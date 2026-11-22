@@ -100,6 +100,7 @@ export type {
   RemoteHostStatus,
 } from "./remote-host-lifecycle.js";
 export { createHostUpdateCoordinator } from "./update-coordinator.js";
+export { HostExtensionManager } from "./host-extension-manager.js";
 export type {
   CreateHostUpdateCoordinatorOptions,
   HostUpdateCoordinator,

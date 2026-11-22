@@ -8,6 +8,9 @@ import {
 } from "@codexhost/desktop-control/renderer-bindings";
 import {
   encodeHarnessPluginRoute,
+  harnessModelRefFromKey,
+  harnessModelRefKey,
+  sameHarnessModelRef,
   type HarnessId,
   type HarnessModel,
   type HarnessPluginDescriptor,
@@ -247,9 +250,14 @@ export function installRendererNativeScheduleControls(
       selectedWorkspace = null;
       workspace.value = "";
     };
+    const findModel = (key: string) => {
+      if (!key) return undefined;
+      const ref = harnessModelRefFromKey(key);
+      return models.find((entry) => sameHarnessModelRef(entry.ref, ref));
+    };
     const applyModel = () => {
       const binding = readNativeScheduleForm(form);
-      const selected = models.find((entry) => entry.ref.id === model.value);
+      const selected = findModel(model.value);
       if (
         !external() ||
         workspaceCreation !== null ||
@@ -270,7 +278,10 @@ export function installRendererNativeScheduleControls(
       confirmSelection();
       update();
     };
-    const loadModels = async ({ preserveSelection = false } = {}) => {
+    const loadModels = async ({
+      preserveSelection = false,
+      credentialAccess,
+    }: { preserveSelection?: boolean; credentialAccess?: "allow" | "retry" } = {}) => {
       const request = ++generation;
       const previousModel = model.value;
       if (!preserveSelection) {
@@ -290,28 +301,37 @@ export function installRendererNativeScheduleControls(
         const result = await selectedClient.inspectHarness({
           harnessId: requestedHarness as HarnessId,
           ...(selectedWorkspace ? { cwd: selectedWorkspace.cwd } : {}),
+          ...(credentialAccess ? { credentialAccess } : {}),
         });
         if (retired || request !== generation || selectedClient !== options.getClient()) return;
         if (result.status !== "ready")
-          throw Error(text("所选 Harness 不可用。", "The selected Harness is unavailable."));
+          throw Error(
+            result.error.message ||
+              text("所选 Harness 不可用。", "The selected Harness is unavailable."),
+          );
         const selectedModel = preserveSelection ? model.value : previousModel;
         const next = result.catalog.models;
         const changed =
           next.length !== models.length ||
           next.some(
             (entry, index) =>
-              entry.ref.id !== models[index]?.ref.id || entry.label !== models[index]?.label,
+              !sameHarnessModelRef(entry.ref, models[index]?.ref) ||
+              entry.label !== models[index]?.label,
           );
         models = next;
         if (changed || !preserveSelection)
-          model.setItems(models.map((entry) => ({ value: entry.ref.id, label: entry.label })));
+          model.setItems(
+            models.map((entry) => ({ value: harnessModelRefKey(entry.ref), label: entry.label })),
+          );
         const defaultModel = result.catalog.defaultModel;
+        const fallback =
+          models.find((entry) => sameHarnessModelRef(entry.ref, defaultModel)) ?? models[0];
         model.value =
-          preserveSelection || models.some((entry) => entry.ref.id === selectedModel)
+          preserveSelection || findModel(selectedModel)
             ? selectedModel
-            : defaultModel && models.some((entry) => entry.ref.id === defaultModel.id)
-              ? defaultModel.id
-              : (models[0]?.ref.id ?? "");
+            : fallback
+              ? harnessModelRefKey(fallback.ref)
+              : "";
         model.setPlaceholder("");
         if (!models.length) throw Error(text("没有可用模型。", "No models are available."));
         // A workspace changes creation context, not the user's Model choice.
@@ -343,12 +363,13 @@ export function installRendererNativeScheduleControls(
       loading = false;
       if (external()) {
         refreshWorkspaces();
-        void loadModels();
+        void loadModels({ credentialAccess: "allow" });
       }
       update();
     };
     retry.addEventListener("click", () => {
-      if (error) void loadModels({ preserveSelection: models.length > 0 });
+      if (error)
+        void loadModels({ preserveSelection: models.length > 0, credentialAccess: "retry" });
       else applyModel();
     });
     function blockedReason(): string {
@@ -406,7 +427,7 @@ export function installRendererNativeScheduleControls(
               "Checking workspace models. Submit again once ready.",
             )
           : text("请等待并选择可用的 Model。", "Wait for an available Model and select it.");
-      if (!carrier || !models.some((entry) => entry.ref.id === model.value))
+      if (!carrier || !findModel(model.value))
         return text(
           "当前模型在此工作区不可用，请重新选择模型。",
           "The selected Model is unavailable in this workspace. Choose another Model.",
@@ -462,7 +483,7 @@ export function installRendererNativeScheduleControls(
         loading ||
         confirming ||
         Boolean(workspaceCreation) ||
-        (!error && models.length > 0 && !models.some((entry) => entry.ref.id === model.value)) ||
+        (!error && models.length > 0 && !findModel(model.value)) ||
         !message ||
         !binding?.supportsExternal ||
         Boolean(binding.hasTarget || binding.isSaving) ||

@@ -8,12 +8,13 @@ export const HARNESS_PLUGIN_ICON_MAX_BYTES = 128 * 1024;
 export const HARNESS_PLUGIN_LIMIT = 128;
 
 /** Installed plugin identities are portable directory keys, not Native Session IDs. */
-export const installedHarnessPluginIdSchema = z
+export const installedPluginIdSchema = z
   .string()
   .min(1)
   .max(128)
-  .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/u)
-  .pipe(harnessIdSchema);
+  .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/u);
+
+export const installedHarnessPluginIdSchema = installedPluginIdSchema.pipe(harnessIdSchema);
 
 /** External Harness routes must never take over the official Desktop Codex identity. */
 export const harnessPluginIdSchema = installedHarnessPluginIdSchema.refine(
@@ -28,7 +29,7 @@ export function isHarnessPluginInScope(id: string, scope: HarnessPluginScope): b
   return scope === "external" && id !== "codex";
 }
 
-const relativeResourceSchema = z
+export const pluginRelativeResourceSchema = z
   .string()
   .min(1)
   .max(512)
@@ -134,8 +135,8 @@ export const harnessPluginManifestSchema = z
     manifestVersion: z.literal(1),
     ...pluginPresentationShape,
     adapterApiVersion: z.number().int().positive(),
-    entry: relativeResourceSchema,
-    icon: relativeResourceSchema.optional(),
+    entry: pluginRelativeResourceSchema,
+    icon: pluginRelativeResourceSchema.optional(),
   })
   .strict();
 export type HarnessPluginManifest = z.infer<typeof harnessPluginManifestSchema>;

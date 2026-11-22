@@ -55,6 +55,7 @@ import {
   type HostInteractionId,
   type NativeSessionRef,
   type NativeTurnRef,
+  catalogModelForRef,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -72,7 +73,7 @@ import {
   decodeQwenCodePermissionModeId,
 } from "./permission-modes.js";
 import {
-  nativeModelIdForRef,
+  normalizeStoredQwenCodeModelRef,
   parseQwenCodeModelState,
   stateForQwenCodeModel,
   type QwenCodeModelState,
@@ -433,8 +434,7 @@ class QwenCodeHarnessSession implements HarnessSession {
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    const nativeModelId = nativeModelIdForRef(this.#modelState, command.model);
-    if (!nativeModelId) {
+    if (!catalogModelForRef(this.#modelState.catalog, command.model)) {
       return {
         ok: false,
         error: {
@@ -456,7 +456,7 @@ class QwenCodeHarnessSession implements HarnessSession {
     }
     this.#configuring = true;
     try {
-      await this.#transport.setModel(nativeModelId);
+      await this.#transport.setModel(command.model.id);
       this.#modelState = { ...this.#modelState, currentModel: command.model };
       this.#state = stateForQwenCodeModel(
         this.#modelState,
@@ -916,11 +916,13 @@ class QwenCodeHarnessSession implements HarnessSession {
 }
 
 export class QwenCodeAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredQwenCodeModelRef;
   readonly harnessId: HarnessId = qwenCodeHarnessId;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: QwenCodeAdapterDependencies;
   readonly #environment: NodeJS.ProcessEnv | undefined;
   readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
+  #inspectionGeneration = 0;
   readonly #sessions = new Set<QwenCodeHarnessSession>();
   readonly #toolOutputLimit: number;
   #closePromise: Promise<void> | null = null;
@@ -941,10 +943,13 @@ export class QwenCodeAdapter implements HarnessAdapter {
       return { status: "unavailable", error: invalidState("Qwen Code Adapter is closed") };
     }
     const cwd = path.resolve(input.cwd ?? process.cwd());
-    if (!input.refresh) {
-      const cached = this.#inspectionCache.get(cwd);
-      if (cached) return cached;
+    if (input.refresh) {
+      this.#inspectionCache.clear();
+      this.#inspectionGeneration++;
     }
+    const cached = this.#inspectionCache.get(cwd);
+    if (cached) return cached;
+    const generation = this.#inspectionGeneration;
     let transport: QwenCodeSdkTransportLike | null = null;
     const startedAt = Date.now();
     let stage = "spawn";
@@ -970,7 +975,8 @@ export class QwenCodeAdapter implements HarnessAdapter {
         permissionModes: QWEN_CODE_PERMISSION_MODE_CATALOG,
         capabilities: capabilitiesForModels(modelState),
       };
-      this.#inspectionCache.set(cwd, ready);
+      if (!this.#closePromise && generation === this.#inspectionGeneration)
+        this.#inspectionCache.set(cwd, ready);
       return ready;
     } catch (error) {
       await transport?.close().catch(() => undefined);
@@ -1110,8 +1116,7 @@ export class QwenCodeAdapter implements HarnessAdapter {
         input.kind === "create"
           ? (input.model ?? modelState.currentModel)
           : modelState.currentModel;
-      const nativeModelId = nativeModelIdForRef(modelState, selectedModel);
-      if (!nativeModelId) {
+      if (!catalogModelForRef(modelState.catalog, selectedModel)) {
         throw new QwenCodeTransportError(
           "protocolError",
           "Requested Qwen Code Model is unavailable",
@@ -1119,7 +1124,7 @@ export class QwenCodeAdapter implements HarnessAdapter {
       }
       // Pin the SDK Session to the Model observed through getContextUsage(), or
       // to the explicit create selection, before any Host Turn can start.
-      await transport.setModel(nativeModelId);
+      await transport.setModel(selectedModel.id);
       modelState.currentModel = selectedModel;
       const history: HostTurnSnapshot[] =
         input.kind === "resume"

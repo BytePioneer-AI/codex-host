@@ -105,6 +105,58 @@ it("coalesces changes, reconciles a change during snapshot read, and stops readi
   assert.equal(host.snapshots, count);
 });
 
+it("refreshes followed usage after a read fails with a newer invalidation pending", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-usage-refresh-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const failedRead = Promise.withResolvers<never>();
+  let failNext = false;
+  let reading = false;
+  let outputTokens = 2;
+  const host = new (class extends FakeChChannel {
+    override async request<T>(method: string, params: Record<string, unknown>): Promise<T> {
+      if (method !== "codexhost/thread/usage/inspect") return super.request<T>(method, params);
+      if (failNext) {
+        failNext = false;
+        reading = true;
+        await failedRead.promise;
+      }
+      return {
+        threadId: params.threadId,
+        usage: { outputTokens },
+        accountCreditsSupported: false,
+      } as T;
+    }
+  })();
+  const row = host.add("thread", root);
+  const sessions = new ChSessions(
+    host,
+    new Workspaces(new DataDir(root), root),
+    new EventHub(root),
+  );
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  const streams = new Streams();
+  sessions.register(rpc, streams);
+  await rpc.dispatch("session/list", { args: {} });
+  const follow = sink();
+  t.after(() => follow.sink.end());
+  await defined(streams.endpoints.get("session/follow"))(
+    { request: { address: { sessionId: row.id } } },
+    follow.sink,
+  );
+  const sawUsage = (tokens: number) =>
+    JSON.stringify(follow.frames).includes(`"outputTokens":${tokens}`);
+  await wait(() => sawUsage(2));
+
+  failNext = true;
+  host.changed(row.id, "codexhost/thread/usage/updated");
+  await wait(() => reading);
+  outputTokens = 7;
+  host.changed(row.id, "codexhost/thread/usage/updated");
+  failedRead.reject(new Error("Usage unavailable"));
+  await wait(() => sawUsage(7));
+});
+
 it("withdraws cross-client approvals and restores only current pending interactions after reconnect", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-interactions-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

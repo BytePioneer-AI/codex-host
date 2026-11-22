@@ -46,10 +46,13 @@
   font: inherit;
   font-size: 14px;
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.button:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+.button:active:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-active);
 }
 
 .button:focus-visible {
@@ -70,11 +73,21 @@
   margin: 8px 0 0;
 }
 
-@media (max-width: 600px) {
+@media (hover: hover) and (pointer: fine) {
+  .button:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+@media (max-width: 640px) {
+  .section {
+    padding: 12px 0;
+  }
+
   .row {
     flex-direction: column;
     align-items: stretch;
-    gap: 12px;
+    gap: 10px;
   }
 
   .text {

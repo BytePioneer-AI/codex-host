@@ -90,7 +90,7 @@ describe("Antigravity Session usage", () => {
   it("meters historical and completed live requests without waiting for the Turn to end", async () => {
     const meter = new UsageMeter();
     const prices = { find: () => ({ input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 }) };
-    const apply = (update: Awaited<ReturnType<typeof tracker.collectNewTranscriptRequests>>) => {
+    const apply = (update: Awaited<ReturnType<typeof tracker.replayHistoricalRequests>>) => {
       for (const request of update.requests) meter.recordRequest(request, "turn-live");
       meter.recordHistory(update.complete);
       return meter.derive(update.usage, prices);
@@ -481,9 +481,16 @@ describe("Antigravity Session usage", () => {
       file,
       planner(3, { tool_calls: [{ name: "read_file", args: { Path: "test" } }] }) + "\n",
     );
+    await writeNativeTimingDatabase(home, [
+      { step: 1 },
+      { step: 3, created: 10000, started: 12000, completed: 13000 },
+    ]);
     const update = await tracker.collectNewTranscriptRequests();
     expect(update.requests).toHaveLength(1);
     expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(update.timings).toEqual([
+      { requestId: "step:3", requestStartedAtMs: 10000, timeToFirstOutputMs: 2000 },
+    ]);
     expect(update.usage).toMatchObject({ outputTokens: 40, outputTokensPerSecond: 10 });
   });
 
@@ -518,7 +525,7 @@ describe("Antigravity Session usage", () => {
     expect(result.usage?.outputTokensPerSecond).toBeCloseTo(50 / 3);
   });
 
-  it.each([0, 10])("waits for timing, thought=%i", async (thought) => {
+  it.each([0, 10])("publishes usage before timing, thought=%i", async (thought) => {
     await transcript(planner(1));
     const database = await writeNativeTimingDatabase(home, [{ step: 1, thought }]);
     const db = new DatabaseSync(database);
@@ -528,18 +535,26 @@ describe("Antigravity Session usage", () => {
       db.close();
     }
     tracker.beginTurn(1000);
-    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
-    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
+    const early = await tracker.collectNewTranscriptRequests();
+    expect(early.complete).toBe(true);
+    expect(early.requests).toMatchObject([
+      { requestId: "step:1", outputTokens: 20, reasoningOutputTokens: thought },
+    ]);
+    expect(early.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(early.timings).toEqual([]);
     await writeNativeTimingDatabase(home, [{ step: 1, thought }]);
     const completed = await tracker.collectNewTranscriptRequests();
-    expect(completed.requests).toHaveLength(1);
-    expect(completed.requests[0]).toMatchObject({
-      reasoningOutputTokens: thought,
-      timedOutputTokens: 20 - thought,
-      startedAtMs: 3000,
-      completedAtMs: 5000,
-    });
-    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
+    expect(completed.requests).toEqual([]);
+    expect(completed.timings).toEqual([
+      {
+        requestId: "step:1",
+        requestStartedAtMs: 1000,
+        timeToFirstOutputMs: 2000,
+        output: { outputTokens: 20 - thought, startedAtMs: 3000, completedAtMs: 5000 },
+      },
+    ]);
+    expect(completed.usage?.outputTokensPerSecond).toBe((20 - thought) / 2);
+    expect((await tracker.collectNewTranscriptRequests()).timings).toEqual([]);
     const usage = { ...nativePrompt, thoughtTokens: thought };
     expect(
       (await tracker.collectNewTranscriptRequests({ promptUsage: usage, completedAtMs: 8000 }))
@@ -564,31 +579,34 @@ describe("Antigravity Session usage", () => {
     expect(update.usage).not.toHaveProperty("outputTokensPerSecond");
   });
 
-  it.each([0, 10])("flushes untimed at Turn end, thought=%i", async (thought) => {
-    await transcript(planner(1));
-    const file = await writeNativeTimingDatabase(home, [{ step: 1, thought }]);
-    const db = new DatabaseSync(file);
-    try {
-      db.exec("DELETE FROM gen_metadata");
-    } finally {
-      db.close();
-    }
-    tracker.beginTurn(1000);
-    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
-    const usage = { ...nativePrompt, thoughtTokens: thought };
-    const update = await tracker.collectNewTranscriptRequests({
-      promptUsage: usage,
-      completedAtMs: 8000,
-    });
-    expect(update.requests).toHaveLength(1);
-    expect(update.requests[0]).toMatchObject({ reasoningOutputTokens: thought });
-    expect(update.requests[0]).not.toHaveProperty("startedAtMs");
-    expect(update.requests[0]).not.toHaveProperty("timedOutputTokens");
-    const result = tracker.recordTurnPromptUsage({ usage });
-    expect(result.complete).toBe(true);
-    expect(result.usage).not.toHaveProperty("outputTokensPerSecond");
-    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
-  });
+  it.each([0, 10])(
+    "supplements already published usage with timing available at Turn end, thought=%i",
+    async (thought) => {
+      await transcript(planner(1));
+      const file = await writeNativeTimingDatabase(home, [{ step: 1, thought }]);
+      const db = new DatabaseSync(file);
+      try {
+        db.exec("DELETE FROM gen_metadata");
+      } finally {
+        db.close();
+      }
+      tracker.beginTurn(1000);
+      const early = await tracker.collectNewTranscriptRequests();
+      expect(early.requests).toMatchObject([{ reasoningOutputTokens: thought }]);
+      expect(early.requests[0]).not.toHaveProperty("timedOutputTokens");
+      await writeNativeTimingDatabase(home, [{ step: 1, thought }]);
+      const usage = { ...nativePrompt, thoughtTokens: thought };
+      const update = await tracker.collectNewTranscriptRequests({
+        promptUsage: usage,
+        completedAtMs: 8000,
+      });
+      expect(update.requests).toEqual([]);
+      expect(update.timings).toMatchObject([{ timeToFirstOutputMs: 2000 }]);
+      const result = tracker.recordTurnPromptUsage({ usage });
+      expect(result.complete).toBe(true);
+      expect(result.usage?.outputTokensPerSecond).toBe((20 - thought) / 2);
+    },
+  );
 
   it("does not backfill live speed when replaying historical native timings", async () => {
     await transcript(planner(1));
@@ -619,6 +637,9 @@ describe("Antigravity Session usage", () => {
     });
     expect(update.requests[0]).not.toHaveProperty("startedAtMs");
     expect(update.requests[1]).toMatchObject({ startedAtMs: 12000, completedAtMs: 13000 });
+    expect(update.timings).toEqual([
+      { requestId: "step:3", requestStartedAtMs: 10000, timeToFirstOutputMs: 2000 },
+    ]);
     expect(tracker.recordTurnPromptUsage({ usage }).usage?.outputTokensPerSecond).toBe(30);
   });
 
@@ -985,23 +1006,33 @@ describe("Antigravity Session usage", () => {
       expect((await tracker.collectNewTranscriptRequests()).requests).toHaveLength(1);
     }
     const clock = { firstOutputAtMs: 1000, completedAtMs: 3000 };
-    expect((await tracker.collectNewTranscriptRequests(clock)).requests).toEqual([]);
-    const result = tracker.recordTurnPromptUsage({
-      usage: {
-        inputTokens: 100 * steps,
-        cachedReadTokens: 50 * steps,
-        cachedWriteTokens: 0,
-        outputTokens: 20 * steps,
-      },
-      ...clock,
-    });
+    const usage = {
+      inputTokens: 100 * steps,
+      cachedReadTokens: 50 * steps,
+      cachedWriteTokens: 0,
+      outputTokens: 20 * steps,
+      thoughtTokens: 0,
+    };
+    const final = await tracker.collectNewTranscriptRequests({ ...clock, promptUsage: usage });
+    expect(final.requests).toEqual([]);
+    expect(final.timings).toEqual(
+      steps === 1
+        ? [
+            {
+              requestId: "step:1",
+              output: { startedAtMs: 1000, completedAtMs: 3000, outputTokens: 20 },
+            },
+          ]
+        : [],
+    );
+    const result = tracker.recordTurnPromptUsage({ usage, ...clock });
     expect(result).not.toHaveProperty("fallbackRequest");
     expect(result.usage).toMatchObject({
       inputTokens: 150 * steps,
       outputTokens: 20 * steps,
       totalTokens: 170 * steps,
     });
-    if (steps > 1) expect(result.usage).not.toHaveProperty("outputTokensPerSecond");
+    expect(result.usage?.outputTokensPerSecond).toBe(steps === 1 ? 10 : undefined);
 
     tracker.beginTurn();
     expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);

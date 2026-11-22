@@ -1,0 +1,244 @@
+:root {
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #1e3a8a 0%, #4f6ef7 58%, #15a383 100%);
+  --vp-home-hero-image-background-image: linear-gradient(
+    135deg,
+    rgba(79, 110, 247, 0.22) 0%,
+    rgba(25, 167, 133, 0.18) 100%
+  );
+  --vp-home-hero-image-filter: blur(64px);
+}
+
+.dark {
+  --vp-home-hero-name-background: linear-gradient(120deg, #93c5fd 0%, #818cf8 55%, #34d399 100%);
+  --vp-home-hero-image-background-image: linear-gradient(
+    135deg,
+    rgba(99, 102, 241, 0.26) 0%,
+    rgba(16, 185, 129, 0.2) 100%
+  );
+}
+
+/* Home Hero: wide product showcase layout */
+.VPHome .VPHero.has-image .main {
+  order: 1;
+}
+
+.VPHome .VPHero.has-image .image {
+  order: 2;
+  margin: 32px auto 0;
+  width: 100%;
+  max-width: 600px;
+}
+
+.VPHome .VPHero.has-image .image-container {
+  width: 100%;
+  height: auto;
+  transform: none;
+}
+
+.VPHome .VPHero.has-image .image-bg {
+  width: 88%;
+  height: 88%;
+  border-radius: 28px;
+}
+
+.VPHome .VPHero.has-image .image-src {
+  position: relative;
+  top: auto;
+  left: auto;
+  transform: none;
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: none;
+  height: auto;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow:
+    0 24px 56px -16px rgba(15, 23, 42, 0.16),
+    0 4px 14px -4px rgba(15, 23, 42, 0.06);
+}
+
+.dark .VPHome .VPHero.has-image .image-src {
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 28px 64px -16px rgba(0, 0, 0, 0.55),
+    0 4px 16px -4px rgba(0, 0, 0, 0.35);
+}
+
+@media (min-width: 960px) {
+  .VPHome .VPHero {
+    padding-top: calc(var(--vp-nav-height) + var(--vp-layout-top-height, 0px) + 64px);
+    padding-bottom: 56px;
+  }
+
+  .VPHome .VPHero.has-image .container {
+    align-items: center;
+    gap: 48px;
+  }
+
+  .VPHome .VPHero.has-image .main {
+    flex: 0 0 468px;
+    width: 468px;
+    max-width: 468px;
+  }
+
+  .VPHome .VPHero.has-image .name {
+    font-size: 48px;
+    line-height: 56px;
+  }
+
+  .VPHome .VPHero.has-image .text {
+    margin-top: 6px;
+    max-width: 468px;
+    font-size: 42px;
+    line-height: 52px;
+    letter-spacing: -0.02em;
+  }
+
+  .VPHome .VPHero.has-image .tagline {
+    padding-top: 14px;
+    max-width: 456px;
+    font-size: 18px;
+    line-height: 29px;
+  }
+
+  .VPHome .VPHero.has-image .actions {
+    padding-top: 28px;
+  }
+
+  .VPHome .VPHero.has-image .image {
+    flex: 1 1 0%;
+    min-width: 0;
+    margin: 0;
+    max-width: none;
+  }
+
+  .VPHome .VPHero.has-image .image-src {
+    border-radius: 16px;
+  }
+}
+
+/* Home Feature Cards */
+.VPHome .VPFeature {
+  border-color: var(--vp-c-divider);
+  transition:
+    border-color 0.25s,
+    background-color 0.25s,
+    transform 0.25s,
+    box-shadow 0.25s;
+}
+
+.VPHome .VPFeature.link:hover {
+  border-color: var(--vp-c-brand-1);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 26px -10px rgba(15, 23, 42, 0.1);
+}
+
+.dark .VPHome .VPFeature.link:hover {
+  box-shadow: 0 10px 26px -10px rgba(0, 0, 0, 0.45);
+}
+
+.VPHome .VPFeature .icon {
+  width: 40px;
+  height: 40px;
+  margin-bottom: 16px;
+  border-radius: 10px;
+  background-color: var(--vp-c-brand-soft);
+  color: var(--vp-c-brand-1);
+}
+
+.VPHome .VPFeature .icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.VPHome .VPFeature .link-text {
+  padding-top: 12px;
+}
+
+/* Home Bottom Quick-Start & Preinstalled Agents */
+.wiki-home-extra {
+  max-width: 1152px;
+  margin: 48px auto 0;
+  padding-top: 40px;
+  border-top: 1px solid var(--vp-c-divider);
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 32px;
+}
+
+@media (min-width: 960px) {
+  .wiki-home-extra {
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+    gap: 48px;
+    align-items: start;
+  }
+}
+
+.wiki-home-panel h2 {
+  margin: 0 0 8px;
+  padding: 0;
+  border-top: none;
+  font-size: 18px;
+  line-height: 28px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.wiki-home-panel p {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--vp-c-text-2);
+}
+
+.wiki-home-panel :is(.vp-code-group, div[class*="language-"]) {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.wiki-agent-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.wiki-agent-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--vp-c-divider);
+  background-color: var(--vp-c-bg-soft);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--vp-c-text-1);
+  text-decoration: none !important;
+  transition:
+    border-color 0.2s,
+    color 0.2s,
+    background-color 0.2s;
+}
+
+.wiki-agent-tag:hover {
+  border-color: var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1);
+  background-color: var(--vp-c-brand-soft);
+}
+
+.wiki-matrix-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vp-c-brand-1);
+  text-decoration: none !important;
+}
+
+.wiki-matrix-link:hover {
+  color: var(--vp-c-brand-2);
+}

@@ -138,8 +138,10 @@ describe("Cursor native configuration", () => {
       clock.mockReturnValue(7 * 24 * 60 * 60_000);
       await adapter.inspect();
       expect(open).toHaveBeenCalledTimes(1);
-      await adapter.inspect({ refresh: true });
+      await adapter.inspect({ cwd: "/project", refresh: true });
       expect(open).toHaveBeenCalledTimes(2);
+      await adapter.inspect();
+      expect(open).toHaveBeenCalledTimes(3);
     } finally {
       await adapter.close();
     }
@@ -182,13 +184,22 @@ describe("Cursor native configuration", () => {
       }
     },
   );
-  it("preserves the complete parameterized native model behind an opaque Host ref", () => {
-    const ref = cursorModelRef("model[effort=high]");
-    expect(ref.id).toMatch(/^[A-Za-z0-9._~-]+$/u);
-    expect(cursorNativeModel(info, ref.id)).toBe("model[effort=high]");
-    expect(() => cursorNativeModel(info, "unknown")).toThrow();
-    expect(cursorCatalog(info).thinkingOptions).toEqual([]);
-  });
+  it.each(["model[effort=high]", "系列/模型.v1~高[effort=high]"])(
+    "preserves the complete parameterized native model behind an opaque Host ref: %s",
+    (value) => {
+      const selected = structuredClone(info);
+      const model = selected.configOptions?.find((option) => option.id === "model");
+      if (model?.type !== "select") throw new Error("Expected a Cursor Model selector");
+      model.currentValue = value;
+      model.options = [{ value, name: "Model" }];
+      const catalog = cursorCatalog(selected);
+      if (!catalog.defaultModel) throw new Error("Expected a Cursor Model Ref");
+      expect(catalog.defaultModel.id).toMatch(/^[A-Za-z0-9._~-]+$/u);
+      expect(cursorNativeModel(selected, catalog.defaultModel.id)).toBe(value);
+      expect(() => cursorNativeModel(selected, "unknown")).toThrow();
+      expect(catalog.thinkingOptions).toEqual([]);
+    },
+  );
   it("caches failed inspection without expiry and retries only on explicit refresh", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(0);
     const open = vi

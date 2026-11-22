@@ -18,6 +18,7 @@ describe("shared-contracts browser bundle", () => {
           'import { codexhostErrorSchema, deepSeekModernSessionImportParamsSchema, deepSeekModernSessionListResultSchema, harnessCommandDescriptorSchema, harnessInspectionSchema, harnessSessionImportCandidateSchema, harnessThinkingOptionSchema, hostThreadIdSchema, jsonRpcEnvelopeSchema, nativeSessionRefSchema, threadModelSelectParamsSchema, threadThinkingSelectParamsSchema } from "@codexhost/shared-contracts";',
           "export const schemas = { codexhostErrorSchema, deepSeekModernSessionImportParamsSchema, deepSeekModernSessionListResultSchema, harnessCommandDescriptorSchema, harnessInspectionSchema, harnessSessionImportCandidateSchema, harnessThinkingOptionSchema, hostThreadIdSchema, jsonRpcEnvelopeSchema, nativeSessionRefSchema, threadModelSelectParamsSchema, threadThinkingSelectParamsSchema };",
           'export { decodeHarnessPluginRoute, encodeHarnessPluginRoute, harnessPluginManifestSchema, harnessPluginListResultSchema } from "@codexhost/shared-contracts";',
+          'export { decodeSidebarBrowserFrameHeader, encodeSidebarBrowserFrameHeader, parseSidebarBrowserClientMessage } from "@codexhost/shared-contracts/sidebar-browser";',
         ].join("\n"),
         loader: "ts",
         resolveDir: resolve(import.meta.dirname, "../../.."),

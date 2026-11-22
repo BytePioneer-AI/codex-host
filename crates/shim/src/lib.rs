@@ -37,6 +37,25 @@ const LAUNCHER_PID_ENV: &str = "CODEXHOST_LAUNCHER_PID";
 const REMOTE_LISTENER_CHILD_ENV: &str = "CODEXHOST_REMOTE_LISTENER_CHILD";
 const INTERNAL_ORIGINATOR_OVERRIDE_ENV: &str = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE";
 const DESKTOP_ORIGINATOR: &str = "Codex Desktop";
+/// Hidden app-server options that take several values each. Codex Desktop passes them to set
+/// process-local launch directories for stdio MCP servers:
+/// `--mcp-launch-cwd <SERVER> <EXECUTABLE> <DIRECTORY>` and
+/// `--plugin-mcp-launch-cwd <PLUGIN_ID> <SERVER> <DIRECTORY>`.
+const APP_SERVER_MULTI_VALUE_OPTIONS: &[(&str, usize)] =
+    &[("--mcp-launch-cwd", 3), ("--plugin-mcp-launch-cwd", 3)];
+
+/// Returns how many values follow a multi-value app-server option, or `None` for other arguments.
+fn app_server_multi_value_count(argument: &str) -> Option<usize> {
+    APP_SERVER_MULTI_VALUE_OPTIONS
+        .iter()
+        .find_map(|&(option, count)| (option == argument).then_some(count))
+}
+
+fn has_app_server_multi_values(arguments: &[OsString], index: usize, count: usize) -> bool {
+    arguments
+        .get(index + 1..=index + count)
+        .is_some_and(|values| values.iter().all(|value| !value.is_empty()))
+}
 
 /// Optional lifecycle hooks for diagnostics around the byte-transparent proxy core.
 pub trait ProxyObserver {
@@ -442,6 +461,13 @@ fn should_start_host_runtime_for_originator(
             index += 2;
             continue;
         }
+        if let Some(count) = app_server_multi_value_count(argument) {
+            if !has_app_server_multi_values(arguments, index, count) {
+                return false;
+            }
+            index += count + 1;
+            continue;
+        }
         if VALUE_OPTIONS.iter().any(|option| {
             argument
                 .strip_prefix(option)
@@ -506,6 +532,13 @@ fn is_default_remote_unix_listener(arguments: &[OsString]) -> bool {
                 return false;
             }
             index += 2;
+            continue;
+        }
+        if let Some(count) = app_server_multi_value_count(argument) {
+            if !has_app_server_multi_values(arguments, index, count) {
+                return false;
+            }
+            index += count + 1;
             continue;
         }
         if VALUE_OPTIONS.iter().any(|option| {
@@ -868,7 +901,8 @@ pub fn run_proxy_with_observer(
 
     let started = Instant::now();
     let shutdown_signals = ShutdownSignals::install()?;
-    let mut desktop_helper = desktop_invocation::is_desktop_helper(&stock_codex_path);
+    let desktop_caller = desktop_invocation::classify_desktop_caller(&stock_codex_path, arguments);
+    let mut desktop_helper = desktop_caller == desktop_invocation::DesktopCaller::Helper;
     let mut local_host_runtime = !desktop_helper
         && should_start_host_runtime(arguments)
         && host_runtime_paths_are_configured()
@@ -879,7 +913,7 @@ pub fn run_proxy_with_observer(
         let data_directory = PathBuf::from(
             env::var_os(DATA_DIRECTORY_ENV).ok_or("CODEXHOST_DATA_DIR is unavailable")?,
         );
-        match admit_local_runtime(&data_directory, &stock_codex_path)? {
+        match admit_local_runtime(&data_directory, &desktop_caller)? {
             LocalRuntimeAdmission::Owner(lease) => local_runtime_lease = Some(lease),
             LocalRuntimeAdmission::OfficialCli(reason) => {
                 eprintln!(
@@ -1166,6 +1200,89 @@ mod tests {
             &arguments,
             Some(std::ffi::OsStr::new("Codex Desktop")),
         ));
+    }
+
+    const DESKTOP_APP_SERVER: &[&str] = &[
+        "-c",
+        "features.code_mode_host=true",
+        "app-server",
+        "--analytics-default-enabled",
+        "-c",
+        "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+    ];
+
+    fn with_desktop_app_server(extra: &[&str]) -> Vec<OsString> {
+        arguments(&[DESKTOP_APP_SERVER, extra].concat())
+    }
+
+    #[test]
+    fn starts_host_runtime_for_desktop_mcp_launch_directories() {
+        assert!(should_start_host_runtime(&with_desktop_app_server(&[])));
+        assert!(should_start_host_runtime(&with_desktop_app_server(&[
+            "--mcp-launch-cwd",
+            "files",
+            "/usr/bin/node",
+            "/tmp/project",
+        ])));
+        assert!(should_start_host_runtime(&with_desktop_app_server(&[
+            "--plugin-mcp-launch-cwd",
+            "github@openai-curated",
+            "github",
+            "/tmp/project",
+        ])));
+        assert!(should_start_host_runtime(&with_desktop_app_server(&[
+            "--mcp-launch-cwd",
+            "files",
+            "/usr/bin/node",
+            "/tmp/project",
+            "--plugin-mcp-launch-cwd",
+            "github@openai-curated",
+            "github",
+            "/tmp/project",
+            "--mcp-launch-cwd",
+            "docs",
+            "/usr/bin/python3",
+            "/tmp/docs",
+        ])));
+        assert!(is_default_remote_unix_listener(&arguments(&[
+            "app-server",
+            "--listen",
+            "unix://",
+            "--mcp-launch-cwd",
+            "files",
+            "/usr/bin/node",
+            "/tmp/project",
+        ])));
+    }
+
+    #[test]
+    fn keeps_incomplete_mcp_launch_directories_and_unknown_options_on_the_stock_cli() {
+        for incomplete in [
+            &["--mcp-launch-cwd"][..],
+            &["--mcp-launch-cwd", "files", "/usr/bin/node"],
+            &["--plugin-mcp-launch-cwd", "github@openai-curated", "github"],
+            &["--mcp-launch-cwd", "files", "/usr/bin/node", ""],
+            &[
+                "--plugin-mcp-launch-cwd",
+                "github@openai-curated",
+                "github",
+                "",
+            ],
+            &["--mcp-launch-cwd=files", "/usr/bin/node", "/tmp/project"],
+        ] {
+            assert!(
+                !should_start_host_runtime(&with_desktop_app_server(incomplete)),
+                "{incomplete:?}"
+            );
+            let remote = [&["app-server", "--listen", "unix://"][..], incomplete].concat();
+            assert!(
+                !is_default_remote_unix_listener(&arguments(&remote)),
+                "{incomplete:?}"
+            );
+        }
+        assert!(!should_start_host_runtime(&with_desktop_app_server(&[
+            "--unknown-option",
+        ])));
     }
 
     #[test]

@@ -50,7 +50,10 @@ The listener accepts profiles received through Desktop's stdin and validates
 the first-party executable against the selected runtime's `node_repl`. Profiles
 use a short-lived capability token per profile and separate MCP session IDs. Transport overrides travel in authenticated Desktop
 context and are applied when launching the backend. Native startup records keep
-the original arguments. Desktop frontend shutdown closes the listener and its tool processes. Browser MCP JavaScript state follows
+the original arguments. Desktop frontend shutdown closes the listener and its tool processes.
+An MCP session also ends on its client's DELETE, or after 30 seconds with no
+open stream or request, since a killed client cannot send DELETE; a live client
+holds its standalone SSE stream open. Browser MCP JavaScript state follows
 that Desktop lifetime, including when the shared task backend remains online.
 
 The independent shared Host keeps the Node chosen by the caller that first

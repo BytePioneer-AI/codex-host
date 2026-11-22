@@ -138,6 +138,10 @@ it("binds the reviewed draft setter tuple to its exact client identity", () => {
     update,
     usesAccountPreferences: true,
   });
+  data.push([...row], [...modelRow]);
+  expect(findScopedDraftModelBinding(element, "client-new-thread:a")?.update).toBe(update);
+  data.pop();
+  data.pop();
   const otherUpdate = vi.fn();
   const otherDraftRow = Object.assign([...row], {
     9: otherUpdate,
@@ -145,9 +149,7 @@ it("binds the reviewed draft setter tuple to its exact client identity", () => {
     13: { draftSettings: draft, isNewThreadDraft: true, updateDraftSettings: otherUpdate },
   });
   data.push(otherDraftRow, Object.assign([...modelRow], { 13: otherUpdate }));
-  expect(findScopedDraftModelBinding(element, "client-new-thread:a")).toMatchObject({
-    usesAccountPreferences: true,
-  });
+  expect(findScopedDraftModelBinding(element, "client-new-thread:a")).toBeNull();
   data.pop();
   data.pop();
   const root = { parentElement: null, querySelector: () => element, __reactFiber$root: {} };
@@ -223,6 +225,177 @@ it("binds the Desktop 26.1106 model tuple without changing another draft or nati
   model[21] = vi.fn();
   expect(findScopedDraftModelBinding(element, "client-new-thread:mac")).toBeNull();
 });
+
+it.each(["52-slot", "26.1103 (53-slot)", "55-slot", "reshuffled"] as const)(
+  "binds the unique submit owner with a %s layout",
+  (layout) => {
+    const current = layout === "55-slot" || layout === "reshuffled";
+    const draftId = "client-new-thread:current";
+    const store = { get() {}, set() {} };
+    const original = { modelSettings: { model: "native", reasoningEffort: "high" } };
+    let draft = original as Record<string, unknown>;
+    const update = (apply: (value: typeof draft) => typeof draft) => {
+      draft = apply(draft);
+    };
+    const otherUpdate = () => {
+      throw new Error("not the creation writer");
+    };
+    const modelCallback = () => {
+      throw new Error("not a draft-only setter");
+    };
+    const settings = { model: "native", reasoning_effort: "high" };
+    const activeMode = { mode: "default", settings };
+    const tuple = (length: number, slots: Record<number, unknown>) => {
+      const row = Object.assign(
+        Array<unknown>(length).fill(Symbol.for("react.memo_cache_sentinel")),
+        slots,
+      );
+      return layout === "reshuffled" ? [null, ...row.toReversed(), "unrelated"] : row;
+    };
+    const projected = { ...original.modelSettings, profile: null, isLoading: false };
+    const identity = (setter: typeof update, storeView = store, draftSettings = original) =>
+      tuple(14, {
+        6: draftId,
+        7: draftId,
+        8: storeView,
+        9: setter,
+        10: draftSettings,
+        11: true,
+        12: setter,
+        13: { draftSettings, isNewThreadDraft: true, updateDraftSettings: setter },
+      });
+    const model = (setter: typeof update, usesAccountPreferences = false) => {
+      const context = { usesAccountPreferences, modelSettings: original.modelSettings };
+      const result = {
+        ...context,
+        modelSettings: projected,
+        setModelAndReasoningEffort: modelCallback,
+      };
+      return current
+        ? tuple(37, {
+            16: null,
+            21: true,
+            24: setter,
+            25: usesAccountPreferences,
+            27: modelCallback,
+            32: projected,
+            33: modelCallback,
+            34: context,
+            36: result,
+          })
+        : tuple(24, {
+            7: null,
+            10: true,
+            12: context,
+            13: setter,
+            14: modelCallback,
+            20: modelCallback,
+            21: context,
+            23: result,
+          });
+    };
+    const creation = (mode = activeMode) =>
+      current
+        ? tuple(55, {
+            42: "native",
+            43: "high",
+            44: settings,
+            46: settings,
+            47: mode,
+            52: mode,
+            54: { activeMode: mode },
+          })
+        : layout === "26.1103 (53-slot)"
+          ? tuple(53, {
+              40: "native",
+              41: "high",
+              42: settings,
+              45: mode,
+              50: mode,
+              52: { activeMode: mode },
+            })
+          : tuple(52, {
+              39: "native",
+              40: "high",
+              41: settings,
+              44: mode,
+              49: mode,
+              51: { activeMode: mode },
+            });
+    const unrelated = { ...activeMode };
+    const onPendingThreadCreated = current ? vi.fn() : undefined;
+    const submitters = { handleSubmitLocal: vi.fn(), handleNewWorktreeConversation: vi.fn() };
+    const submit = current
+      ? tuple(263, { 82: activeMode, 85: draftId, 100: onPendingThreadCreated, 115: submitters })
+      : tuple(264, { 80: activeMode, 83: draftId, 98: onPendingThreadCreated, 113: submitters });
+    const owningCreation = creation();
+    const sameFiberBypass = () => {
+      throw new Error("not the submit writer");
+    };
+    const data = [
+      owningCreation,
+      ...(layout === "reshuffled" ? [["unrelated memo row"]] : []),
+      model(update),
+      identity(update),
+      creation(unrelated),
+      model(sameFiberBypass),
+      identity(sameFiberBypass, { ...store }),
+      model(update),
+      identity(update, { ...store }),
+    ];
+    if (layout === "reshuffled") data.push(submit);
+    else data.unshift(submit);
+    const creationOwner = {
+      memoizedProps: {
+        onLocalSubmitStart: undefined,
+        submitDisabled: false,
+        onPendingThreadCreated,
+      },
+      updateQueue: { memoCache: { data } },
+    };
+    const bypassStore = current ? { ...store } : store;
+    const bypass = [creation(), model(otherUpdate), identity(otherUpdate, bypassStore)];
+    const element = {
+      parentElement: null,
+      __reactFiber$fixture: {
+        updateQueue: { memoCache: { data: bypass } },
+        return: creationOwner,
+      },
+    };
+    const binding = findScopedDraftModelBinding(element, draftId);
+    expect(binding?.update).toBe(update);
+    expect(binding?.creationModes?.[0]).toBe(activeMode);
+    if (!binding) throw new Error("Missing verified creation writer");
+    const writer = createScopedDraftModelWriter();
+    writer.apply(draftId, binding, "codexhost/pi-native");
+    expect(draft.modelSettings).toMatchObject({ model: "codexhost/pi-native" });
+    expect(draft.modelSettingsPersistAsDefault).toBe(false);
+    writer.apply(draftId, binding, null);
+    expect(draft.modelSettings).toBe(original.modelSettings);
+    const size = data.length;
+    data.push(creation(), model(otherUpdate), identity(otherUpdate, { ...store }));
+    expect(findScopedDraftModelBinding(element, draftId)).toBeNull();
+    data.splice(size);
+
+    bypass[2] = identity(otherUpdate, bypassStore, { ...original });
+    expect(findScopedDraftModelBinding(element, draftId)).toBeNull();
+    bypass[2] = identity(otherUpdate, bypassStore);
+    bypass[1] = model(otherUpdate, true);
+    expect(findScopedDraftModelBinding(element, draftId)).toBeNull();
+    bypass[1] = model(otherUpdate);
+
+    const ownerIndex = data.indexOf(owningCreation);
+    data[ownerIndex] = creation(unrelated);
+    expect(findScopedDraftModelBinding(element, draftId)).toBeNull();
+    data[ownerIndex] = owningCreation;
+
+    submit.push(unrelated);
+    expect(findScopedDraftModelBinding(element, draftId)).toBeNull();
+    submit.pop();
+    Object.freeze(activeMode);
+    expect(findScopedDraftModelBinding(element, draftId)).toBeNull();
+  },
+);
 
 it("keeps drafts independent and restores native settings without default persistence", () => {
   const writer = createScopedDraftModelWriter();

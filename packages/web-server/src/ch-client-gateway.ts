@@ -4,6 +4,7 @@ import {
   clientChannelResponseSchema,
   clientSnapshotRequestSchema,
   CLIENT_REQUEST_LIMIT_BYTES,
+  isHostExtensionManagementMethod,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient } from "./ch-host-client.ts";
 import { RpcError } from "./transport.ts";
@@ -11,9 +12,10 @@ import { RpcError } from "./transport.ts";
 /** Generic App protocol behind the Web server's auth + same-origin gate. Never
  * exposes the private loopback descriptor/token or creates an execution owner. */
 export async function serveChClientGateway(
-  host: ChHostClient | undefined,
+  host: Pick<ChHostClient, "realtime"> | undefined,
   request: IncomingMessage,
   response: ServerResponse,
+  { authenticated = false, safeMode = false } = {},
 ): Promise<void> {
   const reply = (status: number, value: unknown) => {
     response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
@@ -97,11 +99,22 @@ export async function serveChClientGateway(
       input.params &&
       typeof input.params === "object" &&
       !Array.isArray(input.params)
-    )
+    ) {
+      if ((!authenticated || safeMode) && isHostExtensionManagementMethod(input.method)) {
+        reply(403, {
+          error: {
+            code: -32000,
+            message: safeMode
+              ? "Extension management is unavailable in safe mode."
+              : "Authentication must be enabled to manage extensions.",
+          },
+        });
+        return;
+      }
       reply(200, {
         result: await channel.request(input.method, input.params as Record<string, unknown>),
       });
-    else reply(404, { error: { code: -32601, message: "Not found" } });
+    } else reply(404, { error: { code: -32601, message: "Not found" } });
   } catch (error) {
     if (response.headersSent) {
       response.destroy();

@@ -24,6 +24,7 @@ export interface HostThreadUsage {
   readonly planSevenDayResetsAtUnix?: number;
   readonly sessionCacheHitRatePercent?: number;
   readonly timeToFirstOutputMs?: number;
+  readonly latestRequestTimeToFirstOutputMs?: number;
   readonly costSource?: "publicPrice" | "native";
   readonly unpricedModels?: readonly string[];
 }

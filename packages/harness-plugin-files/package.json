@@ -16,6 +16,10 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@codexhost/shared-contracts": "0.0.0"
+    "@codexhost/shared-contracts": "0.0.0",
+    "proper-lockfile": "^4.1.2"
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "^4.1.4"
   }
 }

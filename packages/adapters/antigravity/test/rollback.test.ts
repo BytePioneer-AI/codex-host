@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { minimalTrajectoryMetadataBlob, nativeConversationDbPath } from "../src/fork.js";
 import { readNativeTurnCount } from "../src/native-turn-boundaries.js";
 import { rollbackAntigravityLastTurn } from "../src/rollback.js";
+import { integer } from "./support/native-timing-fixture.js";
 const homes: string[] = [];
 afterEach(async () => {
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
@@ -33,7 +34,7 @@ async function fixture(turns: number) {
   await mkdir(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec(
-    "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER); CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT); CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB)",
+    "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER); CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT); CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER NOT NULL)",
   );
   db.prepare("INSERT INTO trajectory_meta VALUES (?, ?)").run(
     randomUUID(),
@@ -42,12 +43,15 @@ async function fixture(turns: number) {
   db.prepare("INSERT INTO trajectory_metadata_blob VALUES ('main', ?)").run(
     minimalTrajectoryMetadataBlob(sourceRef.nativeSessionId),
   );
-  for (let turn = 0; turn < turns; turn++)
+  for (let turn = 0; turn < turns; turn++) {
     db.prepare("INSERT INTO steps VALUES (?,14), (?,15), (?,16)").run(
       turn * 3,
       turn * 3 + 1,
       turn * 3 + 2,
     );
+    const data = integer(2, turn * 3 + 1);
+    db.prepare("INSERT INTO gen_metadata VALUES (?, ?, ?)").run(turn, data, data.length);
+  }
   db.close();
   const openSession = vi.fn(async (input: ResumeSessionInput) => ({
     ok: true as const,
@@ -91,8 +95,12 @@ describe("native SQLite Rollback", () => {
     });
     expect(await readNativeTurnCount(nativeConversationDbPath(id, f.home))).toBe(turns - 1);
     const db = new DatabaseSync(nativeConversationDbPath(id, f.home), { readOnly: true });
-    expect(db.prepare("SELECT count(*) AS n FROM steps").get()?.n).toBe((turns - 1) * 3);
-    db.close();
+    try {
+      expect(db.prepare("SELECT count(*) AS n FROM steps").get()?.n).toBe((turns - 1) * 3);
+      expect(db.prepare("SELECT count(*) AS n FROM gen_metadata").get()?.n).toBe(turns - 1);
+    } finally {
+      db.close();
+    }
     expect(await readFile(f.file)).toEqual(before);
   });
   it("rejects empty, missing and busy history without opening or modifying a Session", async () => {

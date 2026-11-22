@@ -44,9 +44,9 @@ Console 是仅本机访问的诊断和管理网页，默认端口 `4399`，可�
 
 控制台随 codexhost 启动：
 
-| 启动方式 | 行为 |
-|---|---|
-| 安装包（macOS 打开应用、Windows 开始菜单） | 默认在浏览器打开控制台总览，再启动 Desktop；启动失败或注入持续失败时另外打开总览查看原因 |
+| 启动方式                                                    | 行为                                                                                                                                                                                                                                       |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 安装包（macOS 打开应用、Windows 开始菜单）                  | 默认在浏览器打开控制台总览，再启动 Desktop；启动失败或注入持续失败时另外打开总览查看原因                                                                                                                                                   |
 | 终端（npm 的 `codexhost`、`codexhost launch`、`npm start`） | 不打开浏览器；成功和失败都输出 `codexhost console: http://127.0.0.1:4399/`，Web 就绪时另输出 `codexhost web: <登录链接>`，与 `codexhost web` 的登录链接一致。`CODEXHOST_WEB_SERVICE=0` 或 Web 未就绪时省略 Web 行，不改变 Desktop 启动结果 |
 
 控制台在校验 Shim、Host Runtime、Desktop Controller 和 Renderer 等 Codex 启动资源之前启动；这些文件缺失时，仍能提供故障恢复入口。npm 包装脚本将这部分校验交给 Launcher，不提前拦截。Launcher、Node 和控制台自身文件仍须可用，端口占用等控制台自身故障不保证能打开网页；命令参数解析失败也不进入启动流程。
@@ -57,11 +57,11 @@ Launcher 在打开控制台之前先写入 `starting` 启动记录（`finishedAt
 
 设置 `CODEXHOST_CONSOLE=0` 可关闭控制台的启动、打开和地址输出，不影响 Web 的启用设置与地址输出。其他打开方式：
 
-| 方式 | 说明 |
-|---|---|
-| `codexhost console` | 安装包与 npm 均可用 |
-| Windows 开始菜单 | “codexhost console” 快捷方式 |
-| Codex 设置页 | “关于”页的“打开控制台”，通过本地 Host 的 `codexhost/console/open` 打开；远程 Host 不支持 |
+| 方式                | 说明                                                                                     |
+| ------------------- | ---------------------------------------------------------------------------------------- |
+| `codexhost console` | 安装包与 npm 均可用                                                                      |
+| Windows 开始菜单    | “codexhost console” 快捷方式                                                             |
+| Codex 设置页        | “关于”页的“打开控制台”，通过本地 Host 的 `codexhost/console/open` 打开；远程 Host 不支持 |
 
 地址为 `http://127.0.0.1:4399/`。命令只复用安装、构建版本和数据目录均一致的控制台；若端口上的控制台属于另一份安装（例如 npm 与安装包并存），或使用不同的 `CODEXHOST_DATA_DIR`，先让旧实例退出再以当前配置启动。控制台不需要登录，直接访问即可。
 
@@ -89,11 +89,11 @@ Windows 卸载程序在删除安装文件前调用安装内的 `codexhost stop`�
 
 均位于数据目录（`CODEXHOST_DATA_DIR`，未设置时为 `~/.codexhost`）：
 
-| 文件 | 写入方 | 内容 |
-|---|---|---|
-| `diagnostics/launcher-startup-v1.json` | Launcher | 最近 10 次启动的阶段时间线、Codex 版本、结果与错误 |
+| 文件                                     | 写入方             | 内容                                                                                                  |
+| ---------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------- |
+| `diagnostics/launcher-startup-v1.json`   | Launcher           | 最近 10 次启动的阶段时间线、Codex 版本、结果与错误                                                    |
 | `diagnostics/desktop-controller-v1.json` | Desktop Controller | Renderer 注入状态：注入中 / 正常 / 失败、当前失败原因、失败次数，以及恢复后仍保留的上次失败原因与时间 |
-| `logs/host-runtime-*.log` | Host Runtime | 见 [`host-runtime-log.md`](host-runtime-log.md) |
+| `logs/host-runtime-*.log`                | Host Runtime       | 见 [`host-runtime-log.md`](host-runtime-log.md)                                                       |
 
 目录权限 `0700`，文件 `0600`（权限位按平台支持生效）。写入失败不影响启动。
 
@@ -147,11 +147,23 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 - 选择器与连接页只排列实际发现的插件。默认顺序为 Pi → Claude Code → DeepSeek → OpenCode → Grok → OMP → Antigravity → Kiro → CodeBuddy → WorkBuddy → Cursor → Hermes → Qoder → Qoder CN → Kimi → ZCode；名单外的新插件按显示名称排序追加，同名按插件 ID 排序。Codex 始终固定在选择器主区首位；此名单仅用于展示，不注册插件，也不改变动态发现机制。
 - Web 离线插件页不提供排序操作，排序需要运行中的 Host。此设置只影响展示，不改变 Harness 是否启用或可用。
 
+## Desktop 扩展
+
+将你信任的扩展目录（包含 `manifest.json`、脚本和可选样式）复制到 `$CODEXHOST_DATA_DIR/desktop-extensions/`（默认 `~/.codexhost/desktop-extensions/`），然后在 **Desktop 扩展** 页启用。扩展以受信任代码运行，不是沙箱；POSIX 上目录和文件必须属于当前用户，不能允许同组或其他用户写入。复制目录不会自动启用它，也不影响 Harness 插件。
+
+页面显示保存的选择和实际运行状态。若没有连接到 Desktop，选择仍可保存，下次 Controller 就绪时生效。同一槽位只能由一个扩展占用，冲突时 Console 会指出占用者。扩展文件损坏、不兼容，或改动过期的启用选择时，页面会显示原因。
+
+如果扩展导致侧栏无法操作，可在 Console 选择 **禁用全部并重载 Desktop**。即使 Host 不可用也能保存该操作；Controller 连接到 Desktop 后执行重载。此操作可能丢失当前窗口中未保存的界面状态。
+
 ## 更新
 
 更新页面展示当前服务实例启动或从活动更新锁恢复的任务状态。重新启动后，恢复最近一次更新在过去 24 小时内结束的结果；存在 `serviceStopOutput` 时，以纯文本显示 Host 停止时报告的被中断任务数。超过 24 小时的历史任务不恢复；没有停止输出的失败结果仍保留，避免部分停止失败后重连丢失结果。恢复的结果每次读取均检查时限，不无限期缓存；当前实例启动或从活动锁接管的任务仍可保留本次结果。页面刷新可继续查看同一任务；重试切换到新任务。历史状态文件按原有保留策略清理。
 
 共享 Host 为 Web、Desktop 和 Console 提供同一份更新协调器。后台检查和下载不停止服务；原生 Host 监管进程接管同一份已准备请求，在受监管的 Node 子进程树外启动 Updater。Updater 校验所有者身份并确认全局更新锁已转移给自身后，通过当前安装的旧 Launcher `stop-for-update` 依次停止受管理 GUI、Web 和 Host，再安装。安装阶段其他客户端不能重新拉起服务；Updater 的恢复进程可以启动目标服务。请求使用明确的数据目录，停止和恢复都拒绝接管另一安装的运行服务。
+
+macOS 和 Linux 上，`stop` 和更新停服由仍在运行的 Launcher 停止其托管进程，兼容有 Launcher 的 v1 实例。新版生成的孤儿只有在原 Launcher 和 Desktop 均已退出，并确认安装、数据目录和端点身份后，才通过本地鉴权通道自行退出；不向孤儿 PID 发送信号。
+
+如果升级前已留下没有归属记录的 v1 Controller，需要一次性手动恢复：先完全退出 Codex Desktop，再用 `lsof -nP -iTCP:<提示中的端口> -sTCP:LISTEN` 找到监听 PID，用 `ps -ww -p <PID> -o command=` 检查命令。仅当命令是旧安装的 Node `desktop-controller.mjs` 且 `--attachment-port` 与提示一致时，才在进程管理器中退出该进程或执行 `kill -TERM <PID>`，然后重试。不要终止无法辨认的监听进程。
 
 npm 的 Launcher 和 Node 分别来自更新请求的平台包根目录与 `node_path`；Windows 安装包从安装根目录的 `bin` 和 `runtime` 定位；macOS 的 Launcher 位于 `.app/Contents/MacOS/codexhost`，Node 位于 `.app/Contents/Resources/runtime/node`。Host `--stop` 的标准输出作为不透明文本保存在更新状态中，不由 Rust 解析任务数。更新后按原使用方式恢复：纯 Web 只恢复后台 Host 和 Web；受管理 GUI 在线时恢复 GUI 并沿用 Web 的启用设置。恢复检查服务的版本、运行入口、进程身份和监听状态。GUI 恢复由 Launcher 先确保共享 Host 运行，再启动 Desktop，因此不依赖 LaunchServices 保留父子进程关系。
 
@@ -164,7 +176,6 @@ npm 的 Launcher 和 Node 分别来自更新请求的平台包根目录与 `node
 - Windows 安装包更新以 `/DIR` 固定当前安装目录，启动安装器前由 Updater 关闭仍从该安装目录运行的 Launcher、内置 Node（包括独立控制台）、Shim 和 node_repl 包装器，规则与下文的覆盖安装相同；npm 更新前关闭仍从该平台包运行的 codexhost 可执行文件，不关闭共享的系统 Node。安装器和 npm 的输出分别写入本次更新目录的 `installer.log`、`npm-install.log`。失败时保留手动更新入口。
 - npm 安装保留 Node、npm CLI、wrapper 和平台包根目录的绝对路径，后台 Host 不依赖后来连接的 Desktop 提供安装信息。路径必须属于当前 Host 安装。
 - 检查、准备或交接失败时 CLI 返回非零退出码；安装后的最终结果保留在本地状态文件中。
-
 
 ### Windows 安装包覆盖安装
 

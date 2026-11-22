@@ -3,6 +3,10 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  HARNESS_MODEL_REF_MAX_LENGTH,
+  decodeHarnessPluginRoute,
+  encodeHarnessPluginRoute,
+  harnessPluginRouteSchema,
   harnessIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
@@ -417,7 +421,8 @@ describe("mapping-store package", () => {
     expect(repeated).toEqual(reconciled);
     await first.close();
 
-    const second = new MappingStore({ directory });
+    let now = new Date("2026-03-01T00:00:00.000Z");
+    const second = new MappingStore({ directory, now: () => now });
     await second.initialize();
     await expect(second.getThread(threadId)).resolves.toMatchObject({
       revision: reconciled.revision,
@@ -430,12 +435,17 @@ describe("mapping-store package", () => {
       mapping(4),
     ]);
     expect(dropped.turnMappings).toEqual([mapping(1), mapping(2), mapping(4)]);
+    // Removed and reordered Turns are conversation activity.
+    expect(dropped.updatedAt).toBe(now.toISOString());
+    now = new Date("2026-03-02T00:00:00.000Z");
     const reordered = await second.reconcileTurnMappings(threadId, [
       mapping(1),
       mapping(4),
       mapping(2),
     ]);
     expect(reordered.turnMappings).toEqual([mapping(1), mapping(4), mapping(2)]);
+    expect(reordered.updatedAt).toBe(now.toISOString());
+    now = new Date("2026-03-03T00:00:00.000Z");
     const nativeCheckpoint = {
       ...mapping(1),
       nativeCheckpointRef: {
@@ -449,6 +459,11 @@ describe("mapping-store package", () => {
       mapping(2),
     ]);
     expect(adopted.turnMappings[0]).toEqual(nativeCheckpoint);
+    // A newer checkpoint for the same Turns, as a Harness upgrade writes, keeps the Thread's place.
+    expect(adopted).toMatchObject({
+      revision: reordered.revision + 1,
+      updatedAt: reordered.updatedAt,
+    });
 
     await expect(
       second.reconcileTurnMappings(threadId, [
@@ -696,17 +711,20 @@ describe("mapping-store package", () => {
     const first = new MappingStore({ directory });
     await first.initialize();
     await createReady(first);
-    await first.setTransportModelId(
-      threadId,
-      "codexhost/claude-code-native@claude-model-v1.default@acceptEdits",
-    );
+    const route = harnessPluginRouteSchema.parse({
+      harnessId,
+      model: { id: "模".repeat(HARNESS_MODEL_REF_MAX_LENGTH), serviceTier: "priority" },
+      thinkingOptionId: "high",
+      permissionModeId: "acceptEdits",
+    });
+    const transportModelId = encodeHarnessPluginRoute(route);
+    await first.setTransportModelId(threadId, transportModelId);
     await first.close();
 
     const second = new MappingStore({ directory });
     await second.initialize();
-    await expect(second.getThread(threadId)).resolves.toMatchObject({
-      transportModelId: "codexhost/claude-code-native@claude-model-v1.default@acceptEdits",
-    });
+    const stored = await second.getThread(threadId);
+    expect(decodeHarnessPluginRoute(stored?.transportModelId)).toEqual(route);
     await second.close();
   });
 

@@ -29,11 +29,9 @@ node_modules/
 .work/
 .dsh-build/
 /apps/web-ui/**/lib/
-/apps/wiki/.next/
-/apps/wiki/.source/
+/apps/wiki/.vitepress/cache/
+/apps/wiki/.vitepress/dist/
 /apps/wiki/.vercel/
-/apps/wiki/out/
-/apps/wiki/next-env.d.ts
 .npm/
 .cache/
 .wix/
@@ -45,6 +43,9 @@ node_modules/
 # Local website draft and deployment workflow
 /website/
 /.github/workflows/deploy-website.yml
+
+# Local promotional video workspace (ignored)
+/promo-video/
 
 # Build, test, and coverage output
 target/

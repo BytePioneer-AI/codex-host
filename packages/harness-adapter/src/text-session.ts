@@ -1,11 +1,13 @@
 import type { HarnessUsageStatisticsCapability } from "./usage-statistics.js";
 import type {
   HarnessAccountSnapshot,
+  AccountBalanceSnapshot,
   AccountCreditsSnapshot,
   HarnessInstallationState,
   HarnessCommandCatalog,
   HarnessId,
   HarnessInspection,
+  HarnessModelCatalog,
   HarnessModelRef,
   HarnessPermissionModeId,
   HarnessSessionCapabilities,
@@ -22,7 +24,7 @@ import type {
   NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
-import type { HostUsage, HostUsageRequest } from "./usage.js";
+import type { HostUsage, HostUsageRequest, HostUsageRequestTiming } from "./usage.js";
 import type { HarnessSessionUsageCapability } from "./session-usage.js";
 import type { HarnessCredentialExport, HarnessCredentialImports } from "./credential-imports.js";
 
@@ -45,6 +47,7 @@ export type HarnessErrorCode =
   | "unavailable"
   | "authenticationRequired"
   | "configurationRequired"
+  | "credentialAccessRequired"
   | "sessionNotFound"
   | "sessionBusy"
   | "checkpointNotFound"
@@ -78,6 +81,8 @@ export interface InspectHarnessInput {
    * not stand in for a full inspection.
    */
   purpose?: "availability";
+  /** Interactive credential access: `allow` permits a first prompt, `retry` also permits retrying a failed read. */
+  credentialAccess?: "allow" | "retry";
 }
 
 export type HarnessExecutionPolicy = "default" | "unattended-full-access";
@@ -87,6 +92,8 @@ export interface CreateSessionInput {
   cwd: string;
   environment?: Record<string, string | undefined>;
   executionPolicy?: HarnessExecutionPolicy;
+  /** Speculative draft creation, without an explicit request to run this Harness. */
+  prewarm?: true;
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
   permissionModeId?: HarnessPermissionModeId;
@@ -508,6 +515,12 @@ export interface UsageRequestEvent {
   request: HostUsageRequest;
 }
 
+export interface UsageRequestTimingEvent {
+  type: "usage.request.timing";
+  turnId: HostTurnId;
+  timing: HostUsageRequestTiming;
+}
+
 /**
  * Sent after replaying native history on every open, and again with `complete: false` when a
  * running request's usage is missing. The first one switches the Thread to Host metering.
@@ -538,6 +551,13 @@ export interface AutonomousTurnStartedEvent {
   type: "turn.autonomous.started";
   turnId: HostTurnId;
   input: HostTextInput[];
+}
+
+/** A native autonomous Turn observed only after it commits. It does not acquire
+ * the foreground execution slot and its snapshot must also appear in history. */
+export interface AutonomousTurnCompletedEvent {
+  type: "turn.autonomous.completed";
+  snapshot: HostTurnSnapshot;
 }
 
 export interface ItemStartedEvent {
@@ -607,11 +627,13 @@ export type HostEvent =
   | SessionStateChangedEvent
   | SessionUsageChangedEvent
   | UsageRequestEvent
+  | UsageRequestTimingEvent
   | UsageHistoryEvent
   | SubagentStateChangedEvent
   | SubagentTranscriptChangedEvent
   | TurnStartedEvent
   | AutonomousTurnStartedEvent
+  | AutonomousTurnCompletedEvent
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent
@@ -742,6 +764,14 @@ export interface HarnessAdapter {
    * observes a later read, does not await this call, and isolates rejection.
    */
   refreshCredits?(): Promise<AccountCreditsSnapshot | null>;
+  /** Optional cached prepaid balance for Harnesses whose Billing Source reports funds, not a
+   * percentage quota. Same contract as `credits()`: synchronous, no I/O, null when unknown.
+   */
+  balance?(): AccountBalanceSnapshot | null;
+  /** Best-effort refresh of the `balance()` cache. Must not start a model Turn; Host does
+   * not await it and isolates rejection.
+   */
+  refreshBalance?(): Promise<AccountBalanceSnapshot | null>;
   /**
    * The same read when one Harness exposes several Billing Sources. Host prefers
    * this method and retains the first snapshot as the compatibility `account`.
@@ -749,6 +779,16 @@ export interface HarnessAdapter {
   inspectAccounts?(): Promise<readonly HarnessAccountSnapshot[]>;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
+  /**
+   * Maps a Model Ref saved by an earlier release to the matching entry of `catalog`.
+   * Host calls it only for a saved Ref that the catalog does not contain. Return
+   * undefined when the saved value matches no single current Model. Local implementations
+   * are pure; a Broker proxy may return a Promise.
+   */
+  normalizeStoredModelRef?(
+    ref: HarnessModelRef,
+    catalog: HarnessModelCatalog,
+  ): HarnessModelRef | undefined | Promise<HarnessModelRef | undefined>;
   open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>>;
   close(): Promise<void>;
 }

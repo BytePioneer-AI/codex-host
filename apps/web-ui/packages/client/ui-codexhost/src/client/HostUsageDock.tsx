@@ -167,8 +167,8 @@ function usageGroups(usage: HostThreadUsage | null, t: Translate): DetailGroup[]
         label: t("usage.speed.average"),
         value: tokenRate(usage.sessionOutputTokensPerSecond, t),
       });
-    if (usage.timeToFirstOutputMs !== undefined)
-      speed.push({ label: t("usage.ttft"), value: latency(usage.timeToFirstOutputMs, t) });
+    const ttft = usage.latestRequestTimeToFirstOutputMs ?? usage.timeToFirstOutputMs;
+    if (ttft !== undefined) speed.push({ label: t("usage.ttft"), value: latency(ttft, t) });
     if (speed.length) groups.push({ label: t("usage.group.performance"), rows: speed });
 
     const cache: DetailRow[] = [];

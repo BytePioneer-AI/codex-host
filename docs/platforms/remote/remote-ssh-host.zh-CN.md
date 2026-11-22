@@ -13,6 +13,12 @@ Web 控制台的「其他电脑（SSH）」（`#remote-connections`）也提供�
 
 建议先将本机 codexhost 更新到最新版本，再按下面的步骤安装远程端。
 
+### 使用安装在 WSL 内的 Harness
+
+Windows 原生 codexhost 不会发现 WSL 内安装的 Harness。如果本地连接提示不支持 codexhost Harness，且 **Agent environment** 设为 **WSL**，请在 Codex「设置 → 常规」中切换到 **Windows**，然后通过 codexhost 重启 Desktop。
+
+如果要运行 WSL 内的 Harness，请让 Desktop 保持 **Windows** 模式，通过 Remote SSH 连接发行版。[问题报告者已在 WSL2 Ubuntu 24.04 上验证此绕行方案](https://github.com/BytePioneer-AI/codex-host/issues/512#issuecomment-6067959243)，使用的是 Pi。在发行版内安装同版本的 codexhost 和 Harness，使用兼容 POSIX 的 SSH 登录 Shell，再按下文配置 SSH。如果官方 Codex daemon 已占用发行版的 app-server socket，请先确认归属，并在可以中断相关任务时从 WSL 内执行 `codex app-server daemon stop`。这是 SSH 接入，并非原生 WSL Agent environment 支持。
+
 ## 第一步：确认 SSH 可以登录
 
 先在本机终端通过 SSH 登录一次远程电脑，并确认电脑身份。页面使用已有的 SSH 密钥或 SSH 别名，不会弹出密码输入框。

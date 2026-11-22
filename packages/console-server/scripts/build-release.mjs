@@ -57,6 +57,9 @@ export async function buildConsoleServerBundle({ repositoryRoot, outputPath }) {
     treeShaking: true,
     charset: "utf8",
     legalComments: "none",
+    banner: {
+      js: 'import { createRequire as __codexhostCreateRequire } from "node:module"; const require = __codexhostCreateRequire(import.meta.url);',
+    },
     logLevel: "silent",
   });
   if (!result.metafile) throw new Error("Console Server build did not return a metafile");

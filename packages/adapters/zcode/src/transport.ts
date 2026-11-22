@@ -4,6 +4,7 @@ import { ZcodeError } from "./errors.js";
 import { record, text } from "./protocol.js";
 import { resolveInstallation, type ZcodeInstallation } from "./installation.js";
 import { accountConfig, providerRuntimeHeaders } from "./account.js";
+import type { ReadSystemKeyOptions } from "./credential-keyring.js";
 import type { PersonalCodingPlanAccount } from "./personal-coding-plan.js";
 import { DEFAULT_TIMEOUT_MS, nativeCall, type CallContext, type NativeMethod } from "./methods.js";
 import type { ZcodeVerifier } from "./verification/index.js";
@@ -23,6 +24,7 @@ export interface TransportOptions {
   /** ZCode application location saved as the plugin launch path. */
   app?: string;
   timeoutMs?: number;
+  keyOptions?: ReadSystemKeyOptions;
   /** The Host's shared verifier for this installation; the transport never closes it. */
   verifier: (appVersion: string) => ZcodeVerifier;
 }
@@ -50,6 +52,8 @@ export class CliTransport {
   #startPlan = false;
   #signedIn = false;
   #startPlanChecked = true;
+  #credentialIssue: string | undefined;
+  #credentialAccessRequired = false;
   #codingPlan!: PersonalCodingPlanAccount;
   #fault: Error | undefined;
   #closed = false;
@@ -70,6 +74,12 @@ export class CliTransport {
   get startPlanChecked() {
     return this.#startPlanChecked;
   }
+  get credentialIssue() {
+    return this.#credentialIssue ?? this.#codingPlan?.credentialIssue;
+  }
+  get credentialAccessRequired() {
+    return this.#credentialAccessRequired || this.#codingPlan?.credentialAccessRequired === true;
+  }
   get codingPlanIssue() {
     return this.#codingPlan?.issue;
   }
@@ -89,12 +99,16 @@ export class CliTransport {
       startPlan,
       signedIn,
       startPlanChecked,
+      credentialIssue,
+      credentialAccessRequired,
       codingPlan,
-    } = await accountConfig(installation, this.options.environment);
+    } = await accountConfig(installation, this.options.environment, this.options.keyOptions);
     this.#installation = installation;
     this.#startPlan = startPlan;
     this.#signedIn = signedIn;
     this.#startPlanChecked = startPlanChecked;
+    this.#credentialIssue = credentialIssue;
+    this.#credentialAccessRequired = credentialAccessRequired;
     this.#codingPlan = codingPlan;
     // ZCode Desktop runs its Agent CLI on its own Electron build as Node; the CLI's native
     // plugin modules are built for that runtime. Its tool children inherit the variable, as there.

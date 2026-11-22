@@ -126,7 +126,7 @@ Web 的 `session/control` 状态流必须先发送 baseline，再发送 projecti
 
 Desktop 专用 `CodexTurnProjector.pendingTurn()` 不包含所有进行中的 Item，不能用作通用客户端完整快照。`snapshotTurn()` 复用同一投影器的 Item 状态，提供 Reasoning、命令输出及工具状态；原 Desktop 通知形状保留。Host 接受的普通用户输入保留给快照；来自客户端通道的输入还沿既有 shared-Thread 投影方式广播给 GUI。`clientUserMessageId`/`clientId` 关联用于撤下 Web 乐观回显，不能靠相同文本猜测确认。
 
-原生历史缺少 Turn 结束依据时，Turn 附带 `codexhostTurnOutcome: {status: "unknown", reason}`。Desktop 兼容的 `status` 仍使用其已有终态词汇，客户端不能据此覆盖显式的 unknown。Web 将该事实保留为 `turn/end` 的 `unknown` 原因，显示“已结束（状态未知）”；正常完成、取消、失败维持原有区别。正文独立于结束原因保留，不能以空正文猜测失败，也不能将已有正文当作成功证据。
+原生历史缺少 Turn 结束依据时，Turn 附带 `codexhostTurnOutcome: {status: "unknown", reason}`。Desktop 兼容的 `status` 仍使用其已有终态词汇，客户端不能据此覆盖显式的 unknown。Web 将该事实保留为 `turn/end` 的 `unknown` 原因，以中性的“已结束”展示，不将缺少历史结束依据当作异常提示或成功结论；正常完成、取消、失败维持原有区别。正文独立于结束原因保留，不能以空正文猜测失败，也不能将已有正文当作成功证据。
 
 Turn 可附 `codexhostFileOperations: [{beforeItemId, item}]`，保留被 Desktop 累计 `fileChange` 卡合并的原始编辑调用。`item` 沿用原生 Item ID、参数、输出及成功/失败/取消状态；`beforeItemId` 指向后续的非文件 Item，`null` 表示放在轮末，同一锚点按数组顺序排列。客户端展示逐次调用时替换正文里的累计文件卡，而不是叠加两种表示；累计文件卡的 `changes` 仍供本轮变更汇总使用。字段缺失表示 Host 只提供旧的累计表示，不能从累计 diff 猜测真实的工具调用次数或边界。实时快照、已完成 Turn 和分页历史均携带该信息；它参与已完成 Turn 指纹，原始调用不受 `truncateToolOutput` 对 `items` 的截断影响。
 

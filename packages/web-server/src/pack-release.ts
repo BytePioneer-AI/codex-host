@@ -144,6 +144,8 @@ export async function packReleaseWeb(options: {
     ["node_modules/image-size/LICENSE", "image-size-MIT.txt"],
     ["node_modules/js-yaml/LICENSE", "js-yaml-MIT.txt"],
     ["node_modules/import-meta-resolve/license", "import-meta-resolve-MIT.txt"],
+    ["scripts/release/licenses/werift-0.28.0-NOTICES.txt", "werift-NOTICES.txt"],
+    ["node_modules/werift/THIRD_PARTY_LICENSES_LIBWEBRTC.txt", "werift-libwebrtc-NOTICES.txt"],
   ] as const)
     cpSync(resolve(root, source), join(licenses, name));
 }

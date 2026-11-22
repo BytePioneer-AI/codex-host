@@ -145,10 +145,8 @@ export class CursorAdapter implements HarnessAdapter {
   readonly harnessId = harnessIdSchema.parse("cursor-cli");
   readonly #sessions = new Set<CursorSession>();
   readonly #forks = new Map<AbortController, Promise<HarnessResult<HarnessSession>>>();
-  readonly #inspections = new Map<
-    string,
-    { pending: boolean; result: Promise<HarnessInspection> }
-  >();
+  readonly #inspections = new Map<string, Promise<HarnessInspection>>();
+  readonly #inspectionTasks = new Set<Promise<HarnessInspection>>();
   #closed = false;
   readonly sessionImport: CursorSessionImport;
   constructor(readonly options: CursorAdapterOptions = {}) {
@@ -174,7 +172,12 @@ export class CursorAdapter implements HarnessAdapter {
       };
     const cwd = path.resolve(input.cwd ?? process.cwd());
     const cached = this.#inspections.get(cwd);
-    if (cached && (cached.pending || !input.refresh)) return cached.result;
+    if (input.refresh) {
+      this.#inspections.clear();
+      if (cached && this.#inspectionTasks.has(cached)) this.#inspections.set(cwd, cached);
+    }
+    const current = this.#inspections.get(cwd);
+    if (current) return current;
     const result = (async (): Promise<HarnessInspection> => {
       const transport = new CursorTransport(this.transportOptions(cwd));
       try {
@@ -196,11 +199,9 @@ export class CursorAdapter implements HarnessAdapter {
       }
     })();
     // Keep results, including failures, until explicit refresh or Adapter shutdown.
-    const entry = { pending: true, result };
-    this.#inspections.set(cwd, entry);
-    void result.finally(() => {
-      entry.pending = false;
-    });
+    this.#inspections.set(cwd, result);
+    this.#inspectionTasks.add(result);
+    void result.finally(() => this.#inspectionTasks.delete(result));
     return result;
   }
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
@@ -454,9 +455,7 @@ export class CursorAdapter implements HarnessAdapter {
     for (const controller of this.#forks.keys()) controller.abort();
     await Promise.allSettled([importing, ...this.#forks.values()]);
     await Promise.allSettled([...this.#sessions].map((session) => session.close()));
-    await Promise.allSettled(
-      [...this.#inspections.values()].map((inspection) => inspection.result),
-    );
+    await Promise.allSettled(this.#inspectionTasks);
   }
 }
 

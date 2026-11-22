@@ -7,9 +7,17 @@ import {
 } from "../src/model-catalog.js";
 
 describe("DeepSeek Model references", () => {
-  it("round-trips the canonical provider and model identity", () => {
-    const ref = encodeDeepSeekHarnessModelRef({ provider: " 官方 ", model: "模型/flash " });
-    expect(decodeDeepSeekHarnessModelRef(ref)).toEqual({ provider: "官方", model: "模型/flash" });
+  it.each([
+    [
+      { provider: " 官方 ", model: "模型/flash " },
+      { provider: "官方", model: "模型/flash" },
+    ],
+    [
+      { provider: "官方/提供方.v1", model: "系列/模型~高" },
+      { provider: "官方/提供方.v1", model: "系列/模型~高" },
+    ],
+  ])("round-trips the canonical provider and model identity: %j", (native, expected) => {
+    expect(decodeDeepSeekHarnessModelRef(encodeDeepSeekHarnessModelRef(native))).toEqual(expected);
   });
 
   it.each([

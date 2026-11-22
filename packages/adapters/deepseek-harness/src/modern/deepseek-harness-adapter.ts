@@ -862,7 +862,10 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     this.#accepting = false;
     this.#lifetime.abort(new Error("DeepSeek Harness Adapter faulted"));
     for (const session of this.#sessions) session.fault(failure);
-    this.#closePromise ??= this.#performClose(failure);
+    if (this.#closePromise) return;
+    this.#closePromise = this.#performClose(failure);
+    // Nobody awaits fault cleanup here; its failure belongs to whoever calls close() later.
+    this.#closePromise.catch(() => undefined);
   }
 
   #sealEventFailure(error: HarnessError): void {

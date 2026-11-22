@@ -36,7 +36,7 @@ import {
   type VoiceInputFace,
 } from "./VoiceInput.tsx";
 import { ImportIcon } from "./ImportIcon.tsx";
-import { DocumentDownload } from "./DocumentDownload.tsx";
+import { DocumentDownload, DocumentDownloadAction } from "./DocumentDownload.tsx";
 import { RemoteAccessAction, type RemoteAccessActionFace } from "./RemoteAccessAction.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
@@ -56,7 +56,11 @@ import {
 import type {} from "@deepseek-ai/dsh-client-ui-chat/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { ConnectDevicesSection } from "./ConnectDevicesSection.tsx";
-import { WebExtensionsSection, type WebExtensionsFace } from "./WebExtensionsSection.tsx";
+import { PluginsSection, type PluginsSectionFace } from "./PluginsSection.tsx";
+import { PluginsIcon } from "./PluginsIcon.tsx";
+import { PluginsSettingsEntry } from "./PluginsSettingsEntry.tsx";
+import { createPluginsNavigation, PLUGINS_PANEL_ID } from "./plugins-navigation.ts";
+import { webExtensionAppearance } from "./native-extensions/surface.ts";
 import { watchAuthentication } from "./auth-watch.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
@@ -102,6 +106,7 @@ export const inject = [
 const HOST_SETTINGS_PAGES = [
   ["accounts", "settings.accounts", 2],
   ["connections", "settings.connections", 3],
+  ["delegation", "settings.delegation", 3.5],
   ["usage-statistics", "settings.usage", 4],
   ["resources", "settings.resources", 5],
   ["updates", "settings.updates", 7],
@@ -123,6 +128,11 @@ export function apply(ctx: ClientContext): void {
         inject: (sessionId) => ({
           sessionId,
           label: t("file.download"),
+          downloadFailedLabel: t("file.download.failed"),
+          downloadReadyLabel: (name: string) => t("file.download.ready", { name }),
+          downloadSaveLabel: t("file.download.saveAction"),
+          downloadOpenLabel: t("file.download.openAction"),
+          downloadDismissLabel: t("file.download.dismiss"),
           openFolderLabel: t("file.openFolder"),
           openFolderFailedLabel: t("file.openFolder.failed"),
           revealFolder: (path: string) =>
@@ -130,6 +140,25 @@ export function apply(ctx: ClientContext): void {
         }),
       },
       DocumentDownload,
+    ),
+  );
+  ctx.slots.inject("sidebar.right.tab.document.unpreviewable", () =>
+    ctx.slots.register(
+      {
+        name: "sidebar.right.tab.document.unpreviewable",
+        id: "codexhost-download-action",
+        inject: (sessionId) => ({
+          sessionId,
+          ctaLabel: t("file.download.cta"),
+          preparingLabel: t("file.download.preparing"),
+          downloadFailedLabel: t("file.download.failed"),
+          downloadReadyLabel: (name: string) => t("file.download.ready", { name }),
+          downloadSaveLabel: t("file.download.saveAction"),
+          downloadOpenLabel: t("file.download.openAction"),
+          downloadDismissLabel: t("file.download.dismiss"),
+        }),
+      },
+      DocumentDownloadAction,
     ),
   );
   const installation = ctx.get("pwaInstall");
@@ -339,6 +368,18 @@ export function apply(ctx: ClientContext): void {
       ImportIcon,
     ),
   );
+  ctx.slots.inject("sidebar.panellist", () =>
+    ctx.slots.register(
+      {
+        name: "sidebar.panellist",
+        id: PLUGINS_PANEL_ID,
+        order: 20,
+        label: () => t("settings.extensions"),
+        locale: NS,
+      },
+      PluginsIcon,
+    ),
+  );
   ctx.inject(["settingsNavigation"], (scope) => {
     scope.slots.inject("settings.launcher", () =>
       scope.slots.register(
@@ -379,15 +420,20 @@ export function apply(ctx: ClientContext): void {
     ),
   );
 
-  const locale: HostSettingsSectionFace["locale"] = {
-    get: () => ctx.locale.getLocale().active,
-    subscribe: (listener) => ctx.locale.subscribe(listener),
-  };
-  const colorScheme: HostSettingsSectionFace["colorScheme"] = {
-    get: () => ctx.theme.getTheme().active.colorScheme,
-    subscribe: (listener) => ctx.on("theme/change", listener),
-  };
-  // Local management entries stay visible to remote users with access guidance.
+  const { locale, colorScheme } = webExtensionAppearance(ctx);
+  const plugins = createPluginsNavigation(document, () => ctx.layout.selectPanel(PLUGINS_PANEL_ID));
+  ctx.effect(() => plugins.dispose, "ui-codexhost: plugin navigation snapshot");
+  ctx.slots.inject("main", () =>
+    ctx.slots.register(
+      {
+        name: "main",
+        key: PLUGINS_PANEL_ID,
+        locale: NS,
+        inject: (): PluginsSectionFace => ({ locale, colorScheme, navigation: plugins }),
+      },
+      PluginsSection,
+    ),
+  );
   ctx.slots.inject("settings.section", () =>
     ctx.slots.register(
       {
@@ -396,9 +442,9 @@ export function apply(ctx: ClientContext): void {
         order: 6,
         label: () => t("settings.extensions"),
         locale: NS,
-        inject: (): WebExtensionsFace => ({ resolveText: (text) => ctx.locale.resolveText(text) }),
+        inject: () => ({ openWorkspace: () => plugins.open() }),
       },
-      WebExtensionsSection,
+      PluginsSettingsEntry,
     ),
   );
   ctx.slots.inject("settings.section", () =>

@@ -103,8 +103,13 @@ export function $selectDetectSpan(span: DetectSpan): boolean {
 export function $replaceDetectSpanWithText(span: DetectSpan, text: string): boolean {
   const selection = selectSpan($composerLayout(), span);
   if (selection === null) return false;
-  if (text === "" && !selection.isCollapsed()) selection.removeText();
-  else selection.insertText(text);
+  if (text === "") {
+    if (!selection.isCollapsed()) selection.removeText();
+  } else {
+    const normalized = text.replace(/\r\n?/gu, "\n");
+    if (normalized.includes("\n")) selection.insertRawText(normalized);
+    else selection.insertText(normalized);
+  }
   return true;
 }
 

@@ -162,6 +162,49 @@ describe("External Side Chats", () => {
     }
   });
 
+  it("does not replay an inherited plan when a Side Chat resumes", async () => {
+    const fixture = createFixture();
+    try {
+      const sourceId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+        historyMode: "paginated",
+      });
+      const turnId = await startPiTurn(fixture, sourceId, 2);
+      const source = fixture.adapter.sessions[0];
+      if (!source) throw new Error("Missing source Session");
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+      source.completeItem(
+        source.startToolExecution("Todo", {
+          todos: [{ content: "Parent task", status: "pending" }],
+        }),
+        { status: "succeeded" },
+      );
+      source.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+
+      const sideChatId = await openSideChat(fixture, sourceId, 3);
+      const sideChat = fixture.adapter.sessions[1];
+      if (!sideChat) throw new Error("Missing Side Chat Session");
+      sideChat.capabilities.persistentPlan = true;
+      const before = fixture.collector.messages.length;
+      const resumed = await call(fixture, 5, "thread/resume", {
+        threadId: sideChatId,
+        excludeTurns: true,
+        initialTurnsPage: { limit: 5, itemsView: "full" },
+      });
+      expect(resumed.result).toMatchObject({
+        thread: { turns: [] },
+        initialTurnsPage: { data: [] },
+      });
+      // Order the notification stream after the resume.
+      await call(fixture, 6, "thread/read", { threadId: sideChatId });
+      expect(fixture.collector.messages.slice(before)).not.toContainEqual(
+        expect.objectContaining({ method: "turn/plan/updated" }),
+      );
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("opens a Side Chat while the source's first Turn runs, with no inherited history", async () => {
     const fixture = createFixture();
     try {

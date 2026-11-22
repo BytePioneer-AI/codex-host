@@ -32,6 +32,7 @@ export class OfficialRuntimeScope {
   readonly permanentHome: string;
   readonly #diagnosticOutput: Writable;
   readonly #recovery: { delaysMs: readonly number[]; stableMs: number } | undefined;
+  readonly #shouldReplaceIdleBackend: (() => boolean) | undefined;
   #starting: Promise<void> | undefined;
   #stopping: Promise<void> | undefined;
   #started = false;
@@ -45,10 +46,12 @@ export class OfficialRuntimeScope {
       permanentHome: string;
       /** Only long-lived deployments opt in; others keep one generation per Scope start. */
       recovery?: OfficialRuntimeRecoveryOptions;
+      shouldReplaceIdleBackend?: () => boolean;
     },
   ) {
     this.permanentHome = input.permanentHome;
     this.#diagnosticOutput = input.diagnosticOutput;
+    this.#shouldReplaceIdleBackend = input.shouldReplaceIdleBackend;
     const delaysMs = input.recovery?.delaysMs ?? DEFAULT_RECOVERY_DELAYS_MS;
     if (input.recovery && delaysMs.length === 0)
       throw new Error("Official runtime recovery requires at least one delay");
@@ -106,6 +109,20 @@ export class OfficialRuntimeScope {
       },
     );
     return starting;
+  }
+
+  refreshBeforeRequest(): Promise<void> | undefined {
+    if (!this.#shouldReplaceIdleBackend || this.#closed) return;
+    let transition = this.#starting ?? this.#stopping;
+    if (
+      !transition &&
+      this.owner.running &&
+      !this.owner.hasActiveWork &&
+      this.#shouldReplaceIdleBackend()
+    ) {
+      transition = this.stop();
+    }
+    return transition?.then(() => this.start()).then(() => this.refreshBeforeRequest());
   }
 
   attach(output: CodexRuntimeOutput, onBackendStopped?: () => void): OfficialClientSession {
@@ -184,14 +201,17 @@ export class OfficialRuntimeScope {
 export class OfficialRuntimeClient {
   readonly #scope: OfficialRuntimeScope;
   readonly #session: OfficialClientSession;
+  readonly #refreshBeforeRequests: boolean;
   #closed = false;
 
   constructor(input: {
     scope: OfficialRuntimeScope;
     output: CodexRuntimeOutput;
     onBackendStopped?: () => void;
+    refreshBeforeRequests?: boolean;
   }) {
     this.#scope = input.scope;
+    this.#refreshBeforeRequests = input.refreshBeforeRequests ?? true;
     this.#session = input.scope.attach(input.output, input.onBackendStopped);
   }
 
@@ -227,10 +247,22 @@ export class OfficialRuntimeClient {
     };
   }
   request(method: string, params: JsonObject): Promise<JsonObject> {
+    if (this.#refreshBeforeRequests) {
+      const refreshing = this.#scope.refreshBeforeRequest();
+      if (refreshing) return refreshing.then(() => this.#session.request(method, params));
+    }
     return this.#session.request(method, params);
   }
   send(value: JsonObject): Promise<void> {
     if (this.#closed) return Promise.reject(new Error("Official Codex is unavailable"));
+    if (
+      this.#refreshBeforeRequests &&
+      typeof value.method === "string" &&
+      (typeof value.id === "number" || typeof value.id === "string")
+    ) {
+      const refreshing = this.#scope.refreshBeforeRequest();
+      if (refreshing) return refreshing.then(() => this.#session.send(value));
+    }
     return this.#session.send(value);
   }
   async sendFrame(frame: Buffer<ArrayBufferLike>): Promise<void> {
@@ -238,7 +270,7 @@ export class OfficialRuntimeClient {
     const value = parseJsonFrame(frame);
     if (typeof value !== "object" || value === null || Array.isArray(value))
       throw new Error("Official protocol frame must be an object");
-    await this.#session.send(value);
+    await this.send(value);
   }
   close(): Promise<void> {
     if (!this.#closed) {

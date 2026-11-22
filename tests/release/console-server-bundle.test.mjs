@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -32,6 +33,9 @@ describe("Console Server release bundle", () => {
       expect(source).toContain("console-web.js");
       expect(source).not.toContain("@anthropic-ai/");
       expect(source).not.toContain("@codexhost/adapter-");
+      const usage = spawnSync(process.execPath, [outputPath, "--help"], { encoding: "utf8" });
+      expect(usage.stderr).toMatch(/^usage: console-server/u);
+      expect(usage.status).toBe(2);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

@@ -5,7 +5,7 @@ mod windows_service;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -95,7 +95,7 @@ log('web-start');
 fs.writeFileSync(path.join(data, 'npm-entrypoint.json'), JSON.stringify({node: process.env.CODEXHOST_NPM_NODE_PATH, wrapper: process.env.CODEXHOST_NPM_LAUNCHER_PATH}));
 fs.appendFileSync(path.join(data, 'starts'), 'start\n');
 if (fs.existsSync(path.join(data, 'fail'))) {
-  console.error('first diagnostic' + 'x'.repeat(16384) + 'fixture port is occupied; use --port');
+  fs.writeSync(2, 'first diagnostic' + 'x'.repeat(16384) + 'fixture port is occupied; use --port\n');
   process.exit(1);
 }
 const ready = value('--ready-file');
@@ -185,7 +185,11 @@ server.listen(0, '127.0.0.1', () => console.log(server.address().port));
     }
 
     fn public_command(&self, action: &str) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_codexhost"));
+        self.public_command_at(Path::new(env!("CARGO_BIN_EXE_codexhost")), action)
+    }
+
+    fn public_command_at(&self, launcher: &Path, action: &str) -> Command {
+        let mut command = Command::new(launcher);
         command
             .env_clear()
             .env("PATH", env::var_os("PATH").unwrap())
@@ -757,8 +761,22 @@ fn missing_host_entry_reports_failure_but_still_stops_web_and_console() {
             .status
             .success()
     );
+    // The missing Host path has no sibling Console entrypoint. Supply the installed
+    // fallback within this fixture rather than relying on a built console in the checkout.
+    let launcher = fixture
+        .root
+        .join("bin")
+        .join(format!("codexhost{}", std::env::consts::EXE_SUFFIX));
+    fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_codexhost"), &launcher).unwrap();
+    fs::create_dir_all(fixture.root.join("app")).unwrap();
+    fs::copy(
+        fixture.root.join("console-server.mjs"),
+        fixture.root.join("app/console-server.mjs"),
+    )
+    .unwrap();
     let result = fixture
-        .public_command("stop")
+        .public_command_at(&launcher, "stop")
         .arg("--host-runtime")
         .arg(fixture.root.join("missing-host.mjs"))
         .output()

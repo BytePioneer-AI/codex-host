@@ -10,10 +10,15 @@ const entries = [
   { entry: "src/probe-entry.ts", format: "iife", outfile: "dist/renderer-binding-probe.js" },
   { entry: "src/audit-entry.ts", format: "iife", outfile: "dist/contract-audit.js" },
   { entry: "src/console-entry.ts", format: "iife", outfile: "dist/console.js" },
-  { entry: "src/web-settings-entry.ts", format: "iife", outfile: "dist/web-settings.js" },
+  {
+    entry: "src/web-settings-entry.ts",
+    format: "iife",
+    outfile: "dist/web-settings.js",
+    minify: true,
+  },
 ];
 
-for (const { entry, format, outfile } of entries) {
+for (const { entry, format, outfile, minify } of entries) {
   await build({
     absWorkingDir: packageRoot,
     entryPoints: [entry],
@@ -21,6 +26,7 @@ for (const { entry, format, outfile } of entries) {
     platform: "browser",
     format,
     target: "es2024",
+    minify,
     loader: { ".png": "dataurl", ".svg": "dataurl", ".css": "text" },
     plugins: [tailwindEsbuildPlugin()],
     outfile,

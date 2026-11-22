@@ -49,7 +49,7 @@ export function ConversationMainPanel(props: ConversationSlotProps) {
   const phase = settling ? "settling" : hero ? "hero" : "active";
 
   return (
-    <div className={css.root} data-phase={phase}>
+    <div className={css.root} data-phase={phase} data-cx-region="conversation">
       {renderSlot("conversation.header", {})}
       {renderSlot("conversation.header.notice", {})}
       {renderFactorySlot(

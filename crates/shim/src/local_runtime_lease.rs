@@ -348,10 +348,9 @@ pub(crate) enum LocalRuntimeAdmission {
 /// official CLI like any other Desktop helper. Desktop itself keeps the explicit failure.
 pub(crate) fn admit_local_runtime(
     data_directory: &Path,
-    stock_codex_path: &Path,
+    desktop_caller: &crate::desktop_invocation::DesktopCaller,
 ) -> Result<LocalRuntimeAdmission, Box<dyn Error>> {
-    let non_desktop_caller =
-        crate::desktop_invocation::is_known_non_desktop_caller(stock_codex_path);
+    let non_desktop_caller = desktop_caller.is_non_desktop();
     if non_desktop_caller && let Some(owner) = live_mapping_store_owner(data_directory)? {
         return Ok(LocalRuntimeAdmission::OfficialCli(format!(
             "Host Runtime PID {owner} already owns the Mapping Store"

@@ -1,12 +1,14 @@
 import { createReadStream } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import type { HostTurnId } from "@codexhost/shared-contracts";
 
 import {
   parseHostUsage,
   parseHostUsageRequest,
   type HostUsage,
   type HostUsageRequest,
+  type HostUsageRequestTiming,
 } from "@codexhost/harness-adapter";
 
 import type { AntigravityPromptUsage } from "./acp-types.js";
@@ -159,11 +161,14 @@ interface PendingUsage {
   steps: Set<number>;
 }
 
+type TimingTurn = { startedAtMs: number; turnId?: HostTurnId };
+type RequestTiming = HostUsageRequestTiming & { turnId?: HostTurnId };
+
 export class AntigravitySessionUsageTracker {
   readonly #file: string;
   readonly #nativeSessionId: string;
   readonly #home: string;
-  #turnStartedAtMs = 0;
+  #timingTurn: TimingTurn = { startedAtMs: 0 };
   readonly #consumed = new Map<number, HostUsageRequest>();
   readonly #requests = new Map<number, HostUsageRequest>();
   readonly #expectedInitialTurns: number;
@@ -176,6 +181,7 @@ export class AntigravitySessionUsageTracker {
   #outputTokensPerSecond?: number;
   #complete = true;
   readonly #turnCollectionSteps = new Set<number>();
+  readonly #awaitingTiming = new Map<number, TimingTurn>();
 
   constructor(options: AntigravitySessionUsageTrackerOptions) {
     this.#nativeSessionId = options.nativeSessionId;
@@ -237,8 +243,8 @@ export class AntigravitySessionUsageTracker {
     return this.currentUsage();
   }
 
-  beginTurn(startedAtMs = Date.now()): void {
-    this.#turnStartedAtMs = startedAtMs;
+  beginTurn(startedAtMs = Date.now(), turnId?: HostTurnId): void {
+    this.#timingTurn = { startedAtMs, ...(turnId && { turnId }) };
     this.#turnBase = this.#pending
       ? addUsage(this.#pending.base, this.#pending.usage)
       : requestUsage([...this.#requests.values()]);
@@ -295,7 +301,7 @@ export class AntigravitySessionUsageTracker {
     usage: HostUsage | null;
   }> {
     const transcript = await this.#read(signal);
-    const requests = this.#consume(transcript, true);
+    const { requests } = this.#consume(transcript, true);
     this.#reconcile();
     return { requests, complete: this.#historyComplete(), usage: this.currentUsage() };
   }
@@ -310,6 +316,7 @@ export class AntigravitySessionUsageTracker {
     } = {},
   ): Promise<{
     requests: HostUsageRequest[];
+    timings: RequestTiming[];
     complete: boolean;
     usage: HostUsage | null;
   }> {
@@ -326,37 +333,46 @@ export class AntigravitySessionUsageTracker {
       usage && this.#pending
         ? addUsage(this.#pending.usage, usage)
         : (usage ?? this.#pending?.usage);
-    const requests = this.#consume(
-      transcript,
-      false,
-      cacheUsage,
-      input.completedAtMs !== undefined,
-    );
-    const single = requests[0];
-    const step = [...this.#turnCollectionSteps][0];
+    const { requests, timings } = this.#consume(transcript, false, cacheUsage);
+    // A whole-Prompt interval can only describe one request, including one published earlier.
+    const [step] = this.#turnCollectionSteps;
     if (
+      step !== undefined &&
+      this.#turnCollectionSteps.size === 1 &&
       !hadPending &&
       !input.hasToolCalls &&
-      transcript.metadata === null &&
-      single?.reasoningOutputTokens === 0 &&
-      usage?.inputTokens !== undefined &&
-      usage.outputTokens !== undefined &&
-      requests.length === 1 &&
-      single &&
-      step !== undefined &&
       !transcript.toolCallSteps.has(step) &&
-      this.#turnCollectionSteps.size === 1 &&
+      transcript.metadata === null &&
       transcript.complete &&
       !this.#invalidated &&
-      usageMatches(requestUsage([single]), usage, true)
+      usage?.inputTokens !== undefined &&
+      usage.outputTokens !== undefined
     ) {
-      const updated = parseHostUsageRequest({ ...single, ...timing(input) });
-      requests[0] = updated;
-      this.#requests.set(step, updated);
+      const single = this.#requests.get(step);
+      const { startedAtMs, completedAtMs } = timing(input);
+      if (
+        single &&
+        single.startedAtMs === undefined &&
+        (single.reasoningOutputTokens ?? usage.reasoningOutputTokens) === 0 &&
+        (usage.reasoningOutputTokens ?? 0) === 0 &&
+        usageMatches(requestUsage([single]), usage, true) &&
+        startedAtMs !== undefined &&
+        completedAtMs !== undefined
+      ) {
+        const updated = parseHostUsageRequest({ ...single, startedAtMs, completedAtMs });
+        const index = requests.indexOf(single);
+        if (index !== -1) requests[index] = updated;
+        else if (completedAtMs > startedAtMs && single.outputTokens > 0)
+          timings.push({
+            ...this.#timingIdentity(single, this.#timingTurn),
+            output: { startedAtMs, completedAtMs, outputTokens: single.outputTokens },
+          });
+        this.#requests.set(step, updated);
+      }
     }
     this.#recordTurnOutputSpeed();
     this.#reconcile();
-    return { requests, complete: this.#historyComplete(), usage: this.currentUsage() };
+    return { requests, timings, complete: this.#historyComplete(), usage: this.currentUsage() };
   }
 
   #recordTurnOutputSpeed(): void {
@@ -381,10 +397,10 @@ export class AntigravitySessionUsageTracker {
     transcript: TranscriptRequests,
     historical: boolean,
     cacheUsage?: HostUsage | null,
-    finalizing = false,
-  ): HostUsageRequest[] {
+  ): { requests: HostUsageRequest[]; timings: RequestTiming[] } {
     this.#complete = transcript.complete;
     const requests: HostUsageRequest[] = [];
+    const timings: RequestTiming[] = [];
     const steps = new Set([...(this.#pending?.steps ?? []), ...this.#turnCollectionSteps]);
     for (const [step, request] of transcript.steps) {
       if (!request) continue;
@@ -402,8 +418,17 @@ export class AntigravitySessionUsageTracker {
               "reasoningOutputTokens",
             ] as const
           ).some((field) => previous[field] !== request[field])
-        )
+        ) {
           this.#invalidated = true;
+          this.#awaitingTiming.delete(step);
+        }
+        const recorded = this.#requests.get(step);
+        const turn = this.#awaitingTiming.get(step);
+        if (!historical && recorded && turn)
+          this.#requests.set(
+            step,
+            this.#applyTiming(transcript, step, recorded, timings, turn, true),
+          );
         continue;
       }
       const write = cacheUsage?.cacheWriteInputTokens;
@@ -447,45 +472,61 @@ export class AntigravitySessionUsageTracker {
         this.#complete = false;
         continue;
       }
-      const candidate = native?.timing;
-      // Tool-call viewable_at may describe an already assembled payload, not generation start.
-      const clock =
-        parsed.reasoningOutputTokens !== undefined &&
-        parsed.reasoningOutputTokens === native?.reasoningOutputTokens &&
-        // A thinking-only request has no output inside the visible window to time.
-        parsed.reasoningOutputTokens < parsed.outputTokens &&
-        !transcript.toolCallSteps.has(step) &&
-        candidate &&
-        (historical || candidate.startedAtMs >= this.#turnStartedAtMs) &&
-        candidate.completedAtMs <= Date.now()
-          ? {
-              ...candidate,
-              timedOutputTokens: parsed.outputTokens - parsed.reasoningOutputTokens,
-            }
-          : undefined;
-      // Let an in-flight native metadata commit supply timing before publishing the stable ID.
-      if (
-        !historical &&
-        this.#turnActive &&
-        !finalizing &&
-        transcript.metadata !== null &&
-        !clock &&
-        !transcript.toolCallSteps.has(step)
-      )
-        continue;
-      parsed = parseHostUsageRequest({
-        ...parsed,
-        ...(historical ? { historical: true } : {}),
-        ...clock,
-      });
+      const turn = historical ? undefined : this.#timingTurn;
+      if (turn) this.#awaitingTiming.set(step, turn);
+      else parsed.historical = true;
+      const timed = this.#applyTiming(transcript, step, parsed, timings, turn);
       this.#consumed.set(step, request);
-      this.#requests.set(step, parsed);
-      requests.push(parsed);
+      this.#requests.set(step, timed);
+      // Idle catch-up must use the tagged timing event, not the Host's active Turn.
+      requests.push(historical || this.#turnActive ? timed : parsed);
     }
-    return requests;
+    return { requests, timings };
   }
 
-  async #read(signal?: AbortSignal, withTimings = true): Promise<TranscriptRequests> {
+  #timingIdentity(request: HostUsageRequest, turn: TimingTurn) {
+    return { requestId: request.requestId, ...(turn.turnId && { turnId: turn.turnId }) };
+  }
+
+  #applyTiming(
+    transcript: TranscriptRequests,
+    step: number,
+    request: HostUsageRequest,
+    timings: RequestTiming[],
+    turn: TimingTurn | undefined,
+    late = false,
+  ): HostUsageRequest {
+    const native = transcript.metadata?.get(step);
+    if (!native?.timing || native.timing.completedAtMs > Date.now()) return request;
+    this.#awaitingTiming.delete(step);
+    const { requestStartedAtMs, timeToFirstOutputMs, startedAtMs, completedAtMs } = native.timing;
+    const thought = request.reasoningOutputTokens ?? native.reasoningOutputTokens;
+    if ((turn && requestStartedAtMs < turn.startedAtMs) || thought !== native.reasoningOutputTokens)
+      return request;
+    // An assembled tool payload or a thinking-only request has no reliable text generation window.
+    const interval =
+      request.startedAtMs === undefined &&
+      thought < request.outputTokens &&
+      !transcript.toolCallSteps.has(step) &&
+      completedAtMs > startedAtMs
+        ? { startedAtMs, completedAtMs, outputTokens: request.outputTokens - thought }
+        : undefined;
+    const separateOutput = late || !this.#turnActive;
+    if (turn)
+      timings.push({
+        ...this.#timingIdentity(request, turn),
+        requestStartedAtMs,
+        timeToFirstOutputMs,
+        ...(separateOutput && interval ? { output: interval } : {}),
+      });
+    return parseHostUsageRequest({
+      ...request,
+      reasoningOutputTokens: thought,
+      ...(interval ? { startedAtMs, completedAtMs, timedOutputTokens: interval.outputTokens } : {}),
+    });
+  }
+
+  async #read(signal?: AbortSignal): Promise<TranscriptRequests> {
     signal?.throwIfAborted();
     const stream = createReadStream(this.#file, { encoding: "utf8", signal });
     const lines = createInterface({ input: stream, crlfDelay: Infinity });
@@ -556,13 +597,14 @@ export class AntigravitySessionUsageTracker {
     result.complete &&=
       [...result.steps.values()].every((request) => request !== null) &&
       [...this.#consumed.keys()].every((step) => result.steps.has(step));
-    const unseen = new Set([...result.steps.keys()].filter((step) => !this.#consumed.has(step)));
-    if (withTimings && unseen.size > 0)
+    const needed = new Set(this.#awaitingTiming.keys());
+    for (const step of result.steps.keys()) if (!this.#consumed.has(step)) needed.add(step);
+    if (needed.size > 0)
       result.metadata = await readAntigravityRequestMetadata(
         this.#nativeSessionId,
         this.#home,
         result.steps,
-        unseen,
+        needed,
       );
     signal?.throwIfAborted();
     return result;

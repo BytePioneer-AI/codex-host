@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -305,17 +306,49 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
   // Collapsed to the header strip so the conversation above stays readable
   // while the user decides; answer drafts live in the Session store above.
   const [minimized, setMinimized] = useState(false);
+  const [promptExpanded, setPromptExpanded] = useState(false);
+  const [promptOverflow, setPromptOverflow] = useState(false);
   // The free-form textarea autofocuses on first presentation; re-expanding a
   // collapsed question must not steal focus from the expand toggle back into
   // the input, so focus is granted once per question index.
   const focusedQuestions = useRef(new Set<number>());
-  const answerSurface = useRef<HTMLDivElement>(null);
+  const questionScroll = useRef<HTMLDivElement>(null);
+  const promptContent = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (questionScroll.current !== null) questionScroll.current.scrollTop = 0;
+    setPromptExpanded(false);
+  }, [index]);
   // Every navigation write stays in bounds and drafts mirrors questions 1:1.
   // oxlint-disable-next-line typescript/no-non-null-assertion
   const question = questions[index]!;
   // oxlint-disable-next-line typescript/no-non-null-assertion
   const draft = drafts[index]!;
   const hasOptions = (question.options?.length ?? 0) > 0;
+
+  useLayoutEffect(() => {
+    if (minimized) {
+      setPromptOverflow(false);
+      return;
+    }
+    const el = promptContent.current;
+    if (el === null) return;
+    const measure = (): void => {
+      if (!promptExpanded) {
+        setPromptOverflow(el.scrollHeight > el.clientHeight + 2);
+      }
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+    };
+  }, [minimized, promptExpanded, index, question.question, question.detail]);
+
+  useEffect(() => {
+    if (minimized) pending.releaseFocus();
+  }, [minimized, pending]);
 
   const replaceProgress = (nextIndex: number, nextDrafts: QuestionDraftAnswer[]): void => {
     actions.replace(pending.key, {
@@ -354,7 +387,7 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
         pending.engage();
         return;
       }
-      if (answerSurface.current?.contains(document.activeElement) === true) pending.holdFocus();
+      if (questionScroll.current?.contains(document.activeElement) === true) pending.holdFocus();
     };
     const visibilityChanged = (): void => {
       if (document.hidden) release();
@@ -514,48 +547,56 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
     submitDrafts(nextDrafts);
   };
 
+  const showCountdown =
+    countdown !== undefined &&
+    card.waitState !== "waiting" &&
+    card.waitState !== "editing" &&
+    card.waitState !== "continued";
+  const showHeld =
+    countdown !== undefined && (card.waitState === "waiting" || card.waitState === "editing");
+  const hasStatusStrip =
+    showCountdown || card.state === "continued" || showHeld || review !== undefined;
+  const headingId = `question-${pending.key}-${String(index)}`;
+
   return (
     <div className={css.frame} data-question-key={pending.key}>
       <section
         className={clsx(css.card, minimized && css.cardMinimized)}
-        aria-labelledby={`question-${pending.key}-${String(index)}`}
+        aria-labelledby={headingId}
       >
-        <header className={css.header}>
-          <div className={css.headingBlock}>
+        <header className={css.topBar}>
+          <div className={css.topBarLeading}>
             {question.header !== undefined && <div className={css.eyebrow}>{question.header}</div>}
-            <h2 className={css.title} id={`question-${pending.key}-${String(index)}`}>
-              {question.question}
-            </h2>
+            {minimized && (
+              <h2 className={css.minimizedTitle} id={headingId}>
+                {question.question}
+              </h2>
+            )}
           </div>
-          <div className={css.headerActions}>
-            {countdown !== undefined &&
-              card.waitState !== "waiting" &&
-              card.waitState !== "editing" &&
-              card.waitState !== "continued" && (
+          {hasStatusStrip && (
+            <div className={css.statusGroup}>
+              {showCountdown && (
                 <span className={css.waitStatus}>
                   {t(countdown.running ? "wait.countdown" : "wait.paused", {
                     seconds: Math.ceil(countdown.remainingMs / 1000),
                   })}
                 </span>
               )}
-            {countdown !== undefined &&
-              card.waitState !== "waiting" &&
-              card.waitState !== "editing" &&
-              card.waitState !== "continued" && (
-                <Button variant="outline" className={css.waitButton} onClick={takeTime}>
+              {showCountdown && (
+                <Button variant="outline" size="sm" className={css.waitButton} onClick={takeTime}>
                   {t("wait.takeTime")}
                 </Button>
               )}
-            {card.state === "continued" && (
-              <span className={css.waitStatus}>{t("wait.continued")}</span>
-            )}
-            {/* A held or frozen countdown says so; a request that never carried
-                one waits silently, as the blocking question always has. */}
-            {countdown !== undefined &&
-              (card.waitState === "waiting" || card.waitState === "editing") && (
-                <span className={css.waitStatus}>{t("wait.held")}</span>
+              {card.state === "continued" && (
+                <span className={css.waitStatus}>{t("wait.continued")}</span>
               )}
-            {review !== undefined && <span className={css.waitStatus}>{t("review.status")}</span>}
+              {/* A held or frozen countdown says so; a request that never carried
+                one waits silently, as the blocking question always has. */}
+              {showHeld && <span className={css.waitStatus}>{t("wait.held")}</span>}
+              {review !== undefined && <span className={css.waitStatus}>{t("review.status")}</span>}
+            </div>
+          )}
+          <div className={css.iconActions}>
             <button
               type="button"
               className={css.iconButton}
@@ -583,19 +624,51 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
         </header>
 
         {!minimized && (
-          <>
-            <div
-              ref={answerSurface}
-              className={css.body}
-              data-question-scroll
-              onFocusCapture={focusAnswerSurface}
-              onBlurCapture={blurAnswerSurface}
-            >
-              {question.detail !== undefined && (
-                <div className={css.detail} tabIndex={0}>
-                  <MarkdownText text={question.detail} labels={markdownLabels} />
+          <div
+            ref={questionScroll}
+            className={css.scrollArea}
+            data-question-scroll
+            tabIndex={0}
+            onFocusCapture={focusAnswerSurface}
+            onBlurCapture={blurAnswerSurface}
+          >
+            <div className={css.body}>
+              <div className={css.promptBlock}>
+                <div
+                  ref={promptContent}
+                  className={clsx(
+                    css.promptContent,
+                    !promptExpanded && css.promptCollapsed,
+                    !promptExpanded && promptOverflow && css.promptFaded,
+                  )}
+                >
+                  <h2 className={css.title} id={headingId}>
+                    {question.question}
+                  </h2>
+                  {question.detail !== undefined && (
+                    <div className={css.detail}>
+                      <MarkdownText text={question.detail} labels={markdownLabels} />
+                    </div>
+                  )}
                 </div>
-              )}
+                {(promptOverflow || promptExpanded) && (
+                  <button
+                    type="button"
+                    className={css.promptToggle}
+                    aria-expanded={promptExpanded}
+                    onClick={() => {
+                      setPromptExpanded((current) => !current);
+                    }}
+                  >
+                    <span>{t(promptExpanded ? "prompt.collapse" : "prompt.expand")}</span>
+                    {promptExpanded ? (
+                      <IconChevronUpOutlineRegular size={14} />
+                    ) : (
+                      <IconChevronDownOutlineRegular size={14} />
+                    )}
+                  </button>
+                )}
+              </div>
               <div
                 className={css.options}
                 role={question.multiSelect === true ? "group" : "radiogroup"}
@@ -703,67 +776,69 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
                   ))}
               </div>
             </div>
+          </div>
+        )}
 
-            <footer className={css.footer}>
-              {questions.length > 1 && (
-                <div className={css.pager}>
-                  <button
-                    type="button"
-                    className={css.iconButton}
-                    aria-label={t("nav.prev")}
-                    disabled={index === 0 || busy !== null}
-                    onClick={() => {
-                      replaceProgress(index - 1, drafts);
-                      setError(null);
-                    }}
-                  >
-                    <IconChevronLeftOutlineRegular />
-                  </button>
-                  <span className={css.progress}>
-                    {index + 1} / {questions.length}
-                  </span>
-                  <button
-                    type="button"
-                    className={css.iconButton}
-                    aria-label={t("nav.next")}
-                    disabled={index === questions.length - 1 || busy !== null}
-                    onClick={() => {
-                      replaceProgress(index + 1, drafts);
-                      setError(null);
-                    }}
-                  >
-                    <IconChevronRightOutlineRegular />
-                  </button>
-                </div>
-              )}
-              <div className={css.feedback} role="status">
-                {error === null ? null : "key" in error ? t(error.key) : error.text}
+        {!minimized && (
+          <footer className={css.footer}>
+            {questions.length > 1 && (
+              <div className={css.pager}>
+                <button
+                  type="button"
+                  className={css.iconButton}
+                  aria-label={t("nav.prev")}
+                  disabled={index === 0 || busy !== null}
+                  onClick={() => {
+                    replaceProgress(index - 1, drafts);
+                    setError(null);
+                  }}
+                >
+                  <IconChevronLeftOutlineRegular />
+                </button>
+                <span className={css.progress}>
+                  {index + 1} / {questions.length}
+                </span>
+                <button
+                  type="button"
+                  className={css.iconButton}
+                  aria-label={t("nav.next")}
+                  disabled={index === questions.length - 1 || busy !== null}
+                  onClick={() => {
+                    replaceProgress(index + 1, drafts);
+                    setError(null);
+                  }}
+                >
+                  <IconChevronRightOutlineRegular />
+                </button>
               </div>
-              {/* A review card has nothing to send: the pager alone walks the record. */}
-              {review === undefined && (
-                <div className={css.footerActions}>
-                  <Button variant="ghost" disabled={busy !== null} onClick={skipQuestion}>
-                    {t("action.skip")}
-                  </Button>
-                  <Button
-                    variant="primary"
-                    disabled={
-                      busy !== null ||
-                      !answered(draft) ||
-                      (index === questions.length - 1 && !canSubmit)
-                    }
-                    onClick={continueFlow}
-                  >
-                    {busy === "answer"
-                      ? t("submitting")
-                      : index === questions.length - 1
-                        ? t("submit")
-                        : t("action.next")}
-                  </Button>
-                </div>
-              )}
-            </footer>
-          </>
+            )}
+            <div className={css.feedback} role="status">
+              {error === null ? null : "key" in error ? t(error.key) : error.text}
+            </div>
+            {/* A review card has nothing to send: the pager alone walks the record. */}
+            {review === undefined && (
+              <div className={css.footerActions}>
+                <Button variant="ghost" disabled={busy !== null} onClick={skipQuestion}>
+                  {t("action.skip")}
+                </Button>
+                <Button
+                  variant="primary"
+                  disabled={
+                    busy !== null ||
+                    !answered(draft) ||
+                    (index === questions.length - 1 && !canSubmit)
+                  }
+                  onClick={continueFlow}
+                >
+                  {busy === "answer"
+                    ? t("submitting")
+                    : index === questions.length - 1
+                      ? t("submit")
+                      : t("action.next")}
+                </Button>
+              </div>
+            )}
+          </footer>
         )}
       </section>
     </div>

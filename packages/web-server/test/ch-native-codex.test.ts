@@ -80,6 +80,24 @@ it("lists native and external Threads and continues native history with its orig
     ["codex", "fake"],
   );
   assert.equal(catalog.groups[0]?.name, "Codex");
+  host.inspection.catalog.models.push({ ref: { id: "new" }, label: "New model" });
+  const refreshed = await call<{ groups: Array<{ id: string; models: Array<{ id: string }> }> }>(
+    "session/modelCatalog",
+    { refresh: true },
+  );
+  assert.ok(
+    refreshed.groups.find((group) => group.id === "fake")?.models.some(({ id }) => id === "new"),
+  );
+  assert.deepEqual(
+    host.requests
+      .filter((r) => r.method === "codexhost/harness/inspect" && r.params.refresh === true)
+      .map((r) => r.params)
+      .sort((left, right) => String(left.harnessId).localeCompare(String(right.harnessId))),
+    [
+      { harnessId: "codex", refresh: true },
+      { harnessId: "fake", refresh: true },
+    ],
+  );
   for (const cwd of [root, undefined]) {
     const draft = await call<{ sessionId: string }>("session/create", cwd ? { cwd } : {});
     const draftProjections = await call<{

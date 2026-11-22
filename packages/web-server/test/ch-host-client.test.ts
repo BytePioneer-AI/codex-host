@@ -9,6 +9,7 @@ import { DataDir } from "../src/store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { FakeChChannel, startFakeChChannel } from "./support/ch-channel.ts";
+import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
 import { defined } from "./support/defined.ts";
 
 const busyMessage =
@@ -60,6 +61,29 @@ it("uses only the running Host's projects even when Web has a different CODEX_HO
   });
   t.after(() => client.close());
   assert.deepEqual(await client.projects(["imported"]), { ...host.projectSnapshot, pinned: [] });
+});
+
+it("reads legacy CDP projects in Desktop order, omitting missing and repeated IDs", async (t) => {
+  const host = new FakeChHost();
+  const project = (id: string) => ({ id, name: id, rootPaths: [join(tmpdir(), id)] });
+  const first = project("first");
+  const second = project("second");
+  host.projectSnapshot.projects.push(first, second, project("unlisted"));
+  host.projectSnapshot.assignments = { assigned: first.id, unrequested: second.id };
+  host.projectSnapshot.projectless = ["projectless", "unrequested-projectless"];
+  const debuggerServer = await startFakeChDebugger(host, {
+    projectOrder: [second.id, "missing", first.id, second.id],
+  });
+  const client = await createChHostClient({ cdp: debuggerServer.endpoint });
+  t.after(async () => {
+    client.close();
+    await debuggerServer.close();
+  });
+  assert.deepEqual(await client.projects(["assigned", "projectless"]), {
+    projects: [second, first],
+    assignments: { assigned: first.id },
+    projectless: ["projectless"],
+  });
 });
 
 it("preserves a busy Host snapshot error in Web history and allows an explicit retry", async (t) => {

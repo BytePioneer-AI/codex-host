@@ -139,5 +139,6 @@ export async function signOut(): Promise<void> {
   await disableNotifications().catch(() => undefined);
   const response = await fetch("api/auth/logout", { method: "POST", credentials: "same-origin" });
   if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
+  window.dispatchEvent(new Event("codexhost:sign-out"));
   window.location.reload();
 }

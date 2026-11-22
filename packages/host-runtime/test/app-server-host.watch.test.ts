@@ -1,13 +1,96 @@
 import { describe, expect, it, vi } from "vitest";
+import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
+import { harnessIdSchema } from "@codexhost/shared-contracts";
+import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
 import type { DelegationControlApi, DelegationThreadSnapshot } from "../src/delegation-types.js";
 import { DelegationWatchService } from "../src/delegation-watch.js";
 import {
   bindOfficialThread,
   createFixture,
+  messageParams,
+  method,
   readJsonLine,
+  startExternalThread,
+  startPiThread,
+  startPiTurn,
   stopFixture,
+  threadStatus,
+  turnEvent,
 } from "./app-server-host-fixture.js";
+
+describe("watch delivery on Host idle events", () => {
+  it.each(["Thread", "Subagent"])("nudges watch before polling on %s idle", async (target) => {
+    const registry = new DelegationControlRegistry();
+    const adapter = Object.assign(new FakeHarnessAdapter(harnessIdSchema.parse("pi")), {
+      subagents: { readSnapshot: async () => ({ ok: true as const, value: { turns: [] } }) },
+    });
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]),
+      onDelegationApi: (registration) => registry.register(registration),
+    });
+    try {
+      const parentId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, parentId);
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+      const session = adapter.sessions[0];
+      if (!session) throw new Error("Missing external session");
+      let watchedId = parentId;
+      if (target === "Subagent") {
+        session.startSubagentDelegation({
+          subagentId: "child",
+          nativeSubagentId: "native-child",
+          description: "Child task",
+          background: false,
+          status: "running",
+        });
+        const started = await fixture.collector.waitFor(
+          (message) =>
+            method(message, "thread/started") &&
+            (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === parentId,
+        );
+        watchedId = (messageParams(started).thread as JsonObject).id as string;
+      }
+      const notifyId = await startExternalThread(fixture, "codexhost/pi-native", 3);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await expect(
+        registry.watch({ threadId: watchedId, notifyThreadId: notifyId, timeoutMs: 60_000 }),
+      ).resolves.toMatchObject({ state: "watching", status: "running" });
+
+      const messages = fixture.collector.messages;
+      const afterRegistration = messages.length;
+      if (target === "Subagent") {
+        // Keep the parent Turn running: only the Subagent becomes idle.
+        session.emitSubagentState("native-child", "completed");
+      } else {
+        session.succeedTurn();
+      }
+      // waitFor advances the fake clock, but not far enough to reach the 2s poll.
+      await vi.waitFor(() => {
+        const updates = messages.slice(afterRegistration);
+        expect(updates.some((message) => threadStatus(message, watchedId, "idle"))).toBe(true);
+        expect(
+          updates.find(
+            (message) =>
+              method(message, "item/started") &&
+              messageParams(message).threadId === notifyId &&
+              (messageParams(message).item as JsonObject | undefined)?.type === "userMessage",
+          ),
+        ).toMatchObject({
+          params: {
+            item: {
+              content: [{ text: expect.stringContaining(`(thread://${watchedId}): completed`) }],
+            },
+          },
+        });
+      });
+    } finally {
+      registry.close();
+      vi.useRealTimers();
+      await stopFixture(fixture);
+    }
+  });
+});
 
 async function watchFixture() {
   let api: DelegationControlApi | undefined;
@@ -130,6 +213,68 @@ describe("watch delivery through native Codex resume", () => {
     } finally {
       value.service.close();
       await stopFixture(value.fixture);
+    }
+  });
+
+  it("retries watch delivery when an external Harness rejects turn.start with sessionBusy", async () => {
+    let api: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (registration) => {
+        api = registration;
+        return undefined;
+      },
+    });
+    await fixture.ready;
+    if (!api) throw new Error("Delegation API was not registered");
+    const started = await api.start({
+      harnessId: fixture.adapter.harnessId,
+      parentThreadId: "client:test",
+      cwd: process.cwd(),
+      task: "parent task",
+    });
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Missing external session");
+    session.succeedTurn();
+    const controlApi = api;
+    await vi.waitFor(async () =>
+      expect((await controlApi.read({ threadId: started.threadId, view: "result" })).status).toBe(
+        "completed",
+      ),
+    );
+    session.rejectNextTurn({
+      code: "sessionBusy",
+      message: "Antigravity Turn is already running",
+      retryable: true,
+    });
+
+    let childStatus: "running" | "completed" = "running";
+    const send = vi.spyOn(api, "send");
+    const service = new DelegationWatchService(
+      {
+        read: async ({ threadId }): Promise<DelegationThreadSnapshot> => ({
+          threadId,
+          harnessId: fixture.adapter.harnessId,
+          status: threadId === "child" ? childStatus : "completed",
+          turn: { turnId: `${threadId}-turn`, status: childStatus },
+          progress: [],
+          result: { availability: "pending" },
+        }),
+        send: (input) => send(input),
+      },
+      { pollIntervalMs: 15 },
+    );
+    try {
+      await service.watch({
+        threadId: "child",
+        notifyThreadId: started.threadId,
+        timeoutMs: 60_000,
+      });
+      childStatus = "completed";
+      await vi.waitFor(async () => expect((await service.watches()).watches).toEqual([]));
+      expect(send).toHaveBeenCalledTimes(2);
+    } finally {
+      service.close();
+      await stopFixture(fixture);
     }
   });
 });

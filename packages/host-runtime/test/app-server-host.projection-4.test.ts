@@ -7,8 +7,7 @@ import { MappingStore } from "@codexhost/mapping-store";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   decodeExternalTransportSelection,
-  encodeClaudeTransportModel,
-  encodePiTransportModel,
+  encodeExternalTransportSelection,
   type ExternalHarnessId,
   type JsonObject,
 } from "@codexhost/protocol-core";
@@ -1269,12 +1268,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
     const firstThreadId = await startExternalThread(
       fixture,
-      encodeClaudeTransportModel(secondModel),
+      encodeExternalTransportSelection("claude-code", { model: secondModel }),
       20,
     );
     const secondThreadId = await startExternalThread(
       fixture,
-      encodeClaudeTransportModel(firstModel),
+      encodeExternalTransportSelection("claude-code", { model: firstModel }),
       21,
     );
     expect(claudeAdapter.sessions[0]?.initialState.effectiveModel).toEqual(secondModel);
@@ -1324,7 +1323,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "turn/start",
       params: {
         threadId: secondThreadId,
-        model: encodePiTransportModel(piAdapter.catalog.defaultModel),
+        model: encodeExternalTransportSelection("pi", { model: piAdapter.catalog.defaultModel }),
         input: [{ type: "text", text: "foreign" }],
       },
     });
@@ -1577,6 +1576,140 @@ describe("AppServerHost HarnessAdapter projection", () => {
       result: { source: "official" },
     });
     expect(fixture.adapter.sessions).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
+  it("replays the latest plan on reopen only for a Harness whose plan persists", async () => {
+    const piAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["pi", piAdapter],
+        ["claude-code", claudeAdapter],
+      ]),
+    });
+    const todos = {
+      todos: [
+        { content: "Write code", status: "completed" },
+        { content: "Run tests", status: "in_progress" },
+      ],
+    };
+    const runTodoTurn = async (threadId: string, id: number, sessionIndex: number) => {
+      const turnId = await startPiTurn(fixture, threadId, id);
+      const session = [...claudeAdapter.sessions, ...piAdapter.sessions][sessionIndex];
+      if (!session) throw new Error("Fake Session was not opened");
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+      session.completeItem(session.startToolExecution("Todo", todos), { status: "succeeded" });
+      session.appendText("done");
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      return turnId;
+    };
+    const claudeThreadId = await startExternalThread(
+      fixture,
+      CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+      1,
+    );
+    const claudeTurnId = await runTodoTurn(claudeThreadId, 2, 0);
+    const claudeSession = claudeAdapter.sessions[0];
+    if (!claudeSession) throw new Error("Fake Claude Session was not opened");
+    // Claude Code declares this; the Pi fake does not.
+    claudeSession.capabilities.persistentPlan = true;
+    const piThreadId = await startExternalThread(fixture, "codexhost/pi-native", 3);
+    await runTodoTurn(piThreadId, 4, 1);
+    const reopenedAt = fixture.collector.messages.length;
+
+    for (const [id, threadId, request] of [
+      [5, claudeThreadId, "thread/resume"],
+      [6, claudeThreadId, "thread/read"],
+      [7, piThreadId, "thread/resume"],
+      [8, piThreadId, "thread/read"],
+    ] as const) {
+      writeRequest(fixture.desktopInput, {
+        id,
+        method: request,
+        params: { threadId, ...(request === "thread/read" ? { includeTurns: true } : {}) },
+      });
+      const response = await fixture.collector.waitFor((message) => requestId(message, id));
+      expect(response).not.toHaveProperty("error");
+      expect(JSON.stringify(response)).not.toContain("codexhostPlan");
+    }
+    // A marker request orders the stream after every reopen's notifications.
+    writeRequest(fixture.desktopInput, {
+      id: 9,
+      method: "thread/read",
+      params: { threadId: piThreadId },
+    });
+    await fixture.collector.waitFor((message) => requestId(message, 9));
+    const replays = fixture.collector.messages
+      .slice(reopenedAt)
+      .filter((message) => method(message, "turn/plan/updated"));
+    expect(replays).toEqual(
+      Array.from({ length: 2 }, () => ({
+        method: "turn/plan/updated",
+        params: {
+          threadId: claudeThreadId,
+          turnId: claudeTurnId,
+          explanation: null,
+          plan: [
+            { step: "Write code", status: "completed" },
+            { step: "Run tests", status: "inProgress" },
+          ],
+        },
+      })),
+    );
+    await stopFixture(fixture);
+  });
+
+  it("replays the active Claude Turn's live plan when the Thread is reopened mid-Turn", async () => {
+    const claudeAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["claude-code", claudeAdapter],
+      ]),
+    });
+    const threadId = await startExternalThread(fixture, CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID, 1);
+    const firstTurnId = await startPiTurn(fixture, threadId, 2);
+    const session = claudeAdapter.sessions[0];
+    if (!session) throw new Error("Fake Claude Session was not opened");
+    session.capabilities.persistentPlan = true;
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", firstTurnId));
+    session.completeItem(
+      session.startToolExecution("Todo", { todos: [{ content: "Plan", status: "pending" }] }),
+      { status: "succeeded" },
+    );
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", firstTurnId));
+
+    const activeTurnId = await startPiTurn(fixture, threadId, 3);
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", activeTurnId));
+    session.completeItem(session.startToolExecution("Todo", { todos: [] }), {
+      status: "succeeded",
+    });
+    await fixture.collector.waitFor(
+      (message) =>
+        method(message, "turn/plan/updated") &&
+        (message.params as JsonObject).turnId === activeTurnId,
+    );
+
+    writeRequest(fixture.desktopInput, { id: 4, method: "thread/resume", params: { threadId } });
+    const response = await fixture.collector.waitFor((message) => requestId(message, 4));
+    expect(response).not.toHaveProperty("error");
+    const after = fixture.collector.messages.indexOf(response);
+    await expect(
+      fixture.collector.waitFor(
+        (message) =>
+          method(message, "turn/plan/updated") &&
+          fixture.collector.messages.indexOf(message) > after,
+      ),
+    ).resolves.toEqual({
+      method: "turn/plan/updated",
+      params: { threadId, turnId: activeTurnId, explanation: null, plan: [] },
+    });
+    session.succeedTurn();
+    await fixture.collector.waitFor((message) =>
+      turnEvent(message, "turn/completed", activeTurnId),
+    );
     await stopFixture(fixture);
   });
 });

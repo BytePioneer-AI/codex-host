@@ -92,6 +92,18 @@ type SessionListMutation =
   /** Local first-send flip: the sender clears blank without waiting for a host frame. */
   | { kind: "engaged"; sessionId: SessionId };
 
+/**
+ * Read-only display projections that keep their last value while a reconnect
+ * re-syncs, so the title and usage dock do not blank out. Behavioral keys
+ * (permissions, queue, inbox, questions) are always cleared.
+ */
+const RECONNECT_DISPLAY_KEYS: ReadonlySet<string> = new Set([
+  "title",
+  "codexhostUsage",
+  "contextPressure",
+  "contextBreakdown",
+]);
+
 /** Instance cluster + frame entry + the session list. */
 export class SessionManager {
   private readonly sessions = new Map<SessionId, Session>();
@@ -883,7 +895,7 @@ export class SessionManager {
     for (const session of this.sessions.values()) {
       if (session.getSnapshot().openState === "error") void session.resync();
     }
-    for (const store of this.projectionStores.values()) store.clear();
+    for (const store of this.projectionStores.values()) store.clear(RECONNECT_DISPLAY_KEYS);
     this.listMutations = null;
     this.listInflight = null;
     this.nextCursor = undefined;

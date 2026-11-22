@@ -1,3 +1,4 @@
+import { compositeModelRefIds } from "@codexhost/harness-adapter";
 import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
@@ -8,6 +9,7 @@ import {
   type HarnessThinkingOption,
   type HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
+import { supportsPiFastModel } from "./pi-fast-mode.js";
 
 export interface PiNativeModelRef {
   provider: string;
@@ -49,47 +51,90 @@ function assertNativePart(value: string, name: string): void {
   if (value.trim().length === 0) throw new Error(`Pi ${name} must not be empty`);
 }
 
-export function encodePiModelRef(model: PiNativeModelRef): HarnessModelRef {
-  assertNativePart(model.provider, "Model provider");
-  assertNativePart(model.id, "Model id");
-  const encoded = Buffer.from(
-    JSON.stringify(model.fast ? [model.provider, model.id, true] : [model.provider, model.id]),
-    "utf8",
-  ).toString("base64url");
-  return harnessModelRefSchema.parse({ id: `${PI_MODEL_REF_PREFIX}${encoded}` });
+function readableId({ provider, id }: PiNativeModelRef): string {
+  return `${provider}/${id}`;
 }
 
-export function decodePiModelRef(ref: HarnessModelRef): PiNativeModelRef {
-  const parsedRef = harnessModelRefSchema.parse(ref);
-  if (!parsedRef.id.startsWith(PI_MODEL_REF_PREFIX)) {
-    throw new Error("Model Ref does not belong to PiAdapter");
+function modelLabel({ provider, id }: PiNativeModelRef): string {
+  return `${provider} / ${id}`;
+}
+
+function encodedId({ provider, id }: PiNativeModelRef, legacyFast = false): string {
+  const tuple = legacyFast ? [provider, id, true] : [provider, id];
+  return `${PI_MODEL_REF_PREFIX}${Buffer.from(JSON.stringify(tuple)).toString("base64url")}`;
+}
+
+export function encodePiModelRef(model: PiNativeModelRef, id = readableId(model)): HarnessModelRef {
+  assertNativePart(model.provider, "Model provider");
+  assertNativePart(model.id, "Model id");
+  return harnessModelRefSchema.parse({
+    id,
+    ...(model.fast ? { serviceTier: "priority" } : {}),
+  });
+}
+
+export function createPiModelIndex(models: readonly PiNativeModelRef[]) {
+  const entries = new Map(
+    models.map(({ provider, id }) => [JSON.stringify([provider, id]), { provider, model: id, id }]),
+  );
+  const byId = compositeModelRefIds([...entries.values()], (entry) => encodedId(entry));
+  const idsByPair = new Map(
+    [...byId].map(([id, entry]) => [JSON.stringify([entry.provider, entry.model]), id]),
+  );
+  return {
+    models,
+    byId,
+    ref: (model: PiNativeModelRef) => {
+      const id = idsByPair.get(JSON.stringify([model.provider, model.id]));
+      return encodePiModelRef(
+        model,
+        id ?? (byId.has(readableId(model)) ? encodedId(model) : readableId(model)),
+      );
+    },
+  };
+}
+
+export function resolvePiModelRef(
+  ref: HarnessModelRef,
+  index: ReturnType<typeof createPiModelIndex>,
+): PiNativeModelRef {
+  const model = index.byId.get(ref.id);
+  if (!model || ref.serviceTier === "ultrafast") {
+    throw new Error("Model Ref is not in the current Pi Model catalog");
   }
-  const encoded = parsedRef.id.slice(PI_MODEL_REF_PREFIX.length);
-  let decoded: unknown;
+  return { provider: model.provider, id: model.id, ...(ref.serviceTier ? { fast: true } : {}) };
+}
+
+export function normalizeStoredPiModelRef(
+  ref: HarnessModelRef,
+  catalog: HarnessModelCatalog,
+): HarnessModelRef | undefined {
+  if (!ref.id.startsWith(PI_MODEL_REF_PREFIX) || ref.serviceTier === "ultrafast") return undefined;
+  let tuple: unknown;
   try {
-    decoded = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    tuple = JSON.parse(
+      Buffer.from(ref.id.slice(PI_MODEL_REF_PREFIX.length), "base64url").toString("utf8"),
+    );
   } catch {
-    throw new Error("Pi Model Ref is malformed");
+    return undefined;
   }
   if (
-    !Array.isArray(decoded) ||
-    (decoded.length !== 2 && !(decoded.length === 3 && decoded[2] === true)) ||
-    typeof decoded[0] !== "string" ||
-    typeof decoded[1] !== "string"
-  ) {
-    throw new Error("Pi Model Ref has an invalid native identity");
-  }
-  const native: PiNativeModelRef = {
-    provider: decoded[0],
-    id: decoded[1],
-    ...(decoded[2] === true ? { fast: true } : {}),
-  };
-  assertNativePart(native.provider, "Model provider");
-  assertNativePart(native.id, "Model id");
-  if (encodePiModelRef(native).id !== parsedRef.id) {
-    throw new Error("Pi Model Ref is not canonical");
-  }
-  return native;
+    !Array.isArray(tuple) ||
+    (tuple.length !== 2 && !(tuple.length === 3 && tuple[2] === true)) ||
+    typeof tuple[0] !== "string" ||
+    typeof tuple[1] !== "string"
+  )
+    return undefined;
+  const native = { provider: tuple[0], id: tuple[1] };
+  const legacyFast = tuple[2] === true;
+  if (encodedId(native, legacyFast) !== ref.id || (legacyFast && ref.serviceTier)) return undefined;
+  const fast = legacyFast || ref.serviceTier === "priority";
+  const encoded = encodedId(native);
+  const readable = readableId(native);
+  const entry = catalog.models.find(
+    ({ ref, label }) => ref.id === encoded || (ref.id === readable && label === modelLabel(native)),
+  );
+  return fast ? entry?.fastModel : entry?.ref;
 }
 
 export function samePiModel(
@@ -127,30 +172,40 @@ export function normalizePiModelCatalog(
   thinkingLevels: readonly HarnessThinkingOptionId[] | null,
   effectiveThinkingOptionId: HarnessThinkingOptionId | null,
   effectiveModelReasoning: boolean | null = null,
+  fastSupported = false,
 ): HarnessModelCatalog {
+  const index = createPiModelIndex(
+    effectiveModel ? [...nativeModels, effectiveModel] : nativeModels,
+  );
   const byRef = new Map<
     string,
     { model: HarnessModelCatalog["models"][number]; reasoning: boolean; synthesized: boolean }
   >();
   for (const native of nativeModels) {
-    const ref = encodePiModelRef(native);
+    const ref = index.ref(native);
+    const fastModel =
+      fastSupported && supportsPiFastModel(native)
+        ? { id: ref.id, serviceTier: "priority" as const }
+        : undefined;
     const existing = byRef.get(ref.id);
     if (existing) {
       if (existing.reasoning !== native.reasoning) {
         throw new Error("Pi duplicate Model entries disagree on reasoning capability");
       }
+      if (fastModel) existing.model.fastModel = fastModel;
       continue;
     }
     byRef.set(ref.id, {
       model: {
         ref,
-        label: `${native.provider} / ${native.id}`,
+        label: modelLabel(native),
+        ...(fastModel ? { fastModel } : {}),
       },
       reasoning: native.reasoning,
       synthesized: false,
     });
   }
-  const defaultModel = effectiveModel ? encodePiModelRef(effectiveModel) : undefined;
+  const defaultModel = effectiveModel ? index.ref(effectiveModel) : undefined;
   if (effectiveModel && defaultModel && !byRef.has(defaultModel.id)) {
     // Pi resolves its effective Model from the full Model registry plus configured auth, while
     // `get_available_models` lists only currently offered Models (a Provider may filter them, for
@@ -163,7 +218,7 @@ export function normalizePiModelCatalog(
     byRef.set(defaultModel.id, {
       model: {
         ref: defaultModel,
-        label: `${effectiveModel.provider} / ${effectiveModel.id}`,
+        label: modelLabel(effectiveModel),
       },
       reasoning,
       synthesized: true,

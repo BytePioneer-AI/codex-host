@@ -24,6 +24,7 @@ import type {
   DraftInitializationOptions,
   DraftInitializationResult,
   DraftResponseAnnotation,
+  DraftResponseAnnotationInput,
   InputActions,
   InputEffect,
   InputNotice,
@@ -54,7 +55,7 @@ import { SubmitMachine } from "./machine.ts";
 import { resolveDraftInput, snapshotDraft } from "../draft.ts";
 import { DraftEditorRuntime } from "./editor/runtime.ts";
 import type { EditorProjection } from "./editor/projection.ts";
-import { composeAnnotatedMessage, type ResponseAnnotation } from "@codexhost/shared-contracts";
+import { composeAnnotatedMessage } from "@codexhost/shared-contracts";
 
 /** Popup face the shell needs (dismissal only; typed structurally to avoid a value import). */
 export interface PopupDismissFace {
@@ -200,13 +201,7 @@ export class SessionInputShell implements SessionInput {
       if (options?.focus === "end" && !this.canInsertReferences()) return undefined;
       const id = this.addResponseAnnotation(annotation);
       if (id !== undefined && options?.focus === "end" && this.canInsertReferences()) {
-        this.editor.update(
-          () => {
-            $getRoot().selectEnd();
-          },
-          { discrete: true },
-        );
-        this.focus();
+        this.focus("end");
       }
       return id;
     },
@@ -449,7 +444,7 @@ export class SessionInputShell implements SessionInput {
    * @param annotation - selected text and its optional comment.
    * @returns the draft identity, or undefined when the draft is locked.
    */
-  addResponseAnnotation(annotation: ResponseAnnotation): DraftAttachmentId | undefined {
+  addResponseAnnotation(annotation: DraftResponseAnnotationInput): DraftAttachmentId | undefined {
     if (this.snapshot.phase === "adjudicating" || this.snapshot.phase === "submitting")
       return undefined;
     this.annotationSeq += 1;
@@ -460,6 +455,7 @@ export class SessionInputShell implements SessionInput {
         id,
         text: annotation.text.trim(),
         ...(annotation.annotation === undefined ? {} : { annotation: annotation.annotation }),
+        ...(annotation.anchor === undefined ? {} : { anchor: annotation.anchor }),
       },
     ];
     this.publish();
@@ -757,13 +753,22 @@ export class SessionInputShell implements SessionInput {
   }
 
   /**
-   * Return the keyboard to the composer with the caret it last held. Lexical's
-   * own focus restores its stored selection; a bare DOM focus on the
-   * contenteditable would land the caret at the start instead.
+   * Return the keyboard to the composer, restoring its selection by default.
+   * @param placement - force the caret to the end instead.
    */
-  focus(): void {
+  focus(placement?: "end"): void {
     this.editor.getRootElement()?.focus({ preventScroll: true });
-    this.editor.focus();
+    if (placement === "end") {
+      // Native focus can put the DOM caret at the start of a replaced draft.
+      this.editor.update(
+        () => {
+          $getRoot().selectEnd();
+        },
+        { discrete: true },
+      );
+    } else {
+      this.editor.focus();
+    }
   }
 
   // ---- wiring-layer extras (not on the frozen SessionInput face) ----

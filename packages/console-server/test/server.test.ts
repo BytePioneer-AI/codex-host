@@ -5,6 +5,8 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { HOST_EXTENSIONS_RPC as EXT } from "@codexhost/shared-contracts";
+import { extensionZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import type { ConsoleHarnesses } from "../src/harnesses.js";
 import { HostUnavailableError, type ConsoleHostClient } from "../src/host-client.js";
 import type { InspectDocument } from "../src/installation.js";
@@ -87,6 +89,7 @@ async function start(
     codexRunning?: boolean;
     launch?: () => void;
     host?: ConsoleHostClient;
+    environment?: NodeJS.ProcessEnv;
     service?: (command: string, args: string[], environment: NodeJS.ProcessEnv) => Promise<void>;
   } = {},
 ) {
@@ -104,7 +107,13 @@ async function start(
     updates,
     harnesses: fakeHarnesses(),
     pageScript: "window.consoleLoaded = true;\n",
-    host: options.host ?? { available: vi.fn(async () => false), request: vi.fn() },
+    host: options.host ?? {
+      available: vi.fn(async () => false),
+      request: vi.fn(async () => {
+        throw new HostUnavailableError();
+      }),
+    },
+    ...(options.environment ? { environment: options.environment } : {}),
     inspect: async () => inspectDocument(options.codexRunning ?? false),
     launch: options.launch ?? vi.fn(),
     service: options.service ?? vi.fn(async () => {}),
@@ -115,6 +124,124 @@ async function start(
 }
 
 const CHANGE = { "x-codexhost-console": "1" };
+
+it("lists unified extensions offline, ignores Pi extensions and diagnoses broken configuration", async () => {
+  for (const id of ["pi-codex-fast", "pi-subagent-observer"])
+    await mkdir(path.join(directory, "extensions", id), { recursive: true, mode: 0o700 });
+  const { base } = await start();
+  const list = async () => (await fetch(`${base}/api/extensions`)).json();
+  const fresh = await list();
+  expect(fresh.extensions).toEqual([]);
+  expect(fresh.diagnostics).toEqual([]);
+  expect(fresh.configuration).toEqual({ revision: 0, enabled: [] });
+
+  const root = path.join(directory, "host-extensions");
+  await mkdir(root, { mode: 0o700 });
+  expect((await list()).diagnostics).toEqual([]);
+  await writeFile(path.join(root, "enabled.json"), "{!");
+  expect(await list()).toMatchObject({
+    configuration: fresh.configuration,
+    diagnostics: [expect.stringMatching(/^Invalid extension configuration:/u)],
+  });
+});
+
+it("proxies catalog.v2 and bounded ZIP uploads to the shared Host, with the Console write guard", async () => {
+  const now = new Date().toISOString();
+  const catalogUrl = "https://example.com/catalog.v2.json";
+  const installed = {
+    id: "sample",
+    replaced: false,
+    activationId: "e3472f62-d37b-46e4-9a56-b421680b920c",
+    digest: "a".repeat(64),
+    installedAt: now,
+    manifest: {
+      manifestVersion: 2,
+      id: "sample",
+      version: "1",
+      name: { en: "Sample", "zh-CN": "示例" },
+      description: { en: "Sample", "zh-CN": "示例" },
+      web: { apiVersion: 1, entry: "web.mjs" },
+    },
+  };
+  const request = vi.fn(async (method: string) => ({
+    result:
+      method === EXT.catalog
+        ? {
+            schemaVersion: 2,
+            catalogUrl,
+            generatedAt: now,
+            fetchedAt: now,
+            cached: false,
+            extensions: [],
+          }
+        : method === EXT.uninstall
+          ? { id: "sample", removed: true }
+          : installed,
+  }));
+  const { base } = await start({ host: { available: async () => true, request } });
+  const endpoint = `${base}/api/extensions`;
+  expect(await (await fetch(`${endpoint}/catalog?forceRefresh=true`)).json()).toMatchObject({
+    schemaVersion: 2,
+    catalogUrl,
+    extensions: [],
+  });
+  expect(request).toHaveBeenCalledWith(EXT.catalog, { forceRefresh: true });
+  const upload = (size: number) => ({
+    source: {
+      type: "zip",
+      base64: extensionZip({
+        extras: [{ name: "assets/art.png", data: Buffer.alloc(size) }],
+      }).toString("base64"),
+    },
+  });
+  const post = (action: string, body: unknown, headers: Record<string, string> = CHANGE) =>
+    fetch(`${endpoint}/${action}`, { method: "POST", headers, body: JSON.stringify(body) });
+  expect((await post("install", upload(0), {})).status).toBe(403);
+  expect(
+    (
+      await post("install", {
+        source: { type: "zip", localZipPath: path.join(directory, "arc.zip") },
+      })
+    ).status,
+  ).toBe(400);
+  const blob = upload(6 * 1024 * 1024);
+  const response = await post("install", blob);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(installed);
+  expect(request).toHaveBeenLastCalledWith(EXT.install, blob);
+  expect((await post("uninstall", upload(17 * 1024))).status).toBe(400);
+  expect(await (await post("uninstall", { id: "sample" })).json()).toEqual({
+    id: "sample",
+    removed: true,
+  });
+});
+
+it("routes recovery through the owner and refuses to write extension state while it is offline", async () => {
+  const request = vi.fn(async (method: string) => {
+    if (method === EXT.recover)
+      return { result: { state: "saved", configuration: { revision: 3, enabled: [] } } };
+    if (method === EXT.enable) return { result: { state: "revision-conflict", revision: 3 } };
+    throw new HostUnavailableError();
+  });
+  const { base } = await start({ host: { available: async () => true, request } });
+  const send = (action: string, body: unknown) =>
+    fetch(`${base}/api/extensions/${action}`, {
+      method: "POST",
+      headers: CHANGE,
+      body: JSON.stringify(body),
+    });
+  expect(await (await send("disable-all-and-reload", {})).json()).toMatchObject({
+    state: "saved",
+    configuration: { enabled: [], revision: 3 },
+  });
+  const conflict = await send("enable", { id: "sample", expectedRevision: 1 });
+  expect(conflict.status).toBe(409);
+  expect(await conflict.json()).toMatchObject({ revision: 3 });
+  expect((await send("disable", { id: "sample", expectedRevision: 3 })).status).toBe(503);
+  expect(await (await fetch(`${base}/api/extensions`)).json()).toMatchObject({
+    configuration: { enabled: [], revision: 0 },
+  });
+});
 
 function rawRequest(
   port: number,

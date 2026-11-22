@@ -24,6 +24,9 @@
   color: var(--dsw-alias-label-secondary);
   font: inherit;
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 .field input,
 .field select,
@@ -45,4 +48,19 @@
   margin: 0;
   color: var(--dsw-alias-state-error-primary);
   font-size: 12px;
+}
+
+@media (pointer: coarse) {
+  .head button {
+    min-height: 44px;
+    padding: 0 8px;
+  }
+
+  .field input,
+  .field select,
+  .field textarea {
+    min-height: 44px;
+    padding: 10px 12px;
+    font-size: 16px;
+  }
 }

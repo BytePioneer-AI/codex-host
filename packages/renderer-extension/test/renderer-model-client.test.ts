@@ -2,6 +2,7 @@ import {
   HARNESS_INSTALLATION_START_METHOD,
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
+  HOST_EXTENSIONS_RPC,
   harnessIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
@@ -75,6 +76,79 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
+  it("lists Host extensions and reports a stale selection revision without treating it as a save", async () => {
+    const listing = {
+      revision: 7,
+      configuration: { revision: 7, enabled: ["layout"] },
+      diagnostics: [],
+      extensions: [],
+    };
+    const conflict = { state: "revision-conflict", revision: 8 };
+    const sendRequest = vi.fn().mockResolvedValueOnce(listing).mockResolvedValueOnce(conflict);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.listHostExtensions || !client.enableHostExtension)
+      throw new Error("Missing extension client");
+    await expect(client.listHostExtensions()).resolves.toEqual(listing);
+    await expect(client.enableHostExtension({ id: "badge", expectedRevision: 7 })).resolves.toEqual(
+      conflict,
+    );
+    expect(sendRequest.mock.calls).toEqual([
+      [HOST_EXTENSIONS_RPC.list, {}],
+      [HOST_EXTENSIONS_RPC.enable, { id: "badge", expectedRevision: 7 }],
+    ]);
+  });
+
+  it("validates Host extension catalog, install, and uninstall requests and responses", async () => {
+    const id = "sidebar-thread-tree";
+    const catalog = {
+      schemaVersion: 2,
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      catalogUrl: "https://example.com/catalog.v2.json",
+      fetchedAt: "2026-01-01T00:00:00.000Z",
+      cached: false,
+      extensions: [],
+    };
+    const text = { en: "Thread tree", "zh-CN": "委派树" };
+    const installResult = {
+      id,
+      manifest: {
+        manifestVersion: 2,
+        id,
+        name: text,
+        description: text,
+        version: "0.2.0",
+        desktop: { apiVersion: 1, script: "desktop.js" },
+      },
+      activationId: "00000000-0000-4000-8000-000000000000",
+      digest: "a".repeat(64),
+      installedAt: "2026-01-01T00:00:00.000Z",
+      replaced: false,
+    };
+    const uninstallResult = { id, removed: true };
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce(catalog)
+      .mockResolvedValueOnce(installResult)
+      .mockResolvedValueOnce(uninstallResult);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (
+      !client?.listHostExtensionCatalog ||
+      !client.installHostExtension ||
+      !client.uninstallHostExtension
+    ) {
+      throw new Error("Missing marketplace extension client methods");
+    }
+    await expect(client.listHostExtensionCatalog({ forceRefresh: true })).resolves.toEqual(catalog);
+    const install = { source: { type: "catalog" as const, id } };
+    await expect(client.installHostExtension(install)).resolves.toEqual(installResult);
+    await expect(client.uninstallHostExtension({ id })).resolves.toEqual(uninstallResult);
+    expect(sendRequest.mock.calls).toEqual([
+      [HOST_EXTENSIONS_RPC.catalog, { forceRefresh: true }],
+      [HOST_EXTENSIONS_RPC.install, install],
+      [HOST_EXTENSIONS_RPC.uninstall, { id }],
+    ]);
+  });
+
   it.each(["check", "update", "install"] as const)(
     "routes Harness installation %s through the fixed Host method",
     async (action) => {
@@ -420,12 +494,16 @@ describe("Renderer fixed Model request client", () => {
     expect(Object.keys(client).sort()).toEqual([
       "checkUpdate",
       "credentialImports",
+      "disableHostExtension",
+      "enableHostExtension",
       "executeThreadCommand",
       "forkThread",
       "getHarnessDisplayCapabilities",
       "getHarnessDisplaySettings",
       "getHarnessLaunchSettings",
       "getHarnessPreferences",
+      "getHostExtensionSettings",
+      "hasDesktopThread",
       "importHarnessSession",
       "inspectCodexAccountUsage",
       "inspectHarness",
@@ -434,12 +512,16 @@ describe("Renderer fixed Model request client", () => {
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
+      "installHostExtension",
       "installation",
+      "invokeHostExtensionBackend",
       "listCodexAccounts",
       "listHarnessAccountSources",
       "listHarnessAccounts",
       "listHarnessPlugins",
       "listHarnessSessions",
+      "listHostExtensionCatalog",
+      "listHostExtensions",
       "listLoadedSessions",
       "listSessionImportSources",
       "listSkills",
@@ -449,7 +531,9 @@ describe("Renderer fixed Model request client", () => {
       "openWeb",
       "patchHarnessPreferences",
       "readDelegationThread",
+      "readHostExtensionAsset",
       "readUpdateStatus",
+      "recoverHostExtensions",
       "refreshCodexAccounts",
       "runtimeStatus",
       "selectThreadModel",
@@ -457,15 +541,21 @@ describe("Renderer fixed Model request client", () => {
       "selectThreadThinking",
       "setHarnessDisplaySettings",
       "setHarnessLaunchSettings",
+      "setHostExtensionSettings",
       "setIdleReleaseSettings",
       "setupSsh",
+      "snapshotHostExtensions",
       "startUpdate",
       "subscribeCodexAccounts",
       "subscribeHarnessDisplaySettings",
       "subscribeHarnessPreferences",
+      "subscribeHostExtensionsChanged",
       "subscribeSkillsChanged",
       "subscribeThreadUsage",
+      "uninstallHostExtension",
+      "updateHostExtension",
       "updateRemote",
+      "watchThreadTree",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(
@@ -967,5 +1057,39 @@ describe("Renderer fixed Model request client", () => {
       "Invalid params",
     );
     expect(sendRequest).toHaveBeenCalledOnce();
+  });
+
+  it("validates and sends Host extension asset, settings, and backend invoke RPCs", async () => {
+    const asset = { mimeType: "image/png", base64: "AAAA", digest: "a".repeat(64) };
+    const settings = { settingsRevision: 2, values: { opacity: 0.85, theme: "aurora" } };
+    const values = { opacity: 0.6, darkBlur: true };
+    const saved = { settingsRevision: 3, values };
+    const result = { result: { ok: true } };
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce(asset)
+      .mockResolvedValueOnce(settings)
+      .mockResolvedValueOnce(saved)
+      .mockResolvedValueOnce(result);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Synthetic Host extension client was not created");
+
+    const id = "aurora-theme";
+    const path = "assets/wallpaper.png";
+    const write = { id, expectedSettingsRevision: settings.settingsRevision, values };
+    const invoke = { id, method: "stats.summary", params: { range: "7d" } };
+    await expect(client.readHostExtensionAsset?.({ id, path })).resolves.toEqual(asset);
+    await expect(client.readHostExtensionAsset?.({ id, path: "../secret.png" })).rejects.toThrow();
+    await expect(client.getHostExtensionSettings?.({ id })).resolves.toEqual(settings);
+    await expect(client.setHostExtensionSettings?.(write)).resolves.toEqual(saved);
+    await expect(client.invokeHostExtensionBackend?.(invoke)).resolves.toEqual(result);
+    await expect(client.invokeHostExtensionBackend?.({ id, method: "   " })).rejects.toThrow();
+
+    expect(sendRequest.mock.calls).toEqual([
+      [HOST_EXTENSIONS_RPC.asset, { id, path }],
+      [HOST_EXTENSIONS_RPC.settingsGet, { id }],
+      [HOST_EXTENSIONS_RPC.settingsSet, write],
+      [HOST_EXTENSIONS_RPC.backendInvoke, invoke],
+    ]);
   });
 });

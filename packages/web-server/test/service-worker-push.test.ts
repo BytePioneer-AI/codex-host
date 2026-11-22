@@ -188,3 +188,53 @@ for (const [state, windows] of [
     });
   }
 }
+
+it("lets API navigation requests bypass the offline fetch wrapper", async () => {
+  const handlers = new Map<
+    string,
+    (event: { request: { mode: string; url: string }; respondWith(p: unknown): void }) => void
+  >();
+  runInNewContext(source, {
+    URL,
+    AbortController,
+    setTimeout,
+    clearTimeout,
+    fetch: async () => ({ status: 200 }),
+    self: {
+      addEventListener(
+        type: string,
+        handler: (event: {
+          request: { mode: string; url: string };
+          respondWith(p: unknown): void;
+        }) => void,
+      ) {
+        handlers.set(type, handler);
+      },
+      registration: { scope: "https://host.example/web/" },
+    },
+  });
+  const onFetch = handlers.get("fetch");
+  assert.ok(onFetch);
+
+  let downloadIntercepted = false;
+  onFetch({
+    request: {
+      mode: "navigate",
+      url: "https://host.example/web/api/workspace-file/download?sessionId=s&path=a.mp3",
+    },
+    respondWith() {
+      downloadIntercepted = true;
+    },
+  });
+  assert.equal(downloadIntercepted, false);
+
+  let pageResponse: PromiseLike<{ status: number }> | undefined;
+  onFetch({
+    request: { mode: "navigate", url: "https://host.example/web/?session=s" },
+    respondWith(promise) {
+      pageResponse = promise as PromiseLike<{ status: number }>;
+    },
+  });
+  assert.equal(typeof pageResponse?.then, "function");
+  assert.deepEqual(await pageResponse, { status: 200 });
+});

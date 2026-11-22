@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { CodexTurnProjector } from "@codexhost/protocol-core";
 import {
+  harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,
@@ -1222,6 +1223,35 @@ describe("Pi HarnessAdapter Session", () => {
       status: "ready",
     });
     await expect(adapter.inspect({ cwd: "/other" })).resolves.toMatchObject({ status: "ready" });
+    expect(dependencies.createTransport).toHaveBeenCalledTimes(3);
+    await adapter.close();
+  });
+
+  it("does not publish Thinking support from an older cwd after a refresh", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    const pending = Promise.withResolvers<null>();
+    const stale = adapter.inspect({ cwd: "/synthetic" });
+    transports[0]?.getAvailableThinkingLevels.mockReturnValueOnce(pending.promise);
+
+    const refreshed = await adapter.inspect({ cwd: "/other", refresh: true });
+    expect(refreshed).toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+    });
+    pending.resolve(null);
+    await expect(stale).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: false } },
+    });
+    await expect(adapter.inspect({ cwd: "/other" })).resolves.toBe(refreshed);
+    await expect(adapter.open({ kind: "create", cwd: "/other" })).resolves.toMatchObject({
+      ok: true,
+      value: { capabilities: { configuration: { selectThinkingOption: true } } },
+    });
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+    });
     expect(dependencies.createTransport).toHaveBeenCalledTimes(3);
     await adapter.close();
   });
@@ -3013,38 +3043,56 @@ describe("Pi HarnessAdapter Session", () => {
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
   });
 
-  it("applies a create Model before publishing state and starting the first Turn", async () => {
-    const { adapter, transports } = fixture();
-    const model = encodePiModelRef({
-      provider: "synthetic-provider",
-      id: "alternate-model",
-    });
-    const opened = await adapter.open({ kind: "create", cwd: "/synthetic", model });
-    if (!opened.ok) throw new Error(opened.error.message);
-    const session = opened.value;
-    const iterator = session.outputs[Symbol.asyncIterator]();
+  it.each([false, true])(
+    "applies a create Model before the first Turn (collision: %s)",
+    async (collision) => {
+      const native = { provider: "synthetic-provider/project", id: "alternate-model" };
+      const transport = new FakePiTransport();
+      transport.getAvailableModels.mockResolvedValue([
+        { ...native, reasoning: true, api: "openai-responses" },
+        ...(collision
+          ? [
+              {
+                provider: "synthetic-provider",
+                id: "project/alternate-model",
+                reasoning: true,
+                api: "openai-responses",
+              },
+            ]
+          : []),
+      ]);
+      const adapter = new PiAdapter({}, { createTransport: () => transport });
+      const model = harnessModelRefSchema.parse({
+        id: collision
+          ? `pi-model-v1.${Buffer.from(JSON.stringify([native.provider, native.id])).toString("base64url")}`
+          : "synthetic-provider/project/alternate-model",
+      });
+      const opened = await adapter.open({ kind: "create", cwd: "/synthetic", model });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const session = opened.value;
+      const iterator = session.outputs[Symbol.asyncIterator]();
 
-    await expect(session.execute(textTurn("selected-first"))).resolves.toMatchObject({ ok: true });
-    expect(transports[0]?.selectModel).toHaveBeenCalledWith({
-      provider: "synthetic-provider",
-      id: "alternate-model",
-    });
-    expect(await nextEvent(iterator)).toMatchObject({
-      type: "session.state.changed",
-      state: {
-        effectiveModel: model,
-        effectiveThinkingOptionId: "low",
-        availableThinkingOptions: [
-          { id: "off", label: "Off" },
-          { id: "low", label: "Low" },
-        ],
-      },
-    });
-    expect((await nextEvent(iterator)).type).toBe("turn.started");
-    expect((await nextEvent(iterator)).type).toBe("item.started");
-    transports[0]?.succeed("done");
-    await session.close();
-  });
+      await expect(session.execute(textTurn("selected-first"))).resolves.toMatchObject({
+        ok: true,
+      });
+      expect(transport.selectModel).toHaveBeenCalledWith(native);
+      expect(await nextEvent(iterator)).toMatchObject({
+        type: "session.state.changed",
+        state: {
+          effectiveModel: model,
+          effectiveThinkingOptionId: "low",
+          availableThinkingOptions: [
+            { id: "off", label: "Off" },
+            { id: "low", label: "Low" },
+          ],
+        },
+      });
+      expect((await nextEvent(iterator)).type).toBe("turn.started");
+      expect((await nextEvent(iterator)).type).toBe("item.started");
+      transport.succeed("done");
+      await adapter.close();
+    },
+  );
 
   it("applies create Thinking and publishes Pi-corrected readback before the first Turn", async () => {
     const { adapter, transports } = fixture();

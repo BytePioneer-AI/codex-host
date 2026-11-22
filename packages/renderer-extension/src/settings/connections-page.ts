@@ -51,6 +51,7 @@ export interface RendererConnectionHostSnapshot {
   readonly active: boolean;
   readonly agents: readonly RendererConnectionAgentSnapshot[];
   readonly directoryError?: string;
+  readonly directoryUnsupported?: boolean;
 }
 
 export interface RendererConnectionSnapshot {
@@ -61,7 +62,7 @@ export interface RendererConnectionSnapshot {
 export interface RendererConnectionDiagnostics {
   snapshot(): RendererConnectionSnapshot;
   /** With a Host, wait for existing diagnostics and start a fresh post-mutation inspection. */
-  refresh(hostId?: string): Promise<void>;
+  refresh(hostId?: string, credentialAccess?: "retry"): Promise<void>;
   openWebUi?(hostId: string, agent: ExternalRendererAgent): Promise<void>;
   installation?(
     hostId: string,
@@ -490,7 +491,11 @@ function connectionItems(
             key: "plugin-directory",
             name: "Harness plugins",
             availability: "error" as const,
-            error: { code: "unavailable" as const, message: host.directoryError, retryable: true },
+            error: {
+              code: "unavailable" as const,
+              message: host.directoryError,
+              retryable: !host.directoryUnsupported,
+            },
           },
         ]
       : []),
@@ -708,9 +713,13 @@ export function createConnectionsSettingsPage(
       const moreZone = document.createElement("div");
       moreZone.className = "settings-connection-group-more";
       moreZone.setAttribute("role", "presentation");
-      const resetButton = createGroupResetButton(document, messages, () => {
-        groupPreference.resetToDefault();
-      });
+      // The shared order is written to the local connection even when viewing a remote Host.
+      let groupDisabled = false;
+      const resetButton = createGroupResetButton(
+        document,
+        messages,
+        groupPreference.resetToDefault,
+      );
 
       let draggingAgent: ExternalRendererAgent | null = null;
       let currentCatalog: { id: string; name: string }[] = [];
@@ -736,7 +745,7 @@ export function createConnectionsSettingsPage(
       moreZone.addEventListener("drop", (event) => {
         event.preventDefault();
         moreZone.dataset.connectionDragOver = "false";
-        if (!draggingAgent) return;
+        if (groupDisabled || !draggingAgent) return;
         groupPreference.moveAgent(draggingAgent, "more", null, currentCatalog);
         draggingAgent = null;
         clearDropIndicators();
@@ -750,7 +759,7 @@ export function createConnectionsSettingsPage(
           createRendererSettingsIcon("diagnose", 16),
           messages.connectionRefreshing,
         );
-        void context.runLatest(() => diagnostics.refresh(), {
+        void context.runLatest(() => diagnostics.refresh(undefined, "retry"), {
           success() {
             installs?.clearErrors();
             pending = false;
@@ -821,15 +830,6 @@ export function createConnectionsSettingsPage(
       };
 
       const render = (snapshot: RendererConnectionSnapshot | null): void => {
-        const syncStatus = groupPreference.syncStatus();
-        const groupDisabled = syncStatus === "loading" || syncStatus === "saving";
-        syncMessage.hidden = syncStatus === "ready";
-        syncMessage.textContent =
-          syncStatus === "error"
-            ? messages.connectionGroupSyncFailed
-            : syncStatus === "saving"
-              ? messages.connectionGroupSaving
-              : messages.connectionGroupLoading;
         latestSnapshot = snapshot;
         if (!snapshot) {
           renderedHostId = null;
@@ -846,6 +846,25 @@ export function createConnectionsSettingsPage(
           snapshot.hosts[0];
         if (!selectedHost) return;
         selectedHostId = selectedHost.hostId;
+        const syncStatus = groupPreference.syncStatus();
+        const localUnsupported = snapshot.hosts.some(
+          ({ hostId, directoryUnsupported }) => hostId === "local" && directoryUnsupported,
+        );
+        groupDisabled = localUnsupported || syncStatus === "loading" || syncStatus === "saving";
+        if (groupDisabled && draggingAgent) {
+          draggingAgent = null;
+          clearDropIndicators();
+        }
+        syncMessage.hidden = !localUnsupported && syncStatus === "ready";
+        syncMessage.textContent = localUnsupported
+          ? selectedHost.hostId === "local"
+            ? messages.connectionLocalHarnessUnsupported
+            : messages.connectionGroupUnavailable
+          : syncStatus === "error"
+            ? messages.connectionGroupSyncFailed
+            : syncStatus === "saving"
+              ? messages.connectionGroupSaving
+              : messages.connectionGroupLoading;
 
         const layoutFirstMount = content.children[0] !== layout;
         reconcileElementChildren(content, [layout]);
@@ -1095,7 +1114,7 @@ export function createConnectionsSettingsPage(
           },
           onDrop(event) {
             event.preventDefault();
-            if (!draggingAgent) return;
+            if (groupDisabled || !draggingAgent) return;
             const { beforeAgent } = dropTargetSection(agent, event);
             groupPreference.moveAgent(draggingAgent, section, beforeAgent, currentCatalog);
             draggingAgent = null;

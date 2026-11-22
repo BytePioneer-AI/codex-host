@@ -5,7 +5,12 @@ import { decodeVarint, readProtoFields, type ProtoField } from "./native-protobu
 
 export interface AntigravityRequestMetadata {
   reasoningOutputTokens: number;
-  timing?: { startedAtMs: number; completedAtMs: number };
+  timing?: {
+    requestStartedAtMs: number;
+    timeToFirstOutputMs: number;
+    startedAtMs: number;
+    completedAtMs: number;
+  };
 }
 
 const MAX_METADATA_BYTES = 8 * 1024 * 1024;
@@ -36,7 +41,13 @@ function nanoseconds(fields: ProtoField[] | null): bigint | null {
   const result = seconds * 1_000_000_000n + nanos;
   return result / NANOSECONDS_PER_MS <= MAX_MS ? result : null;
 }
-function stepIndices(fields: ProtoField[]): number[] | null {
+export function nativeStepCreatedAtMs(blob: unknown): number | undefined {
+  const fields = blob instanceof Uint8Array && readProtoFields(blob);
+  const timestamp = fields ? nanoseconds(message(fields, 1)) : null;
+  return timestamp === null ? undefined : Number(timestamp / NANOSECONDS_PER_MS);
+}
+
+export function generatorStepIndices(fields: ProtoField[]): number[] | null {
   const result: number[] = [];
   for (const item of fields.filter((candidate) => candidate.number === 2)) {
     if (item.wire === 0 && typeof item.value === "bigint") {
@@ -125,11 +136,14 @@ function requestMetadata(
     !closeTo(completed - started, streamed)
   )
     return facts;
-  const startedAtMs = Number(started / NANOSECONDS_PER_MS);
-  const completedAtMs = Number(completed / NANOSECONDS_PER_MS);
   return {
     ...facts,
-    ...(completedAtMs > startedAtMs ? { timing: { startedAtMs, completedAtMs } } : {}),
+    timing: {
+      requestStartedAtMs: Number(created / NANOSECONDS_PER_MS),
+      timeToFirstOutputMs: Number(ttft / NANOSECONDS_PER_MS),
+      startedAtMs: Number(started / NANOSECONDS_PER_MS),
+      completedAtMs: Number(completed / NANOSECONDS_PER_MS),
+    },
   };
 }
 
@@ -184,7 +198,7 @@ export async function readAntigravityRequestMetadata(
       const generated = generatorQuery.get(Number(generatorIndex));
       if (!(generated?.data instanceof Uint8Array)) continue;
       const fields = readProtoFields(generated.data);
-      const indices = fields && stepIndices(fields);
+      const indices = fields && generatorStepIndices(fields);
       if (!fields || !indices) continue;
       const plannerSteps = [...new Set(indices.filter((step) => requests.get(step)))];
       if (plannerSteps.length !== 1 || plannerSteps[0] !== index) continue;

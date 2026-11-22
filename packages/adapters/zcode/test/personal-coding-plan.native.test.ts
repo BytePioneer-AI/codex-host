@@ -344,8 +344,7 @@ describe.skipIf(!app)("Personal Coding Plan with the installed ZCode CLI", () =>
           expect(request.headers["x-aliyun-captcha-verify-param"]).toBeUndefined();
         }
         expect(subscriptions.length).toBeGreaterThan(0);
-        for (const headers of subscriptions)
-          expect(headers.authorization).toBe(credentialKind === "project" ? loginToken : apiKey);
+        for (const headers of subscriptions) expect(headers.authorization).toBe(apiKey);
         if (credentialKind === "project") {
           expect(tokenRequests.length).toBeGreaterThan(0);
           for (const headers of tokenRequests)

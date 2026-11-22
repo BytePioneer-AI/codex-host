@@ -30,12 +30,12 @@ function negotiate(acceptEncoding: string | undefined): "br" | "gzip" | undefine
   return encodings.includes("br") ? "br" : encodings.includes("gzip") ? "gzip" : undefined;
 }
 
-/** URL-keyed caching is only for immutable assets; RPC and unversioned bodies are compressed anew. */
+/** Reuse compressed bytes when the cache key identifies immutable content. */
 export async function compressResponse(
   body: Buffer,
   contentType: string,
   acceptEncoding: string | undefined,
-  cacheUrl?: string,
+  cacheKey?: string,
 ): Promise<{ body: Buffer; headers: Record<string, string> }> {
   const headers: Record<string, string> = {};
   if (!isCompressible(contentType)) return { body, headers };
@@ -43,7 +43,7 @@ export async function compressResponse(
   const encoding = negotiate(acceptEncoding);
   if (encoding === undefined || body.length < COMPRESSION_THRESHOLD) return { body, headers };
 
-  const key = cacheUrl === undefined ? undefined : `${encoding}:${cacheUrl}`;
+  const key = cacheKey === undefined ? undefined : `${encoding}:${cacheKey}`;
   let compressed = key === undefined ? undefined : compressedAssets.get(key);
   if (compressed === undefined) {
     compressed =

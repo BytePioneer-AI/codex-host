@@ -21,6 +21,8 @@
     "build:release": "node scripts/build-release.mjs"
   },
   "dependencies": {
-    "@codexhost/shared-contracts": "0.0.0"
+    "@codexhost/harness-plugin-files": "0.0.0",
+    "@codexhost/shared-contracts": "0.0.0",
+    "@rollup/browser": "3.30.0"
   }
 }

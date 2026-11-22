@@ -90,16 +90,35 @@ fn node_repl_proxy_does_not_search_path_for_missing_runtime() {
 #[cfg(target_os = "windows")]
 #[test]
 fn desktop_helpers_do_not_reenter_host_runtime() {
-    // Test process = launcher, first fixture = Desktop, additional fixtures = helpers.
-    // Use the same inherited configuration and stdio command at every depth.
-    for depth in [0, 1, 2] {
+    // The Desktop and its utility process use the same executable image.
+    let helper_args = ["app-server", "--listen", "stdio://"];
+    let main_args = [
+        "-c",
+        "features.code_mode_host=true",
+        "app-server",
+        "--analytics-default-enabled",
+        "-c",
+        "features.prefer_mxc=true",
+        "-c",
+        "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+    ];
+    for (depth, args, uses_host) in [
+        (0, helper_args.as_slice(), true),
+        (1, helper_args.as_slice(), false),
+        (2, helper_args.as_slice(), false),
+        (1, &main_args[..6], false),
+        (1, main_args.as_slice(), true),
+    ] {
         let directory = temporary_directory();
-        let mut child = Command::new(fake_codex_path())
-            .args(["app-server", "--listen", "stdio://"])
+        let desktop = directory.join("ChatGPT.exe");
+        fs::copy(fake_codex_path(), &desktop).expect("create Desktop fixture");
+        let mut child = Command::new(&desktop)
+            .args(args)
             .env("FAKE_CODEX_HELPER_SHIM", shim_path())
             .env("FAKE_CODEX_HELPER_DEPTH", depth.to_string())
             .env("FAKE_CODEX_PRINT_INVOCATION", "1")
             .env("FAKE_CODEX_ROUTE_RESPONSE", "1")
+            .env("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "Codex Desktop")
             .env("CODEXHOST_LAUNCHER_PID", process::id().to_string())
             .env("CODEXHOST_DATA_DIR", &directory)
             .env_remove("CODEXHOST_NPM_NODE_PATH")
@@ -128,16 +147,14 @@ fn desktop_helpers_do_not_reenter_host_runtime() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "depth={depth}: {stderr}");
         assert!(output.stdout.is_empty());
-        if depth == 0 {
-            assert!(
-                !stderr.contains("args=app-server|"),
-                "main Desktop must use Host Runtime: {stderr}"
-            );
+        let stock_invocation = format!("args={}", args.join("|"));
+        // Look for the whole line since the startup probe is a prefix of the
+        // main app-server's argument list.
+        let used_stock = stderr.lines().any(|line| line == stock_invocation);
+        if uses_host {
+            assert!(!used_stock, "main Desktop must use Host Runtime: {stderr}");
         } else {
-            assert!(
-                stderr.contains("args=app-server|--listen|stdio://"),
-                "helper must use stock CLI: {stderr}"
-            );
+            assert!(used_stock, "helper must use stock CLI: {stderr}");
             assert!(
                 !directory.join("local-host-runtime-owner.lock").exists(),
                 "helper must not acquire a Host Runtime lease"

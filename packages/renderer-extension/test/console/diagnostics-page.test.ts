@@ -55,7 +55,7 @@ function renderOverview(value: ConsoleOverview): string {
   state.overview = value;
   const replaceChildren = vi.fn();
   const context = {
-    content: { ownerDocument: {}, replaceChildren },
+    content: { ownerDocument: {}, replaceChildren, querySelector: () => null },
   } as unknown as RendererSettingsPageMountContext;
   createOverviewPage(consoleMessages("zh-CN"), state, vi.fn(), "zh-CN").mount(context);
   return JSON.stringify(replaceChildren.mock.calls.at(-1));
@@ -155,9 +155,8 @@ describe("overview startup diagnostics", () => {
   });
 
   it("displays portable desktop source, path, and version unknown fallback in overview", () => {
-    const state = new ConsoleState();
-    state.overview = overview();
-    state.overview.inspect = {
+    const value = overview();
+    value.inspect = {
       desktop: {
         platform: "windows",
         identity: {
@@ -172,12 +171,7 @@ describe("overview startup diagnostics", () => {
       desktopError: null,
       runtime: { running: true },
     };
-    const replaceChildren = vi.fn();
-    const context = {
-      content: { ownerDocument: {}, replaceChildren },
-    } as unknown as RendererSettingsPageMountContext;
-    createOverviewPage(consoleMessages("zh-CN"), state, vi.fn(), "zh-CN").mount(context);
-    const rendered = JSON.stringify(replaceChildren.mock.calls.at(-1));
+    const rendered = renderOverview(value);
     expect(rendered).toContain("绿色便携版");
     expect(rendered).toContain("版本未知");
     expect(rendered).not.toContain("0.0.0.0");
@@ -185,9 +179,8 @@ describe("overview startup diagnostics", () => {
   });
 
   it("displays msix desktop source and valid version in overview", () => {
-    const state = new ConsoleState();
-    state.overview = overview();
-    state.overview.inspect = {
+    const value = overview();
+    value.inspect = {
       desktop: {
         platform: "windows",
         identity: {
@@ -205,12 +198,7 @@ describe("overview startup diagnostics", () => {
       desktopError: null,
       runtime: { running: true },
     };
-    const replaceChildren = vi.fn();
-    const context = {
-      content: { ownerDocument: {}, replaceChildren },
-    } as unknown as RendererSettingsPageMountContext;
-    createOverviewPage(consoleMessages("zh-CN"), state, vi.fn(), "zh-CN").mount(context);
-    const rendered = JSON.stringify(replaceChildren.mock.calls.at(-1));
+    const rendered = renderOverview(value);
     expect(rendered).toContain("MSIX 已注册包");
     expect(rendered).toContain("26.1021.2667.0");
   });

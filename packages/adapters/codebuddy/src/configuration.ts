@@ -1,7 +1,9 @@
-import type {
-  HarnessModelRef,
-  HarnessSessionCapabilities,
-  HarnessSessionState,
+import {
+  normalizeLegacyBase64ModelRef,
+  type HarnessModelCatalog,
+  type HarnessModelRef,
+  type HarnessSessionCapabilities,
+  type HarnessSessionState,
 } from "@codexhost/harness-adapter";
 import {
   harnessModelCatalogSchema,
@@ -41,14 +43,14 @@ export function capabilitiesForProfile(
 }
 
 export function modelRef(modelId: string): HarnessModelRef {
-  return harnessModelRefSchema.parse({ id: `cb.${Buffer.from(modelId).toString("base64url")}` });
+  return harnessModelRefSchema.parse({ id: modelId });
 }
 
-export function nativeModel(ref: HarnessModelRef): string {
-  const value = Buffer.from(ref.id.slice(3), "base64url").toString("utf8");
-  if (!value || !ref.id.startsWith("cb.") || modelRef(value).id !== ref.id)
-    throw new CodeBuddyError("invalidRequest", "Invalid native Model Ref");
-  return value;
+export function normalizeStoredCodeBuddyModelRef(
+  ref: HarnessModelRef,
+  catalog: HarnessModelCatalog,
+): HarnessModelRef | undefined {
+  return normalizeLegacyBase64ModelRef(ref, catalog, "cb.");
 }
 
 export function configuration(
@@ -107,6 +109,50 @@ export function configuration(
     ...(currentThinking ? { effectiveThinkingOptionId: currentThinking.id } : {}),
   };
   return { catalog, permissionModes, state, options };
+}
+
+type Configuration = ReturnType<typeof configuration>;
+
+export async function selectConfiguration(
+  config: Configuration | undefined,
+  id: string,
+  value: string,
+  profile: CodeBuddyRuntimeProfile,
+  request: (id: string, value: string) => Promise<unknown>,
+): Promise<Configuration> {
+  const option = config?.options.find((option) => option.id === id);
+  const listed = rows(option?.options).some((option) => option.value === value);
+  if (!listed && !(id === "model" && profile.allowUnlistedModelSelection))
+    throw new CodeBuddyError(
+      "invalidRequest",
+      `Unavailable ${profile.displayName} ${id} selection`,
+    );
+  return confirmedConfiguration(await request(id, value), id, value, profile);
+}
+
+export async function restoreConfiguration(
+  config: Configuration,
+  saved: HarnessSessionState,
+  profile: CodeBuddyRuntimeProfile,
+  request: (id: string, value: string) => Promise<unknown>,
+): Promise<Configuration> {
+  const selections = [
+    ["model", saved.effectiveModel?.id],
+    ["thought_level", saved.effectiveThinkingOptionId],
+    ["mode", saved.effectivePermissionModeId],
+  ] as const;
+  const matches = (id: string, value: string) =>
+    config.options.some((option) => option.id === id && option.currentValue === value);
+  for (const [id, value] of selections) {
+    if (value && !matches(id, value))
+      config = await selectConfiguration(config, id, value, profile, request);
+  }
+  // A later selection may reset another option. Only publish a fully restored state.
+  for (const [id, value] of selections) {
+    if (value && !matches(id, value))
+      throw new CodeBuddyError("protocolError", `ACP did not restore ${id}`);
+  }
+  return config;
 }
 
 export function confirmedConfiguration(

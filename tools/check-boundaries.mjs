@@ -44,7 +44,7 @@ function moduleSpecifiers(sourceText, filePath) {
     sourceText,
     ts.ScriptTarget.Latest,
     true,
-    filePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    filePath.endsWith(".tsx") || filePath.endsWith(".jsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
   const specifiers = [];
 
@@ -55,10 +55,18 @@ function moduleSpecifiers(sourceText, filePath) {
   function visit(node) {
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
       addStringLiteral(node.moduleSpecifier);
+    } else if (ts.isExternalModuleReference(node)) {
+      addStringLiteral(node.expression);
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      addStringLiteral(node.argument.literal);
     } else if (ts.isCallExpression(node)) {
       const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
       const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require";
-      if (isDynamicImport || isRequire) addStringLiteral(node.arguments[0]);
+      if (isDynamicImport || isRequire) {
+        const argument = node.arguments[0];
+        if (argument && ts.isStringLiteralLike(argument)) addStringLiteral(argument);
+        else specifiers.push(null);
+      }
     }
 
     ts.forEachChild(node, visit);
@@ -93,6 +101,7 @@ export function findSourceBoundaryViolations({
   const violations = [];
 
   for (const specifier of moduleSpecifiers(sourceText, filePath)) {
+    if (specifier === null) continue;
     if (
       isInside(filePath, resolve(packagesDirectory, "host-runtime", "src")) &&
       specifier.startsWith("@codexhost/adapter-")

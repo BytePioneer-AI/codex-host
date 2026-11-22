@@ -11,6 +11,7 @@ describe("ZCode native projections", () => {
     for (const model of [
       { providerId: "provider/name", modelId: "模型/1" },
       { providerId: "provider", modelId: "name/模型/1" },
+      { providerId: "本地/提供方.v1", modelId: "系列/模型~高" },
     ])
       expect(decodeModel(encodeModel(model))).toEqual(model);
     expect(encodeModel({ providerId: "a/b", modelId: "c" })).not.toEqual(

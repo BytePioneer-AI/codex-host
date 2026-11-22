@@ -14,8 +14,7 @@ export {
   type KimiAcpTransportOptions,
 } from "./acp-transport.js";
 export {
-  encodeKimiModelRef,
-  decodeKimiModelRefId,
+  kimiModelRef,
   isKimiModeId,
   kimiPermissionModeCatalog,
   parseKimiConfigToml,

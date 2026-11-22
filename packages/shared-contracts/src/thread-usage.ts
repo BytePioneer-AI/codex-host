@@ -110,6 +110,7 @@ export const threadUsageSnapshotSchema = z
     planSevenDayResetsAtUnix: nonNegativeSafeIntegerSchema.optional(),
     sessionCacheHitRatePercent: cacheHitRatePercentSchema.optional(),
     timeToFirstOutputMs: nonNegativeSafeIntegerSchema.optional(),
+    latestRequestTimeToFirstOutputMs: nonNegativeSafeIntegerSchema.optional(),
     costSource: z.enum(["publicPrice", "native"]).optional(),
     unpricedModels: z.array(z.string().min(1)).min(1).optional(),
   })
@@ -236,6 +237,18 @@ export const accountCreditsSnapshotSchema = z
 export type AccountResetCredits = z.infer<typeof accountResetCreditsSchema>;
 export type AccountCreditsSnapshot = z.infer<typeof accountCreditsSnapshotSchema>;
 
+/** Remaining prepaid funds, distinct from a percentage-based quota or allowance. */
+export const accountBalanceSnapshotSchema = z
+  .object({
+    amount: z.number().finite().nonnegative(),
+    /** ISO 4217 code as reported by the Provider, for example `CNY`. */
+    currency: z.string().trim().min(1).max(8),
+    /** Native label when the Harness exposes several Billing Sources. */
+    label: z.string().trim().min(1).max(128).optional(),
+  })
+  .strict();
+export type AccountBalanceSnapshot = z.infer<typeof accountBalanceSnapshotSchema>;
+
 export const threadUsageInspectionParamsSchema = z
   .object({
     threadId: hostThreadIdSchema,
@@ -250,7 +263,10 @@ export const threadUsageInspectionSchema = z
     threadId: hostThreadIdSchema,
     usage: threadUsageSnapshotSchema.nullable(),
     accountCredits: accountCreditsSnapshotSchema.optional(),
-    /** Whether this source can provide cached account quota independently of usage. */
+    /** Prepaid funds for the Thread's Billing Source; shown only when no percentage quota exists. */
+    accountBalance: accountBalanceSnapshotSchema.optional(),
+    /** Whether this source can provide cached account quota (credits or a prepaid balance)
+     * independently of usage. */
     accountCreditsSupported: z.boolean().optional(),
   })
   .strict();

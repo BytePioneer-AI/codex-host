@@ -80,6 +80,8 @@ winget install --id BytePioneer-AI.CodexHost --exact
 
 **Upgrade and stop:** run `codexhost update` to upgrade, and `codexhost stop` to stop all background services. Before installing over an existing npm installation, run `codexhost stop` first.
 
+**Keep Web access private:** access tokens, login links and QR codes let anyone who has them operate your computer. Do not share them.
+
 <details>
 <summary>Installation troubleshooting</summary>
 

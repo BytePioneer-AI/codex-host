@@ -7,7 +7,18 @@ import { afterEach, expect, it, vi } from "vitest";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import { HostClientChannel } from "@codexhost/desktop-control";
-import { encodeHarnessPluginRoute, harnessIdSchema } from "@codexhost/shared-contracts";
+import {
+  CONSOLE_OPEN_METHOD,
+  HOST_EXTENSIONS_RPC,
+  encodeHarnessPluginRoute,
+  harnessIdSchema,
+  hostThreadIdSchema,
+  THREAD_TREE_WATCH_METHOD,
+  THREAD_TREE_SNAPSHOT_METHOD,
+  threadTreeWatchResultSchema,
+} from "@codexhost/shared-contracts";
+import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
+import { PINNED_THREAD_SECTION_ID } from "../src/external-thread-pins.js";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { AppServerHost } from "../src/app-server-host.js";
 import { SharedThreadOwner } from "../src/shared-thread-owner.js";
@@ -41,6 +52,7 @@ afterEach(async () => {
 
 async function setup(
   desktopSession?: Parameters<typeof startClientChannelServer>[0]["desktopSession"],
+  environment: NodeJS.ProcessEnv = {},
 ) {
   const root = mkdtempSync(path.join(tmpdir(), "local-shared-owner-"));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
@@ -52,6 +64,12 @@ async function setup(
     stockCodexPath: "/unused",
     arguments: [],
     externalOnly: true,
+    environment: {
+      HOME: root,
+      CODEX_HOME: path.join(root, ".codex"),
+      CODEXHOST_DATA_DIR: root,
+      ...environment,
+    },
     desktopInput: owner.input,
     desktopOutput: owner.output,
     diagnosticOutput: new PassThrough(),
@@ -103,6 +121,33 @@ async function setup(
   }
   return { root, owner, adapter, host, server, web, store, gui, stop };
 }
+
+it("lists Host extensions through the local shared Host client channel", async () => {
+  const { web } = await setup();
+  await expect(web.request(HOST_EXTENSIONS_RPC.list, {})).resolves.toMatchObject({
+    configuration: { revision: 0, enabled: [] },
+    extensions: [],
+  });
+});
+
+it("rejects extension management through the SSH-managed shared Host client channel", async () => {
+  const { web } = await setup(undefined, { CODEXHOST_REMOTE_SSH_MANAGED: "1" });
+  await expect(web.request(HOST_EXTENSIONS_RPC.list, {})).rejects.toMatchObject({
+    code: -32601,
+    message: "Extension management is only available on the local Host",
+  });
+});
+
+it("keeps unlisted Desktop methods unavailable on the shared Host", async () => {
+  const { owner } = await setup();
+  const desktop = owner.connect();
+  cleanup.push(() => desktop.close());
+  for (const method of [CONSOLE_OPEN_METHOD, "codexhost/extensions/unknown"]) {
+    await expect(desktop.request(method, {})).resolves.toMatchObject({
+      error: { code: -32601, message: "Method is unavailable on the shared Thread service" },
+    });
+  }
+});
 
 it("returns an actionable failure when authenticated Desktop admission finds a removed runtime", async () => {
   const register = vi.fn();
@@ -354,6 +399,85 @@ it.each(["Web", "Desktop"])(
     expect(await store.listThreads()).toHaveLength(1);
   },
 );
+
+it("projects the shared owner's Turn state without forwarding owner subscription IDs", async () => {
+  const { web, adapter, store, gui } = await setup();
+  const { viewer, bridge } = gui();
+  await viewer.ready;
+  const native = vi
+    .spyOn(OfficialRuntimeClient.prototype, "request")
+    .mockImplementation(async (method, params): Promise<JsonObject> => {
+      if (method === "threadSection/list")
+        return {
+          result: {
+            data: [{ id: PINNED_THREAD_SECTION_ID, name: "Pinned", appearance: null }],
+            nextCursor: null,
+          },
+        };
+      if (method === "thread/read") {
+        if (typeof params.threadId !== "string") throw new Error("Missing native Thread ID");
+        return { result: { thread: { id: params.threadId, status: { type: "notLoaded" } } } };
+      }
+      return { result: { data: [], nextCursor: null } };
+    });
+  try {
+    const { thread } = await web.request<{ thread: { id: string } }>("thread/start", {
+      model: encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("pi") }),
+      cwd: "/synthetic",
+    });
+    const child = hostThreadIdSchema.parse(thread.id);
+    await store.createDelegation({
+      delegationId: hostThreadIdSchema.parse("delegated"),
+      parentHostThreadId: hostThreadIdSchema.parse("native-parent"),
+      childHostThreadId: child,
+      taskDigest: "a".repeat(64),
+      sourceHarnessId: harnessIdSchema.parse("codex"),
+      targetHarnessId: harnessIdSchema.parse("pi"),
+    });
+    writeRequest(viewer.desktopInput, { id: 99, method: THREAD_TREE_WATCH_METHOD, params: {} });
+    const { subscriptionId, snapshot } = threadTreeWatchResultSchema.parse(
+      (await viewer.collector.waitFor((m) => m.id === 99)).result,
+    );
+    let revision = snapshot.revision;
+    const next = async (status: string) => {
+      const msg = await viewer.collector.waitFor((m) => {
+        if (m.method !== THREAD_TREE_SNAPSHOT_METHOD) return false;
+        const result = threadTreeWatchResultSchema.parse(m.params);
+        return (
+          result.subscriptionId === subscriptionId &&
+          result.snapshot.revision > revision &&
+          result.snapshot.nodes[child]?.status === status
+        );
+      }, 1000);
+      revision = threadTreeWatchResultSchema.parse(msg.params).snapshot.revision;
+    };
+    await web.request("turn/start", {
+      threadId: child,
+      input: [{ type: "text", text: "A shared Turn" }],
+    });
+    await next("running");
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Missing shared Session");
+    session.succeedTurn();
+    await next("idle");
+    bridge.close();
+    await next("unknown");
+    expect(
+      viewer.collector.messages
+        .filter((m) => m.method === THREAD_TREE_SNAPSHOT_METHOD)
+        .map((m) => threadTreeWatchResultSchema.parse(m.params).subscriptionId),
+    ).toEqual(expect.arrayContaining([subscriptionId]));
+    expect(
+      new Set(
+        viewer.collector.messages
+          .filter((m) => m.method === THREAD_TREE_SNAPSHOT_METHOD)
+          .map((m) => threadTreeWatchResultSchema.parse(m.params).subscriptionId),
+      ),
+    ).toEqual(new Set([subscriptionId]));
+  } finally {
+    native.mockRestore();
+  }
+});
 
 it.each([0, 1])("shutdown reports %i running tasks before stopping", async (count) => {
   const { root, web, adapter, stop } = await setup();

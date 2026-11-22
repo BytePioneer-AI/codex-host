@@ -130,6 +130,10 @@ describe("Ephemeral Turn completion", () => {
         await expect(
           fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", nextTurnId)),
         ).resolves.toMatchObject({ params: { turn: { status: "completed", error: null } } });
+        const history = [
+          ...(ephemeral ? [] : [{ id: turnId, status: "failed" }]),
+          { id: nextTurnId, status: "completed" },
+        ];
         writeRequest(fixture.desktopInput, {
           id: 6,
           method: "thread/read",
@@ -138,7 +142,7 @@ describe("Ephemeral Turn completion", () => {
         await expect(
           fixture.collector.waitFor((message) => requestId(message, 6)),
         ).resolves.toMatchObject({
-          result: { thread: { turns: [{ id: nextTurnId, status: "completed" }] } },
+          result: { thread: { turns: history } },
         });
         writeRequest(fixture.desktopInput, {
           id: 7,
@@ -148,7 +152,7 @@ describe("Ephemeral Turn completion", () => {
         await expect(
           fixture.collector.waitFor((message) => requestId(message, 7)),
         ).resolves.toMatchObject({
-          result: { data: [{ id: nextTurnId, status: "completed" }] },
+          result: { data: [...history].reverse() },
         });
       } finally {
         await stopFixture(fixture);

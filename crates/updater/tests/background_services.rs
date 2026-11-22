@@ -67,12 +67,29 @@ impl Drop for Fixture {
 
 #[test]
 fn service_managed_handoff_does_not_wait_for_the_owner_and_reports_recovery_failure() {
+    assert_managed_update_failure(false);
+}
+
+#[test]
+fn failed_pre_update_shutdown_does_not_install_and_preserves_the_gui_error() {
+    assert_managed_update_failure(true);
+}
+
+fn assert_managed_update_failure(stop_fails: bool) {
     let mut fixture = Fixture::new(true);
     let launcher = fixture.root.join("package/bin/codexhost");
     let script = fs::read_to_string(&launcher).unwrap().replace(
         "[ \"$3\" = /bin/sh ]",
         "[ \"$3\" = /bin/sh ]\n[ \"$4\" = --data ]\n[ \"$5\" = \"$HOME/data\" ]\n[ \"$CODEXHOST_DATA_DIR\" = \"$HOME/data\" ]",
     );
+    let script = if stop_fails {
+        script.replace(
+            "rm \"$HOME/web-running\" \"$HOME/host-running\"",
+            "echo 'stopping Desktop failed: lifecycle verification rejected' >&2\nexit 1",
+        )
+    } else {
+        script
+    };
     fs::write(launcher, script).unwrap();
     let path = fixture.root.join("request.json");
     let mut request: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -148,12 +165,14 @@ fn service_managed_handoff_does_not_wait_for_the_owner_and_reports_recovery_fail
     let status: serde_json::Value =
         serde_json::from_slice(&fs::read(status_path).unwrap()).unwrap();
     assert_eq!(status["phase"], "failed");
-    assert!(
-        status["error"]
-            .as_str()
-            .unwrap()
-            .contains("npm update failed")
-    );
+    let error = status["error"].as_str().unwrap();
+    if stop_fails {
+        assert!(error.contains("pre-update service shutdown failed"));
+        assert!(error.contains("stopping Desktop failed: lifecycle verification rejected"));
+        assert!(fixture.root.join("host-running").exists());
+    } else {
+        assert!(error.contains("npm update failed"));
+    }
     assert!(
         status["error"]
             .as_str()
@@ -162,7 +181,11 @@ fn service_managed_handoff_does_not_wait_for_the_owner_and_reports_recovery_fail
     );
     assert_eq!(
         fs::read_to_string(fixture.root.join("order")).unwrap(),
-        "stop\ninstall\n"
+        if stop_fails {
+            "stop\n"
+        } else {
+            "stop\ninstall\n"
+        }
     );
 }
 

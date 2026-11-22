@@ -12,7 +12,7 @@ import * as derivation from "../src/derivation.js";
 import { CodeBuddyAdapter } from "../src/codebuddy-adapter.js";
 import { CodeBuddyError } from "../src/common.js";
 import { modelRef } from "../src/configuration.js";
-import { fixture } from "./fixtures.js";
+import { configOptions, fixture } from "./fixtures.js";
 
 const adapters: CodeBuddyAdapter[] = [];
 afterEach(async () => {
@@ -39,9 +39,20 @@ function collect(session: HarnessSession) {
     },
   };
 }
-function setup(environment = {}) {
+function setup(
+  environment = {},
+  prepareClient?: (client: ReturnType<typeof fixture>["clients"][number], index: number) => void,
+) {
   const native = fixture();
-  const adapter = new CodeBuddyAdapter({ ...native, environment });
+  const adapter = new CodeBuddyAdapter({
+    ...native,
+    environment,
+    clientFactory: (options) => {
+      const client = native.clientFactory(options);
+      prepareClient?.(client, native.clients.length - 1);
+      return client;
+    },
+  });
   adapters.push(adapter);
   return { native, adapter };
 }
@@ -192,12 +203,22 @@ describe("CodeBuddy native Adapter", () => {
     const { adapter, native } = setup();
     const first = await adapter.inspect();
     expect(harnessInspectionSchema.parse(first).status).toBe("ready");
+    if (first.status !== "ready") throw Error("Expected a CodeBuddy Model catalog");
+    expect(first.catalog.defaultModel).toEqual({ id: "native/model" });
+    const model = adapter.normalizeStoredModelRef(modelRef("cb.b3RoZXI"), first.catalog);
+    expect(model).toEqual({ id: "other" });
     await adapter.inspect();
     expect(native.clients).toHaveLength(1);
     await adapter.inspect({ refresh: true });
     expect(native.clients).toHaveLength(2);
     expect(native.clients.every((client) => client.closed && client.context.ephemeral)).toBe(true);
     expect(native.history).toEqual([]);
+    if (!model) throw Error("Expected a normalized CodeBuddy Model Ref");
+    const opened = await adapter.open({ kind: "create", cwd: process.cwd(), model });
+    expect(opened).toMatchObject({
+      ok: true,
+      value: { initialState: { effectiveModel: { id: "other" } } },
+    });
   });
 
   it("reports missing CLI and caches failure until explicit refresh", async () => {
@@ -286,6 +307,347 @@ describe("CodeBuddy native Adapter", () => {
       value: { turns: [{ outcome: { status: "unknown" } }, { outcome: { status: "succeeded" } }] },
     });
   });
+
+  it("settles cancellation after retiring the old process without opening its replacement", async () => {
+    const { adapter, native } = setup();
+    const session = await create(adapter);
+    const events = collect(session);
+    const old = native.clients[0];
+    if (!old) throw Error("No native client");
+    const closeEntered = Promise.withResolvers<undefined>();
+    const releaseClose = Promise.withResolvers<undefined>();
+    const close = old.close.bind(old);
+    vi.spyOn(old, "close").mockImplementation(async () => {
+      closeEntered.resolve(undefined);
+      await releaseClose.promise;
+      await close();
+    });
+    const cancel = vi.spyOn(old, "cancel");
+    const start = turn("stopped", "hold");
+    await session.execute(start);
+    try {
+      expect(await session.execute({ type: "turn.cancel", turnId: start.turnId })).toMatchObject({
+        ok: true,
+      });
+      await closeEntered.promise;
+      expect(await session.execute({ type: "turn.cancel", turnId: start.turnId })).toMatchObject({
+        ok: true,
+      });
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(events.outputs.filter(terminal)).toHaveLength(0);
+      expect(await session.execute(turn("too-early"))).toMatchObject({
+        error: { code: "sessionBusy" },
+      });
+    } finally {
+      releaseClose.resolve(undefined);
+    }
+    expect(await events.completed()).toMatchObject([
+      {
+        event: {
+          outcome: { status: "cancelled", checkpoint: { checkpointId: "user-1" } },
+          nativeTurnRef: { nativeTurnKey: "user-1" },
+        },
+      },
+    ]);
+    expect(old.closed).toBe(true);
+    expect(await session.readSnapshot()).toMatchObject({ ok: true });
+    expect(native.clients).toHaveLength(1);
+    expect(await session.execute(turn("next"))).toMatchObject({ ok: true });
+    expect((await events.completed(2))[1]).toMatchObject({
+      event: { outcome: { status: "succeeded" } },
+    });
+  });
+
+  it("settles a first prompt cancelled before native history is written", async () => {
+    const { adapter, native } = setup({}, (client, index) => {
+      if (index !== 0) return;
+      client.prompt = async () => ({ stopReason: "cancelled" });
+    });
+    const session = await create(adapter);
+    const events = collect(session);
+    await session.execute(turn("stopped"));
+    const [completed] = await events.completed();
+    expect(completed).toMatchObject({ event: { outcome: { status: "cancelled" } } });
+    expect(completed).not.toHaveProperty("event.nativeTurnRef");
+    expect(native.clients).toHaveLength(1);
+    expect(await session.execute(turn("next"))).toMatchObject({ ok: true });
+    expect((await events.completed(2))[1]).toMatchObject({
+      event: { outcome: { status: "succeeded" } },
+    });
+  });
+
+  it.each(["missing", "unreadable", "stalled"] as const)(
+    "preserves confirmed cancellation with a userMessageId and %s history",
+    async (historyState) => {
+      const native = fixture();
+      const readEntered = Promise.withResolvers<undefined>();
+      const releaseRead = Promise.withResolvers<string>();
+      const adapter = new CodeBuddyAdapter({
+        ...native,
+        readHistory: async () => {
+          if (native.clients.length === 1 && native.clients[0]?.closed) {
+            readEntered.resolve(undefined);
+            if (historyState === "unreadable") throw Error("History read failed");
+            if (historyState === "stalled") return releaseRead.promise;
+          }
+          return native.readHistory();
+        },
+      });
+      adapters.push(adapter);
+      const session = await create(adapter);
+      const events = collect(session);
+      const old = native.clients[0];
+      if (!old) throw Error("No native client");
+      old.missingHistory = historyState === "missing";
+      const start = turn("stopped", "hold");
+      expect(await session.execute(start)).toMatchObject({ ok: true });
+      expect(old.pending?.id).toBe("user-1");
+      if (historyState === "stalled") vi.useFakeTimers();
+      try {
+        await session.execute({ type: "turn.cancel", turnId: start.turnId });
+        await readEntered.promise;
+        if (historyState === "stalled") {
+          await vi.advanceTimersByTimeAsync(1_000);
+          expect(events.outputs.filter(terminal)).toHaveLength(1);
+        }
+        expect(await events.completed()).toEqual([
+          {
+            kind: "event",
+            event: {
+              type: "turn.completed",
+              turnId: start.turnId,
+              outcome: { status: "cancelled" },
+            },
+          },
+        ]);
+      } finally {
+        if (historyState === "stalled") vi.useRealTimers();
+        releaseRead.resolve("");
+      }
+      expect(native.clients).toHaveLength(1);
+      expect(await session.execute(turn("next"))).toMatchObject({ ok: true });
+      expect((await events.completed(2))[1]).toMatchObject({
+        event: { outcome: { status: "succeeded" } },
+      });
+    },
+  );
+
+  it("fails the old Turn and never opens a replacement if shutdown cannot be confirmed", async () => {
+    const { adapter, native } = setup();
+    const session = await create(adapter);
+    const events = collect(session);
+    const old = native.clients[0];
+    if (!old) throw Error("No native client");
+    vi.spyOn(old, "close").mockRejectedValueOnce(
+      new CodeBuddyError("unavailable", "shutdown timed out"),
+    );
+    const start = turn("stopped", "hold");
+    await session.execute(start);
+    await session.execute({ type: "turn.cancel", turnId: start.turnId });
+    expect(await events.completed()).toMatchObject([
+      {
+        event: {
+          outcome: { status: "failed", error: { message: "CodeBuddy: shutdown timed out" } },
+        },
+      },
+    ]);
+    await events.closed;
+    expect(await session.execute(turn("next"))).toMatchObject({ error: { code: "invalidState" } });
+    expect(native.clients).toHaveLength(1);
+  });
+
+  it("ignores retired process replies and callbacks after cancellation", async () => {
+    const { adapter, native } = setup();
+    const session = await create(adapter);
+    const events = collect(session);
+    const old = native.clients[0];
+    if (!old) throw Error("No native client");
+    const lateConfig = Promise.withResolvers<{ configOptions: ReturnType<typeof configOptions> }>();
+    vi.spyOn(old, "configure").mockReturnValueOnce(lateConfig.promise);
+    const first = turn("first", "hold");
+    await session.execute(first);
+    const selection = session.execute({ type: "model.select", model: modelRef("other") });
+    await session.execute({ type: "turn.cancel", turnId: first.turnId });
+    await events.completed();
+    lateConfig.resolve({ configOptions: configOptions("other") });
+    expect(await selection).toMatchObject({ error: { code: "invalidState" } });
+    expect(await session.readSnapshot()).toMatchObject({
+      value: { state: { effectiveModel: modelRef("native/model") } },
+    });
+
+    // A configuration choice is also a native operation and can trigger lazy recovery.
+    expect(
+      await session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).toMatchObject({ ok: true });
+    const next = turn("next", "hold");
+    const offset = events.outputs.length;
+    expect(await session.execute(next)).toMatchObject({ ok: true });
+    old.update({ sessionUpdate: "config_option_update", configOptions: configOptions("other") });
+    old.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "stale" } });
+    old.context.handlers.fault(Error("retired client fault"));
+    await expect(old.context.handlers.question({ sessionId: "native-session" })).resolves.toEqual({
+      outcome: "cancelled",
+    });
+    await expect(
+      old.context.handlers.permission({
+        sessionId: "native-session",
+        toolCall: { toolCallId: "stale" },
+        options: [],
+      }),
+    ).resolves.toEqual({ outcome: { outcome: "cancelled" } });
+    expect(await session.execute({ type: "turn.cancel", turnId: first.turnId })).toMatchObject({
+      error: { code: "invalidRequest" },
+    });
+    await session.execute({ type: "turn.cancel", turnId: next.turnId });
+    expect(await events.completed(2)).toMatchObject([
+      { event: { outcome: { status: "cancelled" } } },
+      { event: { outcome: { status: "cancelled" } } },
+    ]);
+    expect(
+      events.outputs.slice(offset).map((output) => output.kind === "event" && output.event.type),
+    ).toEqual(["turn.started", "turn.completed"]);
+    expect(await session.readSnapshot()).toMatchObject({
+      value: {
+        state: { effectiveModel: modelRef("native/model"), effectiveThinkingOptionId: "high" },
+      },
+    });
+  });
+
+  it.each(["open timeout", "configuration timeout", "configuration refusal"] as const)(
+    "reports a recovery %s only on the next operation and preserves the confirmed settings",
+    async (failure) => {
+      const code = failure === "configuration refusal" ? "nativeFailure" : "unavailable";
+      const error = new CodeBuddyError(code, failure);
+      const entered = Promise.withResolvers<undefined>();
+      const release = Promise.withResolvers<undefined>();
+      const { adapter, native } = setup({}, (client, index) => {
+        if (index !== 1) return;
+        const fail = async () => {
+          entered.resolve(undefined);
+          await release.promise;
+          if (code === "unavailable") client.context.handlers.fault(error);
+          throw error;
+        };
+        if (failure === "open timeout") client.open = fail;
+        else client.configure = fail;
+      });
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: process.cwd(),
+        model: modelRef("other"),
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+        permissionModeId: harnessPermissionModeIdSchema.parse("fullAccess"),
+      });
+      if (!opened.ok) throw Error(opened.error.message);
+      const session = opened.value;
+      const events = collect(session);
+      const start = turn("stopped", "hold");
+      const confirmed = {
+        effectiveModel: modelRef("other"),
+        effectiveThinkingOptionId: "high",
+        effectivePermissionModeId: "fullAccess",
+      };
+      await session.execute(start);
+      try {
+        await session.execute({ type: "turn.cancel", turnId: start.turnId });
+        expect(await events.completed()).toMatchObject([
+          { event: { outcome: { status: "cancelled" } } },
+        ]);
+        expect(native.clients).toHaveLength(1);
+        const offset = events.outputs.length;
+        const next = session.execute(turn("blocked"));
+        await entered.promise;
+        expect(events.outputs.slice(offset)).not.toContainEqual(
+          expect.objectContaining({
+            event: expect.objectContaining({ type: "session.state.changed" }),
+          }),
+        );
+        release.resolve(undefined);
+        expect(await next).toMatchObject({ error: { code, message: `CodeBuddy: ${failure}` } });
+        expect(native.clients[1]?.closed).toBe(true);
+        expect(await session.readSnapshot()).toMatchObject({ value: { state: confirmed } });
+        expect(
+          events.outputs.slice(offset).filter(({ kind }) => kind === "event"),
+        ).not.toContainEqual(
+          expect.objectContaining({
+            event: expect.objectContaining({
+              type: expect.stringMatching(
+                /^(turn\.started|turn\.completed|session\.faulted|session\.state\.changed)$/u,
+              ),
+            }),
+          }),
+        );
+        expect(await session.execute(turn("retry"))).toMatchObject({ ok: true });
+        expect((await events.completed(2))[1]).toMatchObject({
+          event: { outcome: { status: "succeeded" } },
+        });
+        expect(await session.readSnapshot()).toMatchObject({
+          value: {
+            turns: [{ input: [{ text: "hold" }] }, { input: [{ text: "hello" }] }],
+            state: confirmed,
+          },
+        });
+      } finally {
+        release.resolve(undefined);
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "restores only changed configuration and rejects a reset of a skipped value (%s)",
+    async (resetModel) => {
+      const requests: [string, string][] = [];
+      const { adapter, native } = setup({}, (client, index) => {
+        if (index !== 1) return;
+        const configure = client.configure.bind(client);
+        client.configure = async (sessionId, id, value) => {
+          requests.push([id, value]);
+          if (resetModel && id === "thought_level") client.options = configOptions("other");
+          return configure(sessionId, id, value);
+        };
+      });
+      const session = await create(adapter);
+      const events = collect(session);
+      expect(
+        await session.execute({
+          type: "thinking.select",
+          thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+        }),
+      ).toMatchObject({ ok: true });
+      const start = turn("stopped", "hold");
+      await session.execute(start);
+      await session.execute({ type: "turn.cancel", turnId: start.turnId });
+      await events.completed();
+      const next = await session.execute(turn("next"));
+      expect(requests).toEqual([["thought_level", "high"]]);
+      if (resetModel) {
+        expect(next).toMatchObject({
+          error: {
+            code: "protocolError",
+            message: expect.stringContaining("did not restore model"),
+          },
+        });
+        expect(native.clients[1]?.closed).toBe(true);
+      } else {
+        expect(next).toMatchObject({ ok: true });
+        expect((await events.completed(2))[1]).toMatchObject({
+          event: { outcome: { status: "succeeded" } },
+        });
+      }
+      expect(await session.readSnapshot()).toMatchObject({
+        value: {
+          state: {
+            effectiveModel: modelRef("native/model"),
+            effectiveThinkingOptionId: "high",
+            effectivePermissionModeId: "default",
+          },
+        },
+      });
+    },
+  );
 
   it("keeps unlisted Model selection disabled for the ordinary CodeBuddy profile", async () => {
     const { adapter } = setup();

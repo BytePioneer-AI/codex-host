@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { HarnessOutput, HostEvent, HostUsage } from "@codexhost/harness-adapter";
 import {
+  harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   nativeCheckpointRefSchema,
@@ -678,6 +679,37 @@ describe("OMP Adapter Session environment", () => {
 });
 
 describe("OMP Adapter inspection", () => {
+  it("does not publish Thinking support from an older cwd after a refresh", async () => {
+    const pending = Promise.withResolvers<null>();
+    const oldTransport = new FakeOmpTransport();
+    vi.spyOn(oldTransport, "getAvailableThinkingLevels").mockReturnValueOnce(pending.promise);
+    const createTransport = vi.fn(() => new FakeOmpTransport()).mockReturnValueOnce(oldTransport);
+    const adapter = new OmpAdapter({}, { createTransport });
+    const stale = adapter.inspect({ cwd: "/synthetic" });
+
+    const refreshed = await adapter.inspect({ cwd: "/other", refresh: true });
+    expect(refreshed).toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+    });
+    pending.resolve(null);
+    await expect(stale).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: false } },
+    });
+    await expect(adapter.inspect({ cwd: "/other" })).resolves.toBe(refreshed);
+    await expect(adapter.open({ kind: "create", cwd: "/other" })).resolves.toMatchObject({
+      ok: true,
+      value: { capabilities: { configuration: { selectThinkingOption: true } } },
+    });
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+    });
+    expect(createTransport).toHaveBeenCalledTimes(3);
+    await adapter.close();
+  });
+
   it.each([
     [
       "No models available. Use /login or set an API key environment variable. Then use /model to select a model.",
@@ -1743,6 +1775,52 @@ describe("OMP Adapter Subagents", () => {
     });
     await opened.value.close();
     await adapter.close();
+  });
+
+  it.each([false, true])("selects the exact native Model (collision: %s)", async (collision) => {
+    const transport = new FakeOmpTransport();
+    const native = { provider: "example/team", id: "family/model A:1" };
+    const other = { provider: "example", id: "team/family/model A:1" };
+    vi.spyOn(transport, "getAvailableModels").mockResolvedValue(
+      [{ provider: "synthetic", id: "model" }, native, ...(collision ? [other] : [])].map(
+        (entry) => ({ ...entry, reasoning: true }),
+      ),
+    );
+    const selectModel = vi
+      .spyOn(transport as OmpTurnTransport, "selectModel")
+      .mockImplementation(async ({ provider, id }) => {
+        transport.state = { ...transport.state, provider, modelId: id };
+        return transport.state;
+      });
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    try {
+      await opened.value.readSnapshot();
+      const readable = harnessModelRefSchema.parse({ id: "example/team/family/model A:1" });
+      const encoded = harnessModelRefSchema.parse({
+        id: `omp-model-v1.${Buffer.from(JSON.stringify([native.provider, native.id])).toString("base64url")}`,
+      });
+      const ambiguousOrLegacy = collision ? readable : encoded;
+      await expect(
+        opened.value.execute({ type: "model.select", model: ambiguousOrLegacy }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: "invalidRequest" },
+      });
+      expect(selectModel).not.toHaveBeenCalled();
+      const model = collision ? encoded : readable;
+      await expect(opened.value.execute({ type: "model.select", model })).resolves.toMatchObject({
+        ok: true,
+      });
+      expect(selectModel).toHaveBeenCalledWith(native);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: { state: { effectiveModel: model } },
+      });
+    } finally {
+      await adapter.close();
+    }
   });
 
   it("forwards Model and Thinking selection during a Turn without admitting another Turn", async () => {

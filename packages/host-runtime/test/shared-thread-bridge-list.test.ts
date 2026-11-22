@@ -181,3 +181,42 @@ it("does not keep a failed walk", async () => {
   shared.failNext(false);
   expect(await bridge.list(query)).toHaveLength(10);
 });
+
+it("walks again after a routed section move, which has no Thread notification", async () => {
+  const threadId = "01984de2-8f74-7c91-a3b2-5c5e937cf319";
+  const pinned = "01984de2-8f74-7c91-a3b2-5c5e937cf318";
+  let section: string | null = null;
+  const ended = Promise.withResolvers<undefined>();
+  const peer: SharedThreadPeer = {
+    request: async (method, params) => {
+      if (method === "codexhost/thread/ownership/list")
+        return {
+          result: { threads: [{ threadId, owner: "external", harnessId: "pi" }] },
+        };
+      if (method === "thread/section/move") {
+        section = typeof params.sectionId === "string" ? params.sectionId : null;
+        return { result: {} };
+      }
+      if (method === "thread/list") {
+        const listed = params.sectionId === undefined || params.sectionId === section;
+        return { result: { data: listed ? [{ id: threadId }] : [], nextCursor: null } };
+      }
+      return { result: {} };
+    },
+    respond: async () => undefined,
+    subscribe: () => () => undefined,
+    closed: ended.promise,
+    close: () => ended.resolve(undefined),
+  };
+  const bridge = bridgeFor(peer);
+  const pinnedList = { sectionId: pinned, sortKey: "section_position" };
+  expect(await bridge.list(pinnedList)).toEqual([]);
+  expect(
+    await bridge.route({
+      id: 1,
+      method: "thread/section/move",
+      params: { threadId, sectionId: pinned, beforeThreadId: null },
+    }),
+  ).toEqual({ id: 1, result: {} });
+  expect(await bridge.list(pinnedList)).toEqual([{ id: threadId }]);
+});

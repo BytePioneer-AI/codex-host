@@ -31,4 +31,6 @@ CODEXHOST_DATA_DIR=/tmp/codexhost-try npm start
 - Codex 账号、各 Harness 的原生配置和登录状态与用户共用：只发少量、简短、标明测试的消息。
 - 用完停掉自己启动的 Web（Ctrl+C）和测试 Host，再删除数据目录：
   `target/debug/codexhost host stop --node <node> --host-runtime <工作树绝对路径>/packages/host-runtime/dist/main.js --data /tmp/codexhost-try`
+- 验证 Bug 修复：先用基线代码（如 `main`）复现原问题，再用改动后的代码验证修复，并试一下相关的既有功能。复现不了就如实说明。
+- 并行实测：Web 每路用不同的数据目录和端口（例：`/tmp/codexhost-try-<编号>`，端口从 4401 递增）；Desktop 同一时间只能跑一个。
 - 汇报：试了什么、结果如何、哪些没试到。

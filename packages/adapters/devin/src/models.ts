@@ -4,11 +4,13 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
 } from "@codexhost/shared-contracts";
-import type {
-  HarnessModelCatalog,
-  HarnessPermissionModeCatalog,
-  HarnessSessionCapabilities,
-  HarnessSessionState,
+import {
+  normalizeLegacyBase64ModelRef,
+  type HarnessModelCatalog,
+  type HarnessModelRef,
+  type HarnessPermissionModeCatalog,
+  type HarnessSessionCapabilities,
+  type HarnessSessionState,
 } from "@codexhost/harness-adapter";
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
 import type { DevinSessionInfo } from "./transport.js";
@@ -53,8 +55,14 @@ export function devinModes(info: DevinSessionInfo): HarnessPermissionModeCatalog
   return harnessPermissionModeCatalogSchema.parse({ modes, defaultModeId: current });
 }
 
-export const devinModelRef = (nativeId: string) =>
-  harnessModelRefSchema.parse({ id: `devin.${Buffer.from(nativeId).toString("base64url")}` });
+export const devinModelRef = (nativeId: string) => harnessModelRefSchema.parse({ id: nativeId });
+
+export function normalizeStoredDevinModelRef(
+  ref: HarnessModelRef,
+  catalog: HarnessModelCatalog,
+): HarnessModelRef | undefined {
+  return normalizeLegacyBase64ModelRef(ref, catalog, "devin.");
+}
 
 export function devinModels(info: DevinSessionInfo) {
   const option =
@@ -127,16 +135,14 @@ export function devinCatalog(info: DevinSessionInfo): HarnessModelCatalog {
   const current = native.current;
   return {
     models,
-    ...(current && models.some((model) => model.ref.id === devinModelRef(current).id)
-      ? { defaultModel: devinModelRef(current) }
-      : {}),
+    defaultModel: devinModelRef(current),
     thinkingOptions: thinking.options,
     ...(thinking.current ? { defaultThinkingOptionId: thinking.current } : {}),
   };
 }
 
 export function devinNativeModel(info: DevinSessionInfo, ref: string): string {
-  const native = devinModels(info).models.find((model) => devinModelRef(model.value).id === ref);
-  if (!native) throw new Error("Model is not in this Devin session's native catalog");
-  return native.value;
+  if (!devinModels(info).models.some((model) => model.value === ref))
+    throw new Error("Model is not in this Devin session's native catalog");
+  return ref;
 }

@@ -36,9 +36,15 @@ import {
   type RendererImportedThreadOpener,
 } from "./session-import-page.js";
 import { createAppearanceSettingsPage } from "./appearance-page.js";
+import {
+  createDesktopExtensionsSettingsPage,
+  type RendererDesktopExtensionsClient,
+} from "./desktop-extensions-page.js";
+import type { RendererSettingsPluginPagesSource } from "./desktop-extension-settings-pages.js";
 import type { LoadedSessionsClient } from "./loaded-sessions-table.js";
 import { createReleaseNotesElement } from "./release-notes.js";
 import { createAccountsSettingsPage, type RendererCodexAccountClient } from "./accounts-page.js";
+import { createDelegationSettingsPage, type RendererDelegationClient } from "./delegation-page.js";
 import {
   createHarnessSchedulesPage,
   type HarnessSchedulesPageOptions,
@@ -89,9 +95,11 @@ function windowsInstallerDownloadUrl(window: Window | null | undefined, version:
 
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "connections",
+  "desktop-extensions",
   "mobile-web",
   "remote-connections",
   "accounts",
+  "delegation",
   "session-import",
   "usage-statistics",
   "appearance",
@@ -698,15 +706,20 @@ export function createDefaultRendererSettingsPages(
     Promise.reject(new Error("Local Host connection is unavailable")),
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
   harnessSchedules?: HarnessSchedulesPageOptions,
+  getDesktopExtensionsClient: () => RendererDesktopExtensionsClient | null = () => null,
+  pluginPages?: RendererSettingsPluginPagesSource,
+  getDelegationClient: () => RendererDelegationClient | null = () => null,
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections),
+    createDesktopExtensionsSettingsPage(messages, getDesktopExtensionsClient, pluginPages),
     createMobileWebPage(messages, () => {
       const client = getUpdateClient();
       return client?.openWeb?.bind(client);
     }),
     createRemoteConnectionsPage(messages, getRemoteConnections),
     createAccountsSettingsPage(messages, getAccountClient),
+    createDelegationSettingsPage(messages, getDiagnostics, getDelegationClient),
     ...(harnessSchedules ? [createHarnessSchedulesPage(messages, harnessSchedules)] : []),
     createSessionImportSettingsPage(
       messages,
@@ -735,6 +748,8 @@ export function createDefaultRendererSettingsRegistry(
   openImportedThread?: RendererImportedThreadOpener,
   requestUsageStatistics?: RendererUsageStatisticsRequest,
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
+  getDesktopExtensionsClient?: () => RendererDesktopExtensionsClient | null,
+  getDelegationClient?: () => RendererDelegationClient | null,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(
     createDefaultRendererSettingsPages(
@@ -748,8 +763,14 @@ export function createDefaultRendererSettingsRegistry(
       undefined,
       requestUsageStatistics,
       usageStatisticsHosts,
+      undefined,
+      getDesktopExtensionsClient,
+      undefined,
+      getDelegationClient,
     ),
   );
 }
 
 export type { RendererCodexAccountClient } from "./accounts-page.js";
+export type { RendererDelegationClient } from "./delegation-page.js";
+export type { RendererDesktopExtensionsClient } from "./desktop-extensions-page.js";

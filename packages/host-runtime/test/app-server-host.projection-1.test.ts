@@ -190,8 +190,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
-  it("refreshes native-derived Account selection before returning an Account list", async () => {
-    const stale: CodexAccountListResult = {
+  it("returns the cached Account list and refreshes native selection only on request", async () => {
+    const cached: CodexAccountListResult = {
       version: 2,
       currentAccountId: null,
       phase: "ready",
@@ -199,19 +199,30 @@ describe("AppServerHost HarnessAdapter projection", () => {
       accounts: [],
     };
     const fresh: CodexAccountListResult = {
-      ...stale,
+      ...cached,
       currentAccountId: "native",
       revision: 2,
       accounts: [{ accountId: "native", label: "Observed native Account" }],
     };
     const refresh = vi.fn(async () => fresh);
-    const accountControl = Object.assign(new SingleNativeCodexAccount(() => stale), { refresh });
+    const accountControl = Object.assign(new SingleNativeCodexAccount(() => cached), { refresh });
     const fixture = createFixture({ accountControl });
     try {
       await fixture.ready;
       writeRequest(fixture.desktopInput, { id: 908, method: "codexhost/account/list", params: {} });
-      await expect(fixture.collector.waitFor((message) => message.id === 908)).resolves.toEqual({
+      expect(await fixture.collector.waitFor((message) => message.id === 908)).toEqual({
         id: 908,
+        result: cached,
+      });
+      expect(refresh).not.toHaveBeenCalled();
+
+      writeRequest(fixture.desktopInput, {
+        id: 909,
+        method: "codexhost/account/refresh",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => message.id === 909)).toEqual({
+        id: 909,
         result: fresh,
       });
       expect(refresh).toHaveBeenCalledOnce();

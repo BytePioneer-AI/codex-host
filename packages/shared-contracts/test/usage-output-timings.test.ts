@@ -1,5 +1,9 @@
 import { expect, it } from "vitest";
-import { mergeUsageOutputTimings, usageMeasurementsSchema } from "@codexhost/shared-contracts";
+import {
+  mergeUsageOutputTimings,
+  threadUsageSnapshotSchema,
+  usageMeasurementsSchema,
+} from "@codexhost/shared-contracts";
 
 const timing = {
   version: 4 as const,
@@ -43,6 +47,11 @@ it("drops legacy speed without discarding independent latency or accepting a fak
       outputTokensPerSecond: { version: 4, value: 0, turnId: "turn", at: 2000 },
     }).outputTokensPerSecond?.value,
   ).toBe(0);
+  const published = { timeToFirstOutputMs: 900, latestRequestTimeToFirstOutputMs: 0 };
+  expect(threadUsageSnapshotSchema.parse(published)).toEqual(published);
+  expect(
+    threadUsageSnapshotSchema.safeParse({ latestRequestTimeToFirstOutputMs: -1 }).success,
+  ).toBe(false);
 });
 
 it.each([undefined, 2, 3])(

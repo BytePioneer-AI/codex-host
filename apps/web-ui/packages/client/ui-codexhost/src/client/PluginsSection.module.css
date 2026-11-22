@@ -1,0 +1,108 @@
+.root {
+  --plugin-workspace-gutter: clamp(12px, 3vw, 32px);
+  --plugin-workspace-foot: 24px;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding-top: calc(20px + var(--dsh-frame-top-clearance, 0px));
+}
+
+.tabList {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  margin: 0 var(--plugin-workspace-gutter) 12px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-behavior: smooth;
+}
+
+.tab {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  max-width: min(240px, 100%);
+  padding: 4px 10px;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .tab:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.tab:is([aria-selected="true"], :active) {
+  background: var(--dsw-alias-interactive-bg-active);
+  color: var(--dsw-alias-label-primary);
+}
+
+.tab:focus-visible,
+.panel:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid
+    var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+.tabIcon {
+  display: inline-flex;
+  flex: none;
+}
+
+.tabLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 var(--plugin-workspace-gutter) var(--plugin-workspace-foot);
+}
+
+.root[data-standalone] .panel {
+  display: flex;
+  overflow: hidden;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+}
+
+:global([data-windows-titlebar]) .root {
+  padding-top: 20px;
+}
+
+:global([data-phone]) .root {
+  --plugin-workspace-foot: max(12px, env(safe-area-inset-bottom));
+  padding-top: max(52px, calc(env(safe-area-inset-top) + 48px));
+}
+
+@media (pointer: coarse) {
+  .tab {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tabList {
+    scroll-behavior: auto;
+  }
+}

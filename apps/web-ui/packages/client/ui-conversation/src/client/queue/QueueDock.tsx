@@ -501,7 +501,7 @@ export const queueDockEntry = {
                   text: draft.text === "" ? text : `${draft.text}\n${text}`,
                 });
                 shell.actions.persistDraft();
-                shell.focus();
+                shell.focus("end");
               },
               notify: (level, text) => {
                 conversation.input.for(actx).notify(level, text);

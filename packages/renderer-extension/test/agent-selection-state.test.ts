@@ -675,15 +675,19 @@ describe("Renderer draft Agent controller", () => {
     });
 
     expect(agents.isSwitching(composer)).toBe(true);
-    await expect(
-      agents.switchAgent(composer, "pi", {
-        applyAgent: vi.fn(() => true),
-        clearPrewarm: vi.fn(async () => undefined),
-      }),
-    ).resolves.toBe(false);
+    const secondOperations = {
+      applyAgent: () => {
+        throw new Error("overlapping selection must not apply a draft writer");
+      },
+      clearPrewarm: async () => undefined,
+    };
+    await expect(agents.switchAgent(composer, "claude-code", secondOperations)).resolves.toBe(
+      false,
+    );
     releaseClear?.();
     await first;
     expect(agents.isSwitching(composer)).toBe(false);
+    expect(agents.get(composer).agent).toBe("pi");
   });
 
   it("restores the prior Agent when prewarm clearing fails", async () => {

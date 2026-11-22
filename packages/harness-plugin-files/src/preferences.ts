@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   harnessPreferencePatchSchema,
   harnessPreferenceScopeSchema,
@@ -68,15 +69,18 @@ export class HarnessPreferencesStore {
       values: structuredClone(document.scopes[scope] ?? { favorites: {} }),
     };
   }
-  patch(input: HarnessPreferencePatch): Promise<HarnessPreferenceSnapshot> {
+  patch(
+    input: HarnessPreferencePatch,
+    resolveFavorite?: (harnessId: string, key: string) => Promise<string | undefined>,
+  ): Promise<HarnessPreferenceSnapshot> {
     const request = harnessPreferencePatchSchema.parse(input);
     const work = this.tail.then(async () => {
       if (this.closed) throw new Error("Harness preferences store is closed");
       const document = await this.read();
       if (request.expectedRevision !== undefined && request.expectedRevision !== document.revision)
         throw new HarnessPreferenceConflict("Harness preferences changed; refresh before editing");
-      const before = JSON.stringify(document.scopes);
       const values = document.scopes[request.scope] ?? { favorites: {} };
+      const before = structuredClone(values);
       for (const operation of request.operations) {
         if (operation.kind === "idleRelease") {
           if (!request.initializeOnly || values.idleRelease === undefined)
@@ -87,8 +91,31 @@ export class HarnessPreferencesStore {
         } else if (operation.kind === "favorite") {
           const favorites = new Set(values.favorites[operation.harnessId] ?? []);
           if (operation.enabled) favorites.add(operation.modelId);
-          else favorites.delete(operation.modelId);
+          else {
+            favorites.delete(operation.modelId);
+            if (resolveFavorite) {
+              for (const key of favorites) {
+                if ((await resolveFavorite(operation.harnessId, key)) === operation.modelId)
+                  favorites.delete(key);
+              }
+            }
+          }
           values.favorites[operation.harnessId] = [...favorites];
+        } else if (operation.kind === "delegation") {
+          const { harnessId, configuration } = operation;
+          const byHarness = values.delegation?.byHarness ?? {};
+          const exists = Object.hasOwn(byHarness, harnessId);
+          if (request.initializeOnly && exists) continue;
+          if (configuration === null) {
+            if (!exists) continue;
+            const remaining = Object.fromEntries(
+              Object.entries(byHarness).filter(([id]) => id !== harnessId),
+            );
+            if (Object.keys(remaining).length === 0) delete values.delegation;
+            else values.delegation = { byHarness: remaining };
+          } else {
+            values.delegation = { byHarness: { ...byHarness, [harnessId]: configuration } };
+          }
         } else {
           const defaults = values.newThread ?? { byHarness: {} };
           if (
@@ -105,8 +132,8 @@ export class HarnessPreferencesStore {
           values.newThread = defaults;
         }
       }
-      document.scopes[request.scope] = values;
-      if (before !== JSON.stringify(document.scopes)) {
+      if (!isDeepStrictEqual(before, values)) {
+        document.scopes[request.scope] = values;
         document.revision++;
         harnessPreferencesDocumentSchema.parse(document);
         await mkdir(this.directory, { recursive: true, mode: 0o700 });

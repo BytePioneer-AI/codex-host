@@ -353,6 +353,62 @@ it("subscribes internally despite Desktop raw defaults, preserving its notificat
   }
 });
 
+it("meters a native thread created through the shared Host client channel", async () => {
+  const fixture = createFixture({
+    externalOnly: true,
+    accountControl: {
+      currentAccountId: () => null,
+      snapshot: () => ({
+        version: 2,
+        currentAccountId: null,
+        phase: "unavailable",
+        revision: 0,
+        accounts: [],
+      }),
+    },
+    pluginDirectory: plugins,
+    environment: { CODEX_HOME: home },
+  });
+  const emit = (method: string, params: Record<string, unknown>) =>
+    writeRequest(fixture.official.stdout, { method, params: { threadId: thread, ...params } });
+  try {
+    const creating = fixture.host.handleClientRequest("thread/start", { cwd: home });
+    const init = await readJsonLine(fixture.official.stdin, 4000);
+    writeRequest(fixture.official.stdout, { id: requiredMessageId(init), result: {} });
+    expect(await readJsonLine(fixture.official.stdin)).toMatchObject({ method: "initialized" });
+    const start = await readJsonLine(fixture.official.stdin);
+    writeRequest(fixture.official.stdout, {
+      id: requiredMessageId(start),
+      result: { thread: { id: thread } },
+    });
+    await creating;
+    expect(start).toMatchObject({
+      method: "thread/start",
+      params: { experimentalRawEvents: true },
+    });
+    emit("turn/started", { turn: { id: "t" } });
+    emit("item/agentMessage/delta", { turnId: "t", delta: "hello" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    emit("rawResponse/completed", { turnId: "t", responseId: "r", usage: { outputTokens: 46 } });
+    emit("turn/completed", { turn: { id: "t" } });
+    expect(
+      await fixture.host.handleClientRequest("codexhost/thread/usage/inspect", {
+        threadId: thread,
+      }),
+    ).toMatchObject({
+      result: {
+        usage: {
+          outputTokensPerSecond: expect.any(Number),
+          sessionOutputTokensPerSecond: expect.any(Number),
+        },
+      },
+    });
+  } finally {
+    fixture.host.close();
+    await stopFixture(fixture);
+  }
+});
+
 it("negotiates telemetry even when its cold load exceeds the former 250ms cutoff", async () => {
   const entry = path.join(plugins, "codex-usage", "plugin.mjs");
   await writeFile(

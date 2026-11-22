@@ -404,7 +404,9 @@ export function AppFrame({
   const leading = useMemo(() => renderSlot("shell.leading", {}), [renderSlot]);
   // Phone presentation stays intact until the drawer finishes its visible exit.
   const sidebarHidden = phone ? !drawerPresent : sidebarCollapsed;
-  const leadingMounted = (darwin || phone) && sidebarHidden;
+  // On phone, the drawer overlays the leading button (z-index 41 vs 15), so keeping
+  // leadingSeat mounted avoids a blank flicker while the drawer slides closed.
+  const leadingMounted = phone || (darwin && sidebarHidden);
   const gridSidebar = phone ? 0 : cols.sidebar;
 
   const frame = (
@@ -425,6 +427,7 @@ export function AppFrame({
       data-rightbar-instant={layoutInfo.rightbarInstant || undefined}
       data-dragging={dragging || undefined}
       data-animating={animating > 0 || undefined}
+      data-cx-region="app"
     >
       <DocumentTitle productTitle={productTitle} />
       {phone ? (

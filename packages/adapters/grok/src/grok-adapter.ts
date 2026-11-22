@@ -134,7 +134,7 @@ import {
   type GrokProjectedToolItem,
 } from "./grok-tool-output.js";
 import {
-  decodeGrokModelRef,
+  normalizeStoredGrokModelRef,
   modelStateFromInitialize,
   modelStateFromSessionResponse,
   stateForGrokModel,
@@ -848,7 +848,7 @@ class GrokHarnessSession implements HarnessSession {
     this.#configuring = true;
     try {
       const contextWindow = this.#modelState.defaultContextWindowTokensByModel.get(model.id);
-      await this.#transport.setModel(decodeGrokModelRef(model), thinkingOptionId, contextWindow);
+      await this.#transport.setModel(model.id, thinkingOptionId, contextWindow);
       if (contextWindow !== undefined) {
         this.#modelState.contextWindowTokensByModel = new Map([
           ...this.#modelState.contextWindowTokensByModel,
@@ -1580,6 +1580,7 @@ class GrokHarnessSession implements HarnessSession {
 }
 
 export class GrokAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredGrokModelRef;
   readonly credentialExport = {
     read: () =>
       this.#closePromise
@@ -1713,14 +1714,19 @@ export class GrokAdapter implements HarnessAdapter {
     return this.#credits;
   }
 
+  #inspectionGeneration = 0;
+
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     if (this.#closePromise)
       return { status: "unavailable", error: invalidState("Grok Adapter is closed") };
     const cwd = path.resolve(input.cwd ?? process.cwd());
-    if (!input.refresh) {
-      const cached = this.#inspectionCache.get(cwd);
-      if (cached && Date.now() < cached.expiresAt) return cached.inspection;
+    if (input.refresh) {
+      this.#inspectionCache.clear();
+      this.#inspectionGeneration++;
     }
+    const cached = this.#inspectionCache.get(cwd);
+    if (cached && Date.now() < cached.expiresAt) return cached.inspection;
+    const generation = this.#inspectionGeneration;
     let transport: GrokAcpTransportLike | null = null;
     const startedAt = Date.now();
     let stage = "spawn";
@@ -1739,10 +1745,12 @@ export class GrokAdapter implements HarnessAdapter {
         permissionModes: GROK_PERMISSION_MODE_CATALOG,
         capabilities: capabilitiesForModels(modelState),
       };
-      this.#inspectionCache.set(cwd, {
-        inspection: ready,
-        expiresAt: Date.now() + INSPECTION_CACHE_TTL_MS,
-      });
+      if (!this.#closePromise && generation === this.#inspectionGeneration) {
+        this.#inspectionCache.set(cwd, {
+          inspection: ready,
+          expiresAt: Date.now() + INSPECTION_CACHE_TTL_MS,
+        });
+      }
       this.#scheduleCreditsRefresh();
       return ready;
     } catch (error) {
@@ -1900,9 +1908,7 @@ export class GrokAdapter implements HarnessAdapter {
             : {
                 kind: "create",
                 permissionModeId: requestedPermissionModeId,
-                ...(input.kind === "create" && input.model
-                  ? { modelId: decodeGrokModelRef(input.model) }
-                  : {}),
+                ...(input.kind === "create" && input.model ? { modelId: input.model.id } : {}),
               },
         );
       }
@@ -2009,7 +2015,7 @@ export class GrokAdapter implements HarnessAdapter {
           modelState.contextWindowTokensByModel.get(modelState.currentModel.id) !== contextWindow)
       ) {
         await transport.setModel(
-          decodeGrokModelRef(modelState.currentModel),
+          modelState.currentModel.id,
           modelState.currentThinkingOptionId,
           contextWindow,
         );

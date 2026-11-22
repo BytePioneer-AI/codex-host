@@ -489,6 +489,7 @@ export async function runHostRuntime(input: {
                 modelPrices,
                 usageStatistics,
                 ...common,
+                hostExtensions: host.hostExtensions,
                 arguments: [],
                 desktopInput,
                 desktopOutput,
@@ -599,6 +600,7 @@ export async function runHostRuntime(input: {
             modelPrices,
             usageStatistics,
             ...(sharedDelegation ? { sharedDelegation } : {}),
+            hostExtensions: externalHost.hostExtensions,
             sharedThreads: new SharedThreadBridge({
               connect: async () => sharedOwner.connect(),
               delegateCreates: true,

@@ -1,6 +1,6 @@
 # CodexHost Wiki
 
-独立的 Next.js App Router + Fumadocs + Tailwind CSS 4 + MDX 子工程，不属于根 npm workspaces，也不依赖仓库外部文件。`public/images/hero-desktop-phone.png` 是仓库展示图的独立副本。
+独立的 VitePress 静态文档子工程，使用默认主题，不属于根 npm workspaces，也不依赖仓库外部文件。`public/images/hero-desktop-phone.png` 是仓库展示图的独立副本。
 
 ## 本地开发与验证
 
@@ -12,80 +12,65 @@ npm ci
 npm run dev
 ```
 
-打开 <http://localhost:3000/zh> 或 <http://localhost:3000/en>。无语言前缀的 `/`、`/docs/...` 由 Fumadocs `createI18nMiddleware` 转到默认中文路由；Next.js 16 使用文件名 `proxy.ts`。
+打开 <http://localhost:3000/>（简体中文）或 <http://localhost:3000/en/>（English）。开发服务默认仅供本机访问；请勿将开发端口暴露到公网。
 
 ```sh
-npm run typecheck
-npm run lint
-npm run build
-npm start
+npm run typecheck  # TypeScript 配置与构建钩子
+npm run lint       # ESLint 检查工程配置
+npm run build      # 构建静态站点、检查内部死链、导出 LLM 文档
+npm run preview    # 在 localhost:3000 预览构建产物
+# npm start 是 npm run preview 的别名
 ```
 
-`postinstall` 自动生成 `.source/`；`typecheck` 也会重新生成 MDX 和 Next.js 路由类型。构建不下载外部字体，不需要环境变量或运行主仓库构建。
+所有命令均在本子工程执行，不需要运行主仓库的构建或启停服务。构建无需环境变量、服务端 API 或外部字体下载。构建产物在 `.vitepress/dist/`，临时缓存位于 `.vitepress/cache/`。
 
-## Vercel / v0
+## 目录与路由
 
-在 Vercel 导入仓库并设置：
+```text
+.vitepress/
+  config.ts       # 双语导航、侧栏、搜索与界面文案
+  llms.ts         # buildEnd 钩子，生成 LLM 索引与全文
+index.md          # 中文首页，layout: home
+docs/             # 中文文档（16 篇）
+en/
+  index.md        # 英文首页，layout: home
+  docs/           # 英文文档（16 篇），与中文保持相同相对路径
+public/
+  logo.svg
+  favicon.svg
+  images/hero-desktop-phone.png
+```
+
+- 中文首页 `/`，文档概览 `/docs/`，安装页 `/docs/quick-start/install`。
+- 英文首页 `/en/`，文档概览 `/en/docs/`，安装页 `/en/docs/quick-start/install`。
+- 中文不使用 `/zh/` 前缀。文内链接使用上述路由；顶部语言菜单切换到另一语言的同一页。
+- 每篇文档使用 `.md`，frontmatter 提供 `title` 和 `description`，正文以 `# 标题` 开始。`description` 用于页面元数据，不在标题下自动展示。
+- 目录顺序在 `config.ts` 的侧栏中维护；五组均不可折叠。添加页面时同步添加另一语言版本、侧栏和相关链接。
+- 提示框使用 `::: info` / `::: tip` / `::: warning` / `::: details`；多标签代码可使用 `::: code-group`，无需 MDX 或 React 组件。
+- 能力矩阵通过 `aside: false` 隐藏右侧目录，使用默认主题的全宽正文；表格在窄屏可横向滚动。
+
+## 搜索与 LLM
+
+- 使用 VitePress 内置本地搜索，无外部搜索服务或 `/api/search` 请求。搜索索引随构建生成，并按语言区分；索引与浏览器查询共用内置 `Intl.Segmenter` 分词，支持中文正文关键词，无需额外分词依赖。
+- 中文搜索按钮、搜索弹窗、目录、上下页、主题及语言菜单均在 `config.ts` 配置；英文使用默认界面文案。
+- `/llms.txt`：中英文文档标题、路由与简介索引。
+- `/llms-full.txt`：全部 32 篇文档的 Markdown 正文及对应路由，不含 frontmatter。原生提示框等 Markdown 语法保留。
+- 两个文本文件由 `buildEnd` 从当前文档生成到输出目录，不需要手动维护，也不依赖运行时服务；开发时请先构建并通过预览访问。
+
+## Vercel 部署
+
+导入仓库后设置：
 
 | 设置 | 值 |
 | --- | --- |
 | Root Directory | `apps/wiki` |
-| Framework Preset | Next.js |
+| Framework Preset | VitePress（没有该选项时选 Other） |
 | Node.js | 24.x |
 | Install Command | `npm ci` |
 | Build Command | `npm run build` |
-| Output Directory | 默认 `.next`（保持框架默认） |
+| Output Directory | `.vitepress/dist` |
 | Include source files outside Root Directory | 不需要 |
 
-v0 导入/编辑时以本子工程为 Next.js 应用根目录，保留 MDX、`source.config.ts`、`postinstall`、`proxy.ts` 和锁文件；部署使用同样的 Next.js 设置。无需 `output: export` 或自定义 Vercel 路由；搜索 API 需要 Next.js 服务端运行环境。
+`vercel.json` 启用 `cleanUrls`，与 VitePress 的无扩展名链接一致。无需 Next.js 运行时、SPA 通配重写或重定向至 `index.html`；所有文档都有预渲染 HTML。其他静态托管服务需要支持目录首页及将无扩展名路径解析到对应 `.html` 文件。
 
-这里只提供部署配置，没有执行远程部署或 Git 推送。
-
-## 文档与导航约定
-
-正文只放在 `content/docs/`，使用后缀式语言文件：
-
-```text
-content/docs/
-  index.zh.mdx
-  index.en.mdx
-  meta.zh.json
-  meta.en.json
-  quick-start/
-    meta.zh.json
-    meta.en.json
-    install.zh.mdx  ← 后续由维护者添加
-    install.en.mdx  ← 后续由维护者添加
-```
-
-- `quick-start/install.zh.mdx` 对应 `/zh/docs/quick-start/install`；英文对应 `/en/docs/quick-start/install`。
-- 支持 `.md` 与 `.mdx`；frontmatter 至少包含 `title`，可选 `description`、`full` 等 Fumadocs 标准字段。
-- `lib/i18n.ts` 仅启用 `zh` 和 `en`。缺失的英文正文/导航回退到中文；应先创建中文版本，再补英文。
-- `meta.zh.json` / `meta.en.json` 放在对应目录内；`title` 是该目录的侧栏分组名称，`pages` 按不含扩展名和语言后缀的文件名/目录名排序。`index` 指目录首页，`...` 插入未显式列出的页面。
-- `defaultOpen: true` 默认展开分组，`collapsible: false` 禁止折叠。**不要设置 `root: true`**；文档布局显式使用 `tabs={false}`，保持统一侧栏。
-- 全局 UI 翻译在 `lib/translations.ts`；英文使用 Fumadocs 默认文案，中文覆盖搜索、目录、主题、语言切换等控件。
-
-### 最小占位内容
-
-工程只有两份真实 MDX：`index.zh.mdx`、`index.en.mdx`。`lib/source.ts` 为以下首页入口复用这两份占位正文，并统一提供给路由、侧栏、搜索和 LLM 导出：
-
-| 入口 | 路径（语言前缀之后） |
-| --- | --- |
-| 5 分钟上手 | `/docs/quick-start/install` |
-| Agent 能力矩阵 | `/docs/agents/matrix` |
-| # 多 Agent 派活 | `/docs/agents/delegation` |
-| CLI / MCP / HTTP 底座 | `/docs/platform/interfaces` |
-| Web 与手机 | `/docs/web/mobile` |
-| 跨机运行 | `/docs/remote/cross-machine` |
-
-添加同路径的正式文件后，真实正文（或中文缺译回退）自动优先，无需修改路由代码。首页入口标题、图标和路径在 `lib/entries.ts`。其它不存在的文档路径返回 404，不会一律展示占位正文。
-
-## 搜索与 LLM
-
-- `/api/search`：Fumadocs 内置 Orama，中文使用 `@orama/tokenizers/mandarin`，英文使用英文分词；UI 自动传递当前语言。可用 `?query=文档&locale=zh` 验证中文搜索。
-- Fumadocs Core/UI 固定为 `16.10.6`，MDX 为 `14.3.2`，保留兼容的内置 Orama API；升级时应重新核对搜索引擎和 API，而非直接追随 latest。
-- `/llms.txt`：Fumadocs `llms(source)` 生成的中英文导航索引。
-- `/llms-full.txt`：通过 Fumadocs `getText("processed")` 导出的中英文全文，随构建静态生成。
-- 浅色/深色/系统主题与语言切换由 Fumadocs RootProvider 和布局内置控件提供。
-
-根目录 ESLint 排除整个独立子工程；请在这里运行 `npm run lint`。`.next/`、`.source/`、`.vercel/`、`node_modules/` 和 TypeScript 缓存不会进入 Git。
+以上仅说明部署设置，不会自动部署。依赖锁文件随本工程维护；`node_modules/`、`.vitepress/cache/`、`.vitepress/dist/` 和 `.vercel/` 不进入 Git。

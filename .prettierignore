@@ -24,10 +24,8 @@ apps/web-ui/packages/client/hmr/src/index.ts
 apps/web-ui/packages/client/hmr/tests/*.spec.ts
 # Imported browser build outputs and local diagnostics.
 apps/web-ui/**/lib/
-# Generated Next.js and Fumadocs outputs.
-apps/wiki/.next/
-apps/wiki/.source/
+# Generated VitePress outputs.
+apps/wiki/.vitepress/cache/
+apps/wiki/.vitepress/dist/
 apps/wiki/.vercel/
-apps/wiki/out/
-apps/wiki/next-env.d.ts
 .work/

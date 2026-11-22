@@ -33,6 +33,7 @@ export function nativeModuleCatalogExpression(
  */
 export async function installRendererLoadedModules(
   renderer: RendererModuleCdpClient,
+  onDesktopContext?: () => void,
 ): Promise<() => void> {
   const owner = crypto.randomUUID();
   const contexts = new Map<string, { urls: Set<string>; complete: boolean }>();
@@ -114,6 +115,9 @@ export async function installRendererLoadedModules(
         context.auxData.isDefault !== true
       )
         return;
+      // The Desktop app is the only app://- document on this target.
+      if (typeof context.origin === "string" && /^app:\/\/-\/?$/u.test(context.origin))
+        onDesktopContext?.();
       contextIds.set(context.id, context.uniqueId);
       contexts.set(context.uniqueId, { urls: new Set(), complete: true });
       schedule(context.uniqueId);

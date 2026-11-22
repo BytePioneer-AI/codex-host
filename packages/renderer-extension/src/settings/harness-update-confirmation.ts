@@ -7,7 +7,7 @@ export function confirmHarnessUpdate(
   signal: AbortSignal,
   name: string,
   target: string,
-  verified: string,
+  verified?: string,
 ): Promise<boolean> {
   if (signal.aborted) return Promise.resolve(false);
   const document = container.ownerDocument;
@@ -15,13 +15,19 @@ export function confirmHarnessUpdate(
   dialog.className = "settings-account-dialog settings-credential-dialog";
   const heading = document.createElement("h2");
   heading.id = preferenceId("unverified-harness-update");
-  heading.textContent = messages.harnessUpdateUnverifiedTitle;
+  heading.textContent = verified
+    ? messages.harnessUpdateUnverifiedTitle
+    : messages.harnessUpdateTargetChangedTitle;
   dialog.setAttribute("aria-labelledby", heading.id);
   const detail = document.createElement("p");
   detail.id = preferenceId("unverified-harness-version");
-  detail.textContent = messages.harnessUpdateUnverifiedDetail.replace(
+  const template = verified
+    ? messages.harnessUpdateUnverifiedDetail
+    : messages.harnessUpdateTargetChangedDetail;
+  detail.textContent = template.replace(
     /\{(name|target|verified)\}/gu,
-    (_, field: "name" | "target" | "verified") => ({ name, target, verified })[field],
+    (_, field: "name" | "target" | "verified") =>
+      ({ name, target, verified: verified ?? "" })[field],
   );
   dialog.setAttribute("aria-describedby", detail.id);
   const actions = document.createElement("div");
@@ -34,7 +40,7 @@ export function confirmHarnessUpdate(
   const update = document.createElement("button");
   update.type = "button";
   update.className = "settings-command-button";
-  update.textContent = messages.harnessUpdateAnyway;
+  update.textContent = verified ? messages.harnessUpdateAnyway : messages.harnessVersionUpdate;
   actions.append(skip, update);
   dialog.append(heading, detail, actions);
 
@@ -44,6 +50,12 @@ export function confirmHarnessUpdate(
     skip.addEventListener("click", () => dialog.close());
     update.addEventListener("click", () => {
       confirmed = true;
+      dialog.close();
+    });
+    dialog.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation?.();
       dialog.close();
     });
     dialog.addEventListener(

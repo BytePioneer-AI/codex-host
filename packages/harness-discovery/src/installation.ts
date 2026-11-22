@@ -9,6 +9,8 @@ export interface InstallationState {
   updateAvailable: boolean;
   canUpdate: boolean;
   latestVerifiedVersion?: string;
+  /** Update preflight stopped before running the installer. */
+  confirmationRequired?: true;
   message?: string;
   messageCode?: string;
   /** Adapter-owned display text; Host validates locales and the English fallback. */
@@ -124,7 +126,7 @@ export function createInstallationManager(options: {
         (before.latestVerifiedVersion !== undefined || confirmedVersion !== undefined) &&
         before.latestVersion !== confirmedVersion
       )
-        return before;
+        return { ...before, confirmationRequired: true as const };
       await options.update(before);
       const after = await check();
       if (after.currentVersion === before.currentVersion)

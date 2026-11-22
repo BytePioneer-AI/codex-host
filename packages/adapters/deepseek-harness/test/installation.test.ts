@@ -54,15 +54,21 @@ describe("DeepSeek installation", () => {
       latestVersion: "0.2.3",
       latestVerifiedVersion: "0.2.2-rc.2",
     });
-    await installation("update");
-    await installation("update", "0.2.2-rc.3");
-    expect(mocks.update).not.toHaveBeenCalled();
-    mocks.update.mockImplementation(async () => mocks.run.mockResolvedValue("0.2.3"));
+    await expect(installation("update")).resolves.toMatchObject({ confirmationRequired: true });
+    mocks.fetch.mockResolvedValue(JSON.stringify({ version: "0.2.4" }));
     await expect(installation("update", "0.2.3")).resolves.toMatchObject({
-      currentVersion: "0.2.3",
+      currentVersion: "0.2.0-rc.2",
+      latestVersion: "0.2.4",
+      latestVerifiedVersion: "0.2.2-rc.2",
+      confirmationRequired: true,
+    });
+    expect(mocks.update).not.toHaveBeenCalled();
+    mocks.update.mockImplementation(async () => mocks.run.mockResolvedValue("0.2.4"));
+    await expect(installation("update", "0.2.4")).resolves.toMatchObject({
+      currentVersion: "0.2.4",
       updateAvailable: false,
     });
-    expect(mocks.update).toHaveBeenCalledExactlyOnceWith("0.2.3");
+    expect(mocks.update).toHaveBeenCalledExactlyOnceWith("0.2.4");
   });
 
   it("queries latest independently while preserving the offline npx version probe", async () => {

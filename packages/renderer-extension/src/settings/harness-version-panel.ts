@@ -14,6 +14,9 @@ export interface HarnessVersionPanel {
 export type HarnessVersionStatusKind =
   "checking" | "updating" | "idle" | "updated" | "failed" | "unsupported";
 
+/** An update returns version state instead of a verdict when preflight requires confirmation. */
+type HarnessVersionUpdateOutcome = boolean | HarnessInstallationState;
+
 export interface HarnessVersionSession {
   readonly state: HarnessInstallationState | undefined;
   readonly statusKind: HarnessVersionStatusKind;
@@ -21,7 +24,7 @@ export interface HarnessVersionSession {
   /** Prepares state for a newly mounted panel; returns true when a fresh check should be scheduled. */
   prepareMount(): boolean;
   check(): Promise<void>;
-  update(confirmedVersion?: string): Promise<boolean>;
+  update(confirmedVersion?: string): Promise<HarnessVersionUpdateOutcome>;
   subscribe(listener: (pageChange: boolean) => void): () => void;
 }
 
@@ -43,7 +46,7 @@ export function createHarnessVersionSession(
   let state: HarnessInstallationState | undefined;
   let statusKind: HarnessVersionStatusKind = "checking";
   let checkPromise: Promise<void> | null = null;
-  let updatePromise: Promise<boolean> | null = null;
+  let updatePromise: Promise<HarnessVersionUpdateOutcome> | null = null;
   const listeners = new Set<(pageChange: boolean) => void>();
   const signal = options?.signal;
 
@@ -77,7 +80,7 @@ export function createHarnessVersionSession(
     return checkPromise;
   };
 
-  const update = (confirmedVersion?: string): Promise<boolean> => {
+  const update = (confirmedVersion?: string): Promise<HarnessVersionUpdateOutcome> => {
     if (updatePromise) return updatePromise;
     updatePromise = (async () => {
       if (signal?.aborted) return false;
@@ -98,6 +101,10 @@ export function createHarnessVersionSession(
           : client.run("update", confirmedVersion));
         if (signal?.aborted) return false;
         state = result;
+        if (result.confirmationRequired) {
+          statusKind = "idle";
+          return result;
+        }
         statusKind = !result.canUpdate ? "updated" : result.updateAvailable ? "failed" : "updated";
         return result.canUpdate && !result.updateAvailable;
       } catch (error) {
@@ -152,7 +159,7 @@ export function createHarnessVersionPanel(
   },
   onChange: () => void = () => undefined,
   sharedSession?: HarnessVersionSession,
-  confirmUnverified?: (target: string, verified: string) => Promise<boolean>,
+  confirmUpdate?: (target: string, verified?: string) => Promise<boolean>,
 ): HarnessVersionPanel {
   const session = sharedSession ?? createHarnessVersionSession(client, { signal });
   const shouldScheduleCheck = session.prepareMount();
@@ -234,17 +241,24 @@ export function createHarnessVersionPanel(
       : messages.harnessVersionNote;
   };
 
-  let confirmation: Promise<boolean | "skipped"> | undefined;
+  let pendingUpdate: Promise<boolean | "skipped"> | undefined;
   const requestUpdate = (): Promise<boolean | "skipped"> => {
-    if (signal.aborted) return Promise.resolve(false);
-    const state = session.state;
-    const verified = state?.latestVerifiedVersion;
-    if (!state || !verified) return session.update();
-    return (confirmation ??= (async () => {
-      const proceed = await confirmUnverified?.(state.latestVersion, verified);
-      return proceed && !signal.aborted ? session.update(state.latestVersion) : "skipped";
+    return (pendingUpdate ??= (async () => {
+      let target = session.state;
+      while (!signal.aborted) {
+        let confirmedVersion: string | undefined;
+        if (target?.latestVerifiedVersion || target?.confirmationRequired) {
+          const proceed = await confirmUpdate?.(target.latestVersion, target.latestVerifiedVersion);
+          if (!proceed || signal.aborted) return "skipped";
+          confirmedVersion = target.latestVersion;
+        }
+        const outcome = await session.update(confirmedVersion);
+        if (typeof outcome === "boolean") return outcome;
+        target = outcome;
+      }
+      return "skipped";
     })().finally(() => {
-      confirmation = undefined;
+      pendingUpdate = undefined;
     }));
   };
   update.addEventListener("click", () => {

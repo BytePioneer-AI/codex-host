@@ -33,6 +33,8 @@ export const harnessInstallationStateSchema = z
     canUpdate: z.boolean(),
     /** Present when the Adapter has a verified list and the available target is outside it. */
     latestVerifiedVersion: z.string().min(1).max(128).optional(),
+    /** Update preflight stopped before running the installer; latestVersion needs confirmation. */
+    confirmationRequired: z.literal(true).optional(),
     /** Defaults to CLI; some Harnesses ship only inside a desktop application. */
     versionKind: z.enum(["cli", "application"]).optional(),
     /** Official download opened by the user; does not imply an automatic installation. */

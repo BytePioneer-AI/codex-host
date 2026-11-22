@@ -4,6 +4,7 @@ import {
   HARNESS_INSTALLATION_START_METHOD,
   HARNESS_INSTALLATION_STATUS_METHOD,
   harnessInstallationTaskSchema,
+  type HarnessInstallationState,
 } from "@codexhost/shared-contracts";
 import {
   createFixture,
@@ -49,7 +50,7 @@ describe("Host Harness CLI installation routing", () => {
 
   it("answers task submission and status before the update ends and admits chat messages meanwhile", async () => {
     const fixture = createFixture();
-    const update = Promise.withResolvers<typeof state>();
+    const update = Promise.withResolvers<HarnessInstallationState>();
     const installation = vi.fn(() => update.promise);
     Object.assign(fixture.adapter, { installation });
     try {
@@ -70,13 +71,18 @@ describe("Host Harness CLI installation routing", () => {
       ).toEqual({ result: task });
       await startPiTurn(fixture, threadId, 4);
       fixture.adapter.sessions[0]?.succeedTurn();
-      update.resolve({ ...state, currentVersion: "1.1.0", updateAvailable: false });
+      const preflight = {
+        ...state,
+        latestVersion: "1.2.0",
+        confirmationRequired: true,
+      } satisfies HarnessInstallationState;
+      update.resolve(preflight);
       await vi.waitFor(async () =>
         expect(
           await fixture.host.handleConsoleRequest(HARNESS_INSTALLATION_STATUS_METHOD, {
             taskId: task.taskId,
           }),
-        ).toMatchObject({ result: { status: "succeeded", result: { currentVersion: "1.1.0" } } }),
+        ).toEqual({ result: { taskId: task.taskId, status: "succeeded", result: preflight } }),
       );
     } finally {
       update.resolve(state);

@@ -5192,6 +5192,10 @@ export class AppServerHost {
   }
 
   async #notifyExternalThreadStarted(thread: JsonObject): Promise<void> {
+    // As in native Codex, an attached Side Chat is never announced as a started Thread, including
+    // when its Native identity arrives later. Desktop knows it from the fork response; the
+    // announcement would list it as an ordinary conversation.
+    if (typeof thread.attachedToThreadId === "string") return;
     await this.#writer.json({
       method: "thread/started",
       emittedAtMs: Date.now(),

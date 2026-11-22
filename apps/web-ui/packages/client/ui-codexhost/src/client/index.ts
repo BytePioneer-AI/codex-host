@@ -65,7 +65,7 @@ import { watchAuthentication } from "./auth-watch.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
 import type {} from "@deepseek-ai/dsh-client-web";
-import { PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
+import { isDesktopShell, PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
 import { WallpaperController } from "./wallpaper.ts";
 import { WallpaperRow, type WallpaperFace } from "./WallpaperRow.tsx";
 import { ImportPage, type ImportPageFace } from "./ImportPage.tsx";
@@ -162,7 +162,7 @@ export function apply(ctx: ClientContext): void {
     ),
   );
   const installation = ctx.get("pwaInstall");
-  if (installation !== undefined) {
+  if (installation !== undefined && !isDesktopShell()) {
     ctx.slots.inject("settings.general.item", () =>
       ctx.slots.register(
         {

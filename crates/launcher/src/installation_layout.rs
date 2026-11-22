@@ -135,11 +135,18 @@ impl InstalledResources {
         ]
         .into_iter()
         .find(|path| path.is_file());
+        let packed_web_runtime =
+            repository_root.join("packages/web-server/dist/codexhost-web/app/server.mjs");
+        let web_runtime = if packed_web_runtime.is_file() {
+            packed_web_runtime
+        } else {
+            repository_root.join("packages/web-server/dist/main.js")
+        };
         Some(Self {
             shim: build_directory.join(format!("codexhost-shim{executable_suffix}")),
             node,
             host_runtime,
-            web_runtime: repository_root.join("packages/web-server/dist/main.js"),
+            web_runtime,
             desktop_controller: repository_root
                 .join("packages/desktop-control/dist/release-main.js"),
             renderer_extension: repository_root
@@ -328,6 +335,40 @@ mod tests {
             fs::write(&sibling, "fixture").unwrap();
             assert_eq!(locate(), Some(sibling));
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_checkout_prefers_packed_web_runtime_when_present() {
+        use std::fs;
+
+        let root = env::temp_dir().join(format!(
+            "codexhost-packed-web-layout-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let executable = root
+            .join("target/debug")
+            .join(format!("codexhost{}", env::consts::EXE_SUFFIX));
+        let fallback = root.join("packages/web-server/dist/main.js");
+        let packed = root.join("packages/web-server/dist/codexhost-web/app/server.mjs");
+
+        assert_eq!(
+            InstalledResources::from_source_checkout(&executable, None, None)
+                .unwrap()
+                .web_runtime,
+            fallback
+        );
+
+        fs::create_dir_all(packed.parent().unwrap()).unwrap();
+        fs::write(&packed, "fixture").unwrap();
+        assert_eq!(
+            InstalledResources::from_source_checkout(&executable, None, None)
+                .unwrap()
+                .web_runtime,
+            packed
+        );
+
         fs::remove_dir_all(root).unwrap();
     }
 

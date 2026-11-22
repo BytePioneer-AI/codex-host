@@ -503,6 +503,12 @@ export interface SessionStateChangedEvent {
   state: HarnessSessionState;
 }
 
+/** A display title from the native Session, available to an unnamed Host Thread. */
+export interface SessionTitleChangedEvent {
+  type: "session.title.changed";
+  title: string;
+}
+
 export interface SessionUsageChangedEvent {
   type: "session.usage.changed";
   usage: HostUsage | null;
@@ -630,6 +636,7 @@ export interface SessionFaultedEvent {
 
 export type HostEvent =
   | SessionStateChangedEvent
+  | SessionTitleChangedEvent
   | SessionUsageChangedEvent
   | SessionAccountCreditsChangedEvent
   | UsageRequestEvent

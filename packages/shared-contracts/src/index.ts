@@ -487,6 +487,7 @@ export {
   remoteSessionOperationSchema,
   remoteSessionRequestBytes,
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
+  REMOTE_IDENTITY_MAX_LENGTH,
   type RemoteDeliveryReply,
   type RemoteQueueSnapshot,
   type RemoteSessionOperation,

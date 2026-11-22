@@ -1233,15 +1233,21 @@ describe("Renderer Connections page", () => {
   it.each(["Skip this update", "Update anyway"])(
     "confirms an exact unverified version before its batch update: %s",
     async (choice) => {
-      const installation = vi.fn(async (_host, agent, action, _confirmedVersion?) => ({
-        currentVersion: action === "update" ? "2.0.0" : "1.0.0",
-        latestVersion: "2.0.0",
-        canUpdate: true,
-        updateAvailable: action !== "update",
-        ...(agent === "deepseek-harness" && action === "check"
-          ? { latestVerifiedVersion: "1.5.0" }
-          : {}),
-      }));
+      const installation = vi.fn(
+        async (_host: string, agent: string, action: string, confirmedVersion?: string) => {
+          if (action === "update")
+            expect(confirmedVersion).toBe(agent === "deepseek-harness" ? "2.0.0" : undefined);
+          return {
+            currentVersion: action === "update" ? "2.0.0" : "1.0.0",
+            latestVersion: "2.0.0",
+            canUpdate: true,
+            updateAvailable: action !== "update",
+            ...(agent === "deepseek-harness" && action === "check"
+              ? { latestVerifiedVersion: "1.5.0" }
+              : {}),
+          };
+        },
+      );
       const diagnostics: RendererConnectionDiagnostics = {
         snapshot: () => ({
           adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
@@ -1275,11 +1281,16 @@ describe("Renderer Connections page", () => {
           signal: scope.signal,
           runLatest: (op, handlers) => scope.runLatest(op, handlers),
         });
-        const bulk = () =>
-          descendants(content).find(({ dataset }) => dataset.connectionAction === "update-all");
+        const bulk = () => {
+          const button = descendants(content).find(
+            ({ dataset }) => dataset.connectionAction === "update-all",
+          );
+          assert(button);
+          return button;
+        };
         const updates = () => installation.mock.calls.filter(([, , action]) => action === "update");
-        await vi.waitFor(() => expect(visibleNotesText(bulk()!)).toContain("Update all (2)"));
-        bulk()?.dispatch("click");
+        await vi.waitFor(() => expect(visibleNotesText(bulk())).toContain("Update all (2)"));
+        bulk().dispatch("click");
         const dialog = descendants(content).find(({ tagName }) => tagName === "dialog");
         assert(dialog?.open);
         expect(visibleNotesText(dialog)).toContain("2.0.0");

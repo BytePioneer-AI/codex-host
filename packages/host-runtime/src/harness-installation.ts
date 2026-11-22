@@ -58,8 +58,11 @@ export async function handleHarnessInstallation(
         installing.delete(adapter);
       }
     }
+    const { action, confirmedVersion } = parsed.data;
     return harnessInstallationStateSchema.parse(
-      await installation(parsed.data.action, parsed.data.confirmedVersion),
+      await (confirmedVersion === undefined
+        ? installation(action)
+        : installation(action, confirmedVersion)),
     );
   } catch {
     // Native output may include credentials or paths. Never forward an arbitrary plugin exception.

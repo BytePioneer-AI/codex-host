@@ -365,8 +365,14 @@
 }
 
 @supports (backdrop-filter: blur(18px)) or (-webkit-backdrop-filter: blur(18px)) {
-  .phoneDrawer {
-    background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 38%, transparent);
+  /* Glass on the phone drawer only earns its keep over wallpaper. Over the
+     plain conversation surface the 38% fill + 18px blur lets the underlying
+     page bleed through the drawer (#1046); unblurred fixed-position content
+     can even escape the backdrop snapshot and read as a stray vertical line
+     painted on top of the drawer. Opaque by default; when wallpaper shows
+     through, keep the material near-opaque (#873 validated 88% on device). */
+  :global(body[data-codexhost-wallpaper]) .phoneDrawer {
+    background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 88%, transparent);
     -webkit-backdrop-filter: blur(18px);
     backdrop-filter: blur(18px);
   }

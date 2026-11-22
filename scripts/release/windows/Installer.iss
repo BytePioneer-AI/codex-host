@@ -27,6 +27,7 @@ ArchitecturesInstallIn64BitMode=arm64
 [Files]
 ; Extract the new helper before touching an existing installation, including older versions.
 Source: "{#PayloadRoot}\libexec\codexhost-updater.exe"; DestName: "codexhost-install-helper.exe"; Flags: dontcopy
+; Includes libexec\codexhost-shell.exe when present in the payload.
 Source: "{#PayloadRoot}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]

@@ -326,6 +326,11 @@ export class ConversationController extends Service implements IConversation {
       if (!result.ok) return { kind: "error" };
       if (retirement !== undefined && (await retirement).reason !== "observed")
         return { kind: "error" };
+      if (result.value.queueStartUnconfirmed)
+        return {
+          kind: "success",
+          text: this.ctx.locale.bind(NS)("queue.remoteStartUnconfirmed"),
+        };
       return { kind: "success" };
     } finally {
       reference?.release();

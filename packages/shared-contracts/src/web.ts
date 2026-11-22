@@ -1,7 +1,10 @@
 import { z } from "zod";
 
+export const WEB_ACTIVE_TURN_PROJECTION = "codexhostActiveTurnId";
+
 /** Chat-only whole-value projections owned by the addressed session/follow stream. */
 export const WEB_FOLLOW_PROJECTION_KEYS: ReadonlySet<string> = new Set([
+  WEB_ACTIVE_TURN_PROJECTION,
   "codexhostTurnChanges",
   "codexhostToolOutput",
 ]);

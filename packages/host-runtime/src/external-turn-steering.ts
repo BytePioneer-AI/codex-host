@@ -4,6 +4,7 @@ import {
   hostItemIdSchema,
   restoreHarnessCommandMentions,
   THREAD_STEER_DELIVERY_PARAM,
+  THREAD_STEER_STRICT_TARGET_PARAM,
   threadSteerDeliverySchema,
   type HarnessSessionCapabilities,
   type HostTurnId,
@@ -102,6 +103,7 @@ export class ExternalSteerOutcomeUnknownError extends ExternalSteerError {
 
 interface SteeringInput {
   expectedTurnId: string;
+  strictTarget: boolean;
   clientUserMessageId?: string;
   text: string;
   /** The delivery a Renderer already presented; absent for clients without one. */
@@ -133,6 +135,7 @@ function parseInput(params: JsonObject): SteeringInput {
   }
   return {
     expectedTurnId: params.expectedTurnId,
+    strictTarget: params[THREAD_STEER_STRICT_TARGET_PARAM] === true,
     text,
     ...(typeof clientUserMessageId === "string" ? { clientUserMessageId } : {}),
     ...(parsedDelivery ? { delivery: parsedDelivery.data } : {}),
@@ -211,6 +214,7 @@ type InsertSteeredInput = (input: {
 
 interface PendingSteer {
   turnId: string;
+  strictTarget: boolean;
   resolve(outcome: TurnOutcome): void;
   reject(error: Error): void;
 }
@@ -246,7 +250,7 @@ export class ExternalTurnSteering {
       const key = input.clientUserMessageId
         ? `${thread.id}\u0000${input.clientUserMessageId}`
         : null;
-      const fingerprint = JSON.stringify([input.expectedTurnId, params.input]);
+      const fingerprint = JSON.stringify([input.expectedTurnId, input.strictTarget, params.input]);
       const receipt = key ? this.#receipts.get(key) : undefined;
       if (receipt) {
         if (receipt.fingerprint !== fingerprint) {
@@ -323,6 +327,12 @@ export class ExternalTurnSteering {
       return native.catch(async (error: unknown) => {
         if (!(error instanceof ExternalSteerNotTakenError)) throw error;
         if (thread.running || thread.activeTurnId) return deliver("newTurn");
+        if (input.strictTarget)
+          throw new ExternalSteerError(
+            -32074,
+            "External steering target is no longer active",
+            true,
+          );
         // The Turn ended meanwhile; nothing is left to stop, so start the input as the next Turn.
         const assertActive = (): void => {
           if (this.#closed)
@@ -337,6 +347,7 @@ export class ExternalTurnSteering {
     let failureReason: Error | null = null;
     const pending: PendingSteer = {
       turnId: input.expectedTurnId,
+      strictTarget: input.strictTarget,
       resolve: () => undefined,
       reject(error) {
         failureReason ??= error;
@@ -355,9 +366,20 @@ export class ExternalTurnSteering {
       });
   }
 
-  terminal(threadId: string, turnId: string, outcome: TurnOutcome): void {
+  /** Return whether steering owns the queue transition after this terminal event. */
+  terminal(threadId: string, turnId: string, outcome: TurnOutcome): boolean {
     const pending = this.#pending.get(threadId);
-    if (pending?.turnId === turnId) pending.resolve(outcome);
+    if (!pending) return false;
+    if (pending.turnId !== turnId) return true;
+    if (pending.strictTarget && outcome.status === "succeeded") {
+      this.#pending.delete(threadId);
+      pending.reject(
+        new ExternalSteerError(-32074, "External steering target is no longer active", true),
+      );
+      return false;
+    }
+    pending.resolve(outcome);
+    return true;
   }
 
   interrupt(threadId: string, turnId: string): void {
@@ -396,6 +418,7 @@ export class ExternalTurnSteering {
     let failureReason: Error | null = null;
     const pending: PendingSteer = {
       turnId: input.expectedTurnId,
+      strictTarget: input.strictTarget,
       resolve: terminal.resolve,
       reject(error) {
         failureReason ??= error;
@@ -422,6 +445,8 @@ export class ExternalTurnSteering {
       ]);
       // A Turn that is already ending (for example after its native steer was not taken) refuses
       // the cancel as inactive; its terminal still follows, so keep waiting for it.
+      if (!cancelled.ok && cancelled.error.code === "invalidState" && input.strictTarget)
+        throw new ExternalSteerError(-32074, "External steering target is no longer active", true);
       if (!cancelled.ok && cancelled.error.code !== "invalidState") {
         throw new ExternalSteerError(-32074, cancelled.error.message);
       }

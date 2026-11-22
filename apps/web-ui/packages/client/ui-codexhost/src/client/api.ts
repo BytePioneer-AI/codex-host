@@ -2,6 +2,11 @@
 import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
 import {
   harnessSessionImportResultSchema,
+  RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
+  RELEASE_ANNOUNCEMENT_GET_METHOD,
+  releaseAnnouncementAcknowledgeParamsSchema,
+  releaseAnnouncementGetParamsSchema,
+  releaseAnnouncementGetResultSchema,
   updateCheckResultSchema,
   voiceStatusResultSchema,
   voiceTranscribeResultSchema,
@@ -14,6 +19,7 @@ import {
   webTurnDiffsResultSchema,
   skillsListResultSchema,
   type HarnessCommandCatalog,
+  type ReleaseAnnouncementGetParams,
   type ThreadCommandExecuteResult,
   type HarnessSessionImportCandidate,
   type HarnessSessionImportSourcesResult,
@@ -81,6 +87,47 @@ export async function checkHostUpdate(signal: AbortSignal) {
   };
   if (reply.error) throw new Error(reply.error.message ?? "Update check failed");
   return updateCheckResultSchema.parse(reply.result);
+}
+
+export async function getReleaseAnnouncement(
+  signal: AbortSignal,
+  params: ReleaseAnnouncementGetParams = {},
+) {
+  const response = await fetch("api/ch/v1/rpc", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      method: RELEASE_ANNOUNCEMENT_GET_METHOD,
+      params: releaseAnnouncementGetParamsSchema.parse(params),
+    }),
+    signal,
+  });
+  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
+  const reply = (await response.json()) as {
+    result?: unknown;
+    error?: { message?: string };
+  };
+  if (reply.error) throw new Error(reply.error.message ?? "Release announcement check failed");
+  return releaseAnnouncementGetResultSchema.parse(reply.result);
+}
+
+export async function acknowledgeReleaseAnnouncement(version: string) {
+  const response = await fetch("api/ch/v1/rpc", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      method: RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
+      params: releaseAnnouncementAcknowledgeParamsSchema.parse({ version }),
+    }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
+  const reply = (await response.json()) as {
+    error?: { message?: string };
+  };
+  if (reply.error)
+    throw new Error(reply.error.message ?? "Release announcement acknowledge failed");
 }
 
 export const voiceApi = {

@@ -12,8 +12,6 @@ use serde::{Deserialize, Serialize};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::runtime_instance::default_descriptor_path;
-
 const ACTIVE_UPDATE_LOCK_FILE: &str = "active-update-v1.lock";
 const STATUS_FILE: &str = "status-v1.json";
 const REQUEST_FILE: &str = "request-v1.json";
@@ -185,8 +183,24 @@ fn waiting_for_launcher_exit_at(
     ))
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn update_state_directory() -> io::Result<PathBuf> {
-    let descriptor = default_descriptor_path()?;
+    // Match the Host Runtime's persistent update directory on Linux.
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .map(|home| home.join(".codexhost").join("updates"))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "HOME must be set to an absolute path",
+            )
+        })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) fn update_state_directory() -> io::Result<PathBuf> {
+    let descriptor = crate::runtime_instance::default_descriptor_path()?;
     descriptor
         .parent()
         .ok_or_else(|| invalid("runtime descriptor has no state directory"))

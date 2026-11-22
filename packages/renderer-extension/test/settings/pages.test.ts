@@ -831,6 +831,9 @@ describe("Harness CLI version panel", () => {
     expect(button("update").disabled).toBe(true);
     updated.resolve({ ...state, currentVersion: "1.1.0", updateAvailable: false });
     await vi.waitFor(() => expect(visibleText(panel)).toContain("Update verified"));
+    expect(visibleText(panel)).toContain(
+      "may still use the old version until that process restarts",
+    );
     expect(button("update").disabled).toBe(true);
     abort.abort();
   });
@@ -1229,6 +1232,136 @@ describe("Renderer Connections page", () => {
     if (typeof cleanup === "function") cleanup();
     scope.dispose();
   });
+
+  it.each([
+    { choice: "Skip this update" },
+    { choice: "Escape" },
+    { choice: "Update anyway" },
+    { choice: "Update anyway", newTarget: { version: "3.0.0", choice: "Skip this update" } },
+    { choice: "Update anyway", newTarget: { version: "1.5.0", choice: "Update" } },
+  ])(
+    "requires confirmation for the exact target even if it changes during a batch update: %j",
+    async ({ choice, newTarget }) => {
+      const installation = vi.fn(
+        async (_host: string, agent: string, action: string, confirmedVersion?: string) => {
+          const isDeepSeek = agent === "deepseek-harness";
+          const latestVersion =
+            (isDeepSeek && action === "update" && newTarget?.version) || "2.0.0";
+          const confirmationRequired =
+            isDeepSeek && action === "update" && confirmedVersion !== latestVersion;
+          const updateAvailable = action === "check" || confirmationRequired;
+          return {
+            currentVersion: updateAvailable ? "1.0.0" : latestVersion,
+            latestVersion,
+            canUpdate: true,
+            updateAvailable,
+            ...(confirmationRequired ? { confirmationRequired: true as const } : {}),
+            ...(isDeepSeek && updateAvailable && latestVersion !== "1.5.0"
+              ? { latestVerifiedVersion: "1.5.0" }
+              : {}),
+          };
+        },
+      );
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: ["pi", "deepseek-harness"].map((agent) => ({
+                agent,
+                availability: "ready" as const,
+                error: null,
+              })),
+            },
+          ],
+        }),
+        installation,
+        refresh: async () => undefined,
+        subscribe: () => () => undefined,
+      };
+      const content = new FakeDocument().createElement("main");
+      const scope = new RendererSettingsPageScope();
+      try {
+        const page = createDefaultRendererSettingsPages(
+          rendererSettingsMessages("en"),
+          () => null,
+          () => diagnostics,
+        ).find(({ id }) => id === "connections");
+        assert(page);
+        page.mount({
+          content: content as unknown as HTMLElement,
+          signal: scope.signal,
+          runLatest: (op, handlers) => scope.runLatest(op, handlers),
+        });
+        const bulk = () => {
+          const button = descendants(content).find(
+            ({ dataset }) => dataset.connectionAction === "update-all",
+          );
+          assert(button);
+          return button;
+        };
+        const updates = () => installation.mock.calls.filter(([, , action]) => action === "update");
+        await vi.waitFor(() => expect(visibleNotesText(bulk())).toContain("Update all (2)"));
+        const deepSeekRow = descendants(content).find(
+          ({ dataset }) => dataset.connectionItem === "deepseek-harness",
+        );
+        assert(deepSeekRow);
+        deepSeekRow.dispatch("click", { target: null });
+        bulk().dispatch("click");
+        const firstDialog = descendants(content).find(({ tagName }) => tagName === "dialog");
+        assert(firstDialog?.open);
+        expect(visibleNotesText(firstDialog)).toContain("2.0.0");
+        expect(visibleNotesText(firstDialog)).toContain("1.5.0");
+        expect(updates()).toEqual([["local", "pi", "update"]]);
+        if (choice === "Escape") {
+          const preventDefault = vi.fn();
+          const stopPropagation = vi.fn();
+          firstDialog.dispatch("keydown", { key: "Escape", preventDefault, stopPropagation });
+          expect(preventDefault).toHaveBeenCalledOnce();
+          expect(stopPropagation).toHaveBeenCalledOnce();
+        } else {
+          const button = descendants(firstDialog).find(({ textContent }) => textContent === choice);
+          assert(button);
+          button.dispatch("click");
+        }
+
+        const expectedUpdates = [["local", "pi", "update"]];
+        if (choice === "Update anyway")
+          expectedUpdates.push(["local", "deepseek-harness", "update", "2.0.0"]);
+        if (newTarget) {
+          const nextDialog = await vi.waitFor(() => {
+            const dialog = descendants(content).find(({ tagName }) => tagName === "dialog");
+            assert(dialog?.open);
+            expect(dialog).not.toBe(firstDialog);
+            expect(visibleNotesText(dialog)).toContain(newTarget.version);
+            expect(visibleNotesText(bulk())).toContain("Updating 1/2");
+            return dialog;
+          });
+          expect(updates()).toEqual(expectedUpdates);
+          expect(visibleText(content)).toContain("Current version: 1.0.0");
+          expect(visibleText(content)).not.toContain("Could not complete");
+          const nextChoice = descendants(nextDialog).find(
+            ({ textContent }) => textContent === newTarget.choice,
+          );
+          assert(nextChoice);
+          nextChoice.dispatch("click");
+          if (newTarget.choice === "Update")
+            expectedUpdates.push(["local", "deepseek-harness", "update", newTarget.version]);
+        }
+        const skipped = (newTarget?.choice ?? choice) === "Skip this update" || choice === "Escape";
+        await vi.waitFor(() =>
+          expect(visibleText(content)).toContain(
+            skipped ? "Updated 1; failed 0. Skipped 1." : "Updated 2; failed 0.",
+          ),
+        );
+        expect(updates()).toEqual(expectedUpdates);
+      } finally {
+        scope.dispose();
+      }
+    },
+  );
 
   it("reuses a single update in a concurrent batch and stops notifying after the page closes", async () => {
     const document = new FakeDocument();
@@ -2684,6 +2817,7 @@ describe("Renderer Connections page", () => {
     await vi.waitFor(() => expect(visibleText(ompRow)).toContain("正常"));
     expect(visibleText(versionPanel)).toContain("当前版本: 0.85.2");
     expect(visibleText(versionPanel)).toContain("已确认更新成功");
+    expect(visibleText(versionPanel)).toContain("可能要等该进程重启后才能使用新版本");
     expect(visibleText(secondContent)).toContain("已更新 2 项，0 项失败。");
 
     secondCleanup?.();

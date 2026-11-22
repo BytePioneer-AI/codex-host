@@ -5,6 +5,7 @@ type ListTimingStage =
   | "catalog_wait"
   | "host_catalog"
   | "thread_tree"
+  | "thread_sections"
   | "pins"
   | "project_definitions"
   | "projects"

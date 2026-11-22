@@ -15,6 +15,39 @@ export function remoteSessionRequestBytes(operation: RemoteSessionOperation): nu
 const identity = z.string().min(1).max(1024);
 const target = { hostId: identity.regex(/^remote-(?:ssh(?:-|:)|control:)/u) };
 const thread = { ...target, threadId: identity };
+const text = z.string().min(1).max(8000);
+const input = { text, requestId: identity };
+
+export const remoteDeliveryReplySchema = z.discriminatedUnion("accepted", [
+  z.object({ accepted: z.literal(true), startQueuedItemId: identity.optional() }),
+  z.object({
+    accepted: z.literal(false),
+    code: z.enum([
+      "remote/queue-unavailable",
+      "remote/steer-unavailable",
+      "remote/turn-changed",
+      "remote/send-rejected",
+      "session/queue-item-not-found",
+      "session/queue-item-starting",
+    ]),
+    message: z.string(),
+  }),
+]);
+export type RemoteDeliveryReply = z.infer<typeof remoteDeliveryReplySchema>;
+
+export const remoteQueueSnapshotSchema = z.discriminatedUnion("available", [
+  z.object({ available: z.literal(false) }),
+  z.object({
+    available: z.literal(true),
+    items: z
+      .array(
+        z.object({ id: identity, clientUserMessageId: identity, preview: z.string().max(801) }),
+      )
+      .max(100),
+  }),
+]);
+export type RemoteQueueSnapshot = z.infer<typeof remoteQueueSnapshotSchema>;
+
 /** Operations on existing Desktop connections; no connection or credential management. */
 export const remoteSessionOperationSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("hosts") }),
@@ -65,8 +98,24 @@ export const remoteSessionOperationSchema = z.discriminatedUnion("kind", [
     kind: z.literal("prompt"),
     ...thread,
     epoch: identity,
-    text: z.string().min(1).max(8000),
+    text,
     requestId: identity.optional(),
+  }),
+  z.strictObject({ kind: z.literal("queue"), ...thread, epoch: identity }),
+  z.strictObject({
+    kind: z.literal("delivery"),
+    ...thread,
+    epoch: identity,
+    action: z.discriminatedUnion("kind", [
+      z.strictObject({ kind: z.literal("enqueue"), ...input }),
+      z.strictObject({ kind: z.literal("steer"), ...input, turnId: identity }),
+      z.strictObject({ kind: z.literal("remove"), itemId: identity }),
+      z.strictObject({
+        kind: z.literal("start"),
+        itemId: identity,
+        onlyIfHead: z.literal(true).optional(),
+      }),
+    ]),
   }),
   z.strictObject({ kind: z.literal("interrupt"), ...thread, epoch: identity, turnId: identity }),
   z.strictObject({

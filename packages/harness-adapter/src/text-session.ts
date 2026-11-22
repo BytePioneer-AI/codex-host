@@ -503,10 +503,21 @@ export interface SessionStateChangedEvent {
   state: HarnessSessionState;
 }
 
+/** A display title from the native Session, available to an unnamed Host Thread. */
+export interface SessionTitleChangedEvent {
+  type: "session.title.changed";
+  title: string;
+}
+
 export interface SessionUsageChangedEvent {
   type: "session.usage.changed";
   usage: HostUsage | null;
   observedForTurnId?: HostTurnId;
+}
+
+/** Invalidate an account quota projection without changing token usage. */
+export interface SessionAccountCreditsChangedEvent {
+  type: "session.accountCredits.changed";
 }
 
 /** One native model request's usage; Host derives cost, cache and speed metrics from these. */
@@ -625,7 +636,9 @@ export interface SessionFaultedEvent {
 
 export type HostEvent =
   | SessionStateChangedEvent
+  | SessionTitleChangedEvent
   | SessionUsageChangedEvent
+  | SessionAccountCreditsChangedEvent
   | UsageRequestEvent
   | UsageRequestTimingEvent
   | UsageHistoryEvent
@@ -668,6 +681,8 @@ export interface HarnessSession {
    */
   readCapabilities?(): Promise<HarnessSessionCapabilities>;
   refreshUsage?(): Promise<void>;
+  /** Account quota attributed to this Session, rather than shared across the Adapter. */
+  readAccountCredits?(): Promise<AccountCreditsSnapshot | null>;
   /** Native background work (e.g. a background command) is still running; the Session must not be released. */
   hasBackgroundWork?(): boolean;
   /** Stops every running detached Item; each still settles through its own events. */
@@ -729,7 +744,10 @@ export interface HarnessAdapter {
   /** Native CLI version checks and explicit updates. Never updates the Host plugin,
    * starts a model Turn, or restarts existing Sessions. Commands are Adapter-owned.
    */
-  installation?(action: "check" | "update"): Promise<HarnessInstallationState>;
+  installation?(
+    action: "check" | "update",
+    confirmedVersion?: string,
+  ): Promise<HarnessInstallationState>;
   /** Explicit first-time CLI installation using an Adapter-owned official source. */
   install?(): Promise<void>;
   readonly credentialExport?: HarnessCredentialExport;

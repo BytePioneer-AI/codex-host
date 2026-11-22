@@ -16,6 +16,7 @@ type RowProps = ComponentProps<typeof SessionNodeItem>;
  */
 export function PinnedSection({
   rows,
+  customSection,
   currentId,
   onOpen,
   onRenameRequest,
@@ -27,6 +28,7 @@ export function PinnedSection({
   onToggle,
 }: Pick<RowProps, "currentId" | "onOpen" | "onRenameRequest" | "renderSlot" | "t"> & {
   rows: readonly SessionNode[];
+  customSection?: { key: string; name: string };
   revealSessionId?: RowProps["currentId"];
   onSessionRevealed: (id: SessionNode["id"]) => void;
   /** Whether the pinned rows show. */
@@ -34,15 +36,21 @@ export function PinnedSection({
   /** Fold or unfold the section. */
   onToggle: () => void;
 }) {
-  if (rows.length === 0) return null;
+  if (rows.length === 0 && !customSection) return null;
+  const label = customSection?.name ?? t("section.pinned");
   return (
-    <div role="group" aria-label={t("section.pinned")} className={css.section} data-sidebar-pinned>
+    <div
+      role="group"
+      aria-label={label}
+      className={css.section}
+      data-sidebar-pinned={customSection ? undefined : true}
+    >
       <SectionHeading
-        label={t("section.pinned")}
-        icon={<IconPinOutlineRegular size={14} />}
+        label={label}
+        icon={customSection ? undefined : <IconPinOutlineRegular size={14} />}
         expanded={expanded}
         onToggle={onToggle}
-        rowKey={`section:${PINNED_SECTION_KEY}`}
+        rowKey={`section:${customSection?.key ?? PINNED_SECTION_KEY}`}
       />
       {expanded && (
         <ThreadTreeRows roots={rows}>

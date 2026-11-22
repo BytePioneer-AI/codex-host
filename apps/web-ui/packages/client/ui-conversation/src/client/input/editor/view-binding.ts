@@ -11,6 +11,7 @@ import { registerComposerKeymap } from "./keymap.ts";
 
 interface DraftViewGate {
   locked: boolean;
+  canPasteText: boolean;
   machineBusy: boolean;
   primaryAction: ComposerPrimaryAction | undefined;
   canSteerQueue: boolean;
@@ -164,7 +165,7 @@ export function installDraftKeymap(
       gate.current.intakeFiles(files, directories);
     },
     pasteText: (text) => {
-      if (gate.current.machineBusy || gate.current.locked) return;
+      if (gate.current.machineBusy || !gate.current.canPasteText) return;
       keyboard.paste(text);
     },
   });

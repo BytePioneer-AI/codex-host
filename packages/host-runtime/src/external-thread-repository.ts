@@ -25,6 +25,7 @@ import {
 } from "@codexhost/mapping-store";
 import type { JsonObject, TodoPlan } from "@codexhost/protocol-core";
 import {
+  THREAD_STEER_STRICT_TARGET_FIELD,
   hostThreadIdSchema,
   hostTurnIdSchema,
   type HarnessId,
@@ -84,7 +85,11 @@ export interface ExternalThreadStore {
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
   ): Promise<StoredThreadRecordV1>;
-  setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1>;
+  setTitle(
+    hostThreadId: HostThreadId,
+    title: string,
+    options?: { ifUnnamed?: boolean },
+  ): Promise<StoredThreadRecordV1>;
   touch(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1>;
   setTransportModelId(
     hostThreadId: HostThreadId,
@@ -237,8 +242,12 @@ export class ExternalThreadRepository {
     return this.store.commitReady({ hostThreadId, nativeSessionRef, turnMappings });
   }
 
-  setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1> {
-    return this.store.setTitle(hostThreadId, title);
+  setTitle(
+    hostThreadId: HostThreadId,
+    title: string,
+    options?: { ifUnnamed?: boolean },
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.setTitle(hostThreadId, title, options);
   }
 
   /** A presentation hint, never a title. Call with the known beginning of history. */
@@ -673,6 +682,7 @@ export function externalThreadValue(input: {
     threadSource: record.subagent ? "subAgentThreadSpawn" : null,
     modelProvider: "codexhost",
     cliVersion: "codexhost",
+    [THREAD_STEER_STRICT_TARGET_FIELD]: true,
     createdAt,
     updatedAt,
     recencyAt: updatedAt,

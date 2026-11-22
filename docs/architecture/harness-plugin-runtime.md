@@ -191,10 +191,12 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 | Claude Code | `--version` 和官方 stable/latest 版本源；读取用户及本机文件型受管设置，使用原生 `claude update` 保留策略执行。识别的全局 npm 安装固定 npm prefix，标准原生 launcher 允许更新；版本限制、其他安装渠道及 macOS 受管远程 Broker 保留手动更新。 |
 | CodeBuddy | `--version`；识别的 npm 安装查询 `@tencent-ai/codebuddy-code`，只有全局安装允许在原 prefix 更新。原生安装只显示已安装版本，最新版本和更新交给原安装器；macOS 受管远程 Broker 尚不转发该能力。 |
 | Kiro CLI | 只通过 `--version` 显示当前版本；最新版本未知，不检查更新源、不执行更新。Kiro 的更新策略与发布源选择交给原生安装器，设置页提示使用原生更新器或安装方式。 |
-| DeepSeek Harness | 原生 `--version`，独立查询 npm `@deepseek-ai/dsh` 的 `latest`，不受安装渠道限制。识别的全局安装更新原 prefix；npx 安装显式更新原缓存并验证离线启动版本。Python wheel、桌面载体及项目安装仍使用原安装方式更新，不创建或更新另一份全局安装。 |
+| DeepSeek Harness | 原生 `--version`，独立查询 npm `@deepseek-ai/dsh` 的 `latest`，不受安装渠道限制。识别的全局安装更新原 prefix；npx 安装下载明确的版本，验证离线启动后才保存该版本供后续进程使用。复用常驻进程的新会话可能继续使用旧版本，直到该进程重建。Python wheel、桌面载体及项目安装仍使用原安装方式更新，不创建或更新另一份全局安装。 |
 | Hermes | 原生 `--version`、`update --plan`、`update --check`；使用原生渠道判定和提交标识而非普通 SemVer 比较。仅可原地更新且能报告提交标识、支持非交互与 Gateway 重启延后的干净 Git 安装执行 `update --yes --no-gateway-restart`；桌面包、Docker、Nix 等仍由原生安装所有者更新。 |
 
 检查不发起 Model Turn、不安装任何内容。只有用户明确点击更新才调用原生安装器；并发更新合并为一次，检查不与更新后版本回读竞争，安装后版本未改变不报告成功。普通命令有 30 秒超时，更新命令最多 5 分钟，最新版本网络读取有 15 秒超时；失败后可重新打开连接页触发自动检查。更新的是 Harness CLI，不是 Host 插件或 codexhost 自身，不降级较新安装，不主动重启已有 Session。关闭设置只停止页面更新，不取消已接受的原生更新；现有进程的升级行为遵循 Harness 本身。
+
+需确认的更新以 `confirmedVersion` 提交用户选择的确切版本。若执行前的预检要求确认新目标，Host 返回 `confirmationRequired` 和最新目标版本，不运行安装器；设置页立即重新确认，批量更新在用户跳过时计为跳过而非失败。
 
 无法安全检查最新版本的安装返回 `latestVersion: "Unknown"` 和手动更新说明，而非假称与已安装版本一致；Connections 详情显示 Adapter 的说明，不将这种安装标为「已是最新」。npm 识别包含确实指向对应包入口的 Windows shim；版本比较区分预发布标识并忽略 build metadata，避免预发布间更新被漏判或发生降级。
 
@@ -240,7 +242,9 @@ Mapping Store 使用 `store.lock` 限制同一目录只有一个写入实例。W
 
 本机与远程均保留 Desktop 原生的草稿预热；它只提前创建 Session，不发送用户消息。Desktop Control 只给外部、非 ephemeral 的预热 `thread/start` 加上 `codexhostPrewarm: true`，正式创建与官方 Codex 请求不加此标记。配置变更、策略清理或退役时，已返回的外部预热与之后迟到的结果通过 `codexhost/thread/prewarm/discard { threadId }` 请求释放，不能只在前端丢弃结果。
 
-未提交的外部预热不进入侧栏：即使 Harness 已返回 Native Session 身份，Host 也只在当前 Session 状态中保留它，映射仍为 `creating`，不发出 `thread/started`，普通与分区会话列表均不展示。首次提交消息或执行原生命令时，Host 先提交已知身份再执行；身份仍未就绪时由后续原生状态事件提交并发布。真实原生自主 Turn 也会将预热转为正式 Thread。单纯读取、恢复或配置选择不发布草稿；清理不会留下已公布的空会话入口，重启时沿用 Mapping Store 对无原生身份的 provisional 记录的清理规则。首轮已提交但原生身份尚未就绪的当前运行时 Thread 会进入目录与会话列表，包括初始化失败后保留的首轮；身份就绪不改变 Host Thread ID，归档仍按正常列表过滤处理。普通非预热 Thread 的创建行为不变。
+未提交的外部预热不进入侧栏：即使 Harness 已返回 Native Session 身份，Host 也只在当前 Session 状态中保留它，映射仍为 `creating`，不发出 `thread/started`，普通与分区会话列表均不展示。单纯读取、恢复或配置选择不发布草稿；重启时沿用 Mapping Store 对无原生身份的 provisional 记录的清理规则。
+
+首次提交消息或执行原生命令时，Host 先提交已知身份再执行；真实原生自主 Turn 也会接管预热。如果首个 Turn 事件先于 Native Session 身份到达，Host 会先发 `thread/started`，再转发 Turn 事件。后续原生状态事件仍提交身份，但不重复公告，也不改变 Host Thread ID。首轮已提交但原生身份尚未就绪的当前运行时 Thread 会进入目录与会话列表，包括初始化失败后保留的首轮。挂靠 Side Chat 不发 `thread/started`；删除成功才清除公告记录，归档和闲置卸载均保留。普通非预热 Thread 的创建行为不变。
 
 Host 在现有每 Thread 请求队列内裁决接管与释放：Turn、原生命令、配置选择、恢复等操作接管后，迟到清理返回 `discarded: false`，不关闭 Session；普通空 Thread 也不能被此接口删除。未接管且没有活动工作或历史的预热先关闭 Session、等待输出结束，再移除 Host 映射；重复清理无副作用，关闭报告失败时保留映射并阻止继续使用这个未确认关闭的预热。该标记只是当前 Host 的内存所有权，不把预分配身份持久化为原生历史。
 
@@ -306,6 +310,8 @@ Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和
 额度主窗口及 `productUsage` 可提供原生 `scope: { id, label, localizations? }`；每个附加窗口可提供自己的 `periodType`。客户端按 scope 的稳定 ID 分组，通过 `accountCreditsWindowLabel` 展示本地化范围与公共周期，不解析产品名称中的 `7-day` 等字符串。缺少新元数据的旧插件仍显示原文和数值，不猜周期；未知或自定义的主窗口标签不会被公共周期覆盖。Grok 账号概览由插件只提供共享套餐额度，产品细分仍保留在会话额度浮窗，不再由 Renderer 根据 Grok ID 过滤。
 
 `HarnessAdapter.credits?()` / `refreshCredits?()` 是正式可选接口：前者无 I/O 地同步读取账号级缓存，后者异步刷新同一缓存，原生认证、有效期、并发合并及失效策略仍归插件。Host 不等待刷新，读取后校验公开结构，隔离同步读取异常与刷新拒绝；旧缓存的私有 `fetchedAt` 不传给客户端。`inspectAccount(s)` 继续负责设置页的新鲜账号查询，不用当前账号额度替代历史 Thread 的实际计费事实。
+
+`HarnessSession.readAccountCredits?()` 是会话级可选接口，用于按当前 Session 实际归属账号读取额度。当 Session 实现该接口时，`thread/usage/inspect` 优先使用它而非 `Adapter.credits()`，不触发 `Adapter.refreshCredits()`，并将 `accountCreditsSupported` 标为 `true`。Session 可在 `outputs` 发出 `session.accountCredits.changed` 事件以失效额度投影而不改动 Token 用量；Host 收到后发出 `thread/usage/updated` 通知并广播客户端失效事件。
 
 `HarnessAdapter.balance?()` / `refreshBalance?()` 是同样语义的预付费余额缓存，用于只报告金额、没有百分比额度的 Billing Source（当前为 DeepSeek Harness）。只在 `credits()` 没有有效快照时读取；Host 用 `accountBalanceSnapshotSchema` 校验并以可选 `accountBalance` 返回，异常与刷新拒绝同样隔离。
 

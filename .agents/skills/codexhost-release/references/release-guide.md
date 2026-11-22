@@ -69,9 +69,15 @@ git push origin main
 ````markdown
 codexhost v<version>
 
-## ✨ 本版重点
-- **Composer 命令**：输入框旁新增 Harness 命令按钮，模型列表支持搜索
-- **Grok 压缩上下文**：可以自动或手动压缩
+本次更新带来 Composer 命令按钮和 Grok 上下文压缩，并改进了 Windows 和手机端体验。
+
+### ⌨️ Composer 更好用
+输入框旁新增 Harness 命令按钮，模型列表支持搜索；设置页可以复制 Agent 连接诊断。
+— @maintainer · @contributor-a
+
+### 🗜 Grok 可以压缩上下文
+对话过长时可以自动或手动压缩，压缩后继续在同一个 Thread 里对话。
+— @contributor-b
 
 ## 🚀 新功能
 - Composer：新增 Harness 命令按钮 (#123)
@@ -86,9 +92,15 @@ codexhost v<version>
 
 ---
 
-## ✨ Highlights
-- **Composer commands**: a Harness commands button next to the input, plus model search
-- **Grok context compaction**: compact automatically or on demand
+This release brings a Composer commands button and Grok context compaction, with improvements to Windows and mobile.
+
+### ⌨️ Better Composer
+A Harness commands button sits next to the input, and the model list is searchable; Settings can copy Agent connection diagnostics.
+— @maintainer · @contributor-a
+
+### 🗜 Grok context compaction
+Compact long conversations automatically or on demand, then keep going in the same Thread.
+— @contributor-b
 
 ## 🚀 Features
 - Composer: Harness commands button (#123)
@@ -107,7 +119,7 @@ codexhost v<version>
 - macOS "cannot verify this app": `xattr -dr com.apple.quarantine /Applications/codexhost.app`
 - More: [README](https://github.com/BytePioneer-AI/codex-host#readme)
 
-## Contributors
+## 🙏 致谢 / Thanks
 @maintainer · @contributor-a (#123, #124) · @contributor-b (#125)
 ````
 
@@ -115,15 +127,17 @@ codexhost v<version>
 
 读者主要有两类：在应用内更新页看全文、想知道跟自己有没有关系的现有用户；在 GitHub 下载安装包的新用户。应用内会渲染整篇正文，所以中文在前，安装说明压到最后几行。
 
-- **结构**：本版重点 → 新功能 → 修复 → `---` → 同结构英文 → Install & Upgrade → Contributors。三个栏目标题带图标（✨ 🚀 🐛），条目前不加图标。有破坏性变更时，在本版重点之前单列 `## ⚠️ 破坏性变更`，英文同样处理。
-- **本版重点**：2～3 条，`**名称**：一句话`，写用户现在能做什么，不带 PR 编号。
+- **结构**：一句话总结 → 主题 → 新功能 → 修复 → `---` → 同结构英文 → Install & Upgrade → 致谢。总结和主题前不加栏目标题；新功能、修复带图标（🚀 🐛），条目前不加图标。有破坏性变更时，在总结之后、主题之前单列 `## ⚠️ 破坏性变更`，英文同样处理。
+- **应用内更新公告**：总结和主题会作为该版本的应用内更新公告，在用户升级后弹出，规则见 [更新公告](../../../../docs/product/release-announcement.md)。没有主题的 Release 不弹公告。发布后修改 Release 正文，只影响尚未确认的用户和手动查看。
+- **一句话总结**：正文第一段，`本次更新带来……，并改进了……。`，点出最重要的两三件事和涉及的方面。
+- **主题**：4～7 个，按用户能感知的方面归并（一个主题可以合并多个 PR 和修复），每个主题三行：`### <图标> <短标题>`、一两句说明（写用户现在能做什么、哪些问题不再出现，多件事用分号隔开，不带 PR 编号）、`— @a · @b`（该主题涉及 PR 的作者，维护者直接提交的记维护者）。图标每个主题不同。每位贡献者至少出现在一个主题里。
 - **新功能 / 修复**：每条只写一件事，一句话。开头写关键词（Harness 名、平台或功能区，如 `Claude Code：`、`Windows：`），方便用户扫到跟自己相关的条目。新功能写用户能做什么；修复写用户遇到过的现象，不写原因和实现。新功能不超过约 10 条，修复不超过约 16 条，其余合并为最后一条"另有 N 项…修复"。
 - **不写内部细节**：不出现内部名词、文件、字段和机制；不列 docs、chore、测试、CI 改动。
 - **已知问题**：没有固定栏目。有时在修复列表末尾加一行 `⚠️ 已知问题：…`，没有就不写。
 - **术语不翻译**：`codexhost`、`Harness`、`Composer`、`Thread`、`Fork`、`Model`、`Thinking` 等保持英文，嵌在中文句子里。
 - **Issue / PR 编号**：条目末尾写 `(#123)`，多个写 `(#123, #124)`。只标能从 Git 历史、GitHub 关联或 PR 内容核实的已合入编号；没有对应 PR 就不写。同一条的中英文使用相同编号。
 - **Install & Upgrade**：只写英文，固定 4 行，内容如模板。其余安装问题指向 README，不在 Release Notes 里重复。
-- **Contributors**：放在最后，只写英文，一行用 ` · ` 分隔。以从上一个 Release Tag 到目标提交的实际 Git/GitHub 贡献者为准，使用 GitHub 用户名；同一人的多个提交身份合并；维护者也列入。有已合入 PR 时写 `@user (#123, #124)`，没有就只写用户名。测试机器人、合并机器人和纯自动化账号不列入。
+- **致谢**：放在最后，标题固定为 `## 🙏 致谢 / Thanks`（GitHub 会在正文下方自动生成头像区 Contributors，标题不能与它重名），一行用 ` · ` 分隔。以从上一个 Release Tag 到目标提交的实际 Git/GitHub 贡献者为准，使用 GitHub 用户名；同一人的多个提交身份合并；维护者也列入。有已合入 PR 时写 `@user (#123, #124)`，没有就只写用户名。测试机器人、合并机器人和纯自动化账号不列入。
 
 6. Release Notes 完成后，必须向用户展示全文并取得明确确认。用户未确认或要求修改时，必须暂停，不得创建或推送 Tag。
 

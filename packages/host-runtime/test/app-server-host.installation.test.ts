@@ -4,6 +4,7 @@ import {
   HARNESS_INSTALLATION_START_METHOD,
   HARNESS_INSTALLATION_STATUS_METHOD,
   harnessInstallationTaskSchema,
+  type HarnessInstallationState,
 } from "@codexhost/shared-contracts";
 import {
   createFixture,
@@ -49,18 +50,20 @@ describe("Host Harness CLI installation routing", () => {
 
   it("answers task submission and status before the update ends and admits chat messages meanwhile", async () => {
     const fixture = createFixture();
-    const update = Promise.withResolvers<typeof state>();
-    Object.assign(fixture.adapter, { installation: vi.fn(() => update.promise) });
+    const update = Promise.withResolvers<HarnessInstallationState>();
+    const installation = vi.fn(() => update.promise);
+    Object.assign(fixture.adapter, { installation });
     try {
       const threadId = await startPiThread(fixture);
       writeRequest(fixture.desktopInput, {
         id: 2,
         method: HARNESS_INSTALLATION_START_METHOD,
-        params: { harnessId: "pi", action: "update" },
+        params: { harnessId: "pi", action: "update", confirmedVersion: "1.1.0" },
       });
       const response = await fixture.collector.waitFor((m) => requestId(m, 2));
       const task = harnessInstallationTaskSchema.parse(response.result);
       expect(task.status).toBe("running");
+      expect(installation).toHaveBeenCalledExactlyOnceWith("update", "1.1.0");
       expect(
         await fixture.host.handleConsoleRequest(HARNESS_INSTALLATION_STATUS_METHOD, {
           taskId: task.taskId,
@@ -68,13 +71,18 @@ describe("Host Harness CLI installation routing", () => {
       ).toEqual({ result: task });
       await startPiTurn(fixture, threadId, 4);
       fixture.adapter.sessions[0]?.succeedTurn();
-      update.resolve({ ...state, currentVersion: "1.1.0", updateAvailable: false });
+      const preflight = {
+        ...state,
+        latestVersion: "1.2.0",
+        confirmationRequired: true,
+      } satisfies HarnessInstallationState;
+      update.resolve(preflight);
       await vi.waitFor(async () =>
         expect(
           await fixture.host.handleConsoleRequest(HARNESS_INSTALLATION_STATUS_METHOD, {
             taskId: task.taskId,
           }),
-        ).toMatchObject({ result: { status: "succeeded", result: { currentVersion: "1.1.0" } } }),
+        ).toEqual({ result: { taskId: task.taskId, status: "succeeded", result: preflight } }),
       );
     } finally {
       update.resolve(state);

@@ -7,7 +7,7 @@ import type { SessionListState } from "@deepseek-ai/dsh-api-session-controller/c
 import type { WorkspaceView } from "@deepseek-ai/dsh-api-workspace-controller/client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import { FLAT_SESSION_ORDER_KEY } from "./stores.ts";
-import { threadTreeOrderSource } from "./thread-tree-order.ts";
+import { threadTreeOrderSource, workspaceTreeMembers } from "./thread-tree-order.ts";
 import { owningGroupKey, sessionMemberIds, type SessionRowState, UNGROUPED_KEY } from "./tree.ts";
 
 /** What `pinSessionOrder` reconciles a pinned Session's accounts against. */
@@ -18,7 +18,9 @@ export interface PinOrderSource {
 }
 
 /**
- * Every account's complete membership: each Workspace, Ungrouped, and the flat list.
+ * Every account's complete membership: each Workspace, Ungrouped, and the flat list. A
+ * Workspace's members are the roots the browser lists there, including the root of a tree
+ * shown through a delegated child, so a pin write keeps that root's saved slot.
  * @param workspaces - current Host Workspaces.
  * @param list - current Session list snapshot.
  * @param rowState - registry-global pin and archive sets.
@@ -39,7 +41,11 @@ export function pinOrderSource(
   return {
     members: Object.fromEntries([
       ...workspaces.map(
-        (workspace) => [workspace.workspaceId, rootMembers(workspace.sessionIds)] as const,
+        (workspace) =>
+          [
+            workspace.workspaceId,
+            workspaceTreeMembers(workspace.sessionIds, treeOrder).memberIds,
+          ] as const,
       ),
       [
         UNGROUPED_KEY,

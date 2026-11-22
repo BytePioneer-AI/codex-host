@@ -1,4 +1,4 @@
-import type { HarnessOutput } from "@codexhost/harness-adapter";
+import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
@@ -99,7 +99,7 @@ class FakeConnection implements ModernConnectionLike {
   readonly streams: CallRecord[] = [];
   readonly timeline: string[] = [];
   readonly control = new Feed(() => this.timeline.push("control.return"));
-  readonly events = new Feed(() => this.timeline.push("events.return"));
+  readonly events: Feed;
   readonly replacementEvents: Feed[] = [];
   readonly follows = new Map<string, Feed>();
   readonly journalSnapshots = new Map<string, Record<string, unknown>>();
@@ -126,9 +126,12 @@ class FakeConnection implements ModernConnectionLike {
   forkResponse: Promise<ModernRemoteResult<unknown>> | undefined;
   cancelResponse: Promise<ModernRemoteResult<unknown>> | undefined;
   closeError: Error | undefined;
+  closeResult: Promise<void> | undefined;
 
-  constructor() {
+  constructor(events?: Feed) {
+    this.events = events ?? new Feed(() => this.timeline.push("events.return"));
     this.control.push(controlBaseline());
+    if (events) return;
     this.events.push({
       type: "ready",
       clientId: "client-1",
@@ -330,6 +333,7 @@ class FakeConnection implements ModernConnectionLike {
     this.control.finish();
     this.events.finish();
     for (const feed of this.follows.values()) feed.finish();
+    if (this.closeResult) return this.closeResult;
     return this.closeError ? Promise.reject(this.closeError) : Promise.resolve();
   }
 
@@ -605,11 +609,12 @@ function liveEvent(
 function setup(
   uuids = ["created"],
   adapterOptions: Partial<ConstructorParameters<typeof ModernDeepSeekHarnessAdapter>[0]> = {},
+  events?: Feed,
 ): {
   readonly adapter: ModernDeepSeekHarnessAdapter;
   readonly connection: FakeConnection;
 } {
-  const connection = new FakeConnection();
+  const connection = new FakeConnection(events);
   const values = [...uuids];
   const adapter = new ModernDeepSeekHarnessAdapter(
     { command: "dsh", version: DSH_VERSION, ...adapterOptions },
@@ -3101,8 +3106,271 @@ describe("Modern DeepSeek Harness Adapter", () => {
     expect(connection.closeCalls).toBe(1);
   });
 
-  it("keeps a cleanup failure after a connection fault for close instead of the process", async () => {
-    const { adapter, connection } = setup();
+  async function startRunningTurn(
+    connection: FakeConnection,
+    session: HarnessSession,
+    sessionId: string,
+    turnId: string,
+    rpcId: string,
+  ): Promise<AsyncIterator<HarnessOutput>> {
+    const outputs = lifecycleOutputs(session);
+    await session.execute({
+      type: "turn.start",
+      turnId: turnId as never,
+      input: [{ type: "text", text: "running" }],
+    });
+    const follow = connection.follows.get(sessionId);
+    follow?.push(liveEvent(1, "turn/start", { turn: 1 }));
+    follow?.push(
+      liveEvent(
+        2,
+        "user/message",
+        {
+          id: `u-${rpcId}`,
+          role: "user",
+          content: [{ type: "text", text: "running" }],
+          source: { kind: "user", rpcId },
+        },
+        true,
+      ),
+    );
+    await expect(outputs.next()).resolves.toMatchObject({
+      value: { kind: "event", event: { type: "turn.started" } },
+    });
+    return outputs;
+  }
+
+  it("confirms active Session release once fault cleanup stops the managed process", async () => {
+    const onFault = vi.fn();
+    const { adapter, connection } = setup(["journal-first", "adapter-fault", "req-1", "req-2"], {
+      onFault,
+    });
+    const cwd = path.resolve("fixture-fault-process-stop");
+    connection.expectedCwds.set("session-journal-first", cwd);
+    connection.expectedCwds.set("session-adapter-fault", cwd);
+
+    const first = await adapter.open({ kind: "create", cwd });
+    const second = await adapter.open({ kind: "create", cwd });
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+
+    const firstOutputs = await startRunningTurn(
+      connection,
+      first.value,
+      "session-journal-first",
+      "turn-journal-first",
+      "req-1",
+    );
+    await startRunningTurn(
+      connection,
+      second.value,
+      "session-adapter-fault",
+      "turn-adapter-fault",
+      "req-2",
+    );
+
+    // First session faults alone while dsh web is still alive: release must stay blocked.
+    connection.follows
+      .get("session-journal-first")
+      ?.push({ type: "event", event: { invalid: true } });
+    await expect(firstOutputs.next()).resolves.toMatchObject({
+      value: { kind: "event", event: { type: "turn.completed", outcome: { status: "failed" } } },
+    });
+    await expect(firstOutputs.next()).resolves.toMatchObject({
+      value: { kind: "event", event: { type: "session.faulted" } },
+    });
+    await expect(first.value.close()).rejects.toThrow("native execution stop was not confirmed");
+
+    let resolveProcessStop!: () => void;
+    connection.closeResult = new Promise<void>((resolve) => {
+      resolveProcessStop = resolve;
+    });
+    connection.fault(new ModernRemoteConnectionError("unavailable", "stream closed"));
+    expect(onFault).toHaveBeenCalledTimes(1);
+
+    let secondClosed = false;
+    const secondClose = second.value.close().then(() => {
+      secondClosed = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(secondClosed).toBe(false);
+
+    resolveProcessStop();
+    await expect(secondClose).resolves.toBeUndefined();
+    await expect(first.value.close()).resolves.toBeUndefined();
+    await expect(adapter.close()).resolves.toBeUndefined();
+  });
+
+  it("resumes on the first Host-order release when the journal faults before the connection", async () => {
+    const { adapter, connection } = setup(["journal-first", "req-1"]);
+    const replacement = setup();
+    const cwd = path.resolve("fixture-first-fault-release");
+    const sessionId = "session-journal-first";
+    connection.expectedCwds.set(sessionId, cwd);
+    replacement.connection.expectedCwds.set(sessionId, cwd);
+    const opened = await adapter.open({ kind: "create", cwd });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const nativeRef = session.initialState.nativeRef;
+    if (!nativeRef) throw new Error("missing Native Session reference");
+    const outputs = await startRunningTurn(connection, session, sessionId, "turn-1", "req-1");
+    const feed = connection.follows.get(sessionId);
+    if (!feed) throw new Error("missing journal feed");
+    const localCleanup = Promise.withResolvers<undefined>();
+    const returnFollow = feed.return.bind(feed);
+    vi.spyOn(feed, "return").mockImplementation(async () => {
+      const result = await returnFollow();
+      await localCleanup.promise;
+      return result;
+    });
+    feed.push({ type: "event", event: { invalid: true } });
+    await expect(outputs.next()).resolves.toMatchObject({
+      value: { kind: "event", event: { type: "turn.completed", outcome: { status: "failed" } } },
+    });
+    await expect(outputs.next()).resolves.toMatchObject({
+      value: { kind: "event", event: { type: "session.faulted" } },
+    });
+
+    const processStop = Promise.withResolvers<undefined>();
+    connection.closeResult = processStop.promise;
+    const recovering = session.close().then(() =>
+      replacement.adapter.open({
+        kind: "resume",
+        cwd,
+        nativeRef,
+      }),
+    );
+    const result = expect(recovering).resolves.toMatchObject({
+      ok: true,
+      value: { initialState: { nativeRef } },
+    });
+    connection.fault(new ModernRemoteConnectionError("unavailable", "stream closed"));
+    localCleanup.resolve(undefined);
+    processStop.resolve(undefined);
+
+    await result;
+    const resumed = await recovering;
+    if (resumed.ok) await resumed.value.close();
+    await Promise.all([adapter.close(), replacement.adapter.close()]);
+  });
+
+  it("confirms the first close when the Adapter faults while waiting for native cancellation", async () => {
+    const { adapter, connection } = setup(["closing", "req-1"]);
+    const cwd = path.resolve("fixture-fault-during-close");
+    const sessionId = "session-closing";
+    connection.expectedCwds.set(sessionId, cwd);
+    const opened = await adapter.open({ kind: "create", cwd });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const outputs = await startRunningTurn(connection, session, sessionId, "turn-1", "req-1");
+
+    // Acknowledge the cancel request without sending the native turn/end.
+    connection.cancelResponse = Promise.resolve({ ok: true, value: { accepted: true } });
+    const processStop = Promise.withResolvers<undefined>();
+    connection.closeResult = processStop.promise;
+    const closing = session.close();
+    const closeOutcome = closing.then(
+      () => "closed",
+      () => "rejected",
+    );
+    const nextTick = () =>
+      new Promise<"pending">((resolve) => setImmediate(() => resolve("pending")));
+    try {
+      await expect(Promise.race([closeOutcome, nextTick()])).resolves.toBe("pending");
+      connection.fault(new ModernRemoteConnectionError("unavailable", "stream closed"));
+      await expect(outputs.next()).resolves.toMatchObject({
+        value: { kind: "event", event: { type: "turn.completed", outcome: { status: "failed" } } },
+      });
+      await expect(Promise.race([closeOutcome, nextTick()])).resolves.toBe("pending");
+    } finally {
+      processStop.resolve(undefined);
+    }
+    await expect(closing).resolves.toBeUndefined();
+    await expect(session.close()).resolves.toBeUndefined();
+    await expect(adapter.close()).resolves.toBeUndefined();
+  });
+
+  it("releases a cancel-failed Session after managed process exit without masking flush failure", async () => {
+    const { adapter, connection } = setup(["cancel-failed", "flush-failed", "req-1", "req-2"]);
+    const cwd = path.resolve("fixture-close-before-fault");
+    connection.expectedCwds.set("session-cancel-failed", cwd);
+    connection.expectedCwds.set("session-flush-failed", cwd);
+
+    const cancelOnly = await adapter.open({ kind: "create", cwd });
+    const flushFailed = await adapter.open({ kind: "create", cwd });
+    expect(cancelOnly.ok).toBe(true);
+    expect(flushFailed.ok).toBe(true);
+    if (!cancelOnly.ok || !flushFailed.ok) return;
+
+    await startRunningTurn(
+      connection,
+      cancelOnly.value,
+      "session-cancel-failed",
+      "turn-cancel-failed",
+      "req-1",
+    );
+    await startRunningTurn(
+      connection,
+      flushFailed.value,
+      "session-flush-failed",
+      "turn-flush-failed",
+      "req-2",
+    );
+
+    connection.cancelResponse = Promise.resolve({
+      ok: false,
+      error: { code: "session/cancel-rejected", message: "cancel rejected", details: {} },
+    });
+    await expect(cancelOnly.value.close()).rejects.toThrow("cancel rejected");
+    await expect(cancelOnly.value.close()).rejects.toThrow("cancel rejected");
+
+    connection.flushSession.mockRejectedValueOnce(new Error("export flush failed"));
+    await expect(flushFailed.value.close()).rejects.toThrow("cancel rejected");
+
+    connection.fault(new ModernRemoteConnectionError("unavailable", "stream closed"));
+    await expect(cancelOnly.value.close()).resolves.toBeUndefined();
+    await expect(flushFailed.value.close()).rejects.toThrow("cancel rejected");
+    await expect(adapter.close()).resolves.toBeUndefined();
+  });
+
+  it("drains an in-flight open that registered a Session before event startup faults", async () => {
+    const { adapter, connection } = setup(["pending-events"], {}, new Feed());
+    const cwd = path.resolve("fixture-open-events-fault");
+    connection.expectedCwds.set("session-pending-events", cwd);
+
+    const opening = adapter.open({ kind: "create", cwd });
+    await vi.waitFor(() =>
+      expect(connection.streams.some(({ endpoint }) => endpoint === "$events")).toBe(true),
+    );
+
+    let resolveProcessStop!: () => void;
+    connection.closeResult = new Promise<void>((resolve) => {
+      resolveProcessStop = resolve;
+    });
+    connection.fault(new ModernRemoteConnectionError("unavailable", "stream closed"));
+
+    await expect(opening).resolves.toMatchObject({ ok: false });
+    resolveProcessStop();
+    await expect(adapter.close()).resolves.toBeUndefined();
+  });
+
+  it("keeps blocking active Session release when fault cleanup cannot stop the managed process", async () => {
+    const { adapter, connection } = setup(["active", "req-active"]);
+    const cwd = path.resolve("fixture-fault-process-survived");
+    connection.expectedCwds.set("session-active", cwd);
+    const opened = await adapter.open({ kind: "create", cwd });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+
+    await startRunningTurn(
+      connection,
+      opened.value,
+      "session-active",
+      "turn-survived",
+      "req-active",
+    );
+
     connection.closeError = new Error("process tree survived");
     const unhandled = vi.fn();
     process.on("unhandledRejection", unhandled);
@@ -3110,6 +3378,7 @@ describe("Modern DeepSeek Harness Adapter", () => {
       connection.fault(new ModernRemoteConnectionError("unavailable", "stream closed"));
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(unhandled).not.toHaveBeenCalled();
+      await expect(opened.value.close()).rejects.toThrow("process tree survived");
       await expect(adapter.close()).rejects.toThrow("process tree survived");
     } finally {
       process.off("unhandledRejection", unhandled);

@@ -2,6 +2,7 @@
 
 import type { Context } from "@deepseek-ai/cordis";
 import {
+  WEB_ACTIVE_TURN_PROJECTION,
   WEB_FOLLOW_PROJECTION_KEYS,
   type WebToolOutputReference,
 } from "@codexhost/shared-contracts";
@@ -25,6 +26,7 @@ import type {
   SessionAddress,
   SessionAssistantStreamBaseline,
   SessionProjectionBaseline,
+  SessionPromptValue,
   SessionRequestId,
 } from "../../types.ts";
 import type {
@@ -162,6 +164,7 @@ export class Session implements SessionFace {
     SessionRequestId,
     {
       readonly placement: PendingSubmission["placement"];
+      readonly expectedTurnId: string | null;
       /** Latest received Inbox position; null means removed from that queue. */
       receipt?: {
         readonly target: InboxTarget;
@@ -289,6 +292,7 @@ export class Session implements SessionFace {
     ];
     this.submissionSettlements.set(requestId, {
       placement,
+      expectedTurnId: input.mode === "steer" ? this.activeTurnForSteering() : null,
       onRetire: input.onRetire,
       retiring: false,
     });
@@ -304,6 +308,11 @@ export class Session implements SessionFace {
     };
   }
 
+  private activeTurnForSteering(): string | null {
+    const value = this.projections.get(WEB_ACTIVE_TURN_PROJECTION);
+    return typeof value === "string" ? value : null;
+  }
+
   /**
    * Send (queue/steer passed through 1:1); failures land in the snapshot's promptError.
    * @param content - text, browser-owned temporary image uploads, and staged-file receipts.
@@ -317,7 +326,7 @@ export class Session implements SessionFace {
     mode: "queue" | "steer",
     signal?: AbortSignal,
     requestId?: SessionRequestId,
-  ): Promise<RemoteResult<{ accepted: true }>> {
+  ): Promise<RemoteResult<SessionPromptValue>> {
     const submittedRequestId = requestId ?? (randomUUID() as SessionRequestId);
     this.promptError = null;
     this.lastAgentError = null;
@@ -330,14 +339,34 @@ export class Session implements SessionFace {
     const inFlight = { observed: false };
     this.inFlightPrompts.set(submittedRequestId, inFlight);
     try {
-      let result: RemoteResult<{ accepted: true }>;
-      if (this.address === undefined) {
+      const submission = this.submissionSettlements.get(submittedRequestId);
+      let result: RemoteResult<SessionPromptValue>;
+      if (mode === "steer" && requestId !== undefined && submission === undefined) {
+        result = {
+          ok: false,
+          error: new RemoteError(
+            "remote/turn-changed",
+            "The selected Turn has ended or changed.",
+            {},
+          ),
+        };
+      } else if (this.address === undefined) {
         const clientTimeZone = resolvedClientTimeZone();
+        const remoteThread = this.projections.get("remoteHost") != null;
+        const sentWhileIdle = submission ? submission.placement === "transcript" : !this.running;
         result = await this.remote.session.prompt(
           {
             requestId: submittedRequestId,
             sessionId: this.sessionId,
             mode,
+            ...(remoteThread && mode === "queue" && sentWhileIdle ? { sendWhenIdle: true } : {}),
+            ...(mode === "steer"
+              ? {
+                  expectedTurnId: submission
+                    ? submission.expectedTurnId
+                    : this.activeTurnForSteering(),
+                }
+              : {}),
             content,
             clientTimeZone,
           },

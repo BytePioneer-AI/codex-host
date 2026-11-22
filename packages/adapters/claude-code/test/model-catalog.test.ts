@@ -37,6 +37,27 @@ describe("Claude Code runtime Model catalog", () => {
     expect(claudeModelValue(CLAUDE_DEFAULT_MODEL_REF)).toBeUndefined();
   });
 
+  it.each([
+    ["fable", ["sonnet", "claude-fable-5-2"], "claude-fable-5-2"],
+    ["Claude-FABLE [1M]", ["claude-fable-5-1", "claude-fable-5-1[1m]"], "claude-fable-5-1[1m]"],
+    ["fable", ["sonnet"], undefined],
+    ["fable", ["claude-fable-5", "claude-fable-5-1"], undefined],
+    ["fable[1m]", ["claude-fable-5-2"], undefined],
+    ["fable[custom]", ["claude-fable-5-2"], undefined],
+    ["provider/fable", ["claude-fable-5-2"], undefined],
+    ["claude-fable-5-1", ["claude-fable-5-2"], undefined],
+    ["fable", ["fable", "claude-fable-5-2"], "fable"],
+    ["claude-fable-5-2", ["claude-fable-5-2"], "claude-fable-5-2"],
+    ["sonnet", ["sonnet", "claude-fable-5-2"], "sonnet"],
+  ] as const)("normalizes stored %s with catalog IDs %j", (id, values, expected) => {
+    const { catalog } = normalizeClaudeModelCatalog(
+      snapshot(values.map((value) => ({ value, displayName: value }))),
+    );
+    expect(normalizeStoredClaudeModelRef(harnessModelRefSchema.parse({ id }), catalog)).toEqual(
+      expected === undefined ? undefined : { id: expected },
+    );
+  });
+
   it.each([undefined, "", " \t ", "ignored"])(
     "preserves default, aliases, and custom rows with description %j",
     (description) => {

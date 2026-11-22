@@ -252,6 +252,7 @@ declare module "@deepseek-ai/dsh-typert-protocol" {
     "session/tool-output-stale": Record<string, never>;
     "session/queue-item-not-found": { readonly itemId: MessageId };
     "session/steer-unavailable": { readonly itemId: MessageId };
+    "remote/turn-changed": Record<string, never>;
     "session/title-invalid": { readonly sessionId: SessionId };
     "session/fork-unavailable": { readonly sessionId: SessionId };
     "subagent/not-found": {
@@ -373,6 +374,10 @@ export interface SessionPromptRequest {
   readonly requestId: SessionRequestId;
   readonly sessionId: SessionId;
   readonly mode: "queue" | "steer";
+  /** A normal remote send made while idle can use the legacy idle entry point. */
+  readonly sendWhenIdle?: true;
+  /** Host Turn observed at the send gesture. Null means no target was observed. */
+  readonly expectedTurnId?: string | null;
   /** At least one non-whitespace text part or attachment. */
   readonly content: readonly PromptContentPart[];
   readonly clientTimeZone?: string;
@@ -381,6 +386,8 @@ export interface SessionPromptRequest {
 /** Receipt after one prompt enters the target Agent inbox. */
 export interface SessionPromptValue {
   readonly accepted: true;
+  /** Queue admission is confirmed. The subsequent automatic start was not confirmed. */
+  readonly queueStartUnconfirmed?: true;
 }
 
 /** Durable image read request. */

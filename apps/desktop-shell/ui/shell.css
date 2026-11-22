@@ -498,9 +498,19 @@ html[data-platform="darwin"] .topbar {
 }
 
 .card-icon--brand {
-  background: var(--icon-tile-bg);
-  border-color: var(--icon-tile-border);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-hairline);
+}
+
+.card-mascot-svg .mascot-body {
+  fill: var(--accent-navy);
+}
+
+.card-mascot-svg .mascot-accent {
+  fill: var(--accent-brand);
 }
 
 .card-icon svg {
@@ -509,10 +519,15 @@ html[data-platform="darwin"] .topbar {
   display: block;
 }
 
-.card-icon--brand svg,
+.card-icon--brand svg {
+  width: 28px;
+  height: 28px;
+  display: block;
+}
+
 .card-logo-img {
-  width: 26px;
-  height: 26px;
+  width: 30px;
+  height: 30px;
   display: block;
   object-fit: contain;
 }

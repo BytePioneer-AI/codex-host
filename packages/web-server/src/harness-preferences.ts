@@ -88,9 +88,9 @@ export class WebHarnessPreferences {
       default: { provider: string; model: string; reasoningEffort?: string };
       groups: ModelGroup[];
     },
-  >(catalog: T) {
-    try {
-      const external = await this.get();
+  >(catalog: T, snapshot = this.get().catch(() => undefined)) {
+    const external = await snapshot;
+    if (external) {
       const favorites = external.values.favorites;
       const configurationFor = (harnessId: string) =>
         external.values.newThread?.byHarness[harnessId];
@@ -145,15 +145,14 @@ export class WebHarnessPreferences {
         modelFavorites: favorites,
         preferencesAvailable: true,
       };
-    } catch {
-      // An older Host may lack preference RPCs; ordinary Sessions stay usable.
-      return {
-        ...catalog,
-        rememberedSelections: {},
-        modelFavorites: {},
-        preferencesAvailable: false,
-      };
     }
+    // An older Host may lack preference RPCs; ordinary Sessions stay usable.
+    return {
+      ...catalog,
+      rememberedSelections: {},
+      modelFavorites: {},
+      preferencesAvailable: false,
+    };
   }
   register(rpc: RpcRegistry) {
     rpc.register("codexhost/preferences/get", async () => {

@@ -34,12 +34,17 @@ import {
   stopFixture,
 } from "./app-server-host-fixture.js";
 
-it("projects saved Model defaults and favorites without modifying the preferences file", async () => {
+it("persists migrated Model Refs and retries only Harnesses without a catalog", async () => {
   const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
   const model = adapter.catalog.models[1]?.ref;
   assert(model, "Expected a second Model in the fake catalog");
+  const unavailable = new FakeHarnessAdapter(harnessIdSchema.parse("opencode"));
+  const inspect = vi.spyOn(adapter, "inspect");
+  const delayedInspect = vi.spyOn(unavailable, "inspect");
+  delayedInspect.mockRejectedValueOnce(new Error("Catalog unavailable"));
   const fixture = createFixture({
     externalAdapters: new Map([
+      ["opencode", unavailable],
       [
         "pi",
         Object.assign(adapter, {
@@ -56,10 +61,10 @@ it("projects saved Model defaults and favorites without modifying the preference
       revision: 7,
       scopes: {
         external: {
-          favorites: { pi: ["legacy-model", model.id, "retired"] },
+          favorites: { pi: ["legacy-model", model.id, "retired"], opencode: ["offline-ref"] },
           newThread: {
             lastHarness: "pi",
-            byHarness: { pi: { model: { id: "retired" }, thinkingOptionId: "low" } },
+            byHarness: { pi: { model: { id: "legacy-model" }, thinkingOptionId: "low" } },
           },
           delegation: { byHarness: { pi: { model: { id: "legacy-model" } } } },
         },
@@ -68,49 +73,41 @@ it("projects saved Model defaults and favorites without modifying the preference
   try {
     await fixture.ready;
     writeFileSync(file, before);
-    writeRequest(fixture.desktopInput, {
-      id: 81,
-      method: HARNESS_PREFERENCES_GET_METHOD,
-      params: {},
-    });
-    expect(await fixture.collector.waitFor((message) => requestId(message, 81))).toMatchObject({
-      result: {
-        revision: 7,
-        values: {
-          favorites: { pi: [model.id] },
-          newThread: { lastHarness: "pi", byHarness: {} },
-          delegation: { byHarness: { pi: { model } } },
-        },
-      },
-    });
-    vi.spyOn(adapter, "inspect").mockRejectedValueOnce(new Error("Catalog unavailable"));
+    const get = (id: number) => {
+      writeRequest(fixture.desktopInput, {
+        id,
+        method: HARNESS_PREFERENCES_GET_METHOD,
+        params: {},
+      });
+      return fixture.collector.waitFor((message) => requestId(message, id));
+    };
+    const migrated = {
+      favorites: { pi: [model.id, "retired"], opencode: ["offline-ref"] },
+      newThread: { lastHarness: "pi", byHarness: { pi: { model, thinkingOptionId: "low" } } },
+      delegation: { byHarness: { pi: { model } } },
+    };
+    expect(await get(81)).toMatchObject({ result: { revision: 8, values: migrated } });
+    expect(JSON.parse(readFileSync(file, "utf8")).scopes.external).toEqual(migrated);
+    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(delayedInspect).toHaveBeenCalledTimes(1);
+
+    expect(await get(82)).toMatchObject({ result: { revision: 8, values: migrated } });
+    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(delayedInspect).toHaveBeenCalledTimes(2);
+
     writeRequest(fixture.desktopInput, {
       id: 83,
-      method: HARNESS_PREFERENCES_GET_METHOD,
-      params: {},
-    });
-    expect(await fixture.collector.waitFor((message) => requestId(message, 83))).toMatchObject({
-      result: { revision: 7, values: JSON.parse(before).scopes.external },
-    });
-    expect(readFileSync(file, "utf8")).toBe(before);
-    writeRequest(fixture.desktopInput, {
-      id: 82,
       method: HARNESS_PREFERENCES_PATCH_METHOD,
       params: {
-        expectedRevision: 7,
+        expectedRevision: 8,
         operations: [{ kind: "favorite", harnessId: "pi", modelId: model.id, enabled: false }],
       },
     });
-    expect(await fixture.collector.waitFor((message) => requestId(message, 82))).toMatchObject({
-      result: {
-        revision: 8,
-        values: { favorites: { pi: [] } },
-      },
+    expect(await fixture.collector.waitFor((message) => requestId(message, 83))).toMatchObject({
+      result: { revision: 9, values: { favorites: { pi: ["retired"] } } },
     });
-    expect(JSON.parse(readFileSync(file, "utf8")).scopes.external).toEqual({
-      ...JSON.parse(before).scopes.external,
-      favorites: { pi: ["retired"] },
-    });
+    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(delayedInspect).toHaveBeenCalledTimes(2);
   } finally {
     await stopFixture(fixture);
   }

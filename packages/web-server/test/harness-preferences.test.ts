@@ -21,9 +21,12 @@ it("shares GUI file preferences across Web clients and ignores Web-only copies",
   const store = new HarnessPreferencesStore(join(root, "gui"));
   const host = new FakeChChannel();
   const native = host.request.bind(host);
+  let reads = 0;
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
-    if (method === HARNESS_PREFERENCES_GET_METHOD)
+    if (method === HARNESS_PREFERENCES_GET_METHOD) {
+      reads++;
       return (await store.get(String(params.scope ?? "external"))) as T;
+    }
     if (method === HARNESS_PREFERENCES_PATCH_METHOD)
       return (await store.patch(harnessPreferencePatchSchema.parse(params))) as T;
     return native<T>(method, params);
@@ -126,12 +129,18 @@ it("shares GUI file preferences across Web clients and ignores Web-only copies",
   assert.deepEqual(fastDecorated.rememberedSelections, {
     fake: { provider: "fake", model: "native" },
   });
-  await a.remember("fake", { model: { id: "native" }, permissionModeId: "auto" });
+  await a.remember("fake", { model: { id: "retired" }, permissionModeId: "auto" });
+  reads = 0;
   await call("session/create", { sessionId: "first", cwd: root });
+  assert.equal(reads, 1);
   const projection = (await call("session/projections", { sessionId: "first" })) as {
     values: Record<string, unknown>;
   };
   assert.deepEqual(projection.values.permissions, { currentValue: "auto" });
+  assert.deepEqual(projection.values.modelSelection, {
+    lastUsed: null,
+    next: { provider: "fake", model: "native" },
+  });
   await call("commands/execute", { agentId: "first", line: "/permission ask" });
   await call("session/create", { sessionId: "second", cwd: root });
   const next = (await call("session/projections", { sessionId: "second" })) as {

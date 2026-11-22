@@ -4,90 +4,61 @@ import {
   harnessModelRefKey,
   type HarnessModelCatalog,
   type HarnessModelRef,
-  type HarnessPreferenceSnapshot,
+  type HarnessPreferenceValues,
 } from "@codexhost/shared-contracts";
 import { normalizeStoredModelRef, storedModelCatalog } from "./stored-model-ref.js";
 
-export function storedPreferenceModels(input: {
+export function storedPreferenceModelMigration(input: {
   adapters: ReadonlyMap<string, HarnessAdapter>;
   loadAdapters: () => Promise<void>;
   inspectCodex: () => Promise<HarnessModelCatalog | undefined>;
 }) {
-  const catalogs = new Map<string, Promise<HarnessModelCatalog | undefined>>();
-  async function resolve(harnessId: string, ref: HarnessModelRef) {
-    let catalog = catalogs.get(harnessId);
-    if (!catalog) {
-      catalog = (
-        harnessId === "codex"
-          ? input.inspectCodex()
-          : input.loadAdapters().then(() => {
-              const adapter = input.adapters.get(harnessId);
-              return adapter && storedModelCatalog(adapter);
-            })
-      ).catch(() => undefined);
-      catalogs.set(harnessId, catalog);
-    }
-    return normalizeStoredModelRef(ref, await catalog, harnessId, input.adapters.get(harnessId));
-  }
-  async function favorite(harnessId: string, key: string) {
-    let ref: HarnessModelRef;
-    try {
-      ref = harnessModelRefFromKey(key);
-    } catch {
-      return undefined;
-    }
-    const model = await resolve(harnessId, ref);
-    return model && harnessModelRefKey(model);
-  }
-  async function snapshot(value: HarnessPreferenceSnapshot): Promise<HarnessPreferenceSnapshot> {
-    const { values } = value;
-    const favorites = Object.fromEntries(
-      await Promise.all(
-        Object.entries(values.favorites).map(async ([harnessId, keys]) => {
-          const models = new Set<string>();
-          for (const key of keys) {
-            const model = await favorite(harnessId, key);
-            if (model !== undefined) models.add(model);
+  return async (values: HarnessPreferenceValues, migrated: Set<string>) => {
+    const defaults = values.newThread?.byHarness ?? {};
+    const delegation = values.delegation?.byHarness ?? {};
+    const harnesses = new Set([
+      ...Object.keys(values.favorites),
+      ...Object.keys(defaults),
+      ...Object.keys(delegation),
+    ]);
+    await Promise.all(
+      [...harnesses].map(async (id) => {
+        if (migrated.has(id)) return;
+        const favorites = values.favorites[id];
+        const newThread = defaults[id];
+        const delegated = delegation[id];
+        if (!favorites?.length && !newThread?.model && !delegated?.model) return;
+        const catalog = await (async () => {
+          if (id === "codex") return input.inspectCodex();
+          await input.loadAdapters();
+          const adapter = input.adapters.get(id);
+          return adapter && storedModelCatalog(adapter);
+        })().catch(() => undefined);
+        if (!catalog) return;
+
+        const adapter = input.adapters.get(id);
+        // A missing Model may return later. Catalog consumers decide whether it can be used.
+        const normalize = async (ref: HarnessModelRef) =>
+          (await normalizeStoredModelRef(ref, catalog, id, adapter)) ?? ref;
+        if (favorites?.length) {
+          const keys = new Set<string>();
+          for (const key of favorites) {
+            let ref: HarnessModelRef;
+            try {
+              ref = harnessModelRefFromKey(key);
+            } catch {
+              keys.add(key);
+              continue;
+            }
+            const model = await normalize(ref);
+            keys.add(model === ref ? key : harnessModelRefKey(model));
           }
-          return [harnessId, [...models]];
-        }),
-      ),
+          values.favorites[id] = [...keys];
+        }
+        if (newThread?.model) newThread.model = await normalize(newThread.model);
+        if (delegated?.model) delegated.model = await normalize(delegated.model);
+        migrated.add(id);
+      }),
     );
-    const newThread = values.newThread && {
-      ...values.newThread,
-      byHarness: Object.fromEntries(
-        await Promise.all(
-          Object.entries(values.newThread.byHarness).map(async ([harnessId, saved]) => {
-            if (!saved.model) return [[harnessId, saved]] as const;
-            const model = await resolve(harnessId, saved.model);
-            if (model) return [[harnessId, { ...saved, model }]] as const;
-            return saved.permissionModeId
-              ? ([[harnessId, { permissionModeId: saved.permissionModeId }]] as const)
-              : [];
-          }),
-        ).then((entries) => entries.flat()),
-      ),
-    };
-    const delegation = values.delegation && {
-      byHarness: Object.fromEntries(
-        await Promise.all(
-          Object.entries(values.delegation.byHarness).map(async ([harnessId, saved]) => {
-            if (!saved.model) return [[harnessId, saved]] as const;
-            const model = await resolve(harnessId, saved.model);
-            return model ? ([[harnessId, { ...saved, model }]] as const) : [];
-          }),
-        ).then((entries) => entries.flat()),
-      ),
-    };
-    return {
-      ...value,
-      values: {
-        ...values,
-        favorites,
-        ...(newThread ? { newThread } : {}),
-        ...(delegation ? { delegation } : {}),
-      },
-    };
-  }
-  return { favorite, snapshot };
+  };
 }

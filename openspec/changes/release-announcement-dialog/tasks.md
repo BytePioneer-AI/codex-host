@@ -3,8 +3,8 @@
 ## 1. 数据与 Host
 
 - [ ] 1.1 `shared-contracts`：定义 `ReleaseAnnouncement` schema 和两个 RPC 的参数、返回 schema，并把 RPC 名称加入 Desktop、Web（`client-channel.ts`）和 Console 的允许列表。验证：`npx tsc -b packages/shared-contracts`。
-- [ ] 1.2 `update-manager`：按版本读取正式 GitHub Release（草稿、预发布、Tag 不符都视为无公告）。实现解析正文的纯函数，按 spec 拆分中英文、总结、主题和贡献者。验证：聚焦单测，用 v0.24.0 新版正文、旧格式正文、只有一种语言、预发布这几种情况做夹具。
-- [ ] 1.3 `host-runtime`：实现 `codexhost/announcement/get` 和 `codexhost/announcement/acknowledge`。已读版本持久化到 `release-announcement-v1.json`；已读后的非手动查询不访问 GitHub；进程内只缓存成功结果。验证：聚焦单测，覆盖已读后不请求网络、确认非当前版本被拒绝、失败不缓存。
+- [x] 1.2 `update-manager`：按版本读取正式 GitHub Release（草稿、预发布、Tag 不符都视为无公告）。实现解析正文的纯函数，按 spec 拆分中英文、总结、主题和贡献者。验证：聚焦单测，用 v0.24.0 新版正文、旧格式正文、只有一种语言、预发布这几种情况做夹具。
+- [x] 1.3 `host-runtime`：实现 `codexhost/announcement/get` 和 `codexhost/announcement/acknowledge`。已读版本持久化到 `release-announcement-v1.json`；已读后的非手动查询不访问 GitHub；进程内只缓存成功结果。验证：聚焦单测，覆盖已读后不请求网络、确认非当前版本被拒绝、失败不缓存。
 
 ## 2. 界面
 

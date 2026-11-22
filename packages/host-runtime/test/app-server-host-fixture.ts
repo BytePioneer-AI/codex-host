@@ -291,6 +291,7 @@ export function createFixture(
     createOfficialConnection?: () =>
       OfficialAppServerConnection | Promise<OfficialAppServerConnection>;
     updateCoordinator?: HostUpdateCoordinator;
+    releaseAnnouncement?: AppServerHostOptions["releaseAnnouncement"];
     runtimeMaintenance?: RuntimeMaintenance;
     consoleOpener?: HostConsoleOpener;
     webOpener?: AppServerHostOptions["webOpener"];
@@ -376,6 +377,7 @@ export function createFixture(
         }
       : {}),
     ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
+    ...(options.releaseAnnouncement ? { releaseAnnouncement: options.releaseAnnouncement } : {}),
     ...(options.runtimeMaintenance ? { runtimeMaintenance: options.runtimeMaintenance } : {}),
     ...(options.consoleOpener ? { consoleOpener: options.consoleOpener } : {}),
     ...(options.webOpener ? { webOpener: options.webOpener } : {}),

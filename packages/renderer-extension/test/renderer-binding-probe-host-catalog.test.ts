@@ -5,6 +5,7 @@ import {
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
   type AccountCreditsSnapshot,
+  type HarnessModelCatalog,
 } from "@codexhost/shared-contracts";
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
 
@@ -1291,7 +1292,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
           defaultModel: liveNormal,
         }
       : initialCatalog;
-    let catalog = initialCatalog;
+    let catalog: HarnessModelCatalog = initialCatalog;
     let effectiveModel = normal;
     const host = {
       listHarnessPlugins,

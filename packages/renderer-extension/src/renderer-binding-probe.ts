@@ -206,7 +206,12 @@ interface HostHarnessAvailabilityState {
   errors: HarnessAvailabilityErrors;
   webUi: HarnessWebUiAvailability;
   requestGeneration: number;
-  request: { client: RendererModelClient; promise: Promise<void>; force: boolean } | null;
+  request: {
+    client: RendererModelClient;
+    promise: Promise<void>;
+    force: boolean;
+    credentialAccess?: "retry";
+  } | null;
   retryTimer: number | null;
   retryAttempt: number;
 }
@@ -2812,7 +2817,12 @@ export function installRendererBindingProbe(
       scheduleHarnessAvailabilityRetry(hostId);
       return Promise.resolve();
     }
-    if (state.request?.client === client && (!force || state.request.force)) {
+    // A credential retry must reach the Adapter; an observation started without it cannot stand in.
+    if (
+      state.request?.client === client &&
+      (!force || state.request.force) &&
+      (!credentialAccess || state.request.credentialAccess === credentialAccess)
+    ) {
       return state.request.promise;
     }
     if (state.directoryClient !== client) {
@@ -2987,7 +2997,7 @@ export function installRendererBindingProbe(
         scheduleHarnessAvailabilityRetry(hostId);
       }
     })();
-    const request = { client, promise, force };
+    const request = { client, promise, force, ...(credentialAccess ? { credentialAccess } : {}) };
     state.request = request;
     void promise.then(
       () => {

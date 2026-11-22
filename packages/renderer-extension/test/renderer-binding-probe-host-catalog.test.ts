@@ -2281,6 +2281,77 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(latest()?.selected).toEqual(readyInspection().catalog.defaultModel);
   });
 
+  it("sends a failed first catalog's credential retry even while a plain forced check runs", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    const plainCheck = Promise.withResolvers<ReturnType<typeof emptyInspection>>();
+    let holdPlainCheck = false;
+    let catalogRequests = 0;
+    const client = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(
+        async ({ purpose, credentialAccess }: { purpose?: string; credentialAccess?: string }) => {
+          if (purpose === "availability") {
+            if (holdPlainCheck && credentialAccess === undefined) return plainCheck.promise;
+            return emptyInspection();
+          }
+          catalogRequests += 1;
+          if (catalogRequests > 1) return readyInspection();
+          return {
+            status: "error",
+            error: { code: "unavailable", message: "models failed", retryable: true },
+          } as const;
+        },
+      ),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    const availability = () =>
+      testState
+        .getConnectionDiagnostics?.()
+        ?.snapshot()
+        .hosts[0]?.agents.find(({ plugin }) => plugin?.id === "claude-code")?.availability;
+    const latest = () => testState.renderedModelViews.at(-1);
+    await vi.waitFor(() => expect(availability()).toBe("ready"));
+    testState.selectAgent?.("claude-code");
+    await vi.waitFor(() => expect(latest()?.status).toBe("error"));
+    expect(latest()?.catalog).toBeUndefined();
+    expect(availability()).toBe("error");
+
+    // A forced availability check without credential retry is still in flight.
+    holdPlainCheck = true;
+    const plainRefresh = testState.getConnectionDiagnostics?.()?.refresh("local");
+    await vi.waitFor(() =>
+      expect(
+        client.inspectHarness.mock.calls.some(
+          ([input]) => input.purpose === "availability" && input.credentialAccess === undefined,
+        ),
+      ).toBe(true),
+    );
+
+    testState.refreshModels?.();
+    await vi.waitFor(() =>
+      expect(
+        client.inspectHarness.mock.calls.some(
+          ([input]) => input.purpose === "availability" && input.credentialAccess === "retry",
+        ),
+      ).toBe(true),
+    );
+    plainCheck.resolve(emptyInspection());
+    await plainRefresh;
+    await vi.waitFor(() => expect(latest()?.status).toBe("ready"));
+    expect(latest()?.selected).toEqual(readyInspection().catalog.defaultModel);
+  });
+
   it("confirms a pending Permission Mode selection while models refresh", async () => {
     installFakeBrowser();
     const inspection = {

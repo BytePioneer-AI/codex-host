@@ -219,6 +219,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 5px;
   min-height: 26px;
   padding: 2px 11px;
   border: 0;
@@ -248,6 +249,14 @@
   box-shadow:
     0 1px 2px rgb(0 0 0 / 8%),
     0 0 0 0.5px var(--dsw-alias-border-l2);
+}
+
+.tabUpdateDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-business-primary);
 }
 
 .searchBox {
@@ -810,9 +819,17 @@
   white-space: nowrap;
 }
 
-.updateCue {
+.cardUpdate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
   color: var(--dsw-alias-state-business-primary);
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  overflow-wrap: anywhere;
 }
 
 .metaMetric,

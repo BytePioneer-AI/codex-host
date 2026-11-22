@@ -113,7 +113,7 @@ export interface WebExtensionCardProps {
   readonly capabilityBadges?: readonly ExtensionCapabilityBadge[] | undefined;
   readonly statusDot?:
     { readonly tone: "info" | "warning" | "danger"; readonly label: string } | undefined;
-  readonly updateHint?: { readonly label: string; readonly title: string } | undefined;
+  readonly update?: { readonly label: string; readonly action: ReactNode } | undefined;
   readonly attention?: { readonly tone: "warning" | "danger"; readonly text: string } | undefined;
   readonly secondaryAction?: ReactNode;
   readonly actionControl: ReactNode;
@@ -150,7 +150,7 @@ export function WebExtensionCard({
   platformBadge,
   capabilityBadges = [],
   statusDot,
-  updateHint,
+  update,
   attention,
   secondaryAction,
   actionControl,
@@ -172,7 +172,6 @@ export function WebExtensionCard({
   const trimmedDescription = description?.trim() ?? "";
   const showMeta =
     authorVersion !== "" ||
-    updateHint !== undefined ||
     repositoryHref !== null ||
     formattedStars !== null ||
     formattedDownloads !== null ||
@@ -266,27 +265,22 @@ export function WebExtensionCard({
         </div>
       )}
 
-      {/* Row 3: Borderless muted metadata line */}
+      {update && (
+        <div className={css.cardUpdate} data-update-available="true">
+          <span>{update.label}</span>
+          <div onClick={stopBubble} onKeyDown={stopBubble}>
+            {update.action}
+          </div>
+        </div>
+      )}
+
+      {/* Borderless muted metadata line */}
       {showMeta && (
         <div className={css.cardMeta}>
           <div className={css.cardMetaLeft}>
-            {(authorVersion !== "" || updateHint !== undefined) && (
-              <span
-                className={css.authorVersion}
-                title={
-                  updateHint
-                    ? authorVersion
-                      ? `${authorVersion} · ${updateHint.title}`
-                      : updateHint.title
-                    : authorVersion
-                }
-              >
-                {authorVersion !== "" && <span>{authorVersion}</span>}
-                {updateHint !== undefined && (
-                  <span className={css.updateCue} data-update-available="true">
-                    {authorVersion !== "" ? ` · ${updateHint.label}` : updateHint.label}
-                  </span>
-                )}
+            {authorVersion !== "" && (
+              <span className={css.authorVersion} title={authorVersion}>
+                {authorVersion}
               </span>
             )}
             {repositoryHref !== null && (

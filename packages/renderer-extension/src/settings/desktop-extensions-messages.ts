@@ -31,6 +31,7 @@ export interface DesktopExtensionsMessages {
   readonly tabListLabel: string;
   readonly tabInstalled: string;
   readonly tabMarketplace: string;
+  readonly tabMarketplaceCount: string;
   readonly desktopDisconnected: string;
   readonly loading: string;
   readonly unavailableTitle: string;
@@ -74,6 +75,8 @@ export interface DesktopExtensionsMessages {
   readonly categories: Readonly<Record<DesktopExtensionCategory, string>>;
   readonly attentionHeading: string;
   readonly updateAvailable: string;
+  readonly updateVersionCue: string;
+  readonly installedUpdatesAvailable: string;
   readonly trustOfficial: string;
   readonly trustCommunity: string;
   readonly communityNotice: string;
@@ -224,7 +227,8 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   importButton: "Import plugin",
   tabListLabel: "Plugin views",
   tabInstalled: "Installed ({count})",
-  tabMarketplace: "Marketplace ({count})",
+  tabMarketplace: "Marketplace",
+  tabMarketplaceCount: "Marketplace ({count})",
   desktopDisconnected: "Desktop disconnected",
   loading: "Loading plugins…",
   unavailableTitle: "Plugin management is unavailable",
@@ -242,14 +246,15 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   filterAll: "All",
   filterPage: "Page",
   filterWidget: "Widget",
-  filterWeb: "Web",
-  filterDesktop: "Desktop",
+  filterWeb: "CH Web",
+  filterDesktop: "Codex Desktop",
   filterBackend: "Backend",
   platformLabel: "Supported platforms",
-  platformBoth: "Desktop & Web",
-  platformDesktopOnly: "Desktop Only",
-  platformWebOnly: "Web Only",
-  platformWebOnlyNotice: "Runs in Web UI only. You can still install or toggle it from Desktop.",
+  platformBoth: "Codex Desktop & CH Web",
+  platformDesktopOnly: "Codex Desktop Only",
+  platformWebOnly: "CH Web Only",
+  platformWebOnlyNotice:
+    "Runs in CH Web only. You can still install or toggle it from Codex Desktop.",
   badgePage: "Page",
   badgeWidget: "Widget",
   badgeBackend: "Backend",
@@ -277,6 +282,8 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   }),
   attentionHeading: "Needs Attention",
   updateAvailable: "Update available",
+  updateVersionCue: "Update v{version}",
+  installedUpdatesAvailable: "Plugin updates available",
   trustOfficial: "Official",
   trustCommunity: "Community",
   communityNotice: "Community plugin — review its source repository before enabling.",
@@ -450,7 +457,8 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   importButton: "导入插件",
   tabListLabel: "插件视图",
   tabInstalled: "已安装 ({count})",
-  tabMarketplace: "市场 ({count})",
+  tabMarketplace: "市场",
+  tabMarketplaceCount: "市场 ({count})",
   desktopDisconnected: "Desktop 未连接",
   loading: "正在加载插件…",
   unavailableTitle: "无法管理插件",
@@ -466,14 +474,14 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   filterAll: "全部",
   filterPage: "独立页面",
   filterWidget: "挂件",
-  filterWeb: "网页端",
-  filterDesktop: "桌面端",
+  filterWeb: "CH Web",
+  filterDesktop: "Codex Desktop",
   filterBackend: "后台",
   platformLabel: "适用平台",
-  platformBoth: "桌面端 · 网页端",
-  platformDesktopOnly: "仅桌面端",
-  platformWebOnly: "仅网页端",
-  platformWebOnlyNotice: "此插件仅在网页端界面生效，桌面端仅支持安装与启停管理。",
+  platformBoth: "Codex Desktop · CH Web",
+  platformDesktopOnly: "仅 Codex Desktop",
+  platformWebOnly: "仅 CH Web",
+  platformWebOnlyNotice: "此插件仅在 CH Web 界面生效，Codex Desktop 仅支持安装与启停管理。",
   badgePage: "独立页面",
   badgeWidget: "挂件",
   badgeBackend: "后台",
@@ -501,6 +509,8 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   }),
   attentionHeading: "需要关注",
   updateAvailable: "可更新",
+  updateVersionCue: "可更新 v{version}",
+  installedUpdatesAvailable: "有插件可更新",
   trustOfficial: "官方",
   trustCommunity: "社区",
   communityNotice: "社区插件，启用前建议先查看源码仓库。",

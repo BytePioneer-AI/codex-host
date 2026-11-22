@@ -376,6 +376,17 @@ function sampleList(overrides: Partial<HostExtensionsListResult> = {}): HostExte
   };
 }
 
+function sampleCatalog(extensions: HostExtensionCatalogEntry[]): HostExtensionsCatalogResult {
+  return {
+    schemaVersion: 2,
+    generatedAt: "2026-07-02T00:00:00.000Z",
+    catalogUrl: "https://example.com/catalog.v2.json",
+    fetchedAt: "2026-07-02T00:00:00.000Z",
+    cached: false,
+    extensions,
+  };
+}
+
 function makeCatalogEntry(
   overrides: Partial<HostExtensionCatalogEntry>,
 ): HostExtensionCatalogEntry {
@@ -618,7 +629,7 @@ describe("Unified Host extensions settings page", () => {
     // The shared page and widget have separate badges; only the page adds an Open Page button.
     const treeCard = must(cards[2]);
     expect(textOf(descendants(treeCard).find((el) => el.dataset.platform === "both"))).toBe(
-      "桌面端 · 网页端",
+      "Codex Desktop · CH Web",
     );
     const treeBadges = descendants(treeCard)
       .filter((el) => el.dataset.capability)
@@ -638,7 +649,7 @@ describe("Unified Host extensions settings page", () => {
     // The Desktop-only card has no Open Page button.
     const badgesCard = must(cards[3]);
     expect(textOf(descendants(badgesCard).find((el) => el.dataset.platform === "desktop"))).toBe(
-      "仅桌面端",
+      "仅 Codex Desktop",
     );
     expect(descendants(badgesCard).find((el) => el.dataset.action === "open-page")).toBeUndefined();
 
@@ -710,14 +721,14 @@ describe("Unified Host extensions settings page", () => {
     const desktopPill = must(
       descendants(mounted.content).find((el) => el.dataset.capabilityFilter === "desktop"),
     );
-    expect(textOf(desktopPill)).toBe("桌面端");
+    expect(textOf(desktopPill)).toBe("Codex Desktop");
     desktopPill.dispatch("click");
     expect(cardIds()).toEqual(["sidebar-thread-tree", "sidebar-delegation-badges"]);
 
     const webPill = must(
       descendants(mounted.content).find((el) => el.dataset.capabilityFilter === "web"),
     );
-    expect(textOf(webPill)).toBe("网页端");
+    expect(textOf(webPill)).toBe("CH Web");
     webPill.dispatch("click");
     expect(cardIds()).toEqual(["sidebar-thread-tree"]);
 
@@ -770,42 +781,123 @@ describe("Unified Host extensions settings page", () => {
     mounted.dispose();
   });
 
+  it("preloads the Marketplace and updates an installed plugin directly from its card", async () => {
+    const list = sampleList();
+    const tree = must(list.extensions[0]);
+    if (tree.state !== "valid") throw new Error("Expected the installed tree to be valid");
+    const installed = {
+      ...tree,
+      activationId: "act-tree-2",
+      digest: "c".repeat(64),
+      manifest: { ...tree.manifest, version: "0.2.0" },
+    };
+    const pendingCatalog = deferred<HostExtensionsCatalogResult>();
+    const pendingUpdate = deferred<typeof installed & { replaced: boolean }>();
+    const client: RendererDesktopExtensionsClient = {
+      listHostExtensions: vi
+        .fn<() => Promise<HostExtensionsListResult>>()
+        .mockResolvedValueOnce(list)
+        .mockResolvedValue({ ...list, extensions: [installed, ...list.extensions.slice(1)] }),
+      listHostExtensionCatalog: vi.fn(() => pendingCatalog.promise),
+      updateHostExtension: vi.fn(() => pendingUpdate.promise),
+    };
+    const mounted = mountPage("zh-CN", () => client);
+    const elements = () => descendants(mounted.content);
+    const marketplaceTab = must(elements().find((el) => el.dataset.tab === "marketplace"));
+    const installedTab = must(elements().find((el) => el.dataset.tab === "installed"));
+    const treeCard = () =>
+      must(elements().find((el) => el.tagName === "article" && el.dataset.extensionId === tree.id));
+    const updateButton = () => descendants(treeCard()).find((el) => el.dataset.action === "update");
+    expect(textOf(marketplaceTab)).toBe("市场");
+    expect(client.listHostExtensionCatalog).toHaveBeenCalledWith({});
+    await vi.waitFor(() => expect(textOf(treeCard())).toContain("侧栏委派树"));
+    expect(installedTab.getAttribute("aria-selected")).toBe("true");
+    expect(textOf(marketplaceTab)).toBe("市场");
+    expect(updateButton()).toBeUndefined();
+
+    pendingCatalog.resolve(sampleCatalog([makeCatalogEntry({ id: tree.id, version: "0.2.0" })]));
+    await vi.waitFor(() => expect(textOf(marketplaceTab)).toBe("市场 (1)"));
+    expect(installedTab.getAttribute("aria-description")).toBe("有插件可更新");
+    expect(textOf(treeCard())).toContain("可更新 v0.2.0");
+    const button = must(updateButton());
+    expect(textOf(button)).toBe("更新");
+    const pageButton = must(
+      descendants(treeCard()).find((el) => el.dataset.action === "open-page"),
+    );
+    expect(button.parent).not.toBe(pageButton.parent);
+    expect(button.dispatch("keydown", { key: "Enter" }).stopped).toBe(true);
+    button.dispatchBubbling("click");
+    expect(elements().some((el) => el.tagName === "dialog" && el.open)).toBe(false);
+    expect(client.updateHostExtension).toHaveBeenCalledWith({
+      id: tree.id,
+      expectedDigest: tree.digest,
+      expectedActivationId: tree.activationId,
+      source: { type: "catalog", id: tree.id },
+    });
+    const updating = must(updateButton());
+    expect(updating.disabled).toBe(true);
+    expect(updating.getAttribute("aria-busy")).toBe("true");
+    expect(textOf(updating)).toBe("更新中…");
+
+    pendingUpdate.resolve({ ...installed, replaced: true });
+    await vi.waitFor(() => expect(updateButton()).toBeUndefined());
+    expect(installedTab.getAttribute("aria-description")).toBe("");
+    expect(textOf(treeCard())).toContain("v0.2.0");
+    mounted.dispose();
+  });
+
+  it("keeps a failed Marketplace prefetch off the installed tab and counts an empty catalog after retry", async () => {
+    const listHostExtensionCatalog = vi
+      .fn<() => Promise<HostExtensionsCatalogResult>>()
+      .mockRejectedValueOnce(new Error("Catalog offline"))
+      .mockResolvedValue(sampleCatalog([]));
+    const mounted = mountPage("en", () => ({
+      listHostExtensions: async () => sampleList(),
+      listHostExtensionCatalog,
+    }));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("Sidebar Thread Tree"));
+    expect(textOf(mounted.content)).not.toContain("Catalog offline");
+    const marketplaceTab = must(
+      descendants(mounted.content).find((el) => el.dataset.tab === "marketplace"),
+    );
+    expect(textOf(marketplaceTab)).toBe("Marketplace");
+    marketplaceTab.dispatch("click");
+    expect(textOf(mounted.content)).toContain("Catalog offline");
+    const retry = must(
+      descendants(mounted.content).find((el) => el.tagName === "button" && textOf(el) === "Retry"),
+    );
+    retry.dispatch("click");
+    await vi.waitFor(() => expect(textOf(marketplaceTab)).toBe("Marketplace (0)"));
+    expect(textOf(mounted.content)).not.toContain("Catalog offline");
+    mounted.dispose();
+  });
+
   it.each([
     {
       locale: "en",
-      filterDesktop: "Desktop",
-      filterWeb: "Web",
       label: "Supported platforms",
-      both: "Desktop & Web",
-      desktopOnly: "Desktop Only",
-      webOnly: "Web Only",
-      notice: "Runs in Web UI only. You can still install or toggle it from Desktop.",
+      both: "Codex Desktop & CH Web",
+      desktopOnly: "Codex Desktop Only",
+      webOnly: "CH Web Only",
+      notice: "Runs in CH Web only. You can still install or toggle it from Codex Desktop.",
     },
     {
       locale: "zh-CN",
-      filterDesktop: "桌面端",
-      filterWeb: "网页端",
       label: "适用平台",
-      both: "桌面端 · 网页端",
-      desktopOnly: "仅桌面端",
-      webOnly: "仅网页端",
-      notice: "此插件仅在网页端界面生效，桌面端仅支持安装与启停管理。",
+      both: "Codex Desktop · CH Web",
+      desktopOnly: "仅 Codex Desktop",
+      webOnly: "仅 CH Web",
+      notice: "此插件仅在 CH Web 界面生效，Codex Desktop 仅支持安装与启停管理。",
     },
   ] as const)("shows Marketplace platform filters and detail guidance in $locale", async (copy) => {
     const mounted = mountPage(copy.locale, () => ({
       listHostExtensions: async () => sampleList(),
-      listHostExtensionCatalog: async (): Promise<HostExtensionsCatalogResult> => ({
-        schemaVersion: 2,
-        generatedAt: "2026-07-02T00:00:00.000Z",
-        catalogUrl: "https://example.com/catalog.v2.json",
-        fetchedAt: "2026-07-02T00:00:00.000Z",
-        cached: false,
-        extensions: [
+      listHostExtensionCatalog: async () =>
+        sampleCatalog([
           makeCatalogEntry({ id: "desktop-only" }),
           makeCatalogEntry({ id: "web-only", targets: ["web"], apis: { web: 1 } }),
           makeCatalogEntry({ id: "both", targets: ["desktop", "web"], apis: { page: 1 } }),
-        ],
-      }),
+        ]),
     }));
     must(descendants(mounted.content).find((el) => el.dataset.tab === "marketplace")).dispatch(
       "click",
@@ -831,8 +923,8 @@ describe("Unified Host extensions settings page", () => {
     checkPlatform("both", "both", copy.both);
 
     for (const [filter, label] of [
-      ["desktop", copy.filterDesktop],
-      ["web", copy.filterWeb],
+      ["desktop", "Codex Desktop"],
+      ["web", "CH Web"],
     ]) {
       const pill = must(
         descendants(mounted.content).find((el) => el.dataset.capabilityFilter === filter),

@@ -349,7 +349,15 @@ export function createDesktopExtensionsSettingsPage(
       installedTabButton.dataset.tab = "installed";
       installedTabButton.setAttribute("role", "tab");
       installedTabButton.setAttribute("aria-selected", "true");
-      installedTabButton.textContent = formatMessage(copy.tabInstalled, { count: "0" });
+      const installedTabLabel = createEl(document, "span");
+      const installedTabUpdateDot = createEl(
+        document,
+        "span",
+        "settings-extensions-segmented__update-dot",
+      );
+      installedTabUpdateDot.hidden = true;
+      installedTabUpdateDot.setAttribute("aria-hidden", "true");
+      installedTabButton.append(installedTabLabel, installedTabUpdateDot);
 
       const marketplaceTabButton = createEl(
         document,
@@ -360,7 +368,7 @@ export function createDesktopExtensionsSettingsPage(
       marketplaceTabButton.dataset.tab = "marketplace";
       marketplaceTabButton.setAttribute("role", "tab");
       marketplaceTabButton.setAttribute("aria-selected", "false");
-      marketplaceTabButton.textContent = formatMessage(copy.tabMarketplace, { count: "0" });
+      marketplaceTabButton.textContent = copy.tabMarketplace;
 
       tabList.append(installedTabButton, marketplaceTabButton);
 
@@ -426,6 +434,7 @@ export function createDesktopExtensionsSettingsPage(
       let activeTab: ActiveTab = "installed";
       let listing: HostExtensionsListResult | null = null;
       let catalog: HostExtensionsCatalogResult | null = null;
+      let catalogById = new Map<string, HostExtensionCatalogEntry>();
       let unavailable = false;
       let catalogUnavailable = false;
       let catalogError: string | null = null;
@@ -448,6 +457,8 @@ export function createDesktopExtensionsSettingsPage(
         return {
           client,
           canInstall: !unavailable && Boolean(client?.installHostExtension),
+          canUpdate:
+            !unavailable && Boolean(client?.updateHostExtension || client?.installHostExtension),
           canUninstall: !unavailable && Boolean(client?.uninstallHostExtension),
           canRecover: !unavailable && Boolean(client?.recoverHostExtensions),
         };
@@ -489,7 +500,7 @@ export function createDesktopExtensionsSettingsPage(
         detailModal.close();
         importModal.close();
         createModal.close();
-        const catalogEntry = catalog?.extensions.find((entry) => entry.id === item.id);
+        const catalogEntry = catalogById.get(item.id);
         listViewWrap.hidden = true;
         pageViewHost.hidden = false;
         pageHost.open(item, catalogEntry?.icon);
@@ -614,12 +625,20 @@ export function createDesktopExtensionsSettingsPage(
         importButton.disabled = mutating || !canInstall;
         recoveryMenuItem.disabled = mutating || !canRecover;
 
-        installedTabButton.textContent = formatMessage(copy.tabInstalled, {
+        installedTabLabel.textContent = formatMessage(copy.tabInstalled, {
           count: String(listing?.extensions.length ?? 0),
         });
-        marketplaceTabButton.textContent = formatMessage(copy.tabMarketplace, {
-          count: String(catalog?.extensions.length ?? 0),
-        });
+        const hasInstalledUpdates = listing?.extensions.some((item) =>
+          hasCatalogUpdate(item, catalogById.get(item.id)),
+        );
+        installedTabUpdateDot.hidden = !hasInstalledUpdates;
+        installedTabButton.setAttribute(
+          "aria-description",
+          hasInstalledUpdates ? copy.installedUpdatesAvailable : "",
+        );
+        marketplaceTabButton.textContent = catalog
+          ? formatMessage(copy.tabMarketplaceCount, { count: String(catalog.extensions.length) })
+          : copy.tabMarketplace;
         installedTabButton.setAttribute("aria-selected", String(activeTab === "installed"));
         marketplaceTabButton.setAttribute("aria-selected", String(activeTab === "marketplace"));
         syncLocaleControl();
@@ -820,6 +839,7 @@ export function createDesktopExtensionsSettingsPage(
         item: HostExtensionListItem,
         allExtensions: readonly HostExtensionListItem[],
         catalogEntry: HostExtensionCatalogEntry | undefined,
+        canUpdate: boolean,
       ): HTMLElement => {
         const contentLocale = resolveContentLocale();
         const displayName = extensionDisplayName(item, contentLocale);
@@ -869,13 +889,29 @@ export function createDesktopExtensionsSettingsPage(
           openPageButton = btn;
         }
 
-        const updateHint =
-          hasCatalogUpdate(item, catalogEntry) && catalogEntry
-            ? {
-                label: copy.updateAvailable,
-                title: formatMessage(copy.updateToVersion, { version: catalogEntry.version }),
-              }
-            : undefined;
+        let update: { label: string; action: HTMLButtonElement } | undefined;
+        if (catalogEntry && hasCatalogUpdate(item, catalogEntry)) {
+          const updating = activeMutationId === item.id && activeMutationAction === "update";
+          const button = createEl(
+            document,
+            "button",
+            "settings-command-button settings-command-button--secondary settings-extensions-card__button",
+            updating ? copy.updating : copy.update,
+          );
+          button.type = "button";
+          button.dataset.action = "update";
+          button.setAttribute("aria-busy", String(updating));
+          button.disabled = mutating || !canUpdate;
+          button.addEventListener("click", () => {
+            if (!button.disabled) void installFromCatalog(catalogEntry, true);
+          });
+          update = {
+            label: formatMessage(copy.updateVersionCue, {
+              version: catalogEntry.version.replace(/^v/u, ""),
+            }),
+            action: button,
+          };
+        }
 
         const attention = resolveAttentionDetail(item, allExtensions, messages.locale, copy);
 
@@ -897,7 +933,7 @@ export function createDesktopExtensionsSettingsPage(
           downloads: catalogEntry?.downloads,
           trustTier: catalogEntry?.trustTier,
           statusState,
-          updateHint,
+          update,
           description: extensionDescription(item, contentLocale),
           attention,
           attentionId: attention ? errorId : undefined,
@@ -968,11 +1004,6 @@ export function createDesktopExtensionsSettingsPage(
           return;
         }
 
-        const catalogById = new Map<string, HostExtensionCatalogEntry>();
-        for (const entry of catalog?.extensions ?? []) {
-          catalogById.set(entry.id, entry);
-        }
-
         const attentionItems: HostExtensionListItem[] = [];
         const normalItems: HostExtensionListItem[] = [];
         for (const item of visibleExtensions) {
@@ -994,10 +1025,13 @@ export function createDesktopExtensionsSettingsPage(
         });
 
         const allExtensions = listing.extensions;
+        const { canUpdate } = clientCapabilities();
         const buildGrid = (items: readonly HostExtensionListItem[]): HTMLElement => {
           const grid = createEl(document, "div", "settings-extensions-grid");
           for (const item of items) {
-            grid.append(renderExtensionCard(item, allExtensions, catalogById.get(item.id)));
+            grid.append(
+              renderExtensionCard(item, allExtensions, catalogById.get(item.id), canUpdate),
+            );
           }
           return grid;
         };
@@ -1331,6 +1365,7 @@ export function createDesktopExtensionsSettingsPage(
           catalogUnavailable = false;
           catalogError = null;
           catalog = result;
+          catalogById = new Map(result.extensions.map((entry) => [entry.id, entry]));
           render();
         } catch (error) {
           if (disposed || context.signal.aborted || token !== catalogRequestToken) return;
@@ -1338,6 +1373,7 @@ export function createDesktopExtensionsSettingsPage(
           if (error instanceof RendererMethodUnavailableError) {
             catalogUnavailable = true;
             catalog = null;
+            catalogById.clear();
             render();
             return;
           }
@@ -1783,8 +1819,14 @@ export function createDesktopExtensionsSettingsPage(
         activeTab = next;
         setFeedback(null);
         render();
-        if (next === "marketplace" && !catalog && !catalogLoading && !catalogUnavailable) {
-          void loadCatalog({ forceRefresh: false, silent: false });
+        if (
+          next === "marketplace" &&
+          !catalog &&
+          !catalogLoading &&
+          !catalogUnavailable &&
+          !catalogError
+        ) {
+          void loadCatalog({ silent: true });
         }
       };
 
@@ -1911,6 +1953,7 @@ export function createDesktopExtensionsSettingsPage(
           if (!catalogLoading) void loadCatalog({ forceRefresh: true, silent: false });
         } else if (!loading) {
           void loadInstalled({ silent: false, keepFeedback: false });
+          if (!catalogLoading) void loadCatalog({ forceRefresh: true, silent: true });
         }
       });
 
@@ -1936,7 +1979,7 @@ export function createDesktopExtensionsSettingsPage(
 
       void loadInstalled({ silent: false });
       if (resolveAvailableClient(getClient)?.listHostExtensionCatalog) {
-        void loadCatalog({ forceRefresh: false, silent: true });
+        void loadCatalog({ silent: true });
       }
 
       return () => {

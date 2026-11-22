@@ -3503,9 +3503,17 @@
   outline-offset: 2px;
 }
 
-.settings-extensions-card__update-cue {
+.settings-extensions-card__update {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
   color: var(--settings-focus);
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  overflow-wrap: anywhere;
 }
 
 .settings-extensions-card__categories-text {
@@ -3672,6 +3680,14 @@ dialog.settings-account-dialog.settings-extensions-detail-dialog::backdrop {
     color 140ms ease,
     background-color 140ms ease,
     box-shadow 140ms ease;
+}
+
+.settings-extensions-segmented__update-dot:not([hidden]) {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--settings-focus);
 }
 
 .settings-extensions-segmented__tab:hover:not(:disabled) {

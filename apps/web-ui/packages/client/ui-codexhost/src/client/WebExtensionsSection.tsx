@@ -86,8 +86,7 @@ interface MarketState {
   readonly loading: boolean;
   readonly loaded: boolean;
   readonly entries: readonly HostExtensionCatalogEntry[];
-  readonly cached: boolean;
-  readonly error: string | null;
+  readonly error: { readonly cause: unknown } | null;
 }
 
 type SelectedRef =
@@ -110,7 +109,6 @@ const INITIAL_MARKET: MarketState = {
   loading: false,
   loaded: false,
   entries: [],
-  cached: false,
   error: null,
 };
 
@@ -224,41 +222,34 @@ export function WebExtensionsSection({
   );
 
   const refreshMarket = useCallback(
-    async (forceRefresh = false): Promise<void> => {
+    async (forceRefresh = false, signal?: AbortSignal): Promise<void> => {
       setMarket((prev) => ({ ...prev, loading: true }));
       try {
-        const result = await hostExtensionsApi.catalog({ forceRefresh });
-        if (!mountedRef.current) return;
+        const result = await hostExtensionsApi.catalog({ forceRefresh }, signal);
+        if (signal?.aborted || !mountedRef.current) return;
         setMarket({
           loading: false,
           loaded: true,
           entries: result.extensions,
-          cached: result.cached,
           error: null,
         });
       } catch (cause: unknown) {
-        if (!mountedRef.current) return;
-        if (isHostExtensionAuthDisabledError(cause)) {
-          setListView({ kind: "disabled" });
-          setMarket((prev) => ({ ...prev, loading: false }));
-          return;
-        }
-        setMarket((prev) => ({
-          ...prev,
-          loading: false,
-          loaded: true,
-          cached: prev.entries.length > 0,
-          error: formatManagementError(cause, t),
-        }));
+        if (signal?.aborted || !mountedRef.current) return;
+        setMarket((prev) => ({ ...prev, loading: false, error: { cause } }));
       }
     },
-    [t],
+    [],
   );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshMarket(false, controller.signal);
+    return () => controller.abort();
+  }, [refreshMarket]);
 
   const openMarket = () => {
     setActiveTab("market");
     setSelectedCategory(null);
-    if (!market.loaded && !market.loading) void refreshMarket(false);
   };
 
   // Initial load + live synchronization on `extensions-changed` client channel events.
@@ -367,6 +358,11 @@ export function WebExtensionsSection({
     }
     return map;
   }, [market.entries]);
+
+  const hasInstalledUpdates = useMemo(
+    () => extensions.some((item) => hasHostCatalogUpdate(item, catalogById.get(item.id))),
+    [extensions, catalogById],
+  );
 
   const availableCategories = useMemo(() => {
     const present = new Set<DesktopExtensionCategory>();
@@ -602,9 +598,7 @@ export function WebExtensionsSection({
     if (busy) return;
     setFeedback(null);
     void refreshList();
-    if (market.loaded || activeTab === "market") {
-      void refreshMarket(true);
-    }
+    if (!market.loading) void refreshMarket(true);
   };
 
   if (selectedPage !== null) {
@@ -858,12 +852,16 @@ export function WebExtensionsSection({
             role="tab"
             className={css.segmentedTab}
             aria-selected={activeTab === "installed"}
+            aria-description={
+              hasInstalledUpdates ? t("extensions.installedUpdatesAvailable") : undefined
+            }
             onClick={() => {
               setActiveTab("installed");
               setSelectedCategory(null);
             }}
           >
             {t("extensions.tabInstalled", { count: String(extensions.length) })}
+            {hasInstalledUpdates && <span className={css.tabUpdateDot} aria-hidden="true" />}
           </button>
           <button
             type="button"
@@ -872,7 +870,9 @@ export function WebExtensionsSection({
             aria-selected={activeTab === "market"}
             onClick={openMarket}
           >
-            {t("extensions.tabMarket", { count: String(market.entries.length) })}
+            {market.loaded
+              ? t("extensions.tabMarketCount", { count: String(market.entries.length) })
+              : t("extensions.tabMarket")}
           </button>
         </div>
 
@@ -1031,7 +1031,7 @@ export function WebExtensionsSection({
                     const validItem = item.state === "valid" ? item : undefined;
                     const displayName = hostDisplayName(item, contentLocale, catalogEntry);
                     const description = hostDescription(item, contentLocale, catalogEntry);
-                    const updateAvailable = hasHostCatalogUpdate(item, catalogEntry);
+                    const isUpdating = activeAction === `update:${item.id}`;
                     const blocked = isHostToggleBlocked(item);
                     const capabilityBadges = deriveHostCapabilityBadges(itemCapabilities(item), t);
 
@@ -1090,18 +1090,28 @@ export function WebExtensionsSection({
                         platformBadge={derivePlatformBadge(itemTargets(item), t)}
                         capabilityBadges={capabilityBadges}
                         statusDot={statusDot}
-                        updateHint={
-                          updateAvailable && catalogEntry
+                        update={
+                          validItem && catalogEntry && hasHostCatalogUpdate(validItem, catalogEntry)
                             ? {
-                                label: t("extensions.updateAvailable"),
-                                title: t("extensions.updateToVersion", {
+                                label: t("extensions.updateVersionCue", {
                                   version: catalogEntry.version.replace(/^v/u, ""),
                                 }),
+                                action: (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={busy}
+                                    aria-busy={isUpdating}
+                                    onClick={() => handleUpdate(validItem, catalogEntry, false)}
+                                  >
+                                    {t(isUpdating ? "extensions.updating" : "extensions.update")}
+                                  </Button>
+                                ),
                               }
                             : undefined
                         }
                         attention={attention}
-                        busy={activeAction === `toggle:${item.id}`}
+                        busy={isUpdating || activeAction === `toggle:${item.id}`}
                         contentLocale={contentLocale}
                         t={t}
                         secondaryAction={
@@ -1170,13 +1180,15 @@ export function WebExtensionsSection({
             </div>
           )}
 
-          {market.loading && !market.loaded ? (
+          {!market.loaded && (market.loading || market.error === null) ? (
             <p className={css.hint}>{t("extensions.marketLoading")}</p>
           ) : market.error !== null && market.entries.length === 0 ? (
             <div className={css.emptyCard} role="alert">
               <div className={css.emptyCopy}>
                 <h3 className={css.emptyTitle}>
-                  {t("extensions.marketLoadFailed", { message: market.error })}
+                  {t("extensions.marketLoadFailed", {
+                    message: formatManagementError(market.error.cause, t),
+                  })}
                 </h3>
                 <p className={css.emptyDesc}>{t("extensions.marketEmptyDescription")}</p>
               </div>

@@ -145,9 +145,60 @@ impl Launcher {
         Ok(command)
     }
 
+    fn redact_query_tokens(line: &str) -> String {
+        let mut out = String::with_capacity(line.len());
+        let mut rest = line;
+        while let Some(pos) = rest.find("token=") {
+            out.push_str(&rest[..pos + 6]);
+            let after = &rest[pos + 6..];
+            let end = after
+                .find(|c: char| c.is_whitespace() || matches!(c, '&' | '#' | '"' | '\'' | ')'))
+                .unwrap_or(after.len());
+            out.push_str("[redacted]");
+            rest = &after[end..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn summarize_stderr(stderr: &[u8]) -> Option<String> {
+        let text = String::from_utf8_lossy(stderr);
+        let line = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| {
+                !line.is_empty()
+                    && !line.starts_with("(node:")
+                    && !line.starts_with("(Use `node --trace-warnings")
+            })
+            .next_back()?;
+        let cleaned = line
+            .strip_prefix("codexhost launcher:")
+            .or_else(|| line.strip_prefix("codexhost:"))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(line);
+        let redacted = Self::redact_query_tokens(cleaned);
+        let mut bounded: String = redacted.chars().take(240).collect();
+        if redacted.chars().count() > 240 {
+            bounded.push('…');
+        }
+        Some(bounded)
+    }
+
     fn check_exit(args: &[&str], status: ExitStatus) -> Result<(), String> {
+        Self::check_exit_with_stderr(args, status, &[])
+    }
+
+    fn check_exit_with_stderr(
+        args: &[&str],
+        status: ExitStatus,
+        stderr: &[u8],
+    ) -> Result<(), String> {
         if status.success() {
             Ok(())
+        } else if let Some(detail) = Self::summarize_stderr(stderr) {
+            Err(detail)
         } else {
             Err(format!(
                 "`codexhost {}` failed ({status}). See CodexHost diagnostics for details.",
@@ -158,16 +209,18 @@ impl Launcher {
 
     fn execute(&self, args: &[&str], read_stdout: bool) -> Result<Vec<u8>, String> {
         let mut command = self.command(args)?;
-        command.stdout(if read_stdout {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        });
+        command
+            .stdout(if read_stdout {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stderr(Stdio::piped());
         codexhost_platform::configure_background_command(&mut command);
         let output = command
             .output()
             .map_err(|error| format!("Cannot run `codexhost {}`: {error}", args.join(" ")))?;
-        Self::check_exit(args, output.status)?;
+        Self::check_exit_with_stderr(args, output.status, &output.stderr)?;
         Ok(output.stdout)
     }
 
@@ -371,5 +424,20 @@ esac
                 Some(launcher)
             );
         }
+    }
+
+    #[test]
+    fn summarizes_launcher_stderr_without_node_warnings_or_tokens() {
+        let stderr = b"(node:123) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental\n(Use `node --trace-warnings ...` to show where the warning was created)\ncodexhost launcher: Web port 4400 is in use; see http://127.0.0.1:4400/?token=secret123&x=1\n";
+        assert_eq!(
+            Launcher::summarize_stderr(stderr).as_deref(),
+            Some("Web port 4400 is in use; see http://127.0.0.1:4400/?token=[redacted]&x=1")
+        );
+        assert_eq!(
+            Launcher::summarize_stderr(
+                b"(node:1) Warning\n(Use `node --trace-warnings ...`)\n  \n"
+            ),
+            None
+        );
     }
 }

@@ -9,7 +9,6 @@ import type {
 import type {
   ISessions,
   SessionCreateError,
-  SessionBinding,
   SessionReference,
   SessionTarget,
   SessionListState,
@@ -45,6 +44,27 @@ export type SessionOpeningState =
   | { readonly state: "loading"; readonly sessionId: SessionId }
   | { readonly state: "error"; readonly sessionId: SessionId; readonly message: string };
 
+/** Classified failure categories for New Session creation on the Hero surface. */
+export type SessionCreationFailureReason = "no-harness" | "workspace-required" | "unknown";
+
+/** Pending or failed New Session creation displayed immediately on the Hero surface. */
+export type SessionCreationState =
+  | { readonly state: "idle" }
+  | {
+      readonly state: "creating";
+      readonly workspaceId: WorkspaceId | null;
+      readonly token: number;
+      readonly initialPrompt?: string;
+    }
+  | {
+      readonly state: "error";
+      readonly workspaceId: WorkspaceId | null;
+      readonly reason: SessionCreationFailureReason;
+      readonly message?: string;
+      readonly token: number;
+      readonly initialPrompt?: string;
+    };
+
 /** Workspace archive and directory operations consumed by Client UI domains. */
 export interface UiWorkspace {
   /**
@@ -57,6 +77,10 @@ export interface UiWorkspace {
   readonly opening: ObservableSnapshot<SessionOpeningState>;
   /** Retry only the current failed target; never resubmit a write. */
   retryOpening(): void;
+  /** Current New Session creation progress or failure on the Hero surface. */
+  readonly creating: ObservableSnapshot<SessionCreationState>;
+  /** Retry the current failed New Session creation while keeping the user's draft. */
+  retryCreating(): void;
   /**
    * Connect a Workspace and open its Session unless a later navigation supersedes it.
    * @param workspaceId - target Workspace.
@@ -167,6 +191,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   readonly opening = createSnapshotStore<SessionOpeningState>({ state: "idle" });
   private retryOpen: (() => void) | undefined;
   private openingLoad: { readonly stop: () => void } | undefined;
+  readonly creating = createSnapshotStore<SessionCreationState>({ state: "idle" });
+  private retryCreate: (() => void) | undefined;
+  private creatingLoad: { readonly stop: () => void } | undefined;
+  private creationToken = 0;
   private readonly keepalive: SessionKeepalive;
   /** Stable browser tab order; does not own Session references. */
   readonly recentVisits: RecentVisits;
@@ -291,6 +319,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     this.retryOpen?.();
   }
 
+  retryCreating(): void {
+    this.retryCreate?.();
+  }
+
   private async resolveSession(
     sessionId: SessionId,
     signal: AbortSignal,
@@ -331,11 +363,23 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     workspaceId: WorkspaceId | null,
     beforeOpen?: (sessionId: SessionId) => void,
   ): Promise<void> {
+    if (this.mainReference === undefined) {
+      const current = this.creating.getSnapshot();
+      const token = current.state === "idle" ? ++this.creationToken : current.token;
+      const initialPrompt = current.state === "idle" ? undefined : current.initialPrompt;
+      await this.runCreation({
+        workspaceId,
+        token,
+        ...(initialPrompt === undefined ? {} : { initialPrompt }),
+        ...(beforeOpen === undefined ? {} : { beforeOpen }),
+      });
+      return;
+    }
     const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal]);
     let sessionId: SessionId;
     try {
       if (workspaceId === null && !this.workspaces.list.getSnapshot().canStartProjectless)
-        throw new Error("This Host requires a Workspace.");
+        throw new WorkspaceRequiredError();
       sessionId =
         workspaceId === null
           ? await this.sessions.create()
@@ -393,25 +437,108 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       this.clearMain();
       return;
     }
-    void this.openWorkspace(
-      target,
-      initializeDraft
-        ? (id) => {
-            const binding = this.sessions.binding(id);
-            if (binding === undefined) this.draftPreparationFailed();
-            this.prepareDraft(binding, draftOptions);
-          }
-        : undefined,
-    ).catch((reason: unknown) => {
+    // Reveal the Conversation Hero immediately before creating the navigation signal;
+    // selectPanel aborts any earlier pending navigation.
+    this.ctx.layout.selectPanel(null);
+    this.releaseMainSelection();
+    const token = ++this.creationToken;
+    void this.runCreation({
+      workspaceId: target,
+      token,
+      ...(draftOptions?.prompt === undefined ? {} : { initialPrompt: draftOptions.prompt }),
+      ...(initializeDraft ? { draftOptions } : {}),
+    }).catch((reason: unknown) => {
       console.warn("new session failed:", reason);
     });
   }
 
-  private prepareDraft(binding: SessionBinding, options: DraftInitializationOptions): void {
+  private async runCreation(request: {
+    readonly workspaceId: WorkspaceId | null;
+    readonly token: number;
+    readonly initialPrompt?: string;
+    readonly draftOptions?: DraftInitializationOptions;
+    readonly beforeOpen?: (sessionId: SessionId) => void;
+  }): Promise<void> {
+    // Disarm any prior creation abort listener before beginNavigation so a retry
+    // or in-place workspace switch transitions directly without flashing `idle`
+    // and discarding the user's pending draft.
+    this.creatingLoad?.stop();
+    this.creatingLoad = undefined;
+    this.retryCreate = undefined;
+    const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal]);
+    this.openingLoad?.stop();
+    this.openingLoad = undefined;
+    this.opening.set({ state: "idle" });
+    this.retryOpen = undefined;
+
+    const load = { stop: (): void => navigation.removeEventListener("abort", clear) };
+    const clear = (): void => {
+      load.stop();
+      if (this.creatingLoad !== load) return;
+      this.creatingLoad = undefined;
+      this.retryCreate = undefined;
+      this.creating.set({ state: "idle" });
+    };
+    navigation.addEventListener("abort", clear, { once: true });
+    this.creatingLoad = load;
+    this.creating.set({
+      state: "creating",
+      workspaceId: request.workspaceId,
+      token: request.token,
+      ...(request.initialPrompt === undefined ? {} : { initialPrompt: request.initialPrompt }),
+    });
+
+    try {
+      if (request.workspaceId === null && !this.workspaces.list.getSnapshot().canStartProjectless) {
+        throw new WorkspaceRequiredError();
+      }
+      const sessionId =
+        request.workspaceId === null
+          ? await this.sessions.create()
+          : await this.connectWorkspace(request.workspaceId);
+      if (navigation.aborted || this.creatingLoad !== load) return;
+      this.replaceMain(sessionId, navigation, "preserve", (id) => {
+        request.beforeOpen?.(id);
+        this.handoffPendingDraft(id, request.draftOptions);
+      });
+      clear();
+    } catch (error: unknown) {
+      if (navigation.aborted || this.creatingLoad !== load) return;
+      this.retryCreate = () => {
+        void this.runCreation(request).catch((reason: unknown) => {
+          console.warn("new session retry failed:", reason);
+        });
+      };
+      const reason = classifyCreationFailure(error);
+      const message = reason === "unknown" ? creationFailureDetail(error) : undefined;
+      this.creating.set({
+        state: "error",
+        workspaceId: request.workspaceId,
+        reason,
+        ...(message === undefined ? {} : { message }),
+        token: request.token,
+        ...(request.initialPrompt === undefined ? {} : { initialPrompt: request.initialPrompt }),
+      });
+      throw error;
+    }
+  }
+
+  private handoffPendingDraft(
+    sessionId: SessionId,
+    draftOptions?: DraftInitializationOptions,
+  ): void {
+    const binding = this.sessions.binding(sessionId);
     const conversation = this.ctx.get("conversation");
-    if (conversation === undefined) this.draftPreparationFailed();
-    if (conversation.input.requestDraftInitialization(binding, options) === "blocked")
-      this.draftPreparationFailed();
+    if (draftOptions !== undefined) {
+      if (binding === undefined || conversation === undefined) this.draftPreparationFailed();
+      if (conversation.input.adoptPendingDraft(binding, draftOptions) === "blocked") {
+        this.draftPreparationFailed();
+      }
+      return;
+    }
+    if (binding !== undefined && conversation !== undefined) {
+      conversation.input.adoptPendingDraft(binding);
+    }
   }
 
   private draftPreparationFailed(): never {
@@ -609,12 +736,16 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     return true;
   }
 
-  private clearMain(): void {
+  private releaseMainSelection(): void {
     const previous = this.mainReference;
     this.mainReference = undefined;
     this.recentVisits.clearCurrent();
     this.selection.set({});
     previous?.release();
+  }
+
+  private clearMain(): void {
+    this.releaseMainSelection();
     this.ctx.layout.selectPanel(null);
   }
 
@@ -661,6 +792,36 @@ function sessionCreateErrorOf(error: unknown): SessionCreateError | undefined {
   return error instanceof Error && error.name === "SessionCreateError"
     ? (error as SessionCreateError)
     : undefined;
+}
+
+class WorkspaceRequiredError extends Error {
+  override readonly name = "WorkspaceRequiredError";
+
+  constructor() {
+    super("This Host requires a Workspace.");
+  }
+}
+
+/** Map a creation failure to a product-facing failure category without leaking wire codes. */
+function classifyCreationFailure(error: unknown): SessionCreationFailureReason {
+  const refused = sessionCreateErrorOf(error);
+  const code: string | undefined = refused?.rpcError.code;
+  if (code === "host/no-harness") return "no-harness";
+  if (error instanceof WorkspaceRequiredError) return "workspace-required";
+  return "unknown";
+}
+
+/** Extract a clean failure detail without wire-code prefixes for unknown creation errors. */
+function creationFailureDetail(error: unknown): string | undefined {
+  const refused = sessionCreateErrorOf(error);
+  const raw =
+    refused !== undefined
+      ? refused.rpcError.message
+      : error instanceof Error
+        ? error.message
+        : String(error);
+  const trimmed = raw.trim();
+  return trimmed === "" ? undefined : trimmed;
 }
 
 /**

@@ -143,13 +143,35 @@ fn web_event(app: &AppHandle, event: WebEvent) {
     navigate_loading(app, status);
 }
 
+#[cfg(target_os = "macos")]
+fn apply_macos_dock_icon() {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    const DOCK_ICON_PNG: &[u8] = include_bytes!("../icons/dock.png");
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let data = NSData::with_bytes(DOCK_ICON_PNG);
+    if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+        let app = NSApplication::sharedApplication(mtm);
+        unsafe {
+            app.setApplicationIconImage(Some(&image));
+        }
+    }
+}
+
 fn set_visible(app: &AppHandle, visible: bool) {
     let Some(window) = app.get_webview_window(MAIN) else {
         return;
     };
     if visible {
         #[cfg(target_os = "macos")]
-        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        {
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            apply_macos_dock_icon();
+        }
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -327,6 +349,47 @@ async fn choose_surface(
     .map_err(|error| error.to_string())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowChromeState {
+    maximized: bool,
+    fullscreen: bool,
+}
+
+#[tauri::command]
+fn window_start_dragging(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.start_dragging().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn window_minimize(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.minimize().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn window_toggle_maximize(window: tauri::WebviewWindow) -> Result<bool, String> {
+    if window.is_maximized().unwrap_or(false) {
+        window.unmaximize().map_err(|error| error.to_string())?;
+        Ok(false)
+    } else {
+        window.maximize().map_err(|error| error.to_string())?;
+        Ok(true)
+    }
+}
+
+#[tauri::command]
+fn window_close(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.close().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn window_chrome_state(window: tauri::WebviewWindow) -> WindowChromeState {
+    WindowChromeState {
+        maximized: window.is_maximized().unwrap_or(false),
+        fullscreen: window.is_fullscreen().unwrap_or(false),
+    }
+}
+
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let options = Options::from_env()?;
     let launcher = Arc::new(Launcher::new(&std::env::current_exe()?, options.data_dir));
@@ -366,7 +429,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             retry,
             choose_surface,
             ensure_web_access,
-            open_web_browser
+            open_web_browser,
+            window_start_dragging,
+            window_minimize,
+            window_toggle_maximize,
+            window_close,
+            window_chrome_state
         ])
         .on_window_event(|window, event| {
             if window.label() == MAIN {
@@ -378,12 +446,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         })
         .setup(move |app| {
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            {
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                apply_macos_dock_icon();
+            }
             let app_handle = app.handle().clone();
             let popup_app = app_handle.clone();
             let navigation_app = app_handle.clone();
             let path = if onboarding { ONBOARDING } else { LOADING };
-            WebviewWindowBuilder::new(
+            let builder = WebviewWindowBuilder::new(
                 app,
                 MAIN,
                 WebviewUrl::App(path.trim_start_matches('/').into()),
@@ -392,31 +463,38 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             .inner_size(1140.0, 800.0)
             .min_inner_size(400.0, 320.0)
             .visible(false)
-            .initialization_script(navigation::initialization_script())
-            .on_navigation(move |url| match navigation_for(&navigation_app, url) {
-                Navigation::Embedded | Navigation::Web => true,
-                Navigation::Browser => {
-                    open_browser(url);
-                    false
-                }
-                Navigation::Block => false,
-            })
-            .on_new_window(move |url, _features| {
-                match navigation_for(&popup_app, &url) {
-                    Navigation::Browser => open_browser(&url),
-                    Navigation::Web => {
-                        let app = popup_app.clone();
-                        let _ = popup_app.run_on_main_thread(move || {
-                            if navigation_for(&app, &url) == Navigation::Web {
-                                navigate(&app, url);
-                            }
-                        });
+            .initialization_script(navigation::initialization_script());
+            #[cfg(target_os = "windows")]
+            let builder = builder.decorations(false).shadow(true);
+            #[cfg(target_os = "macos")]
+            let builder = builder
+                .title_bar_style(tauri::TitleBarStyle::Overlay)
+                .hidden_title(true);
+            builder
+                .on_navigation(move |url| match navigation_for(&navigation_app, url) {
+                    Navigation::Embedded | Navigation::Web => true,
+                    Navigation::Browser => {
+                        open_browser(url);
+                        false
                     }
-                    Navigation::Embedded | Navigation::Block => (),
-                }
-                NewWindowResponse::Deny
-            })
-            .build()?;
+                    Navigation::Block => false,
+                })
+                .on_new_window(move |url, _features| {
+                    match navigation_for(&popup_app, &url) {
+                        Navigation::Browser => open_browser(&url),
+                        Navigation::Web => {
+                            let app = popup_app.clone();
+                            let _ = popup_app.run_on_main_thread(move || {
+                                if navigation_for(&app, &url) == Navigation::Web {
+                                    navigate(&app, url);
+                                }
+                            });
+                        }
+                        Navigation::Embedded | Navigation::Block => (),
+                    }
+                    NewWindowResponse::Deny
+                })
+                .build()?;
             tray::install(&app_handle, &locale)?;
             let ready = ShellReady::publish(&launcher.data_dir)?;
             app.manage(ready);

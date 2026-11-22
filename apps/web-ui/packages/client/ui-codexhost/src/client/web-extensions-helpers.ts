@@ -29,11 +29,15 @@ import { resolveHostExtensionAssetUrl } from "./native-extensions/api.ts";
 export type Translate = PropsLocale<"codexhostImport">["t"];
 export type ExtensionLocale = "zh-CN" | "en";
 export type HostExtensionValidItem = Extract<HostExtensionListItem, { state: "valid" }>;
-export type ExtensionGroupId = "attention" | "enabled" | "disabled";
 export type ExtensionCapabilityFilter = "all" | "page" | "widget" | "web" | "desktop" | "backend";
 
+export interface ExtensionPlatformBadge {
+  readonly kind: "both" | HostExtensionTarget;
+  readonly label: string;
+}
+
 export interface ExtensionCapabilityBadge {
-  readonly kind: ExtensionCapabilityFilter;
+  readonly kind: "page" | "widget" | "backend";
   readonly label: string;
 }
 
@@ -91,22 +95,24 @@ export function catalogCapabilities(entry: HostExtensionCatalogEntry): HostExten
   };
 }
 
+export function derivePlatformBadge(
+  targets: readonly HostExtensionTarget[],
+  t: Translate,
+): ExtensionPlatformBadge | null {
+  const hasDesktop = targets.includes("desktop");
+  const hasWeb = targets.includes("web");
+  if (hasDesktop && hasWeb) return { kind: "both", label: t("extensions.platform.both") };
+  if (hasDesktop) return { kind: "desktop", label: t("extensions.platform.desktopOnly") };
+  if (hasWeb) return { kind: "web", label: t("extensions.platform.webOnly") };
+  return null;
+}
+
 export function deriveHostCapabilityBadges(
   capabilities: HostExtensionCapabilities | null,
-  targets: readonly HostExtensionTarget[],
   t: Translate,
 ): readonly ExtensionCapabilityBadge[] {
   if (!capabilities) return [];
   const badges: ExtensionCapabilityBadge[] = [];
-  const hasDesktop = targets.includes("desktop");
-  const hasWeb = targets.includes("web");
-  if (hasDesktop && hasWeb) {
-    badges.push({ kind: "all", label: t("extensions.badge.allTargets") });
-  } else if (hasWeb) {
-    badges.push({ kind: "web", label: t("extensions.badge.web") });
-  } else if (hasDesktop) {
-    badges.push({ kind: "desktop", label: t("extensions.badge.desktop") });
-  }
   if (capabilities.hasPage) {
     badges.push({ kind: "page", label: t("extensions.badge.page") });
   }
@@ -124,19 +130,18 @@ export function matchesCapabilityFilter(
   capabilities: HostExtensionCapabilities | null,
   targets: readonly HostExtensionTarget[],
 ): boolean {
-  if (filter === "all") return true;
-  if (!capabilities) return false;
   switch (filter) {
-    case "page":
-      return capabilities.hasPage;
-    case "widget":
-      return capabilities.hasWidget;
+    case "all":
+      return true;
     case "web":
-      return capabilities.hasWeb || targets.includes("web");
     case "desktop":
-      return capabilities.hasDesktop || targets.includes("desktop");
+      return targets.includes(filter);
+    case "page":
+      return capabilities?.hasPage ?? false;
+    case "widget":
+      return capabilities?.hasWidget ?? false;
     case "backend":
-      return capabilities.hasBackend;
+      return capabilities?.hasBackend ?? false;
   }
 }
 
@@ -265,11 +270,10 @@ export function hasHostCatalogUpdate(
   return compareExtensionVersions(catalogEntry.version, installed.manifest.version) > 0;
 }
 
-export function itemGroupOf(item: HostExtensionListItem): ExtensionGroupId {
-  if (item.state !== "valid" || item.backendState === "failed" || item.desktopConflictWith) {
-    return "attention";
-  }
-  return item.enabled ? "enabled" : "disabled";
+export function needsAttention(item: HostExtensionListItem): boolean {
+  return (
+    item.state !== "valid" || item.backendState === "failed" || Boolean(item.desktopConflictWith)
+  );
 }
 
 export function categoryLabelForLocale(

@@ -7,13 +7,14 @@ import { HarnessPreferencesStore } from "@codexhost/harness-plugin-files";
 import { MappingStore } from "@codexhost/mapping-store";
 import type { JsonObject } from "@codexhost/protocol-core";
 import {
-  encodeOfficialCodexModelRef,
   harnessModelRefSchema,
   harnessPreferencePatchSchema,
   harnessThinkingOptionIdSchema,
 } from "@codexhost/shared-contracts";
 import { AppServerHost } from "../src/app-server-host.js";
 import { OfficialRuntimeScope } from "../src/codex-runtime/official-runtime-scope.js";
+import { runDelegationCli } from "../src/delegation-cli.js";
+import { routeDelegationRequest } from "../src/delegation-control-server.js";
 import type { DelegationControlRegistration } from "../src/delegation-types.js";
 import type { OfficialAppServerExit } from "../src/official-app-server-connection.js";
 import { JsonLineCollector } from "./app-server-host-fixture.js";
@@ -60,14 +61,24 @@ it("supports native and saved defaults for headless Codex delegations and export
                 isDefault: true,
                 supportedReasoningEfforts: [{ reasoningEffort: "low" }],
               },
-              { model: "delegated", supportedReasoningEfforts: [{ reasoningEffort: "high" }] },
+              {
+                model: "delegated",
+                serviceTiers: [{ id: "priority" }, { id: "ultrafast" }],
+                supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+              },
             ],
           },
         };
       } else if (request.method === "thread/start") {
         const id = threadStarts.length ? `native-child-${threadStarts.length}` : "native-child";
         threadStarts.push(request.params);
-        response = { result: { thread: { id } } };
+        const { model, serviceTier } = request.params as JsonObject;
+        response = {
+          result: {
+            thread: { id },
+            ...(typeof model === "string" ? { model, serviceTier: serviceTier ?? null } : {}),
+          },
+        };
       } else if (request.method === "thread/read") {
         threadReads.push(request.params);
         response = {
@@ -172,9 +183,9 @@ it("supports native and saved defaults for headless Codex delegations and export
     expect(threadStarts[0]).not.toHaveProperty("model");
     expect(turnStarts[0]).not.toHaveProperty("effort");
 
-    const canonicalModel = encodeOfficialCodexModelRef("delegated");
+    const canonicalModel = { id: "delegated" };
     const delegatedInput = { ...input, requestId: "headless-saved" };
-    await save({ model: canonicalModel, thinkingOptionId: "high" });
+    await save({ model: { id: "codex-model-v1.ZGVsZWdhdGVk" }, thinkingOptionId: "high" });
     const delegated = await api.start(delegatedInput);
     expect(delegated.configuration?.requested).toEqual({
       model: canonicalModel,
@@ -203,6 +214,70 @@ it("supports native and saved defaults for headless Codex delegations and export
       model: "native-default",
     });
     expect(turnStarts.at(-1)).not.toHaveProperty("effort");
+
+    const cli = async (...arguments_: string[]) => {
+      const output = new PassThrough();
+      const diagnosticOutput = new PassThrough();
+      const exit = await runDelegationCli({
+        arguments: arguments_,
+        output,
+        diagnosticOutput,
+        environment: {
+          CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:4321",
+          CODEXHOST_RUNTIME_TOKEN: "test",
+          CODEXHOST_THREAD_ID: input.parentThreadId,
+        },
+        fetchImpl: async (url, init) =>
+          Response.json(
+            await routeDelegationRequest(
+              { api },
+              new URL(String(url)).pathname,
+              JSON.parse(String(init?.body)),
+            ),
+          ),
+      });
+      expect(exit, diagnosticOutput.read()?.toString()).toBe(0);
+      return String(output.read());
+    };
+    const discovered = JSON.parse(await cli("harness", "inspect", "codex"));
+    expect(discovered.inspection.catalog.models).toEqual([
+      expect.objectContaining({ ref: { id: "native-default" } }),
+      expect.objectContaining({ ref: { id: "delegated" }, fastModel: { id: "delegated~fast" } }),
+      expect.objectContaining({ ref: { id: "delegated~ultrafast" } }),
+    ]);
+    const compact = JSON.parse(await cli("harness", "inspect", "codex", "--format", "compact"));
+    const fast = compact.models.find(
+      (model: { label: string }) => model.label === "delegated (Fast)",
+    );
+    const args = ["delegate", "start", "--harness", "codex", "--task", "fast", "--cwd", directory];
+    expect(
+      await cli(...args, "--model", fast.id, "--request-id", "fast", "--format", "text"),
+    ).toContain("model: delegated~fast\n");
+    expect(threadStarts.at(-1)).toMatchObject({ model: "delegated", serviceTier: "priority" });
+    const count = threadStarts.length;
+    const retry = { ...input, task: "fast", requestId: "fast" };
+    const native = await api.start({
+      ...retry,
+      model: harnessModelRefSchema.parse({ id: "delegated", serviceTier: "priority" }),
+    });
+    await expect(
+      api.start({
+        ...retry,
+        model: harnessModelRefSchema.parse({ id: "codex-fast-model-v1.ZGVsZWdhdGVk" }),
+      }),
+    ).resolves.toMatchObject({
+      delegationId: native.delegationId,
+      threadId: native.threadId,
+    });
+    await expect(
+      api.start({
+        ...retry,
+        model: harnessModelRefSchema.parse({ id: "delegated", serviceTier: "ultrafast" }),
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    expect(threadStarts).toHaveLength(count);
+    await cli(...args, "--model", discovered.inspection.catalog.models[2].ref.id);
+    expect(threadStarts.at(-1)).toMatchObject({ model: "delegated", serviceTier: "ultrafast" });
 
     await save({ model: { id: "retired" }, thinkingOptionId: "low" });
     await expect(api.start(delegatedInput)).resolves.toMatchObject({

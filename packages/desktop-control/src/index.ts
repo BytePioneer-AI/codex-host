@@ -38,11 +38,6 @@ export type {
 } from "./contract-audit.js";
 export { inspectRendererDom, validateRendererDomInspection } from "./renderer-dom.js";
 export {
-  desktopExtensionModuleUrl,
-  desktopExtensionPageModuleUrl,
-  desktopExtensionWidgetModuleUrl,
-} from "./renderer-extension-page-url.js";
-export {
   createRendererCdpControlSession,
   installRendererCdpControlSession,
   selectPrimaryRendererTarget,
@@ -89,17 +84,6 @@ export {
   installRendererDraftPrewarmPolicyDirect,
 } from "./renderer-draft-prewarm-policy.js";
 export type { RendererDraftPrewarmPolicyStatus } from "./renderer-draft-prewarm-policy.js";
-
-export {
-  parseDesktopControllerArguments,
-  runDesktopController,
-  serializeDesktopControllerReadiness,
-} from "./production-controller.js";
-export type {
-  DesktopControllerDependencies,
-  DesktopControllerOptions,
-  DesktopControllerReadiness,
-} from "./production-controller.js";
 
 export const packageMetadata = {
   name: "@codexhost/desktop-control",

@@ -27,7 +27,10 @@ import {
 } from "../src/claude-code-adapter.js";
 import { ClaudeCodeExecutableError } from "../src/command.js";
 import { ClaudeUltracodeUnavailableError } from "../src/ultracode.js";
-import { CLAUDE_DEFAULT_MODEL_REF, encodeClaudeModelRef } from "../src/model-catalog.js";
+import {
+  CLAUDE_DEFAULT_MODEL_REF,
+  claudeModelRef as encodeClaudeModelRef,
+} from "../src/model-catalog.js";
 import {
   claudeBypassPermissionsAvailable,
   type ClaudePermissionMode,
@@ -6205,9 +6208,10 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("applies a create-time alias lazily and publishes the configured Model before the Turn", async () => {
+  it("applies a create-time Model lazily and publishes the exact native ID before the Turn", async () => {
     const { adapter, dependencies, transports } = fixture();
-    const selected = encodeClaudeModelRef("sonnet");
+    const id = " provider/模型 [1m] & (test) ";
+    const selected = encodeClaudeModelRef(id);
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("max");
     const opened = await adapter.open({
       kind: "create",
@@ -6223,7 +6227,7 @@ describe("Claude Code HarnessAdapter", () => {
     await expect(session.execute(textTurn("selected-first"))).resolves.toMatchObject({ ok: true });
     expect(dependencies.createTransport).toHaveBeenCalledWith(
       expect.objectContaining({
-        model: "sonnet",
+        model: id,
         openMode: "create",
         thinkingOptionId: "max",
       }),
@@ -6279,6 +6283,70 @@ describe("Claude Code HarnessAdapter", () => {
     await expect(resetting).resolves.toEqual({ ok: true, value: { completed: true } });
     expect(transport.setModel).toHaveBeenLastCalledWith(undefined, "auto");
     expect(transport.getContextUsage).toHaveBeenCalledTimes(contextReadsBeforeSelection);
+    await session.close();
+  });
+
+  it("resumes a stored Fable alias using the catalog Model and its Thinking options", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    const cwd = "/synthetic";
+    const currentId = "claude-fable-5-1";
+    dependencies.createInspector = () => ({
+      close: async () => undefined,
+      inspect: async () => ({
+        canSelectModel: true,
+        canSelectPermissionMode: true,
+        models: [
+          {
+            value: currentId,
+            displayName: "Fable 5.1",
+            supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+            supportsThinkingOff: false,
+          },
+        ],
+      }),
+    });
+    const inspection = await adapter.inspect({ cwd });
+    if (inspection.status !== "ready" || !inspection.catalog) throw new Error("Missing catalog");
+    const model = adapter.normalizeStoredModelRef(
+      encodeClaudeModelRef("claude-model-v1.ZmFibGU"), // Base64url of the saved native ID `fable`.
+      inspection.catalog,
+    );
+    if (model?.id !== currentId) throw new Error("Stored Fable alias did not resolve");
+
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd,
+      model,
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "restored-fable-session",
+        formatVersion: 1,
+      }),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const events = session.outputs[Symbol.asyncIterator]();
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("max"),
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    const optionIds = ["auto", "low", "medium", "high", "xhigh", "max", "ultracode"];
+    await expect(nextEvent(events)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: {
+        effectiveModel: model,
+        effectiveThinkingOptionId: "max",
+        availableThinkingOptions: optionIds.map((id) => ({ id })),
+      },
+    });
+    await expect(session.execute(textTurn("restored-fable"))).resolves.toMatchObject({ ok: true });
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ openMode: "resume", model: currentId, thinkingOptionId: "max" }),
+    );
+    expect(transports[0]?.turns.map(({ text }) => text)).toEqual(["restored-fable"]);
+    transports[0]?.finish({ status: "succeeded" });
     await session.close();
   });
 

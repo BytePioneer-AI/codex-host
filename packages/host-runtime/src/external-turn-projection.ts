@@ -137,7 +137,9 @@ export type TurnScopedEvent = Exclude<
   {
     type:
       | "session.state.changed"
+      | "session.title.changed"
       | "session.usage.changed"
+      | "session.accountCredits.changed"
       | "usage.request"
       | "usage.request.timing"
       | "usage.history"
@@ -290,6 +292,11 @@ export class ExternalTurnProjection {
       }
     }
     const result = projection.projector.project(event as ProjectableHostEvent);
+    // Desktop drops Turn events for unknown Threads. Submitted prewarms may still
+    // be waiting for their Native identity when their first Turn starts.
+    if (!thread.unsubmittedPrewarm && result.messages.length > 0) {
+      await this.#host.notifyExternalThreadStarted(thread.thread);
+    }
     if (
       event.type === "item.background.started" ||
       (projection.projector.completed &&

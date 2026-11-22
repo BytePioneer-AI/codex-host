@@ -102,7 +102,8 @@ export async function readHostFile(
   owned = true,
 ): Promise<Buffer> {
   const parts = hostExtensionResourcePathSchema.parse(relative).split("/");
-  const leaf = parts.pop()!;
+  const leaf = parts.pop();
+  if (!leaf) throw new Error(`No file name for ${relative}`);
   let directory = root;
   for (const part of parts) {
     directory = path.join(directory, part);

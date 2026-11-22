@@ -266,6 +266,8 @@ Codex Desktop 的 codexhost 设置提供独立的“手机与浏览器”菜单�
 
 **用户文件：** 所有响应带 `X-Content-Type-Options: nosniff`。`GET/HEAD /api/file` 只返回 PNG/JPEG/WebP/GIF 栅格图片，按文件内容判断，HTML 和 SVG 一律拒绝。HTML 预览运行在 `sandbox="allow-scripts"` 的不透明来源 iframe 中，无法读取 Cookie 或调用 Web 接口。
 
+**已查看图片：** 原生 `imageView` 只从当前 Thread 中对应的 Turn 与 Item 获取路径，浏览器不能提交路径或伪造附件身份。投影时读取并记录图片内容的 SHA-256 指纹，后续读取必须与记录版本一致；首次投影失败的图片保持不可读，即使文件随后出现或路径被覆盖也不会返回新内容。连续图片按相邻已查看项组成可展开分组，文件变化或暂时不可读时保留占位，不重建原生历史。
+
 ## Web 数据目录
 
 Web 网关自有数据默认位于 `~/.codexhost/web/`，源码入口与打包预览使用相同默认值；指定 `--ch-data <root>` 或对应的 `--ch-control-directory <root>/client-hosts` 时，默认跟随为 `<root>/web`。显式 `--data`（直接 server 入口也支持 `CODEXHOST_WEB_DATA`）仍可选择独立目录，不修改 Host 的 Mapping Store 位置。
@@ -580,6 +582,8 @@ Web 侧栏与空会话主视觉共用 `ui-brand-official` 提供的原版“抱�
 ### 置顶与 Desktop 同步
 
 共享来源统一调用 Host 的 `codexhost/thread/pins/list` / `codexhost/thread/pins/set`，不调用 Renderer 的置顶服务。Host 复用原生 `threadSection/list`、`thread/list(section_position)` 和既有外部 Thread 分区移动逻辑；内置 Pinned 分区使用原生协议的保留标识，并通过原生查询确认存在，不按显示名称猜测或自行创建分区。官方 Codex Thread 的分区成员与顺序由官方 app-server 持久化，Host 通过 `thread/read` 确认当前分区，通过 `thread/section/move` 修改；外部 Thread 的归属与排序锚点只保存于 Mapping Store 的分区记录。`pins/list` 始终读取官方 Pinned 分区并合并可见外部成员，即使没有任何外部置顶也返回官方成员，和 Desktop 的原生 Thread 查询共用同一混合顺序；不修改 `.codex-global-state.json`，不创建镜像会话。展示未归档的本机官方 Codex 与 canonical external Threads 的置顶，不聚合远程 Threads。
+
+Web 侧栏读取本机 Codex Desktop 的自定义分区，并按原生成员顺序显示。置顶仍由内置分区管理。可通过会话菜单把未置顶、未归档的本机 Codex 会话移入自定义分区或移回无分区。分区名称在 Desktop 管理，Web 在刷新会话目录时同步。翻页首次读到的分区成员摘要会推送给其他已连接浏览器，普通分页新行只返回给发起请求的浏览器。
 
 分组、树形及平铺模式都将已置顶会话集中到顶部“置顶”分区，项目内不重复显示，不改变项目归属；项目折叠不影响置顶行。取消置顶后恢复普通列表位置；搜索仍只显示一个结果。置顶区为空时隐藏。行继续沿用 Harness 图标、菜单、键盘导航、当前选中态及手机触摸目标。置顶行不常驻显示独立图钉，也不为其预留时间旁的空位；支持悬停且使用精细指针时，悬停、键盘聚焦或菜单打开显示原有置顶/取消置顶快捷按钮。不支持悬停或使用粗指针时隐藏独立快捷按钮，常驻至少 44px 的 `…` 菜单入口，菜单提供「取消置顶」，不依赖长按；按输入能力而非屏幕宽度区分。暂不提供置顶区拖动排序，避免把浏览器本地顺序冒充 GUI 顺序。
 

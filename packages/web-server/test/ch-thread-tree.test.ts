@@ -10,6 +10,7 @@ import { DataDir } from "../src/store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { FakeChChannel } from "./support/ch-channel.ts";
+import { nativeCodex } from "./support/native-codex.ts";
 import type { CatalogPage } from "../src/ch-session-page.ts";
 
 class TreeHost extends FakeChChannel {
@@ -50,11 +51,18 @@ class TreeHost extends FakeChChannel {
     return result;
   }
 }
+interface TreeProjections {
+  values: {
+    threadTreeParent?: string | null;
+    archiveForkParent?: string | null;
+    nativeDiscovery?: boolean;
+  };
+}
 interface Summary {
   sessionId: string;
   parentSessionId?: string;
   origin?: string;
-  projections: { values: { threadTreeParent?: string | null; nativeDiscovery?: boolean } };
+  projections: TreeProjections;
 }
 function fixture(t: TestContext) {
   const directory = mkdtempSync(join(tmpdir(), "web-tree-"));
@@ -276,12 +284,47 @@ it("archives and restores all unloaded descendants parent first, and limits chil
   assert.ok(!host.archivedIds.has("root"));
 });
 
-it("pin writes publish Host parents and exclude the promoted subtree from ancestor reads and archive cascades", async (t) => {
+it("pin writes publish delegation and Fork isolation, excluding pinned subtrees from archive cascades", async (t) => {
   const { host, add, list, call, mutations, events } = fixture(t);
-  for (const id of ["root", "child", "grandchild", "sibling"]) add(id);
-  host.parents = { child: "root", grandchild: "child", sibling: "root" };
-  await list();
+  nativeCodex(host);
+  for (const id of ["root", "child", "grandchild", "sibling", "fork-child"]) add(id);
+  const fork = add("native-fork");
+  fork.forkedFromId = "root";
+  host.parents = { child: "root", grandchild: "child", sibling: "root", "fork-child": fork.id };
+  host.pinnedIds = [fork.id];
+  const forkSummary = (page: { items: Summary[] }) => {
+    const summary = page.items.find((row) => row.sessionId === fork.id);
+    assert.ok(summary);
+    return summary.projections.values;
+  };
+  assert.equal(forkSummary(await list({ sessionId: fork.id })).archiveForkParent, null);
+  await call("workspace/unpinSession", { sessionId: fork.id });
+  const unpinned = forkSummary(await list());
+  assert.equal(unpinned.threadTreeParent, null);
+  assert.equal(unpinned.archiveForkParent, "root");
+  const forkProjections = () =>
+    call<TreeProjections>("session/projections", { sessionId: fork.id });
+  assert.equal((await forkProjections()).values.archiveForkParent, "root");
+
   const emitted = t.mock.method(events, "emit");
+  await call("workspace/pinSession", { sessionId: fork.id });
+  assert.ok(
+    emitted.mock.calls.some(
+      ({ arguments: [event, value] }) =>
+        event === "api-session/added" &&
+        (value as Summary).sessionId === fork.id &&
+        (value as Summary).projections.values.archiveForkParent === null,
+    ),
+  );
+  assert.equal((await forkProjections()).values.archiveForkParent, null);
+  const directForkChild = await list({ sessionId: "fork-child" });
+  assert.equal(forkSummary(directForkChild).archiveForkParent, null);
+  assert.equal(
+    directForkChild.items.find((row) => row.sessionId === "fork-child")?.projections.values
+      .threadTreeParent,
+    fork.id,
+  );
+
   await call("workspace/pinSession", { sessionId: "child" });
   assert.ok(
     emitted.mock.calls.some(
@@ -303,7 +346,7 @@ it("pin writes publish Host parents and exclude the promoted subtree from ancest
     ["root", "sibling"],
   );
   assert.deepEqual([...host.archivedIds], ["root", "sibling"]);
-  assert.deepEqual(host.pinnedIds, ["child"]);
+  assert.deepEqual(host.pinnedIds, [fork.id, "child"]);
   await call("workspace/unarchiveSession", { sessionId: "root" });
   await call("workspace/unpinSession", { sessionId: "child" });
   const restored = await list();

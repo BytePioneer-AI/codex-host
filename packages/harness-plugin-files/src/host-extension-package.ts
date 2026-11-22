@@ -45,14 +45,15 @@ type Index = Map<string, string>;
 export function indexHostPackage(files: Map<string, Buffer>) {
   let total = 0;
   if (files.size > MAX_ENTRIES) throw new Error("Too many extension package files");
-  const entries = [...files.keys()].sort().map((resource) => {
-    hostExtensionResourcePathSchema.parse(resource);
-    const bytes = files.get(resource)!;
-    total += bytes.length;
-    if (bytes.length > packageLimit(resource) || total > MAX_PACKAGE_BYTES)
-      throw new Error(`Extension package size limit exceeded: ${resource}`);
-    return [resource, sha256(bytes)] as const;
-  });
+  const entries = [...files]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([resource, bytes]) => {
+      hostExtensionResourcePathSchema.parse(resource);
+      total += bytes.length;
+      if (bytes.length > packageLimit(resource) || total > MAX_PACKAGE_BYTES)
+        throw new Error(`Extension package size limit exceeded: ${resource}`);
+      return [resource, sha256(bytes)] as const;
+    });
   const bytes = Buffer.from(JSON.stringify(entries));
   if (bytes.length > MAX_INDEX_BYTES) throw new Error("Extension index exceeds size limit");
   return { bytes, digest: sha256(bytes) };

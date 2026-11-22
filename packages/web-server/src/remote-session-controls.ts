@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
-  decodeOfficialCodexModelRef,
-  encodeOfficialCodexModelRef,
+  officialCodexModelRef,
+  harnessModelRefFromKey,
+  harnessModelRefKey,
+  sameHarnessModelRef,
   harnessInspectionSchema,
   threadInspectionSchema,
   type HarnessInspection,
@@ -39,20 +41,14 @@ export interface RemoteControls {
 
 export type ExternalThreadInspection = Extract<ThreadInspection, { owner: "external" }>;
 export type RemoteConfigurationSetting =
-  { modelId: string } | { thinkingOptionId: string } | { permissionModeId: string };
+  | { modelId: HarnessModelRef["id"]; serviceTier?: HarnessModelRef["serviceTier"] }
+  | { thinkingOptionId: string }
+  | { permissionModeId: string };
 
 export interface RemoteControlsEntry {
   epoch?: string;
   controls?: RemoteControls;
   row: { modelProvider: string };
-}
-
-function matchesNativeModel(ref: HarnessModelRef, model: string): boolean {
-  try {
-    return decodeOfficialCodexModelRef(ref) === model;
-  } catch {
-    return false;
-  }
 }
 
 export function parseRemoteControls(snapshot: RemoteControlsSnapshot): RemoteControls {
@@ -71,12 +67,10 @@ export function parseRemoteControls(snapshot: RemoteControlsSnapshot): RemoteCon
       const confirmed = configuration.data.effectiveModel;
       const { model, serviceTier } = native.data;
       const inheritedRef =
-        serviceTier === undefined && confirmed && matchesNativeModel(confirmed, model)
-          ? confirmed
-          : undefined;
+        serviceTier === undefined && confirmed && confirmed.id === model ? confirmed : undefined;
       const parsed = threadInspectionSchema.safeParse({
         ...configuration.data,
-        effectiveModel: inheritedRef ?? encodeOfficialCodexModelRef(model, serviceTier),
+        effectiveModel: inheritedRef ?? officialCodexModelRef(model, serviceTier),
         ...(native.data.reasoningEffort
           ? { effectiveThinkingOptionId: native.data.reasoningEffort }
           : {}),
@@ -125,7 +119,7 @@ export function mergeRemoteControls(
     nextConfiguration?.owner === "codex" &&
     next.nativeModelWithoutTier !== undefined &&
     confirmed &&
-    matchesNativeModel(confirmed, next.nativeModelWithoutTier)
+    confirmed.id === next.nativeModelWithoutTier
       ? { ...nextConfiguration, effectiveModel: confirmed }
       : (nextConfiguration ?? previousConfiguration);
   if (configuration === undefined) return next;
@@ -200,7 +194,7 @@ export function applyRemoteControls(entry: RemoteControlsEntry, view: ChThreadVi
       ? null
       : {
           provider: configuration.owner === "external" ? configuration.harnessId : "codex",
-          model: configuration.effectiveModel.id,
+          model: harnessModelRefKey(configuration.effectiveModel),
           ...(configuration.effectiveThinkingOptionId
             ? { reasoningEffort: configuration.effectiveThinkingOptionId }
             : {}),
@@ -243,8 +237,8 @@ export function remoteModelCatalog(entry: RemoteControlsEntry) {
     remoteHarnessIdentity(entry)?.name ?? configuration.harnessId,
     inspection as Extract<Inspection, { status: "ready" }>,
   );
-  const model =
-    configuration.effectiveModel?.id ?? inspection.catalog.defaultModel?.id ?? group.models[0]?.id;
+  const ref = configuration.effectiveModel ?? inspection.catalog.defaultModel;
+  const model = ref ? harnessModelRefKey(ref) : group.models[0]?.id;
   if (!model) throw new RpcError("remote/unsupported", "Remote Harness has no advertised models.");
   return {
     default: { provider: configuration.harnessId, model },
@@ -275,14 +269,18 @@ export async function selectRemoteModel(
     (typeof request.reasoningEffort !== "string" || !request.reasoningEffort)
   )
     throw new RpcError("session/model-unavailable", "The remote thinking option is invalid.");
+  const model = harnessModelRefFromKey(request.model);
   let changed = false;
   let refreshedAfterModel = false;
   let currentConfiguration = configuration;
   if (
-    currentConfiguration.effectiveModel?.id !== request.model ||
+    !sameHarnessModelRef(currentConfiguration.effectiveModel, model) ||
     entry.controls?.nativeModelWithoutTier !== undefined
   ) {
-    await configure(entry, { modelId: request.model });
+    await configure(entry, {
+      modelId: model.id,
+      ...(model.serviceTier ? { serviceTier: model.serviceTier } : {}),
+    });
     changed = true;
     if (typeof request.reasoningEffort === "string") {
       try {

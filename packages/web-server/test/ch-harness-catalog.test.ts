@@ -237,8 +237,8 @@ it("does not let a bulk refresh consume a targeted re-detect", async (t) => {
   const { host, catalog, requests } = fixture();
   t.after(() => catalog.close());
   nativeCodex(host);
-  const started = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<undefined>();
+  const release = Promise.withResolvers<undefined>();
   const request = host.request.bind(host);
   host.request = async <T>(method: string, params: Record<string, unknown>) => {
     const result = await request<T>(method, params);
@@ -247,7 +247,7 @@ it("does not let a bulk refresh consume a targeted re-detect", async (t) => {
       params.harnessId === "fake" &&
       !params.credentialAccess
     ) {
-      started.resolve();
+      started.resolve(undefined);
       await release.promise;
     }
     return result;
@@ -255,7 +255,7 @@ it("does not let a bulk refresh consume a targeted re-detect", async (t) => {
   const bulk = catalog.models(true);
   await started.promise;
   const targeted = catalog.models(true, "fake");
-  release.resolve();
+  release.resolve(undefined);
   await Promise.all([bulk, targeted]);
   assert.deepEqual(
     requests()

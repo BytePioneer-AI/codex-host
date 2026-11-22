@@ -88,7 +88,7 @@ TypeScript 类型与 Zod 校验以 [`packages/shared-contracts/src/host-extensio
 
 ## 跨端独立管理页（`page`）
 
-声明 `page` 的插件只需编写一份标准 ESM 前端代码。Desktop 在设置中以 Shadow DOM 打开；Web 在左侧一级目录「插件」中列出已启用的独立页，在主工作区打开而非设置弹窗。
+声明 `page` 的插件只需编写一份标准 ESM 前端代码。Desktop 在设置中以 Shadow DOM 打开；Web 左侧一级导航只有一行「插件」入口，进入主工作区后可在顶部切页栏切换「插件中心」与已启用的独立页。没有可打开的独立页时，主工作区直接展示插件中心。
 
 - 入口模块导出 `mount(root: HTMLElement, api: HostExtensionPageApi)`，可返回同步或异步清理函数。
 - 宿主在容器上暴露统一的主题 CSS 变量（`HOST_EXTENSION_PAGE_CSS_VARIABLES`）：
@@ -105,7 +105,12 @@ TypeScript 类型与 Zod 校验以 [`packages/shared-contracts/src/host-extensio
 | `api.storage.get()` / `set(values)` / `onChange(cb)` | 读写共享 Host 维护的独立 `settings.json` 并监听修订变更（自动处理修订号冲突重试）。 |
 | `api.backend.invoke(method, params?)` | 调用共享 Host 单实例 Node 后端通过 `ctx.handle` 注册的方法；未声明 `backend` 时直接拒绝。 |
 
-- **Desktop CSP 同源加载**：`desktopExtensionModuleUrl` 使用同源虚拟路径 `app://-/.codexhost/extension-pages/<id>/<activationId>/<digest>/<relativePath>`，保留包内路径，因而 `page/index.mjs` 和 `widget/index.mjs` 均可原生导入 `../shared/timer.mjs`。Desktop CDP 只为 `app://-/index.html` 主框架、当前已启用代次的 `GET` Script 请求提供索引中的 `.mjs`，不放宽 CSP。根路径 `page.mjs` / `widget.mjs` 在对应入口已声明时用作兼容别名，建议入口和共享模块使用子目录。
+### Desktop 与 Web 的模块加载
+
+- **Desktop**：Controller 仅为已启用代次链接 `manifest.page.entry` / `manifest.widget.entry`。入口及递归依赖均通过 `readHostExtensionAsset` 校验路径、当前代次和内容完整性；禁止越界、访问 `backend.entry`、裸包名、外部 URL 和动态 `import()`。静态导入和重导出可引用包内 `.mjs`（例如 `../shared/timer.mjs`）。`import.meta.url` 提供带代次的 `codexhost-extension:` 标识，不是可请求的资产 URL；读取图片、字体等资源请用 `api.assets.url()`。
+- Controller 使用纯 JS 链接器生成自包含工厂，并用 `vm.Script` 逐个预检；Node 不执行插件代码。工厂随 CDP 快照注入 `app://-/index.html` 主框架，当前文档用 `Runtime.evaluate` 更新。加载不依赖 `app://` 虚拟资产或网络拦截，不改变 CSP，也不在 Renderer 编译字符串。每个入口模块图内的共享模块只求值一次，同一入口代次的重复挂载复用已求值的模块。
+- Renderer 按扩展 ID、入口、`activationId` 与 `digest` 匹配工厂。先打开的页面等待就绪；挂件在快照与工厂都到齐后自动挂载。代次替换、禁用或卸载时回收旧工厂和挂载，且不重载 Desktop。链接、求值和挂载错误会显示在页面错误提示，或写入 Desktop 扩展诊断的 `surfaces`（键为 `<id>:page` / `<id>:widget`）。失败的挂件不会在同一份快照上反复尝试。
+- **CH Web**：浏览器原生 `import()` 使用原有经鉴权的 `/api/extensions/assets/...` HTTP 路径，不使用 Desktop 工厂表。
 
 ## 跨端主窗口挂件（`widget`）
 
@@ -155,7 +160,7 @@ Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 
   - `POST /api/extensions/upload`（`Content-Type: application/zip`，≤ 64 MiB）：流式读取 ZIP 后转为 `install` / `update` RPC；
   - `GET` / `HEAD /api/extensions/assets/:id/:activationId/:digest/*`：向 Host 请求资产并返回 `Cache-Control: private, max-age=31536000, immutable`、`X-Content-Type-Options: nosniff`、`Cross-Origin-Resource-Policy: same-origin`；对缺失、代次不匹配及 `backend.entry` 统一返回 `404`。
 - **Console 转发（`packages/console-server`）**：`/api/extensions/*` 写操作转发至共享 Host RPC，共享 Host 未运行时返回 `503`；只读列表与市场查询在离线时支持直接读取磁盘/拉取目录。
-- **双端统一 UI**：Desktop「设置 → 插件」和 Web 一级目录「插件 → 插件中心」提供统一的管理界面和能力角标（`全端` / `Web` / `Desktop` / `独立页面` / `挂件` / `后台`），支持按能力和分类筛选。已启用且含 `page` 的扩展可以从中心点击「打开页面」，或从 Web 左侧「插件」专区直接打开。含 `settingsSchema` 的扩展可在详情中编辑共享设置。
+- **双端统一 UI**：Desktop「设置 → 插件」和 Web「插件」工作区内的插件中心提供统一的管理界面。正常已安装插件在同一网格按本地化名称排列，只有异常插件单独列在顶部。卡片和详情标明适用平台（`Codex Desktop · CH Web` / `仅 Codex Desktop` / `仅 CH Web`），并支持按适用平台、能力（`独立页面` / `挂件` / `后台`）和分类筛选。插件中心在后台加载市场目录，目录可用后显示市场数量；有新版本的插件可直接从「已安装」卡片更新。已启用且含 `page` 的扩展可从 Desktop 设置左侧的「插件页面」分组或 Web 主工作区顶部的切页栏打开，也可从插件中心点击「打开页面」。`settingsSchema` 表单只在插件详情中显示，用于编辑共享设置。Desktop 侧栏也支持旧版 `api.settings.registerPage` 自定义页；同一扩展声明了 `page` 时优先展示独立页面。
 
 ## 作者与打包指南
 

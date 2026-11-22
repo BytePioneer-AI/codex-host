@@ -145,7 +145,6 @@
   background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent);
 }
 
-.capabilityChip[data-capability="all"],
 .capabilityChip[data-capability="page"] {
   color: var(--dsw-alias-state-business-primary);
   border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 26%, transparent);
@@ -154,6 +153,23 @@
 
 .capabilityChip[data-capability="backend"] {
   color: var(--dsw-alias-label-primary);
+}
+
+.platformRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.platformNotice {
+  margin: 4px 0 0;
+  color: var(--dsw-alias-state-warn-label);
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .metaRow {

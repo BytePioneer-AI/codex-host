@@ -1,7 +1,7 @@
 .root {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 8px;
   min-width: 0;
   min-height: 0;
   width: 100%;
@@ -10,47 +10,11 @@
 .header {
   flex: none;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 10px 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  gap: 8px;
 }
 
-.headerLeft {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 12px;
-  min-width: 0;
-}
-
-.backButton {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 30px;
-  padding: 0 10px 0 7px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: var(--dsw-radius-sm);
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 500;
-  cursor: pointer;
-  transition:
-    background-color 140ms ease,
-    border-color 140ms ease;
-}
-
-.backButton:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  border-color: var(--dsw-alias-border-l4);
-}
-
-.backButton:focus-visible,
 .reloadButton:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 1px;
@@ -59,13 +23,6 @@
 .identity {
   display: flex;
   align-items: center;
-  gap: 9px;
-  min-width: 0;
-}
-
-.titleWrap {
-  display: flex;
-  align-items: baseline;
   gap: 8px;
   min-width: 0;
 }
@@ -73,10 +30,9 @@
 .title {
   margin: 0;
   color: var(--dsw-alias-label-primary);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
-  line-height: 21px;
-  letter-spacing: -0.01em;
+  line-height: 20px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -89,15 +45,9 @@
   font-variant-numeric: tabular-nums;
 }
 
-.actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-}
-
 .reloadButton {
   display: inline-flex;
+  flex: none;
   align-items: center;
   justify-content: center;
   width: 30px;
@@ -178,17 +128,14 @@
   overflow-wrap: anywhere;
 }
 
+@media (pointer: coarse) {
+  .reloadButton {
+    width: 44px;
+    height: 44px;
+  }
+}
+
 @media (max-width: 640px) {
-  .backButton,
-  .reloadButton {
-    min-height: 36px;
-  }
-
-  .reloadButton {
-    width: 36px;
-    height: 36px;
-  }
-
   .stage {
     padding: 12px;
   }

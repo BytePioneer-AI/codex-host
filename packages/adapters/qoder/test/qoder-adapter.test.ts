@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
 import {
   harnessInspectionSchema,
-  harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
@@ -21,8 +20,7 @@ import {
 import { mapQoderException, mapQoderExitCode, mapQoderResultError } from "../src/qoder-errors.js";
 import { mapQoderSnapshot } from "../src/qoder-history.js";
 import {
-  decodeQoderModelRef,
-  encodeQoderModelRef,
+  qoderModelRef as encodeQoderModelRef,
   parseQoderModelCatalog,
   qoderAvailableThinkingOptions,
 } from "../src/qoder-models.js";
@@ -1238,31 +1236,7 @@ describe("QoderAdapter", () => {
     });
   });
 
-  describe("Model catalog encoding and decoding", () => {
-    it.each(["qoder-model-v1.", "qoder-model-v1.YQ.", "qoder-model-v1.YR", "other-model"])(
-      "rejects invalid model ref %s before starting a query",
-      async (id) => {
-        const model = harnessModelRefSchema.parse({ id });
-        expect(decodeQoderModelRef(model)).toBeUndefined();
-        const queryFactory = vi.fn();
-        const adapter = new QoderAdapter({ queryFactory });
-        expect(await adapter.open({ kind: "create", cwd: "/project", model })).toMatchObject({
-          ok: false,
-          error: { code: "invalidRequest" },
-        });
-        expect(queryFactory).not.toHaveBeenCalled();
-        await adapter.close();
-      },
-    );
-
-    it("encodes and decodes model refs to opaque transport-safe strings", () => {
-      const modelRef = encodeQoderModelRef("claude-3-7-sonnet@20250219/thinking");
-      expect(/^[A-Za-z0-9._~-]+$/.test(modelRef.id)).toBe(true);
-
-      const decoded = decodeQoderModelRef(modelRef);
-      expect(decoded).toBe("claude-3-7-sonnet@20250219/thinking");
-    });
-
+  describe("Model catalog", () => {
     it("parses model catalog from dynamic model list", () => {
       const catalog = parseQoderModelCatalog([
         { value: "qoder-1", displayName: "Qoder Model 1" },
@@ -1367,13 +1341,13 @@ describe("QoderAdapter", () => {
       ]);
       expect(catalog.defaultThinkingOptionId).toBe("high");
 
-      const claude = catalog.models.find((m) => decodeQoderModelRef(m.ref) === "claude-3-7-sonnet");
+      const claude = catalog.models.find((m) => m.ref.id === "claude-3-7-sonnet");
       expect(claude?.supportedThinkingOptionIds).toEqual(["off", "low", "medium", "high", "max"]);
 
-      const r1 = catalog.models.find((m) => decodeQoderModelRef(m.ref) === "deepseek-r1");
+      const r1 = catalog.models.find((m) => m.ref.id === "deepseek-r1");
       expect(r1?.supportedThinkingOptionIds).toEqual(["off", "low", "medium"]);
 
-      const gpt4o = catalog.models.find((m) => decodeQoderModelRef(m.ref) === "gpt-4o");
+      const gpt4o = catalog.models.find((m) => m.ref.id === "gpt-4o");
       expect(gpt4o?.supportedThinkingOptionIds).toBeUndefined();
 
       expect(qoderAvailableThinkingOptions(catalog, claude?.ref)).toHaveLength(5);

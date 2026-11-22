@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { harnessModelServiceTierSchema } from "./harness-models.js";
 
 export const REMOTE_CONTROLLER_REQUEST_MAX_BYTES = 16 * 1024;
 /** REMOTE + nonce + separators/newline, including JSON escaping and UTF-8 encoding. */
@@ -72,6 +73,7 @@ export const remoteSessionOperationSchema = z.discriminatedUnion("kind", [
       ...thread,
       epoch: identity,
       modelId: identity.optional(),
+      serviceTier: harnessModelServiceTierSchema.optional(),
       thinkingOptionId: identity.optional(),
       permissionModeId: identity.optional(),
     })
@@ -81,7 +83,10 @@ export const remoteSessionOperationSchema = z.discriminatedUnion("kind", [
           (v) => v !== undefined,
         ).length === 1,
       "Select exactly one remote setting",
-    ),
+    )
+    .refine((value) => value.serviceTier === undefined || value.modelId !== undefined, {
+      message: "A service tier requires a Model ID",
+    }),
   z.strictObject({
     kind: z.literal("prompt"),
     ...thread,

@@ -10,6 +10,7 @@ import {
   catalogDisplayName,
   createEl,
   deriveCapabilityBadges,
+  derivePlatformBadge,
   hasCatalogUpdate,
   type DesktopExtensionContentLocale,
   type DesktopExtensionMutationAction,
@@ -142,12 +143,6 @@ export function renderDesktopExtensionsMarketplaceGrid(
       event.stopPropagation?.();
     });
 
-    const capabilityBadges = deriveCapabilityBadges(
-      catalogCapabilities(entry),
-      entry.targets,
-      copy,
-    );
-
     grid.append(
       renderDesktopExtensionCard({
         document,
@@ -165,7 +160,8 @@ export function renderDesktopExtensionsMarketplaceGrid(
         trustTier: entry.trustTier,
         description: catalogDescription(entry, contentLocale),
         categories: entry.categories,
-        capabilityBadges,
+        platformBadge: derivePlatformBadge(entry.targets, copy),
+        capabilityBadges: deriveCapabilityBadges(catalogCapabilities(entry), copy),
         actionControl: actionButton,
         busy: isBusyCard,
         dataset: {

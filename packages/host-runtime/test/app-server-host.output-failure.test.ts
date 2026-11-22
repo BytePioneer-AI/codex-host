@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { HarnessSession } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
+import * as attachments from "../src/external-inline-attachments.js";
 import {
   harnessIdSchema,
   harnessPermissionModeCatalogSchema,
@@ -309,6 +310,97 @@ describe("AppServerHost output failure", () => {
       await stopFixture(fixture);
     }
   });
+
+  it("resumes the native Session for the next Turn after a successful Turn and EOF", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const first = await startPiTurn(fixture, threadId);
+      const { adapter } = fixture;
+      const session = adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      session.succeedTurn();
+      expect(
+        await fixture.collector.waitFor((msg) => turnEvent(msg, "turn/completed", first)),
+      ).toMatchObject({ params: { turn: { status: "completed" } } });
+      await session.close();
+
+      const restored = new FakeHarnessSession(
+        adapter.harnessId,
+        adapter.catalog,
+        undefined,
+        session.initialState.nativeRef,
+        session.persistedSnapshot(),
+        true,
+        session.cwd,
+      );
+      const open = vi.spyOn(adapter, "open").mockResolvedValueOnce({ ok: true, value: restored });
+      const staleExecute = vi.spyOn(session, "execute");
+      const next = await startPiTurn(fixture, threadId, 3);
+      expect(open).toHaveBeenCalledOnce();
+      expect(open).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "resume",
+          nativeRef: session.initialState.nativeRef,
+        }),
+      );
+      expect(staleExecute).not.toHaveBeenCalled();
+      restored.succeedTurn();
+      expect(
+        await fixture.collector.waitFor((msg) => turnEvent(msg, "turn/completed", next)),
+      ).toMatchObject({ params: { turn: { status: "completed" } } });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it.each(["image", "mapping"])(
+    "rejects a Turn when output ends during %s preparation",
+    async (stage) => {
+      const fixture = createFixture();
+      const materialize = attachments.materializeExternalImages;
+      const prepare = vi.spyOn(attachments, "materializeExternalImages");
+      try {
+        const threadId = await startPiThread(fixture);
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Pi Session was not opened");
+        const execute = vi.spyOn(session, "execute");
+        const close = async () => {
+          await session.close();
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        };
+        prepare.mockImplementationOnce(async (input, env) => {
+          if (stage === "image") await close();
+          else {
+            const read = fixture.mappingStore.getThread.bind(fixture.mappingStore);
+            vi.spyOn(fixture.mappingStore, "getThread").mockImplementationOnce(async (id) => {
+              await close();
+              return read(id);
+            });
+          }
+          return materialize(input, env);
+        });
+        writeRequest(fixture.desktopInput, {
+          id: 2,
+          method: "turn/start",
+          params: {
+            threadId,
+            input: [
+              { type: "text", text: "inspect" },
+              { type: "image", url: "data:image/png;base64,Ag==" },
+            ],
+          },
+        });
+        expect(await fixture.collector.waitFor((msg) => requestId(msg, 2))).toMatchObject({
+          error: { code: -32073, message: expect.stringContaining("no longer available") },
+        });
+        expect(execute).not.toHaveBeenCalled();
+      } finally {
+        prepare.mockRestore();
+        await stopFixture(fixture);
+      }
+    },
+  );
 
   const parentEndings = [
     { parent: "active", ending: "EOF", error: "output ended before the active Turn settled" },

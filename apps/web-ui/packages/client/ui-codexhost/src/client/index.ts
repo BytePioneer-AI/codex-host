@@ -57,11 +57,12 @@ import type {} from "@deepseek-ai/dsh-client-ui-chat/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { ConnectDevicesSection } from "./ConnectDevicesSection.tsx";
 import { PluginsSection, type PluginsSectionFace } from "./PluginsSection.tsx";
-import { PluginsSidebar, type PluginsSidebarFace } from "./PluginsSidebar.tsx";
+import { PluginsIcon } from "./PluginsIcon.tsx";
 import { PluginsSettingsEntry } from "./PluginsSettingsEntry.tsx";
 import { createPluginsNavigation, PLUGINS_PANEL_ID } from "./plugins-navigation.ts";
 import { webExtensionAppearance } from "./native-extensions/surface.ts";
 import { watchAuthentication } from "./auth-watch.ts";
+import { watchReleaseAnnouncement } from "./release-announcement.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
 import type {} from "@deepseek-ai/dsh-client-web";
@@ -368,6 +369,18 @@ export function apply(ctx: ClientContext): void {
       ImportIcon,
     ),
   );
+  ctx.slots.inject("sidebar.panellist", () =>
+    ctx.slots.register(
+      {
+        name: "sidebar.panellist",
+        id: PLUGINS_PANEL_ID,
+        order: 20,
+        label: () => t("settings.extensions"),
+        locale: NS,
+      },
+      PluginsIcon,
+    ),
+  );
   ctx.inject(["settingsNavigation"], (scope) => {
     scope.slots.inject("settings.launcher", () =>
       scope.slots.register(
@@ -420,16 +433,6 @@ export function apply(ctx: ClientContext): void {
         inject: (): PluginsSectionFace => ({ locale, colorScheme, navigation: plugins }),
       },
       PluginsSection,
-    ),
-  );
-  ctx.slots.inject("sidebar.plugins", () =>
-    ctx.slots.register(
-      {
-        name: "sidebar.plugins",
-        locale: NS,
-        inject: (): PluginsSidebarFace => ({ navigation: plugins, locale }),
-      },
-      PluginsSidebar,
     ),
   );
   ctx.slots.inject("settings.section", () =>
@@ -544,6 +547,15 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(
     () => watchAuthentication((ctx.get("connection") as ConnectionHandle).state),
     "ui-codexhost: enter sign-in when the token is revoked",
+  );
+  ctx.effect(
+    () =>
+      watchReleaseAnnouncement({
+        connection: ctx.get("connection") as ConnectionHandle,
+        locale,
+        colorScheme,
+      }),
+    "ui-codexhost: release announcement",
   );
   const openFromUrl = (): void => {
     const url = new URL(window.location.href);

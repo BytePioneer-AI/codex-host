@@ -35,12 +35,17 @@ const closed = (socket: Socket) =>
   new Promise<void>((resolve) => socket.once("close", () => resolve()));
 
 async function expectConnections(relay: ReturnType<typeof createRelay>, count: number) {
-  await vi.waitFor(async () => {
-    const current = await new Promise<number>((resolve, reject) =>
-      relay.server.getConnections((error, value) => (error ? reject(error) : resolve(value))),
-    );
-    expect(current).toBe(count);
-  });
+  // The default-limit case observes nearly 100 socket transitions. A 50 ms polling
+  // interval per transition would consume the test's timeout even on a healthy relay.
+  await vi.waitFor(
+    async () => {
+      const current = await new Promise<number>((resolve, reject) =>
+        relay.server.getConnections((error, value) => (error ? reject(error) : resolve(value))),
+      );
+      expect(current).toBe(count);
+    },
+    { interval: 5 },
+  );
 }
 
 afterEach(async () => {

@@ -112,11 +112,11 @@ it("deduplicates concurrent macOS Keychain reads and caches the resolved key in 
 
 it("shares a stalled macOS Keychain read across passive and explicit callers", async () => {
   vi.stubGlobal("process", { ...process, platform: "darwin" });
-  const started = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<undefined>();
   const read = Promise.withResolvers<{ stdout: string }>();
   execute.mockResolvedValueOnce({ stdout: '"/fixture/keychain"\n' });
   execute.mockImplementationOnce(() => {
-    started.resolve();
+    started.resolve(undefined);
     return read.promise;
   });
   const earlierGesture = performance.now();

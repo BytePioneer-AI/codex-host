@@ -72,8 +72,7 @@ import {
   readKimiSessionUsage,
 } from "./history.js";
 import {
-  decodeKimiModelRefId,
-  encodeKimiModelRef,
+  kimiModelRef,
   isKimiModeId,
   readKimiEffectiveConfig,
   readKimiThinkingOptions,
@@ -400,7 +399,7 @@ export class KimiSession implements HarnessSession {
     delete state.effectiveModel;
     delete state.effectiveThinkingOptionId;
     delete state.effectivePermissionModeId;
-    if (effective.modelAlias) state.effectiveModel = encodeKimiModelRef(effective.modelAlias);
+    if (effective.modelAlias) state.effectiveModel = kimiModelRef(effective.modelAlias);
     if (effective.thinkingOptionId) state.effectiveThinkingOptionId = effective.thinkingOptionId;
     if (effective.permissionModeId)
       state.effectivePermissionModeId = harnessPermissionModeIdSchema.parse(
@@ -1192,13 +1191,7 @@ export class KimiSession implements HarnessSession {
   async #handleModelSelect(
     command: ModelSelectCommand,
   ): Promise<HarnessResult<ModelSelectCompleted>> {
-    let alias: string;
-    try {
-      alias = decodeKimiModelRefId(command.model.id);
-    } catch {
-      return err("invalidRequest", `Invalid model reference: ${command.model.id}`);
-    }
-
+    const alias = command.model.id;
     try {
       const confirmed = await this.#transport.setConfigOption("model", alias);
       this.#applyConfigOptions(confirmed);

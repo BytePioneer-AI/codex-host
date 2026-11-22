@@ -30,6 +30,7 @@ const _deepseek_ai_dsh_api_workspace_controller_directoryPicker_pick_result$sche
 let _deepseek_ai_dsh_api_workspace_controller_workspace_archiveSession_parameter_0$schema$value
 const _deepseek_ai_dsh_api_workspace_controller_workspace_archiveSession_parameter_0$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_archiveSession_parameter_0$schema$value ??= z.object({
   'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
+  'scope': z.literal("single").optional().readonly(),
   'stopActivity': z.boolean().readonly().optional(),
 }))
 let _deepseek_ai_dsh_api_workspace_controller_workspace_archiveSession_result$schema$value
@@ -61,6 +62,11 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_delete_result$schema =
   'deleted': z.literal(true).readonly(),
 }))
 let _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema$value
+const threadSections = () => z.array(z.object({
+  'id': z.string().readonly(),
+  'name': z.string().readonly(),
+  'threadIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
+}).readonly()).readonly()
 const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema$value ??= z.union([z.object({
   'type': z.literal("baseline").readonly(),
   'value': z.object({
@@ -74,6 +80,7 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema =
 })).readonly(),
   'archivedSessionIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
   'pinnedSessionIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
+  'threadSections': threadSections().optional().readonly(),
 }).readonly(),
 }), z.object({
   'type': z.literal("upsert").readonly(),
@@ -97,6 +104,9 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema =
 }), z.object({
   'type': z.literal("pinned").readonly(),
   'pinnedSessionIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
+}), z.object({
+  'type': z.literal("threadSections").readonly(),
+  'threadSections': threadSections(),
 })]))
 let _deepseek_ai_dsh_api_workspace_controller_workspace_initializeDefault_result$schema$value
 const _deepseek_ai_dsh_api_workspace_controller_workspace_initializeDefault_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_initializeDefault_result$schema$value ??= z.union([z.undefined(), z.object({
@@ -162,6 +172,7 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_rename_result$schema =
 let _deepseek_ai_dsh_api_workspace_controller_workspace_unarchiveSession_parameter_0$schema$value
 const _deepseek_ai_dsh_api_workspace_controller_workspace_unarchiveSession_parameter_0$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_unarchiveSession_parameter_0$schema$value ??= z.object({
   'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
+  'scope': z.literal("single").optional().readonly(),
 }))
 let _deepseek_ai_dsh_api_workspace_controller_workspace_unarchiveSession_result$schema$value
 const _deepseek_ai_dsh_api_workspace_controller_workspace_unarchiveSession_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_unarchiveSession_result$schema$value ??= z.object({
@@ -175,6 +186,14 @@ let _deepseek_ai_dsh_api_workspace_controller_workspace_unpinSession_result$sche
 const _deepseek_ai_dsh_api_workspace_controller_workspace_unpinSession_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_unpinSession_result$schema$value ??= z.object({
   'pinnedSessionIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
 }))
+
+const workspaceMoveSectionRequest = () => z.object({
+  'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
+  'sectionId': z.union([z.string(), z.null()]).readonly(),
+})
+const workspaceMoveSectionResult = () => z.object({
+  'sectionId': z.union([z.string(), z.null()]).readonly(),
+})
 
 export const TYPERT_REMOTE = {
   package: '@deepseek-ai/dsh-api-workspace-controller',
@@ -414,6 +433,28 @@ export const TYPERT_REMOTE = {
         create: _deepseek_ai_dsh_api_workspace_controller_workspace_insertSessionBefore_result$schema,
       },
       sourceLocation: {"file":"packages/api/workspace-controller/src/index.ts","line":145,"column":3},
+    },
+    {
+      id: '@deepseek-ai/dsh-api-workspace-controller#workspace/moveSessionToSection',
+      service: 'workspaceController',
+      namespace: 'workspace',
+      method: 'moveSessionToSection',
+      invocation: { kind: 'direct' },
+      parameters: [{
+        name: 'request',
+        wire: 'request',
+        source: 'json',
+        codec: {
+          mode: 'strict',
+          typeSymbol: '@deepseek-ai/dsh-api-workspace-controller/types#WorkspaceMoveSessionToSectionRequest',
+          create: workspaceMoveSectionRequest,
+        },
+      }],
+      result: {
+        mode: 'strict',
+        typeSymbol: '@deepseek-ai/dsh-api-workspace-controller/types#WorkspaceMoveSessionToSectionValue',
+        create: workspaceMoveSectionResult,
+      },
     },
     {
       id: '@deepseek-ai/dsh-api-workspace-controller#workspace/pinSession',

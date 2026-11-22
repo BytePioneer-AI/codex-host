@@ -84,7 +84,13 @@ describe("delegation CLI", () => {
     expect(await runDelegationCli({ arguments: [group, command, help], output, fetchImpl })).toBe(
       0,
     );
-    expect(outputText(output)).toContain(`codexhost ${group} ${command}`);
+    const text = outputText(output);
+    expect(text).toContain(`codexhost ${group} ${command}`);
+    if (`${group} ${command}` === "delegate start") {
+      expect(text).toContain("--model <id>");
+      expect(text).toContain("gpt-6.2-sol~fast");
+      expect(text).toContain("gpt-6.2-sol~ultrafast");
+    }
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -172,7 +178,10 @@ describe("delegation CLI", () => {
   });
 
   it("inspects Harness configuration through the Runtime", async () => {
-    const fetchImpl = successfulFetch({ harnessId: "pi", inspection: { status: "ready" } });
+    const fetchImpl = successfulFetch({
+      harnessId: "pi",
+      inspection: { status: "ready", catalog: { models: [], thinkingOptions: [] } },
+    });
     const output = new PassThrough();
     await expect(
       runDelegationCli({
@@ -197,7 +206,10 @@ describe("delegation CLI", () => {
   });
 
   it("preserves the caller Thread while resolving a relative Harness inspection cwd", async () => {
-    const fetchImpl = successfulFetch({ harnessId: "pi", inspection: { status: "ready" } });
+    const fetchImpl = successfulFetch({
+      harnessId: "pi",
+      inspection: { status: "ready", catalog: { models: [], thinkingOptions: [] } },
+    });
     await expect(
       runDelegationCli({
         arguments: ["harness", "inspect", "pi", "--cwd", ".", "--refresh", "true"],
@@ -218,55 +230,58 @@ describe("delegation CLI", () => {
     });
   });
 
-  it("normalizes deep links and sends delegate start as JSON", async () => {
-    const fetchImpl = successfulFetch({ threadId: "child-1" });
-    const output = new PassThrough();
-    const environment = {
-      [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
-      [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
-    };
-    await expect(
-      runDelegationCli({
-        arguments: [
-          "delegate",
-          "start",
-          "--harness",
-          "claude-code",
-          "--task",
-          "review auth",
-          "--task-name",
-          "Auth review",
-          "--cwd",
-          "/workspace/project",
-          "--model",
-          "model-ref",
-          "--thinking",
-          "high",
-          "--parent-thread",
-          "codex://threads/parent-1",
-          "--request-id",
-          "request-1",
-        ],
-        environment,
-        output,
-        fetchImpl,
-      }),
-    ).resolves.toBe(0);
-    const firstCall = vi.mocked(fetchImpl).mock.calls[0];
-    if (!firstCall) throw new Error("Runtime fetch was not called");
-    const [, init] = firstCall;
-    expect(JSON.parse(String(init?.body))).toMatchObject({
-      harnessId: "claude-code",
-      task: "review auth",
-      taskName: "Auth review",
-      cwd: path.resolve("/workspace/project"),
-      parentThreadId: "parent-1",
-      requestId: "request-1",
-      model: { id: "model-ref" },
-      thinkingOptionId: "high",
-    });
-    expect(JSON.parse(outputText(output))).toEqual({ threadId: "child-1" });
-  });
+  it.each(["claude-code", "codex"])(
+    "normalizes deep links and sends Model selection for %s",
+    async (harnessId) => {
+      const fetchImpl = successfulFetch({ threadId: "child-1" });
+      const output = new PassThrough();
+      const environment = {
+        [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+        [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+      };
+      await expect(
+        runDelegationCli({
+          arguments: [
+            "delegate",
+            "start",
+            "--harness",
+            harnessId,
+            "--task",
+            "review auth",
+            "--task-name",
+            "Auth review",
+            "--cwd",
+            "/workspace/project",
+            "--model",
+            "provider/vendor/model: v1~fast",
+            "--thinking",
+            "high",
+            "--parent-thread",
+            "codex://threads/parent-1",
+            "--request-id",
+            "request-1",
+          ],
+          environment,
+          output,
+          fetchImpl,
+        }),
+      ).resolves.toBe(0);
+      const firstCall = vi.mocked(fetchImpl).mock.calls[0];
+      if (!firstCall) throw new Error("Runtime fetch was not called");
+      const [, init] = firstCall;
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        harnessId,
+        task: "review auth",
+        taskName: "Auth review",
+        cwd: path.resolve("/workspace/project"),
+        parentThreadId: "parent-1",
+        requestId: "request-1",
+        model: "provider/vendor/model: v1~fast",
+        thinkingOptionId: "high",
+      });
+      expect(JSON.parse(outputText(output))).toEqual({ threadId: "child-1" });
+    },
+  );
 
   it("uses the Host-provided current Thread when --parent-thread is omitted", async () => {
     const fetchImpl = successfulFetch({ threadId: "child-1" });

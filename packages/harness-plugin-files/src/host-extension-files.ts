@@ -23,7 +23,7 @@ import {
   type HostExtensionProvenance,
   type HostExtensionsRpcParams,
   type HostExtensionsRpcResult,
-  HOST_EXTENSIONS_RPC,
+  type HOST_EXTENSIONS_RPC,
 } from "@codexhost/shared-contracts";
 import {
   errorMessage,
@@ -60,6 +60,16 @@ export type HostExtensionDiskInstallation = HostExtensionInstallation & {
   generation: string;
   directory: string;
 };
+export function hostExtensionInstallationMetadata({
+  id,
+  activationId,
+  digest,
+  manifest,
+  installedAt,
+  source,
+}: HostExtensionDiskInstallation): HostExtensionInstallation {
+  return { id, activationId, digest, manifest, installedAt, ...(source ? { source } : {}) };
+}
 export class HostExtensionInstallConflict extends Error {}
 export class HostExtensionRevisionConflict extends Error {
   constructor(readonly revision: number) {
@@ -178,7 +188,7 @@ export async function discoverHostExtensions(dataDir: string): Promise<{
       const resolved = await currentAt(root, id);
       if (!resolved) continue;
       const { installation, read } = resolved;
-      const { directory, generation, ...metadata } = installation;
+      const metadata = hostExtensionInstallationMetadata(installation);
       const { icon, screenshots } = await validateHostPackageEntries(metadata.manifest, read);
       const toDataUrl = ({ mime, bytes }: { mime: string | undefined; bytes: Buffer }) =>
         `data:${mime};base64,${bytes.toString("base64")}`;

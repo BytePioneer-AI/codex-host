@@ -25,6 +25,7 @@ import {
   parseSafeIconUrl,
   type ExtensionCapabilityBadge,
   type ExtensionLocale,
+  type ExtensionPlatformBadge,
   type Translate,
 } from "./web-extensions-helpers.ts";
 import css from "./WebExtensionsSection.module.css";
@@ -86,6 +87,14 @@ export function ExtensionIcon({
   );
 }
 
+export function WebExtensionPlatformBadge({ badge }: { badge: ExtensionPlatformBadge }) {
+  return (
+    <span className={css.capBadge} data-platform={badge.kind}>
+      {badge.label}
+    </span>
+  );
+}
+
 export interface WebExtensionCardProps {
   readonly cardKey: string;
   readonly extensionId: string;
@@ -100,10 +109,11 @@ export interface WebExtensionCardProps {
   readonly downloads?: number | undefined;
   readonly trustTier?: DesktopExtensionTrustTier | undefined;
   readonly categories?: readonly DesktopExtensionCategory[] | undefined;
+  readonly platformBadge: ExtensionPlatformBadge | null;
   readonly capabilityBadges?: readonly ExtensionCapabilityBadge[] | undefined;
   readonly statusDot?:
     { readonly tone: "info" | "warning" | "danger"; readonly label: string } | undefined;
-  readonly updateHint?: { readonly label: string; readonly title: string } | undefined;
+  readonly update?: { readonly label: string; readonly action: ReactNode } | undefined;
   readonly attention?: { readonly tone: "warning" | "danger"; readonly text: string } | undefined;
   readonly secondaryAction?: ReactNode;
   readonly actionControl: ReactNode;
@@ -137,9 +147,10 @@ export function WebExtensionCard({
   downloads,
   trustTier,
   categories,
-  capabilityBadges,
+  platformBadge,
+  capabilityBadges = [],
   statusDot,
-  updateHint,
+  update,
   attention,
   secondaryAction,
   actionControl,
@@ -161,7 +172,6 @@ export function WebExtensionCard({
   const trimmedDescription = description?.trim() ?? "";
   const showMeta =
     authorVersion !== "" ||
-    updateHint !== undefined ||
     repositoryHref !== null ||
     formattedStars !== null ||
     formattedDownloads !== null ||
@@ -182,6 +192,7 @@ export function WebExtensionCard({
       role="button"
       aria-haspopup="dialog"
       aria-label={t("extensions.openDetailsLabel", { name: displayName })}
+      aria-description={platformBadge?.label}
       onClick={onOpenDetails}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -225,9 +236,10 @@ export function WebExtensionCard({
         </div>
       </div>
 
-      {/* Capability badges row */}
-      {capabilityBadges !== undefined && capabilityBadges.length > 0 && (
+      {/* Platform and capability badges */}
+      {(platformBadge || capabilityBadges.length > 0) && (
         <div className={css.cardCapabilities}>
+          {platformBadge && <WebExtensionPlatformBadge badge={platformBadge} />}
           {capabilityBadges.map((badge) => (
             <span key={badge.kind} className={css.capBadge} data-capability={badge.kind}>
               {badge.label}
@@ -253,27 +265,22 @@ export function WebExtensionCard({
         </div>
       )}
 
-      {/* Row 3: Borderless muted metadata line */}
+      {update && (
+        <div className={css.cardUpdate} data-update-available="true">
+          <span>{update.label}</span>
+          <div onClick={stopBubble} onKeyDown={stopBubble}>
+            {update.action}
+          </div>
+        </div>
+      )}
+
+      {/* Borderless muted metadata line */}
       {showMeta && (
         <div className={css.cardMeta}>
           <div className={css.cardMetaLeft}>
-            {(authorVersion !== "" || updateHint !== undefined) && (
-              <span
-                className={css.authorVersion}
-                title={
-                  updateHint
-                    ? authorVersion
-                      ? `${authorVersion} · ${updateHint.title}`
-                      : updateHint.title
-                    : authorVersion
-                }
-              >
-                {authorVersion !== "" && <span>{authorVersion}</span>}
-                {updateHint !== undefined && (
-                  <span className={css.updateCue} data-update-available="true">
-                    {authorVersion !== "" ? ` · ${updateHint.label}` : updateHint.label}
-                  </span>
-                )}
+            {authorVersion !== "" && (
+              <span className={css.authorVersion} title={authorVersion}>
+                {authorVersion}
               </span>
             )}
             {repositoryHref !== null && (

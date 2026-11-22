@@ -26,8 +26,8 @@ export interface DesktopExtensionPageHostOptions {
   readonly messages: RendererSettingsMessages;
   readonly getClient: () => DesktopExtensionSurfaceClient | null;
   readonly getContentLocale?: (() => DesktopExtensionContentLocale) | undefined;
-  readonly importModule?: ((url: string) => Promise<unknown>) | undefined;
-  readonly onClose: () => void;
+  /** Inline hosts provide a back action; sidebar pages use shell navigation instead. */
+  readonly onClose?: () => void;
 }
 
 export interface DesktopExtensionPageHostController {
@@ -41,6 +41,17 @@ export interface DesktopExtensionPageHostController {
   dispose(): void;
 }
 
+export function desktopExtensionPageTitle(
+  item: HostExtensionValidItem,
+  locale: DesktopExtensionContentLocale,
+): string {
+  const title = item.manifest.page?.title;
+  return (
+    (title && resolveLocalizedExtensionText(title, locale).trim()) ||
+    resolveLocalizedExtensionText(item.manifest.name, locale)
+  );
+}
+
 export function createDesktopExtensionPageHost({
   document: doc,
   host,
@@ -48,7 +59,6 @@ export function createDesktopExtensionPageHost({
   messages,
   getClient,
   getContentLocale = () => messages.locale,
-  importModule,
   onClose,
 }: DesktopExtensionPageHostOptions): DesktopExtensionPageHostController {
   const copy = messages.desktopExtensions;
@@ -65,7 +75,7 @@ export function createDesktopExtensionPageHost({
     surface = undefined;
     panel?.remove();
     panel = undefined;
-    if (wasOpen && notifyOwner) onClose();
+    if (wasOpen && notifyOwner) onClose?.();
   };
 
   const mountActivePage = (): void => {
@@ -75,7 +85,7 @@ export function createDesktopExtensionPageHost({
     surface?.dispose();
 
     const locale = getContentLocale();
-    const pageTitle = resolveLocalizedExtensionText(pageSpec.title ?? item.manifest.name, locale);
+    const pageTitle = desktopExtensionPageTitle(item, locale);
     const version = item.manifest.version.replace(/^v/u, "");
 
     panel = createEl(doc, "section", "settings-extensions-page-view");
@@ -86,18 +96,21 @@ export function createDesktopExtensionPageHost({
     const header = createEl(doc, "header", "settings-extensions-page-view__header");
     const headerLeft = createEl(doc, "div", "settings-extensions-page-view__header-left");
 
-    const backButton = createEl(
-      doc,
-      "button",
-      "settings-command-button settings-command-button--secondary settings-extensions-page-view__back",
-    );
-    backButton.type = "button";
-    backButton.dataset.action = "page-back";
-    backButton.append(
-      createRendererSettingsIcon("chevron-left", 14),
-      createEl(doc, "span", "", copy.pageBack),
-    );
-    backButton.addEventListener("click", () => closeInternal(true));
+    if (onClose) {
+      const backButton = createEl(
+        doc,
+        "button",
+        "settings-command-button settings-command-button--secondary settings-extensions-page-view__back",
+      );
+      backButton.type = "button";
+      backButton.dataset.action = "page-back";
+      backButton.append(
+        createRendererSettingsIcon("chevron-left", 14),
+        createEl(doc, "span", "", copy.pageBack),
+      );
+      backButton.addEventListener("click", () => closeInternal(true));
+      headerLeft.append(backButton);
+    }
 
     const identity = createEl(doc, "div", "settings-extensions-page-view__identity");
     identity.append(
@@ -110,7 +123,12 @@ export function createDesktopExtensionPageHost({
       }),
     );
     const titleWrap = createEl(doc, "div", "settings-extensions-page-view__title-wrap");
-    const titleEl = createEl(doc, "h2", "settings-extensions-page-view__title", pageTitle);
+    const titleEl = createEl(
+      doc,
+      onClose ? "h2" : "h1",
+      "settings-extensions-page-view__title",
+      pageTitle,
+    );
     const versionEl = createEl(
       doc,
       "span",
@@ -119,7 +137,7 @@ export function createDesktopExtensionPageHost({
     );
     titleWrap.append(titleEl, versionEl);
     identity.append(titleWrap);
-    headerLeft.append(backButton, identity);
+    headerLeft.append(identity);
 
     const headerActions = createEl(doc, "div", "settings-extensions-page-view__actions");
     const reloadButton = createEl(
@@ -153,7 +171,11 @@ export function createDesktopExtensionPageHost({
       kind: "page",
       getClient,
       getLocale: getContentLocale,
-      importModule,
+      onRetired: () => {
+        queueMicrotask(() => {
+          if (surface === instance) mountActivePage();
+        });
+      },
       noBackendMessage: formatMessage(copy.pageNoBackend, { id: item.id }),
     });
     surface = instance;

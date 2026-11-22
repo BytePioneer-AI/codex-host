@@ -7,6 +7,7 @@ import {
   type JsonObject,
   type JsonValue,
 } from "@codexhost/shared-contracts";
+import { createExtensionPlatformBadgeElement } from "./desktop-extensions-card.js";
 import { renderSafeMarkdown } from "./desktop-extensions-markdown.js";
 import {
   blockedToggleReason,
@@ -18,6 +19,7 @@ import {
   createExtensionIconElement,
   createTrustBadge,
   deriveCapabilityBadges,
+  derivePlatformBadge,
   errorMessage,
   extensionDescription,
   extensionDisplayName,
@@ -742,7 +744,13 @@ export function createDesktopExtensionDetailModal(options: {
         nodes.push(openPageButton);
       }
 
-      if (onOpenSettings && state.hasSettingsPage?.(extensionId)) {
+      if (
+        onOpenSettings &&
+        installed.state === "valid" &&
+        installed.enabled &&
+        !installed.manifest.page &&
+        state.hasSettingsPage?.(extensionId)
+      ) {
         const openSettingsButton = createEl(
           document,
           "button",
@@ -935,7 +943,7 @@ export function createDesktopExtensionDetailModal(options: {
     }
     titleRow.replaceChildren(...titleNodes);
 
-    // Capability badges row
+    // Supported platform and capability badges.
     const capabilities =
       installed?.state === "valid"
         ? itemCapabilities(installed)
@@ -948,20 +956,35 @@ export function createDesktopExtensionDetailModal(options: {
         : catalogEntry
           ? catalogEntry.targets
           : [];
-    const capBadges = deriveCapabilityBadges(capabilities, targets, copy);
-    if (capBadges.length > 0) {
-      capabilityRow.hidden = false;
-      capabilityRow.replaceChildren(
-        ...capBadges.map((badge) => {
-          const el = createEl(document, "span", "settings-extensions-cap-badge", badge.label);
-          el.dataset.capability = badge.kind;
-          return el;
-        }),
+    const platformBadge = derivePlatformBadge(targets, copy);
+    const capabilityNodes: HTMLElement[] = [];
+    if (platformBadge) {
+      const platform = createEl(document, "div", "settings-extensions-detail-modal__platform");
+      const row = createEl(document, "div", "settings-extensions-detail-modal__platform-row");
+      row.append(
+        createEl(document, "span", "", copy.platformLabel),
+        createExtensionPlatformBadgeElement(document, platformBadge),
       );
-    } else {
-      capabilityRow.hidden = true;
-      capabilityRow.replaceChildren();
+      platform.append(row);
+      if (platformBadge.kind === "web") {
+        platform.append(
+          createEl(
+            document,
+            "p",
+            "settings-extensions-detail-modal__platform-notice",
+            copy.platformWebOnlyNotice,
+          ),
+        );
+      }
+      capabilityNodes.push(platform);
     }
+    for (const badge of deriveCapabilityBadges(capabilities, copy)) {
+      const el = createEl(document, "span", "settings-extensions-cap-badge", badge.label);
+      el.dataset.capability = badge.kind;
+      capabilityNodes.push(el);
+    }
+    capabilityRow.hidden = capabilityNodes.length === 0;
+    capabilityRow.replaceChildren(...capabilityNodes);
 
     // Header metadata: author, version, category chips, GitHub repository link.
     const metaNodes: HTMLElement[] = [];

@@ -90,6 +90,7 @@ function composerFixture(
     signalReserve?: boolean;
     /** Desktop 26.1002: exempting Account gate, also subscribed in a child of the owner. */
     childAccount?: boolean;
+    reasons?: "owned" | "duplicate" | "unowned";
   } = {},
 ) {
   const accountGate = options.childAccount ? source.exemptAccountGate : source.accountGate;
@@ -99,16 +100,33 @@ function composerFixture(
   const rerender = vi.fn();
   const childHooks: Array<Record<string, unknown>> = [];
   type SelectorEntry = [Atom, Array<Record<string, unknown>>];
-  const selectors: SelectorEntry[] = [
-    [source.reserveActive, hooks],
-    [accountGate, hooks],
-    ...(options.omitReserve ? [] : ([[source.reserveGate, hooks]] satisfies SelectorEntry[])),
-    ...(options.duplicateAccount ? ([[accountGate, hooks]] satisfies SelectorEntry[]) : []),
-    ...(options.childAccount ? ([[accountGate, childHooks]] satisfies SelectorEntry[]) : []),
-  ];
+  const usageReasons: Atom = {
+    read: (get) =>
+      [
+        get(source.reserveGate) === true && "reserve-limit",
+        get(source.exemptAccountGate) === true && "usage-limit",
+      ]
+        .filter(Boolean)
+        .join(","),
+  };
+  const selectors: SelectorEntry[] = options.reasons
+    ? [
+        [source.reserveActive, hooks],
+        [usageReasons, hooks],
+        ...(options.reasons === "duplicate"
+          ? ([[usageReasons, hooks]] satisfies SelectorEntry[])
+          : []),
+      ]
+    : [
+        [source.reserveActive, hooks],
+        [accountGate, hooks],
+        ...(options.omitReserve ? [] : ([[source.reserveGate, hooks]] satisfies SelectorEntry[])),
+        ...(options.duplicateAccount ? ([[accountGate, hooks]] satisfies SelectorEntry[]) : []),
+        ...(options.childAccount ? ([[accountGate, childHooks]] satisfies SelectorEntry[]) : []),
+      ];
   for (const [selector, target] of selectors) {
     // Desktop 26.928 wraps parameterized selectors in a readonly signal atom.
-    const signal = options.signalReserve && selector !== accountGate;
+    const signal = selector === usageReasons || (options.signalReserve && selector !== accountGate);
     const atom: Atom = signal ? { read: (get) => get(selector) } : selector;
     const value = {
       atom,
@@ -116,19 +134,27 @@ function composerFixture(
       get: () => source.store.get(atom),
       subscribe: (listener: () => void) => source.store.sub(atom, listener),
     };
+    let notifyStoreChange: (() => void) | undefined;
     const subscriber = {
       getSnapshot: value.get,
-      subscribe: value.subscribe,
+      subscribe:
+        selector === usageReasons
+          ? (listener: () => void) => {
+              notifyStoreChange = listener;
+              return value.subscribe(() => notifyStoreChange?.());
+            }
+          : value.subscribe,
       createRender: () => undefined,
     };
     // The new hook passes a lazy wrapper, not subscriber.getSnapshot, to React.
-    const getSnapshot = options.snapshotWrapper
-      ? () => {
-          const snapshot = subscriber.getSnapshot();
-          subscriber.createRender();
-          return snapshot;
-        }
-      : subscriber.getSnapshot;
+    const getSnapshot =
+      options.snapshotWrapper || selector === usageReasons
+        ? () => {
+            const snapshot = subscriber.getSnapshot();
+            subscriber.createRender();
+            return snapshot;
+          }
+        : subscriber.getSnapshot;
     const instance = { value: getSnapshot(), getSnapshot };
     const effect = {
       deps: [subscriber.subscribe],
@@ -140,8 +166,13 @@ function composerFixture(
           rerender();
         }),
     };
+    const deps = signal
+      ? selector === usageReasons
+        ? [value, undefined, false]
+        : [value, undefined]
+      : [source.store, atom];
     target.push(
-      { memoizedState: [subscriber, signal ? [value, undefined] : [source.store, atom]] },
+      { memoizedState: [subscriber, deps] },
       { queue: instance },
       { memoizedState: effect },
     );
@@ -163,20 +194,35 @@ function composerFixture(
     memoizedState: { memoizedState: null, next: null },
     return: null,
   };
+  let callerDisabled = false;
+  const reasonsProps = {
+    get submitDisabledReasons() {
+      return [callerDisabled && "caller-disabled", required(instances[1]).value]
+        .filter(Boolean)
+        .join(",");
+    },
+    onSubmitLocal() {},
+  };
+  const elementType = () => undefined;
+  const element = {
+    type: elementType,
+    props: options.reasons === "unowned" ? { ...reasonsProps } : reasonsProps,
+  };
   const owner = {
     memoizedProps: props,
     memoizedState: hooks[0] as unknown,
     return: wrapper,
+    updateQueue: options.reasons && { memoCache: { data: [[element]] } },
   };
-  // 26.1002 subscribes the Account gate again in a child without owner props.
   const child = {
-    memoizedProps: { submitDisabled: false, onSubmitLocal() {} },
+    elementType,
+    memoizedProps: options.reasons ? reasonsProps : { submitDisabled: false, onSubmitLocal() {} },
     memoizedState: childHooks[0] ?? null,
     return: owner,
   };
   const editor = {
     parentElement: null,
-    __reactFiber$test: options.childAccount ? child : owner,
+    __reactFiber$test: options.childAccount || options.reasons ? child : owner,
   };
   const composer = {
     isConnected: true,
@@ -193,7 +239,12 @@ function composerFixture(
     hooks,
     editor,
     child,
-    blocked: () => instances.slice(1).some((instance) => instance.getSnapshot() === true),
+    setCallerDisabled(value: boolean) {
+      callerDisabled = value;
+    },
+    blocked: options.reasons
+      ? () => reasonsProps.submitDisabledReasons.length > 0
+      : () => instances.slice(1).some((instance) => instance.getSnapshot() === true),
   };
 }
 
@@ -285,6 +336,32 @@ describe("Codex usage gate for external Harness Composers", () => {
     expect(external.gate.update(false)).toBe("native");
     expect(external.blocked()).toBe(true);
     expect(external.instances.map((instance) => instance.getSnapshot)).toEqual(nativeSnapshots);
+  });
+
+  it("lifts the Composer's owned usage reasons but keeps caller and other Composer blockers", () => {
+    vi.useFakeTimers();
+    const source = desktopStore();
+    const external = composerFixture(source, { reasons: "owned" });
+    const codex = composerFixture(source, { reasons: "owned" });
+    expect(external.blocked()).toBe(true);
+    expect(external.gate.update(true)).toBe("bypassed");
+    expect(external.blocked()).toBe(false);
+    expect(codex.blocked()).toBe(true);
+
+    external.setCallerDisabled(true);
+    expect(external.blocked()).toBe(true);
+    external.setCallerDisabled(false);
+    source.setAllowed(true);
+    source.setHardBlocked(true);
+    vi.advanceTimersByTime(1000);
+    expect(external.gate.refresh()).toBe("bypassed");
+    expect(external.blocked()).toBe(false);
+    expect(codex.blocked()).toBe(true);
+    expect(source.store.get(source.reserveGate)).toBe(true);
+    expect(source.store.set).not.toHaveBeenCalled();
+
+    expect(external.gate.update(false)).toBe("native");
+    expect(external.blocked()).toBe(true);
   });
 
   it("keeps unrelated or mismatched snapshot wrappers native", () => {
@@ -533,6 +610,8 @@ describe("Codex usage gate for external Harness Composers", () => {
       { duplicateAccount: true },
       { omitReserve: true, snapshotWrapper: true, signalReserve: true },
       { duplicateAccount: true, snapshotWrapper: true, signalReserve: true },
+      { reasons: "duplicate" as const },
+      { reasons: "unowned" as const },
     ]) {
       const f = composerFixture(undefined, options);
       expect(f.gate.update(true)).toBe("unsupported");

@@ -63,6 +63,7 @@ description: 开发、打包、验收或排查 codexhost 统一 Host 扩展：�
 ```
 
 - `id` 最长 128 字符，匹配 `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`；`name` 与 `description` 须提供非空 `en` 与 `zh-CN` 文案。
+- `settingsSchema` 为可选字段，只在 Desktop 与 Web 的「插件详情」弹窗中自动渲染设置表单（读写 `api.storage`）；不需要配置项、或已将参数调整做在 `page` / `widget` 内的插件应省略 `settingsSchema`，详情弹窗不会显示空白设置区。
 - `categories` 可选多选：`appearance`、`interface`、`workflow`、`analytics`、`integrations`、`tools`。
 - `icon`（≤ 128 KiB）与 `screenshots`（最多 4 张，每张 ≤ 512 KiB，合计 ≤ 2 MiB）仅允许 PNG / JPEG / WebP，相对路径须使用 `/` 且不得越界。
 - `backend.entry` 不可与 `page.entry`、`widget.entry` 或 `web.entry` 指向同一文件，且不会被静态资产接口对外暴露。
@@ -135,7 +136,7 @@ export async function activate(ctx) {
 2. 使用 [隔离实测 Skill](../codexhost-isolated-testing/SKILL.md) 以独立数据目录与空闲端口启动测试 Web / Desktop（不碰 `~/.codexhost` 与用户正在运行的端口）。
 3. 从 Desktop「设置 → 插件」或 Web 一级目录「插件 → 插件中心」导入 `.zip`（或开发期填入本机目录 `localDir`）并启用：
    - 验证能力角标显示准确；含 `widget` 的扩展启用后确认主窗口自动出现挂件，禁用后确认挂件移除且未拦截非挂件区域的点击；
-   - 含 `page` 的扩展点击「打开页面」，在 Web 也可直接从左侧「插件」专区打开全宽工作区；验证样式、交互、设置持久化与关闭清理；
+   - 含 `page` 的扩展点击「打开页面」（Desktop 也可从「设置」左侧「插件页面」分组打开，Web 也可从左侧「插件」主工作区顶部切页栏打开）；验证样式、交互、设置持久化与关闭清理；
    - 含 `backend` 的扩展确认共享 Host 仅起 1 个子进程、多标签页/双端共享同一 PID 与数据、禁用后进程立即退出；
    - 纯前端无 `backend` 扩展确认零后端子进程；
    - 如需兜底，可通过管理界面的「禁用全部扩展」（`codexhost/extensions/recover`）一键恢复。

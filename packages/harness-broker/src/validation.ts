@@ -5,6 +5,7 @@ import {
   harnessSessionImportCandidateSchema,
   harnessSessionImportIdSchema,
   harnessModelRefSchema,
+  harnessModelCatalogSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
@@ -90,6 +91,11 @@ export const brokerInspectInputSchema = z
     purpose: z.literal("availability").optional(),
   })
   .strict();
+
+export const brokerNormalizeStoredModelRefSchema = z.strictObject({
+  ref: harnessModelRefSchema,
+  catalog: harnessModelCatalogSchema,
+});
 
 export const brokerSessionImportListParamsSchema = z
   .object({

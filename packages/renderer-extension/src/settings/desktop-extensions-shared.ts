@@ -25,14 +25,34 @@ import type { RendererSettingsMessages } from "./localization.js";
 export type HostExtensionValidItem = Extract<HostExtensionListItem, { state: "valid" }>;
 export type DesktopExtensionItem = HostExtensionListItem;
 export type DesktopExtensionBannerTone = "info" | "success" | "warning" | "danger";
-export type DesktopExtensionGroupId = "attention" | "enabled" | "disabled";
 export type DesktopExtensionMutationAction = "toggle" | "install" | "update" | "uninstall";
 export type DesktopExtensionContentLocale = RendererSettingsMessages["locale"];
 export type DesktopExtensionContentLocalePreference = "system" | DesktopExtensionContentLocale;
+
+export const CONTENT_LOCALE_STORAGE_KEY = "codexhost.desktopExtensions.contentLocale";
+
+export function readContentLocalePreference(
+  ownerWindow: Window | null,
+): DesktopExtensionContentLocalePreference {
+  try {
+    const storage =
+      ownerWindow?.localStorage ?? (typeof localStorage !== "undefined" ? localStorage : undefined);
+    const stored = storage?.getItem(CONTENT_LOCALE_STORAGE_KEY);
+    if (stored === "system" || stored === "zh-CN" || stored === "en") return stored;
+  } catch {
+    // Ignore restricted storage environments.
+  }
+  return "system";
+}
 export type ExtensionCapabilityFilter = "all" | "page" | "widget" | "web" | "desktop" | "backend";
 
+export interface ExtensionPlatformBadge {
+  readonly kind: "both" | HostExtensionTarget;
+  readonly label: string;
+}
+
 export interface ExtensionCapabilityBadge {
-  readonly kind: ExtensionCapabilityFilter;
+  readonly kind: "page" | "widget" | "backend";
   readonly label: string;
 }
 
@@ -124,22 +144,24 @@ export function catalogCapabilities(entry: HostExtensionCatalogEntry): HostExten
   };
 }
 
+export function derivePlatformBadge(
+  targets: readonly HostExtensionTarget[],
+  copy: DesktopExtensionsMessages,
+): ExtensionPlatformBadge | null {
+  const hasDesktop = targets.includes("desktop");
+  const hasWeb = targets.includes("web");
+  if (hasDesktop && hasWeb) return { kind: "both", label: copy.platformBoth };
+  if (hasDesktop) return { kind: "desktop", label: copy.platformDesktopOnly };
+  if (hasWeb) return { kind: "web", label: copy.platformWebOnly };
+  return null;
+}
+
 export function deriveCapabilityBadges(
   capabilities: HostExtensionCapabilities | null,
-  targets: readonly HostExtensionTarget[],
   copy: DesktopExtensionsMessages,
 ): readonly ExtensionCapabilityBadge[] {
   if (!capabilities) return [];
   const badges: ExtensionCapabilityBadge[] = [];
-  const hasDesktopTarget = targets.includes("desktop");
-  const hasWebTarget = targets.includes("web");
-  if (hasDesktopTarget && hasWebTarget) {
-    badges.push({ kind: "all", label: copy.badgeAllTargets });
-  } else if (hasDesktopTarget) {
-    badges.push({ kind: "desktop", label: copy.badgeDesktop });
-  } else if (hasWebTarget) {
-    badges.push({ kind: "web", label: copy.badgeWeb });
-  }
   if (capabilities.hasPage) {
     badges.push({ kind: "page", label: copy.badgePage });
   }
@@ -157,19 +179,18 @@ export function matchesCapabilityFilter(
   capabilities: HostExtensionCapabilities | null,
   targets: readonly HostExtensionTarget[],
 ): boolean {
-  if (filter === "all") return true;
-  if (!capabilities) return false;
   switch (filter) {
-    case "page":
-      return capabilities.hasPage;
-    case "widget":
-      return capabilities.hasWidget;
+    case "all":
+      return true;
     case "web":
-      return capabilities.hasWeb || targets.includes("web");
     case "desktop":
-      return capabilities.hasDesktop || targets.includes("desktop");
+      return targets.includes(filter);
+    case "page":
+      return capabilities?.hasPage ?? false;
+    case "widget":
+      return capabilities?.hasWidget ?? false;
     case "backend":
-      return capabilities.hasBackend;
+      return capabilities?.hasBackend ?? false;
   }
 }
 
@@ -307,19 +328,10 @@ export function itemStatusState(item: HostExtensionListItem): DesktopExtensionSt
   return item.enabled ? "running" : "disabled";
 }
 
-export function extensionGroupOf(state: DesktopExtensionStatus["state"]): DesktopExtensionGroupId {
-  switch (state) {
-    case "failed":
-    case "conflict":
-    case "invalid":
-    case "incompatible":
-      return "attention";
-    case "running":
-    case "waiting":
-      return "enabled";
-    case "disabled":
-      return "disabled";
-  }
+export function needsAttention(state: DesktopExtensionStatus["state"]): boolean {
+  return (
+    state === "failed" || state === "conflict" || state === "invalid" || state === "incompatible"
+  );
 }
 
 export function statusTone(
@@ -494,7 +506,7 @@ export function resolveAttentionDetail(
   copy: DesktopExtensionsMessages,
 ): DesktopExtensionAttentionDetail | null {
   const state = itemStatusState(item);
-  if (extensionGroupOf(state) !== "attention") return null;
+  if (!needsAttention(state)) return null;
   if (item.state !== "valid") {
     return {
       tone: item.state === "incompatible" ? "warning" : "danger",

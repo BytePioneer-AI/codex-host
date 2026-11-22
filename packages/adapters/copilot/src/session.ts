@@ -21,7 +21,6 @@ import {
 import { createCopilotClient } from "./client.js";
 import {
   confirmedConfiguration,
-  modelId,
   readModels,
   requireModel,
   selectThinking,
@@ -157,7 +156,7 @@ export class CopilotHarnessSession implements HarnessSession {
     try {
       await bounded(client.start());
       if (this.input.kind === "create" && this.input.model)
-        requireModel(await readModels(client), modelId(this.input.model));
+        requireModel(await readModels(client), this.input.model.id);
       if (this.input.kind === "resume") {
         if (
           (
@@ -222,7 +221,7 @@ export class CopilotHarnessSession implements HarnessSession {
               client.createSession({
                 ...handlers,
                 sessionId: this.nativeId,
-                ...(this.input.model ? { model: modelId(this.input.model) } : {}),
+                ...(this.input.model ? { model: this.input.model.id } : {}),
               }),
             );
       this.session = session;
@@ -257,7 +256,7 @@ export class CopilotHarnessSession implements HarnessSession {
       }
       if (this.input.kind === "create" && (this.input.model || this.input.thinkingOptionId)) {
         const current = await bounded(session.rpc.model.getCurrent());
-        const requestedModel = this.input.model ? modelId(this.input.model) : current.modelId;
+        const requestedModel = this.input.model?.id ?? current.modelId;
         if (!requestedModel)
           throw new CopilotOperationError("invalidState", "Copilot has not confirmed a Model.");
         const models = await readModels(client, session);
@@ -676,7 +675,7 @@ export class CopilotHarnessSession implements HarnessSession {
       }
       this.configurationRevision++;
       if (command.type === "model.select") {
-        const id = modelId(command.model);
+        const id = command.model.id;
         requireModel(await readModels(client, session), id);
         await bounded(session.setModel(id));
       }

@@ -1,17 +1,14 @@
 import assert from "node:assert/strict";
-import { it } from "node:test";
-import {
-  encodeOfficialCodexModelRef,
-  decodeOfficialCodexModelSelection,
-} from "@codexhost/shared-contracts";
-import { RemoteSessions, remoteSessionId } from "../src/remote-sessions.ts";
-import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
+import { it, onTestFinished } from "vitest";
+import { officialCodexModelRef, harnessModelRefKey } from "@codexhost/shared-contracts";
+import { RemoteSessions, remoteSessionId } from "../../packages/web-server/src/remote-sessions.ts";
+import { EventHub, RpcRegistry, StreamRegistry } from "../../packages/web-server/src/transport.ts";
 import {
   mergeRemoteControls,
   parseRemoteControls,
   selectRemoteModel,
   type RemoteControlsEntry,
-} from "../src/remote-session-controls.ts";
+} from "../../packages/web-server/src/remote-session-controls.ts";
 
 it("carries a confirmed speed tier across partial reads only for the same model and connection", () => {
   const configuration = { owner: "codex", locked: true };
@@ -32,12 +29,12 @@ it("carries a confirmed speed tier across partial reads only for the same model 
     });
     assert.deepEqual(mergeRemoteControls(previous, next, sameEpoch).configuration, {
       ...configuration,
-      effectiveModel: encodeOfficialCodexModelRef(model, expectedTier),
+      effectiveModel: { id: model, ...(expectedTier ? { serviceTier: expectedTier } : {}) },
       effectiveThinkingOptionId: "high",
     });
   }
   const confirmedStandard = parseRemoteControls({
-    configuration: { ...configuration, effectiveModel: encodeOfficialCodexModelRef("gpt-6-astra") },
+    configuration: { ...configuration, effectiveModel: { id: "gpt-6-astra" } },
     nativeSettings: { model: "gpt-6-astra" },
   });
   assert.deepEqual(
@@ -46,12 +43,12 @@ it("carries a confirmed speed tier across partial reads only for the same model 
   );
 });
 
-it("uses native model and Thinking settings when the confirmed reference is malformed", () => {
+it("uses native model and Thinking settings when the confirmed Model differs", () => {
   const controls = parseRemoteControls({
     configuration: {
       owner: "codex",
       locked: true,
-      effectiveModel: { id: "codex-model-v1." },
+      effectiveModel: { id: "previous", serviceTier: "ultrafast" },
       effectiveThinkingOptionId: "low",
     },
     nativeSettings: { model: "gpt-other", reasoningEffort: "high" },
@@ -59,7 +56,7 @@ it("uses native model and Thinking settings when the confirmed reference is malf
   assert.deepEqual(controls.configuration, {
     owner: "codex",
     locked: true,
-    effectiveModel: encodeOfficialCodexModelRef("gpt-other"),
+    effectiveModel: { id: "gpt-other" },
     effectiveThinkingOptionId: "high",
   });
 });
@@ -80,7 +77,7 @@ it("stops a combined selection when refresh moves to another connection", async 
       entry,
       {
         provider: "codex",
-        model: encodeOfficialCodexModelRef("after").id,
+        model: "after",
         reasoningEffort: "high",
       },
       async (_entry, setting) => {
@@ -92,10 +89,10 @@ it("stops a combined selection when refresh moves to another connection", async 
     ),
     /Thinking was not completed/,
   );
-  assert.deepEqual(writes, [{ modelId: encodeOfficialCodexModelRef("after").id }]);
+  assert.deepEqual(writes, [{ modelId: "after" }]);
 });
 
-it("reads and changes the remote native model without consulting local defaults", async (t) => {
+it("switches remote Codex speed tiers and skips unchanged Refs without consulting local defaults", async () => {
   const rpc = new RpcRegistry();
   for (const method of ["session/modelCatalog", "session/selectModel", "session/projections"])
     rpc.register(method, () => {
@@ -106,25 +103,27 @@ it("reads and changes the remote native model without consulting local defaults"
   let epoch = "one";
   let writes = 0;
   let available = true;
-  const ref = () => encodeOfficialCodexModelRef(model ?? "unknown", tier);
+  const ref = () => officialCodexModelRef(model ?? "unknown", tier);
+  const key = (id: string, serviceTier?: string | null) =>
+    harnessModelRefKey(officialCodexModelRef(id, serviceTier));
   const inspection = {
     status: "ready",
     catalog: {
       models: [
         {
-          ref: encodeOfficialCodexModelRef("gpt-6-astra"),
-          fastModel: encodeOfficialCodexModelRef("gpt-6-astra", "priority"),
+          ref: { id: "gpt-6-astra" },
+          fastModel: { id: "gpt-6-astra", serviceTier: "priority" },
           label: "Astra",
           supportedThinkingOptionIds: ["high"],
         },
         {
-          ref: encodeOfficialCodexModelRef("gpt-6-astra", "ultrafast"),
+          ref: { id: "gpt-6-astra", serviceTier: "ultrafast" },
           label: "Astra · Ultrafast",
           supportedThinkingOptionIds: ["high"],
         },
-        { ref: encodeOfficialCodexModelRef("gpt-other"), label: "Other" },
+        { ref: { id: "gpt-other" }, label: "Other" },
       ],
-      defaultModel: encodeOfficialCodexModelRef("gpt-other"),
+      defaultModel: { id: "gpt-other" },
       thinkingOptions: [{ id: "high", label: "High" }],
     },
     capabilities: {
@@ -169,17 +168,14 @@ it("reads and changes the remote native model without consulting local defaults"
       assert.equal(op.threadId, "native");
       assert.equal(op.epoch, epoch);
       assert.ok(op.modelId);
-      const selection = decodeOfficialCodexModelSelection({ id: op.modelId } as ReturnType<
-        typeof ref
-      >);
-      model = selection.model;
-      tier = selection.serviceTier;
+      model = op.modelId;
+      tier = op.serviceTier ?? null;
       writes++;
       return { effectiveModel: ref() };
     }
     throw Error("unexpected operation");
   });
-  t.after(() => remote.close());
+  onTestFinished(() => remote.close());
   remote.install(rpc, new StreamRegistry());
   const id = remoteSessionId("remote-ssh:mac", "native");
   const call = (method: string, request = {}) =>
@@ -199,62 +195,55 @@ it("reads and changes the remote native model without consulting local defaults"
   assert.equal((catalog.value as { default: { model: string } }).default.model, ref().id);
   assert.deepEqual((catalog.value as { groups: Array<{ models: unknown }> }).groups[0]?.models, [
     {
-      id: encodeOfficialCodexModelRef("gpt-6-astra").id,
+      id: "gpt-6-astra",
       name: "Astra",
-      fastModel: encodeOfficialCodexModelRef("gpt-6-astra", "priority").id,
-      ultrafastModel: encodeOfficialCodexModelRef("gpt-6-astra", "ultrafast").id,
+      fastModel: key("gpt-6-astra", "priority"),
+      ultrafastModel: key("gpt-6-astra", "ultrafast"),
       reasoning: { efforts: [{ id: "high", name: "High" }] },
     },
     {
-      id: encodeOfficialCodexModelRef("gpt-6-astra", "ultrafast").id,
+      id: key("gpt-6-astra", "ultrafast"),
       name: "Astra · Ultrafast",
       reasoning: { efforts: [{ id: "high", name: "High" }] },
     },
     {
-      id: encodeOfficialCodexModelRef("gpt-other").id,
+      id: "gpt-other",
       name: "Other",
       reasoning: { efforts: [{ id: "high", name: "High" }] },
     },
   ]);
   for (const [targetModel, targetTier] of [
-    ["gpt-other", null],
+    ["gpt-6-astra", "priority"],
     ["gpt-6-astra", "priority"],
     ["gpt-6-astra", "ultrafast"],
     ["gpt-6-astra", null],
   ] as const) {
-    const target = encodeOfficialCodexModelRef(targetModel, targetTier);
-    assert.ok((await call("session/selectModel", { provider: "codex", model: target.id })).ok);
+    const target = key(targetModel, targetTier);
+    assert.ok((await call("session/selectModel", { provider: "codex", model: target })).ok);
     assert.equal(model, targetModel);
     assert.equal(tier, targetTier);
-    assert.equal(ref().id, target.id);
     const view = await call("session/projections");
     assert.ok(view.ok);
     assert.equal(
       (view.value as { values: { modelSelection: { next: { model: string } } } }).values
         .modelSelection.next.model,
-      target.id,
+      target,
     );
   }
-  assert.equal(writes, 4);
+  assert.equal(writes, 3);
   assert.equal(
     (await call("session/selectModel", { provider: "claude-code", model: "wrong" })).ok,
     false,
   );
-  await t.test(
-    "clears an unreported speed tier when Standard is selected after reconnect",
-    async () => {
-      epoch = "two";
-      tier = "ultrafast";
-      await remote.read(id);
-      const standard = { provider: "codex", model: encodeOfficialCodexModelRef("gpt-6-astra").id };
-      assert.ok((await call("session/selectModel", standard)).ok);
-      assert.equal(tier, null);
-    },
-  );
+  epoch = "two";
+  tier = "ultrafast";
+  await remote.read(id);
+  assert.ok((await call("session/selectModel", { provider: "codex", model: "gpt-6-astra" })).ok);
+  assert.equal(tier, null);
   epoch = "three";
   model = undefined;
   available = false;
   await remote.read(id);
   assert.equal((await call("session/modelCatalog")).ok, false);
-  assert.equal(writes, 5);
+  assert.equal(writes, 4);
 });

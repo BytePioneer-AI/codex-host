@@ -20,7 +20,6 @@ import {
 import { installNativeRpcRemoteControlDirect } from "./renderer-native-rpc-install.js";
 import { installRendererRpcSteeringDirect } from "./renderer-rpc-steering.js";
 import type { RendererDesktopExtensions } from "./renderer-desktop-extensions.js";
-import { installRendererExtensionPages } from "./renderer-extension-pages.js";
 
 export interface ProductionRendererStatus {
   version: 2;
@@ -280,12 +279,11 @@ async function installTarget(
   renderer: RendererCdpClient;
   snapshot: RendererCdpControlSnapshot;
   attachExtensions(): void;
-  disposeModules(): Promise<void> | undefined;
+  disposeModules(retireSurfaces?: boolean): Promise<void> | undefined;
 }> {
   const renderer = await operations.connect(target.webSocketDebuggerUrl);
   let disposeModules: (() => void) | undefined;
-  let disposePages: (() => Promise<void>) | undefined;
-  let detach: (() => Promise<void>) | undefined;
+  let detach: ((retireSurfaces?: boolean) => Promise<void>) | undefined;
   const attachExtensions = () => {
     detach ??= extensions?.attach(target.id, renderer);
   };
@@ -295,8 +293,6 @@ async function installTarget(
       extensions ? () => extensions.hint() : undefined,
     );
     await renderer.command("Page.enable");
-    if (extensions)
-      disposePages = await installRendererExtensionPages(renderer, extensions.dataDirectory);
     const source = extensions ? reconnectableRendererSource(rendererSource) : rendererSource;
     await renderer.command("Page.addScriptToEvaluateOnNewDocument", { source });
     // Attach before waiting for the binding: emergency reload must also work
@@ -310,19 +306,15 @@ async function installTarget(
       renderer,
       snapshot: { target, draftPrewarmPolicy, binding },
       attachExtensions,
-      disposeModules: () => {
+      disposeModules: (retireSurfaces) => {
         disposeModules?.();
-        const pages = disposePages?.();
-        const snapshot = detach?.();
-        return pages && snapshot
-          ? Promise.all([pages, snapshot]).then(() => undefined)
-          : (pages ?? snapshot);
+        return detach?.(retireSurfaces);
       },
     };
   } catch (error) {
     disposeModules?.();
     try {
-      await Promise.all([disposePages?.(), detach?.()]);
+      await detach?.();
     } finally {
       renderer.close();
     }
@@ -342,7 +334,7 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
     private readonly pollIntervalMs: number,
     private readonly operations: RendererCdpControlOperations,
     private currentSnapshot: RendererCdpControlSnapshot,
-    private disposeModules: () => Promise<void> | undefined,
+    private disposeModules: (retireSurfaces?: boolean) => Promise<void> | undefined,
     private readonly extensions?: RendererDesktopExtensions,
   ) {}
 
@@ -392,7 +384,7 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
     );
     try {
       if (!this.#closed) {
-        await this.disposeModules();
+        await this.disposeModules(target.id !== this.currentSnapshot.target.id);
         this.renderer.close();
       }
       if (this.#closed) throw new Error("Renderer CDP Control Session is closed");

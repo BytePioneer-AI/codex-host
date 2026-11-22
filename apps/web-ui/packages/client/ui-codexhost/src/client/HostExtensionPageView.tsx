@@ -1,9 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import {
-  Button,
-  IconChevronLeftOutlineRegular,
-  IconRefreshOutlineRegular,
-} from "@deepseek-ai/dsh-client-ui-primitives";
+import { Button, IconRefreshOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import type {
   HostExtensionInstallation,
   HostExtensionPageColorScheme,
@@ -28,7 +24,6 @@ export interface HostExtensionPageViewProps {
   readonly colorScheme: HostSettingsSource<HostExtensionPageColorScheme>;
   readonly contentLocale: ExtensionLocale;
   readonly t: Translate;
-  readonly onBack: () => void;
 }
 
 export function HostExtensionPageView({
@@ -38,7 +33,6 @@ export function HostExtensionPageView({
   colorScheme,
   contentLocale,
   t,
-  onBack,
 }: HostExtensionPageViewProps): ReactNode {
   const activeLocale = useSyncExternalStore(locale.subscribe, locale.get);
   const activeScheme = useSyncExternalStore(colorScheme.subscribe, colorScheme.get);
@@ -119,35 +113,23 @@ export function HostExtensionPageView({
       data-color-scheme={activeScheme}
     >
       <header className={css.header}>
-        <div className={css.headerLeft}>
-          <button type="button" className={css.backButton} data-action="page-back" onClick={onBack}>
-            <IconChevronLeftOutlineRegular size={14} />
-            <span>{t("extensions.page.back")}</span>
-          </button>
-
-          <div className={css.identity}>
-            <ExtensionIcon src={iconUrl} categories={item.manifest.categories} size="card" />
-            <div className={css.titleWrap}>
-              <h2 className={css.title} title={pageTitle}>
-                {pageTitle}
-              </h2>
-              <span className={css.version}>v{version}</span>
-            </div>
-          </div>
+        <div className={css.identity}>
+          <ExtensionIcon src={iconUrl} size="sidebar" />
+          <h2 className={css.title} title={pageTitle}>
+            {pageTitle}
+          </h2>
+          <span className={css.version}>v{version}</span>
         </div>
-
-        <div className={css.actions}>
-          <button
-            type="button"
-            className={css.reloadButton}
-            data-action="page-reload"
-            aria-label={t("extensions.page.reload")}
-            title={t("extensions.page.reload")}
-            onClick={() => setReloadNonce((n) => n + 1)}
-          >
-            <IconRefreshOutlineRegular size={15} />
-          </button>
-        </div>
+        <button
+          type="button"
+          className={css.reloadButton}
+          data-action="page-reload"
+          aria-label={t("extensions.page.reload")}
+          title={t("extensions.page.reload")}
+          onClick={() => setReloadNonce((n) => n + 1)}
+        >
+          <IconRefreshOutlineRegular size={15} />
+        </button>
       </header>
 
       <div className={`${css.stage} ${surfaceCss.theme}`}>

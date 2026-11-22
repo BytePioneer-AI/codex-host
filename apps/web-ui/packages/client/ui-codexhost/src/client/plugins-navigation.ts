@@ -14,7 +14,7 @@ interface PluginNavigationState {
   selectedPage: HostExtensionInstallation | null;
 }
 
-/** One navigation state for both the sidebar and the main workspace. */
+/** Tracks available page activations and selection in the Plugins workspace. */
 export function createPluginsNavigation(doc: Document, selectPanel: () => void) {
   const store = createSnapshotStore<PluginNavigationState>({ pages: [], selectedPage: null });
   let request: AbortController | undefined;
@@ -59,16 +59,23 @@ export function createPluginsNavigation(doc: Document, selectPanel: () => void) 
 
   const selectPage = (page: HostExtensionInstallation | null) => {
     const { pages, selectedPage } = store.getSnapshot();
-    if (selectedPage !== page) store.set({ pages, selectedPage: page });
-    // The management list can observe an activation before the sidebar snapshot does.
-    if (
-      page &&
-      !pages.some(
-        ({ id, activationId, digest }) =>
-          id === page.id && activationId === page.activationId && digest === page.digest,
-      )
-    )
-      void sync();
+    if (page === null) {
+      if (selectedPage !== null) store.set({ pages, selectedPage: null });
+      return;
+    }
+    const existing = pages.find(({ id }) => id === page.id);
+    if (existing?.activationId === page.activationId && existing.digest === page.digest) {
+      if (selectedPage !== existing) store.set({ pages, selectedPage: existing });
+      return;
+    }
+    // A card may observe a new activation before the snapshot. Give the opened
+    // page a tab immediately, then reconcile against the next Host snapshot.
+    const next =
+      existing === undefined
+        ? [...pages, page]
+        : pages.map((entry) => (entry === existing ? page : entry));
+    store.set({ pages: next, selectedPage: page });
+    void sync();
   };
 
   return {

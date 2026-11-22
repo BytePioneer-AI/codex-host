@@ -1084,13 +1084,12 @@ setInterval(() => {{
         // A service handoff leaves Host online until the Updater stops it.
         assert!(fixture.root.join("shared-host-ready.json").exists());
         if attempt == 2 {
+            let stopped = fixture.command("host", "stop").output().unwrap();
             assert!(
-                fixture
-                    .command("host", "stop")
-                    .output()
-                    .unwrap()
-                    .status
-                    .success()
+                stopped.status.success(),
+                "host stop exited with {}: {}",
+                stopped.status,
+                String::from_utf8_lossy(&stopped.stderr)
             );
             assert!(
                 codexhost_platform::process_snapshot(updater).is_ok(),

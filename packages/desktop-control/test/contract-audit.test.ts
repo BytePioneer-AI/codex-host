@@ -18,6 +18,7 @@ const validInspection = {
     trailingActionOwnerCount: 1,
   },
   model: { draftCount: 1, conversationCount: 0, missingCount: 0, ambiguousCount: 0 },
+  draftHarnessBinding: { visibleDraftCount: 1, boundCount: 1, missingCreationModeCount: 0 },
   settings: { railCount: 1, visibleRailCount: 1, insertionPointCount: 1 },
   sidebar: { rowCount: 0, titleOwnerCount: 0, resolvedThreadCount: 0, ambiguousThreadCount: 0 },
   transcript: {

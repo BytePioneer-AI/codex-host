@@ -13,6 +13,7 @@ export interface DraftEditorProps {
   readonly scrollRef: RefObject<HTMLDivElement>;
   readonly editable: boolean;
   readonly editorDisabled: boolean;
+  readonly preserveFocus?: boolean;
   readonly phase: InputState["phase"] | "inert";
   readonly placeholderText: string;
   readonly ariaLabel: string;
@@ -34,6 +35,7 @@ export function DraftEditor({
   scrollRef,
   editable,
   editorDisabled,
+  preserveFocus = false,
   phase,
   placeholderText,
   ariaLabel,
@@ -49,6 +51,7 @@ export function DraftEditor({
         <ComposerContentEditable
           editor={workspaceTrigger ? null : editor}
           editable={editable}
+          preserveFocus={preserveFocus}
           className={clsx(css.input, editorDisabled && css.inputDisabled)}
           data-phase={phase}
           aria-disabled={editorDisabled || undefined}

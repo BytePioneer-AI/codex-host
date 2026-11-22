@@ -7,6 +7,7 @@ import type {
   HarnessCommandCatalog,
   HarnessId,
   HarnessInspection,
+  HarnessModelCatalog,
   HarnessModelRef,
   HarnessPermissionModeId,
   HarnessSessionCapabilities,
@@ -502,10 +503,21 @@ export interface SessionStateChangedEvent {
   state: HarnessSessionState;
 }
 
+/** A display title from the native Session, available to an unnamed Host Thread. */
+export interface SessionTitleChangedEvent {
+  type: "session.title.changed";
+  title: string;
+}
+
 export interface SessionUsageChangedEvent {
   type: "session.usage.changed";
   usage: HostUsage | null;
   observedForTurnId?: HostTurnId;
+}
+
+/** Invalidate an account quota projection without changing token usage. */
+export interface SessionAccountCreditsChangedEvent {
+  type: "session.accountCredits.changed";
 }
 
 /** One native model request's usage; Host derives cost, cache and speed metrics from these. */
@@ -624,7 +636,9 @@ export interface SessionFaultedEvent {
 
 export type HostEvent =
   | SessionStateChangedEvent
+  | SessionTitleChangedEvent
   | SessionUsageChangedEvent
+  | SessionAccountCreditsChangedEvent
   | UsageRequestEvent
   | UsageRequestTimingEvent
   | UsageHistoryEvent
@@ -667,6 +681,8 @@ export interface HarnessSession {
    */
   readCapabilities?(): Promise<HarnessSessionCapabilities>;
   refreshUsage?(): Promise<void>;
+  /** Account quota attributed to this Session, rather than shared across the Adapter. */
+  readAccountCredits?(): Promise<AccountCreditsSnapshot | null>;
   /** Native background work (e.g. a background command) is still running; the Session must not be released. */
   hasBackgroundWork?(): boolean;
   /** Stops every running detached Item; each still settles through its own events. */
@@ -728,7 +744,10 @@ export interface HarnessAdapter {
   /** Native CLI version checks and explicit updates. Never updates the Host plugin,
    * starts a model Turn, or restarts existing Sessions. Commands are Adapter-owned.
    */
-  installation?(action: "check" | "update"): Promise<HarnessInstallationState>;
+  installation?(
+    action: "check" | "update",
+    confirmedVersion?: string,
+  ): Promise<HarnessInstallationState>;
   /** Explicit first-time CLI installation using an Adapter-owned official source. */
   install?(): Promise<void>;
   readonly credentialExport?: HarnessCredentialExport;
@@ -778,6 +797,16 @@ export interface HarnessAdapter {
   inspectAccounts?(): Promise<readonly HarnessAccountSnapshot[]>;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
+  /**
+   * Maps a Model Ref saved by an earlier release to the matching entry of `catalog`.
+   * Host calls it only for a saved Ref that the catalog does not contain. Return
+   * undefined when the saved value matches no single current Model. Local implementations
+   * are pure; a Broker proxy may return a Promise.
+   */
+  normalizeStoredModelRef?(
+    ref: HarnessModelRef,
+    catalog: HarnessModelCatalog,
+  ): HarnessModelRef | undefined | Promise<HarnessModelRef | undefined>;
   open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>>;
   close(): Promise<void>;
 }

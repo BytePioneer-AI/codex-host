@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { isDeepSeekSemVer } from "../generation-selector.js";
 import { deepSeekHarnessCommandCatalog } from "../harness-commands.js";
@@ -27,7 +28,7 @@ import {
   type HarnessPermissionModeId,
 } from "@codexhost/shared-contracts";
 
-import type { DeepSeekModelSelection } from "../model-catalog.js";
+import { normalizeStoredDeepSeekModelRef, type DeepSeekModelSelection } from "../model-catalog.js";
 
 import {
   loadModernModelCatalog,
@@ -146,6 +147,15 @@ const DEFAULT_DEPENDENCIES: ModernDeepSeekHarnessAdapterDependencies = {
 
 /** Exact Modern Adapter assembly over the managed Web Remote. */
 export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef: NonNullable<HarnessAdapter["normalizeStoredModelRef"]> = (
+    ref,
+    catalog,
+  ) => {
+    const snapshot = this.#catalog;
+    if (snapshot && isDeepStrictEqual(snapshot.catalog, catalog)) {
+      return normalizeStoredDeepSeekModelRef(ref, snapshot.index);
+    }
+  };
   readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
   readonly sessionImport: HarnessSessionImportCapability = Object.freeze({
@@ -339,7 +349,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       this.#assertAccepting();
 
       if (rollbackSourceSessionId) {
-        rollbackPlan = await this.#resolveLastTurnRollback(rollbackSourceSessionId, cwd);
+        rollbackPlan = await this.#resolveLastTurnRollback(rollbackSourceSessionId, cwd, catalog);
         if (rollbackPlan.kind === "fork") {
           forkInput = rollbackPlan.input;
         } else {
@@ -359,7 +369,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       }
 
       if (forkInput) {
-        forkExpectation = await this.#forkSession(forkInput, cwd);
+        forkExpectation = await this.#forkSession(forkInput, cwd, catalog);
         sessionId = forkExpectation.childSessionId;
         if (this.#sessionIds.has(sessionId)) {
           throw forkProtocolError();
@@ -412,7 +422,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       );
       this.#assertAccepting();
       if (forkExpectation) {
-        await this.#verifyForkJournal(forkExpectation, journal, cwd);
+        await this.#verifyForkJournal(forkExpectation, journal, cwd, catalog);
         if (await clearInheritedForkInbox(this.#connection, journal, this.#lifetime.signal)) {
           await journal.close();
           journal = await openModernJournal(
@@ -420,7 +430,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
             { sessionId, cwd },
             this.#journalOptions(),
           );
-          await this.#verifyForkJournal(forkExpectation, journal, cwd);
+          await this.#verifyForkJournal(forkExpectation, journal, cwd, catalog);
           if (pendingForkInboxIds(journal).length !== 0) throw forkProtocolError();
           await this.#connection.flushSession(sessionId, this.#lifetime.signal);
         }
@@ -431,6 +441,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         }
         if (rollbackPlan.kind === "create") {
           const replacement = projectModernHistory({
+            modelIndex: catalog.index,
             harnessId: this.harnessId,
             sessionId,
             events: journal.events,
@@ -584,6 +595,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
   async #resolveLastTurnRollback(
     sourceSessionId: string,
     cwd: string,
+    catalog: ModernModelCatalogSnapshot,
   ): Promise<ModernRollbackPlan> {
     const source = await openModernJournal(
       this.#connection,
@@ -592,6 +604,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     );
     try {
       const projected = projectModernHistory({
+        modelIndex: catalog.index,
         harnessId: this.harnessId,
         sessionId: sourceSessionId,
         events: source.events,
@@ -635,7 +648,11 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     }
   }
 
-  async #forkSession(input: ParsedModernForkInput, cwd: string): Promise<ModernForkExpectation> {
+  async #forkSession(
+    input: ParsedModernForkInput,
+    cwd: string,
+    catalog: ModernModelCatalogSnapshot,
+  ): Promise<ModernForkExpectation> {
     const source = await openModernJournal(
       this.#connection,
       {
@@ -650,6 +667,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       const boundary = resolveModernForkBoundary(source.events, input.checkpointId, this.#profile);
       if (!boundary) throw forkCheckpointError();
       const projected = projectModernHistory({
+        modelIndex: catalog.index,
         harnessId: this.harnessId,
         sessionId: input.sourceSessionId,
         events: boundary.events,
@@ -699,6 +717,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     expected: ModernForkExpectation,
     child: ModernJournal,
     cwd: string,
+    catalog: ModernModelCatalogSnapshot,
   ): Promise<void> {
     const seedLength = child.inheritedEventCount;
     if (
@@ -728,6 +747,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         throw forkProtocolError();
       }
       const expectedProjection = projectModernHistory({
+        modelIndex: catalog.index,
         harnessId: this.harnessId,
         sessionId: expected.sourceSessionId,
         events: inherited,
@@ -738,6 +758,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         ...(this.#options.maxEvents === undefined ? {} : { maxEvents: this.#options.maxEvents }),
       });
       const childProjection = projectModernHistory({
+        modelIndex: catalog.index,
         harnessId: this.harnessId,
         sessionId: expected.childSessionId,
         events: child.events,

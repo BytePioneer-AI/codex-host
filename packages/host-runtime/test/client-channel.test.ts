@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,7 +9,7 @@ import {
   discoverHostClientChannel,
   type HostClientUpdate,
 } from "@codexhost/desktop-control";
-import type { ClientChannelEvent } from "@codexhost/shared-contracts";
+import { jsonObjectSchema, type ClientChannelEvent } from "@codexhost/shared-contracts";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
 import { routeDelegationRequest } from "../src/delegation-control-server.js";
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
@@ -342,12 +343,14 @@ describe("public authenticated owner channel", () => {
   });
   it("shares durable preferences between Desktop and Web without creating Harness sessions", async () => {
     const { fixture, a, b, events } = await setup();
+    const model = fixture.adapter.catalog.defaultModel;
+    assert(model, "Expected a default Model in the fake catalog");
     const patchMethod = "codexhost/harness/preferences/patch";
     const getMethod = "codexhost/harness/preferences/get";
     writeRequest(fixture.desktopInput, {
       id: 700,
       method: patchMethod,
-      params: {
+      params: jsonObjectSchema.parse({
         scope: "external",
         operations: [
           { kind: "idleRelease", value: { enabled: true, timeoutMinutes: 20 } },
@@ -355,10 +358,10 @@ describe("public authenticated owner channel", () => {
             kind: "newThread",
             lastHarness: "pi",
             harnessId: "pi",
-            configuration: { model: { id: "native" } },
+            configuration: { model },
           },
         ],
-      },
+      }),
     });
     await fixture.collector.waitFor((message) => message.id === 700);
     await vi.waitFor(() =>
@@ -367,15 +370,15 @@ describe("public authenticated owner channel", () => {
     expect(await a.request(getMethod, {})).toMatchObject({
       values: {
         idleRelease: { enabled: true, timeoutMinutes: 20 },
-        newThread: { lastHarness: "pi" },
+        newThread: { lastHarness: "pi", byHarness: { pi: { model } } },
       },
     });
     await b.request(patchMethod, {
-      operations: [{ kind: "favorite", harnessId: "pi", modelId: "native", enabled: true }],
+      operations: [{ kind: "favorite", harnessId: "pi", modelId: model.id, enabled: true }],
     });
     writeRequest(fixture.desktopInput, { id: 701, method: getMethod, params: {} });
     expect(await fixture.collector.waitFor((message) => message.id === 701)).toMatchObject({
-      result: { values: { favorites: { pi: ["native"] } } },
+      result: { values: { favorites: { pi: [model.id] } } },
     });
     expect(
       JSON.parse(
@@ -384,14 +387,25 @@ describe("public authenticated owner channel", () => {
           "utf8",
         ),
       ).scopes.external.favorites.pi,
-    ).toEqual(["native"]);
-    await expect(
-      a.request(patchMethod, {
-        operations: [
-          { kind: "newThread", harnessId: "codex", configuration: { model: { id: "gpt" } } },
-        ],
-      }),
-    ).resolves.toMatchObject({
+    ).toEqual([model.id]);
+    const codexPatch = a.request(patchMethod, {
+      operations: [
+        { kind: "newThread", harnessId: "codex", configuration: { model: { id: "gpt" } } },
+      ],
+    });
+    let request = await readJsonLine(fixture.official.stdin);
+    if (request.method === "initialize") {
+      fixture.official.stdout.write(
+        `${JSON.stringify({ id: request.id, result: { userAgent: "fixture" } })}\n`,
+      );
+      request = await readJsonLine(fixture.official.stdin);
+      if (request.method === "initialized") request = await readJsonLine(fixture.official.stdin);
+    }
+    expect(request.method).toBe("model/list");
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: request.id, result: { data: [{ model: "gpt", isDefault: true }] } })}\n`,
+    );
+    await expect(codexPatch).resolves.toMatchObject({
       values: { newThread: { byHarness: { codex: { model: { id: "gpt" } } } } },
     });
     expect(fixture.adapter.sessions).toHaveLength(0);

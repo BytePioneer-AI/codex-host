@@ -224,6 +224,10 @@ describe("macOS Aqua Harness broker", () => {
     };
     const native = Object.assign(new FakeHarnessAdapter(harnessIdSchema.parse("claude-code")), {
       inspectAccount: vi.fn(async () => account),
+      normalizeStoredModelRef: ((ref, catalog) =>
+        ref.id === "legacy-model" ? catalog.models[1]?.ref : undefined) satisfies NonNullable<
+        HarnessAdapter["normalizeStoredModelRef"]
+      >,
     });
     const nativeOpen = vi.spyOn(native, "open");
     const server = await startHarnessBrokerServer({ descriptorPath, socketPath, adapter: native });
@@ -232,6 +236,18 @@ describe("macOS Aqua Harness broker", () => {
     await expect(adapter.inspect({ cwd: root })).resolves.toMatchObject({
       status: "ready",
     });
+    await expect(
+      adapter.normalizeStoredModelRef(
+        harnessModelRefSchema.parse({ id: "legacy-model" }),
+        native.catalog,
+      ),
+    ).resolves.toEqual(native.catalog.models[1]?.ref);
+    await expect(
+      adapter.normalizeStoredModelRef(
+        harnessModelRefSchema.parse({ id: "unavailable" }),
+        native.catalog,
+      ),
+    ).resolves.toBeUndefined();
     await expect(adapter.inspectAccount()).resolves.toEqual(account);
     expect(native.inspectAccount).toHaveBeenCalledWith();
     expect(nativeOpen).not.toHaveBeenCalled();

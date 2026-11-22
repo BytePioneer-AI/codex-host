@@ -1,5 +1,6 @@
 import { createZcodeUsageStatistics } from "./usage-statistics.js";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { HarnessLocalPage } from "@codexhost/harness-adapter/plugin";
 import { stat } from "node:fs/promises";
 import type {
@@ -10,7 +11,7 @@ import type {
   InspectHarnessInput,
   OpenSessionInput,
 } from "@codexhost/harness-adapter";
-import { nativeSessionRefSchema } from "@codexhost/shared-contracts";
+import { nativeSessionRefSchema, type HarnessModelRef } from "@codexhost/shared-contracts";
 import { CliTransport, type TransportOptions } from "./transport.js";
 import type { ReadSystemKeyOptions } from "./credential-keyring.js";
 import {
@@ -24,10 +25,11 @@ import {
   modelCatalog,
   permissionModes,
   selectNativeModel,
-  encodeModel,
+  sameNativeModel,
+  normalizeStoredZcodeModelRef,
 } from "./models.js";
 import { ZCODE_CAPABILITIES } from "./capabilities.js";
-import { snapshotSchema, record } from "./protocol.js";
+import { snapshotSchema, record, type NativeModel } from "./protocol.js";
 import { nativeError, ZcodeError, failure } from "./errors.js";
 import { sameWorkspaceDirectory } from "./workspace-directory.js";
 import { COMMAND_CATALOG } from "./commands.js";
@@ -53,6 +55,20 @@ async function readCatalog(transport: CliTransport) {
 export class ZcodeAdapter implements HarnessAdapter {
   readonly harnessId = ZCODE_ID;
   readonly commandCatalog = COMMAND_CATALOG;
+  readonly #inspectedModels = new Map<string, ReturnType<typeof modelCatalog>>();
+  readonly normalizeStoredModelRef: NonNullable<HarnessAdapter["normalizeStoredModelRef"]> = (
+    ref,
+    catalog,
+  ) => {
+    let match: HarnessModelRef | undefined;
+    for (const models of this.#inspectedModels.values()) {
+      if (!isDeepStrictEqual(models.catalog, catalog)) continue;
+      const candidate = normalizeStoredZcodeModelRef(ref, models.index);
+      if (!candidate || (match && match.id !== candidate.id)) return undefined;
+      match = candidate;
+    }
+    return match;
+  };
   #closed = false;
   #sessions = new Set<ZcodeSession>();
   #transports = new Set<CliTransport>();
@@ -134,7 +150,8 @@ export class ZcodeAdapter implements HarnessAdapter {
     try {
       transport = await this.#transport(cwd, undefined, keyOptions);
       const settings = await readCatalog(transport);
-      const catalog = modelCatalog(settings);
+      const models = modelCatalog(settings);
+      const { catalog } = models;
       if (!catalog.models.length) {
         const issue = transport.codingPlanIssue ?? transport.credentialIssue;
         const retryable = !transport.credentialIssue;
@@ -173,6 +190,7 @@ export class ZcodeAdapter implements HarnessAdapter {
                   },
         };
       }
+      this.#inspectedModels.set(cwd, models);
       return {
         status: "ready",
         catalog,
@@ -223,28 +241,31 @@ export class ZcodeAdapter implements HarnessAdapter {
         input.environment,
         prewarm ? undefined : { access: "allow" },
       );
+      const credentialIssue = transport.credentialIssue ?? "ZCode credential access is required";
       // A prewarm without the account overlay cannot be reused for the first real turn.
       if (prewarm && transport.credentialAccessRequired)
-        throw new ZcodeError("credentialAccessRequired", transport.credentialIssue!);
+        throw new ZcodeError("credentialAccessRequired", credentialIssue);
       let snapshot, settings;
+      let requestedModel: NativeModel | undefined;
       if (input.kind === "create") {
         settings = await readCatalog(transport);
-        if (transport.credentialAccessRequired && !modelCatalog(settings).models.length)
-          throw new ZcodeError("credentialAccessRequired", transport.credentialIssue!);
+        const { catalog, index } = modelCatalog(settings);
+        if (transport.credentialAccessRequired && !catalog.models.length)
+          throw new ZcodeError("credentialAccessRequired", credentialIssue);
         if (
           input.permissionModeId &&
           !permissionModes().modes.some((m) => m.id === input.permissionModeId)
         )
           throw new ZcodeError("invalidRequest", "Unknown ZCode permission mode");
-        const model = input.model
-          ? selectNativeModel(input.model, settings, input.thinkingOptionId)
+        requestedModel = input.model
+          ? selectNativeModel(input.model, index, settings.model.current, input.thinkingOptionId)
           : undefined;
         const mode =
           input.executionPolicy === "unattended-full-access" ? "yolo" : input.permissionModeId;
         const created = await transport.command(null, "createSession", {
           workspaceId: input.cwd,
           config: {
-            ...(model ? { modelSelection: model } : {}),
+            ...(requestedModel ? { modelSelection: requestedModel } : {}),
             ...(mode ? { mode } : {}),
             ...(input.thinkingOptionId ? { thought: input.thinkingOptionId } : {}),
           },
@@ -275,9 +296,9 @@ export class ZcodeAdapter implements HarnessAdapter {
         throw new ZcodeError("sessionBusy", "ZCode Session is executing native work", true);
       if (input.kind === "create") {
         if (
-          input.model &&
+          requestedModel &&
           (!snapshot.settings.model.current ||
-            encodeModel(snapshot.settings.model.current).id !== input.model.id)
+            !sameNativeModel(snapshot.settings.model.current, requestedModel))
         )
           throw new ZcodeError("nativeFailure", "ZCode did not apply the requested model");
         if (
@@ -330,6 +351,7 @@ export class ZcodeAdapter implements HarnessAdapter {
   }
   async close() {
     this.#closed = true;
+    this.#inspectedModels.clear();
     await Promise.all([...this.#sessions].map((session) => session.close()));
     await Promise.all([...this.#transports].map((transport) => transport.close()));
     this.#sessions.clear();

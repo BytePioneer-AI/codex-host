@@ -240,6 +240,7 @@ const HASH_B = "b".repeat(64);
 const HASH_C = "c".repeat(64);
 
 const CATALOG_TREE: HostExtensionCatalogEntry = {
+  format: "codexhost",
   id: "sidebar-thread-tree",
   version: "0.2.0",
   name: { en: "Sidebar Thread Tree", "zh-CN": "侧栏委派树" },
@@ -262,6 +263,7 @@ const CATALOG_TREE: HostExtensionCatalogEntry = {
 };
 
 const CATALOG_THEME: HostExtensionCatalogEntry = {
+  format: "codexhost",
   id: "nord-palette",
   version: "1.0.0",
   name: { en: "Nord Palette", "zh-CN": "极光配色" },
@@ -304,7 +306,7 @@ function sampleInstalledList(
           author: "codexhost",
           repository: "https://github.com/BytePioneer-AI/codex-host",
           categories: ["interface", "workflow"],
-          desktop: { apiVersion: 1, entry: "desktop.js" },
+          desktop: { apiVersion: 1, script: "desktop.js" },
           web: { apiVersion: 1, entry: "web.mjs" },
           page: { apiVersion: 1, entry: "page.mjs" },
         },
@@ -397,7 +399,7 @@ describe("Unified Host extensions marketplace and 3-source import modal", () => 
         name: CATALOG_TREE.name,
         version: "0.2.0",
         description: CATALOG_TREE.description,
-        desktop: { apiVersion: 1 as const, entry: "desktop.js" },
+        desktop: { apiVersion: 1 as const, script: "desktop.js" },
       },
       replaced: true,
     }));

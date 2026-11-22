@@ -292,7 +292,7 @@ describe("Renderer Settings lifecycle", () => {
     lifecycle.dispose();
   });
 
-  it("periodically syncs installed Host extensions while Settings is open and stops on close", async () => {
+  it("periodically syncs installed Host extension pages while Settings is open and stops on close", async () => {
     vi.useFakeTimers();
     const title = { en: "Ext A", "zh-CN": "扩展 A" };
     const extension = {
@@ -307,15 +307,7 @@ describe("Renderer Settings lifecycle", () => {
         name: title,
         description: title,
         version: "1.0.0",
-        desktop: { apiVersion: 1, script: "desktop.js" },
-        settingsSchema: [
-          {
-            key: "flag",
-            type: "boolean",
-            label: { en: "Flag", "zh-CN": "开关" },
-            default: true,
-          },
-        ],
+        page: { apiVersion: 1, entry: "page/index.mjs" },
       },
     } as const;
     const listHostExtensions = vi
@@ -351,7 +343,7 @@ describe("Renderer Settings lifecycle", () => {
       throw new Error("Expected shell onOpenChange and pluginPages options");
     }
 
-    // Opening Settings triggers an immediate sync and registers ext-a's declarative page.
+    // Opening Settings triggers an immediate sync and lists ext-a's standalone page.
     shellOptions.onOpenChange(true);
     await vi.advanceTimersByTimeAsync(0);
     expect(listHostExtensions).toHaveBeenCalledTimes(1);

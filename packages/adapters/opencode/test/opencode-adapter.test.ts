@@ -16,6 +16,7 @@ import type {
 } from "@opencode-ai/sdk/v2";
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import {
+  harnessModelRefSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
@@ -30,6 +31,7 @@ import {
   type OpenCodeProviderCatalog,
 } from "../src/model-catalog.js";
 import { OpenCodeAdapter, type OpenCodeAdapterDependencies } from "../src/opencode-adapter.js";
+import { OpenCodeAdapter as VersionedOpenCodeAdapter } from "../src/versioned-adapter.js";
 import type {
   OpenCodePromptInput,
   OpenCodeTransport,
@@ -726,7 +728,7 @@ describe("OpenCode HarnessAdapter", () => {
 
   it("opens the SDK Session with native configuration and selectable permissions", async () => {
     const transport = new FakeOpenCodeTransport();
-    const adapter = new OpenCodeAdapter(
+    const adapter = new VersionedOpenCodeAdapter(
       {},
       {
         createConnection: () => ({
@@ -738,7 +740,15 @@ describe("OpenCode HarnessAdapter", () => {
         randomUUID: () => "uuid-1",
       },
     );
-    const model = encodeOpenCodeModelRef({ providerID: "provider-1", modelID: "model-1" });
+    const model = harnessModelRefSchema.parse({ id: "provider-1/model-1" });
+    const inspected = await adapter.inspect({ cwd });
+    if (inspected.status !== "ready") throw new Error(inspected.error.message);
+    const saved = harnessModelRefSchema.parse({
+      id: "opencode-model-v1.WyJwcm92aWRlci0xIiwibW9kZWwtMSJd",
+    });
+    expect(adapter.normalizeStoredModelRef(saved, structuredClone(inspected.catalog))).toEqual(
+      model,
+    );
     const thinkingOptionId = encodeOpenCodeVariant("high");
     const opened = await adapter.open({ kind: "create", cwd, model, thinkingOptionId });
     if (!opened.ok) throw new Error(opened.error.message);
@@ -875,7 +885,7 @@ describe("OpenCode HarnessAdapter", () => {
   it("applies dynamic Model and Thinking selection to the next native prompt", async () => {
     const { adapter, session, transport } = await openFixture();
     const iterator = session.outputs[Symbol.asyncIterator]();
-    const model = encodeOpenCodeModelRef({ providerID: "provider-1", modelID: "model-1" });
+    const model = harnessModelRefSchema.parse({ id: "provider-1/model-1" });
     const thinkingOptionId = encodeOpenCodeVariant("high");
 
     await session.execute(turn("in-progress", "before switching"));

@@ -8,6 +8,8 @@ import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js"
 import { handleRemoteConnectionsRequest } from "./remote-connections-request.js";
 import {
   catalogModelForRef,
+  harnessModelRefFromKey,
+  sameHarnessModelRef,
   decodeHarnessPluginRoute,
   harnessIdSchema,
   permissionModeFixedAtCreate,
@@ -126,6 +128,12 @@ import {
   isNativeProjectThreadCreator,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { loadCodexNativeServices } from "./codex-native-services.js";
+import {
+  loadSidebarCatalog,
+  sidebarCatalogForWindow,
+  reconcileRemoteSidebarThread,
+  observeRemoteSidebarClosures,
+} from "./remote-sidebar-history.js";
 import { openCodexSchedules, openCodexThread } from "./codex-schedule-navigation.js";
 import { createDesktopTreeRelay, openLocalExtensionThread } from "./desktop-extension-api.js";
 import { installDesktopExtensionHost } from "./desktop-extension-host.js";
@@ -857,9 +865,22 @@ export function installRendererBindingProbe(
     return null;
   };
   const sidebarThreadState = installRendererSidebarThreadState();
+  const catalogForWindow = sidebarCatalogForWindow(() => loadSidebarCatalog(window));
   const sidebarDom = new BrowserSidebarAgentIconDom(document);
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     dom: sidebarDom,
+    checkRemotePlaceholder(hostId, threadId, cwd) {
+      const current = () => window.__codexhostHostRoutingV1?.forHost(hostId)?.manager;
+      const manager = current();
+      if (!manager || !("kind" in manager) || manager.kind !== "main-process-rpc") return;
+      return reconcileRemoteSidebarThread(
+        manager,
+        { hostId, threadId },
+        cwd,
+        catalogForWindow,
+        () => !disposed && current() === manager,
+      );
+    },
     getClient: (hostId) => modelClientForHost(hostId),
     getPlugins: (hostId) => {
       if (hostId === "durable") return undefined;
@@ -879,6 +900,10 @@ export function installRendererBindingProbe(
     },
     getLocalAgent: localAgentForSidebarThread,
   });
+  const stopSidebarClosures = observeRemoteSidebarClosures(
+    window,
+    sidebarAgentIcons.remoteThreadClosed,
+  );
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const remoteConnections = createRemoteConnectionsControl(window, modelClientForHost);
   const usageStatistics = createRendererUsageStatisticsSource({
@@ -2060,11 +2085,8 @@ export function installRendererBindingProbe(
     if (current.agent === "codex") return;
     const agent = current.agent;
     const catalog = mounted.modelView.catalog;
-    const entry = catalog?.models.find(
-      (model) => model.ref.id === modelId || model.fastModel?.id === modelId,
-    );
-    const selected = entry?.ref.id === modelId ? entry.ref : entry?.fastModel;
-    if (!catalog || !selected || !modelControl) return;
+    const selected = harnessModelRefFromKey(modelId);
+    if (!catalog || !catalogModelForRef(catalog, selected) || !modelControl) return;
     const previousModel = controller.modelForAgent(mounted.composer, agent);
     const previousThinking = controller.thinkingOptionForAgent(mounted.composer, agent);
     const previousPermissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
@@ -2425,7 +2447,7 @@ export function installRendererBindingProbe(
         ) {
           return;
         }
-        if (state.effectiveModel && state.effectiveModel.id !== model.id) {
+        if (state.effectiveModel && !sameHarnessModelRef(state.effectiveModel, model)) {
           throw new Error("External Harness changed Model during Thinking selection");
         }
         if (!state.effectiveThinkingOptionId) {
@@ -2519,7 +2541,13 @@ export function installRendererBindingProbe(
     }
     controller.invalidateModelRequests(mounted.composer);
     const switching = controller.switchAgent(mounted.composer, agent, {
-      applyAgent: (nextAgent) => applyDraftAgentCarrier(mounted.composer, nextAgent),
+      applyAgent: (nextAgent) => {
+        const applied = applyDraftAgentCarrier(mounted.composer, nextAgent);
+        if (!applied && credentialAccess && nextAgent === agent) {
+          mounted.control.picker.showSwitchFailure();
+        }
+        return applied;
+      },
       clearPrewarm: () => clearDraftPrewarm(mounted.composer),
     });
     renderMounted(mounted);
@@ -3093,11 +3121,15 @@ export function installRendererBindingProbe(
           : undefined,
       );
     },
-    async installation(hostId, agent, action) {
+    async installation(hostId, agent, action, confirmedVersion) {
       const client = isHarnessDirectoryUnsupported(hostId) ? null : modelClientForHost(hostId);
       if (!client?.installation)
         throw new Error("Harness version management is unavailable on this Host");
-      return client.installation({ harnessId: harnessIdSchema.parse(agent), action });
+      return client.installation({
+        harnessId: harnessIdSchema.parse(agent),
+        action,
+        ...(confirmedVersion === undefined ? {} : { confirmedVersion }),
+      });
     },
     async getLaunchSettings(hostId, agent) {
       const client = hostId === "local" ? modelClientForHost(hostId) : null;
@@ -3983,6 +4015,7 @@ export function installRendererBindingProbe(
       delegationMention?.dispose();
       skillLibrary.dispose();
       disposeSkillReferences();
+      stopSidebarClosures();
       sidebarAgentIcons.dispose();
       sidebarThreadState.dispose();
       nativeScheduleControls.dispose();

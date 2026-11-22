@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
-import { desktopExtensionModuleUrl } from "@codexhost/desktop-control/renderer-bindings";
 import {
   HOST_EXTENSION_PAGE_API_VERSION,
   HOST_EXTENSION_PAGE_CSS_VARIABLES,
   type HostExtensionPageApi,
   type HostExtensionsListResult,
+  type JsonObject,
 } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { installDesktopExtensionHost } from "../../src/desktop-extension-host.js";
+import { moduleEntry } from "../fixtures/desktop-extension-modules.js";
 import { RendererSettingsPageScope } from "../../src/settings/core.js";
 import { createDesktopExtensionPageHost } from "../../src/settings/desktop-extension-page-host.js";
 import {
@@ -57,12 +59,13 @@ function makePageItem(overrides: Partial<HostExtensionValidItem> = {}): HostExte
 }
 
 afterEach(() => {
+  delete window.__codexhostDesktopExtensionsV1;
   vi.restoreAllMocks();
   document.body.replaceChildren();
 });
 
 describe("Desktop standalone extension page host", () => {
-  it("mounts page.entry via its same-origin package path + page.style in Shadow DOM with CSS variables, full HostExtensionPageApi, and cleans up on close/disable/generation change", async () => {
+  it("waits for the injected generation and mounts page.entry + page.style in Shadow DOM with CSS variables, full HostExtensionPageApi, and cleans up on close/disable/generation change", async () => {
     const readHostExtensionAsset = vi.fn(async ({ path }: { path: string }) => {
       if (path === "page/style.css") {
         return {
@@ -78,7 +81,7 @@ describe("Desktop standalone extension page host", () => {
       };
     });
 
-    let storedSettings: Record<string, unknown> = { theme: "warm" };
+    let storedSettings: JsonObject = { theme: "warm" };
     let settingsRev = 1;
     const getHostExtensionSettings = vi.fn(async () => ({
       settingsRevision: settingsRev,
@@ -87,7 +90,7 @@ describe("Desktop standalone extension page host", () => {
     const setHostExtensionSettings = vi
       .fn()
       .mockRejectedValueOnce(new Error("settings revision conflict"))
-      .mockImplementation(async ({ values }: { values: Record<string, unknown> }) => {
+      .mockImplementation(async ({ values }: { values: JsonObject }) => {
         settingsRev += 1;
         storedSettings = { ...values };
         return { settingsRevision: settingsRev, values: { ...storedSettings } };
@@ -137,26 +140,18 @@ describe("Desktop standalone extension page host", () => {
         setHostExtensionSettings,
         invokeHostExtensionBackend,
       }),
-      importModule,
       onClose,
     });
 
     const itemV1 = makePageItem();
-    const expectedUrlV1 = desktopExtensionModuleUrl({
-      id: itemV1.id,
-      activationId: itemV1.activationId,
-      digest: itemV1.digest,
-      path: "page/index.mjs",
-    });
-    expect(expectedUrlV1).toBe(
-      `app://-/.codexhost/extension-pages/notes-board/act-notes-1/${"d".repeat(64)}/page/index.mjs`,
-    );
-
+    const runtime = installDesktopExtensionHost(window);
+    const create = async () => ({ namespace: await importModule() });
     controller.open(itemV1);
-
+    expect(host.querySelector('[role="status"]')).not.toBeNull();
+    expect(importModule).not.toHaveBeenCalled();
+    await runtime.reconcile([], [moduleEntry("page", itemV1, create)]);
     await vi.waitFor(() => expect(capturedApis).toHaveLength(1));
-    expect(importModule).toHaveBeenCalledWith(expectedUrlV1);
-    // Only page.style is read via asset RPC; page.entry is loaded via same-origin module URL.
+    // Only page.style is read via asset RPC; page.entry came from the injected table.
     expect(readHostExtensionAsset).toHaveBeenCalledTimes(1);
     expect(readHostExtensionAsset).toHaveBeenCalledWith({
       id: "notes-board",
@@ -213,16 +208,10 @@ describe("Desktop standalone extension page host", () => {
 
     // Generation change (new activationId) aborts v1 signal, calls disposerV1, and remounts v2.
     const itemV2 = makePageItem({ activationId: "act-notes-2" });
+    await runtime.reconcile([], [moduleEntry("page", itemV2, create)]);
+    expect(api.signal.aborted).toBe(true);
     controller.sync([itemV2]);
     await vi.waitFor(() => expect(capturedApis).toHaveLength(2));
-    expect(importModule).toHaveBeenLastCalledWith(
-      desktopExtensionModuleUrl({
-        id: itemV2.id,
-        activationId: itemV2.activationId,
-        digest: itemV2.digest,
-        path: "page/index.mjs",
-      }),
-    );
     expect(api.signal.aborted).toBe(true);
     expect(disposerV1).toHaveBeenCalledTimes(1);
     expect(disposerV2).not.toHaveBeenCalled();
@@ -238,18 +227,50 @@ describe("Desktop standalone extension page host", () => {
     controller.dispose();
   });
 
+  it("discards a waiting sidebar page when its settings scope is aborted", async () => {
+    const host = document.createElement("div");
+    const scope = new RendererSettingsPageScope();
+    const item = makePageItem();
+    const mount = vi.fn();
+    const runtime = installDesktopExtensionHost(window);
+    const create = vi.fn(async () => ({ namespace: { mount } }));
+    const controller = createDesktopExtensionPageHost({
+      document,
+      host,
+      signal: scope.signal,
+      messages: rendererSettingsMessages("en"),
+      getClient: () => ({
+        readHostExtensionAsset: async () => ({
+          mimeType: "text/css",
+          base64: "",
+          digest: item.digest,
+        }),
+      }),
+    });
+    controller.open(item);
+    expect(host.querySelector('[role="status"]')).not.toBeNull();
+    expect(host.querySelector("[data-action=page-back]")).toBeNull();
+
+    scope.dispose();
+    await runtime.reconcile([], [moduleEntry("page", item, create)]);
+    expect(create).not.toHaveBeenCalled();
+    expect(mount).not.toHaveBeenCalled();
+    expect(host.childElementCount).toBe(0);
+    controller.dispose();
+  });
+
   it("mounts without readHostExtensionAsset when page.style is omitted, rejects backend.invoke clearly without manifest.backend, and isolates mount errors", async () => {
     const invokeHostExtensionBackend = vi.fn();
 
     let capturedApi: HostExtensionPageApi | null = null;
-    const importModule = vi
-      .fn()
-      .mockResolvedValueOnce({
+    const create = vi.fn(async () => ({
+      namespace: {
         mount(_root: HTMLElement, api: HostExtensionPageApi) {
+          if (capturedApi) throw new Error("Module mount failed");
           capturedApi = api;
         },
-      })
-      .mockRejectedValueOnce(new Error("Module evaluation failed"));
+      },
+    }));
 
     const noBackendItem = makePageItem({
       id: "pure-page",
@@ -265,6 +286,8 @@ describe("Desktop standalone extension page host", () => {
       },
     });
 
+    const runtime = installDesktopExtensionHost(window);
+    await runtime.reconcile([], [moduleEntry("page", noBackendItem, create)]);
     const listResult: HostExtensionsListResult = {
       revision: 1,
       configuration: { revision: 1, enabled: ["pure-page"] },
@@ -281,12 +304,7 @@ describe("Desktop standalone extension page host", () => {
     const content = document.createElement("div");
     document.body.append(content);
     const scope = new RendererSettingsPageScope();
-    const page = createDesktopExtensionsSettingsPage(
-      rendererSettingsMessages("en"),
-      () => client,
-      undefined,
-      { importPageModule: importModule },
-    );
+    const page = createDesktopExtensionsSettingsPage(rendererSettingsMessages("en"), () => client);
     const cleanup = page.mount({
       content,
       signal: scope.signal,
@@ -300,25 +318,22 @@ describe("Desktop standalone extension page host", () => {
     openPageButton.click();
 
     await vi.waitFor(() => expect(capturedApi).not.toBeNull());
-    expect(importModule).toHaveBeenCalledWith(
-      desktopExtensionModuleUrl({
-        id: "pure-page",
-        activationId: "act-pure-1",
-        digest: "e".repeat(64),
-        path: "page.mjs",
-      }),
-    );
-    await expect(must(capturedApi).backend.invoke("ping")).rejects.toThrow(
+    await expect(must<HostExtensionPageApi>(capturedApi).backend.invoke("ping")).rejects.toThrow(
       /does not declare a backend/i,
     );
     expect(invokeHostExtensionBackend).not.toHaveBeenCalled();
 
-    // Clicking reload hits the failing second importModule mock -> shows isolated error alert.
+    // Reload mounts the cached namespace again and reports a mount error.
     const reloadButton = must(
       content.querySelector<HTMLButtonElement>('button[data-action="page-reload"]'),
     );
     reloadButton.click();
-    await vi.waitFor(() => expect(content.textContent).toContain("Module evaluation failed"));
+    await vi.waitFor(() => expect(content.textContent).toContain("Module mount failed"));
+    expect(runtime.modules.status()["pure-page:page"]).toMatchObject({
+      state: "failed",
+      error: "Module mount failed",
+    });
+    expect(create).toHaveBeenCalledOnce();
     expect(content.querySelector('[role="alert"]')).not.toBeNull();
 
     // Clicking back returns cleanly to the unified list view.

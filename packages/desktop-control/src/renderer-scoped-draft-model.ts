@@ -18,80 +18,98 @@ function record(value: unknown): Draft | null {
     : null;
 }
 
-function draftIdentity(row: readonly unknown[], draftId: string) {
-  const result = record(row[13]);
-  return row.length === 14 &&
-    row[6] === draftId &&
-    row[7] === draftId &&
-    result?.isNewThreadDraft === true &&
-    row[11] === true &&
-    !!record(row[10]) &&
-    result.draftSettings === row[10] &&
-    result.updateDraftSettings === row[9] &&
-    row[9] === row[12] &&
-    typeof row[9] === "function"
-    ? { update: row[9] as UpdateDraft, store: row[8], draft: row[10] }
+type DraftIdentity = { draftId: string; update: UpdateDraft; draft: Draft };
+type ModelContext = {
+  row: readonly unknown[];
+  usesAccountPreferences: boolean;
+  settings: Draft | null;
+};
+type Writer = DraftIdentity & Pick<ScopedDraftModelBinding, "usesAccountPreferences">;
+type Mode = Draft & { settings: Draft & { model: string } };
+
+function isDraftId(value: unknown): value is string {
+  return typeof value === "string" && value.startsWith("client-new-thread:");
+}
+
+function repeated(row: readonly unknown[], value: unknown): boolean {
+  return row.indexOf(value) !== row.lastIndexOf(value);
+}
+
+function draftIdentities(row: readonly unknown[]): DraftIdentity[] {
+  const ids = row.filter(isDraftId);
+  const [draftId] = ids;
+  if (!draftId || ids.length < 2 || ids.some((id) => id !== draftId)) return [];
+  return [...new Set(row)].flatMap((value) => {
+    const result = record(value);
+    const draft = record(result?.draftSettings);
+    const update = result?.updateDraftSettings;
+    return result?.isNewThreadDraft === true &&
+      draft &&
+      row.includes(draft) &&
+      typeof update === "function" &&
+      repeated(row, update)
+      ? [{ draftId, draft, update: update as UpdateDraft }]
+      : [];
+  });
+}
+
+function modelContexts(row: readonly unknown[]): ModelContext[] {
+  return [...new Set(row)].flatMap((value) => {
+    const result = record(value);
+    const callback = result?.setModelAndReasoningEffort;
+    const usesAccountPreferences = result?.usesAccountPreferences;
+    if (
+      typeof callback !== "function" ||
+      !repeated(row, callback) ||
+      typeof usesAccountPreferences !== "boolean" ||
+      !row.some(
+        (context) =>
+          context !== value && record(context)?.usesAccountPreferences === usesAccountPreferences,
+      )
+    )
+      return [];
+    return [{ row, usesAccountPreferences, settings: record(result?.modelSettings) }];
+  });
+}
+
+function collaborationMode(value: unknown): Mode | null {
+  const mode = record(value);
+  const settings = record(mode?.settings);
+  return typeof mode?.mode === "string" && settings && typeof settings.model === "string"
+    ? (mode as Mode)
     : null;
 }
 
-/** Reviewed memo layouts; the callback and setting identities, not row length, authorize writes. */
-function modelContext(row: readonly unknown[]) {
-  const offset = row.length === 25 ? 1 : 0;
-  const current = row.length === 37;
-  if (!current && row.length !== 24 && row.length !== 25) return null;
-  const context = record(row[current ? 34 : 12 + offset]);
-  const result = record(row[current ? 36 : 23 + offset]);
-  const callback = row[current ? 27 : 14 + offset];
-  const usesAccountPreferences = context?.usesAccountPreferences;
-  if (
-    row[current ? 16 : 7 + offset] !== null ||
-    row[current ? 21 : 10 + offset] !== true ||
-    typeof usesAccountPreferences !== "boolean" ||
-    result?.usesAccountPreferences !== usesAccountPreferences ||
-    typeof callback !== "function" ||
-    result.setModelAndReasoningEffort !== callback ||
-    row[current ? 33 : 20 + offset] !== callback ||
-    (current
-      ? row[25] !== usesAccountPreferences || row[32] !== result.modelSettings || !record(row[32])
-      : row[21 + offset] !== context)
-  )
-    return null;
-  return { update: row[current ? 24 : 13 + offset], usesAccountPreferences, result };
+function activeModes(row: readonly unknown[]): Set<Mode> {
+  const modes = new Set<Mode>();
+  for (const value of row) {
+    const mode = collaborationMode(record(value)?.activeMode);
+    if (mode && row.includes(mode) && row.includes(mode.settings)) modes.add(mode);
+  }
+  return modes;
 }
 
-function creationModeFor(
-  row: unknown,
-  model: Draft,
-  owner: unknown,
-  draftId: string,
-): Draft | null {
-  if (!Array.isArray(row) || (row.length !== 52 && row.length !== 55)) return null;
-  const current = row.length === 55;
-  const settings = record(row[current ? 44 : 41]);
-  const mode = record(row[current ? 47 : 44]);
-  const result = record(row[current ? 54 : 51]);
-  const modelSettings = record(model.modelSettings);
-  // Desktop 26.1117's Composer memoizes the actual submit mode and client Thread ID.
-  if (
-    current &&
-    (!Array.isArray(owner) || owner.length !== 263 || owner[82] !== mode || owner[85] !== draftId)
-  )
-    return null;
-  return mode &&
-    settings &&
-    modelSettings &&
-    typeof mode.mode === "string" &&
-    typeof modelSettings.model === "string" &&
-    row[current ? 42 : 39] === modelSettings.model &&
-    row[current ? 43 : 40] === modelSettings.reasoningEffort &&
-    settings.model === modelSettings.model &&
-    settings.reasoning_effort === modelSettings.reasoningEffort &&
-    mode.settings === settings &&
-    (!current || row[46] === settings) &&
-    mode === row[current ? 52 : 49] &&
-    result?.activeMode === mode
-    ? mode
-    : null;
+function submitModesFor(rows: readonly unknown[][], draftId: string): Set<Mode> {
+  const modes = new Set<Mode>();
+  for (const row of rows) {
+    if (
+      !row.includes(draftId) ||
+      row.some((value) => isDraftId(value) && value !== draftId) ||
+      !row.some((value) => {
+        const result = record(value);
+        return (
+          typeof result?.handleSubmitLocal === "function" &&
+          typeof result.handleNewWorktreeConversation === "function"
+        );
+      })
+    )
+      continue;
+    for (const value of row) {
+      const mode = collaborationMode(value);
+      if (mode) modes.add(mode);
+    }
+  }
+  return modes;
 }
 
 export function findScopedDraftModelBinding(
@@ -110,59 +128,77 @@ export function findScopedDraftModelBinding(
     if (key) fiber = Object.getOwnPropertyDescriptor(element, key)?.value;
     element = element.parentElement;
   }
-  type Candidate = NonNullable<ReturnType<typeof draftIdentity>> & {
-    usesAccountPreferences: boolean;
-    modes: Set<Draft>;
-  };
-  const candidates = new Map<UpdateDraft, Candidate>();
+  const writers = new Map<UpdateDraft, Writer | null>();
+  const submitModes = new Set<Mode>();
+  const owners: Writer[] = [];
   for (const ancestor of committedReactAncestors(fiber)) {
     const data = record(record(ancestor.updateQueue)?.memoCache)?.data;
     if (!Array.isArray(data)) continue;
-    // Nested compiled hooks allocate their memo rows on the same Fiber.
-    const identities = data.filter(Array.isArray).map((row) => draftIdentity(row, draftId));
-    for (const [index, row] of data.entries()) {
-      const model = Array.isArray(row) ? modelContext(row) : null;
-      if (!model) continue;
-      for (const identity of identities) {
-        if (!identity || identity.update !== model.update) continue;
-        const candidate = candidates.get(identity.update) ?? {
-          ...identity,
-          usesAccountPreferences: model.usesAccountPreferences,
-          modes: new Set<Draft>(),
-        };
-        if (
-          candidate.store !== identity.store ||
-          candidate.draft !== identity.draft ||
-          candidate.usesAccountPreferences !== model.usesAccountPreferences
-        )
-          return null;
-        // The owning collaboration hook allocates its row before its nested Model hook.
-        const mode = creationModeFor(data[index - 1], model.result, data[0], draftId);
-        if (mode) candidate.modes.add(mode);
-        candidates.set(identity.update, candidate);
+    const rows: unknown[][] = data.filter(Array.isArray);
+    const identities = rows.map(draftIdentities);
+    const allIdentities = identities.flat();
+    const models = rows.map(modelContexts);
+    for (const { row, usesAccountPreferences } of models.flat()) {
+      for (const identity of allIdentities) {
+        if (identity.draftId !== draftId || !row.includes(identity.update)) continue;
+        const previous = writers.get(identity.update);
+        const agrees =
+          previous === undefined ||
+          (previous?.draft === identity.draft &&
+            previous.usesAccountPreferences === usesAccountPreferences);
+        writers.set(identity.update, agrees ? { ...identity, usesAccountPreferences } : null);
       }
     }
+
+    const localModes = submitModesFor(rows, draftId);
+    for (const mode of localModes) submitModes.add(mode);
+    if (localModes.size !== 1) continue;
+    const [mode] = localModes;
+    if (!mode) continue;
+
+    const active = rows.map(activeModes);
+    for (const [index, modes] of active.entries()) {
+      if (modes.size !== 1 || !modes.has(mode)) continue;
+      // Compiled hooks allocate the collaboration, Model and draft rows in nesting order.
+      const end = rows.findIndex(
+        (_, next) => next > index && (identities[next]?.length || active[next]?.size),
+      );
+      if (end === -1 || identities[end]?.length !== 1) continue;
+      const [identity] = identities[end];
+      if (identity?.draftId !== draftId) continue;
+      const related = models.slice(index + 1, end).flat();
+      const [model] = related;
+      if (
+        related.length !== 1 ||
+        !model ||
+        !model.row.includes(identity.update) ||
+        allIdentities.some(
+          ({ update }) => update !== identity.update && model.row.includes(update),
+        ) ||
+        model.settings?.model !== mode.settings.model ||
+        model.settings.reasoningEffort !== mode.settings.reasoning_effort
+      )
+        continue;
+      owners.push({ ...identity, usesAccountPreferences: model.usesAccountPreferences });
+    }
   }
-  const writers = [...candidates.values()];
-  const creationOwners = writers.filter(({ modes }) => modes.size > 0);
-  const selected =
-    writers.length === 1 ? writers[0] : creationOwners.length === 1 ? creationOwners[0] : undefined;
+  const [mode] = submitModes;
+  const selected = mode
+    ? submitModes.size === 1 && owners.length === 1 && Object.isExtensible(mode)
+      ? owners[0]
+      : null
+    : writers.size === 1
+      ? writers.values().next().value
+      : null;
   if (
     !selected ||
-    (writers.length > 1 &&
-      (!record(selected.store) ||
-        typeof record(selected.store)?.set !== "function" ||
-        writers.some(
-          (writer) =>
-            writer.store !== selected.store ||
-            writer.draft !== selected.draft ||
-            writer.usesAccountPreferences !== selected.usesAccountPreferences,
-        )))
+    [...writers.values()].some(
+      (writer) =>
+        writer?.draft !== selected.draft ||
+        writer.usesAccountPreferences !== selected.usesAccountPreferences,
+    )
   )
     return null;
-
-  const [mode] = selected.modes;
-  if (selected.modes.size > 1 || (mode && !Object.isExtensible(mode))) return null;
   const { update, usesAccountPreferences } = selected;
   return { update, usesAccountPreferences, ...(mode ? { creationModes: [mode] } : {}) };
 }

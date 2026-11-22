@@ -6,11 +6,18 @@ import type {
 import { SessionId } from "@deepseek-ai/dsh-session/types";
 import { threadTreeParentOf } from "./tree.ts";
 
-export function sessionDescendantIds(list: SessionListState, id: string): ReadonlySet<string> {
+export function sessionDescendantIds(
+  list: SessionListState,
+  id: string,
+  includeForks = false,
+): ReadonlySet<string> {
   const children = new Map<string, string[]>();
   for (const summary of Object.values(list.byId)) {
-    const parent = threadTreeParentOf(summary, list);
-    if (parent === null) continue;
+    if (includeForks && !isLocalThreadTreeMember(summary)) continue;
+    const parent =
+      threadTreeParentOf(summary, list) ??
+      (includeForks ? summary.projectionValues?.archiveForkParent : null);
+    if (!parent) continue;
     const siblings = children.get(parent) ?? [];
     siblings.push(summary.id);
     children.set(parent, siblings);
@@ -36,12 +43,29 @@ export function isLocalThreadTreeMember(summary: SessionSummary | undefined): bo
   );
 }
 
+/** Fix the candidate set at the moment the Archive action is invoked. */
+export function archiveCandidates(
+  list: SessionListState,
+  parent: SessionId,
+  archived: ReadonlySet<SessionId>,
+): { id: SessionId; title: string }[] {
+  const result: { id: SessionId; title: string }[] = [];
+  for (const descendant of sessionDescendantIds(list, parent, true)) {
+    const id = SessionId(descendant);
+    const summary = list.byId[id];
+    if (archived.has(id) || !summary) continue;
+    result.push({ id, title: summary.displayTitle });
+  }
+  return result;
+}
+
 /** Native Subagents retain their own confirmation lines, even below display descendants. */
 export function runningSubagentsInThreadSubtree(
   list: SessionListState,
   sessionId: string,
+  descendants: Iterable<string> = sessionDescendantIds(list, sessionId),
 ): { id: string; label?: string }[] {
-  const stack = [sessionId, ...sessionDescendantIds(list, sessionId)];
+  const stack = [sessionId, ...descendants];
   const seen = new Set<string>();
   const running = new Map<string, { id: string; label?: string }>();
   for (let parent = stack.pop(); parent !== undefined; parent = stack.pop()) {

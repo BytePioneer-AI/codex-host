@@ -1,5 +1,6 @@
 import { backendIpcErrorMessage } from "@codexhost/extension-backend";
 import {
+  hostExtensionInstallationMetadata,
   HostExtensionInstallConflict,
   HostExtensionSettingsRevisionConflict,
 } from "@codexhost/harness-plugin-files";
@@ -38,14 +39,11 @@ async function dispatch(
       const { source } = params(method, input);
       if (source?.type === "zip" && "localZipPath" in source)
         throw new InvalidParameters("Use a base64 ZIP; local ZIP paths are not accepted");
-      const {
-        directory: _directory,
-        generation: _generation,
-        ...installed
-      } = method === RPC.install
-        ? await manager.install(params(method, input))
-        : await manager.update(params(method, input));
-      return installed;
+      const installed =
+        method === RPC.install
+          ? await manager.install(params(method, input))
+          : await manager.update(params(method, input));
+      return { ...hostExtensionInstallationMetadata(installed), replaced: installed.replaced };
     }
     case RPC.enable:
     case RPC.disable:

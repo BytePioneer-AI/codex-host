@@ -284,7 +284,10 @@ it("shares recovery between viewers and releases retired and closed subscription
   f.calls.length = 0;
   t.mock.timers.tick(60_000);
   await flush();
-  assert.equal(f.calls.length, 0);
+  assert.deepEqual(
+    f.calls.map((call) => call.kind),
+    ["queue"],
+  );
 
   second.close();
   const retry = follow.viewer();

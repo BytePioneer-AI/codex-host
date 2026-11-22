@@ -1293,7 +1293,6 @@ export class AppServerHost {
         this.#resolveDesktopQuestion(interactionId, thread),
       retireSharedQuestions: (thread, turnId) => this.#retireSharedQuestions(thread, turnId),
       setThreadStatus: (thread, status) => this.#setThreadStatus(thread, status),
-      forgetQueuedTurnStart: (threadId) => this.#queuedTurnStarts.delete(threadId),
       signalActiveWorkChanged: () => this.#signalActiveWorkChanged(),
       hasRunningSubagents: (parentThreadId) => this.#hasRunningSubagents(parentThreadId),
       publishExternalQueue: (threadId) => this.#publishExternalQueue(threadId),
@@ -5887,6 +5886,7 @@ export class AppServerHost {
           this.#options.environment ?? process.env,
         );
         requestText(params);
+        this.#assertQueuedExternalItemUnclaimed(thread.id, itemId);
         const queuedSubmission = this.#externalQueue.update(
           thread.id,
           itemId,
@@ -5903,6 +5903,7 @@ export class AppServerHost {
         return;
       }
       if (request.method === "thread/queue/delete") {
+        this.#assertQueuedExternalItemUnclaimed(thread.id, itemId);
         const deleted = this.#externalQueue.delete(thread.id, itemId);
         if (deleted) await this.#publishExternalQueue(thread.id);
         await this.#writer.json(rpcEnvelope(request, { result: { deleted } }));
@@ -5935,6 +5936,14 @@ export class AppServerHost {
     }
   }
 
+  #assertQueuedExternalItemUnclaimed(threadId: string, itemId: string): void {
+    if (
+      this.#queuedTurnStarts.get(threadId)?.itemId === itemId &&
+      this.#externalQueue.find(threadId, itemId)
+    )
+      throw new ExternalQueueError(-32072, "Queued message is already starting");
+  }
+
   async #startQueuedExternalTurn(
     thread: ExternalThread,
     itemId: string,
@@ -5960,16 +5969,15 @@ export class AppServerHost {
       );
       this.#externalQueue.resume(thread.id);
       if (this.#externalQueue.delete(thread.id, item.id))
-        await this.#publishExternalQueue(thread.id);
+        await this.#publishExternalQueue(thread.id).catch((error) => this.#diagnose(error));
       return started;
     })();
     this.#queuedTurnStarts.set(thread.id, { itemId, result });
     try {
       return await result;
-    } catch (error) {
+    } finally {
       if (this.#queuedTurnStarts.get(thread.id)?.result === result)
         this.#queuedTurnStarts.delete(thread.id);
-      throw error;
     }
   }
 
@@ -5986,6 +5994,7 @@ export class AppServerHost {
       return;
     }
     try {
+      this.#assertQueuedExternalItemUnclaimed(thread.id, itemId);
       const started = this.#externalThreadBusy(thread)
         ? await this.#externalSteering.run(
             thread,
@@ -6024,6 +6033,7 @@ export class AppServerHost {
         if (this.#externalQueue.pause(thread.id, "outcome-unknown"))
           await this.#publishExternalQueue(thread.id);
       } else if (
+        !(error instanceof ExternalQueueError) &&
         !thread.running &&
         !thread.activeTurnId &&
         this.#externalQueue.pause(thread.id, "failed")
@@ -6032,7 +6042,9 @@ export class AppServerHost {
       await this.#writer.json(
         rpcError(
           request,
-          error instanceof ExternalSteerError || error instanceof ExternalCommandError
+          error instanceof ExternalSteerError ||
+            error instanceof ExternalCommandError ||
+            error instanceof ExternalQueueError
             ? error.code
             : -32073,
           errorMessage(error),
@@ -6124,6 +6136,14 @@ export class AppServerHost {
       } catch (error) {
         throw new ExternalSteerError(-32602, errorMessage(error));
       }
+      const startingId = this.#queuedTurnStarts.get(thread.id)?.itemId;
+      if (
+        startingId &&
+        typeof params.clientUserMessageId === "string" &&
+        this.#externalQueue.find(thread.id, startingId)?.clientUserMessageId ===
+          params.clientUserMessageId
+      )
+        this.#assertQueuedExternalItemUnclaimed(thread.id, startingId);
       queued = this.#externalQueue.takeSteered(thread.id, params.clientUserMessageId, params.input);
       const started = await this.#externalSteering.run(
         thread,
@@ -6516,7 +6536,6 @@ export class AppServerHost {
           !this.#externalQueue.isPaused(thread.id) &&
           this.#externalQueue.pause(thread.id, "outcome-unknown")
         ) {
-          this.#queuedTurnStarts.delete(thread.id);
           await this.#publishExternalQueue(thread.id);
         }
       }
@@ -6746,7 +6765,6 @@ export class AppServerHost {
       return;
     }
     if (event.type === "session.faulted") {
-      this.#queuedTurnStarts.delete(thread.id);
       this.#retireSharedQuestions(thread);
       this.#externalSteering.fault(thread.id, new Error(event.error.message));
       thread.stateObserver.fault(new Error(event.error.message));

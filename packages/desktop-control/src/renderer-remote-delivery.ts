@@ -3,6 +3,8 @@ import type {
   RemoteQueueSnapshot,
   RemoteSessionOperation,
   THREAD_QUEUE_START_IF_EMPTY_PARAM,
+  THREAD_STEER_STRICT_TARGET_FIELD,
+  THREAD_STEER_STRICT_TARGET_PARAM,
 } from "@codexhost/shared-contracts";
 
 /** Self-contained for the Desktop Controller expression. All writes use the selected native manager. */
@@ -86,11 +88,14 @@ export async function rendererRemoteDelivery(
     const status = record(thread?.status)?.type;
     if (thread?.id !== threadId || typeof status !== "string")
       throw new Error("Invalid remote Thread status");
+    const strictSteerField =
+      "codexhostSupportsStrictSteer" satisfies typeof THREAD_STEER_STRICT_TARGET_FIELD;
     return {
       status,
       readOnly: thread.canAcceptDirectInput === false,
       // The Host reserves both markers on its external Thread projections.
       external: thread.modelProvider === "codexhost" && thread.cliVersion === "codexhost",
+      strictSteer: thread[strictSteerField] === true,
     };
   };
   const readOnly = () =>
@@ -100,18 +105,26 @@ export async function rendererRemoteDelivery(
 
   const { action } = operation;
   if (action.kind === "remove") {
-    const result = record(
-      await write("thread/queue/delete", { threadId, queuedSubmissionId: action.itemId }),
-    );
-    if (result?.deleted === true) return { accepted: true };
-    if (result?.deleted === false)
-      return reject("session/queue-item-not-found", "Queued message is no longer pending.");
-    throw new Error("Remote queue removal was not confirmed");
+    try {
+      const result = record(
+        await write("thread/queue/delete", { threadId, queuedSubmissionId: action.itemId }),
+      );
+      if (result?.deleted === true) return { accepted: true };
+      if (result?.deleted === false)
+        return reject("session/queue-item-not-found", "Queued message is no longer pending.");
+      throw new Error("Remote queue removal was not confirmed");
+    } catch (error) {
+      if (codeOf(error) === -32072 && messageOf(error) === "Queued message is already starting")
+        return reject("session/queue-item-starting", messageOf(error));
+      throw error;
+    }
   }
   if (action.kind === "start") {
     const busy = () => reject("remote/turn-changed", "The remote Thread is already running.");
     if (header.status === "active") return busy();
     try {
+      if (action.onlyIfHead && record((await readQueue(1)).data[0])?.id !== action.itemId)
+        return { accepted: true };
       const result = record(
         await write("thread/queue/start", { threadId, queuedSubmissionId: action.itemId }),
       );
@@ -143,17 +156,30 @@ export async function rendererRemoteDelivery(
     const turnChanged = () =>
       reject("remote/turn-changed", "The selected Turn has ended or changed.");
     if (header.status !== "active") return turnChanged();
+    if (header.external && !header.strictSteer)
+      return reject(
+        "remote/steer-unavailable",
+        "This remote Host does not support steering with a confirmed Turn target.",
+      );
+    const strictTarget = {
+      codexhostSteerStrictTarget: true,
+    } satisfies Record<typeof THREAD_STEER_STRICT_TARGET_PARAM, true>;
     try {
       const result = record(
         await write("turn/steer", {
           ...params,
           expectedTurnId: action.turnId,
-          ...(header.external ? { codexhostSteerStrictTarget: true } : {}),
+          ...(header.external ? strictTarget : {}),
         }),
       );
       if (result?.turnId === action.turnId) return { accepted: true };
       // An external Harness can explicitly acknowledge replacement as its native delivery.
-      if (result?.delivery === "newTurn" && typeof result.turnId === "string" && result.turnId)
+      if (
+        header.external &&
+        result?.delivery === "newTurn" &&
+        typeof result.turnId === "string" &&
+        result.turnId
+      )
         return { accepted: true };
       throw new Error("Remote steering was not confirmed");
     } catch (error) {
@@ -227,14 +253,6 @@ export async function rendererRemoteDelivery(
   )
     throw new Error("Remote queue admission was not confirmed");
 
-  // Native Codex exposes an idle-only start for the newly admitted item.
-  if (startNativeWhenEmpty) {
-    try {
-      if (record((await readQueue(1)).data[0])?.id === queued.id)
-        await write("thread/queue/start", { threadId, queuedSubmissionId: queued.id });
-    } catch {
-      // Admission was confirmed. The queue or transcript will show where the input ended up.
-    }
-  }
-  return { accepted: true };
+  // Return admission before a separate native start request can time out.
+  return { accepted: true, ...(startNativeWhenEmpty ? { startQueuedItemId: queued.id } : {}) };
 }

@@ -17,7 +17,12 @@ import type { MessageId } from "@deepseek-ai/dsh-llm/brand";
 import type { SessionId, SessionSeq } from "@deepseek-ai/dsh-session/types";
 import type { RemoteResult } from "@deepseek-ai/dsh-typert-protocol";
 import type { ObservableSnapshot } from "@deepseek-ai/dsh-client-store";
-import type { PromptContentPart, QueueAction, SessionRequestId } from "../../types.ts";
+import type {
+  PromptContentPart,
+  QueueAction,
+  SessionPromptValue,
+  SessionRequestId,
+} from "../../types.ts";
 import type { PendingSubmissionAttachment, SessionSnapshot } from "./snapshot.ts";
 
 /**
@@ -94,7 +99,7 @@ export interface ISession {
     mode: "queue" | "steer",
     signal?: AbortSignal,
     requestId?: SessionRequestId,
-  ): Promise<RemoteResult<{ accepted: true }>>;
+  ): Promise<RemoteResult<SessionPromptValue>>;
   /** Read a projected tool fragment, caching by its complete identity and content version. */
   readToolOutput(reference: WebToolOutputReference): Promise<string>;
   /**

@@ -188,7 +188,6 @@ export interface ExternalTurnProjectionHost {
   resolveDesktopQuestion(interactionId: HostInteractionId, thread: ExternalThread): Promise<void>;
   retireSharedQuestions(thread: ExternalThread, turnId: HostTurnId): void;
   setThreadStatus(thread: ExternalThread, status: ExternalThreadStatus): Promise<void>;
-  forgetQueuedTurnStart(threadId: string): void;
   signalActiveWorkChanged(): void;
   hasRunningSubagents(parentThreadId: string): boolean;
   publishExternalQueue(threadId: string): Promise<void>;
@@ -310,7 +309,6 @@ export class ExternalTurnProjection {
       await this.#host.setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
     if (event.type === "turn.completed") {
-      this.#host.forgetQueuedTurnStart(thread.id);
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
       const turn = projection.projector.snapshotTurn(result.completedTurn);
       if (thread.ephemeralTurnIds.delete(event.turnId)) {
@@ -403,8 +401,7 @@ export class ExternalTurnProjection {
           ? { type: "active", activeFlags: [] }
           : { type: "idle" },
       );
-      const steering = this.#host.steering.hasPending(thread.id);
-      this.#host.steering.terminal(thread.id, event.turnId, event.outcome);
+      const steering = this.#host.steering.terminal(thread.id, event.turnId, event.outcome);
       if (!steering) {
         const status = event.outcome.status;
         if (status === "succeeded") void this.#host.startNextQueuedExternalTurn(thread);

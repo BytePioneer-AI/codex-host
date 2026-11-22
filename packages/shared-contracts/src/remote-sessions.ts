@@ -19,14 +19,16 @@ const text = z.string().min(1).max(8000);
 const input = { text, requestId: identity };
 
 export const remoteDeliveryReplySchema = z.discriminatedUnion("accepted", [
-  z.object({ accepted: z.literal(true) }),
+  z.object({ accepted: z.literal(true), startQueuedItemId: identity.optional() }),
   z.object({
     accepted: z.literal(false),
     code: z.enum([
       "remote/queue-unavailable",
+      "remote/steer-unavailable",
       "remote/turn-changed",
       "remote/send-rejected",
       "session/queue-item-not-found",
+      "session/queue-item-starting",
     ]),
     message: z.string(),
   }),
@@ -108,7 +110,11 @@ export const remoteSessionOperationSchema = z.discriminatedUnion("kind", [
       z.strictObject({ kind: z.literal("enqueue"), ...input }),
       z.strictObject({ kind: z.literal("steer"), ...input, turnId: identity }),
       z.strictObject({ kind: z.literal("remove"), itemId: identity }),
-      z.strictObject({ kind: z.literal("start"), itemId: identity }),
+      z.strictObject({
+        kind: z.literal("start"),
+        itemId: identity,
+        onlyIfHead: z.literal(true).optional(),
+      }),
     ]),
   }),
   z.strictObject({ kind: z.literal("interrupt"), ...thread, epoch: identity, turnId: identity }),

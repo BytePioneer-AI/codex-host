@@ -2,6 +2,7 @@
 import {
   REASONING_TRANSCRIPT_COMMAND,
   WEB_ACTIVE_TURN_PROJECTION,
+  type THREAD_STEER_STRICT_TARGET_FIELD,
   type ClientFileOperation,
   type ClientThreadImportSource,
   type ClientThreadSnapshot,
@@ -55,6 +56,7 @@ export interface ChThread {
   historyMode?: "legacy" | "paginated";
   parentThreadId?: string | null;
   canAcceptDirectInput?: boolean;
+  [THREAD_STEER_STRICT_TARGET_FIELD]?: boolean;
   codexhostImportSource?: ClientThreadImportSource | undefined;
 }
 
@@ -332,7 +334,7 @@ export class ChThreadView {
     this.publishFileChanges();
   }
 
-  update(thread: ChThread): void {
+  update(thread: ChThread, activeTurnId?: string | null): void {
     this.ensureCurrent();
     // The journal is append-only. Same-Turn input can append in place; input
     // replacement or insertion before displayed output needs a fresh history view.
@@ -398,9 +400,11 @@ export class ChThreadView {
     }
     this.log.setProjection(
       WEB_ACTIVE_TURN_PROJECTION,
-      thread.status.type === "active"
-        ? (thread.turns.findLast((turn) => !finished(turn.status))?.id ?? null)
-        : null,
+      activeTurnId !== undefined
+        ? activeTurnId
+        : thread.status.type === "active"
+          ? (thread.turns.findLast((turn) => !finished(turn.status))?.id ?? null)
+          : null,
     );
     this.log.setProjection("codexhostToolOutput", Object.fromEntries(this.liveOutput));
     this.publishMessageTimes();

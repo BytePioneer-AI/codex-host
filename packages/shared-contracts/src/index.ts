@@ -231,6 +231,7 @@ export {
   threadSteeringInspectResultSchema,
   THREAD_STEER_DELIVERY_PARAM,
   THREAD_STEER_STRICT_TARGET_PARAM,
+  THREAD_STEER_STRICT_TARGET_FIELD,
   THREAD_STEERING_CONTEXT_PARAM,
   threadSteeringContextSchema,
   threadSteerDeliverySchema,

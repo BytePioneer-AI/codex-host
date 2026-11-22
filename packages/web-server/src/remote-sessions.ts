@@ -410,7 +410,10 @@ export class RemoteSessions {
         );
     };
     requireCurrent();
+    this.loadQueue(id, current);
     const configurationRevision = current.configurationRevision;
+    const previousView = current.view;
+    const previousReadOnly = previousView?.thread.canAcceptDirectInput === false;
     current.reading ??= (async () => {
       try {
         const before = JSON.stringify(this.summary(id, current));
@@ -487,7 +490,11 @@ export class RemoteSessions {
             current.view.log.setProjection(key, value);
         current.view.log.setProjection("harnessIdentity", remoteHarnessIdentity(current) ?? null);
         applyRemoteControls(current, current.view);
-        this.loadQueue(id, current);
+        if (
+          current.view !== previousView ||
+          (current.view.thread.canAcceptDirectInput === false) !== previousReadOnly
+        )
+          this.loadQueue(id, current);
         this.loadUsage(id, current, current.view, snapshot.epoch);
         this.interactions(id, current, snapshot.requests);
         if (
@@ -765,6 +772,10 @@ export class RemoteSessions {
         this.followLifetime.signal,
         () => this.entries.get(id)?.historyError,
         (view) => this.entries.get(id)?.view === view,
+        (view) => {
+          const entry = this.entries.get(id);
+          if (entry?.view === view) this.loadQueue(id, entry);
+        },
       );
       return true;
     });
@@ -789,7 +800,21 @@ export class RemoteSessions {
         return this.invoke(operation);
       };
       try {
-        return await deliverRemoteInput(invoke, identity, method, request);
+        return await deliverRemoteInput(invoke, identity, method, request, async () => {
+          const view = await this.read(id);
+          if (this.entries.get(id) !== entry || !entry.epoch)
+            throw new RpcError(
+              "remote/connection-changed",
+              "Remote Thread changed before dispatch.",
+            );
+          return {
+            threadId: identity.threadId,
+            status: view.thread.status.type,
+            turnId: null,
+            epoch: entry.epoch,
+            ...(view.thread.canAcceptDirectInput === false ? { readOnly: true } : {}),
+          };
+        });
       } finally {
         this.refreshAfterDelivery(id, entry);
       }

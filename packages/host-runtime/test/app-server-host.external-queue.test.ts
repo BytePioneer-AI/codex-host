@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import type {
+  HarnessResult,
+  TurnStartAccepted,
+  TurnStartCommand,
+} from "@codexhost/harness-adapter";
 import type { JsonObject } from "@codexhost/protocol-core";
 
 import {
@@ -43,6 +48,82 @@ describe("External Thread follow-up queue", () => {
       await stopFixture(fixture);
     }
   });
+
+  it.each(["accepts", "rejects"] as const)(
+    "rejects a concurrent Desktop delete while the Harness %s a queued start",
+    async (outcome) => {
+      const fixture = createFixture();
+      const admission = Promise.withResolvers<undefined>();
+      const starting = Promise.withResolvers<undefined>();
+      try {
+        const threadId = await startPiThread(fixture);
+        await expect(
+          fixture.host.handleClientRequest("thread/read", { threadId, includeTurns: false }),
+        ).resolves.toHaveProperty("result.thread.codexhostSupportsStrictSteer", true);
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Session was not opened");
+        if (outcome === "rejects")
+          session.rejectNextTurn({
+            code: "internalError",
+            message: "Harness declined the queued Turn",
+            retryable: false,
+          });
+        const turnStarter: {
+          execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+        } = session;
+        const execute = turnStarter.execute.bind(session);
+        const spy = vi.spyOn(turnStarter, "execute").mockImplementation(async (command) => {
+          starting.resolve(undefined);
+          await admission.promise;
+          return execute(command);
+        });
+        await fixture.host.handleClientRequest("thread/queue/add", {
+          threadId,
+          input: text("selected message"),
+          clientUserMessageId: "selected",
+          codexhostQueueStartIfEmpty: true,
+        });
+        await starting.promise;
+        await fixture.host.handleClientRequest("thread/queue/add", {
+          threadId,
+          input: text("later message"),
+          clientUserMessageId: "later",
+        });
+        const pending = (await fixture.host.clientSnapshot(threadId)).queue?.items;
+        expect(pending?.map((item) => item.clientUserMessageId)).toEqual(["selected", "later"]);
+        const selected = pending?.[0];
+        if (!selected) throw new Error("Claimed message should remain visible during admission");
+        writeRequest(fixture.desktopInput, {
+          id: 21,
+          method: "thread/queue/delete",
+          params: { threadId, queuedSubmissionId: selected.id },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, 21)),
+        ).resolves.toMatchObject({
+          error: { code: -32072, message: "Queued message is already starting" },
+        });
+        admission.resolve(undefined);
+        await vi.waitFor(async () => {
+          const queue = (await fixture.host.clientSnapshot(threadId)).queue;
+          expect(queue?.items.map((item) => item.clientUserMessageId)).toEqual(
+            outcome === "accepts" ? ["later"] : ["selected", "later"],
+          );
+          if (outcome === "rejects") expect(queue?.pausedReason).toBe("failed");
+        });
+        expect(spy).toHaveBeenCalledTimes(1);
+        await expect(
+          fixture.host.handleClientRequest("thread/queue/delete", {
+            threadId,
+            queuedSubmissionId: selected.id,
+          }),
+        ).resolves.toHaveProperty("result.deleted", outcome === "rejects");
+      } finally {
+        admission.resolve(undefined);
+        await stopFixture(fixture);
+      }
+    },
+  );
 
   it("honors the current External Thread queue order for automatic starts and allows manual selection", async () => {
     const fixture = createFixture();

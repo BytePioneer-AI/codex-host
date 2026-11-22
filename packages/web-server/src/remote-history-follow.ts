@@ -23,6 +23,7 @@ export async function followRemoteHistory(
   shutdown: AbortSignal,
   failure: () => { code: string; message: string } | undefined,
   isCurrent: (view: ChThreadView) => boolean,
+  refreshQueue: (view: ChThreadView) => void,
 ): Promise<void> {
   const lifetime = new AbortController();
   let timer: NodeJS.Timeout | undefined;
@@ -59,7 +60,9 @@ export async function followRemoteHistory(
       failures = 0,
       retryAt = 0;
     timer = setInterval(() => {
-      if (busy || lifetime.signal.aborted || permanent(failure()) || Date.now() < retryAt) return;
+      if (lifetime.signal.aborted) return;
+      refreshQueue(view);
+      if (busy || permanent(failure()) || Date.now() < retryAt) return;
       busy = true;
       void read()
         .then(

@@ -26,6 +26,7 @@ import type {
   SessionAddress,
   SessionAssistantStreamBaseline,
   SessionProjectionBaseline,
+  SessionPromptValue,
   SessionRequestId,
 } from "../../types.ts";
 import type {
@@ -325,7 +326,7 @@ export class Session implements SessionFace {
     mode: "queue" | "steer",
     signal?: AbortSignal,
     requestId?: SessionRequestId,
-  ): Promise<RemoteResult<{ accepted: true }>> {
+  ): Promise<RemoteResult<SessionPromptValue>> {
     const submittedRequestId = requestId ?? (randomUUID() as SessionRequestId);
     this.promptError = null;
     this.lastAgentError = null;
@@ -338,15 +339,18 @@ export class Session implements SessionFace {
     const inFlight = { observed: false };
     this.inFlightPrompts.set(submittedRequestId, inFlight);
     try {
-      let result: RemoteResult<{ accepted: true }>;
+      let result: RemoteResult<SessionPromptValue>;
       if (this.address === undefined) {
         const clientTimeZone = resolvedClientTimeZone();
         const submission = this.submissionSettlements.get(submittedRequestId);
+        const remoteThread = this.projections.get("remoteHost") != null;
+        const sentWhileIdle = submission ? submission.placement === "transcript" : !this.running;
         result = await this.remote.session.prompt(
           {
             requestId: submittedRequestId,
             sessionId: this.sessionId,
             mode,
+            ...(remoteThread && mode === "queue" && sentWhileIdle ? { sendWhenIdle: true } : {}),
             ...(mode === "steer"
               ? {
                   expectedTurnId: submission

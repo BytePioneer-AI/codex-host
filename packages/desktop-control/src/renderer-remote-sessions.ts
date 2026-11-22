@@ -240,6 +240,7 @@ export async function rendererRemoteSession(
       status: result.thread.status.type,
       turnId,
       epoch: generation.epoch,
+      supportsDelivery: true,
       ...(result.thread.canAcceptDirectInput === false ? { readOnly: true } : {}),
     };
   }

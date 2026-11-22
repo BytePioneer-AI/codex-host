@@ -214,6 +214,7 @@ type InsertSteeredInput = (input: {
 
 interface PendingSteer {
   turnId: string;
+  strictTarget: boolean;
   resolve(outcome: TurnOutcome): void;
   reject(error: Error): void;
 }
@@ -346,6 +347,7 @@ export class ExternalTurnSteering {
     let failureReason: Error | null = null;
     const pending: PendingSteer = {
       turnId: input.expectedTurnId,
+      strictTarget: input.strictTarget,
       resolve: () => undefined,
       reject(error) {
         failureReason ??= error;
@@ -364,9 +366,20 @@ export class ExternalTurnSteering {
       });
   }
 
-  terminal(threadId: string, turnId: string, outcome: TurnOutcome): void {
+  /** Return whether steering owns the queue transition after this terminal event. */
+  terminal(threadId: string, turnId: string, outcome: TurnOutcome): boolean {
     const pending = this.#pending.get(threadId);
-    if (pending?.turnId === turnId) pending.resolve(outcome);
+    if (!pending) return false;
+    if (pending.turnId !== turnId) return true;
+    if (pending.strictTarget && outcome.status === "succeeded") {
+      this.#pending.delete(threadId);
+      pending.reject(
+        new ExternalSteerError(-32074, "External steering target is no longer active", true),
+      );
+      return false;
+    }
+    pending.resolve(outcome);
+    return true;
   }
 
   interrupt(threadId: string, turnId: string): void {
@@ -405,6 +418,7 @@ export class ExternalTurnSteering {
     let failureReason: Error | null = null;
     const pending: PendingSteer = {
       turnId: input.expectedTurnId,
+      strictTarget: input.strictTarget,
       resolve: terminal.resolve,
       reject(error) {
         failureReason ??= error;

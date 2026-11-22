@@ -418,6 +418,25 @@ describe("Host native steering", () => {
     expect(f.start).not.toHaveBeenCalled();
   });
 
+  it("leaves the queue transition to normal completion if a strict target finishes naturally", async () => {
+    const f = fixture();
+    const result = f.coordinator.run(
+      f.thread,
+      { ...f.params, [THREAD_STEER_STRICT_TARGET_PARAM]: true },
+      f.start,
+      f.insert,
+    );
+    await vi.waitFor(() => expect(f.execute).toHaveBeenCalledOnce());
+    f.thread.running = false;
+    f.thread.activeTurnId = null;
+    expect(f.coordinator.terminal("thread", "old", { status: "succeeded" })).toBe(false);
+    await expect(result).rejects.toMatchObject({
+      code: -32074,
+      message: "External steering target is no longer active",
+    });
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
   it("waits for an ending Turn whose cancel is refused as inactive", async () => {
     const f = fixture();
     f.thread.session.capabilities.steer = true;

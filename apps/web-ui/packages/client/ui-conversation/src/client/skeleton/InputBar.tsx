@@ -196,6 +196,10 @@ export const InputBar = memo(function InputBar({
       showToast(t("error.steerTurnChanged"));
       return;
     }
+    if (error.code === "remote/steer-unavailable") {
+      showToast(t("error.remoteSteerUnavailable"));
+      return;
+    }
     showToast(
       error.code === "session/attachment-invalid" || error.code === "subagent/attachment-invalid"
         ? attachmentErrorText(t, error.details.reason, imageLimits)

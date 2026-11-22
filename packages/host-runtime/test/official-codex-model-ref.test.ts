@@ -4,10 +4,8 @@ import {
   harnessModelRefSchema,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
-import {
-  formatOfficialDelegationModel,
-  resolveOfficialDelegationModel,
-} from "../src/official-delegation-model.js";
+import { formatDelegationModel } from "../src/delegation-model-argument.js";
+import { resolveOfficialDelegationModel } from "../src/official-delegation-model.js";
 import {
   normalizeOfficialCodexModelRef,
   officialCodexModelRef,
@@ -31,7 +29,7 @@ describe("official Codex Model refs", () => {
     async (id) => {
       const ref = officialCodexModelRef(id, "flex");
       expect(ref).toEqual({ id });
-      expect(formatOfficialDelegationModel(ref)).toBe(id);
+      expect(formatDelegationModel(ref)).toBe(id);
       await expect(resolveOfficialDelegationModel(id, async () => undefined)).resolves.toEqual(ref);
     },
   );
@@ -55,9 +53,9 @@ describe("official Codex Model refs", () => {
     });
     const resolve = (argument: string | typeof literal) =>
       resolveOfficialDelegationModel(argument, async () => catalog);
-    expect(formatOfficialDelegationModel(fast)).toBe("foo~fast");
-    expect(formatOfficialDelegationModel(ultra)).toBe("foo~ultrafast");
-    expect(formatOfficialDelegationModel(literal)).toBe("foo~fast");
+    expect(formatDelegationModel(fast)).toBe("foo~fast");
+    expect(formatDelegationModel(ultra)).toBe("foo~ultrafast");
+    expect(formatDelegationModel(literal)).toBe("foo~fast");
     await expect(resolve("foo~fast")).resolves.toEqual(fast);
     await expect(resolve("foo~ultrafast")).resolves.toEqual(ultra);
     await expect(resolve(literal)).resolves.toEqual(literal);

@@ -51,6 +51,7 @@ import {
   type ThreadExportResult,
 } from "./delegation-thread-export.js";
 import { resolveDelegationConfiguration } from "./delegation-configuration.js";
+import { resolveDelegationModelArgument } from "./delegation-model-argument.js";
 import { normalizeStoredModelRef } from "./stored-model-ref.js";
 import { originClientName } from "./external-client-origin.js";
 import { delegationTitle } from "./delegation-title.js";
@@ -93,7 +94,10 @@ function terminal(status: DelegationThreadSnapshot["status"]): boolean {
 }
 
 function taskDigest(
-  input: Pick<DelegationStartInput, "task" | "model" | "thinkingOptionId"> & { cwd: string },
+  input: Pick<DelegationStartInput, "task" | "thinkingOptionId"> & {
+    cwd: string;
+    model: HarnessModelRef | undefined;
+  },
 ): string {
   return createHash("sha256")
     .update(
@@ -279,7 +283,7 @@ export class HarnessDelegationCoordinator {
       const startInput = { ...input, parentThreadId, cwd: selectedCwd, title };
       // The official owner resolves preferences only after checking the original request digest.
       const result = await this.#startOfficial(startInput, (model, inspected) =>
-        this.#resolveConfiguration(startInput, model, inspected),
+        this.#resolveConfiguration(startInput, model, inspected && Promise.resolve(inspected)),
       );
       return {
         ...result,
@@ -298,19 +302,19 @@ export class HarnessDelegationCoordinator {
       );
     }
     const startInput = { ...input, parentThreadId, cwd: path.resolve(selectedCwd) };
-    const inspected = input.model
-      ? await this.inspect(startInput).catch(() => undefined)
+    const inspection = input.model !== undefined ? this.inspect(startInput) : undefined;
+    const inspected = await inspection?.catch(() => undefined);
+    const catalog =
+      inspected?.inspection.status === "ready" ? inspected.inspection.catalog : undefined;
+    const explicitModel =
+      input.model === undefined
+        ? undefined
+        : await resolveDelegationModelArgument(input.model, async () => catalog);
+    const modelForRequest = explicitModel
+      ? ((await normalizeStoredModelRef(explicitModel, catalog, targetHarnessId, adapter)) ??
+        explicitModel)
       : undefined;
-    if (input.model && inspected?.inspection.status === "ready") {
-      const model = await normalizeStoredModelRef(
-        input.model,
-        inspected.inspection.catalog,
-        targetHarnessId,
-        adapter,
-      );
-      if (model) startInput.model = model;
-    }
-    const digest = taskDigest(startInput);
+    const digest = taskDigest({ ...startInput, model: modelForRequest });
     const duplicate = input.requestId
       ? await this.#repository.findDelegationByRequest(input.requestId)
       : await this.#repository.findRecentDelegation({
@@ -331,7 +335,7 @@ export class HarnessDelegationCoordinator {
     }
     if (duplicate) return this.#existingResult(duplicate);
 
-    const selection = await this.#resolveConfiguration(startInput, startInput.model, inspected);
+    const selection = await this.#resolveConfiguration(startInput, modelForRequest, inspection);
     const { model, thinkingOptionId } = selection;
     const transportModelId =
       model || thinkingOptionId
@@ -770,14 +774,14 @@ export class HarnessDelegationCoordinator {
   #resolveConfiguration(
     { harnessId, cwd, thinkingOptionId }: DelegationStartInput & { cwd: string },
     model: HarnessModelRef | undefined,
-    inspected?: HarnessInspectResult,
+    inspection?: Promise<HarnessInspectResult>,
   ) {
     return resolveDelegationConfiguration({
       harnessId,
       adapter: this.#adapters.get(harnessId),
       explicit: { model, thinkingOptionId },
       readDefault: async () => this.#readDelegationDefault?.(harnessId),
-      inspect: async () => inspected ?? this.inspect({ harnessId, cwd }),
+      inspect: () => inspection ?? this.inspect({ harnessId, cwd }),
     });
   }
 

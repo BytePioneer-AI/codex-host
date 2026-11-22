@@ -178,7 +178,10 @@ describe("delegation CLI", () => {
   });
 
   it("inspects Harness configuration through the Runtime", async () => {
-    const fetchImpl = successfulFetch({ harnessId: "pi", inspection: { status: "ready" } });
+    const fetchImpl = successfulFetch({
+      harnessId: "pi",
+      inspection: { status: "ready", catalog: { models: [], thinkingOptions: [] } },
+    });
     const output = new PassThrough();
     await expect(
       runDelegationCli({
@@ -203,7 +206,10 @@ describe("delegation CLI", () => {
   });
 
   it("preserves the caller Thread while resolving a relative Harness inspection cwd", async () => {
-    const fetchImpl = successfulFetch({ harnessId: "pi", inspection: { status: "ready" } });
+    const fetchImpl = successfulFetch({
+      harnessId: "pi",
+      inspection: { status: "ready", catalog: { models: [], thinkingOptions: [] } },
+    });
     await expect(
       runDelegationCli({
         arguments: ["harness", "inspect", "pi", "--cwd", ".", "--refresh", "true"],
@@ -247,7 +253,7 @@ describe("delegation CLI", () => {
             "--cwd",
             "/workspace/project",
             "--model",
-            "model-ref",
+            "provider/vendor/model: v1~fast",
             "--thinking",
             "high",
             "--parent-thread",
@@ -270,9 +276,7 @@ describe("delegation CLI", () => {
         cwd: path.resolve("/workspace/project"),
         parentThreadId: "parent-1",
         requestId: "request-1",
-        ...(harnessId === "codex"
-          ? { officialModelArgument: "model-ref" }
-          : { model: { id: "model-ref" } }),
+        model: "provider/vendor/model: v1~fast",
         thinkingOptionId: "high",
       });
       expect(JSON.parse(outputText(output))).toEqual({ threadId: "child-1" });

@@ -560,41 +560,64 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
-  it("validates an advertised Fast ref with the same Thinking options and preserves the opaque selection", async () => {
-    const catalog = harnessModelCatalogSchema.parse({
-      models: [
-        {
-          ref: { id: "normal" },
-          fastModel: { id: "priority" },
-          label: "Model",
-          supportedThinkingOptionIds: ["high"],
-        },
-      ],
-      thinkingOptions: [{ id: "high", label: "High" }],
-    });
-    const model = catalog.models[0]?.fastModel;
-    const thinkingOptionId = catalog.thinkingOptions[0]?.id;
-    if (!model || !thinkingOptionId) throw new Error("Missing fixture selections");
-    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"), catalog);
-    const value = await fixture(adapter);
-    try {
-      const result = await value.coordinator.start({
-        harnessId: "pi",
-        task: "fixture task",
-        cwd: "/synthetic",
-        parentThreadId: "parent-thread",
-        model,
-        thinkingOptionId,
+  const modelId = "provider/team/vendor/model: v1";
+  it.each([
+    ["opaque Fast Ref", { id: "priority" }, { id: "priority" }],
+    ["advertised Fast", `${modelId}~fast`, { id: modelId, serviceTier: "priority" }],
+    ["advertised Ultrafast", `${modelId}~ultrafast`, { id: modelId, serviceTier: "ultrafast" }],
+    ["literal Fast", "provider/other~fast", { id: "provider/other~fast" }],
+    ["literal Ultrafast", "provider/other~ultrafast", { id: "provider/other~ultrafast" }],
+    ["structured literal ID", { id: `${modelId}~fast` }, { id: `${modelId}~fast` }],
+  ] as const)(
+    "delegates with the correct Ref and Thinking options for %s",
+    async (_, argument, ref) => {
+      const catalog = harnessModelCatalogSchema.parse({
+        models: [
+          { ref: { id: "normal" }, fastModel: { id: "priority" }, label: "Legacy catalog" },
+          {
+            ref: { id: modelId },
+            fastModel: { id: modelId, serviceTier: "priority" },
+            label: "Model",
+          },
+          { ref: { id: modelId, serviceTier: "ultrafast" }, label: "Ultrafast" },
+          { ref: { id: `${modelId}~fast` }, label: "Literal collision" },
+          { ref: { id: "provider/other" }, label: "Other" },
+          { ref: { id: "provider/other~fast" }, label: "Literal Fast" },
+          { ref: { id: "provider/other~ultrafast" }, label: "Literal Ultrafast" },
+        ].map((entry) => ({ ...entry, supportedThinkingOptionIds: ["high"] })),
+        thinkingOptions: [{ id: "high", label: "High" }],
       });
-      expect(result.configuration).toMatchObject({
-        requested: { model, thinkingOptionId },
-        effective: { effectiveModel: model, effectiveThinkingOptionId: thinkingOptionId },
-      });
-      expect(adapter.openInputs[0]).toMatchObject({ model, thinkingOptionId });
-    } finally {
-      await value.close();
-    }
-  });
+      const model = harnessModelRefSchema.parse(ref);
+      const thinkingOptionId = catalog.thinkingOptions[0]?.id;
+      if (!thinkingOptionId) throw new Error("Missing fixture Thinking option");
+      const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"), catalog);
+      const value = await fixture(adapter);
+      try {
+        const input: DelegationStartInput = {
+          harnessId: "pi",
+          task: "fixture task",
+          cwd: "/synthetic",
+          parentThreadId: "parent-thread",
+          requestId: "tier-selection",
+          thinkingOptionId,
+        };
+        const result = await value.coordinator.start({
+          ...input,
+          model: typeof argument === "string" ? argument : harnessModelRefSchema.parse(argument),
+        });
+        expect(result.configuration).toMatchObject({
+          requested: { model, thinkingOptionId },
+          effective: { effectiveModel: model, effectiveThinkingOptionId: thinkingOptionId },
+        });
+        expect(adapter.openInputs[0]).toMatchObject({ model, thinkingOptionId });
+        await expect(value.coordinator.start({ ...input, model })).resolves.toMatchObject({
+          threadId: result.threadId,
+        });
+      } finally {
+        await value.close();
+      }
+    },
+  );
 
   it("applies saved delegation defaults without changing explicit or implicit retry identity", async () => {
     const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));

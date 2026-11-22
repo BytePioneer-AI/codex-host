@@ -4,7 +4,12 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
 import { decodeExternalTransportSelection } from "@codexhost/protocol-core";
-import { encodeHarnessPluginRoute, harnessPluginRouteSchema } from "@codexhost/shared-contracts";
+import {
+  encodeHarnessPluginRoute,
+  harnessPluginRouteSchema,
+  hostTurnIdSchema,
+  nativeSessionRefSchema,
+} from "@codexhost/shared-contracts";
 import {
   AntigravityAdapter,
   type AntigravityAcpTransportLike,
@@ -36,6 +41,142 @@ function seedHistory(file: string, label: string): void {
     db.close();
   }
 }
+
+it.each([
+  { boundary: 2, occupied: 2, next: 3 },
+  { boundary: 377, occupied: 594, next: 594 },
+])(
+  "resumes sparse Antigravity history ($occupied → $boundary) and settles new Turns",
+  async ({ boundary, occupied, next }) => {
+    const home = mkdtempSync(path.join(tmpdir(), "codexhost-agy-turn-identity-"));
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const conversations = path.join(home, ".gemini", "antigravity-cli", "conversations");
+    mkdirSync(conversations, { recursive: true });
+    const db = new DatabaseSync(path.join(conversations, `${sessionId}.db`));
+    db.exec(`
+    PRAGMA user_version = 1;
+    CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB);
+  `);
+    const insert = db.prepare("INSERT INTO steps VALUES (?, ?, 3, ?)");
+    const visible = [...new Set([0, boundary, next - 1])];
+    for (let index = 0; index < next; index++) {
+      if (visible.includes(index)) {
+        insert.run(index * 2, 14, protoField(19, protoField(2, `history ${index}`)));
+        insert.run(index * 2 + 1, 15, protoField(20, protoField(1, `reply ${index}`)));
+      } else insert.run(index * 2, 14, protoField(19, ""));
+    }
+    let liveIndex = next;
+    const environment = { HOME: home, USERPROFILE: home };
+    const adapter = new AntigravityAdapter({
+      environment,
+      createTransport: (): AntigravityAcpTransportLike => ({
+        sessionId,
+        isClosed: false,
+        skipPermissions: false,
+        initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+        openSession: async () => ({ opened: { sessionId } }),
+        setSessionEventHandler: () => {},
+        setMode: async () => {},
+        setConfigOption: async () => [],
+        prompt: async ([part], handler) => {
+          if (part?.type !== "text") throw new Error("Expected a text prompt");
+          const index = liveIndex++;
+          const reply = `reply to ${part.text}`;
+          insert.run(index * 2, 14, protoField(19, protoField(2, part.text)));
+          insert.run(index * 2 + 1, 15, protoField(20, protoField(1, reply)));
+          handler.onEvent({ type: "agent.text", text: reply });
+          return { stopReason: "end_turn" };
+        },
+        cancel: async () => {},
+        closeSession: async () => {},
+        close: async () => {},
+      }),
+    });
+    const fixture = createFixture({
+      environment,
+      additionalAdapters: new Map([["antigravity", adapter]]),
+    });
+    try {
+      await fixture.ready;
+      const { hostThreadId: threadId } = await fixture.mappingStore.createProvisional(
+        createExternalThreadRecordInput({
+          harnessId: adapter.harnessId,
+          cwd: home,
+          transportModelId: encodeHarnessPluginRoute(
+            harnessPluginRouteSchema.parse({ harnessId: adapter.harnessId }),
+          ),
+          ephemeral: false,
+          historyMode: "paginated",
+        }),
+      );
+      const nativeSessionRef = nativeSessionRefSchema.parse({
+        harnessId: adapter.harnessId,
+        nativeSessionId: sessionId,
+        formatVersion: 1,
+      });
+      const mapping = (index: number, key = index) => ({
+        hostTurnId: hostTurnIdSchema.parse(`saved-${index}`),
+        nativeTurnRef: { ...nativeSessionRef, nativeTurnKey: `turn-${key}` },
+        nativeCheckpointRef: { ...nativeSessionRef, checkpointId: `turn-${index}` },
+      });
+      await fixture.mappingStore.commitReady({
+        hostThreadId: threadId,
+        nativeSessionRef,
+        turnMappings: visible.map((index) => mapping(index, index === boundary ? occupied : index)),
+      });
+      expect(await fixture.host.handleClientRequest("thread/resume", { threadId })).toHaveProperty(
+        "result",
+      );
+
+      for (let index = next; index < next + 3; index++) {
+        const offset = fixture.collector.messages.length;
+        expect(
+          await fixture.host.handleClientRequest("turn/start", {
+            threadId,
+            input: [{ type: "text", text: `live ${index}` }],
+          }),
+        ).toHaveProperty("result");
+        await vi.waitFor(() =>
+          expect(fixture.collector.messages.slice(offset)).toEqual(
+            expect.arrayContaining([expect.objectContaining({ method: "turn/completed" })]),
+          ),
+        );
+        expect(
+          fixture.collector.messages
+            .slice(offset)
+            .find(({ method }) => method === "turn/completed"),
+        ).toMatchObject({ params: { turn: { status: "completed" } } });
+      }
+
+      expect(await fixture.host.handleClientRequest("thread/resume", { threadId })).toHaveProperty(
+        "result",
+      );
+      const saved = await fixture.mappingStore.getThread(threadId);
+      expect(saved?.failedTurns ?? []).toEqual([]);
+      expect(saved?.turnMappings.slice(0, visible.length)).toEqual(
+        visible.map((index) => mapping(index)),
+      );
+      expect(
+        saved?.turnMappings
+          .slice(visible.length)
+          .map(({ nativeTurnRef, nativeCheckpointRef }) => [
+            nativeTurnRef.nativeTurnKey,
+            nativeCheckpointRef?.checkpointId,
+          ]),
+      ).toEqual(
+        Array.from({ length: 3 }, (_, offset) => [
+          `turn-${next + offset}`,
+          `turn-${next + offset}`,
+        ]),
+      );
+      expect(fixture.diagnosticOutput.read()?.toString() ?? "").not.toContain("mapping conflicts");
+    } finally {
+      await stopFixture(fixture);
+      db.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  },
+);
 
 it("returns and saves each confirmed configuration for queued cold agy selections", async () => {
   const home = mkdtempSync(path.join(tmpdir(), "codexhost-agy-cold-config-"));

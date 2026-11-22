@@ -118,11 +118,18 @@ export class HostConnectionService extends Service implements HostConnectionHand
 
   /** Authenticate an index request through the process-token exchange or cookie. */
   authorizeIndex(request: ConnectionIndexRequest, response: ConnectionIndexResponse): boolean {
+    // Without an embedded browser authentication owner the embedding Web has
+    // already authenticated the request before forwarding it, so every index
+    // request is admitted as-is.
+    if (this.browserAuth === undefined) return true;
     return this.browserAuth.authorizeIndex(request, response);
   }
 
   /** Add this process's launch token to the clean application URL. */
   authenticatedUrl(baseUrl: string): string {
+    // Without an embedded browser authentication owner there is no launch
+    // token to add; the URL is already authenticated by the embedding Web.
+    if (this.browserAuth === undefined) return baseUrl;
     return this.browserAuth.authenticatedUrl(baseUrl);
   }
 

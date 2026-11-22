@@ -320,3 +320,14 @@ jobs:
           path: build/release/*/windows-x64/codexhost-*-windows-x64.exe
           if-no-files-found: error
           retention-days: 7
+
+      - name: Upload fixed native executables
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codexhost-fixed-native-windows-x64
+          path: |
+            build/release/*/windows-x64/payload/bin/codexhost.exe
+            build/release/*/windows-x64/payload/libexec/codexhost-shell.exe
+            build/release/*/windows-x64/payload/libexec/codexhost-updater.exe
+          if-no-files-found: error
+          retention-days: 7

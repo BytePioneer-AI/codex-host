@@ -8,7 +8,12 @@ import { test } from "node:test";
 import { ChSessions } from "../src/ch-sessions.ts";
 import { DataDir } from "../src/store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
-import { downloadWorkspaceFile, openWorkspaceFile } from "../src/workspace-file-actions.ts";
+import {
+  downloadWorkspaceFile,
+  issueWorkspaceDownloadTicket,
+  openWorkspaceFile,
+  WorkspaceDownloadTickets,
+} from "../src/workspace-file-actions.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { FakeChHost } from "./support/ch-host.ts";
 
@@ -65,6 +70,110 @@ test("downloads original binary, HTML and empty files with attachment headers; r
       { sessionId: "known", path: "missing" },
     ])
       assert.equal((await fetch(`${base}/?${new URLSearchParams(query)}`)).status, 404);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("download tickets stay scoped to one file, expire, and drop when their owner is revoked", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ch-file-tickets-"));
+  let now = 1_000;
+  const tickets = new WorkspaceDownloadTickets(() => now);
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    if (request.method === "POST" && url.pathname === "/ticket") {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        void issueWorkspaceDownloadTicket(
+          response,
+          Buffer.concat(chunks).toString("utf8"),
+          (id) => (id === "known" ? root : undefined),
+          tickets,
+          "token-a",
+        );
+      });
+      return;
+    }
+    const ticket = url.searchParams.get("ticket");
+    const grant = ticket ? tickets.resolve(ticket) : undefined;
+    if (!grant) {
+      response.writeHead(401).end("expired");
+      return;
+    }
+    void downloadWorkspaceFile(
+      request,
+      response,
+      url,
+      (id) => (id === "known" ? root : undefined),
+      grant,
+    );
+  });
+  try {
+    await writeFile(join(root, "dialogue.mp3"), Buffer.from("audio-bytes"));
+    await writeFile(join(root, "secret.txt"), Buffer.from("other"));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const base = `http://127.0.0.1:${address.port}`;
+
+    const issued = await fetch(`${base}/ticket`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "known", path: "dialogue.mp3" }),
+    });
+    assert.equal(issued.status, 200);
+    const { ticket, name, size } = (await issued.json()) as {
+      ticket: string;
+      name: string;
+      size: number;
+    };
+    assert.equal(name, "dialogue.mp3");
+    assert.equal(size, 11);
+
+    // Query path overrides are ignored: the ticket only serves its bound file.
+    const redeemed = await fetch(
+      `${base}/download?ticket=${encodeURIComponent(ticket)}&sessionId=known&path=secret.txt`,
+    );
+    assert.equal(redeemed.status, 200);
+    assert.equal(await redeemed.text(), "audio-bytes");
+
+    // Revoking the issuing credential invalidates its tickets immediately.
+    tickets.revokeOwner("token-a");
+    assert.equal(
+      (await fetch(`${base}/download?ticket=${encodeURIComponent(ticket)}`)).status,
+      401,
+    );
+
+    // Tickets expire after their TTL.
+    const second = await fetch(`${base}/ticket`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "known", path: "dialogue.mp3" }),
+    });
+    const { ticket: expiring } = (await second.json()) as { ticket: string };
+    now += 60_001;
+    assert.equal(
+      (await fetch(`${base}/download?ticket=${encodeURIComponent(expiring)}`)).status,
+      401,
+    );
+
+    // Missing files and directories cannot mint tickets.
+    for (const bad of [
+      { sessionId: "known", path: "missing.mp3" },
+      { sessionId: "known", path: "." },
+      { sessionId: "unknown", path: "dialogue.mp3" },
+    ]) {
+      const reply = await fetch(`${base}/ticket`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(bad),
+      });
+      assert.equal(reply.status, 404);
+    }
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

@@ -8,6 +8,7 @@ import { MappingStore } from "@codexhost/mapping-store";
 import type { JsonObject } from "@codexhost/protocol-core";
 import {
   encodeOfficialCodexModelRef,
+  harnessModelRefSchema,
   harnessPreferencePatchSchema,
   harnessThinkingOptionIdSchema,
 } from "@codexhost/shared-contracts";
@@ -189,13 +190,13 @@ it("supports native and saved defaults for headless Codex delegations and export
     const sameModel = await api.start({
       ...input,
       requestId: "headless-same-model",
-      model: { id: "delegated" },
+      model: harnessModelRefSchema.parse({ id: "delegated" }),
     });
     expect(turnStarts.at(-1)).toMatchObject({ threadId: sameModel.threadId, effort: "high" });
     const differentModel = await api.start({
       ...input,
       requestId: "headless-different-model",
-      model: { id: "native-default" },
+      model: harnessModelRefSchema.parse({ id: "native-default" }),
     });
     expect(turnStarts.at(-1)).toMatchObject({
       threadId: differentModel.threadId,
@@ -212,9 +213,9 @@ it("supports native and saved defaults for headless Codex delegations and export
     expect(threadStarts.at(-1)).not.toHaveProperty("model");
     expect(turnStarts.at(-1)).toMatchObject({ threadId: fallback.threadId });
     expect(turnStarts.at(-1)).not.toHaveProperty("effort");
-    await expect(api.start({ ...input, model: { id: "retired" } })).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-    });
+    await expect(
+      api.start({ ...input, model: harnessModelRefSchema.parse({ id: "retired" }) }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     await expect(
       api.start({ ...input, thinkingOptionId: harnessThinkingOptionIdSchema.parse("high") }),
     ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });

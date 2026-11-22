@@ -38,6 +38,11 @@ export type {
 } from "./contract-audit.js";
 export { inspectRendererDom, validateRendererDomInspection } from "./renderer-dom.js";
 export {
+  desktopExtensionModuleUrl,
+  desktopExtensionPageModuleUrl,
+  desktopExtensionWidgetModuleUrl,
+} from "./renderer-extension-page-url.js";
+export {
   createRendererCdpControlSession,
   installRendererCdpControlSession,
   selectPrimaryRendererTarget,

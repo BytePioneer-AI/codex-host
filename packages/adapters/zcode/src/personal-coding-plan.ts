@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { plaintextCredential, readCredentials, ZcodeCredentialError } from "./credentials.js";
-import { readLoginChannel, readOAuthUserId } from "./oauth-account.js";
+import { readLoginChannel, readOAuthUserId, type CredentialReader } from "./oauth-account.js";
 import { ZcodeError } from "./errors.js";
 import type { ZcodeInstallation } from "./installation.js";
 import { ProjectToken, readProjectCredential, type ProjectCredential } from "./project-token.js";
@@ -160,14 +160,20 @@ export class PersonalCodingPlanAccount {
   #authorized = new Map<string, { family: Family; account: string }>();
   #projectToken = new ProjectToken();
   issue: string | undefined;
+  credentialIssue: string | undefined;
+  credentialAccessRequired = false;
   constructor(
     private readonly installation: ZcodeInstallation,
     private readonly environment: NodeJS.ProcessEnv,
   ) {}
 
-  async #context(providerId: string, family: Family): Promise<AccountContext | undefined> {
+  async #context(
+    providerId: string,
+    family: Family,
+    existingCredential?: CredentialReader,
+  ): Promise<AccountContext | undefined> {
     const [credential, current] = await Promise.all([
-      readCredentials(this.installation, this.environment),
+      existingCredential ?? readCredentials(this.installation, this.environment),
       readSelection(this.environment, family),
     ]);
     const channel = await readLoginChannel(credential);
@@ -200,13 +206,19 @@ export class PersonalCodingPlanAccount {
     return { ...base, apiKey: (await credential(key)).trim() };
   }
 
-  async inspect(providerId: string, accountType: string): Promise<AccountState> {
+  async inspect(
+    providerId: string,
+    accountType: string,
+    existingCredential?: CredentialReader,
+  ): Promise<AccountState> {
     const family = familySchema.parse(accountType);
     this.#authorized.delete(providerId);
     this.issue = undefined;
+    this.credentialIssue = undefined;
+    this.credentialAccessRequired = false;
     let current = false;
     try {
-      const context = await this.#context(providerId, family);
+      const context = await this.#context(providerId, family, existingCredential);
       if (!context)
         return {
           availability: "unavailable",
@@ -273,11 +285,15 @@ export class PersonalCodingPlanAccount {
     } catch (error) {
       // Credential/profile reads can fail before #context returns its selection snapshot.
       current = await readSelection(this.environment, family).catch(() => false);
-      if (current)
+      if (current) {
+        if (error instanceof ZcodeCredentialError) {
+          this.credentialIssue = `${error.message} Personal Coding Plan subscription status is unknown.`;
+          this.credentialAccessRequired = error.code === "credentialAccessRequired";
+        }
         this.issue =
-          error instanceof ZcodeCredentialError
-            ? `${error.message} Personal Coding Plan subscription status is unknown.`
-            : "ZCode Personal Coding Plan credentials could not be read or verified. Open the personal plan in ZCode Desktop, then re-detect ZCode; subscription status is unknown.";
+          this.credentialIssue ??
+          "ZCode Personal Coding Plan credentials could not be read or verified. Open the personal plan in ZCode Desktop, then re-detect ZCode; subscription status is unknown.";
+      }
       // An unreadable personal key/profile/settings must not break Start or personal Providers.
       return { availability: "unknown", entitled: false, current };
     }

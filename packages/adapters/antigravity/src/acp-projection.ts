@@ -38,7 +38,7 @@ import {
 import { createTwoFilesPatch } from "diff";
 
 import type { AntigravityAcpConfigOption, AntigravityAcpEvent } from "./acp-types.js";
-import type { NativeReplayEvent } from "./native-replay.js";
+import type { NativeCompactionEvent, NativeReplayEvent } from "./native-replay.js";
 import { ANTIGRAVITY_COMMAND_CATALOG } from "./slash-commands.js";
 import {
   compactToolName,
@@ -586,6 +586,22 @@ export class AntigravityToolTracker {
   }
 }
 
+export function compactionItemId(stepIndex: number): HostItemId {
+  return hostItemIdSchema.parse(`checkpoint-${stepIndex}`);
+}
+
+export function compactionOutcome(event: NativeCompactionEvent): HostItemOutcome {
+  if (event.status === "succeeded") return succeeded;
+  return {
+    status: "failed",
+    error: {
+      code: "nativeFailure",
+      message: event.error ?? "Antigravity context compaction failed",
+      retryable: false,
+    },
+  };
+}
+
 export function projectReplayedEventsToTurns(params: {
   nativeSessionId: string;
   cwd: string;
@@ -745,6 +761,14 @@ export function projectReplayedEventsToTurns(params: {
       userRun = false;
       textItem = undefined;
       tracker.handleToolEvent(event);
+    } else if (event.type === "history.compaction") {
+      const { turn } = active ?? begin();
+      userRun = false;
+      textItem = undefined;
+      turn.items.push({
+        item: { type: "contextCompaction", itemId: compactionItemId(event.stepIndex) },
+        outcome: compactionOutcome(event),
+      });
     }
   }
   active?.tracker.finishPending({

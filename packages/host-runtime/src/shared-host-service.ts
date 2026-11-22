@@ -183,7 +183,7 @@ export async function runSharedHostService(
           stockCodex: values["stock-codex"] ?? "",
           official,
           owner,
-          desktopExtensionBackends: host.desktopExtensionBackends,
+          hostExtensions: host.hostExtensions,
           store,
           prices,
           ...(updateCoordinator ? { updateCoordinator } : {}),
@@ -230,7 +230,8 @@ export async function runSharedHostService(
             target: {
               clientEvents: host.clientEvents,
               handleConsoleRequest: (method, params) =>
-                (method.startsWith("codexhost/update/")
+                (method.startsWith("codexhost/update/") ||
+                method.startsWith("codexhost/extensions/")
                   ? host
                   : ([...desktops].at(-1) ?? host)
                 ).handleConsoleRequest(method, params),

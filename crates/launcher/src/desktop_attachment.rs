@@ -156,7 +156,7 @@ pub(super) fn host_runtime_node_candidates(
     nodes
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 fn wait_for_host_chain_with_nodes(
     desktop: &ProcessSnapshot,
     options: &ResolvedLaunchOptions,

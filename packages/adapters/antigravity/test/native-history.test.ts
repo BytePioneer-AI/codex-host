@@ -9,6 +9,7 @@ import { readDerivationBoundaries } from "../src/fork.js";
 import { nativeConversationDbPath } from "../src/native-turn-boundaries.js";
 import {
   answerStep,
+  checkpointStep,
   createNativeHistoryDatabase,
   runField,
   systemStep,
@@ -156,6 +157,80 @@ describe("native session history", () => {
       expect(snapshot.value.turns[1]?.items).toMatchObject([
         { item: { type: "agentMessage", text: "Second reply" } },
       ]);
+      expect(await opened.value.readSnapshot()).toEqual(snapshot);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("projects terminal compaction checkpoints across foreground, /compact, and settled wake turns", async () => {
+    const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
+    assert(opened.ok);
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    try {
+      // Passive compaction at turn start + mid-turn + cleared/in-flight skipped + failed error
+      userStep(db, 0, "Work on repo", "r1");
+      checkpointStep(db, 1, { status: 3, run: "r1", summary: "Internal summary not for chat" });
+      answerStep(db, 2, "First part", "r1");
+      checkpointStep(db, 3, { status: 5, run: "r1" });
+      checkpointStep(db, 4, { status: 2, run: "r1" });
+      checkpointStep(db, 5, { status: 7, run: "r1", error: "Compaction limit exceeded" });
+      answerStep(db, 6, "Second part", "r1");
+      // Standalone /compact turn must not merge with the next user turn
+      userStep(db, 7, "/compact", "r2");
+      checkpointStep(db, 8, { status: 3, run: "r2", summary: "Manual compact summary" });
+      userStep(db, 9, "Follow up", "r3");
+      answerStep(db, 10, "Done", "r3");
+      // Settled autonomous wake with compaction before its planner reply
+      systemStep(db, 11, "wake-ok");
+      checkpointStep(db, 12, { status: 3, run: "wake-ok", summary: "Wake summary" });
+      answerStep(db, 13, "Wake reply", "wake-ok");
+      // Unsettled autonomous wake with checkpoint must be dropped
+      systemStep(db, 14, "wake-dropped");
+      checkpointStep(db, 15, { status: 3, run: "wake-dropped", summary: "Orphan summary" });
+
+      const snapshot = await opened.value.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns).toHaveLength(4);
+      expect(snapshot.value.turns[0]?.items).toMatchObject([
+        {
+          item: { type: "contextCompaction", itemId: "checkpoint-1" },
+          outcome: { status: "succeeded" },
+        },
+        { item: { type: "agentMessage", text: "First part" } },
+        {
+          item: { type: "contextCompaction", itemId: "checkpoint-5" },
+          outcome: {
+            status: "failed",
+            error: {
+              code: "nativeFailure",
+              message: "Compaction limit exceeded",
+              retryable: false,
+            },
+          },
+        },
+        { item: { type: "agentMessage", text: "Second part" } },
+      ]);
+      expect(snapshot.value.turns[1]?.input).toEqual([{ type: "text", text: "/compact" }]);
+      expect(snapshot.value.turns[1]?.items).toMatchObject([
+        {
+          item: { type: "contextCompaction", itemId: "checkpoint-8" },
+          outcome: { status: "succeeded" },
+        },
+      ]);
+      expect(snapshot.value.turns[2]?.input).toEqual([{ type: "text", text: "Follow up" }]);
+      expect(snapshot.value.turns[2]?.items).toMatchObject([
+        { item: { type: "agentMessage", text: "Done" } },
+      ]);
+      expect(snapshot.value.turns[3]?.nativeTurnRef.nativeTurnKey).toBe("wake-11");
+      expect(snapshot.value.turns[3]?.items).toMatchObject([
+        {
+          item: { type: "contextCompaction", itemId: "checkpoint-12" },
+          outcome: { status: "succeeded" },
+        },
+        { item: { type: "agentMessage", text: "Wake reply" } },
+      ]);
+      // Stable across repeated reads
       expect(await opened.value.readSnapshot()).toEqual(snapshot);
     } finally {
       db.close();

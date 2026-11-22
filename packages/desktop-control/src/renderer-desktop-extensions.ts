@@ -1,21 +1,19 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Script } from "node:vm";
 import {
   DESKTOP_EXTENSION_SNAPSHOT_MAX_BYTES,
   desktopExtensionStatusSchema,
-  desktopExtensionsDiagnosticSchema,
-  resolveDesktopExtensionSlots,
   type DesktopExtensionStatus,
+  type HostExtensionListItem,
 } from "@codexhost/shared-contracts";
 import {
-  desktopExtensionsRoot,
   desktopExtensionsStatusPath,
-  isDesktopExtensionTransactionEntry,
-  readDesktopExtensionSnapshot,
-  type DesktopExtensionInstallation,
+  discoverHostExtensions,
+  hostExtensionsRoot,
+  readHostExtensionAsset,
 } from "@codexhost/harness-plugin-files";
 
 export interface ExtensionRenderer {
@@ -23,7 +21,9 @@ export interface ExtensionRenderer {
   evaluate<T>(expression: string, timeoutMs?: number): Promise<T>;
 }
 
-type Installed = Extract<DesktopExtensionInstallation, { state: "valid" }>;
+type Installed = Extract<HostExtensionListItem, { state: "valid" }>;
+const renderHash = ({ activationId, digest }: Installed) =>
+  createHash("sha256").update(`${activationId}:${digest}`).digest("hex");
 interface Application {
   id: string;
   hash: string;
@@ -50,13 +50,24 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function application(item: Installed): Application | undefined {
-  const { id, hash, manifest, script, style } = item;
-  if (script === undefined) return undefined;
-  const reference = JSON.stringify({ id, hash, slots: manifest.slots });
-  const factory = `(function (define) { "use strict";\n${script}\n})`;
+async function application(dataDir: string, item: Installed): Promise<Application> {
+  const { id, activationId, digest, manifest } = item;
+  const hash = renderHash(item);
+  const slots = manifest.slots ?? [];
+  const reference = JSON.stringify({ id, hash, slots, activationId, digest });
   let expression: string;
   try {
+    const desktop = manifest.desktop!;
+    const read = async (path: string) =>
+      Buffer.from(
+        (await readHostExtensionAsset({ dataDir, id, activationId, digest, path })).base64,
+        "base64",
+      ).toString("utf8");
+    const [script, style] = await Promise.all([
+      read(desktop.script),
+      desktop.style ? read(desktop.style) : undefined,
+    ]);
+    const factory = `(function (define) { "use strict";\n${script}\n})`;
     // Parse individually without running code, so one syntax error cannot
     // prevent parsing unrelated extensions in the full new-document script.
     new Script(`({defineScript: ${factory}})`, {
@@ -67,7 +78,7 @@ function application(item: Installed): Application | undefined {
     expression = JSON.stringify({
       id,
       hash,
-      slots: manifest.slots,
+      slots,
       error: cause instanceof Error ? cause.message : String(cause),
     });
   }
@@ -95,15 +106,11 @@ export class RendererDesktopExtensions {
   #pendingScan: Promise<void> | undefined;
   #pendingPoll = false;
   #lastEnsure = 0;
-  #handled: string | undefined;
-  #attempted: string | undefined;
-  #loadedToken = false;
-
   constructor(
-    private readonly dataDirectory: string,
+    readonly dataDirectory: string,
     private readonly diagnose: (error: unknown) => void = () => undefined,
   ) {
-    this.#root = desktopExtensionsRoot(dataDirectory);
+    this.#root = hostExtensionsRoot(dataDirectory);
     this.#statusPath = desktopExtensionsStatusPath(dataDirectory);
     this.#scan = setInterval(() => {
       void this.refresh();
@@ -178,9 +185,8 @@ export class RendererDesktopExtensions {
   #ensureWatch(): void {
     if (this.#watchingRoot || this.#closed) return;
     const onChange = (event: string, filename: string | null) => {
-      // A read snapshot takes the same lock as installers; it isn't a package change.
-      if (filename && isDesktopExtensionTransactionEntry(filename.split(path.sep, 1)[0] ?? ""))
-        return;
+      // Ignore staging and lock activity; only active generations and selection matter.
+      if (filename?.startsWith(".")) return;
       if (event === "rename" && this.#watchingRoot) {
         this.#watch?.close();
         this.#watch = undefined;
@@ -250,57 +256,35 @@ export class RendererDesktopExtensions {
   async #reconcile(target: Target): Promise<void> {
     if (this.#target !== target || this.#closed) return;
     this.#ensureWatch();
-    if (!this.#loadedToken) {
-      this.#loadedToken = true;
-      try {
-        this.#handled = desktopExtensionsDiagnosticSchema.parse(
-          JSON.parse(await readFile(this.#statusPath, "utf8")),
-        ).handledReloadToken;
-      } catch {
-        /* No completed recovery to remember. */
-      }
-    }
-    const {
-      selection: { configuration },
-      discovery,
-    } = await readDesktopExtensionSnapshot(this.#root);
+    const { configuration, extensions } = await discoverHostExtensions(this.dataDirectory);
     if (this.#target !== target || this.#closed) return;
-    target.enabled = configuration.enabled.length > 0;
-    const token = configuration.reloadToken;
-    if (token && token !== this.#handled) {
-      if (target.enabled) {
-        // A newer enable supersedes recovery, even if applying that selection fails.
-        await this.#recordReloadToken(target, token);
-      } else {
-        await this.#replaceSnapshot(target, []);
-        if (token !== this.#attempted) {
-          await target.renderer.evaluate(reconciliation([]), 1_000).catch(() => undefined);
-          if (this.#target !== target || this.#closed) return;
-          await target.renderer.command("Page.reload");
-          this.#attempted = token;
-        }
-        target.extensions = {};
-        await this.#recordReloadToken(target, token);
-        this.hint();
-        return;
-      }
-    }
+    target.enabled = false;
     const desired: Application[] = [];
     const statuses = new Map<string, DesktopExtensionStatus>();
     const valid = new Map<string, Installed>();
-    for (const item of discovery.extensions) {
+    for (const item of extensions) {
       if (item.state === "valid") valid.set(item.id, item);
       else statuses.set(item.id, { state: item.state, error: item.error });
     }
-    const { active, conflicts } = resolveDesktopExtensionSlots(
-      configuration.enabled,
-      [...valid.values()].map(({ manifest }) => manifest),
-    );
     let remaining = DESKTOP_EXTENSION_SNAPSHOT_MAX_BYTES - 512;
-    for (const id of active) {
+    for (const id of configuration.enabled) {
       const installed = valid.get(id);
-      const item = installed && application(installed);
-      if (!item) continue;
+      if (!installed) {
+        if (!statuses.has(id))
+          statuses.set(id, { state: "invalid", error: "Extension directory not found" });
+        continue;
+      }
+      if (!installed.manifest.desktop) continue;
+      if (installed.desktopConflictWith) {
+        statuses.set(id, {
+          state: "conflict",
+          hash: renderHash(installed),
+          conflictWith: installed.desktopConflictWith,
+        });
+        continue;
+      }
+      target.enabled = true;
+      const item = await application(this.dataDirectory, installed);
       const bytes = Buffer.byteLength(item.expression) + 2;
       if (bytes > remaining)
         statuses.set(id, {
@@ -313,16 +297,6 @@ export class RendererDesktopExtensions {
         desired.push(item);
       }
     }
-    for (const [id, conflictWith] of conflicts) {
-      const item = valid.get(id);
-      if (item) statuses.set(id, { state: "conflict", conflictWith, hash: item.hash });
-    }
-    for (const id of configuration.enabled)
-      if (!valid.has(id) && !statuses.has(id))
-        statuses.set(id, {
-          state: "invalid",
-          error: discovery.diagnostic ?? "Extension directory not found",
-        });
     // Check current state even on the first reconciliation after re-attachment.
     const before = await this.#readRenderer(target).catch(() => null);
     if (this.#target !== target || this.#closed) return;
@@ -356,18 +330,6 @@ export class RendererDesktopExtensions {
         statuses.set(id, status);
     target.extensions = Object.fromEntries(statuses);
     await this.#publish(target);
-  }
-
-  async #recordReloadToken(target: Target, token: string): Promise<void> {
-    if (this.#target !== target || this.#closed) return;
-    const previous = this.#handled;
-    this.#handled = token;
-    try {
-      await this.#publish(target);
-    } catch (error) {
-      this.#handled = previous;
-      throw error;
-    }
   }
 
   #pollStatus(): void {
@@ -417,7 +379,6 @@ export class RendererDesktopExtensions {
       controllerPid: process.pid,
       targetId: target.id,
       updatedAt: new Date().toISOString(),
-      ...(this.#handled ? { handledReloadToken: this.#handled } : {}),
       extensions: target.extensions,
     };
     await mkdir(path.dirname(this.#statusPath), { recursive: true, mode: 0o700 });

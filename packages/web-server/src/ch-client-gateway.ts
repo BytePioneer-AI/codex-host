@@ -4,7 +4,7 @@ import {
   clientChannelResponseSchema,
   clientSnapshotRequestSchema,
   CLIENT_REQUEST_LIMIT_BYTES,
-  isDesktopExtensionManagementMethod,
+  isHostExtensionManagementMethod,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient } from "./ch-host-client.ts";
 import { RpcError } from "./transport.ts";
@@ -12,10 +12,10 @@ import { RpcError } from "./transport.ts";
 /** Generic App protocol behind the Web server's auth + same-origin gate. Never
  * exposes the private loopback descriptor/token or creates an execution owner. */
 export async function serveChClientGateway(
-  host: ChHostClient | undefined,
+  host: Pick<ChHostClient, "realtime"> | undefined,
   request: IncomingMessage,
   response: ServerResponse,
-  authenticated = false,
+  { authenticated = false, safeMode = false } = {},
 ): Promise<void> {
   const reply = (status: number, value: unknown) => {
     response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
@@ -100,11 +100,13 @@ export async function serveChClientGateway(
       typeof input.params === "object" &&
       !Array.isArray(input.params)
     ) {
-      if (isDesktopExtensionManagementMethod(input.method) && !authenticated) {
+      if ((!authenticated || safeMode) && isHostExtensionManagementMethod(input.method)) {
         reply(403, {
           error: {
             code: -32000,
-            message: "Authentication must be enabled to manage Desktop extensions.",
+            message: safeMode
+              ? "Extension management is unavailable in safe mode."
+              : "Authentication must be enabled to manage extensions.",
           },
         });
         return;

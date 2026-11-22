@@ -56,7 +56,7 @@ it.each(exitModes)("reaps the backend process tree on %s", async (mode) => {
   try {
     await expect.poll(async () => (await heartbeat()).length).toBeGreaterThan(1);
     if (mode === "SIGINT" || mode === "SIGTERM") runner.kill(mode);
-    else runner.send(null);
+    else runner.send(mode);
     await expect(closed).resolves.toBe(0);
     // A write already in progress may finish just after the kill; sample once it has settled.
     const wait = () => new Promise((resolve) => setTimeout(resolve, 150));
@@ -67,7 +67,7 @@ it.each(exitModes)("reaps the backend process tree on %s", async (mode) => {
     if (mode !== "exit")
       expect(await readFile(path.join(directory, "disposed"), "utf8")).toBe('{"disposed":true}');
   } finally {
-    if (runner.connected) runner.send(null);
+    if (runner.connected) runner.send(mode);
     await closed;
     await rm(directory, { recursive: true, force: true });
   }

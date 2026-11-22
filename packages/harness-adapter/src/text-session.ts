@@ -46,6 +46,7 @@ export type HarnessErrorCode =
   | "unavailable"
   | "authenticationRequired"
   | "configurationRequired"
+  | "credentialAccessRequired"
   | "sessionNotFound"
   | "sessionBusy"
   | "checkpointNotFound"
@@ -79,6 +80,8 @@ export interface InspectHarnessInput {
    * not stand in for a full inspection.
    */
   purpose?: "availability";
+  /** Interactive credential access: `allow` permits a first prompt, `retry` also permits retrying a failed read. */
+  credentialAccess?: "allow" | "retry";
 }
 
 export type HarnessExecutionPolicy = "default" | "unattended-full-access";
@@ -88,6 +91,8 @@ export interface CreateSessionInput {
   cwd: string;
   environment?: Record<string, string | undefined>;
   executionPolicy?: HarnessExecutionPolicy;
+  /** Speculative draft creation, without an explicit request to run this Harness. */
+  prewarm?: true;
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
   permissionModeId?: HarnessPermissionModeId;

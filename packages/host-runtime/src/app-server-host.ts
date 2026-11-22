@@ -49,6 +49,7 @@ import {
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import {
   isConsoleHostMethod,
+  isHostExtensionManagementMethod,
   consoleOpenParamsSchema,
   consoleOpenResultSchema,
   webOpenParamsSchema,
@@ -290,7 +291,8 @@ import {
   type ExternalThreadStatus,
   type ProjectedTurn,
 } from "./external-turn-projection.js";
-import { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
+import { HostExtensionManager } from "./host-extension-manager.js";
+import { handleHostExtensionRequest } from "./host-extension-requests.js";
 import { codexhostDataDirectory } from "./external-clients.js";
 import { DesktopControlRequests } from "./desktop-control-requests.js";
 import { DesktopThreadRouting } from "./desktop-thread-routing.js";
@@ -399,7 +401,7 @@ import {
 } from "@codexhost/protocol-core";
 
 export interface AppServerHostOptions {
-  desktopExtensionBackends?: DesktopExtensionBackendManager | undefined;
+  hostExtensions?: HostExtensionManager | undefined;
   /** Private external-session owner: never forwards requests to native Codex. */
   externalOnly?: boolean;
   /** Shared service's live Desktop connection count, not native client subscriptions. */
@@ -884,7 +886,7 @@ export class AppServerHost {
   readonly clientEvents = new ClientChannelEvents();
   readonly #client: ClientChannelHost;
   readonly #desktopControl: DesktopControlRequests;
-  readonly desktopExtensionBackends: DesktopExtensionBackendManager | undefined;
+  readonly hostExtensions: HostExtensionManager | undefined;
   readonly #threadRouting: DesktopThreadRouting;
   readonly #threadPins: ThreadPins;
   readonly #threadTree: ThreadTree;
@@ -1295,16 +1297,17 @@ export class AppServerHost {
       startNextQueuedExternalTurn: (thread) => this.#startNextQueuedExternalTurn(thread),
     });
     const desktopEnvironment = options.environment ?? process.env;
-    this.desktopExtensionBackends =
+    this.hostExtensions =
       desktopEnvironment.CODEXHOST_REMOTE_SSH_MANAGED === "1"
         ? undefined
-        : (options.desktopExtensionBackends ??
-          new DesktopExtensionBackendManager(
+        : (options.hostExtensions ??
+          new HostExtensionManager(
             codexhostDataDirectory(desktopEnvironment),
+            (revision) => this.clientEvents.extensionsChanged(revision),
             (message) => this.#diagnose(message),
           ));
     this.#desktopControl = new DesktopControlRequests({
-      desktopExtensionBackends: this.desktopExtensionBackends,
+      hostExtensions: this.hostExtensions,
       writeJson: (value) => this.#writer.json(value),
       dispatchReply: (request, run, threadId) => this.#dispatchDesktopReply(request, run, threadId),
       waitForPlugins: () => this.#waitForPlugins(),
@@ -1403,6 +1406,7 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    if (!this.#options.hostExtensions) void this.hostExtensions?.close();
     this.#skills?.dispose();
     this.#options.sharedThreads?.close();
     this.#externalRuntime.idleRelease.disable();
@@ -1551,6 +1555,7 @@ export class AppServerHost {
       }
     } catch (error) {
       this.#diagnose(`Host initialization failed: ${errorMessage(error)}`);
+      if (!this.#options.hostExtensions) await this.hostExtensions?.close();
       this.#skills?.dispose();
       this.#pluginLoadAbort.abort();
       await this.#pluginLoading;
@@ -1576,8 +1581,7 @@ export class AppServerHost {
           .catch((closeError: unknown) => this.#diagnose(closeError));
       }
     }
-    if (!this.#closeRequested && !this.#options.desktopExtensionBackends)
-      this.desktopExtensionBackends?.start();
+    if (!this.#closeRequested && !this.#options.hostExtensions) void this.hostExtensions?.start();
     // Load statistics plugins before native subscription negotiation; Session plugins continue
     // independently and must not hold up the official initialization.
     void this.#waitForPlugins().then(() => this.#attachUsageStatistics());
@@ -1600,7 +1604,7 @@ export class AppServerHost {
       this.#treeWatch.close();
       this.#options.sharedThreads?.close();
       this.#pluginLoadAbort.abort();
-      if (!this.#options.desktopExtensionBackends) await this.desktopExtensionBackends?.close();
+      if (!this.#options.hostExtensions) await this.hostExtensions?.close();
       // Stop replacement waiters before waiting for their tracked Host operations.
       this.#externalSteering.close();
       await this.#desktopRequests.drain();
@@ -1734,6 +1738,8 @@ export class AppServerHost {
     params: unknown,
     timeoutMs = CONSOLE_REQUEST_TIMEOUT_MS,
   ): Promise<ConsoleHostReply> {
+    if (isHostExtensionManagementMethod(method))
+      return handleHostExtensionRequest(this.hostExtensions, method, params);
     if (!isConsoleHostMethod(method)) {
       return { error: { code: -32601, message: `${method} is not available to the console` } };
     }
@@ -1813,6 +1819,8 @@ export class AppServerHost {
 
   /** Public client operations stay on this owner and never fall through to official Codex. */
   handleClientRequest(method: string, input: unknown): Promise<ConsoleHostReply> {
+    if (isHostExtensionManagementMethod(method))
+      return handleHostExtensionRequest(this.hostExtensions, method, input);
     return this.#client.handleClientRequest(method, input);
   }
 
@@ -2082,7 +2090,8 @@ export class AppServerHost {
         // Settings requests from Web clients; the shared service owns these handlers too.
         request.method.startsWith("codexhost/account/") ||
         request.method.startsWith("codexhost/update/") ||
-        isModelPriceOverridesMethod(request.method)
+        isModelPriceOverridesMethod(request.method) ||
+        isHostExtensionManagementMethod(request.method)
       )
     ) {
       await this.#writer.json(
@@ -2486,8 +2495,10 @@ export class AppServerHost {
     return this.#accountControl.currentAccountId();
   }
 
-  async #codexAccountSnapshot() {
-    return this.#accountControl.refresh?.() ?? this.#accountControl.snapshot();
+  async #codexAccountSnapshot(refresh = false) {
+    return refresh
+      ? (this.#accountControl.refresh?.() ?? this.#accountControl.snapshot())
+      : this.#accountControl.snapshot();
   }
 
   async #handleCodexAccountRequest(request: JsonRpcRequest): Promise<void> {
@@ -2511,7 +2522,9 @@ export class AppServerHost {
       }
       await this.#writer.json(
         rpcEnvelope(request, {
-          result: jsonValueSchema.parse(await this.#codexAccountSnapshot()),
+          result: jsonValueSchema.parse(
+            await this.#codexAccountSnapshot(request.method === "codexhost/account/refresh"),
+          ),
         }),
       );
     } catch (error) {
@@ -3860,6 +3873,7 @@ export class AppServerHost {
         ...(params.data.cwd ? { cwd: params.data.cwd } : {}),
         ...(params.data.refresh !== undefined ? { refresh: params.data.refresh } : {}),
         ...(params.data.purpose ? { purpose: params.data.purpose } : {}),
+        ...(params.data.credentialAccess ? { credentialAccess: params.data.credentialAccess } : {}),
       });
     } catch (error) {
       await this.#writer.json(
@@ -4939,6 +4953,7 @@ export class AppServerHost {
     const sessionResult = await adapter.open({
       kind: "create",
       cwd,
+      ...(prewarm ? { prewarm: true } : {}),
       environment: {
         ...(this.#options.environment ?? process.env),
         [DELEGATION_THREAD_ID_ENV]: record.hostThreadId,

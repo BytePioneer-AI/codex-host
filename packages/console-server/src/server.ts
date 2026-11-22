@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import {
-  DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH,
+  HOST_EXTENSION_ZIP_MAX_BYTES,
   isConsoleHostMethod,
   type ConsoleAnnouncement,
 } from "@codexhost/shared-contracts";
@@ -24,7 +24,7 @@ import {
 } from "./installation.js";
 import { buildDiagnosticReport, issueUrl, serializeDiagnosticReport } from "./diagnostic-report.js";
 import { ConsoleHarnessError, type ConsoleHarnesses } from "./harnesses.js";
-import { INSTALL, extensionsRoute } from "./extensions.js";
+import { extensionsRoute, isExtensionUploadRoute } from "./extensions.js";
 import { HostUnavailableError, type ConsoleHostClient } from "./host-client.js";
 import { CONSOLE_PAGE_CSS, CONSOLE_PAGE_HTML } from "./page.js";
 import type { ConsolePaths } from "./paths.js";
@@ -34,7 +34,8 @@ import { webConnectionRequest, WEB_CONNECTION_METHODS } from "./web-client.js";
 
 export const CONSOLE_SERVICE = "codexhost-console";
 const MAX_BODY_BYTES = 16 * 1024;
-const MAX_EXTENSION_INSTALL_BODY_BYTES = DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH + MAX_BODY_BYTES;
+const MAX_EXTENSION_INSTALL_BODY_BYTES =
+  4 * Math.ceil(HOST_EXTENSION_ZIP_MAX_BYTES / 3) + MAX_BODY_BYTES;
 const INSPECT_CACHE_MS = 2_000;
 
 export interface ConsoleServerOptions {
@@ -356,7 +357,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       try {
         body = await readJsonBody(
           request,
-          route === INSTALL ? MAX_EXTENSION_INSTALL_BODY_BYTES : MAX_BODY_BYTES,
+          isExtensionUploadRoute(route) ? MAX_EXTENSION_INSTALL_BODY_BYTES : MAX_BODY_BYTES,
         );
       } catch (error) {
         if (!request.complete) response.setHeader("connection", "close");
@@ -370,7 +371,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       body,
       options.paths.dataDirectory,
       url.searchParams,
-      options.environment,
+      options.host,
     );
     if (extensions) {
       sendJson(response, extensions.status, extensions.body);

@@ -15,6 +15,7 @@ import {
   statusTone,
   type DesktopExtensionAttentionDetail,
   type DesktopExtensionContentLocale,
+  type ExtensionCapabilityBadge,
 } from "./desktop-extensions-shared.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
@@ -41,6 +42,8 @@ export interface DesktopExtensionCardOptions {
   readonly attention?: DesktopExtensionAttentionDetail | null | undefined;
   readonly attentionId?: string | undefined;
   readonly categories?: readonly DesktopExtensionCategory[] | undefined;
+  readonly capabilityBadges?: readonly ExtensionCapabilityBadge[] | undefined;
+  readonly secondaryAction?: HTMLElement | undefined;
   readonly actionControl: HTMLElement;
   readonly busy?: boolean | undefined;
   readonly dataset?: Readonly<Record<string, string | undefined>> | undefined;
@@ -52,7 +55,9 @@ function formatAuthorVersion(author: string | undefined, version: string | undef
   const trimmedAuthor = author?.trim();
   const trimmedVersion = version?.trim();
   if (trimmedAuthor) parts.push(trimmedAuthor);
-  if (trimmedVersion) parts.push(`v${trimmedVersion}`);
+  if (trimmedVersion) {
+    parts.push(trimmedVersion.startsWith("v") ? trimmedVersion : `v${trimmedVersion}`);
+  }
   return parts.join(" · ");
 }
 
@@ -81,6 +86,8 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     attention,
     attentionId,
     categories,
+    capabilityBadges,
+    secondaryAction,
     actionControl,
     busy,
     dataset,
@@ -103,7 +110,7 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
   card.setAttribute("aria-haspopup", "dialog");
   card.setAttribute("aria-label", formatMessage(copy.openDetailsLabel, { name: displayName }));
 
-  // Row 1: 32x32 rounded icon + Title + optional lightweight official shield / status dot on left, action control on right.
+  // Row 1: 32x32 rounded icon + Title + optional official shield / status dot on left, actions on right.
   const topRow = createEl(document, "div", "settings-extensions-card__top");
   const identity = createEl(document, "div", "settings-extensions-card__identity");
   const iconEl = createExtensionIconElement({
@@ -146,10 +153,24 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
   };
   actionWrap.addEventListener("click", stopTrigger);
   actionWrap.addEventListener("keydown", stopTrigger);
+  if (secondaryAction) {
+    actionWrap.append(secondaryAction);
+  }
   actionWrap.append(actionControl);
 
   topRow.append(identity, actionWrap);
   card.append(topRow);
+
+  // Capability badges row (compact, subtle pills derived from targets & manifest entries).
+  if (capabilityBadges && capabilityBadges.length > 0) {
+    const badgesRow = createEl(document, "div", "settings-extensions-card__capabilities");
+    for (const badge of capabilityBadges) {
+      const chip = createEl(document, "span", "settings-extensions-cap-badge", badge.label);
+      chip.dataset.capability = badge.kind;
+      badgesRow.append(chip);
+    }
+    card.append(badgesRow);
+  }
 
   // Row 2: 2-line clamped muted description + optional compact inline error callout.
   const trimmedDescription = description?.trim() ?? "";
@@ -178,8 +199,7 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     card.append(body);
   }
 
-  // Row 3: Borderless muted metadata line — "author · vX.Y.Z" (+ optional subtle update cue, star link & downloads) on left,
-  // plain middot-separated categories (up to 2) on right.
+  // Row 3: Borderless muted metadata line.
   const authorVersion = formatAuthorVersion(author, version);
   const repositoryHref = parseSafeRepositoryUrl(repository);
   const formattedStars = isValidExtensionCount(stars) ? formatExtensionCount(stars) : null;

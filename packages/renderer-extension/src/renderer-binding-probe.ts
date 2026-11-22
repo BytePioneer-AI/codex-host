@@ -2027,6 +2027,21 @@ export function installRendererBindingProbe(
       composerClient(candidate) === client &&
       controller.get(candidate.composer).agent === agent &&
       !controller.isSwitching(candidate.composer);
+    if (
+      matchesTarget(mounted) &&
+      mounted.modelView.status === "error" &&
+      mounted.modelView.catalog === undefined
+    ) {
+      // The first load failed, so there is no catalog to refresh. Load it again;
+      // a Harness whose availability that failure marked unready is rechecked first.
+      const availability = hostHarnessAvailabilityState(hostId).availability[agent];
+      if (availability === "ready" || availability === "checking") {
+        void loadExternalCatalog(mounted);
+      } else {
+        void refreshHarnessAvailabilityForHost(hostId, true, false, true, "retry");
+      }
+      return;
+    }
     const canRefresh = (candidate: MountedComposer): boolean =>
       matchesTarget(candidate) &&
       candidate.modelView.catalog !== undefined &&

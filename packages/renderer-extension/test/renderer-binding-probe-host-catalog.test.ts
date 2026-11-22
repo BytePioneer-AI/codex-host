@@ -2158,6 +2158,75 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(latest()?.catalog?.models.at(-1)?.ref.id).toBe("new-model");
   });
 
+  it.each([
+    ["rejects", { reject: "request timed out", availability: "ready" }],
+    [
+      "is not ready",
+      {
+        inspection: {
+          status: "error",
+          error: { code: "unavailable", message: "models failed", retryable: true },
+        },
+        availability: "error",
+      },
+    ],
+  ] as const)(
+    "retries a draft whose first catalog request %s and restores its Model",
+    async (_case, failure) => {
+      installFakeBrowser();
+      testState.modelTarget = ["default"];
+      let catalogRequests = 0;
+      const client = {
+        listHarnessPlugins,
+        inspectHarness: vi.fn(async ({ purpose }: { purpose?: string }) => {
+          if (purpose === "availability") return emptyInspection();
+          catalogRequests += 1;
+          if (catalogRequests > 1) return readyInspection();
+          if ("reject" in failure) throw new Error(failure.reject);
+          return failure.inspection;
+        }),
+      };
+      const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+      const probe = installRendererBindingProbe({
+        enabledAgents: ["codex", "claude-code"],
+        defaultAgent: "codex",
+      });
+      probe.setAdapter(
+        { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+        undefined,
+        () => true,
+        { currentHostId: () => "local", clientForHost: () => client } as never,
+      );
+      const availability = () =>
+        testState
+          .getConnectionDiagnostics?.()
+          ?.snapshot()
+          .hosts[0]?.agents.find(({ plugin }) => plugin?.id === "claude-code")?.availability;
+      const latest = () => testState.renderedModelViews.at(-1);
+      const submitBlocked = () => {
+        const preventDefault = vi.fn();
+        testState.documentListeners.get("submit")?.({
+          target: testState.composer,
+          preventDefault,
+          stopImmediatePropagation: vi.fn(),
+        } as unknown as Event);
+        return preventDefault.mock.calls.length > 0;
+      };
+      await vi.waitFor(() => expect(availability()).toBe("ready"));
+      testState.selectAgent?.("claude-code");
+      await vi.waitFor(() => expect(latest()?.status).toBe("error"));
+      expect(latest()?.catalog).toBeUndefined();
+      expect(availability()).toBe(failure.availability);
+      expect(submitBlocked()).toBe(true);
+
+      testState.refreshModels?.();
+      await vi.waitFor(() => expect(latest()?.status).toBe("ready"));
+      expect(latest()?.selected).toEqual(readyInspection().catalog.defaultModel);
+      expect(availability()).toBe("ready");
+      expect(submitBlocked()).toBe(false);
+    },
+  );
+
   it("confirms a pending Permission Mode selection while models refresh", async () => {
     installFakeBrowser();
     const inspection = {

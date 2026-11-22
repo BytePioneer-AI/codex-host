@@ -2,11 +2,12 @@ import {
   getSharedAgentGroupPreferenceStore,
   type AgentGroupPreferenceStore,
 } from "./agent-group-preference.js";
-import type {
-  ComposerAgentPhase,
-  ExternalRendererAgent,
-  RendererAgent,
-  RendererAgentAvailability,
+import {
+  isPickerAgentSelectable,
+  type ComposerAgentPhase,
+  type ExternalRendererAgent,
+  type RendererAgent,
+  type PickerAgentAvailability,
 } from "./agent-selection-state.js";
 import type { CodexAccountSummary, HarnessPluginDescriptor } from "@codexhost/shared-contracts";
 import { createRendererAgentIcon, rendererAgentLabel } from "./renderer-agent-icon.js";
@@ -58,7 +59,7 @@ function openConnectionsSettings(opener?: HTMLElement): void {
   openSettingsPage("connections", opener);
 }
 
-type AgentAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
+type AgentAvailability = Partial<Record<ExternalRendererAgent, PickerAgentAvailability>>;
 
 export const CONTROL_ATTRIBUTE = "data-codexhost-agent-control";
 const AGENT_MENU_WIDTH = 224;
@@ -147,7 +148,8 @@ export function rendererAgentPickerView(
       agent,
       switching ||
         state.phase === "locked" ||
-        (agent !== "codex" && (adapterState !== "ready" || availability[agent] !== "ready")),
+        (agent !== "codex" &&
+          (adapterState !== "ready" || !isPickerAgentSelectable(availability[agent]))),
     ]),
   ) as Partial<Record<RendererAgent, boolean>>;
   const downloadVisible = Object.fromEntries(

@@ -192,6 +192,7 @@ describe("delegation CLI", () => {
       harnessId: "pi",
       cwd: path.resolve("/synthetic"),
       refresh: true,
+      credentialAccess: "retry",
     });
   });
 
@@ -199,7 +200,7 @@ describe("delegation CLI", () => {
     const fetchImpl = successfulFetch({ harnessId: "pi", inspection: { status: "ready" } });
     await expect(
       runDelegationCli({
-        arguments: ["harness", "inspect", "pi", "--cwd", "."],
+        arguments: ["harness", "inspect", "pi", "--cwd", ".", "--refresh", "true"],
         environment: {
           [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
           [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
@@ -213,6 +214,7 @@ describe("delegation CLI", () => {
       harnessId: "pi",
       parentThreadId: "inspection-parent",
       cwd: process.cwd(),
+      refresh: true,
     });
   });
 

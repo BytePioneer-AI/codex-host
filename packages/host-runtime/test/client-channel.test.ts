@@ -109,7 +109,9 @@ describe("public authenticated owner channel", () => {
     await fixture.host.handleConsoleRequest("codexhost/harness/inspect", {
       harnessId: "pi",
       refresh: true,
+      credentialAccess: "retry",
     });
+    expect(inspect).toHaveBeenLastCalledWith({ refresh: true, credentialAccess: "retry" });
     await vi.waitFor(() => expect(changes()).toHaveLength(2));
     expect(changes()).toEqual([
       expect.objectContaining({
@@ -127,19 +129,29 @@ describe("public authenticated owner channel", () => {
       onDelegationApi: (registration) => api.register(registration, { harnessCatalog: true }),
     });
     const inspect = vi.spyOn(fixture.adapter, "inspect");
-    const call = (refresh: boolean) =>
+    const call = (refresh: boolean, credentialAccess?: "retry") =>
       routeDelegationRequest({ api }, "/v1/harness/inspect", {
         harnessId: "pi",
         cwd: process.cwd(),
         refresh,
+        ...(credentialAccess ? { credentialAccess } : {}),
       });
     const changes = () => events.filter((event) => event.type === "harness-inspection-changed");
     await call(false);
     expect(changes()).toHaveLength(0);
-    await call(true);
+    await call(true); // MCP also uses this route for a refresh, not for re-detect.
     expect(inspect).toHaveBeenLastCalledWith({ cwd: process.cwd(), refresh: true });
+    await call(true, "retry");
+    expect(inspect).toHaveBeenLastCalledWith({
+      cwd: process.cwd(),
+      refresh: true,
+      credentialAccess: "retry",
+    });
     await vi.waitFor(() =>
-      expect(changes()).toEqual([expect.objectContaining({ harnessId: "pi" })]),
+      expect(changes()).toEqual([
+        expect.objectContaining({ harnessId: "pi" }),
+        expect.objectContaining({ harnessId: "pi" }),
+      ]),
     );
   });
 

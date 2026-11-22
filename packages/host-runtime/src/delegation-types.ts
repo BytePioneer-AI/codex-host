@@ -116,6 +116,7 @@ export interface HarnessInspectInput {
   harnessId: RoutedHarnessId;
   cwd?: string;
   refresh?: boolean;
+  credentialAccess?: "allow" | "retry";
   /** Calling Thread; an official parent cannot inspect a Harness Desktop must not present. */
   parentThreadId?: string;
 }

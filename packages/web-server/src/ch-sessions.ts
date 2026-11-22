@@ -773,6 +773,11 @@ export class ChSessions {
     if (existing || this.rows.has(id))
       throw new RpcError("session/busy", "This Session already exists; start a new draft.");
     const selection = configuration?.selection ?? (await this.catalog.models()).default;
+    if (!selection)
+      throw new RpcError(
+        "host/no-harness",
+        "No models are available. Re-detect the Harness in Connections to authorize access.",
+      );
     const draft: Draft = { id, ...(cwd ? { cwd } : {}), selection, createdAt: Date.now() };
     if (configuration) {
       if (configuration.permissionModeId) draft.permissionModeId = configuration.permissionModeId;

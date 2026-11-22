@@ -270,7 +270,10 @@ export function installRendererNativeScheduleControls(
       confirmSelection();
       update();
     };
-    const loadModels = async ({ preserveSelection = false } = {}) => {
+    const loadModels = async ({
+      preserveSelection = false,
+      credentialAccess,
+    }: { preserveSelection?: boolean; credentialAccess?: "allow" | "retry" } = {}) => {
       const request = ++generation;
       const previousModel = model.value;
       if (!preserveSelection) {
@@ -290,10 +293,14 @@ export function installRendererNativeScheduleControls(
         const result = await selectedClient.inspectHarness({
           harnessId: requestedHarness as HarnessId,
           ...(selectedWorkspace ? { cwd: selectedWorkspace.cwd } : {}),
+          ...(credentialAccess ? { credentialAccess } : {}),
         });
         if (retired || request !== generation || selectedClient !== options.getClient()) return;
         if (result.status !== "ready")
-          throw Error(text("所选 Harness 不可用。", "The selected Harness is unavailable."));
+          throw Error(
+            result.error.message ||
+              text("所选 Harness 不可用。", "The selected Harness is unavailable."),
+          );
         const selectedModel = preserveSelection ? model.value : previousModel;
         const next = result.catalog.models;
         const changed =
@@ -343,12 +350,13 @@ export function installRendererNativeScheduleControls(
       loading = false;
       if (external()) {
         refreshWorkspaces();
-        void loadModels();
+        void loadModels({ credentialAccess: "allow" });
       }
       update();
     };
     retry.addEventListener("click", () => {
-      if (error) void loadModels({ preserveSelection: models.length > 0 });
+      if (error)
+        void loadModels({ preserveSelection: models.length > 0, credentialAccess: "retry" });
       else applyModel();
     });
     function blockedReason(): string {

@@ -485,7 +485,10 @@ describe("Delegation settings page", () => {
       ]),
     );
     expect(inspectHarness).toHaveBeenCalledTimes(1);
-    expect(inspectHarness).toHaveBeenCalledWith({ harnessId: harnessIdSchema.parse("codex") });
+    expect(inspectHarness).toHaveBeenCalledWith({
+      harnessId: harnessIdSchema.parse("codex"),
+      credentialAccess: "allow",
+    });
     expect(codexThinking.parent?.hidden).toBe(false);
     expect(selectOptionLabels(codexThinking)).toEqual(["默认强度", "低", "高"]);
 

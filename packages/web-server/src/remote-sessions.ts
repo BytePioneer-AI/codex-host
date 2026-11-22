@@ -161,7 +161,10 @@ export class RemoteSessions {
     }, 30_000);
     this.timer.unref();
   }
-  private async invoke(operation: RemoteSessionOperation): Promise<unknown> {
+  private async invoke(
+    operation: RemoteSessionOperation,
+    onDispatch?: () => void,
+  ): Promise<unknown> {
     if (this.closed) throw new RpcError("remote/offline", "Remote session gateway is closed");
     const parsed = remoteSessionOperationSchema.safeParse(operation);
     if (!parsed.success) {
@@ -178,6 +181,7 @@ export class RemoteSessions {
         "remote/too-large",
         "Remote request is too large; shorten the message before sending.",
       );
+    onDispatch?.();
     try {
       return await this.call(parsed.data);
     } catch (error) {
@@ -419,8 +423,9 @@ export class RemoteSessions {
           "remote/connection-changed",
           "Reopen the draft in the reconnected project.",
         );
-      dispatched = true;
-      const reply = await this.invoke(operation);
+      const reply = await this.invoke(operation, () => {
+        dispatched = true;
+      });
       const result = z.object({ thread: rowSchema }).safeParse(reply);
       if (!result.success || this.closed)
         throw new RpcError(
@@ -430,13 +435,14 @@ export class RemoteSessions {
       const thread = result.data.thread;
       const identity = { hostId: host.hostId, threadId: thread.id };
       const id = remoteSessionId(identity.hostId, identity.threadId);
-      const entry: Entry = {
+      // A catalog refresh can publish this Thread while startSelected is awaiting its reply.
+      const entry: Entry = this.entries.get(id) ?? {
         identity,
         row: { ...thread, turns: [] } as ChThread,
         online: true,
-        createdEpoch: target.epoch,
         configurationRevision: 0,
       };
+      entry.createdEpoch = target.epoch;
       this.hosts.set(host.hostId, host);
       this.entries.set(id, entry);
       try {

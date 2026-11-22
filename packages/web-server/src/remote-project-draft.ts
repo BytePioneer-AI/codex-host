@@ -83,12 +83,11 @@ export class RemoteProjectDraft {
     if (this.submission)
       throw new RpcError("session/busy", "The first message is already being sent.");
     const group = catalog.groups.find((g) => g.id === request.provider);
-    const model = group?.models.find(
-      (m) =>
-        m.id === request.model ||
-        m.fastModel === request.model ||
-        m.ultrafastModel === request.model,
-    );
+    const model =
+      group?.models.find((m) => m.id === request.model) ??
+      group?.models.find(
+        (m) => m.fastModel === request.model || m.ultrafastModel === request.model,
+      );
     if (
       !group ||
       !model ||

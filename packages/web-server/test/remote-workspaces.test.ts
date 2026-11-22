@@ -26,10 +26,18 @@ it("preserves default and explicitly selected native service tiers on the first 
             ref: { id: "native" },
             label: "Native",
             fastModel: { id: "native", serviceTier: "priority" },
+            supportedThinkingOptionIds: ["low"],
           },
-          { ref: { id: "native", serviceTier: "ultrafast" }, label: "Ultrafast" },
+          {
+            ref: { id: "native", serviceTier: "ultrafast" },
+            label: "Ultrafast",
+            supportedThinkingOptionIds: ["high"],
+          },
         ],
-        thinkingOptions: [],
+        thinkingOptions: [
+          { id: "low", label: "Low" },
+          { id: "high", label: "High" },
+        ],
       },
       capabilities: {
         configuration: {
@@ -46,8 +54,15 @@ it("preserves default and explicitly selected native service tiers on the first 
   assert.deepEqual(await draft.startOperation(call), { ...start, serviceTier: "priority" });
   const row = (await draft.catalog(call)).groups[0]?.models[0];
   assert.ok(row?.ultrafastModel);
-  await draft.select({ provider: "codex", model: row.ultrafastModel }, call);
-  assert.deepEqual(await draft.startOperation(call), { ...start, serviceTier: "ultrafast" });
+  await draft.select(
+    { provider: "codex", model: row.ultrafastModel, reasoningEffort: "high" },
+    call,
+  );
+  assert.deepEqual(await draft.startOperation(call), {
+    ...start,
+    serviceTier: "ultrafast",
+    reasoningEffort: "high",
+  });
 });
 
 it("separates identical remote project names and paths and keeps unmatched sessions visible", () => {
@@ -133,7 +148,14 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const workspaces = new Workspaces(new DataDir(dir), dir);
   const hostId = "remote-ssh-discovered:mac";
-  const project = { id: "center", name: "Center", path: "/remote/center", threadIds: [] };
+  // The project fits the Controller frame; the longer encoded Harness model does not.
+  const project = {
+    id: "center",
+    name: "Center",
+    path: "/remote/" + "界".repeat(5150),
+    threadIds: [],
+  };
+  const longModel = "x".repeat(500);
   const host = {
     hostId,
     online: true,
@@ -151,13 +173,14 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
   const writes: unknown[] = [];
   const prompted = Promise.withResolvers<undefined>();
   const acknowledge = Promise.withResolvers<undefined>();
-  const remote = new RemoteSessions(
+  let visibleInCatalog = false;
+  const remote: RemoteSessions = new RemoteSessions(
     new EventHub("create"),
     async (op) => {
       if (op.kind === "hosts") return [host, { ...host, hostId: "remote-control:other" }];
       if (op.kind === "list")
         return {
-          data: [],
+          data: visibleInCatalog && op.hostId === hostId ? [{ ...thread, updatedAt: 2 }] : [],
           nextCursor: null,
           ...(op.includeLoaded ? { loaded: [thread.id], epoch: host.epoch } : {}),
         };
@@ -166,7 +189,10 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
         return {
           status: "ready",
           catalog: {
-            models: [{ ref: { id: "standard" }, label: "Standard" }],
+            models: [
+              { ref: { id: "standard" }, label: "Standard" },
+              { ref: { id: longModel }, label: "Long" },
+            ],
             thinkingOptions: [],
           },
           capabilities: {
@@ -182,6 +208,11 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
       if (op.kind !== "startSelected" && op.kind !== "prompt")
         throw new Error("unexpected operation");
       writes.push(op);
+      if (op.kind === "startSelected") {
+        visibleInCatalog = true;
+        await remote.refresh();
+        visibleInCatalog = false;
+      }
       if (op.kind === "prompt") {
         prompted.resolve(undefined);
         await acknowledge.promise;
@@ -222,6 +253,11 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
       throw new Error("local fallback");
     });
   assert.equal((await call("session/modelCatalog", {})).ok, true);
+  assert.ok((await call("session/selectModel", { provider: "claude", model: longModel })).ok);
+  const oversized = await call("session/prompt", { content: [{ type: "text", text: "ping" }] });
+  assert.ok(!oversized.ok);
+  assert.equal(oversized.error.code, "remote/too-large");
+  assert.deepEqual(writes, []);
   assert.equal(
     (await call("session/selectModel", { provider: "claude", model: "standard" })).ok,
     true,
@@ -256,6 +292,7 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
   for (const reply of sent) assert.ok(reply.ok, JSON.stringify(reply));
   const direct = await call("session/list", {});
   assert.ok(direct.ok);
+  assert.equal((direct.value as { items: { updatedAt: number }[] }).items[0]?.updatedAt, 2000);
   assert.deepEqual(
     (direct.value as { items: { sessionId: string }[] }).items.map((row) => row.sessionId),
     [sessionId],

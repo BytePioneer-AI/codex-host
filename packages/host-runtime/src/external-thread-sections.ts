@@ -168,12 +168,12 @@ export async function sectionOrder(input: {
   );
 }
 
-/** The official definition of a section, which External placements copy. */
-export async function findOfficialSection(
+/** List native section definitions in their official order, across pages. */
+export async function* officialThreadSections(
   requestOfficial: OfficialRequest,
-  sectionId: string,
-): Promise<StoredThreadSection> {
+): AsyncGenerator<StoredThreadSection> {
   let cursor: string | null = null;
+  const seen = new Set<string>();
   for (let page = 0; page < MAX_OFFICIAL_PAGES; page += 1) {
     const response = await requestOfficial("threadSection/list", {
       cursor,
@@ -186,10 +186,11 @@ export async function findOfficialSection(
     const data = Array.isArray(result.data) ? result.data : [];
     for (const entry of data) {
       if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
-      if (entry.id !== sectionId) continue;
+      if (typeof entry.id !== "string" || !entry.id || seen.has(entry.id)) continue;
+      seen.add(entry.id);
       const appearance = entry.appearance;
-      return {
-        id: sectionId,
+      yield {
+        id: entry.id,
         name: typeof entry.name === "string" ? entry.name : "",
         appearance:
           typeof appearance === "object" && appearance !== null && !Array.isArray(appearance)
@@ -203,6 +204,16 @@ export async function findOfficialSection(
     const next = typeof result.nextCursor === "string" ? result.nextCursor : null;
     if (next === null || next === cursor) break;
     cursor = next;
+  }
+}
+
+/** The official definition of a section, which External placements copy. */
+export async function findOfficialSection(
+  requestOfficial: OfficialRequest,
+  sectionId: string,
+): Promise<StoredThreadSection> {
+  for await (const section of officialThreadSections(requestOfficial)) {
+    if (section.id === sectionId) return section;
   }
   throw new ThreadSectionError(`section ${sectionId} does not exist`);
 }

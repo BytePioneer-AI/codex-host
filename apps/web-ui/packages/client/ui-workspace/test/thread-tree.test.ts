@@ -205,6 +205,24 @@ it("also shows a tree, once, in the Workspace of a child whose root lives elsewh
   );
   for (const group of groups.slice(0, 2))
     assert.deepEqual(group.sessions[0]?.tree?.descendantIds, ["child", "grandchild"]);
+
+  const sectioned = { ...state, sectionedSessionIds: new Set([id("root")]) };
+  const ordinaryGroups = deriveGroups(
+    list,
+    [workspace("x", ...own.memberIds), workspace("y", ...elsewhere.memberIds)],
+    sectioned,
+    new Map(),
+    { expandedGroups: ["x", "y"], excludePinned: true },
+  );
+  assert.deepEqual(ordinaryGroups.find((group) => group.key === "x")?.sessions, []);
+  assert.deepEqual(
+    ordinaryGroups.find((group) => group.key === "y")?.sessions.map((node) => node.id),
+    ["other"],
+  );
+  assert.deepEqual(deriveFlat(list, [id("root")], sectioned, new Map())[0]?.tree?.descendantIds, [
+    "child",
+    "grandchild",
+  ]);
 });
 
 it("keeps a linked root's manual slot when an unrelated Thread is pinned", () => {
@@ -435,6 +453,7 @@ it("captures all unarchived local descendants when the tree is collapsed or sear
     ...state,
     pinnedSessionIds: [id("pinned-fork"), id("pinned-delegation")],
     archivedSessionIds: [id("archived")],
+    sectionedSessionIds: new Set([id("fork")]),
   };
   const collapsed = visibleThreadRows(deriveFlat(list, list.ids, rowState, new Map()), {});
   assert.ok(!collapsed.some((node) => node.id === id("hidden")));

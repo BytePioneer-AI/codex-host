@@ -5,6 +5,8 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  clientThreadSectionsSchema,
+  clientThreadSectionMoveSchema,
   WEB_FOLLOW_PROJECTION_KEYS,
   webTurnDiffsRequestSchema,
   webToolOutputReferenceSchema,
@@ -272,10 +274,20 @@ export class ChSessions {
     cursor?: string,
   ): Promise<CatalogPage | undefined> {
     const known = new Set(this.rows.keys());
-    const [{ page: snapshot }, definitions] = await Promise.all([
+    const [{ page: snapshot }, definitions, , sections] = await Promise.all([
       readSessionPage(this.host, timing, includeArchived, cursor, () => this.refreshPins()),
       timing.measure("project_definitions", () => this.host.projects([])),
       timing.measure("thread_tree", () => this.tree.refresh()),
+      timing.measure("thread_sections", async () => {
+        try {
+          return clientThreadSectionsSchema.parse(
+            await this.host.request("codexhost/thread/sections/list", {}),
+          ).sections;
+        } catch {
+          // Optional on older Hosts; keep the last confirmed snapshot on a read failure.
+          return undefined;
+        }
+      }),
     ]);
     if (this.closed) return;
     const found = new Map(snapshot.threads.map((row) => [row.id, row]));
@@ -292,6 +304,31 @@ export class ChSessions {
       )
         ownership.set(item.threadId, item.harnessId);
       else if (item.owner === "codex") ownership.set(item.threadId, "codex");
+    }
+    const pageSectionAdditions = cursor === undefined ? undefined : new Set<string>();
+    if (sections) {
+      this.workspaces.setReferenceThreadSections(
+        sections.map(({ id, name, threads }) => {
+          const threadIds: string[] = [];
+          for (const thread of threads) {
+            if (typeof thread.id !== "string" || thread.archived === true) continue;
+            if (thread.archived === false && !snapshotArchives.has(thread.id))
+              archivedIds.delete(thread.id);
+            if (!found.has(thread.id)) {
+              const row = thread as unknown as ChThread;
+              found.set(thread.id, row);
+              ownership.set(thread.id, "codex");
+              if (cursor === undefined || !this.publishedCatalog?.has(row.id))
+                snapshot.threads.push(row);
+            }
+            if (ownership.get(thread.id) === "codex") {
+              threadIds.push(thread.id);
+              if (!this.publishedCatalog?.has(thread.id)) pageSectionAdditions?.add(thread.id);
+            }
+          }
+          return { id, name, threadIds };
+        }),
+      );
     }
     timing.count("ownershipIds", ownership.size);
     timing.count(
@@ -342,7 +379,7 @@ export class ChSessions {
     timing.measureSync("archive_sync", () =>
       this.workspaces.setReferenceArchives([...archivedIds].sort()),
     );
-    await timing.measure("catalog_publish", () => this.publishCatalogChanges(cursor !== undefined));
+    await timing.measure("catalog_publish", () => this.publishCatalogChanges(pageSectionAdditions));
     this.catalogReadAt = Date.now();
     return snapshot;
   }
@@ -416,11 +453,12 @@ export class ChSessions {
       this.threads.harnessId(row.id),
     ]);
   }
-  private async publishCatalogChanges(explicitPage = false): Promise<void> {
+  private async publishCatalogChanges(pageSectionAdditions?: ReadonlySet<string>): Promise<void> {
     const before = this.publishedCatalog;
     const next = new Map([...this.rows].map(([id, row]) => [id, this.catalogKey(row)]));
     // First load is already delivered by session/list. Subsequent refreshes,
     // including ones requested by a second browser, publish actual deltas only.
+    // New continuation rows stay request-local unless a shared section references them.
     const changed =
       before === undefined
         ? []
@@ -428,7 +466,8 @@ export class ChSessions {
             [...this.rows.values()]
               .filter(
                 (row) =>
-                  before.get(row.id) !== next.get(row.id) && (!explicitPage || before.has(row.id)),
+                  before.get(row.id) !== next.get(row.id) &&
+                  (!pageSectionAdditions || before.has(row.id) || pageSectionAdditions.has(row.id)),
               )
               .map((row) => this.summary(row)),
           );
@@ -1112,6 +1151,31 @@ export class ChSessions {
         return { pinnedSessionIds };
       });
     }
+    rpc.register("workspace/moveSessionToSection", async (args) => {
+      const input = requestOf<{ sessionId: string; sectionId: string | null }>(args);
+      const move = clientThreadSectionMoveSchema.safeParse({
+        threadId: input.sessionId,
+        sectionId: input.sectionId,
+      });
+      if (!move.success)
+        throw new RpcError("workspace/section-invalid", "Invalid Thread section move.");
+      const { threadId, sectionId } = move.data;
+      if (
+        this.threads.harnessId(threadId) !== "codex" ||
+        this.rows.get(threadId)?.parentThreadId ||
+        this.workspaces.isArchived(threadId) ||
+        this.workspaces.pinnedSessionIds().includes(threadId) ||
+        (sectionId !== null && !this.workspaces.hasThreadSection(sectionId))
+      )
+        throw new RpcError(
+          "workspace/section-unavailable",
+          "This Thread or section is unavailable for a move.",
+        );
+      await this.host.request("codexhost/thread/sections/move", move.data);
+      await this.refreshing?.catch(() => undefined);
+      await this.refresh().catch(() => undefined);
+      return { sectionId };
+    });
     rpc.register("session/list", async (args, context) => {
       const {
         includeArchived = false,

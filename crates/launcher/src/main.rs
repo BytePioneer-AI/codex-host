@@ -10,8 +10,10 @@ mod desktop_lifecycle;
 #[cfg(unix)]
 mod desktop_lifecycle_storage;
 mod desktop_path_overrides;
+mod desktop_shell;
 mod host_service;
 mod installation_layout;
+mod launch_preferences;
 mod native_harness_broker;
 mod runtime_instance;
 #[cfg(unix)]
@@ -67,6 +69,7 @@ use desktop_attachment::{endpoint_ready, publish_runtime_descriptor, stop_stale_
 #[cfg(unix)]
 use desktop_lifecycle::Lifecycle;
 use installation_layout::InstalledResources;
+use launch_preferences::{Preferences, Surface};
 use native_harness_broker::run_native_harness_broker_cli;
 use runtime_instance::default_descriptor_path;
 #[cfg(target_os = "windows")]
@@ -143,6 +146,9 @@ const USAGE: &str = "usage:
   codexhost --help
   codexhost --version
   codexhost inspect [--json] [--custom-install <absolute-directory>]
+  codexhost app [--onboarding]
+  codexhost launch-prefs get --json
+  codexhost launch-prefs set --surface <native-shell|codex-desktop> [--onboarding-completed true|false]
   codexhost web [--background] [--connect-devices] [--host <address>] [--port <port>] [--public-url <url>] [--trusted-proxy <addresses>] [--relay <control-host>]
   codexhost stop
   codexhost status
@@ -1239,7 +1245,7 @@ fn force_stop_external_desktop(
     }
 }
 
-fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error>> {
+fn launch(options: LaunchOptions) -> Result<(), Box<dyn Error>> {
     autostart::refresh();
     start_launch_console(&options);
     #[cfg(target_os = "windows")]
@@ -1250,6 +1256,14 @@ fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error
     };
     #[cfg(not(target_os = "windows"))]
     let installation = discover_desktop(options.custom_install_root.as_deref());
+    launch_official_desktop(options, installation, false)
+}
+
+fn launch_official_desktop(
+    options: LaunchOptions,
+    installation: Result<DesktopInstallation, Box<dyn Error>>,
+    interactive: bool,
+) -> Result<(), Box<dyn Error>> {
     if options.update_recovery {
         services::prepare_host_for_update(
             &options,
@@ -1269,7 +1283,8 @@ fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error
         })
     {
         println!("Codex Desktop is not installed; opening Web instead");
-        match services::open_for_launch(&options) {
+        let open_browser = console::presentation() != Some(console::Presentation::Print);
+        match services::open_for_launch(&options, open_browser) {
             Ok(()) => {
                 startup_record::finish(StartupOutcome::Ready, None);
                 console::show_for_launch(None);
@@ -1564,18 +1579,17 @@ fn run_console_command(action: &str) -> Result<(), Box<dyn Error>> {
 }
 
 fn launch_presentation(arguments: &[String], terminal: bool) -> console::Presentation {
-    if arguments.first().map(String::as_str) == Some("launch") || (arguments.is_empty() && terminal)
-    {
-        console::Presentation::Print
-    } else {
-        console::Presentation::Browser
+    match arguments.first().map(String::as_str) {
+        Some("launch") => console::Presentation::Print,
+        None | Some("app") if terminal => console::Presentation::Print,
+        _ => console::Presentation::Browser,
     }
 }
 
 fn is_launch_command(arguments: &[String]) -> bool {
     matches!(
         arguments.first().map(String::as_str),
-        None | Some(START_MENU_ARGUMENT) | Some("launch")
+        None | Some(START_MENU_ARGUMENT | "launch" | "app")
     )
 }
 
@@ -1594,13 +1608,83 @@ fn default_launch_options() -> LaunchOptions {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum DesktopRoute {
+    CodexDesktop,
+    App,
+    Onboarding,
+    RememberNative,
+    CodexUnavailable,
+}
+
+fn desktop_route(
+    preferences: Option<Preferences>,
+    codex_installed: bool,
+    shell_available: bool,
+) -> DesktopRoute {
+    match preferences.filter(|prefs| prefs.onboarding_completed) {
+        Some(prefs) => match prefs.default_desktop_surface {
+            Surface::NativeShell => DesktopRoute::App,
+            Surface::CodexDesktop if codex_installed => DesktopRoute::CodexDesktop,
+            Surface::CodexDesktop => DesktopRoute::CodexUnavailable,
+        },
+        None if !codex_installed => DesktopRoute::RememberNative,
+        None if shell_available => DesktopRoute::Onboarding,
+        None => DesktopRoute::CodexDesktop,
+    }
+}
+
+fn launch_app(shell: Option<&Path>, onboarding: bool) -> Result<(), Box<dyn Error>> {
+    services::open_app(shell, onboarding)?;
+    startup_record::finish(StartupOutcome::Ready, None);
+    console::show_for_launch(None);
+    Ok(())
+}
+
+fn launch_default(interactive: bool) -> Result<(), Box<dyn Error>> {
+    if !services::graphical_session() {
+        services::run("web", &[])?;
+        startup_record::finish(StartupOutcome::Ready, None);
+        return Ok(());
+    }
+    let options = default_launch_options();
+    autostart::refresh();
+    start_launch_console(&options);
+    let data = startup_record::data_directory().ok_or("User data directory is unavailable")?;
+    let preferences = Preferences::read(&data)?;
+    let installation = discover_desktop(None);
+    let installed = InstalledResources::from_current_executable()?;
+    let shell = installed.desktop_shell.as_deref();
+    match desktop_route(preferences, installation.is_ok(), shell.is_some()) {
+        DesktopRoute::CodexDesktop => launch_official_desktop(options, installation, interactive),
+        DesktopRoute::App => launch_app(shell, false),
+        DesktopRoute::Onboarding => launch_app(shell, true),
+        DesktopRoute::RememberNative => {
+            Preferences::new(Surface::NativeShell, true).save(&data)?;
+            if shell.is_none() {
+                eprintln!("Codex Desktop is not installed; opening Web instead");
+            }
+            launch_app(shell, false)
+        }
+        DesktopRoute::CodexUnavailable => {
+            let fallback = if shell.is_some() {
+                "the codexhost desktop shell"
+            } else {
+                "Web"
+            };
+            eprintln!("Your default Codex Desktop could not be found; opening {fallback} instead");
+            launch_app(shell, false)
+        }
+    }
+}
+
 fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     match arguments.first().map(String::as_str) {
         #[cfg(target_os = "windows")]
         Some(APPX_RESUME_ARGUMENT) => {
             resume_packaged_application(&arguments[1..]).map_err(Into::into)
         }
-        None => launch(default_launch_options(), false),
+        None => launch_default(false),
         Some("--help" | "-h" | "help") => {
             println!("{USAGE}");
             Ok(())
@@ -1610,7 +1694,19 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             println!("{}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch(default_launch_options(), true),
+        Some(START_MENU_ARGUMENT) if arguments.len() == 1 => launch_default(true),
+        Some("launch-prefs") => launch_preferences::run(&arguments[1..]),
+        Some("app") => {
+            let onboarding = match &arguments[1..] {
+                [] => false,
+                [flag] if flag == "--onboarding" => true,
+                _ => return Err("usage: codexhost app [--onboarding]".into()),
+            };
+            autostart::refresh();
+            start_launch_console(&default_launch_options());
+            let installed = InstalledResources::from_current_executable()?;
+            launch_app(installed.desktop_shell.as_deref(), onboarding)
+        }
         Some("inspect") => {
             let options = parse_inspect_options(&arguments[1..])?;
             let custom_install_root = options
@@ -1627,7 +1723,7 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         Some("update") if arguments.len() == 1 => run_console_command("update"),
         Some("update") => Err("update accepts no arguments".into()),
         Some("console") => Err("console accepts no arguments".into()),
-        Some("launch") => launch(parse_launch_options(&arguments[1..])?, false),
+        Some("launch") => launch(parse_launch_options(&arguments[1..])?),
         Some("open-file") if arguments.len() == 2 => {
             let path = PathBuf::from(&arguments[1]).canonicalize()?;
             if !path.is_file() {
@@ -1695,13 +1791,16 @@ fn main() -> ExitCode {
     let launching = is_launch_command(&arguments);
     if launching {
         startup_record::begin();
+        let headless_app = arguments.first().is_some_and(|argument| argument == "app")
+            && !services::graphical_session();
         console::set_presentation(launch_presentation(
             &arguments,
             std::io::stdin().is_terminal()
                 || std::io::stdout().is_terminal()
                 || std::io::stderr().is_terminal()
                 || env::var_os("SSH_CONNECTION").is_some()
-                || env::var_os("SSH_TTY").is_some(),
+                || env::var_os("SSH_TTY").is_some()
+                || headless_app,
         ));
     }
     match run(&arguments) {
@@ -1823,10 +1922,51 @@ mod tests {
         assert_eq!(super::launch_presentation(&[], false), Browser);
         assert_eq!(super::launch_presentation(&[], true), Print);
         assert_eq!(super::launch_presentation(&["launch".into()], false), Print);
+        assert_eq!(super::launch_presentation(&["app".into()], false), Browser);
+        assert_eq!(super::launch_presentation(&["app".into()], true), Print);
         assert_eq!(
             super::launch_presentation(&[super::START_MENU_ARGUMENT.into()], true),
             Browser
         );
+    }
+
+    #[test]
+    fn default_desktop_routes_follow_preferences_and_available_entrypoints() {
+        use super::DesktopRoute::*;
+        use super::{Preferences, Surface, desktop_route};
+
+        let native = Some(Preferences::new(Surface::NativeShell, true));
+        let codex = Some(Preferences::new(Surface::CodexDesktop, true));
+        let incomplete = Some(Preferences::new(Surface::CodexDesktop, false));
+        for (prefs, installed, shell, expected) in [
+            (None, false, true, RememberNative),
+            (None, false, false, RememberNative),
+            (None, true, true, Onboarding),
+            (None, true, false, CodexDesktop),
+            (incomplete, false, true, RememberNative),
+            (incomplete, true, true, Onboarding),
+            (native, true, true, App),
+            (native, true, false, App),
+            (codex, true, true, CodexDesktop),
+            (codex, true, false, CodexDesktop),
+            (codex, false, true, CodexUnavailable),
+            (codex, false, false, CodexUnavailable),
+        ] {
+            assert_eq!(desktop_route(prefs, installed, shell), expected);
+        }
+    }
+
+    #[test]
+    fn app_is_a_launch_command_but_launch_preferences_is_not() {
+        assert!(super::is_launch_command(&[
+            "app".into(),
+            "--onboarding".into()
+        ]));
+        assert!(!super::is_launch_command(&[
+            "launch-prefs".into(),
+            "get".into(),
+            "--json".into()
+        ]));
     }
 
     #[test]

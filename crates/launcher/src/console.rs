@@ -38,7 +38,7 @@ pub struct ConsoleCommand {
 /// How a launch shows the console once its outcome is known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Presentation {
-    /// Installer launches (Finder, Start Menu) open the default browser.
+    /// Graphical launches open the default browser only for recovery.
     Browser,
     /// Terminal launches (`launch`, used by npm and `npm start`) print the address.
     Print,
@@ -81,45 +81,39 @@ fn node_command(command: &ConsoleCommand) -> Result<Command, Box<dyn Error>> {
     Ok(process)
 }
 
-/// Starts the recovery console before Desktop resources are validated. Installer
-/// launches open the overview immediately; terminal launches announce it at readiness
-/// or failure. Missing console resources do not replace the original launch error.
+/// Starts the Console in the background without presenting it. Missing Console
+/// resources do not replace the original launch error.
 pub fn start_for_launch(command: ConsoleCommand) {
-    start_for_launch_with(command, open_browser);
-}
-
-fn open_browser(url: &str) -> bool {
-    codexhost_platform::open_external_url(url).is_ok()
-}
-
-fn start_for_launch_with(command: ConsoleCommand, open: impl FnOnce(&str) -> bool) {
     if !console_enabled(env::var_os(CONSOLE_ENV)) || !command.console_server.is_file() {
         return;
     }
     let Some(presentation) = PRESENTATION.lock().ok().and_then(|slot| *slot) else {
         return;
     };
+    // Spawn before returning so even a launch that only activates an existing
+    // window cannot exit before the background ensure process starts.
+    let ensure = node_command(&command)
+        .ok()
+        .and_then(|mut process| {
+            process
+                .arg("ensure")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok()
+        })
+        .map(|mut child| {
+            thread::spawn(move || {
+                let _ = child.wait();
+            })
+        });
     if let Ok(mut slot) = LAUNCH_CONSOLE.lock() {
         *slot = Some(LaunchConsole {
-            command: command.clone(),
+            command,
             presentation,
-            ensure: None,
+            ensure,
             shown: false,
         });
-    }
-    let ensure = thread::spawn(move || {
-        let Ok(mut process) = node_command(&command) else {
-            return;
-        };
-        let _ = process.arg("ensure").stderr(Stdio::null()).output();
-    });
-    if let Ok(mut slot) = LAUNCH_CONSOLE.lock()
-        && let Some(console) = slot.as_mut()
-    {
-        console.ensure = Some(ensure);
-    }
-    if presentation == Presentation::Browser {
-        show_with(None, open);
     }
 }
 
@@ -147,12 +141,16 @@ fn console_url(command: &ConsoleCommand) -> Result<String, Box<dyn Error>> {
     parse_console_url(&output.stdout).ok_or_else(|| "codexhost console returned no address".into())
 }
 
-/// Presents launch addresses without changing the launch result. Installer failures
-/// reopen the overview; ordinary calls and terminal address output are deduplicated.
+/// Presents terminal addresses or opens the overview for graphical launch failures.
 pub fn show_for_launch(reason: Option<&str>) -> bool {
     let shown = show(reason);
     crate::services::finish_launch(presentation() == Some(Presentation::Print));
-    if shown && reason.is_none() && presentation() == Some(Presentation::Browser) {
+    if reason.is_none()
+        && LAUNCH_CONSOLE.lock().is_ok_and(|slot| {
+            slot.as_ref()
+                .is_some_and(|console| console.presentation == Presentation::Browser)
+        })
+    {
         watch_integration();
     }
     shown
@@ -250,7 +248,9 @@ fn integration_failing(document: &Value, launch_started_ms: u64, now_ms: u64) ->
 }
 
 fn show(reason: Option<&str>) -> bool {
-    show_with(reason, open_browser)
+    show_with(reason, |url| {
+        codexhost_platform::open_external_url(url).is_ok()
+    })
 }
 
 fn show_with(reason: Option<&str>, open: impl FnOnce(&str) -> bool) -> bool {
@@ -261,7 +261,10 @@ fn show_with(reason: Option<&str>, open: impl FnOnce(&str) -> bool) -> bool {
         let Some(console) = slot.as_mut() else {
             return false;
         };
-        if console.shown && (reason.is_none() || console.presentation == Presentation::Print) {
+        if console.presentation == Presentation::Browser && reason.is_none() {
+            return false;
+        }
+        if console.shown && console.presentation == Presentation::Print {
             return true;
         }
         (
@@ -434,7 +437,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn successful_terminal_launch_prints_the_console_once() {
+    fn launch_prints_once_in_terminal_and_only_opens_the_browser_for_failures() {
         use std::os::unix::fs::PermissionsExt;
 
         let _gate = LAUNCH_TEST_GATE.lock().expect("launch test gate");
@@ -477,29 +480,21 @@ mod tests {
         assert!(shown_at_ready);
         assert_eq!(std::fs::read_to_string(&calls).unwrap(), "ensure\nopen\n");
 
+        std::fs::remove_file(&calls).unwrap();
         set_presentation(Presentation::Browser);
-        let mut opened = 0;
-        start_for_launch_with(command, |url| {
-            assert_eq!(url, "http://127.0.0.1:4399/");
-            opened += 1;
-            true
-        });
-        assert_eq!(
-            opened, 1,
-            "installer opens the overview before Desktop startup"
-        );
-        assert!(show_with(None, |_| panic!(
-            "ordinary calls must not reopen"
+        start_for_launch(command);
+        assert!(!show_with(None, |_| panic!(
+            "normal launch must not open a browser"
         )));
         for reason in ["startup-failure", "integration-failure"] {
-            assert!(show_with(Some(reason), |_| {
-                opened += 1;
+            assert!(show_with(Some(reason), |url| {
+                assert_eq!(url, "http://127.0.0.1:4399/");
                 true
             }));
         }
         assert_eq!(
-            opened, 3,
-            "failures reopen the overview even if it was already shown"
+            std::fs::read_to_string(&calls).unwrap(),
+            "ensure\nopen\nopen\n"
         );
         assert!(
             !show_with(Some("startup-failure"), |_| false),

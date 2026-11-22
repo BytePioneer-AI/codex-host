@@ -103,14 +103,16 @@ it("propagates native section order and loads members outside the normal catalog
   host.add("ordinary", root);
   const older = host.add("outside-catalog", root);
   host.threads.delete(older.id);
+  const members = [{ ...older, archived: false }];
   const request = host.request.bind(host);
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
     method === "codexhost/thread/sections/list"
-      ? ({ sections: [{ id: "research", name: "Research", threads: [older] }] } as T)
+      ? ({ sections: [{ id: "research", name: "Research", threads: members }] } as T)
       : request<T>(method, params);
   const data = new DataDir(root);
   const workspaces = new Workspaces(data, root);
   const sessions = new ChSessions(host, workspaces, new EventHub(root));
+  workspaces.setReferenceArchives([older.id]);
   t.after(async () => {
     await sessions.close();
     rmSync(root, { recursive: true, force: true });
@@ -165,6 +167,22 @@ it("propagates native section order and loads members outside the normal catalog
           }),
       ),
     );
+    assert.equal(workspaces.isArchived(older.id), false);
+
+    const later = host.add("found-on-continuation", root);
+    host.threads.delete(later.id);
+    members.push({ ...later, archived: false });
+    const continuation = await rpc.dispatch("session/list", {
+      args: {
+        cursor: JSON.stringify({ includeArchived: false, officialCursor: { live: "next" } }),
+      },
+    });
+    assert.ok(continuation.ok, continuation.ok ? undefined : continuation.error.message);
+    const ids = (continuation.value as { items: Array<{ sessionId: string }> }).items.map(
+      (row) => row.sessionId,
+    );
+    assert.ok(ids.includes(later.id));
+    assert.ok(!ids.includes(older.id), "Do not repeat section members already sent on page one");
   } finally {
     for (const handler of closeHandlers) handler();
   }

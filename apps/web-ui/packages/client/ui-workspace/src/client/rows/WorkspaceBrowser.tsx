@@ -623,6 +623,13 @@ function SessionTree({
   );
   const shownWorkspaceRoots = allWorkspacesShown ? workspaceRoots : collapsedWorkspaces.rows;
   const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
+  const nativeLayout = nativeSectionLayout(
+    nativeSections,
+    list,
+    rowState,
+    statuses,
+    sectionExpansion,
+  );
   const workspacesSectionExpanded = sectionExpanded(sectionExpansion, WORKSPACES_SECTION_KEY);
 
   // Folding a group returns its Session window to the default, so reopening it
@@ -643,6 +650,7 @@ function SessionTree({
     if (pinnedSectionExpanded)
       for (const node of threadView.rows(pinnedRows)) rowKeys.push(`session:${node.id}`);
   }
+  rowKeys.push(...nativeSectionRowKeys(nativeLayout, threadView.rows));
   if (groups.length === 0 && pinnedRows.length === 0 && nativeSections.length === 0)
     rowKeys.push("empty");
   const renderGroup = (group: GroupNode, depth: number): ReactNode => {
@@ -965,17 +973,13 @@ function SessionTree({
           t={t}
         />
         <NativeSections
-          sections={nativeSections}
-          list={list}
-          rowState={rowState}
-          statuses={statuses}
+          sections={nativeLayout}
           currentId={current}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
           revealSessionId={revealSessionId}
           onSessionRevealed={onSessionRevealed}
-          sectionExpansion={sectionExpansion}
           setSectionExpanded={setSectionExpanded}
           t={t}
         />
@@ -1008,50 +1012,61 @@ function SessionTree({
 /** The flat "In one list" body: every session is one draggable top-level row. */
 const NO_THREAD_SECTIONS: readonly WorkspaceThreadSection[] = [];
 
-function NativeSections({
-  sections,
-  list,
-  rowState,
-  statuses,
-  sectionExpansion,
-  setSectionExpanded,
-  ...rowProps
-}: Omit<
-  ComponentProps<typeof PinnedSection>,
-  "rows" | "expanded" | "onToggle" | "customSection"
-> & {
-  sections: readonly WorkspaceThreadSection[];
-  list: SessionListState;
-  rowState: SessionRowState;
-  statuses: SessionStatuses;
-  sectionExpansion: SessionTreeProps["sectionExpansion"];
-  setSectionExpanded: SessionTreeProps["setSectionExpanded"];
-}) {
-  if (!sections.length) return null;
+function nativeSectionLayout(
+  sections: readonly WorkspaceThreadSection[],
+  list: SessionListState,
+  rowState: SessionRowState,
+  statuses: SessionStatuses,
+  expansion: SessionTreeProps["sectionExpansion"],
+) {
+  if (!sections.length) return [];
   const roots = new Map(
     deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]),
   );
   const placed = new Set<SessionId>();
   return sections.map(({ id, name, threadIds }) => {
     const key = `native-section:${id}`;
-    const expanded = sectionExpanded(sectionExpansion, key);
     const rows = threadIds.flatMap((threadId) => {
       const row = roots.get(threadId);
       if (!row || row.pinned || placed.has(threadId)) return [];
       placed.add(threadId);
       return [row];
     });
-    return (
-      <PinnedSection
-        key={id}
-        {...rowProps}
-        rows={rows}
-        customSection={{ key, name }}
-        expanded={expanded}
-        onToggle={() => setSectionExpanded(key, !expanded)}
-      />
-    );
+    return { key, name, rows, expanded: sectionExpanded(expansion, key) };
   });
+}
+
+function nativeSectionRowKeys(
+  sections: ReturnType<typeof nativeSectionLayout>,
+  visibleRows: (roots: readonly SessionNode[]) => SessionNode[],
+): string[] {
+  return sections.flatMap(({ key, rows, expanded }) => [
+    `section:${key}`,
+    ...(expanded ? visibleRows(rows).map((row) => `session:${row.id}`) : []),
+  ]);
+}
+
+function NativeSections({
+  sections,
+  setSectionExpanded,
+  ...rowProps
+}: Omit<
+  ComponentProps<typeof PinnedSection>,
+  "rows" | "expanded" | "onToggle" | "customSection"
+> & {
+  sections: ReturnType<typeof nativeSectionLayout>;
+  setSectionExpanded: SessionTreeProps["setSectionExpanded"];
+}) {
+  return sections.map(({ key, name, rows, expanded }) => (
+    <PinnedSection
+      key={key}
+      {...rowProps}
+      rows={rows}
+      customSection={{ key, name }}
+      expanded={expanded}
+      onToggle={() => setSectionExpanded(key, !expanded)}
+    />
+  ));
 }
 
 function FlatList({
@@ -1129,6 +1144,13 @@ function FlatList({
   };
   const now = Date.now();
   const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
+  const nativeLayout = nativeSectionLayout(
+    nativeSections,
+    list,
+    rowState,
+    statuses,
+    sectionExpansion,
+  );
   return (
     <div className={clsx(css.treeBody, css.wide)}>
       <AnimatedRows
@@ -1139,6 +1161,7 @@ function FlatList({
           ...(pinnedSectionExpanded
             ? threadView.rows(pinnedRows).map((row) => `session:${row.id}`)
             : []),
+          ...nativeSectionRowKeys(nativeLayout, threadView.rows),
           ...(rows.length === 0 && pinnedRows.length === 0 && nativeSections.length === 0
             ? ["empty"]
             : []),
@@ -1163,17 +1186,13 @@ function FlatList({
           t={t}
         />
         <NativeSections
-          sections={nativeSections}
-          list={list}
-          rowState={rowState}
-          statuses={statuses}
+          sections={nativeLayout}
           currentId={currentId}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
           revealSessionId={revealSessionId}
           onSessionRevealed={onSessionRevealed}
-          sectionExpansion={sectionExpansion}
           setSectionExpanded={setSectionExpanded}
           t={t}
         />

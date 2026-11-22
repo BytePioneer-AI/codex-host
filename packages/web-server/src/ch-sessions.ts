@@ -307,11 +307,14 @@ export class ChSessions {
           const threadIds: string[] = [];
           for (const thread of threads) {
             if (typeof thread.id !== "string" || thread.archived === true) continue;
+            if (thread.archived === false && !snapshotArchives.has(thread.id))
+              archivedIds.delete(thread.id);
             if (!found.has(thread.id)) {
               const row = thread as unknown as ChThread;
               found.set(thread.id, row);
               ownership.set(thread.id, "codex");
-              if (cursor === undefined) snapshot.threads.push(row);
+              if (cursor === undefined || !this.publishedCatalog?.has(row.id))
+                snapshot.threads.push(row);
             }
             if (ownership.get(thread.id) === "codex") threadIds.push(thread.id);
           }

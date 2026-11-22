@@ -293,9 +293,15 @@ fn windows_installation(
         )));
     }
     // WindowsApps resources are not directly executable by a normal desktop
-    // process. Use any Desktop-managed CLI copy, without requiring it to match
-    // the bundled CLI byte-for-byte or by version.
-    let executable_codex_cli = find_desktop_cli_cache(local_app_data)?.ok_or_else(|| {
+    // process, so historically any Desktop-managed cache copy was preferred.
+    // Newer Desktop builds with the app-package core runtime mode no longer
+    // stage `codex.exe` into `%LOCALAPPDATA%\OpenAI\Codex\bin`: they run the
+    // copy bundled with the installed package. Prefer the CLI that ships with
+    // the currently installed package so cached, stale builds are not used,
+    // and fall back to the Desktop-managed cache for older layouts.
+    let executable_codex_cli = find_desktop_cli_cache(local_app_data)?
+        .or_else(|| packaged_codex_cli.canonicalize().ok())
+        .ok_or_else(|| {
         PlatformError::NotFound(
             "no runnable Codex CLI was found in the Desktop-managed cache; launch the official Desktop once to create it".into(),
         )
@@ -364,11 +370,13 @@ pub fn discover_desktop_managed_codex_cli() -> Result<PathBuf, PlatformError> {
         }
         return Ok(executable);
     }
-    find_desktop_cli_cache(&windows_local_app_data()?)?.ok_or_else(|| {
-        PlatformError::NotFound(
-            "no runnable Codex CLI was found in the Desktop-managed cache; launch the official Desktop once to create it".into(),
-        )
-    })
+    if let Some(cli) = find_desktop_cli_cache(&windows_local_app_data()?)? {
+        return Ok(cli);
+    }
+    // App-package core runtime mode no longer stages a CLI copy into the
+    // Desktop-managed cache; recover the CLI from the registered package.
+    let installation = discover_registered_codex_desktop()?;
+    canonical_existing_file(&installation.executable_codex_cli)
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -730,9 +738,33 @@ mod windows_tests {
             installation.install_root,
             install_root.canonicalize().expect("canonical install root")
         );
+        // The CLI bundled with the installed package wins over any stale
+        // Desktop-managed cache copy.
         assert_eq!(
             installation.executable_codex_cli,
-            cached_cli.canonicalize().expect("canonical cached CLI")
+            packaged_cli.canonicalize().expect("canonical packaged CLI")
+        );
+
+        // Removing the stale cache copy (or the whole cache) must not break
+        // discovery: the packaged CLI is still used.
+        fs::remove_dir_all(&local_app_data).expect("remove Desktop CLI cache");
+        let installation = windows_installation(
+            WindowsPackageDetails {
+                package_name: "OpenAI.Codex".into(),
+                package_family_name: "OpenAI.Codex_family".into(),
+                appx_activation: WindowsAppxActivationIdentity {
+                    package_full_name: "OpenAI.Codex_1.2.3.4_x64_family".into(),
+                    app_user_model_id: "OpenAI.Codex_family!App".into(),
+                },
+                version: "1.2.3.4".into(),
+                install_root: install_root.clone(),
+            },
+            &local_app_data,
+        )
+        .expect("valid Windows installation without a Desktop CLI cache");
+        assert_eq!(
+            installation.executable_codex_cli,
+            packaged_cli.canonicalize().expect("canonical packaged CLI")
         );
 
         fs::remove_dir_all(root).expect("remove Windows installation fixture");

@@ -109,7 +109,9 @@ fn production_launcher_resolves_resources_beside_its_installed_location() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
+fn finder_launch_resolves_standard_app_resources_for_installed_codex_without_a_shell() {
+    use std::os::unix::fs::PermissionsExt;
+
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time")
@@ -122,14 +124,27 @@ fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
     fs::create_dir_all(&macos).expect("create app executable directory");
     let installed = macos.join("codexhost");
     fs::copy(launcher_path(), &installed).expect("copy app launcher");
+    let codex = root.join("Codex.app");
+    fs::create_dir_all(codex.join("Contents/MacOS")).unwrap();
+    fs::create_dir_all(codex.join("Contents/Resources")).unwrap();
+    fs::write(codex.join("Contents/Info.plist"), r#"<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.openai.codex</string><key>CFBundleExecutable</key><string>Codex</string><key>CFBundleShortVersionString</key><string>1.0</string><key>CFBundleVersion</key><string>1</string></dict></plist>"#).unwrap();
+    fs::write(codex.join("Contents/Resources/app.asar"), "fixture").unwrap();
+    for file in ["Contents/MacOS/Codex", "Contents/Resources/codex"] {
+        let executable = codex.join(file);
+        fs::write(&executable, [0xcf, 0xfa, 0xed, 0xfe]).unwrap();
+        fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 
     let output = output_of_copied_binary(
         Command::new(&installed)
+            .env_remove("SSH_CONNECTION")
+            .env_remove("SSH_TTY")
+            .env_remove("CODEXHOST_DESKTOP_SHELL_PATH")
             .env("HOME", &root)
             .env("CODEXHOST_WEB_SERVICE", "0")
             .env("CODEXHOST_DATA_DIR", root.join("data"))
             .env("CODEXHOST_CONSOLE", "0")
-            .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop")),
+            .env("CODEXHOST_INSTALL_ROOT", &codex),
     )
     .expect("run Finder-style launcher");
     fs::remove_dir_all(&root).expect("remove app layout");
@@ -204,6 +219,8 @@ fn help_prints_usage_to_stdout_and_succeeds() {
         assert!(stdout.starts_with("usage:\n"), "{argument}");
         for command in [
             "codexhost --version",
+            "codexhost app [--onboarding]",
+            "codexhost launch-prefs get --json",
             "codexhost desktop-screenshot",
             "codexhost host info ...",
             "codexhost project list ...",

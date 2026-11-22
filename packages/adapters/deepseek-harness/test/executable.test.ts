@@ -192,9 +192,11 @@ describe("DeepSeek executable helpers", () => {
     }
   });
 
-  it("uses bounded hidden taskkill for the owned Windows tree and reports launch failure", () => {
+  it("uses bounded hidden taskkill for the owned Windows tree and reports failures", () => {
     vi.stubEnv("SystemRoot", String.raw`C:\Windows`);
-    vi.mocked(spawnSync).mockReturnValue({ status: 0 } as ReturnType<typeof spawnSync>);
+    vi.mocked(spawnSync).mockReturnValue({ status: 0, signal: null } as ReturnType<
+      typeof spawnSync
+    >);
     const child = { pid: 1234 } as ChildProcess;
     killDeepSeekProcessTree(child, "win32", 50);
     expect(spawnSync).toHaveBeenCalledWith(
@@ -202,6 +204,18 @@ describe("DeepSeek executable helpers", () => {
       ["/pid", "1234", "/t", "/f"],
       { stdio: "ignore", windowsHide: true, timeout: 50 },
     );
+    vi.mocked(spawnSync).mockReturnValue({ status: 128, signal: null } as ReturnType<
+      typeof spawnSync
+    >);
+    expect(() => killDeepSeekProcessTree(child, "win32", 50)).toThrow("status 128");
+    vi.mocked(spawnSync).mockReturnValue({ status: 1, signal: null } as ReturnType<
+      typeof spawnSync
+    >);
+    expect(() => killDeepSeekProcessTree(child, "win32", 50)).toThrow("status 1");
+    vi.mocked(spawnSync).mockReturnValue({ status: null, signal: "SIGTERM" } as ReturnType<
+      typeof spawnSync
+    >);
+    expect(() => killDeepSeekProcessTree(child, "win32", 50)).toThrow("signal SIGTERM");
     const error = new Error("taskkill could not start");
     vi.mocked(spawnSync).mockReturnValue({ error } as ReturnType<typeof spawnSync>);
     expect(() => killDeepSeekProcessTree(child, "win32", 50)).toThrow(error);

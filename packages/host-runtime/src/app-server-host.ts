@@ -902,7 +902,7 @@ export class AppServerHost {
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
   #pendingExternalCommandRequests = new Set<string>();
-  /** External Threads whose `thread/started` already reached the connected clients. */
+  /** External Threads with a pending or successful `thread/started` write. */
   readonly #announcedExternalThreadIds = new Set<string>();
   readonly #externalQueue = new ExternalThreadQueue();
   readonly #queuedTurnStarts = new Map<
@@ -1281,7 +1281,6 @@ export class AppServerHost {
       outputFailed: (thread) => this.#externalRuntime.idleRelease.outputFailed(thread),
       submitPrewarm: (thread) => this.#externalRuntime.submitPrewarm(thread),
       notifyExternalThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),
-      ensureExternalThreadAnnounced: (thread) => this.#ensureExternalThreadAnnounced(thread),
       persistTerminalIdentity: (thread, event) =>
         this.#externalRuntime.persistTerminalIdentity(thread, event),
       retainFailedTurn: (...args) => this.#externalRuntime.retainFailedTurn(...args),
@@ -5199,23 +5198,19 @@ export class AppServerHost {
     // when its Native identity arrives later. Desktop knows it from the fork response; the
     // announcement would list it as an ordinary conversation.
     if (typeof thread.attachedToThreadId === "string") return;
-    if (typeof thread.id === "string") this.#announcedExternalThreadIds.add(thread.id);
-    await this.#writer.json({
-      method: "thread/started",
-      emittedAtMs: Date.now(),
-      params: { thread: { ...thread, turns: [] } },
-    });
-  }
-
-  /**
-   * Announces an External Thread once before its Turn events flow. Threads with a
-   * deferred Native identity (for example a prewarm draft adopted by the first
-   * `turn/start`) are otherwise invisible to Desktop, which silently drops every
-   * `turn/started`/`turn/completed` for the unknown conversation.
-   */
-  async #ensureExternalThreadAnnounced(thread: ExternalThread): Promise<void> {
-    if (this.#announcedExternalThreadIds.has(thread.id)) return;
-    await this.#notifyExternalThreadStarted(thread.thread);
+    const { id } = thread;
+    if (typeof id !== "string" || this.#announcedExternalThreadIds.has(id)) return;
+    this.#announcedExternalThreadIds.add(id);
+    try {
+      await this.#writer.json({
+        method: "thread/started",
+        emittedAtMs: Date.now(),
+        params: { thread: { ...thread, turns: [] } },
+      });
+    } catch (error) {
+      this.#announcedExternalThreadIds.delete(id);
+      throw error;
+    }
   }
 
   async #revertExternalThread(
@@ -5333,6 +5328,7 @@ export class AppServerHost {
       );
       return;
     }
+    this.#announcedExternalThreadIds.delete(location.record.hostThreadId);
     if (location.thread) await this.#resolveThreadInteractions(location.thread);
     this.#routeObservationTracker.forgetThread(location.record.hostThreadId);
     this.#externalQueue.clear(location.record.hostThreadId);
@@ -6556,7 +6552,7 @@ export class AppServerHost {
       const threadId = thread.id;
       const turnId = hostTurnIdSchema.parse(turn.id);
       const items = Array.isArray(turn.items) ? turn.items : [];
-      await this.#ensureExternalThreadAnnounced(thread);
+      await this.#notifyExternalThreadStarted(thread.thread);
       await this.#writer.json({
         method: "turn/started",
         params: {
@@ -6834,11 +6830,7 @@ export class AppServerHost {
     });
     this.#subagentThreadStatuses.set(record.hostThreadId, status);
     this.#trackRunningSubagent(parent.id, record.hostThreadId, status);
-    await this.#writer.json({
-      method: "thread/started",
-      emittedAtMs: Date.now(),
-      params: { thread },
-    });
+    await this.#notifyExternalThreadStarted(thread);
     return { ...subagent, subagentId: record.hostThreadId };
   }
 

@@ -178,12 +178,6 @@ export interface ExternalTurnProjectionHost {
   outputFailed(thread: ExternalThread): void;
   submitPrewarm(thread: ExternalThread): Promise<boolean>;
   notifyExternalThreadStarted(thread: JsonObject): Promise<void>;
-  /**
-   * Announces a Thread the connected clients may not know yet. Desktop drops Turn
-   * events for an unknown conversation, so a Thread must be published before its
-   * first projected Turn event reaches the stream.
-   */
-  ensureExternalThreadAnnounced(thread: ExternalThread): Promise<void>;
   touchThread(thread: ExternalThread): Promise<void>;
   persistTerminalIdentity(
     thread: ExternalThread,
@@ -298,6 +292,11 @@ export class ExternalTurnProjection {
       }
     }
     const result = projection.projector.project(event as ProjectableHostEvent);
+    // Desktop drops Turn events for unknown Threads. Submitted prewarms may still
+    // be waiting for their Native identity when their first Turn starts.
+    if (!thread.unsubmittedPrewarm && result.messages.length > 0) {
+      await this.#host.notifyExternalThreadStarted(thread.thread);
+    }
     if (
       event.type === "item.background.started" ||
       (projection.projector.completed &&
@@ -391,11 +390,6 @@ export class ExternalTurnProjection {
       )
         thread.projectedTurns.delete(event.turnId);
     }
-    // Desktop drops Turn events for a conversation it never learned. A draft that
-    // adopts a prewarm with deferred Native identity is never announced by
-    // `thread/start` or by the prewarm commit, so publish it here, once, before
-    // its first projected Turn event reaches the stream.
-    await this.#host.ensureExternalThreadAnnounced(thread);
     for (const message of result.messages) {
       const params = message.params;
       if (

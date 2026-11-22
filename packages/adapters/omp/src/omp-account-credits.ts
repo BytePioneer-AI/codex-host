@@ -144,10 +144,10 @@ export class OmpAccountCredits {
   }
 
   #read(refresh = false): Promise<Map<string, HarnessAccountSnapshot>> {
-    if (this.#pending) return this.#pending;
+    if (!refresh && this.#pending) return this.#pending;
     if (!refresh && this.#cached && Date.now() - this.#cached.fetchedAt < CACHE_MS)
       return Promise.resolve(this.#cached.accounts);
-    this.#pending = (async () => {
+    const pending = (async () => {
       const accounts = new Map<string, HarnessAccountSnapshot>();
       try {
         const data = object(JSON.parse(await this.load()));
@@ -169,12 +169,17 @@ export class OmpAccountCredits {
       } catch {
         // Old CLI, missing credentials, or a failed probe: no quota, never another account's.
       }
-      this.#cached = { fetchedAt: Date.now(), accounts };
       return accounts;
-    })().finally(() => {
-      this.#pending = undefined;
+    })().then((accounts) => {
+      // A superseded probe can answer its original callers, but only the newest owns the cache.
+      if (this.#pending === pending) {
+        this.#cached = { fetchedAt: Date.now(), accounts };
+        this.#pending = undefined;
+      }
+      return accounts;
     });
-    return this.#pending;
+    this.#pending = pending;
+    return pending;
   }
 }
 

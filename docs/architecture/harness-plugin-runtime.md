@@ -307,6 +307,8 @@ Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和
 
 `HarnessAdapter.credits?()` / `refreshCredits?()` 是正式可选接口：前者无 I/O 地同步读取账号级缓存，后者异步刷新同一缓存，原生认证、有效期、并发合并及失效策略仍归插件。Host 不等待刷新，读取后校验公开结构，隔离同步读取异常与刷新拒绝；旧缓存的私有 `fetchedAt` 不传给客户端。`inspectAccount(s)` 继续负责设置页的新鲜账号查询，不用当前账号额度替代历史 Thread 的实际计费事实。
 
+`HarnessSession.readAccountCredits?()` 异步读取当前会话实际归属账号的额度，归属不明或没有额度时返回 `null`。外部 Thread 的 `thread/usage/inspect` 优先使用该方法；仅在方法不存在时读取 Adapter 的 `credits()`，方法返回空或抛错也不回退到 Adapter 的其他账号额度。有效的百分比额度优先于预付费余额；无有效额度时仍可读取 Adapter 的 `balance()`。会话额度的归属或可用性变化时，插件发布 `session.accountCredits.changed`；Host 仅为当前会话转发 `codexhost/thread/usage/updated`，通知只携带 Thread ID，客户端据此重新读取。
+
 `HarnessAdapter.balance?()` / `refreshBalance?()` 是同样语义的预付费余额缓存，用于只报告金额、没有百分比额度的 Billing Source（当前为 DeepSeek Harness）。只在 `credits()` 没有有效快照时读取；Host 用 `accountBalanceSnapshotSchema` 校验并以可选 `accountBalance` 返回，异常与刷新拒绝同样隔离。
 
 `thread/usage/inspect` 的结果通过可选 `accountCreditsSupported` 告诉客户端是否应在会话用量已到达后继续等待额度（百分比额度或预付费余额任一到达即停止等待；会话用量已到达而两者都没有返回时，只按退避节奏重试一轮，不持续轮询）；无需 Harness 名单。停止定时重试不影响用量更新通知触发的读取。旧 Host 未给此字段时不额外等待账号额度。Broker 插件通过构造选项 `accountCredits` 声明是否暴露缓存能力，不支持的 CodeBuddy/WorkBuddy/Cursor 路径不会假报可用；为兼容既有调用方该选项默认 true。Broker 的 Credits 转发保留刷新合并、无数据清空、失败保留最近值的既有行为，不等于其他可选能力已经全部转发。

@@ -15,6 +15,7 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 
+import { OmpAccountCredits } from "../src/omp-account-credits.js";
 import {
   OmpAdapter,
   type OmpAdapterDependencies,
@@ -1146,6 +1147,40 @@ async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
 }
 
 describe("OMP Adapter usage metering", () => {
+  it("refreshes past an in-flight quota probe without letting its late result replace the cache", async () => {
+    const oldProbe = Promise.withResolvers<string>();
+    const newProbe = Promise.withResolvers<string>();
+    const load = vi
+      .fn<() => Promise<string>>()
+      .mockReturnValueOnce(oldProbe.promise)
+      .mockReturnValueOnce(newProbe.promise)
+      .mockRejectedValue(new Error("Unexpected quota probe"));
+    const report = (usedFraction: number) =>
+      JSON.stringify({
+        reports: [
+          {
+            provider: "synthetic",
+            metadata: { credentialId: 1 },
+            limits: [{ amount: { usedFraction } }],
+          },
+        ],
+      });
+    const service = new OmpAccountCredits(load);
+    const key = JSON.stringify(["synthetic", 1]);
+
+    const oldRead = service.forAccount(key);
+    const refreshed = service.inspectAccounts();
+    const concurrentRead = service.forAccount(key);
+    expect(load).toHaveBeenCalledTimes(2);
+    newProbe.resolve(report(0.75));
+    expect(await refreshed).toMatchObject([{ credits: { usedPercent: 75 } }]);
+    expect(await concurrentRead).toMatchObject({ usedPercent: 75 });
+
+    oldProbe.resolve(report(0.25));
+    expect(await oldRead).toMatchObject({ usedPercent: 25 });
+    expect(await service.forAccount(key)).toMatchObject({ usedPercent: 75 });
+  });
+
   it("switches quota when a response starts and restores the confirmed account on failure", async () => {
     const root = path.join(tmpdir(), `codexhost-omp-quota-${randomUUID()}`);
     await mkdir(root);

@@ -164,6 +164,31 @@ describe("installed plugin presentation through Host RPC", () => {
     }
   });
 
+  it.each([quota, null])("prefers session quota over adapter quota (%j)", async (sessionQuota) => {
+    const f = await fixtureFor(`
+      credits: () => ({ usedPercent: 90 }),
+      async open(input) {
+        const result = await FakeHarnessAdapter.prototype.open.call(this, input);
+        if (result.ok) result.value.readAccountCredits = async () => (${JSON.stringify(sessionQuota)});
+        return result;
+      },
+    `);
+    try {
+      const threadId = await startExternalThread(
+        f.fixture,
+        encodeHarnessPluginRoute({ harnessId: id }),
+      );
+      const usage = threadUsageInspectionSchema.parse(
+        await f.rpc("codexhost/thread/usage/inspect", { threadId }),
+      );
+      expect(usage.accountCreditsSupported).toBe(true);
+      if (sessionQuota) expect(usage.accountCredits).toEqual(sessionQuota);
+      else expect(usage).not.toHaveProperty("accountCredits");
+    } finally {
+      await f.close();
+    }
+  });
+
   it("passes a cached prepaid balance only when no percentage quota exists", async () => {
     const balance = { amount: 12.34, currency: "CNY", label: "DeepSeek API" };
     const f = await fixtureFor(

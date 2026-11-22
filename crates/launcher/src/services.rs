@@ -170,9 +170,9 @@ pub fn open_for_launch(options: &LaunchOptions) -> Result<(), Box<dyn Error>> {
         options.node.clone(),
     )?;
     if console::presentation() == Some(console::Presentation::Print) {
-        ensure_current(&resolved, &[], false)
+        ensure_current(&resolved, &[], options.update_recovery)
     } else {
-        open_web(&resolved, &[], false)
+        open_web(&resolved, &[], options.update_recovery)
     }
 }
 
@@ -211,7 +211,14 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
         )?;
         let _guard = host_service::lifecycle_lock(&resolved.data, "web-service-lifecycle.lock")?;
         crate::service_update::ensure_start_allowed(&resolved.data)?;
-        replace_outdated(&resolved, false, None)?;
+        // Update recovery acts on behalf of the Updater: its orphan handling
+        // must be scoped to this installation's runtime on every branch that
+        // may stop a Web, or it could terminate an orphan that stop-for-update
+        // deliberately left alone.
+        let expected_runtime = options
+            .update_recovery
+            .then_some(resolved.runtime.as_path());
+        replace_outdated(&resolved, false, expected_runtime)?;
         Ok(resolved)
     };
     let resolved = match prepare() {
@@ -221,12 +228,14 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
             return;
         }
     };
+    let update_recovery = options.update_recovery;
     let startup = thread::spawn(move || {
         let start = || -> Result<(), Box<dyn Error>> {
             let _guard =
                 host_service::lifecycle_lock(&resolved.data, "web-service-lifecycle.lock")?;
             crate::service_update::ensure_start_allowed(&resolved.data)?;
-            web_service::ensure(&resolved, None)
+            let expected_runtime = update_recovery.then_some(resolved.runtime.as_path());
+            web_service::ensure(&resolved, expected_runtime)
         };
         if let Err(error) = start() {
             record_failure(&error);
@@ -396,16 +405,19 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
             None => println!("Host: stopped"),
         }
         match web_service::owner(&data)? {
-            Some(owner) => println!(
-                "Web: {}; version {}; {}",
-                if owner.web_running().unwrap_or(false) {
-                    "running"
-                } else {
-                    "stopped"
-                },
-                owner.version,
-                owner.access.address
-            ),
+            Some(owner) => {
+                // A failed presence query is not an exit: report the status as
+                // unknown instead of showing a live Web as stopped.
+                let state = match owner.web_running() {
+                    Ok(true) => "running".to_string(),
+                    Ok(false) => "stopped".to_string(),
+                    Err(error) => format!("status unknown ({error})"),
+                };
+                println!(
+                    "Web: {state}; version {}; {}",
+                    owner.version, owner.access.address
+                );
+            }
             None => println!("Web: stopped"),
         }
         match fs::read_to_string(data.join(web_service::FAILURE)) {

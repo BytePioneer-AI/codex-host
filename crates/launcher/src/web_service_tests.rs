@@ -328,3 +328,121 @@ fn orphan_cleanup_scopes_runtime_ownership_and_frees_the_port() {
     drop(rebound);
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn update_recovery_reclaim_spares_foreign_orphans_and_same_group_neighbors() {
+    const TEST: &str = "web_service::tests::update_recovery_reclaim_spares_foreign_orphans_and_same_group_neighbors";
+    // The fixture plays the orphaned Web child of an update's stop phase: it
+    // leads its own process group, spawns a plain child that shares that
+    // group (an unrelated process the old group-wide reclaim would have
+    // killed), and stays alive until it is signalled.
+    if let Some(root) = env::var_os("CODEXHOST_WEB_GROUP_TEST") {
+        let root = std::path::PathBuf::from(root);
+        let neighbor = Command::new("sleep")
+            .arg("120")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        fs::write(root.join("neighbor"), neighbor.id().to_string()).unwrap();
+        fs::write(root.join("started"), "ready").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        return;
+    }
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = env::temp_dir().join(format!(
+        "codexhost-web-group-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let executable = env::current_exe().unwrap();
+    let mut command = Command::new(&executable);
+    command
+        .args(["--exact", TEST])
+        .env("CODEXHOST_WEB_GROUP_TEST", &root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    codexhost_platform::configure_detached_service_command(&mut command).unwrap();
+    let mut child = command.spawn().unwrap();
+    let orphan = child.id();
+    thread::spawn(move || child.wait());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !root.join("started").exists() {
+        assert!(Instant::now() < deadline, "fixture did not start");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let neighbor: u32 = fs::read_to_string(root.join("neighbor"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let orphan_started = codexhost_platform::process_identity(orphan)
+        .unwrap()
+        .started_at_micros;
+    let neighbor_identity = codexhost_platform::process_snapshot(neighbor).unwrap();
+    assert_eq!(
+        neighbor_identity.process_group_id, orphan,
+        "the neighbor must share the orphan's process group"
+    );
+    fs::create_dir_all(root.join("other-install")).unwrap();
+    fs::write(root.join("other-install/web-server.mjs"), "").unwrap();
+    fs::create_dir_all(root.join("this-install")).unwrap();
+    let this_install = root.join("this-install/web-server.mjs");
+    fs::write(&this_install, "").unwrap();
+    let file = root.join(super::READY);
+    let record_for = |runtime: std::path::PathBuf| ReadyOwner {
+        pid: orphan,
+        // Matches no live process: models a supervisor that already exited.
+        started_at_micros: orphan_started + 1,
+        executable: root.join("deleted-package/codexhost"),
+        web_pid: orphan,
+        web_started_at_micros: orphan_started,
+        version: "0.23.0".into(),
+        runtime,
+        access: WebAccess {
+            address: "http://127.0.0.1:4400/".into(),
+            login_url: String::new(),
+        },
+    };
+
+    // Recovery entry (--update-recovery) passes the expected runtime: a
+    // foreign installation's orphan sharing this data directory is left
+    // alone, with its record kept for that installation's own recovery.
+    let record = record_for(root.join("other-install/web-server.mjs"));
+    fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
+    assert!(!super::stop_orphaned_web_service(&root, Some(&this_install)).unwrap());
+    assert!(file.exists(), "the foreign orphan's record must be kept");
+    assert!(
+        codexhost_platform::process_identity(orphan).is_ok(),
+        "a foreign installation's orphan must survive recovery"
+    );
+    assert!(
+        codexhost_platform::process_identity(neighbor).is_ok(),
+        "the same-group neighbor must survive a skipped reclaim"
+    );
+
+    // The orphan provably belongs to this installation: only the verified
+    // Web identity is terminated; its same-group neighbor survives.
+    let record = record_for(this_install.clone());
+    fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
+    assert!(super::stop_orphaned_web_service(&root, Some(&this_install)).unwrap());
+    assert!(!file.exists(), "the reclaimed record must be removed");
+    assert!(
+        codexhost_platform::process_identity(orphan).is_err(),
+        "the confirmed orphan must be terminated"
+    );
+    assert!(
+        codexhost_platform::process_identity(neighbor).is_ok(),
+        "a same-PGID unrelated process must not be terminated"
+    );
+    let _ = Command::new("kill").arg(neighbor.to_string()).status();
+    fs::remove_dir_all(&root).unwrap();
+}

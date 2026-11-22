@@ -37,9 +37,9 @@ mod process;
 mod process_chain;
 mod process_identity;
 pub use independent_service::{IndependentServiceRegistration, register_independent_service};
-#[cfg(unix)]
-pub use process_identity::observe_process_identity;
-pub use process_identity::{ProcessIdentity, process_identity, process_instance};
+pub use process_identity::{
+    ProcessIdentity, observe_process_identity, process_identity, process_instance,
+};
 mod process_supervision;
 mod process_termination;
 mod proxy_environment;

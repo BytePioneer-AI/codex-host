@@ -3606,8 +3606,82 @@ export function installRendererBindingProbe(
     }
     notifySubmission(composer, "submit");
   };
+  // External Harness activation hides the native Codex Model / Permission
+  // controls, but Codex Desktop's Composer shortcuts still act on the hidden
+  // native refs (issue #1053). Route those shortcuts to the mounted external
+  // controls instead while an external Harness is active.
+  const isExternalHarnessComposerShortcut = (event: KeyboardEvent): boolean => {
+    if (event.altKey || event.isComposing) return false;
+    if (event.key === "Tab" && event.shiftKey) return !event.ctrlKey && !event.metaKey;
+    if (!event.shiftKey || !(event.ctrlKey || event.metaKey)) return false;
+    const key = event.key.toLowerCase();
+    return key === "m" || key === "r" || key === "e" || key === "arrowup" || key === "arrowdown";
+  };
+  const openExternalModelPicker = (mounted: MountedComposer): boolean => {
+    if (!mounted.modelView.catalog || mounted.modelView.status === "selecting") return false;
+    const { modelPicker } = mounted.control;
+    if (modelPicker.menu.matches(":popover-open") || modelPicker.modelMenu.matches(":popover-open"))
+      return true;
+    modelPicker.trigger.click();
+    return true;
+  };
+  const toggleExternalPlanMode = (mounted: MountedComposer): boolean => {
+    const view = mounted.permissionModeView;
+    const catalog = view.catalog;
+    if (!catalog || view.selectionLocked || view.status === "selecting") return false;
+    const planMode = catalog.modes.find(({ id }) => id === "plan");
+    if (!planMode) return false;
+    const selectedModeId = view.selected ?? catalog.defaultModeId;
+    const nextModeId = selectedModeId === planMode.id ? catalog.defaultModeId : planMode.id;
+    void selectPermissionMode(mounted, nextModeId);
+    return true;
+  };
+  const stepExternalThinking = (mounted: MountedComposer, step: 1 | -1): boolean => {
+    const view = mounted.modelView;
+    const catalog = view.catalog;
+    if (!view.thinkingSelectionSupported || !catalog || view.status === "selecting") return false;
+    const model = controller.modelForAgent(
+      mounted.composer,
+      controller.get(mounted.composer).agent,
+    );
+    const catalogModel = model ? catalogModelForRef(catalog, model) : undefined;
+    const supported = catalogModel?.supportedThinkingOptionIds;
+    const options = catalog.thinkingOptions.filter(
+      (option) => !supported || supported.includes(option.id),
+    );
+    if (options.length < 2) return false;
+    const currentIndex = options.findIndex(({ id }) => id === view.selectedThinkingOptionId);
+    const nextIndex =
+      ((((currentIndex < 0 ? 0 : currentIndex) + step) % options.length) + options.length) %
+      options.length;
+    const nextOption = options[nextIndex];
+    if (!nextOption || nextOption.id === view.selectedThinkingOptionId) return step === 1;
+    void selectExternalThinking(mounted, nextOption.id);
+    return true;
+  };
+  const routeExternalHarnessComposerShortcut = (
+    event: KeyboardEvent,
+    mounted: MountedComposer,
+  ): boolean => {
+    if (controller.get(mounted.composer).agent === "codex") return false;
+    if (event.key === "Tab" && event.shiftKey) return toggleExternalPlanMode(mounted);
+    if (!event.shiftKey || !(event.ctrlKey || event.metaKey)) return false;
+    const key = event.key.toLowerCase();
+    if (key === "m" || key === "r") return openExternalModelPicker(mounted);
+    if (key === "e") return stepExternalThinking(mounted, 1);
+    if (key === "arrowup") return stepExternalThinking(mounted, 1);
+    if (key === "arrowdown") return stepExternalThinking(mounted, -1);
+    return false;
+  };
   const onKeyDown = (event: KeyboardEvent): void => {
-    const composer = isComposerInputIntent(event) ? composerForTarget(event.target) : null;
+    let composer = isComposerInputIntent(event) ? composerForTarget(event.target) : null;
+    if (
+      composer === null &&
+      isExternalHarnessComposerShortcut(event) &&
+      composerForTarget(event.target)
+    ) {
+      composer = composerForTarget(event.target);
+    }
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
     if (composer && controller.isSwitching(composer)) {
       blockEvent(event);
@@ -3618,6 +3692,10 @@ export function installRendererBindingProbe(
       return;
     }
     if (composer && !applyComposerAgent(composer)) {
+      blockEvent(event);
+      return;
+    }
+    if (composer && mounted && routeExternalHarnessComposerShortcut(event, mounted)) {
       blockEvent(event);
       return;
     }

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createRendererCdpControlSession } from "@codexhost/desktop-control";
 import {
-  createRendererCdpControlSession,
   runDesktopController,
   type DesktopControllerDependencies,
-} from "@codexhost/desktop-control";
+} from "@codexhost/desktop-control/production-controller";
 
 describe("production Controller / Renderer Agent contract", () => {
   afterEach(() => vi.useRealTimers());

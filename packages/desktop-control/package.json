@@ -7,6 +7,10 @@
     "dist"
   ],
   "exports": {
+    "./production-controller": {
+      "types": "./dist/production-controller.d.ts",
+      "import": "./dist/production-controller.js"
+    },
     "./renderer-bindings": {
       "types": "./dist/renderer-bindings.d.ts",
       "import": "./dist/renderer-bindings.js"

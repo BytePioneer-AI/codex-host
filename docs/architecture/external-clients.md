@@ -12,19 +12,20 @@
 - 连接优先级：完整的 Host 注入参数 → 显式客户端令牌／令牌文件 → 本机私有凭据。部分缺失的 Host 参数仍报错，不自动改变内部会话身份；显式令牌无效时不会回退到本机凭据。
 - HTTP／MCP 不免认证，仍须显式提供 Bearer 令牌。
 
-### 委派时选择 Codex Model 与速度
+### 委派时选择 Model 与速度
 
-`codexhost harness inspect codex` 列出的 Model ID 可直接复制给 `--model`：原生 Model ID 表示普通档，加 `~fast` 或 `~ultrafast` 后缀表示对应档位。Thinking 由 `--thinking` 单独设置。例如：
+`codexhost harness inspect <harness>` 列出的 Model ID 可直接复制给 `--model`。单值 Harness 是原生 Model ID；Pi、OMP、OpenCode、DeepSeek、ZCode 是 `<provider>/<model>`，例如 `codex-pi/gpt-5.6-sol`。加 `~fast` 或 `~ultrafast` 后缀表示对应档位。Thinking 由 `--thinking` 单独设置。例如：
 
 ```sh
 codexhost delegate start --harness codex --cwd "$PWD" \
   --model 'gpt-6.2-sol~ultrafast' --thinking max --task "执行任务"
 ```
 
-- 只有目标 Host 的原生 Codex 模型目录为该 Model 公布了相应档位时，后缀才表示档位；否则整个值按原生 Model ID 处理。
-- 含 `/`、`[`、空格或中文等字符的原生 Model ID 都可直接传入。
+- 只有目标 Harness 的模型目录为该 Model 公布了相应档位时，后缀才表示档位；否则整个值按 Model ID 处理。
+- 含 `/`、`[`、空格或中文等字符的 Model ID 都可直接传入；在 shell 中用单引号括起，避免 `[` 被当作通配符。
+- 两个 Provider/Model 组合拼出同一字符串时，这几个条目在 `inspect` 中显示为编码 ID。
 - 后缀只是 CLI 简写。Host RPC、HTTP 和 MCP 传的是 Model Ref 对象：`id` 为原生 Model ID，档位放在可选的 `serviceTier`（`priority` 或 `ultrafast`）字段。
-- 旧版本的编码 Ref（`codex-model-v1.…`、`codex-fast-model-v1.…`、`codex-ultra-v1.…`）照常接受，读取时转为原生 ID 加档位。
+- 旧版本的编码 Ref（如 `codex-model-v1.…`、`pi-model-v1.…`）照常接受，读取时转为当前 ID 加档位。
 - 设置页的委派默认模型显示目录名称；目录未加载时显示原生 Model ID 和档位。
 
 ### CLI 输出格式

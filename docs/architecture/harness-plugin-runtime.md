@@ -280,7 +280,7 @@ Composer 配置按动态插件 ID 存储，不再为每个 Harness 增加字段�
 
 ### Model Ref
 
-- Model Ref 的 `id` 接受任何非空、无控制字符、最长 512 个 UTF-16 单元的字符串。原生用一个值标识 Model 的 Harness，`id` 直接等于原生 Model ID，不裁剪、不编码；Pi、OpenCode 等由多个部分组成身份的 Harness，编码仍归各自 Adapter。
+- Model Ref 的 `id` 接受任何非空、无控制字符、最长 512 个 UTF-16 单元的字符串。原生用一个值标识 Model 的 Harness，`id` 直接等于原生 Model ID，不裁剪、不编码。Pi、OMP、OpenCode、DeepSeek、ZCode 由 Provider 和 Model 两部分确定身份，`id` 是 `<provider>/<model>`；两部分都可能含 `/`，所以 Adapter 用 `harness-adapter` 的 `compositeModelRefIds` 按原生模型列表整串查找，不切分字符串。两个身份拼出同一字符串时，只有这几个条目改用 Adapter 的编码 ID。
 - 同一 Model 的速度档位放在可选的 `serviceTier` 字段，`fastModel` 与普通条目共用 `id`。目录匹配、收藏、偏好和委派去重比较完整的 Ref（`sameHarnessModelRef`、`catalogModelForRef`），不只比较 `id`。
 - 旧版本保存的编码 Ref 在读取时转换，不改写文件。偏好、收藏、委派默认值和 Thread 记录中的 Ref 不在当前目录时，Host 调用该 Adapter 的 `normalizeStoredModelRef(ref, catalog)`（Codex 用内置转换）。只有在拿到目录、而且仍然不能唯一对应一个 Model 时，这个值才视为不可用，按 Harness 默认处理；目录暂时读不到时保留原值。前缀加 base64url 的旧编码共用 `harness-adapter` 的 `normalizeLegacyBase64ModelRef`。
 

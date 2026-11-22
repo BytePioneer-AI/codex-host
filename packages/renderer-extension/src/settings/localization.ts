@@ -4,6 +4,11 @@ import {
   type CredentialImportMessages,
 } from "./credential-import-messages.js";
 import {
+  delegationEnglish,
+  delegationChinese,
+  type DelegationMessages,
+} from "./delegation-messages.js";
+import {
   desktopExtensionsEnglish,
   desktopExtensionsChinese,
   type DesktopExtensionsMessages,
@@ -34,6 +39,7 @@ export interface RendererSettingsLanguageControl {
 
 export interface RendererSettingsMessages {
   readonly credentialImports: CredentialImportMessages;
+  readonly delegation: DelegationMessages;
   readonly desktopExtensions: DesktopExtensionsMessages;
   readonly locale: RendererSettingsLocale;
   readonly title: string;
@@ -239,6 +245,8 @@ export interface RendererSettingsMessages {
   readonly connectionGroupLoading: string;
   readonly connectionGroupSaving: string;
   readonly connectionGroupSyncFailed: string;
+  readonly connectionGroupUnavailable: string;
+  readonly connectionLocalHarnessUnsupported: string;
   readonly pickerMoreAgentsLabel: string;
   readonly pickerManageLink: string;
   readonly pickerHideUnusedAgentsCta: string;
@@ -280,6 +288,12 @@ export interface RendererSettingsMessages {
   readonly updateCopyFailed: string;
   readonly updateDownloadFromReleases: string;
   readonly updateDownloadWindowsInstaller: string;
+  readonly updateViewAnnouncement: string;
+  readonly releaseAnnouncement: {
+    readonly title: string;
+    readonly acknowledge: string;
+    readonly fullNotes: string;
+  };
   readonly updateStarCallout: string;
   readonly updateStarLink: string;
   readonly aboutTagline: string;
@@ -296,6 +310,7 @@ export interface RendererSettingsMessages {
 
 const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   credentialImports: credentialImportEnglish,
+  delegation: delegationEnglish,
   desktopExtensions: desktopExtensionsEnglish,
   locale: "en",
   title: "Settings",
@@ -303,7 +318,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   starOnGitHub: "Star to support",
   sectionsLabel: "Settings sections",
   generalSection: "General",
-  pluginsSection: "Plugin Settings",
+  pluginsSection: "Plugin Pages",
   otherSection: "Other",
   appearanceDescription: "Conversation display and local resource management.",
   appearanceGroup: "Appearance",
@@ -536,6 +551,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionGroupSaving: "Saving shared Harness order…",
   connectionGroupSyncFailed:
     "Could not sync Harness order. The last confirmed order is shown; check codexhost and retry your change.",
+  connectionGroupUnavailable:
+    "Harness order is read-only because the local connection does not support it. The last confirmed order is kept.",
+  connectionLocalHarnessUnsupported:
+    "This local connection does not support codexhost Harnesses. You can still use Codex. On Windows, if Agent environment is set to WSL, switch it to Windows in Codex Settings → General, then restart Desktop through codexhost. To use Harnesses installed in WSL, connect to WSL through Remote SSH instead.",
   pickerMoreAgentsLabel: "More agents",
   pickerManageLink: "Manage",
   pickerHideUnusedAgentsCta: "Hide unused agents",
@@ -582,6 +601,12 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateCopyFailed: "Copy failed",
   updateDownloadFromReleases: "Download from GitHub Releases",
   updateDownloadWindowsInstaller: "Download Windows installer",
+  updateViewAnnouncement: "View release announcement",
+  releaseAnnouncement: Object.freeze({
+    title: "Release announcement",
+    acknowledge: "Got it",
+    fullNotes: "View full release notes",
+  }),
   updateStarCallout:
     "If CodexHost has helped you, please Star it on GitHub. It means a lot to us 👉",
   updateStarLink: "GitHub",
@@ -606,6 +631,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     appearance: "General",
     "desktop-extensions": "Plugins",
     accounts: "Accounts",
+    delegation: "Multi-Agent",
     "session-import": "Session Import",
     "usage-statistics": "Usage statistics",
     updates: "Updates",
@@ -615,6 +641,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
 
 const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   credentialImports: credentialImportChinese,
+  delegation: delegationChinese,
   desktopExtensions: desktopExtensionsChinese,
   locale: "zh-CN",
   title: "设置",
@@ -622,7 +649,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   starOnGitHub: "Star 支持",
   sectionsLabel: "设置分类",
   generalSection: "通用",
-  pluginsSection: "插件设置",
+  pluginsSection: "插件页面",
   otherSection: "其他",
   appearanceDescription: "会话显示与本地资源管理。",
   appearanceGroup: "外观",
@@ -840,6 +867,9 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionGroupSaving: "正在保存共享 Harness 排序…",
   connectionGroupSyncFailed:
     "Harness 排序同步失败，当前显示上次确认的顺序。请确认 codexhost 正常运行后重试修改。",
+  connectionGroupUnavailable: "本地连接不支持修改 Harness 排序，已保留上次确认的顺序。",
+  connectionLocalHarnessUnsupported:
+    "此本地连接不支持 codexhost Harness，仍可使用原生 Codex。在 Windows 上，如果 Agent environment 设为 WSL，请在 Codex「设置 → 常规」中切换到 Windows，再通过 codexhost 重启 Desktop。若要使用安装在 WSL 内的 Harness，请改用 Remote SSH 连接 WSL。",
   pickerMoreAgentsLabel: "更多 Agent",
   pickerManageLink: "管理",
   pickerHideUnusedAgentsCta: "收起不常用的 Agent",
@@ -883,6 +913,12 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateCopyFailed: "复制失败",
   updateDownloadFromReleases: "前往 GitHub Releases 下载",
   updateDownloadWindowsInstaller: "下载 Windows 安装包",
+  updateViewAnnouncement: "查看本版公告",
+  releaseAnnouncement: Object.freeze({
+    title: "更新公告",
+    acknowledge: "我知道了",
+    fullNotes: "查看完整更新说明",
+  }),
   updateStarCallout: "如果 CodexHost 帮到了你，请在 GitHub 点个 Star，这对我们意义重大 👉",
   updateStarLink: "GitHub",
   aboutTagline: "在 Codex Desktop 中运行 Pi 和其他 Harness",
@@ -906,6 +942,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     appearance: "通用",
     "desktop-extensions": "插件",
     accounts: "账号",
+    delegation: "多 Agent 协作",
     "session-import": "会话导入",
     "usage-statistics": "用量统计",
     updates: "更新",

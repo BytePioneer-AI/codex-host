@@ -12,6 +12,7 @@ import {
 } from "@codexhost/protocol-core";
 import {
   permissionModeFixedAtCreate,
+  sameHarnessModelRef,
   type HarnessPermissionModeId,
   type NativeCheckpointRef,
   type NativeSessionRef,
@@ -216,7 +217,7 @@ export async function executeExternalThreadFork(input: {
       source.harnessId,
       provisional.transportModelId,
     );
-    if (effectiveModel && selection && selection.model?.id !== effectiveModel.id) {
+    if (effectiveModel && selection && !sameHarnessModelRef(selection.model, effectiveModel)) {
       const transportModelId = encodeExternalTransportSelection(source.harnessId, {
         ...selection,
         model: effectiveModel,

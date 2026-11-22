@@ -59,6 +59,15 @@ describe("ZCode request-time project token", () => {
     ).rejects.toThrow("project credentials are unavailable");
   });
 
+  it("does not return opaque project tokens as authentication", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      response({ accessToken: "Bearer enc:v9:fixture" }),
+    );
+    await expect(
+      new ProjectToken().resolve(credential, "3.18.2", new AbortController().signal),
+    ).rejects.toThrow(/unsupported encrypted credential format/);
+  });
+
   it("does not expose HTTP bodies or thrown transport errors", async () => {
     const fetch = vi.spyOn(globalThis, "fetch");
     for (const fail of [

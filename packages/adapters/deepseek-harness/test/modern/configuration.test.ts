@@ -6,7 +6,6 @@ import {
   type HarnessPermissionModeCatalog,
 } from "@codexhost/shared-contracts";
 
-import { decodeDeepSeekHarnessModelRef } from "../../src/model-catalog.js";
 import { parseModernModelCatalog } from "../../src/modern/catalog.js";
 import {
   MODERN_MODEL_SELECTION_PROJECTION_KEY,
@@ -272,15 +271,11 @@ describe("DeepSeek Harness Modern configuration projection", () => {
           harnessId: "deepseek-harness",
           nativeSessionId: SESSION_ID,
         }),
-        modelCatalog: catalog,
+        modelCatalog: { ...catalog, catalog: structuredClone(catalog.catalog) },
         permissionModes: permissionCatalog(),
       });
 
-      if (!snapshot.state.effectiveModel) throw new Error("Expected an effective Model");
-      expect(decodeDeepSeekHarnessModelRef(snapshot.state.effectiveModel)).toEqual({
-        provider,
-        model,
-      });
+      expect(snapshot.state.effectiveModel).toEqual({ id: `${provider}/${model}` });
       expect(snapshot.state).not.toHaveProperty("resolvedModelLabel");
       expect(snapshot.state).not.toHaveProperty("availableThinkingOptions");
     },

@@ -8,6 +8,7 @@
     { "path": "./packages/harness-broker/tsconfig.json" },
     { "path": "./packages/harness-discovery/tsconfig.json" },
     { "path": "./packages/harness-plugin-files/tsconfig.json" },
+    { "path": "./packages/extension-backend/tsconfig.json" },
     { "path": "./packages/mapping-store/tsconfig.json" },
     { "path": "./packages/protocol-core/tsconfig.json" },
     { "path": "./packages/desktop-control/tsconfig.json" },

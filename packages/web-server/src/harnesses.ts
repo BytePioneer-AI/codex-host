@@ -3,8 +3,8 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   HARNESS_PLUGIN_API_VERSION,
-  decodeOfficialCodexModelSelection,
-  encodeOfficialCodexModelRef,
+  harnessModelRefKey,
+  sameHarnessModelRef,
   harnessPluginManifestSchema,
   isHarnessPluginInScope,
   type HarnessPluginScope,
@@ -105,26 +105,15 @@ export function groupOf(
 ): ModelGroup {
   const { catalog } = inspection;
   const options = new Map(catalog.thinkingOptions.map((option) => [option.id, option]));
-  const ultrafastByModel = new Map<string, string>();
-  if (id === "codex") {
-    const ids = new Set(catalog.models.map(({ ref }) => ref.id));
-    for (const { ref } of catalog.models) {
-      try {
-        const selection = decodeOfficialCodexModelSelection(ref);
-        if (selection.serviceTier === "ultrafast") {
-          const base = encodeOfficialCodexModelRef(selection.model).id;
-          if (ids.has(base)) ultrafastByModel.set(base, ref.id);
-        }
-      } catch {
-        // Unrecognized remote references have no speed control metadata.
-      }
-    }
-  }
+  const refs = catalog.models.map(({ ref }) => ref);
   return {
     id,
     name,
     models: catalog.models.map((model) => {
-      const ultrafastModel = ultrafastByModel.get(model.ref.id);
+      const ultrafastModel =
+        model.ref.serviceTier === undefined
+          ? refs.find((ref) => sameHarnessModelRef(ref, { ...model.ref, serviceTier: "ultrafast" }))
+          : undefined;
       const supported =
         model.supportedThinkingOptionIds ?? catalog.thinkingOptions.map((option) => option.id);
       const efforts = supported.flatMap((optionId) => {
@@ -132,13 +121,13 @@ export function groupOf(
         return option === undefined ? [] : [{ id: option.id, name: option.label }];
       });
       return {
-        id: model.ref.id,
+        id: harnessModelRefKey(model.ref),
         name: model.label,
         ...(model.resolvedModelLabel !== undefined && model.resolvedModelLabel !== model.label
           ? { description: model.resolvedModelLabel }
           : {}),
-        ...(model.fastModel ? { fastModel: model.fastModel.id } : {}),
-        ...(ultrafastModel ? { ultrafastModel } : {}),
+        ...(model.fastModel ? { fastModel: harnessModelRefKey(model.fastModel) } : {}),
+        ...(ultrafastModel ? { ultrafastModel: harnessModelRefKey(ultrafastModel) } : {}),
         ...(efforts.length > 0
           ? {
               reasoning: {

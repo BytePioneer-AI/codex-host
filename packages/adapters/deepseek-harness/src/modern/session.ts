@@ -469,6 +469,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     }
 
     const projection = projectModernHistory({
+      modelIndex: this.#modelCatalog.index,
       harnessId: this.harnessId,
       sessionId: this.#sessionId,
       events: this.#events,
@@ -2813,6 +2814,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   /** `media` also resolves local media paths, which only displayed history needs. */
   #project(media = false): ReturnType<typeof projectModernHistory> {
     return projectModernHistory({
+      modelIndex: this.#modelCatalog.index,
       harnessId: this.harnessId,
       sessionId: this.#sessionId,
       events: this.#events,

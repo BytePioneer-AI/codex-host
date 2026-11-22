@@ -26,6 +26,11 @@ import type {
 } from "@codexhost/shared-contracts";
 
 import {
+  hasDisplacedAntigravityTurn,
+  planAntigravityTurnRepair,
+  type SnapshotTurnIdentity,
+} from "./antigravity-turn-repair.js";
+import {
   MAX_PENDING_INJECTED_TEXTS,
   THREAD_METADATA_FIELDS,
   storedDelegationRecordV1Schema,
@@ -126,6 +131,27 @@ function sameTurns(left: StoredTurnMappingV1[], right: StoredTurnMappingV1[]): b
       );
     })
   );
+}
+
+function failuresBeforeRollback(
+  record: StoredThreadRecordV1,
+  retained: StoredTurnMappingV1[],
+): StoredThreadRecordV1["failedTurns"] {
+  if (!record.failedTurns) return;
+  const undone = new Set(
+    record.turnMappings.slice(retained.length).map(({ hostTurnId }) => hostTurnId),
+  );
+  const kept = record.failedTurns
+    .filter(
+      ({ hostTurnId, afterTurnId }) =>
+        !undone.has(hostTurnId) && (afterTurnId === undefined || !undone.has(afterTurnId)),
+    )
+    .map((failure) => ({
+      ...failure,
+      nativeTurnRef: retained.find(({ hostTurnId }) => hostTurnId === failure.hostTurnId)
+        ?.nativeTurnRef,
+    }));
+  return kept.length ? kept : undefined;
 }
 
 /** Records must not persist credentials, such as a token embedded in a Git remote URL. */
@@ -703,6 +729,7 @@ export class MappingStore {
         nativeSessionRef: input.nativeSessionRef,
         turnMappings: input.turnMappings,
         forkSource: input.forkSource,
+        failedTurns: failuresBeforeRollback(current, input.turnMappings),
       };
     });
   }
@@ -738,6 +765,7 @@ export class MappingStore {
         ...current,
         nativeSessionRef: input.nativeSessionRef,
         turnMappings: input.turnMappings,
+        failedTurns: failuresBeforeRollback(current, input.turnMappings),
       };
     });
   }
@@ -803,6 +831,57 @@ export class MappingStore {
       ...current,
       turnMappings: this.#mergeMappings(current.turnMappings, mappings),
     }));
+  }
+
+  async saveFailedTurn(
+    hostThreadId: HostThreadId,
+    failure: NonNullable<StoredThreadRecordV1["failedTurns"]>[number],
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (record) => {
+      const ref = failure.nativeTurnRef;
+      if (
+        ref &&
+        (ref.harnessId !== record.harnessId ||
+          ref.nativeSessionId !== record.nativeSessionRef?.nativeSessionId)
+      ) {
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Failed Turn belongs to another Native Session",
+        );
+      }
+      if (record.failedTurns?.some((turn) => turn.hostTurnId === failure.hostTurnId)) return null;
+      return { ...record, failedTurns: [...(record.failedTurns ?? []), failure] };
+    });
+  }
+
+  /** Rekey only confirmed Antigravity foreground boundaries, without replacing Host identities. */
+  async repairAntigravityTurnMappings(
+    hostThreadId: HostThreadId,
+    expectedRevision: number,
+    snapshot: readonly SnapshotTurnIdentity[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(
+      hostThreadId,
+      (current) => {
+        if (current.revision !== expectedRevision) {
+          throw new MappingStoreError(
+            "MAPPING_CONFLICT",
+            "Antigravity boundary repair source is stale",
+          );
+        }
+        if (!current.turnMappings.some(hasDisplacedAntigravityTurn)) return null;
+        const repaired = planAntigravityTurnRepair(current, snapshot);
+        if (!repaired) {
+          throw new MappingStoreError(
+            "MAPPING_CONFLICT",
+            "Antigravity Turn boundaries cannot be repaired unambiguously",
+          );
+        }
+        return { ...current, turnMappings: repaired };
+      },
+      true,
+      "antigravityBoundaryRepair",
+    );
   }
 
   async reconcileTurnMappings(
@@ -1097,6 +1176,7 @@ export class MappingStore {
     change: (current: StoredThreadRecordV1) => StoredThreadRecordV1 | null,
     preserveUpdatedAt:
       boolean | ((current: StoredThreadRecordV1, next: StoredThreadRecordV1) => boolean) = false,
+    mode?: "antigravityBoundaryRepair",
   ): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
     let result: StoredThreadRecordV1 | null = null;
@@ -1118,7 +1198,7 @@ export class MappingStore {
         revision: current.revision + 1,
         updatedAt: preserve ? current.updatedAt : this.#now().toISOString(),
       }) as StoredThreadRecordV1;
-      this.#validateGlobal(next, hostThreadId);
+      this.#validateGlobal(next, hostThreadId, mode === "antigravityBoundaryRepair");
       await this.#replaceFile(this.#recordPath(hostThreadId), next, true);
       const metadata = threadMetadataOf(next);
       if (!sameJson(threadMetadataOf(current), metadata)) {
@@ -1392,7 +1472,11 @@ export class MappingStore {
     }
   }
 
-  #validateGlobal(record: StoredThreadRecordV1, replacing: HostThreadId | null): void {
+  #validateGlobal(
+    record: StoredThreadRecordV1,
+    replacing: HostThreadId | null,
+    allowOwnNativeTurnRekeys = false,
+  ): void {
     const duplicateCreate = this.#createRequests.get(record.createRequestId);
     if (duplicateCreate && duplicateCreate !== replacing) {
       throw new MappingStoreError("DUPLICATE_CREATE_REQUEST", "Create request is already stored");
@@ -1409,7 +1493,11 @@ export class MappingStore {
         throw new MappingStoreError("MAPPING_CONFLICT", "Host Turn is already mapped");
       }
       const duplicateNativeTurn = this.#nativeTurns.get(nativeTurnKey(mapping));
-      if (duplicateNativeTurn && duplicateNativeTurn !== mapping.hostTurnId) {
+      if (
+        duplicateNativeTurn &&
+        duplicateNativeTurn !== mapping.hostTurnId &&
+        !(allowOwnNativeTurnRekeys && this.#hostTurns.get(duplicateNativeTurn) === replacing)
+      ) {
         throw new MappingStoreError("MAPPING_CONFLICT", "Native Turn is already mapped");
       }
     }

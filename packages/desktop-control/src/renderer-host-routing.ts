@@ -39,6 +39,8 @@ export interface RendererHostRoutePolicy {
   readonly state: "ready";
   readonly hostId: string;
   readonly scopedCreation: boolean;
+  /** Background creation on this route may start with a different client Thread id. */
+  readonly requiresCreationMode?: true;
   requestTarget(): unknown;
   select(
     model: string | null,

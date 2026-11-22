@@ -26,7 +26,7 @@ pub(crate) fn stop(request: &UpdateRequest) -> Result<Option<String>, Box<dyn Er
     let output = stop_command(request).output()?;
     if !output.status.success() {
         return Err(format!(
-            "stopping Web and Host failed ({}): {}{}",
+            "pre-update service shutdown failed ({}): {}{}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)

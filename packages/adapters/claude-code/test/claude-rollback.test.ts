@@ -12,7 +12,7 @@ import {
 import type { HarnessSession } from "@codexhost/harness-adapter";
 
 import { ClaudeCodeAdapter } from "../src/claude-code-adapter.js";
-import { encodeClaudeModelRef } from "../src/model-catalog.js";
+import { claudeModelRef } from "../src/model-catalog.js";
 import { CLAUDE_DEFAULT_THINKING_OPTION_ID } from "../src/thinking-options.js";
 import { CLAUDE_DEFAULT_PERMISSION_MODE_ID } from "../src/permission-modes.js";
 import { ClaudePendingSessions } from "../src/pending-session.js";
@@ -159,7 +159,7 @@ async function unwrap(result: ReturnType<ClaudeCodeAdapter["open"]>): Promise<Ha
   return opened.value;
 }
 
-const model = encodeClaudeModelRef("sonnet");
+const model = claudeModelRef("sonnet");
 
 describe("Claude last-Turn rollback", () => {
   it("restores lazy native configuration before selecting permission mode", async () => {
@@ -194,7 +194,7 @@ describe("Claude last-Turn rollback", () => {
         kind: "resume",
         cwd: f.directory,
         nativeRef: ref,
-        model: encodeClaudeModelRef("default"),
+        model: claudeModelRef("default"),
       }),
     );
     expect(session.initialState.effectiveModel).toEqual(model);

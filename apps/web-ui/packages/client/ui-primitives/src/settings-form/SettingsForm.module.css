@@ -40,6 +40,13 @@
   cursor: pointer;
   background: var(--dsw-alias-label-primary);
   color: var(--dsw-alias-bg-layer-3);
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.save:active:not(:disabled) {
+  opacity: 0.86;
 }
 
 .save:disabled {
@@ -51,4 +58,31 @@
   outline: var(--dsw-focus-ring-width) solid
     var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: 1px;
+}
+
+@media (max-width: 640px) {
+  .form {
+    padding: 4px 14px 14px;
+    border: 0.5px solid var(--dsw-alias-border-l2);
+    border-radius: 16px;
+    background: var(--dsw-alias-bg-layer-2);
+  }
+
+  .readOnly,
+  .unavailable {
+    margin-top: 10px;
+  }
+
+  .footer {
+    flex-wrap: wrap;
+    padding-top: 14px;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .save {
+    width: 100%;
+    min-height: 44px;
+    font-size: 15px;
+    font-weight: 500;
+  }
 }

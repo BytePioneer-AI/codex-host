@@ -80,6 +80,7 @@ export class OfficialRuntimeOwner {
   readonly #threadModelSettings = new Map<string, JsonObject & { model: string }>();
   #backend: OwnedOfficialBackend | undefined;
   #generation = 0;
+  #hasStartedSuccessfully = false;
   #phase: "stopped" | "starting" | "running" | "stopping" | "unavailable" = "stopped";
   #starting: Promise<void> | undefined;
   #stopping: Promise<void> | undefined;
@@ -99,6 +100,11 @@ export class OfficialRuntimeOwner {
 
   get running(): boolean {
     return this.#phase === "running";
+  }
+
+  /** Stays true when a confirmed generation is retired or its replacement fails to start. */
+  get hasStartedSuccessfully(): boolean {
+    return this.#hasStartedSuccessfully;
   }
 
   start(): Promise<void> {
@@ -142,6 +148,7 @@ export class OfficialRuntimeOwner {
         if (generation !== this.#generation || this.#phase !== "starting")
           throw new OfficialAdmissionError("unavailable");
         this.#phase = "running";
+        this.#hasStartedSuccessfully = true;
       } catch (error) {
         this.#unavailable();
         throw new OfficialAdmissionError("unavailable", error);

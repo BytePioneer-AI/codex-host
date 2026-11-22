@@ -1,5 +1,6 @@
 import { usageMeasurementsSchema } from "@codexhost/shared-contracts";
 import {
+  HARNESS_TRANSPORT_MODEL_ID_MAX_LENGTH,
   harnessIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
@@ -59,7 +60,7 @@ const storedThreadCoreV1Shape = {
   cwd: nonBlankTextSchema.max(16_384),
   title: z.string().max(4_096),
   archived: z.boolean(),
-  transportModelId: nonBlankTextSchema.max(1_024),
+  transportModelId: nonBlankTextSchema.max(HARNESS_TRANSPORT_MODEL_ID_MAX_LENGTH),
   ephemeral: z.boolean(),
   historyMode: z.enum(["legacy", "paginated"]),
   forkSource: z
@@ -105,6 +106,20 @@ const storedThreadCoreV1Shape = {
     .optional()
     .catch(undefined),
   turnMappings: z.array(storedTurnMappingV1Schema),
+  /** Host execution outcomes, separate from Native history; never includes Items or input. */
+  failedTurns: z
+    .array(
+      z
+        .object({
+          hostTurnId: hostTurnIdSchema,
+          afterTurnId: hostTurnIdSchema.optional(),
+          nativeTurnRef: nativeTurnRefSchema.optional(),
+          error: z.enum(["authenticationRequired", "executionFailed"]),
+        })
+        .strict(),
+    )
+    .optional()
+    .catch(undefined),
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema,
 };

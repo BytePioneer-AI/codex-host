@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { QoderAdapter } from "../src/qoder-adapter.js";
 import type { QoderSdkDaemon } from "../src/qoder-daemon-pool.js";
-import { decodeQoderModelRef } from "../src/qoder-models.js";
 import type { QoderModelInfo, QoderQuery, QoderQueryFactory } from "../src/qoder-sdk-types.js";
 
 function model(value: string): QoderModelInfo {
@@ -48,7 +47,7 @@ describe.each(["global", "cn"] as const)("Qoder %s model inspection", (variant) 
       const first = await adapter.inspect({ cwd });
       expect(first.status).toBe("ready");
       if (first.status !== "ready") throw new Error("Model inspection failed");
-      expect(first.catalog.models.map(({ ref }) => decodeQoderModelRef(ref))).toEqual(["model-1"]);
+      expect(first.catalog.models.map(({ ref }) => ref.id)).toEqual(["model-1"]);
       expect(first.catalog.defaultModel).toEqual(first.catalog.models[0]?.ref);
       expect(await adapter.inspect({ cwd })).toBe(first);
       expect(queryFactory).toHaveBeenCalledTimes(1);
@@ -56,15 +55,13 @@ describe.each(["global", "cn"] as const)("Qoder %s model inspection", (variant) 
       const refreshed = await adapter.inspect({ cwd, refresh: true });
       expect(refreshed.status).toBe("ready");
       if (refreshed.status !== "ready") throw new Error("Model refresh failed");
-      expect(refreshed.catalog.models.map(({ ref }) => decodeQoderModelRef(ref))).toEqual([
-        "model-2",
-      ]);
+      expect(refreshed.catalog.models.map(({ ref }) => ref.id)).toEqual(["model-2"]);
       expect(await adapter.inspect({ cwd })).toBe(refreshed);
 
       const other = await adapter.inspect({ cwd: "/other" });
       expect(other.status).toBe("ready");
       if (other.status !== "ready") throw new Error("Other directory inspection failed");
-      expect(other.catalog.models.map(({ ref }) => decodeQoderModelRef(ref))).toEqual(["model-3"]);
+      expect(other.catalog.models.map(({ ref }) => ref.id)).toEqual(["model-3"]);
       expect(await adapter.inspect({ cwd })).toBe(refreshed);
       expect(queryFactory).toHaveBeenCalledTimes(3);
       expect(stops).toHaveLength(3);

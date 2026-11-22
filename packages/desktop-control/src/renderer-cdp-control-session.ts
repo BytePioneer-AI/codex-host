@@ -279,11 +279,11 @@ async function installTarget(
   renderer: RendererCdpClient;
   snapshot: RendererCdpControlSnapshot;
   attachExtensions(): void;
-  disposeModules(): Promise<void> | undefined;
+  disposeModules(retireSurfaces?: boolean): Promise<void> | undefined;
 }> {
   const renderer = await operations.connect(target.webSocketDebuggerUrl);
   let disposeModules: (() => void) | undefined;
-  let detach: (() => Promise<void>) | undefined;
+  let detach: ((retireSurfaces?: boolean) => Promise<void>) | undefined;
   const attachExtensions = () => {
     detach ??= extensions?.attach(target.id, renderer);
   };
@@ -306,9 +306,9 @@ async function installTarget(
       renderer,
       snapshot: { target, draftPrewarmPolicy, binding },
       attachExtensions,
-      disposeModules: () => {
+      disposeModules: (retireSurfaces) => {
         disposeModules?.();
-        return detach?.();
+        return detach?.(retireSurfaces);
       },
     };
   } catch (error) {
@@ -334,7 +334,7 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
     private readonly pollIntervalMs: number,
     private readonly operations: RendererCdpControlOperations,
     private currentSnapshot: RendererCdpControlSnapshot,
-    private disposeModules: () => Promise<void> | undefined,
+    private disposeModules: (retireSurfaces?: boolean) => Promise<void> | undefined,
     private readonly extensions?: RendererDesktopExtensions,
   ) {}
 
@@ -384,7 +384,7 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
     );
     try {
       if (!this.#closed) {
-        await this.disposeModules();
+        await this.disposeModules(target.id !== this.currentSnapshot.target.id);
         this.renderer.close();
       }
       if (this.#closed) throw new Error("Renderer CDP Control Session is closed");

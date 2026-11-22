@@ -546,7 +546,14 @@
   padding-inline-start: calc(8px + var(--dsh-workspace-indent, 0px));
 }
 
-.sessionOverflowButton:hover {
+@media (hover: hover) {
+  .sessionOverflowButton:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+    color: var(--dsw-alias-label-secondary);
+  }
+}
+
+.sessionOverflowButton:active {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
 }
@@ -563,6 +570,10 @@
   }
   .root:not(.rail) .sectionHeader {
     height: 44px;
+  }
+  .searchInput,
+  .renameInput {
+    font-size: 16px;
   }
 }
 

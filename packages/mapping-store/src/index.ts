@@ -1,5 +1,6 @@
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 
+export { hasDisplacedAntigravityTurn } from "./antigravity-turn-repair.js";
 export { MappingStore, MappingStoreError } from "./mapping-store.js";
 export type { MappingStoreErrorCode, MappingStoreOptions } from "./mapping-store.js";
 export {

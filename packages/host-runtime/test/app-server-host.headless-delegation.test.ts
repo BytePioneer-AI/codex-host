@@ -3,15 +3,23 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { expect, it } from "vitest";
+import { HarnessPreferencesStore } from "@codexhost/harness-plugin-files";
 import { MappingStore } from "@codexhost/mapping-store";
 import type { JsonObject } from "@codexhost/protocol-core";
+import {
+  harnessModelRefSchema,
+  harnessPreferencePatchSchema,
+  harnessThinkingOptionIdSchema,
+} from "@codexhost/shared-contracts";
 import { AppServerHost } from "../src/app-server-host.js";
 import { OfficialRuntimeScope } from "../src/codex-runtime/official-runtime-scope.js";
+import { runDelegationCli } from "../src/delegation-cli.js";
+import { routeDelegationRequest } from "../src/delegation-control-server.js";
 import type { DelegationControlRegistration } from "../src/delegation-types.js";
 import type { OfficialAppServerExit } from "../src/official-app-server-connection.js";
 import { JsonLineCollector } from "./app-server-host-fixture.js";
 
-it("initializes a headless client's first default-model Codex delegation and exports its full Thread", async () => {
+it("supports native and saved defaults for headless Codex delegations and exports their Threads", async () => {
   const directory = mkdtempSync(path.join(tmpdir(), "headless-delegation-"));
   const stdin = new PassThrough();
   const stdout = new PassThrough();
@@ -32,6 +40,8 @@ it("initializes a headless client's first default-model Codex delegation and exp
     },
   ];
   const threadReads: unknown[] = [];
+  const threadStarts: unknown[] = [];
+  const turnStarts: unknown[] = [];
   stdin.on("data", () => {
     for (const request of requests.messages.splice(0)) {
       methods.push(String(request.method));
@@ -42,8 +52,33 @@ it("initializes a headless client's first default-model Codex delegation and exp
         response = { result: { userAgent: "fixture" } };
       } else if (!initialized) {
         response = { error: { code: -32002, message: "Not initialized" } };
+      } else if (request.method === "model/list") {
+        response = {
+          result: {
+            data: [
+              {
+                model: "native-default",
+                isDefault: true,
+                supportedReasoningEfforts: [{ reasoningEffort: "low" }],
+              },
+              {
+                model: "delegated",
+                serviceTiers: [{ id: "priority" }, { id: "ultrafast" }],
+                supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+              },
+            ],
+          },
+        };
       } else if (request.method === "thread/start") {
-        response = { result: { thread: { id: "native-child" } } };
+        const id = threadStarts.length ? `native-child-${threadStarts.length}` : "native-child";
+        threadStarts.push(request.params);
+        const { model, serviceTier } = request.params as JsonObject;
+        response = {
+          result: {
+            thread: { id },
+            ...(typeof model === "string" ? { model, serviceTier: serviceTier ?? null } : {}),
+          },
+        };
       } else if (request.method === "thread/read") {
         threadReads.push(request.params);
         response = {
@@ -58,6 +93,7 @@ it("initializes a headless client's first default-model Codex delegation and exp
           },
         };
       } else if (request.method === "turn/start") {
+        turnStarts.push(request.params);
         response = { result: { turn: { id: "native-turn" } } };
       } else {
         response = { result: {} };
@@ -105,17 +141,22 @@ it("initializes a headless client's first default-model Codex delegation and exp
     },
   });
   const running = host.run();
+  const preferences = new HarnessPreferencesStore(directory);
+  const save = (configuration: unknown) =>
+    preferences.patch(
+      harnessPreferencePatchSchema.parse({
+        operations: [{ kind: "delegation", harnessId: "codex", configuration }],
+      }),
+    );
+  const input = {
+    harnessId: "codex",
+    task: "inspect workspace",
+    cwd: directory,
+    parentThreadId: "client:grokbot-user",
+  };
   try {
     const api = await registration.promise;
-    await expect(
-      api.start({
-        harnessId: "codex",
-        task: "inspect workspace",
-        cwd: directory,
-        parentThreadId: "client:grokbot-user",
-        requestId: "headless-first",
-      }),
-    ).resolves.toMatchObject({
+    await expect(api.start({ ...input, requestId: "headless-first" })).resolves.toMatchObject({
       threadId: "native-child",
       turnId: "native-turn",
       status: "running",
@@ -139,7 +180,122 @@ it("initializes a headless client's first default-model Codex delegation and exp
     expect(threadReads).toContainEqual({ threadId: "native-child", includeTurns: true });
     expect(methods.indexOf("initialize")).toBeLessThan(methods.indexOf("thread/start"));
     expect(methods.filter((method) => method === "initialize")).toHaveLength(1);
+    expect(threadStarts[0]).not.toHaveProperty("model");
+    expect(turnStarts[0]).not.toHaveProperty("effort");
+
+    const canonicalModel = { id: "delegated" };
+    const delegatedInput = { ...input, requestId: "headless-saved" };
+    await save({ model: { id: "codex-model-v1.ZGVsZWdhdGVk" }, thinkingOptionId: "high" });
+    const delegated = await api.start(delegatedInput);
+    expect(delegated.configuration?.requested).toEqual({
+      model: canonicalModel,
+      thinkingOptionId: "high",
+    });
+    expect(threadStarts.at(-1)).toMatchObject({ model: "delegated", serviceTier: null });
+    expect(turnStarts.at(-1)).toMatchObject({
+      threadId: delegated.threadId,
+      model: "delegated",
+      effort: "high",
+    });
+
+    const sameModel = await api.start({
+      ...input,
+      requestId: "headless-same-model",
+      model: harnessModelRefSchema.parse({ id: "delegated" }),
+    });
+    expect(turnStarts.at(-1)).toMatchObject({ threadId: sameModel.threadId, effort: "high" });
+    const differentModel = await api.start({
+      ...input,
+      requestId: "headless-different-model",
+      model: harnessModelRefSchema.parse({ id: "native-default" }),
+    });
+    expect(turnStarts.at(-1)).toMatchObject({
+      threadId: differentModel.threadId,
+      model: "native-default",
+    });
+    expect(turnStarts.at(-1)).not.toHaveProperty("effort");
+
+    const cli = async (...arguments_: string[]) => {
+      const output = new PassThrough();
+      const diagnosticOutput = new PassThrough();
+      const exit = await runDelegationCli({
+        arguments: arguments_,
+        output,
+        diagnosticOutput,
+        environment: {
+          CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:4321",
+          CODEXHOST_RUNTIME_TOKEN: "test",
+          CODEXHOST_THREAD_ID: input.parentThreadId,
+        },
+        fetchImpl: async (url, init) =>
+          Response.json(
+            await routeDelegationRequest(
+              { api },
+              new URL(String(url)).pathname,
+              JSON.parse(String(init?.body)),
+            ),
+          ),
+      });
+      expect(exit, diagnosticOutput.read()?.toString()).toBe(0);
+      return String(output.read());
+    };
+    const discovered = JSON.parse(await cli("harness", "inspect", "codex"));
+    expect(discovered.inspection.catalog.models).toEqual([
+      expect.objectContaining({ ref: { id: "native-default" } }),
+      expect.objectContaining({ ref: { id: "delegated" }, fastModel: { id: "delegated~fast" } }),
+      expect.objectContaining({ ref: { id: "delegated~ultrafast" } }),
+    ]);
+    const compact = JSON.parse(await cli("harness", "inspect", "codex", "--format", "compact"));
+    const fast = compact.models.find(
+      (model: { label: string }) => model.label === "delegated (Fast)",
+    );
+    const args = ["delegate", "start", "--harness", "codex", "--task", "fast", "--cwd", directory];
+    expect(
+      await cli(...args, "--model", fast.id, "--request-id", "fast", "--format", "text"),
+    ).toContain("model: delegated~fast\n");
+    expect(threadStarts.at(-1)).toMatchObject({ model: "delegated", serviceTier: "priority" });
+    const count = threadStarts.length;
+    const retry = { ...input, task: "fast", requestId: "fast" };
+    const native = await api.start({
+      ...retry,
+      model: harnessModelRefSchema.parse({ id: "delegated", serviceTier: "priority" }),
+    });
+    await expect(
+      api.start({
+        ...retry,
+        model: harnessModelRefSchema.parse({ id: "codex-fast-model-v1.ZGVsZWdhdGVk" }),
+      }),
+    ).resolves.toMatchObject({
+      delegationId: native.delegationId,
+      threadId: native.threadId,
+    });
+    await expect(
+      api.start({
+        ...retry,
+        model: harnessModelRefSchema.parse({ id: "delegated", serviceTier: "ultrafast" }),
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    expect(threadStarts).toHaveLength(count);
+    await cli(...args, "--model", discovered.inspection.catalog.models[2].ref.id);
+    expect(threadStarts.at(-1)).toMatchObject({ model: "delegated", serviceTier: "ultrafast" });
+
+    await save({ model: { id: "retired" }, thinkingOptionId: "low" });
+    await expect(api.start(delegatedInput)).resolves.toMatchObject({
+      delegationId: delegated.delegationId,
+      threadId: delegated.threadId,
+    });
+    const fallback = await api.start({ ...input, requestId: "headless-stale" });
+    expect(threadStarts.at(-1)).not.toHaveProperty("model");
+    expect(turnStarts.at(-1)).toMatchObject({ threadId: fallback.threadId });
+    expect(turnStarts.at(-1)).not.toHaveProperty("effort");
+    await expect(
+      api.start({ ...input, model: harnessModelRefSchema.parse({ id: "retired" }) }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    await expect(
+      api.start({ ...input, thinkingOptionId: harnessThinkingOptionIdSchema.parse("high") }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
   } finally {
+    await preferences.close();
     host.close();
     await running;
     await scope.close();

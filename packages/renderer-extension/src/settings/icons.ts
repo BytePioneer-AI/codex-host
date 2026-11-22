@@ -50,6 +50,7 @@ import CircleHelp from "lucide/dist/esm/icons/circle-question-mark.mjs";
 import Upload from "lucide/dist/esm/icons/upload.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
 import Users from "lucide/dist/esm/icons/users.mjs";
+import Workflow from "lucide/dist/esm/icons/workflow.mjs";
 import Plus from "lucide/dist/esm/icons/plus.mjs";
 import Zap from "lucide/dist/esm/icons/zap.mjs";
 
@@ -60,6 +61,7 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "github",
   "language",
   "connections",
+  "delegation",
   "extensions",
   "accounts",
   "session-import",
@@ -129,6 +131,7 @@ const iconNodes = {
   ],
   language: Languages,
   connections: PlugZap,
+  delegation: Workflow,
   extensions: Puzzle,
   accounts: Users,
   "session-import": FolderInput,

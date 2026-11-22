@@ -1,4 +1,3 @@
-import { decodeModel } from "./models.js";
 import {
   configureSubagentEvent,
   configureSubagentSnapshot,
@@ -103,7 +102,7 @@ export class ZcodeSession implements HarnessSession {
   #lastSeq = 0;
   #closePromise: Promise<void> | undefined;
   #terminalTask: Promise<void> | undefined;
-  readonly catalog: ReturnType<typeof modelCatalog>;
+  readonly #models: ReturnType<typeof modelCatalog>;
   constructor(
     readonly transport: CliTransport,
     snapshot: NativeSnapshot,
@@ -112,13 +111,13 @@ export class ZcodeSession implements HarnessSession {
     readonly isLocked = () => false,
   ) {
     this.capabilities = ZCODE_CAPABILITIES;
-    this.catalog = modelCatalog(nativeCatalog);
+    this.#models = modelCatalog(nativeCatalog);
     this.#snapshot = snapshot;
     this.#usage = new ZcodeUsage(snapshot.session.sessionId, (event) => this.#emit(event));
     this.#goalActive =
       (snapshot.target === undefined ? snapshot.projection.target : snapshot.target)?.status ===
       "active";
-    this.#state = sessionState(snapshot, transport.locator);
+    this.#state = sessionState(snapshot, transport.locator, this.#models.index);
     this.initialState = structuredClone(this.#state);
     this.initialUsage = sessionUsage(snapshot, nativeCatalog);
     this.#lastSeq = typeof snapshot.runtime.eventSeq === "number" ? snapshot.runtime.eventSeq : 0;
@@ -224,7 +223,7 @@ export class ZcodeSession implements HarnessSession {
     this.#goalActive =
       (snapshot.target === undefined ? snapshot.projection.target : snapshot.target)?.status ===
       "active";
-    this.#state = sessionState(snapshot, this.transport.locator);
+    this.#state = sessionState(snapshot, this.transport.locator, this.#models.index);
     this.#emit({ type: "session.state.changed", state: structuredClone(this.#state) });
   }
   async refreshUsage() {
@@ -253,7 +252,7 @@ export class ZcodeSession implements HarnessSession {
   }
   #subagentConfiguration(): SubagentConfiguration {
     const state = this.#state;
-    const model = state.effectiveModel ? decodeModel(state.effectiveModel).modelId : undefined;
+    const model = state.effectiveModel ? this.#snapshot.settings.model.current?.modelId : undefined;
     return {
       ...(model ? { model } : {}),
       ...(state.effectiveThinkingOptionId
@@ -275,7 +274,7 @@ export class ZcodeSession implements HarnessSession {
     try {
       const snapshot = await this.#readNative();
       this.#apply(snapshot);
-      return { ok: true, value: await readHistory(this.transport, snapshot) };
+      return { ok: true, value: await readHistory(this.transport, snapshot, this.#models.index) };
     } catch (error) {
       return { ok: false, error: nativeError(error) };
     }
@@ -349,17 +348,13 @@ export class ZcodeSession implements HarnessSession {
       try {
         let method: "setModel" | "setThoughtLevel" | "setMode", params: Record<string, unknown>;
         if (command.type === "model.select") {
-          if (!this.catalog.models.some((model) => model.ref.id === command.model.id))
-            return failure("invalidRequest", "ZCode model is not available");
           method = "setModel";
           params = {
-            model: selectNativeModel(command.model, {
-              ...this.#snapshot.settings,
-              model: {
-                ...this.#snapshot.settings.model,
-                available: this.nativeCatalog.model.available,
-              },
-            }),
+            model: selectNativeModel(
+              command.model,
+              this.#models.index,
+              this.#snapshot.settings.model.current,
+            ),
             persistAsWorkspaceLastUsed: false,
           };
         } else if (command.type === "thinking.select") {
@@ -591,7 +586,12 @@ export class ZcodeSession implements HarnessSession {
       const snapshot = await this.#readNative();
       if (this.#active !== active || this.#closed || this.#faulted) return;
       const turns = (
-        await readHistory(this.transport, snapshot, active.terminal ? [active.terminal] : [])
+        await readHistory(
+          this.transport,
+          snapshot,
+          this.#models.index,
+          active.terminal ? [active.terminal] : [],
+        )
       ).turns;
       const turn = turns.find((turn) => turn.nativeTurnRef.nativeTurnKey === active.messageId);
       if (turn) active.projection.reconcile(turn.items);

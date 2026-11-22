@@ -17,7 +17,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { createCopilotClient, copilotEnvironment } from "./client.js";
 import { resolveCopilotExecutable } from "./command.js";
-import { modelCatalog, readModels } from "./configuration.js";
+import { modelCatalog, normalizeStoredCopilotModelRef, readModels } from "./configuration.js";
 import { bounded, failure, nativeError, CopilotOperationError } from "./errors.js";
 import { forkBoundary, readPersistedEvents, rootMessages } from "./history.js";
 import { copilotId, sessionIdFromRef, sessionRef, sessionIsUnattended } from "./refs.js";
@@ -55,6 +55,7 @@ const permissionModes = harnessPermissionModeCatalogSchema.parse({
 });
 
 export class CopilotAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredCopilotModelRef;
   readonly harnessId = copilotId;
   private readonly sessions = new Map<string, CopilotHarnessSession>();
   private readonly clients = new Set<CopilotClient>();

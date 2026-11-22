@@ -3,6 +3,7 @@
  * into a Web settings section and backed by the Web client channel instead of
  * the console server.
  */
+import type { ReleaseAnnouncement } from "@codexhost/shared-contracts";
 import { createConsoleConnectionDiagnostics } from "./console/connection-diagnostics.js";
 import consoleComponentsCss from "./console/components.css";
 import usageCss from "./console/usage/usage.css";
@@ -13,6 +14,7 @@ import { installIdleReleasePreferenceSync } from "./renderer-idle-release-prefer
 import { createRendererModelClient, type RendererModelClient } from "./renderer-model-client.js";
 import coloredBrandCss from "./renderer-brand-mark.css";
 import accountsCss from "./settings/accounts.css";
+import delegationCss from "./settings/delegation.css";
 import { RendererSettingsPageScope, type RendererSettingsPageDefinition } from "./settings/core.js";
 import { mountIdleReleaseControls } from "./settings/idle-release-controls.js";
 import {
@@ -21,6 +23,10 @@ import {
   type RendererSettingsMessages,
 } from "./settings/localization.js";
 import { createDefaultRendererSettingsPages } from "./settings/pages.js";
+import {
+  openReleaseAnnouncementDialog,
+  type ReleaseAnnouncementDialogHandle,
+} from "./settings/release-announcement-dialog.js";
 import type { RendererConnectionDiagnostics } from "./settings/connections-page.js";
 import settingsCss from "./settings/shell.css";
 import tailwindCss from "./settings/tailwind.css";
@@ -66,6 +72,17 @@ function resourcesPage(
   };
 }
 
+let cachedSettingsSheet: CSSStyleSheet | undefined;
+function getWebSettingsStyleSheet(): CSSStyleSheet {
+  if (!cachedSettingsSheet) {
+    cachedSettingsSheet = new CSSStyleSheet();
+    cachedSettingsSheet.replaceSync(
+      `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${delegationCss}\n${consoleComponentsCss}\n${usageCss}\n${coloredBrandCss}\n${WEB_LAYOUT_CSS}`,
+    );
+  }
+  return cachedSettingsSheet;
+}
+
 function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptions): () => void {
   const messages = rendererSettingsMessages(resolveRendererSettingsLocale([options.locale]));
   const manager = webRequestManager();
@@ -80,6 +97,8 @@ function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptio
     checkUpdate: () => modelClient.checkUpdate(),
     startUpdate: () => modelClient.startUpdate(),
     readUpdateStatus: () => modelClient.readUpdateStatus(),
+    getReleaseAnnouncement: (params?: { manual?: boolean }) =>
+      modelClient.getReleaseAnnouncement?.(params) ?? Promise.resolve(null),
   };
   const page = [
     ...createDefaultRendererSettingsPages(
@@ -95,6 +114,8 @@ function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptio
       undefined,
       undefined,
       () => modelClient,
+      undefined,
+      () => modelClient,
     ),
     resourcesPage(messages, modelClient),
   ].find((candidate) => candidate.id === pageId);
@@ -102,11 +123,7 @@ function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptio
 
   host.style.colorScheme = options.colorScheme;
   const shadow = host.shadowRoot ?? host.attachShadow({ mode: "open" });
-  const sheet = new CSSStyleSheet();
-  sheet.replaceSync(
-    `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${consoleComponentsCss}\n${usageCss}\n${coloredBrandCss}\n${WEB_LAYOUT_CSS}`,
-  );
-  shadow.adoptedStyleSheets = [sheet];
+  shadow.adoptedStyleSheets = [getWebSettingsStyleSheet()];
   const content = document.createElement("div");
   content.className = "settings-page__content";
   const root = document.createElement("div");
@@ -137,6 +154,44 @@ function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptio
   };
 }
 
+interface WebReleaseAnnouncementOptions {
+  locale: string;
+  colorScheme: "light" | "dark";
+  onClose?: () => void;
+}
+
+interface WebReleaseAnnouncementControl {
+  setColorScheme(colorScheme: "light" | "dark"): void;
+  dispose(): void;
+}
+
+function openReleaseAnnouncement(
+  announcement: ReleaseAnnouncement,
+  options: WebReleaseAnnouncementOptions,
+): WebReleaseAnnouncementControl | null {
+  const handle: ReleaseAnnouncementDialogHandle | null = openReleaseAnnouncementDialog({
+    announcement,
+    locale: resolveRendererSettingsLocale([options.locale]),
+    ownerDocument: document,
+    colorScheme: options.colorScheme,
+    ...(options.onClose ? { onClose: options.onClose } : {}),
+  });
+  if (!handle) return null;
+  return {
+    setColorScheme(colorScheme) {
+      handle.setColorScheme(colorScheme);
+    },
+    dispose() {
+      handle.dispose();
+    },
+  };
+}
+
 (
-  window as unknown as { __codexhostWebSettingsV1?: { mount: typeof mount } }
-).__codexhostWebSettingsV1 = { mount };
+  window as unknown as {
+    __codexhostWebSettingsV1?: {
+      mount: typeof mount;
+      openReleaseAnnouncement: typeof openReleaseAnnouncement;
+    };
+  }
+).__codexhostWebSettingsV1 = { mount, openReleaseAnnouncement };

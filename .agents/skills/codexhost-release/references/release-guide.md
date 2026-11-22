@@ -64,81 +64,80 @@ git push origin main
 
 默认在推送 Tag 前，必须确认该版本提交对应的 `CI`（`main` 的 push run）已成功。可以在 CI 运行期间编写 Release Notes 并等待用户确认。Tag 触发的发布工作流也会最多等待 30 分钟；远端 CI 失败或超时仍会阻止默认发布。用户明确选择不等待且不校验 CI 时，使用下述手动发布的 `skip_ci=true`，不能通过普通 Tag push 选择跳过。
 
-5. 编写 Release Notes 到临时文件 `.git/release-notes-v<version>.md`。正文必须非空。What's New 先写中英摘要，再按 Features / Fixes 分节；中文完整列表放在英文列表之后，不要逐条中英夹杂。用户可见条目如有明确对应的 Issue 或已合入 PR，在条目末尾添加 `#编号`。Installation 及其后的 Contributors 只写英文。例如：
+5. 编写 Release Notes 到临时文件 `.git/release-notes-v<version>.md`。首行是 Tag 标题 `codexhost v<version>`，空一行后是正文，正文必须非空。按下面的模板和写作规范写：
 
 ````markdown
 codexhost v<version>
 
-## What's New
+本次更新带来 Composer 命令按钮和 Grok 上下文压缩，并改进了 Windows 和手机端体验。
 
-Composer adds a Harness commands button and model search. Grok can compact context automatically or on demand. Settings can copy Agent connection diagnostics.
-Composer 增加 Harness 命令按钮和模型搜索。Grok 支持自动或手动压缩上下文。设置里可复制 Agent 连接诊断。
+### ⌨️ Composer 更好用
+输入框旁新增 Harness 命令按钮，模型列表支持搜索；设置页可以复制 Agent 连接诊断。
+— @maintainer · @contributor-a
 
-### Features
-- Add a Harness commands button in the Composer (#123)
-- Search models in the picker
-- Compact Grok context automatically or on demand (#124)
-- Copy Agent connection diagnostics from Settings
+### 🗜 Grok 可以压缩上下文
+对话过长时可以自动或手动压缩，压缩后继续在同一个 Thread 里对话。
+— @contributor-b
 
-### Fixes
-- Show account credits next to the + button (#125)
-- Keep the model picker stable and the selected model visible
-- Keep Usage updating during a conversation (#126, #127)
-- Open Codex Desktop from Inspector on Linux
+## 🚀 新功能
+- Composer：新增 Harness 命令按钮 (#123)
+- 模型选择器：支持搜索
+- 设置：可以复制 Agent 连接诊断
 
-### 新功能
-- Composer 增加 Harness 命令按钮 (#123)
-- 模型选择器支持搜索
-- Grok 支持自动和手动压缩上下文 (#124)
-- 设置中可复制 Agent 连接诊断
+## 🐛 修复
+- Usage：对话过程中不再停止更新 (#126, #127)
+- Linux：Inspector 无法打开 Codex Desktop
+- 另有 12 项稳定性修复
+- ⚠️ 已知问题：<一句话>
 
-### 修复
-- 额度显示回到 + 按钮旁 (#125)
-- 模型选择器更稳定，发送后仍显示当前模型
-- 对话过程中 Usage 会持续更新 (#126, #127)
-- Linux 上 Inspector 可直接打开 Codex Desktop
+---
 
-## Installation
+This release brings a Composer commands button and Grok context compaction, with improvements to Windows and mobile.
 
-### npm
+### ⌨️ Better Composer
+A Harness commands button sits next to the input, and the model list is searchable; Settings can copy Agent connection diagnostics.
+— @maintainer · @contributor-a
 
-```bash
-npm install -g @codexhost/cli
-codexhost
-```
+### 🗜 Grok context compaction
+Compact long conversations automatically or on demand, then keep going in the same Thread.
+— @contributor-b
 
-### Installer
+## 🚀 Features
+- Composer: Harness commands button (#123)
+- Model picker: search
+- Settings: copy Agent connection diagnostics
 
-Download the installer matching your OS and CPU architecture:
+## 🐛 Fixes
+- Usage: stopped updating during a conversation (#126, #127)
+- Linux: Inspector could not open Codex Desktop
+- 12 more stability fixes
+- ⚠️ Known issue: <one sentence>
 
-### macOS Gatekeeper
+## Install & Upgrade
+- New install: `npm install -g @codexhost/cli`, or download the installer for your platform from Assets below.
+- Upgrade: `codexhost update`. For npm installs, run `codexhost stop` before reinstalling.
+- macOS "cannot verify this app": `xattr -dr com.apple.quarantine /Applications/codexhost.app`
+- More: [README](https://github.com/BytePioneer-AI/codex-host#readme)
 
-After installing on macOS, if codexhost shows "Apple cannot verify this app" when you open it for the first time, run the following command in Terminal and reopen codexhost:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/codexhost.app
-```
-
-## Contributors
-
-Thanks to everyone who contributed to this release:
-
-- @maintainer
-- @contributor-a (#123, #124)
-- @contributor-b (#125)
+## 🙏 致谢 / Thanks
+@maintainer · @contributor-a (#123, #124) · @contributor-b (#125)
 ````
 
 ### Release Notes 写作规范
 
-- **结构**：摘要 → Features → Fixes → 新功能 → 修复 → Installation → Contributors。有破坏性变更时在 Fixes 之后、Installation 之前单列 `Breaking Changes` / `破坏性变更`。
-- **摘要**：What's New 开头先用 1-2 句英文概括本版重点，下一行中文对照。不要用 `English / 中文` 合并标题。
-- **分节承担类型**：用 `Features` / `Fixes` 分组，条目不要写 `feat:` / `fix:`。
-- **不要逐条双语**：每条只写一种语言。英文读者扫完 Features / Fixes 即可；中文读者看摘要后扫 新功能 / 修复。
-- **术语不翻译**：`codexhost`、`npm`、`GitHub Releases`、`Launcher`、`Renderer Usage`、`DSH`、`Harness`、`Grok`、`Composer` 等保持英文原样，嵌进该语言的句子里。
-- **用户可见条目**：写用户能感知的结果，不写实现细节或 commit 标题。相关提交合并成一条，不要一提交一条。不要列入 docs、chore、测试或错误分支。
-- **Issue / PR 标签**：功能或修复如有明确所属 Issue 或已合入 PR，在对应中英文条目末尾添加 `(#123)`；多个直接关联写成 `(#123, #124)`。只标注能够从 Git 历史、GitHub 关联或 Issue / PR 内容核实的编号，不猜测、不关联仍未合入且不代表当前实现的 PR。同一更新的中英文条目使用相同编号。
-- **Installation**：单独成节，只写英文。升级操作说明放这里，不必再配中文对照。
-- **Contributors**：放在全文最后，只写英文。以从上一个 Release Tag 到目标提交的实际 Git/GitHub 贡献者为准，使用 GitHub 用户名；同一人的多个提交身份合并，不重复列出。维护者也列入。贡献者有明确已合入 PR 时在用户名后列出本次版本对应编号，例如 `@user (#123, #124)`；没有对应 PR 时只写用户名。测试机器人、合并机器人和纯自动化账号不列入。
+读者主要有两类：在应用内更新页看全文、想知道跟自己有没有关系的现有用户；在 GitHub 下载安装包的新用户。应用内会渲染整篇正文，所以中文在前，安装说明压到最后几行。
+
+- **结构**：一句话总结 → 主题 → 新功能 → 修复 → `---` → 同结构英文 → Install & Upgrade → 致谢。总结和主题前不加栏目标题；新功能、修复带图标（🚀 🐛），条目前不加图标。有破坏性变更时，在总结之后、主题之前单列 `## ⚠️ 破坏性变更`，英文同样处理。
+- **应用内更新公告**：总结和主题会作为该版本的应用内更新公告，在用户升级后弹出，规则见 [更新公告](../../../../docs/product/release-announcement.md)。没有主题的 Release 不弹公告。发布后修改 Release 正文，只影响尚未确认的用户和手动查看。
+- **一句话总结**：正文第一段，`本次更新带来……，并改进了……。`，点出最重要的两三件事和涉及的方面。
+- **主题**：4～7 个，按用户能感知的方面归并（一个主题可以合并多个 PR 和修复），每个主题三行：`### <图标> <短标题>`、一两句说明（写用户现在能做什么、哪些问题不再出现，多件事用分号隔开，不带 PR 编号）、`— @a · @b`（该主题涉及 PR 的作者，维护者直接提交的记维护者）。图标每个主题不同。每位贡献者至少出现在一个主题里。
+- **新功能 / 修复**：每条只写一件事，一句话。开头写关键词（Harness 名、平台或功能区，如 `Claude Code：`、`Windows：`），方便用户扫到跟自己相关的条目。新功能写用户能做什么；修复写用户遇到过的现象，不写原因和实现。新功能不超过约 10 条，修复不超过约 16 条，其余合并为最后一条"另有 N 项…修复"。
+- **不写内部细节**：不出现内部名词、文件、字段和机制；不列 docs、chore、测试、CI 改动。
+- **已知问题**：没有固定栏目。有时在修复列表末尾加一行 `⚠️ 已知问题：…`，没有就不写。
+- **术语不翻译**：`codexhost`、`Harness`、`Composer`、`Thread`、`Fork`、`Model`、`Thinking` 等保持英文，嵌在中文句子里。
+- **Issue / PR 编号**：条目末尾写 `(#123)`，多个写 `(#123, #124)`。只标能从 Git 历史、GitHub 关联或 PR 内容核实的已合入编号；没有对应 PR 就不写。同一条的中英文使用相同编号。
+- **Install & Upgrade**：只写英文，固定 4 行，内容如模板。其余安装问题指向 README，不在 Release Notes 里重复。
+- **致谢**：放在最后，标题固定为 `## 🙏 致谢 / Thanks`（GitHub 会在正文下方自动生成头像区 Contributors，标题不能与它重名），一行用 ` · ` 分隔。以从上一个 Release Tag 到目标提交的实际 Git/GitHub 贡献者为准，使用 GitHub 用户名；同一人的多个提交身份合并；维护者也列入。有已合入 PR 时写 `@user (#123, #124)`，没有就只写用户名。测试机器人、合并机器人和纯自动化账号不列入。
 
 6. Release Notes 完成后，必须向用户展示全文并取得明确确认。用户未确认或要求修改时，必须暂停，不得创建或推送 Tag。
 

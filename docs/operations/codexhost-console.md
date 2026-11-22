@@ -161,6 +161,10 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 
 共享 Host 为 Web、Desktop 和 Console 提供同一份更新协调器。后台检查和下载不停止服务；原生 Host 监管进程接管同一份已准备请求，在受监管的 Node 子进程树外启动 Updater。Updater 校验所有者身份并确认全局更新锁已转移给自身后，通过当前安装的旧 Launcher `stop-for-update` 依次停止受管理 GUI、Web 和 Host，再安装。安装阶段其他客户端不能重新拉起服务；Updater 的恢复进程可以启动目标服务。请求使用明确的数据目录，停止和恢复都拒绝接管另一安装的运行服务。
 
+macOS 和 Linux 上，`stop` 和更新停服由仍在运行的 Launcher 停止其托管进程，兼容有 Launcher 的 v1 实例。新版生成的孤儿只有在原 Launcher 和 Desktop 均已退出，并确认安装、数据目录和端点身份后，才通过本地鉴权通道自行退出；不向孤儿 PID 发送信号。
+
+如果升级前已留下没有归属记录的 v1 Controller，需要一次性手动恢复：先完全退出 Codex Desktop，再用 `lsof -nP -iTCP:<提示中的端口> -sTCP:LISTEN` 找到监听 PID，用 `ps -ww -p <PID> -o command=` 检查命令。仅当命令是旧安装的 Node `desktop-controller.mjs` 且 `--attachment-port` 与提示一致时，才在进程管理器中退出该进程或执行 `kill -TERM <PID>`，然后重试。不要终止无法辨认的监听进程。
+
 npm 的 Launcher 和 Node 分别来自更新请求的平台包根目录与 `node_path`；Windows 安装包从安装根目录的 `bin` 和 `runtime` 定位；macOS 的 Launcher 位于 `.app/Contents/MacOS/codexhost`，Node 位于 `.app/Contents/Resources/runtime/node`。Host `--stop` 的标准输出作为不透明文本保存在更新状态中，不由 Rust 解析任务数。更新后按原使用方式恢复：纯 Web 只恢复后台 Host 和 Web；受管理 GUI 在线时恢复 GUI 并沿用 Web 的启用设置。恢复检查服务的版本、运行入口、进程身份和监听状态。GUI 恢复由 Launcher 先确保共享 Host 运行，再启动 Desktop，因此不依赖 LaunchServices 保留父子进程关系。
 
 停止服务后安装或启动失败时，Updater 尝试一次恢复同一安装，更新状态保持失败并附带恢复结果；不保证损坏的安装可以回滚。会话记录保留，被中断任务不自动继续。浏览器在更新期间断线时有界重试状态查询，不重发开始更新；10 分钟内无法确认结果时显示未知，不推断安装失败。

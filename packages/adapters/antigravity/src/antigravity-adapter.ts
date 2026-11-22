@@ -80,6 +80,8 @@ import {
   buildAcpElicitationResponse,
   buildAcpPermissionResponse,
   buildLiveCommandCatalog,
+  compactionItemId,
+  compactionOutcome,
   projectAcpApprovalInteraction,
   projectAcpQuestionInteraction,
   projectReplayedEventsToTurns,
@@ -95,8 +97,12 @@ import {
   splitAntigravityModelAndEffort,
 } from "./model-catalog.js";
 import { AntigravityWakeObserver } from "./wake-observer.js";
-import { readNativeHistory } from "./native-replay.js";
-import { readNativeTurnCount } from "./native-turn-boundaries.js";
+import {
+  readNativeHistory,
+  readNativeStepWatermark,
+  readNativeTurnCompactions,
+} from "./native-replay.js";
+import { observeNativeTurnCount, readNativeTurnCount } from "./native-turn-boundaries.js";
 import {
   ANTIGRAVITY_PERMISSION_MODE_CATALOG,
   decodeAntigravityPermissionModeId,
@@ -111,6 +117,7 @@ import { antigravityHome, createAntigravityUsageStatistics } from "./usage-stati
 
 const harnessId = harnessIdSchema.parse("antigravity");
 const SKIP = "dangerously-skip-permissions";
+
 export const antigravitySessionCapabilities: HarnessSessionCapabilities = {
   configuration: {
     selectModel: true,
@@ -267,7 +274,6 @@ interface SessionOptions extends RequestedConfiguration {
   cwd: string;
   environment: NodeJS.ProcessEnv;
   nativeRef?: NativeSessionRef;
-  knownTurnRefs?: readonly NativeTurnRef[] | undefined;
   unattended: boolean;
   adapter: AntigravityAdapterOptions;
   onClosed(session: AntigravitySession): void;
@@ -277,8 +283,12 @@ interface ActiveTurn {
   cancelled: boolean;
   ended: boolean;
   promptPhase: "notSubmitted" | "submitted" | "returned";
+  readonly accounting: AbortController;
   firstOutputAtMs?: number;
   hasToolCalls?: boolean;
+  dbPath?: string;
+  compactionAfterStep?: number;
+  readonly emittedCompactions: Set<number>;
   tracker?: AntigravityToolTracker;
   textItem?:
     | {
@@ -311,7 +321,8 @@ export class AntigravitySession implements HarnessSession {
   #configOptions: AntigravityAcpConfigOption[] = [];
   #catalog: HarnessModelCatalog | undefined;
   #commands: HarnessCommandCatalog = ANTIGRAVITY_COMMAND_CATALOG;
-  #turnCount = 0;
+  // Null means a raw count increase alone cannot identify the next prompt.
+  #confirmedCount: number | null = null;
   readonly #confirmedCheckpoints = new Set<string>();
   #active: ActiveTurn | undefined;
   #wakes: AntigravityWakeObserver | undefined;
@@ -326,7 +337,7 @@ export class AntigravitySession implements HarnessSession {
   #closed = false;
   #faulted = false;
   #closing: Promise<void> | undefined;
-  #configuring = false;
+  #configurationQueue: Promise<void> | undefined;
   #historyOperation = false;
 
   constructor(options: SessionOptions) {
@@ -356,7 +367,9 @@ export class AntigravitySession implements HarnessSession {
     return this.#state.nativeRef;
   }
   get isActive(): boolean {
-    return !!this.#active || !!this.#opening || this.#configuring || this.#subagents.running;
+    return (
+      !!this.#active || !!this.#opening || !!this.#configurationQueue || this.#subagents.running
+    );
   }
   hasBackgroundWork(): boolean {
     return this.#subagents.running || !!this.#wakes?.observing;
@@ -364,8 +377,9 @@ export class AntigravitySession implements HarnessSession {
   activeForkTurnIndex(checkpointId: string, home: string): number | undefined {
     if (
       this.#active?.promptPhase === "submitted" &&
+      this.#confirmedCount !== null &&
       !this.#opening &&
-      !this.#configuring &&
+      !this.#configurationQueue &&
       !this.#subagents.running &&
       !this.#historyOperation &&
       !this.#closed &&
@@ -373,7 +387,7 @@ export class AntigravitySession implements HarnessSession {
       home === antigravityHome(this.#options.environment) &&
       this.#confirmedCheckpoints.has(checkpointId)
     )
-      return this.#turnCount;
+      return this.#confirmedCount;
   }
   reserveHistoryOperation(): (() => void) | null {
     if (
@@ -465,9 +479,12 @@ export class AntigravitySession implements HarnessSession {
           "Antigravity returned an invalid native Session ID",
         );
       this.#applyOpened(opened, skip);
-      this.#turnCount = await readNativeTurnCount(
-        nativeConversationDbPath(opened.sessionId, antigravityHome(this.#options.environment)),
-      ).catch(() => this.#turnCount);
+      // A transport rebuild is not proof that a previously unconfirmed write settled.
+      if (!this.#wakes) {
+        this.#confirmedCount = await readNativeTurnCount(
+          nativeConversationDbPath(opened.sessionId, antigravityHome(this.#options.environment)),
+        ).catch((error: NodeJS.ErrnoException) => (!ref && error.code === "ENOENT" ? 0 : null));
+      }
       this.#initializeUsage(opened.sessionId);
       if (!this.#wakes) {
         const home = antigravityHome(this.#options.environment);
@@ -498,16 +515,17 @@ export class AntigravitySession implements HarnessSession {
           this.#requested.thinkingOptionId,
         );
         if (!applied.bakedInThinking) {
-          if (this.#requested.thinkingOptionId) {
-            await this.#setConfig("thinking", this.#requested.thinkingOptionId);
-          } else if (
-            applied.impliedThinking &&
-            this.#hasConfigChoice("thinking", applied.impliedThinking)
-          ) {
-            await this.#setConfig("thinking", applied.impliedThinking);
+          const desiredThinking = this.#resolveThinkingChoice(
+            this.#requested.thinkingOptionId ?? applied.impliedThinking,
+          );
+          if (desiredThinking) {
+            await this.#setConfig("thinking", desiredThinking);
           }
         }
-      } else if (this.#requested.thinkingOptionId) {
+      } else if (
+        this.#requested.thinkingOptionId &&
+        this.#hasConfigChoice("thinking", this.#requested.thinkingOptionId)
+      ) {
         await this.#setConfig("thinking", this.#requested.thinkingOptionId);
       }
       if (!skip && this.#requested.permissionModeId) {
@@ -515,7 +533,7 @@ export class AntigravitySession implements HarnessSession {
         this.#state.effectivePermissionModeId = this.#requested.permissionModeId;
         this.#setLocatorPermissionMode(this.#requested.permissionModeId);
       }
-      this.#publishState();
+      if (!this.#configurationQueue) this.#publishState();
     } catch (error) {
       await transport.close().catch(() => undefined);
       if (this.#transport === transport) this.#transport = undefined;
@@ -527,7 +545,7 @@ export class AntigravitySession implements HarnessSession {
     this.#usage = new AntigravitySessionUsageTracker({
       nativeSessionId,
       homedir: antigravityHome(this.#options.environment),
-      expectedInitialTurns: this.#turnCount,
+      expectedInitialTurns: this.#confirmedCount ?? 0,
     });
     this.#trackUsageWork(this.#replayUsage());
   }
@@ -589,7 +607,6 @@ export class AntigravitySession implements HarnessSession {
       ...(effectivePermissionModeId ? { effectivePermissionModeId } : {}),
       ...readAcpEffectiveModelState(config, this.#catalog),
     };
-    this.#publishState();
   }
   #findConfigOption(category: "model" | "thinking"): AntigravityAcpConfigOption | undefined {
     return this.#configOptions.find(
@@ -602,6 +619,13 @@ export class AntigravitySession implements HarnessSession {
   #hasConfigChoice(category: "model" | "thinking", value: string): boolean {
     const option = this.#findConfigOption(category);
     return !!option?.options.some((choice) => choice.value === value);
+  }
+  #resolveThinkingChoice(preferred?: string): string | undefined {
+    if (preferred && this.#hasConfigChoice("thinking", preferred)) return preferred;
+    if (!this.#state.effectiveThinkingOptionId) {
+      return this.#findConfigOption("thinking")?.options.at(-1)?.value;
+    }
+    return undefined;
   }
   async #setModelConfig(
     requestedModelId: string,
@@ -678,7 +702,12 @@ export class AntigravitySession implements HarnessSession {
     }
     switch (event.type) {
       case "config.update":
-        this.#applyConfig(event.configOptions);
+        // During open or selection, only the ACP responses confirm configuration.
+        // A notification may contain an intermediate snapshot.
+        if (!this.#opening && !this.#configurationQueue) {
+          this.#applyConfig(event.configOptions);
+          this.#publishState();
+        }
         break;
       case "mode.update":
         if (!this.#transport?.skipPermissions) {
@@ -686,7 +715,7 @@ export class AntigravitySession implements HarnessSession {
             event.currentModeId,
           );
           this.#setLocatorPermissionMode(event.currentModeId);
-          this.#publishState();
+          if (!this.#opening && !this.#configurationQueue) this.#publishState();
         }
         break;
       case "commands.update":
@@ -697,6 +726,7 @@ export class AntigravitySession implements HarnessSession {
         if (usage) this.#emit({ type: "session.usage.changed", usage });
         if (this.#active?.promptPhase === "submitted") {
           void this.refreshUsage();
+          void this.#syncTurnCompactions(this.#active);
           this.#scheduleUsageRetry();
         }
         break;
@@ -830,13 +860,12 @@ export class AntigravitySession implements HarnessSession {
         nativeSessionId,
         cwd: this.#options.cwd,
         events,
-        ...(this.#options.knownTurnRefs ? { knownTurnRefs: this.#options.knownTurnRefs } : {}),
         ...(this.#options.adapter.toolOutputLimit !== undefined
           ? { outputLimit: this.#options.adapter.toolOutputLimit }
           : {}),
       });
-      if (!this.#transport) {
-        this.#turnCount = turnCount;
+      if (!this.#transport && !this.#wakes) {
+        this.#confirmedCount = turnCount;
         this.#initializeUsage(nativeSessionId);
       }
       return ok({ turns, ...(this.#transport ? { state: { ...this.#state } } : {}) });
@@ -878,6 +907,7 @@ export class AntigravitySession implements HarnessSession {
             return err("invalidRequest", "Turn is not active");
           if (!turn.cancelled) {
             turn.cancelled = true;
+            turn.accounting.abort();
             this.#closeInteractions("cancelled");
             try {
               if (turn.promptPhase === "submitted") await this.#transport?.cancel();
@@ -903,9 +933,30 @@ export class AntigravitySession implements HarnessSession {
       return { ok: false, error: normalizeAntigravityError(error) };
     }
   }
+  async #enqueueConfiguration<T>(run: () => Promise<T>): Promise<T> {
+    const previous = this.#configurationQueue;
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous ? previous.then(() => current) : current;
+    // Install the barrier synchronously, including when a cold open is already in flight.
+    this.#configurationQueue = tail;
+    if (previous) await previous;
+    const before = this.#state;
+    try {
+      return await run();
+    } finally {
+      if (this.#transport && !this.#closed && !this.#faulted && this.#state !== before) {
+        this.#publishState();
+      }
+      if (this.#configurationQueue === tail) this.#configurationQueue = undefined;
+      release();
+    }
+  }
   #startTurn(command: TurnStartCommand, catalogCommand: boolean): HarnessResult<TurnStartAccepted> {
     if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
-    if (this.#active || this.#configuring || this.#historyOperation)
+    if (this.#active || this.#configurationQueue || this.#historyOperation)
       return err("sessionBusy", "Session is busy", true);
     if (
       !command.turnId ||
@@ -920,6 +971,8 @@ export class AntigravitySession implements HarnessSession {
         cancelled: false,
         ended: false,
         promptPhase: "notSubmitted",
+        accounting: new AbortController(),
+        emittedCompactions: new Set(),
       };
       this.#active = turn;
       this.#emit({ type: "turn.started", turnId: turn.turnId });
@@ -932,7 +985,7 @@ export class AntigravitySession implements HarnessSession {
   async #select(
     command: ModelSelectCommand | ThinkingSelectCommand | PermissionModeSelectCommand,
   ): Promise<HarnessResult<ModelSelectCompleted>> {
-    if (this.#configuring || this.#historyOperation)
+    if (this.#historyOperation)
       return err("sessionBusy", "Configuration or history is changing", true);
     if (command.type === "permissionMode.select") {
       try {
@@ -943,17 +996,46 @@ export class AntigravitySession implements HarnessSession {
       if (this.#options.unattended && command.permissionModeId !== SKIP)
         return err("invalidRequest", "Unattended execution requires Skip permissions");
     }
-    this.#configuring = true;
-    try {
+    return this.#enqueueConfiguration(async () => {
+      if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
+      if (this.#historyOperation)
+        return err("sessionBusy", "Configuration or history is changing", true);
+      if (this.#opening) {
+        try {
+          await this.#opening;
+        } catch (error) {
+          if (!(
+            command.type === "model.select" &&
+            error instanceof AntigravityTransportError &&
+            error.kind === "unsupported"
+          ))
+            throw error;
+        }
+        if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
+      }
       const openingFromCold = !this.#transport;
+      const previousModel = this.#requested.model;
+      const previousThinkingOptionId = this.#requested.thinkingOptionId;
       const previousPermissionMode = this.#requested.permissionModeId;
-      if (openingFromCold && command.type === "permissionMode.select") {
+      if (openingFromCold && command.type === "model.select") {
+        this.#requested.model = command.model;
+        if (command.model.id !== previousModel?.id) {
+          this.#requested.thinkingOptionId = undefined;
+        }
+      } else if (openingFromCold && command.type === "thinking.select") {
+        this.#requested.thinkingOptionId = undefined;
+      } else if (openingFromCold && command.type === "permissionMode.select") {
         this.#requested.permissionModeId = command.permissionModeId;
       }
       try {
         await this.initialize();
       } catch (error) {
-        if (openingFromCold && command.type === "permissionMode.select") {
+        if (openingFromCold && command.type === "model.select") {
+          this.#requested.model = previousModel;
+          this.#requested.thinkingOptionId = previousThinkingOptionId;
+        } else if (openingFromCold && command.type === "thinking.select") {
+          this.#requested.thinkingOptionId = previousThinkingOptionId;
+        } else if (openingFromCold && command.type === "permissionMode.select") {
           this.#requested.permissionModeId = previousPermissionMode;
         }
         throw error;
@@ -961,20 +1043,29 @@ export class AntigravitySession implements HarnessSession {
       const transport = this.#transport;
       if (!transport || this.#closed || this.#faulted)
         return err("invalidState", "Native Session is not connected");
-      if (openingFromCold && command.type === "permissionMode.select") {
+      if (
+        openingFromCold &&
+        (command.type === "model.select" || command.type === "permissionMode.select")
+      ) {
+        if (command.type === "model.select") {
+          this.#requested.model = this.#state.effectiveModel;
+          this.#requested.thinkingOptionId = this.#state.effectiveThinkingOptionId;
+        }
         return ok({ completed: true });
       }
       if (command.type === "model.select") {
         const applied = await this.#setModelConfig(command.model.id);
-        if (
-          !applied.bakedInThinking &&
-          applied.impliedThinking &&
-          this.#hasConfigChoice("thinking", applied.impliedThinking)
-        ) {
-          await this.#setConfig("thinking", applied.impliedThinking);
+        try {
+          if (!applied.bakedInThinking) {
+            const desiredThinking = this.#resolveThinkingChoice(applied.impliedThinking);
+            if (desiredThinking) {
+              await this.#setConfig("thinking", desiredThinking);
+            }
+          }
+        } finally {
+          this.#requested.model = this.#state.effectiveModel;
+          this.#requested.thinkingOptionId = this.#state.effectiveThinkingOptionId;
         }
-        this.#requested.model = this.#state.effectiveModel;
-        this.#requested.thinkingOptionId = this.#state.effectiveThinkingOptionId;
       } else if (command.type === "thinking.select") {
         await this.#setConfig("thinking", command.thinkingOptionId);
         this.#requested.thinkingOptionId = this.#state.effectiveThinkingOptionId;
@@ -1014,13 +1105,10 @@ export class AntigravitySession implements HarnessSession {
           this.#state.effectivePermissionModeId = command.permissionModeId;
           this.#setLocatorPermissionMode(command.permissionModeId);
           this.#requested.permissionModeId = command.permissionModeId;
-          this.#publishState();
         }
       }
       return ok({ completed: true });
-    } finally {
-      this.#configuring = false;
-    }
+    });
   }
   async #runTurn(
     turn: ActiveTurn,
@@ -1030,6 +1118,7 @@ export class AntigravitySession implements HarnessSession {
     let outcome: TurnOutcome;
     let nativeTurnRef: NativeTurnRef | undefined;
     let confirmedCheckpoint: string | undefined;
+    let mayWriteInput = true;
     try {
       await this.initialize();
       await this.#usageWork;
@@ -1039,6 +1128,26 @@ export class AntigravitySession implements HarnessSession {
         this.#finish(turn, { status: "cancelled" });
         return;
       }
+      const ref = this.nativeRef;
+      if (!ref)
+        throw new AntigravityTransportError("unavailable", "Native Session is not connected");
+      const home = antigravityHome(this.#options.environment);
+      const file = nativeConversationDbPath(ref.nativeSessionId, home);
+      const parts = promptParts(command);
+      const part = parts[0];
+      mayWriteInput =
+        !catalogCommand || part?.type !== "text" || !/^\/(?:compact|help)(?:\s|$)/u.test(part.text);
+      while (this.#configurationQueue && !turn.cancelled && this.#isCurrent(turn)) {
+        await this.#configurationQueue;
+      }
+      if (!this.#isCurrent(turn)) return;
+      if (turn.cancelled) {
+        this.#finish(turn, { status: "cancelled" });
+        return;
+      }
+      const transport = this.#transport;
+      if (!transport)
+        throw new AntigravityTransportError("unavailable", "Native Session is not connected");
       turn.tracker = new AntigravityToolTracker({
         turnId: turn.turnId,
         cwd: this.#options.cwd,
@@ -1056,14 +1165,15 @@ export class AntigravitySession implements HarnessSession {
         },
         onSubagentSpawned: (id, item) => this.#subagents.track(id, item),
       });
-      const transport = this.#transport;
-      const ref = this.nativeRef;
-      if (!transport || !ref)
-        throw new AntigravityTransportError("unavailable", "Native Session is not connected");
-      this.#usage?.beginTurn(Date.now(), turn.turnId);
+      const before = this.#confirmedCount;
+      turn.dbPath = file;
+      turn.compactionAfterStep = await readNativeStepWatermark(file);
+      if (!this.#isCurrent(turn)) return;
+      const submittedAtMs = Date.now();
+      this.#usage?.beginTurn(submittedAtMs, turn.turnId);
       this.#usageTurnId = turn.turnId;
       turn.promptPhase = "submitted";
-      const result = await transport.prompt(promptParts(command), {
+      const result = await transport.prompt(parts, {
         onResponse: () => {
           turn.promptPhase = "returned";
         },
@@ -1108,19 +1218,19 @@ export class AntigravitySession implements HarnessSession {
                 },
               }
             : { status: "succeeded" };
-      const before = this.#turnCount;
-      let count: number;
-      try {
-        count = await readNativeTurnCount(
-          nativeConversationDbPath(ref.nativeSessionId, antigravityHome(this.#options.environment)),
-        );
-        if (count === before + 1) confirmedCheckpoint = `turn-${count - 1}`;
-      } catch {
-        // Command output alone cannot establish that the prompt created a conversation Turn.
-        count = !catalogCommand && outcome.status === "succeeded" ? before + 1 : before;
-      }
-      if (count > before) {
-        const key = `turn-${count - 1}`;
+      const confirmedCount = mayWriteInput
+        ? await observeNativeTurnCount(
+            file,
+            before,
+            submittedAtMs,
+            completedAtMs,
+            outcome.status === "succeeded",
+            AbortSignal.any([turn.accounting.signal, this.#abort.signal]),
+          )
+        : null;
+      if (!this.#isCurrent(turn)) return;
+      if (confirmedCount !== null) {
+        const key = `turn-${confirmedCount - 1}`;
         nativeTurnRef = {
           harnessId,
           nativeSessionId: ref.nativeSessionId,
@@ -1128,13 +1238,15 @@ export class AntigravitySession implements HarnessSession {
           nativeTurnKey: key,
         };
         outcome = { ...outcome, checkpoint: { ...ref, checkpointId: key } };
-        this.#turnCount = count;
+        this.#confirmedCount = confirmedCount;
+        confirmedCheckpoint = key;
       }
       await this.#trackUsageWork(
         Promise.resolve(this.#usageWork).then(() =>
           this.#collectUsage({ turn, completedAtMs, ...(result.usage && { usage: result.usage }) }),
         ),
       );
+      await this.#syncTurnCompactions(turn);
       this.#scheduleUsageRetry();
     } catch (error) {
       if (
@@ -1152,6 +1264,13 @@ export class AntigravitySession implements HarnessSession {
       this.#usage?.endTurn();
     }
     if (this.#isCurrent(turn)) {
+      if (mayWriteInput && turn.promptPhase !== "notSubmitted" && !nativeTurnRef)
+        this.#confirmedCount = null;
+      if (turn.cancelled)
+        outcome = {
+          status: "cancelled",
+          ...(outcome.checkpoint && { checkpoint: outcome.checkpoint }),
+        };
       if (confirmedCheckpoint && outcome.checkpoint)
         this.#confirmedCheckpoints.add(confirmedCheckpoint);
       this.#finish(turn, outcome, nativeTurnRef);
@@ -1183,6 +1302,32 @@ export class AntigravitySession implements HarnessSession {
       snapshot: { item: { ...turn.textItem }, outcome },
     });
     turn.textItem = undefined;
+  }
+  async #syncTurnCompactions(turn: ActiveTurn): Promise<void> {
+    if (
+      !this.#isCurrent(turn) ||
+      turn.cancelled ||
+      turn.dbPath === undefined ||
+      turn.compactionAfterStep === undefined
+    )
+      return;
+    const compactions = await readNativeTurnCompactions(turn.dbPath, turn.compactionAfterStep);
+    if (!this.#isCurrent(turn) || turn.cancelled) return;
+    for (const compaction of compactions) {
+      if (turn.emittedCompactions.has(compaction.stepIndex)) continue;
+      turn.emittedCompactions.add(compaction.stepIndex);
+      this.#completeText(turn, { status: "succeeded" });
+      const item = {
+        type: "contextCompaction" as const,
+        itemId: compactionItemId(compaction.stepIndex),
+      };
+      this.#emit({ type: "item.started", turnId: turn.turnId, item });
+      this.#emit({
+        type: "item.completed",
+        turnId: turn.turnId,
+        snapshot: { item, outcome: compactionOutcome(compaction) },
+      });
+    }
   }
   #finish(turn: ActiveTurn, outcome: TurnOutcome, nativeTurnRef?: NativeTurnRef): void {
     if (!this.#isCurrent(turn)) return;
@@ -1356,7 +1501,7 @@ export class AntigravitySession implements HarnessSession {
     if (active) this.#finish(active, { status: "cancelled", reason: "Session closed" });
     this.#channel.end();
     this.#transport?.setSessionEventHandler(null);
-    if (active) await this.#transport?.cancel().catch(() => undefined);
+    if (active?.promptPhase === "submitted") await this.#transport?.cancel().catch(() => undefined);
     await Promise.all([this.#transport?.close(), this.#subagents.close()]);
     this.#options.onClosed(this);
   }
@@ -1581,9 +1726,7 @@ export class AntigravityAdapter implements HarnessAdapter {
           locator.permissionModeId === SKIP)
           ? harnessPermissionModeIdSchema.parse(SKIP)
           : input.permissionModeId,
-      ...(input.kind === "resume"
-        ? { nativeRef: input.nativeRef, knownTurnRefs: input.knownTurnRefs }
-        : {}),
+      ...(input.kind === "resume" ? { nativeRef: input.nativeRef } : {}),
       unattended,
       adapter: this.options,
       onClosed: (closed) => this.#sessions.delete(closed),

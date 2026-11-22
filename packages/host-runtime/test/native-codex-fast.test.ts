@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { JsonObject, JsonValue } from "@codexhost/protocol-core";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
 import { NativeClientChannel } from "../src/native-client-channel.js";
-import { encodeOfficialCodexModelRef } from "../src/official-codex-model-ref.js";
+import { officialCodexModelRef } from "../src/official-codex-model-ref.js";
 import { updateNativeThreadSettings } from "../src/codex-runtime/native-thread-controls.js";
 import { createFixture, stopFixture } from "./app-server-host-fixture.js";
 import type { DelegationControlApi } from "../src/delegation-types.js";
@@ -66,20 +66,20 @@ it("advertises Fast and Ultrafast only from the official service tiers", async (
       catalog: {
         models: [
           {
-            ref: encodeOfficialCodexModelRef("priority-capable"),
-            fastModel: encodeOfficialCodexModelRef("priority-capable", "priority"),
+            ref: { id: "priority-capable" },
+            fastModel: { id: "priority-capable", serviceTier: "priority" },
           },
           {
-            ref: encodeOfficialCodexModelRef("priority-capable", "ultrafast"),
+            ref: { id: "priority-capable", serviceTier: "ultrafast" },
             label: "priority-capable · Ultrafast",
             supportedThinkingOptionIds: ["high"],
           },
-          { ref: encodeOfficialCodexModelRef("flex-only") },
-          { ref: encodeOfficialCodexModelRef("legacy-fast") },
-          { ref: encodeOfficialCodexModelRef("no-tiers") },
-          { ref: encodeOfficialCodexModelRef("long-label"), label: longLabel },
+          { ref: { id: "flex-only" } },
+          { ref: { id: "legacy-fast" } },
+          { ref: { id: "no-tiers" } },
+          { ref: { id: "long-label" }, label: longLabel },
           {
-            ref: encodeOfficialCodexModelRef("long-label", "ultrafast"),
+            ref: { id: "long-label", serviceTier: "ultrafast" },
             label: labelPrefix + suffix,
           },
         ],
@@ -122,7 +122,7 @@ it("changes the native speed tier only after matching confirmation, preserving T
     const selecting = fixture.host
       .handleClientRequest("codexhost/thread/model/select", {
         threadId: "official",
-        model: encodeOfficialCodexModelRef("native", tier),
+        model: officialCodexModelRef("native", tier),
       })
       .then((reply) => {
         resolved = true;
@@ -138,7 +138,7 @@ it("changes the native speed tier only after matching confirmation, preserving T
     notify(settings);
     expect(await selecting).toMatchObject({
       result: {
-        effectiveModel: encodeOfficialCodexModelRef("native", tier),
+        effectiveModel: officialCodexModelRef("native", tier),
         effectiveThinkingOptionId: "high",
       },
     });
@@ -153,7 +153,7 @@ it("changes the native speed tier only after matching confirmation, preserving T
   notify(settings);
   expect(await thinking).toMatchObject({
     result: {
-      effectiveModel: encodeOfficialCodexModelRef("native", "ultrafast"),
+      effectiveModel: { id: "native", serviceTier: "ultrafast" },
       effectiveThinkingOptionId: "low",
     },
   });
@@ -244,7 +244,7 @@ it("projects confirmed Fast on creation, resume and Desktop settings changes wit
     request,
     respond: async () => {},
   });
-  const fast = encodeOfficialCodexModelRef("native", "priority");
+  const fast = { id: "native", serviceTier: "priority" };
   await channel.request("thread/start", {});
   expect(await channel.request("codexhost/thread/inspect", { threadId: "official" })).toMatchObject(
     { result: { effectiveModel: fast } },
@@ -264,7 +264,7 @@ it("projects confirmed Fast on creation, resume and Desktop settings changes wit
   expect(await channel.request("codexhost/thread/inspect", { threadId: "official" })).toMatchObject(
     {
       result: {
-        effectiveModel: encodeOfficialCodexModelRef("native"),
+        effectiveModel: { id: "native" },
         effectiveThinkingOptionId: "low",
       },
     },

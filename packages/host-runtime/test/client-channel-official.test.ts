@@ -6,7 +6,7 @@ import type { JsonObject } from "@codexhost/protocol-core";
 import { hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { ClientChannelHost } from "../src/client-channel-host.js";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
-import { encodeOfficialCodexModelRef } from "../src/official-codex-model-ref.js";
+import { officialCodexModelRef } from "../src/official-codex-model-ref.js";
 import {
   createFixture,
   startPiThread,
@@ -202,7 +202,7 @@ it("routes official and external fork, queue, configuration, command, pin and us
   expect(await host.handleClientRequest("turn/start", queuedInput)).toEqual(acceptedQueue);
   expect(request).toHaveBeenCalledTimes(calls);
   await host.handleClientRequest("thread/start", {
-    model: encodeOfficialCodexModelRef("gpt/test"),
+    model: { id: "gpt/test" },
     projectlessWorkspace: { prompt: "a new task" },
   });
   expect(request).toHaveBeenLastCalledWith("thread/start", {
@@ -211,7 +211,7 @@ it("routes official and external fork, queue, configuration, command, pin and us
     cwd: expect.stringContaining(path.join(home, "Documents", "Codex")),
   });
   await host.handleClientRequest("thread/start", {
-    model: encodeOfficialCodexModelRef("gpt/test", "priority"),
+    model: { id: "gpt/test", serviceTier: "priority" },
     cwd: "/workspace",
   });
   expect(request).toHaveBeenLastCalledWith("thread/start", {
@@ -351,7 +351,7 @@ it("uses official profiles and waits for settings confirmation; forwards command
   });
   expect(calls.some((call) => call.method === "thread/resume")).toBe(false);
   for (const [method, selection, applied] of [
-    ["model", { model: encodeOfficialCodexModelRef("new") }, { model: "new" }],
+    ["model", { model: { id: "new" } }, { model: "new" }],
     ["thinking", { thinkingOptionId: "high" }, { effort: "high" }],
     [
       "permission-mode",
@@ -378,7 +378,7 @@ it("uses official profiles and waits for settings confirmation; forwards command
     );
     expect(await selectionResult).toMatchObject({
       result: {
-        effectiveModel: encodeOfficialCodexModelRef(String(settings.model)),
+        effectiveModel: officialCodexModelRef(String(settings.model)),
         effectiveThinkingOptionId: settings.effort,
         effectivePermissionModeId: (settings.activePermissionProfile as JsonObject).id,
       },
@@ -526,7 +526,7 @@ it("keeps writer-conflicted snapshots readable and falls back to queue IDs for m
     { id: "with-client-id", input: [], clientUserMessageId: "original-client-id" },
   ]);
   expect(writable.configuration).toMatchObject({
-    effectiveModel: encodeOfficialCodexModelRef("gpt-5.4"),
+    effectiveModel: { id: "gpt-5.4" },
     effectiveThinkingOptionId: "high",
     effectivePermissionModeId: ":workspace",
   });

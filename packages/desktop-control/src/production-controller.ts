@@ -243,6 +243,7 @@ export async function runDesktopController(
   options: DesktopControllerOptions,
   signal: AbortSignal,
   dependencies: DesktopControllerDependencies = defaultDependencies,
+  lifecycle?: StartControllerAttachmentServerOptions["lifecycle"],
 ): Promise<void> {
   const now = dependencies.now ?? Date.now;
   const desktopExtensions =
@@ -348,6 +349,7 @@ export async function runDesktopController(
     attachmentServer = await dependencies.startAttachmentServer({
       port: options.attachmentPort,
       nonce: options.attachmentNonce,
+      ...(lifecycle ? { lifecycle } : {}),
       remoteConnections: async (request) => {
         // Serialize session recovery, not the native request: the renderer can await Host
         // responses while other settings reads run. Never retry a submitted mutation.

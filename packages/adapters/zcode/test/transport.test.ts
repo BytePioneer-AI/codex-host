@@ -1,11 +1,20 @@
+import type * as ChildProcess from "node:child_process";
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { copyFile, link, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ZcodeAdapter } from "../src/adapter.js";
 import { CliTransport, type TransportOptions } from "../src/transport.js";
 import { resolveInstallation } from "../src/installation.js";
 import type { ZcodeVerifier } from "../src/verification/index.js";
+
+const { execute } = vi.hoisted(() => ({ execute: vi.fn() }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof ChildProcess>();
+  const { promisify } = await import("node:util");
+  return { ...actual, execFile: Object.assign(() => {}, { [promisify.custom]: execute }) };
+});
 
 const SECRET = "fixture-only";
 const JWT = "synthetic.jwt.value";
@@ -30,6 +39,8 @@ beforeEach(() => {
 afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  execute.mockReset();
   // Windows keeps a just-exited fake CLI's executable locked for a moment; retry instead of
   // failing the test on EBUSY.
   await Promise.all(
@@ -269,6 +280,220 @@ describe("ZCode installed CLI transport", () => {
     });
   });
 
+  it.each([
+    { personal: false, codingPlan: false },
+    { personal: true, codingPlan: false },
+    { personal: false, codingPlan: true },
+  ])(
+    "isolates unreadable account credentials (personal model: $personal, coding plan: $codingPlan)",
+    async ({ personal, codingPlan }) => {
+      const { root, options, appDir, log } = await fixture(`
+if(method==='session/create')return reply(${JSON.stringify({
+        protocol: { name: "ZCode Protocol", version: 1 },
+        session: {
+          sessionId: "draft",
+          workspace: { workspaceKey: "fixture", workspacePath: "fixture" },
+          title: "",
+          status: "idle",
+          mode: "build",
+          createdAt: 0,
+          updatedAt: 0,
+          sessionKind: "main",
+        },
+        settings: {
+          model: {
+            available: personal
+              ? [{ ref: { providerId: "personal", modelId: "fixture" }, label: "Fixture" }]
+              : [],
+          },
+          thoughtLevel: { enabled: false, available: [] },
+          mode: { current: "build" },
+        },
+        projection: { status: "idle", contextUsed: 0, contextWindow: 0 },
+        messages: [],
+        runtime: {},
+      })});reply(null);`);
+      const family = "enc:v2:os:synthetic-family-ciphertext";
+      const jwt = "enc:v2:os:synthetic-jwt-ciphertext";
+      await writeFile(
+        path.join(root, ".zcode/v2/credentials.json"),
+        JSON.stringify({
+          "oauth:active_provider": codingPlan ? "zai" : family,
+          [codingPlan ? "oauth:zai:user_info" : "zcodejwttoken"]: jwt,
+        }),
+      );
+      if (codingPlan)
+        await writeFile(
+          path.join(root, ".zcode/v2/setting.json"),
+          JSON.stringify({
+            providerFamilyDomain: "zai",
+            providerFamilyConnectionSelections: { zai: { kind: "individual-coding-plan" } },
+          }),
+        );
+      const adapter = new ZcodeAdapter({ environment: options().environment, app: appDir });
+      try {
+        const result = await adapter.inspect({ cwd: root });
+        expect(fetch).not.toHaveBeenCalled();
+        const [launch] = await log();
+        expect(launch).toMatchObject({
+          params: codingPlan
+            ? {
+                providers: {
+                  "account:zai-individual-coding-plan": { access: { entitled: false } },
+                },
+              }
+            : { providers: {}, states: {} },
+        });
+        for (const value of [family, jwt])
+          expect(JSON.stringify([launch, result])).not.toContain(value);
+        if (personal)
+          expect(result).toMatchObject({
+            status: "ready",
+            catalog: { models: [{ label: "Fixture" }] },
+          });
+        else
+          expect(result).toMatchObject({
+            status: "unavailable",
+            error: {
+              code: "configurationRequired",
+              message: expect.stringMatching(/enc:v2:.*subscription status is unknown/i),
+              retryable: false,
+            },
+          });
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32").each(["denied", "timeout", "key mismatch"])(
+    "retries a Keychain %s only on a targeted re-detect, sharing concurrent probes",
+    async (failure) => {
+      const late = failure === "timeout";
+      vi.stubGlobal("process", Object.create(process, { platform: { value: "darwin" } }));
+      const { root, options, appDir, log } = await fixture(`
+if(method==='session/create'){
+while(fs.existsSync(process.env.FAKE_DRAFT_GATE))await new Promise(r=>setTimeout(r,10));
+const snapshot=${JSON.stringify({
+        protocol: { name: "ZCode Protocol", version: 1 },
+        session: {
+          sessionId: "draft",
+          workspace: { workspaceKey: "fixture", workspacePath: "fixture" },
+          title: "",
+          status: "idle",
+          mode: "build",
+          createdAt: 0,
+          updatedAt: 0,
+          sessionKind: "main",
+        },
+        settings: {
+          model: {
+            available: [{ ref: { providerId: "personal", modelId: "fixture" }, label: "Fixture" }],
+          },
+          thoughtLevel: { enabled: false, available: [] },
+          mode: { current: "build" },
+        },
+        projection: { status: "idle", contextUsed: 0, contextWindow: 0 },
+        messages: [],
+        runtime: {},
+      })};
+if (${late} && !JSON.parse(fs.readFileSync(process.env.FAKE_LOG,'utf8').trim().split('\\n').at(-1)).params.revision.startsWith('codexhost:zai:')) snapshot.settings.model.available=[];
+return reply(snapshot);}reply(null);`);
+      const gate = path.join(root, "hold-draft");
+      const environment = {
+        ...options().environment,
+        ZCODE_CREDENTIAL_SECRET: undefined,
+        FAKE_DRAFT_GATE: gate,
+      };
+      const file = path.join(root, ".zcode/v2/credentials.json");
+      const key = Buffer.alloc(32, 42);
+      const iv = Buffer.alloc(12);
+      const cipher = createCipheriv("aes-256-gcm", key, iv);
+      const data = Buffer.concat([cipher.update("zai"), cipher.final()]);
+      const fingerprint = createHash("sha256").update(key).digest("hex").slice(0, 24);
+      const payload = [iv, cipher.getAuthTag(), data].map((b) => b.toString("base64url")).join(".");
+      await writeFile(
+        file,
+        JSON.stringify({ "oauth:active_provider": `enc:v2:os:${fingerprint}:${payload}` }),
+      );
+      execute.mockImplementation(async (_file, [method]: string[]) => {
+        if (method === "default-keychain") return { stdout: `"${root}"\n` };
+        if (
+          execute.mock.calls.filter(([, args]) => args[0] === "find-generic-password").length === 1
+        ) {
+          if (failure === "key mismatch")
+            return { stdout: `${Buffer.alloc(32).toString("base64url")}\n` };
+          if (failure === "timeout")
+            throw Object.assign(new Error("synthetic timeout"), {
+              killed: true,
+              code: null,
+              signal: "SIGTERM",
+            });
+          throw new Error("synthetic denial");
+        }
+        return { stdout: `${key.toString("base64url")}\n` };
+      });
+      const adapter = new ZcodeAdapter({ environment, app: appDir });
+      try {
+        const cold = late
+          ? {
+              status: "unavailable",
+              error: {
+                code: "credentialAccessRequired",
+                retryable: false,
+                message: expect.stringMatching(/select ZCode or re-detect/i),
+              },
+            }
+          : { status: "ready", catalog: { models: [{ label: "Fixture" }] } };
+        expect(await adapter.inspect({ cwd: root })).toMatchObject(cold);
+        expect(await adapter.inspect({ cwd: root, refresh: true })).toMatchObject(cold);
+        expect(await adapter.open({ kind: "create", cwd: root, prewarm: true })).toMatchObject({
+          ok: false,
+          error: { code: "credentialAccessRequired", retryable: false },
+        });
+        expect(execute).not.toHaveBeenCalled();
+        // A real Session can make the first attempt; a second open is not a re-detect gesture.
+        await adapter.open({ kind: "create", cwd: root });
+        await adapter.open({ kind: "create", cwd: root });
+        await adapter.inspect({ cwd: root, credentialAccess: "allow" });
+        expect(execute.mock.calls.map(([, args]) => args[0])).toEqual([
+          "default-keychain",
+          "find-generic-password",
+        ]);
+
+        const before = (await log()).length;
+        if (late) await writeFile(gate, "");
+        const passive = adapter.inspect({ cwd: root, purpose: "availability", refresh: true });
+        // The account overlay being sent means this probe already skipped the cached timeout.
+        if (late) await vi.waitFor(async () => expect(await log()).toHaveLength(before + 1));
+        const active = adapter.inspect({ cwd: root, refresh: true, credentialAccess: "retry" });
+        const concurrent = adapter.inspect({ cwd: root, refresh: true, credentialAccess: "retry" });
+        if (late) await rm(gate);
+        expect(await Promise.all([passive, active, concurrent])).toEqual([
+          expect.objectContaining({ status: late ? "unavailable" : "ready" }),
+          expect.objectContaining({ status: "ready" }),
+          expect.objectContaining({ status: "ready" }),
+        ]);
+        expect(execute.mock.calls.map(([, args]) => args[0])).toEqual([
+          "default-keychain",
+          "find-generic-password",
+          "default-keychain",
+          "find-generic-password",
+        ]);
+        const launches = (await log()).slice(before);
+        expect(launches).toHaveLength(late ? 2 : 1);
+        expect(launches.at(-1)).toMatchObject({
+          params: { revision: expect.stringMatching(/^codexhost:zai:/) },
+        });
+        expect(await adapter.inspect({ cwd: root })).toMatchObject({ status: "ready" });
+        expect(execute).toHaveBeenCalledTimes(4);
+      } finally {
+        await rm(gate, { force: true });
+        await adapter.close();
+      }
+    },
+  );
+
   it("routes Personal Coding Plan reverse requests without JWT or verification", async () => {
     const providerId = "account:zai-individual-coding-plan";
     const apiKey = "synthetic-personal-key";
@@ -408,9 +633,21 @@ describe("ZCode installed CLI transport", () => {
       const transport = new CliTransport(
         options({ environment: { ...options().environment, ZCODE_CREDENTIAL_SECRET: "other" } }),
       );
-      const failure = await transport.start().catch((error: Error) => error);
-      expect(failure).toMatchObject({ code: "authenticationRequired" });
-      expect(String(failure)).not.toContain(JWT);
+      try {
+        await transport.start();
+        expect(transport.signedIn).toBe(false);
+        expect(transport.credentialIssue).toMatch(/Cannot decrypt ZCode credentials/);
+        expect(transport.credentialIssue).not.toContain(JWT);
+        expect(fetch).not.toHaveBeenCalled();
+        expect(await transport.request("readSession", { sessionId: "start-plan" })).toMatchObject({
+          result: {
+            headersApplied: false,
+            errorMessage: expect.stringMatching(/Cannot decrypt ZCode credentials/),
+          },
+        });
+      } finally {
+        await transport.close();
+      }
     });
 
     it("aborts verification when the CLI cancels the header request", async () => {

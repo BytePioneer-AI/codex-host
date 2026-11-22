@@ -4,7 +4,7 @@ import {
   harnessCommandDescriptorSchema,
   harnessConfigurationStateSchema,
 } from "@codexhost/shared-contracts";
-import { encodeOfficialCodexModelRef } from "../official-codex-model-ref.js";
+import { officialCodexModelRef } from "../official-codex-model-ref.js";
 
 const isRecord = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -17,7 +17,7 @@ export function nativeThreadConfiguration(settings: JsonObject) {
   return harnessConfigurationStateSchema.parse({
     ...(typeof settings.model === "string"
       ? {
-          effectiveModel: encodeOfficialCodexModelRef(
+          effectiveModel: officialCodexModelRef(
             settings.model,
             typeof settings.serviceTier === "string" ? settings.serviceTier : null,
           ),

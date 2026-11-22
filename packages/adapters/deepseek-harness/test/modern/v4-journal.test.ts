@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { decodeDeepSeekHarnessModelRef } from "../../src/model-catalog.js";
 
 import {
   matchesModernForkHistory,
@@ -689,11 +688,7 @@ describe("DSH V4 durable protocol", () => {
     });
     expect(turn?.items[3]?.item).toMatchObject({ text: "DONE" });
     expect(turn?.checkpoint?.checkpointId).toBe(`v4-turn-end:${events.length - 1}`);
-    assert(projected.effectiveModel);
-    expect(decodeDeepSeekHarnessModelRef(projected.effectiveModel)).toMatchObject({
-      provider: "deepseek-official",
-      model: "deepseek-v4-flash",
-    });
+    expect(projected.effectiveModel).toEqual({ id: "deepseek-official/deepseek-v4-flash" });
   });
 
   // 0.2.1-rc.2 records `thinking: disabled` on the auxiliary search request.

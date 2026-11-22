@@ -14,7 +14,7 @@ import type {
   HermesTransportEvent,
 } from "../src/hermes-transport.js";
 import { HermesTransportError } from "../src/hermes-transport.js";
-import { encodeHermesModelRef } from "../src/hermes-models.js";
+import { hermesModelRef } from "../src/hermes-models.js";
 import { HermesSession } from "../src/hermes-session.js";
 
 class FakeTurnTransport {
@@ -621,7 +621,7 @@ describe("HermesSession live configuration errors", () => {
         turnId: hostTurnIdSchema.parse("active-config"),
         input: [{ type: "text", text: "go" }],
       });
-      const model = encodeHermesModelRef("openrouter:test-model");
+      const model = hermesModelRef("openrouter:test-model");
       if (!model) throw new Error("Expected a Model");
       expect(await session.execute({ type: "model.select", model })).toMatchObject({ ok: true });
       expect(select).toHaveBeenCalledWith("openrouter:test-model");
@@ -648,7 +648,7 @@ describe("HermesSession live configuration errors", () => {
       open: openResult(),
       onSettle: () => undefined,
     });
-    const model = encodeHermesModelRef("openrouter:test-model");
+    const model = hermesModelRef("openrouter:test-model");
     if (!model) throw new Error("Expected a valid Hermes Model Ref");
 
     const selected = await session.execute({ type: "model.select", model });

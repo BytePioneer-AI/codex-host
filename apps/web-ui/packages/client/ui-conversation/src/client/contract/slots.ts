@@ -164,6 +164,12 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
     };
     /** Persistent product notices below navigation, including without a selected Session. */
     "conversation.header.notice": { kind: "list"; scope: "session-maybe" };
+    /** Resident header trailing action paired with the corner control on phone frames. */
+    "conversation.header.trailing": {
+      kind: "single";
+      scope: "root";
+      owner: ConversationHeaderTrailingOwnerProps;
+    };
     /** Strict per-Session title, actions, and View navigation. */
     "conversation.session.header": {
       kind: "single";
@@ -173,6 +179,8 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
         hideChrome: boolean;
         /** Resident header-owned control; title and lineage keep their own click behavior. */
         titleNavigation?: ReactNode;
+        /** Resident trailing action housed in the phone right capsule beside the corner button. */
+        trailingAction?: ReactNode;
       };
     };
     /** Optional replacement for one Session breadcrumb title. */
@@ -357,6 +365,12 @@ export interface ConversationHeaderLeadingOwnerProps {
   children?: never;
 }
 
+/** The trailing seat exposes a global header action independently of a Session. */
+export interface ConversationHeaderTrailingOwnerProps {
+  /** Marker field: the occupant receives no owner-specific values. */
+  children?: never;
+}
+
 /** Focus lifetime shared by resident navigation controls, independent of Session incarnations. */
 export interface ConversationHeaderNavigationOwnerProps {
   /** Return to the visible data-navigation-focus-return control, or the header if absent. */
@@ -394,14 +408,44 @@ export interface ConvViewOwnerProps {
 /** Base props of one target-owned Conversation View entry. */
 export type ConvViewProps = PropsRuntime<"conversation.view">;
 
+/** Classified failure categories for New Session creation shown on the Hero surface. */
+export type SessionCreationFailureReason = "no-harness" | "workspace-required" | "unknown";
+
+/** Structural view of pending or failed New Session creation from uiWorkspace. */
+export type SessionCreationView =
+  | { readonly state: "idle" }
+  | {
+      readonly state: "creating";
+      readonly workspaceId: WorkspaceId | null;
+      readonly token: number;
+    }
+  | {
+      readonly state: "error";
+      readonly workspaceId: WorkspaceId | null;
+      readonly reason: SessionCreationFailureReason;
+      readonly message?: string;
+      readonly token: number;
+    };
+
+/** Plain-text editor face bound to InputBar while a New Session is being created. */
+export interface PendingDraftFace {
+  readonly editor: LexicalEditor;
+  paste(text: string): void;
+}
+
 /** Business callbacks injected into the resident Conversation shell. */
 export interface ConversationInjected {
   /** Borrowed current Composer editor for the package-owned native reference drop target. */
   referenceEditor: LexicalEditor | undefined;
   /** Connect a blank Session; null explicitly selects no project on a supporting Host. */
   selectWorkspace: (workspaceId: WorkspaceId | null) => Promise<void>;
-  /** Session-addressed composer block source, or the stable absent source. */
-  hooks: { composerBlock: ObservableSnapshot<ComposerBlock | undefined> };
+  /** Retry a failed New Session creation without clearing the pending draft. */
+  retrySessionCreation: () => void;
+  /** Session-addressed composer block source and New Session creation state. */
+  hooks: {
+    composerBlock: ObservableSnapshot<ComposerBlock | undefined>;
+    sessionCreation: ObservableSnapshot<SessionCreationView>;
+  };
 }
 
 /** Business callbacks injected into the strict Session body. */
@@ -413,6 +457,8 @@ export interface ConversationSessionInjected {
   };
   /** Bind input draft persistence to the Session-owned store instance. */
   bindDraftPersistence: (write: (draft: DraftSnapshot) => void) => () => void;
+  /** Subscribe to composer requests that reveal an unsent response annotation. */
+  onRevealResponseAnnotation: (listener: (id: DraftAttachmentId) => void) => () => void;
   /** Select and activate one View while addressing an opaque focus request to it. */
   openView: (view: string, focus: string) => void;
 }
@@ -435,6 +481,12 @@ export interface ComposerBarOwnerProps {
   blocked?: { readonly reason: string };
   /** Lock all message actions while preserving the resident composer surface. */
   disabled?: boolean;
+  /** Keep typing enabled while the newly created blank Session finishes opening, keeping send/upload locked. */
+  preparingDraft?: boolean;
+  /** Active New Session creation progress or error shown on the Hero surface before a Session exists. */
+  sessionCreation?: SessionCreationView;
+  /** Retry a failed New Session creation from the inline Hero error banner. */
+  onRetrySessionCreation?: () => void;
   /** Whether the shared Workspace picker is expanded. */
   workspacePickerOpen?: boolean;
   /** Open the Workspace picker from the inert composer surface. */
@@ -447,6 +499,8 @@ export interface ComposerBarOwnerProps {
 /** Package-private operations injected into the resident composer bar. */
 export interface ComposerBarInjected {
   keyboard: ComposerKeyboard | undefined;
+  /** Lightweight plain-text draft editor used while a New Session is still creating. */
+  pendingDraft: PendingDraftFace | undefined;
   /**
    * Register one picked batch; resolves to the rejection copy or null. Where
    * the browser shell reports host paths (the Desktop application), files
@@ -461,10 +515,14 @@ export interface ComposerBarInjected {
     ((ids: readonly DraftAttachmentId[]) => readonly ComposerAttachment[]) | undefined;
   /** Restart one failed file upload; absent without a session. */
   retryFileUpload: ((id: DraftAttachmentId) => void) | undefined;
+  /** Reveal a selected response annotation in the current Chat view. */
+  revealResponseAnnotation: ((id: DraftAttachmentId) => void) | undefined;
   /** Toggle the existing command menu at the editor selection. */
   toggleCommandMenu: ((selection: EditSelection) => void) | undefined;
   stop: (() => void) | undefined;
   hooks: {
+    /** Live plain-text content of the pending New Session draft. */
+    pendingDraftText: ObservableSnapshot<string>;
     /** Readable sequence while the fixed Stop command is registered. */
     stopShortcut: ObservableSnapshot<readonly string[]>;
     /**
@@ -574,6 +632,7 @@ export type ConversationHeaderProps = PropsRuntime<"conversation.header"> &
     | "conversation.header.leading"
     | "conversation.header.navigation"
     | "conversation.header.shortcuts"
+    | "conversation.header.trailing"
     | "conversation.session.header"
   >;
 

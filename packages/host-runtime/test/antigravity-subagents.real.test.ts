@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { AntigravityAdapter } from "@codexhost/adapter-antigravity";
 import { MappingStore } from "@codexhost/mapping-store";
-import { encodeAntigravityTransportModel } from "@codexhost/protocol-core";
+import { encodeExternalTransportSelection } from "@codexhost/protocol-core";
 import {
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
@@ -101,11 +101,11 @@ describe.skipIf(!RUN_REAL)("Antigravity real Subagent Desktop protocol", () => {
     try {
       const created = await host.request("thread/start", {
         cwd: workspace,
-        model: encodeAntigravityTransportModel(
-          harnessModelRefSchema.parse({ id: "gemini-3.8-flash" }),
-          harnessPermissionModeIdSchema.parse("dangerously-skip-permissions"),
-          harnessThinkingOptionIdSchema.parse("high"),
-        ),
+        model: encodeExternalTransportSelection("antigravity", {
+          model: harnessModelRefSchema.parse({ id: "gemini-3.8-flash" }),
+          permissionModeId: harnessPermissionModeIdSchema.parse("dangerously-skip-permissions"),
+          thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+        }),
       });
       const parentId = (created.thread as JsonObject).id as string;
       stage = "spawn";

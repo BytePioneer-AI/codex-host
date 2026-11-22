@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo } from "react";
+import { memo, useCallback, useMemo, useRef } from "react";
 import type { InjectFace } from "@deepseek-ai/dsh-client-ui-slots";
 import type {
   ChatNodeViewProps,
@@ -6,8 +6,10 @@ import type {
   TurnTailOwnerProps,
 } from "../contract/slots.ts";
 import { AssistantMarkdown } from "./AssistantMarkdown.tsx";
+import { ResponseAnnotationMarks } from "./ResponseAnnotationMarks.tsx";
 import { annotationLabels } from "../markdown-labels.ts";
 import type { MarkdownResponseAnnotations } from "@deepseek-ai/dsh-client-ui-primitives";
+import css from "./SelectionActions.module.css";
 
 type AssistantNodeViewProps = ChatNodeViewProps<"assistant-step"> &
   InjectFace<PresentationInjected>;
@@ -23,10 +25,13 @@ export const AssistantNodeView = memo(function AssistantNodeView({
   renderMessageImages,
   fileMentions,
   responseAnnotations,
+  useInput,
   usePresentation,
   t,
 }: AssistantNodeViewProps) {
   const data = node.data;
+  const answer = useRef<HTMLDivElement>(null);
+  const answerKey = JSON.stringify([node.key, groupPart ?? null]);
   const turn =
     node.location.kind === "turn" || node.location.kind === "step" ? node.location.turn : undefined;
   const tail = useTurnData("turn-tail");
@@ -60,7 +65,9 @@ export const AssistantNodeView = memo(function AssistantNodeView({
   );
   return (
     <div
-      data-selection-answer=""
+      ref={answer}
+      className={css.answer}
+      data-selection-answer={answerKey}
       data-selection-answer-streaming={data.status === "running" || undefined}
     >
       <AssistantMarkdown
@@ -77,6 +84,14 @@ export const AssistantNodeView = memo(function AssistantNodeView({
         responseAnnotations={citations}
         t={t}
       />
+      {data.status !== "running" && (
+        <ResponseAnnotationMarks
+          answer={answer}
+          answerKey={answerKey}
+          useInput={useInput}
+          labels={citationLabels}
+        />
+      )}
     </div>
   );
 });

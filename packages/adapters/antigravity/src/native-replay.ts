@@ -3,12 +3,22 @@ import type { AntigravityAcpEvent } from "./acp-types.js";
 import { readProtoFields, type ProtoField } from "./native-protobuf.js";
 import { nativeConversationDbPath } from "./native-turn-boundaries.js";
 
+export interface NativeCompactionEvent {
+  type: "history.compaction";
+  stepIndex: number;
+  status: "succeeded" | "failed";
+  error?: string;
+}
+
 export type NativeReplayEvent =
-  AntigravityAcpEvent | { type: "history.autonomous"; stepIndex: number };
+  AntigravityAcpEvent | { type: "history.autonomous"; stepIndex: number } | NativeCompactionEvent;
+
+type ToolCalls = Map<string, "pending" | "settled">;
 
 const USER_INPUT = 14;
 const PLANNER_RESPONSE = 15;
 const ERROR_MESSAGE = 17;
+const CHECKPOINT = 23;
 const SYSTEM_MESSAGE = 101;
 const GENERIC_TOOL = 132;
 const DONE = 3;
@@ -61,12 +71,101 @@ export async function readNativeHistory(
   }
 }
 
+/** Read the latest committed step index before a live prompt begins, or -1 if absent. */
+export async function readNativeStepWatermark(dbPath: string): Promise<number> {
+  const { DatabaseSync } = await import("node:sqlite");
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+  } catch {
+    return -1;
+  }
+  try {
+    db.exec("BEGIN");
+    const row = db.prepare("SELECT MAX(idx) AS max_idx FROM steps").get();
+    return row?.max_idx === null || row?.max_idx === undefined ? -1 : Number(row.max_idx);
+  } catch {
+    return -1;
+  } finally {
+    db.close();
+  }
+}
+
+function decodeCheckpointEvent(
+  idx: number,
+  status: unknown,
+  step: readonly ProtoField[],
+): NativeCompactionEvent | undefined {
+  if (status !== DONE && status !== ERROR) return undefined;
+  const error = status === ERROR ? nested(step, 31) : [];
+  const errorText = textField(error, 3) || textField(error, 2) || textField(error, 1);
+  return {
+    type: "history.compaction",
+    stepIndex: idx,
+    status: status === DONE ? "succeeded" : "failed",
+    ...(errorText ? { error: errorText } : {}),
+  };
+}
+
+/** Read terminal compaction checkpoints committed for the active foreground Turn after a watermark. */
+export async function readNativeTurnCompactions(
+  dbPath: string,
+  afterStepIndex: number,
+): Promise<NativeCompactionEvent[]> {
+  const { DatabaseSync } = await import("node:sqlite");
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+  } catch {
+    return [];
+  }
+  try {
+    db.exec("BEGIN");
+    if (db.prepare("PRAGMA user_version").get()?.user_version !== 1) return [];
+    const compactions: NativeCompactionEvent[] = [];
+    let turnRun: string | undefined;
+    let seenUserInput = false;
+    const wakeRuns = new Set<string>();
+    for (const row of db
+      .prepare(
+        `SELECT idx, step_type, status, step_payload FROM steps
+         WHERE idx > ? AND step_type IN (${USER_INPUT}, ${SYSTEM_MESSAGE}, ${CHECKPOINT})
+         ORDER BY idx`,
+      )
+      .iterate(afterStepIndex)) {
+      const idx = Number(row.idx);
+      const step = message(row.step_payload);
+      const stepRun = textField(nested(step, 5), 12);
+      if (row.step_type === USER_INPUT) {
+        seenUserInput = true;
+        turnRun = stepRun;
+        continue;
+      }
+      if (row.step_type === SYSTEM_MESSAGE) {
+        if (stepRun && stepRun !== turnRun) wakeRuns.add(stepRun);
+        continue;
+      }
+      if (!seenUserInput) continue;
+      if (stepRun && wakeRuns.has(stepRun)) continue;
+      if (stepRun && turnRun && stepRun !== turnRun) continue;
+      const event = decodeCheckpointEvent(idx, row.status, step);
+      if (event) compactions.push(event);
+    }
+    return compactions;
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
+}
+
 export function decodeNativeHistory(db: DatabaseSync) {
   const events: NativeReplayEvent[] = [];
-  const pendingCalls = new Set<string>();
+  let toolCalls: ToolCalls = new Map();
   let turnCount = 0;
   let run = "";
-  let candidate: { stepIndex: number; run: string } | undefined;
+  let candidate:
+    { stepIndex: number; run: string; events: NativeReplayEvent[]; calls: ToolCalls } | undefined;
   let wake: { eventIndex: number; settled: boolean } | undefined;
   let finalPlanner = false;
   const endWake = () => {
@@ -82,7 +181,7 @@ export function decodeNativeHistory(db: DatabaseSync) {
   for (const row of db
     .prepare(
       `SELECT idx, step_type, status, step_payload FROM steps
-       WHERE step_type IN (${USER_INPUT}, ${PLANNER_RESPONSE}, ${ERROR_MESSAGE}, ${SYSTEM_MESSAGE}, ${GENERIC_TOOL})
+       WHERE step_type IN (${USER_INPUT}, ${PLANNER_RESPONSE}, ${ERROR_MESSAGE}, ${CHECKPOINT}, ${SYSTEM_MESSAGE}, ${GENERIC_TOOL})
        ORDER BY idx`,
     )
     .iterate()) {
@@ -99,34 +198,37 @@ export function decodeNativeHistory(db: DatabaseSync) {
     const step = message(row.step_payload);
     // CascadeStep.metadata.run_id is shared by input, system messages and planner
     // steps in the same execution. A system message inside that run is not a boundary.
-    const stepRun = textField(nested(step, 5), 12);
+    const metadata = nested(step, 5);
+    const stepRun = textField(metadata, 12);
     if (row.step_type === SYSTEM_MESSAGE) {
       if (row.status === DONE && (stepRun ? stepRun !== run : finalPlanner)) {
         if (candidate?.run !== stepRun) {
           // A new run's in-flight planner must not unsettle the previous wake.
           endWake();
-          candidate = { stepIndex: idx, run: stepRun };
+          candidate = { stepIndex: idx, run: stepRun, events: [], calls: new Map() };
         }
       }
       continue;
     }
+    if (row.step_type === CHECKPOINT) {
+      const event = decodeCheckpointEvent(idx, row.status, step);
+      if (!event) continue;
+      const pendingWake = candidate?.run === stepRun ? candidate : undefined;
+      if (!pendingWake && (candidate || (stepRun && run && stepRun !== run))) continue;
+      (pendingWake?.events ?? events).push(event);
+      continue;
+    }
     if (row.step_type === USER_INPUT) run = stepRun;
-    const number =
-      row.step_type === USER_INPUT
-        ? 19
-        : row.step_type === PLANNER_RESPONSE
-          ? 20
-          : row.step_type === ERROR_MESSAGE
-            ? 24
-            : 140;
-    const body = message(messageField(step, number));
+    const number = row.step_type === USER_INPUT ? 19 : row.step_type === PLANNER_RESPONSE ? 20 : 24;
+    const body =
+      row.step_type === GENERIC_TOOL ? nested(step, 140) : message(messageField(step, number));
     switch (row.step_type) {
       case USER_INPUT: {
         const items = body.flatMap((field) =>
           field.number === 3 && field.wire === 2 ? [textField(message(field.value), 1)] : [],
         );
         const text = items.join("") || textField(body, 2) || textField(body, 1);
-        pendingCalls.clear();
+        toolCalls.clear();
         if (text && nativeTurnIndex !== undefined)
           events.push({ type: "user.text", text, nativeTurnIndex });
         break;
@@ -136,11 +238,12 @@ export function decodeNativeHistory(db: DatabaseSync) {
         const text = textField(body, 1);
         const calls = body.filter((field) => field.number === 7 && field.wire === 2);
         if (candidate && candidate.run === stepRun) {
-          const { stepIndex } = candidate;
+          const { stepIndex, events: earlierTools, calls: earlierCalls } = candidate;
           endWake();
           wake = { eventIndex: events.length, settled: false };
           events.push({ type: "history.autonomous", stepIndex });
-          pendingCalls.clear();
+          for (const event of earlierTools) events.push(event);
+          toolCalls = earlierCalls;
         }
         if (stepRun) run = stepRun;
         finalPlanner = row.status === DONE && !!text.trim() && calls.length === 0;
@@ -152,8 +255,8 @@ export function decodeNativeHistory(db: DatabaseSync) {
           const call = message(field.value);
           const toolCallId = textField(call, 1);
           const name = textField(call, 2);
-          if (!toolCallId || !name) continue;
-          pendingCalls.add(toolCallId);
+          if (!toolCallId || !name || toolCalls.get(toolCallId) === "settled") continue;
+          toolCalls.set(toolCallId, "pending");
           events.push({
             type: "tool.call",
             toolCallId,
@@ -171,8 +274,28 @@ export function decodeNativeHistory(db: DatabaseSync) {
         break;
       }
       case GENERIC_TOOL: {
-        const toolCallId = textField(nested(nested(step, 5), 4), 1);
-        if (!pendingCalls.delete(toolCallId)) break;
+        const call = nested(metadata, 4);
+        const toolCallId = textField(call, 1);
+        if (!toolCallId) break;
+        // Tools in a wake candidate belong to that run, but cannot confirm the wake.
+        const pendingWake = candidate?.run === stepRun ? candidate : undefined;
+        const calls = pendingWake?.calls ?? toolCalls;
+        const target = pendingWake?.events ?? events;
+        const state = calls.get(toolCallId);
+        if (state === "settled") break;
+        if (state === undefined) {
+          const name = textField(call, 2);
+          if (row.status !== DONE || !name) break;
+          // A standalone tool must not extend the previous Turn past a possible fork boundary.
+          if (!pendingWake && (candidate || (stepRun && run && stepRun !== run))) break;
+          target.push({
+            type: "tool.call",
+            toolCallId,
+            name,
+            args: argsValue(textField(call, 3)),
+          });
+        }
+        calls.set(toolCallId, "settled");
         const error = nested(step, 31);
         const output =
           textField(nested(body, 2), 1) ||
@@ -181,7 +304,7 @@ export function decodeNativeHistory(db: DatabaseSync) {
           textField(error, 1);
         const status =
           row.status === DONE ? "completed" : row.status === ERROR ? "failed" : "cancelled";
-        events.push({
+        target.push({
           type: "tool.update",
           toolCallId,
           status,

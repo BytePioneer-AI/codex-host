@@ -12,6 +12,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
 import {
   createFixture,
+  readJsonLine,
   startPiThread,
   startPiTurn,
   stopFixture,
@@ -368,4 +369,79 @@ it("observes out-of-process Desktop pin membership on canonical reads, without e
   await fixture.mappingStore.replaceSectionPlacements([]);
   await read();
   expect(changed).toHaveBeenCalledExactlyOnceWith(external, "codexhost/thread/tree/changed");
+});
+
+async function delegateBelowParent(fixture: ReturnType<typeof createFixture>, child: string) {
+  for (const [parent, id] of [
+    ["parent", child],
+    [child, "grandchild"],
+  ]) {
+    await fixture.mappingStore.createDelegation({
+      delegationId: hostThreadIdSchema.parse(`delegation-${id}`),
+      parentHostThreadId: hostThreadIdSchema.parse(parent),
+      childHostThreadId: hostThreadIdSchema.parse(id),
+      sourceHarnessId: harnessIdSchema.parse("pi"),
+      targetHarnessId: harnessIdSchema.parse("codex"),
+      taskDigest: "a".repeat(64),
+    });
+  }
+}
+
+it.each(["official", "external"])(
+  "drops a deleted %s Thread and its Delegations from the Thread tree",
+  async (kind) => {
+    const fixture = createFixture();
+    cleanup.push(() => stopFixture(fixture));
+    await fixture.ready;
+    const child = kind === "external" ? await startPiThread(fixture) : "official-child";
+    nativePins();
+    await delegateBelowParent(fixture, child);
+    const readTree = () => fixture.host.handleClientRequest("codexhost/thread/tree/read", {});
+    expect(await readTree()).toEqual({
+      result: { parents: { [child]: "parent", grandchild: child } },
+    });
+    const changed = vi.spyOn(fixture.host.clientEvents, "changed");
+
+    const request = { id: 921, method: "thread/delete", params: { threadId: child } };
+    writeRequest(fixture.desktopInput, request);
+    if (kind === "official") {
+      expect(await readJsonLine(fixture.official.stdin)).toEqual(request);
+      // A colliding server-initiated request ID must not retire the pending delete.
+      fixture.official.stdout.write(
+        `${JSON.stringify({ id: 921, method: "item/tool/requestUserInput", params: { threadId: "other", questions: [] } })}\n`,
+      );
+      fixture.official.stdout.write(`${JSON.stringify({ id: 921, result: {} })}\n`);
+    }
+    expect(
+      await fixture.collector.waitFor((message) => message.id === 921 && !("method" in message)),
+    ).toEqual({
+      id: 921,
+      result: {},
+    });
+
+    await vi.waitFor(() =>
+      expect(changed).toHaveBeenCalledWith(child, "codexhost/thread/tree/changed"),
+    );
+    // Its own Delegation and its children's go: the grandchild now stands at the top.
+    expect(await fixture.mappingStore.listDelegations()).toEqual([]);
+    expect(await readTree()).toEqual({ result: { parents: {} } });
+  },
+);
+
+it("keeps an official Thread's Delegations when its deletion fails", async () => {
+  const fixture = createFixture();
+  cleanup.push(() => stopFixture(fixture));
+  await fixture.ready;
+  await delegateBelowParent(fixture, "official-child");
+  const request = { id: 922, method: "thread/delete", params: { threadId: "official-child" } };
+  writeRequest(fixture.desktopInput, request);
+  expect(await readJsonLine(fixture.official.stdin)).toEqual(request);
+  const failure = { id: 922, error: { code: -32600, message: "Thread not found" } };
+  fixture.official.stdout.write(`${JSON.stringify(failure)}\n`);
+  expect(await fixture.collector.waitFor((message) => message.id === 922)).toEqual(failure);
+  expect(
+    (await fixture.mappingStore.listDelegations()).map(
+      ({ childHostThreadId }) => childHostThreadId,
+    ),
+  ).toEqual(expect.arrayContaining(["official-child", "grandchild"]));
 });

@@ -1,5 +1,6 @@
 import settingsCss from "./shell.css";
 import accountsCss from "./accounts.css";
+import delegationCss from "./delegation.css";
 import consoleComponentsCss from "../console/components.css";
 import usageCss from "../console/usage/usage.css";
 import tailwindCss from "./tailwind.css";
@@ -16,6 +17,7 @@ import type {
   RendererSettingsDynamicPageEntry,
   RendererSettingsPluginPagesSource,
 } from "./desktop-extension-settings-pages.js";
+import { parseSafeExtensionIconUrl } from "./desktop-extensions-shared.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
@@ -23,6 +25,7 @@ import {
 } from "./localization.js";
 import { CODEXHOST_GITHUB_REPOSITORY_URL, createDefaultRendererSettingsRegistry } from "./pages.js";
 import { attachRendererSettingsRailPage, type RendererSettingsRailPage } from "./rail-page.js";
+import { RELEASE_ANNOUNCEMENT_DIALOG_ATTRIBUTE } from "./release-announcement-dialog.js";
 
 export const SETTINGS_SHELL_ATTRIBUTE = "data-codexhost-settings-shell";
 export const RENDERER_SETTINGS_COLOR_SCHEME = "inherit";
@@ -82,7 +85,7 @@ export function mountRendererSettingsShell(
   const shadow = root.attachShadow({ mode: "open" });
   const style = ownerDocument.createElement("style");
   // Tailwind declares the cascade layer order, so it must precede the unlayered settings CSS.
-  style.textContent = `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${consoleComponentsCss}\n${usageCss}\n${coloredBrandCss}`;
+  style.textContent = `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${delegationCss}\n${consoleComponentsCss}\n${usageCss}\n${coloredBrandCss}`;
 
   // A page beside the native navigation rail, not a modal: the rail stays
   // usable and native navigation replaces the page.
@@ -184,6 +187,7 @@ export function mountRendererSettingsShell(
   const navigateToPage = (pageId: string): boolean => {
     if (disposed || !resolvePage(pageId)) return false;
     activatePage(pageId);
+    if (!surface.hidden) focusActiveNavigation();
     return true;
   };
 
@@ -226,14 +230,33 @@ export function mountRendererSettingsShell(
 
   const createNavigationButton = (
     definition: RendererSettingsPageDefinition,
-    extensionId?: string,
+    entry?: RendererSettingsDynamicPageEntry,
   ): HTMLButtonElement => {
     const button = ownerDocument.createElement("button");
     button.type = "button";
     button.className = "settings-nav-button";
     button.dataset.pageId = definition.id;
-    if (extensionId) button.dataset.extensionId = extensionId;
-    button.append(createRendererSettingsIcon(definition.icon, 17));
+    if (entry) button.dataset.extensionId = entry.extensionId;
+    const iconUrl = parseSafeExtensionIconUrl(entry?.iconDataUrl);
+    if (iconUrl) {
+      const image = ownerDocument.createElement("img");
+      image.className = "settings-nav-button__plugin-icon";
+      image.alt = "";
+      image.width = 16;
+      image.height = 16;
+      image.decoding = "async";
+      image.addEventListener(
+        "error",
+        () => {
+          image.replaceWith(createRendererSettingsIcon(definition.icon, 17));
+        },
+        { once: true },
+      );
+      image.src = iconUrl;
+      button.append(image);
+    } else {
+      button.append(createRendererSettingsIcon(definition.icon, 17));
+    }
     const label = ownerDocument.createElement("span");
     label.textContent = definition.label;
     button.append(label);
@@ -270,7 +293,7 @@ export function mountRendererSettingsShell(
       nodes.push(createNavigationSection(messages.pluginsSection, "plugins"));
       for (const entry of pluginEntries) {
         if (!dynamicPagesById.has(entry.definition.id)) continue;
-        const button = createNavigationButton(entry.definition, entry.extensionId);
+        const button = createNavigationButton(entry.definition, entry);
         navigationButtons.set(entry.definition.id, button);
         nodes.push(button);
       }
@@ -365,8 +388,13 @@ export function mountRendererSettingsShell(
   };
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key !== "Escape" || event.defaultPrevented) return;
-    // A page-owned modal (for example a credential import) closes first.
-    if (shadow.querySelector("dialog[open]")) return;
+    // A page-owned modal (for example a credential import or release announcement) closes first.
+    if (
+      shadow.querySelector("dialog[open]") ||
+      ownerDocument.querySelector(`[${RELEASE_ANNOUNCEMENT_DIALOG_ATTRIBUTE}]`)
+    ) {
+      return;
+    }
     event.preventDefault();
     hide(true);
   };

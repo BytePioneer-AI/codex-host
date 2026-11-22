@@ -4,6 +4,7 @@ import path from "node:path";
 
 import {
   harnessIdSchema,
+  harnessModelRefSchema,
   hostInteractionIdSchema,
   hostTurnIdSchema,
   nativeTurnRefSchema,
@@ -166,17 +167,54 @@ describe("QwenCodeAdapter", () => {
     expect(transport.closed).toBe(true);
   });
 
-  it("pins SDK creation to the advertised default Model", async () => {
-    const transport = new FakeTransport();
-    const { adapter } = adapterFor(transport);
+  it.each([
+    ["GLM-5.3-flash-openai", "GLM-5.3-flash(openai)"],
+    ["foo-bar", "qwen-max"],
+  ])(
+    "pins SDK creation to the exact selected Model or native default (%s)",
+    async (savedId, expected) => {
+      const models = {
+        ...SESSION_MODELS,
+        availableModels: [
+          ...SESSION_MODELS.availableModels,
+          ...["GLM-5.3-flash(openai)", "foo/bar", "foo:bar"].map((modelId) => ({
+            modelId,
+            name: modelId,
+          })),
+        ],
+      };
+      const probe = new FakeTransport();
+      const transport = new FakeTransport();
+      probe.models = transport.models = models;
+      transport.runTurnImplementation = async () => ({ status: "succeeded" });
+      const { adapter } = adapterFor(probe, transport);
+      const inspection = await adapter.inspect();
+      if (inspection.status !== "ready") throw new Error("Expected a Qwen Code Model catalog");
+      const model = adapter.normalizeStoredModelRef(
+        harnessModelRefSchema.parse({ id: savedId }),
+        inspection.catalog,
+      );
+      expect(model).toEqual(expected === "qwen-max" ? undefined : { id: expected });
 
-    const opened = await adapter.open({ kind: "create", cwd: "/tmp" });
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "/tmp",
+        ...(model ? { model } : {}),
+      });
 
-    if (!opened.ok) throw new Error("create failed");
-    expect(transport.setModelCalls).toEqual(["qwen-max"]);
-    expect(opened.value.initialState.effectiveModel?.id).toBe("qwen-max");
-    await opened.value.close();
-  });
+      if (!opened.ok) throw new Error("create failed");
+      expect(transport.setModelCalls).toEqual([expected]);
+      expect(opened.value.initialState.effectiveModel).toEqual({ id: expected });
+      expect(
+        await opened.value.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("model-turn"),
+          input: [{ type: "text", text: "hello" }],
+        }),
+      ).toMatchObject({ ok: true });
+      await opened.value.close();
+    },
+  );
 
   it("gives an explicit mode priority over the normal Qwen default", async () => {
     const transport = new FakeTransport();

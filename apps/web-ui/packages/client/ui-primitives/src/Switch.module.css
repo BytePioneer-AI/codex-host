@@ -14,6 +14,9 @@
   corner-shape: round;
   background: var(--dsw-alias-border-l3);
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .switch[aria-checked="true"] {
@@ -47,4 +50,12 @@
 
 .switch[aria-checked="true"] .thumb {
   transform: translateX(16px);
+}
+
+@media (pointer: coarse) {
+  .switch::after {
+    content: "";
+    position: absolute;
+    inset: -12px -4px;
+  }
 }

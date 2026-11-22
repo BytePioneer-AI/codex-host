@@ -175,22 +175,6 @@ pub fn process_snapshot(_process_id: u32) -> Result<ProcessSnapshot, PlatformErr
     ))
 }
 
-/// Snapshot a live process without relying on its executable path, so a
-/// recorded child can still be recognized after its image directory was
-/// removed or replaced.
-pub fn process_identity(process_id: u32) -> Result<ProcessSnapshot, PlatformError> {
-    process_snapshot(process_id)
-}
-
-/// Snapshot `process_id` only when it is still the exact instance that started
-/// at `started_at_micros`, so a recycled PID is never mistaken for the
-/// recorded process. Returns `None` when the process is gone or was replaced.
-pub fn process_instance(process_id: u32, started_at_micros: u64) -> Option<ProcessSnapshot> {
-    process_snapshot(process_id)
-        .ok()
-        .filter(|process| process.started_at_micros == started_at_micros)
-}
-
 #[cfg(target_os = "macos")]
 pub fn process_snapshots() -> Result<Vec<ProcessSnapshot>, PlatformError> {
     use libproc::processes::{ProcFilter, pids_by_type};

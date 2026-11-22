@@ -88,7 +88,7 @@ TypeScript 类型与 Zod 校验以 [`packages/shared-contracts/src/host-extensio
 
 ## 跨端独立管理页（`page`）
 
-声明 `page` 的插件只需编写一份标准 ESM 前端代码，即可同时在 Desktop 设置（Shadow DOM 容器）与 Web 设置（容器 + 公共样式表）中通过「打开页面」直接运行。
+声明 `page` 的插件只需编写一份标准 ESM 前端代码。Desktop 在设置中以 Shadow DOM 打开；Web 在左侧一级目录「插件」中列出已启用的独立页，在主工作区打开而非设置弹窗。
 
 - 入口模块导出 `mount(root: HTMLElement, api: HostExtensionPageApi)`，可返回同步或异步清理函数。
 - 宿主在容器上暴露统一的主题 CSS 变量（`HOST_EXTENSION_PAGE_CSS_VARIABLES`）：
@@ -109,9 +109,9 @@ TypeScript 类型与 Zod 校验以 [`packages/shared-contracts/src/host-extensio
 
 ## 跨端主窗口挂件（`widget`）
 
-`widget.entry` 同样导出 `mount(root, api)`，复用 `HostExtensionPageApi`、可选 CSS 和 `--cx-page-*` 主题变量，不需要打开设置或独立页。Desktop 在主窗口 `body` 下为每个挂件创建 Shadow DOM 容器；覆盖层默认透传指针事件，只有需要交互的控件应设置 `pointer-events: auto`。
+`widget.entry` 同样导出 `mount(root, api)`，一份代码在 Desktop 和 Web 主页面自动运行，不需要打开设置或独立页。双端在 `body` 下各用一个 Shadow DOM 容器挂载，提供可选样式、`--cx-page-*` 和语言/主题订阅；只在交互区域设置 `pointer-events: auto`。`page` 与 `widget` 可以从入口相对导入同一个包内 `.mjs`，例如 `../shared/timer.mjs`。
 
-Desktop 监听本地扩展变更，并在窗口可见时每 5 秒与共享 Host 快照对账，以发现其他客户端或后端的变更。同一代次的设置变更通知 `storage.onChange`，保留挂件 DOM；禁用、卸载、更换代次或宿主销毁时，宿主中止 `api.signal`、调用清理函数并移除容器。`widget` 的 Web 主窗口宿主独立接入该共享契约。
+Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 监听本地扩展变更，并在窗口可见时每 5 秒补读快照。同一代次的设置变更通知 `storage.onChange`，保留挂件 DOM；禁用、卸载、更换代次或宿主销毁时，中止 `api.signal`、调用清理函数并移除容器。挂载和清理错误按实例隔离。
 
 ## 宿主页面注入（`desktop` 与 `web`）
 
@@ -155,7 +155,7 @@ Desktop 监听本地扩展变更，并在窗口可见时每 5 秒与共享 Host 
   - `POST /api/extensions/upload`（`Content-Type: application/zip`，≤ 64 MiB）：流式读取 ZIP 后转为 `install` / `update` RPC；
   - `GET` / `HEAD /api/extensions/assets/:id/:activationId/:digest/*`：向 Host 请求资产并返回 `Cache-Control: private, max-age=31536000, immutable`、`X-Content-Type-Options: nosniff`、`Cross-Origin-Resource-Policy: same-origin`；对缺失、代次不匹配及 `backend.entry` 统一返回 `404`。
 - **Console 转发（`packages/console-server`）**：`/api/extensions/*` 写操作转发至共享 Host RPC，共享 Host 未运行时返回 `503`；只读列表与市场查询在离线时支持直接读取磁盘/拉取目录。
-- **双端统一 UI**：Desktop 设置与 Web 设置均提供单一「插件 / Plugins」中心，以能力角标（`全端` / `Web` / `Desktop` / `独立页面` / `后台`，Desktop 另有 `挂件`）和能力/分类筛选展示全部扩展，已启用且含 `page` 的扩展可直接点击「打开页面」，含 `settingsSchema` 的扩展可在详情中直接编辑共享设置。
+- **双端统一 UI**：Desktop「设置 → 插件」和 Web 一级目录「插件 → 插件中心」提供统一的管理界面和能力角标（`全端` / `Web` / `Desktop` / `独立页面` / `挂件` / `后台`），支持按能力和分类筛选。已启用且含 `page` 的扩展可以从中心点击「打开页面」，或从 Web 左侧「插件」专区直接打开。含 `settingsSchema` 的扩展可在详情中编辑共享设置。
 
 ## 作者与打包指南
 
@@ -167,4 +167,4 @@ npx tsc -b packages/harness-plugin-files
 node tools/build-desktop-extension.mjs "$EXTENSION_SOURCE_DIR" "<输出目录>"
 ```
 
-含 `page`、`web` 或 `backend` 的统一扩展直接将 `manifest.json` 与构建后的 `.mjs`/`.css`/静态资源打入 `.zip`（或在开发期通过本机目录 `localDir` 安装），在 Desktop 或 Web 的「插件」中心导入并启用即可跨端生效。
+含 `page`、`widget`、`web` 或 `backend` 的统一扩展直接将 `manifest.json` 与构建后的 `.mjs`/`.css`/静态资源打入 `.zip`（或在开发期通过本机目录 `localDir` 安装），在 Desktop 或 Web 的「插件」中心导入并启用即可跨端生效。

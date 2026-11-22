@@ -569,6 +569,9 @@ export function WebExtensionDetailModal({
               {capabilities?.hasPage && (
                 <span className={css.capabilityChip}>{t("extensions.badge.page")}</span>
               )}
+              {capabilities?.hasWidget && (
+                <span className={css.capabilityChip}>{t("extensions.badge.widget")}</span>
+              )}
               {capabilities?.hasWeb && (
                 <span className={css.capabilityChip}>{t("extensions.capability.webUi")}</span>
               )}

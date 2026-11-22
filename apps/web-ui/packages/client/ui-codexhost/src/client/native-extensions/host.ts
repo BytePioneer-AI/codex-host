@@ -1,9 +1,9 @@
 /**
- * Browser runtime host for unified Host extensions that declare a `web` entry.
+ * Browser runtime host for unified Host extensions with `web` or `widget` entries.
  *
  * Subscribes to `/api/ch/v1/events` (`extensions-changed`) for event-driven reconciliation,
  * syncs immediately on reconnect or when the page becomes visible, keeps a low-frequency 30s
- * fallback poll, reconciles `manifest.web` entries by `(id, activationId, digest)`, refreshes
+ * fallback poll, reconciles both surfaces by `(id, activationId, digest)`, refreshes
  * same-generation settings changes without remounting UI, and isolates every failure.
  */
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
@@ -21,6 +21,7 @@ import {
   type ManagedWebExtensionResources,
 } from "./api.ts";
 import { webNativeExtensionRpcClient, type WebNativeExtensionRpcClient } from "./rpc.ts";
+import { createWebWidgetHost } from "./widgets.ts";
 
 const FALLBACK_POLL_INTERVAL_MS = 30_000;
 
@@ -93,6 +94,7 @@ export function startWebNativeExtensionHost(
   } = options;
 
   const instances = new Map<string, ActiveInstance>();
+  const widgets = createWebWidgetHost(ctx, doc, rpc, importModule);
   let lastSnapshotRevision: number | undefined;
   let stopped = false;
   let syncing = false;
@@ -254,6 +256,7 @@ export function startWebNativeExtensionHost(
     if (stopped) return;
     if (snapshot.revision === lastSnapshotRevision) return;
     lastSnapshotRevision = snapshot.revision;
+    widgets.reconcile(snapshot.extensions);
 
     // Only activate enabled entries that declare a `web` browser injection entry.
     const webEntries = snapshot.extensions.filter((entry) => entry.manifest.web !== undefined);
@@ -408,6 +411,7 @@ export function startWebNativeExtensionHost(
         destroyInstance(instance);
       }
       instances.clear();
+      widgets.dispose();
     },
   };
 }

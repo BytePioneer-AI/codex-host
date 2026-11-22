@@ -99,7 +99,7 @@ export async function mount(root, api) {
 
 ### 2.2 主窗口挂件（`widget`）
 
-在清单中声明 `widget: { apiVersion: 1, entry: "widget/index.mjs", style: "widget/style.css" }`（`style` 可省略）。只在可交互控件上设置 `pointer-events: auto`，让覆盖层其余区域透传点击。将共享模块放进包内子目录，从入口使用相对 ESM 导入，例如 `../shared/timer.mjs`。
+在清单中声明 `widget: { apiVersion: 1, entry: "widget/index.mjs", style: "widget/style.css" }`（`style` 可省略）。用同一份 `mount(root, api)` 代码在 Desktop 和 Web 主页面运行；双端均使用 Shadow DOM。只在交互区域设置 `pointer-events: auto`，让覆盖层其余区域透传点击。`page` 和 `widget` 入口可相对导入同一个包内 `.mjs`，例如 `../shared/timer.mjs`；打包时包含该模块。
 
 ### 2.3 Desktop 宿主注入（`desktop`）
 
@@ -133,9 +133,9 @@ export async function activate(ctx) {
    node tools/build-desktop-extension.mjs "$EXTENSION_SOURCE_DIR" "<输出目录>"
    ```
 2. 使用 [隔离实测 Skill](../codexhost-isolated-testing/SKILL.md) 以独立数据目录与空闲端口启动测试 Web / Desktop（不碰 `~/.codexhost` 与用户正在运行的端口）。
-3. 在「设置 → 插件」导入 `.zip`（或开发期填入本机目录 `localDir`）并启用：
+3. 从 Desktop「设置 → 插件」或 Web 一级目录「插件 → 插件中心」导入 `.zip`（或开发期填入本机目录 `localDir`）并启用：
    - 验证能力角标显示准确；含 `widget` 的扩展启用后确认主窗口自动出现挂件，禁用后确认挂件移除且未拦截非挂件区域的点击；
-   - 含 `page` 的扩展点击「打开页面」，验证样式、交互、设置持久化与关闭清理；
+   - 含 `page` 的扩展点击「打开页面」，在 Web 也可直接从左侧「插件」专区打开全宽工作区；验证样式、交互、设置持久化与关闭清理；
    - 含 `backend` 的扩展确认共享 Host 仅起 1 个子进程、多标签页/双端共享同一 PID 与数据、禁用后进程立即退出；
    - 纯前端无 `backend` 扩展确认零后端子进程；
    - 如需兜底，可通过管理界面的「禁用全部扩展」（`codexhost/extensions/recover`）一键恢复。

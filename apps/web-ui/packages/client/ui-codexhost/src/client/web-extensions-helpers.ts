@@ -30,10 +30,10 @@ export type Translate = PropsLocale<"codexhostImport">["t"];
 export type ExtensionLocale = "zh-CN" | "en";
 export type HostExtensionValidItem = Extract<HostExtensionListItem, { state: "valid" }>;
 export type ExtensionGroupId = "attention" | "enabled" | "disabled";
-export type ExtensionCapabilityFilter = "all" | "page" | "web" | "desktop" | "backend";
+export type ExtensionCapabilityFilter = "all" | "page" | "widget" | "web" | "desktop" | "backend";
 
 export interface ExtensionCapabilityBadge {
-  readonly kind: "all" | "web" | "desktop" | "page" | "backend";
+  readonly kind: ExtensionCapabilityFilter;
   readonly label: string;
 }
 
@@ -49,6 +49,7 @@ export const CATEGORY_ORDER: readonly DesktopExtensionCategory[] = [
 export const CAPABILITY_FILTER_ORDER: readonly ExtensionCapabilityFilter[] = [
   "all",
   "page",
+  "widget",
   "web",
   "desktop",
   "backend",
@@ -83,6 +84,7 @@ export function itemTargets(item: HostExtensionListItem): HostExtensionTarget[] 
 export function catalogCapabilities(entry: HostExtensionCatalogEntry): HostExtensionCapabilities {
   return {
     hasPage: Boolean(entry.apis.page),
+    hasWidget: Boolean(entry.apis.widget),
     hasDesktop: Boolean(entry.apis.desktop),
     hasWeb: Boolean(entry.apis.web),
     hasBackend: Boolean(entry.apis.backend),
@@ -108,6 +110,9 @@ export function deriveHostCapabilityBadges(
   if (capabilities.hasPage) {
     badges.push({ kind: "page", label: t("extensions.badge.page") });
   }
+  if (capabilities.hasWidget) {
+    badges.push({ kind: "widget", label: t("extensions.badge.widget") });
+  }
   if (capabilities.hasBackend) {
     badges.push({ kind: "backend", label: t("extensions.badge.backend") });
   }
@@ -124,6 +129,8 @@ export function matchesCapabilityFilter(
   switch (filter) {
     case "page":
       return capabilities.hasPage;
+    case "widget":
+      return capabilities.hasWidget;
     case "web":
       return capabilities.hasWeb || targets.includes("web");
     case "desktop":
@@ -139,6 +146,8 @@ export function capabilityFilterLabel(filter: ExtensionCapabilityFilter, t: Tran
       return t("extensions.filter.all");
     case "page":
       return t("extensions.filter.page");
+    case "widget":
+      return t("extensions.filter.widget");
     case "web":
       return t("extensions.filter.web");
     case "desktop":

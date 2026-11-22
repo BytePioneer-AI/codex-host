@@ -60,6 +60,7 @@ import { PluginsSection, type PluginsSectionFace } from "./PluginsSection.tsx";
 import { PluginsSidebar, type PluginsSidebarFace } from "./PluginsSidebar.tsx";
 import { PluginsSettingsEntry } from "./PluginsSettingsEntry.tsx";
 import { createPluginsNavigation, PLUGINS_PANEL_ID } from "./plugins-navigation.ts";
+import { webExtensionAppearance } from "./native-extensions/surface.ts";
 import { watchAuthentication } from "./auth-watch.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
@@ -407,14 +408,7 @@ export function apply(ctx: ClientContext): void {
     ),
   );
 
-  const locale: HostSettingsSectionFace["locale"] = {
-    get: () => ctx.locale.getLocale().active,
-    subscribe: (listener) => ctx.locale.subscribe(listener),
-  };
-  const colorScheme: HostSettingsSectionFace["colorScheme"] = {
-    get: () => ctx.theme.getTheme().active.colorScheme,
-    subscribe: (listener) => ctx.on("theme/change", listener),
-  };
+  const { locale, colorScheme } = webExtensionAppearance(ctx);
   const plugins = createPluginsNavigation(document, () => ctx.layout.selectPanel(PLUGINS_PANEL_ID));
   ctx.effect(() => plugins.dispose, "ui-codexhost: plugin navigation snapshot");
   ctx.slots.inject("main", () =>

@@ -222,6 +222,13 @@ export interface RendererSettingsMessages {
   readonly harnessUpdateAllProgress: string;
   readonly harnessUpdateAllDescription: string;
   readonly harnessUpdateAllResult: string;
+  readonly harnessUpdateAllSkipped: string;
+  readonly harnessUpdateUnverifiedTitle: string;
+  readonly harnessUpdateUnverifiedDetail: string;
+  readonly harnessUpdateTargetChangedTitle: string;
+  readonly harnessUpdateTargetChangedDetail: string;
+  readonly harnessUpdateSkip: string;
+  readonly harnessUpdateAnyway: string;
   readonly harnessVersionUpdating: string;
   readonly harnessVersionUpToDate: string;
   readonly harnessVersionUpdated: string;
@@ -523,9 +530,18 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   harnessUpdateAllProgress: "Updating",
   harnessUpdateAllDescription: "Update all eligible Harnesses on the selected Host.",
   harnessUpdateAllResult: "Updated {succeeded}; failed {failed}.",
+  harnessUpdateAllSkipped: "Skipped {skipped}.",
+  harnessUpdateUnverifiedTitle: "Update to an unverified version?",
+  harnessUpdateUnverifiedDetail:
+    "{name} {target} has not been verified with this adapter. The latest verified version is {verified}.",
+  harnessUpdateTargetChangedTitle: "Confirm the new update target",
+  harnessUpdateTargetChangedDetail: "The update target changed to {name} {target}.",
+  harnessUpdateSkip: "Skip this update",
+  harnessUpdateAnyway: "Update anyway",
   harnessVersionUpdating: "Updating…",
   harnessVersionUpToDate: "Up to date",
-  harnessVersionUpdated: "Update verified. New sessions will use the new version.",
+  harnessVersionUpdated:
+    "Update verified. New sessions that reuse a running Harness process may still use the old version until that process restarts.",
   harnessVersionFailed:
     "Could not complete the operation. Check the network connection or native installation.",
   harnessVersionUnsupported: "This Host or plugin does not support CLI version management.",
@@ -842,9 +858,18 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   harnessUpdateAllProgress: "更新中",
   harnessUpdateAllDescription: "更新当前 Host 上支持自动更新且有新版本的 Harness。",
   harnessUpdateAllResult: "已更新 {succeeded} 项，{failed} 项失败。",
+  harnessUpdateAllSkipped: "已跳过 {skipped} 项。",
+  harnessUpdateUnverifiedTitle: "更新到未经验证的版本？",
+  harnessUpdateUnverifiedDetail:
+    "当前适配器尚未验证 {name} {target}，最新已验证版本为 {verified}。",
+  harnessUpdateTargetChangedTitle: "确认新的更新目标",
+  harnessUpdateTargetChangedDetail: "更新目标已变更为 {name} {target}。",
+  harnessUpdateSkip: "跳过此项",
+  harnessUpdateAnyway: "继续更新",
   harnessVersionUpdating: "正在更新…",
   harnessVersionUpToDate: "已是最新",
-  harnessVersionUpdated: "已确认更新成功，新会话将使用新版本。",
+  harnessVersionUpdated:
+    "已确认更新成功。若新会话复用运行中的 Harness 进程，可能要等该进程重启后才能使用新版本。",
   harnessVersionFailed: "操作未完成，请检查网络连接或原生安装。",
   harnessVersionUnsupported: "当前 Host 或插件不支持 CLI 版本管理。",
   harnessVersionManual: "请使用原安装方式更新此 Harness。",

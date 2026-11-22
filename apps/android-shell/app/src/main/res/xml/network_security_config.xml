@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Android cannot express CIDR ranges here. Native login checks literal addresses before I/O.
+         WebView uses exact-origin proxy bypass rules and navigation/request checks before loading. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

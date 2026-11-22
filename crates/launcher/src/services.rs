@@ -37,7 +37,8 @@ pub fn finish_launch(print: bool) {
 use crate::installation_layout::InstalledResources;
 use crate::startup_record::data_directory;
 use crate::{
-    LaunchOptions, NPM_NODE_PATH_ENV, console, desktop_attachment, host_service, web_service,
+    LaunchOptions, NPM_NODE_PATH_ENV, console, desktop_attachment, desktop_shell, host_service,
+    web_service,
 };
 use codexhost_platform::node_entrypoint_path;
 use web_service::Options;
@@ -138,13 +139,11 @@ fn open_web(
     let ready =
         web_service::owner(&options.data)?.ok_or("Web exited before its address could be read")?;
     println!("codexhost web: {}", ready.access.login_url);
+    if let Ok(mut announced) = WEB_ANNOUNCED.lock() {
+        *announced = true;
+    }
     println!("Web is running in the background; use `codexhost stop` to stop it");
-    let graphical = env::var_os("SSH_CONNECTION").is_none()
-        && env::var_os("SSH_TTY").is_none()
-        && (!cfg!(target_os = "linux")
-            || env::var_os("DISPLAY").is_some()
-            || env::var_os("WAYLAND_DISPLAY").is_some());
-    if graphical {
+    if graphical_session() {
         codexhost_platform::open_external_url(&web_browser_url(
             &ready.access.login_url,
             connect_devices,
@@ -153,7 +152,15 @@ fn open_web(
     Ok(())
 }
 
-pub fn open_for_launch(options: &LaunchOptions) -> Result<(), Box<dyn Error>> {
+pub fn graphical_session() -> bool {
+    env::var_os("SSH_CONNECTION").is_none()
+        && env::var_os("SSH_TTY").is_none()
+        && (!cfg!(target_os = "linux")
+            || env::var_os("DISPLAY").is_some_and(|value| !value.is_empty())
+            || env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty()))
+}
+
+pub fn open_for_launch(options: &LaunchOptions, open_browser: bool) -> Result<(), Box<dyn Error>> {
     let resolved = resolve_options(
         options.node.clone(),
         options.host_runtime.clone(),
@@ -161,11 +168,41 @@ pub fn open_for_launch(options: &LaunchOptions) -> Result<(), Box<dyn Error>> {
         None,
         options.node.clone(),
     )?;
-    if console::presentation() == Some(console::Presentation::Print) {
-        ensure_current(&resolved, &[], false)
-    } else {
+    if open_browser {
         open_web(&resolved, &[], false)
+    } else {
+        ensure_current(&resolved, &[], false)
     }
+}
+
+fn select_app_shell(
+    shell: Option<&Path>,
+    onboarding: bool,
+    graphical: bool,
+) -> Result<Option<&Path>, &'static str> {
+    if !graphical {
+        if onboarding {
+            return Err("Desktop shell onboarding requires a graphical session");
+        }
+        return Ok(None);
+    }
+    if onboarding && shell.is_none() {
+        return Err("The codexhost desktop shell is required for onboarding");
+    }
+    Ok(shell)
+}
+
+pub fn open_app(shell: Option<&Path>, onboarding: bool) -> Result<(), Box<dyn Error>> {
+    let Some(shell) = select_app_shell(shell, onboarding, graphical_session())? else {
+        return open_for_launch(&crate::default_launch_options(), true);
+    };
+    let data = data_directory().ok_or("User data directory is unavailable")?;
+    if onboarding {
+        crate::service_update::ensure_start_allowed(&data)?;
+    } else {
+        open_for_launch(&crate::default_launch_options(), false)?;
+    }
+    desktop_shell::spawn(shell, &data, onboarding)
 }
 
 // LaunchServices may reparent Desktop, so its bridge cannot rely on Updater ancestry.
@@ -266,6 +303,8 @@ fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
 
 fn stop_for_update(options: &Options) -> Result<(), Box<dyn Error>> {
     validate_installation(options)?;
+    desktop_shell::stop(&options.data)
+        .map_err(|error| format!("stopping desktop shell failed: {error}"))?;
     // Stop Desktop before taking web-service-lifecycle.lock: the Launcher joins its
     // background Web startup thread before exiting, and that thread waits on the same lock.
     desktop_attachment::stop_managed(&options.data)
@@ -285,6 +324,10 @@ fn stop_all(options: &Options) -> Result<(), Box<dyn Error>> {
     let home = PathBuf::from(env::var_os("HOME").ok_or("HOME is unavailable")?);
     let mut failures = Vec::new();
     let mut running = false;
+    match desktop_shell::stop(&options.data) {
+        Ok(stopped) => running |= stopped,
+        Err(error) => failures.push(format!("Desktop shell: {error}")),
+    }
     match desktop_attachment::stop_managed(&options.data) {
         Ok(stopped) => running |= stopped,
         Err(error) => failures.push(format!("GUI: {error}")),
@@ -505,6 +548,17 @@ mod tests {
             !*WEB_ANNOUNCED.lock().unwrap(),
             "joining must not announce Web"
         );
+    }
+
+    #[test]
+    fn headless_app_uses_web_even_with_a_shell_and_rejects_onboarding() {
+        let shell = Some(Path::new("codexhost-shell"));
+        assert_eq!(select_app_shell(shell, false, false), Ok(None));
+        assert_eq!(
+            select_app_shell(shell, true, false),
+            Err("Desktop shell onboarding requires a graphical session")
+        );
+        assert_eq!(select_app_shell(shell, false, true), Ok(shell));
     }
 
     #[test]

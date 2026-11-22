@@ -38,7 +38,7 @@ type: warning
 
 Console 是仅本机访问的诊断和管理网页，默认端口 `4399`，可由 `codexhost console` 打开。总览的“打开 Web”和“远程访问”按钮通过同一安装的 Launcher `web` 命令确保服务运行，并在默认浏览器打开登录链接，不依赖 Desktop；“远程访问”附带 `--connect-devices`，直接定位到 Web 的连接设备设置页。`codexhost web` 打开的是独立会话 Web，首次默认监听 `127.0.0.1:4400`，需要访问令牌，可用于手机连接；Host 和 Web 脱离终端运行，关闭页面不停止服务。无 Desktop 时 `codexhost` 改为打开会话 Web，不把 Console 当作聊天界面。命令和安装包路径见[独立 Web 应用](../product/standalone-web.md#安装版后台-web)。
 
-`codexhost status` 只读查看后台 Host/Web 的状态、版本、Web 地址及自启状态；`codexhost stop` 依次停止托管 GUI、Web、Host、远程服务、Broker 和 Console，报告被中断的任务数，会话数据保留。自启项用 `codexhost autostart on|off|status` 管理，停止服务不关闭自启，也不撤销 Tailscale Serve。
+`codexhost status` 只读查看后台 Host/Web 的状态、版本、Web 地址及自启状态；`codexhost stop` 依次停止原生桌面壳（`codexhost-shell`）、托管 GUI、Web、Host、远程服务、Broker 和 Console，报告被中断的任务数，会话数据保留。桌面默认启动形态由 `$CODEXHOST_DATA_DIR/launch-preferences-v1.json` 记录，也可通过 `codexhost app [--onboarding]` 或 `codexhost launch-prefs get|set` 直接拉起原生桌面壳或调整默认启动方式。自启项用 `codexhost autostart on|off|status` 管理，停止服务不关闭自启，也不撤销 Tailscale Serve。
 
 ## 打开方式
 
@@ -46,7 +46,7 @@ Console 是仅本机访问的诊断和管理网页，默认端口 `4399`，可�
 
 | 启动方式                                                    | 行为                                                                                                                                                                                                                                       |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 安装包（macOS 打开应用、Windows 开始菜单）                  | 默认在浏览器打开控制台总览，再启动 Desktop；启动失败或注入持续失败时另外打开总览查看原因                                                                                                                                                   |
+| 安装包（macOS 打开应用、Windows 开始菜单）                  | 正常启动时在后台准备控制台而不自动弹出浏览器页签；仅在启动失败或注入持续失败时打开总览救援页，仍可通过托盘菜单或 `codexhost console` 按需打开                                                                                              |
 | 终端（npm 的 `codexhost`、`codexhost launch`、`npm start`） | 不打开浏览器；成功和失败都输出 `codexhost console: http://127.0.0.1:4399/`，Web 就绪时另输出 `codexhost web: <登录链接>`，与 `codexhost web` 的登录链接一致。`CODEXHOST_WEB_SERVICE=0` 或 Web 未就绪时省略 Web 行，不改变 Desktop 启动结果 |
 
 控制台在校验 Shim、Host Runtime、Desktop Controller 和 Renderer 等 Codex 启动资源之前启动；这些文件缺失时，仍能提供故障恢复入口。npm 包装脚本将这部分校验交给 Launcher，不提前拦截。Launcher、Node 和控制台自身文件仍须可用，端口占用等控制台自身故障不保证能打开网页；命令参数解析失败也不进入启动流程。
@@ -194,4 +194,6 @@ codexhost 未运行时，“连接”页列出已安装的插件（读取 `manif
 
 ## 其他命令
 
-`codexhost inspect --json` 输出 Codex Desktop 安装信息与 Launcher 运行状态；未找到 Codex Desktop 时在 `desktopError` 中说明，不以失败退出。
+- `codexhost inspect --json` 输出 Codex Desktop 安装信息与 Launcher 运行状态；未找到 Codex Desktop 时在 `desktopError` 中说明，不以失败退出。
+- `codexhost app [--onboarding]` 启动独立 Tauri v2 原生桌面壳（可选强制展示首次选择界面）；无图形会话且未指定 `--onboarding` 时回退到后台 Web，写入 `$CODEXHOST_DATA_DIR/desktop-shell-ready.json`（`0600`）。
+- `codexhost launch-prefs get --json` 与 `codexhost launch-prefs set --surface <native-shell|codex-desktop> [--onboarding-completed true|false]` 读取或保存桌面默认启动方式（`$CODEXHOST_DATA_DIR/launch-preferences-v1.json`，`0600`）。

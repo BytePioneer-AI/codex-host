@@ -3,24 +3,27 @@
   flex: none;
 }
 
-.hostBadge {
-  fill: #111318;
+.hostBadgePill {
+  fill: rgb(17 19 24 / 0.065);
+  stroke: rgb(17 19 24 / 0.11);
+  stroke-width: 0.75;
 }
 
 .hostBadgeText {
-  fill: #fff;
+  fill: rgb(17 19 24 / 0.66);
   font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
-  font-size: 10.3px;
-  font-weight: 500;
-  letter-spacing: 0.25px;
+  font-size: 9.2px;
+  font-weight: 550;
+  letter-spacing: 0.45px;
 }
 
-:global(body[data-ds-dark-theme]) .hostBadge {
-  fill: #f2f3f5;
+:global(body[data-ds-dark-theme]) .hostBadgePill {
+  fill: rgb(255 255 255 / 0.09);
+  stroke: rgb(255 255 255 / 0.13);
 }
 
 :global(body[data-ds-dark-theme]) .hostBadgeText {
-  fill: #151517;
+  fill: rgb(255 255 255 / 0.68);
 }
 
 .darkPlate {

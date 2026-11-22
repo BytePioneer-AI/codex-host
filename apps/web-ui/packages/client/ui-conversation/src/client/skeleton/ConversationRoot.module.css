@@ -28,7 +28,13 @@
 
 .header:where(:not(:has(.tabs))) {
   min-height: 0;
-  padding-bottom: 10px;
+  padding: 10px 24px 6px 20px;
+  border-bottom: none;
+}
+
+:global([data-windows-titlebar]) .header:where(:not(:has(.tabs))) {
+  padding-top: 8px;
+  padding-bottom: 4px;
 }
 
 /* Blank Sessions retain navigation controls without conversation title or tabs. */

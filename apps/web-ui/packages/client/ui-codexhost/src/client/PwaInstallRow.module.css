@@ -24,11 +24,12 @@
 .guide {
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
-  line-height: 18px;
+  line-height: 19px;
 }
 
 .description {
   margin-top: 4px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .button {
@@ -65,12 +66,62 @@
   cursor: default;
 }
 
-.guide {
-  margin-top: 12px;
+.chevron,
+.chevronOpen {
+  flex: none;
+  transition: transform 0.16s ease;
 }
 
-.guide p {
-  margin: 8px 0 0;
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+.guide {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md, 10px);
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.guideLead,
+.apkRow,
+.note {
+  margin: 0;
+}
+
+.steps {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.apkRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--dsw-alias-label-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.note {
+  padding-top: 8px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-tertiary);
 }
 
 @media (hover: hover) and (pointer: fine) {

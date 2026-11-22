@@ -86,7 +86,10 @@ export async function smokeNpmPackage({ targetName, version, workDirectory }) {
       const executables = [
         ...executablePaths,
         ...(target.hostPlatform === "darwin"
-          ? [`app/web-modules/node_modules/node-pty/prebuilds/darwin-${architecture}/spawn-helper`]
+          ? [
+              "libexec/codexhost-shell",
+              `app/web-modules/node_modules/node-pty/prebuilds/darwin-${architecture}/spawn-helper`,
+            ]
           : []),
       ];
       for (const relative of executables) {

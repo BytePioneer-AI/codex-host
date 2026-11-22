@@ -1,6 +1,6 @@
 # 独立 Web 应用
 
-Web 与 Codex Desktop 在同一仓库开发，浏览器通过 `packages/web-server` 的独立 Node 服务访问。默认 `codexhost` 会话来源按需启动或连接独立的本地 CH 后台，复用 CH 的 Thread 目录、创建、读取和操作；Web 网关不直接读写 Mapping Store、不为外部 Threads 启动第二份 Adapter，也不登记 Desktop 进程所有权。主列表同时展示本机原生 Codex Threads 和共享外部 Harness Threads，不按原生会话的 Model Provider 排除会话。原生 Codex 保留原始 Thread ID，通过共享 Host 使用 Desktop 相同的官方 app-server；外部 Harness 继续由共享后台的外部 Thread 运行时执行。Web/PWA 共用响应式界面；尚无 iOS/Android 原生封装。
+Web 与 Codex Desktop 在同一仓库开发，浏览器通过 `packages/web-server` 的独立 Node 服务访问。默认 `codexhost` 会话来源按需启动或连接独立的本地 CH 后台，复用 CH 的 Thread 目录、创建、读取和操作；Web 网关不直接读写 Mapping Store、不为外部 Threads 启动第二份 Adapter，也不登记 Desktop 进程所有权。主列表同时展示本机原生 Codex Threads 和共享外部 Harness Threads，不按原生会话的 Model Provider 排除会话。原生 Codex 保留原始 Thread ID，通过共享 Host 使用 Desktop 相同的官方 app-server；外部 Harness 继续由共享后台的外部 Thread 运行时执行。Web 与 PWA 共用响应式界面；桌面端另有基于 Tauri v2 的独立原生桌面壳（`apps/desktop-shell/src-tauri`，与官方 Codex Desktop 共用同一本机 Host 与 Web 服务），Android 提供免应用商店的轻量原生 APK 壳（`apps/android-shell/`），iOS 继续使用 Safari「添加到主屏幕」独立窗口。
 
 ### 本机原生 Codex 会话
 
@@ -40,7 +40,7 @@ Web「设置 → 通用设置 → 显示」提供「背景图片」与「背景�
 
 Web「设置 → 通用设置」顶部的「应用与通知」分组提供「安装 CodexHost 应用」和通知入口。浏览器发出可安装事件后，点击「安装应用」唤起原生确认弹窗；确认、取消或失败后不重复使用同一次安装事件。用户接受安装请求不等于安装完成，只有浏览器确认完成或页面以独立应用模式运行时才显示已安装状态。安装事件由浏览器壳在异步加载插件前监听，设置入口通过客户端服务读取，不依赖设置页是否打开；浏览器没有提供事件、暂不满足条件或已在其他窗口安装时，显示「安装指引」，不据此断言浏览器不支持 PWA。
 
-指引按当前设备说明安卓浏览器菜单、iOS/iPadOS Safari「添加到主屏幕」、macOS Safari「添加到程序坞」及桌面 Chrome/Edge 的入口；应用内浏览器建议改用外部浏览器。PWA 需要 HTTPS 安全上下文，本机 localhost 除外；普通局域网或 Tailscale IP 的 HTTP 访问会提示使用「连接设备」中已配置的 HTTPS 地址，不自动改写或跳转地址。是否提供安装及其形式由浏览器决定，创建快捷方式不等于安装 PWA；页面不能绕过用户确认。安装不下载原生 CodexHost、不请求通知权限，也不提供离线 Agent 执行，仍需连接运行中的 Web 与 Host。原生 Desktop 壳不显示此入口。
+指引按当前设备说明安卓浏览器菜单与 GitHub Releases 轻量原生 APK 下载入口、iOS/iPadOS Safari「添加到主屏幕」、macOS Safari「添加到程序坞」及桌面 Chrome/Edge 的入口；应用内浏览器建议改用外部浏览器。PWA 需要 HTTPS 安全上下文，本机 localhost 除外；普通局域网或 Tailscale IP 的 HTTP 访问会提示使用「连接设备」中已配置的 HTTPS 地址，不自动改写或跳转地址。是否提供安装及其形式由浏览器决定，创建快捷方式不等于安装 PWA；页面不能绕过用户确认。安装不下载原生 CodexHost、不请求通知权限，也不提供离线 Agent 执行，仍需连接运行中的 Web 与 Host。在原生桌面壳内打开时（`window.__CODEXHOST_DESKTOP_SHELL__ === true`）隐藏此浏览器 PWA 安装入口。
 
 iOS/iPadOS 主屏幕模式通过 `display-mode: standalone` 与 `-webkit-touch-callout` 支持检测启用透明顶边兼容层：固定在视口顶边，高 6px、全宽，使用 `backdrop-filter: blur(0px)`（含 Safari 前缀），不绘制实色底、不改变下方像素、不占布局空间、不接收触摸，也不进入可访问性树。该尝试依据 WebKit `LocalFrameView::fixedContainerEdges` 对背景滤镜容器的识别路径，用于规避 [WebKit 329103](https://bugs.webkit.org/show_bug.cgi?id=329103) 所报告的系统顶部虚化侵入页面内容；零半径滤镜不能替换为 `none`，否则不再提供该识别条件。不改状态栏样式 meta、安全区留白或侧栏毛玻璃，也不隐藏系统时钟和电池区域。普通浏览器、Android 和桌面不启用。该模式的根画布固定为深色 `#151517`，为系统状态栏提供稳定的深色背景，不尝试随应用主题动态切换系统顶部。应用内部仍由 `body` 上的主题正常切换亮色、暗色或跟随系统；固定深色画布不向页面顶部增加实色覆盖条，也不触发刷新或重启。主题呈现器写入的 `theme-color` 插在页面静态默认值之前，浏览器取第一个匹配项，系统状态栏和浏览器外围随应用实际背景色变化，而不是只跟随系统深浅色；移除后回落到静态默认值。WebKit 主干的识别逻辑不保证已发布 iOS 的系统显示效果；固定深色顶部在亮／暗主题冷启动、运行中切换和横竖屏下的表现仍需 iOS 真机验收。
 
@@ -63,7 +63,7 @@ codexhost web --host 0.0.0.0 --port 4500
 codexhost stop
 ```
 
-`codexhost web` 确保 Host 和 Web 在后台运行，输出本机登录链接并打开浏览器；SSH 或无图形界面时只输出链接。`codexhost` 打开 Desktop，同时在后台拉起 Web；未安装 Desktop 时说明原因并改为打开 Web。`CODEXHOST_WEB_SERVICE=0` 禁用 `codexhost` 随启动拉起 Web 的行为。Windows 的后台监管进程和 Node 服务均不创建控制台窗口。启动命令成功返回后，关闭原始终端、GUI 或浏览器不停止或重启后台服务；电脑休眠时手机仍无法连接。
+`codexhost web` 确保 Host 和 Web 在后台运行，输出本机登录链接并打开浏览器；SSH 或无图形界面时只输出链接。无参运行 `codexhost` 按 `$CODEXHOST_DATA_DIR/launch-preferences-v1.json` 路由桌面入口：未安装官方 Codex Desktop 时优先启动原生桌面壳，两者均存在且尚未完成引导时弹出原生模式选择页，已选定官方 Desktop 时拉起官方界面并在后台准备 Web；无可用桌面壳时启动官方 Desktop 或回退打开会话 Web。`CODEXHOST_WEB_SERVICE=0` 禁用随官方 Desktop 自动拉起 Web 的行为。Windows 的后台监管进程和 Node 服务均不创建控制台窗口。启动命令成功返回后，关闭原始终端、GUI 或浏览器不停止或重启后台服务；电脑休眠时手机仍无法连接。
 
 首次后台启动默认监听 `127.0.0.1:4400`。`codexhost web` 的 `--host`、`--port`、`--public-url`、`--trusted-proxy`、`--relay` 经 Web 处理后保存在 `<web-data>/service.json`，后续启动沿用；传空字符串清除对应选项，无效值不覆盖保存内容。选项变化只重启 Web，Host 任务不受影响，Web 终端会断开。`--relay` 仅作为自建中转地址的开发覆盖，不改变官方中转卡片。本机连接设备页提供中转配置（无需重启）、首次启用设备访问和启动设置，见[远程访问](web-remote-access.md)。
 
@@ -71,7 +71,7 @@ codexhost stop
 
 每代官方 Codex 后台记录创建时存在的 CLI 文件及 Windows 工具宿主。Desktop 重连若要保留正在运行的后台，会先检查这些文件；文件已被 Desktop 更新或清理移除时，连接返回固定的恢复提示和失败状态，现有 Host 与任务继续保留。确认可以中断后台任务后，运行 `codexhost stop` 再启动 CodexHost，以当前 Desktop 缓存重建后台。空闲后台仍可按原有规则切换到 Desktop 提供的新配置，新的一代重新记录实际使用的文件；可选工具宿主在创建时不存在则不要求补齐。检查覆盖文件缺失，不检测同一路径内的文件版本替换。
 
-`codexhost stop` 不确认，按 GUI、Web、Host、远程服务、Broker、Console 的顺序停止，并报告本地 Host 被中断的任务数；用户自行打开的 Desktop 不关闭。远程服务停止后，其他电脑重新连接可恢复远程服务。自启项、Serve 配置和会话数据保留。前台开发 Web 不属于此命令的停止范围，开发者使用下文的 `npm stop`。
+`codexhost stop` 不确认，按独立桌面壳（`codexhost-shell`）、托管 GUI、Web、Host、远程服务、Broker、Console 的顺序停止，并报告本地 Host 被中断的任务数；用户自行打开的 Desktop 不关闭。远程服务停止后，其他电脑重新连接可恢复远程服务。自启项、Serve 配置和会话数据保留。前台开发 Web 不属于此命令的停止范围，开发者使用下文的 `npm stop`。
 
 
 ## Desktop 远程项目与会话

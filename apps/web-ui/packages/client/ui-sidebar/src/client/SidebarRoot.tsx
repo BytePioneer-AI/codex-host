@@ -382,8 +382,14 @@ export function SidebarRoot({
         ))}
         {renderSlot("sidebar.primary.action", {
           size: wide ? 16 : 18,
-          renderAction: ({ label, icon, onClick }) => (
-            <PanelNavigationRow label={label} icon={icon} onClick={onClick} wide={wide} />
+          renderAction: ({ label, icon, onClick, active }) => (
+            <PanelNavigationRow
+              label={label}
+              icon={icon}
+              onClick={onClick}
+              active={active}
+              wide={wide}
+            />
           ),
         })}
       </nav>

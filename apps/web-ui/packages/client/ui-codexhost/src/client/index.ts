@@ -57,7 +57,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-chat/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { ConnectDevicesSection } from "./ConnectDevicesSection.tsx";
 import { PluginsSection, type PluginsSectionFace } from "./PluginsSection.tsx";
-import { PluginsIcon } from "./PluginsIcon.tsx";
+import { PluginsAction, type PluginsActionFace } from "./PluginsIcon.tsx";
 import { PluginsSettingsEntry } from "./PluginsSettingsEntry.tsx";
 import { createPluginsNavigation, PLUGINS_PANEL_ID } from "./plugins-navigation.ts";
 import { webExtensionAppearance } from "./native-extensions/surface.ts";
@@ -66,12 +66,13 @@ import { watchReleaseAnnouncement } from "./release-announcement.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
 import type {} from "@deepseek-ai/dsh-client-web";
-import { PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
+import { isDesktopShell, PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
 import { WallpaperController } from "./wallpaper.ts";
 import { WallpaperRow, type WallpaperFace } from "./WallpaperRow.tsx";
 import { ImportPage, type ImportPageFace } from "./ImportPage.tsx";
 import { HostSettingsSection, type HostSettingsSectionFace } from "./HostSettingsSection.tsx";
 import { SettingsLauncher, type SettingsLauncherFace } from "./SettingsLauncher.tsx";
+import { AndroidHostSwitcherAction } from "./AndroidHostSwitcherAction.tsx";
 import type {} from "@deepseek-ai/dsh-client-ui-theme/client";
 import { en, zh, type ImportLocaleKey } from "./locales.ts";
 
@@ -163,7 +164,7 @@ export function apply(ctx: ClientContext): void {
     ),
   );
   const installation = ctx.get("pwaInstall");
-  if (installation !== undefined) {
+  if (installation !== undefined && !isDesktopShell()) {
     ctx.slots.inject("settings.general.item", () =>
       ctx.slots.register(
         {
@@ -369,16 +370,18 @@ export function apply(ctx: ClientContext): void {
       ImportIcon,
     ),
   );
-  ctx.slots.inject("sidebar.panellist", () =>
+  ctx.slots.inject("sidebar.primary.action", () =>
     ctx.slots.register(
       {
-        name: "sidebar.panellist",
+        name: "sidebar.primary.action",
         id: PLUGINS_PANEL_ID,
         order: 20,
-        label: () => t("settings.extensions"),
         locale: NS,
+        inject: (): PluginsActionFace => ({
+          openPlugins: () => ctx.layout.selectPanel(PLUGINS_PANEL_ID),
+        }),
       },
-      PluginsIcon,
+      PluginsAction,
     ),
   );
   ctx.inject(["settingsNavigation"], (scope) => {
@@ -400,6 +403,7 @@ export function apply(ctx: ClientContext): void {
         {
           name: "sidebar.primary.action",
           id: "codexhost-remote-access",
+          order: 10,
           locale: NS,
           inject: (): RemoteAccessActionFace => ({
             openSection: (id) => scope.settingsNavigation.openSection(id),
@@ -418,6 +422,17 @@ export function apply(ctx: ClientContext): void {
         locale: NS,
       },
       NotificationsRow,
+    ),
+  );
+  ctx.slots.inject("sidebar.footer.action", () =>
+    ctx.slots.register(
+      {
+        name: "sidebar.footer.action",
+        id: "codexhost-android-host-switcher",
+        order: 10,
+        locale: NS,
+      },
+      AndroidHostSwitcherAction,
     ),
   );
 

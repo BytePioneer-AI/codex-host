@@ -9,6 +9,7 @@ import { AutostartControl, useDirectRestart } from "./BackgroundControls.tsx";
 import { resubmitNotifications } from "./notifications.ts";
 import { relayPreparing } from "./RelayControl.tsx";
 import { ConnectionCard } from "./ConnectionCard.tsx";
+import { MobileGuideCard } from "./MobileGuideCard.tsx";
 import css from "./ConnectDevicesSection.module.css";
 
 type Translate = PropsLocale<"codexhostImport">["t"];
@@ -217,7 +218,7 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
   return (
     <div className={css.page} data-connect-devices>
       <header className={css.header}>
-        <div>
+        <div className={css.headerText}>
           <h2 className={css.title}>{t("connectDevices.title")}</h2>
           <p className={css.description}>{t("connectDevices.subtitle")}</p>
         </div>
@@ -254,7 +255,8 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
           {shownError}
         </p>
       )}
-      <section className={css.manage}>
+      <MobileGuideCard t={t} />
+      <section className={css.manage} aria-label={t("connectDevices.manageTitle")}>
         <div className={css.manageRow}>
           <div className={css.manageText}>
             <span className={css.manageTitle}>{t("connectDevices.tokenTitle")}</span>
@@ -318,28 +320,28 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
             </div>
           </div>
         )}
+        {canStop && (
+          <div className={css.manageRow}>
+            <div className={css.manageText}>
+              <span className={css.manageTitle}>{t("connectDevices.stopTitleShort")}</span>
+              <span className={css.meta}>{t("connectDevices.stopHint")}</span>
+            </div>
+            <div className={css.manageActions}>
+              <Button
+                variant="outline"
+                className={css.dangerOutline}
+                disabled={working}
+                onClick={() => {
+                  setError(null);
+                  setConfirming("stop");
+                }}
+              >
+                {t("connectDevices.stop")}
+              </Button>
+            </div>
+          </div>
+        )}
       </section>
-      {canStop && (
-        <div className={`${css.manageRow} ${css.stopRow}`}>
-          <div className={css.manageText}>
-            <span className={css.manageTitle}>{t("connectDevices.stopTitleShort")}</span>
-            <span className={css.meta}>{t("connectDevices.stopHint")}</span>
-          </div>
-          <div className={css.manageActions}>
-            <Button
-              variant="outline"
-              className={css.dangerOutline}
-              disabled={working}
-              onClick={() => {
-                setError(null);
-                setConfirming("stop");
-              }}
-            >
-              {t("connectDevices.stop")}
-            </Button>
-          </div>
-        </div>
-      )}
       <details className={css.other} data-remote-options>
         <summary>{t("connectDevices.help")}</summary>
         <div className={css.remoteList}>

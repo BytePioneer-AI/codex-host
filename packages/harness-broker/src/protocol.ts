@@ -15,6 +15,7 @@ export const HARNESS_BROKER_RETIRING_ERROR_CODE = "brokerRetiring";
 
 export const harnessBrokerMethodSchema = z.enum([
   "adapter.inspect",
+  "adapter.normalizeStoredModelRef",
   "adapter.inspectAccount",
   "adapter.credits",
   "adapter.open",

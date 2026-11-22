@@ -203,12 +203,22 @@ describe("CodeBuddy native Adapter", () => {
     const { adapter, native } = setup();
     const first = await adapter.inspect();
     expect(harnessInspectionSchema.parse(first).status).toBe("ready");
+    if (first.status !== "ready") throw Error("Expected a CodeBuddy Model catalog");
+    expect(first.catalog.defaultModel).toEqual({ id: "native/model" });
+    const model = adapter.normalizeStoredModelRef(modelRef("cb.b3RoZXI"), first.catalog);
+    expect(model).toEqual({ id: "other" });
     await adapter.inspect();
     expect(native.clients).toHaveLength(1);
     await adapter.inspect({ refresh: true });
     expect(native.clients).toHaveLength(2);
     expect(native.clients.every((client) => client.closed && client.context.ephemeral)).toBe(true);
     expect(native.history).toEqual([]);
+    if (!model) throw Error("Expected a normalized CodeBuddy Model Ref");
+    const opened = await adapter.open({ kind: "create", cwd: process.cwd(), model });
+    expect(opened).toMatchObject({
+      ok: true,
+      value: { initialState: { effectiveModel: { id: "other" } } },
+    });
   });
 
   it("reports missing CLI and caches failure until explicit refresh", async () => {

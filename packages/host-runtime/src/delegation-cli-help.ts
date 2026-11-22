@@ -30,12 +30,13 @@ List Harnesses available in the active Runtime.`,
   "harness inspect": `codexhost harness inspect <harness> [--cwd <path>] [--refresh true|false] [--format json|compact|text]
 Read available Models, native defaults, Thinking options, and configuration capabilities.
 Use the returned Model and Thinking IDs for explicit selections.
-For Codex Ultrafast, use the ID of the advertised "<Model> · Ultrafast" entry as --model. Pass the Thinking option separately, for example --thinking max if the entry supports it. For Codex Fast, use fastModel.id from --format json.`,
-  "delegate start": `codexhost delegate start --harness <id> (--task <text> | --task-file <path|->) [--task-name <name>] [--cwd <path>] [--worktree <branch>] [--base <ref>] [--model <opaque-ref>] [--thinking <option-id>] [--parent-thread <thread>] [--request-id <id>] [--ref <uri>]... [--watch true|false] [--watch-timeout-ms <n>] [--stall-after-ms <n>] [--format json|compact|text]
+Copy the displayed ID into --model. Advertised tiers use ~fast for Fast or ~ultrafast for Ultrafast. In JSON, a Fast variant is listed under fastModel.id.`,
+  "delegate start": `codexhost delegate start --harness <id> (--task <text> | --task-file <path|->) [--task-name <name>] [--cwd <path>] [--worktree <branch>] [--base <ref>] [--model <id>] [--thinking <option-id>] [--parent-thread <thread>] [--request-id <id>] [--ref <uri>]... [--watch true|false] [--watch-timeout-ms <n>] [--stall-after-ms <n>] [--format json|compact|text]
 Create an independent child Thread, submit the task, and return immediately.
 --task and --task-file are mutually exclusive. --task-file reads UTF-8 from a file, or stdin for -; maximum 262144 bytes (256 KiB) before removing one final LF or CRLF. Other whitespace and special characters are preserved; empty/whitespace-only input is rejected. Terminal stdin is rejected: use a quoted heredoc (<<'EOF') or a pipe. --task is unchanged.
 --task-name supplies a short subtask name (1-120 characters); otherwise the first task line is used.
 The child title is the subtask name only, fixed at creation; parent titles are not appended. Existing Threads are not renamed.
+Use a Model ID from harness inspect. Suffixes such as gpt-6.2-sol~fast and gpt-6.2-sol~ultrafast select advertised tiers; otherwise the suffix is literal.
 Omit --model and --thinking to use the configured delegation defaults, or the Harness native defaults when unset.
 --cwd overrides the child workspace; a relative path resolves against the caller process cwd. Otherwise use the resolved parent Thread workspace, then the Host Runtime process cwd.
 --worktree creates a new branch and workspace at <main-repository>.worktrees/<sanitized-branch>, then uses it as the child cwd. The source is --cwd, or the caller process cwd when omitted (not the parent Thread workspace).

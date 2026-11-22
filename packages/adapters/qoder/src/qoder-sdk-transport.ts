@@ -75,7 +75,7 @@ import { mapQoderException, mapQoderResultError } from "./qoder-errors.js";
 import { qoderEnvironment } from "./qoder-command.js";
 import { mapQoderSnapshot } from "./qoder-history.js";
 import {
-  decodeQoderModelRef,
+  qoderModelValue,
   QODER_DEFAULT_MODEL_REF,
   qoderAvailableThinkingOptions,
 } from "./qoder-models.js";
@@ -299,7 +299,7 @@ export class QoderSession implements HarnessSession {
     };
     this.initialState = { ...this.#state };
 
-    const nativeModel = options.model ? decodeQoderModelRef(options.model) : undefined;
+    const nativeModel = options.model ? qoderModelValue(options.model) : undefined;
     this.#usageTracker = new QoderUsageTracker(nativeModel ? { modelId: nativeModel } : undefined);
     const planMode = isQoderPlanModeId(options.permissionModeId);
     const permissionMode = mapToQoderPermissionModeExcludingPlan(options.permissionModeId);
@@ -1530,7 +1530,7 @@ export class QoderSession implements HarnessSession {
           };
         }
 
-        const nativeModel = decodeQoderModelRef(command.model);
+        const nativeModel = qoderModelValue(command.model);
         if (!nativeModel) {
           return {
             ok: false,
@@ -1643,7 +1643,7 @@ export class QoderSession implements HarnessSession {
         }
 
         const nativeModel = this.#state.effectiveModel
-          ? decodeQoderModelRef(this.#state.effectiveModel)
+          ? qoderModelValue(this.#state.effectiveModel)
           : undefined;
         if (this.#state.effectiveModel && !nativeModel) {
           return {

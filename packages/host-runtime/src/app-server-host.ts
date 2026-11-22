@@ -49,7 +49,7 @@ import {
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import {
   isConsoleHostMethod,
-  isDesktopExtensionManagementMethod,
+  isHostExtensionManagementMethod,
   consoleOpenParamsSchema,
   consoleOpenResultSchema,
   webOpenParamsSchema,
@@ -257,11 +257,8 @@ import { projectDelegationThreadSnapshot } from "./delegation-snapshot.js";
 import { rememberNativeListSeconds } from "./delegation-thread-list-merge.js";
 import { QuestionInteractions } from "./question-interactions.js";
 import type { NativeAsyncQuestions } from "./native-async-questions.js";
-import {
-  canonicalizeOfficialCodexModelRef,
-  decodeOfficialCodexModelSelection,
-  encodeOfficialCodexModelRef,
-} from "./official-codex-model-ref.js";
+import { officialCodexModelSelection, officialCodexModelRef } from "./official-codex-model-ref.js";
+import { resolveOfficialDelegationModel } from "./official-delegation-model.js";
 import {
   spawnOfficialAppServerConnection,
   type OfficialAppServerConnection,
@@ -292,7 +289,8 @@ import {
   type ExternalThreadStatus,
   type ProjectedTurn,
 } from "./external-turn-projection.js";
-import { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
+import { HostExtensionManager } from "./host-extension-manager.js";
+import { handleHostExtensionRequest } from "./host-extension-requests.js";
 import { codexhostDataDirectory } from "./external-clients.js";
 import { DesktopControlRequests } from "./desktop-control-requests.js";
 import { DesktopThreadRouting } from "./desktop-thread-routing.js";
@@ -401,7 +399,7 @@ import {
 } from "@codexhost/protocol-core";
 
 export interface AppServerHostOptions {
-  desktopExtensionBackends?: DesktopExtensionBackendManager | undefined;
+  hostExtensions?: HostExtensionManager | undefined;
   /** Private external-session owner: never forwards requests to native Codex. */
   externalOnly?: boolean;
   /** Shared service's live Desktop connection count, not native client subscriptions. */
@@ -886,7 +884,7 @@ export class AppServerHost {
   readonly clientEvents = new ClientChannelEvents();
   readonly #client: ClientChannelHost;
   readonly #desktopControl: DesktopControlRequests;
-  readonly desktopExtensionBackends: DesktopExtensionBackendManager | undefined;
+  readonly hostExtensions: HostExtensionManager | undefined;
   readonly #threadRouting: DesktopThreadRouting;
   readonly #threadPins: ThreadPins;
   readonly #threadTree: ThreadTree;
@@ -1300,22 +1298,27 @@ export class AppServerHost {
       startNextQueuedExternalTurn: (thread) => this.#startNextQueuedExternalTurn(thread),
     });
     const desktopEnvironment = options.environment ?? process.env;
-    this.desktopExtensionBackends =
+    this.hostExtensions =
       desktopEnvironment.CODEXHOST_REMOTE_SSH_MANAGED === "1"
         ? undefined
-        : (options.desktopExtensionBackends ??
-          new DesktopExtensionBackendManager(
+        : (options.hostExtensions ??
+          new HostExtensionManager(
             codexhostDataDirectory(desktopEnvironment),
+            (revision) => this.clientEvents.extensionsChanged(revision),
             (message) => this.#diagnose(message),
           ));
     this.#desktopControl = new DesktopControlRequests({
-      desktopExtensionBackends: this.desktopExtensionBackends,
+      hostExtensions: this.hostExtensions,
       writeJson: (value) => this.#writer.json(value),
       dispatchReply: (request, run, threadId) => this.#dispatchDesktopReply(request, run, threadId),
       waitForPlugins: () => this.#waitForPlugins(),
       diagnose: (error) => this.#diagnose(error),
       environment: this.#options.environment ?? process.env,
       preferences: this.#preferences,
+      inspectCodexModels: async () => {
+        const { inspection } = await this.#inspectOfficialDelegationTarget({ harnessId: "codex" });
+        return inspection.status === "ready" ? inspection.catalog : undefined;
+      },
       displaySettings: this.#displaySettings,
       launchSettings: this.#launchSettings,
       modelPrices: this.#modelPrices,
@@ -1408,6 +1411,7 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    if (!this.#options.hostExtensions) void this.hostExtensions?.close();
     this.#skills?.dispose();
     this.#options.sharedThreads?.close();
     this.#externalRuntime.idleRelease.disable();
@@ -1556,6 +1560,7 @@ export class AppServerHost {
       }
     } catch (error) {
       this.#diagnose(`Host initialization failed: ${errorMessage(error)}`);
+      if (!this.#options.hostExtensions) await this.hostExtensions?.close();
       this.#skills?.dispose();
       this.#pluginLoadAbort.abort();
       await this.#pluginLoading;
@@ -1581,8 +1586,7 @@ export class AppServerHost {
           .catch((closeError: unknown) => this.#diagnose(closeError));
       }
     }
-    if (!this.#closeRequested && !this.#options.desktopExtensionBackends)
-      this.desktopExtensionBackends?.start();
+    if (!this.#closeRequested && !this.#options.hostExtensions) void this.hostExtensions?.start();
     // Load statistics plugins before native subscription negotiation; Session plugins continue
     // independently and must not hold up the official initialization.
     void this.#waitForPlugins().then(() => this.#attachUsageStatistics());
@@ -1605,7 +1609,7 @@ export class AppServerHost {
       this.#treeWatch.close();
       this.#options.sharedThreads?.close();
       this.#pluginLoadAbort.abort();
-      if (!this.#options.desktopExtensionBackends) await this.desktopExtensionBackends?.close();
+      if (!this.#options.hostExtensions) await this.hostExtensions?.close();
       // Stop replacement waiters before waiting for their tracked Host operations.
       this.#externalSteering.close();
       await this.#desktopRequests.drain();
@@ -1739,6 +1743,8 @@ export class AppServerHost {
     params: unknown,
     timeoutMs = CONSOLE_REQUEST_TIMEOUT_MS,
   ): Promise<ConsoleHostReply> {
+    if (isHostExtensionManagementMethod(method))
+      return handleHostExtensionRequest(this.hostExtensions, method, params);
     if (!isConsoleHostMethod(method)) {
       return { error: { code: -32601, message: `${method} is not available to the console` } };
     }
@@ -1818,6 +1824,8 @@ export class AppServerHost {
 
   /** Public client operations stay on this owner and never fall through to official Codex. */
   handleClientRequest(method: string, input: unknown): Promise<ConsoleHostReply> {
+    if (isHostExtensionManagementMethod(method))
+      return handleHostExtensionRequest(this.hostExtensions, method, input);
     return this.#client.handleClientRequest(method, input);
   }
 
@@ -2088,7 +2096,7 @@ export class AppServerHost {
         request.method.startsWith("codexhost/account/") ||
         request.method.startsWith("codexhost/update/") ||
         isModelPriceOverridesMethod(request.method) ||
-        isDesktopExtensionManagementMethod(request.method)
+        isHostExtensionManagementMethod(request.method)
       )
     ) {
       await this.#writer.json(
@@ -2652,7 +2660,11 @@ export class AppServerHost {
     const data = result && Array.isArray(result.data) ? result.data : [];
     const thinkingById = new Map<ReturnType<typeof harnessThinkingOptionIdSchema.parse>, string>();
     const models = data.flatMap((candidate) => {
-      if (!isRecord(candidate) || typeof candidate.model !== "string" || !candidate.model.trim()) {
+      if (
+        !isRecord(candidate) ||
+        typeof candidate.model !== "string" ||
+        candidate.model.length === 0
+      ) {
         return [];
       }
       const supportedThinkingOptionIds = Array.isArray(candidate.supportedReasoningEfforts)
@@ -2673,19 +2685,23 @@ export class AppServerHost {
       const serviceTiers = Array.isArray(candidate.serviceTiers)
         ? candidate.serviceTiers.flatMap((tier) => (isRecord(tier) ? [tier.id] : []))
         : [];
+      const label =
+        typeof candidate.displayName === "string" && candidate.displayName.trim()
+          ? candidate.displayName
+          : candidate.model;
+      const boundedLabel = label
+        .slice(0, HARNESS_MODEL_LABEL_MAX_LENGTH)
+        .replace(/[\uD800-\uDBFF]$/u, "");
       const model = {
-        ref: encodeOfficialCodexModelRef(candidate.model),
-        label:
-          typeof candidate.displayName === "string" && candidate.displayName.trim()
-            ? candidate.displayName
-            : candidate.model,
+        ref: officialCodexModelRef(candidate.model),
+        label: boundedLabel.trim() ? boundedLabel : "Codex",
         ...(supportedThinkingOptionIds.length > 0 ? { supportedThinkingOptionIds } : {}),
       };
       const selections = [
         {
           ...model,
           ...(serviceTiers.includes("priority")
-            ? { fastModel: encodeOfficialCodexModelRef(candidate.model, "priority") }
+            ? { fastModel: officialCodexModelRef(candidate.model, "priority") }
             : {}),
         },
       ];
@@ -2696,7 +2712,7 @@ export class AppServerHost {
           .replace(/[\uD800-\uDBFF]$/u, "");
         selections.push({
           ...model,
-          ref: encodeOfficialCodexModelRef(candidate.model, "ultrafast"),
+          ref: officialCodexModelRef(candidate.model, "ultrafast"),
           label: label + suffix,
         });
       }
@@ -2707,7 +2723,7 @@ export class AppServerHost {
     );
     const defaultModel =
       isRecord(defaultEntry) && typeof defaultEntry.model === "string"
-        ? encodeOfficialCodexModelRef(defaultEntry.model)
+        ? officialCodexModelRef(defaultEntry.model)
         : undefined;
     return {
       harnessId: input.harnessId,
@@ -2735,20 +2751,26 @@ export class AppServerHost {
     input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
     resolveConfiguration: (
       model: HarnessModelRef | undefined,
+      inspected?: HarnessInspectResult,
     ) => ReturnType<typeof resolveDelegationConfiguration>,
   ): Promise<DelegationStartResult> {
-    let explicitModel: HarnessModelRef | undefined;
-    try {
-      explicitModel = input.model ? canonicalizeOfficialCodexModelRef(input.model) : undefined;
-    } catch {
-      throw new DelegationControlError("INVALID_ARGUMENT", "Official Model Ref is invalid");
-    }
+    let inspected: HarnessInspectResult | undefined;
+    const requestedModel = input.officialModelArgument ?? input.model;
+    const explicitModel =
+      requestedModel !== undefined
+        ? await resolveOfficialDelegationModel(requestedModel, async () => {
+            inspected = await this.#inspectOfficialDelegationTarget(input);
+            return inspected.inspection.status === "ready"
+              ? inspected.inspection.catalog
+              : undefined;
+          })
+        : undefined;
     const digest = createHash("sha256")
       .update(
         JSON.stringify({
           task: input.task,
           cwd: input.cwd,
-          modelId: explicitModel?.id ?? null,
+          model: explicitModel ? [explicitModel.id, explicitModel.serviceTier ?? null] : null,
           thinkingOptionId: input.thinkingOptionId ?? null,
         }),
       )
@@ -2786,9 +2808,9 @@ export class AppServerHost {
         },
       };
     }
-    const selection = await resolveConfiguration(explicitModel);
+    const selection = await resolveConfiguration(explicitModel, inspected);
     const { model, thinkingOptionId } = selection;
-    const nativeSelection = model ? decodeOfficialCodexModelSelection(model) : undefined;
+    const nativeSelection = model ? officialCodexModelSelection(model) : undefined;
     const started = await this.#requestOfficial("thread/start", {
       cwd: input.cwd,
       ...nativeSelection,
@@ -2856,7 +2878,7 @@ export class AppServerHost {
                 effective: {
                   ...(startedResult && typeof startedResult.model === "string"
                     ? {
-                        effectiveModel: encodeOfficialCodexModelRef(
+                        effectiveModel: officialCodexModelRef(
                           startedResult.model,
                           typeof startedResult.serviceTier === "string"
                             ? startedResult.serviceTier
@@ -3871,6 +3893,7 @@ export class AppServerHost {
         ...(params.data.cwd ? { cwd: params.data.cwd } : {}),
         ...(params.data.refresh !== undefined ? { refresh: params.data.refresh } : {}),
         ...(params.data.purpose ? { purpose: params.data.purpose } : {}),
+        ...(params.data.credentialAccess ? { credentialAccess: params.data.credentialAccess } : {}),
       });
     } catch (error) {
       await this.#writer.json(
@@ -4560,7 +4583,7 @@ export class AppServerHost {
       await this.#selectOfficialThreadSettings(
         request,
         params.data.threadId,
-        decodeOfficialCodexModelSelection(params.data.model),
+        officialCodexModelSelection(params.data.model),
       );
       return;
     }
@@ -4947,6 +4970,7 @@ export class AppServerHost {
     const sessionResult = await adapter.open({
       kind: "create",
       cwd,
+      ...(prewarm ? { prewarm: true } : {}),
       environment: {
         ...(this.#options.environment ?? process.env),
         [DELEGATION_THREAD_ID_ENV]: record.hostThreadId,

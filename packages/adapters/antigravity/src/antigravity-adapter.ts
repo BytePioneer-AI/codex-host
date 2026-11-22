@@ -274,7 +274,6 @@ interface SessionOptions extends RequestedConfiguration {
   cwd: string;
   environment: NodeJS.ProcessEnv;
   nativeRef?: NativeSessionRef;
-  knownTurnRefs?: readonly NativeTurnRef[] | undefined;
   unattended: boolean;
   adapter: AntigravityAdapterOptions;
   onClosed(session: AntigravitySession): void;
@@ -861,7 +860,6 @@ export class AntigravitySession implements HarnessSession {
         nativeSessionId,
         cwd: this.#options.cwd,
         events,
-        ...(this.#options.knownTurnRefs ? { knownTurnRefs: this.#options.knownTurnRefs } : {}),
         ...(this.#options.adapter.toolOutputLimit !== undefined
           ? { outputLimit: this.#options.adapter.toolOutputLimit }
           : {}),
@@ -1728,9 +1726,7 @@ export class AntigravityAdapter implements HarnessAdapter {
           locator.permissionModeId === SKIP)
           ? harnessPermissionModeIdSchema.parse(SKIP)
           : input.permissionModeId,
-      ...(input.kind === "resume"
-        ? { nativeRef: input.nativeRef, knownTurnRefs: input.knownTurnRefs }
-        : {}),
+      ...(input.kind === "resume" ? { nativeRef: input.nativeRef } : {}),
       unattended,
       adapter: this.options,
       onClosed: (closed) => this.#sessions.delete(closed),

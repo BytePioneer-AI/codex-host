@@ -1,38 +1,53 @@
+import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 
 import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
 import {
-  decodePiModelRef,
+  createPiModelIndex,
   encodePiModelRef,
+  normalizeStoredPiModelRef,
+  resolvePiModelRef,
   normalizePiModelCatalog,
   normalizePiThinkingOptions,
 } from "../src/pi-model-catalog.js";
 
 describe("Pi Model Catalog normalization", () => {
-  it("round-trips exact Provider and Model identities with separators and Unicode", () => {
-    const native = { provider: "local/provider-一", id: "family/model-v1.2" };
-    const ref = encodePiModelRef(native);
-
-    expect(ref.id).toMatch(/^pi-model-v1\.[A-Za-z0-9_-]+$/u);
-    expect(decodePiModelRef(ref)).toEqual(native);
-  });
-
-  it("encodes Fast as a distinct opaque ref while preserving the original off encoding", () => {
-    const native = { provider: "c", id: "model" };
-    const normal = encodePiModelRef(native);
-    expect(encodePiModelRef({ ...native, fast: false })).toEqual(normal);
-    expect(Buffer.from(normal.id.slice("pi-model-v1.".length), "base64url").toString()).toBe(
-      JSON.stringify(["c", "model"]),
+  it.each([false, true])("round-trips exact pairs and Fast (collision: %s)", (collision) => {
+    const native = { provider: "本地/提供方", id: "系列/GPT 模型:高~fast" };
+    const other = { provider: "本地", id: "提供方/系列/GPT 模型:高~fast" };
+    const models = [
+      { ...native, reasoning: true, api: "openai-responses" },
+      ...(collision ? [{ ...other, reasoning: false }] : []),
+    ];
+    const catalog = normalizePiModelCatalog(models, native, null, null, null, true);
+    const base = catalog.defaultModel;
+    const fast = catalog.models.find(({ fastModel }) => fastModel)?.fastModel;
+    assert(base && fast, "Expected base and Fast Model Refs");
+    const legacy = (tuple: unknown[]) =>
+      harnessModelRefSchema.parse({
+        id: `pi-model-v1.${Buffer.from(JSON.stringify(tuple)).toString("base64url")}`,
+      });
+    const old = legacy([native.provider, native.id]);
+    const readable = harnessModelRefSchema.parse({ id: "本地/提供方/系列/GPT 模型:高~fast" });
+    expect(base).toEqual(collision ? old : readable);
+    expect(fast).toEqual({ id: base.id, serviceTier: "priority" });
+    expect(normalizeStoredPiModelRef(old, catalog)).toEqual(base);
+    expect(normalizeStoredPiModelRef(legacy([native.provider, native.id, true]), catalog)).toEqual(
+      fast,
     );
-    const fast = encodePiModelRef({ ...native, fast: true });
-    expect(fast).not.toEqual(normal);
-    expect(decodePiModelRef(fast)).toEqual({ ...native, fast: true });
-    const invalid = harnessModelRefSchema.parse({
-      id: `pi-model-v1.${Buffer.from(JSON.stringify(["c", "model", false])).toString("base64url")}`,
-    });
-    expect(() => decodePiModelRef(invalid)).toThrow();
+    expect(
+      normalizeStoredPiModelRef(legacy([native.provider, native.id, false]), catalog),
+    ).toBeUndefined();
+    expect(resolvePiModelRef(fast, createPiModelIndex(models))).toEqual({ ...native, fast: true });
+    const otherRef = legacy([other.provider, other.id]);
+    if (collision) {
+      expect(resolvePiModelRef(otherRef, createPiModelIndex(models))).toEqual(other);
+      expect(() => resolvePiModelRef(readable, createPiModelIndex(models))).toThrow();
+    } else {
+      expect(normalizeStoredPiModelRef(otherRef, catalog)).toBeUndefined();
+    }
   });
 
   it("keeps Provider identity distinct, removes exact duplicates, and sorts deterministically", () => {
@@ -211,16 +226,21 @@ describe("Pi Model Catalog normalization", () => {
   });
 
   it("rejects malformed, foreign, and non-canonical opaque refs", () => {
-    expect(() =>
-      decodePiModelRef(harnessModelRefSchema.parse({ id: "other-adapter-v1.value" })),
-    ).toThrow("does not belong");
-    expect(() =>
-      decodePiModelRef(harnessModelRefSchema.parse({ id: "pi-model-v1.bm90LWpzb24" })),
-    ).toThrow("malformed");
-
+    const catalog = normalizePiModelCatalog(
+      [{ provider: "provider", id: "model", reasoning: true }],
+      null,
+      null,
+      null,
+    );
     const nonCanonical = Buffer.from('[ "provider", "model" ]', "utf8").toString("base64url");
-    expect(() =>
-      decodePiModelRef(harnessModelRefSchema.parse({ id: `pi-model-v1.${nonCanonical}` })),
-    ).toThrow("not canonical");
+    for (const id of [
+      "other-adapter-v1.value",
+      "pi-model-v1.bm90LWpzb24",
+      `pi-model-v1.${nonCanonical}`,
+    ]) {
+      expect(
+        normalizeStoredPiModelRef(harnessModelRefSchema.parse({ id }), catalog),
+      ).toBeUndefined();
+    }
   });
 });

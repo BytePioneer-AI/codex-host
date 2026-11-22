@@ -33,7 +33,11 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
-import { encodeDeepSeekHarnessModelRef, parseDeepSeekThinkingOptionId } from "../model-catalog.js";
+import {
+  encodeDeepSeekHarnessModelRef,
+  parseDeepSeekThinkingOptionId,
+  type DeepSeekModelIndex,
+} from "../model-catalog.js";
 import {
   isRecord,
   mergeDeepSeekUsage,
@@ -785,6 +789,7 @@ export interface ProjectModernHistoryInput {
   readonly events: readonly ModernJournalEvent[];
   readonly harnessId?: HarnessId;
   readonly fallbackModel?: HarnessModelRef;
+  readonly modelIndex?: DeepSeekModelIndex;
   readonly fallbackThinkingOptionId?: HarnessThinkingOptionId;
   readonly toolOutputLimit?: number;
   readonly maxEvents?: number;
@@ -855,14 +860,14 @@ export function projectModernHistory(input: ProjectModernHistoryInput): ModernHi
         };
         break;
       case "model/selection": {
-        const selection = selectionFrom(data);
+        const selection = selectionFrom(data, input.modelIndex);
         effectiveModel = selection.model;
         effectiveThinkingOptionId = selection.thinking;
         if (active) active.model = selection.model;
         break;
       }
       case "request/header": {
-        const selection = selectionFromHeader(data);
+        const selection = selectionFromHeader(data, input.modelIndex);
         effectiveModel = selection.model;
         effectiveThinkingOptionId = selection.thinking;
         if (active) active.model = selection.model;
@@ -1242,25 +1247,34 @@ function incompleteToolOutcome(toolName: string): HostItemOutcome {
   };
 }
 
-function selectionFrom(data: Record<string, unknown>): {
+function selectionFrom(
+  data: Record<string, unknown>,
+  index?: DeepSeekModelIndex,
+): {
   model: HarnessModelRef;
   thinking: HarnessThinkingOptionId | undefined;
 } {
   return {
-    model: encodeDeepSeekHarnessModelRef({
-      provider: data.provider as string,
-      model: data.model as string,
-    }),
+    model: encodeDeepSeekHarnessModelRef(
+      {
+        provider: data.provider as string,
+        model: data.model as string,
+      },
+      index,
+    ),
     thinking: parseDeepSeekThinkingOptionId(data.reasoningEffort as string | undefined),
   };
 }
 
-function selectionFromHeader(data: Record<string, unknown>): {
+function selectionFromHeader(
+  data: Record<string, unknown>,
+  index?: DeepSeekModelIndex,
+): {
   model: HarnessModelRef;
   thinking: HarnessThinkingOptionId | undefined;
 } {
   const header = data.header as Record<string, unknown>;
-  return selectionFrom(header.config as Record<string, unknown>);
+  return selectionFrom(header.config as Record<string, unknown>, index);
 }
 
 function textInputs(value: unknown): HostTextInput[] {

@@ -12,6 +12,7 @@ import {
 } from "@codexhost/protocol-core";
 import {
   permissionModeFixedAtCreate,
+  sameHarnessModelRef,
   type HostTurnId,
   type NativeCheckpointRef,
   type NativeSessionRef,
@@ -55,7 +56,7 @@ function sameCurrentConfiguration(
   replacement: HarnessSessionState,
 ): boolean {
   return (
-    current.effectiveModel?.id === replacement.effectiveModel?.id &&
+    sameHarnessModelRef(current.effectiveModel, replacement.effectiveModel) &&
     current.effectiveThinkingOptionId === replacement.effectiveThinkingOptionId &&
     current.effectivePermissionModeId === replacement.effectivePermissionModeId
   );

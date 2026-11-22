@@ -1,7 +1,7 @@
-import { Buffer } from "node:buffer";
+import { normalizeLegacyBase64ModelRef } from "@codexhost/harness-adapter";
 import {
   HARNESS_MODEL_LABEL_MAX_LENGTH,
-  HARNESS_MODEL_REF_MAX_LENGTH,
+  catalogModelForRef,
   harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
@@ -11,10 +11,6 @@ import {
   type HarnessThinkingOption,
   type HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
-import { z } from "zod";
-
-const QODER_MODEL_REF_PREFIX = "qoder-model-v1.";
-const QODER_MODEL_VALUE_MAX_LENGTH = 512;
 
 export const QODER_STANDARD_MODELS = [
   { value: "auto", label: "Auto (Recommended)" },
@@ -24,7 +20,11 @@ export const QODER_STANDARD_MODELS = [
   { value: "lite", label: "Lite" },
 ] as const;
 
-export const QODER_DEFAULT_MODEL_REF = encodeQoderModelRef("auto");
+export function qoderModelRef(id: string): HarnessModelRef {
+  return harnessModelRefSchema.parse({ id });
+}
+
+export const QODER_DEFAULT_MODEL_REF = qoderModelRef("auto");
 
 export const QODER_EFFORT_LABELS: ReadonlyMap<string, string> = new Map([
   ["off", "Off"],
@@ -136,25 +136,15 @@ function extractModelEfforts(raw: Record<string, unknown>): {
   };
 }
 
-export function encodeQoderModelRef(value: string): HarnessModelRef {
-  const parsed = z.string().trim().min(1).max(QODER_MODEL_VALUE_MAX_LENGTH).parse(value);
-  const id = `${QODER_MODEL_REF_PREFIX}${Buffer.from(parsed, "utf8").toString("base64url")}`;
-  if (id.length > HARNESS_MODEL_REF_MAX_LENGTH) {
-    throw new Error("Qoder Model value is too long for a Model Ref");
-  }
-  return harnessModelRefSchema.parse({ id });
+export function qoderModelValue(ref: HarnessModelRef): string | undefined {
+  return harnessModelRefSchema.safeParse(ref).data?.id;
 }
 
-export function decodeQoderModelRef(ref: HarnessModelRef): string | undefined {
-  const parsed = harnessModelRefSchema.safeParse(ref);
-  if (!parsed.success || !parsed.data.id.startsWith(QODER_MODEL_REF_PREFIX)) return undefined;
-  const encoded = parsed.data.id.slice(QODER_MODEL_REF_PREFIX.length);
-  try {
-    const value = Buffer.from(encoded, "base64url").toString("utf8");
-    return encodeQoderModelRef(value).id === parsed.data.id ? value : undefined;
-  } catch {
-    return undefined;
-  }
+export function normalizeStoredQoderModelRef(
+  ref: HarnessModelRef,
+  catalog: HarnessModelCatalog,
+): HarnessModelRef | undefined {
+  return normalizeLegacyBase64ModelRef(ref, catalog, "qoder-model-v1.");
 }
 
 export function parseQoderModelCatalog(rawModels?: unknown[]): HarnessModelCatalog {
@@ -170,12 +160,12 @@ export function parseQoderModelCatalog(rawModels?: unknown[]): HarnessModelCatal
       if (typeof item === "object" && item !== null) {
         const raw = item as Record<string, unknown>;
         const value =
-          typeof raw.value === "string" && raw.value.trim().length > 0
-            ? raw.value.trim()
-            : typeof raw.modelId === "string" && raw.modelId.trim().length > 0
-              ? raw.modelId.trim()
-              : typeof raw.id === "string" && raw.id.trim().length > 0
-                ? raw.id.trim()
+          typeof raw.value === "string" && raw.value.length > 0
+            ? raw.value
+            : typeof raw.modelId === "string" && raw.modelId.length > 0
+              ? raw.modelId
+              : typeof raw.id === "string"
+                ? raw.id
                 : undefined;
         if (!value) continue;
 
@@ -192,7 +182,7 @@ export function parseQoderModelCatalog(rawModels?: unknown[]): HarnessModelCatal
           allThinkingOptions.set(effortId, { id: effortId, label: effortLabel(effortId) });
         }
 
-        const ref = encodeQoderModelRef(value);
+        const ref = qoderModelRef(value);
         if (!seenRefs.has(ref.id)) {
           seenRefs.add(ref.id);
           models.push({
@@ -248,10 +238,8 @@ export function qoderAvailableThinkingOptions(
   catalog: HarnessModelCatalog | undefined,
   model: HarnessModelRef | undefined,
 ): HarnessThinkingOption[] | undefined {
-  if (!catalog || !model) return undefined;
-  const supported = catalog.models.find(
-    ({ ref }) => ref.id === model.id,
-  )?.supportedThinkingOptionIds;
+  if (!catalog) return undefined;
+  const supported = catalogModelForRef(catalog, model)?.supportedThinkingOptionIds;
   if (!supported || supported.length === 0) return undefined;
   const options = supported.flatMap((id) => {
     const option = catalog.thinkingOptions.find((candidate) => candidate.id === id);

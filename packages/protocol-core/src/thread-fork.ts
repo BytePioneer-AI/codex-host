@@ -168,6 +168,8 @@ export function mapExternalThreadHarnessError(
       return { code: -32079, message: "External Native Session is unavailable" };
     case "checkpointNotFound":
       return { code: -32080, message: "External Fork Checkpoint is unavailable" };
+    case "credentialAccessRequired":
+      return { code: -32077, message: error.message };
     case "notInstalled":
     case "unavailable":
     case "authenticationRequired":

@@ -1,24 +1,43 @@
 import { describe, expect, it } from "vitest";
 import type { HostEvent } from "@codexhost/harness-adapter";
 import { harnessModelRefSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
-import { decodeModel, encodeModel } from "../src/models.js";
+import { modelCatalog, normalizeStoredZcodeModelRef, selectNativeModel } from "../src/models.js";
 import { fileChanges, TurnProjection } from "../src/projection.js";
 import { makeInteraction } from "../src/interactions.js";
-import { eventSchema, modelSchema } from "../src/protocol.js";
+import { eventSchema, modelSchema, settingsSchema } from "../src/protocol.js";
 
 describe("ZCode native projections", () => {
   it("keeps Provider and Model identities unambiguous", () => {
-    for (const model of [
-      { providerId: "provider/name", modelId: "模型/1" },
-      { providerId: "provider", modelId: "name/模型/1" },
-    ])
-      expect(decodeModel(encodeModel(model))).toEqual(model);
-    expect(encodeModel({ providerId: "a/b", modelId: "c" })).not.toEqual(
-      encodeModel({ providerId: "a", modelId: "b/c" }),
+    const first = { providerId: "provider/name", modelId: "模型/1" };
+    const second = { providerId: "provider", modelId: "name/模型/1" };
+    const third = { providerId: "本地/提供方.v1", modelId: "系列/模型: 高" };
+    const legacy = ({ providerId, modelId }: typeof first) =>
+      harnessModelRefSchema.parse({
+        id: `zcode-local-v1.${Buffer.from(JSON.stringify([providerId, modelId])).toString("base64url")}`,
+      });
+    const { catalog, index } = modelCatalog(
+      settingsSchema.parse({
+        model: {
+          current: first,
+          available: [first, second, third].map((ref) => ({ ref, label: ref.modelId })),
+        },
+        thoughtLevel: { enabled: false, available: [] },
+        mode: { current: "build" },
+      }),
     );
-    expect(() => decodeModel(harnessModelRefSchema.parse({ id: "raw-model" }))).toThrow(
-      "Invalid ZCode model reference",
-    );
+    const readable = harnessModelRefSchema.parse({ id: "本地/提供方.v1/系列/模型: 高" });
+    expect(catalog.models.map(({ ref }) => ref)).toEqual([legacy(first), legacy(second), readable]);
+    expect(catalog.defaultModel).toEqual(legacy(first));
+    expect(selectNativeModel(legacy(first), index)).toEqual(first);
+    expect(selectNativeModel(legacy(second), index)).toEqual(second);
+    expect(selectNativeModel(readable, index)).toEqual(third);
+    expect(normalizeStoredZcodeModelRef(legacy(third), index)).toEqual(readable);
+    for (const ref of [
+      harnessModelRefSchema.parse({ id: "provider/name/模型/1" }),
+      legacy(third),
+    ]) {
+      expect(() => selectNativeModel(ref, index)).toThrow("not available");
+    }
   });
   it("shortens official Coding Plan labels without changing model identities or custom names", () => {
     for (const [providerId, providerLabel, prefix] of [

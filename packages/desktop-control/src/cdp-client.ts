@@ -327,10 +327,14 @@ export class CdpClient {
     });
   }
 
-  async evaluate<T>(expression: string, timeoutMs?: number): Promise<T> {
+  async evaluate<T>(
+    expression: string,
+    timeoutMs?: number,
+    options?: { allowUnsafeEvalBlockedByCSP: false },
+  ): Promise<T> {
     const response = await this.#send(
       "Runtime.evaluate",
-      { expression, awaitPromise: true, returnByValue: true },
+      { expression, awaitPromise: true, returnByValue: true, ...options },
       undefined,
       timeoutMs,
     );

@@ -3,15 +3,20 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+  NPM_PACKAGE_NAME,
+  NPM_PLATFORM_PACKAGE_NAMES,
+  npmMetaTarballFileName,
+} from "./npm-artifacts.mjs";
+import {
   NPM_PACKAGE_DESCRIPTION,
   NPM_NODE_ENGINE,
   NPM_NODE_REQUIREMENT,
-  NPM_PACKAGE_NAME,
-  NPM_PLATFORM_PACKAGE_NAMES,
   createNpmBinLauncherSource,
   packNpmPackage,
   resolveNpmPackageVersion,
 } from "./prepare-npm.mjs";
+
+export { npmMetaTarballFileName };
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
@@ -162,10 +167,6 @@ export async function prepareNpmMetaPackage({ version, root = repositoryRoot }) 
   );
   await validateNpmMetaPackage({ packageRoot });
   return { outputRoot, packageRoot, version: packageVersion };
-}
-
-export function npmMetaTarballFileName(version) {
-  return `codexhost-cli-${version}.tgz`;
 }
 
 export async function packNpmMetaPackage({ outputRoot, packageRoot, version }) {

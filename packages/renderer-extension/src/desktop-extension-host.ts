@@ -18,6 +18,11 @@ import {
   type DesktopExtensionStorageApi,
 } from "./desktop-extension-api.js";
 
+import {
+  createDesktopExtensionModules,
+  type DesktopExtensionModuleEntry,
+} from "./desktop-extension-modules.js";
+
 export interface DesktopExtensionEntry {
   id: string;
   hash: string;
@@ -52,7 +57,11 @@ interface Instance {
 
 export interface DesktopExtensionHost {
   readonly version: 1;
-  reconcile(entries: DesktopExtensionEntry[]): Promise<void>;
+  reconcile(
+    entries: DesktopExtensionEntry[],
+    modules?: DesktopExtensionModuleEntry[],
+  ): Promise<void>;
+  readonly modules: ReturnType<typeof createDesktopExtensionModules>;
   status(): Record<string, DesktopExtensionStatus>;
   disposeAll(): Promise<void>;
   bind(bridge: DesktopExtensionBridge): () => void;
@@ -111,6 +120,7 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
   let desired: DesktopExtensionEntry[] = [];
   let queue = Promise.resolve();
   let pendingReady: ReturnType<typeof setTimeout> | undefined;
+  const modules = createDesktopExtensionModules();
   const instances = new Map<string, Instance>();
   const reports = new Map<string, DesktopExtensionStatus>();
   const customSettingsPages = new Map<
@@ -396,7 +406,9 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
 
   return {
     version: 1,
-    reconcile(entries) {
+    modules,
+    reconcile(entries, moduleEntries) {
+      if (moduleEntries) modules.replace(moduleEntries);
       const previous = new Map(desired.map((entry) => [entry.id, entry]));
       desired = entries.map((entry) => {
         const old = previous.get(entry.id);
@@ -415,6 +427,7 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
       return Object.fromEntries(status);
     },
     disposeAll() {
+      modules.replace([]);
       desired = [];
       for (const instance of instances.values()) instance.resources?.stopDeliveries();
       return serialize(apply);

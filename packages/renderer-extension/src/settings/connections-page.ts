@@ -62,7 +62,7 @@ export interface RendererConnectionSnapshot {
 export interface RendererConnectionDiagnostics {
   snapshot(): RendererConnectionSnapshot;
   /** With a Host, wait for existing diagnostics and start a fresh post-mutation inspection. */
-  refresh(hostId?: string): Promise<void>;
+  refresh(hostId?: string, credentialAccess?: "retry"): Promise<void>;
   openWebUi?(hostId: string, agent: ExternalRendererAgent): Promise<void>;
   installation?(
     hostId: string,
@@ -759,7 +759,7 @@ export function createConnectionsSettingsPage(
           createRendererSettingsIcon("diagnose", 16),
           messages.connectionRefreshing,
         );
-        void context.runLatest(() => diagnostics.refresh(), {
+        void context.runLatest(() => diagnostics.refresh(undefined, "retry"), {
           success() {
             installs?.clearErrors();
             pending = false;

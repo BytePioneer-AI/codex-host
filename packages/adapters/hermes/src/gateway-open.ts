@@ -9,7 +9,6 @@ import {
 import { type HermesGatewayTransport, gatewayString, gatewayRecord } from "./gateway-transport.js";
 import { HermesGatewayHistory, HermesGatewayHistoryError } from "./gateway-history.js";
 import { HermesGatewaySessionTransport } from "./gateway-session-transport.js";
-import { decodeHermesModelRefId } from "./hermes-models.js";
 import { HermesSession } from "./hermes-session.js";
 
 async function sameDirectory(left: string, right: string): Promise<boolean> {
@@ -99,8 +98,7 @@ export async function openGatewaySession(
       "invalidRequest",
       "unattended-full-access requires dont_ask",
     );
-  const model =
-    input.kind !== "fork" && input.model ? decodeHermesModelRefId(input.model.id) : null;
+  const model = input.kind !== "fork" ? input.model?.id : undefined;
   if (input.kind !== "fork" && input.model && !model)
     throw new HermesGatewayHistoryError("invalidRequest", "Model Ref does not belong to Hermes");
   if (

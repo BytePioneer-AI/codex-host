@@ -21,19 +21,18 @@ import {
   preinstalledHarnessPluginPaths,
 } from "./harness-plugins.mjs";
 import { linuxGlibcCargoArguments, stripLinuxDebugInfo } from "./linux-glibc.mjs";
+import {
+  NPM_PACKAGE_NAME,
+  NPM_PLATFORM_PACKAGE_NAMES,
+  npmPlatformPackageName,
+  npmTarballFileName,
+} from "./npm-artifacts.mjs";
 import { hostReleaseTarget, npmReleaseUsage, releaseTargetForHost } from "./targets.mjs";
+
+export { NPM_PACKAGE_NAME, NPM_PLATFORM_PACKAGE_NAMES, npmPlatformPackageName, npmTarballFileName };
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
-export const NPM_PACKAGE_NAME = "@codexhost/cli";
-export const NPM_PLATFORM_PACKAGE_NAMES = Object.freeze({
-  "macos-arm64": "@codexhost/cli-darwin-arm64",
-  "macos-x64": "@codexhost/cli-darwin-x64",
-  "windows-x64": "@codexhost/cli-win32-x64",
-  "windows-arm64": "@codexhost/cli-win32-arm64",
-  "linux-x64": "@codexhost/cli-linux-x64",
-  "linux-arm64": "@codexhost/cli-linux-arm64",
-});
 export const NPM_RUNTIME_PLATFORM_PACKAGES = Object.freeze({
   "darwin-arm64": NPM_PLATFORM_PACKAGE_NAMES["macos-arm64"],
   "darwin-x64": NPM_PLATFORM_PACKAGE_NAMES["macos-x64"],
@@ -73,12 +72,6 @@ export const NPM_NODE_REQUIREMENT = `Node.js ${NPM_MINIMUM_NODE_VERSION} or late
 
 export const NPM_PACKAGE_DESCRIPTION =
   "Run Pi and Claude Code as first-class external harnesses inside Codex Desktop.";
-
-export function npmPlatformPackageName(target) {
-  const packageName = NPM_PLATFORM_PACKAGE_NAMES[target.id];
-  if (!packageName) throw new Error(`unsupported npm package target: ${target.id}`);
-  return packageName;
-}
 
 const runtimeLicenses = [
   {
@@ -1298,10 +1291,6 @@ export async function prepareNpmPackage({
   await validateNpmPackage({ packageRoot, target, root });
 
   return { version: packageVersion, outputRoot, packageRoot, target };
-}
-
-export function npmTarballFileName({ version, target }) {
-  return `codexhost-cli-${version}-${target.id}.tgz`;
 }
 
 export async function packNpmPackage({ packageRoot, outputRoot, version, target }) {

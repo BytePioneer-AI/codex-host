@@ -17,6 +17,7 @@ const contracts = {
     trailingActionOwnerCount: 1,
   },
   model: { draftCount: 1, conversationCount: 0, missingCount: 0, ambiguousCount: 0 },
+  draftHarnessBinding: { visibleDraftCount: 1, boundCount: 1, missingCreationModeCount: 0 },
   settings: { railCount: 1, visibleRailCount: 1, insertionPointCount: 1 },
   sidebar: { rowCount: 0, titleOwnerCount: 0, resolvedThreadCount: 0, ambiguousThreadCount: 0 },
   transcript: {
@@ -82,24 +83,54 @@ describe("Codex Desktop contract audit report", () => {
   });
 
   it("accepts a reviewed baseline that predates a newer surface", () => {
-    const older = buildSurfaceResults(contracts).filter(({ id }) => id !== "codex-usage-gate");
+    const newSurfaces = ["codex-usage-gate", "draft-harness-binding"];
+    const older = buildSurfaceResults(contracts).filter(({ id }) => !newSurfaces.includes(id));
     expect(() => validateAuditReport(reportFor(older))).toThrow("incomplete");
     const baseline = validateAuditReport(reportFor(older), { baseline: true });
-    const gate = buildSurfaceResults(contracts, baseline).find(
-      ({ id }) => id === "codex-usage-gate",
-    );
-    expect(gate).toMatchObject({ verdict: "no-impact", baselineChanged: false });
-    expect(gate?.evidence.static).toBe("not-run");
+    const results = buildSurfaceResults(contracts, baseline);
+    for (const id of newSurfaces) {
+      expect(results.find((surface) => surface.id === id)).toMatchObject({
+        verdict: "no-impact",
+        baselineChanged: false,
+        evidence: { static: "not-run", liveStructure: "pass" },
+      });
+    }
   });
 
   it("reports ambiguous active ownership as confirmed impact", () => {
     const surfaces = buildSurfaceResults({
       ...contracts,
       model: { draftCount: 0, conversationCount: 0, missingCount: 0, ambiguousCount: 1 },
+      draftHarnessBinding: { visibleDraftCount: 1, boundCount: 0, missingCreationModeCount: 0 },
     });
     expect(surfaces.find(({ id }) => id === "model")?.verdict).toBe("confirmed-impact");
+    expect(surfaces.find(({ id }) => id === "draft-harness-binding")).toMatchObject({
+      verdict: "confirmed-impact",
+      reason: "draft-writer-unverified",
+    });
     expect(aggregateVerdict(surfaces)).toBe("confirmed-impact");
   });
+
+  it.each([
+    [1, 1, "fail", "confirmed-impact"],
+    [0, 0, "inactive", "unverified"],
+  ])(
+    "classifies %i visible drafts with %i missing creation modes",
+    (count, missing, live, verdict) => {
+      const surfaces = buildSurfaceResults({
+        ...contracts,
+        draftHarnessBinding: {
+          visibleDraftCount: count,
+          boundCount: count,
+          missingCreationModeCount: missing,
+        },
+      });
+      expect(surfaces.find(({ id }) => id === "draft-harness-binding")).toMatchObject({
+        verdict,
+        evidence: { liveStructure: live, behavior: "not-run" },
+      });
+    },
+  );
 
   it("separates controlled installation from unexercised behavior", () => {
     const surfaces = buildSurfaceResults(contracts, null, {

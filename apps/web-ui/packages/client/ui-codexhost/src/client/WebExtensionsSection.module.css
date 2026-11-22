@@ -6,6 +6,13 @@
   min-width: 0;
 }
 
+.standalone {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
 /* Single-line header matching Desktop Plugins page */
 .header {
   position: relative;
@@ -38,7 +45,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  flex: none;
+  max-width: 100%;
 }
 
 .toolbarButton {
@@ -171,6 +178,16 @@
   justify-content: space-between;
 }
 
+.menuItemDanger {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.menuDivider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--dsw-alias-border-l2);
+}
+
 .menuCheck {
   display: inline-flex;
   align-items: center;
@@ -202,6 +219,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 5px;
   min-height: 26px;
   padding: 2px 11px;
   border: 0;
@@ -231,6 +249,14 @@
   box-shadow:
     0 1px 2px rgb(0 0 0 / 8%),
     0 0 0 0.5px var(--dsw-alias-border-l2);
+}
+
+.tabUpdateDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-business-primary);
 }
 
 .searchBox {
@@ -301,7 +327,15 @@
   color: var(--dsw-alias-label-primary);
 }
 
-/* Category filter pills */
+/* Capability + Category filter pills */
+.filterRows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.capabilityBar,
 .categoryBar {
   display: flex;
   flex-wrap: nowrap;
@@ -311,6 +345,7 @@
   scrollbar-width: none;
 }
 
+.capabilityBar::-webkit-scrollbar,
 .categoryBar::-webkit-scrollbar {
   display: none;
 }
@@ -612,7 +647,100 @@
 .cardAction {
   display: flex;
   align-items: center;
+  gap: 8px;
   flex: none;
+}
+
+.openPageButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 34%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 9%, transparent);
+  color: var(--dsw-alias-state-business-primary);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+.openPageButton:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent);
+  border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 50%, transparent);
+}
+
+.openPageButton:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.cardCapabilities {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.capBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 7px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.capBadge[data-platform="both"],
+.capBadge[data-capability="page"] {
+  color: var(--dsw-alias-state-business-primary);
+  border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 26%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 9%, transparent);
+}
+
+.capBadge[data-platform] {
+  font-weight: 600;
+}
+
+.capBadge[data-platform="desktop"] {
+  color: var(--dsw-alias-state-warn-label);
+  border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 45%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent);
+}
+
+.capBadge[data-capability="backend"] {
+  color: var(--dsw-alias-label-primary);
+}
+
+.recoverDialog {
+  width: min(440px, 100%);
+}
+
+.recoverBody {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.recoverFooter {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  width: 100%;
 }
 
 .cardBody {
@@ -691,9 +819,17 @@
   white-space: nowrap;
 }
 
-.updateCue {
+.cardUpdate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
   color: var(--dsw-alias-state-business-primary);
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  overflow-wrap: anywhere;
 }
 
 .metaMetric,
@@ -740,6 +876,13 @@
   width: 44px;
   height: 44px;
   border-radius: 11px;
+}
+
+.iconSidebar {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--dsw-radius-xs);
+  box-sizing: border-box;
 }
 
 .iconImg {
@@ -964,5 +1107,10 @@
   .emptyCard {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .openPageButton {
+    min-height: 30px;
+    padding: 0 10px;
   }
 }

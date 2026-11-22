@@ -2,14 +2,14 @@ import type { SessionConfigOption } from "@agentclientprotocol/sdk";
 import { describe, expect, it } from "vitest";
 import {
   harnessModelCatalogSchema,
+  harnessModelRefSchema,
   harnessPermissionModeCatalogSchema,
 } from "@codexhost/shared-contracts";
 
 import {
   buildModelCatalogFromAcp,
   buildModelCatalogFromConfig,
-  decodeKimiModelRefId,
-  encodeKimiModelRef,
+  normalizeStoredKimiModelRef,
   formatThinkingLabel,
   isKimiModeId,
   kimiPermissionModeCatalog,
@@ -20,31 +20,14 @@ import {
 } from "../src/models.js";
 
 describe("Kimi Code Models & Config", () => {
-  describe("ModelRef Encoding & Decoding", () => {
-    it("encodes and decodes standard model aliases", () => {
-      const alias = "claude-sonnet-5";
-      const ref = encodeKimiModelRef(alias);
-      expect(ref.id).toMatch(/^kimi\.[A-Za-z0-9_-]+$/);
-      const decoded = decodeKimiModelRefId(ref.id);
-      expect(decoded).toBe(alias);
+  it("preserves native aliases and resolves a stored encoded alias to the same Model", () => {
+    const id = " moonshot/模型 [1m] ";
+    const catalog = buildModelCatalogFromConfig({ defaultModel: id, models: [{ alias: id }] });
+    const saved = harnessModelRefSchema.parse({
+      id: `kimi.${Buffer.from(id).toString("base64url")}`,
     });
-
-    it("encodes and decodes aliases with slashes and special characters without collision", () => {
-      const aliasWithSlash = "moonshot/kimi-k2.5-preview";
-      const ref = encodeKimiModelRef(aliasWithSlash);
-      expect(decodeKimiModelRefId(ref.id)).toBe(aliasWithSlash);
-
-      const aliasWithDash = "moonshot-kimi-k2.5-preview";
-      const ref2 = encodeKimiModelRef(aliasWithDash);
-      expect(decodeKimiModelRefId(ref2.id)).toBe(aliasWithDash);
-
-      // Slashes and dashes must not produce the same ref
-      expect(ref.id).not.toBe(ref2.id);
-    });
-
-    it("throws on invalid model ref id", () => {
-      expect(() => decodeKimiModelRefId("other.invalid")).toThrow(/Invalid Kimi model ref ID/);
-    });
+    expect(catalog.defaultModel).toEqual({ id });
+    expect(normalizeStoredKimiModelRef(saved, catalog)).toEqual({ id });
   });
 
   describe("Permission Modes", () => {
@@ -144,7 +127,7 @@ default_model = "test"
       const firstModel = validated.models[0];
       expect(firstModel).toBeDefined();
       if (!firstModel) return;
-      expect(decodeKimiModelRefId(firstModel.ref.id)).toBe("relay");
+      expect(firstModel.ref.id).toBe("relay");
       expect(firstModel.label).toBe("relay (claude-sonnet-5)");
       expect(firstModel.resolvedModelLabel).toBe("claude-sonnet-5");
       expect(validated.defaultModel?.id).toBe(firstModel.ref.id);
@@ -223,7 +206,7 @@ support_efforts = ["max"]
       const fallbackModel = catalog.models[0];
       expect(fallbackModel).toBeDefined();
       if (fallbackModel) {
-        expect(decodeKimiModelRefId(fallbackModel.ref.id)).toBe("default");
+        expect(fallbackModel.ref.id).toBe("default");
       }
     });
   });
@@ -290,7 +273,7 @@ support_efforts = ["max"]
       const firstModel = validated.models[0];
       expect(firstModel).toBeDefined();
       if (!firstModel) return;
-      expect(decodeKimiModelRefId(firstModel.ref.id)).toBe("relay");
+      expect(firstModel.ref.id).toBe("relay");
       expect(firstModel.label).toBe("Claude Sonnet 5 (Relay)");
       expect(validated.defaultModel?.id).toBe(firstModel.ref.id);
       expect(validated.defaultThinkingOptionId).toBe("high");
@@ -326,7 +309,7 @@ support_efforts = ["max"]
       const fallbackModel = catalog.models[0];
       expect(fallbackModel).toBeDefined();
       if (fallbackModel) {
-        expect(decodeKimiModelRefId(fallbackModel.ref.id)).toBe("fallback-m");
+        expect(fallbackModel.ref.id).toBe("fallback-m");
       }
     });
   });

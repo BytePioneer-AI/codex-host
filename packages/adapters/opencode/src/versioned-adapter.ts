@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import type { HarnessModelRef } from "@codexhost/shared-contracts";
 import { createOpenCodeUsageStatistics } from "./usage-statistics.js";
 import type {
   HarnessAdapter,
@@ -17,12 +19,30 @@ import {
 import { OpenCodeExecutableError } from "./command.js";
 import { detectOpenCode } from "./version.js";
 import { V2Adapter } from "./v2/adapter.js";
+import {
+  normalizeStoredOpenCodeModelRef,
+  type OpenCodeModelCatalogSnapshot,
+} from "./model-catalog.js";
 import { harnessId, failure } from "./v2/state.js";
 
 /** Version routing belongs to the plugin. Native session data never crosses protocols. */
 export class OpenCodeAdapter implements HarnessAdapter {
   readonly harnessId = harnessId;
   readonly commandCatalog = openCodeCommandCatalog;
+  readonly #inspectedModels = new Map<string, OpenCodeModelCatalogSnapshot>();
+  readonly normalizeStoredModelRef: NonNullable<HarnessAdapter["normalizeStoredModelRef"]> = (
+    ref,
+    catalog,
+  ) => {
+    let match: HarnessModelRef | undefined;
+    for (const models of this.#inspectedModels.values()) {
+      if (!isDeepStrictEqual(models.catalog, catalog)) continue;
+      const candidate = normalizeStoredOpenCodeModelRef(ref, models.index);
+      if (!candidate || (match && match.id !== candidate.id)) return undefined;
+      match = candidate;
+    }
+    return match;
+  };
   readonly #adapters = new Set<HarnessAdapter>();
   #closed = false;
   readonly usageStatistics: HarnessUsageStatisticsCapability;
@@ -101,10 +121,13 @@ export class OpenCodeAdapter implements HarnessAdapter {
   }
 
   async inspect(input: { cwd?: string; refresh?: boolean } = {}): Promise<HarnessInspection> {
-    let adapter: HarnessAdapter | undefined;
+    let adapter: V1Adapter | V2Adapter | undefined;
     try {
       adapter = await this.#select();
-      return await adapter.inspect(input);
+      const cwd = input.cwd ?? process.cwd();
+      return await adapter.inspect({ ...input, cwd }, (models) => {
+        this.#inspectedModels.set(cwd, models);
+      });
     } catch (error) {
       return {
         status: error instanceof OpenCodeExecutableError ? "notInstalled" : "error",
@@ -147,6 +170,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
 
   async close() {
     this.#closed = true;
+    this.#inspectedModels.clear();
     await Promise.all([...this.#adapters].map((adapter) => adapter.close()));
     this.#adapters.clear();
   }

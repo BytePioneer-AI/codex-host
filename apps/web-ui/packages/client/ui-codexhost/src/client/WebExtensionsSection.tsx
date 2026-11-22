@@ -1,13 +1,11 @@
-/** Web settings section for managing installed (`codexhost` & `dsh`) extensions and the Marketplace. */
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
+/**
+ * Unified Plugins workspace backed by the shared Host (`codexhost/extensions/*`).
+ *
+ * Displays all installed plugins and the unified Marketplace (`catalog.v2.json`), capability
+ * badges and filters, ZIP / GitHub / local-directory import, declarative settings, recovery
+ * actions, and the cross-platform standalone `page` container.
+ */
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Button,
   IconCheckOutlineRegular,
@@ -19,46 +17,50 @@ import {
   IconRefreshOutlineRegular,
   IconSearchOutlineRegular,
   IconSparkleRegular,
+  Modal,
   Switch,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import {
   resolveLocalizedExtensionText,
   type DesktopExtensionCategory,
-  type ExtensionCatalogV2Entry,
-  type WebExtensionList,
-  type WebNativeExtensionListItem,
-  type WebUiExtension,
-  type WebUiExtensionMeta,
+  type HostExtensionCatalogEntry,
+  type HostExtensionInstallation,
+  type HostExtensionListItem,
+  type HostExtensionsListResult,
 } from "@codexhost/shared-contracts";
 import type { HostSettingsSource } from "./HostSettingsSection.tsx";
-import { formatWebExtensionError } from "./web-extension-errors.ts";
+import { subscribeHostExtensionEvents } from "./host-extensions-events.ts";
 import {
-  isWebExtensionAuthDisabledError,
-  isWebExtensionStaleError,
-  webNativeExtensionsApi,
+  hostExtensionsApi,
+  isHostExtensionAuthDisabledError,
+  isHostExtensionRevisionConflictError,
+  isHostExtensionUnavailableError,
 } from "./web-native-extension-management-api.ts";
 import {
+  CAPABILITY_FILTER_ORDER,
   CATEGORY_ORDER,
+  capabilityFilterLabel,
+  catalogCapabilities,
   categoryLabelForLocale,
-  dshText,
-  extensionKey,
+  deriveHostCapabilityBadges,
+  derivePlatformBadge,
   formatManagementError,
-  hasNativeCatalogUpdate,
-  isCatalogEntryWebCompatible,
-  isNativeExtension,
-  isNativeToggleBlocked,
-  itemGroupOf,
+  hasHostCatalogUpdate,
+  hostDescription,
+  hostDisplayName,
+  isHostToggleBlocked,
+  itemCapabilities,
+  itemTargets,
+  matchesCapabilityFilter,
   matchesCatalogSearch,
   matchesInstalledSearch,
-  nativeDescription,
-  nativeDisplayName,
-  resolveNativeIconUrl,
+  needsAttention,
+  resolveHostIconUrl,
   resolveOptionalLocalizedText,
-  toExtensionLocale,
-  type ExtensionGroupId,
+  type ExtensionCapabilityFilter,
   type ExtensionLocale,
-  type WebExtensionItem,
+  type HostExtensionValidItem,
 } from "./web-extensions-helpers.ts";
 import { InstalledCheckIcon, WebExtensionCard } from "./WebExtensionCard.tsx";
 import { WebExtensionDetailModal, type DetailModalTarget } from "./WebExtensionDetailModal.tsx";
@@ -67,68 +69,48 @@ import {
   type InstallWebExtensionRequest,
 } from "./InstallWebExtensionDialog.tsx";
 import { CreateWebExtensionDialog } from "./CreateWebExtensionDialog.tsx";
+import { HostExtensionPageView } from "./HostExtensionPageView.tsx";
 import css from "./WebExtensionsSection.module.css";
 
 type ActiveTab = "installed" | "market";
-type ContentLocalePreference = "system" | ExtensionLocale;
+export type ContentLocalePreference = "system" | ExtensionLocale;
 
 type ListView =
   | { readonly kind: "loading" }
-  | { readonly kind: "ready"; readonly data: WebExtensionList }
+  | { readonly kind: "ready"; readonly data: HostExtensionsListResult }
   | { readonly kind: "disabled" }
+  | { readonly kind: "unavailable" }
   | { readonly kind: "failed"; readonly message: string };
 
 interface MarketState {
   readonly loading: boolean;
   readonly loaded: boolean;
-  readonly entries: readonly ExtensionCatalogV2Entry[];
-  readonly stale: boolean;
-  readonly error: string | null;
+  readonly entries: readonly HostExtensionCatalogEntry[];
+  readonly error: { readonly cause: unknown } | null;
 }
 
 type SelectedRef =
-  | { readonly kind: "installed"; readonly format: "codexhost" | "dsh"; readonly id: string }
+  | { readonly kind: "installed"; readonly id: string }
   | { readonly kind: "market"; readonly id: string };
 
 type Feedback = { readonly tone: "success" | "warning" | "danger"; readonly text: string };
 
 export interface WebExtensionsFace {
-  resolveText: (text: NonNullable<WebUiExtensionMeta["title"]>) => string;
   locale: HostSettingsSource<string>;
-  headerAccessory?: ReactNode;
+  colorScheme: HostSettingsSource<"light" | "dark">;
+  contentLocale: ExtensionLocale;
+  contentLocalePref: ContentLocalePreference;
+  selectContentLocale: (next: ContentLocalePreference) => void;
+  selectedPage: HostExtensionInstallation | null;
+  selectPage: (page: HostExtensionInstallation) => void;
 }
-
-const GROUP_ORDER: readonly ExtensionGroupId[] = ["attention", "enabled", "disabled"];
-const CONTENT_LOCALE_STORAGE_KEY = "codexhost.webExtensions.contentLocale";
 
 const INITIAL_MARKET: MarketState = {
   loading: false,
   loaded: false,
   entries: [],
-  stale: false,
   error: null,
 };
-
-function readContentLocalePreference(): ContentLocalePreference {
-  try {
-    const stored =
-      typeof localStorage !== "undefined" ? localStorage.getItem(CONTENT_LOCALE_STORAGE_KEY) : null;
-    if (stored === "system" || stored === "zh-CN" || stored === "en") return stored;
-  } catch {
-    // Ignore restricted storage environments.
-  }
-  return "system";
-}
-
-function writeContentLocalePreference(preference: ContentLocalePreference): void {
-  try {
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(CONTENT_LOCALE_STORAGE_KEY, preference);
-    }
-  } catch {
-    // Ignore restricted storage environments.
-  }
-}
 
 function UploadArrowIcon(): ReactNode {
   return (
@@ -150,31 +132,28 @@ function UploadArrowIcon(): ReactNode {
   );
 }
 
-/** Settings section for Web native (`codexhost`) and legacy (`dsh`) extensions + Marketplace. */
 export function WebExtensionsSection({
   t,
-  resolveText,
   locale,
-  headerAccessory,
+  colorScheme,
+  contentLocale,
+  contentLocalePref,
+  selectContentLocale,
+  selectedPage,
+  selectPage,
 }: PropsLocale<"codexhostImport"> & WebExtensionsFace): ReactNode {
-  const activeLocaleRaw = useSyncExternalStore(locale.subscribe, locale.get);
-  const systemLocale = toExtensionLocale(activeLocaleRaw);
-  const [contentLocalePref, setContentLocalePref] = useState<ContentLocalePreference>(() =>
-    readContentLocalePreference(),
-  );
-  const contentLocale: ExtensionLocale =
-    contentLocalePref === "system" ? systemLocale : contentLocalePref;
-
   const [listView, setListView] = useState<ListView>({ kind: "loading" });
   const [market, setMarket] = useState<MarketState>(INITIAL_MARKET);
   const [activeTab, setActiveTab] = useState<ActiveTab>("installed");
   const [searchQuery, setSearchQuery] = useState("");
+  const [capabilityFilter, setCapabilityFilter] = useState<ExtensionCapabilityFilter>("all");
   const [selectedCategory, setSelectedCategory] = useState<DesktopExtensionCategory | null>(null);
 
   const [localeMenuOpen, setLocaleMenuOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [installOpen, setInstallOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [recoverOpen, setRecoverOpen] = useState(false);
   const [selectedRef, setSelectedRef] = useState<SelectedRef | null>(null);
 
   const [activeAction, setActiveAction] = useState<string | null>(null);
@@ -220,80 +199,88 @@ export function WebExtensionsSection({
     };
   }, [localeMenuOpen, moreMenuOpen]);
 
-  const selectContentLocale = (next: ContentLocalePreference) => {
-    setContentLocalePref(next);
-    writeContentLocalePreference(next);
-    setLocaleMenuOpen(false);
-  };
-
   const refreshList = useCallback(
-    async (signal?: AbortSignal): Promise<void> => {
+    async (signal?: AbortSignal): Promise<HostExtensionsListResult | null> => {
       try {
-        const data = await webNativeExtensionsApi.list(signal);
-        if (signal?.aborted || !mountedRef.current) return;
+        const data = await hostExtensionsApi.list(signal);
+        if (signal?.aborted || !mountedRef.current) return null;
         setListView({ kind: "ready", data });
+        return data;
       } catch (cause: unknown) {
-        if (signal?.aborted || !mountedRef.current) return;
-        if (isWebExtensionAuthDisabledError(cause)) {
+        if (signal?.aborted || !mountedRef.current) return null;
+        if (isHostExtensionAuthDisabledError(cause)) {
           setListView({ kind: "disabled" });
+        } else if (isHostExtensionUnavailableError(cause)) {
+          setListView({ kind: "unavailable" });
         } else {
           setListView({ kind: "failed", message: formatManagementError(cause, t) });
         }
+        return null;
       }
     },
     [t],
   );
 
-  const refreshMarket = async (): Promise<void> => {
-    setMarket((prev) => ({ ...prev, loading: true }));
-    try {
-      const result = await webNativeExtensionsApi.marketRefresh();
-      if (!mountedRef.current) return;
-      const webEntries = result.extensions.filter((entry) => entry.targets.includes("web"));
-      setMarket({
-        loading: false,
-        loaded: true,
-        entries: webEntries,
-        stale: result.stale,
-        error: result.error ?? null,
-      });
-    } catch (cause: unknown) {
-      if (!mountedRef.current) return;
-      if (isWebExtensionAuthDisabledError(cause)) {
-        setListView({ kind: "disabled" });
-        setMarket((prev) => ({ ...prev, loading: false }));
-        return;
+  const refreshMarket = useCallback(
+    async (forceRefresh = false, signal?: AbortSignal): Promise<void> => {
+      setMarket((prev) => ({ ...prev, loading: true }));
+      try {
+        const result = await hostExtensionsApi.catalog({ forceRefresh }, signal);
+        if (signal?.aborted || !mountedRef.current) return;
+        setMarket({
+          loading: false,
+          loaded: true,
+          entries: result.extensions,
+          error: null,
+        });
+      } catch (cause: unknown) {
+        if (signal?.aborted || !mountedRef.current) return;
+        setMarket((prev) => ({ ...prev, loading: false, error: { cause } }));
       }
-      setMarket((prev) => ({
-        ...prev,
-        loading: false,
-        loaded: true,
-        stale: prev.entries.length > 0,
-        error: formatManagementError(cause, t),
-      }));
-    }
-  };
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshMarket(false, controller.signal);
+    return () => controller.abort();
+  }, [refreshMarket]);
 
   const openMarket = () => {
     setActiveTab("market");
     setSelectedCategory(null);
-    if (!market.loaded && !market.loading) void refreshMarket();
   };
 
+  // Initial load + live synchronization on `extensions-changed` client channel events.
   useEffect(() => {
     const controller = new AbortController();
     void refreshList(controller.signal);
-    return () => controller.abort();
+    const unsubscribe = subscribeHostExtensionEvents({
+      document,
+      onExtensionsChanged: () => {
+        if (!mountedRef.current) return;
+        void refreshList();
+      },
+      onReconnect: () => {
+        if (!mountedRef.current) return;
+        void refreshList();
+      },
+    });
+    return () => {
+      controller.abort();
+      unsubscribe();
+    };
   }, [refreshList]);
 
   const runMutation = useCallback(
     async (
       actionKey: string,
-      operation: () => Promise<WebExtensionList>,
+      operation: () => Promise<{ readonly conflict?: boolean } | void>,
       options?: {
         readonly successText?: string;
         readonly target?: "page" | "modal" | "install";
-        readonly onSuccess?: (list: WebExtensionList) => void;
+        readonly onSuccess?: () => void;
       },
     ): Promise<boolean> => {
       if (runningRef.current) return false;
@@ -305,26 +292,34 @@ export function WebExtensionsSection({
       else setFeedback(null);
 
       try {
-        const nextList = await operation();
+        const outcome = await operation();
         if (!mountedRef.current) return true;
-        setListView({ kind: "ready", data: nextList });
+        await refreshList();
+        if (!mountedRef.current) return true;
+        if (outcome && outcome.conflict) {
+          const msg: Feedback = { tone: "warning", text: t("extensions.error.stale") };
+          if (target === "install") setInstallError(msg.text);
+          else if (target === "modal") setModalFeedback(msg);
+          else setFeedback(msg);
+          return false;
+        }
         if (options?.successText) {
           const msg: Feedback = { tone: "success", text: options.successText };
           if (target === "modal") setModalFeedback(msg);
           else setFeedback(msg);
         }
-        options?.onSuccess?.(nextList);
+        options?.onSuccess?.();
         return true;
       } catch (cause: unknown) {
         if (!mountedRef.current) return false;
-        if (isWebExtensionAuthDisabledError(cause)) {
+        if (isHostExtensionAuthDisabledError(cause)) {
           setListView({ kind: "disabled" });
           setInstallOpen(false);
           setSelectedRef(null);
           return false;
         }
         const message = formatManagementError(cause, t);
-        if (isWebExtensionStaleError(cause)) {
+        if (isHostExtensionRevisionConflictError(cause)) {
           void refreshList();
         }
         if (target === "install") {
@@ -343,41 +338,38 @@ export function WebExtensionsSection({
     [refreshList, t],
   );
 
-  const extensions = listView.kind === "ready" ? listView.data.extensions : [];
-  const dshLoadedIds = listView.kind === "ready" ? listView.data.dshLoadedIds : [];
-  const safeMode = listView.kind === "ready" ? listView.data.safeMode : false;
-  const storeError = listView.kind === "ready" ? listView.data.storeError : undefined;
+  const listData = listView.kind === "ready" ? listView.data : null;
+  const extensions = useMemo(() => listData?.extensions ?? [], [listData]);
+  const diagnostics = useMemo(() => listData?.diagnostics ?? [], [listData]);
+  const configRevision = listData?.configuration.revision ?? 0;
 
-  const nativeById = useMemo(() => {
-    const map = new Map<string, WebNativeExtensionListItem>();
+  const installedById = useMemo(() => {
+    const map = new Map<string, HostExtensionListItem>();
     for (const item of extensions) {
-      if (isNativeExtension(item)) map.set(item.id, item);
-    }
-    return map;
-  }, [extensions]);
-
-  const dshById = useMemo(() => {
-    const map = new Map<string, WebUiExtension>();
-    for (const item of extensions) {
-      if (!isNativeExtension(item)) map.set(item.id, item);
+      map.set(item.id, item);
     }
     return map;
   }, [extensions]);
 
   const catalogById = useMemo(() => {
-    const map = new Map<string, ExtensionCatalogV2Entry>();
+    const map = new Map<string, HostExtensionCatalogEntry>();
     for (const entry of market.entries) {
       map.set(entry.id, entry);
     }
     return map;
   }, [market.entries]);
 
+  const hasInstalledUpdates = useMemo(
+    () => extensions.some((item) => hasHostCatalogUpdate(item, catalogById.get(item.id))),
+    [extensions, catalogById],
+  );
+
   const availableCategories = useMemo(() => {
     const present = new Set<DesktopExtensionCategory>();
     if (activeTab === "installed") {
       for (const item of extensions) {
-        if (isNativeExtension(item)) {
-          for (const cat of item.manifest?.categories ?? []) present.add(cat);
+        if (item.state === "valid") {
+          for (const cat of item.manifest.categories ?? []) present.add(cat);
         }
       }
     } else {
@@ -398,61 +390,69 @@ export function WebExtensionsSection({
 
   const filteredInstalled = useMemo(() => {
     return extensions.filter((item) => {
-      if (selectedCategory !== null) {
-        if (!isNativeExtension(item)) return false;
-        if (!item.manifest?.categories?.includes(selectedCategory)) return false;
+      if (!matchesCapabilityFilter(capabilityFilter, itemCapabilities(item), itemTargets(item))) {
+        return false;
       }
-      return matchesInstalledSearch(item, normalizedQuery, resolveText, t);
+      if (selectedCategory !== null) {
+        if (item.state !== "valid") return false;
+        if (!item.manifest.categories?.includes(selectedCategory)) return false;
+      }
+      return matchesInstalledSearch(item, normalizedQuery, t);
     });
-  }, [extensions, selectedCategory, normalizedQuery, resolveText, t]);
+  }, [extensions, capabilityFilter, selectedCategory, normalizedQuery, t]);
 
   const groupedInstalled = useMemo(() => {
-    const buckets: Record<ExtensionGroupId, WebExtensionItem[]> = {
-      attention: [],
-      enabled: [],
-      disabled: [],
-    };
+    const attention: HostExtensionListItem[] = [];
+    const normal: HostExtensionListItem[] = [];
     for (const item of filteredInstalled) {
-      buckets[itemGroupOf(item, dshLoadedIds, safeMode)].push(item);
+      (needsAttention(item) ? attention : normal).push(item);
     }
-    return GROUP_ORDER.filter((group) => buckets[group].length > 0).map((group) => ({
-      id: group,
-      items: buckets[group],
-    }));
-  }, [filteredInstalled, dshLoadedIds, safeMode]);
+    normal.sort((left, right) => {
+      const leftName = hostDisplayName(left, contentLocale, catalogById.get(left.id));
+      const rightName = hostDisplayName(right, contentLocale, catalogById.get(right.id));
+      return (
+        leftName.localeCompare(rightName, contentLocale) || left.id.localeCompare(right.id, "en")
+      );
+    });
+    return [
+      { id: "attention", items: attention },
+      { id: "normal", items: normal },
+    ].filter((group) => group.items.length > 0);
+  }, [filteredInstalled, contentLocale, catalogById]);
 
   const filteredMarket = useMemo(() => {
     return market.entries.filter((entry) => {
+      if (!matchesCapabilityFilter(capabilityFilter, catalogCapabilities(entry), entry.targets)) {
+        return false;
+      }
       if (selectedCategory !== null && !entry.categories?.includes(selectedCategory)) {
         return false;
       }
       return matchesCatalogSearch(entry, normalizedQuery, t);
     });
-  }, [market.entries, selectedCategory, normalizedQuery, t]);
+  }, [market.entries, capabilityFilter, selectedCategory, normalizedQuery, t]);
 
   const detailTarget: DetailModalTarget | null = useMemo(() => {
     if (selectedRef === null) return null;
-    if (selectedRef.kind === "installed" && selectedRef.format === "dsh") {
-      const item = dshById.get(selectedRef.id);
-      return item ? { kind: "dsh", item } : null;
-    }
-    const nativeItem = nativeById.get(selectedRef.id);
+    const item = installedById.get(selectedRef.id);
     const catalog = catalogById.get(selectedRef.id);
-    if (!nativeItem && !catalog) return null;
-    return { kind: "native", item: nativeItem, catalog };
-  }, [selectedRef, dshById, nativeById, catalogById]);
+    if (!item && !catalog) return null;
+    return { item, catalog };
+  }, [selectedRef, installedById, catalogById]);
 
   const busy = activeAction !== null;
 
-  const handleToggleNative = (
-    item: WebNativeExtensionListItem,
-    enabled: boolean,
-    fromModal: boolean,
-  ) => {
-    const name = nativeDisplayName(item, contentLocale, catalogById.get(item.id));
+  const handleToggle = (item: HostExtensionListItem, enabled: boolean, fromModal: boolean) => {
+    const name = hostDisplayName(item, contentLocale, catalogById.get(item.id));
     void runMutation(
-      `toggle:codexhost:${item.id}`,
-      () => webNativeExtensionsApi.setEnabled({ format: "codexhost", id: item.id, enabled }),
+      `toggle:${item.id}`,
+      async () => {
+        const res = enabled
+          ? await hostExtensionsApi.enable({ id: item.id, expectedRevision: configRevision })
+          : await hostExtensionsApi.disable({ id: item.id, expectedRevision: configRevision });
+        if (res.state === "revision-conflict") return { conflict: true };
+        return undefined;
+      },
       {
         target: fromModal ? "modal" : "page",
         successText: t(enabled ? "extensions.savedEnabled" : "extensions.savedDisabled", { name }),
@@ -460,34 +460,18 @@ export function WebExtensionsSection({
     );
   };
 
-  const handleToggleDsh = (item: WebUiExtension, enabled: boolean, fromModal: boolean) => {
-    const { title } = dshText(item, resolveText);
-    void runMutation(
-      `toggle:dsh:${item.id}`,
-      () => webNativeExtensionsApi.setEnabled({ format: "dsh", id: item.id, enabled }),
-      {
-        target: fromModal ? "modal" : "page",
-        successText: t(enabled ? "extensions.savedEnabled" : "extensions.savedDisabled", {
-          name: title,
-        }),
-      },
-    );
-  };
-
-  const handleInstallMarket = (entry: ExtensionCatalogV2Entry, fromModal: boolean) => {
+  const handleInstallMarket = (entry: HostExtensionCatalogEntry, fromModal: boolean) => {
     const name = resolveLocalizedExtensionText(entry.name, contentLocale);
     void runMutation(
       `install:${entry.id}`,
-      () =>
-        webNativeExtensionsApi.install({
-          format: "codexhost",
+      async () => {
+        await hostExtensionsApi.install({
           source: {
-            type: "market",
+            type: "catalog",
             id: entry.id,
-            version: entry.version,
-            sha256: entry.sha256,
           },
-        }),
+        });
+      },
       {
         target: fromModal ? "modal" : "page",
         successText: t("extensions.installedSuccess", { name }),
@@ -495,28 +479,25 @@ export function WebExtensionsSection({
     );
   };
 
-  const handleUpdateNative = (
-    item: WebNativeExtensionListItem,
-    entry: ExtensionCatalogV2Entry,
+  const handleUpdate = (
+    item: HostExtensionValidItem,
+    entry: HostExtensionCatalogEntry,
     fromModal: boolean,
   ) => {
-    const expectedDigest = item.digest;
-    if (!expectedDigest) return;
-    const name = nativeDisplayName(item, contentLocale, entry);
+    const name = hostDisplayName(item, contentLocale, entry);
     void runMutation(
       `update:${item.id}`,
-      () =>
-        webNativeExtensionsApi.update({
-          format: "codexhost",
+      async () => {
+        await hostExtensionsApi.update({
           id: item.id,
-          expectedDigest,
+          expectedDigest: item.digest,
+          expectedActivationId: item.activationId,
           source: {
-            type: "market",
+            type: "catalog",
             id: entry.id,
-            version: entry.version,
-            sha256: entry.sha256,
           },
-        }),
+        });
+      },
       {
         target: fromModal ? "modal" : "page",
         successText: t("extensions.updatedSuccess", {
@@ -527,12 +508,14 @@ export function WebExtensionsSection({
     );
   };
 
-  const handleUninstallNative = (item: WebNativeExtensionListItem) => {
-    const name = nativeDisplayName(item, contentLocale, catalogById.get(item.id));
+  const handleUninstall = (item: HostExtensionListItem) => {
+    const name = hostDisplayName(item, contentLocale, catalogById.get(item.id));
     const hasCatalog = catalogById.has(item.id);
     void runMutation(
-      `uninstall:codexhost:${item.id}`,
-      () => webNativeExtensionsApi.uninstall({ format: "codexhost", id: item.id }),
+      `uninstall:${item.id}`,
+      async () => {
+        await hostExtensionsApi.uninstall({ id: item.id });
+      },
       {
         target: "page",
         successText: t("extensions.uninstalledSuccess", { name }),
@@ -544,27 +527,29 @@ export function WebExtensionsSection({
     );
   };
 
-  const handleUninstallDsh = (item: WebUiExtension) => {
-    const { title } = dshText(item, resolveText);
+  const handleRecover = () => {
     void runMutation(
-      `uninstall:dsh:${item.id}`,
-      () => webNativeExtensionsApi.uninstall({ format: "dsh", id: item.id }),
+      "recover",
+      async () => {
+        const res = await hostExtensionsApi.recover({ expectedRevision: configRevision });
+        if (res.state === "revision-conflict") return { conflict: true };
+        return undefined;
+      },
       {
         target: "page",
-        successText: t("extensions.uninstalledSuccess", { name: title }),
-        onSuccess: () => {
-          setSelectedRef(null);
-          setModalFeedback(null);
-        },
+        successText: t("extensions.recover.success"),
+        onSuccess: () => setRecoverOpen(false),
       },
     );
   };
 
   const handleManualInstall = (request: InstallWebExtensionRequest): Promise<boolean> => {
-    if (request.format === "codexhost" && request.kind === "zip") {
+    if (request.kind === "zip") {
       return runMutation(
         "install:manual",
-        () => webNativeExtensionsApi.installNativeZip(request.file),
+        async () => {
+          await hostExtensionsApi.uploadZip(request.file);
+        },
         {
           target: "install",
           successText: t("extensions.installedSuccess", { name: request.file.name }),
@@ -575,22 +560,15 @@ export function WebExtensionsSection({
         },
       );
     }
-    if (request.format === "codexhost" && request.kind === "github") {
+    if (request.kind === "github") {
       return runMutation(
         "install:manual",
-        () =>
-          webNativeExtensionsApi.install({
-            format: "codexhost",
-            source: {
-              type: "github",
-              repository: request.repository,
-              ...(request.tag !== undefined ? { tag: request.tag } : {}),
-              asset: request.asset,
-            },
-          }),
+        async () => {
+          await hostExtensionsApi.install({ source: request.source });
+        },
         {
           target: "install",
-          successText: t("extensions.installedSuccess", { name: request.repository }),
+          successText: t("extensions.installedSuccess", { name: request.source.repository }),
           onSuccess: () => {
             setInstallOpen(false);
             setActiveTab("installed");
@@ -600,14 +578,14 @@ export function WebExtensionsSection({
     }
     return runMutation(
       "install:manual",
-      () =>
-        webNativeExtensionsApi.install({
-          format: "dsh",
-          source: { spec: request.spec, registry: request.registry },
-        }),
+      async () => {
+        await hostExtensionsApi.install({
+          source: { type: "localDir", localDir: request.localDir },
+        });
+      },
       {
         target: "install",
-        successText: t("extensions.installedSuccess", { name: request.spec }),
+        successText: t("extensions.installedSuccess", { name: request.localDir }),
         onSuccess: () => {
           setInstallOpen(false);
           setActiveTab("installed");
@@ -620,18 +598,33 @@ export function WebExtensionsSection({
     if (busy) return;
     setFeedback(null);
     void refreshList();
-    void refreshMarket();
+    if (!market.loading) void refreshMarket(true);
   };
+
+  if (selectedPage !== null) {
+    return (
+      <div className={css.standalone} data-web-extensions data-page-open={selectedPage.id}>
+        <HostExtensionPageView
+          key={`${selectedPage.id}:${selectedPage.activationId}:${selectedPage.digest}`}
+          item={selectedPage}
+          catalogIcon={catalogById.get(selectedPage.id)?.icon}
+          locale={locale}
+          colorScheme={colorScheme}
+          contentLocale={contentLocale}
+          t={t}
+        />
+      </div>
+    );
+  }
 
   const renderHeader = (options: { readonly canMutate: boolean }) => (
     <header className={css.header}>
       <div className={css.headerLeft}>
-        <h2 className={css.title}>{t("settings.extensions")}</h2>
-        {headerAccessory}
+        <h2 className={css.title}>{t("extensions.center")}</h2>
       </div>
 
       <div className={css.toolbar}>
-        {/* Content language switcher (matching Desktop EN / 中文 dropdown) */}
+        {/* Content language switcher */}
         <div ref={localeWrapRef} className={css.menuAnchor}>
           <button
             type="button"
@@ -673,7 +666,10 @@ export function WebExtensionsSection({
                     role="menuitemradio"
                     aria-checked={selected}
                     className={`${css.menuItem} ${css.menuItemRadio}`}
-                    onClick={() => selectContentLocale(value)}
+                    onClick={() => {
+                      selectContentLocale(value);
+                      setLocaleMenuOpen(false);
+                    }}
                   >
                     <span>{label}</span>
                     {selected && (
@@ -688,7 +684,7 @@ export function WebExtensionsSection({
           )}
         </div>
 
-        {/* Create plugin button (light outline matching Desktop) */}
+        {/* Create plugin button */}
         <button
           type="button"
           className={css.toolbarButton}
@@ -704,7 +700,7 @@ export function WebExtensionsSection({
           <span>{t("extensions.create.button")}</span>
         </button>
 
-        {/* Import plugin button (light outline matching Desktop) */}
+        {/* Import plugin button */}
         <button
           type="button"
           className={css.toolbarButton}
@@ -734,7 +730,7 @@ export function WebExtensionsSection({
           <IconRefreshOutlineRegular size={15} />
         </button>
 
-        {/* More ("...") menu containing recovery actions */}
+        {/* More ("...") menu: disable all plugins (recover) + legacy DSH recovery link */}
         <div ref={moreWrapRef} className={`${css.menuAnchor} ${css.moreMenuAnchor}`}>
           <button
             type="button"
@@ -755,13 +751,27 @@ export function WebExtensionsSection({
 
           {moreMenuOpen && (
             <div className={css.menu} role="menu" aria-label={t("extensions.moreActions")}>
+              {options.canMutate && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={`${css.menuItem} ${css.menuItemDanger}`}
+                  onClick={() => {
+                    setMoreMenuOpen(false);
+                    setRecoverOpen(true);
+                  }}
+                >
+                  {t("extensions.recover.action")}
+                </button>
+              )}
+              {options.canMutate && <div className={css.menuDivider} role="separator" />}
               <a
                 className={css.menuItem}
                 role="menuitem"
                 href="/extensions"
                 onClick={() => setMoreMenuOpen(false)}
               >
-                {t("extensions.recovery")}
+                {t("extensions.legacyDshRecovery")}
               </a>
               <a
                 className={css.menuItem}
@@ -800,6 +810,22 @@ export function WebExtensionsSection({
     );
   }
 
+  if (listView.kind === "unavailable") {
+    return (
+      <div className={css.page} data-web-extensions>
+        {renderHeader({ canMutate: false })}
+        <div className={css.emptyCard} data-web-extensions-notice="unavailable">
+          <div className={css.emptyCopy}>
+            <p className={css.emptyDesc}>{t("extensions.unavailable")}</p>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => void refreshList()}>
+            {t("extensions.retry")}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   if (listView.kind === "failed") {
     return (
       <div className={css.page} data-web-extensions>
@@ -814,22 +840,11 @@ export function WebExtensionsSection({
     );
   }
 
-  const groupLabel = (id: ExtensionGroupId): string => {
-    switch (id) {
-      case "attention":
-        return t("extensions.group.attention");
-      case "enabled":
-        return t("extensions.group.enabled");
-      case "disabled":
-        return t("extensions.group.disabled");
-    }
-  };
-
   return (
     <div className={css.page} data-web-extensions>
-      {renderHeader({ canMutate: storeError === undefined })}
+      {renderHeader({ canMutate: true })}
 
-      {/* Tabs + Search bar (1:1 Desktop layout) */}
+      {/* Tabs + Search bar */}
       <div className={css.controlsBar}>
         <div className={css.segmented} role="tablist" aria-label={t("extensions.tabListLabel")}>
           <button
@@ -837,12 +852,16 @@ export function WebExtensionsSection({
             role="tab"
             className={css.segmentedTab}
             aria-selected={activeTab === "installed"}
+            aria-description={
+              hasInstalledUpdates ? t("extensions.installedUpdatesAvailable") : undefined
+            }
             onClick={() => {
               setActiveTab("installed");
               setSelectedCategory(null);
             }}
           >
             {t("extensions.tabInstalled", { count: String(extensions.length) })}
+            {hasInstalledUpdates && <span className={css.tabUpdateDot} aria-hidden="true" />}
           </button>
           <button
             type="button"
@@ -851,7 +870,9 @@ export function WebExtensionsSection({
             aria-selected={activeTab === "market"}
             onClick={openMarket}
           >
-            {t("extensions.tabMarket", { count: String(market.entries.length) })}
+            {market.loaded
+              ? t("extensions.tabMarketCount", { count: String(market.entries.length) })
+              : t("extensions.tabMarket")}
           </button>
         </div>
 
@@ -881,48 +902,65 @@ export function WebExtensionsSection({
         </div>
       </div>
 
-      {/* Category filter pills */}
-      {availableCategories.length > 0 && (
+      {/* Capability filter + Category filter pills */}
+      <div className={css.filterRows}>
         <div
-          className={css.categoryBar}
+          className={css.capabilityBar}
           role="group"
-          aria-label={t("extensions.categoryFilterLabel")}
+          aria-label={t("extensions.filter.label")}
+          data-capability-filters
         >
-          <button
-            type="button"
-            className={css.filterPill}
-            aria-pressed={selectedCategory === null}
-            onClick={() => setSelectedCategory(null)}
-          >
-            {t("extensions.categoryAll")}
-          </button>
-          {availableCategories.map((cat) => (
+          {CAPABILITY_FILTER_ORDER.map((filter) => (
             <button
-              key={cat}
+              key={filter}
               type="button"
               className={css.filterPill}
-              aria-pressed={selectedCategory === cat}
-              onClick={() => setSelectedCategory(selectedCategory === cat ? null : cat)}
+              aria-pressed={capabilityFilter === filter}
+              data-capability-filter={filter}
+              onClick={() => setCapabilityFilter(filter)}
             >
-              {categoryLabelForLocale(cat, contentLocale)}
+              {capabilityFilterLabel(filter, t)}
             </button>
           ))}
         </div>
-      )}
 
-      {/* Global status banners */}
-      {safeMode && (
+        {availableCategories.length > 0 && (
+          <div
+            className={css.categoryBar}
+            role="group"
+            aria-label={t("extensions.categoryFilterLabel")}
+          >
+            <button
+              type="button"
+              className={css.filterPill}
+              aria-pressed={selectedCategory === null}
+              onClick={() => setSelectedCategory(null)}
+            >
+              {t("extensions.categoryAll")}
+            </button>
+            {availableCategories.map((cat) => (
+              <button
+                key={cat}
+                type="button"
+                className={css.filterPill}
+                aria-pressed={selectedCategory === cat}
+                onClick={() => setSelectedCategory(selectedCategory === cat ? null : cat)}
+              >
+                {categoryLabelForLocale(cat, contentLocale)}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Host diagnostics banner */}
+      {diagnostics.length > 0 && (
         <div className={css.banner} data-tone="warning" role="status">
-          <span>{t("extensions.safeMode")}</span>
+          <span>{diagnostics.join(" · ")}</span>
         </div>
       )}
 
-      {storeError !== undefined && (
-        <div className={css.banner} data-tone="danger" role="alert">
-          <span>{t("extensions.storeError", { message: storeError })}</span>
-        </div>
-      )}
-
+      {/* Action feedback banner */}
       {feedback !== null && (
         <div
           className={css.banner}
@@ -956,7 +994,6 @@ export function WebExtensionsSection({
               <Button
                 variant="outline"
                 size="sm"
-                disabled={storeError !== undefined}
                 onClick={() => {
                   setInstallError(null);
                   setInstallOpen(true);
@@ -977,6 +1014,7 @@ export function WebExtensionsSection({
               size="sm"
               onClick={() => {
                 setSearchQuery("");
+                setCapabilityFilter("all");
                 setSelectedCategory(null);
               }}
             >
@@ -985,149 +1023,147 @@ export function WebExtensionsSection({
           </div>
         ) : (
           <div className={css.groups}>
-            {groupedInstalled.map((group) => (
-              <section key={group.id} className={css.group} data-extension-group={group.id}>
-                <div className={css.groupHead}>
-                  <h3 className={css.groupTitle}>{groupLabel(group.id)}</h3>
-                  <span className={css.groupCount}>{group.items.length}</span>
-                </div>
-                <div className={css.grid}>
+            {groupedInstalled.map((group) => {
+              const grid = (
+                <div key={group.id} className={css.grid}>
                   {group.items.map((item) => {
-                    const key = extensionKey(item.format, item.id);
-                    if (isNativeExtension(item)) {
-                      const catalogEntry = catalogById.get(item.id);
-                      const displayName = nativeDisplayName(item, contentLocale, catalogEntry);
-                      const description = nativeDescription(item, contentLocale, catalogEntry);
-                      const updateAvailable = hasNativeCatalogUpdate(item, catalogEntry);
-                      const blocked = isNativeToggleBlocked(item);
+                    const catalogEntry = catalogById.get(item.id);
+                    const validItem = item.state === "valid" ? item : undefined;
+                    const displayName = hostDisplayName(item, contentLocale, catalogEntry);
+                    const description = hostDescription(item, contentLocale, catalogEntry);
+                    const isUpdating = activeAction === `update:${item.id}`;
+                    const blocked = isHostToggleBlocked(item);
+                    const capabilityBadges = deriveHostCapabilityBadges(itemCapabilities(item), t);
 
-                      const statusDot =
-                        item.error !== undefined || item.manifest === undefined
-                          ? { tone: "danger" as const, label: t("extensions.state.error") }
-                          : item.backendState === "failed"
-                            ? { tone: "danger" as const, label: t("extensions.backend.failed") }
+                    const statusDot =
+                      item.state !== "valid"
+                        ? { tone: "danger" as const, label: t("extensions.state.error") }
+                        : item.backendState === "failed"
+                          ? { tone: "danger" as const, label: t("extensions.backend.failed") }
+                          : item.desktopConflictWith
+                            ? { tone: "warning" as const, label: t("extensions.state.conflict") }
                             : undefined;
 
-                      const attention = item.error
-                        ? { tone: "danger" as const, text: item.error }
-                        : item.manifest === undefined
-                          ? { tone: "danger" as const, text: t("extensions.manifestMissing") }
-                          : item.backendState === "failed"
-                            ? { tone: "danger" as const, text: t("extensions.backendFailedNotice") }
-                            : undefined;
-
-                      return (
-                        <WebExtensionCard
-                          key={key}
-                          cardKey={key}
-                          extensionId={item.id}
-                          format="codexhost"
-                          cardKind="installed"
-                          displayName={displayName}
-                          description={description}
-                          iconUrl={resolveNativeIconUrl(item, catalogEntry)}
-                          author={item.manifest?.author ?? catalogEntry?.author}
-                          version={item.version ?? item.manifest?.version}
-                          repository={item.manifest?.repository ?? catalogEntry?.repository}
-                          stars={catalogEntry?.stars}
-                          downloads={catalogEntry?.downloads}
-                          trustTier={catalogEntry?.trustTier}
-                          categories={item.manifest?.categories ?? catalogEntry?.categories}
-                          statusDot={statusDot}
-                          updateHint={
-                            updateAvailable && catalogEntry
-                              ? {
-                                  label: t("extensions.updateAvailable"),
-                                  title: t("extensions.updateToVersion", {
-                                    version: catalogEntry.version.replace(/^v/u, ""),
-                                  }),
-                                }
-                              : undefined
-                          }
-                          attention={attention}
-                          busy={activeAction === `toggle:codexhost:${item.id}`}
-                          contentLocale={contentLocale}
-                          t={t}
-                          actionControl={
-                            <Switch
-                              label={displayName}
-                              checked={item.enabled}
-                              disabled={busy || blocked || storeError !== undefined}
-                              title={blocked ? t("extensions.toggleBlockedInvalid") : undefined}
-                              onChange={(next) => handleToggleNative(item, next, false)}
-                            />
-                          }
-                          onOpenDetails={() => {
-                            setModalFeedback(null);
-                            setSelectedRef({ kind: "installed", format: "codexhost", id: item.id });
-                          }}
-                        />
-                      );
-                    }
-
-                    const enabled = item.enabledTargets.includes("web");
-                    const loaded = dshLoadedIds.includes(item.id);
-                    const { title, description } = dshText(item, resolveText);
-                    const statusDot = item.loadError
-                      ? { tone: "danger" as const, label: t("extensions.state.error") }
-                      : enabled !== loaded && !safeMode
-                        ? { tone: "warning" as const, label: t("extensions.state.pending") }
-                        : undefined;
-                    const attention = item.loadError
-                      ? {
-                          tone: "danger" as const,
-                          text: formatWebExtensionError(item.loadError, t),
-                        }
-                      : item.meta?.error
+                    const attention =
+                      item.state !== "valid"
                         ? {
-                            tone: "warning" as const,
-                            text: t("extensions.metadataError", { message: item.meta.error }),
+                            tone:
+                              item.state === "incompatible"
+                                ? ("warning" as const)
+                                : ("danger" as const),
+                            text: item.error || t("extensions.manifestMissing"),
                           }
-                        : enabled !== loaded && !safeMode
-                          ? { tone: "warning" as const, text: t("extensions.pendingRestart") }
-                          : undefined;
+                        : item.backendState === "failed"
+                          ? {
+                              tone: "danger" as const,
+                              text: item.backendError || t("extensions.backendFailedNotice"),
+                            }
+                          : item.desktopConflictWith
+                            ? {
+                                tone: "warning" as const,
+                                text: t("extensions.desktopConflictNotice", {
+                                  other: item.desktopConflictWith,
+                                }),
+                              }
+                            : undefined;
+
+                    const canOpenPage = Boolean(
+                      validItem && validItem.enabled && validItem.manifest.page,
+                    );
 
                     return (
                       <WebExtensionCard
-                        key={key}
-                        cardKey={key}
+                        key={item.id}
+                        cardKey={`host:${item.id}`}
                         extensionId={item.id}
-                        format="dsh"
                         cardKind="installed"
-                        displayName={title}
+                        displayName={displayName}
                         description={description}
-                        iconUrl={item.meta?.icon}
-                        version={item.version}
-                        repository={item.projectUrl}
+                        iconUrl={resolveHostIconUrl(item, catalogEntry)}
+                        author={validItem?.manifest.author ?? catalogEntry?.author}
+                        version={validItem?.manifest.version}
+                        repository={validItem?.manifest.repository ?? catalogEntry?.repository}
+                        stars={catalogEntry?.stars}
+                        downloads={catalogEntry?.downloads}
+                        trustTier={catalogEntry?.trustTier}
+                        categories={validItem?.manifest.categories ?? catalogEntry?.categories}
+                        platformBadge={derivePlatformBadge(itemTargets(item), t)}
+                        capabilityBadges={capabilityBadges}
                         statusDot={statusDot}
+                        update={
+                          validItem && catalogEntry && hasHostCatalogUpdate(validItem, catalogEntry)
+                            ? {
+                                label: t("extensions.updateVersionCue", {
+                                  version: catalogEntry.version.replace(/^v/u, ""),
+                                }),
+                                action: (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={busy}
+                                    aria-busy={isUpdating}
+                                    onClick={() => handleUpdate(validItem, catalogEntry, false)}
+                                  >
+                                    {t(isUpdating ? "extensions.updating" : "extensions.update")}
+                                  </Button>
+                                ),
+                              }
+                            : undefined
+                        }
                         attention={attention}
-                        busy={activeAction === `toggle:dsh:${item.id}`}
+                        busy={isUpdating || activeAction === `toggle:${item.id}`}
                         contentLocale={contentLocale}
                         t={t}
+                        secondaryAction={
+                          canOpenPage && validItem ? (
+                            <button
+                              type="button"
+                              className={css.openPageButton}
+                              data-action="open-page"
+                              data-extension-id={validItem.id}
+                              disabled={busy}
+                              onClick={() => selectPage(validItem)}
+                            >
+                              {t("extensions.page.open")}
+                            </button>
+                          ) : undefined
+                        }
                         actionControl={
                           <Switch
-                            label={title}
-                            checked={enabled}
-                            disabled={busy || storeError !== undefined}
-                            onChange={(next) => handleToggleDsh(item, next, false)}
+                            label={displayName}
+                            checked={item.enabled}
+                            disabled={busy || blocked}
+                            title={blocked ? t("extensions.toggleBlockedInvalid") : undefined}
+                            onChange={(next) => handleToggle(item, next, false)}
                           />
                         }
                         onOpenDetails={() => {
                           setModalFeedback(null);
-                          setSelectedRef({ kind: "installed", format: "dsh", id: item.id });
+                          setSelectedRef({ kind: "installed", id: item.id });
                         }}
                       />
                     );
                   })}
                 </div>
-              </section>
-            ))}
+              );
+              return group.id === "attention" ? (
+                <section key={group.id} className={css.group} data-extension-group="attention">
+                  <div className={css.groupHead}>
+                    <h3 className={css.groupTitle}>{t("extensions.group.attention")}</h3>
+                    <span className={css.groupCount}>{group.items.length}</span>
+                  </div>
+                  {grid}
+                </section>
+              ) : (
+                grid
+              );
+            })}
           </div>
         )
       ) : (
-        /* Market Tab */
+        /* Unified Marketplace Tab (catalog.v2.json — all targets) */
         <div className={css.marketBody}>
-          {market.stale && market.entries.length > 0 && (
+          {market.error !== null && market.entries.length > 0 && (
             <div className={css.marketNotice} role="status" data-market-stale="true">
               <div className={css.marketNoticeCopy}>
                 <IconInfoOutlineRegular size={14} className={css.marketNoticeIcon} />
@@ -1137,20 +1173,22 @@ export function WebExtensionsSection({
                 variant="outline"
                 size="sm"
                 disabled={market.loading}
-                onClick={() => void refreshMarket()}
+                onClick={() => void refreshMarket(true)}
               >
                 {t("extensions.retry")}
               </Button>
             </div>
           )}
 
-          {market.loading && !market.loaded ? (
+          {!market.loaded && (market.loading || market.error === null) ? (
             <p className={css.hint}>{t("extensions.marketLoading")}</p>
           ) : market.error !== null && market.entries.length === 0 ? (
             <div className={css.emptyCard} role="alert">
               <div className={css.emptyCopy}>
                 <h3 className={css.emptyTitle}>
-                  {t("extensions.marketLoadFailed", { message: market.error })}
+                  {t("extensions.marketLoadFailed", {
+                    message: formatManagementError(market.error.cause, t),
+                  })}
                 </h3>
                 <p className={css.emptyDesc}>{t("extensions.marketEmptyDescription")}</p>
               </div>
@@ -1158,7 +1196,7 @@ export function WebExtensionsSection({
                 variant="outline"
                 size="sm"
                 disabled={market.loading}
-                onClick={() => void refreshMarket()}
+                onClick={() => void refreshMarket(true)}
               >
                 {t("extensions.retry")}
               </Button>
@@ -1173,7 +1211,7 @@ export function WebExtensionsSection({
                 variant="outline"
                 size="sm"
                 disabled={market.loading}
-                onClick={() => void refreshMarket()}
+                onClick={() => void refreshMarket(true)}
               >
                 {t("extensions.refresh")}
               </Button>
@@ -1189,6 +1227,7 @@ export function WebExtensionsSection({
                 size="sm"
                 onClick={() => {
                   setSearchQuery("");
+                  setCapabilityFilter("all");
                   setSelectedCategory(null);
                 }}
               >
@@ -1200,38 +1239,30 @@ export function WebExtensionsSection({
               {filteredMarket.map((entry) => {
                 const displayName = resolveLocalizedExtensionText(entry.name, contentLocale);
                 const description = resolveOptionalLocalizedText(entry.description, contentLocale);
-                const installed = nativeById.get(entry.id);
-                const compatible = isCatalogEntryWebCompatible(entry);
-                const updateAvailable = hasNativeCatalogUpdate(installed, entry);
+                const installed = installedById.get(entry.id);
+                const validInstalled = installed?.state === "valid" ? installed : undefined;
+                const updateAvailable = hasHostCatalogUpdate(installed, entry);
                 const isInstalling = activeAction === `install:${entry.id}`;
                 const isUpdating = activeAction === `update:${entry.id}`;
+                const capabilityBadges = deriveHostCapabilityBadges(catalogCapabilities(entry), t);
 
-                const actionButton = !compatible ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled
-                    title={t("extensions.marketIncompatible")}
-                  >
-                    {t("extensions.incompatibleBadge")}
-                  </Button>
-                ) : !installed ? (
+                const actionButton = !installed ? (
                   <Button
                     variant="primary"
                     size="sm"
-                    disabled={busy || storeError !== undefined}
+                    disabled={busy}
                     aria-busy={isInstalling}
                     onClick={() => handleInstallMarket(entry, false)}
                   >
                     {t(isInstalling ? "extensions.installing" : "extensions.install")}
                   </Button>
-                ) : updateAvailable && installed.digest ? (
+                ) : updateAvailable && validInstalled ? (
                   <Button
                     variant="primary"
                     size="sm"
-                    disabled={busy || storeError !== undefined}
+                    disabled={busy}
                     aria-busy={isUpdating}
-                    onClick={() => handleUpdateNative(installed, entry, false)}
+                    onClick={() => handleUpdate(validInstalled, entry, false)}
                   >
                     {t(isUpdating ? "extensions.updating" : "extensions.update")}
                   </Button>
@@ -1252,10 +1283,9 @@ export function WebExtensionsSection({
 
                 return (
                   <WebExtensionCard
-                    key={extensionKey("codexhost", entry.id)}
+                    key={entry.id}
                     cardKey={`market:${entry.id}`}
                     extensionId={entry.id}
-                    format="codexhost"
                     cardKind="market"
                     displayName={displayName}
                     description={description}
@@ -1267,11 +1297,8 @@ export function WebExtensionsSection({
                     downloads={entry.downloads}
                     trustTier={entry.trustTier}
                     categories={entry.categories}
-                    attention={
-                      !compatible
-                        ? { tone: "warning", text: t("extensions.marketIncompatible") }
-                        : undefined
-                    }
+                    platformBadge={derivePlatformBadge(entry.targets, t)}
+                    capabilityBadges={capabilityBadges}
                     busy={isInstalling || isUpdating}
                     contentLocale={contentLocale}
                     t={t}
@@ -1306,26 +1333,52 @@ export function WebExtensionsSection({
       <WebExtensionDetailModal
         open={detailTarget !== null}
         target={detailTarget}
-        dshLoadedIds={dshLoadedIds}
-        safeMode={safeMode}
-        storeError={storeError}
         busy={busy}
         activeAction={activeAction}
         feedback={modalFeedback}
         locale={contentLocale}
-        resolveText={resolveText}
         t={t}
         onClose={() => {
           setSelectedRef(null);
           setModalFeedback(null);
         }}
-        onToggleNative={(item, enabled) => handleToggleNative(item, enabled, true)}
-        onToggleDsh={(item, enabled) => handleToggleDsh(item, enabled, true)}
+        onToggle={(item, enabled) => handleToggle(item, enabled, true)}
         onInstallMarket={(entry) => handleInstallMarket(entry, true)}
-        onUpdateNative={(item, entry) => handleUpdateNative(item, entry, true)}
-        onUninstallNative={handleUninstallNative}
-        onUninstallDsh={handleUninstallDsh}
+        onUpdate={(item, entry) => handleUpdate(item, entry, true)}
+        onUninstall={handleUninstall}
+        onOpenPage={selectPage}
       />
+
+      <Modal
+        open={recoverOpen}
+        onClose={() => {
+          if (!busy) setRecoverOpen(false);
+        }}
+        title={t("extensions.recover.title")}
+        closeLabel={t("extensions.close")}
+        className={css.recoverDialog}
+        footer={
+          <div className={css.recoverFooter}>
+            <Button variant="outline" disabled={busy} onClick={() => setRecoverOpen(false)}>
+              {t("extensions.cancel")}
+            </Button>
+            <Button
+              variant="primary"
+              disabled={busy}
+              aria-busy={activeAction === "recover"}
+              onClick={handleRecover}
+            >
+              {t(
+                activeAction === "recover"
+                  ? "extensions.recover.running"
+                  : "extensions.recover.confirm",
+              )}
+            </Button>
+          </div>
+        }
+      >
+        <p className={css.recoverBody}>{t("extensions.recover.description")}</p>
+      </Modal>
     </div>
   );
 }

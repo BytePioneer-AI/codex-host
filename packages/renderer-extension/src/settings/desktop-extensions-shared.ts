@@ -1,12 +1,18 @@
 import {
   compareExtensionVersions,
+  hostExtensionCapabilities,
+  hostExtensionGitHubSourceSchema,
+  hostExtensionTargets,
   resolveLocalizedExtensionText,
-  type DesktopExtensionCatalogEntry,
   type DesktopExtensionCategory,
   type DesktopExtensionSlot,
   type DesktopExtensionStatus,
   type DesktopExtensionTrustTier,
-  type DesktopExtensionsListResult,
+  type HostExtensionCapabilities,
+  type HostExtensionCatalogEntry,
+  type HostExtensionInstallSource,
+  type HostExtensionListItem,
+  type HostExtensionTarget,
 } from "@codexhost/shared-contracts";
 import {
   desktopExtensionsChinese,
@@ -16,12 +22,39 @@ import {
 import { createRendererSettingsIcon, type RendererSettingsIconName } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
-export type DesktopExtensionItem = DesktopExtensionsListResult["extensions"][number];
+export type HostExtensionValidItem = Extract<HostExtensionListItem, { state: "valid" }>;
+export type DesktopExtensionItem = HostExtensionListItem;
 export type DesktopExtensionBannerTone = "info" | "success" | "warning" | "danger";
-export type DesktopExtensionGroupId = "attention" | "enabled" | "disabled";
 export type DesktopExtensionMutationAction = "toggle" | "install" | "update" | "uninstall";
 export type DesktopExtensionContentLocale = RendererSettingsMessages["locale"];
 export type DesktopExtensionContentLocalePreference = "system" | DesktopExtensionContentLocale;
+
+export const CONTENT_LOCALE_STORAGE_KEY = "codexhost.desktopExtensions.contentLocale";
+
+export function readContentLocalePreference(
+  ownerWindow: Window | null,
+): DesktopExtensionContentLocalePreference {
+  try {
+    const storage =
+      ownerWindow?.localStorage ?? (typeof localStorage !== "undefined" ? localStorage : undefined);
+    const stored = storage?.getItem(CONTENT_LOCALE_STORAGE_KEY);
+    if (stored === "system" || stored === "zh-CN" || stored === "en") return stored;
+  } catch {
+    // Ignore restricted storage environments.
+  }
+  return "system";
+}
+export type ExtensionCapabilityFilter = "all" | "page" | "widget" | "web" | "desktop" | "backend";
+
+export interface ExtensionPlatformBadge {
+  readonly kind: "both" | HostExtensionTarget;
+  readonly label: string;
+}
+
+export interface ExtensionCapabilityBadge {
+  readonly kind: "page" | "widget" | "backend";
+  readonly label: string;
+}
 
 export function contentLocaleMessages(
   locale: DesktopExtensionContentLocale,
@@ -47,6 +80,15 @@ export const CATEGORY_ORDER: readonly DesktopExtensionCategory[] = [
   "analytics",
   "integrations",
   "tools",
+];
+
+export const CAPABILITY_FILTER_ORDER: readonly ExtensionCapabilityFilter[] = [
+  "all",
+  "page",
+  "widget",
+  "web",
+  "desktop",
+  "backend",
 ];
 
 const SAFE_SCREENSHOT_DATA_URL_PATTERN =
@@ -76,6 +118,102 @@ export const EXTENSION_CATEGORY_ICON_MAP: Readonly<
   tools: "puzzle",
 });
 
+export function isValidHostExtensionItem(
+  item: HostExtensionListItem,
+): item is HostExtensionValidItem {
+  return item.state === "valid";
+}
+
+export function itemCapabilities(item: HostExtensionListItem): HostExtensionCapabilities | null {
+  if (item.state !== "valid") return null;
+  return hostExtensionCapabilities(item.manifest);
+}
+
+export function itemTargets(item: HostExtensionListItem): HostExtensionTarget[] {
+  if (item.state !== "valid") return [];
+  return hostExtensionTargets(item.manifest);
+}
+
+export function catalogCapabilities(entry: HostExtensionCatalogEntry): HostExtensionCapabilities {
+  return {
+    hasPage: Boolean(entry.apis.page),
+    hasWidget: Boolean(entry.apis.widget),
+    hasDesktop: Boolean(entry.apis.desktop),
+    hasWeb: Boolean(entry.apis.web),
+    hasBackend: Boolean(entry.apis.backend),
+  };
+}
+
+export function derivePlatformBadge(
+  targets: readonly HostExtensionTarget[],
+  copy: DesktopExtensionsMessages,
+): ExtensionPlatformBadge | null {
+  const hasDesktop = targets.includes("desktop");
+  const hasWeb = targets.includes("web");
+  if (hasDesktop && hasWeb) return { kind: "both", label: copy.platformBoth };
+  if (hasDesktop) return { kind: "desktop", label: copy.platformDesktopOnly };
+  if (hasWeb) return { kind: "web", label: copy.platformWebOnly };
+  return null;
+}
+
+export function deriveCapabilityBadges(
+  capabilities: HostExtensionCapabilities | null,
+  copy: DesktopExtensionsMessages,
+): readonly ExtensionCapabilityBadge[] {
+  if (!capabilities) return [];
+  const badges: ExtensionCapabilityBadge[] = [];
+  if (capabilities.hasPage) {
+    badges.push({ kind: "page", label: copy.badgePage });
+  }
+  if (capabilities.hasWidget) {
+    badges.push({ kind: "widget", label: copy.badgeWidget });
+  }
+  if (capabilities.hasBackend) {
+    badges.push({ kind: "backend", label: copy.badgeBackend });
+  }
+  return badges;
+}
+
+export function matchesCapabilityFilter(
+  filter: ExtensionCapabilityFilter,
+  capabilities: HostExtensionCapabilities | null,
+  targets: readonly HostExtensionTarget[],
+): boolean {
+  switch (filter) {
+    case "all":
+      return true;
+    case "web":
+    case "desktop":
+      return targets.includes(filter);
+    case "page":
+      return capabilities?.hasPage ?? false;
+    case "widget":
+      return capabilities?.hasWidget ?? false;
+    case "backend":
+      return capabilities?.hasBackend ?? false;
+  }
+}
+
+export function capabilityFilterLabel(
+  filter: ExtensionCapabilityFilter,
+  copy: DesktopExtensionsMessages,
+): string {
+  switch (filter) {
+    case "all":
+      return copy.filterAll;
+    case "page":
+      return copy.filterPage;
+    case "widget":
+      return copy.filterWidget;
+    case "web":
+      return copy.filterWeb;
+    case "desktop":
+      return copy.filterDesktop;
+    case "backend":
+      return copy.filterBackend;
+  }
+}
+
 export function resolveExtensionIconCategory(
   categories: readonly DesktopExtensionCategory[] | undefined,
 ): DesktopExtensionCategory {
@@ -95,12 +233,13 @@ export function parseSafeExtensionIconUrl(raw: string | null | undefined): strin
 }
 
 export function resolveInstalledExtensionIconUrl(
-  installed: DesktopExtensionItem | undefined,
-  catalogEntry: DesktopExtensionCatalogEntry | undefined,
+  installed: HostExtensionListItem | undefined,
+  catalogOrIconUrl: HostExtensionCatalogEntry | string | undefined,
 ): string | undefined {
-  const localIcon = (installed as { readonly iconDataUrl?: string } | undefined)?.iconDataUrl;
+  const localIcon = installed?.state === "valid" ? installed.iconDataUrl : undefined;
   if (parseSafeExtensionIconUrl(localIcon)) return localIcon;
-  const catalogIcon = (catalogEntry as { readonly icon?: string } | undefined)?.icon;
+  const catalogIcon =
+    typeof catalogOrIconUrl === "string" ? catalogOrIconUrl : catalogOrIconUrl?.icon;
   if (parseSafeExtensionIconUrl(catalogIcon)) return catalogIcon;
   return undefined;
 }
@@ -179,19 +318,20 @@ export function isWithinElement(target: EventTarget | null, container: HTMLEleme
   return false;
 }
 
-export function extensionGroupOf(state: DesktopExtensionStatus["state"]): DesktopExtensionGroupId {
-  switch (state) {
-    case "failed":
-    case "conflict":
-    case "invalid":
-    case "incompatible":
-      return "attention";
-    case "running":
-    case "waiting":
-      return "enabled";
-    case "disabled":
-      return "disabled";
+export function itemStatusState(item: HostExtensionListItem): DesktopExtensionStatus["state"] {
+  if (item.state !== "valid") {
+    return item.state === "incompatible" ? "incompatible" : "invalid";
   }
+  if (item.backendState === "failed") return "failed";
+  if (item.desktopConflictWith) return "conflict";
+  if (item.enabled && item.backendState === "starting") return "waiting";
+  return item.enabled ? "running" : "disabled";
+}
+
+export function needsAttention(state: DesktopExtensionStatus["state"]): boolean {
+  return (
+    state === "failed" || state === "conflict" || state === "invalid" || state === "incompatible"
+  );
 }
 
 export function statusTone(
@@ -216,28 +356,32 @@ export function resolveOptionalLocalizedText(
 }
 
 export function extensionDisplayName(
-  item: DesktopExtensionItem,
+  item: HostExtensionListItem,
   locale: RendererSettingsMessages["locale"],
 ): string {
-  return item.manifest ? resolveLocalizedExtensionText(item.manifest.name, locale) : item.id;
+  return item.state === "valid"
+    ? resolveLocalizedExtensionText(item.manifest.name, locale)
+    : item.id;
 }
 
 export function extensionDescription(
-  item: DesktopExtensionItem,
+  item: HostExtensionListItem,
   locale: RendererSettingsMessages["locale"],
 ): string | null {
-  return resolveOptionalLocalizedText(item.manifest?.description, locale);
+  return item.state === "valid"
+    ? resolveOptionalLocalizedText(item.manifest.description, locale)
+    : null;
 }
 
 export function catalogDisplayName(
-  entry: DesktopExtensionCatalogEntry,
+  entry: HostExtensionCatalogEntry,
   locale: RendererSettingsMessages["locale"],
 ): string {
   return resolveLocalizedExtensionText(entry.name, locale);
 }
 
 export function catalogDescription(
-  entry: DesktopExtensionCatalogEntry,
+  entry: HostExtensionCatalogEntry,
   locale: RendererSettingsMessages["locale"],
 ): string | null {
   return resolveOptionalLocalizedText(entry.description, locale);
@@ -252,12 +396,14 @@ export function splitParagraphs(raw: string | null): string[] {
 }
 
 export function extensionDetailsParagraphs(
-  item: DesktopExtensionItem,
+  item: HostExtensionListItem,
   locale: RendererSettingsMessages["locale"],
 ): string[] {
   const raw =
-    resolveOptionalLocalizedText(item.manifest?.details, locale) ??
-    extensionDescription(item, locale);
+    item.state === "valid"
+      ? (resolveOptionalLocalizedText(item.manifest.details, locale) ??
+        extensionDescription(item, locale))
+      : null;
   return splitParagraphs(raw);
 }
 
@@ -276,12 +422,12 @@ export function parseSafeHttpUrl(raw: string | undefined): string | null {
 export const parseSafeRepositoryUrl = parseSafeHttpUrl;
 
 export function safeScreenshotUrls(
-  installed: DesktopExtensionItem | undefined,
-  catalogEntry: DesktopExtensionCatalogEntry | undefined,
+  installed: HostExtensionListItem | undefined,
+  catalogEntry: HostExtensionCatalogEntry | undefined,
 ): readonly string[] {
-  const localUrls = (installed?.screenshotDataUrls ?? []).filter((url) =>
-    SAFE_SCREENSHOT_DATA_URL_PATTERN.test(url),
-  );
+  const localUrls = (
+    installed?.state === "valid" ? (installed.screenshotDataUrls ?? []) : []
+  ).filter((url) => SAFE_SCREENSHOT_DATA_URL_PATTERN.test(url));
   if (localUrls.length > 0) return localUrls;
   const remoteUrls: string[] = [];
   for (const raw of catalogEntry?.screenshots ?? []) {
@@ -292,10 +438,10 @@ export function safeScreenshotUrls(
 }
 
 export function hasCatalogUpdate(
-  installed: DesktopExtensionItem | undefined,
-  catalogEntry: DesktopExtensionCatalogEntry | undefined,
+  installed: HostExtensionListItem | undefined,
+  catalogEntry: HostExtensionCatalogEntry | undefined,
 ): boolean {
-  const installedVersion = installed?.manifest?.version;
+  const installedVersion = installed?.state === "valid" ? installed.manifest.version : undefined;
   if (!installedVersion || !catalogEntry) return false;
   return compareExtensionVersions(catalogEntry.version, installedVersion) > 0;
 }
@@ -310,58 +456,72 @@ export function formatSlotLabel(
 
 export function describeOtherExtension(
   conflictWithId: string,
-  extensions: readonly DesktopExtensionItem[],
+  extensions: readonly HostExtensionListItem[],
   locale: RendererSettingsMessages["locale"],
 ): string {
   const other = extensions.find((item) => item.id === conflictWithId);
-  const name = other?.manifest
-    ? resolveLocalizedExtensionText(other.manifest.name, locale)
-    : undefined;
+  const name =
+    other?.state === "valid"
+      ? resolveLocalizedExtensionText(other.manifest.name, locale)
+      : undefined;
   return name && name !== conflictWithId ? `${name} (${conflictWithId})` : conflictWithId;
 }
 
 export function overlappingSlots(
-  target: DesktopExtensionItem,
+  target: HostExtensionListItem,
   conflictWithId: string,
-  extensions: readonly DesktopExtensionItem[],
+  extensions: readonly HostExtensionListItem[],
 ): readonly DesktopExtensionSlot[] {
-  const targetSlots = target.manifest?.slots ?? [];
+  const targetSlots = target.state === "valid" ? (target.manifest.slots ?? []) : [];
   if (targetSlots.length === 0) return [];
-  const otherSlots = extensions.find((item) => item.id === conflictWithId)?.manifest?.slots;
+  const other = extensions.find((item) => item.id === conflictWithId);
+  const otherSlots = other?.state === "valid" ? other.manifest.slots : undefined;
   if (!otherSlots || otherSlots.length === 0) return targetSlots;
   const shared = targetSlots.filter((slot) => otherSlots.includes(slot));
   return shared.length > 0 ? shared : targetSlots;
 }
 
-export function isToggleBlocked(item: DesktopExtensionItem): boolean {
+export function isToggleBlocked(item: HostExtensionListItem): boolean {
   if (item.enabled) return false;
-  return (
-    item.status.state === "incompatible" ||
-    item.status.state === "invalid" ||
-    item.manifest === undefined
-  );
+  return item.state !== "valid";
 }
 
 export function blockedToggleReason(
-  item: DesktopExtensionItem,
+  item: HostExtensionListItem,
   copy: DesktopExtensionsMessages,
 ): string {
-  if (item.status.error) return item.status.error;
-  return item.status.state === "incompatible"
-    ? copy.toggleDisabledIncompatible
-    : copy.toggleDisabledInvalid;
+  if (item.state !== "valid") {
+    if (item.error) return item.error;
+    return item.state === "incompatible"
+      ? copy.toggleDisabledIncompatible
+      : copy.toggleDisabledInvalid;
+  }
+  return copy.toggleDisabledInvalid;
 }
 
 export function resolveAttentionDetail(
-  item: DesktopExtensionItem,
-  allExtensions: readonly DesktopExtensionItem[],
+  item: HostExtensionListItem,
+  allExtensions: readonly HostExtensionListItem[],
   locale: RendererSettingsMessages["locale"],
   copy: DesktopExtensionsMessages,
 ): DesktopExtensionAttentionDetail | null {
-  if (extensionGroupOf(item.status.state) !== "attention") return null;
-  if (item.status.conflictWith) {
-    const other = describeOtherExtension(item.status.conflictWith, allExtensions, locale);
-    const shared = overlappingSlots(item, item.status.conflictWith, allExtensions);
+  const state = itemStatusState(item);
+  if (!needsAttention(state)) return null;
+  if (item.state !== "valid") {
+    return {
+      tone: item.state === "incompatible" ? "warning" : "danger",
+      text: item.error || blockedToggleReason(item, copy),
+    };
+  }
+  if (item.backendState === "failed") {
+    return {
+      tone: "danger",
+      text: item.backendError || copy.backendFailedNotice,
+    };
+  }
+  if (item.desktopConflictWith) {
+    const other = describeOtherExtension(item.desktopConflictWith, allExtensions, locale);
+    const shared = overlappingSlots(item, item.desktopConflictWith, allExtensions);
     return {
       tone: "warning",
       text:
@@ -371,18 +531,6 @@ export function resolveAttentionDetail(
               other,
             })
           : formatMessage(copy.conflictOccupiedBy, { other }),
-    };
-  }
-  if (item.status.error) {
-    return {
-      tone: item.status.state === "incompatible" ? "warning" : "danger",
-      text: item.status.error,
-    };
-  }
-  if (isToggleBlocked(item)) {
-    return {
-      tone: item.status.state === "incompatible" ? "warning" : "danger",
-      text: blockedToggleReason(item, copy),
     };
   }
   return null;
@@ -411,26 +559,18 @@ function matchesTokens(fields: readonly string[], normalizedQuery: string): bool
 }
 
 export function matchesInstalledSearchQuery(
-  item: DesktopExtensionItem,
+  item: HostExtensionListItem,
   normalizedQuery: string,
 ): boolean {
   if (!normalizedQuery) return true;
   const fields: string[] = [item.id];
-  const manifest = item.manifest;
-  if (manifest) {
-    if (typeof manifest.name === "string") {
-      fields.push(manifest.name);
-    } else {
-      fields.push(manifest.name.en, manifest.name["zh-CN"]);
-    }
+  if (item.state === "valid") {
+    const manifest = item.manifest;
+    fields.push(manifest.name.en, manifest.name["zh-CN"]);
     if (manifest.author) fields.push(manifest.author);
-    if (manifest.description) {
-      fields.push(manifest.description.en);
-      if (manifest.description["zh-CN"]) fields.push(manifest.description["zh-CN"]);
-    }
+    fields.push(manifest.description.en, manifest.description["zh-CN"]);
     if (manifest.details) {
-      fields.push(manifest.details.en);
-      if (manifest.details["zh-CN"]) fields.push(manifest.details["zh-CN"]);
+      fields.push(manifest.details.en, manifest.details["zh-CN"]);
     }
     appendCategorySearchFields(fields, manifest.categories);
   }
@@ -438,7 +578,7 @@ export function matchesInstalledSearchQuery(
 }
 
 export function matchesCatalogSearchQuery(
-  entry: DesktopExtensionCatalogEntry,
+  entry: HostExtensionCatalogEntry,
   normalizedQuery: string,
 ): boolean {
   if (!normalizedQuery) return true;
@@ -455,6 +595,71 @@ export function matchesCatalogSearchQuery(
   }
   appendCategorySearchFields(fields, entry.categories);
   return matchesTokens(fields, normalizedQuery);
+}
+
+/**
+ * Parse either `owner/repo` or a GitHub URL (repo, `/tree/<ref>/<subpath>`, or `/releases/download/<tag>/<asset>.zip`)
+ * into a validated `HostExtensionInstallSource` of type `"github"`.
+ */
+export function parseGitHubInstallSource(input: {
+  readonly repoOrUrl: string;
+  readonly ref?: string;
+  readonly tag?: string;
+  readonly asset?: string;
+  readonly subpath?: string;
+}): Extract<HostExtensionInstallSource, { type: "github" }> | null {
+  const raw = input.repoOrUrl.trim();
+  if (!raw) return null;
+  let repository = raw;
+  let ref = input.ref?.trim() || undefined;
+  let tag = input.tag?.trim() || undefined;
+  let asset = input.asset?.trim() || undefined;
+  let subpath = input.subpath?.trim() || undefined;
+
+  if (/^https?:\/\//iu.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      if (parsed.hostname !== "github.com" && parsed.hostname !== "www.github.com") {
+        return null;
+      }
+      const segments = parsed.pathname.replace(/^\/+|\/+$/gu, "").split("/");
+      const owner = segments[0];
+      const repo = segments[1]?.replace(/\.git$/iu, "");
+      if (!owner || !repo) return null;
+      repository = `${owner}/${repo}`;
+      if (segments[2] === "tree" && segments[3]) {
+        ref ??= decodeURIComponent(segments[3]);
+        if (segments.length > 4) {
+          subpath ??= segments.slice(4).map(decodeURIComponent).join("/");
+        }
+      } else if (
+        segments[2] === "releases" &&
+        segments[3] === "download" &&
+        segments[4] &&
+        segments[5]
+      ) {
+        tag ??= decodeURIComponent(segments[4]);
+        asset ??= decodeURIComponent(segments[5]);
+      } else if (segments[2] === "releases" && segments[3] === "tag" && segments[4]) {
+        tag ??= decodeURIComponent(segments[4]);
+      }
+    } catch {
+      return null;
+    }
+  } else {
+    repository = raw.replace(/\.git$/iu, "").replace(/^\/+|\/+$/gu, "");
+  }
+
+  const candidate = {
+    type: "github" as const,
+    repository,
+    ...(ref ? { ref } : {}),
+    ...(tag ? { tag } : {}),
+    ...(asset ? { asset } : {}),
+    ...(subpath ? { subpath } : {}),
+  };
+  const checked = hostExtensionGitHubSourceSchema.safeParse(candidate);
+  return checked.success ? checked.data : null;
 }
 
 export function formatShortDate(raw: string | undefined): string | null {

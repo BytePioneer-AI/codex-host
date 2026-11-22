@@ -6,6 +6,8 @@
 
 - **OMP**：现有原生提问与工具审批已接入。选择题使用原生逐项说明，超时与主动取消分别回传 `timedOut` / `cancelled`，详见 [OMP 交互](omp/omp-interactions.md)。子代理投影依赖 OMP RPC 的 `set_subagent_subscription` 订阅（服务端默认 `off`）：Host 启动连接时请求 `events` 级别；不支持该命令的旧版 OMP 优雅降级为无子代理投影，不阻塞会话。子代理转写读取优先直接读父会话文件旁的 `<子代理ID>.jsonl`（OMP RPC 的子代理注册表仅存于内存，冷启动进程无法按 ID 解析已完成的子代理）；文件不存在时回退 RPC 读取。
   OMP 的 `/context` 及原生明确报告未调用 Agent 的动态命令使用非持久化完成语义，显示原生文本后释放当前轮次，不合成历史身份；普通轮次的终结与取消检查保持不变。首次本地命令不产生历史文件时，以原生空消息确认下一轮可继续。详见 [本地命令边界](omp/omp-interactions.md#不调用-agent-的本地命令)。
+  会话额度在同一工作目录和启动环境下运行 `omp usage --json --no-extensions`，避免项目 `.env` 选中另一套凭证。圆环按 OMP 开始回复时报告的 Provider 与凭证编号匹配；重试换号时跟随新的流，回合结束后清除未确认的账号。打开已有会话时，从活动分支恢复最近一次完成回复所用账号；无法确认时不显示圆环。
+  相同目录和启动环境的会话共享额度查询，忽略 Host 注入的逐会话委派标识；设置页显式刷新不使用会话额度缓存。原生运行摘要可以补齐缺失的回复结束事件，只更新账号归属，不补记用量。
 - **CodeBuddy**：从 ACP 动态目录读取斜杠命令，按原生压缩事件及持久化结果确认上下文压缩；通过原生附加系统提示让会话发现 Host 委派 CLI。Fork 和修订通过无模型的原生复制、原生 `/fork` 与仅作用于新副本的 rollback 完成，校验完整历史前缀与源会话不变；派生配置随原生引用恢复。成功派生后通过同一临时 ACP 进程的原生 HTTP 接口删除中间副本；早期失败或强杀仍可能残留，详见专属文档。详见 [CodeBuddy 接入](codebuddy/codebuddy-harness-integration.md)。
 - **Cursor**：参数化模型目录提供 Thinking 组合；ACP 原生命令目录提供命令；原生 shell 通过 Host 安装的 `codexhost-delegation` skill 调用 CLI 向外委派。详见 [Cursor 接入](cursor/cursor-cli-experimental.md)。
 - **Hermes**：会话统一使用官方 Gateway，不以版本数值差异阻断，接入提问、Thinking、命令、压缩、原生 Diff，以及未压缩历史的独立 Fork/修订；通过进程内注册的私有临时 Skill 发现 Host CLI 并保留父任务环境，不向共享技能目录写入临时 Skill。不再保留 ACP 实现或 SDK 依赖；历史发现和导入使用原生 SessionDB 只读查询，导入的原生身份通过 Gateway 恢复。详见 [Hermes 能力与边界](hermes/hermes-capabilities.md)。
@@ -59,12 +61,12 @@ Pi 当前 Model 同时具备 Codex OAuth、Codex API 和本地 `priority` 元数
 Antigravity 通过官方 `agy acp`（要求 `agy >= 1.5.8`，已用本机 `1.5.9` 实测）接入：
 
 - **权限与交互**：原生提供 `default`、`accept-edits`、`auto`、`plan` 四种 ACP 模式（`session/set_mode`）及进程启动级 `dangerously-skip-permissions`；工具审批走原生 `session/request_permission`，`ask_question` 走原生客户端 `elicitation/create`（`form` 模式），不使用私有 Hook 桥。详见 [Antigravity 权限与交互](antigravity/antigravity-tool-approval.md)。
-- **历史读取**：只读 `~/.gemini/antigravity-cli/conversations/<id>.db` 的 `steps`，不启动 `agy`，不走 `session/load`（ACP 回放在 stdout 受阻时会提前回复并跨轮乱序，不可作为完整来源）。活动库读取已提交的 WAL 快照并跳过仍在生成的步骤；数据库不可读或格式未知时返回“历史不可用”，不降级。连续用户输入沿用既有分组规则合并，保证已存 Turn 身份稳定。有原生调用 ID 和工具名称的已完成工具步骤没有对应 planner 调用时，仍可按所属回合恢复；工具输出字段缺失时使用已存错误信息（若有），不影响其余历史读取。
+- **历史读取**：只读 `~/.gemini/antigravity-cli/conversations/<id>.db` 的 `steps`，不启动 `agy`，不走 `session/load`（ACP 回放在 stdout 受阻时会提前回复并跨轮乱序，不可作为完整来源）。活动库读取已提交的 WAL 快照并跳过仍在生成的步骤；数据库不可读或格式未知时返回“历史不可用”，不降级。连续无回复的用户输入合并为一轮。有原生调用 ID 和工具名称的已完成工具步骤没有对应 planner 调用时，仍可按所属回合恢复；工具输出字段缺失时使用已存错误信息（若有），不影响其余历史读取。
 - **前台 Turn 结算**：ACP 响应与 SQLite 提交是两个边界。结算先读取一次原生用户输入计数；成功且可能写入历史的提示若暂未看到提交，可在短预算内以新的只读快照复查，不等待 WAL checkpoint，也不把观察时间计入模型用量计时。无法确认归属时只结算实时输出，不猜测 Turn 身份或分叉检查点；已提交的内容由历史读取恢复。以上一轮已确认的计数为基线；基线缺失或计数跨越多个输入时，只读取最后一个原生输入的创建时间，确认它是在本次 ACP 提示发出后、响应返回前创建的。
-- **空闲唤醒**：定时器或后台任务唤起的独立原生运行（`step_type = 101` 系统消息起始，同一运行 ID 的连续系统消息合并）有已提交的最终回答时，作为无用户消息的独立 Turn 展示，保留上一轮的最终回答。ACP 的空闲输出通知触发有界的 SQLite 提交观察，不显示未提交的逐字流，也不占用前台执行位。已有 Turn 所属的迟到输出不创建自主 Turn；已归属的尾部后台消息仍可成为该 Turn 的最终回答。
-- **历史身份与检查点**：读取时保留每条原生用户输入的序号。合并展示的 Turn 使用其覆盖的最后一条原生用户输入生成分叉检查点，不使用界面分组下标；例如 15 条原生输入显示为 14 组，末组的检查点仍保留完整的 15 条输入。有效的已有身份可以与检查点不同，稀疏编号和非数字旧身份继续保留；没有已有映射时，依据原生边界生成身份，使首次读取与带映射重读保持一致。
+- **空闲唤醒与 Plan 续接**：定时器或后台任务唤起的独立原生运行在有已提交的最终回答后，作为无用户消息的独立 Turn 展示。`step_type = 101` 的系统消息可以标记新运行，但运行 ID 变化不一定意味着新 Turn：原生 `plan_mode_handoff` 和 `plan_mode_handback` 续接原 Turn，包括自主 Turn，保留原身份与分叉检查点。ACP 空闲输出通知触发有界的 SQLite 提交观察，不显示未提交的逐字流，也不占用前台执行位。已有 Turn 所属的迟到输出不创建自主 Turn。
+- **历史身份与检查点**：前台回放和实时结算均用从零开始的原生用户输入序号生成 `turn-N`；没有可显示文本的输入仍计入序号。合并轮次的身份与分叉检查点均取最后一条可见原生输入的边界。自主轮次使用 `wake-<step>`；没有可确认原生边界的孤立组使用 `replay-` 前缀，不提供分叉检查点。恢复时，Mapping Store 仅在同一原生会话的快照确认了检查点、且所有已有映射都能无歧义保留时，修正错位的 `turn-N`，保留 Host Turn ID、检查点和 Fork 关系。
 - **历史派生（Fork / Rollback）**：`agy acp` 1.5.9 未提供 `session/fork` RPC。Adapter 克隆原生 SQLite，按用户输入或已结算的独立唤醒边界裁剪并同步 `conversation_summaries.db`，再经 `session/resume` 打开派生会话。Rollback 只在空闲态可用；运行中 Fork 仅支持当前会话已确认、严格早于活动 Turn 的用户检查点，要求源库为 WAL 且无正在运行的子代理。
-- **压缩与实时命令**：命令目录保留内置 `antigravity.compact`（`/compact`）并通过 ACP `available_commands_update` 合并原生实时命令。在 ACP 模式下，`/compact` 作为原生斜杠命令随 `session/prompt` 发送给 `agy acp` 执行；ACP 流本身不推送旧 PrintMode 专有的“进行中” `checkpoint` 通知，但 Adapter 会从原生 SQLite 已提交的 `step_type = 23`（`DONE` / `ERROR`）记录中投影已结算的 `contextCompaction` Item（包括被动自动压缩与 `/compact`，覆盖实时轮内/轮末及历史回放），不以用量回落或文本内容猜测进行中状态。
+- **压缩与实时命令**：命令目录保留内置 `antigravity.compact`（`/compact`）并通过 ACP `available_commands_update` 合并原生实时命令。在 ACP 模式下，`/compact` 作为原生斜杠命令随 `session/prompt` 发送给 `agy acp` 执行；ACP 流本身不推送旧 PrintMode 专有的“进行中” `checkpoint` 通知，但 Adapter 会从原生 SQLite 已提交的 `step_type = 23`（`DONE` / `ERROR`）记录中投影已结算的 `contextCompaction` Item（包括被动自动压缩与 `/compact`，覆盖实时轮内/轮末、前台 Plan 续接及历史回放），不以用量回落或文本内容猜测进行中状态。
 
 ## Copilot 原生接入
 

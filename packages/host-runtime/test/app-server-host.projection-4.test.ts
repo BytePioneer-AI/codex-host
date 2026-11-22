@@ -2,17 +2,23 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { HostFileChangeItem } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   decodeExternalTransportSelection,
-  encodeClaudeTransportModel,
-  encodePiTransportModel,
+  encodeExternalTransportSelection,
   type ExternalHarnessId,
   type JsonObject,
 } from "@codexhost/protocol-core";
-import { harnessIdSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  hostItemIdSchema,
+  hostThreadIdSchema,
+  hostTurnIdSchema,
+  jsonObjectSchema,
+} from "@codexhost/shared-contracts";
 
 import {
   method,
@@ -348,6 +354,57 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it.each([false, true])(
+    "uses the native title for an unnamed Thread (renamed: %s)",
+    async (renamed) => {
+      const fixture = createFixture();
+      try {
+        const threadId = await startPiThread(fixture);
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Session was not opened");
+        const nativeTitle = "Native task title";
+        const userTitle = "User title";
+        if (renamed) {
+          writeRequest(fixture.desktopInput, {
+            id: 2,
+            method: "thread/name/set",
+            params: { threadId, name: userTitle },
+          });
+          await fixture.collector.waitFor((message) => method(message, "thread/name/updated"));
+        }
+
+        const changes: string[] = [];
+        const unsubscribe = fixture.host.clientEvents.subscribe((event) => {
+          if (event.type === "changed" && event.threadId === threadId) changes.push(event.method);
+        });
+        try {
+          session.emitEvent({ type: "session.title.changed", title: nativeTitle });
+          session.emitEvent({ type: "session.state.changed", state: session.initialState });
+          await vi.waitFor(() =>
+            expect(changes).toContain("codexhost/thread/configuration/updated"),
+          );
+          expect(changes.includes("thread/name/updated")).toBe(!renamed);
+          const expectedTitle = renamed ? userTitle : nativeTitle;
+          writeRequest(fixture.desktopInput, {
+            id: 3,
+            method: "thread/read",
+            params: { threadId },
+          });
+          await expect(
+            fixture.collector.waitFor((message) => requestId(message, 3)),
+          ).resolves.toMatchObject({ result: { thread: { name: expectedTitle } } });
+          await expect(
+            fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+          ).resolves.toMatchObject({ title: expectedTitle });
+        } finally {
+          unsubscribe();
+        }
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
   it("deletes an unused Pi prewarm locally", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
@@ -565,6 +622,112 @@ describe("AppServerHost HarnessAdapter projection", () => {
       },
     });
     await stopFixture(fixture);
+  });
+
+  it("keeps the cumulative file summary in thread/read after a late detached change settles", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = hostTurnIdSchema.parse(await startPiTurn(fixture, threadId));
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+
+      const summaryId = session.emitFileChange([
+        {
+          path: "a.txt",
+          kind: "update",
+          unifiedDiff: "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+foreground\n",
+        },
+      ]);
+      const command = { command: "make changes", cwd: "/synthetic" };
+      const commandId = session.startCommandExecution(command.command, command.cwd);
+      session.detachItem(commandId);
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+
+      const lateChange: HostFileChangeItem = {
+        type: "fileChange",
+        itemId: hostItemIdSchema.parse("detached-file-change"),
+        sourceItemIds: [commandId],
+        changes: [
+          {
+            path: "b.txt",
+            kind: "update",
+            unifiedDiff: "--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-old\n+detached\n",
+          },
+        ],
+      };
+      session.emitEvent({ type: "item.started", turnId, item: lateChange });
+      await fixture.collector.waitFor(
+        (message) =>
+          method(message, "turn/diff/updated") &&
+          String(messageParams(message).diff).includes("+detached"),
+      );
+
+      // While a successor runs, thread/read uses cached history rather than refreshing it.
+      const nextTurnId = await startPiTurn(fixture, threadId, 3);
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", nextTurnId));
+      const readFileChanges = async (id: number) => {
+        writeRequest(fixture.desktopInput, {
+          id,
+          method: "thread/read",
+          params: { threadId, includeTurns: true },
+        });
+        const response = await fixture.collector.waitFor((message) => requestId(message, id));
+        const result = response.result as {
+          thread: { turns: Array<{ id: string; items: JsonObject[] }> };
+        };
+        return result.thread.turns
+          .find((turn) => turn.id === turnId)
+          ?.items.filter(({ type }) => type === "fileChange");
+      };
+      const summary = {
+        id: summaryId,
+        changes: [
+          { path: "a.txt", diff: expect.stringContaining("+foreground") },
+          { path: "b.txt", diff: expect.stringContaining("+detached") },
+        ],
+      };
+      expect(await readFileChanges(4)).toMatchObject([{ ...summary, status: "inProgress" }]);
+
+      session.emitEvent({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { type: "commandExecution", itemId: commandId, ...command },
+          outcome: { status: "succeeded" },
+        },
+      });
+      const settledDiff = "--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-old\n+settled\n";
+      session.emitEvent({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            ...lateChange,
+            changes: [{ path: "b.txt", kind: "update", unifiedDiff: settledDiff }],
+          },
+          outcome: { status: "succeeded" },
+        },
+      });
+      await fixture.collector.waitFor(
+        (message) =>
+          method(message, "turn/diff/updated") &&
+          String(messageParams(message).diff).includes("+settled"),
+      );
+      expect(await readFileChanges(5)).toMatchObject([
+        {
+          id: summaryId,
+          status: "completed",
+          changes: [
+            summary.changes[0],
+            { path: "b.txt", diff: expect.stringContaining("+settled") },
+          ],
+        },
+      ]);
+    } finally {
+      await stopFixture(fixture);
+    }
   });
 
   it("round-trips an early Approval without plugin presentation metadata", async () => {
@@ -1269,12 +1432,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
     const firstThreadId = await startExternalThread(
       fixture,
-      encodeClaudeTransportModel(secondModel),
+      encodeExternalTransportSelection("claude-code", { model: secondModel }),
       20,
     );
     const secondThreadId = await startExternalThread(
       fixture,
-      encodeClaudeTransportModel(firstModel),
+      encodeExternalTransportSelection("claude-code", { model: firstModel }),
       21,
     );
     expect(claudeAdapter.sessions[0]?.initialState.effectiveModel).toEqual(secondModel);
@@ -1283,7 +1446,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 22,
       method: "codexhost/thread/model/select",
-      params: { threadId: firstThreadId, model: firstModel },
+      params: jsonObjectSchema.parse({ threadId: firstThreadId, model: firstModel }),
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 22)),
@@ -1324,7 +1487,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "turn/start",
       params: {
         threadId: secondThreadId,
-        model: encodePiTransportModel(piAdapter.catalog.defaultModel),
+        model: encodeExternalTransportSelection("pi", { model: piAdapter.catalog.defaultModel }),
         input: [{ type: "text", text: "foreign" }],
       },
     });
@@ -1359,7 +1522,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 21,
       method: "codexhost/thread/model/select",
-      params: { threadId, model },
+      params: jsonObjectSchema.parse({ threadId, model }),
     });
 
     await expect(

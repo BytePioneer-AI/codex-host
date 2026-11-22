@@ -2,7 +2,7 @@ import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { AppServerHost } from "./app-server-host.js";
-import type { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
+import type { HostExtensionManager } from "./host-extension-manager.js";
 import { SharedThreadBridge } from "./shared-thread-bridge.js";
 import type { SharedThreadOwner } from "./shared-thread-owner.js";
 import type { ExternalThreadStore } from "./external-thread-repository.js";
@@ -19,6 +19,7 @@ import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
 import { createHostWebOpener } from "./web-opener.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
+import type { HostReleaseAnnouncement } from "./release-announcement.js";
 import {
   isDesktopContextVariable,
   withoutDesktopToolContext,
@@ -73,10 +74,11 @@ export function sharedHostDesktop(
     stockCodex: string;
     official: PreparedLocalCodex;
     owner: SharedThreadOwner;
-    desktopExtensionBackends?: DesktopExtensionBackendManager | undefined;
+    hostExtensions?: HostExtensionManager | undefined;
     store: ExternalThreadStore;
     prices: ModelPriceCatalog;
     updateCoordinator?: HostUpdateCoordinator;
+    releaseAnnouncement?: HostReleaseAnnouncement;
     delegation(): DelegationControlRegistration | undefined;
     register(api: DelegationControlRegistration): (() => void) | undefined;
     connected: Set<AppServerHost>;
@@ -99,7 +101,7 @@ export function sharedHostDesktop(
       stockCodexPath: options.stockCodex,
       arguments: [],
       environment,
-      desktopExtensionBackends: options.desktopExtensionBackends,
+      hostExtensions: options.hostExtensions,
       desktopInput: streams.input,
       desktopOutput: streams.output,
       diagnosticOutput: streams.diagnosticOutput,
@@ -124,6 +126,7 @@ export function sharedHostDesktop(
             runtimeMaintenance: new RuntimeMaintenance({ runtimePath, remote: false, environment }),
           }
         : {}),
+      ...(options.releaseAnnouncement ? { releaseAnnouncement: options.releaseAnnouncement } : {}),
       ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
       ...(entry
         ? { consoleOpener: createHostConsoleOpener({ entrypoint: entry, environment }) }

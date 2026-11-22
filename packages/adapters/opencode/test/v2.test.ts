@@ -14,7 +14,7 @@ import {
   type HostEvent,
 } from "@codexhost/harness-adapter";
 import { CodexTurnProjector } from "@codexhost/protocol-core";
-import { harnessModelCatalogSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { encodeOpenCodeVariant } from "../src/model-catalog.js";
 import { openCodeMajor } from "../src/version.js";
 import { assistantItems, projectHistory, readMessages } from "../src/v2/history.js";
@@ -50,7 +50,7 @@ const assistant = (text: string): SessionMessageAssistant => ({
 const idle = (
   outcome: "succeeded" | "failed" | "interrupted" = "succeeded",
 ): SessionMessageInfo => ({ id: "idle", type: "idle", time: { created: 3 }, outcome });
-const catalog = harnessModelCatalogSchema.parse({ models: [], thinkingOptions: [] });
+const models = v2Catalog([], null);
 const sessions: V2Session[] = [];
 afterEach(async () => {
   await Promise.all(sessions.splice(0).map((s) => s.close()));
@@ -90,7 +90,7 @@ function fixture() {
     client as unknown as OpenCodeClient,
     connection,
     info,
-    catalog,
+    models,
     "default",
     64_000,
     () => {},
@@ -276,6 +276,32 @@ describe("OpenCode v2 native history", () => {
 });
 
 describe("OpenCode v2 Session lifecycle", () => {
+  it.each(["at completion", "after completion"])("publishes the native title %s", async (when) => {
+    const f = fixture();
+    const placeholder = "New session - 2026-11-21T12:00:00.000Z";
+    const title = "Explain the host protocol";
+    f.client.session.get.mockResolvedValue({ ...info, title: placeholder });
+    await f.start();
+    expect((await f.turn()).ok).toBe(true);
+    if (when === "at completion") f.client.session.get.mockResolvedValue({ ...info, title });
+    f.messages.push(assistant("Done."), idle());
+    f.emit("session.execution.succeeded");
+    await vi.waitFor(() => expect(f.completed()).toHaveLength(1));
+
+    if (when === "after completion") {
+      f.emit("session.renamed", { title: placeholder });
+      f.emit("session.renamed", { sessionID: "other", title: "Other Session" });
+      f.emit("session.renamed", { title });
+    }
+    await vi.waitFor(() =>
+      expect(
+        f.events.filter(
+          (output) => output.kind === "event" && output.event.type === "session.title.changed",
+        ),
+      ).toEqual([{ kind: "event", event: { type: "session.title.changed", title } }]),
+    );
+  });
+
   it.each([false, true])(
     "completes reasoning and text with independent ordinals (before admission: %s)",
     async (beforeAdmission) => {
@@ -842,7 +868,7 @@ describe("OpenCode v2 catalog readiness", () => {
     } as unknown as OpenCodeClient;
     const reading = readCatalog(client, "/workspace", 1000);
     expect(models).not.toHaveBeenCalled();
-    await expect(reading).resolves.toMatchObject({ models: [] });
+    await expect(reading).resolves.toMatchObject({ catalog: { models: [] } });
     expect(list).toHaveBeenCalledTimes(2);
     expect(models).toHaveBeenCalledTimes(1);
   });

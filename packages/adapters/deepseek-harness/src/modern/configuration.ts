@@ -201,7 +201,7 @@ export function readModernModelSelectionState(
   const selection =
     projected ?? parseSelection(catalog.defaultSelection, "default Model selection");
   try {
-    encodeDeepSeekHarnessModelRef(selection);
+    encodeDeepSeekHarnessModelRef(selection, catalog.index);
   } catch {
     throw configurationError(
       "protocolError",
@@ -217,7 +217,7 @@ function stateForSelection(
   catalog: ModernModelCatalogSnapshot,
   permissionModeId?: HarnessPermissionModeId,
 ): HarnessSessionState {
-  const effectiveModel = encodeDeepSeekHarnessModelRef(selection);
+  const effectiveModel = encodeDeepSeekHarnessModelRef(selection, catalog.index);
   if (!catalog.routableProviders.includes(selection.provider)) {
     throw configurationError(
       "protocolError",
@@ -293,7 +293,7 @@ export function modernSelectionForModel(
 ): DeepSeekModelSelection {
   let native: ReturnType<typeof decodeDeepSeekHarnessModelRef>;
   try {
-    native = decodeDeepSeekHarnessModelRef(model);
+    native = decodeDeepSeekHarnessModelRef(model, catalog.index);
   } catch (error) {
     throw configurationError(
       "invalidRequest",

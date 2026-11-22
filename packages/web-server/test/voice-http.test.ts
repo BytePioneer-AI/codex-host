@@ -12,7 +12,7 @@ import { voiceFailure } from "@codexhost/shared-contracts";
 import { startServer } from "./support/server.ts";
 
 async function waitFor(check: () => Promise<boolean>) {
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 300; i++) {
     if (await check()) return;
     await delay(10);
   }
@@ -27,19 +27,18 @@ it("voice upload bounds bytes and deletes temp audio on success, Host failure an
   let calls = 0;
   let mode = "success";
   let entered = false;
-  let release = () => {};
+  let disconnect = Promise.withResolvers<undefined>();
   const host = {
     request: async (method: string, params: Record<string, unknown>) => {
       calls++;
-      entered = true;
       assert.equal(method, "codexhost/voice/transcribe");
       assert.deepEqual(Object.keys(params).sort(), ["mimeType", "path"]);
       assert.equal(await readFile(String(params.path), "utf8"), "audio");
       if (mode === "failure") throw new Error("must not leak raw host errors");
-      if (mode === "disconnect")
-        await new Promise<void>((done) => {
-          release = done;
-        });
+      if (mode === "disconnect") {
+        entered = true;
+        await disconnect.promise;
+      }
       return { ok: true, text: "你好" };
     },
   } as unknown as ChHostClient;
@@ -87,6 +86,7 @@ it("voice upload bounds bytes and deletes temp audio on success, Host failure an
 
   mode = "disconnect";
   entered = false;
+  disconnect = Promise.withResolvers<undefined>();
   const abort = new AbortController();
   const pending = fetch(url, {
     method: "POST",
@@ -99,7 +99,7 @@ it("voice upload bounds bytes and deletes temp audio on success, Host failure an
   await pending;
   // The Host call cannot be cancelled: its audio stays readable until it returns.
   assert.equal((await spooled(root)).length, 1);
-  release();
+  disconnect.resolve(undefined);
   await waitFor(async () => (await spooled(root)).length === 0);
 
   // An interrupted upload is cleaned even before any Host request.

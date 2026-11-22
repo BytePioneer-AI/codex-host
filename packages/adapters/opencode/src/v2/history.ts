@@ -17,7 +17,7 @@ import {
   nativeTurnRefSchema,
   nativeCheckpointRefSchema,
 } from "@codexhost/shared-contracts";
-import { encodeOpenCodeModelRef } from "../model-catalog.js";
+import { encodeOpenCodeModelRef, type OpenCodeModelIndex } from "../model-catalog.js";
 import { failure, harnessId } from "./state.js";
 
 export async function readMessages(
@@ -99,6 +99,7 @@ export function projectHistory(
   session: SessionInfo,
   messages: SessionMessageInfo[],
   limit: number,
+  index?: OpenCodeModelIndex,
 ): HostThreadSnapshot {
   if (session.revert)
     throw new Error("Clear the staged OpenCode v2 revert before using this Session in codexhost");
@@ -128,10 +129,13 @@ export function projectHistory(
     if (!turn) continue;
     if (message.type === "assistant") {
       turn.items.push(...assistantItems(message, limit));
-      turn.model = encodeOpenCodeModelRef({
-        providerID: message.model.providerID,
-        modelID: message.model.id,
-      });
+      turn.model = encodeOpenCodeModelRef(
+        {
+          providerID: message.model.providerID,
+          modelID: message.model.id,
+        },
+        index,
+      );
     } else if (message.type === "compaction") {
       turn.items.push({
         item: { type: "contextCompaction", itemId: hostItemIdSchema.parse(message.id) },
@@ -219,9 +223,14 @@ export function fileChanges(
   };
 }
 
-export async function readHistory(client: OpenCodeClient, session: SessionInfo, limit: number) {
+export async function readHistory(
+  client: OpenCodeClient,
+  session: SessionInfo,
+  limit: number,
+  index: OpenCodeModelIndex,
+) {
   const messages = await readMessages(client, session.id);
-  const snapshot = projectHistory(session, messages, limit);
+  const snapshot = projectHistory(session, messages, limit, index);
   for (const turn of snapshot.turns) {
     if (!turn.checkpoint) continue;
     const first = messages.findIndex((m) => m.id === turn.nativeTurnRef.nativeTurnKey);

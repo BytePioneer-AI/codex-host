@@ -6,7 +6,7 @@ Desktop 打开侧边聊天时，先用 `thread/fork` 从主对话 Fork 出子 Th
 
 | 请求 | Host 行为 |
 | --- | --- |
-| `thread/fork` + `attachToSource` | 按原有方式 Fork 来源的 Native Session，并记录 `attachedToThreadId` 和继承的 Turn 数。与官方一致：来源须为分页历史，不能与 `ephemeral` 同时使用。来源本身是临时 Thread 时同样拒绝。 |
+| `thread/fork` + `attachToSource` | 按原有方式 Fork 来源的 Native Session，并记录 `attachedToThreadId` 和继承的 Turn 数。与官方一致：来源须为分页历史，不能与 `ephemeral` 同时使用。来源本身是临时 Thread 时同样拒绝。与官方一致，挂靠 Fork 不发 `thread/started`，否则 Desktop 会把侧边聊天当普通对话列在侧边栏。 |
 | `thread/inject_items` | 只接受纯文本的 user message，文本暂存在 Thread 记录中，由下一个 Turn 带入，最多暂存 64 条，超过时报错并保留原有暂存。其他条目返回 `-32602`，Subagent Thread 返回 `-32076`。 |
 | `thread/list` | 带 `attachedToThreadId` 时只返回挂在该 Thread 下的侧边聊天。其他列表不含侧边聊天，带 `includeAttachedThreads` 的搜索除外。`attachedToThreadId` 不能与 `parentThreadId`、`ancestorThreadId` 同时使用。 |
 | `thread/read`、`thread/turns/list`、`thread/items/list` | 侧边聊天带 `attachedToThreadId`，只列出自己的 Turn，预览也取自己的第一条用户消息；继承的 Turn 留在 Native Session 中作为上下文。 |

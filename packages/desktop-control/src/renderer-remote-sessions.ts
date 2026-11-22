@@ -1,4 +1,5 @@
 import type { RemoteSessionOperation } from "@codexhost/shared-contracts";
+import { rendererRemoteDelivery } from "./renderer-remote-delivery.js";
 
 interface Request {
   id: string | number;
@@ -47,6 +48,7 @@ export interface RemoteSessionTarget {
 export async function rendererRemoteSession(
   target: RemoteSessionTarget,
   operation: RemoteSessionOperation,
+  delivery = rendererRemoteDelivery,
 ): Promise<unknown> {
   const routing = target.__codexhostHostRoutingV1;
   if (!routing)
@@ -57,10 +59,25 @@ export async function rendererRemoteSession(
     /^remote-(?:ssh(?:-|:)|control:)/u.test(id),
   );
   const state = (target.__codexhostRemoteSessionsV1 ??= { managers: new WeakMap() });
+  const connectionGeneration = (route: object) => {
+    let generation = state.managers.get(route);
+    if (!generation) {
+      generation = { epoch: crypto.randomUUID(), answered: new Set() };
+      state.managers.set(route, generation);
+    }
+    return generation;
+  };
   if (operation.kind === "hosts") {
     const api = target.__codexhostRendererBindingProbeV1;
     if (!api?.remoteConnections)
-      return ids.map((hostId) => ({ hostId, online: !!routing.forHost(hostId) }));
+      return ids.map((hostId) => {
+        const route = routing.forHost(hostId);
+        return {
+          hostId,
+          online: !!route,
+          ...(route ? { epoch: connectionGeneration(route).epoch } : {}),
+        };
+      });
     const configured = await api.remoteConnections({ action: "catalog" });
     const connections = Array.isArray(configured)
       ? (configured as Array<{ hostId: string; displayName: string; autoConnect: boolean }>)
@@ -144,6 +161,7 @@ export async function rendererRemoteSession(
             .remoteConnections({ action: "state", hostId })
             .catch(() => ({ state: "error" }))) as { state: string };
         }
+        const route = routing.forHost(hostId);
         return {
           hostId,
           displayName:
@@ -152,7 +170,10 @@ export async function rendererRemoteSession(
               ? "Remote Control"
               : hostId.replace(/^remote-ssh-(?:discovered|codex-managed):/u, "")),
           state: status.state,
-          online: status.state === "connected" && !!routing.forHost(hostId),
+          online: status.state === "connected" && !!route,
+          ...(status.state === "connected" && route
+            ? { epoch: connectionGeneration(route).epoch }
+            : {}),
         };
       }),
     );
@@ -179,22 +200,87 @@ export async function rendererRemoteSession(
       throw connectionError("Remote connection changed during read", true);
     return result;
   };
-  let generation = state.managers.get(route);
-  if (!generation) {
-    generation = { epoch: crypto.randomUUID(), answered: new Set() };
-    state.managers.set(route, generation);
-  }
+  const generation = connectionGeneration(route);
   if ("epoch" in operation && operation.epoch !== generation.epoch)
     throw connectionError("Remote connection changed; refresh before operating", true);
-  if (operation.kind === "list")
+  if (operation.kind === "projectHarnesses") {
+    const result = (await read(() =>
+      manager.sendRequest("codexhost/harness/plugins/list", {}),
+    )) as {
+      plugins: Array<{ id: string; name: string; kind?: string }>;
+    };
+    return result.plugins
+      .filter((plugin) => plugin.kind !== "usage")
+      .map(({ id, name }) => ({ id, name }));
+  }
+  if (operation.kind === "inspectHarness")
     return read(() =>
+      manager.sendRequest("codexhost/harness/inspect", {
+        harnessId: operation.harnessId,
+        cwd: operation.cwd,
+      }),
+    );
+  if (operation.kind === "startSelected") {
+    const result = (await read(() =>
+      manager.sendRequest("thread/start", {
+        cwd: operation.cwd,
+        historyMode: "paginated",
+        model: operation.model,
+        ...(operation.serviceTier ? { serviceTier: operation.serviceTier } : {}),
+        ...(operation.reasoningEffort
+          ? { config: { model_reasoning_effort: operation.reasoningEffort } }
+          : {}),
+      }),
+    )) as { thread: { id: string } };
+    const owner = (await read(() =>
+      manager.sendRequest("codexhost/thread/inspect", {
+        threadId: result.thread.id,
+      }),
+    )) as { owner: string; harnessId?: string };
+    if (
+      (owner.owner === "codex"
+        ? "codex"
+        : owner.owner === "external"
+          ? owner.harnessId
+          : undefined) !== operation.harnessId
+    )
+      throw new Error("Remote Host did not confirm the selected Harness; no message was sent");
+    return result;
+  }
+  if (operation.kind === "create") {
+    const result = await manager.sendRequest("thread/start", {
+      cwd: operation.cwd,
+      historyMode: "paginated",
+    });
+    if (routing.forHost(operation.hostId) !== route)
+      throw connectionError("Remote connection changed during Thread creation", true);
+    return result;
+  }
+  if (operation.kind === "list") {
+    // An unlisted Thread can be persisted and unloaded between the two reads.
+    const loaded = operation.includeLoaded
+      ? ((await read(() => manager.sendRequest("thread/loaded/list", {}))) as { data: string[] })
+      : undefined;
+    const page = await read(() =>
       manager.sendRequest("thread/list", {
         cursor: operation.cursor,
         archived: operation.archived,
         limit: 100,
       }),
     );
+    return loaded ? { ...(page as object), loaded: loaded.data, epoch: generation.epoch } : page;
+  }
   const threadId = operation.threadId;
+  if (operation.kind === "delivery" || operation.kind === "queue")
+    return delivery(
+      operation,
+      (method, params) => read(() => manager.sendRequest(method, params)),
+      async (method, params) => {
+        if (routing.forHost(operation.hostId) !== route)
+          throw connectionError("Remote connection changed before dispatch", true);
+        return manager.sendRequest(method, params);
+      },
+    );
   if (operation.kind === "usage")
     return read(() => manager.sendRequest("codexhost/thread/usage/inspect", { threadId }));
   if (operation.kind === "status") {
@@ -204,7 +290,7 @@ export async function rendererRemoteSession(
         includeTurns: false,
       }),
     )) as {
-      thread?: { id?: string; status?: { type?: string } };
+      thread?: { id?: string; status?: { type?: string }; canAcceptDirectInput?: boolean };
     };
     if (result.thread?.id !== threadId || typeof result.thread.status?.type !== "string")
       throw new Error("Invalid remote Thread status");
@@ -223,7 +309,14 @@ export async function rendererRemoteSession(
       const latest = page.data[0];
       if (latest?.status === "inProgress" && typeof latest.id === "string") turnId = latest.id;
     }
-    return { threadId, status: result.thread.status.type, turnId, epoch: generation.epoch };
+    return {
+      threadId,
+      status: result.thread.status.type,
+      turnId,
+      epoch: generation.epoch,
+      supportsDelivery: true,
+      ...(result.thread.canAcceptDirectInput === false ? { readOnly: true } : {}),
+    };
   }
   const pendingRequests = async (): Promise<Request[]> => {
     const conversation = (await read(() => manager.getConversation?.(threadId))) as
@@ -251,20 +344,43 @@ export async function rendererRemoteSession(
         serviceTier?: unknown;
       };
     };
+    const readTurns = async (
+      cursor: string | null,
+      limit: number,
+      sortDirection: "asc" | "desc",
+    ) => {
+      try {
+        return (await read(() =>
+          manager.sendRequest("thread/turns/list", {
+            threadId,
+            cursor,
+            limit,
+            sortDirection,
+            itemsView: "full",
+          }),
+        )) as { data?: unknown[]; nextCursor?: string | null };
+      } catch (error) {
+        const rpc = error as { code?: number; jsonRpcCode?: number; message?: string } | null;
+        if (
+          cursor === null &&
+          (rpc?.jsonRpcCode ?? rpc?.code) === -32600 &&
+          rpc?.message ===
+            `thread ${threadId} is not materialized yet; thread/turns/list is unavailable before first user message`
+        )
+          return { data: [], nextCursor: null };
+        throw error;
+      }
+    };
     let nextCursor: string | null = null;
     const requestedPage = operation.page;
     if (header.thread?.historyMode === "paginated" && requestedPage) {
       let limit = requestedPage.limit ?? 20;
       for (;;) {
-        const response = (await read(() =>
-          manager.sendRequest("thread/turns/list", {
-            threadId,
-            cursor: requestedPage.cursor,
-            limit,
-            sortDirection: requestedPage.sortDirection ?? "asc",
-            itemsView: "full",
-          }),
-        )) as { data?: unknown[]; nextCursor?: string | null };
+        const response = await readTurns(
+          requestedPage.cursor,
+          limit,
+          requestedPage.sortDirection ?? "asc",
+        );
         if (
           !Array.isArray(response.data) ||
           (response.nextCursor !== null &&
@@ -297,15 +413,7 @@ export async function rendererRemoteSession(
       for (let page = 0; page < 100; page++) {
         if (routing.forHost(operation.hostId) !== route)
           throw connectionError("Remote connection changed during read", true);
-        const response = (await read(() =>
-          manager.sendRequest("thread/turns/list", {
-            threadId,
-            cursor,
-            limit: 50,
-            sortDirection: "asc",
-            itemsView: "full",
-          }),
-        )) as { data?: unknown[]; nextCursor?: string | null };
+        const response = await readTurns(cursor, 50, "asc");
         if (
           !Array.isArray(response.data) ||
           (response.nextCursor !== null && typeof response.nextCursor !== "string")
@@ -498,7 +606,13 @@ export async function rendererRemoteSession(
       let method: string, params: Record<string, unknown>;
       if (operation.modelId !== undefined) {
         method = "codexhost/thread/model/select";
-        params = { threadId, model: { id: operation.modelId } };
+        params = {
+          threadId,
+          model: {
+            id: operation.modelId,
+            ...(operation.serviceTier ? { serviceTier: operation.serviceTier } : {}),
+          },
+        };
       } else if (operation.thinkingOptionId !== undefined) {
         method = "codexhost/thread/thinking/select";
         params = { threadId, thinkingOptionId: operation.thinkingOptionId };
@@ -517,7 +631,20 @@ export async function rendererRemoteSession(
       }
     }
     case "prompt":
-      await manager.sendRequest("thread/resume", { threadId, excludeTurns: true });
+      try {
+        await manager.sendRequest("thread/resume", { threadId, excludeTurns: true });
+      } catch (error) {
+        // A newly allocated native Thread is already loaded but has no rollout to resume.
+        if (
+          (error as { message?: string } | null)?.message !==
+          `no rollout found for thread id ${threadId}`
+        )
+          throw error;
+        const loaded = (await read(() => manager.sendRequest("thread/loaded/list", {}))) as {
+          data: string[];
+        };
+        if (!loaded.data.includes(threadId)) throw error;
+      }
       if (routing.forHost(operation.hostId) !== route)
         throw new Error("Remote connection changed during resume");
       return manager.sendRequest("turn/start", {

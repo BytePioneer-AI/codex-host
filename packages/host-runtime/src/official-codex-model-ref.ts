@@ -1,7 +1,5 @@
 export {
-  encodeOfficialCodexModelRef,
-  decodeOfficialCodexModelRef,
-  decodeOfficialCodexModelSelection,
-  canonicalizeOfficialCodexModelRef,
-  OFFICIAL_CODEX_MODEL_REF_PREFIX,
+  officialCodexModelRef,
+  officialCodexModelSelection,
+  normalizeOfficialCodexModelRef,
 } from "@codexhost/shared-contracts";

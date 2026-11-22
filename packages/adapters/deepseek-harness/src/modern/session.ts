@@ -329,6 +329,13 @@ export interface ModernHarnessSessionOptions {
   readonly acceptedCorrelationTimeoutMs?: number;
   readonly onClosed?: () => void;
   readonly flushSession?: () => Promise<void>;
+  /**
+   * Returns the active fault teardown Promise for the owning managed `dsh web` connection, or
+   * `undefined` when no Adapter fault teardown has started. Resolution signals managed teardown
+   * completion (on Windows `.cmd` wrappers, `taskkill` status `128` after the wrapper exits cannot
+   * prove orphaned child processes have exited); rejection reports cleanup failure.
+   */
+  readonly managedProcessStop?: () => Promise<void> | undefined;
 }
 
 export interface ModernSessionControl extends ModernConfigurationControl {
@@ -369,6 +376,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   readonly #acceptedCorrelationTimeoutMs: number;
   readonly #onClosed: () => void;
   readonly #flushSession: (() => Promise<void>) | undefined;
+  readonly #managedProcessStop: (() => Promise<void> | undefined) | undefined;
   readonly #fallbackModel: HarnessModelRef;
   readonly #fallbackThinkingOptionId: HarnessThinkingOptionId | undefined;
   readonly #sessionDirectory: string | undefined;
@@ -405,7 +413,8 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   #closedNotified = false;
   #faulted?: HarnessError;
   #faultMayHaveNativeWork = false;
-  #closePromise?: Promise<void>;
+  #closeStopUnconfirmed = false;
+  #localClosePromise?: Promise<void>;
   readonly #pumpPromise: Promise<void>;
 
   constructor(options: ModernHarnessSessionOptions) {
@@ -458,6 +467,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     );
     this.#onClosed = options.onClosed ?? (() => undefined);
     this.#flushSession = options.flushSession;
+    this.#managedProcessStop = options.managedProcessStop;
     this.#events = [...options.journal.events];
     this.#historyBytes = journalHistoryBytes(this.#events, this.#maxHistoryBytes);
     this.#validator = new ModernEventValidator(this.#maxEvents, this.#profile);
@@ -469,6 +479,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     }
 
     const projection = projectModernHistory({
+      modelIndex: this.#modelCatalog.index,
       harnessId: this.harnessId,
       sessionId: this.#sessionId,
       events: this.#events,
@@ -629,18 +640,32 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   close(): Promise<void> {
-    const faultCleanup = this.#closePromise;
-    if (this.#faultMayHaveNativeWork && !this.#closing && faultCleanup) {
-      this.#closing = true;
-      // Fault cleanup retires local projection, but cannot certify native execution stopped.
-      this.#closePromise = faultCleanup.then(() => {
+    this.#localClosePromise ??= this.#performClose();
+    return this.#localClosePromise.then(
+      () => {
+        if (!this.#faultMayHaveNativeWork) return;
+        const processStop = this.#managedProcessStop?.();
+        if (processStop) return processStop;
+        // Local fault cleanup cannot certify that the managed DSH process tree exited.
         throw new Error(
           "DeepSeek Harness native execution stop was not confirmed before the Session fault",
         );
-      });
-    }
-    this.#closePromise ??= this.#performClose();
-    return this.#closePromise;
+      },
+      (error: unknown) => {
+        // A stop result can confirm release after a fault or unconfirmed cancellation,
+        // but cannot replace a failed persistence confirmation.
+        if (this.#faulted || this.#closeStopUnconfirmed) {
+          const processStop = this.#managedProcessStop?.();
+          if (processStop) return processStop;
+        }
+        throw error;
+      },
+    );
+  }
+
+  /** Adapter-owned local teardown drain after fault; never waits on managed process exit. */
+  async waitForFaultCleanup(): Promise<void> {
+    await this.#localClosePromise?.catch(() => undefined);
   }
 
   /** Adapter-owned transport/control fault convergence. */
@@ -2813,6 +2838,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   /** `media` also resolves local media paths, which only displayed history needs. */
   #project(media = false): ReturnType<typeof projectModernHistory> {
     return projectModernHistory({
+      modelIndex: this.#modelCatalog.index,
       harnessId: this.harnessId,
       sessionId: this.#sessionId,
       events: this.#events,
@@ -2861,7 +2887,8 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     }
     this.#settleAllPromptCorrelationGraces({ kind: "fault", error: failure });
     this.#abortOperations();
-    this.#closePromise ??= this.#performFault(failure, acceptedPending);
+    this.#nativeCloseTerminal?.();
+    this.#localClosePromise ??= this.#performFault(failure, acceptedPending);
   }
 
   async #performFault(failure: HarnessError, acceptedPending: PendingPrompt[]): Promise<void> {
@@ -2940,7 +2967,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const terminal = new Promise<void>((resolve) => {
         this.#nativeCloseTerminal = () => {
-          if (activeAtClose?.terminal) resolve();
+          if (activeAtClose?.terminal || this.#faulted) resolve();
         };
       });
       try {
@@ -3031,13 +3058,18 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       this.#channel.end();
     }
     await Promise.allSettled([this.#journal.close(), this.#pumpPromise]);
+    let flushFailure: unknown;
     try {
       await this.#flushSession?.();
     } catch (error) {
+      flushFailure = error;
       stopFailure ??= error;
     }
     this.#notifyClosed();
-    if (stopFailure) throw stopFailure;
+    if (stopFailure) {
+      this.#closeStopUnconfirmed = !flushFailure;
+      throw stopFailure;
+    }
   }
 
   #abortOperations(): void {

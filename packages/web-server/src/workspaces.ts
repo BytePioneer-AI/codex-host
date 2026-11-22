@@ -20,6 +20,8 @@ export interface WorkspaceView {
 }
 
 interface WorkspaceState {
+  /** Web-created assignments keyed by the Host-qualified Web Session ID. */
+  remoteProjectIds?: Record<string, string>;
   items: WorkspaceView[];
   archivedSessionIds: string[];
   pinnedSessionIds: string[];
@@ -163,6 +165,15 @@ export class Workspaces {
     this.data.writeJson(FILE, this.state);
   }
 
+  rememberRemoteProject(sessionId: string, projectId: string): void {
+    (this.state.remoteProjectIds ??= {})[sessionId] = projectId;
+    this.save();
+  }
+
+  remoteProjectId(sessionId: string): string | undefined {
+    return this.state.remoteProjectIds?.[sessionId];
+  }
+
   private broadcast(frame: unknown): void {
     for (const sink of this.followers) sink.push(frame);
   }
@@ -250,6 +261,21 @@ export class Workspaces {
     this.broadcast({ type: "pinned", pinnedSessionIds: this.pinnedSessionIds() });
   }
 
+  /** Read-only native Thread sections; only the app-server persists them. */
+  private referenceThreadSections: Array<{ id: string; name: string; threadIds: string[] }> = [];
+
+  hasThreadSection(id: string): boolean {
+    return this.referenceThreadSections.some((section) => section.id === id);
+  }
+
+  setReferenceThreadSections(
+    sections: Array<{ id: string; name: string; threadIds: string[] }>,
+  ): void {
+    if (JSON.stringify(sections) === JSON.stringify(this.referenceThreadSections)) return;
+    this.referenceThreadSections = sections;
+    this.broadcast({ type: "threadSections", threadSections: sections });
+  }
+
   /** Ephemeral Host archive projection; shared Threads never use legacy Web archive flags. */
   setReferenceArchives(ids: readonly string[]): void {
     const next = [...new Set(ids)];
@@ -277,7 +303,7 @@ export class Workspaces {
     if (this.remoteGroups.some((group) => group.workspaceId === workspaceId))
       throw new RpcError(
         "workspace/remote-read-only",
-        "Open an existing remote Thread; remote project creation and local tools are unavailable.",
+        "This operation requires a local workspace; remote project paths belong to their Host.",
       );
     return this.state.items.find((item) => item.workspaceId === workspaceId);
   }
@@ -615,6 +641,7 @@ export class Workspaces {
         value: {
           items: this.list(),
           pinnedSessionIds: this.pinnedSessionIds(),
+          threadSections: this.referenceThreadSections,
           archivedSessionIds: this.archivedSessionIds(),
           ...(this.referenceOnlyDefault ? { canStartProjectless: true } : {}),
         },

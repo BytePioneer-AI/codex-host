@@ -137,7 +137,9 @@ export type TurnScopedEvent = Exclude<
   {
     type:
       | "session.state.changed"
+      | "session.title.changed"
       | "session.usage.changed"
+      | "session.accountCredits.changed"
       | "usage.request"
       | "usage.request.timing"
       | "usage.history"
@@ -172,7 +174,11 @@ export interface ExternalTurnProjectionHost {
   readonly queue: Pick<ExternalThreadQueue, "pause">;
   /** Turns started by an explicit /compact command, announced when compaction begins. */
   readonly manualCompactionTurns: WeakMap<ExternalThread, HostTurnId>;
-  foldSettledItem(turn: JsonObject, projector: CodexTurnProjector, itemId: HostItemId): JsonObject;
+  foldSettledItem(
+    turn: JsonObject,
+    projector: CodexTurnProjector,
+    wireItemId: HostItemId,
+  ): JsonObject;
   outputFailed(thread: ExternalThread): void;
   submitPrewarm(thread: ExternalThread): Promise<boolean>;
   notifyExternalThreadStarted(thread: JsonObject): Promise<void>;
@@ -187,7 +193,6 @@ export interface ExternalTurnProjectionHost {
   resolveDesktopQuestion(interactionId: HostInteractionId, thread: ExternalThread): Promise<void>;
   retireSharedQuestions(thread: ExternalThread, turnId: HostTurnId): void;
   setThreadStatus(thread: ExternalThread, status: ExternalThreadStatus): Promise<void>;
-  forgetQueuedTurnStart(threadId: string): void;
   signalActiveWorkChanged(): void;
   hasRunningSubagents(parentThreadId: string): boolean;
   publishExternalQueue(threadId: string): Promise<void>;
@@ -290,6 +295,11 @@ export class ExternalTurnProjection {
       }
     }
     const result = projection.projector.project(event as ProjectableHostEvent);
+    // Desktop drops Turn events for unknown Threads. Submitted prewarms may still
+    // be waiting for their Native identity when their first Turn starts.
+    if (!thread.unsubmittedPrewarm && result.messages.length > 0) {
+      await this.#host.notifyExternalThreadStarted(thread.thread);
+    }
     if (
       event.type === "item.background.started" ||
       (projection.projector.completed &&
@@ -309,7 +319,6 @@ export class ExternalTurnProjection {
       await this.#host.setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
     if (event.type === "turn.completed") {
-      this.#host.forgetQueuedTurnStart(thread.id);
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
       const turn = projection.projector.snapshotTurn(result.completedTurn);
       if (thread.ephemeralTurnIds.delete(event.turnId)) {
@@ -373,7 +382,7 @@ export class ExternalTurnProjection {
         thread.turns[index] = this.#host.foldSettledItem(
           existing,
           projection.projector,
-          event.snapshot.item.itemId,
+          result.settledWireItemId ?? event.snapshot.item.itemId,
         );
         thread.historyHydrated = false;
       }
@@ -402,8 +411,7 @@ export class ExternalTurnProjection {
           ? { type: "active", activeFlags: [] }
           : { type: "idle" },
       );
-      const steering = this.#host.steering.hasPending(thread.id);
-      this.#host.steering.terminal(thread.id, event.turnId, event.outcome);
+      const steering = this.#host.steering.terminal(thread.id, event.turnId, event.outcome);
       if (!steering) {
         const status = event.outcome.status;
         if (status === "succeeded") void this.#host.startNextQueuedExternalTurn(thread);

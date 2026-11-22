@@ -66,12 +66,15 @@ export class HostConnectionService extends Service implements HostConnectionHand
    * Provide the Host half over the active HTTP server.
    * @param ctx - owning Connection plugin context.
    * @param trustedHosts - deployment authorities accepted by the Host/Origin fence.
-   * @param browserAuth - process token and persistent browser-session owner.
+   * @param browserAuth - process token and persistent browser-session owner;
+   *   undefined when the embedding Web already authenticates every forwarded
+   *   request itself (e.g. the DSH Web backend mounts Connection for its
+   *   shared Fetch handler, not for its own auth).
    */
   constructor(
     ctx: Context,
     private readonly trustedHosts: readonly string[],
-    private readonly browserAuth: BrowserAuth,
+    private readonly browserAuth: BrowserAuth | undefined,
   ) {
     super(ctx, "connection");
     this.operator = new OperatorPeer(ctx);
@@ -99,6 +102,11 @@ export class HostConnectionService extends Service implements HostConnectionHand
   /** Apply the configured Host/Origin fence, then browser authentication. */
   requestRejection(request: ConnectionTrustRequest): ConnectionRequestRejection {
     if (!isTrustedApiRequest(request, this.trustedHosts)) return 403;
+    // Without an embedded browser authentication owner the embedding Web has
+    // already authenticated the request before forwarding it; extensions that
+    // read this method must see an admitted trusted request, not a TypeError
+    // from a placeholder object.
+    if (this.browserAuth === undefined) return undefined;
     return this.browserAuth.isAuthenticated(request) ? undefined : 401;
   }
 
@@ -110,11 +118,18 @@ export class HostConnectionService extends Service implements HostConnectionHand
 
   /** Authenticate an index request through the process-token exchange or cookie. */
   authorizeIndex(request: ConnectionIndexRequest, response: ConnectionIndexResponse): boolean {
+    // Without an embedded browser authentication owner the embedding Web has
+    // already authenticated the request before forwarding it, so every index
+    // request is admitted as-is.
+    if (this.browserAuth === undefined) return true;
     return this.browserAuth.authorizeIndex(request, response);
   }
 
   /** Add this process's launch token to the clean application URL. */
   authenticatedUrl(baseUrl: string): string {
+    // Without an embedded browser authentication owner there is no launch
+    // token to add; the URL is already authenticated by the embedding Web.
+    if (this.browserAuth === undefined) return baseUrl;
     return this.browserAuth.authenticatedUrl(baseUrl);
   }
 

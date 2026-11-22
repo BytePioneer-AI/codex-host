@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
 import {
   createInstallationManager,
   fetchInstallationText,
@@ -7,7 +10,11 @@ import {
   runInstallationCommand,
   versionFromOutput,
 } from "@codexhost/harness-discovery";
-import { resolveDeepSeekCommand } from "./executable.js";
+import { deepSeekNpxVersionFile, resolveDeepSeekCommand } from "./executable.js";
+import {
+  DEEPSEEK_NEWEST_VERIFIED_VERSION,
+  DEEPSEEK_VERIFIED_VERSIONS,
+} from "./generation-selector.js";
 
 export function createDeepSeekInstallation(environment: NodeJS.ProcessEnv, command?: string) {
   let update: ((version: string) => Promise<void>) | undefined;
@@ -33,33 +40,45 @@ export function createDeepSeekInstallation(environment: NodeJS.ProcessEnv, comma
         : await npmInstallation(invocation.command, ["@deepseek-ai/dsh"], environment);
       update = isNpx
         ? async (version) => {
-            // Keep the same unversioned package spec as resolveDeepSeekCommand:
-            // npm keys its npx cache by package spec, so @latest or @<version>
-            // would populate a different cache instead of updating our launch path.
+            const specifier = `@deepseek-ai/dsh@${version}`;
             const output = await runInstallationCommand(
               invocation.command,
-              ["--yes", "--prefer-online", "@deepseek-ai/dsh", "--version"],
+              ["--yes", "--prefer-online", specifier, "--version"],
               environment,
               600_000,
             );
             if (versionFromOutput(output) !== version)
               throw new Error("DSH npx update did not select the requested version");
-            // Verify the exact offline invocation used by subsequent Host launches.
             const offline = await runInstallationCommand(
               invocation.command,
-              [...invocation.arguments, "--version"],
+              ["--offline", "--no-install", specifier, "--version"],
               environment,
             );
             if (versionFromOutput(offline) !== version)
               throw new Error("DSH offline npx launch still selects a different version");
+
+            // Publish the new launch spec only after its own cache is verified offline.
+            const destination = deepSeekNpxVersionFile(environment);
+            const temporary = `${destination}.${randomUUID()}.tmp`;
+            await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+            try {
+              await writeFile(temporary, `${version}\n`, { flag: "wx", mode: 0o600 });
+              await rename(temporary, destination);
+            } finally {
+              await rm(temporary, { force: true }).catch(() => undefined);
+            }
           }
         : npm?.update;
       const canUpdate = isNpx || (npm?.canUpdate ?? false);
+      const updateAvailable = newerInstallationVersion(currentVersion, latestVersion);
       return {
         currentVersion,
         latestVersion,
-        updateAvailable: newerInstallationVersion(currentVersion, latestVersion),
+        updateAvailable,
         canUpdate,
+        ...(updateAvailable && !DEEPSEEK_VERIFIED_VERSIONS.includes(latestVersion)
+          ? { latestVerifiedVersion: DEEPSEEK_NEWEST_VERIFIED_VERSION }
+          : {}),
         ...(!canUpdate
           ? {
               messageCode: "deepseek-original-installer",

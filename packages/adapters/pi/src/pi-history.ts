@@ -31,7 +31,7 @@ import {
 } from "./pi-message-item-id.js";
 import { piAssistantPhase, piAssistantWasAborted } from "./pi-assistant-outcome.js";
 import { PiSubagents } from "./pi-subagents.js";
-import { encodePiModelRef, type PiNativeModelRef } from "./pi-model-catalog.js";
+import { createPiModelIndex, type PiNativeModelRef } from "./pi-model-catalog.js";
 import { piHistoryNotices, type PiProgressMessage } from "./pi-progress.js";
 import { piToolCommand } from "./pi-tool-command.js";
 
@@ -43,6 +43,7 @@ export interface PiSessionHistory {
 export interface PiHistoryState {
   sessionId: string;
   model: PiNativeModelRef | null;
+  models?: readonly PiNativeModelRef[];
   /** Session cwd for file change paths; snapshots used only for Turn identity omit it. */
   cwd?: string;
 }
@@ -422,6 +423,11 @@ export function mapPiSnapshot(
   const turns: HostThreadSnapshot["turns"] = [];
   const starts = turnStarts(active);
   const byIndex = new Map(starts.map((start, ordinal) => [start.index, ordinal]));
+  const models = createPiModelIndex([
+    ...(state.models ?? []),
+    ...(state.model ? [state.model] : []),
+    ...active.map(modelChange).filter((model) => model !== null),
+  ]);
   let effectiveModel = state.model;
   for (let index = 0; index < active.length;) {
     const model = modelChange(active[index] as PiEntry);
@@ -459,7 +465,7 @@ export function mapPiSnapshot(
       input: messageRole(user) === "user" ? [{ type: "text", text: userText }] : [],
       items: snapshotItems(entries, identities, notices, outcome, subagents, state.cwd),
       outcome,
-      ...(effectiveModel ? { model: encodePiModelRef(effectiveModel) } : {}),
+      ...(effectiveModel ? { model: models.ref(effectiveModel) } : {}),
     });
     for (const entry of entries) {
       const changed = modelChange(entry);

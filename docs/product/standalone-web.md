@@ -1,6 +1,6 @@
 # 独立 Web 应用
 
-Web 与 Codex Desktop 在同一仓库开发，浏览器通过 `packages/web-server` 的独立 Node 服务访问。默认 `codexhost` 会话来源按需启动或连接独立的本地 CH 后台，复用 CH 的 Thread 目录、创建、读取和操作；Web 网关不直接读写 Mapping Store、不为外部 Threads 启动第二份 Adapter，也不登记 Desktop 进程所有权。主列表同时展示本机原生 Codex Threads 和共享外部 Harness Threads，不按原生会话的 Model Provider 排除会话。原生 Codex 保留原始 Thread ID，通过共享 Host 使用 Desktop 相同的官方 app-server；外部 Harness 继续由共享后台的外部 Thread 运行时执行。Web/PWA 共用响应式界面；尚无 iOS/Android 原生封装。
+Web 与 Codex Desktop 在同一仓库开发，浏览器通过 `packages/web-server` 的独立 Node 服务访问。默认 `codexhost` 会话来源按需启动或连接独立的本地 CH 后台，复用 CH 的 Thread 目录、创建、读取和操作；Web 网关不直接读写 Mapping Store、不为外部 Threads 启动第二份 Adapter，也不登记 Desktop 进程所有权。主列表同时展示本机原生 Codex Threads 和共享外部 Harness Threads，不按原生会话的 Model Provider 排除会话。原生 Codex 保留原始 Thread ID，通过共享 Host 使用 Desktop 相同的官方 app-server；外部 Harness 继续由共享后台的外部 Thread 运行时执行。Web 与 PWA 共用响应式界面；桌面端另有基于 Tauri v2 的独立原生桌面壳（`apps/desktop-shell/src-tauri`，与官方 Codex Desktop 共用同一本机 Host 与 Web 服务），Android 提供免应用商店的轻量原生 APK 壳（`apps/android-shell/`），iOS 继续使用 Safari「添加到主屏幕」独立窗口。
 
 ### 本机原生 Codex 会话
 
@@ -40,7 +40,7 @@ Web「设置 → 通用设置 → 显示」提供「背景图片」与「背景�
 
 Web「设置 → 通用设置」顶部的「应用与通知」分组提供「安装 CodexHost 应用」和通知入口。浏览器发出可安装事件后，点击「安装应用」唤起原生确认弹窗；确认、取消或失败后不重复使用同一次安装事件。用户接受安装请求不等于安装完成，只有浏览器确认完成或页面以独立应用模式运行时才显示已安装状态。安装事件由浏览器壳在异步加载插件前监听，设置入口通过客户端服务读取，不依赖设置页是否打开；浏览器没有提供事件、暂不满足条件或已在其他窗口安装时，显示「安装指引」，不据此断言浏览器不支持 PWA。
 
-指引按当前设备说明安卓浏览器菜单、iOS/iPadOS Safari「添加到主屏幕」、macOS Safari「添加到程序坞」及桌面 Chrome/Edge 的入口；应用内浏览器建议改用外部浏览器。PWA 需要 HTTPS 安全上下文，本机 localhost 除外；普通局域网或 Tailscale IP 的 HTTP 访问会提示使用「连接设备」中已配置的 HTTPS 地址，不自动改写或跳转地址。是否提供安装及其形式由浏览器决定，创建快捷方式不等于安装 PWA；页面不能绕过用户确认。安装不下载原生 CodexHost、不请求通知权限，也不提供离线 Agent 执行，仍需连接运行中的 Web 与 Host。原生 Desktop 壳不显示此入口。
+指引按当前设备说明安卓浏览器菜单与 GitHub Releases 轻量原生 APK 下载入口、iOS/iPadOS Safari「添加到主屏幕」、macOS Safari「添加到程序坞」及桌面 Chrome/Edge 的入口；应用内浏览器建议改用外部浏览器。PWA 需要 HTTPS 安全上下文，本机 localhost 除外；普通局域网或 Tailscale IP 的 HTTP 访问会提示使用「连接设备」中已配置的 HTTPS 地址，不自动改写或跳转地址。是否提供安装及其形式由浏览器决定，创建快捷方式不等于安装 PWA；页面不能绕过用户确认。安装不下载原生 CodexHost、不请求通知权限，也不提供离线 Agent 执行，仍需连接运行中的 Web 与 Host。在原生桌面壳内打开时（`window.__CODEXHOST_DESKTOP_SHELL__ === true`）隐藏此浏览器 PWA 安装入口。
 
 iOS/iPadOS 主屏幕模式通过 `display-mode: standalone` 与 `-webkit-touch-callout` 支持检测启用透明顶边兼容层：固定在视口顶边，高 6px、全宽，使用 `backdrop-filter: blur(0px)`（含 Safari 前缀），不绘制实色底、不改变下方像素、不占布局空间、不接收触摸，也不进入可访问性树。该尝试依据 WebKit `LocalFrameView::fixedContainerEdges` 对背景滤镜容器的识别路径，用于规避 [WebKit 329103](https://bugs.webkit.org/show_bug.cgi?id=329103) 所报告的系统顶部虚化侵入页面内容；零半径滤镜不能替换为 `none`，否则不再提供该识别条件。不改状态栏样式 meta、安全区留白或侧栏毛玻璃，也不隐藏系统时钟和电池区域。普通浏览器、Android 和桌面不启用。该模式的根画布固定为深色 `#151517`，为系统状态栏提供稳定的深色背景，不尝试随应用主题动态切换系统顶部。应用内部仍由 `body` 上的主题正常切换亮色、暗色或跟随系统；固定深色画布不向页面顶部增加实色覆盖条，也不触发刷新或重启。主题呈现器写入的 `theme-color` 插在页面静态默认值之前，浏览器取第一个匹配项，系统状态栏和浏览器外围随应用实际背景色变化，而不是只跟随系统深浅色；移除后回落到静态默认值。WebKit 主干的识别逻辑不保证已发布 iOS 的系统显示效果；固定深色顶部在亮／暗主题冷启动、运行中切换和横竖屏下的表现仍需 iOS 真机验收。
 
@@ -63,7 +63,7 @@ codexhost web --host 0.0.0.0 --port 4500
 codexhost stop
 ```
 
-`codexhost web` 确保 Host 和 Web 在后台运行，输出本机登录链接并打开浏览器；SSH 或无图形界面时只输出链接。`codexhost` 打开 Desktop，同时在后台拉起 Web；未安装 Desktop 时说明原因并改为打开 Web。`CODEXHOST_WEB_SERVICE=0` 禁用 `codexhost` 随启动拉起 Web 的行为。Windows 的后台监管进程和 Node 服务均不创建控制台窗口。启动命令成功返回后，关闭原始终端、GUI 或浏览器不停止或重启后台服务；电脑休眠时手机仍无法连接。
+`codexhost web` 确保 Host 和 Web 在后台运行，输出本机登录链接并打开浏览器；SSH 或无图形界面时只输出链接。无参运行 `codexhost` 按 `$CODEXHOST_DATA_DIR/launch-preferences-v1.json` 路由桌面入口：未安装官方 Codex Desktop 时优先启动原生桌面壳，两者均存在且尚未完成引导时弹出原生模式选择页，已选定官方 Desktop 时拉起官方界面并在后台准备 Web；无可用桌面壳时启动官方 Desktop 或回退打开会话 Web。`CODEXHOST_WEB_SERVICE=0` 禁用随官方 Desktop 自动拉起 Web 的行为。Windows 的后台监管进程和 Node 服务均不创建控制台窗口。启动命令成功返回后，关闭原始终端、GUI 或浏览器不停止或重启后台服务；电脑休眠时手机仍无法连接。
 
 首次后台启动默认监听 `127.0.0.1:4400`。`codexhost web` 的 `--host`、`--port`、`--public-url`、`--trusted-proxy`、`--relay` 经 Web 处理后保存在 `<web-data>/service.json`，后续启动沿用；传空字符串清除对应选项，无效值不覆盖保存内容。选项变化只重启 Web，Host 任务不受影响，Web 终端会断开。`--relay` 仅作为自建中转地址的开发覆盖，不改变官方中转卡片。本机连接设备页提供中转配置（无需重启）、首次启用设备访问和启动设置，见[远程访问](web-remote-access.md)。
 
@@ -73,14 +73,16 @@ Web 监管进程异常退出（崩溃或被强制结束）而其 Node 子进程�
 
 每代官方 Codex 后台记录创建时存在的 CLI 文件及 Windows 工具宿主。Desktop 重连若要保留正在运行的后台，会先检查这些文件；文件已被 Desktop 更新或清理移除时，连接返回固定的恢复提示和失败状态，现有 Host 与任务继续保留。确认可以中断后台任务后，运行 `codexhost stop` 再启动 CodexHost，以当前 Desktop 缓存重建后台。空闲后台仍可按原有规则切换到 Desktop 提供的新配置，新的一代重新记录实际使用的文件；可选工具宿主在创建时不存在则不要求补齐。检查覆盖文件缺失，不检测同一路径内的文件版本替换。
 
-`codexhost stop` 不确认，按 GUI、Web、Host、远程服务、Broker、Console 的顺序停止，并报告本地 Host 被中断的任务数；用户自行打开的 Desktop 不关闭。远程服务停止后，其他电脑重新连接可恢复远程服务。自启项、Serve 配置和会话数据保留。前台开发 Web 不属于此命令的停止范围，开发者使用下文的 `npm stop`。
+`codexhost stop` 不确认，按独立桌面壳（`codexhost-shell`）、托管 GUI、Web、Host、远程服务、Broker、Console 的顺序停止，并报告本地 Host 被中断的任务数；用户自行打开的 Desktop 不关闭。远程服务停止后，其他电脑重新连接可恢复远程服务。自启项、Serve 配置和会话数据保留。前台开发 Web 不属于此命令的停止范围，开发者使用下文的 `npm stop`。
 
 
-## Desktop 已有远程会话
+## Desktop 远程项目与会话
+
+本机和已连接的远程项目都可以从侧栏或顶部的「新会话」打开草稿。选择项目和 Harness 时，草稿只保存在 Web 内存中。远程草稿的 Harness 和模型目录来自目标 Host。首次发送文本时，Web 再次核对项目目录和连接，由目标 Host 创建 Thread 并确认 Harness 归属，然后将原生 ID 绑定到项目侧栏，提交首条消息。创建回执丢失时，刷新项目可查看远端已确认的会话。
 
 支持分页的远程历史首次通过所属远端 Host 的 `thread/turns/list` 按时间升序读取完整 items。Web 分次请求 Controller，Controller 根据响应体积缩小每页回合数，Web 收齐所有页后生成历史投影；传输层不裁剪工具输出，展示投影仍保留单段文本最多 100,000 字符的现有限制。已确认归属原生 Codex 的普通 Thread 后续从最新回合开始，每页读取一个回合，直到与已加载历史重叠，再替换对应尾部。旧前缀只短期复用：准备复用的前缀含未结束 Turn 或 Item、运行中的重叠回合进入终态，或距上次完整读取达到 30 秒时，完整分页重读。终态本身不代表历史永久不变。外部 Harness、只读子 Thread 和归属信息缺失的历史保持完整分页，因为它们可能在终态后补齐旧消息或文件变更。连接代次变化时重新读取完整历史，回退或替换的历史重新建立展示代次。每次续读绑定首次返回的连接代次；读取中途连接变化、重复游标或无效页面均拒绝整个读取，不发布部分历史。不支持分页的旧版远端继续使用官方整段读取接口。
 
-历史更新确认的运行状态立即发布到会话目录，发送后和结束后不等待下一次目录轮询。远程会话运行中拒绝再次启动回合。停止操作独立读取 Thread 状态和最新 Turn 元数据（`itemsView: "notLoaded"`），不依赖完整历史读取，仍受所属连接的排队与响应延迟影响；只有确认 Thread 活动且最新 Turn 正在运行时，才使用同一连接代次发送一次中断。历史中遗留的未完成标记不改变停止目标，读取失败或代次变化不触发猜测与重发。
+历史更新确认的运行状态立即发布到会话目录，发送后和结束后不等待下一次目录轮询。文本引导和停止操作独立读取 Thread 状态和最新 Turn 元数据（`itemsView: "notLoaded"`）。只有确认 Thread 活动且最新 Turn 正在运行时，才使用同一连接代次和 Turn ID 发送一次请求。历史中遗留的未完成标记不改变目标，读取失败或代次变化不触发猜测与重发。
 
 本机模型目录按 Harness 与 cwd 缓存 Host 的检查结果，失败结果也缓存，窗口焦点切换、打开菜单不会重新启动原生检查；Codex 的非就绪结果不缓存。任一入口（Desktop、Web、Console、CLI）以 `refresh: true` 完成检查后，Host 广播该 Harness 的检查失效事件；Web 丢弃该 Harness 的全部缓存并通知选择器重新读取本机目录，远程目录不受影响。Host 重连时清空全部缓存。设置页的连接检查只判断 Harness 能否启动，选择器需要读取完整模型目录，两者结果可能不同。
 
@@ -100,7 +102,15 @@ Linux 的 Web 与 Desktop 环境不同时，发现过程还检查当前用户标
 
 本机列表立即返回，远程目录在后台刷新并发布列表差量。侧栏归档/撤销使用原生远程归档操作，确认后合并本机与远程归档集合并广播给其他浏览器；已确认的远程归档行保留到本次 Web 进程结束，以便目录刷新后仍能撤销。远程归档状态不写入本机历史；完整远程归档目录的重新发现尚不提供。消息文本 `prompt.text` 最多为 8000 个 UTF-16 代码单元；发送前还会按完整 JSON 请求的 UTF-8 字节数（含转义、nonce 和分隔符）校验 16 KiB Controller 上限，两项限制均适用。超限提示缩短消息，不报告为已派发后的未知结果。
 
-支持读取会话、空闲时文本续聊、停止当前 Turn、改名、归档，以及 manager 提供原生 pending request 和 responder 时的命令/文件变更审批（允许一次、拒绝）。线程 resume 和 turn/start 使用原生 ID，owner 和鉴权由原生 manager 保持。缺少原生审批方法的旧 manager 或其他交互类型会提示回 Desktop 操作，不伪造权限能力。远程文件上传、终端、本机路径打开、fork、编辑、队列和 steering 不提供；远程原生 Codex Thread 支持模型与思考等级切换，权限切换仍不可用。远程 external Thread 的配置支持取决于所属 Harness 的原生能力。这些请求均不会落到本机 Thread handler。远程项目来自 Desktop 保存的 remote-projects，按 hostId+项目 ID 隔离；归属优先使用原生项目分配，其次在该主机已登记项目的路径范围内匹配，未匹配的会话保留在对应主机分组。分组仅用于只读导航，不把远程路径交给本机目录创建、终端或文件操作。
+支持读取会话、文本续聊、停止当前 Turn、改名、归档，以及 manager 提供原生 pending request 和 responder 时的命令/文件变更审批（允许一次、拒绝）。请求携带原生 ID，owner 和鉴权由所属远端连接的原生 manager 保持。缺少原生审批方法的旧 manager 或其他交互类型会提示回 Desktop 操作。远程原生 Codex Thread 支持模型与思考等级切换，权限切换仍不可用。远程 external Thread 的配置支持取决于所属 Harness 的原生能力。远程文件面板、文件上传、终端、本机路径打开、fork 和编辑历史仍需在 Desktop 处理。远程项目来自 Desktop 保存的 remote-projects，按 hostId+项目 ID 隔离；归属优先使用原生项目分配，其次在该主机已登记项目的路径范围内匹配，未匹配的会话保留在对应主机分组。已登记的项目支持在所属 Host 新建会话，未匹配项目的主机分组仅用于导航。远程路径始终由远端处理。
+
+Web 在「设置 → 通用 → 繁忙时的发送行为」保存自己的发送偏好。运行中点击发送或按 `Enter` 使用该偏好，`Ctrl+Enter`（macOS 为 `⌘+Enter`）仅为当前消息选择另一种方式。Desktop 的发送偏好由 Desktop 使用。
+
+本机和远程 Web 都将插话绑定至发送时显示的 Turn。原 Turn 在投递前结束或被替换时，Web 拒绝本次插话并保留草稿。
+
+「排队」通过所属远端的 `thread/queue/add` 接收文本，推进顺序由所属 Host 管理。空闲且队列为空时，外部 Harness 的 Host 在启动前确认新接收的条目仍是队首。原生 Codex 先确认入队，再用 `thread/queue/start` 启动刚接收的条目。启动回执丢失时，Web 保留入队确认并提示查看队列、勿重发。支持队列的旧版外部 Host 仍可接收消息，必要时在空闲后手动继续。旧 Controller 或远端明确不支持队列时，普通空闲发送可以使用原有续聊入口。显式排队会保留草稿并提示不支持。超时、断线和其他未确认的发送结果不触发兼容发送。
+
+「插话」通过 `turn/steer` 绑定点击发送时 Web 显示的 Turn。目标结束或切换时拒绝该次发送并保留草稿。外部 Harness 还要求所属 Host 明确支持严格目标校验。队列在 Web 显示预览，支持移除和空闲时继续指定条目。编辑队列和插话已排队的消息由 Desktop 提供。历史读取失败或退避期间，Web 仍独立刷新队列。读取队列失败时，已有预览标记为待刷新，队列操作暂停至下一次成功读取。
 
 列表每个 Host 最多读取 100 页，每页 100 条；超过限制不发布不完整目录。打开的会话每 1.5 秒读取不消费事件的绝对快照，多个浏览器独立可见；关闭跟随停止后续轮询，已开始的一次读取仍可完成。目录移除或重新建立的会话拒绝旧读取的成功和失败结果，旧结果不能恢复目录行或清除新会话的审批。快照保留原生 Turn/Item ID，单次 Controller 响应上限 16 MiB，其中历史页面使用最多 14 MiB，为 Thread 元数据和交互信息预留空间；完整历史可跨多次响应读取，总计最多 128 MiB 或 5,000 个 Turn。这是单次历史读取限制；已打开会话的内存视图保留到目录移除或 Web 进程退出，目前没有跨会话缓存总量淘汰。单个 Turn 无法拆入页面、旧版整段响应超限或完整历史达到总上限时，明确提示在 Codex Desktop 打开，不报告为 Desktop 连接失败。Controller 拒绝请求时提示核对连接配置、更新并重新打开 CodexHost Desktop；协议拒绝本身不证明版本过旧，原生游标错误保留实际原因，不回退到不完整历史。
 
@@ -265,6 +275,8 @@ Codex Desktop 的 codexhost 设置提供独立的“手机与浏览器”菜单�
 **页面隔离：** 所有入口页面带 `Content-Security-Policy: frame-ancestors 'self'`。中转请求按非本机 HTTPS 处理，忽略转发头，按 Relay 提供的手机 IP 限速并完整比较 HTTPS Origin；响应带仅限本子域的 HSTS。
 
 **用户文件：** 所有响应带 `X-Content-Type-Options: nosniff`。`GET/HEAD /api/file` 只返回 PNG/JPEG/WebP/GIF 栅格图片，按文件内容判断，HTML 和 SVG 一律拒绝。HTML 预览运行在 `sandbox="allow-scripts"` 的不透明来源 iframe 中，无法读取 Cookie 或调用 Web 接口。
+
+**已查看图片：** 原生 `imageView` 只从当前 Thread 中对应的 Turn 与 Item 获取路径，浏览器不能提交路径或伪造附件身份。投影时读取并记录图片内容的 SHA-256 指纹，后续读取必须与记录版本一致；首次投影失败的图片保持不可读，即使文件随后出现或路径被覆盖也不会返回新内容。连续图片按相邻已查看项组成可展开分组，文件变化或暂时不可读时保留占位，不重建原生历史。
 
 ## Web 数据目录
 
@@ -445,7 +457,7 @@ Host 在原生确认首轮开始后，将首条用户消息的文本规范化并
 
 执行 `cwd` 不等于用户选择了项目。Web 独立完整获取后台只读的 GUI 本地项目定义（`CODEX_HOME/.codex-global-state.json`），仅对已加载 Thread 获取项目归属与未选项目标记；没有已加载会话的项目仍显示，不能据此判断项目没有历史。Web 不维护项目会话的准确全量计数。旧 Host 沿用 CDP 读取项目元数据。按实际项目根目录补齐导航条目和项目名称：每个根目录只对应一个条目，作为某个项目首个根目录的目录显示该项目的名称（多个项目把同一目录列为首个根目录时取 GUI 顺序靠前的项目），其余根目录显示目录名；不同目录的项目名称相同时都显示完整路径；目录名与其他项目名称或目录名相同时，该目录改为显示完整路径。同一目录被多个项目共用不算冲突。本地项目根目录按 GUI 项目顺序（`project-order`）及项目内的根目录顺序列出，共用目录只在首次出现的位置显示，其他本地工作区排在后面。在 Web 中实际拖动改变工作区顺序后，本地排序会保存并优先于 GUI 顺序，新根目录追加在末尾。旧版保存的工作区列表若未记录是否手动排序，升级后默认跟随 GUI。已关联项目的 worktree 归到所属项目，实际执行 `cwd` 保持不变。未选项目的会话保留，但其自动生成的目录不单独列为项目；历史临时目录也不凭路径名称猜测项目。Web 明确选择并实际提交的工作区仍保留。项目元数据不可读取时报错，不回退到全部 `cwd`；目录查询不创建 GUI 项目、不设置 `projectId`、不执行 `mkdir`。显式新建工作区和首次提交无项目会话的目录分配是上述独立写入流程，不由历史分组查询触发。复用已有 `workspaces.json`，旧版本误生成的导航条目仅在共享视图隐藏，不删除记录、会话或物理目录。已经失效的真实项目目录仍能显示历史入口。现有独立模式的历史文件保持原样，不自动迁入共享来源。
 
-共享入口保留文本及图片路径附件发送、停止、原生模型/权限选择及改名。事件模式下，同一 Thread 的 GUI/Web 消息、普通工具进展、生效配置、审批和提问共用 Host 状态。Web 使用原生选项呈现交互，Host 校验并接受第一份有效响应，再通知其余端关闭；断线时撤下交互，重连只恢复仍待处理的请求，不因取消本地卡片而自动回答 Harness。Web/App 发出的用户输入也通过既有 Host 投影广播给 GUI，原生 `clientId` 用于撤下 Web 的乐观回显。已确认发送不会因随后读取失败变成“发送被拒绝”；连接中断导致结果未知时不自动重发。`turn/start` 的请求 ID 去重仅覆盖当前 Host 进程最近 256 条回执，不承诺跨重启或超窗口 exactly-once。同时发送不会另开会话并行执行：Shared Host 持有 Desktop/Web 共用的跟进队列；成功终态自动推进，停止、失败和 unknown outcome 暂停，用户可编辑、删除或显式继续单条消息。活跃窗口内的 Steer 由 Host 根据 Harness 当前能力选择原生同轮插入或 cancel → terminal → replacement；官方 Codex 保留原生 Steer 语义。Web 提交时已没有活动 Turn，则把输入送入同一 canonical 跟进队列；目标变化、已有替换在途等错误仍由 Host 校验并返回，不自动重试。Desktop 原有的 Steer 校验保持不变。
+共享入口保留文本及图片路径附件发送、停止、原生模型/权限选择及改名。事件模式下，同一 Thread 的 GUI/Web 消息、普通工具进展、生效配置、审批和提问共用 Host 状态。Web 使用原生选项呈现交互，Host 校验并接受第一份有效响应，再通知其余端关闭；断线时撤下交互，重连只恢复仍待处理的请求，不因取消本地卡片而自动回答 Harness。Web/App 发出的用户输入也通过既有 Host 投影广播给 GUI，原生 `clientId` 用于撤下 Web 的乐观回显。已确认发送不会因随后读取失败变成“发送被拒绝”；连接中断导致结果未知时不自动重发。`turn/start` 的请求 ID 去重仅覆盖当前 Host 进程最近 256 条回执，不承诺跨重启或超窗口 exactly-once。同时发送不会另开会话并行执行：Shared Host 持有 Desktop/Web 共用的跟进队列；成功终态自动推进，停止、失败和 unknown outcome 暂停，用户可编辑、删除或显式继续单条消息。Web 的 Steer 请求携带点击发送时的 Turn ID。官方 Codex 使用原生 Steer。外部 Harness 由 Host 对仍有效的目标执行原生同轮插入或 cancel → terminal → replacement。目标失效或已有替换在途时，Host 拒绝提交，Web 保留草稿。
 
 同轮插入的每条 `userMessage` 按 Host 条目顺序独立投影，保留各自的 `clientId → source.rpcId`，不把引导文本合入开头输入，也不借用其他消息的身份。实时追加复用当前历史流，首次快照、终态快照和较早历史页使用同样的顺序；重复快照不重复发布输入。已显示输入被替换、删除、重排，或新输入需要插到已显示输出之前时，通过既有 follow 重建恢复权威顺序。浏览器按每条发送身份清除本地回显，不把模型回复或 Turn 结束当成任意输入已送达的证据。引导输入或新叙述打开后续 Step 时，尚在运行的工具留在原 Step，直到真实工具结果到达再闭合，不把 Step 切换显示为工具中断。晚到的工具若需要插入已显示输入之前，或 Turn 结束后才收到工具及其完成结果，也通过历史重建恢复顺序和状态。
 
@@ -580,6 +592,8 @@ Web 侧栏与空会话主视觉共用 `ui-brand-official` 提供的原版“抱�
 ### 置顶与 Desktop 同步
 
 共享来源统一调用 Host 的 `codexhost/thread/pins/list` / `codexhost/thread/pins/set`，不调用 Renderer 的置顶服务。Host 复用原生 `threadSection/list`、`thread/list(section_position)` 和既有外部 Thread 分区移动逻辑；内置 Pinned 分区使用原生协议的保留标识，并通过原生查询确认存在，不按显示名称猜测或自行创建分区。官方 Codex Thread 的分区成员与顺序由官方 app-server 持久化，Host 通过 `thread/read` 确认当前分区，通过 `thread/section/move` 修改；外部 Thread 的归属与排序锚点只保存于 Mapping Store 的分区记录。`pins/list` 始终读取官方 Pinned 分区并合并可见外部成员，即使没有任何外部置顶也返回官方成员，和 Desktop 的原生 Thread 查询共用同一混合顺序；不修改 `.codex-global-state.json`，不创建镜像会话。展示未归档的本机官方 Codex 与 canonical external Threads 的置顶，不聚合远程 Threads。
+
+Web 侧栏读取本机 Codex Desktop 的自定义分区，并按原生成员顺序显示。置顶仍由内置分区管理。可通过会话菜单把未置顶、未归档的本机 Codex 会话移入自定义分区或移回无分区。分区名称在 Desktop 管理，Web 在刷新会话目录时同步。翻页首次读到的分区成员摘要会推送给其他已连接浏览器，普通分页新行只返回给发起请求的浏览器。
 
 分组、树形及平铺模式都将已置顶会话集中到顶部“置顶”分区，项目内不重复显示，不改变项目归属；项目折叠不影响置顶行。取消置顶后恢复普通列表位置；搜索仍只显示一个结果。置顶区为空时隐藏。行继续沿用 Harness 图标、菜单、键盘导航、当前选中态及手机触摸目标。置顶行不常驻显示独立图钉，也不为其预留时间旁的空位；支持悬停且使用精细指针时，悬停、键盘聚焦或菜单打开显示原有置顶/取消置顶快捷按钮。不支持悬停或使用粗指针时隐藏独立快捷按钮，常驻至少 44px 的 `…` 菜单入口，菜单提供「取消置顶」，不依赖长按；按输入能力而非屏幕宽度区分。暂不提供置顶区拖动排序，避免把浏览器本地顺序冒充 GUI 顺序。
 

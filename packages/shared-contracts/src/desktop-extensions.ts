@@ -1,14 +1,11 @@
 import { z } from "zod";
 import { installedPluginIdSchema, pluginRelativeResourceSchema } from "./harness-plugins.js";
-import { jsonObjectSchema, jsonValueSchema } from "./json-value.js";
 import type { ThreadTreeSnapshot } from "./thread-tree-watch.js";
 
 export const DESKTOP_EXTENSION_API_VERSION = 1;
 export const DESKTOP_EXTENSION_LIMIT = 64;
 // Memory guard for buffered ZIP downloads and uploads, not a package size target.
 export const DESKTOP_EXTENSION_ZIP_MAX_BYTES = 64 * 1024 * 1024;
-export const DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH =
-  4 * Math.ceil(DESKTOP_EXTENSION_ZIP_MAX_BYTES / 3);
 export const DESKTOP_EXTENSION_MANIFEST_MAX_BYTES = 128 * 1024;
 export const DESKTOP_EXTENSION_SCRIPT_MAX_BYTES = 2 * 1024 * 1024;
 export const DESKTOP_EXTENSION_STYLE_MAX_BYTES = 256 * 1024;
@@ -56,31 +53,8 @@ export function desktopExtensionScreenshotMimeType(resource: string) {
   }
 }
 
-export function desktopExtensionAssetMimeType(resource: string) {
-  switch (resource.match(/\.([^./]+)$/u)?.[1]?.toLowerCase()) {
-    case "gif":
-      return "image/gif";
-    case "svg":
-      return "image/svg+xml";
-    case "woff2":
-      return "font/woff2";
-    case "json":
-      return "application/json";
-    case "css":
-      return "text/css";
-    default:
-      return desktopExtensionScreenshotMimeType(resource);
-  }
-}
-
 const hasPortableSegments = (resource: string) =>
   resource.split("/").every((segment) => !/[. ]$/u.test(segment));
-
-export const desktopExtensionAssetPathSchema = pluginRelativeResourceSchema.refine(
-  (resource) =>
-    hasPortableSegments(resource) && desktopExtensionAssetMimeType(resource) !== undefined,
-  "Expected a relative Desktop extension asset path with a supported suffix",
-);
 
 const imagePathSchema = pluginRelativeResourceSchema.refine(
   (resource) =>
@@ -263,17 +237,6 @@ export function parseDesktopExtensionManifest(value: unknown): DesktopExtensionM
     : { state: "invalid", error: z.prettifyError(manifest.error) };
 }
 
-export const desktopExtensionConfigurationSchema = z.strictObject({
-  version: z.literal(1),
-  revision: z.int().nonnegative(),
-  enabled: z
-    .array(desktopExtensionIdSchema)
-    .max(DESKTOP_EXTENSION_LIMIT)
-    .refine((ids) => new Set(ids).size === ids.length, "Duplicate extension IDs"),
-  reloadToken: z.uuid().optional(),
-});
-export type DesktopExtensionConfiguration = z.infer<typeof desktopExtensionConfigurationSchema>;
-
 export const desktopExtensionHashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 export const desktopExtensionStatusSchema = z.strictObject({
   state: z.enum([
@@ -297,6 +260,7 @@ export const desktopExtensionsDiagnosticSchema = z.strictObject({
   updatedAt: z.iso.datetime(),
   handledReloadToken: z.uuid().optional(),
   extensions: z.record(z.string(), desktopExtensionStatusSchema),
+  surfaces: z.record(z.string(), desktopExtensionStatusSchema).optional(),
 });
 export type DesktopExtensionsDiagnostic = z.infer<typeof desktopExtensionsDiagnosticSchema>;
 
@@ -409,36 +373,7 @@ export function resolveDesktopExtensionSlots(
   return { active, conflicts };
 }
 
-export const DESKTOP_EXTENSIONS_ASSET_METHOD = "codexhost/desktop/extensions/asset";
-export const DESKTOP_EXTENSIONS_SETTINGS_GET_METHOD = "codexhost/desktop/extensions/settings/get";
-export const DESKTOP_EXTENSIONS_SETTINGS_SET_METHOD = "codexhost/desktop/extensions/settings/set";
-export const DESKTOP_EXTENSIONS_BACKEND_INVOKE_METHOD =
-  "codexhost/desktop/extensions/backend/invoke";
-
-const extensionIdParams = { id: desktopExtensionIdSchema };
-export const desktopExtensionsAssetParamsSchema = z.strictObject({
-  ...extensionIdParams,
-  path: desktopExtensionAssetPathSchema,
-});
-export const desktopExtensionsAssetResultSchema = z.strictObject({
-  mimeType: z.string(),
-  dataUrl: z.string(),
-});
-export const desktopExtensionsSettingsGetParamsSchema = z.strictObject(extensionIdParams);
-export const desktopExtensionsSettingsSetParamsSchema = z.strictObject({
-  ...extensionIdParams,
-  values: jsonObjectSchema,
-});
-export const desktopExtensionsSettingsResultSchema = z.strictObject({ values: jsonObjectSchema });
 export const desktopExtensionBackendMethodSchema = z.string().trim().min(1).max(128);
-export const desktopExtensionsBackendInvokeParamsSchema = z.strictObject({
-  ...extensionIdParams,
-  method: desktopExtensionBackendMethodSchema,
-  params: jsonValueSchema.optional(),
-});
-export const desktopExtensionsBackendInvokeResultSchema = z.strictObject({
-  result: jsonValueSchema,
-});
 
 export interface DesktopExtensionBackendContext {
   readonly extensionId: string;

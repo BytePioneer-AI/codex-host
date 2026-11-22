@@ -12,16 +12,21 @@
 - 连接优先级：完整的 Host 注入参数 → 显式客户端令牌／令牌文件 → 本机私有凭据。部分缺失的 Host 参数仍报错，不自动改变内部会话身份；显式令牌无效时不会回退到本机凭据。
 - HTTP／MCP 不免认证，仍须显式提供 Bearer 令牌。
 
-### 委派时选择 Codex 速度
+### 委派时选择 Model 与速度
 
-用 `codexhost harness inspect codex --format compact` 查看目标 Host 公布的档位。要指定 Ultrafast，将标有 `· Ultrafast` 的模型条目的 `id` 传给 `--model`。Thinking 由 `--thinking` 单独设置。例如，选择 `GPT-6.2-Sol · Ultrafast` 且该条目支持 `max` 时：
+`codexhost harness inspect <harness>` 列出的 Model ID 可直接复制给 `--model`。单值 Harness 是原生 Model ID；Pi、OMP、OpenCode、DeepSeek、ZCode 是 `<provider>/<model>`，例如 `codex-pi/gpt-5.6-sol`。加 `~fast` 或 `~ultrafast` 后缀表示对应档位。Thinking 由 `--thinking` 单独设置。例如：
 
 ```sh
 codexhost delegate start --harness codex --cwd "$PWD" \
-  --model '<Ultrafast 条目的 id>' --thinking max --task "执行任务"
+  --model 'gpt-6.2-sol~ultrafast' --thinking max --task "执行任务"
 ```
 
-普通 Fast 使用 `--format json` 中的 `fastModel.id`。可用档位由原生 Codex 模型目录决定。
+- 只有目标 Harness 的模型目录为该 Model 公布了相应档位时，后缀才表示档位；否则整个值按 Model ID 处理。
+- 含 `/`、`[`、空格或中文等字符的 Model ID 都可直接传入；在 shell 中用单引号括起，避免 `[` 被当作通配符。
+- 两个 Provider/Model 组合拼出同一字符串时，这几个条目在 `inspect` 中显示为编码 ID。
+- 后缀只是 CLI 简写。Host RPC、HTTP 和 MCP 传的是 Model Ref 对象：`id` 为原生 Model ID，档位放在可选的 `serviceTier`（`priority` 或 `ultrafast`）字段。
+- 旧版本的编码 Ref（如 `codex-model-v1.…`、`pi-model-v1.…`）照常接受，读取时转为当前 ID 加档位。
+- 设置页的委派默认模型显示目录名称；目录未加载时显示原生 Model ID 和档位。
 
 ### CLI 输出格式
 
@@ -83,7 +88,9 @@ Rarely needed: debugging only. Exports the full Thread to a JSON file and return
 
 ## 登记与认证
 
-- `codexhost client add <name>` 生成 `chc_` 开头的随机令牌并只输出一次；`client list` 列出名称与登记时间；`client remove` 立即吊销。
+- `codexhost client add <name> [--scope read|dispatch]` 生成 `chc_` 开头的随机令牌并只输出一次；`client list` 列出名称、登记时间与权限范围；`client set <name> --scope read|dispatch` 修改权限范围，令牌不变，下一次请求生效；`client remove` 立即吊销。
+- 权限范围在执行前由外部监听的路由统一检查，HTTP 与 MCP 工具走同一处。`read` 只能使用 `host info`、`project list`、`harness list`、`harness inspect`、`thread read`、`thread file`、`thread wait`、`thread watches`、`thread list` 与事件（`/v1/events`、`/v1/events/poll`）；其余路由（`delegate start`、`thread send`、`answer`、`export`、`cancel`、`watch`，以及以后新增的路由）需要 `dispatch`，`read` 客户端调用时返回 `FORBIDDEN`，不改变任何 Thread。
+- `client add` 默认 `dispatch`；权限范围出现之前登记的客户端与自动认证的 `local-cli` 都按 `dispatch` 处理。
 - 登记保存在 `<数据目录>/external-clients.json`（默认 `~/.codexhost`，仅当前用户可读写），只存加盐 SHA-256 摘要。CLI 直接编辑该文件，因此 Runtime 未运行时也能登记；Runtime 按文件修改时间重读，删除在下一次请求生效。
 - 名称只允许小写字母、数字和连字符，同时用作事件日志的目录名；`local-cli` 保留给自动认证的本机 CLI。
 
@@ -182,6 +189,6 @@ CLI 用 `codexhost thread file <thread> --path <文件> --offset <位置> --limi
 
 ## 边界
 
-- 本地监听只绑定 `127.0.0.1`，所有客户端拥有完整的委派权限；tailnet、公网、权限范围与 webhook 推送见 `openspec/changes/add-remote-client-access`。
+- 本地监听只绑定 `127.0.0.1`；tailnet、公网与 webhook 推送见 `openspec/changes/add-remote-client-access`。
 - 外部客户端发起的 Thread 与其他 Thread 一样出现在 Desktop 侧栏；按客户端分组尚未提供。
 - npm 安装没有自带 Node：在 codexhost 会话之外运行 `codexhost client`、`codexhost events` 等命令时，需要 `CODEXHOST_CLI_NODE_PATH` 指向一个 Node。MCP 与 HTTP 客户端不受影响。

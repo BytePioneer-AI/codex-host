@@ -11,7 +11,6 @@ import { contentText } from "./projection.js";
 import { codeBuddyChildId, codeBuddyDelegation } from "./subagent-tool.js";
 import { CodeBuddyChildObserver } from "./subagent-history.js";
 import type { locateCodeBuddyChild, readCodeBuddyChild } from "./subagent-history.js";
-import { nativeModel } from "./configuration.js";
 
 interface Delegation {
   turnId: HostTurnId;
@@ -229,7 +228,7 @@ export class CodeBuddySubagents {
           const reasoningEffort = snapshot.state?.effectiveThinkingOptionId;
           if (observedModel || reasoningEffort)
             this.#update(call, {
-              ...(observedModel ? { model: nativeModel(observedModel) } : {}),
+              ...(observedModel ? { model: observedModel.id } : {}),
               ...(reasoningEffort ? { reasoningEffort } : {}),
             });
           const signature = JSON.stringify(snapshot);

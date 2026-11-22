@@ -62,12 +62,13 @@ export interface RendererConnectionSnapshot {
 export interface RendererConnectionDiagnostics {
   snapshot(): RendererConnectionSnapshot;
   /** With a Host, wait for existing diagnostics and start a fresh post-mutation inspection. */
-  refresh(hostId?: string): Promise<void>;
+  refresh(hostId?: string, credentialAccess?: "retry"): Promise<void>;
   openWebUi?(hostId: string, agent: ExternalRendererAgent): Promise<void>;
   installation?(
     hostId: string,
     agent: ExternalRendererAgent,
     action: "check" | "update" | "install",
+    confirmedVersion?: string,
   ): Promise<HarnessInstallationState>;
   getLaunchSettings?(hostId: string, agent: ExternalRendererAgent): Promise<HarnessLaunchSettings>;
   setLaunchSettings?(
@@ -635,7 +636,7 @@ export function createConnectionsSettingsPage(
 
       const diagnostics = getDiagnostics();
       const versions = createConnectionVersions(
-        document,
+        context.content,
         messages,
         context.signal,
         diagnostics,
@@ -759,7 +760,7 @@ export function createConnectionsSettingsPage(
           createRendererSettingsIcon("diagnose", 16),
           messages.connectionRefreshing,
         );
-        void context.runLatest(() => diagnostics.refresh(), {
+        void context.runLatest(() => diagnostics.refresh(undefined, "retry"), {
           success() {
             installs?.clearErrors();
             pending = false;
@@ -943,7 +944,7 @@ export function createConnectionsSettingsPage(
               (item.agentSnapshot?.availability !== "notInstalled" &&
                 availability !== "installing" &&
                 availability !== "checking")
-                ? versions.get(selectedHost.hostId, agent)
+                ? versions.get(selectedHost.hostId, agent, item.name)
                 : undefined;
             return {
               ...item,

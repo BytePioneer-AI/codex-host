@@ -41,11 +41,16 @@ import {
   answerStep,
   checkpointStep,
   createNativeHistoryDatabase,
+  planModeSwitch,
   systemStep,
   textField,
   userStep,
-} from "./support/native-history-fixture.js";
-import { bytes, nanoseconds, writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
+} from "../../../../tests/fixtures/antigravity/native-history-fixture.js";
+import {
+  bytes,
+  nanoseconds,
+  writeNativeTimingDatabase,
+} from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
 
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof fs>();
@@ -2329,20 +2334,52 @@ describe("Antigravity idle wake Turns", () => {
     }
   });
 
-  it("observes updates after the wire response without publishing ahead of the user terminal", async () => {
+  it("publishes only the independent wake after the wire response, not a Plan continuation", async () => {
     const { session, outputs, transport, db } = await setup();
     try {
-      transport.handler?.onResponse?.();
-      systemStep(db, 2, "wake");
-      answerStep(db, 3, "wake answer", "wake");
-      transport.eventHandler?.({ type: "agent.text", text: "wake answer" });
+      const handler = required(transport.handler);
+      planModeSwitch(db, 2, "prompt", "execute");
+      answerStep(db, 5, "Execution reply", "execute");
+      handler.onEvent({ type: "tool.call", toolCallId: "plan-2", name: "exit_plan_mode" });
+      handler.onEvent({ type: "tool.update", toolCallId: "plan-2", status: "completed" });
+      handler.onEvent({ type: "agent.text", text: "Execution reply" });
+      handler.onResponse?.();
+      systemStep(db, 6, "wake", "task_notification");
+      answerStep(db, 7, "Wake reply", "wake");
+      transport.eventHandler?.({ type: "agent.text", text: "Wake reply" });
       expect(wakes(outputs)).toEqual([]);
       transport.result.resolve({ stopReason: "end_turn" });
-      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
-      const all = events(outputs);
-      expect(all.findIndex((event) => event.type === "turn.autonomous.completed")).toBeGreaterThan(
-        all.findIndex((event) => event.type === "turn.completed" && event.turnId === "t1"),
+      await vi.waitFor(() =>
+        expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
+          "wake-6",
+        ]),
       );
+      const all = events(outputs);
+      expect(
+        all.filter(({ type }) => type === "turn.completed" || type === "turn.autonomous.completed"),
+      ).toMatchObject([
+        { type: "turn.completed", turnId: "t1", nativeTurnRef: { nativeTurnKey: "turn-0" } },
+        {
+          type: "turn.autonomous.completed",
+          snapshot: { nativeTurnRef: { nativeTurnKey: "wake-6" } },
+        },
+      ]);
+      expect(all).toContainEqual(
+        expect.objectContaining({
+          type: "item.completed",
+          turnId: "t1",
+          snapshot: expect.objectContaining({
+            item: expect.objectContaining({ text: "Execution reply" }),
+          }),
+        }),
+      );
+      const snapshot = await session.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey)).toEqual([
+        "turn-0",
+        "wake-6",
+      ]);
+      expect(wakes(outputs)[0]?.snapshot).toEqual(snapshot.value.turns[1]);
       await session.close();
     } finally {
       db.close();
@@ -2367,8 +2404,12 @@ describe("Antigravity idle wake Turns", () => {
           ),
         ).toHaveLength(1),
       );
-      // A second checkpoint committed before turn end is also emitted once before turn.completed
-      checkpointStep(db, 6, { status: 7, run: "fg-run", error: "Compaction failed" });
+      // Only the foreground Plan continuation's checkpoint belongs to this ACP prompt.
+      planModeSwitch(db, 6, "fg-run", "execute");
+      checkpointStep(db, 9, { status: 7, run: "execute", error: "Compaction failed" });
+      systemStep(db, 10, "wake", "agent_message");
+      planModeSwitch(db, 11, "wake", "wake-execute");
+      checkpointStep(db, 14, { status: 3, run: "wake-execute" });
       transport.result.resolve({ stopReason: "end_turn" });
       await completed(outputs, "t1");
       const all = events(outputs);
@@ -2393,7 +2434,7 @@ describe("Antigravity idle wake Turns", () => {
           type: "item.completed",
           turnId: "t1",
           snapshot: {
-            item: { type: "contextCompaction", itemId: "checkpoint-6" },
+            item: { type: "contextCompaction", itemId: "checkpoint-9" },
             outcome: {
               status: "failed",
               error: { code: "nativeFailure", message: "Compaction failed", retryable: false },

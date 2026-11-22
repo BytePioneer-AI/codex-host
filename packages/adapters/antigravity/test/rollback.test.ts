@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { minimalTrajectoryMetadataBlob, nativeConversationDbPath } from "../src/fork.js";
 import { readNativeTurnCount } from "../src/native-turn-boundaries.js";
 import { rollbackAntigravityLastTurn } from "../src/rollback.js";
-import { integer } from "./support/native-timing-fixture.js";
+import { integer } from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
 const homes: string[] = [];
 afterEach(async () => {
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));

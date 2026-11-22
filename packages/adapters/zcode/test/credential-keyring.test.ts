@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { accountConfig } from "../src/account.js";
 import {
+  KeychainAccessDeferred,
   KeychainReadTimeout,
   readSystemCredentialKey,
   resetSystemCredentialKeyCache,
@@ -28,9 +29,9 @@ it.each(["darwin", "linux"])("handles only %s backend's own trailing newline", a
   if (platform === "darwin")
     execute.mockResolvedValueOnce({ stdout: '"/fixture/keychain"\n', stderr: "" });
   execute.mockResolvedValueOnce({ stdout: `${fixtureOutput}\n`, stderr: "" });
-  expect(await readSystemCredentialKey(account)).toBe(
-    platform === "linux" ? `${fixtureOutput}\n` : fixtureOutput,
-  );
+  expect(
+    await readSystemCredentialKey(account, platform === "darwin" ? { access: "allow" } : undefined),
+  ).toBe(platform === "linux" ? `${fixtureOutput}\n` : fixtureOutput);
 });
 
 it.each(["timeout", "missing"])(
@@ -72,6 +73,7 @@ it.each(["timeout", "missing"])(
           personalProviderConfig: "",
         },
         {},
+        { access: "allow" },
       );
       expect(config.credentialIssue).not.toContain(fixtureOutput);
       if (scenario === "timeout") {
@@ -93,9 +95,11 @@ it("deduplicates concurrent macOS Keychain reads and caches the resolved key in 
   vi.stubGlobal("process", { ...process, platform: "darwin" });
   execute.mockResolvedValueOnce({ stdout: '"/fixture/keychain"\n', stderr: "" });
   execute.mockResolvedValueOnce({ stdout: `${fixtureOutput}\n`, stderr: "" });
+  await expect(readSystemCredentialKey(account)).rejects.toBeInstanceOf(KeychainAccessDeferred);
+  expect(execute).not.toHaveBeenCalled();
   const [first, second] = await Promise.all([
-    readSystemCredentialKey(account),
-    readSystemCredentialKey(account),
+    readSystemCredentialKey(account, { access: "allow" }),
+    readSystemCredentialKey(account, { access: "allow" }),
   ]);
   expect(first).toBe(fixtureOutput);
   expect(second).toBe(fixtureOutput);
@@ -104,6 +108,37 @@ it("deduplicates concurrent macOS Keychain reads and caches the resolved key in 
   // Subsequent reads reuse the in-process cache without spawning /usr/bin/security again.
   expect(await readSystemCredentialKey(account)).toBe(fixtureOutput);
   expect(execute).toHaveBeenCalledTimes(2);
+});
+
+it("shares a stalled macOS Keychain read across passive and explicit callers", async () => {
+  vi.stubGlobal("process", { ...process, platform: "darwin" });
+  const started = Promise.withResolvers<undefined>();
+  const read = Promise.withResolvers<{ stdout: string }>();
+  execute.mockResolvedValueOnce({ stdout: '"/fixture/keychain"\n' });
+  execute.mockImplementationOnce(() => {
+    started.resolve(undefined);
+    return read.promise;
+  });
+  const earlierGesture = performance.now();
+  const passive = readSystemCredentialKey(account, { access: "allow" });
+  await started.promise;
+  const active = readSystemCredentialKey(account, { access: "retry" });
+  const completed = Promise.allSettled([passive, active]);
+  read.reject(
+    Object.assign(new Error("synthetic timeout"), { killed: true, code: null, signal: "SIGTERM" }),
+  );
+  expect(await completed).toEqual([
+    { status: "rejected", reason: expect.any(KeychainReadTimeout) },
+    { status: "rejected", reason: expect.any(KeychainReadTimeout) },
+  ]);
+  // Another workspace can reach the same account after the first lookup settled.
+  await expect(
+    readSystemCredentialKey(account, { access: "retry", requestedAt: earlierGesture }),
+  ).rejects.toBeInstanceOf(KeychainReadTimeout);
+  expect(execute.mock.calls.map(([, args]) => args[0])).toEqual([
+    "default-keychain",
+    "find-generic-password",
+  ]);
 });
 
 it.each(["denied", "timeout"] as const)(
@@ -119,11 +154,13 @@ it.each(["denied", "timeout"] as const)(
       }),
     );
     if (scenario === "timeout") {
-      await expect(readSystemCredentialKey(account)).rejects.toBeInstanceOf(KeychainReadTimeout);
+      await expect(readSystemCredentialKey(account, { access: "allow" })).rejects.toBeInstanceOf(
+        KeychainReadTimeout,
+      );
       // Repeated background reads return the cached timeout without spawning /usr/bin/security.
       await expect(readSystemCredentialKey(account)).rejects.toBeInstanceOf(KeychainReadTimeout);
     } else {
-      expect(await readSystemCredentialKey(account)).toBeUndefined();
+      expect(await readSystemCredentialKey(account, { access: "allow" })).toBeUndefined();
       expect(await readSystemCredentialKey(account)).toBeUndefined();
     }
     expect(execute).toHaveBeenCalledTimes(2);
@@ -131,7 +168,7 @@ it.each(["denied", "timeout"] as const)(
     // An explicit retry clears the negative cache and caches the key once allowed.
     execute.mockResolvedValueOnce({ stdout: '"/fixture/keychain"\n', stderr: "" });
     execute.mockResolvedValueOnce({ stdout: `${fixtureOutput}\n`, stderr: "" });
-    expect(await readSystemCredentialKey(account, { retryDenied: true })).toBe(fixtureOutput);
+    expect(await readSystemCredentialKey(account, { access: "retry" })).toBe(fixtureOutput);
     expect(execute).toHaveBeenCalledTimes(4);
     expect(await readSystemCredentialKey(account)).toBe(fixtureOutput);
     expect(execute).toHaveBeenCalledTimes(4);

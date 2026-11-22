@@ -15,6 +15,8 @@ import {
   statusTone,
   type DesktopExtensionAttentionDetail,
   type DesktopExtensionContentLocale,
+  type ExtensionCapabilityBadge,
+  type ExtensionPlatformBadge,
 } from "./desktop-extensions-shared.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
@@ -36,11 +38,14 @@ export interface DesktopExtensionCardOptions {
   readonly downloads?: number | undefined;
   readonly trustTier?: DesktopExtensionTrustTier | undefined;
   readonly statusState?: DesktopExtensionStatus["state"] | undefined;
-  readonly updateHint?: { readonly label: string; readonly title: string } | undefined;
+  readonly update?: { readonly label: string; readonly action: HTMLElement } | undefined;
   readonly description?: string | null | undefined;
   readonly attention?: DesktopExtensionAttentionDetail | null | undefined;
   readonly attentionId?: string | undefined;
   readonly categories?: readonly DesktopExtensionCategory[] | undefined;
+  readonly platformBadge: ExtensionPlatformBadge | null;
+  readonly capabilityBadges?: readonly ExtensionCapabilityBadge[] | undefined;
+  readonly secondaryAction?: HTMLElement | undefined;
   readonly actionControl: HTMLElement;
   readonly busy?: boolean | undefined;
   readonly dataset?: Readonly<Record<string, string | undefined>> | undefined;
@@ -52,12 +57,23 @@ function formatAuthorVersion(author: string | undefined, version: string | undef
   const trimmedAuthor = author?.trim();
   const trimmedVersion = version?.trim();
   if (trimmedAuthor) parts.push(trimmedAuthor);
-  if (trimmedVersion) parts.push(`v${trimmedVersion}`);
+  if (trimmedVersion) {
+    parts.push(trimmedVersion.startsWith("v") ? trimmedVersion : `v${trimmedVersion}`);
+  }
   return parts.join(" · ");
 }
 
 function shouldShowStatusDot(state: DesktopExtensionStatus["state"] | undefined): boolean {
   return Boolean(state && state !== "running" && state !== "disabled");
+}
+
+export function createExtensionPlatformBadgeElement(
+  document: Document,
+  badge: ExtensionPlatformBadge,
+): HTMLSpanElement {
+  const element = createEl(document, "span", "settings-extensions-cap-badge", badge.label);
+  element.dataset.platform = badge.kind;
+  return element;
 }
 
 export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions): HTMLElement {
@@ -76,11 +92,14 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     downloads,
     trustTier,
     statusState,
-    updateHint,
+    update,
     description,
     attention,
     attentionId,
     categories,
+    platformBadge,
+    capabilityBadges = [],
+    secondaryAction,
     actionControl,
     busy,
     dataset,
@@ -102,8 +121,9 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
   card.setAttribute("role", "button");
   card.setAttribute("aria-haspopup", "dialog");
   card.setAttribute("aria-label", formatMessage(copy.openDetailsLabel, { name: displayName }));
+  if (platformBadge) card.setAttribute("aria-description", platformBadge.label);
 
-  // Row 1: 32x32 rounded icon + Title + optional lightweight official shield / status dot on left, action control on right.
+  // Row 1: 32x32 rounded icon + Title + optional official shield / status dot on left, actions on right.
   const topRow = createEl(document, "div", "settings-extensions-card__top");
   const identity = createEl(document, "div", "settings-extensions-card__identity");
   const iconEl = createExtensionIconElement({
@@ -146,10 +166,26 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
   };
   actionWrap.addEventListener("click", stopTrigger);
   actionWrap.addEventListener("keydown", stopTrigger);
+  if (secondaryAction) {
+    actionWrap.append(secondaryAction);
+  }
   actionWrap.append(actionControl);
 
   topRow.append(identity, actionWrap);
   card.append(topRow);
+
+  // Platform and capability badges.
+  if (platformBadge || capabilityBadges.length > 0) {
+    const badgesRow = createEl(document, "div", "settings-extensions-card__capabilities");
+    if (platformBadge)
+      badgesRow.append(createExtensionPlatformBadgeElement(document, platformBadge));
+    for (const badge of capabilityBadges) {
+      const chip = createEl(document, "span", "settings-extensions-cap-badge", badge.label);
+      chip.dataset.capability = badge.kind;
+      badgesRow.append(chip);
+    }
+    card.append(badgesRow);
+  }
 
   // Row 2: 2-line clamped muted description + optional compact inline error callout.
   const trimmedDescription = description?.trim() ?? "";
@@ -178,8 +214,16 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     card.append(body);
   }
 
-  // Row 3: Borderless muted metadata line — "author · vX.Y.Z" (+ optional subtle update cue, star link & downloads) on left,
-  // plain middot-separated categories (up to 2) on right.
+  if (update) {
+    const row = createEl(document, "div", "settings-extensions-card__update");
+    row.dataset.updateAvailable = "true";
+    update.action.addEventListener("click", stopTrigger);
+    update.action.addEventListener("keydown", stopTrigger);
+    row.append(createEl(document, "span", "", update.label), update.action);
+    card.append(row);
+  }
+
+  // Borderless muted metadata line.
   const authorVersion = formatAuthorVersion(author, version);
   const repositoryHref = parseSafeRepositoryUrl(repository);
   const formattedStars = isValidExtensionCount(stars) ? formatExtensionCount(stars) : null;
@@ -192,41 +236,17 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
   const categoriesText = categoryLabels.join(" · ");
 
   let starControl: HTMLElement | null = null;
-  if (
-    authorVersion ||
-    updateHint ||
-    repositoryHref ||
-    formattedStars ||
-    formattedDownloads ||
-    categoriesText
-  ) {
+  if (authorVersion || repositoryHref || formattedStars || formattedDownloads || categoriesText) {
     const metaRow = createEl(document, "div", "settings-extensions-card__meta");
     const metaLeft = createEl(document, "div", "settings-extensions-card__meta-left");
-    if (authorVersion || updateHint) {
+    if (authorVersion) {
       const authorVersionWrap = createEl(
         document,
         "span",
         "settings-extensions-card__author-version",
+        authorVersion,
       );
-      if (authorVersion) {
-        authorVersionWrap.append(createEl(document, "span", "", authorVersion));
-      }
-      if (updateHint) {
-        const updateCue = createEl(
-          document,
-          "span",
-          "settings-extensions-card__update-cue",
-          authorVersion ? ` · ${updateHint.label}` : updateHint.label,
-        );
-        updateCue.dataset.updateAvailable = "true";
-        updateCue.title = updateHint.title;
-        authorVersionWrap.append(updateCue);
-      }
-      if (authorVersion) {
-        authorVersionWrap.title = updateHint
-          ? `${authorVersion} · ${updateHint.title}`
-          : authorVersion;
-      }
+      authorVersionWrap.title = authorVersion;
       metaLeft.append(authorVersionWrap);
     }
 

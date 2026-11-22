@@ -9,6 +9,7 @@ import {
   buildPreinstalledHarnessPlugins,
   preinstalledHarnessPluginPaths,
 } from "./harness-plugins.mjs";
+import { MACOS_SHELL_BUNDLE_PATHS, stageMacosShellBundle } from "./macos-shell-bundle.mjs";
 import { ensureNodeArchive, extractNodeRuntime } from "./node-runtime.mjs";
 import { parseReleaseArguments, releaseUsage } from "./targets.mjs";
 
@@ -151,6 +152,19 @@ export function releaseBuildCommands(
         "codexhost-updater",
       ],
     },
+    {
+      label: "Desktop shell release build",
+      command: "cargo",
+      args: [
+        "build",
+        "--manifest-path",
+        "apps/desktop-shell/src-tauri/Cargo.toml",
+        "--release",
+        "--locked",
+        "--target",
+        target.rustTarget,
+      ],
+    },
   ];
 }
 
@@ -286,6 +300,9 @@ export function expectedPayloadPaths(target) {
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
     ...(target.hostPlatform === "win32" ? ["libexec/codexhost-node-repl.exe"] : []),
+    ...(target.hostPlatform === "darwin"
+      ? MACOS_SHELL_BUNDLE_PATHS
+      : [`libexec/codexhost-shell${target.executableSuffix}`]),
     `libexec/codexhost-updater${target.executableSuffix}`,
     `runtime/node${target.executableSuffix}`,
     "app/codexhost-distribution.json",
@@ -426,6 +443,30 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     "release Updater",
     true,
   );
+  const shellOutput = path.join(
+    root,
+    "apps",
+    "desktop-shell",
+    "src-tauri",
+    "target",
+    target.rustTarget,
+    "release",
+  );
+  if (target.hostPlatform === "darwin") {
+    await stageMacosShellBundle({
+      sourceExecutable: path.join(shellOutput, `codexhost-shell${target.executableSuffix}`),
+      iconSource: path.join(root, "apps/desktop-shell/src-tauri/icons/AppIcon.icns"),
+      destinationRoot: payloadRoot,
+      version,
+    });
+  } else {
+    await copyReleaseFile(
+      path.join(shellOutput, `codexhost-shell${target.executableSuffix}`),
+      path.join(payloadRoot, "libexec", `codexhost-shell${target.executableSuffix}`),
+      "release Desktop shell",
+      true,
+    );
+  }
 
   await runCommand(
     {

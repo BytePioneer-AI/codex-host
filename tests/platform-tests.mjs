@@ -4,6 +4,8 @@ import path from "node:path";
 // Look for exercised OS behavior, not imports or generic environment settings.
 // Read-only fixture/source loading alone is platform-independent. Filesystem
 // mutations, metadata, persistence, native commands and explicit OS paths stay.
+// Loopback socket listening (node:net servers bound to 127.0.0.1) behaves the
+// same on every supported OS, so it is deliberately not platform-sensitive.
 const filesystemCalls =
   /\b(?:mkdtemp|mkdir|writeFile|appendFile|cp|copyFile|readdir|stat|lstat|realpath|access|rename|unlink|rm|rmdir|symlink|chmod|chown|exists)(?:Sync)?\s*\(|\b(?:openSync|watchFile)\s*\(|\b(?:fs|fsPromises)\.(?:open|watch|link)\s*\(/;
 const platformBehavior = [

@@ -46,6 +46,11 @@ function textField(fields: readonly ProtoField[], number: number): string {
   return bytes ? Buffer.from(bytes).toString("utf8") : "";
 }
 
+function isPlanContinuation(step: readonly ProtoField[]): boolean {
+  const eventType = textField(nested(step, 114), 3);
+  return eventType === "plan_mode_handoff" || eventType === "plan_mode_handback";
+}
+
 function argsValue(raw: string): unknown {
   if (!raw) return undefined;
   try {
@@ -124,6 +129,7 @@ export async function readNativeTurnCompactions(
     if (db.prepare("PRAGMA user_version").get()?.user_version !== 1) return [];
     const compactions: NativeCompactionEvent[] = [];
     let turnRun: string | undefined;
+    let latestRun: string | undefined;
     let seenUserInput = false;
     const wakeRuns = new Set<string>();
     for (const row of db
@@ -138,11 +144,24 @@ export async function readNativeTurnCompactions(
       const stepRun = textField(nested(step, 5), 12);
       if (row.step_type === USER_INPUT) {
         seenUserInput = true;
-        turnRun = stepRun;
+        turnRun = latestRun = stepRun;
         continue;
       }
       if (row.step_type === SYSTEM_MESSAGE) {
-        if (stepRun && stepRun !== turnRun) wakeRuns.add(stepRun);
+        if (!stepRun) continue;
+        if (stepRun !== turnRun) {
+          // A Plan switch in a background execution does not return ownership to the prompt.
+          if (
+            row.status === DONE &&
+            turnRun &&
+            latestRun === turnRun &&
+            !wakeRuns.has(stepRun) &&
+            isPlanContinuation(step)
+          ) {
+            turnRun = stepRun;
+          } else wakeRuns.add(stepRun);
+        }
+        latestRun = stepRun;
         continue;
       }
       if (!seenUserInput) continue;
@@ -189,19 +208,29 @@ export function decodeNativeHistory(db: DatabaseSync) {
     const nativeTurnIndex = row.step_type === USER_INPUT ? turnCount++ : undefined;
     if (nativeTurnIndex !== undefined) {
       endWake();
+      run = "";
       finalPlanner = false;
+      toolCalls.clear();
     }
     if (IN_FLIGHT.has(Number(row.status))) {
       if (wake && row.step_type === PLANNER_RESPONSE) wake.settled = false;
       continue;
     }
     const step = message(row.step_payload);
-    // CascadeStep.metadata.run_id is shared by input, system messages and planner
-    // steps in the same execution. A system message inside that run is not a boundary.
+    // CortexStepMetadata.execution_id is shared within an execution, not necessarily a Turn.
     const metadata = nested(step, 5);
     const stepRun = textField(metadata, 12);
     if (row.step_type === SYSTEM_MESSAGE) {
-      if (row.status === DONE && (stepRun ? stepRun !== run : finalPlanner)) {
+      if (row.status !== DONE) continue;
+      if (isPlanContinuation(step)) {
+        // Keep the owner (including an existing wake) across the Plan execution boundary.
+        if (stepRun) {
+          if (candidate) candidate.run = stepRun;
+          else run = stepRun;
+        }
+        continue;
+      }
+      if (stepRun ? stepRun !== run : finalPlanner) {
         if (candidate?.run !== stepRun) {
           // A new run's in-flight planner must not unsettle the previous wake.
           endWake();
@@ -228,7 +257,6 @@ export function decodeNativeHistory(db: DatabaseSync) {
           field.number === 3 && field.wire === 2 ? [textField(message(field.value), 1)] : [],
         );
         const text = items.join("") || textField(body, 2) || textField(body, 1);
-        toolCalls.clear();
         if (text && nativeTurnIndex !== undefined)
           events.push({ type: "user.text", text, nativeTurnIndex });
         break;

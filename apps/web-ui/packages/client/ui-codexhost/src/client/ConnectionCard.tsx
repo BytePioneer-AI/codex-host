@@ -3,7 +3,9 @@ import { useEffect, useId, useState, type ReactNode } from "react";
 import {
   Button,
   IconCheckCircleOutlineRegular,
+  IconCheckOutlineRegular,
   IconChevronDownOutlineRegular,
+  IconCopyOutlineRegular,
   IconShieldOutlineRegular,
   Menu,
 } from "@deepseek-ai/dsh-client-ui-primitives";
@@ -114,6 +116,11 @@ export function ConnectionCard({
   const canEnable = https
     ? tailscale.status === "not-serving"
     : direct && background !== undefined && !background.lan && selected !== undefined;
+  const primaryMethods: Kind[] = [
+    ...(relay !== undefined ? (["relay", "self-hosted-relay"] as const) : []),
+    "lan",
+    "tailscale-https",
+  ];
   const extras = PREFERENCE.filter(
     (kind) =>
       kind !== "lan" &&
@@ -140,6 +147,15 @@ export function ConnectionCard({
     return () => clearTimeout(timer);
   }, [copied]);
 
+  const routeActive = (kind: Kind): boolean => {
+    if (isRelay(kind)) return relay?.enabled === true && kind === relayMethod;
+    if (kind === "tailscale-https")
+      return networkUrls.some(
+        (entry) => entry.kind === "tailscale-https" || entry.kind === "tailscale",
+      );
+    return networkUrls.some((entry) => entry.kind === kind);
+  };
+
   const routeHost = (kind: Kind): string | undefined => {
     if (isRelay(kind)) return kind === "relay" ? relay?.officialHost : relay?.customHost;
     const shown =
@@ -154,33 +170,68 @@ export function ConnectionCard({
     return shown === undefined ? undefined : new URL(shown.url).host;
   };
 
-  const option = (kind: Kind): ReactNode => (
-    <label key={kind} className={css.route} data-connect-route={kind}>
-      <input
-        type="radio"
-        name={group}
-        checked={kind === "tailscale-https" ? tailscaleChosen : method === kind}
-        disabled={busy}
-        onChange={() => choose(kind)}
-      />
-      <span className={css.routeText}>
-        <span className={css.routeTitle}>
-          {t(LABEL[kind])}
-          {isRelay(kind) && relay?.enabled && kind === relayMethod && (
-            <span className={css.badge}>{t("connectDevices.relay.inUse")}</span>
-          )}
-          <span className={css.routeAddress}>{routeHost(kind)}</span>
+  const primaryOption = (kind: Kind): ReactNode => {
+    const checked = kind === "tailscale-https" ? tailscaleChosen : method === kind;
+    const active = routeActive(kind);
+    return (
+      <label
+        key={kind}
+        className={css.methodCard}
+        data-connect-route={kind}
+        data-selected={checked}
+      >
+        <input
+          type="radio"
+          name={group}
+          checked={checked}
+          disabled={busy}
+          onChange={() => choose(kind)}
+        />
+        <span className={css.routeText}>
+          <span className={css.routeTitle}>
+            <span>{t(LABEL[kind])}</span>
+            {active && <span className={css.activeBadge}>{t("connectDevices.relay.inUse")}</span>}
+          </span>
+          {(kind === "lan" ||
+            kind === "tailscale-https" ||
+            kind === "relay" ||
+            kind === "self-hosted-relay") && <span className={css.meta}>{t(SUMMARY[kind])}</span>}
         </span>
-        {(kind === "lan" ||
-          kind === "tailscale-https" ||
-          kind === "relay" ||
-          kind === "self-hosted-relay") && <span className={css.meta}>{t(SUMMARY[kind])}</span>}
-      </span>
-    </label>
-  );
+      </label>
+    );
+  };
+
+  const advancedOption = (kind: Kind): ReactNode => {
+    const checked = method === kind;
+    const active = routeActive(kind);
+    return (
+      <label key={kind} className={css.route} data-connect-route={kind}>
+        <input
+          type="radio"
+          name={group}
+          checked={checked}
+          disabled={busy}
+          onChange={() => choose(kind)}
+        />
+        <span className={css.routeText}>
+          <span className={css.routeTitle}>
+            <span>{t(LABEL[kind])}</span>
+            {active && <span className={css.activeBadge}>{t("connectDevices.relay.inUse")}</span>}
+            <span className={css.routeAddress}>{routeHost(kind)}</span>
+          </span>
+        </span>
+      </label>
+    );
+  };
 
   return (
-    <section className={css.connection}>
+    <section className={css.connectionCard}>
+      <div className={css.methodBar}>
+        <fieldset className={css.routes} disabled={busy}>
+          <legend className={css.fieldTitle}>{t("connectDevices.connectVia")}</legend>
+          <div className={css.methodGrid}>{primaryMethods.map(primaryOption)}</div>
+        </fieldset>
+      </div>
       <div className={css.connectionMain}>
         <div className={css.scan}>
           {link !== undefined ? (
@@ -200,7 +251,7 @@ export function ConnectionCard({
                 />
                 {!revealed && (
                   <span className={css.qrCover} aria-hidden="true">
-                    <IconShieldOutlineRegular size={24} />
+                    <IconShieldOutlineRegular size={22} />
                     <span>{t("connectDevices.viewQr")}</span>
                     <small>{t("connectDevices.qrSensitive")}</small>
                   </span>
@@ -210,12 +261,36 @@ export function ConnectionCard({
             </button>
           ) : (
             <div className={css.qrPlaceholder}>
-              <IconShieldOutlineRegular size={32} />
+              <IconShieldOutlineRegular size={28} />
               <span>{t(restarting ? "connectDevices.preparing" : "connectDevices.qrPending")}</span>
             </div>
           )}
         </div>
         <div className={css.connectionDetails}>
+          {tailscaleChosen && hasTailscaleIp && (
+            <div className={css.subRoutes} role="radiogroup" aria-label="Tailscale">
+              <label className={css.subRoute}>
+                <input
+                  type="radio"
+                  name={`${group}-tailscale`}
+                  checked={method === "tailscale-https"}
+                  disabled={busy}
+                  onChange={() => choose("tailscale-https")}
+                />
+                {t("connectDevices.tailscaleViaHttps")}
+              </label>
+              <label className={css.subRoute} data-connect-route="tailscale">
+                <input
+                  type="radio"
+                  name={`${group}-tailscale`}
+                  checked={method === "tailscale"}
+                  disabled={busy}
+                  onChange={() => choose("tailscale")}
+                />
+                {t("connectDevices.tailscaleViaIp")}
+              </label>
+            </div>
+          )}
           {isRelay(method) && relay !== undefined && (
             <RelayControl
               key={method}
@@ -315,115 +390,93 @@ export function ConnectionCard({
             </div>
           )}
           {selected !== undefined && (
-            <div className={css.addressRow}>
-              {choices.length > 1 ? (
-                <Menu
-                  open={addressMenu}
-                  onClose={() => setAddressMenu(false)}
-                  portal
-                  className={css.addressMenu}
-                  anchor={
-                    <button
-                      aria-label={t("connectDevices.address")}
-                      type="button"
-                      className={`${css.input} ${css.addressTrigger}`}
-                      disabled={busy}
-                      aria-haspopup="menu"
-                      aria-expanded={addressMenu}
-                      onClick={() => setAddressMenu(!addressMenu)}
-                    >
-                      <span>{new URL(selected.url).host}</span>
-                      <IconChevronDownOutlineRegular />
-                    </button>
-                  }
-                  items={choices.map((entry) => ({
-                    id: entry.url,
-                    label: new URL(entry.url).host,
-                  }))}
-                  selectedId={selected.url}
-                  onSelect={(url) => {
-                    setAddressMenu(false);
-                    setSelectedUrl(url);
-                  }}
-                />
-              ) : (
-                <input
-                  aria-label={t("connectDevices.address")}
-                  className={css.input}
-                  value={new URL(selected.url).host}
-                  readOnly
-                />
+            <div className={css.addressBlock}>
+              {ready && !isRelay(method) && hint === undefined && (
+                <p className={css.ready}>
+                  <IconCheckCircleOutlineRegular />
+                  <span>{t("connectDevices.readyHint")}</span>
+                </p>
               )}
-              {link !== undefined && (
-                <Button
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => {
-                    void copyText(link).then(
-                      () => setCopied("copied"),
-                      () => setCopied("failed"),
-                    );
-                  }}
-                >
-                  {t(
-                    copied === "copied"
-                      ? "connectDevices.copied"
-                      : copied === "failed"
-                        ? "connectDevices.copyFailed"
-                        : "connectDevices.copyLink",
-                  )}
-                </Button>
-              )}
+              <div className={css.addressRow}>
+                {choices.length > 1 ? (
+                  <Menu
+                    open={addressMenu}
+                    onClose={() => setAddressMenu(false)}
+                    portal
+                    className={css.addressMenu}
+                    anchor={
+                      <button
+                        aria-label={t("connectDevices.address")}
+                        type="button"
+                        className={`${css.input} ${css.addressTrigger}`}
+                        disabled={busy}
+                        aria-haspopup="menu"
+                        aria-expanded={addressMenu}
+                        onClick={() => setAddressMenu(!addressMenu)}
+                      >
+                        <span>{new URL(selected.url).host}</span>
+                        <IconChevronDownOutlineRegular />
+                      </button>
+                    }
+                    items={choices.map((entry) => ({
+                      id: entry.url,
+                      label: new URL(entry.url).host,
+                    }))}
+                    selectedId={selected.url}
+                    onSelect={(url) => {
+                      setAddressMenu(false);
+                      setSelectedUrl(url);
+                    }}
+                  />
+                ) : (
+                  <input
+                    aria-label={t("connectDevices.address")}
+                    className={css.input}
+                    value={new URL(selected.url).host}
+                    readOnly
+                  />
+                )}
+                {link !== undefined && (
+                  <Button
+                    variant="primary"
+                    disabled={busy}
+                    onClick={() => {
+                      void copyText(link).then(
+                        () => setCopied("copied"),
+                        () => setCopied("failed"),
+                      );
+                    }}
+                  >
+                    {copied === "copied" ? (
+                      <IconCheckOutlineRegular size={14} />
+                    ) : (
+                      <IconCopyOutlineRegular size={14} />
+                    )}
+                    <span>
+                      {t(
+                        copied === "copied"
+                          ? "connectDevices.copied"
+                          : copied === "failed"
+                            ? "connectDevices.copyFailed"
+                            : "connectDevices.copyLink",
+                      )}
+                    </span>
+                  </Button>
+                )}
+              </div>
             </div>
           )}
           {method === "self-hosted-relay" && relay !== undefined && <SelfHostedRelayHelp t={t} />}
         </div>
       </div>
-      <div className={css.routePanel}>
-        <fieldset className={css.routes} disabled={busy}>
-          <legend className={css.fieldTitle}>{t("connectDevices.connectVia")}</legend>
-          <div className={css.routeGroup}>
-            {relay !== undefined && (
-              <>
-                {option("relay")}
-                {option("self-hosted-relay")}
-              </>
-            )}
-            <div className={css.routeFamily}>
-              {option("tailscale-https")}
-              {tailscaleChosen && hasTailscaleIp && (
-                <div className={css.subRoutes}>
-                  <label className={css.subRoute}>
-                    <input
-                      type="radio"
-                      name={`${group}-tailscale`}
-                      checked={method === "tailscale-https"}
-                      onChange={() => choose("tailscale-https")}
-                    />
-                    {t("connectDevices.tailscaleViaHttps")}
-                  </label>
-                  <label className={css.subRoute} data-connect-route="tailscale">
-                    <input
-                      type="radio"
-                      name={`${group}-tailscale`}
-                      checked={method === "tailscale"}
-                      onChange={() => choose("tailscale")}
-                    />
-                    {t("connectDevices.tailscaleViaIp")}
-                  </label>
-                </div>
-              )}
-            </div>
-            {option("lan")}
-          </div>
-        </fieldset>
-        {extras.length > 0 && (
+      {extras.length > 0 && (
+        <div className={css.moreMethods}>
           <details className={css.other} open={extras.includes(method) ? true : undefined}>
             <summary>{t("connectDevices.otherMethods")}</summary>
-            <div className={css.extraRoutes}>{extras.map(option)}</div>
+            <div className={css.extraRoutes}>{extras.map(advancedOption)}</div>
           </details>
-        )}
-      </div>
+        </div>
+      )}
     </section>
   );
 }

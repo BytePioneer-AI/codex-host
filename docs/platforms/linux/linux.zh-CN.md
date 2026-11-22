@@ -17,6 +17,8 @@ Linux 版本支持 x86-64 和 ARM64 上的官方 ChatGPT `.deb` 和 `.rpm` 包�
 
 运行时要求 `/proc` 已挂载，并且 Linux 支持 `pidfd`。目前不支持 Snap、Flatpak、AppImage、本地或迁移后的安装、包装脚本或 `alternatives` 启动器、跨架构执行，以及 codexhost Linux installer 包。codexhost 在 Linux 上通过 npm 安装和更新。
 
+启动 Host 和 Web 服务时，`HOME` 必须设为绝对路径。设置了 `XDG_RUNTIME_DIR` 和自定义数据目录时也一样。服务在 `$HOME/.codexhost/independent-processes` 下登记监管进程，npm 更新在 `$HOME/.codexhost/updates` 中保存状态。
+
 ## Renderer 兼容性
 
 Renderer 集成失败会在后台恢复，不会显示兼容弹窗，也不会写入本地警告确认。外部 Agent 集成不可用时，受管 Desktop 仍可通过官方 Codex 路由使用。Controller 的首次握手仍会对格式错误或不受支持的 readiness 输出按失败关闭处理。

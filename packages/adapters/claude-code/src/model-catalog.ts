@@ -3,9 +3,10 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { normalizeLegacyBase64ModelRef } from "@codexhost/harness-adapter";
 import {
   HARNESS_MODEL_LABEL_MAX_LENGTH,
-  HARNESS_MODEL_REF_MAX_LENGTH,
+  catalogModelForRef,
   harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessResolvedModelLabelSchema,
@@ -21,11 +22,10 @@ import {
   claudeSupportedThinkingOptionIds,
 } from "./thinking-options.js";
 
-const CLAUDE_MODEL_REF_PREFIX = "claude-model-v1.";
-const CLAUDE_MODEL_VALUE_MAX_LENGTH = 512;
+const LEGACY_MODEL_REF_PREFIX = "claude-model-v1.";
 
 const modelInfoSchema = z.object({
-  value: z.string().trim().min(1).max(CLAUDE_MODEL_VALUE_MAX_LENGTH),
+  value: harnessModelRefSchema.shape.id,
   displayName: z.string().trim().min(1).max(HARNESS_MODEL_LABEL_MAX_LENGTH),
   description: z.string().trim().max(HARNESS_MODEL_LABEL_MAX_LENGTH).optional(),
   resolvedModel: harnessResolvedModelLabelSchema.optional(),
@@ -38,7 +38,7 @@ const modelInfoSchema = z.object({
 });
 
 const modelPickerOptionSchema = z.object({
-  model: z.string().trim().min(1).max(CLAUDE_MODEL_VALUE_MAX_LENGTH),
+  model: harnessModelRefSchema.shape.id,
   label: z.string().trim().min(1).max(HARNESS_MODEL_LABEL_MAX_LENGTH).optional(),
   description: z.string().trim().min(1).max(HARNESS_MODEL_LABEL_MAX_LENGTH).optional(),
   behavesAs: z.string().trim().min(1).max(HARNESS_MODEL_LABEL_MAX_LENGTH).optional(),
@@ -72,34 +72,41 @@ export interface NormalizedClaudeModelCatalog {
   defaultModel: HarnessModelRef;
 }
 
-export const CLAUDE_DEFAULT_MODEL_REF = encodeClaudeModelRef("default");
-
-export function encodeClaudeModelRef(value: string): HarnessModelRef {
-  const parsed = z.string().trim().min(1).max(CLAUDE_MODEL_VALUE_MAX_LENGTH).parse(value);
-  const id = `${CLAUDE_MODEL_REF_PREFIX}${Buffer.from(parsed, "utf8").toString("base64url")}`;
-  if (id.length > HARNESS_MODEL_REF_MAX_LENGTH) {
-    throw new Error("Claude Code Model value is too long for a Model Ref");
-  }
+export function claudeModelRef(id: string): HarnessModelRef {
   return harnessModelRefSchema.parse({ id });
 }
 
-export function decodeClaudeModelRef(ref: HarnessModelRef): string | undefined {
-  const parsed = harnessModelRefSchema.parse(ref);
-  if (!parsed.id.startsWith(CLAUDE_MODEL_REF_PREFIX)) {
-    throw new Error("Claude Code Model Ref belongs to another Adapter");
+export const CLAUDE_DEFAULT_MODEL_REF = claudeModelRef("default");
+
+export function claudeModelValue(ref: HarnessModelRef): string | undefined {
+  const { id } = harnessModelRefSchema.parse(ref);
+  return id === "default" ? undefined : id;
+}
+
+export function normalizeStoredClaudeModelRef(
+  ref: HarnessModelRef,
+  catalog: HarnessModelCatalog,
+): HarnessModelRef | undefined {
+  if (catalogModelForRef(catalog, ref)) return ref;
+  if (ref.serviceTier) return undefined;
+  const legacy = normalizeLegacyBase64ModelRef(ref, catalog, LEGACY_MODEL_REF_PREFIX);
+  if (legacy) return legacy;
+
+  let id: string = ref.id;
+  if (id.startsWith(LEGACY_MODEL_REF_PREFIX)) {
+    const encoded = id.slice(LEGACY_MODEL_REF_PREFIX.length);
+    id = Buffer.from(encoded, "base64url").toString("utf8");
+    if (Buffer.from(id).toString("base64url") !== encoded) return undefined;
   }
-  const encoded = parsed.id.slice(CLAUDE_MODEL_REF_PREFIX.length);
-  if (encoded.length === 0) throw new Error("Claude Code Model Ref is empty");
-  let value: string;
-  try {
-    value = Buffer.from(encoded, "base64url").toString("utf8");
-  } catch {
-    throw new Error("Claude Code Model Ref is malformed");
-  }
-  if (encodeClaudeModelRef(value).id !== parsed.id) {
-    throw new Error("Claude Code Model Ref is not canonical");
-  }
-  return value === "default" ? undefined : value;
+  const alias = /^(?:claude-)?fable(?: *(\[1m\]))?$/iu.exec(id);
+  if (!alias) return undefined;
+
+  // A missing alias can only be restored to a unique catalog entry of the same variant.
+  const matches = catalog.models.filter(({ ref }) => {
+    const fable = /^claude-fable-\d+(?:-\d+)*(?: *(\[1m\]))?$/iu.exec(ref.id);
+    return !ref.serviceTier && fable && Boolean(fable[1]) === Boolean(alias[1]);
+  });
+  return matches.length === 1 ? matches[0]?.ref : undefined;
 }
 
 export function resolveClaudeConfigDirectory(environment: NodeJS.ProcessEnv = process.env): string {
@@ -189,7 +196,7 @@ function optionToModelInfo(option: ClaudeModelPickerOption): Record<string, unkn
 function readModelValue(row: unknown): string | undefined {
   if (row === null || typeof row !== "object" || Array.isArray(row)) return undefined;
   const value = (row as Record<string, unknown>).value;
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function mergeOptionOntoSdkRow(
@@ -306,7 +313,7 @@ function normalizeRows(value: unknown): Array<z.infer<typeof modelInfoSchema>> {
   }
   if (byValue.size === 0) throw new Error("Claude Code Model catalog is empty");
   if (!byValue.has("default")) {
-    byValue.set("default", { value: "default", displayName: "Default" });
+    byValue.set("default", { value: CLAUDE_DEFAULT_MODEL_REF.id, displayName: "Default" });
   }
   return [...byValue.values()];
 }
@@ -319,7 +326,7 @@ export function normalizeClaudeModelCatalog(
   const labels = uniqueDisplayLabels(rows);
   const models: HarnessModel[] = rows.map((row) => {
     return {
-      ref: encodeClaudeModelRef(row.value),
+      ref: claudeModelRef(row.value),
       label: labels.get(row.value) ?? row.displayName,
       ...(row.resolvedModel ? { resolvedModelLabel: row.resolvedModel } : {}),
       supportedThinkingOptionIds: claudeSupportedThinkingOptionIds(row),

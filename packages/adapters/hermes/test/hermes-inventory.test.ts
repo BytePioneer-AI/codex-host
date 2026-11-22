@@ -9,7 +9,8 @@ import {
   inventoryPythonCandidates,
   venvPythonFromShim,
 } from "../src/hermes-inventory.js";
-import { encodeHermesModelRef, projectHermesModelState } from "../src/hermes-models.js";
+import { harnessModelRefSchema } from "@codexhost/shared-contracts";
+import { normalizeStoredHermesModelRef, projectHermesModelState } from "../src/hermes-models.js";
 
 describe("Hermes model catalog", () => {
   it("labels each model as Provider / model", () => {
@@ -45,11 +46,14 @@ describe("Hermes model catalog", () => {
       ],
       currentModelId: "custom:pi-openai:gpt-5.6-sol",
     });
-    expect(catalog.defaultModel).toEqual(encodeHermesModelRef("custom:pi-openai:gpt-5.6-sol"));
+    const id = "custom:pi-openai:gpt-5.6-sol";
+    expect(catalog.defaultModel).toEqual({ id });
+    const saved = harnessModelRefSchema.parse({ id: Buffer.from(id).toString("base64url") });
+    expect(
+      normalizeStoredHermesModelRef(saved, { models: catalog.models, thinkingOptions: [] }),
+    ).toEqual({ id });
     expect(catalog.models.map(({ ref }) => ref)).toContainEqual(catalog.defaultModel);
-    expect(catalog.models.map(({ ref }) => ref)).toContainEqual(
-      encodeHermesModelRef("custom:pi-openai:gpt-5.6-sol"),
-    );
+    expect(catalog.models.map(({ ref }) => ref)).toContainEqual({ id });
   });
 
   it("never substitutes a historical alias for the native route", () => {
@@ -64,7 +68,7 @@ describe("Hermes model catalog", () => {
       ],
       currentModelId: "custom:custom:sol-gateway:Model:Beta",
     });
-    expect(catalog.defaultModel).toEqual(encodeHermesModelRef("custom:sol-gateway:Model:Beta"));
+    expect(catalog.defaultModel).toEqual({ id: "custom:sol-gateway:Model:Beta" });
   });
 
   it("rejects ambiguous defaults instead of choosing the last provider", () => {
@@ -179,7 +183,7 @@ describe("Hermes Session Model projection", () => {
         currentModelId: "zai:glm-5.3",
       }),
     ).toEqual({
-      effectiveModel: encodeHermesModelRef("zai:glm-5.3"),
+      effectiveModel: { id: "zai:glm-5.3" },
       resolvedModelLabel: "Z.AI / GLM / glm-5.3",
     });
   });

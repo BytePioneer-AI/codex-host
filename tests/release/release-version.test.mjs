@@ -147,4 +147,49 @@ describe("release version preparation", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it(
+    "synchronizes the standalone desktop-shell Cargo manifest, lockfile, and tauri config when present",
+    { timeout: 20_000 },
+    async () => {
+      const root = await createRepositoryFixture();
+      try {
+        const shellDir = path.join(root, "apps/desktop-shell/src-tauri");
+        await mkdir(shellDir, { recursive: true });
+        await writeFile(
+          path.join(shellDir, "Cargo.toml"),
+          `[package]\nname = "codexhost-shell"\nversion = "0.0.0"\nedition = "2024"\n\n[workspace]\n`,
+        );
+        await writeFile(
+          path.join(shellDir, "Cargo.lock"),
+          `version = 4\n\n[[package]]\nname = "codexhost-example"\nversion = "0.0.0"\n\n[[package]]\nname = "codexhost-shell"\nversion = "0.0.0"\n\n[[package]]\nname = "third-party"\nversion = "0.0.0"\n`,
+        );
+        await writeFile(
+          path.join(shellDir, "tauri.conf.json"),
+          `${JSON.stringify({ productName: "CodexHost", version: "0.0.0" }, null, 2)}\n`,
+        );
+
+        const prepared = await prepareReleaseVersion({ root, version: "0.25.0" });
+        expect(prepared.changedFiles).toEqual([
+          "package.json",
+          "package-lock.json",
+          "Cargo.toml",
+          "Cargo.lock",
+          "apps/desktop-shell/src-tauri/Cargo.toml",
+          "apps/desktop-shell/src-tauri/Cargo.lock",
+          "apps/desktop-shell/src-tauri/tauri.conf.json",
+        ]);
+        expect(await readFile(path.join(shellDir, "Cargo.toml"), "utf8")).toContain(
+          'version = "0.25.0"',
+        );
+        const shellLock = await readFile(path.join(shellDir, "Cargo.lock"), "utf8");
+        expect(shellLock).toContain('name = "codexhost-example"\nversion = "0.25.0"');
+        expect(shellLock).toContain('name = "codexhost-shell"\nversion = "0.25.0"');
+        expect(shellLock).toContain('name = "third-party"\nversion = "0.0.0"');
+        expect((await readJson(path.join(shellDir, "tauri.conf.json"))).version).toBe("0.25.0");
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 });

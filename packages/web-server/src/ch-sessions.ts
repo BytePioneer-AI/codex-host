@@ -5,12 +5,20 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  THREAD_STEER_STRICT_TARGET_FIELD,
+  THREAD_STEER_STRICT_TARGET_PARAM,
+  WEB_ACTIVE_TURN_PROJECTION,
   WEB_FOLLOW_PROJECTION_KEYS,
+  clientThreadSectionsSchema,
+  clientThreadSectionMoveSchema,
   webTurnDiffsRequestSchema,
   webToolOutputReferenceSchema,
   encodeHarnessPluginRoute,
   harnessPluginRouteSchema,
   harnessModelSelectionStateSchema,
+  harnessModelRefFromKey,
+  harnessModelRefKey,
+  sameHarnessModelRef,
   threadInspectionSchema,
   threadArchiveConfirmResultSchema,
   threadUsageInspectionSchema,
@@ -256,6 +264,12 @@ export class ChSessions {
       if (timing && catalogTiming) timing.catalog = { mode, ...catalogTiming.snapshot() };
     }
   }
+  private refreshPins(): Promise<string[]> {
+    return this.pins.refresh().catch((error: unknown) => {
+      console.error("[session/list] native pins unavailable", error);
+      return this.workspaces.pinnedSessionIds();
+    });
+  }
   private async listAll(
     timing: SessionListTiming,
     includeArchived: boolean,
@@ -263,15 +277,20 @@ export class ChSessions {
     cursor?: string,
   ): Promise<CatalogPage | undefined> {
     const known = new Set(this.rows.keys());
-    const [{ page: snapshot }, definitions] = await Promise.all([
-      readSessionPage(this.host, timing, includeArchived, cursor, () =>
-        this.pins.refresh().catch((error: unknown) => {
-          console.error("[session/list] native pins unavailable", error);
-          return [...this.workspaces.pinnedSessionIds()];
-        }),
-      ),
+    const [{ page: snapshot }, definitions, , sections] = await Promise.all([
+      readSessionPage(this.host, timing, includeArchived, cursor, () => this.refreshPins()),
       timing.measure("project_definitions", () => this.host.projects([])),
       timing.measure("thread_tree", () => this.tree.refresh()),
+      timing.measure("thread_sections", async () => {
+        try {
+          return clientThreadSectionsSchema.parse(
+            await this.host.request("codexhost/thread/sections/list", {}),
+          ).sections;
+        } catch {
+          // Optional on older Hosts; keep the last confirmed snapshot on a read failure.
+          return undefined;
+        }
+      }),
     ]);
     if (this.closed) return;
     const found = new Map(snapshot.threads.map((row) => [row.id, row]));
@@ -288,6 +307,31 @@ export class ChSessions {
       )
         ownership.set(item.threadId, item.harnessId);
       else if (item.owner === "codex") ownership.set(item.threadId, "codex");
+    }
+    const pageSectionAdditions = cursor === undefined ? undefined : new Set<string>();
+    if (sections) {
+      this.workspaces.setReferenceThreadSections(
+        sections.map(({ id, name, threads }) => {
+          const threadIds: string[] = [];
+          for (const thread of threads) {
+            if (typeof thread.id !== "string" || thread.archived === true) continue;
+            if (thread.archived === false && !snapshotArchives.has(thread.id))
+              archivedIds.delete(thread.id);
+            if (!found.has(thread.id)) {
+              const row = thread as unknown as ChThread;
+              found.set(thread.id, row);
+              ownership.set(thread.id, "codex");
+              if (cursor === undefined || !this.publishedCatalog?.has(row.id))
+                snapshot.threads.push(row);
+            }
+            if (ownership.get(thread.id) === "codex") {
+              threadIds.push(thread.id);
+              if (!this.publishedCatalog?.has(thread.id)) pageSectionAdditions?.add(thread.id);
+            }
+          }
+          return { id, name, threadIds };
+        }),
+      );
     }
     timing.count("ownershipIds", ownership.size);
     timing.count(
@@ -338,7 +382,7 @@ export class ChSessions {
     timing.measureSync("archive_sync", () =>
       this.workspaces.setReferenceArchives([...archivedIds].sort()),
     );
-    await timing.measure("catalog_publish", () => this.publishCatalogChanges(cursor !== undefined));
+    await timing.measure("catalog_publish", () => this.publishCatalogChanges(pageSectionAdditions));
     this.catalogReadAt = Date.now();
     return snapshot;
   }
@@ -386,6 +430,14 @@ export class ChSessions {
       this.workspaces.syncReferencedSessions(references, groups, projectless, projects.projects);
     });
   }
+  private archiveForkParent(row: ChThread): string | null {
+    return this.threads.harnessId(row.id) === "codex" &&
+      !row.parentThreadId &&
+      typeof row.forkedFromId === "string" &&
+      !this.workspaces.pinnedSessionIds().includes(row.id)
+      ? row.forkedFromId
+      : null;
+  }
   /** Only fields used by the list summary; projections have their own
    * streams. Re-emitting every row makes each browser rebuild its entire
    * catalog thousands of times and starves interactive history frames.
@@ -398,16 +450,18 @@ export class ChSessions {
       row.status.type,
       row.parentThreadId ?? null,
       this.tree.parent(row.id),
+      this.archiveForkParent(row),
       row.canAcceptDirectInput !== false,
       row.codexhostImportSource ?? null,
       this.threads.harnessId(row.id),
     ]);
   }
-  private async publishCatalogChanges(explicitPage = false): Promise<void> {
+  private async publishCatalogChanges(pageSectionAdditions?: ReadonlySet<string>): Promise<void> {
     const before = this.publishedCatalog;
     const next = new Map([...this.rows].map(([id, row]) => [id, this.catalogKey(row)]));
     // First load is already delivered by session/list. Subsequent refreshes,
     // including ones requested by a second browser, publish actual deltas only.
+    // New continuation rows stay request-local unless a shared section references them.
     const changed =
       before === undefined
         ? []
@@ -415,7 +469,8 @@ export class ChSessions {
             [...this.rows.values()]
               .filter(
                 (row) =>
-                  before.get(row.id) !== next.get(row.id) && (!explicitPage || before.has(row.id)),
+                  before.get(row.id) !== next.get(row.id) &&
+                  (!pageSectionAdditions || before.has(row.id) || pageSectionAdditions.has(row.id)),
               )
               .map((row) => this.summary(row)),
           );
@@ -427,6 +482,7 @@ export class ChSessions {
       const log = this.threads.view(id)?.log;
       log?.setProjection("title", threadListTitle(row));
       log?.setProjection("threadTreeParent", this.tree.parent(id));
+      log?.setProjection("archiveForkParent", this.archiveForkParent(row));
       log?.setProjection("codexhostImportSource", row.codexhostImportSource ?? null);
     }
     for (const row of changed) this.events.emit("api-session/added", row);
@@ -521,6 +577,9 @@ export class ChSessions {
         this.attachments
           ? (content) => this.attachments?.project(id, content) ?? content
           : undefined,
+        this.attachments
+          ? (path, projectionKey) => this.attachments?.projectImageView(id, path, projectionKey)
+          : undefined,
       );
       view = history;
       view.log.setProjection("threadReference", { hostId: "local" });
@@ -551,6 +610,10 @@ export class ChSessions {
     }
     if (this.threads.view(id) !== view)
       throw new RpcError("host/resync", "Host snapshot was superseded by a new generation");
+    view.log.setProjection(
+      "archiveForkParent",
+      this.archiveForkParent(this.rows.get(id) ?? view.thread),
+    );
     view.log.setProjection(
       "nativeDiscovery",
       !view.thread.parentThreadId && view.thread.canAcceptDirectInput !== false,
@@ -655,7 +718,7 @@ export class ChSessions {
         );
         const selection = {
           provider: harnessId,
-          model: owner.effectiveModel?.id ?? "harness",
+          model: owner.effectiveModel ? harnessModelRefKey(owner.effectiveModel) : "harness",
           ...(owner.effectiveThinkingOptionId
             ? { reasoningEffort: owner.effectiveThinkingOptionId }
             : {}),
@@ -690,6 +753,7 @@ export class ChSessions {
           .map((key) => [key, projections[key]]),
       ),
       threadTreeParent: this.tree.parent(row.id),
+      archiveForkParent: this.archiveForkParent(row),
       nativeDiscovery: !row.parentThreadId && row.canAcceptDirectInput !== false,
       threadReference: { hostId: "local" },
       title: threadListTitle(row),
@@ -772,14 +836,20 @@ export class ChSessions {
       return { sessionId: id, agentPreset: "standard" };
     if (existing || this.rows.has(id))
       throw new RpcError("session/busy", "This Session already exists; start a new draft.");
-    const selection = configuration?.selection ?? (await this.catalog.models()).default;
+    const preferences = configuration ? undefined : this.preferences?.get().catch(() => undefined);
+    const selection =
+      configuration?.selection ??
+      (await this.catalog.models(false, undefined, preferences)).default;
+    if (!selection)
+      throw new RpcError(
+        "host/no-harness",
+        "No models are available. Re-detect the Harness in Connections to authorize access.",
+      );
     const draft: Draft = { id, ...(cwd ? { cwd } : {}), selection, createdAt: Date.now() };
     if (configuration) {
       if (configuration.permissionModeId) draft.permissionModeId = configuration.permissionModeId;
     } else {
-      const config = await this.preferences
-        ?.configuration(selection.provider)
-        .catch(() => undefined);
+      const config = (await preferences)?.values.newThread?.byHarness[selection.provider];
       const inspection = await this.catalog.inspect(selection.provider, cwd);
       const permissionModeId = draftPermissionMode(
         selection.provider,
@@ -827,7 +897,7 @@ export class ChSessions {
               model: encodeHarnessPluginRoute(
                 harnessPluginRouteSchema.parse({
                   harnessId: draft.selection.provider,
-                  model: { id: draft.selection.model },
+                  model: harnessModelRefFromKey(draft.selection.model),
                   ...(draft.selection.reasoningEffort
                     ? { thinkingOptionId: draft.selection.reasoningEffort }
                     : {}),
@@ -836,7 +906,7 @@ export class ChSessions {
               ),
             }
           : {
-              model: { id: draft.selection.model },
+              model: harnessModelRefFromKey(draft.selection.model),
               ...(draft.selection.reasoningEffort
                 ? { config: { model_reasoning_effort: draft.selection.reasoningEffort } }
                 : {}),
@@ -1087,6 +1157,31 @@ export class ChSessions {
         return { pinnedSessionIds };
       });
     }
+    rpc.register("workspace/moveSessionToSection", async (args) => {
+      const input = requestOf<{ sessionId: string; sectionId: string | null }>(args);
+      const move = clientThreadSectionMoveSchema.safeParse({
+        threadId: input.sessionId,
+        sectionId: input.sectionId,
+      });
+      if (!move.success)
+        throw new RpcError("workspace/section-invalid", "Invalid Thread section move.");
+      const { threadId, sectionId } = move.data;
+      if (
+        this.threads.harnessId(threadId) !== "codex" ||
+        this.rows.get(threadId)?.parentThreadId ||
+        this.workspaces.isArchived(threadId) ||
+        this.workspaces.pinnedSessionIds().includes(threadId) ||
+        (sectionId !== null && !this.workspaces.hasThreadSection(sectionId))
+      )
+        throw new RpcError(
+          "workspace/section-unavailable",
+          "This Thread or section is unavailable for a move.",
+        );
+      await this.host.request("codexhost/thread/sections/move", move.data);
+      await this.refreshing?.catch(() => undefined);
+      await this.refresh().catch(() => undefined);
+      return { sectionId };
+    });
     rpc.register("session/list", async (args, context) => {
       const {
         includeArchived = false,
@@ -1103,7 +1198,7 @@ export class ChSessions {
             archivedSessionIds: this.workspaces.archivedSessionIds(),
           };
         const id = this.id(sessionId);
-        await this.tree.refresh();
+        await Promise.all([this.tree.refresh(), this.refreshPins()]);
         const { thread, harnessId } = await this.readThread(id);
         this.rows.set(thread.id, thread);
         this.threads.setHarness(thread.id, harnessId);
@@ -1180,6 +1275,7 @@ export class ChSessions {
     });
     rpc.register("session/selectModel", async (args) => {
       const request = requestOf<ModelSelection & { sessionId: string }>(args);
+      const model = harnessModelRefFromKey(request.model);
       const draft = this.drafts.get(request.sessionId);
       if (draft && !draft.canonicalId) {
         if (draft.creating) throw new RpcError("session/busy", "Draft creation is in progress.");
@@ -1202,7 +1298,7 @@ export class ChSessions {
         draft.selection = request;
         await this.preferences
           ?.remember(request.provider, {
-            model: { id: request.model },
+            model,
             thinkingOptionId: request.reasoningEffort,
             permissionModeId: draft.permissionModeId,
           })
@@ -1238,7 +1334,7 @@ export class ChSessions {
         state.configurationRevision = (state.configurationRevision ?? 0) + 1;
         const selection = {
           provider: owner.harnessId,
-          model: configuration.effectiveModel.id,
+          model: harnessModelRefKey(configuration.effectiveModel),
           ...(configuration.effectiveThinkingOptionId
             ? { reasoningEffort: configuration.effectiveThinkingOptionId }
             : {}),
@@ -1248,14 +1344,14 @@ export class ChSessions {
       };
       // Unchanged native settings may not emit a confirmation notification.
       const configuration = publish(
-        owner.owner === "codex" && owner.effectiveModel?.id === request.model
+        owner.owner === "codex" && sameHarnessModelRef(owner.effectiveModel, model)
           ? {
               effectiveModel: owner.effectiveModel,
               effectiveThinkingOptionId: owner.effectiveThinkingOptionId,
             }
           : await this.host.request("codexhost/thread/model/select", {
               threadId: id,
-              model: { id: request.model },
+              model,
             }),
       );
       if (
@@ -1279,6 +1375,7 @@ export class ChSessions {
         requestId?: string;
         content: Array<{ type: string; text?: string }>;
         mode?: string;
+        expectedTurnId?: string | null;
       }>(args);
       if (!this.images && request.content.some((part) => part.type !== "text"))
         throw new RpcError(
@@ -1286,7 +1383,29 @@ export class ChSessions {
           "Shared CH input currently accepts text only.",
         );
       const draft = this.drafts.get(request.sessionId);
-      if (!draft || draft.canonicalId) await this.owner(request.sessionId);
+      const existingOwner =
+        !draft || draft.canonicalId ? await this.owner(request.sessionId) : undefined;
+      let steerTurnId: string | undefined;
+      if (request.mode === "steer") {
+        const view = existingOwner && (await this.view(request.sessionId, true));
+        const activeTurnId = view ? view.log.projections[WEB_ACTIVE_TURN_PROJECTION] : null;
+        if (
+          !existingOwner ||
+          !view ||
+          typeof activeTurnId !== "string" ||
+          (request.expectedTurnId !== undefined && request.expectedTurnId !== activeTurnId)
+        )
+          throw new RpcError("remote/turn-changed", "The selected Turn has ended or changed.");
+        if (
+          existingOwner.owner === "external" &&
+          view.thread[THREAD_STEER_STRICT_TARGET_FIELD] !== true
+        )
+          throw new RpcError(
+            "remote/steer-unavailable",
+            "This Host does not support steering with a confirmed Turn target.",
+          );
+        steerTurnId = activeTurnId;
+      }
       // Validate/save before creating a native Thread. Only native path context crosses the Host channel.
       const prepared = this.fileInputs
         ? await this.fileInputs.prepare(this.id(request.sessionId), request.content)
@@ -1309,26 +1428,15 @@ export class ChSessions {
               .join("\n"),
           )
         : this.id(request.sessionId);
-      await this.owner(threadId);
-      if (request.mode === "steer") {
-        const view = await this.view(threadId, true);
-        const expectedTurnId =
-          view.ownerSnapshot?.activeTurnId ??
-          view.thread.turns.find((turn) => turn.status === "inProgress")?.id;
-        if (expectedTurnId) {
-          await this.host.request("turn/steer", {
-            threadId,
-            expectedTurnId,
-            input,
-            ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
-          });
-        } else {
-          await this.host.request("turn/start", {
-            threadId,
-            input,
-            ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
-          });
-        }
+      const owner = existingOwner ?? (await this.owner(threadId));
+      if (steerTurnId) {
+        await this.host.request("turn/steer", {
+          threadId,
+          expectedTurnId: steerTurnId,
+          input,
+          ...(owner.owner === "external" ? { [THREAD_STEER_STRICT_TARGET_PARAM]: true } : {}),
+          ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
+        });
       } else {
         await this.host.request("turn/start", {
           threadId,
@@ -1534,15 +1642,27 @@ export class ChSessions {
       ["session/unarchive", false],
     ] as const)
       rpc.register(method, async (args) => {
-        const { sessionId } = requestOf<{ sessionId: string }>(args);
-        this.archiveOperations.delete(this.id(sessionId));
+        const { sessionId, scope } = requestOf<{ sessionId: string; scope?: "single" }>(args);
+        const id = this.id(sessionId);
+        if (scope !== undefined && scope !== "single")
+          throw new RpcError("session/archive-invalid", "Invalid archive scope.");
+        this.archiveOperations.delete(id);
         try {
-          await this.tree.archive(
-            this.id(sessionId),
-            archived,
-            new Set(this.workspaces.localArchivedSessionIds()),
-            (id) => this.setArchived(id, archived),
-          );
+          if (scope === "single") {
+            await this.setArchived(id, archived);
+            if (this.workspaces.localArchivedSessionIds().includes(id) !== archived)
+              throw new RpcError(
+                "session/archive-unconfirmed",
+                "The requested archive state was not confirmed.",
+              );
+          } else {
+            await this.tree.archive(
+              id,
+              archived,
+              new Set(this.workspaces.localArchivedSessionIds()),
+              (member) => this.setArchived(member, archived),
+            );
+          }
         } finally {
           await this.refresh().catch(() => undefined);
         }
@@ -1723,7 +1843,7 @@ export class ChSessions {
         draft.permissionModeId = modeId;
         await this.preferences
           ?.remember(harnessId, {
-            model: { id: draft.selection.model },
+            model: harnessModelRefFromKey(draft.selection.model),
             thinkingOptionId: draft.selection.reasoningEffort,
             permissionModeId: modeId,
           })

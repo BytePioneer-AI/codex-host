@@ -60,12 +60,17 @@ describe("release Payload", () => {
       "C:\\node\\node.exe",
       "C:\\node\\node.exe",
       "cargo",
+      "cargo",
     ]);
     expect(commands[0].args).toEqual(["C:\\node\\npm-cli.js", "run", "build:typescript"]);
-    expect(commands.at(-1).args).toContain("aarch64-pc-windows-msvc");
-    expect(commands.at(-1).args).toContain("codexhost-launcher");
-    expect(commands.at(-1).args).toContain("codexhost-shim");
-    expect(commands.at(-1).args).toContain("codexhost-updater");
+    expect(commands[2].args).toContain("aarch64-pc-windows-msvc");
+    expect(commands[2].args).toContain("codexhost-launcher");
+    expect(commands[2].args).toContain("codexhost-shim");
+    expect(commands[2].args).toContain("codexhost-updater");
+    expect(commands[3].args).toContain("apps/desktop-shell/src-tauri/Cargo.toml");
+    expect(commands[3].args).toContain("--release");
+    expect(commands[3].args).toContain("--locked");
+    expect(commands[3].args).toContain("aarch64-pc-windows-msvc");
     expect(() => npmReleaseCommand(["--version"], "win32", {})).toThrow("npm_execpath");
   });
 
@@ -110,10 +115,10 @@ describe("release Payload", () => {
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
       expect(paths).toHaveLength(
-        33 + preinstalledHarnessPluginPaths().length + expectedWebPaths(target).length,
+        37 + preinstalledHarnessPluginPaths().length + expectedWebPaths(target).length,
       );
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
-        35 +
+        36 +
           preinstalledHarnessPluginPaths().length +
           expectedWebPaths(releaseTarget("windows-x64")).length,
       );
@@ -130,6 +135,13 @@ describe("release Payload", () => {
       expect(paths).not.toContain("libexec/codexhost-node-repl");
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "bin/codexhost-start.exe",
+      );
+      expect(paths).toContain("libexec/CodexHost.app/Contents/Info.plist");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/MacOS/CodexHost");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/Resources/AppIcon.icns");
+      expect(paths).not.toContain("libexec/codexhost-shell");
+      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
+        "libexec/codexhost-shell.exe",
       );
       expect(paths).toContain("libexec/codexhost-updater");
       expect(paths).toContain("app/codexhost-distribution.json");

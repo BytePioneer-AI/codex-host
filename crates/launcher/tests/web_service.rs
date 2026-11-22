@@ -188,7 +188,7 @@ server.listen(0, '127.0.0.1', () => console.log(server.address().port));
         self.public_command_at(Path::new(env!("CARGO_BIN_EXE_codexhost")), action)
     }
 
-    fn public_command_at(&self, launcher: &Path, action: &str) -> Command {
+    fn launcher_command(&self, launcher: &Path) -> Command {
         let mut command = Command::new(launcher);
         command
             .env_clear()
@@ -203,10 +203,15 @@ server.listen(0, '127.0.0.1', () => console.log(server.address().port));
             .env("CODEXHOST_CONSOLE_PORT", &self.console_port)
             .env("CODEXHOST_CONSOLE", "0")
             .env("CODEXHOST_WEB_SERVICE", "0")
-            .env("SSH_CONNECTION", "fixture")
-            .arg(action);
+            .env("SSH_CONNECTION", "fixture");
         #[cfg(windows)]
         command.env("SystemRoot", env::var_os("SystemRoot").unwrap());
+        command
+    }
+
+    fn public_command_at(&self, launcher: &Path, action: &str) -> Command {
+        let mut command = self.launcher_command(launcher);
+        command.arg(action);
         if !["status", "host", "web-service", "autostart"].contains(&action) {
             command
                 .arg("--node")
@@ -259,6 +264,46 @@ impl Drop for Fixture {
         let _ = self.console.wait();
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn ssh_default_and_start_menu_launch_web_without_reading_desktop_preferences() {
+    let fixture = Fixture::new();
+    let bin = fixture.root.join("bin");
+    let app = fixture.root.join("app");
+    fs::create_dir(&bin).unwrap();
+    fs::create_dir(&app).unwrap();
+    let launcher = bin.join("codexhost");
+    fs::copy(env!("CARGO_BIN_EXE_codexhost"), &launcher).unwrap();
+    fs::copy(
+        fixture.root.join("host-runtime.mjs"),
+        app.join("host-runtime.mjs"),
+    )
+    .unwrap();
+    fs::copy(fixture.root.join("web.mjs"), app.join("web-server.mjs")).unwrap();
+    let prefs = fixture.root.join("launch-preferences-v1.json");
+    fs::write(&prefs, "fixture invalid preferences").unwrap();
+    for args in [&[][..], &["--start-menu"]] {
+        let output = fixture
+            .launcher_command(&launcher)
+            .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains("codexhost web: http://127.0.0.1:4501/?token=fixture-secret"));
+    }
+    assert_eq!(
+        fs::read_to_string(prefs).unwrap(),
+        "fixture invalid preferences"
+    );
+    assert_eq!(fixture.starts(), 1);
 }
 
 #[cfg(target_os = "macos")]
@@ -972,6 +1017,25 @@ fn owned_gui_activation(refuse_stop: bool) {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_service_start_explains_missing_home() {
+    let fixture = Fixture::new();
+    for service in ["host", "web-service"] {
+        let started = fixture
+            .command(service, "ensure")
+            .env_remove("HOME")
+            .output()
+            .unwrap();
+        assert!(!started.status.success());
+        let stderr = String::from_utf8_lossy(&started.stderr);
+        assert!(
+            stderr.contains("HOME must be set to an absolute path"),
+            "{service}: {stderr}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn service_supervisor_hands_off_once_and_can_retry_without_desktop() {
@@ -1001,14 +1065,14 @@ fn service_supervisor_hands_off_once_and_can_retry_without_desktop() {
         .unwrap()
         .parse()
         .unwrap();
-    let state = PathBuf::from(
-        environment["CODEXHOST_RUNTIME_DESCRIPTOR_PATH"]
-            .as_str()
-            .unwrap(),
-    )
-    .parent()
-    .unwrap()
-    .join("updates");
+    // Stage the operation where the Host Runtime writes it, even when the
+    // Launcher stores the Desktop runtime descriptor in a different directory.
+    #[cfg(target_os = "linux")]
+    let state = fixture.root.join(".codexhost").join("updates");
+    #[cfg(target_os = "macos")]
+    let state = fixture
+        .root
+        .join("Library/Application Support/codexhost/updates");
     fs::create_dir_all(&state).unwrap();
     let deadline = || Instant::now() + Duration::from_secs(15);
     for attempt in 1..=2 {
@@ -1084,13 +1148,12 @@ setInterval(() => {{
         // A service handoff leaves Host online until the Updater stops it.
         assert!(fixture.root.join("shared-host-ready.json").exists());
         if attempt == 2 {
+            let stopped = fixture.command("host", "stop").output().unwrap();
             assert!(
-                fixture
-                    .command("host", "stop")
-                    .output()
-                    .unwrap()
-                    .status
-                    .success()
+                stopped.status.success(),
+                "host stop exited with {}: {}",
+                stopped.status,
+                String::from_utf8_lossy(&stopped.stderr)
             );
             assert!(
                 codexhost_platform::process_snapshot(updater).is_ok(),

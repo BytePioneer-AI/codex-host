@@ -10,6 +10,7 @@ describe("platform packagers", () => {
     const source = await readFile(path.join(root, "scripts/release/macos/package.sh"), "utf8");
     expect(source).toContain('CONTENTS="$APP_PATH/Contents"');
     expect(source).toContain('RESOURCES="$CONTENTS/Resources"');
+    expect(source).toContain('"$CONTENTS/Helpers/CodexHost.app"');
     expect(source).toContain("codesign --verify --deep --strict");
     expect(source).toContain('runtime/node" -e');
     expect(source).not.toContain("--options runtime");

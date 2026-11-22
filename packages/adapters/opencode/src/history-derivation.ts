@@ -9,7 +9,7 @@ import {
   selectionMetadata,
   type OpenCodeSnapshotProjection,
 } from "./history-projection.js";
-import type { OpenCodeProviderCatalog } from "./model-catalog.js";
+import type { OpenCodeModelIndex, OpenCodeProviderCatalog } from "./model-catalog.js";
 import { OpenCodeTransportError, type OpenCodeTransport } from "./protocol.js";
 
 function semanticHistory(snapshot: HostThreadSnapshot) {
@@ -51,12 +51,15 @@ export async function deriveOpenCodeHistory(options: {
   source: Session;
   input: Extract<OpenSessionInput, { kind: "fork" | "rollbackLastTurn" }>;
   providers: OpenCodeProviderCatalog;
+  modelIndex: OpenCodeModelIndex;
   toolOutputLimit: number;
   onCreated(session: Session): void;
 }): Promise<Session> {
-  const { transport, source, input, providers, toolOutputLimit } = options;
+  const { transport, source, input, providers, modelIndex, toolOutputLimit } = options;
   const read = (id: string) =>
-    readProjection(transport, id, providers, toolOutputLimit, { strictFileChanges: true });
+    readProjection(transport, id, providers, toolOutputLimit, modelIndex, {
+      strictFileChanges: true,
+    });
   if ((await transport.getStatus(source.id)).type !== "idle") {
     throw new Error("OpenCode source Session is busy");
   }

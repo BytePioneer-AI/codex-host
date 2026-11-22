@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Release announcement preview — v0.24.0</title>
+    <style>
+      :root {
+        --preview-bg: light-dark(#f3f4f6, #141415);
+        --preview-sidebar: light-dark(#eceef1, #19191b);
+        --preview-surface: light-dark(#ffffff, #1e1e20);
+        --preview-border: light-dark(rgb(13 13 13 / 9%), rgb(255 255 255 / 9%));
+        --preview-text: light-dark(#0d0d0d, #ececec);
+        --preview-muted: light-dark(#676767, #9a9a9a);
+        --preview-skeleton: light-dark(rgb(13 13 13 / 6%), rgb(255 255 255 / 6%));
+        color-scheme: light dark;
+        font:
+          13px/1.5 system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          "PingFang SC",
+          sans-serif;
+      }
+
+      :root[data-theme="light"] {
+        color-scheme: light;
+      }
+
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        background: var(--preview-bg);
+        color: var(--preview-text);
+      }
+
+      .workspace-backdrop {
+        display: grid;
+        grid-template-columns: 240px minmax(0, 1fr);
+        min-height: 100dvh;
+      }
+
+      .workspace-sidebar {
+        padding: 20px 14px;
+        background: var(--preview-sidebar);
+        border-right: 1px solid var(--preview-border);
+        display: grid;
+        align-content: start;
+        gap: 10px;
+      }
+
+      .workspace-main {
+        padding: 28px 36px;
+        display: grid;
+        align-content: start;
+        gap: 18px;
+      }
+
+      .workspace-pill {
+        height: 12px;
+        border-radius: 999px;
+        background: var(--preview-skeleton);
+      }
+
+      .workspace-card {
+        max-width: 720px;
+        padding: 20px;
+        border-radius: 14px;
+        background: var(--preview-surface);
+        border: 1px solid var(--preview-border);
+        display: grid;
+        gap: 10px;
+      }
+
+      .preview-controls {
+        position: fixed;
+        top: 14px;
+        right: 14px;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 8px 10px;
+        background: var(--preview-surface);
+        border: 1px solid var(--preview-border);
+        border-radius: 10px;
+        box-shadow: 0 8px 24px rgb(0 0 0 / 16%);
+      }
+
+      .preview-controls[hidden] {
+        display: none;
+      }
+
+      .preview-controls button {
+        padding: 5px 10px;
+        color: var(--preview-text);
+        background: transparent;
+        border: 1px solid var(--preview-border);
+        border-radius: 7px;
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .preview-controls button[aria-pressed="true"] {
+        background: var(--preview-skeleton);
+        font-weight: 600;
+      }
+
+      .preview-status {
+        margin: 0;
+        color: var(--preview-muted);
+        font-size: 12px;
+      }
+
+      @media (max-width: 640px) {
+        .workspace-backdrop {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .workspace-sidebar {
+          display: none;
+        }
+
+        .workspace-main {
+          padding: 20px 16px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="workspace-backdrop" aria-hidden="true">
+      <aside class="workspace-sidebar">
+        <div class="workspace-pill" style="width: 58%; height: 14px"></div>
+        <div class="workspace-pill" style="width: 84%; margin-top: 12px"></div>
+        <div class="workspace-pill" style="width: 70%"></div>
+        <div class="workspace-pill" style="width: 76%"></div>
+        <div class="workspace-pill" style="width: 64%"></div>
+      </aside>
+      <main class="workspace-main">
+        <div class="workspace-pill" style="width: 220px; height: 18px"></div>
+        <div class="workspace-card">
+          <div class="workspace-pill" style="width: 40%"></div>
+          <div class="workspace-pill" style="width: 92%"></div>
+          <div class="workspace-pill" style="width: 84%"></div>
+        </div>
+        <div class="workspace-card">
+          <div class="workspace-pill" style="width: 32%"></div>
+          <div class="workspace-pill" style="width: 88%"></div>
+          <div class="workspace-pill" style="width: 75%"></div>
+        </div>
+      </main>
+    </div>
+
+    <div class="preview-controls" id="preview-controls">
+      <button type="button" data-theme-toggle="dark">Dark</button>
+      <button type="button" data-theme-toggle="light">Light</button>
+      <button type="button" data-lang-toggle="zh-CN">中文</button>
+      <button type="button" data-lang-toggle="en">English</button>
+      <button type="button" id="reopen-button">Reopen</button>
+      <p class="preview-status" id="preview-status"></p>
+    </div>
+
+    <script src="../../dist/web-settings.js"></script>
+    <script>
+      /** Hand-authored ReleaseAnnouncement fixture from `gh release view v0.24.0`. */
+      const V0240_ANNOUNCEMENT = {
+        version: "0.24.0",
+        publishedAt: "2026-11-22T09:30:03Z",
+        url: "https://github.com/BytePioneer-AI/codex-host/releases/tag/v0.24.0",
+        zh: {
+          summary:
+            "本次更新带来 Desktop 与 Web 通用的插件平台和多 Agent 协作设置，适配 Codex Desktop 26.1117，并改进了 Antigravity、Windows、Thread 和手机端体验。",
+          themes: [
+            {
+              icon: "🧩",
+              title: "插件两端通用",
+              body: "Desktop 和 Web 共用一套插件，挂件和独立页面两端都能用；已装的 Desktop 插件升级后自动迁移，Windows 上保存插件设置不再冲突。",
+              contributors: ["BytePioneer-AI", "mouzhi", "MGHus4473"],
+            },
+            {
+              icon: "🤝",
+              title: "多 Agent 协作更顺手",
+              body: "新增设置页，可以给每个 Harness 设置默认的委派 Model 和 Thinking；所有 Harness 的 Model ID 都能直接书写，CLI 委派支持 `~fast`；Claude Code 的任务实时显示在计划面板，子代理不再让父 Thread 一直忙碌。",
+              contributors: ["BytePioneer-AI", "ump45nose", "qbnmmm"],
+            },
+            {
+              icon: "🖥",
+              title: "适配 Codex Desktop 26.1117",
+              body: "修好了配置 MCP 时启动超时、新对话里点 Harness 没反应、Codex 额度用完后外部 Harness 发不了消息等问题；Harness 切换改为自动识别，以后 Desktop 更新也不容易再失效。",
+              contributors: ["BytePioneer-AI", "YanYunCY", "lpmasser"],
+            },
+            {
+              icon: "🌀",
+              title: "Antigravity 更稳",
+              body: "后台唤醒单独成一轮，不再覆盖上一轮回答；每次请求后刷新用量并显示首字耗时；委派 Codex 遵循指定的速度档位；旧 Model 下线、释放空闲进程、历史回放错位等问题都已修好。",
+              contributors: [
+                "BytePioneer-AI",
+                "TimYuhong",
+                "ChaceLyee2101",
+                "ump45nose",
+                "aabiberyi-prog",
+                "bwndlct",
+              ],
+            },
+            {
+              icon: "🪟",
+              title: "Windows 与远程连接",
+              body: "Remote SSH 上的 Harness 能正常识别；Store 版启动失败时可改用 `codexhost launch --windows-direct`；WSL 本地连接不支持外部 Harness 时，会提示改用 Remote SSH，不再反复重试。",
+              contributors: ["mouzhi", "BytePioneer-AI"],
+            },
+            {
+              icon: "🧵",
+              title: "Thread 更可靠",
+              body: "删除的 Thread 不再残留在侧栏和委派记录里；首轮回复不再重复显示；有轮次正在运行时也能从更早的轮次 Fork；共享 Host 的 Thread 列表、排序和最近时间更准确。",
+              contributors: ["ump45nose", "sduhantao-maker", "hhucz", "BytePioneer-AI"],
+            },
+            {
+              icon: "📱",
+              title: "Web 与手机端",
+              body: "划词批注精确定位并高亮原文；iOS PWA 可以下载文件；手机端顶栏、弹窗、审批和设置页重新排版，长问题可以滚动作答；通过 Cloudflare Tunnel 等 HTTPS 反向代理访问不再被拒绝。",
+              contributors: ["biground", "hhucz", "sduhantao-maker", "BytePioneer-AI"],
+            },
+          ],
+        },
+        en: {
+          summary:
+            "This release brings plugins shared by Desktop and Web, Multi-Agent settings and support for Codex Desktop 26.1117, with improvements to Antigravity, Windows, Threads and mobile.",
+          themes: [
+            {
+              icon: "🧩",
+              title: "Plugins on both Desktop and Web",
+              body: "Desktop and Web share one set of plugins, and Widgets and Pages work on both; installed Desktop plugins migrate automatically, and saving plugin settings on Windows no longer conflicts.",
+              contributors: ["BytePioneer-AI", "mouzhi", "MGHus4473"],
+            },
+            {
+              icon: "🤝",
+              title: "Smoother Multi-Agent work",
+              body: "A new settings page sets the default delegation Model and Thinking for each Harness; every Harness accepts writable Model IDs, and CLI delegation supports `~fast`; Claude Code tasks update the plan panel live, and stuck subagents no longer keep the parent Thread busy.",
+              contributors: ["BytePioneer-AI", "ump45nose", "qbnmmm"],
+            },
+            {
+              icon: "🖥",
+              title: "Codex Desktop 26.1117 support",
+              body: "Fixed startup timeouts with MCP servers configured, Harness clicks doing nothing in a new chat, and external Harnesses failing once the Codex usage limit was reached; Harness switching now adapts automatically, so future Desktop updates are less likely to break it.",
+              contributors: ["BytePioneer-AI", "YanYunCY", "lpmasser"],
+            },
+            {
+              icon: "🌀",
+              title: "Steadier Antigravity",
+              body: "Background wakeups appear as their own Turn instead of replacing the previous answer; usage refreshes after each request and shows time to first token; Codex delegations honor the requested speed tier; retired Models, idle process release and misplaced history replay are fixed.",
+              contributors: [
+                "BytePioneer-AI",
+                "TimYuhong",
+                "ChaceLyee2101",
+                "ump45nose",
+                "aabiberyi-prog",
+                "bwndlct",
+              ],
+            },
+            {
+              icon: "🪟",
+              title: "Windows and remote connections",
+              body: "Harnesses on Remote SSH hosts are detected; when the Store version fails to start, `codexhost launch --windows-direct` is available; unsupported local WSL connections now point to Remote SSH instead of retrying endlessly.",
+              contributors: ["mouzhi", "BytePioneer-AI"],
+            },
+            {
+              icon: "🧵",
+              title: "More reliable Threads",
+              body: "Deleted Threads no longer linger in the sidebar and delegation records; the first reply no longer appears twice; you can fork an earlier Turn while a later one is running; Thread lists, ordering and recency on a shared Host are more accurate.",
+              contributors: ["ump45nose", "sduhantao-maker", "hhucz", "BytePioneer-AI"],
+            },
+            {
+              icon: "📱",
+              title: "Web and mobile",
+              body: "Reply annotations anchor to the exact selected text and highlight it; the iOS PWA can download files; the mobile header, dialogs, approvals and Settings are re-laid out, and long questions scroll; access through HTTPS reverse proxies such as Cloudflare Tunnel is no longer rejected.",
+              contributors: ["biground", "hhucz", "sduhantao-maker", "BytePioneer-AI"],
+            },
+          ],
+        },
+      };
+
+      const params = new URLSearchParams(window.location.search);
+      let currentTheme = params.get("theme") === "light" ? "light" : "dark";
+      let currentLang = params.get("lang") === "en" ? "en" : "zh-CN";
+      let activeDialog = null;
+
+      const controls = document.getElementById("preview-controls");
+      const status = document.getElementById("preview-status");
+      if (params.get("capture") === "1" && controls) {
+        controls.hidden = true;
+      }
+
+      function syncButtons() {
+        document.documentElement.dataset.theme = currentTheme;
+        document.documentElement.lang = currentLang;
+        for (const button of document.querySelectorAll("[data-theme-toggle]")) {
+          button.setAttribute(
+            "aria-pressed",
+            String(button.getAttribute("data-theme-toggle") === currentTheme),
+          );
+        }
+        for (const button of document.querySelectorAll("[data-lang-toggle]")) {
+          button.setAttribute(
+            "aria-pressed",
+            String(button.getAttribute("data-lang-toggle") === currentLang),
+          );
+        }
+      }
+
+      function openPreviewDialog() {
+        activeDialog?.dispose();
+        activeDialog = null;
+        const api = window.__codexhostWebSettingsV1;
+        if (!api || typeof api.openReleaseAnnouncement !== "function") {
+          if (status) {
+            status.textContent =
+              "Run `npm run build:renderer` first to bundle dist/web-settings.js.";
+          }
+          return;
+        }
+        if (status) status.textContent = "";
+        activeDialog = api.openReleaseAnnouncement(V0240_ANNOUNCEMENT, {
+          locale: currentLang,
+          colorScheme: currentTheme,
+          onClose() {
+            activeDialog = null;
+            if (status) status.textContent = "Closed (would acknowledge v0.24.0)";
+          },
+        });
+      }
+
+      for (const button of document.querySelectorAll("[data-theme-toggle]")) {
+        button.addEventListener("click", () => {
+          currentTheme = button.getAttribute("data-theme-toggle") === "light" ? "light" : "dark";
+          syncButtons();
+          if (activeDialog) activeDialog.setColorScheme(currentTheme);
+        });
+      }
+
+      for (const button of document.querySelectorAll("[data-lang-toggle]")) {
+        button.addEventListener("click", () => {
+          currentLang = button.getAttribute("data-lang-toggle") === "en" ? "en" : "zh-CN";
+          syncButtons();
+          openPreviewDialog();
+        });
+      }
+
+      document.getElementById("reopen-button")?.addEventListener("click", () => {
+        openPreviewDialog();
+      });
+
+      syncButtons();
+      openPreviewDialog();
+    </script>
+  </body>
+</html>

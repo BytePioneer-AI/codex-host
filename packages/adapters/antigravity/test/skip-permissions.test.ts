@@ -15,7 +15,7 @@ import {
   answerStep,
   createNativeHistoryDatabase,
   userStep,
-} from "./support/native-history-fixture.js";
+} from "../../../../tests/fixtures/antigravity/native-history-fixture.js";
 const adapters: AntigravityAdapter[] = [];
 const homes: string[] = [];
 afterEach(async () => {

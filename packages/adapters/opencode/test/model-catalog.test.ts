@@ -7,9 +7,9 @@ import { describe, expect, it } from "vitest";
 import {
   decodeOpenCodeModelRef,
   decodeOpenCodeVariant,
-  encodeOpenCodeModelRef,
   encodeOpenCodeVariant,
   normalizeOpenCodeModelCatalog,
+  normalizeStoredOpenCodeModelRef,
   openCodeContextWindow,
 } from "../src/model-catalog.js";
 
@@ -51,16 +51,33 @@ function provider(id: string, connectedModels: Model[]): Provider {
   };
 }
 
-describe("OpenCode Model catalog", () => {
-  it("round-trips exact Provider, Model, and variant identities", () => {
-    const native = { providerID: "local/provider-一", modelID: "family/model-v1.2" };
-    const ref = encodeOpenCodeModelRef(native);
-    const variant = encodeOpenCodeVariant("reasoning/high-一");
+function legacy(providerID: string, modelID: string) {
+  return harnessModelRefSchema.parse({
+    id: `opencode-model-v1.${Buffer.from(JSON.stringify([providerID, modelID])).toString("base64url")}`,
+  });
+}
 
-    expect(ref.id).toMatch(/^opencode-model-v1\.[A-Za-z0-9_-]+$/u);
-    expect(decodeOpenCodeModelRef(ref)).toEqual(native);
+describe("OpenCode Model catalog", () => {
+  it.each([
+    [{ providerID: "local/provider-一", modelID: "family/model-v1.2" }, "reasoning/high-一"],
+    [{ providerID: "本地/提供方.v1", modelID: "系列/模型~高" }, "推理/高"],
+  ])("round-trips exact Provider, Model, and variant identities: %j", (native, variantId) => {
+    const { providerID, modelID } = native;
+    const { catalog, index } = normalizeOpenCodeModelCatalog({
+      all: [provider(providerID, [model(modelID)])],
+      connected: [providerID],
+      default: { [providerID]: modelID },
+    });
+    const ref = harnessModelRefSchema.parse({ id: `${providerID}/${modelID}` });
+    const variant = encodeOpenCodeVariant(variantId);
+
+    expect(catalog.defaultModel).toEqual(ref);
+    expect(decodeOpenCodeModelRef(ref, index)).toEqual(native);
+    const saved = legacy(providerID, modelID);
+    expect(normalizeStoredOpenCodeModelRef(saved, index)).toEqual(ref);
+    expect(() => decodeOpenCodeModelRef(saved, index)).toThrow("absent");
     expect(variant).toMatch(/^ocv\.[A-Za-z0-9_-]+$/u);
-    expect(decodeOpenCodeVariant(variant)).toBe("reasoning/high-一");
+    expect(decodeOpenCodeVariant(variant)).toBe(variantId);
     expect(decodeOpenCodeVariant(encodeOpenCodeVariant(undefined))).toBeUndefined();
   });
 
@@ -68,7 +85,7 @@ describe("OpenCode Model catalog", () => {
     const first = provider("alpha", [model("reasoner", ["high", "low"])]);
     const second = provider("beta", [model("plain")]);
     const catalog = { all: [second, first], connected: ["alpha"], default: { alpha: "reasoner" } };
-    const normalized = normalizeOpenCodeModelCatalog(catalog);
+    const { catalog: normalized } = normalizeOpenCodeModelCatalog(catalog);
 
     expect(normalized.models).toHaveLength(1);
     expect(normalized.models[0]?.label).toBe("ALPHA / reasoner");
@@ -77,27 +94,56 @@ describe("OpenCode Model catalog", () => {
       encodeOpenCodeVariant("high"),
       encodeOpenCodeVariant("low"),
     ]);
-    expect(normalized.defaultModel).toEqual(
-      encodeOpenCodeModelRef({ providerID: "alpha", modelID: "reasoner" }),
-    );
+    expect(normalized.defaultModel).toEqual({ id: "alpha/reasoner" });
     expect(openCodeContextWindow(catalog, { providerID: "alpha", modelID: "reasoner" })).toBe(
       200_000,
     );
   });
 
-  it("rejects foreign, malformed, and non-canonical refs", () => {
+  it("uses the old encoding only for colliding catalog entries", () => {
+    const { catalog, index } = normalizeOpenCodeModelCatalog({
+      all: [
+        provider("team", [model("proxy/model"), model("plain")]),
+        provider("team/proxy", [model("model")]),
+      ],
+      connected: ["team", "team/proxy"],
+      default: { team: "proxy/model" },
+    });
+    const first = legacy("team", "proxy/model");
+    const second = legacy("team/proxy", "model");
+    expect(catalog.models.map(({ ref }) => ref.id)).toEqual(
+      expect.arrayContaining([first.id, second.id, "team/plain"]),
+    );
+    expect(catalog.defaultModel).toEqual(first);
+    expect(decodeOpenCodeModelRef(first, index)).toEqual({
+      providerID: "team",
+      modelID: "proxy/model",
+    });
+    expect(decodeOpenCodeModelRef(second, index)).toEqual({
+      providerID: "team/proxy",
+      modelID: "model",
+    });
     expect(() =>
-      decodeOpenCodeModelRef(harnessModelRefSchema.parse({ id: "other-model-v1.value" })),
-    ).toThrow("another Adapter");
-    expect(() =>
-      decodeOpenCodeModelRef(harnessModelRefSchema.parse({ id: "opencode-model-v1.bm90LWpzb24" })),
-    ).toThrow("malformed");
-    const nonCanonical = Buffer.from('[ "provider", "model" ]', "utf8").toString("base64url");
-    expect(() =>
-      decodeOpenCodeModelRef(
-        harnessModelRefSchema.parse({ id: `opencode-model-v1.${nonCanonical}` }),
-      ),
-    ).toThrow("not canonical");
+      decodeOpenCodeModelRef(harnessModelRefSchema.parse({ id: "team/proxy/model" }), index),
+    ).toThrow("absent");
+  });
+
+  it.each([
+    "other-model-v1.value",
+    "opencode-model-v1.bm90LWpzb24",
+    `${legacy("provider", "model").id}=`,
+  ])("rejects invalid stored Ref %s", (id) => {
+    const { index } = normalizeOpenCodeModelCatalog({
+      all: [provider("provider", [model("model")])],
+      connected: ["provider"],
+      default: {},
+    });
+    expect(
+      normalizeStoredOpenCodeModelRef(harnessModelRefSchema.parse({ id }), index),
+    ).toBeUndefined();
+  });
+
+  it("rejects foreign variants", () => {
     expect(() =>
       decodeOpenCodeVariant(harnessThinkingOptionIdSchema.parse("foreign.high")),
     ).toThrow("another Adapter");

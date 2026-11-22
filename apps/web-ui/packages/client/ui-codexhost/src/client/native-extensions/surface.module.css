@@ -1,0 +1,18 @@
+.theme {
+  --cx-page-bg: var(--dsw-alias-bg-layer-1);
+  --cx-page-surface: var(--dsw-alias-bg-layer-2);
+  --cx-page-text: var(--dsw-alias-label-primary);
+  --cx-page-text-muted: var(--dsw-alias-label-secondary);
+  --cx-page-border: var(--dsw-alias-border-l2);
+  --cx-page-accent: var(--dsw-alias-state-business-primary);
+  --cx-page-danger: var(--dsw-alias-state-error-primary);
+  --cx-page-radius: var(--dsw-radius-md);
+}
+
+.widget {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+  color: var(--cx-page-text);
+}

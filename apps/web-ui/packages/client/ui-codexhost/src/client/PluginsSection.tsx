@@ -1,187 +1,165 @@
-/**
- * Unified Plugins settings section: defaults to Web plugins and silently probes whether the
- * connected Host supports Desktop extension management. When supported, reveals a lightweight
- * Web | Desktop switcher in the section header without introducing duplicate headings.
- */
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent,
+} from "react";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
-import type { WebUiExtensionMeta } from "@codexhost/shared-contracts";
-import { probeDesktopExtensionsSupport } from "./api.ts";
-import { HostSettingsSection, type HostSettingsSource } from "./HostSettingsSection.tsx";
-import { WebExtensionsSection } from "./WebExtensionsSection.tsx";
+import { PluginsIcon } from "./PluginsIcon.tsx";
+import {
+  WebExtensionsSection,
+  type ContentLocalePreference,
+  type WebExtensionsFace,
+} from "./WebExtensionsSection.tsx";
+import { ExtensionIcon } from "./WebExtensionCard.tsx";
+import type { PluginsNavigation } from "./plugins-navigation.ts";
+import {
+  extensionPageIconUrl,
+  extensionPageTitle,
+  toExtensionLocale,
+} from "./web-extensions-helpers.ts";
 import css from "./PluginsSection.module.css";
 
-type PluginsTarget = "web" | "desktop";
-
-export interface PluginsSectionFace {
-  resolveText: (text: NonNullable<WebUiExtensionMeta["title"]>) => string;
-  locale: HostSettingsSource<string>;
-  colorScheme: HostSettingsSource<"light" | "dark">;
+export interface PluginsSectionFace extends Pick<WebExtensionsFace, "locale" | "colorScheme"> {
+  navigation: PluginsNavigation;
 }
 
-/**
- * Injected into the embedded Desktop extensions Shadow DOM so the outer shell owns the section
- * heading and target switcher, while keeping the Desktop toolbar, menus, and mobile layout clean.
- */
-const EMBEDDED_DESKTOP_EXTENSIONS_CSS = `
-.settings-extensions__header {
-  position: relative;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  gap: 8px 12px;
-  margin-bottom: 0;
+const CONTENT_LOCALE_STORAGE_KEY = "codexhost.webExtensions.contentLocale";
+
+function readContentLocalePreference(): ContentLocalePreference {
+  try {
+    const stored = localStorage.getItem(CONTENT_LOCALE_STORAGE_KEY);
+    if (stored === "zh-CN" || stored === "en") return stored;
+  } catch {
+    // Ignore restricted storage environments.
+  }
+  return "system";
 }
 
-.settings-extensions__header-left > .settings-section-label {
-  display: none;
-}
-
-.settings-extensions__header-left:not(:has(.settings-extensions__connection:not([hidden]))) {
-  display: none;
-}
-
-.settings-extensions__header-left {
-  order: 2;
-}
-
-.settings-extensions__header .settings-remote__toolbar {
-  order: 1;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.settings-extensions__locale .settings-extensions-menu {
-  left: 0;
-  right: auto;
-}
-
-@container codexhost-settings-page (max-width: 540px) {
-  .settings-extensions__header .settings-remote__toolbar {
-    width: 100%;
-  }
-
-  .settings-extensions-menu {
-    max-width: calc(100cqi - 8px);
-  }
-}
-
-@media (max-width: 640px) {
-  .settings-extensions__header .settings-remote__toolbar {
-    width: 100%;
-  }
-
-  .settings-extensions__header .settings-command-button,
-  .settings-extensions__header .settings-icon-button {
-    min-height: 32px;
-  }
-
-  .settings-extensions__more {
-    position: static;
-  }
-
-  .settings-extensions__more .settings-extensions-menu {
-    top: calc(100% + 4px);
-    right: 0;
-    left: auto;
-    max-width: calc(100vw - 32px);
-  }
-
-  .settings-extensions__toolbar {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .settings-extensions-segmented {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    width: 100%;
-  }
-
-  .settings-extensions__search {
-    flex: 1 1 auto;
-    width: 100%;
-    margin-left: 0;
-  }
-}
-`;
-
+/** The plugin center and standalone pages occupy the same main panel. */
 export function PluginsSection({
-  t,
-  resolveText,
+  navigation,
   locale,
   colorScheme,
-}: PropsLocale<"codexhostImport"> & PluginsSectionFace): ReactNode {
-  const [desktopSupported, setDesktopSupported] = useState(false);
-  const [activeTarget, setActiveTarget] = useState<PluginsTarget>("web");
+  t,
+}: PropsLocale<"codexhostImport"> & PluginsSectionFace) {
+  const { pages, selectedPage } = useSyncExternalStore(
+    navigation.store.subscribe,
+    navigation.store.getSnapshot,
+  );
+  const systemLocale = toExtensionLocale(useSyncExternalStore(locale.subscribe, locale.get));
+  const [contentLocalePref, setContentLocalePref] = useState(readContentLocalePreference);
+  const contentLocale = contentLocalePref === "system" ? systemLocale : contentLocalePref;
+  const selectContentLocale = (next: ContentLocalePreference) => {
+    setContentLocalePref(next);
+    try {
+      localStorage.setItem(CONTENT_LOCALE_STORAGE_KEY, next);
+    } catch {
+      // The preference still applies in this workspace when storage is restricted.
+    }
+  };
 
+  const id = useId();
+  const panelId = `${id}-panel`;
+  const tabId = (pageId?: string) =>
+    pageId === undefined ? `${id}-center` : `${id}-page-${pageId}`;
+  const selectedTabId = tabId(selectedPage?.id);
+  const activeTab = useRef<HTMLButtonElement>(null);
+  const hasTabs = pages.length > 0;
   useEffect(() => {
-    const controller = new AbortController();
-    void probeDesktopExtensionsSupport(controller.signal).then((supported) => {
-      if (!controller.signal.aborted && supported) {
-        setDesktopSupported(true);
-      }
-    });
-    return () => controller.abort();
-  }, []);
+    if (hasTabs) activeTab.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [hasTabs, selectedTabId]);
 
-  const targetSwitcher = desktopSupported ? (
-    <div
-      className={css.targetSwitcher}
-      role="group"
-      aria-label={t("extensions.targetSwitcherLabel")}
-      data-plugins-target-switcher
-    >
-      <button
-        type="button"
-        className={css.targetOption}
-        aria-pressed={activeTarget === "web"}
-        data-target="web"
-        onClick={() => setActiveTarget("web")}
-      >
-        {t("extensions.targetWeb")}
-      </button>
-      <button
-        type="button"
-        className={css.targetOption}
-        aria-pressed={activeTarget === "desktop"}
-        data-target="desktop"
-        onClick={() => setActiveTarget("desktop")}
-      >
-        {t("extensions.targetDesktop")}
-      </button>
-    </div>
-  ) : null;
+  const tabs = [null, ...pages];
+  const moveTab = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let next: number;
+    switch (event.key) {
+      case "ArrowLeft":
+        next = (index + tabs.length - 1) % tabs.length;
+        break;
+      case "ArrowRight":
+        next = (index + 1) % tabs.length;
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = tabs.length - 1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.parentElement
+      ?.querySelectorAll<HTMLButtonElement>('[role="tab"]')
+      .item(next)
+      ?.focus({ preventScroll: true });
+    navigation.selectPage(tabs[next] ?? null);
+  };
 
   return (
-    <div className={css.root} data-plugins-section data-plugins-target={activeTarget}>
-      {/* Keep Web plugins mounted while viewing Desktop so returning preserves tabs, search, and cache. */}
-      <div className={css.pane} hidden={activeTarget !== "web"}>
+    <div
+      className={css.root}
+      data-plugins-section
+      data-standalone={selectedPage !== null || undefined}
+    >
+      {hasTabs && (
+        <div className={css.tabList} role="tablist" aria-label={t("extensions.pageTabsLabel")}>
+          {tabs.map((page, index) => {
+            const selected = page?.id === selectedPage?.id;
+            const title =
+              page === null
+                ? t("extensions.centerTab")
+                : extensionPageTitle(page.manifest, contentLocale);
+            return (
+              <button
+                key={tabId(page?.id)}
+                id={tabId(page?.id)}
+                ref={selected ? activeTab : undefined}
+                type="button"
+                className={css.tab}
+                role="tab"
+                aria-selected={selected}
+                aria-controls={panelId}
+                tabIndex={selected ? 0 : -1}
+                title={title}
+                onClick={() => navigation.selectPage(page)}
+                onKeyDown={(event) => moveTab(event, index)}
+              >
+                <span className={css.tabIcon} aria-hidden="true">
+                  {page === null ? (
+                    <PluginsIcon size={16} />
+                  ) : (
+                    <ExtensionIcon src={extensionPageIconUrl(page)} size="sidebar" />
+                  )}
+                </span>
+                <span className={css.tabLabel}>{title}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <div
+        className={css.panel}
+        id={hasTabs ? panelId : undefined}
+        role={hasTabs ? "tabpanel" : undefined}
+        aria-labelledby={hasTabs ? selectedTabId : undefined}
+        tabIndex={hasTabs ? 0 : undefined}
+      >
         <WebExtensionsSection
           t={t}
-          resolveText={resolveText}
           locale={locale}
-          headerAccessory={targetSwitcher}
+          colorScheme={colorScheme}
+          contentLocale={contentLocale}
+          contentLocalePref={contentLocalePref}
+          selectContentLocale={selectContentLocale}
+          selectedPage={selectedPage}
+          selectPage={navigation.selectPage}
         />
       </div>
-
-      {desktopSupported && activeTarget === "desktop" ? (
-        <div className={css.desktopPane} data-desktop-plugins>
-          <header className={css.desktopHeader}>
-            <div className={css.desktopHeaderLeft}>
-              <h2 className={css.title}>{t("settings.extensions")}</h2>
-              {targetSwitcher}
-            </div>
-          </header>
-
-          <HostSettingsSection
-            t={t}
-            pageId="desktop-extensions"
-            locale={locale}
-            colorScheme={colorScheme}
-            shadowCss={EMBEDDED_DESKTOP_EXTENSIONS_CSS}
-          />
-        </div>
-      ) : null}
     </div>
   );
 }

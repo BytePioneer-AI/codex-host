@@ -109,8 +109,9 @@ import { readClaudeTranscript } from "./claude-transcript.js";
 import { readClaudeQueuedCommand } from "./claude-queued-command.js";
 import {
   CLAUDE_DEFAULT_MODEL_REF,
-  decodeClaudeModelRef,
+  claudeModelValue,
   normalizeClaudeModelCatalog,
+  normalizeStoredClaudeModelRef,
 } from "./model-catalog.js";
 import {
   CLAUDE_BYPASS_PERMISSIONS_UNAVAILABLE_MESSAGE,
@@ -831,7 +832,7 @@ class ClaudeHarnessSession implements HarnessSession {
 
   #subagentConfiguration(): SubagentConfiguration {
     const state = this.#state;
-    const model = state.effectiveModel ? decodeClaudeModelRef(state.effectiveModel) : undefined;
+    const model = state.effectiveModel ? claudeModelValue(state.effectiveModel) : undefined;
     return {
       ...(model ? { model } : {}),
       ...(state.effectiveThinkingOptionId
@@ -1423,7 +1424,7 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     let model: string | undefined;
     try {
-      model = decodeClaudeModelRef(command.model);
+      model = claudeModelValue(command.model);
     } catch {
       return {
         ok: false,
@@ -1939,7 +1940,7 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     const selectedModel =
       this.#requestedModel ?? (this.#openMode === "create" ? CLAUDE_DEFAULT_MODEL_REF : undefined);
-    const model = selectedModel ? decodeClaudeModelRef(selectedModel) : undefined;
+    const model = selectedModel ? claudeModelValue(selectedModel) : undefined;
     const permissionMode = decodeClaudePermissionModeId(this.#requestedPermissionModeId);
     let transport: ClaudeTurnTransport;
     try {
@@ -3233,6 +3234,7 @@ class ClaudeHarnessSession implements HarnessSession {
 }
 
 export class ClaudeCodeAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredClaudeModelRef;
   readonly commandCatalog = claudeCommandCatalog;
   readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = claudeCodeHarnessId;
@@ -3611,7 +3613,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       input.model
     ) {
       try {
-        decodeClaudeModelRef(input.model);
+        claudeModelValue(input.model);
       } catch {
         return {
           ok: false,
@@ -3730,7 +3732,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           openMode = "create";
         }
         if (pending.configuration.effectiveModel)
-          decodeClaudeModelRef(pending.configuration.effectiveModel);
+          claudeModelValue(pending.configuration.effectiveModel);
         if (pending.configuration.effectiveThinkingOptionId)
           parseClaudeThinkingOptionId(pending.configuration.effectiveThinkingOptionId);
         if (pending.configuration.effectivePermissionModeId)

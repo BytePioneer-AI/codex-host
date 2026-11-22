@@ -3,6 +3,7 @@
  * into a Web settings section and backed by the Web client channel instead of
  * the console server.
  */
+import type { ReleaseAnnouncement } from "@codexhost/shared-contracts";
 import { createConsoleConnectionDiagnostics } from "./console/connection-diagnostics.js";
 import consoleComponentsCss from "./console/components.css";
 import usageCss from "./console/usage/usage.css";
@@ -22,6 +23,10 @@ import {
   type RendererSettingsMessages,
 } from "./settings/localization.js";
 import { createDefaultRendererSettingsPages } from "./settings/pages.js";
+import {
+  openReleaseAnnouncementDialog,
+  type ReleaseAnnouncementDialogHandle,
+} from "./settings/release-announcement-dialog.js";
 import type { RendererConnectionDiagnostics } from "./settings/connections-page.js";
 import settingsCss from "./settings/shell.css";
 import tailwindCss from "./settings/tailwind.css";
@@ -92,6 +97,8 @@ function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptio
     checkUpdate: () => modelClient.checkUpdate(),
     startUpdate: () => modelClient.startUpdate(),
     readUpdateStatus: () => modelClient.readUpdateStatus(),
+    getReleaseAnnouncement: (params?: { manual?: boolean }) =>
+      modelClient.getReleaseAnnouncement?.(params) ?? Promise.resolve(null),
   };
   const page = [
     ...createDefaultRendererSettingsPages(
@@ -147,6 +154,44 @@ function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptio
   };
 }
 
+interface WebReleaseAnnouncementOptions {
+  locale: string;
+  colorScheme: "light" | "dark";
+  onClose?: () => void;
+}
+
+interface WebReleaseAnnouncementControl {
+  setColorScheme(colorScheme: "light" | "dark"): void;
+  dispose(): void;
+}
+
+function openReleaseAnnouncement(
+  announcement: ReleaseAnnouncement,
+  options: WebReleaseAnnouncementOptions,
+): WebReleaseAnnouncementControl | null {
+  const handle: ReleaseAnnouncementDialogHandle | null = openReleaseAnnouncementDialog({
+    announcement,
+    locale: resolveRendererSettingsLocale([options.locale]),
+    ownerDocument: document,
+    colorScheme: options.colorScheme,
+    ...(options.onClose ? { onClose: options.onClose } : {}),
+  });
+  if (!handle) return null;
+  return {
+    setColorScheme(colorScheme) {
+      handle.setColorScheme(colorScheme);
+    },
+    dispose() {
+      handle.dispose();
+    },
+  };
+}
+
 (
-  window as unknown as { __codexhostWebSettingsV1?: { mount: typeof mount } }
-).__codexhostWebSettingsV1 = { mount };
+  window as unknown as {
+    __codexhostWebSettingsV1?: {
+      mount: typeof mount;
+      openReleaseAnnouncement: typeof openReleaseAnnouncement;
+    };
+  }
+).__codexhostWebSettingsV1 = { mount, openReleaseAnnouncement };

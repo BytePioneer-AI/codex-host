@@ -2,7 +2,7 @@ import type {
   ComposerAgentPhase,
   ExternalRendererAgent,
   RendererAgent,
-  RendererAgentAvailability,
+  PickerAgentAvailability,
 } from "./agent-selection-state.js";
 import { catalogModelForRef } from "@codexhost/shared-contracts";
 import type {
@@ -383,7 +383,7 @@ export function nativeContextUsageControlForComposer(composer: Element): HTMLEle
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
-function contractElementVisible(element: Element): boolean {
+export function contractElementVisible(element: Element): boolean {
   const typed = element as HTMLElement;
   const bounds = typed.getBoundingClientRect?.();
   if (!bounds || bounds.width <= 0 || bounds.height <= 0) return false;
@@ -818,7 +818,7 @@ export function renderComposerAgentControl(
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
-  availability: Partial<Record<ExternalRendererAgent, RendererAgentAvailability>> = {},
+  availability: Partial<Record<ExternalRendererAgent, PickerAgentAvailability>> = {},
   modelView: ExternalModelControlView = { status: "idle" },
   permissionModeView: RendererPermissionModeControlView = { status: "idle" },
   usage: ThreadUsageSnapshot | null = null,

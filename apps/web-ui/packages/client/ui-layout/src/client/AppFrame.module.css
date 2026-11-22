@@ -24,7 +24,7 @@
 
 /* The Windows caption row remains outside every conversation and file panel. */
 :global([data-windows-titlebar]) .frame {
-  --dsh-windows-content-radius: 16px;
+  --dsh-windows-content-radius: 12px;
   box-sizing: border-box;
   padding-top: var(--dsh-windows-titlebar-height);
   background: var(--dsw-specific-sidebar-fill);
@@ -34,6 +34,7 @@
   background: var(--dsw-alias-bg-base);
   border-radius: var(--dsh-windows-content-radius) 0 0 0;
   corner-shape: round;
+  box-shadow: inset 1px 1px 0 color-mix(in srgb, var(--dsw-alias-border-l3) 55%, transparent);
 }
 
 :global([data-windows-titlebar]) .frame::before {
@@ -197,6 +198,18 @@
    where a separator would draw a seam against nothing. */
 :global([data-platform="darwin"]) [data-sidebar-hidden] .centerCol {
   border-left: none;
+}
+
+/* Tauri macOS shell uses an opaque window rather than Electron vibrancy. */
+:global([data-platform="darwin"][data-tauri-shell]) .frame,
+:global([data-platform="darwin"][data-tauri-shell]) .sidebarCol,
+:global([data-platform="darwin"][data-tauri-shell]) :global([data-ds-dark-theme]) .sidebarCol {
+  background: var(--dsw-specific-sidebar-fill);
+}
+
+:global([data-platform="darwin"][data-tauri-shell]) .centerCol {
+  border-left: none;
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--dsw-alias-border-l3) 55%, transparent);
 }
 
 /* Published while the shell.leading seat is mounted (same condition as the

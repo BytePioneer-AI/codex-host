@@ -137,7 +137,7 @@ dialog.release-announcement-dialog:focus {
 
 .release-announcement__body {
   display: flex;
-  flex: 1;
+  flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
   gap: 24px;
@@ -145,6 +145,10 @@ dialog.release-announcement-dialog:focus {
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+}
+
+.release-announcement__body > * {
+  flex-shrink: 0;
 }
 
 .release-announcement__intro {

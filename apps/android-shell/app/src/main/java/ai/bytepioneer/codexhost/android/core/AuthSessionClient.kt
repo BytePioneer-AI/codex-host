@@ -27,7 +27,7 @@ internal sealed interface AuthResult {
 
 internal class AuthSessionClient {
     fun login(origin: Origin, token: String): AuthResult {
-        if (!NetworkSecurityPolicy.allows(origin) || !isToken(token)) return AuthResult.Rejected
+        if (!isToken(token)) return AuthResult.Rejected
         val json = buildJsonObject { put("token", token) }.toString()
         val request = Request.Builder()
             .url(origin.url.resolve("/api/auth/login")!!)

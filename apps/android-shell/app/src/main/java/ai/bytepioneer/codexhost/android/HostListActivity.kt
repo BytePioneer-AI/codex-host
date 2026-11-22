@@ -20,6 +20,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import ai.bytepioneer.codexhost.android.core.HostProfile
+import ai.bytepioneer.codexhost.android.core.NetworkSecurityPolicy
 import ai.bytepioneer.codexhost.android.core.Origin
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
@@ -195,7 +196,9 @@ internal class HostListActivity : NativeActivity() {
             name.text = value.name
             address.text = value.origin
 
-            val secure = Origin.parse(value.origin)?.secure == true
+            val parsedOrigin = Origin.parse(value.origin)
+            val secure = parsedOrigin?.secure == true
+            val privateCleartext = parsedOrigin != null && !secure && NetworkSecurityPolicy.isPrivateOrLoopback(parsedOrigin)
             val accent = ContextCompat.getColor(
                 this@HostListActivity,
                 if (secure) R.color.brand_emerald_text else R.color.warn_amber,
@@ -206,7 +209,13 @@ internal class HostListActivity : NativeActivity() {
             transportIcon.setImageResource(if (secure) R.drawable.ic_lock else R.drawable.ic_wifi)
             transportIcon.setColorFilter(accent)
             transportText.setTextColor(accent)
-            transportText.setText(if (secure) R.string.secure_label else R.string.private_cleartext_label)
+            transportText.setText(
+                when {
+                    secure -> R.string.secure_label
+                    privateCleartext -> R.string.private_cleartext_label
+                    else -> R.string.cleartext_label
+                },
+            )
 
             lastOpenedText.text = value.lastOpenedAtMillis?.let {
                 getString(

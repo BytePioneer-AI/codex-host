@@ -38,7 +38,7 @@ class AuthSessionClientTest {
             assertSame(AuthResult.Rejected, auth.login(Origin.parse(server.url("/").toString())!!, "secret"))
             assertEquals(1, server.requestCount)
         }
-        assertSame(AuthResult.Rejected, auth.login(Origin.parse("http://example.net")!!, "secret"))
+        assertSame(AuthResult.Rejected, auth.login(Origin.parse("http://example.net")!!, ""))
     }
 
     @Test fun `distinguishes revoked credentials rate limits and invalid responses`() {

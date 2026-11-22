@@ -4,7 +4,6 @@ import androidx.webkit.ProfileStore
 import androidx.webkit.ProxyConfig
 import androidx.webkit.ProxyController
 import androidx.webkit.WebViewFeature
-import ai.bytepioneer.codexhost.android.core.NetworkSecurityPolicy
 import ai.bytepioneer.codexhost.android.core.Origin
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -68,7 +67,6 @@ internal object BrowserBoundary {
         .removeImplicitRules()
         .apply {
             if (origin != null) {
-                check(NetworkSecurityPolicy.allows(origin))
                 val authority = "${origin.socketHost}:${origin.url.port}"
                 addBypassRule("${origin.url.scheme}://$authority")
                 addBypassRule("${if (origin.secure) "wss" else "ws"}://$authority")

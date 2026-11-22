@@ -44,8 +44,6 @@ internal data class Origin private constructor(val url: HttpUrl) {
             val url = HttpUrl.Builder().scheme(scheme).host(host).apply {
                 if (server.port != -1) port(server.port)
             }.build()
-            // Neither IDNA aliases nor IPv4-mapped IPv6 can qualify as listed HTTP literals.
-            if (!url.isHttps && (uri.host == null || (':' in host && ':' !in url.host))) return null
             return Origin(url)
         }
     }

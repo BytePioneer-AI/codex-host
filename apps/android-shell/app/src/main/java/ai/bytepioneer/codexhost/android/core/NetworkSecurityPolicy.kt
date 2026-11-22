@@ -4,7 +4,7 @@ import java.net.Inet6Address
 import java.net.InetAddress
 
 internal object NetworkSecurityPolicy {
-    fun allows(origin: Origin): Boolean = origin.secure || isPrivateOrLoopbackHost(origin.url.host)
+    fun isPrivateOrLoopback(origin: Origin): Boolean = isPrivateOrLoopbackHost(origin.url.host)
 
     private val ipv4 = Regex("(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}")
 

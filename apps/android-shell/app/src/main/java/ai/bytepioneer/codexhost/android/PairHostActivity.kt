@@ -21,7 +21,6 @@ import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import ai.bytepioneer.codexhost.android.core.AuthResult
 import ai.bytepioneer.codexhost.android.core.AuthSessionClient
-import ai.bytepioneer.codexhost.android.core.NetworkSecurityPolicy
 import ai.bytepioneer.codexhost.android.core.PairingLink
 import ai.bytepioneer.codexhost.android.core.PairingLinkParser
 import com.google.android.material.button.MaterialButton
@@ -192,7 +191,6 @@ internal class PairHostActivity : NativeActivity() {
     private fun submit(link: PairingLink?) {
         if (busy) return
         if (link == null) return message(R.string.pair_invalid_link)
-        if (!NetworkSecurityPolicy.allows(link.origin)) return message(R.string.private_http_only)
         if (!BrowserBoundary.supported()) return message(R.string.webview_unsupported)
         busy = true
         verify.isEnabled = false

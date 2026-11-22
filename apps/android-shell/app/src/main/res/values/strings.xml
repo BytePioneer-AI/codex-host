@@ -38,6 +38,7 @@
     <string name="last_opened">Last opened: %1$s</string>
     <string name="secure_label">Encrypted HTTPS</string>
     <string name="private_cleartext_label">Local network · Unencrypted HTTP</string>
+    <string name="cleartext_label">Unencrypted HTTP</string>
     <string name="pair_title">Add a computer</string>
     <string name="scan_tab">Scan QR</string>
     <string name="manual_tab">Enter manually</string>
@@ -45,13 +46,12 @@
     <string name="camera_unavailable">Camera unavailable. Enter the connection link manually.</string>
     <string name="camera_permission">Allow camera access</string>
     <string name="switch_to_manual">Enter manually instead</string>
-    <string name="manual_security_note">Public addresses require HTTPS. Unencrypted HTTP is restricted to local private networks.</string>
+    <string name="manual_security_note">HTTPS is recommended on public networks. Unencrypted HTTP is also allowed at your discretion.</string>
     <string name="connection_link">Connection link or address</string>
     <string name="access_token">Access token (if not in the link)</string>
     <string name="pair_action">Verify and connect</string>
     <string name="pair_connecting">Verifying access token…</string>
     <string name="pair_invalid_link">Enter a valid HTTP(S) connection link and access token.</string>
-    <string name="private_http_only">Use HTTPS for public addresses. Unencrypted HTTP is allowed only for private IPs and localhost.</string>
     <string name="token_invalid">The access token is no longer valid. Scan a new code.</string>
     <string name="scan_again">Scan again</string>
     <string name="rate_limited">Too many sign-in attempts. Wait a while before trying again.</string>
@@ -66,6 +66,7 @@
     <string name="token_revoked_title">Sign-in expired</string>
     <string name="session_status_https">HTTPS</string>
     <string name="session_status_lan">LAN</string>
+    <string name="session_status_http">HTTP</string>
     <string name="switch_host">Switch computer</string>
     <string name="retry">Retry</string>
     <string name="offline">No network connection. Reconnect and try again.</string>

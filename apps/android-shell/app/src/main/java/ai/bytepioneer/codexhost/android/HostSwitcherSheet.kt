@@ -20,6 +20,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import ai.bytepioneer.codexhost.android.core.HostProfile
+import ai.bytepioneer.codexhost.android.core.NetworkSecurityPolicy
 import ai.bytepioneer.codexhost.android.core.Origin
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
@@ -191,7 +192,9 @@ internal class HostSwitcherSheet(
                 )
             }
 
-            val secure = Origin.parse(value.origin)?.secure == true
+            val parsedOrigin = Origin.parse(value.origin)
+            val secure = parsedOrigin?.secure == true
+            val privateCleartext = parsedOrigin != null && !secure && NetworkSecurityPolicy.isPrivateOrLoopback(parsedOrigin)
             val accent = ContextCompat.getColor(
                 activity,
                 if (secure) R.color.brand_emerald_text else R.color.warn_amber,
@@ -200,7 +203,13 @@ internal class HostSwitcherSheet(
             hostIcon.setColorFilter(accent)
             transportPill.setBackgroundResource(if (secure) R.drawable.bg_pill_secure else R.drawable.bg_pill_local)
             transportPill.setTextColor(accent)
-            transportPill.setText(if (secure) R.string.session_status_https else R.string.session_status_lan)
+            transportPill.setText(
+                when {
+                    secure -> R.string.session_status_https
+                    privateCleartext -> R.string.session_status_lan
+                    else -> R.string.session_status_http
+                },
+            )
         }
     }
 

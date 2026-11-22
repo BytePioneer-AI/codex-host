@@ -35,7 +35,6 @@ import androidx.webkit.WebViewCompat
 import ai.bytepioneer.codexhost.android.core.AuthResult
 import ai.bytepioneer.codexhost.android.core.AuthSessionClient
 import ai.bytepioneer.codexhost.android.core.HostProfile
-import ai.bytepioneer.codexhost.android.core.NetworkSecurityPolicy
 import ai.bytepioneer.codexhost.android.core.Origin
 import ai.bytepioneer.codexhost.android.core.SessionAuthRecovery
 import com.google.android.material.button.MaterialButton
@@ -253,8 +252,8 @@ internal class SessionWebActivity : NativeActivity() {
                 val stored = store.get(id) ?: return@launch showError(R.string.storage_error, false)
                 currentHostName = stored.profile.name
                 pillHostName.text = stored.profile.name
-                val selected = Origin.parse(stored.profile.origin)?.takeIf(NetworkSecurityPolicy::allows)
-                    ?: return@launch showError(R.string.private_http_only, false)
+                val selected = Origin.parse(stored.profile.origin)
+                    ?: return@launch showError(R.string.storage_error, false)
                 origin = selected
                 val token = stored.token
                 if (token == null) return@launch showRevoked()

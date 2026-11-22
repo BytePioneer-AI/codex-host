@@ -38,6 +38,7 @@
     <string name="last_opened">最后访问：%1$s</string>
     <string name="secure_label">加密 HTTPS</string>
     <string name="private_cleartext_label">局域网 · 明文 HTTP</string>
+    <string name="cleartext_label">明文 HTTP</string>
     <string name="pair_title">添加电脑</string>
     <string name="scan_tab">扫码</string>
     <string name="manual_tab">手动输入</string>
@@ -45,13 +46,12 @@
     <string name="camera_unavailable">相机不可用，请手动输入连接链接。</string>
     <string name="camera_permission">授权使用相机</string>
     <string name="switch_to_manual">改为手动输入</string>
-    <string name="manual_security_note">公网地址仅支持 HTTPS，明文 HTTP 仅限局域网私有地址。</string>
+    <string name="manual_security_note">公网环境建议使用 HTTPS，也允许按需使用明文 HTTP 连接。</string>
     <string name="connection_link">连接链接或地址</string>
     <string name="access_token">访问令牌（如果链接中不包含）</string>
     <string name="pair_action">验证并连接</string>
     <string name="pair_connecting">正在验证访问令牌…</string>
     <string name="pair_invalid_link">请输入有效的 HTTP(S) 连接链接和访问令牌。</string>
-    <string name="private_http_only">公网地址必须使用 HTTPS。明文 HTTP 仅允许私网 IP 和 localhost。</string>
     <string name="token_invalid">访问令牌已失效，请重新扫码。</string>
     <string name="scan_again">重新扫码</string>
     <string name="rate_limited">登录尝试过多，请稍后再试。</string>
@@ -66,6 +66,7 @@
     <string name="token_revoked_title">登录已失效</string>
     <string name="session_status_https">HTTPS</string>
     <string name="session_status_lan">局域网</string>
+    <string name="session_status_http">HTTP</string>
     <string name="switch_host">切换电脑</string>
     <string name="retry">重试</string>
     <string name="offline">网络已断开。重新联网后重试。</string>

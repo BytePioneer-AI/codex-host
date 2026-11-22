@@ -1,9 +1,9 @@
 import { Buffer } from "node:buffer";
 
 import type { Model, Provider } from "@opencode-ai/sdk/v2";
+import { compositeModelRefIds } from "@codexhost/harness-adapter";
 
 import {
-  HARNESS_MODEL_REF_MAX_LENGTH,
   harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
@@ -33,45 +33,75 @@ function assertNonBlank(value: string, label: string): void {
   if (!value.trim()) throw new Error(`OpenCode ${label} must not be empty`);
 }
 
-export function encodeOpenCodeModelRef(model: OpenCodeNativeModelRef): HarnessModelRef {
-  assertNonBlank(model.providerID, "Provider ID");
-  assertNonBlank(model.modelID, "Model ID");
-  const encoded = Buffer.from(JSON.stringify([model.providerID, model.modelID]), "utf8").toString(
-    "base64url",
-  );
-  const id = `${MODEL_REF_PREFIX}${encoded}`;
-  if (id.length > HARNESS_MODEL_REF_MAX_LENGTH) {
-    throw new Error("OpenCode Model identity is too long for a Model Ref");
-  }
-  return harnessModelRefSchema.parse({ id });
+function readableId({ providerID, modelID }: OpenCodeNativeModelRef): string {
+  return `${providerID}/${modelID}`;
 }
 
-export function decodeOpenCodeModelRef(ref: HarnessModelRef): OpenCodeNativeModelRef {
-  const parsed = harnessModelRefSchema.parse(ref);
-  if (!parsed.id.startsWith(MODEL_REF_PREFIX)) {
-    throw new Error("OpenCode Model Ref belongs to another Adapter");
+function legacyId({ providerID, modelID }: OpenCodeNativeModelRef): string {
+  return (
+    MODEL_REF_PREFIX + Buffer.from(JSON.stringify([providerID, modelID])).toString("base64url")
+  );
+}
+
+export function openCodeModelIndex(models: OpenCodeNativeModelRef[]) {
+  const entries = new Map(
+    models.map((native) => [
+      legacyId(native),
+      {
+        provider: native.providerID,
+        model: native.modelID,
+        native,
+      },
+    ]),
+  );
+  const ids = compositeModelRefIds([...entries.values()], ({ native }) => legacyId(native));
+  const readable = new Set(models.map(readableId));
+  const byLegacy = new Map<string, HarnessModelRef>();
+  for (const [id, { native }] of ids) {
+    byLegacy.set(legacyId(native), harnessModelRefSchema.parse({ id }));
   }
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(
-      Buffer.from(parsed.id.slice(MODEL_REF_PREFIX.length), "base64url").toString("utf8"),
+  const encode = (model: OpenCodeNativeModelRef): HarnessModelRef => {
+    assertNonBlank(model.providerID, "Provider ID");
+    assertNonBlank(model.modelID, "Model ID");
+    const id = readableId(model);
+    return (
+      byLegacy.get(legacyId(model)) ??
+      harnessModelRefSchema.parse({
+        id: readable.has(id) ? legacyId(model) : id,
+      })
     );
-  } catch {
-    throw new Error("OpenCode Model Ref is malformed");
-  }
-  if (
-    !Array.isArray(decoded) ||
-    decoded.length !== 2 ||
-    typeof decoded[0] !== "string" ||
-    typeof decoded[1] !== "string"
-  ) {
-    throw new Error("OpenCode Model Ref has an invalid native identity");
-  }
-  const native = { providerID: decoded[0], modelID: decoded[1] };
-  if (encodeOpenCodeModelRef(native).id !== parsed.id) {
-    throw new Error("OpenCode Model Ref is not canonical");
-  }
-  return native;
+  };
+  return { encode, ids, byLegacy };
+}
+
+export type OpenCodeModelIndex = ReturnType<typeof openCodeModelIndex>;
+
+export interface OpenCodeModelCatalogSnapshot {
+  readonly catalog: HarnessModelCatalog;
+  readonly index: OpenCodeModelIndex;
+}
+
+export function encodeOpenCodeModelRef(
+  model: OpenCodeNativeModelRef,
+  index?: OpenCodeModelIndex,
+): HarnessModelRef {
+  if (index) return index.encode(model);
+  assertNonBlank(model.providerID, "Provider ID");
+  assertNonBlank(model.modelID, "Model ID");
+  return harnessModelRefSchema.parse({ id: readableId(model) });
+}
+
+export function decodeOpenCodeModelRef(
+  ref: HarnessModelRef,
+  index: OpenCodeModelIndex,
+): OpenCodeNativeModelRef {
+  const model = !ref.serviceTier && index.ids.get(ref.id)?.native;
+  if (!model) throw new Error("OpenCode Model is absent from the connected Provider catalog");
+  return model;
+}
+
+export function normalizeStoredOpenCodeModelRef(ref: HarnessModelRef, index: OpenCodeModelIndex) {
+  return ref.serviceTier ? undefined : index.byLegacy.get(ref.id);
 }
 
 export function encodeOpenCodeVariant(variant: string | undefined): HarnessThinkingOptionId {
@@ -121,8 +151,11 @@ function modelsForConnectedProviders(catalog: OpenCodeProviderCatalog): Array<{
 
 export function normalizeOpenCodeModelCatalog(
   catalog: OpenCodeProviderCatalog,
-): HarnessModelCatalog {
+): OpenCodeModelCatalogSnapshot {
   const nativeModels = modelsForConnectedProviders(catalog);
+  const index = openCodeModelIndex(
+    nativeModels.map(({ provider, model }) => ({ providerID: provider.id, modelID: model.id })),
+  );
   const variants = new Set<string>();
   for (const { model } of nativeModels) {
     for (const variant of Object.keys(model.variants ?? {})) variants.add(variant);
@@ -133,7 +166,7 @@ export function normalizeOpenCodeModelCatalog(
   ];
   const models = nativeModels
     .map(({ provider, model }) => ({
-      ref: encodeOpenCodeModelRef({ providerID: provider.id, modelID: model.id }),
+      ref: index.encode({ providerID: provider.id, modelID: model.id }),
       label: `${provider.name} / ${model.name}`,
       resolvedModelLabel: `${provider.id}/${model.id}`,
       supportedThinkingOptionIds: [
@@ -153,15 +186,18 @@ export function normalizeOpenCodeModelCatalog(
       (candidate): candidate is OpenCodeNativeModelRef =>
         typeof candidate.modelID === "string" && candidate.modelID.length > 0,
     );
-  const defaultModel = defaultNative ? encodeOpenCodeModelRef(defaultNative) : undefined;
-  return harnessModelCatalogSchema.parse({
-    models,
-    ...(defaultModel && models.some(({ ref }) => ref.id === defaultModel.id)
-      ? { defaultModel }
-      : {}),
-    thinkingOptions,
-    defaultThinkingOptionId: DEFAULT_VARIANT_ID,
-  });
+  const defaultModel = defaultNative ? index.encode(defaultNative) : undefined;
+  return {
+    catalog: harnessModelCatalogSchema.parse({
+      models,
+      ...(defaultModel && models.some(({ ref }) => ref.id === defaultModel.id)
+        ? { defaultModel }
+        : {}),
+      thinkingOptions,
+      defaultThinkingOptionId: DEFAULT_VARIANT_ID,
+    }),
+    index,
+  };
 }
 
 export function openCodeContextWindow(

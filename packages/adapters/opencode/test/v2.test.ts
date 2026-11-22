@@ -14,7 +14,7 @@ import {
   type HostEvent,
 } from "@codexhost/harness-adapter";
 import { CodexTurnProjector } from "@codexhost/protocol-core";
-import { harnessModelCatalogSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { encodeOpenCodeVariant } from "../src/model-catalog.js";
 import { openCodeMajor } from "../src/version.js";
 import { assistantItems, projectHistory, readMessages } from "../src/v2/history.js";
@@ -50,7 +50,7 @@ const assistant = (text: string): SessionMessageAssistant => ({
 const idle = (
   outcome: "succeeded" | "failed" | "interrupted" = "succeeded",
 ): SessionMessageInfo => ({ id: "idle", type: "idle", time: { created: 3 }, outcome });
-const catalog = harnessModelCatalogSchema.parse({ models: [], thinkingOptions: [] });
+const models = v2Catalog([], null);
 const sessions: V2Session[] = [];
 afterEach(async () => {
   await Promise.all(sessions.splice(0).map((s) => s.close()));
@@ -90,7 +90,7 @@ function fixture() {
     client as unknown as OpenCodeClient,
     connection,
     info,
-    catalog,
+    models,
     "default",
     64_000,
     () => {},
@@ -842,7 +842,7 @@ describe("OpenCode v2 catalog readiness", () => {
     } as unknown as OpenCodeClient;
     const reading = readCatalog(client, "/workspace", 1000);
     expect(models).not.toHaveBeenCalled();
-    await expect(reading).resolves.toMatchObject({ models: [] });
+    await expect(reading).resolves.toMatchObject({ catalog: { models: [] } });
     expect(list).toHaveBeenCalledTimes(2);
     expect(models).toHaveBeenCalledTimes(1);
   });

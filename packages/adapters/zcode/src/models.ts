@@ -6,16 +6,17 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   nativeSessionRefSchema,
+  type HarnessModelCatalog,
   type HarnessModelRef,
   type JsonObject,
 } from "@codexhost/shared-contracts";
 import {
+  compositeModelRefIds,
   parseHostUsage,
   type HarnessSessionState,
   type HostUsage,
 } from "@codexhost/harness-adapter";
 import {
-  nativeModelSchema,
   type NativeModel,
   type NativeSettings,
   type NativeSnapshot,
@@ -24,43 +25,70 @@ import {
 import { ZcodeError } from "./errors.js";
 
 export const ZCODE_ID = harnessIdSchema.parse("zcode");
-export function encodeModel(model: NativeModel): HarnessModelRef {
-  return harnessModelRefSchema.parse({
-    id: `zcode-local-v1.${Buffer.from(JSON.stringify([model.providerId, model.modelId])).toString("base64url")}`,
-  });
+function readableId({ providerId, modelId }: NativeModel): string {
+  return `${providerId}/${modelId}`;
 }
-export function decodeModel(model: HarnessModelRef): NativeModel {
-  try {
-    const prefix = "zcode-local-v1.";
-    const value: unknown = JSON.parse(
-      Buffer.from(model.id.slice(prefix.length), "base64url").toString("utf8"),
-    );
-    if (!model.id.startsWith(prefix) || !Array.isArray(value) || value.length !== 2)
-      throw new Error();
-    const native = nativeModelSchema.parse({ providerId: value[0], modelId: value[1] });
-    if (encodeModel(native).id !== model.id) throw new Error();
-    return native;
-  } catch {
-    throw new ZcodeError("invalidRequest", "Invalid ZCode model reference");
+
+function legacyId({ providerId, modelId }: NativeModel): string {
+  return `zcode-local-v1.${Buffer.from(JSON.stringify([providerId, modelId])).toString("base64url")}`;
+}
+
+export function sameNativeModel(a: NativeModel, b: NativeModel): boolean {
+  return a.providerId === b.providerId && a.modelId === b.modelId;
+}
+
+function modelIndex(models: NativeSettings["model"]["available"]) {
+  const entries = new Map(
+    models.map((entry) => [
+      legacyId(entry.ref),
+      {
+        provider: entry.ref.providerId,
+        model: entry.ref.modelId,
+        entry,
+      },
+    ]),
+  );
+  const ids = compositeModelRefIds([...entries.values()], ({ entry }) => legacyId(entry.ref));
+  const readable = new Set(models.map(({ ref }) => readableId(ref)));
+  const byLegacy = new Map<string, HarnessModelRef>();
+  for (const [id, { entry }] of ids) {
+    byLegacy.set(legacyId(entry.ref), harnessModelRefSchema.parse({ id }));
   }
+  const encode = (model: NativeModel): HarnessModelRef => {
+    const id = readableId(model);
+    return (
+      byLegacy.get(legacyId(model)) ??
+      harnessModelRefSchema.parse({
+        id: readable.has(id) ? legacyId(model) : id,
+      })
+    );
+  };
+  return { encode, ids, byLegacy };
+}
+
+export type ZcodeModelIndex = ReturnType<typeof modelIndex>;
+
+export function encodeModel(model: NativeModel, index?: ZcodeModelIndex): HarnessModelRef {
+  return index?.encode(model) ?? harnessModelRefSchema.parse({ id: readableId(model) });
+}
+
+export function normalizeStoredZcodeModelRef(ref: HarnessModelRef, index: ZcodeModelIndex) {
+  return ref.serviceTier ? undefined : index.byLegacy.get(ref.id);
 }
 /** Creation/model selection uses the native catalog's completion rule, never a Host default. */
 export function selectNativeModel(
   model: HarnessModelRef,
-  settings: NativeSettings,
+  index: ZcodeModelIndex,
+  current?: NativeModel,
   thinkingOption?: string,
 ): NativeModel {
-  const native = decodeModel(model);
-  const entry = settings.model.available.find(
-    (entry) => encodeModel(entry.ref).id === model.id && !entry.disabledReason,
-  );
+  const entry = !model.serviceTier && index.ids.get(model.id)?.entry;
   if (!entry) throw new ZcodeError("invalidRequest", "ZCode model is not available");
-  const current = settings.model.current;
+  const { providerId, modelId } = entry.ref;
+  const native = { providerId, modelId };
   const level =
     thinkingOption ??
-    (current && encodeModel(current).id === model.id
-      ? current.options?.reasoningLevel
-      : undefined) ??
+    (current && sameNativeModel(current, native) ? current.options?.reasoningLevel : undefined) ??
     entry.reasoning?.defaultLevel;
   if (level === undefined) return native;
   if (!entry.reasoning?.levels.some((option) => option.value === level))
@@ -68,29 +96,32 @@ export function selectNativeModel(
   return { ...native, options: { reasoningLevel: level } };
 }
 
-export function modelCatalog(settings: NativeSettings) {
+export function modelCatalog(settings: NativeSettings): {
+  catalog: HarnessModelCatalog;
+  index: ZcodeModelIndex;
+} {
   const available = settings.model.available.filter((model) => !model.disabledReason);
   const levels = new Map(settings.thoughtLevel.available.map((level) => [level.value, level]));
   for (const model of available)
     for (const level of model.reasoning?.levels ?? []) levels.set(level.value, level);
-  const current = settings.model.current ? encodeModel(settings.model.current) : undefined;
+  const index = modelIndex(available);
+  const current = settings.model.current ? index.encode(settings.model.current) : undefined;
   const defaultThinking = settings.thoughtLevel.current ?? settings.thoughtLevel.defaultLevel;
-  return harnessModelCatalogSchema.parse({
+  const catalog = harnessModelCatalogSchema.parse({
     models: available.map((model) => ({
-      ref: encodeModel(model.ref),
+      ref: index.encode(model.ref),
       label: model.label,
       supportedThinkingOptionIds: model.reasoning?.enabled
         ? model.reasoning.levels.map((level) => level.value)
         : [],
     })),
-    ...(current && available.some((model) => encodeModel(model.ref).id === current.id)
-      ? { defaultModel: current }
-      : {}),
+    ...(current && index.ids.has(current.id) ? { defaultModel: current } : {}),
     thinkingOptions: [...levels.values()].map((level) => ({ id: level.value, label: level.label })),
     ...(defaultThinking && levels.has(defaultThinking)
       ? { defaultThinkingOptionId: defaultThinking }
       : {}),
   });
+  return { catalog, index };
 }
 const modeLabels = {
   build: "Confirm changes",
@@ -117,12 +148,16 @@ export function permissionModes(current: NativeSettings["mode"]["current"] = "bu
     defaultModeId: current,
   });
 }
-export function sessionState(snapshot: NativeSnapshot, locator?: JsonObject): HarnessSessionState {
+export function sessionState(
+  snapshot: NativeSnapshot,
+  locator?: JsonObject,
+  index = modelCatalog(snapshot.settings).index,
+): HarnessSessionState {
   const settings = snapshot.settings;
-  const current = settings.model.current ? encodeModel(settings.model.current) : undefined;
-  const model = settings.model.available.find(
-    (candidate) => encodeModel(candidate.ref).id === current?.id,
-  );
+  const native = settings.model.current;
+  const current = native ? encodeModel(native, index) : undefined;
+  const model =
+    native && settings.model.available.find((candidate) => sameNativeModel(candidate.ref, native));
   return {
     nativeRef: nativeSessionRefSchema.parse({
       harnessId: ZCODE_ID,

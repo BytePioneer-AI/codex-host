@@ -3308,19 +3308,26 @@ describe("Pi RPC Turn aggregation", () => {
     ] as const) {
       const onFault = vi.fn();
       const rpc = session("stats-late", onFault, { commandTimeoutMs: 10 });
-      await rpc.start();
-      const usages = Array.from({ length: count }, () => rpc.getSessionUsage());
-      for (const usage of usages) await expect(usage).rejects.toThrow("command timed out");
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      // Past the bound the oldest id is forgotten, so its late answer is an unknown id.
-      if (faults) {
-        expect(onFault).toHaveBeenCalledWith(
-          expect.objectContaining({ message: "Pi RPC response id is not pending" }),
+      vi.useFakeTimers();
+      try {
+        await rpc.start();
+        const timeouts = Array.from({ length: count }, () =>
+          expect(rpc.getSessionUsage()).rejects.toThrow("command timed out"),
         );
-      } else {
-        expect(onFault).not.toHaveBeenCalled();
+        await vi.runAllTimersAsync();
+        await Promise.all(timeouts);
+        // Past the bound the oldest id is forgotten, so its late answer is an unknown id.
+        if (faults) {
+          expect(onFault).toHaveBeenCalledWith(
+            expect.objectContaining({ message: "Pi RPC response id is not pending" }),
+          );
+        } else {
+          expect(onFault).not.toHaveBeenCalled();
+        }
+      } finally {
+        vi.useRealTimers();
+        await rpc.close();
       }
-      await rpc.close();
     }
   });
 

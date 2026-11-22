@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -214,7 +215,8 @@ it("starts once before any clients connect and shares the process and settings a
   const { host, close } = startHost();
   await expect.poll(journal).toMatch(/^start 1 \d+\n$/u);
   const pid = Number((await journal()).trim().split(" ").at(-1));
-  const viewer = startHost({ manager: host.hostExtensions! });
+  assert(host.hostExtensions, "Expected the local Host extension manager");
+  const viewer = startHost({ manager: host.hostExtensions });
   const web = await connectWeb(host);
   const events: number[] = [];
   const unsubscribe = web.subscribe((event) => {
@@ -334,11 +336,12 @@ it("reaps old generations on update, rollback, disable, recover and uninstall", 
   const {
     extensions: [restored],
   } = schemas[RPC.snapshot].result.parse(await web.request(RPC.snapshot, {}));
+  assert(restored, "Expected the restored extension in the snapshot");
   expect(restored).toMatchObject({
     digest: second.digest,
     activationId: expect.not.stringMatching(second.activationId),
   });
-  const rolledBack = await probe(restored!.activationId, "2");
+  const rolledBack = await probe(restored.activationId, "2");
   const log = await journal();
   const brokenPid = Number(log.match(/start broken (\d+)/u)?.[1]);
   reaped(brokenPid);
@@ -347,9 +350,9 @@ it("reaps old generations on update, rollback, disable, recover and uninstall", 
   );
   await web.request(RPC.disable, { id: "sample", expectedRevision: 1 });
   reaped(rolledBack);
-  await expect(probe(restored!.activationId, "2")).rejects.toMatchObject({ code: -32000 });
+  await expect(probe(restored.activationId, "2")).rejects.toMatchObject({ code: -32000 });
   await web.request(RPC.enable, { id: "sample", expectedRevision: 2 });
-  const beforeRecover = await probe(restored!.activationId, "2");
+  const beforeRecover = await probe(restored.activationId, "2");
   expect(await web.request(RPC.recover, { expectedRevision: 2 })).toEqual({
     state: "revision-conflict",
     revision: 3,
@@ -357,7 +360,7 @@ it("reaps old generations on update, rollback, disable, recover and uninstall", 
   await web.request(RPC.recover, {});
   reaped(beforeRecover);
   await web.request(RPC.enable, { id: "sample", expectedRevision: 4 });
-  const beforeUninstall = await probe(restored!.activationId, "2");
+  const beforeUninstall = await probe(restored.activationId, "2");
   expect(await web.request(RPC.uninstall, { id: "sample" })).toEqual({
     id: "sample",
     removed: true,

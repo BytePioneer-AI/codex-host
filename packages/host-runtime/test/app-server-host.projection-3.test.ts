@@ -21,6 +21,7 @@ import {
   harnessPermissionModeIdSchema,
   hostItemIdSchema,
   hostThreadIdSchema,
+  jsonObjectSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 
@@ -58,7 +59,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 33,
       method: "codexhost/thread/model/select",
-      params: { threadId, model },
+      params: jsonObjectSchema.parse({ threadId, model }),
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 33)),
@@ -406,7 +407,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 32,
       method: "codexhost/thread/model/select",
-      params: { threadId, model },
+      params: jsonObjectSchema.parse({ threadId, model }),
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 32)),
@@ -1692,7 +1693,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 40,
       method: "codexhost/thread/model/select",
-      params: { threadId, model },
+      params: jsonObjectSchema.parse({ threadId, model }),
     });
     await fixture.collector.waitFor((message) => requestId(message, 40));
     writeRequest(fixture.desktopInput, {

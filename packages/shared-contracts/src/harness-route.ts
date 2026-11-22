@@ -39,7 +39,7 @@ export function decodeHarnessPluginRoute(value: unknown): HarnessPluginRoute | n
     throw new Error("Invalid Harness plugin route");
   }
   try {
-    const bytes = Uint8Array.from(payload.match(/../gu)!, (byte) => parseInt(byte, 16));
+    const bytes = Uint8Array.from(payload.matchAll(/../gu), ([byte]) => parseInt(byte, 16));
     const json = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     const decoded = harnessPluginRouteSchema.parse(JSON.parse(json));
     if (encodeHarnessPluginRoute(decoded) !== value)

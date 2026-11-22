@@ -548,6 +548,10 @@ class FakeOmpProcess extends EventEmitter {
       this.#respond(command, { messages: this.#messages });
       return;
     }
+    if (command.type === "get_available_models") {
+      this.#respond(command, { models: [{ provider: "synthetic", id: "model", reasoning: true }] });
+      return;
+    }
     if (command.type === "steer") {
       if (this.rejectSteer) {
         this.#output({

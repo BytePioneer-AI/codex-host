@@ -49,7 +49,9 @@ describe("Hermes model catalog", () => {
     const id = "custom:pi-openai:gpt-5.6-sol";
     expect(catalog.defaultModel).toEqual({ id });
     const saved = harnessModelRefSchema.parse({ id: Buffer.from(id).toString("base64url") });
-    expect(normalizeStoredHermesModelRef(saved, catalog)).toEqual({ id });
+    expect(
+      normalizeStoredHermesModelRef(saved, { models: catalog.models, thinkingOptions: [] }),
+    ).toEqual({ id });
     expect(catalog.models.map(({ ref }) => ref)).toContainEqual(catalog.defaultModel);
     expect(catalog.models.map(({ ref }) => ref)).toContainEqual({ id });
   });

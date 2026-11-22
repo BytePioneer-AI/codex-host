@@ -6,7 +6,7 @@ import {
   desktopExtensionManifestSchema,
   parseDesktopExtensionManifest,
   type DesktopExtensionBackendContext,
-  type DesktopExtensionDispose,
+  type DesktopExtensionDefinitionV1,
 } from "./desktop-extensions.js";
 import { pluginRelativeResourceSchema } from "./harness-plugins.js";
 import type { JsonObject, JsonValue } from "./json-value.js";
@@ -248,11 +248,10 @@ export interface HostExtensionPageApi {
   backend: { invoke(method: string, params?: JsonValue): Promise<JsonValue> };
 }
 export interface HostExtensionPageModule {
-  /* eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- A page may not need a disposer. */
   mount(
     root: HTMLElement,
     api: HostExtensionPageApi,
-  ): void | DesktopExtensionDispose | Promise<void | DesktopExtensionDispose>;
+  ): ReturnType<DesktopExtensionDefinitionV1["activate"]>;
 }
 
 export const hostExtensionBackendMethodSchema = desktopExtensionBackendMethodSchema;

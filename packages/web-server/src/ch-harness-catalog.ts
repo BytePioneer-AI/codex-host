@@ -206,15 +206,12 @@ export class ChHarnessCatalog {
           ]
         : [],
     );
-    const selection: ModelSelection | undefined =
-      first?.inspection.status === "ready"
-        ? {
-            provider: first.id,
-            model: harnessModelRefKey(
-              first.inspection.catalog.defaultModel ?? first.inspection.catalog.models[0]!.ref,
-            ),
-          }
-        : undefined;
+    let selection: ModelSelection | undefined;
+    if (first?.inspection.status === "ready") {
+      const { defaultModel, models } = first.inspection.catalog;
+      const ref = defaultModel ?? models[0]?.ref;
+      if (ref) selection = { provider: first.id, model: harnessModelRefKey(ref) };
+    }
     // Keep the targeted authorization action reachable even with no routable Harness.
     if (!selection && !failures.some((failure) => failure.credentialAccessRequired))
       throw new RpcError("host/no-harness", "CH has no ready session Harness.");

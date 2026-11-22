@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
@@ -35,7 +36,8 @@ import {
 
 it("projects saved Model defaults and favorites without modifying the preferences file", async () => {
   const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-  const model = adapter.catalog.models[1]!.ref;
+  const model = adapter.catalog.models[1]?.ref;
+  assert(model, "Expected a second Model in the fake catalog");
   const fixture = createFixture({
     externalAdapters: new Map([
       [

@@ -7,6 +7,11 @@ fn main() {
             "get_state",
             "ensure_web_access",
             "open_web_browser",
+            "window_start_dragging",
+            "window_minimize",
+            "window_toggle_maximize",
+            "window_close",
+            "window_chrome_state",
         ]),
     ))
     .expect("build Tauri desktop shell");

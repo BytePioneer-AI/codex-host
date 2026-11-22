@@ -11,7 +11,7 @@
       pageTitle: "CodexHost — 选择打开方式",
       title: "选择打开方式",
       subtitle: "每次启动可自由选择入口，桌面端、官方客户端与浏览器共用同一套本机后台与会话。",
-      nativeBadge: "推荐",
+      nativeBadge: "独立窗口",
       nativeTitle: "CodexHost 桌面端",
       nativeSummary: "轻量、低内存的独立原生桌面窗口",
       nativePoint1: "轻量低内存，独立原生窗口体验",
@@ -61,7 +61,7 @@
       title: "Choose how to open CodexHost",
       subtitle:
         "Pick a launch mode each time you open CodexHost. Desktop, official client, and Web share the same local Host and sessions.",
-      nativeBadge: "Recommended",
+      nativeBadge: "Standalone",
       nativeTitle: "CodexHost Desktop",
       nativeSummary: "Lightweight, low-memory native desktop window",
       nativePoint1: "Lightweight and low-memory native window",

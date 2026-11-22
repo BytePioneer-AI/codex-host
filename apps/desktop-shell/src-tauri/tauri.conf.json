@@ -7,8 +7,8 @@
   "app": {
     "windows": [],
     "security": {
-      "capabilities": ["embedded-pages"],
-      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+      "capabilities": ["embedded-pages", "window-chrome"],
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
     }
   },
   "bundle": { "active": false, "icon": ["icons/icon.ico", "icons/tray.png"] }

@@ -63,7 +63,7 @@
 
 /* The brand stays in the sidebar; fixed caption controls survive zero-width collapse. */
 :global([data-windows-titlebar]) .root .logoRow {
-  height: 40px;
+  height: 36px;
   margin: 0;
   padding: 0;
 }

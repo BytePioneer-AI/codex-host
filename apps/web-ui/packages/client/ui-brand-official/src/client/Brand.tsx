@@ -41,9 +41,9 @@ export function CodexHostName() {
   const cCutId = useId();
   return (
     <svg
-      width={127}
-      height={22}
-      viewBox="0 0 102 17"
+      width={112}
+      height={19}
+      viewBox="0 0 104 17"
       className={css.wordmark}
       fill="currentColor"
       role="img"
@@ -72,8 +72,8 @@ export function CodexHostName() {
         />
       </g>
       <g className={css.hostBadge} data-codexhost-word="host">
-        <rect x="68.35" y="1.872" width="33" height="14" rx="2" />
-        <text className={css.hostBadgeText} x="84.85" y="12.422" textAnchor="middle">
+        <rect className={css.hostBadgePill} x="68.35" y="1.872" width="34" height="14" rx="4" />
+        <text className={css.hostBadgeText} x="85.35" y="12.1" textAnchor="middle">
           HOST
         </text>
       </g>

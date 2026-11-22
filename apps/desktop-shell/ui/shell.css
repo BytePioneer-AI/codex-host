@@ -253,6 +253,18 @@ button {
   min-height: 52px;
 }
 
+html[data-windows-titlebar] .topbar {
+  padding-top: 10px;
+  padding-right: 152px;
+  min-height: 44px;
+}
+
+html[data-platform="darwin"] .topbar {
+  padding-top: 12px;
+  padding-left: 84px;
+  min-height: 46px;
+}
+
 .topbar-brand {
   display: inline-flex;
   align-items: center;
@@ -485,10 +497,24 @@ button {
   color: var(--text-brand);
 }
 
+.card-icon--brand {
+  background: var(--icon-tile-bg);
+  border-color: var(--icon-tile-border);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
 .card-icon svg {
   width: 20px;
   height: 20px;
   display: block;
+}
+
+.card-icon--brand svg,
+.card-logo-img {
+  width: 26px;
+  height: 26px;
+  display: block;
+  object-fit: contain;
 }
 
 .badge {
@@ -564,10 +590,6 @@ button {
   height: 15px;
   margin-top: 2px;
   flex-shrink: 0;
-  color: var(--text-brand);
-}
-
-.surface-card:not(.surface-card--recommended) .feature-check {
   color: var(--text-tertiary);
 }
 

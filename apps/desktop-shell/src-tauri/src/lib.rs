@@ -13,7 +13,7 @@ use url::Url;
 
 use launcher::{Launcher, Options, Surface};
 use navigation::{LOADING, Navigation, ONBOARDING, classify, embedded, open_browser};
-use readiness::{ShellReady, WebEvent};
+use readiness::{ShellReady, WebEvent, WebReady};
 
 const MAIN: &str = "main";
 
@@ -33,6 +33,18 @@ struct PageState {
     status: Status,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
+    web_running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web_login_url: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebAccessInfo {
+    web_url: String,
+    web_login_url: String,
 }
 
 enum Page {
@@ -178,6 +190,19 @@ pub(crate) fn show_main(app: &AppHandle, route: Option<&'static str>) {
     set_visible(app, true);
 }
 
+pub(crate) fn show_onboarding(app: &AppHandle) {
+    let shell = app.state::<Shell>();
+    if shell.launcher.is_stopping() {
+        return;
+    }
+    let mut view = shell.view.lock().unwrap();
+    view.page = Page::Onboarding;
+    view.pending_route = None;
+    drop(view);
+    navigate(app, embedded(ONBOARDING));
+    set_visible(app, true);
+}
+
 async fn launcher_action<T: Send + 'static>(
     launcher: Arc<Launcher>,
     action: impl FnOnce(&Launcher) -> Result<T, String> + Send + 'static,
@@ -190,12 +215,19 @@ async fn launcher_action<T: Send + 'static>(
 #[tauri::command]
 async fn get_state(shell: State<'_, Shell>) -> Result<PageState, String> {
     let onboarding = matches!(shell.view.lock().unwrap().page, Page::Onboarding);
-    let codex_desktop_installed = if onboarding {
-        launcher_action(shell.launcher.clone(), Launcher::codex_installed)
+    let (codex_desktop_installed, web_ready) = if onboarding {
+        let installed = launcher_action(shell.launcher.clone(), Launcher::codex_installed)
             .await
-            .unwrap_or(false)
+            .unwrap_or(false);
+        let data_dir = shell.launcher.data_dir.clone();
+        let web =
+            tauri::async_runtime::spawn_blocking(move || WebReady::read_live_optional(&data_dir))
+                .await
+                .ok()
+                .flatten();
+        (installed, web)
     } else {
-        false
+        (false, None)
     };
     let (status, message) = match &shell.view.lock().unwrap().page {
         Page::Loading(status, message) => (*status, message.clone()),
@@ -206,7 +238,36 @@ async fn get_state(shell: State<'_, Shell>) -> Result<PageState, String> {
         locale: shell.locale.clone(),
         status,
         message,
+        web_running: web_ready.is_some(),
+        web_url: web_ready.as_ref().map(WebReady::display_url),
+        web_login_url: web_ready.map(|ready| ready.login_url.as_str().to_owned()),
     })
+}
+
+#[tauri::command]
+async fn ensure_web_access(shell: State<'_, Shell>) -> Result<WebAccessInfo, String> {
+    let ready = launcher_action(shell.launcher.clone(), readiness::ensure_web_ready).await?;
+    Ok(WebAccessInfo {
+        web_url: ready.display_url(),
+        web_login_url: ready.login_url.as_str().to_owned(),
+    })
+}
+
+#[tauri::command]
+async fn open_web_browser(shell: State<'_, Shell>) -> Result<WebAccessInfo, String> {
+    let ready = launcher_action(shell.launcher.clone(), readiness::ensure_web_ready).await?;
+    let info = WebAccessInfo {
+        web_url: ready.display_url(),
+        web_login_url: ready.login_url.as_str().to_owned(),
+    };
+    let login = ready.login_url;
+    tauri::async_runtime::spawn_blocking(move || {
+        codexhost_platform::open_external_url(login.as_str())
+            .map_err(|error| format!("Could not open the system browser: {error}"))
+    })
+    .await
+    .map_err(|error| format!("Browser open task failed: {error}"))??;
+    Ok(info)
 }
 
 #[tauri::command]
@@ -273,9 +334,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (ensure_web, requests) = mpsc::channel();
     let onboarding = options.onboarding;
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             let handle = app.clone();
-            let _ = app.run_on_main_thread(move || show_main(&handle, None));
+            let wants_onboarding = args.iter().any(|arg| arg == "--onboarding");
+            let _ = app.run_on_main_thread(move || {
+                if wants_onboarding {
+                    show_onboarding(&handle);
+                } else {
+                    show_main(&handle, None);
+                }
+            });
         }))
         .plugin(tauri_plugin_dialog::init())
         .manage(Shell {
@@ -296,7 +364,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             get_state,
             open_console,
             retry,
-            choose_surface
+            choose_surface,
+            ensure_web_access,
+            open_web_browser
         ])
         .on_window_event(|window, event| {
             if window.label() == MAIN {

@@ -50,9 +50,9 @@
                 />
               </svg>
             </div>
-            <h1 id="onboarding-title" class="onboarding-title">选择你的默认桌面方式</h1>
+            <h1 id="onboarding-title" class="onboarding-title">选择打开方式</h1>
             <p id="onboarding-subtitle" class="onboarding-subtitle">
-              同一个 CodexHost 安装包支持两种窗口形态，选定后将记住为默认启动方式。
+              每次启动可自由选择入口，桌面端、官方客户端与浏览器共用同一套本机后台与会话。
             </p>
           </div>
 
@@ -270,6 +270,84 @@
               </div>
             </button>
           </div>
+
+          <section class="web-access-bar" aria-labelledby="web-access-label">
+            <div class="web-access-info">
+              <span
+                id="web-status-dot"
+                class="web-status-dot"
+                data-running="false"
+                aria-hidden="true"
+              ></span>
+              <div class="web-access-text">
+                <div class="web-access-heading">
+                  <span id="web-access-label" class="web-access-label">Web 浏览器访问</span>
+                  <span id="web-access-status" class="web-access-status">按需启动</span>
+                </div>
+                <code id="web-access-url" class="web-access-url"
+                  >点击右侧启动或复制本机访问地址</code
+                >
+              </div>
+            </div>
+            <div class="web-access-actions">
+              <button type="button" id="web-copy-btn" class="web-action-btn">
+                <span id="web-copy-spinner" class="spinner" hidden></span>
+                <svg
+                  id="web-copy-icon"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="5.5" y="5.5" width="7.5" height="8" rx="1.6" />
+                  <path
+                    d="M10.5 5.5V3.9A1.4 1.4 0 0 0 9.1 2.5H4.4A1.4 1.4 0 0 0 3 3.9v6.2a1.4 1.4 0 0 0 1.4 1.4h1.1"
+                  />
+                </svg>
+                <svg
+                  id="web-copied-icon"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                  hidden
+                >
+                  <path d="M3.5 8.5 6.5 11.5 12.5 5" />
+                </svg>
+                <span id="web-copy-label">复制地址</span>
+              </button>
+              <button
+                type="button"
+                id="web-open-btn"
+                class="web-action-btn web-action-btn--primary"
+              >
+                <span id="web-open-spinner" class="spinner" hidden></span>
+                <svg
+                  id="web-open-icon"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M6.5 3.5H4A1.5 1.5 0 0 0 2.5 5v7A1.5 1.5 0 0 0 4 13.5h7a1.5 1.5 0 0 0 1.5-1.5V9.5"
+                  />
+                  <path d="M9.5 2.5h4v4" />
+                  <path d="M13.5 2.5 7.5 8.5" />
+                </svg>
+                <span id="web-open-label">浏览器打开</span>
+              </button>
+            </div>
+          </section>
 
           <div
             id="feedback-banner"

@@ -125,6 +125,17 @@ fn login_url(value: &str) -> Result<Url, &'static str> {
 }
 
 impl WebReady {
+    pub(crate) fn display_url(&self) -> String {
+        let mut clean = self.login_url.clone();
+        clean.set_query(None);
+        clean.set_fragment(None);
+        clean.as_str().trim_end_matches('/').to_owned()
+    }
+
+    pub(crate) fn read_live_optional(data_dir: &Path) -> Option<Self> {
+        Self::read_live(data_dir).ok()
+    }
+
     fn parse(bytes: &[u8]) -> Result<Self, &'static str> {
         // Launcher flattens WebAccess into the supervisor's JSON record.
         let record: WebRecord = serde_json::from_slice(bytes)
@@ -164,6 +175,29 @@ pub(crate) enum WebEvent {
     Connected(WebReady),
     Reconnecting,
     Error(String),
+}
+
+/// Ensure the background Web service is running and return its live loopback access info.
+pub(crate) fn ensure_web_ready(launcher: &Launcher) -> Result<WebReady, String> {
+    if let Ok(live) = WebReady::read_live(&launcher.data_dir) {
+        return Ok(live);
+    }
+    launcher.run(&["web", "--background"])?;
+    let deadline = Instant::now() + READY_TIMEOUT;
+    loop {
+        match WebReady::read_live(&launcher.data_dir) {
+            Ok(live) => return Ok(live),
+            Err(reason) => {
+                if launcher.is_stopping() {
+                    return Err("CodexHost is shutting down".into());
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!("Web service readiness timed out. {reason}"));
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+        }
+    }
 }
 
 /// Inactive until the first native-window request. After startup, the Launcher
@@ -227,6 +261,7 @@ mod tests {
             (18, 42, 20)
         );
         assert_eq!(first.login_url.port(), Some(4400));
+        assert_eq!(first.display_url(), "http://127.0.0.1:4400");
         let next = WebReady::parse(br#"{"pid":18,"started_at_micros":42,"web_pid":21,"loginUrl":"http://127.0.0.1:4400/?token=fixture"}"#).unwrap();
         assert!(first != next);
         assert!(WebReady::parse(br#"{"pid":18,"started_at_micros":42,"loginUrl":"http://127.0.0.1:4400/?token=fixture"}"#).is_err());

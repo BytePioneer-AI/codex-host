@@ -5,6 +5,8 @@ fn main() {
             "retry",
             "open_console",
             "get_state",
+            "ensure_web_access",
+            "open_web_browser",
         ]),
     ))
     .expect("build Tauri desktop shell");

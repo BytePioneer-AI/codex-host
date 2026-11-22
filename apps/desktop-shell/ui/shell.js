@@ -110,11 +110,35 @@
           ? base.message.trim()
           : "";
 
+    var webRunning =
+      typeof source.webRunning === "boolean"
+        ? source.webRunning
+        : typeof base.webRunning === "boolean"
+          ? base.webRunning
+          : false;
+
+    var webUrl =
+      typeof source.webUrl === "string" && source.webUrl.trim()
+        ? source.webUrl.trim()
+        : typeof base.webUrl === "string" && base.webUrl.trim()
+          ? base.webUrl.trim()
+          : "";
+
+    var webLoginUrl =
+      typeof source.webLoginUrl === "string" && source.webLoginUrl.trim()
+        ? source.webLoginUrl.trim()
+        : typeof base.webLoginUrl === "string" && base.webLoginUrl.trim()
+          ? base.webLoginUrl.trim()
+          : "";
+
     return {
       codexDesktopInstalled: codexDesktopInstalled,
       locale: locale,
       status: status,
       message: message,
+      webRunning: webRunning,
+      webUrl: webUrl,
+      webLoginUrl: webLoginUrl,
     };
   }
 

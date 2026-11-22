@@ -1631,6 +1631,9 @@ fn desktop_route(
     codex_installed: bool,
     shell_available: bool,
 ) -> DesktopRoute {
+    if shell_available {
+        return DesktopRoute::Onboarding;
+    }
     match preferences.filter(|prefs| prefs.onboarding_completed) {
         Some(prefs) => match prefs.default_desktop_surface {
             Surface::NativeShell => DesktopRoute::App,
@@ -1638,7 +1641,6 @@ fn desktop_route(
             Surface::CodexDesktop => DesktopRoute::CodexUnavailable,
         },
         None if !codex_installed => DesktopRoute::RememberNative,
-        None if shell_available => DesktopRoute::Onboarding,
         None => DesktopRoute::CodexDesktop,
     }
 }
@@ -1948,17 +1950,17 @@ mod tests {
         let codex = Some(Preferences::new(Surface::CodexDesktop, true));
         let incomplete = Some(Preferences::new(Surface::CodexDesktop, false));
         for (prefs, installed, shell, expected) in [
-            (None, false, true, RememberNative),
+            (None, false, true, Onboarding),
             (None, false, false, RememberNative),
             (None, true, true, Onboarding),
             (None, true, false, CodexDesktop),
-            (incomplete, false, true, RememberNative),
+            (incomplete, false, true, Onboarding),
             (incomplete, true, true, Onboarding),
-            (native, true, true, App),
+            (native, true, true, Onboarding),
             (native, true, false, App),
-            (codex, true, true, CodexDesktop),
+            (codex, true, true, Onboarding),
             (codex, true, false, CodexDesktop),
-            (codex, false, true, CodexUnavailable),
+            (codex, false, true, Onboarding),
             (codex, false, false, CodexUnavailable),
         ] {
             assert_eq!(desktop_route(prefs, installed, shell), expected);

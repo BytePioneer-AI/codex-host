@@ -8,9 +8,9 @@
 
   var COPY = {
     "zh-CN": {
-      pageTitle: "CodexHost — 选择默认桌面方式",
-      title: "选择你的默认桌面方式",
-      subtitle: "同一个 CodexHost 安装包支持两种窗口形态，选定后将记住为默认启动方式。",
+      pageTitle: "CodexHost — 选择打开方式",
+      title: "选择打开方式",
+      subtitle: "每次启动可自由选择入口，桌面端、官方客户端与浏览器共用同一套本机后台与会话。",
       nativeBadge: "推荐",
       nativeTitle: "CodexHost 桌面端",
       nativeSummary: "轻量、低内存的独立原生桌面窗口",
@@ -29,13 +29,25 @@
       desktopPending: "正在打开官方 Codex Desktop…",
       desktopUnavailable: "未在本机检测到 Codex Desktop",
       desktopUnavailableCta: "当前不可用",
-      footnote: "之后随时可在系统托盘或设置中切换，两个窗口共用同一批会话。",
-      chooseErrorPrefix: "无法保存或打开所选方式：",
+      webLabel: "Web 浏览器访问",
+      webRunning: "运行中",
+      webIdle: "按需启动",
+      webIdleHint: "点击右侧启动或复制本机免登链接",
+      webCopy: "复制地址",
+      webCopying: "准备中…",
+      webCopied: "已复制",
+      webOpen: "浏览器打开",
+      webOpening: "正在启动…",
+      webOpenedInfo: "已在系统默认浏览器中打开本机 Web。",
+      webErrorPrefix: "无法启动或打开 Web：",
+      webErrorFallback: "请稍后重试，或从系统托盘打开诊断控制台。",
+      footnote: "托盘图标随时可切换窗口、查看诊断日志或完全退出。",
+      chooseErrorPrefix: "无法打开所选方式：",
       chooseErrorFallback: "请稍后重试，或从系统托盘打开诊断控制台。",
       previewNotice: function (surfaceLabel) {
         return "离线预览模式：已模拟选择「" + surfaceLabel + "」（未连接桌面壳）。";
       },
-      previewErrorSample: "示例错误：无法写入启动偏好文件（离线预览模拟）。",
+      previewErrorSample: "示例错误：无法启动所选界面（离线预览模拟）。",
       previewLabel: "预览",
       previewDesktopInstalled: "已安装 Codex Desktop",
       previewDesktopMissing: "未检测到 Codex Desktop",
@@ -45,10 +57,10 @@
       previewThemeDark: "深色",
     },
     en: {
-      pageTitle: "CodexHost — Choose Desktop Experience",
-      title: "Choose your default desktop experience",
+      pageTitle: "CodexHost — Choose Launch Mode",
+      title: "Choose how to open CodexHost",
       subtitle:
-        "One CodexHost installation supports both window experiences. Your choice will be remembered on future launches.",
+        "Pick a launch mode each time you open CodexHost. Desktop, official client, and Web share the same local Host and sessions.",
       nativeBadge: "Recommended",
       nativeTitle: "CodexHost Desktop",
       nativeSummary: "Lightweight, low-memory native desktop window",
@@ -67,9 +79,20 @@
       desktopPending: "Opening Official Codex Desktop…",
       desktopUnavailable: "Codex Desktop was not detected on this device",
       desktopUnavailableCta: "Unavailable",
-      footnote:
-        "You can switch anytime from the system tray or Settings. Both windows share the same sessions.",
-      chooseErrorPrefix: "Could not apply selection: ",
+      webLabel: "Web Browser Access",
+      webRunning: "Running",
+      webIdle: "On demand",
+      webIdleHint: "Start or copy the local sign-in link on the right",
+      webCopy: "Copy URL",
+      webCopying: "Starting…",
+      webCopied: "Copied",
+      webOpen: "Open in Browser",
+      webOpening: "Starting…",
+      webOpenedInfo: "Opened local Web in your default browser.",
+      webErrorPrefix: "Could not open Web: ",
+      webErrorFallback: "Please try again or open diagnostics from the system tray.",
+      footnote: "Switch windows, open diagnostics, or quit anytime from the system tray.",
+      chooseErrorPrefix: "Could not open selection: ",
       chooseErrorFallback: "Please try again or open the diagnostic console from the system tray.",
       previewNotice: function (surfaceLabel) {
         return (
@@ -78,7 +101,7 @@
           '" (desktop shell bridge not connected).'
         );
       },
-      previewErrorSample: "Sample error: failed to persist launch preferences (offline preview).",
+      previewErrorSample: "Sample error: failed to launch surface (offline preview).",
       previewLabel: "Preview",
       previewDesktopInstalled: "Desktop installed",
       previewDesktopMissing: "Desktop missing",
@@ -95,11 +118,17 @@
     localeLockedByUser: ui.getQueryLocale() !== null,
     codexDesktopInstalled: params.get("installed") !== "false",
     submittingSurface: null,
+    webRunning: false,
+    webUrl: "",
+    webLoginUrl: "",
+    webBusy: null,
+    webCopied: false,
     feedbackKind: null,
     feedbackMessage: "",
     previewTheme: ui.applyThemeFromQuery(),
     previewSimulateError: params.get("error") === "1" || params.get("error") === "true",
   };
+  var copiedTimer = null;
 
   var els = {
     langToggle: document.getElementById("lang-toggle"),
@@ -127,6 +156,19 @@
     desktopCta: document.getElementById("desktop-cta"),
     desktopSpinner: document.getElementById("desktop-spinner"),
     desktopArrow: document.getElementById("desktop-arrow"),
+    webStatusDot: document.getElementById("web-status-dot"),
+    webLabel: document.getElementById("web-access-label"),
+    webStatus: document.getElementById("web-access-status"),
+    webUrl: document.getElementById("web-access-url"),
+    webCopyBtn: document.getElementById("web-copy-btn"),
+    webCopySpinner: document.getElementById("web-copy-spinner"),
+    webCopyIcon: document.getElementById("web-copy-icon"),
+    webCopiedIcon: document.getElementById("web-copied-icon"),
+    webCopyLabel: document.getElementById("web-copy-label"),
+    webOpenBtn: document.getElementById("web-open-btn"),
+    webOpenSpinner: document.getElementById("web-open-spinner"),
+    webOpenIcon: document.getElementById("web-open-icon"),
+    webOpenLabel: document.getElementById("web-open-label"),
     feedbackBanner: document.getElementById("feedback-banner"),
     feedbackIconError: document.getElementById("feedback-icon-error"),
     feedbackIconInfo: document.getElementById("feedback-icon-info"),
@@ -193,6 +235,40 @@
         : t.desktopCta;
     ui.setHidden(els.desktopSpinner, !desktopPending);
     ui.setHidden(els.desktopArrow, desktopPending || desktopUnavailable);
+
+    if (els.webStatusDot) {
+      els.webStatusDot.setAttribute("data-running", state.webRunning ? "true" : "false");
+    }
+    if (els.webLabel) {
+      els.webLabel.textContent = t.webLabel;
+    }
+    if (els.webStatus) {
+      els.webStatus.textContent = state.webRunning ? t.webRunning : t.webIdle;
+      els.webStatus.setAttribute("data-running", state.webRunning ? "true" : "false");
+    }
+    if (els.webUrl) {
+      els.webUrl.textContent = state.webUrl || t.webIdleHint;
+    }
+    var webDisabled = isBusy || state.webBusy !== null;
+    var copying = state.webBusy === "copy";
+    var opening = state.webBusy === "open";
+    if (els.webCopyBtn) {
+      els.webCopyBtn.disabled = webDisabled;
+      els.webCopyLabel.textContent = copying
+        ? t.webCopying
+        : state.webCopied
+          ? t.webCopied
+          : t.webCopy;
+      ui.setHidden(els.webCopySpinner, !copying);
+      ui.setHidden(els.webCopyIcon, copying || state.webCopied);
+      ui.setHidden(els.webCopiedIcon, copying || !state.webCopied);
+    }
+    if (els.webOpenBtn) {
+      els.webOpenBtn.disabled = webDisabled;
+      els.webOpenLabel.textContent = opening ? t.webOpening : t.webOpen;
+      ui.setHidden(els.webOpenSpinner, !opening);
+      ui.setHidden(els.webOpenIcon, opening);
+    }
 
     if (state.feedbackMessage) {
       var isInfo = state.feedbackKind === "info";
@@ -339,6 +415,137 @@
     },
   );
 
+  function copyTextToClipboard(text) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      return navigator.clipboard.writeText(text).catch(function () {
+        fallbackCopy(text);
+      });
+    }
+    fallbackCopy(text);
+    return Promise.resolve();
+  }
+
+  function fallbackCopy(text) {
+    var area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    try {
+      document.execCommand("copy");
+    } finally {
+      document.body.removeChild(area);
+    }
+  }
+
+  function flashCopied() {
+    state.webCopied = true;
+    render();
+    if (copiedTimer) {
+      window.clearTimeout(copiedTimer);
+    }
+    copiedTimer = window.setTimeout(function () {
+      copiedTimer = null;
+      state.webCopied = false;
+      render();
+    }, 2000);
+  }
+
+  function applyWebInfo(info) {
+    if (info && typeof info.webUrl === "string" && info.webUrl) {
+      state.webRunning = true;
+      state.webUrl = info.webUrl;
+    }
+    if (info && typeof info.webLoginUrl === "string" && info.webLoginUrl) {
+      state.webLoginUrl = info.webLoginUrl;
+    }
+  }
+
+  function handleCopyWebUrl() {
+    if (state.submittingSurface !== null || state.webBusy !== null) {
+      return;
+    }
+    state.feedbackKind = null;
+    state.feedbackMessage = "";
+
+    if (state.webLoginUrl || state.webUrl) {
+      copyTextToClipboard(state.webLoginUrl || state.webUrl).then(flashCopied);
+      return;
+    }
+
+    var bridge = ui.getNativeBridge();
+    if (bridge && typeof bridge.ensureWebAccess === "function") {
+      state.webBusy = "copy";
+      render();
+      Promise.resolve()
+        .then(function () {
+          return bridge.ensureWebAccess();
+        })
+        .then(function (info) {
+          applyWebInfo(info);
+          state.webBusy = null;
+          return copyTextToClipboard(state.webLoginUrl || state.webUrl).then(flashCopied);
+        })
+        .catch(function (err) {
+          var t = getCopy();
+          state.webBusy = null;
+          state.feedbackKind = "error";
+          state.feedbackMessage = t.webErrorPrefix + ui.formatError(err, t.webErrorFallback);
+          render();
+        });
+      return;
+    }
+
+    // Offline preview
+    state.webRunning = true;
+    state.webUrl = "http://127.0.0.1:4400";
+    state.webLoginUrl = "http://127.0.0.1:4400/?token=preview";
+    copyTextToClipboard(state.webUrl).then(flashCopied);
+  }
+
+  function handleOpenWebBrowser() {
+    if (state.submittingSurface !== null || state.webBusy !== null) {
+      return;
+    }
+    state.feedbackKind = null;
+    state.feedbackMessage = "";
+
+    var bridge = ui.getNativeBridge();
+    if (bridge && typeof bridge.openWebBrowser === "function") {
+      state.webBusy = "open";
+      render();
+      Promise.resolve()
+        .then(function () {
+          return bridge.openWebBrowser();
+        })
+        .then(function (info) {
+          var t = getCopy();
+          applyWebInfo(info);
+          state.webBusy = null;
+          state.feedbackKind = "info";
+          state.feedbackMessage = t.webOpenedInfo;
+          render();
+        })
+        .catch(function (err) {
+          var t = getCopy();
+          state.webBusy = null;
+          state.feedbackKind = "error";
+          state.feedbackMessage = t.webErrorPrefix + ui.formatError(err, t.webErrorFallback);
+          render();
+        });
+      return;
+    }
+
+    var t = getCopy();
+    state.webRunning = true;
+    state.webUrl = "http://127.0.0.1:4400";
+    state.feedbackKind = "info";
+    state.feedbackMessage = t.webOpenedInfo;
+    render();
+  }
+
   els.nativeCard.addEventListener("click", function () {
     handleChooseSurface("native-shell");
   });
@@ -347,6 +554,13 @@
     handleChooseSurface("codex-desktop");
   });
 
+  if (els.webCopyBtn) {
+    els.webCopyBtn.addEventListener("click", handleCopyWebUrl);
+  }
+  if (els.webOpenBtn) {
+    els.webOpenBtn.addEventListener("click", handleOpenWebBrowser);
+  }
+
   render();
 
   ui.readShellState({
@@ -354,6 +568,9 @@
     locale: state.locale,
     status: "starting",
     message: "",
+    webRunning: false,
+    webUrl: "",
+    webLoginUrl: "",
   }).then(function (result) {
     if (!result.isNative) {
       return;
@@ -362,6 +579,9 @@
       state.locale = result.state.locale;
     }
     state.codexDesktopInstalled = result.state.codexDesktopInstalled;
+    state.webRunning = result.state.webRunning;
+    state.webUrl = result.state.webUrl;
+    state.webLoginUrl = result.state.webLoginUrl;
     if (result.state.status === "error" && result.state.message) {
       state.feedbackKind = "error";
       state.feedbackMessage = result.state.message;

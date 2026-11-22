@@ -66,6 +66,8 @@ window.__CODEXHOST_DESKTOP_SHELL__ = true;
     retry: () => invoke("retry"),
     openConsole: () => invoke("open_console"),
     getState: () => invoke("get_state"),
+    ensureWebAccess: () => invoke("ensure_web_access"),
+    openWebBrowser: () => invoke("open_web_browser"),
   }});
 }})();
 "#,

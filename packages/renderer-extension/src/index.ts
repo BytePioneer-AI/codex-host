@@ -222,6 +222,18 @@ export type {
   RendererSettingsWritableLanguageSelection,
 } from "./settings/localization.js";
 export {
+  RELEASE_ANNOUNCEMENT_DIALOG_ATTRIBUTE,
+  formatReleaseAnnouncementContributors,
+  formatReleaseAnnouncementDate,
+  openReleaseAnnouncementDialog,
+  selectReleaseAnnouncementContent,
+} from "./settings/release-announcement-dialog.js";
+export type {
+  ReleaseAnnouncementDialogHandle,
+  ReleaseAnnouncementDialogOptions,
+  SelectedReleaseAnnouncementContent,
+} from "./settings/release-announcement-dialog.js";
+export {
   SETTINGS_SHELL_ATTRIBUTE,
   installRendererSettingsShell,
   mountRendererSettingsShell,

@@ -1633,6 +1633,19 @@
   border-radius: 20px;
 }
 
+.settings-update-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.settings-update-header .settings-section-label {
+  padding-bottom: 0;
+}
+
 .settings-update-metadata {
   display: flex;
   flex-wrap: wrap;

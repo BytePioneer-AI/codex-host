@@ -25,6 +25,7 @@ import {
 } from "./localization.js";
 import { CODEXHOST_GITHUB_REPOSITORY_URL, createDefaultRendererSettingsRegistry } from "./pages.js";
 import { attachRendererSettingsRailPage, type RendererSettingsRailPage } from "./rail-page.js";
+import { RELEASE_ANNOUNCEMENT_DIALOG_ATTRIBUTE } from "./release-announcement-dialog.js";
 
 export const SETTINGS_SHELL_ATTRIBUTE = "data-codexhost-settings-shell";
 export const RENDERER_SETTINGS_COLOR_SCHEME = "inherit";
@@ -387,8 +388,13 @@ export function mountRendererSettingsShell(
   };
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key !== "Escape" || event.defaultPrevented) return;
-    // A page-owned modal (for example a credential import) closes first.
-    if (shadow.querySelector("dialog[open]")) return;
+    // A page-owned modal (for example a credential import or release announcement) closes first.
+    if (
+      shadow.querySelector("dialog[open]") ||
+      ownerDocument.querySelector(`[${RELEASE_ANNOUNCEMENT_DIALOG_ATTRIBUTE}]`)
+    ) {
+      return;
+    }
     event.preventDefault();
     hide(true);
   };

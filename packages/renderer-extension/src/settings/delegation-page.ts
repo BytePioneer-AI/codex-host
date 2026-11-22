@@ -1,6 +1,5 @@
 import {
   catalogModelForRef,
-  normalizeOfficialCodexModelRef,
   harnessIdSchema,
   harnessModelRefFromKey,
   harnessModelRefKey,
@@ -160,7 +159,7 @@ function resolveModelLabel(
   if (harnessId !== "codex") return found?.label ?? ref.id;
   if (found)
     return sameHarnessModelRef(found.fastModel, ref) ? `${found.label} · Fast` : found.label;
-  const { id, serviceTier } = normalizeOfficialCodexModelRef(ref);
+  const { id, serviceTier } = ref;
   return (
     id +
     (serviceTier === "priority" ? " · Fast" : serviceTier === "ultrafast" ? " · Ultrafast" : "")
@@ -488,21 +487,6 @@ export function createDelegationSettingsPage(
         if (!client?.patchHarnessPreferences) return;
         const parsedHarnessId = harnessIdSchema.safeParse(harnessId);
         if (!parsedHarnessId.success) return;
-
-        const entry = catalogs.get(harnessId);
-        if (
-          harnessId === "codex" &&
-          configuration?.model &&
-          !catalogModelForRef(
-            entry?.status === "ready" ? entry.catalog : undefined,
-            configuration.model,
-          )
-        ) {
-          configuration = {
-            ...configuration,
-            model: normalizeOfficialCodexModelRef(configuration.model),
-          };
-        }
 
         const nextSeq = (patchSeqByHarness.get(harnessId) ?? 0) + 1;
         patchSeqByHarness.set(harnessId, nextSeq);

@@ -1311,6 +1311,10 @@ export class AppServerHost {
       diagnose: (error) => this.#diagnose(error),
       environment: this.#options.environment ?? process.env,
       preferences: this.#preferences,
+      inspectCodexModels: async () => {
+        const { inspection } = await this.#inspectOfficialDelegationTarget({ harnessId: "codex" });
+        return inspection.status === "ready" ? inspection.catalog : undefined;
+      },
       displaySettings: this.#displaySettings,
       launchSettings: this.#launchSettings,
       modelPrices: this.#modelPrices,

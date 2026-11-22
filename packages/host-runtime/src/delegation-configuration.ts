@@ -1,6 +1,7 @@
+import type { HarnessAdapter } from "@codexhost/harness-adapter";
+import { normalizeStoredModelRef } from "./stored-model-ref.js";
 import type { RoutedHarnessId } from "@codexhost/protocol-core";
 import {
-  normalizeOfficialCodexModelRef,
   catalogModelForRef,
   sameHarnessModelRef,
   type HarnessDelegationDefault,
@@ -15,6 +16,7 @@ import {
 
 export async function resolveDelegationConfiguration(input: {
   harnessId: RoutedHarnessId;
+  adapter?: HarnessAdapter | undefined;
   explicit: HarnessDelegationDefault;
   readDefault: () => Promise<HarnessDelegationDefault | undefined>;
   inspect: () => Promise<HarnessInspectResult>;
@@ -46,13 +48,14 @@ export async function resolveDelegationConfiguration(input: {
     capabilities: { configuration },
   } = inspection;
   const savedModel =
-    official && saved?.model && !catalogModelForRef(catalog, saved.model)
-      ? normalizeOfficialCodexModelRef(saved.model)
-      : saved?.model;
+    saved?.model && configuration.selectModel
+      ? await normalizeStoredModelRef(saved.model, catalog, input.harnessId, input.adapter)
+      : undefined;
   let model = explicitModel ?? savedModel;
   let thinkingOptionId =
     explicitThinking ??
-    (!explicitModel || sameHarnessModelRef(explicitModel, savedModel)
+    ((!saved?.model || savedModel) &&
+    (!explicitModel || sameHarnessModelRef(explicitModel, savedModel))
       ? saved?.thinkingOptionId
       : undefined);
   if (model && (!configuration.selectModel || !catalogModelForRef(catalog, model))) {

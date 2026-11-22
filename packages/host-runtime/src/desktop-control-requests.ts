@@ -40,12 +40,14 @@ import {
   LOADED_SESSIONS_METHOD,
   USAGE_STATISTICS_METHOD,
   usageStatisticsParamsSchema,
+  type HarnessModelCatalog,
   type HarnessAccountInspectResult,
   type HarnessPluginDescriptor,
   type HarnessPreferenceSnapshot,
   type LoadedSession,
 } from "@codexhost/shared-contracts";
 
+import { storedPreferenceModels } from "./stored-harness-preferences.js";
 import { handleCredentialImports } from "./credential-imports.js";
 import type { HostExtensionManager } from "./host-extension-manager.js";
 import { handleHostExtensionRequest } from "./host-extension-requests.js";
@@ -73,6 +75,7 @@ export interface DesktopControlRequestHost {
   readonly environment: NodeJS.ProcessEnv;
   readonly hostExtensions: HostExtensionManager | undefined;
   readonly preferences: HarnessPreferencesStore;
+  inspectCodexModels(): Promise<HarnessModelCatalog | undefined>;
   readonly displaySettings: HarnessDisplaySettingsStore;
   readonly launchSettings: HarnessLaunchSettingsStore;
   readonly modelPrices: ModelPriceCatalog;
@@ -125,26 +128,37 @@ export class DesktopControlRequests {
       request.method === HARNESS_PREFERENCES_GET_METHOD ||
       request.method === HARNESS_PREFERENCES_PATCH_METHOD
     ) {
-      try {
-        const result =
-          request.method === HARNESS_PREFERENCES_GET_METHOD
-            ? await this.#host.preferences.get(
-                harnessPreferenceGetSchema.parse(request.params ?? {}).scope,
-              )
-            : await this.#host.preferences.patch(
-                harnessPreferencePatchSchema.parse(request.params ?? {}),
-              );
-        this.#host.applyHarnessPreferences(result);
-        await this.#host.writeJson(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
-      } catch (error) {
-        await this.#host.writeJson(
-          rpcError(
-            request,
-            error instanceof HarnessPreferenceConflict ? -32091 : -32602,
-            errorMessage(error),
-          ),
-        );
-      }
+      this.#host.dispatchReply(request, async () => {
+        try {
+          const models = storedPreferenceModels({
+            adapters: this.#host.externalAdapters,
+            loadAdapters: () => this.#host.waitForPlugins(),
+            inspectCodex: () => this.#host.inspectCodexModels(),
+          });
+          const stored =
+            request.method === HARNESS_PREFERENCES_GET_METHOD
+              ? await this.#host.preferences.get(
+                  harnessPreferenceGetSchema.parse(request.params ?? {}).scope,
+                )
+              : await this.#host.preferences.patch(
+                  harnessPreferencePatchSchema.parse(request.params ?? {}),
+                  models.favorite,
+                );
+          this.#host.applyHarnessPreferences(stored);
+          const result = await models.snapshot(stored);
+          await this.#host.writeJson(
+            rpcEnvelope(request, { result: jsonValueSchema.parse(result) }),
+          );
+        } catch (error) {
+          await this.#host.writeJson(
+            rpcError(
+              request,
+              error instanceof HarnessPreferenceConflict ? -32091 : -32602,
+              errorMessage(error),
+            ),
+          );
+        }
+      });
       return true;
     }
     if (request.method === HARNESS_DISPLAY_CAPABILITIES_METHOD) {

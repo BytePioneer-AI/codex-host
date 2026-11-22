@@ -174,7 +174,11 @@ export interface ExternalTurnProjectionHost {
   readonly queue: Pick<ExternalThreadQueue, "pause">;
   /** Turns started by an explicit /compact command, announced when compaction begins. */
   readonly manualCompactionTurns: WeakMap<ExternalThread, HostTurnId>;
-  foldSettledItem(turn: JsonObject, projector: CodexTurnProjector, itemId: HostItemId): JsonObject;
+  foldSettledItem(
+    turn: JsonObject,
+    projector: CodexTurnProjector,
+    wireItemId: HostItemId,
+  ): JsonObject;
   outputFailed(thread: ExternalThread): void;
   submitPrewarm(thread: ExternalThread): Promise<boolean>;
   notifyExternalThreadStarted(thread: JsonObject): Promise<void>;
@@ -378,7 +382,7 @@ export class ExternalTurnProjection {
         thread.turns[index] = this.#host.foldSettledItem(
           existing,
           projection.projector,
-          event.snapshot.item.itemId,
+          result.settledWireItemId ?? event.snapshot.item.itemId,
         );
         thread.historyHydrated = false;
       }

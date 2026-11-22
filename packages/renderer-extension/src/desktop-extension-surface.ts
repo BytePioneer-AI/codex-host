@@ -1,4 +1,3 @@
-import { desktopExtensionModuleUrl } from "@codexhost/desktop-control/renderer-bindings";
 import {
   HOST_EXTENSION_PAGE_API_VERSION,
   HOST_EXTENSION_PAGE_CSS_VARIABLES as css,
@@ -9,6 +8,7 @@ import {
   type HostExtensionRuntimeEntry,
   type JsonObject,
 } from "@codexhost/shared-contracts";
+import { installDesktopExtensionHost } from "./desktop-extension-host.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
 
 export type DesktopExtensionSurfaceClient = Pick<
@@ -122,7 +122,7 @@ export function createDesktopExtensionSurface({
   kind,
   getClient,
   getLocale,
-  importModule = (url) => import(/* @vite-ignore */ url),
+  onRetired,
   noBackendMessage = `Extension "${item.id}" does not declare a backend`,
 }: {
   container: HTMLElement;
@@ -133,7 +133,7 @@ export function createDesktopExtensionSurface({
   kind: "page" | "widget";
   getClient: () => DesktopExtensionSurfaceClient | null;
   getLocale: () => string;
-  importModule?: ((url: string) => Promise<unknown>) | undefined;
+  onRetired?: () => void;
   noBackendMessage?: string;
 }) {
   const { id, activationId, digest } = item;
@@ -273,43 +273,50 @@ export function createDesktopExtensionSurface({
     },
   };
 
+  const dispose = () => {
+    if (signal.aborted) return;
+    controller.abort();
+    themeObserver?.disconnect();
+    media?.removeEventListener?.("change", syncScheme);
+    storageListeners.clear();
+    localeListeners.clear();
+    schemeListeners.clear();
+    if (disposer) runDisposer(disposer);
+    disposer = undefined;
+    container.remove();
+  };
+
   return {
     signal,
     async mount(attach: () => void) {
-      const sheets = [BASE_CSS];
-      if (kind === "page") sheets.push(`:host { background: var(${css.background}); }`);
-      if (spec.style) {
-        const asset = await readAsset(spec.style);
-        sheets.push(
-          new TextDecoder().decode(
-            Uint8Array.from(atob(asset.base64), (char) => char.charCodeAt(0)),
-          ),
-        );
+      const window = doc.defaultView;
+      if (!window) throw new Error("Desktop extension module host is unavailable");
+      const module = await installDesktopExtensionHost(window).modules.waitFor(
+        { ...identity, kind, path: spec.entry },
+        signal,
+      );
+      guard();
+      if (module.signal.aborted) {
+        dispose();
+        onRetired?.();
+        return;
       }
-      guard();
-      const mount = shadowMount(container, sheets);
-      const mod = (await importModule(
-        desktopExtensionModuleUrl({ ...identity, path: spec.entry }),
-      )) as Partial<HostExtensionPageModule> | null | undefined;
-      guard();
-      if (typeof mod?.mount !== "function")
-        throw new Error(`Extension ${kind} "${id}" must export a mount(root, api) function`);
-      scheme = colorScheme(doc, media);
-      container.style.colorScheme = scheme;
-      locale = getLocale();
-      container.setAttribute("lang", locale);
-      themeObserver?.observe(doc.documentElement, {
-        attributes: true,
-        attributeFilter: ["class", "style", "data-theme"],
-      });
-      media?.addEventListener?.("change", syncScheme);
-      attach();
-      const cleanup = await mod.mount(mount, api);
-      if (typeof cleanup === "function") {
-        if (signal.aborted) runDisposer(cleanup);
-        else disposer = cleanup;
-      } else if (cleanup !== undefined)
-        throw new Error(`Extension ${kind} "${id}" mount() returned an invalid disposer`);
+      module.signal.addEventListener(
+        "abort",
+        () => {
+          dispose();
+          onRetired?.();
+        },
+        { once: true, signal },
+      );
+      try {
+        await mountModule(attach, module);
+        module.report({});
+      } catch (cause) {
+        if (!signal.aborted)
+          module.report({ error: cause instanceof Error ? cause.message : String(cause) });
+        throw cause;
+      }
     },
     syncLocale,
     notifySettings,
@@ -324,17 +331,43 @@ export function createDesktopExtensionSurface({
         readingSettings = false;
       }
     },
-    dispose() {
-      if (signal.aborted) return;
-      controller.abort();
-      themeObserver?.disconnect();
-      media?.removeEventListener?.("change", syncScheme);
-      storageListeners.clear();
-      localeListeners.clear();
-      schemeListeners.clear();
-      if (disposer) runDisposer(disposer);
-      disposer = undefined;
-      container.remove();
-    },
+    dispose,
   };
+
+  async function mountModule(
+    attach: () => void,
+    module: { load(): Promise<{ namespace: unknown }> },
+  ) {
+    const sheets = [BASE_CSS];
+    if (kind === "page") sheets.push(`:host { background: var(${css.background}); }`);
+    if (spec.style) {
+      const asset = await readAsset(spec.style);
+      sheets.push(
+        new TextDecoder().decode(Uint8Array.from(atob(asset.base64), (char) => char.charCodeAt(0))),
+      );
+    }
+    guard();
+    const mount = shadowMount(container, sheets);
+    const { namespace } = await module.load();
+    const mod = namespace as Partial<HostExtensionPageModule> | null | undefined;
+    guard();
+    if (typeof mod?.mount !== "function")
+      throw new Error(`Extension ${kind} "${id}" must export a mount(root, api) function`);
+    scheme = colorScheme(doc, media);
+    container.style.colorScheme = scheme;
+    locale = getLocale();
+    container.setAttribute("lang", locale);
+    themeObserver?.observe(doc.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "style", "data-theme"],
+    });
+    media?.addEventListener?.("change", syncScheme);
+    attach();
+    const cleanup = await mod.mount(mount, api);
+    if (typeof cleanup === "function") {
+      if (signal.aborted) runDisposer(cleanup);
+      else disposer = cleanup;
+    } else if (cleanup !== undefined)
+      throw new Error(`Extension ${kind} "${id}" mount() returned an invalid disposer`);
+  }
 }

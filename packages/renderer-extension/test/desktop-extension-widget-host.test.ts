@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { desktopExtensionModuleUrl } from "@codexhost/desktop-control/renderer-bindings";
 import {
   HOST_EXTENSIONS_RPC as rpc,
   type HostExtensionPageApi,
   type HostExtensionRuntimeEntry,
 } from "@codexhost/shared-contracts";
 import { afterEach, expect, it, vi } from "vitest";
+import { installDesktopExtensionHost } from "../src/desktop-extension-host.js";
+import { moduleEntry } from "./fixtures/desktop-extension-modules.js";
 import { createDesktopExtensionWidgetHost } from "../src/desktop-extension-widget-host.js";
 import { createRendererModelClient } from "../src/renderer-model-client.js";
 
@@ -35,6 +36,7 @@ const flush = async () => vi.advanceTimersByTimeAsync(0);
 const css = ".capsule { color: var(--cx-page-accent); }";
 
 afterEach(() => {
+  delete window.__codexhostDesktopExtensionsV1;
   vi.useRealTimers();
   vi.restoreAllMocks();
   document.documentElement.removeAttribute("data-theme");
@@ -52,16 +54,19 @@ it("mounts a widget from the local snapshot, delivers settings and UI context in
   const changes: string[] = [];
   const apis: HostExtensionPageApi[] = [];
   const cleanup = vi.fn();
-  const importModule = vi.fn(async () => ({
-    mount(root: HTMLElement, api: HostExtensionPageApi) {
-      apis.push(api);
-      root.textContent = "Timer capsule";
-      api.storage.onChange((values) => changes.push(`minutes:${String(values.minutes)}`));
-      api.onColorSchemeChange((value) => changes.push(value));
-      api.onLocaleChange((value) => changes.push(value));
-      return cleanup;
+  const create = vi.fn(async () => ({
+    namespace: {
+      mount(root: HTMLElement, api: HostExtensionPageApi) {
+        apis.push(api);
+        root.textContent = "Timer capsule";
+        api.storage.onChange((values) => changes.push(`minutes:${String(values.minutes)}`));
+        api.onColorSchemeChange((value) => changes.push(value));
+        api.onLocaleChange((value) => changes.push(value));
+        return cleanup;
+      },
     },
   }));
+  const runtime = installDesktopExtensionHost(window);
   const client = createRendererModelClient([
     {
       async sendRequest(method, params) {
@@ -101,16 +106,16 @@ it("mounts a widget from the local snapshot, delivers settings and UI context in
     document,
     getClient: () => client,
     getLocale: () => locale,
-    importModule,
   });
   try {
+    await flush();
+    expect(container("timer")).toBeNull();
+    await runtime.reconcile([], [moduleEntry("widget", original, create)]);
     await flush();
     const el = container("timer");
     const [api] = apis;
     if (!api) throw new Error("Timer widget did not mount");
-    expect(importModule).toHaveBeenCalledWith(
-      desktopExtensionModuleUrl({ ...original, path: "widget/index.mjs" }),
-    );
+    expect(create).toHaveBeenCalledOnce();
     expect(el?.parentNode).toBe(document.body);
     expect(el?.style.position).toBe("fixed");
     expect(el?.style.inset).toBe("0px");
@@ -143,9 +148,12 @@ it("mounts a widget from the local snapshot, delivers settings and UI context in
     expect(el?.lang).toBe("zh-CN");
     expect(el?.style.colorScheme).toBe("light");
 
-    entries = [{ ...original, settingsRevision: 2, digest: "b".repeat(64) }];
-    await vi.advanceTimersByTimeAsync(5_000);
+    const updated = { ...original, settingsRevision: 2, digest: "b".repeat(64) };
+    await runtime.reconcile([], [moduleEntry("widget", updated, create)]);
     expect(api.signal.aborted).toBe(true);
+    expect(container("timer")).toBeNull();
+    entries = [updated];
+    await vi.advanceTimersByTimeAsync(5_000);
     expect(cleanup).toHaveBeenCalledTimes(1);
     expect(container("timer")).not.toBe(el);
     expect(container("timer")?.shadowRoot?.textContent).toContain("Timer capsule");
@@ -162,7 +170,8 @@ it("isolates failed widgets and aborts an unfinished mount when the extension is
   vi.useFakeTimers();
   vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   const slow = widget("slow");
-  let entries = [widget("broken"), slow];
+  const broken = widget("broken");
+  let entries = [broken, slow];
   let api: HostExtensionPageApi | undefined;
   const { promise, resolve } = Promise.withResolvers<() => void>();
   const disposer = vi.fn();
@@ -180,24 +189,39 @@ it("isolates failed widgets and aborts an unfinished mount when the extension is
       },
     },
   ]);
+  const runtime = installDesktopExtensionHost(window);
+  const badFactory = vi.fn(async () => {
+    throw new Error("failed module");
+  });
+  await runtime.reconcile(
+    [],
+    [
+      moduleEntry("widget", broken, badFactory),
+      moduleEntry("widget", slow, async () => ({
+        namespace: {
+          mount(root: HTMLElement, received: HostExtensionPageApi) {
+            root.textContent = "mounting";
+            api = received;
+            return promise;
+          },
+        },
+      })),
+    ],
+  );
   const host = createDesktopExtensionWidgetHost({
     document,
     getClient: () => client,
     getLocale: () => "en",
-    async importModule(url) {
-      if (url.includes("/broken/")) throw new Error("failed module");
-      return {
-        mount(root: HTMLElement, received: HostExtensionPageApi) {
-          root.textContent = "mounting";
-          api = received;
-          return promise;
-        },
-      };
-    },
   });
   try {
     await flush();
     expect(container("broken")).toBeNull();
+    expect(runtime.modules.status()["broken:widget"]).toMatchObject({
+      state: "failed",
+      error: "failed module",
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(badFactory).toHaveBeenCalledOnce();
     expect(container("slow")?.shadowRoot?.textContent).toContain("mounting");
     if (!client?.disableHostExtension) throw new Error("Extension client is unavailable");
     await client.disableHostExtension({ id: slow.id, expectedRevision: 1 });

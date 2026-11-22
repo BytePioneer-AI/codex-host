@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@codexhost/harness-plugin-files": "0.0.0",
-    "@codexhost/shared-contracts": "0.0.0"
+    "@codexhost/shared-contracts": "0.0.0",
+    "@rollup/browser": "3.30.0"
   }
 }

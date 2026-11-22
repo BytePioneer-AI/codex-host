@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { desktopExtensionModuleUrl } from "@codexhost/desktop-control/renderer-bindings";
+import { moduleEntry } from "../fixtures/desktop-extension-modules.js";
 import {
   type HostExtensionPageApi,
   type HostExtensionsListResult,
@@ -8,7 +8,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DesktopExtensionRuntimeApiV1 } from "../../src/desktop-extension-api.js";
 import {
-  createDesktopExtensionHost,
+  installDesktopExtensionHost,
   type DesktopExtensionEntry,
 } from "../../src/desktop-extension-host.js";
 import { createRendererSettingsPageRegistry } from "../../src/settings/core.js";
@@ -65,7 +65,14 @@ function schemaExtension(id = "schema-theme"): HostExtensionValidItem {
       version: "1.0.0",
       desktop: { apiVersion: 1, script: "desktop.js" },
       settingsSchema: [
-        { key: "opacity", type: "range", label: "Opacity", min: 0, max: 100, default: 80 },
+        {
+          key: "opacity",
+          type: "range",
+          label: { en: "Opacity", "zh-CN": "不透明度" },
+          min: 0,
+          max: 100,
+          default: 80,
+        },
       ],
     },
   };
@@ -125,7 +132,7 @@ function legacyPage(id: string, version: string, cleanup: () => void): DesktopEx
 }
 
 function createHarness(locale: "en" | "zh-CN" = "zh-CN") {
-  const host = createDesktopExtensionHost(document);
+  const host = installDesktopExtensionHost(window);
   const unbind = host.bind({
     ready: () => true,
     sidebar: { rows: () => [], observe: () => () => undefined },
@@ -145,21 +152,28 @@ function createHarness(locale: "en" | "zh-CN" = "zh-CN") {
     }),
   };
   const mountedPages: Array<{ api: HostExtensionPageApi; cleanup: ReturnType<typeof vi.fn> }> = [];
-  const importPageModule = vi.fn(async (url: string) => ({
-    mount(root: HTMLElement, api: HostExtensionPageApi) {
-      root.textContent = `Standalone ${api.hostTarget} page: ${url}`;
-      const cleanup = vi.fn();
-      mountedPages.push({ api, cleanup });
-      return cleanup;
-    },
-  }));
+  const modulesFor = (next: HostExtensionsListResult) =>
+    next.extensions.flatMap((item) => {
+      if (item.state !== "valid" || !item.enabled || !item.manifest.page) return [];
+      return [
+        moduleEntry("page", item, async () => ({
+          namespace: {
+            mount(root: HTMLElement, api: HostExtensionPageApi) {
+              root.textContent = `Standalone ${api.hostTarget} page: ${item.activationId}/${item.digest}`;
+              const cleanup = vi.fn();
+              mountedPages.push({ api, cleanup });
+              return cleanup;
+            },
+          },
+        })),
+      ];
+    });
 
   const messages = rendererSettingsMessages(locale);
   const pluginPages = createDesktopExtensionPluginPagesSource({
     messages,
     getHost: () => host,
     getClient: () => desktopClient,
-    importPageModule,
   });
   const pages = createDefaultRendererSettingsPages(
     messages,
@@ -198,15 +212,16 @@ function createHarness(locale: "en" | "zh-CN" = "zh-CN") {
     shell,
     pluginPages,
     desktopClient,
-    importPageModule,
     mountedPages,
     content,
     setListing(next: HostExtensionsListResult) {
       listResponse = next;
+      host.modules.replace(modulesFor(next));
     },
     sync(next: HostExtensionsListResult) {
       listResponse = next;
       pluginPages.syncInstalledExtensions?.(next.extensions, next.configuration.revision);
+      host.modules.replace(modulesFor(next));
     },
     navSections() {
       return Array.from(
@@ -263,16 +278,12 @@ describe("Settings shell plugin pages", () => {
       ),
     ).toBeNull();
 
-    const firstUrl = desktopExtensionModuleUrl({
-      id: standalone.id,
-      activationId: standalone.activationId,
-      digest: standalone.digest,
-      path: "page/index.mjs",
-    });
     const shadow = await vi.waitFor(() =>
       must(harness.content.querySelector("[data-extension-page-host]")?.shadowRoot),
     );
-    expect(shadow.textContent).toContain(`Standalone desktop page: ${firstUrl}`);
+    expect(shadow.textContent).toContain(
+      `Standalone desktop page: ${standalone.activationId}/${standalone.digest}`,
+    );
     expect(shadow.textContent).toContain("--cx-page-bg");
     const pageId = harness.shell.activePageId;
 
@@ -295,14 +306,9 @@ describe("Settings shell plugin pages", () => {
       expect(old.cleanup).toHaveBeenCalledOnce();
       expect(harness.shell.activePageId).toBe(pageId);
       await vi.waitFor(() => expect(harness.mountedPages).toHaveLength(index + 2));
-      expect(harness.importPageModule).toHaveBeenLastCalledWith(
-        desktopExtensionModuleUrl({
-          id: updated.id,
-          activationId: updated.activationId,
-          digest: updated.digest,
-          path: "page/index.mjs",
-        }),
-      );
+      expect(
+        harness.content.querySelector("[data-extension-page-host]")?.shadowRoot?.textContent,
+      ).toContain(`Standalone desktop page: ${updated.activationId}/${updated.digest}`);
     }
 
     const beforeReload = must(harness.mountedPages.at(-1));

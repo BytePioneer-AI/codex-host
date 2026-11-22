@@ -1,4 +1,5 @@
 import type { HostExtensionRuntimeEntry } from "@codexhost/shared-contracts";
+import { installDesktopExtensionHost } from "./desktop-extension-host.js";
 import { createDesktopExtensionSurface } from "./desktop-extension-surface.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
 
@@ -24,17 +25,19 @@ export function createDesktopExtensionWidgetHost({
   document,
   getClient,
   getLocale,
-  importModule,
 }: {
   document: Document;
   getClient: () => WidgetClient | null;
   getLocale: () => string;
-  importModule?: (url: string) => Promise<unknown>;
 }): DesktopExtensionWidgetHost {
+  const win = document.defaultView;
+  const modules = win && installDesktopExtensionHost(win).modules;
+  type Module = NonNullable<ReturnType<NonNullable<typeof modules>["get"]>>;
   const instances = new Map<
     string,
-    { item: HostExtensionRuntimeEntry; surface: ReturnType<typeof createDesktopExtensionSurface> }
+    { module: Module; surface?: ReturnType<typeof createDesktopExtensionSurface> }
   >();
+  let observed: readonly HostExtensionRuntimeEntry[] = [];
   let disposed = false;
   let subscribedClient: WidgetClient | null = null;
   let unsubscribe: (() => void) | undefined;
@@ -42,19 +45,21 @@ export function createDesktopExtensionWidgetHost({
   let queued = false;
 
   const reconcile = (extensions: readonly HostExtensionRuntimeEntry[]) => {
-    const desired = new Map(
-      extensions.filter(({ manifest }) => manifest.widget).map((item) => [item.id, item]),
-    );
-    for (const [id, { item, surface }] of instances) {
-      const next = desired.get(id);
-      if (next?.activationId === item.activationId && next.digest === item.digest) continue;
-      instances.delete(id);
-      surface.dispose();
+    const desired = new Map<string, { item: HostExtensionRuntimeEntry; module: Module }>();
+    for (const item of extensions) {
+      const spec = item.manifest.widget;
+      const module = spec && modules?.get({ ...item, kind: "widget", path: spec.entry });
+      if (module) desired.set(item.id, { item, module });
     }
-    for (const [id, item] of desired) {
+    for (const [id, { module, surface }] of instances) {
+      if (desired.get(id)?.module === module) continue;
+      instances.delete(id);
+      surface?.dispose();
+    }
+    for (const [id, { item, module }] of desired) {
       const existing = instances.get(id);
       if (existing) {
-        void existing.surface.refreshSettings(item.settingsRevision).catch(() => undefined);
+        void existing.surface?.refreshSettings(item.settingsRevision).catch(() => undefined);
         continue;
       }
       const spec = item.manifest.widget;
@@ -75,17 +80,18 @@ export function createDesktopExtensionWidgetHost({
           kind: "widget",
           getClient,
           getLocale,
-          importModule,
         });
-        instances.set(id, { item, surface });
+        const record = { module, surface };
+        instances.set(id, record);
         void surface
           .mount(() => document.body.append(container))
           .catch(() => {
-            // Keep the failed generation retired until it is disabled or replaced.
+            // Keep the failed generation retired until disabled/replaced, without retaining its DOM.
+            if (instances.get(id) === record) delete (record as { surface?: unknown }).surface;
             surface.dispose();
           });
-      } catch {
-        // Failure to initialize one widget does not prevent others from mounting.
+      } catch (cause) {
+        module.report({ error: cause instanceof Error ? cause.message : String(cause) });
       }
     }
   };
@@ -107,7 +113,10 @@ export function createDesktopExtensionWidgetHost({
     void (async () => {
       try {
         const snapshot = await client.snapshotHostExtensions?.();
-        if (!disposed && snapshot && client === getClient()) reconcile(snapshot.extensions);
+        if (!disposed && snapshot && client === getClient()) {
+          observed = snapshot.extensions;
+          reconcile(observed);
+        }
       } catch {
         // Keep existing widgets on transient RPC errors and try again on the next refresh.
       } finally {
@@ -123,7 +132,7 @@ export function createDesktopExtensionWidgetHost({
   const refreshVisible = () => {
     if (!document.hidden) refresh();
   };
-  const win = document.defaultView;
+  const stopModules = modules?.subscribe(() => reconcile(observed));
   const timer = win?.setInterval(refreshVisible, POLL_MS);
   document.addEventListener?.("visibilitychange", refreshVisible);
   refreshVisible();
@@ -131,15 +140,16 @@ export function createDesktopExtensionWidgetHost({
   return {
     refresh,
     syncLocale() {
-      for (const { surface } of instances.values()) surface.syncLocale();
+      for (const { surface } of instances.values()) surface?.syncLocale();
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       unsubscribe?.();
+      stopModules?.();
       document.removeEventListener?.("visibilitychange", refreshVisible);
       if (timer !== undefined) win?.clearInterval(timer);
-      for (const { surface } of instances.values()) surface.dispose();
+      for (const { surface } of instances.values()) surface?.dispose();
       instances.clear();
     },
   };

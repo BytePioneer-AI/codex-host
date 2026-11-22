@@ -117,11 +117,6 @@ export interface RendererDesktopExtensionsClient {
   ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.backendInvoke>>;
 }
 
-export interface CreateDesktopExtensionsSettingsPageOptions {
-  /** Optional dynamic ESM importer seam for testing standalone `page` loading. */
-  readonly importPageModule?: (url: string) => Promise<unknown>;
-}
-
 function resolveAvailableClient(
   getClient: () => RendererDesktopExtensionsClient | null,
 ): RendererDesktopExtensionsClient | null {
@@ -133,7 +128,6 @@ export function createDesktopExtensionsSettingsPage(
   messages: RendererSettingsMessages,
   getClient: () => RendererDesktopExtensionsClient | null = () => null,
   pluginPages?: RendererSettingsPluginPagesSource,
-  options: CreateDesktopExtensionsSettingsPageOptions = {},
 ): RendererSettingsPageDefinition {
   const copy = messages.desktopExtensions;
   return Object.freeze<RendererSettingsPageDefinition>({
@@ -473,7 +467,6 @@ export function createDesktopExtensionsSettingsPage(
         messages,
         getClient: () => resolveAvailableClient(getClient),
         getContentLocale: resolveContentLocale,
-        importModule: options.importPageModule,
         onClose: () => {
           listViewWrap.hidden = false;
           pageViewHost.hidden = true;
@@ -1402,17 +1395,21 @@ export function createDesktopExtensionsSettingsPage(
         render();
 
         try {
-          const result =
-            canUpdate && update && installedItem?.state === "valid"
-              ? await update({
-                  id: entry.id,
-                  expectedDigest: installedItem.digest,
-                  expectedActivationId: installedItem.activationId,
-                  source: { type: "catalog", id: entry.id },
-                })
-              : await install!({
-                  source: { type: "catalog", id: entry.id },
-                });
+          let result;
+          if (canUpdate && update && installedItem?.state === "valid") {
+            result = await update({
+              id: entry.id,
+              expectedDigest: installedItem.digest,
+              expectedActivationId: installedItem.activationId,
+              source: { type: "catalog", id: entry.id },
+            });
+          } else if (install) {
+            result = await install({
+              source: { type: "catalog", id: entry.id },
+            });
+          } else {
+            return;
+          }
           if (disposed || context.signal.aborted) return;
           const displayName =
             result.manifest.name[messages.locale] || result.manifest.name.en || fallbackName;

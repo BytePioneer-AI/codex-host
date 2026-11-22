@@ -26,7 +26,6 @@ export interface DesktopExtensionPageHostOptions {
   readonly messages: RendererSettingsMessages;
   readonly getClient: () => DesktopExtensionSurfaceClient | null;
   readonly getContentLocale?: (() => DesktopExtensionContentLocale) | undefined;
-  readonly importModule?: ((url: string) => Promise<unknown>) | undefined;
   /** Inline hosts provide a back action; sidebar pages use shell navigation instead. */
   readonly onClose?: () => void;
 }
@@ -60,7 +59,6 @@ export function createDesktopExtensionPageHost({
   messages,
   getClient,
   getContentLocale = () => messages.locale,
-  importModule,
   onClose,
 }: DesktopExtensionPageHostOptions): DesktopExtensionPageHostController {
   const copy = messages.desktopExtensions;
@@ -173,7 +171,11 @@ export function createDesktopExtensionPageHost({
       kind: "page",
       getClient,
       getLocale: getContentLocale,
-      importModule,
+      onRetired: () => {
+        queueMicrotask(() => {
+          if (surface === instance) mountActivePage();
+        });
+      },
       noBackendMessage: formatMessage(copy.pageNoBackend, { id: item.id }),
     });
     surface = instance;

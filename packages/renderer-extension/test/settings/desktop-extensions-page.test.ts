@@ -315,11 +315,11 @@ function sampleList(overrides: Partial<HostExtensionsListResult> = {}): HostExte
           },
           screenshots: ["assets/tree-1.png", "assets/tree-2.webp"],
           categories: ["interface", "workflow"],
+          slots: ["sidebar.thread-layout", "sidebar.thread-badge"],
           desktop: {
             apiVersion: 1,
-            entry: "desktop.js",
+            script: "desktop.js",
             style: "desktop.css",
-            slots: ["sidebar.thread-layout", "sidebar.thread-badge"],
           },
           web: {
             apiVersion: 1,
@@ -352,10 +352,10 @@ function sampleList(overrides: Partial<HostExtensionsListResult> = {}): HostExte
           version: "0.2.0",
           description: { en: "Shows child badges", "zh-CN": "显示子 Thread 角标" },
           categories: ["interface"],
+          slots: ["sidebar.thread-badge"],
           desktop: {
             apiVersion: 1,
-            entry: "desktop.js",
-            slots: ["sidebar.thread-badge"],
+            script: "desktop.js",
           },
         },
       },
@@ -392,6 +392,7 @@ function makeCatalogEntry(
 ): HostExtensionCatalogEntry {
   return {
     id: "sample-ext",
+    format: "codexhost",
     version: "1.0.0",
     name: { en: "Sample", "zh-CN": "示例" },
     description: { en: "Desc", "zh-CN": "描述" },
@@ -1142,7 +1143,7 @@ describe("Unified Host extensions settings page", () => {
   it("shows an unavailable state when the Host does not support unified extension RPCs", async () => {
     const mounted = mountPage("en", () => ({
       listHostExtensions: vi.fn(async () => {
-        throw new RendererMethodUnavailableError("codexhost/extensions/list");
+        throw new RendererMethodUnavailableError("codexhost/extensions/list", undefined);
       }),
       recoverHostExtensions: vi.fn(),
     }));

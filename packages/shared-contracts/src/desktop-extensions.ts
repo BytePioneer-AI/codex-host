@@ -260,6 +260,7 @@ export const desktopExtensionsDiagnosticSchema = z.strictObject({
   updatedAt: z.iso.datetime(),
   handledReloadToken: z.uuid().optional(),
   extensions: z.record(z.string(), desktopExtensionStatusSchema),
+  surfaces: z.record(z.string(), desktopExtensionStatusSchema).optional(),
 });
 export type DesktopExtensionsDiagnostic = z.infer<typeof desktopExtensionsDiagnosticSchema>;
 

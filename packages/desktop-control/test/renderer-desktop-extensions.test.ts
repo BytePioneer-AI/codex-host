@@ -70,6 +70,24 @@ function recover() {
 
 function fakeRenderer(initial: Record<string, DesktopExtensionStatus> = {}) {
   let state = initial;
+  type Module = {
+    id: string;
+    kind: string;
+    hash: string;
+    create?: () => Promise<{ namespace: unknown }>;
+    error?: string;
+  };
+  const modules = new Map<string, Module>();
+  const replace = (entries: Module[]) => {
+    const previous = new Map(modules);
+    modules.clear();
+    for (const entry of entries) {
+      const key = `${entry.id}:${entry.kind}`;
+      const old = previous.get(key);
+      if (entry.create || entry.error) modules.set(key, entry);
+      else if (old?.hash === entry.hash) modules.set(key, old);
+    }
+  };
   const pages = new Map<string, string>();
   let nextScript = 0;
   const events: string[] = [];
@@ -79,7 +97,25 @@ function fakeRenderer(initial: Record<string, DesktopExtensionStatus> = {}) {
   const window = {
     __codexhostDesktopExtensionsV1: {
       status: () => state,
-      reconcile(entries: Array<{ id: string; hash: string; error?: string }>) {
+      modules: {
+        replace,
+        status: () =>
+          Object.fromEntries(
+            [...modules].map(([key, { hash, error }]) => [
+              key,
+              {
+                hash,
+                state: error ? "failed" : "waiting",
+                ...(error ? { error } : {}),
+              },
+            ]),
+          ),
+      },
+      reconcile(
+        entries: Array<{ id: string; hash: string; error?: string }>,
+        moduleEntries: Module[],
+      ) {
+        replace(moduleEntries);
         state = Object.fromEntries(
           entries.map(({ id, hash, error }) => [
             id,
@@ -95,6 +131,7 @@ function fakeRenderer(initial: Record<string, DesktopExtensionStatus> = {}) {
   const context = { window, location: new URL("app://-/index.html") };
   const reset = () => {
     state = {};
+    modules.clear();
     for (const script of pages.values()) runInNewContext(script, context);
   };
   return {
@@ -103,6 +140,7 @@ function fakeRenderer(initial: Record<string, DesktopExtensionStatus> = {}) {
     pages,
     events,
     evaluations,
+    modules,
     largest,
     get state() {
       return state;
@@ -158,6 +196,67 @@ function fakeRenderer(initial: Record<string, DesktopExtensionStatus> = {}) {
     },
   };
 }
+
+it("injects enabled surface-only generations, isolates a broken graph, and retires factories on uninstall and detach", async () => {
+  async function installSurfaces(value: number) {
+    return installZip(
+      "surfaces",
+      makeZip([
+        {
+          name: "manifest.json",
+          data: JSON.stringify({
+            manifestVersion: 2,
+            id: "surfaces",
+            version: String(value),
+            name: { en: "Surfaces", "zh-CN": "页面与挂件" },
+            description: { en: "Surfaces", "zh-CN": "页面与挂件" },
+            page: { apiVersion: 1, entry: "page/index.mjs" },
+            widget: { apiVersion: 1, entry: "widget/index.mjs" },
+          }),
+        },
+        { name: "page/index.mjs", data: "export const invalid = ;" },
+        { name: "widget/index.mjs", data: 'export { mount } from "../shared/timer.mjs";' },
+        { name: "shared/timer.mjs", data: `export const mount = () => ${value};` },
+      ]),
+    );
+  }
+  await installSurfaces(1);
+  const renderer = fakeRenderer();
+  const c = controller();
+  const detach = c.attach("target", renderer);
+  await c.refresh();
+  expect(renderer.modules.size).toBe(0);
+  await enable("surfaces");
+  await c.refresh();
+  const mount = async () => {
+    const loaded = await renderer.modules.get("surfaces:widget")?.create?.();
+    return (loaded?.namespace as { mount(): number } | undefined)?.mount();
+  };
+  expect(await mount()).toBe(1);
+  expect(renderer.modules.get("surfaces:page")?.error).toMatch(
+    /page\/index\.mjs.*Unexpected token/s,
+  );
+  const diagnostics = desktopExtensionsDiagnosticSchema.parse(
+    JSON.parse(await readFile(desktopExtensionsStatusPath(directory), "utf8")),
+  );
+  expect(diagnostics.surfaces?.["surfaces:page"]).toMatchObject({ state: "failed" });
+  await installSurfaces(2);
+  await c.refresh();
+  expect(await mount()).toBe(2);
+  renderer.reset();
+  expect(await mount()).toBe(2);
+  await uninstallHostExtension({ dataDir: directory, id: "surfaces" });
+  await c.refresh();
+  expect(renderer.modules.size).toBe(0);
+  await installSurfaces(3);
+  await enable("surfaces");
+  await c.refresh();
+  expect(await mount()).toBe(3);
+  await detach();
+  expect(renderer.modules.size).toBe(0);
+  expect(renderer.pages.size).toBe(0);
+  expect(renderer.reloads).toBe(0);
+});
 
 it("observes package replacements and uninstalls without polling or reloading Desktop", async () => {
   await installZip("sample", extensionZip());

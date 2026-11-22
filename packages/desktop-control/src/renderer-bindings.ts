@@ -1,10 +1,5 @@
 // Browser-safe public contracts shared with the injected Renderer extension.
 export {
-  desktopExtensionModuleUrl,
-  desktopExtensionPageModuleUrl,
-  desktopExtensionWidgetModuleUrl,
-} from "./renderer-extension-page-url.js";
-export {
   committedReactAncestors,
   REACT_FIBER_WALK_LIMIT_EVENT,
 } from "./renderer-react-ownership.js";

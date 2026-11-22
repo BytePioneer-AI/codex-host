@@ -105,7 +105,12 @@ TypeScript 类型与 Zod 校验以 [`packages/shared-contracts/src/host-extensio
 | `api.storage.get()` / `set(values)` / `onChange(cb)` | 读写共享 Host 维护的独立 `settings.json` 并监听修订变更（自动处理修订号冲突重试）。 |
 | `api.backend.invoke(method, params?)` | 调用共享 Host 单实例 Node 后端通过 `ctx.handle` 注册的方法；未声明 `backend` 时直接拒绝。 |
 
-- **Desktop CSP 同源加载**：`desktopExtensionModuleUrl` 使用同源虚拟路径 `app://-/.codexhost/extension-pages/<id>/<activationId>/<digest>/<relativePath>`，保留包内路径，因而 `page/index.mjs` 和 `widget/index.mjs` 均可原生导入 `../shared/timer.mjs`。Desktop CDP 只为 `app://-/index.html` 主框架、当前已启用代次的 `GET` Script 请求提供索引中的 `.mjs`，不放宽 CSP。根路径 `page.mjs` / `widget.mjs` 在对应入口已声明时用作兼容别名，建议入口和共享模块使用子目录。
+### Desktop 与 Web 的模块加载
+
+- **Desktop**：Controller 仅为已启用代次链接 `manifest.page.entry` / `manifest.widget.entry`。入口及递归依赖均通过 `readHostExtensionAsset` 校验路径、当前代次和内容完整性；禁止越界、访问 `backend.entry`、裸包名、外部 URL 和动态 `import()`。静态导入和重导出可引用包内 `.mjs`（例如 `../shared/timer.mjs`）。`import.meta.url` 提供带代次的 `codexhost-extension:` 标识，不是可请求的资产 URL；读取图片、字体等资源请用 `api.assets.url()`。
+- Controller 使用纯 JS 链接器生成自包含工厂，并用 `vm.Script` 逐个预检；Node 不执行插件代码。工厂随 CDP 快照注入 `app://-/index.html` 主框架，当前文档用 `Runtime.evaluate` 更新。加载不依赖 `app://` 虚拟资产或网络拦截，不改变 CSP，也不在 Renderer 编译字符串。每个入口模块图内的共享模块只求值一次，同一入口代次的重复挂载复用已求值的模块。
+- Renderer 按扩展 ID、入口、`activationId` 与 `digest` 匹配工厂。先打开的页面等待就绪；挂件在快照与工厂都到齐后自动挂载。代次替换、禁用或卸载时回收旧工厂和挂载，且不重载 Desktop。链接、求值和挂载错误会显示在页面错误提示，或写入 Desktop 扩展诊断的 `surfaces`（键为 `<id>:page` / `<id>:widget`）。失败的挂件不会在同一份快照上反复尝试。
+- **CH Web**：浏览器原生 `import()` 使用原有经鉴权的 `/api/extensions/assets/...` HTTP 路径，不使用 Desktop 工厂表。
 
 ## 跨端主窗口挂件（`widget`）
 

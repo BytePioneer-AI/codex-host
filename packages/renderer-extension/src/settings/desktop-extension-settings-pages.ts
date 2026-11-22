@@ -16,11 +16,7 @@ import {
   createDesktopExtensionPageHost,
   desktopExtensionPageTitle,
 } from "./desktop-extension-page-host.js";
-import {
-  createEl,
-  readContentLocalePreference,
-  type HostExtensionValidItem,
-} from "./desktop-extensions-shared.js";
+import { createEl, readContentLocalePreference } from "./desktop-extensions-shared.js";
 import { isRendererSettingsIconName } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
@@ -111,9 +107,8 @@ export function createDesktopExtensionPluginPagesSource(options: {
   readonly messages: RendererSettingsMessages;
   readonly getHost?: () => DesktopExtensionHost | null | undefined;
   readonly getClient?: () => DesktopExtensionSurfaceClient | null | undefined;
-  readonly importPageModule?: (url: string) => Promise<unknown>;
 }): RendererSettingsPluginPagesSource {
-  const { messages, getHost = () => null, getClient = () => null, importPageModule } = options;
+  const { messages, getHost = () => null, getClient = () => null } = options;
   const listeners = new Set<() => void>();
   // Remember listed IDs so an uninstalled extension cannot fall back to a stale legacy registration.
   const knownInstalledIds = new Set<string>();
@@ -170,7 +165,6 @@ export function createDesktopExtensionPluginPagesSource(options: {
               messages,
               getClient: () => getClient() ?? null,
               getContentLocale: () => (preference === "system" ? messages.locale : preference),
-              importModule: importPageModule,
             });
             pageHost.open(item);
             return () => pageHost.dispose();

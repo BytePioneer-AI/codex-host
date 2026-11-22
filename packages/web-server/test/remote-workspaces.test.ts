@@ -2,12 +2,53 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { remoteWorkspaceGroups } from "../src/remote-workspaces.ts";
 import { RemoteSessions, remoteSessionId } from "../src/remote-sessions.ts";
+import { RemoteProjectDraft } from "../src/remote-project-draft.ts";
+import { type RemoteSessionOperation } from "@codexhost/shared-contracts";
 import { Workspaces } from "../src/workspaces.ts";
 import { DataDir } from "../src/store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+it("preserves default and explicitly selected native service tiers on the first remote turn", async () => {
+  const target = { hostId: "host", cwd: "/project", epoch: "one" };
+  const draft = new RemoteProjectDraft("workspace", "project", target, "Project");
+  const call = async (op: RemoteSessionOperation) => {
+    if (op.kind === "projectHarnesses") return [];
+    assert.equal(op.kind, "inspectHarness");
+    return {
+      status: "ready",
+      catalog: {
+        defaultModel: { id: "native", serviceTier: "priority" },
+        models: [
+          {
+            ref: { id: "native" },
+            label: "Native",
+            fastModel: { id: "native", serviceTier: "priority" },
+          },
+          { ref: { id: "native", serviceTier: "ultrafast" }, label: "Ultrafast" },
+        ],
+        thinkingOptions: [],
+      },
+      capabilities: {
+        configuration: {
+          selectModel: true,
+          selectThinkingOption: false,
+          selectPermissionMode: false,
+          permissionModeScope: "live",
+        },
+        history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+      },
+    };
+  };
+  const start = { kind: "startSelected", ...target, model: "native", harnessId: "codex" };
+  assert.deepEqual(await draft.startOperation(call), { ...start, serviceTier: "priority" });
+  const row = (await draft.catalog(call)).groups[0]?.models[0];
+  assert.ok(row?.ultrafastModel);
+  await draft.select({ provider: "codex", model: row.ultrafastModel }, call);
+  assert.deepEqual(await draft.startOperation(call), { ...start, serviceTier: "ultrafast" });
+});
 
 it("separates identical remote project names and paths and keeps unmatched sessions visible", () => {
   const hosts = ["mac", "gateway"].map((name) => ({

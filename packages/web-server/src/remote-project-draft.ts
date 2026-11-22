@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
-  decodeOfficialCodexModelSelection,
   encodeHarnessPluginRoute,
   harnessIdSchema,
   harnessInspectionSchema,
-  harnessModelRefSchema,
+  harnessModelRefFromKey,
+  harnessModelRefKey,
   harnessPluginRouteSchema,
   type RemoteSessionOperation,
 } from "@codexhost/shared-contracts";
@@ -30,7 +30,9 @@ async function loadCatalog(target: Target, call: Call) {
         if (inspection.status === "ready" && inspection.catalog.models.length) {
           return {
             group: groupOf(id, name, inspection),
-            preferred: inspection.catalog.defaultModel?.id ?? inspection.catalog.models[0]?.ref.id,
+            preferred: harnessModelRefKey(
+              inspection.catalog.defaultModel ?? inspection.catalog.models[0]!.ref,
+            ),
           };
         }
         if (inspection.status !== "ready" && inspection.status !== "notInstalled")
@@ -82,7 +84,10 @@ export class RemoteProjectDraft {
       throw new RpcError("session/busy", "The first message is already being sent.");
     const group = catalog.groups.find((g) => g.id === request.provider);
     const model = group?.models.find(
-      (m) => m.id === request.model || m.fastModel === request.model,
+      (m) =>
+        m.id === request.model ||
+        m.fastModel === request.model ||
+        m.ultrafastModel === request.model,
     );
     if (
       !group ||
@@ -103,6 +108,7 @@ export class RemoteProjectDraft {
   async startOperation(call: Call): Promise<RemoteSessionOperation> {
     const selection: ModelSelection = this.selection ?? (await this.catalog(call)).default;
     const { provider, model, reasoningEffort } = selection;
+    const ref = harnessModelRefFromKey(model);
     const base = { kind: "startSelected" as const, ...this.target, harnessId: provider };
     if (provider !== "codex")
       return {
@@ -110,18 +116,15 @@ export class RemoteProjectDraft {
         model: encodeHarnessPluginRoute(
           harnessPluginRouteSchema.parse({
             harnessId: provider,
-            model: { id: model },
+            model: ref,
             thinkingOptionId: reasoningEffort,
           }),
         ),
       };
-    const native = decodeOfficialCodexModelSelection(harnessModelRefSchema.parse({ id: model }));
     return {
       ...base,
-      model: native.model,
-      ...(native.serviceTier === "priority" || native.serviceTier === "ultrafast"
-        ? { serviceTier: native.serviceTier }
-        : {}),
+      model: ref.id,
+      ...(ref.serviceTier ? { serviceTier: ref.serviceTier } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
     };
   }

@@ -97,21 +97,35 @@ it("shares canonical CH identity and cwd without a Web index/history or physical
   assert.deepEqual(readdirSync(root), ["workspaces.json"]);
 });
 
-it("propagates native section order and loads members outside the normal catalog page", async (t) => {
+it("propagates native section membership and summaries to browsers that did not paginate", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-native-sections-"));
-  const host = new FakeChHost();
-  host.add("ordinary", root);
-  const older = host.add("outside-catalog", root);
-  host.threads.delete(older.id);
+  const host = nativeCodex(new FakeChHost());
+  const ordinary = host.add("native-ordinary", root);
+  const older = host.add("native-outside-catalog", root);
+  const later = host.add("native-found-by-section", root);
+  const pageMember = host.add("native-found-by-page", root);
+  const pageOrdinary = host.add("native-page-ordinary", root);
   const members = [{ ...older, archived: false }];
   const request = host.request.bind(host);
-  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
-    method === "codexhost/thread/sections/list"
-      ? ({ sections: [{ id: "research", name: "Research", threads: members }] } as T)
-      : request<T>(method, params);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/thread/sections/list")
+      return { sections: [{ id: "research", name: "Research", threads: members }] } as T;
+    if (method === "codexhost/thread/catalog/read") {
+      const continuation = params.officialCursor !== undefined;
+      const rows = continuation ? [pageMember, pageOrdinary] : [ordinary];
+      return {
+        threads: rows.map((row) => ({ ...row, turns: [] })),
+        ownership: rows.map((row) => host.threadOwnership(row.id)),
+        officialCursor: { live: continuation ? null : "next" },
+        archivedThreadIds: [],
+      } as T;
+    }
+    return request<T>(method, params);
+  };
   const data = new DataDir(root);
   const workspaces = new Workspaces(data, root);
-  const sessions = new ChSessions(host, workspaces, new EventHub(root));
+  const events = new EventHub(root);
+  const sessions = new ChSessions(host, workspaces, events);
   workspaces.setReferenceArchives([older.id]);
   t.after(async () => {
     await sessions.close();
@@ -128,61 +142,75 @@ it("propagates native section order and loads members outside the normal catalog
   const streams = new WorkspaceStreams();
   workspaces.register(rpc, streams);
   sessions.register(rpc, streams);
-  const frames: unknown[] = [];
   assert.ok(follow);
   const closeHandlers: Array<() => void> = [];
-  await follow(
-    {},
-    {
-      id: "sections",
-      closed: false,
-      push: (frame) => {
-        frames.push(frame);
+  const subscribe = async (id: string, handler: StreamHandler) => {
+    const frames: unknown[] = [];
+    await handler(
+      {},
+      {
+        id,
+        closed: false,
+        push: (frame) => frames.push(frame),
+        end: () => {},
+        fail: (code, message) => {
+          throw new Error(`${code} ${message}`);
+        },
+        onClose: (close) => closeHandlers.push(close),
       },
-      end: () => {},
-      fail: (code, message) => {
-        throw new Error(`${code} ${message}`);
-      },
-      onClose: (handler) => {
-        closeHandlers.push(handler);
-      },
-    },
-  );
-  try {
-    const result = await rpc.dispatch("session/list", { args: {} });
+    );
+    return frames;
+  };
+  const list = async (args = {}) => {
+    const result = await rpc.dispatch("session/list", { args });
     assert.ok(result.ok, result.ok ? undefined : result.error.message);
-    assert.deepEqual(
-      (result.value as { items: Array<{ sessionId: string }> }).items
-        .map((row) => row.sessionId)
-        .sort(),
-      ["ordinary", older.id].sort(),
-    );
-    assert.ok(
-      frames.some(
-        (frame) =>
-          JSON.stringify(frame) ===
-          JSON.stringify({
-            type: "threadSections",
-            threadSections: [{ id: "research", name: "Research", threadIds: [older.id] }],
-          }),
-      ),
-    );
+    const { items, nextCursor } = result.value as {
+      items: Array<{ sessionId: string }>;
+      nextCursor: string | null;
+    };
+    return { ids: items.map((row) => row.sessionId).sort(), cursor: nextCursor };
+  };
+  const sectionFrame = (...threadIds: string[]) => ({
+    type: "threadSections",
+    threadSections: [{ id: "research", name: "Research", threadIds }],
+  });
+  try {
+    await subscribe("A/events", events.handler);
+    await subscribe("A/workspace", follow);
+    const firstA = await list();
+    const eventsB = await subscribe("B/events", events.handler);
+    const workspaceB = await subscribe("B/workspace", follow);
+    const firstB = await list();
+    assert.deepEqual(firstA.ids, [ordinary.id, older.id].sort());
+    assert.deepEqual(firstB, firstA);
+    assert.ok(firstA.cursor);
     assert.equal(workspaces.isArchived(older.id), false);
 
-    const later = host.add("found-on-continuation", root);
-    host.threads.delete(later.id);
-    members.push({ ...later, archived: false });
-    const continuation = await rpc.dispatch("session/list", {
-      args: {
-        cursor: JSON.stringify({ includeArchived: false, officialCursor: { live: "next" } }),
-      },
-    });
-    assert.ok(continuation.ok, continuation.ok ? undefined : continuation.error.message);
-    const ids = (continuation.value as { items: Array<{ sessionId: string }> }).items.map(
-      (row) => row.sessionId,
+    // Desktop moves two old Threads: one is on A's next page, the other is read from the section.
+    members.push({ ...pageMember, archived: false }, { ...later, archived: false });
+    eventsB.length = 0;
+    const continuedA = await list({ cursor: firstA.cursor });
+    assert.deepEqual(continuedA.ids, [pageMember.id, pageOrdinary.id, later.id].sort());
+    assert.deepEqual(
+      workspaceB.filter((frame) => (frame as { type: string }).type === "threadSections"),
+      [sectionFrame(older.id, pageMember.id, later.id)],
     );
-    assert.ok(ids.includes(later.id));
-    assert.ok(!ids.includes(older.id), "Do not repeat section members already sent on page one");
+
+    const addedB = () =>
+      (eventsB as Array<{ type: string; event: string; args: [{ sessionId: string }] }>)
+        .filter((frame) => frame.type === "emit" && frame.event === "api-session/added")
+        .map((frame) => frame.args[0].sessionId)
+        .sort();
+    const duringContinuation = addedB();
+    eventsB.length = 0;
+    // Another first-page read includes the section members in its RPC response, but B does not call it.
+    const refreshedA = await list();
+    assert.deepEqual(refreshedA.ids, [ordinary.id, older.id, pageMember.id, later.id].sort());
+    assert.deepEqual(
+      { duringContinuation, afterRefresh: addedB() },
+      { duringContinuation: [pageMember.id, later.id].sort(), afterRefresh: [] },
+      "B must receive the new section summaries immediately, not ordinary pagination rows",
+    );
   } finally {
     for (const handler of closeHandlers) handler();
   }

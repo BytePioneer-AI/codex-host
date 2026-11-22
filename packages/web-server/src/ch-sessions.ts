@@ -305,6 +305,7 @@ export class ChSessions {
         ownership.set(item.threadId, item.harnessId);
       else if (item.owner === "codex") ownership.set(item.threadId, "codex");
     }
+    const pageSectionAdditions = cursor === undefined ? undefined : new Set<string>();
     if (sections) {
       this.workspaces.setReferenceThreadSections(
         sections.map(({ id, name, threads }) => {
@@ -320,7 +321,10 @@ export class ChSessions {
               if (cursor === undefined || !this.publishedCatalog?.has(row.id))
                 snapshot.threads.push(row);
             }
-            if (ownership.get(thread.id) === "codex") threadIds.push(thread.id);
+            if (ownership.get(thread.id) === "codex") {
+              threadIds.push(thread.id);
+              if (!this.publishedCatalog?.has(thread.id)) pageSectionAdditions?.add(thread.id);
+            }
           }
           return { id, name, threadIds };
         }),
@@ -375,7 +379,7 @@ export class ChSessions {
     timing.measureSync("archive_sync", () =>
       this.workspaces.setReferenceArchives([...archivedIds].sort()),
     );
-    await timing.measure("catalog_publish", () => this.publishCatalogChanges(cursor !== undefined));
+    await timing.measure("catalog_publish", () => this.publishCatalogChanges(pageSectionAdditions));
     this.catalogReadAt = Date.now();
     return snapshot;
   }
@@ -449,11 +453,12 @@ export class ChSessions {
       this.threads.harnessId(row.id),
     ]);
   }
-  private async publishCatalogChanges(explicitPage = false): Promise<void> {
+  private async publishCatalogChanges(pageSectionAdditions?: ReadonlySet<string>): Promise<void> {
     const before = this.publishedCatalog;
     const next = new Map([...this.rows].map(([id, row]) => [id, this.catalogKey(row)]));
     // First load is already delivered by session/list. Subsequent refreshes,
     // including ones requested by a second browser, publish actual deltas only.
+    // New continuation rows stay request-local unless a shared section references them.
     const changed =
       before === undefined
         ? []
@@ -461,7 +466,8 @@ export class ChSessions {
             [...this.rows.values()]
               .filter(
                 (row) =>
-                  before.get(row.id) !== next.get(row.id) && (!explicitPage || before.has(row.id)),
+                  before.get(row.id) !== next.get(row.id) &&
+                  (!pageSectionAdditions || before.has(row.id) || pageSectionAdditions.has(row.id)),
               )
               .map((row) => this.summary(row)),
           );

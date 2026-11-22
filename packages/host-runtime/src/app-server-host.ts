@@ -1282,8 +1282,8 @@ export class AppServerHost {
       steering: this.#externalSteering,
       queue: this.#externalQueue,
       manualCompactionTurns: this.#manualCompactionTurns,
-      foldSettledItem: (turn, projector, itemId) =>
-        this.#withBackgroundItems(turn, projector, itemId),
+      foldSettledItem: (turn, projector, wireItemId) =>
+        this.#withBackgroundItems(turn, projector, wireItemId),
       outputFailed: (thread) => this.#externalRuntime.idleRelease.outputFailed(thread),
       submitPrewarm: (thread) => this.#externalRuntime.submitPrewarm(thread),
       notifyExternalThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),
@@ -5635,20 +5635,22 @@ export class AppServerHost {
   #withBackgroundItems(
     turn: JsonObject,
     projector: CodexTurnProjector,
-    settledItemId?: HostItemId,
+    settledWireItemId?: HostItemId,
   ): JsonObject {
     const foreground = projector.foregroundWireItems();
     const background = projector.backgroundWireItems();
-    const remaining = new Map(settledItemId === undefined ? projector.openDetachedWireItems() : []);
-    if (settledItemId === undefined) {
+    const remaining = new Map(
+      settledWireItemId === undefined ? projector.openDetachedWireItems() : [],
+    );
+    if (settledWireItemId === undefined) {
       for (const id of background.keys()) remaining.delete(id);
     } else {
-      const settled = foreground.get(settledItemId);
-      if (settled) remaining.set(settledItemId, settled);
+      const settled = foreground.get(settledWireItemId);
+      if (settled) remaining.set(settledWireItemId, settled);
     }
     // Reads can overlay open text, but only cache it once all detached Items settle.
     const liveItems =
-      settledItemId !== undefined && projector.hasOpenDetachedItems
+      settledWireItemId !== undefined && projector.hasOpenDetachedItems
         ? []
         : [...background.values()].filter((item) => backgroundItemText(item) !== "");
     if (remaining.size === 0 && liveItems.length === 0) return turn;

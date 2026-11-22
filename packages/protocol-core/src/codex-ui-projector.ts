@@ -60,6 +60,8 @@ export type ProjectableHostEvent =
 export interface CodexTurnProjection {
   messages: JsonObject[];
   completedTurn?: JsonObject;
+  /** Overrides the completed Host Item's ID when it contributes to another wire Item. */
+  settledWireItemId?: HostItemId;
 }
 
 export interface CodexApprovalProjection extends CodexTurnProjection {
@@ -1525,7 +1527,10 @@ export class CodexTurnProjector {
           },
         });
       }
-      return { messages };
+      const summaryId = this.#fileItemId;
+      return summaryId && summaryId !== projected.item.itemId
+        ? { messages, settledWireItemId: summaryId }
+        : { messages };
     }
     const completedItem = (item: JsonObject): JsonObject => ({
       method: "item/completed",

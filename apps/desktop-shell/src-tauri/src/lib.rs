@@ -223,6 +223,57 @@ pub(crate) fn show_main(app: &AppHandle, route: Option<&'static str>) {
     set_visible(app, true);
 }
 
+#[cfg(target_os = "windows")]
+fn open_existing_main(app: &AppHandle) {
+    if !matches!(app.state::<Shell>().view.lock().unwrap().page, Page::Onboarding) {
+        show_main(app, None);
+        return;
+    }
+    let launcher = app.state::<Shell>().launcher.clone();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        match launcher_action(launcher, Launcher::default_menu_state).await {
+            Ok((Some(Surface::Both), _)) => {
+                let app_for_main = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    begin_web(&app_for_main, true);
+                    set_visible(&app_for_main, true);
+                });
+                let launcher = app.state::<Shell>().launcher.clone();
+                if let Err(error) =
+                    launcher_action(launcher, Launcher::launch_codex_desktop).await
+                {
+                    codexhost_platform::show_error_dialog(&error);
+                }
+            }
+            Ok((Some(surface), _)) => {
+                let shell = app.state::<Shell>();
+                let result = choose_surface(app.clone(), shell, surface).await;
+                match (surface, result) {
+                    (Surface::NativeShell, Ok(())) => {
+                        let app_for_main = app.clone();
+                        let _ = app.run_on_main_thread(move || {
+                            set_visible(&app_for_main, true);
+                        });
+                    }
+                    (_, Err(error)) => {
+                        let app_for_main = app.clone();
+                        let _ = app.run_on_main_thread(move || {
+                            show_main(&app_for_main, None);
+                            codexhost_platform::show_error_dialog(&error);
+                        });
+                    }
+                    _ => (),
+                }
+            }
+            _ => {
+                let app_for_main = app.clone();
+                let _ = app.run_on_main_thread(move || show_main(&app_for_main, None));
+            }
+        }
+    });
+}
+
 pub(crate) fn show_onboarding(app: &AppHandle) {
     let shell = app.state::<Shell>();
     if shell.launcher.is_stopping() {
@@ -332,17 +383,22 @@ async fn choose_surface(
     if !matches!(shell.view.lock().unwrap().page, Page::Onboarding) {
         return Err("Launch surface can only be chosen on the onboarding page".into());
     }
+    #[cfg(target_os = "windows")]
+    if matches!(surface, Surface::Both) {
+        return Err("Use the default launch preferences to open both surfaces".into());
+    }
     launcher_action(shell.launcher.clone(), move |launcher| {
         if matches!(surface, Surface::CodexDesktop) && !launcher.codex_installed()? {
             return Err("Codex Desktop is not installed / 未安装官方 Codex Desktop".into());
         }
-        launcher.set_surface(surface)?;
-        if matches!(surface, Surface::CodexDesktop) {
-            launcher.launch_codex_desktop()?;
-        }
-        Ok(())
+        launcher.set_surface(surface)
     })
     .await?;
+    #[cfg(target_os = "windows")]
+    tray::sync(&app);
+    if matches!(surface, Surface::CodexDesktop) {
+        launcher_action(shell.launcher.clone(), Launcher::launch_codex_desktop).await?;
+    }
     let on_main = app.clone();
     app.run_on_main_thread(move || {
         let shell = on_main.state::<Shell>();
@@ -353,6 +409,8 @@ async fn choose_surface(
         }
         match surface {
             Surface::NativeShell => begin_web(&on_main, true),
+            #[cfg(target_os = "windows")]
+            Surface::Both => unreachable!(),
             Surface::CodexDesktop => {
                 shell.view.lock().unwrap().page = Page::Dormant;
                 set_visible(&on_main, false);
@@ -417,6 +475,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if wants_onboarding {
                     show_onboarding(&handle);
                 } else {
+                    #[cfg(target_os = "windows")]
+                    open_existing_main(&handle);
+                    #[cfg(not(target_os = "windows"))]
                     show_main(&handle, None);
                 }
             });

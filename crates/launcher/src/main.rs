@@ -1617,10 +1617,12 @@ fn default_launch_options() -> LaunchOptions {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DesktopRoute {
     CodexDesktop,
     App,
+    #[cfg(target_os = "windows")]
+    Both,
     Onboarding,
     RememberNative,
     CodexUnavailable,
@@ -1631,6 +1633,18 @@ fn desktop_route(
     codex_installed: bool,
     shell_available: bool,
 ) -> DesktopRoute {
+    #[cfg(target_os = "windows")]
+    if let Some(prefs) = preferences
+        .as_ref()
+        .filter(|prefs| prefs.onboarding_completed)
+    {
+        return match prefs.default_desktop_surface {
+            Surface::NativeShell => DesktopRoute::App,
+            Surface::CodexDesktop if codex_installed => DesktopRoute::CodexDesktop,
+            Surface::CodexDesktop => DesktopRoute::CodexUnavailable,
+            Surface::Both => DesktopRoute::Both,
+        };
+    }
     if shell_available {
         return DesktopRoute::Onboarding;
     }
@@ -1639,6 +1653,8 @@ fn desktop_route(
             Surface::NativeShell => DesktopRoute::App,
             Surface::CodexDesktop if codex_installed => DesktopRoute::CodexDesktop,
             Surface::CodexDesktop => DesktopRoute::CodexUnavailable,
+            #[cfg(target_os = "windows")]
+            Surface::Both => DesktopRoute::Both,
         },
         None if !codex_installed => DesktopRoute::RememberNative,
         None => DesktopRoute::CodexDesktop,
@@ -1670,6 +1686,19 @@ fn launch_default(interactive: bool) -> Result<(), Box<dyn Error>> {
         DesktopRoute::CodexDesktop => launch_official_desktop(options, installation, interactive),
         DesktopRoute::App => launch_app(shell, false),
         DesktopRoute::Onboarding => launch_app(shell, true),
+        #[cfg(target_os = "windows")]
+        DesktopRoute::Both => {
+            let native = launch_app(shell, false);
+            let official = launch_official_desktop(options, installation, interactive);
+            match (native, official) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Err(native), Err(official)) => Err(format!(
+                    "CodexHost window failed: {native}; Codex Desktop failed: {official}"
+                )
+                .into()),
+            }
+        }
         DesktopRoute::RememberNative => {
             Preferences::new(Surface::NativeShell, true).save(&data)?;
             if shell.is_none() {
@@ -1949,6 +1978,17 @@ mod tests {
         let native = Some(Preferences::new(Surface::NativeShell, true));
         let codex = Some(Preferences::new(Surface::CodexDesktop, true));
         let incomplete = Some(Preferences::new(Surface::CodexDesktop, false));
+        let native_with_shell = if cfg!(windows) { App } else { Onboarding };
+        let codex_installed_with_shell = if cfg!(windows) {
+            CodexDesktop
+        } else {
+            Onboarding
+        };
+        let codex_missing_with_shell = if cfg!(windows) {
+            CodexUnavailable
+        } else {
+            Onboarding
+        };
         for (prefs, installed, shell, expected) in [
             (None, false, true, Onboarding),
             (None, false, false, RememberNative),
@@ -1956,14 +1996,26 @@ mod tests {
             (None, true, false, CodexDesktop),
             (incomplete, false, true, Onboarding),
             (incomplete, true, true, Onboarding),
-            (native, true, true, Onboarding),
+            (native, true, true, native_with_shell),
             (native, true, false, App),
-            (codex, true, true, Onboarding),
+            (native, false, true, native_with_shell),
+            (codex, true, true, codex_installed_with_shell),
             (codex, true, false, CodexDesktop),
-            (codex, false, true, Onboarding),
+            (codex, false, true, codex_missing_with_shell),
             (codex, false, false, CodexUnavailable),
         ] {
             assert_eq!(desktop_route(prefs, installed, shell), expected);
+        }
+        #[cfg(target_os = "windows")]
+        for (installed, shell) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(
+                desktop_route(
+                    Some(Preferences::new(Surface::Both, true)),
+                    installed,
+                    shell,
+                ),
+                Both
+            );
         }
     }
 

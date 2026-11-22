@@ -3,8 +3,8 @@
 codexhost 扩展是可选的受信任代码，由共享 `codexhost Host`（`host-runtime`）唯一托管。插件在整机只安装一份、配置与数据只存一份、可选的 Node 后端只在共享 Host 内运行唯一一个子进程实例；Desktop 与 Web 是两个平等的前端渲染壳，都通过 Host RPC 读取列表、变更配置、获取资产与调用后端。
 
 - **后端独立于前端存活**：只要共享 Host 运行且扩展处于启用状态，含 `backend` 入口的扩展就在 Host 维持唯一的子进程实例，不依赖 Desktop 或 Web 是否打开；双端同时打开时连接同一个后端实例并读写同一份数据。
-- **纯前端零后端**：未声明 `backend` 的扩展（如纯 `page`、`desktop` 或 `web` 小组件）不会启动任何 Node 后端子进程。
-- **按需组合四种入口**：同一个插件包内可按需声明 `page`（跨端独立管理页，一份前端代码同时运行于 Desktop 与 Web）、`desktop`（Desktop 宿主 DOM 注入）、`web`（Web/PWA 宿主 DOM 注入）和 `backend`（共享 Host 单实例 Node 后端），四者均可选，至少声明其一。
+- **纯前端零后端**：未声明 `backend` 的扩展不会启动任何 Node 后端子进程。
+- **按需组合五种入口**：`page`（跨端独立管理页）、`widget`（跨端主窗口挂件）、`desktop`（Desktop 宿主 DOM 注入）、`web`（Web/PWA 宿主 DOM 注入）和 `backend`（共享 Host 单实例 Node 后端）。五种入口均可选，至少声明其一。
 
 ## 安装目录与数据存储
 
@@ -18,6 +18,7 @@ $CODEXHOST_DATA_DIR/                       # 默认 ~/.codexhost/
         manifest.json
         page/index.mjs                     # 可选：跨端独立管理页
         page/style.css                     # 可选
+        widget/index.mjs / widget/style.css # 可选：跨端主窗口挂件
         desktop.js / desktop.css           # 可选：Desktop 宿主注入
         web/index.mjs / web/style.css      # 可选：Web 宿主注入
         backend/index.mjs                  # 可选：Host 单实例 Node 后端
@@ -75,12 +76,13 @@ TypeScript 类型与 Zod 校验以 [`packages/shared-contracts/src/host-extensio
 
 - **`id`**：匹配 `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`（最长 128 字符）。
 - **双语文案**：`name` 与 `description` 为 `{ en, "zh-CN" }`；`details`、`page.title` 可选双语对象。UI 通过 `resolveLocalizedExtensionText(value, locale)` 按语言回退显示。
-- **四种可选入口**（至少声明其一；`backend.entry` 不得与 `page.entry` 或 `web.entry` 重合）：
+- **五种可选入口**（至少声明其一；`backend.entry` 不得与 `page.entry`、`widget.entry` 或 `web.entry` 重合）：
   - `page`：`{ apiVersion: 1, entry: "*.mjs", style?: "*.css", title?: LocalizedText }`
+  - `widget`：`{ apiVersion: 1, entry: "*.mjs", style?: "*.css" }`
   - `desktop`：`{ apiVersion: 1, script: "*.js", style?: "*.css" }`；可配合可选 `slots`（`sidebar.thread-badge`、`sidebar.thread-layout`、`appearance.theme`）声明 Desktop 独占槽位。
   - `web`：`{ apiVersion: 1, entry?: "*.mjs", style?: "*.css" }`（至少声明 `entry` 或 `style` 之一）。
   - `backend`：`{ apiVersion: 1, entry: "*.mjs" }`。
-- **能力与目标推导**：`hostExtensionCapabilities(manifest)` 推导 `{ hasPage, hasDesktop, hasWeb, hasBackend }`；`hostExtensionTargets(manifest)` 推导适用端（含 `page` 或仅 `backend` 时为 `["desktop", "web"]`，否则按声明的 `desktop` / `web` 推导）。
+- **能力与目标推导**：`hostExtensionCapabilities(manifest)` 推导 `{ hasPage, hasWidget, hasDesktop, hasWeb, hasBackend }`；`hostExtensionTargets(manifest)` 推导适用端（含 `page`、`widget` 或仅 `backend` 时为 `["desktop", "web"]`，否则按声明的 `desktop` / `web` 推导）。
 - **展示元数据**：`author`、`repository`（HTTP(S)）、`categories`（`appearance` / `interface` / `workflow` / `analytics` / `integrations` / `tools`）、`icon`（≤ 128 KiB PNG/JPEG/WebP）、`screenshots`（最多 4 张，单张 ≤ 512 KiB，合计 ≤ 2 MiB）。
 - **兼容解析**：`parseHostExtensionManifest` 同时支持将 `manifestVersion: 1` 清单规范化解析为 v2 形态；高于 v2 的清单标记为 `incompatible`。
 
@@ -103,7 +105,13 @@ TypeScript 类型与 Zod 校验以 [`packages/shared-contracts/src/host-extensio
 | `api.storage.get()` / `set(values)` / `onChange(cb)` | 读写共享 Host 维护的独立 `settings.json` 并监听修订变更（自动处理修订号冲突重试）。 |
 | `api.backend.invoke(method, params?)` | 调用共享 Host 单实例 Node 后端通过 `ctx.handle` 注册的方法；未声明 `backend` 时直接拒绝。 |
 
-- **Desktop CSP 同源加载**：Codex Desktop 的 `script-src 'self'` CSP 禁止 `blob:` 动态 `import()`。`packages/desktop-control` 通过 CDP `Fetch.requestPaused` 拦截同源虚拟路径 `app://-/.codexhost/extension-pages/<id>/<activationId>/<digest>/page.mjs`（由 `@codexhost/desktop-control/renderer-bindings` 导出的 `desktopExtensionPageModuleUrl` 构造），仅对主窗口 `app://-/index.html` 的当前已启用代次返回声明的 `page.entry` 字节，不放宽 CSP。
+- **Desktop CSP 同源加载**：`desktopExtensionModuleUrl` 使用同源虚拟路径 `app://-/.codexhost/extension-pages/<id>/<activationId>/<digest>/<relativePath>`，保留包内路径，因而 `page/index.mjs` 和 `widget/index.mjs` 均可原生导入 `../shared/timer.mjs`。Desktop CDP 只为 `app://-/index.html` 主框架、当前已启用代次的 `GET` Script 请求提供索引中的 `.mjs`，不放宽 CSP。根路径 `page.mjs` / `widget.mjs` 在对应入口已声明时用作兼容别名，建议入口和共享模块使用子目录。
+
+## 跨端主窗口挂件（`widget`）
+
+`widget.entry` 同样导出 `mount(root, api)`，复用 `HostExtensionPageApi`、可选 CSS 和 `--cx-page-*` 主题变量，不需要打开设置或独立页。Desktop 在主窗口 `body` 下为每个挂件创建 Shadow DOM 容器；覆盖层默认透传指针事件，只有需要交互的控件应设置 `pointer-events: auto`。
+
+Desktop 监听本地扩展变更，并在窗口可见时每 5 秒与共享 Host 快照对账，以发现其他客户端或后端的变更。同一代次的设置变更通知 `storage.onChange`，保留挂件 DOM；禁用、卸载、更换代次或宿主销毁时，宿主中止 `api.signal`、调用清理函数并移除容器。`widget` 的 Web 主窗口宿主独立接入该共享契约。
 
 ## 宿主页面注入（`desktop` 与 `web`）
 
@@ -111,7 +119,7 @@ TypeScript 类型与 Zod 校验以 [`packages/shared-contracts/src/host-extensio
 
 - 经典脚本（非 ESM），加载时同步调用一次 `define({ activate(api) { … } })`，运行在 Codex Desktop 主窗口；激活超时 5 秒。
 - `packages/desktop-control` 的 `RendererDesktopExtensions` 扫描 `$CODEXHOST_DATA_DIR/host-extensions/`，仅注入已启用、声明了 `manifest.desktop` 且未发生槽位冲突的扩展；按 `(activationId, digest)` 做无重载热更新与回收，并将状态写入诊断文件。
-- 槽位：`sidebar.thread-badge`、`sidebar.thread-layout`、`appearance.theme` 同一时间只分配给一个扩展；冲突按 `enabled` 顺序判定，不影响该扩展的 `page`、`web` 或 `backend` 能力。
+- 槽位：`sidebar.thread-badge`、`sidebar.thread-layout`、`appearance.theme` 同一时间只分配给一个扩展；冲突按 `enabled` 顺序判定，不影响该扩展的 `page`、`widget`、`web` 或 `backend` 能力。
 - 原语包括 `api.sidebar.observeRows`、`api.threads.watchTree`、`api.navigate.openThread`、`api.harnesses.describe`、`api.dom.mount`、`api.dom.mark` / `unmark`、`api.assets.readDataUrl`、`api.storage`、`api.backend.invoke`、`api.settings.registerPage`、`api.signal` 与 `api.track`。
 
 ### Web 注入（`web`）
@@ -137,7 +145,7 @@ TypeScript 类型与 Zod 校验以 [`packages/shared-contracts/src/host-extensio
 | `catalog` | 并发竞速拉取市场索引 `catalog.v2.json`（GitHub Raw 与 jsDelivr 镜像，5 分钟缓存） |
 | `install` / `update` / `uninstall` | 支持 `catalog`、`github`、`zip`（base64；拒绝 `localZipPath`）与 `localDir`；代次原子替换 |
 | `enable` / `disable` / `recover` | 带 `expectedRevision` 乐观锁更新 `enabled.json`；`recover` 一键清空启用列表 |
-| `asset` | 安全读取公开静态资源与声明的前端入口，严格禁止读取 `backend.entry` 或路径穿越 |
+| `asset` | 安全读取公开静态资源、声明的前端入口及包内 `.mjs` 模块，严格禁止读取 `backend.entry` 或路径穿越 |
 | `settings/get` / `settings/set` | 带 `expectedSettingsRevision` 读写独立 `settings.json`（≤ 1 MiB） |
 | `backend/invoke` | 按 `(id, activationId?, method, params?)` 调用已启用且激活成功的单实例后端 |
 
@@ -147,7 +155,7 @@ TypeScript 类型与 Zod 校验以 [`packages/shared-contracts/src/host-extensio
   - `POST /api/extensions/upload`（`Content-Type: application/zip`，≤ 64 MiB）：流式读取 ZIP 后转为 `install` / `update` RPC；
   - `GET` / `HEAD /api/extensions/assets/:id/:activationId/:digest/*`：向 Host 请求资产并返回 `Cache-Control: private, max-age=31536000, immutable`、`X-Content-Type-Options: nosniff`、`Cross-Origin-Resource-Policy: same-origin`；对缺失、代次不匹配及 `backend.entry` 统一返回 `404`。
 - **Console 转发（`packages/console-server`）**：`/api/extensions/*` 写操作转发至共享 Host RPC，共享 Host 未运行时返回 `503`；只读列表与市场查询在离线时支持直接读取磁盘/拉取目录。
-- **双端统一 UI**：Desktop 设置与 Web 设置均提供单一「插件 / Plugins」中心，以能力角标（`全端` / `Web` / `Desktop` / `独立页面` / `后台`）和能力/分类筛选展示全部扩展，已启用且含 `page` 的扩展可直接点击「打开页面」，含 `settingsSchema` 的扩展可在详情中直接编辑共享设置。
+- **双端统一 UI**：Desktop 设置与 Web 设置均提供单一「插件 / Plugins」中心，以能力角标（`全端` / `Web` / `Desktop` / `独立页面` / `后台`，Desktop 另有 `挂件`）和能力/分类筛选展示全部扩展，已启用且含 `page` 的扩展可直接点击「打开页面」，含 `settingsSchema` 的扩展可在详情中直接编辑共享设置。
 
 ## 作者与打包指南
 

@@ -4730,7 +4730,8 @@ dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
 }
 
 .settings-extensions-cap-badge[data-capability="all"],
-.settings-extensions-cap-badge[data-capability="page"] {
+.settings-extensions-cap-badge[data-capability="page"],
+.settings-extensions-cap-badge[data-capability="widget"] {
   color: var(--settings-focus);
   border-color: color-mix(in srgb, var(--settings-focus) 28%, transparent);
   background: color-mix(in srgb, var(--settings-focus) 10%, transparent);

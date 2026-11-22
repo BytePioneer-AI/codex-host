@@ -127,6 +127,7 @@ import { loadCodexNativeServices } from "./codex-native-services.js";
 import { openCodexSchedules, openCodexThread } from "./codex-schedule-navigation.js";
 import { createDesktopTreeRelay, openLocalExtensionThread } from "./desktop-extension-api.js";
 import { installDesktopExtensionHost } from "./desktop-extension-host.js";
+import { createDesktopExtensionWidgetHost } from "./desktop-extension-widget-host.js";
 import { openRendererThread } from "./renderer-fork-control.js";
 import type {
   RendererConnectionDiagnostics,
@@ -914,8 +915,14 @@ export function installRendererBindingProbe(
     openImportedThread: (threadId, signal, hostId) =>
       openRendererThread(threadId, { hostId: hostId ?? "local", signal }),
     onLocaleChange() {
+      widgets.syncLocale();
       for (const mounted of mountedByComposer.values()) renderMounted(mounted);
     },
+  });
+  const widgets = createDesktopExtensionWidgetHost({
+    document,
+    getClient: () => modelClientForHost("local"),
+    getLocale: () => settingsLifecycle.locale,
   });
   let adapterStatus: RendererAdapterStatus = {
     state: "installing",
@@ -3835,6 +3842,7 @@ export function installRendererBindingProbe(
       applyAdapterAgent = applyAgent ?? null;
       modelControl = nextModelControl ?? null;
       adapterStatus = status;
+      widgets.refresh();
       treeRelay.reconnect();
       publishConnectionStatus();
       const installedModelControl = modelControl;
@@ -3888,6 +3896,7 @@ export function installRendererBindingProbe(
     dispose() {
       if (disposed) return;
       disposed = true;
+      widgets.dispose();
       unbindDesktopExtensions();
       pendingDefaultPreferences.clear();
       window.removeEventListener(HARNESS_PREFERENCES_UPDATED_EVENT, onPreferencesChanged);

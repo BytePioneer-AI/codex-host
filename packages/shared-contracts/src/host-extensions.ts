@@ -100,6 +100,13 @@ export const hostExtensionManifestV2Schema = z
         title: localized(128, 1).optional(),
       })
       .optional(),
+    widget: z
+      .strictObject({
+        apiVersion: z.literal(HOST_EXTENSION_PAGE_API_VERSION),
+        entry: moduleEntry,
+        style,
+      })
+      .optional(),
     desktop: z
       .strictObject({ apiVersion: z.literal(1), script: resourceWithSuffix(".js"), style })
       .optional(),
@@ -113,13 +120,14 @@ export const hostExtensionManifestV2Schema = z
     backend: z.strictObject({ apiVersion: z.literal(1), entry: moduleEntry }).optional(),
   })
   .refine(
-    ({ page, desktop, web, backend }) => Boolean(page || desktop || web || backend),
-    "Expected at least one page, desktop, web, or backend entry",
+    ({ page, widget, desktop, web, backend }) =>
+      Boolean(page || widget || desktop || web || backend),
+    "Expected at least one page, widget, desktop, web, or backend entry",
   )
   .refine(
-    ({ page, web, backend }) =>
+    ({ page, widget, web, backend }) =>
       !backend ||
-      [page?.entry, web?.entry].every(
+      [page?.entry, widget?.entry, web?.entry].every(
         (entry) =>
           entry === undefined ||
           hostExtensionCanonicalPath(entry) !== hostExtensionCanonicalPath(backend.entry),
@@ -176,9 +184,10 @@ export function parseHostExtensionManifest(value: unknown): HostExtensionManifes
     : { state: "invalid", error: z.prettifyError(manifest.error) };
 }
 
-type Entries = Pick<HostExtensionManifest, "page" | "desktop" | "web" | "backend">;
+type Entries = Pick<HostExtensionManifest, "page" | "widget" | "desktop" | "web" | "backend">;
 export interface HostExtensionCapabilities {
   hasPage: boolean;
+  hasWidget: boolean;
   hasDesktop: boolean;
   hasWeb: boolean;
   hasBackend: boolean;
@@ -186,22 +195,23 @@ export interface HostExtensionCapabilities {
 export function hostExtensionCapabilities(manifest: Entries): HostExtensionCapabilities {
   return {
     hasPage: Boolean(manifest.page),
+    hasWidget: Boolean(manifest.widget),
     hasDesktop: Boolean(manifest.desktop),
     hasWeb: Boolean(manifest.web),
     hasBackend: Boolean(manifest.backend),
   };
 }
 export function hostExtensionTargets(manifest: Entries): HostExtensionTarget[] {
-  const { hasPage, hasDesktop, hasWeb, hasBackend } = hostExtensionCapabilities(manifest);
-  return targetsForCapabilities({ hasPage, hasDesktop, hasWeb, hasBackend });
+  return targetsForCapabilities(hostExtensionCapabilities(manifest));
 }
 export function targetsForCapabilities({
   hasPage,
+  hasWidget,
   hasDesktop,
   hasWeb,
   hasBackend,
 }: HostExtensionCapabilities): HostExtensionTarget[] {
-  if (hasPage || (hasBackend && !hasDesktop && !hasWeb)) return ["desktop", "web"];
+  if (hasPage || hasWidget || (hasBackend && !hasDesktop && !hasWeb)) return ["desktop", "web"];
   const targets: HostExtensionTarget[] = [];
   if (hasDesktop) targets.push("desktop");
   if (hasWeb) targets.push("web");

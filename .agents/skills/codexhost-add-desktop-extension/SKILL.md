@@ -1,6 +1,6 @@
 ---
 name: codexhost-add-desktop-extension
-description: 开发、打包、验收或排查 codexhost 统一 Host 扩展：跨端独立管理页（page）、Desktop/Web 宿主注入、静态资源、声明式设置与可选单实例 Node 后端。不用于接入 Agent Harness 或改变 Thread 行为。
+description: 开发、打包、验收或排查 codexhost 统一 Host 扩展：跨端独立管理页（page）与挂件（widget）、Desktop/Web 宿主注入、静态资源、声明式设置与可选单实例 Node 后端。不用于接入 Agent Harness 或改变 Thread 行为。
 ---
 
 # 新增 codexhost Host 扩展
@@ -15,9 +15,10 @@ description: 开发、打包、验收或排查 codexhost 统一 Host 扩展：�
 
 ## 1. 选择入口形态并编写 `manifest.json`
 
-统一扩展安装在 `$CODEXHOST_DATA_DIR/host-extensions/<id>/generations/<activationId>/`，配置与后端数据持久化在 `$CODEXHOST_DATA_DIR/host-extension-data/<id>/`。四种入口均为可选，**至少声明其一**；不声明 `backend` 的纯前端插件不会启动任何 Node 后台进程：
+统一扩展安装在 `$CODEXHOST_DATA_DIR/host-extensions/<id>/generations/<activationId>/`，配置与后端数据持久化在 `$CODEXHOST_DATA_DIR/host-extension-data/<id>/`。五种入口均为可选，**至少声明其一**；不声明 `backend` 的纯前端插件不会启动任何 Node 后台进程：
 
 - **`page`**（跨端独立管理页）：写一份标准 ESM + CSS，Desktop 与 Web 两端打开都能直接运行；
+- **`widget`**（跨端主窗口挂件）：已启用时自动挂载，复用 `page` 的 `mount(root, api)` 和主题变量，无需打开设置；
 - **`desktop`**（Desktop 宿主 DOM 注入）：在 Codex Desktop 主窗口注入侧栏/主题等原生增强；
 - **`web`**（Web/PWA 宿主 DOM 注入）：在 Web 界面挂载区域组件或样式；
 - **`backend`**（共享 Host 单实例 Node 后端）：由共享 Host 唯一托管并常驻，Desktop 与 Web 共用同一实例和同一份数据。
@@ -64,7 +65,7 @@ description: 开发、打包、验收或排查 codexhost 统一 Host 扩展：�
 - `id` 最长 128 字符，匹配 `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`；`name` 与 `description` 须提供非空 `en` 与 `zh-CN` 文案。
 - `categories` 可选多选：`appearance`、`interface`、`workflow`、`analytics`、`integrations`、`tools`。
 - `icon`（≤ 128 KiB）与 `screenshots`（最多 4 张，每张 ≤ 512 KiB，合计 ≤ 2 MiB）仅允许 PNG / JPEG / WebP，相对路径须使用 `/` 且不得越界。
-- `backend.entry` 不可与 `page.entry` 或 `web.entry` 指向同一文件，且不会被静态资产接口对外暴露。
+- `backend.entry` 不可与 `page.entry`、`widget.entry` 或 `web.entry` 指向同一文件，且不会被静态资产接口对外暴露。
 - 若声明 `desktop` 入口并占用独占区域，通过 `slots` 声明实际用到的槽位（`sidebar.thread-badge`、`sidebar.thread-layout`、`appearance.theme`）；不需要时省略。
 
 ## 2. 实现所声明的入口
@@ -96,15 +97,19 @@ export async function mount(root, api) {
   - `api.storage.get()` / `set(values)` / `onChange(cb)`（读写共享 Host `settings.json`，**纯前端无后端插件也能使用**；临时前端运行态如倒计时可直接存 `localStorage`）
   - `api.backend.invoke(method, params?)`（仅含 `backend` 的插件可调用；无 `backend` 时抛出明确错误）
 
-### 2.2 Desktop 宿主注入（`desktop`）
+### 2.2 主窗口挂件（`widget`）
+
+在清单中声明 `widget: { apiVersion: 1, entry: "widget/index.mjs", style: "widget/style.css" }`（`style` 可省略）。只在可交互控件上设置 `pointer-events: auto`，让覆盖层其余区域透传点击。将共享模块放进包内子目录，从入口使用相对 ESM 导入，例如 `../shared/timer.mjs`。
+
+### 2.3 Desktop 宿主注入（`desktop`）
 
 经典脚本（`.js`，非 ESM），加载时同步调用 `define({ activate(api) { … } })`。只通过 `api.dom.mount` 与 `api.dom.mark` + `desktop.style` 增强界面，不直接改写原生元素的 `style` / `class`，不接入私有 React 对象。支持 `sidebar.observeRows`、`threads.watchTree`、`navigate.openThread`、`harnesses.describe`、`assets.readDataUrl`、`storage`、`backend.invoke`、`settings.registerPage`、`signal` 与 `track`。
 
-### 2.3 Web 宿主注入（`web`）
+### 2.4 Web 宿主注入（`web`）
 
 ESM 模块（`.mjs`），导出 `activate(api)` 并可返回清理函数（也可只声明 `web.style` 纯 CSS 扩展）。通过 `api.dom.mount(regionOrEl)`、`api.dom.mark`、`api.assets.url`、`api.storage`、`api.backend.invoke`、`api.settings.registerPage`、`api.panels.register` 与 `api.signal` / `api.track` 集成，停用时自动回收全部节点、标记与订阅。
 
-### 2.4 单实例 Node 后端（`backend`）
+### 2.5 单实例 Node 后端（`backend`）
 
 包内 ESM（`.mjs`，≤ 2 MiB，自行打包运行依赖），导出 `activate(ctx)` 或 `default.activate(ctx)`：
 
@@ -122,14 +127,14 @@ export async function activate(ctx) {
 
 ## 3. 打包与隔离实测
 
-1. 将 `manifest.json`、构建后的 `page`/`desktop`/`web`/`backend` 文件以及声明的图标、截图与静态资源打入 `.zip`（`manifest.json` 位于 ZIP 根或唯一顶层目录；ZIP ≤ 64 MiB）。如仅构建 `desktop` 经典入口，也可复用：
+1. 将 `manifest.json`、构建后的 `page`/`widget`/`desktop`/`web`/`backend` 文件以及声明的图标、截图与静态资源打入 `.zip`（`manifest.json` 位于 ZIP 根或唯一顶层目录；ZIP ≤ 64 MiB）。如仅构建 `desktop` 经典入口，也可复用：
    ```bash
    npx tsc -b packages/harness-plugin-files
    node tools/build-desktop-extension.mjs "$EXTENSION_SOURCE_DIR" "<输出目录>"
    ```
 2. 使用 [隔离实测 Skill](../codexhost-isolated-testing/SKILL.md) 以独立数据目录与空闲端口启动测试 Web / Desktop（不碰 `~/.codexhost` 与用户正在运行的端口）。
 3. 在「设置 → 插件」导入 `.zip`（或开发期填入本机目录 `localDir`）并启用：
-   - 验证能力角标（全端 / Web / Desktop / 独立页面 / 后台）显示准确；
+   - 验证能力角标显示准确；含 `widget` 的扩展启用后确认主窗口自动出现挂件，禁用后确认挂件移除且未拦截非挂件区域的点击；
    - 含 `page` 的扩展点击「打开页面」，验证样式、交互、设置持久化与关闭清理；
    - 含 `backend` 的扩展确认共享 Host 仅起 1 个子进程、多标签页/双端共享同一 PID 与数据、禁用后进程立即退出；
    - 纯前端无 `backend` 扩展确认零后端子进程；

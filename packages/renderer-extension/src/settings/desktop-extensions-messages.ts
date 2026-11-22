@@ -45,6 +45,7 @@ export interface DesktopExtensionsMessages {
   readonly capabilityFilterLabel: string;
   readonly filterAll: string;
   readonly filterPage: string;
+  readonly filterWidget: string;
   readonly filterWeb: string;
   readonly filterDesktop: string;
   readonly filterBackend: string;
@@ -52,6 +53,7 @@ export interface DesktopExtensionsMessages {
   readonly badgeWeb: string;
   readonly badgeDesktop: string;
   readonly badgePage: string;
+  readonly badgeWidget: string;
   readonly badgeBackend: string;
   readonly openPage: string;
   readonly pageBack: string;
@@ -241,6 +243,7 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   capabilityFilterLabel: "Filter by capability",
   filterAll: "All",
   filterPage: "Page",
+  filterWidget: "Widget",
   filterWeb: "Web",
   filterDesktop: "Desktop",
   filterBackend: "Backend",
@@ -248,6 +251,7 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   badgeWeb: "Web",
   badgeDesktop: "Desktop",
   badgePage: "Page",
+  badgeWidget: "Widget",
   badgeBackend: "Backend",
   openPage: "Open Page",
   pageBack: "Back to Plugins",
@@ -465,6 +469,7 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   capabilityFilterLabel: "按能力筛选",
   filterAll: "全部",
   filterPage: "独立页面",
+  filterWidget: "挂件",
   filterWeb: "Web",
   filterDesktop: "Desktop",
   filterBackend: "后台",
@@ -472,6 +477,7 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   badgeWeb: "Web",
   badgeDesktop: "Desktop",
   badgePage: "独立页面",
+  badgeWidget: "挂件",
   badgeBackend: "后台",
   openPage: "打开页面",
   pageBack: "返回插件",

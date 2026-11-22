@@ -51,6 +51,7 @@ export const hostExtensionCatalogEntrySchema = z
       .refine((targets) => new Set(targets).size === targets.length, "Duplicate targets"),
     apis: z.strictObject({
       page: z.int().positive().optional(),
+      widget: z.int().positive().optional(),
       desktop: z.int().positive().optional(),
       web: z.int().positive().optional(),
       backend: z.int().positive().optional(),
@@ -60,6 +61,7 @@ export const hostExtensionCatalogEntrySchema = z
   .refine(({ targets, apis }) => {
     const derived = targetsForCapabilities({
       hasPage: Boolean(apis.page),
+      hasWidget: Boolean(apis.widget),
       hasDesktop: Boolean(apis.desktop),
       hasWeb: Boolean(apis.web),
       hasBackend: Boolean(apis.backend),

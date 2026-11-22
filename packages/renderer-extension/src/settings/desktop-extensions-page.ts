@@ -379,7 +379,7 @@ export function createDesktopExtensionsSettingsPage(
       searchBox.append(searchIcon, searchInput, clearSearchButton);
       controlsBar.append(tabList, searchBox);
 
-      // Capability filter pills row (All / Page / Web / Desktop / Backend) + Category filter pills row.
+      // Capability and category filters.
       const capabilitySlot = createEl(document, "div", "settings-extensions__capability-slot");
       capabilitySlot.hidden = true;
 
@@ -1843,6 +1843,7 @@ export function createDesktopExtensionsSettingsPage(
           if (contentLocalePreference === value) return;
           contentLocalePreference = value;
           writeContentLocalePreference(ownerWindow, value);
+          pageHost.syncLocale();
           render();
         });
       }

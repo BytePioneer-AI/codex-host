@@ -29,10 +29,10 @@ export type DesktopExtensionGroupId = "attention" | "enabled" | "disabled";
 export type DesktopExtensionMutationAction = "toggle" | "install" | "update" | "uninstall";
 export type DesktopExtensionContentLocale = RendererSettingsMessages["locale"];
 export type DesktopExtensionContentLocalePreference = "system" | DesktopExtensionContentLocale;
-export type ExtensionCapabilityFilter = "all" | "page" | "web" | "desktop" | "backend";
+export type ExtensionCapabilityFilter = "all" | "page" | "widget" | "web" | "desktop" | "backend";
 
 export interface ExtensionCapabilityBadge {
-  readonly kind: "all" | "web" | "desktop" | "page" | "backend";
+  readonly kind: ExtensionCapabilityFilter;
   readonly label: string;
 }
 
@@ -65,6 +65,7 @@ export const CATEGORY_ORDER: readonly DesktopExtensionCategory[] = [
 export const CAPABILITY_FILTER_ORDER: readonly ExtensionCapabilityFilter[] = [
   "all",
   "page",
+  "widget",
   "web",
   "desktop",
   "backend",
@@ -116,6 +117,7 @@ export function itemTargets(item: HostExtensionListItem): HostExtensionTarget[] 
 export function catalogCapabilities(entry: HostExtensionCatalogEntry): HostExtensionCapabilities {
   return {
     hasPage: Boolean(entry.apis.page),
+    hasWidget: Boolean(entry.apis.widget),
     hasDesktop: Boolean(entry.apis.desktop),
     hasWeb: Boolean(entry.apis.web),
     hasBackend: Boolean(entry.apis.backend),
@@ -141,6 +143,9 @@ export function deriveCapabilityBadges(
   if (capabilities.hasPage) {
     badges.push({ kind: "page", label: copy.badgePage });
   }
+  if (capabilities.hasWidget) {
+    badges.push({ kind: "widget", label: copy.badgeWidget });
+  }
   if (capabilities.hasBackend) {
     badges.push({ kind: "backend", label: copy.badgeBackend });
   }
@@ -157,6 +162,8 @@ export function matchesCapabilityFilter(
   switch (filter) {
     case "page":
       return capabilities.hasPage;
+    case "widget":
+      return capabilities.hasWidget;
     case "web":
       return capabilities.hasWeb || targets.includes("web");
     case "desktop":
@@ -175,6 +182,8 @@ export function capabilityFilterLabel(
       return copy.filterAll;
     case "page":
       return copy.filterPage;
+    case "widget":
+      return copy.filterWidget;
     case "web":
       return copy.filterWeb;
     case "desktop":

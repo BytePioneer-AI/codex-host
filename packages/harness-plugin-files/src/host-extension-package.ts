@@ -151,11 +151,11 @@ export async function readHostManifest(read: ReadResource) {
   if (result.state !== "valid") throw new InvalidHostExtensionManifest(result.state, result.error);
   return result.manifest;
 }
-export function hostFrontendEntries({ page, desktop, web }: HostExtensionManifest) {
-  return [page?.entry, desktop?.script, web?.entry];
+export function hostFrontendEntries({ page, widget, desktop, web }: HostExtensionManifest) {
+  return [page?.entry, widget?.entry, desktop?.script, web?.entry];
 }
-export function hostFrontendStyles({ page, desktop, web }: HostExtensionManifest) {
-  return [page?.style, desktop?.style, web?.style];
+export function hostFrontendStyles({ page, widget, desktop, web }: HostExtensionManifest) {
+  return [page?.style, widget?.style, desktop?.style, web?.style];
 }
 
 async function image(read: ReadResource, resource: string, limit: number) {

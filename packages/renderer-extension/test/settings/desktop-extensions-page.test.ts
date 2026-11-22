@@ -330,6 +330,7 @@ function sampleList(overrides: Partial<HostExtensionsListResult> = {}): HostExte
             entry: "page.mjs",
             title: { en: "Tree Explorer", "zh-CN": "委派树视图" },
           },
+          widget: { apiVersion: 1, entry: "widget/index.mjs" },
           backend: {
             apiVersion: 1,
             entry: "backend.mjs",
@@ -606,7 +607,7 @@ describe("Unified Host extensions settings page", () => {
     expect(incompatibleSwitch.disabled).toBe(true);
     expect(invalidSwitch.disabled).toBe(true);
 
-    // Tree card declares desktop + web + page + backend -> shows 全端 / 独立页面 / 后台 badges + Open Page button.
+    // The shared page and widget have separate badges; only the page adds an Open Page button.
     const treeCard = must(cards[2]);
     const treeBadges = descendants(treeCard)
       .filter((el) => el.className === "settings-extensions-cap-badge")
@@ -614,6 +615,7 @@ describe("Unified Host extensions settings page", () => {
     expect(treeBadges).toEqual([
       { kind: "all", text: "全端" },
       { kind: "page", text: "独立页面" },
+      { kind: "widget", text: "挂件" },
       { kind: "backend", text: "后台" },
     ]);
     const openPageBtn = must(
@@ -652,6 +654,13 @@ describe("Unified Host extensions settings page", () => {
       descendants(mounted.content).find((el) => el.dataset.capabilityFilter === "page"),
     );
     pagePill.dispatch("click");
+    expect(cardIds()).toEqual(["sidebar-thread-tree"]);
+
+    const widgetPill = must(
+      descendants(mounted.content).find((el) => el.dataset.capabilityFilter === "widget"),
+    );
+    expect(textOf(widgetPill)).toBe("挂件");
+    widgetPill.dispatch("click");
     expect(cardIds()).toEqual(["sidebar-thread-tree"]);
 
     // Capability filter "backend" shows only extensions declaring manifest.backend.

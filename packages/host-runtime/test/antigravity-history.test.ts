@@ -14,6 +14,13 @@ import {
   AntigravityAdapter,
   type AntigravityAcpTransportLike,
 } from "@codexhost/adapter-antigravity";
+import {
+  answerStep,
+  createNativeHistoryDatabase,
+  planModeSwitch,
+  systemStep,
+  userStep,
+} from "../../adapters/antigravity/test/support/native-history-fixture.js";
 import type { DelegationControlRegistration } from "../src/delegation-types.js";
 import { createExternalThreadRecordInput } from "../src/external-thread-repository.js";
 import { createFixture, startExternalThread, stopFixture } from "./app-server-host-fixture.js";
@@ -180,6 +187,83 @@ it.each([
     }
   },
 );
+
+it("removes an obsolete Plan wake mapping on resume without rekeying neighboring Turns", async () => {
+  const home = mkdtempSync(path.join(tmpdir(), "codexhost-agy-plan-identity-"));
+  const environment = { HOME: home, USERPROFILE: home };
+  const adapter = new AntigravityAdapter({ environment });
+  const nativeSessionRef = nativeSessionRefSchema.parse({
+    harnessId: adapter.harnessId,
+    nativeSessionId: "plan-history",
+    formatVersion: 1,
+  });
+  const db = await createNativeHistoryDatabase(home, nativeSessionRef.nativeSessionId);
+  try {
+    userStep(db, 0, "Plan and implement", "plan");
+    planModeSwitch(db, 1, "plan", "execute");
+    answerStep(db, 4, "Execution reply", "execute");
+    systemStep(db, 5, "wake", "task_notification");
+    answerStep(db, 6, "Independent reply", "wake");
+  } finally {
+    db.close();
+  }
+  const fixture = createFixture({
+    environment,
+    additionalAdapters: new Map([[adapter.harnessId, adapter]]),
+  });
+  try {
+    await fixture.ready;
+    const { hostThreadId: threadId } = await fixture.mappingStore.createProvisional(
+      createExternalThreadRecordInput({
+        harnessId: adapter.harnessId,
+        cwd: home,
+        transportModelId: encodeHarnessPluginRoute(
+          harnessPluginRouteSchema.parse({ harnessId: adapter.harnessId }),
+        ),
+        ephemeral: false,
+        historyMode: "paginated",
+      }),
+    );
+    const mapping = (key: string) => ({
+      hostTurnId: hostTurnIdSchema.parse(`saved-${key}`),
+      nativeTurnRef: { ...nativeSessionRef, nativeTurnKey: key },
+      nativeCheckpointRef: { ...nativeSessionRef, checkpointId: key },
+    });
+    const user = mapping("turn-0");
+    const wake = mapping("wake-5");
+    await fixture.mappingStore.commitReady({
+      hostThreadId: threadId,
+      nativeSessionRef,
+      turnMappings: [user, mapping("wake-3"), wake],
+    });
+    expect(await fixture.host.handleClientRequest("thread/resume", { threadId })).toHaveProperty(
+      "result",
+    );
+    expect((await fixture.mappingStore.getThread(threadId))?.turnMappings).toEqual([user, wake]);
+    expect(
+      await fixture.host.handleClientRequest("thread/turns/list", {
+        threadId,
+        sortDirection: "asc",
+        itemsView: "full",
+      }),
+    ).toMatchObject({
+      result: {
+        data: [
+          {
+            id: user.hostTurnId,
+            items: expect.arrayContaining([
+              expect.objectContaining({ type: "agentMessage", text: "Execution reply" }),
+            ]),
+          },
+          { id: wake.hostTurnId },
+        ],
+      },
+    });
+  } finally {
+    await stopFixture(fixture);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 
 it("returns and saves each confirmed configuration for queued cold agy selections", async () => {
   const home = mkdtempSync(path.join(tmpdir(), "codexhost-agy-cold-config-"));

@@ -16,7 +16,13 @@ import {
 import { readNativeTurnCount } from "../src/native-turn-boundaries.js";
 import { readNativeHistory } from "../src/native-replay.js";
 import { rollbackAntigravityLastTurn } from "../src/rollback.js";
-import { answerStep, systemStep, textField, userStep } from "./support/native-history-fixture.js";
+import {
+  answerStep,
+  planModeSwitch,
+  systemStep,
+  textField,
+  userStep,
+} from "./support/native-history-fixture.js";
 import { bytes, integer, varint } from "./support/native-timing-fixture.js";
 
 const metadataRows = {
@@ -161,15 +167,20 @@ describe("native SQLite Fork", () => {
         "PRAGMA user_version = 1; DROP TABLE steps; CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB)",
       );
       userStep(db, 0, "hello", "prompt");
-      answerStep(db, 1, "hello there", "prompt");
-      systemStep(db, 2, "wake");
-      answerStep(db, 3, "wake answer", "wake");
+      planModeSwitch(db, 1, "prompt", "execute");
+      answerStep(db, 4, "hello there", "execute");
+      systemStep(db, 5, "wake", "task_notification");
+      answerStep(db, 6, "wake answer", "wake");
     } finally {
       db.close();
     }
     const prefix = (id: string) => readNativeHistory(id, f.home).then(({ events }) => events);
     const source = await prefix(f.sourceRef.nativeSessionId);
-    for (const checkpointId of ["turn-0", "wake-2"]) {
+    const userPrefix = source.slice(
+      0,
+      source.findIndex((event) => event.type === "history.autonomous"),
+    );
+    for (const checkpointId of ["turn-0", "wake-5"]) {
       const result = await forkAntigravitySession({
         ...f.options,
         input: {
@@ -180,17 +191,28 @@ describe("native SQLite Fork", () => {
         },
       });
       assert(result.ok && result.value.initialState.nativeRef);
-      expect(await prefix(result.value.initialState.nativeRef.nativeSessionId)).toEqual(
-        checkpointId === "turn-0" ? source.slice(0, 2) : source,
-      );
+      const forked = await prefix(result.value.initialState.nativeRef.nativeSessionId);
+      expect(forked).toEqual(checkpointId === "turn-0" ? userPrefix : source);
+      expect(forked).toContainEqual({ type: "agent.text", text: "hello there" });
     }
+    expect(
+      await forkAntigravitySession({
+        ...f.options,
+        input: {
+          kind: "fork",
+          cwd: f.home,
+          sourceRef: f.sourceRef,
+          checkpoint: { ...f.sourceRef, checkpointId: "wake-3" },
+        },
+      }),
+    ).toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
     const rolledBack = await rollbackAntigravityLastTurn({
       ...f.options,
       input: { kind: "rollbackLastTurn", cwd: f.home, sourceRef: f.sourceRef },
     });
     assert(rolledBack.ok && rolledBack.value.initialState.nativeRef);
     expect(await prefix(rolledBack.value.initialState.nativeRef.nativeSessionId)).toEqual(
-      source.slice(0, 2),
+      userPrefix,
     );
     expect(await prefix(f.sourceRef.nativeSessionId)).toEqual(source);
   });

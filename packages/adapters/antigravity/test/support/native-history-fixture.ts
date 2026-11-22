@@ -37,11 +37,32 @@ export function answerStep(db: DatabaseSync, idx: number, text: string, run = ""
   );
 }
 
-export function systemStep(db: DatabaseSync, idx: number, run: string): void {
+export function systemStep(db: DatabaseSync, idx: number, run: string, eventType?: string): void {
   db.prepare("INSERT INTO steps (idx, step_type, status, step_payload) VALUES (?, 101, 3, ?)").run(
     idx,
-    runField(run),
+    Buffer.concat([runField(run), ...(eventType ? [bytes(114, textField(3, eventType))] : [])]),
   );
+}
+
+export function planModeSwitch(
+  db: DatabaseSync,
+  idx: number,
+  from: string,
+  to: string,
+  direction: "exit" | "enter" = "exit",
+): void {
+  const call = Buffer.concat([textField(1, `plan-${idx}`), textField(2, `${direction}_plan_mode`)]);
+  const insert = db.prepare("INSERT INTO steps VALUES (?, ?, 3, ?)");
+  insert.run(idx, 15, Buffer.concat([runField(from), bytes(20, bytes(7, call))]));
+  insert.run(
+    idx + 1,
+    132,
+    Buffer.concat([
+      bytes(5, Buffer.concat([textField(12, from), bytes(4, call)])),
+      bytes(140, Buffer.alloc(0)),
+    ]),
+  );
+  systemStep(db, idx + 2, to, direction === "exit" ? "plan_mode_handoff" : "plan_mode_handback");
 }
 
 export function checkpointStep(

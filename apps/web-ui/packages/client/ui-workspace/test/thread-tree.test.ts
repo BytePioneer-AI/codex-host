@@ -23,7 +23,7 @@ import {
 } from "../src/client/thread-tree-catalog.ts";
 import { sidebarWindow } from "../src/client/rows/sidebar-window.ts";
 import { createWorkspaceViewStore } from "../src/client/stores.ts";
-import { pinOrderSource } from "../src/client/pin-order.ts";
+import { pinOrderAccounts, pinOrderSource } from "../src/client/pin-order.ts";
 
 const id = SessionId;
 function row(key: string, parent: string | null = null, updatedAt = 1): SessionSummary {
@@ -204,6 +204,26 @@ it("also shows a tree, once, in the Workspace of a child whose root lives elsewh
   );
   for (const group of groups.slice(0, 2))
     assert.deepEqual(group.sessions[0]?.tree?.descendantIds, ["child", "grandchild"]);
+});
+
+it("keeps a linked root's manual slot when an unrelated Thread is pinned", () => {
+  const list = catalog(row("p", null, 1), row("c", "p", 5), row("x", null, 3), row("y", null, 2));
+  const workspaces = [workspace("a", "p", "y"), workspace("b", "c", "x")];
+  const view = createWorkspaceViewStore().create();
+  view.actions.setSessionOrder(
+    "b",
+    [id("p"), id("x")],
+    {},
+    pinOrderSource(workspaces, list, state),
+  );
+  const pinned = { ...state, pinnedSessionIds: [id("y")] };
+  view.actions.pinSessionOrder(
+    id("y"),
+    pinOrderAccounts(workspaces, id("y")),
+    pinOrderSource(workspaces, list, pinned),
+  );
+  assert.deepEqual(view.getSnapshot().sessionOrderByAccount.b, ["p", "x"]);
+  assert.deepEqual(view.getSnapshot().sessionOrderByAccount.a?.[0], "y");
 });
 
 it("uses subtree recency for roots but own recency for children, and reconciles only root manual slots", () => {

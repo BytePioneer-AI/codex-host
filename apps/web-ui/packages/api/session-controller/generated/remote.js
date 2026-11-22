@@ -864,6 +864,8 @@ const _deepseek_ai_dsh_api_session_controller_session_prompt_parameter_0$schema 
   'requestId': z.intersection(z.string(), z.unknown()).readonly(),
   'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
   'mode': z.union([z.literal("queue"), z.literal("steer")]).readonly(),
+  'sendWhenIdle': z.literal(true).readonly().optional(),
+  'expectedTurnId': z.string().nullable().readonly().optional(),
   'content': z.array(z.union([z.object({
   'type': z.literal("text").readonly(),
   'text': z.string().readonly(),
@@ -881,6 +883,7 @@ const _deepseek_ai_dsh_api_session_controller_session_prompt_parameter_0$schema 
 let _deepseek_ai_dsh_api_session_controller_session_prompt_result$schema$value
 const _deepseek_ai_dsh_api_session_controller_session_prompt_result$schema = () => (_deepseek_ai_dsh_api_session_controller_session_prompt_result$schema$value ??= z.object({
   'accepted': z.literal(true).readonly(),
+  'queueStartUnconfirmed': z.literal(true).readonly().optional(),
 }))
 let _deepseek_ai_dsh_api_session_controller_session_rename_parameter_0$schema$value
 const _deepseek_ai_dsh_api_session_controller_session_rename_parameter_0$schema = () => (_deepseek_ai_dsh_api_session_controller_session_rename_parameter_0$schema$value ??= z.object({

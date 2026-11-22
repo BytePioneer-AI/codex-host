@@ -252,6 +252,7 @@ declare module "@deepseek-ai/dsh-typert-protocol" {
     "session/tool-output-stale": Record<string, never>;
     "session/queue-item-not-found": { readonly itemId: MessageId };
     "session/steer-unavailable": { readonly itemId: MessageId };
+    "remote/turn-changed": Record<string, never>;
     "session/title-invalid": { readonly sessionId: SessionId };
     "session/fork-unavailable": { readonly sessionId: SessionId };
     "subagent/not-found": {

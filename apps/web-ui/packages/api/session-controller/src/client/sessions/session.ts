@@ -339,10 +339,19 @@ export class Session implements SessionFace {
     const inFlight = { observed: false };
     this.inFlightPrompts.set(submittedRequestId, inFlight);
     try {
+      const submission = this.submissionSettlements.get(submittedRequestId);
       let result: RemoteResult<SessionPromptValue>;
-      if (this.address === undefined) {
+      if (mode === "steer" && requestId !== undefined && submission === undefined) {
+        result = {
+          ok: false,
+          error: new RemoteError(
+            "remote/turn-changed",
+            "The selected Turn has ended or changed.",
+            {},
+          ),
+        };
+      } else if (this.address === undefined) {
         const clientTimeZone = resolvedClientTimeZone();
-        const submission = this.submissionSettlements.get(submittedRequestId);
         const remoteThread = this.projections.get("remoteHost") != null;
         const sentWhileIdle = submission ? submission.placement === "transcript" : !this.running;
         result = await this.remote.session.prompt(

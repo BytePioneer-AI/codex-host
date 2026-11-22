@@ -259,6 +259,12 @@ export class ChSessions {
       if (timing && catalogTiming) timing.catalog = { mode, ...catalogTiming.snapshot() };
     }
   }
+  private refreshPins(): Promise<string[]> {
+    return this.pins.refresh().catch((error: unknown) => {
+      console.error("[session/list] native pins unavailable", error);
+      return this.workspaces.pinnedSessionIds();
+    });
+  }
   private async listAll(
     timing: SessionListTiming,
     includeArchived: boolean,
@@ -267,12 +273,7 @@ export class ChSessions {
   ): Promise<CatalogPage | undefined> {
     const known = new Set(this.rows.keys());
     const [{ page: snapshot }, definitions] = await Promise.all([
-      readSessionPage(this.host, timing, includeArchived, cursor, () =>
-        this.pins.refresh().catch((error: unknown) => {
-          console.error("[session/list] native pins unavailable", error);
-          return [...this.workspaces.pinnedSessionIds()];
-        }),
-      ),
+      readSessionPage(this.host, timing, includeArchived, cursor, () => this.refreshPins()),
       timing.measure("project_definitions", () => this.host.projects([])),
       timing.measure("thread_tree", () => this.tree.refresh()),
     ]);
@@ -389,6 +390,14 @@ export class ChSessions {
       this.workspaces.syncReferencedSessions(references, groups, projectless, projects.projects);
     });
   }
+  private archiveForkParent(row: ChThread): string | null {
+    return this.threads.harnessId(row.id) === "codex" &&
+      !row.parentThreadId &&
+      typeof row.forkedFromId === "string" &&
+      !this.workspaces.pinnedSessionIds().includes(row.id)
+      ? row.forkedFromId
+      : null;
+  }
   /** Only fields used by the list summary; projections have their own
    * streams. Re-emitting every row makes each browser rebuild its entire
    * catalog thousands of times and starves interactive history frames.
@@ -401,6 +410,7 @@ export class ChSessions {
       row.status.type,
       row.parentThreadId ?? null,
       this.tree.parent(row.id),
+      this.archiveForkParent(row),
       row.canAcceptDirectInput !== false,
       row.codexhostImportSource ?? null,
       this.threads.harnessId(row.id),
@@ -430,6 +440,7 @@ export class ChSessions {
       const log = this.threads.view(id)?.log;
       log?.setProjection("title", threadListTitle(row));
       log?.setProjection("threadTreeParent", this.tree.parent(id));
+      log?.setProjection("archiveForkParent", this.archiveForkParent(row));
       log?.setProjection("codexhostImportSource", row.codexhostImportSource ?? null);
     }
     for (const row of changed) this.events.emit("api-session/added", row);
@@ -554,6 +565,10 @@ export class ChSessions {
     }
     if (this.threads.view(id) !== view)
       throw new RpcError("host/resync", "Host snapshot was superseded by a new generation");
+    view.log.setProjection(
+      "archiveForkParent",
+      this.archiveForkParent(this.rows.get(id) ?? view.thread),
+    );
     view.log.setProjection(
       "nativeDiscovery",
       !view.thread.parentThreadId && view.thread.canAcceptDirectInput !== false,
@@ -693,6 +708,7 @@ export class ChSessions {
           .map((key) => [key, projections[key]]),
       ),
       threadTreeParent: this.tree.parent(row.id),
+      archiveForkParent: this.archiveForkParent(row),
       nativeDiscovery: !row.parentThreadId && row.canAcceptDirectInput !== false,
       threadReference: { hostId: "local" },
       title: threadListTitle(row),
@@ -1112,7 +1128,7 @@ export class ChSessions {
             archivedSessionIds: this.workspaces.archivedSessionIds(),
           };
         const id = this.id(sessionId);
-        await this.tree.refresh();
+        await Promise.all([this.tree.refresh(), this.refreshPins()]);
         const { thread, harnessId } = await this.readThread(id);
         this.rows.set(thread.id, thread);
         this.threads.setHarness(thread.id, harnessId);
@@ -1544,15 +1560,27 @@ export class ChSessions {
       ["session/unarchive", false],
     ] as const)
       rpc.register(method, async (args) => {
-        const { sessionId } = requestOf<{ sessionId: string }>(args);
-        this.archiveOperations.delete(this.id(sessionId));
+        const { sessionId, scope } = requestOf<{ sessionId: string; scope?: "single" }>(args);
+        const id = this.id(sessionId);
+        if (scope !== undefined && scope !== "single")
+          throw new RpcError("session/archive-invalid", "Invalid archive scope.");
+        this.archiveOperations.delete(id);
         try {
-          await this.tree.archive(
-            this.id(sessionId),
-            archived,
-            new Set(this.workspaces.localArchivedSessionIds()),
-            (id) => this.setArchived(id, archived),
-          );
+          if (scope === "single") {
+            await this.setArchived(id, archived);
+            if (this.workspaces.localArchivedSessionIds().includes(id) !== archived)
+              throw new RpcError(
+                "session/archive-unconfirmed",
+                "The requested archive state was not confirmed.",
+              );
+          } else {
+            await this.tree.archive(
+              id,
+              archived,
+              new Set(this.workspaces.localArchivedSessionIds()),
+              (member) => this.setArchived(member, archived),
+            );
+          }
         } finally {
           await this.refresh().catch(() => undefined);
         }

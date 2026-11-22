@@ -17,6 +17,7 @@ import {
 } from "../src/client/tree.ts";
 import { threadTreeOrderSource } from "../src/client/thread-tree-order.ts";
 import {
+  archiveCandidates,
   isLocalThreadTreeMember,
   runningSubagentsInThreadSubtree,
   runningThreadSubtree,
@@ -350,4 +351,61 @@ it("defaults Thread folds to collapsed and keeps Thread and Workspace folds inde
   view.actions.setThreadsExpanded(["a"], false);
   assert.equal(view.getSnapshot().threadExpansion?.a, false);
   assert.equal(view.getSnapshot().threadExpansion?.b, true);
+});
+
+it("captures all unarchived local descendants when the tree is collapsed or search only shows the parent", () => {
+  const fork = row("fork");
+  const pinnedFork = row("pinned-fork");
+  const remote = row("remote", "root");
+  const list = catalog(
+    row("root"),
+    row("fold", "root"),
+    row("hidden", "fold"),
+    row("archived", "root"),
+    { ...fork, projectionValues: { ...fork.projectionValues, archiveForkParent: "fold" } },
+    row("fork-child", "fork"),
+    {
+      ...pinnedFork,
+      projectionValues: { ...pinnedFork.projectionValues, archiveForkParent: null },
+    },
+    row("pinned-fork-child", "pinned-fork"),
+    row("pinned-delegation"),
+    row("pinned-delegation-child", "pinned-delegation"),
+    { ...row("subagent", "root"), origin: "subagent" },
+    {
+      ...remote,
+      projectionValues: {
+        ...remote.projectionValues,
+        remoteHost: { hostId: "other", displayName: "Other", state: "ready" },
+      },
+    },
+  );
+  const rowState = {
+    ...state,
+    pinnedSessionIds: [id("pinned-fork"), id("pinned-delegation")],
+    archivedSessionIds: [id("archived")],
+  };
+  const collapsed = visibleThreadRows(deriveFlat(list, list.ids, rowState, new Map()), {});
+  assert.ok(!collapsed.some((node) => node.id === id("hidden")));
+  const search = deriveSearchResults(
+    list,
+    [],
+    "root",
+    rowState.archivedSessionIds,
+    "default",
+    new Map(),
+    { items: [], hasMore: false },
+    10,
+  );
+  assert.deepEqual(
+    search.items.map((node) => node.id),
+    [id("root")],
+  );
+  const [parent] = search.items;
+  assert.ok(parent);
+  const selection = archiveCandidates(list, parent.id, new Set(rowState.archivedSessionIds));
+  assert.deepEqual(
+    selection.map(({ id, title }) => [id, title]).sort(),
+    ["fold", "fork", "fork-child", "hidden"].map((key) => [id(key), key]),
+  );
 });

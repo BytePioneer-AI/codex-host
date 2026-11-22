@@ -30,6 +30,7 @@ const _deepseek_ai_dsh_api_workspace_controller_directoryPicker_pick_result$sche
 let _deepseek_ai_dsh_api_workspace_controller_workspace_archiveSession_parameter_0$schema$value
 const _deepseek_ai_dsh_api_workspace_controller_workspace_archiveSession_parameter_0$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_archiveSession_parameter_0$schema$value ??= z.object({
   'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
+  'scope': z.literal("single").optional().readonly(),
   'stopActivity': z.boolean().readonly().optional(),
 }))
 let _deepseek_ai_dsh_api_workspace_controller_workspace_archiveSession_result$schema$value
@@ -162,6 +163,7 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_rename_result$schema =
 let _deepseek_ai_dsh_api_workspace_controller_workspace_unarchiveSession_parameter_0$schema$value
 const _deepseek_ai_dsh_api_workspace_controller_workspace_unarchiveSession_parameter_0$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_unarchiveSession_parameter_0$schema$value ??= z.object({
   'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
+  'scope': z.literal("single").optional().readonly(),
 }))
 let _deepseek_ai_dsh_api_workspace_controller_workspace_unarchiveSession_result$schema$value
 const _deepseek_ai_dsh_api_workspace_controller_workspace_unarchiveSession_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_unarchiveSession_result$schema$value ??= z.object({

@@ -3255,6 +3255,42 @@ describe("Modern DeepSeek Harness Adapter", () => {
     await Promise.all([adapter.close(), replacement.adapter.close()]);
   });
 
+  it("confirms the first close when the Adapter faults while waiting for native cancellation", async () => {
+    const { adapter, connection } = setup(["closing", "req-1"]);
+    const cwd = path.resolve("fixture-fault-during-close");
+    const sessionId = "session-closing";
+    connection.expectedCwds.set(sessionId, cwd);
+    const opened = await adapter.open({ kind: "create", cwd });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const outputs = await startRunningTurn(connection, session, sessionId, "turn-1", "req-1");
+
+    // Acknowledge the cancel request without sending the native turn/end.
+    connection.cancelResponse = Promise.resolve({ ok: true, value: { accepted: true } });
+    const processStop = Promise.withResolvers<undefined>();
+    connection.closeResult = processStop.promise;
+    const closing = session.close();
+    const closeOutcome = closing.then(
+      () => "closed",
+      () => "rejected",
+    );
+    const nextTick = () =>
+      new Promise<"pending">((resolve) => setImmediate(() => resolve("pending")));
+    try {
+      await expect(Promise.race([closeOutcome, nextTick()])).resolves.toBe("pending");
+      connection.fault(new ModernRemoteConnectionError("unavailable", "stream closed"));
+      await expect(outputs.next()).resolves.toMatchObject({
+        value: { kind: "event", event: { type: "turn.completed", outcome: { status: "failed" } } },
+      });
+      await expect(Promise.race([closeOutcome, nextTick()])).resolves.toBe("pending");
+    } finally {
+      processStop.resolve(undefined);
+    }
+    await expect(closing).resolves.toBeUndefined();
+    await expect(session.close()).resolves.toBeUndefined();
+    await expect(adapter.close()).resolves.toBeUndefined();
+  });
+
   it("releases a cancel-failed Session after managed process exit without masking flush failure", async () => {
     const { adapter, connection } = setup(["cancel-failed", "flush-failed", "req-1", "req-2"]);
     const cwd = path.resolve("fixture-close-before-fault");

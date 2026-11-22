@@ -379,15 +379,15 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         this.#closeOwner(owner),
       );
       if (inspection.status !== "ready") {
-        throw new DelegateSelectionError(
-          owner.faultError ?? normalizeInspectionError(inspection.error),
-        );
+        throw new DelegateSelectionError(normalizeInspectionError(inspection.error));
       }
       owner.inspection = inspection;
       return owner;
     } catch (error) {
-      await this.#closeFailedCandidate(owner);
-      throw error;
+      const firstFault = owner.faultError;
+      const cleanupFailure = await this.#closeFailedCandidate(owner);
+      if (firstFault) throw new DelegateSelectionError(firstFault);
+      throw cleanupFailure ?? error;
     }
   }
 
@@ -448,11 +448,11 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     return owner.closePromise;
   }
 
-  async #closeFailedCandidate(owner: DelegateOwner): Promise<void> {
+  async #closeFailedCandidate(owner: DelegateOwner): Promise<DelegateSelectionError | undefined> {
     try {
       await this.#closeOwner(owner);
     } catch {
-      throw this.#recordCleanupFailure();
+      return this.#recordCleanupFailure();
     } finally {
       if (this.#candidate === owner) this.#candidate = undefined;
     }

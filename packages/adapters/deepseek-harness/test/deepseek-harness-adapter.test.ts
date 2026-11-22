@@ -824,33 +824,47 @@ describe("DeepSeek public generation selector", () => {
     await expect(adapter.close()).resolves.toBeUndefined();
   });
 
-  it("reports a faulted ready candidate's failed cleanup on later close", async () => {
-    const adapter = new DeepSeekHarnessAdapter(
-      {},
-      {
-        probeExecutable: () => Promise.resolve(modernExecutable),
-        createModernAdapter: (options) =>
-          new FakeAdapter(
-            () => {
-              options.onFault?.({
-                code: "unavailable",
-                message: "Connection closed",
-                retryable: true,
-              });
-              return Promise.resolve(readyInspection);
-            },
-            () => Promise.reject(new Error("process tree survived")),
-          ),
-      },
-    );
-    await expect(adapter.inspect()).resolves.toMatchObject({
-      status: "unavailable",
-      error: { code: "internalError", stage: "cleanup" },
-    });
-    await expect(adapter.close()).rejects.toThrow(
-      "DeepSeek Harness Adapter cleanup did not complete",
-    );
-  });
+  it.each([readyInspection, unavailableInspection])(
+    "preserves the first candidate fault when inspection returns $status and cleanup fails",
+    async (inspection) => {
+      const firstFault: HarnessError = {
+        code: "protocolError",
+        message: "Invalid startup event",
+        retryable: false,
+        diagnostic: "invalidStartupEvent",
+      };
+      const adapter = new DeepSeekHarnessAdapter(
+        {},
+        {
+          probeExecutable: () => Promise.resolve(modernExecutable),
+          createModernAdapter: (options) =>
+            new FakeAdapter(
+              () => {
+                options.onFault?.(firstFault);
+                options.onFault?.({
+                  code: "unavailable",
+                  message: "Connection closed",
+                  retryable: true,
+                });
+                return Promise.resolve(inspection);
+              },
+              () => Promise.reject(new Error("process tree survived")),
+            ),
+        },
+      );
+      await expect(adapter.inspect()).resolves.toMatchObject({
+        status: "unavailable",
+        error: firstFault,
+      });
+      await expect(adapter.inspect({ refresh: true })).resolves.toMatchObject({
+        status: "unavailable",
+        error: { code: "internalError", stage: "cleanup", retryable: false },
+      });
+      await expect(adapter.close()).rejects.toThrow(
+        "DeepSeek Harness Adapter cleanup did not complete",
+      );
+    },
+  );
 
   it("retires a faulted delegate after cleanup completes and starts a fresh delegate on demand", async () => {
     const firstClose = deferred<undefined>();

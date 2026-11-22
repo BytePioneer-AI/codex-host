@@ -518,6 +518,26 @@ interface BackgroundTextRunItem {
   start: number;
 }
 
+/**
+ * Keeps a published Reasoning preview append-only. A part published from history
+ * can carry a title derived from text that later grows, so recomputing that text
+ * retitles the part, or drops it while its paragraph is still undecided. Reads
+ * that shrink or retitle what the Web view already rendered fail with
+ * `host/history-changed`, so keep the published parts and append the new text.
+ */
+function extendPublishedSummary(
+  published: readonly string[],
+  merged: string,
+  appended: string,
+  complete: boolean,
+): string[] {
+  const next = reasoningSummaryParts(merged, complete);
+  if (published.length === 0) return next;
+  if (next.join("\n\n").startsWith(published.join("\n\n"))) return next;
+  if (!appended) return [...published];
+  return [...published.slice(0, -1), `${published.at(-1)}\n\n${appended}`];
+}
+
 function appendBackgroundText(
   items: JsonObject[],
   { index, text }: BackgroundTextRunItem,
@@ -533,7 +553,10 @@ function appendBackgroundText(
   }
   const transcript = items[index + 1];
   if (!isReasoningTranscript(item, transcript)) return;
-  items[index] = { ...item, summary: reasoningSummaryParts(merged, complete) };
+  const published = Array.isArray(item.summary)
+    ? item.summary.filter((part): part is string => typeof part === "string")
+    : [];
+  items[index] = { ...item, summary: extendPublishedSummary(published, merged, suffix, complete) };
   items[index + 1] = { ...transcript, aggregatedOutput: merged };
 }
 

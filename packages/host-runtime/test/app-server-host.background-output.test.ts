@@ -422,18 +422,41 @@ describe("Host runtime idle background output on a completed Turn", () => {
     },
   );
 
+  // The last column is the Reasoning summary a stable read keeps: the title the
+  // settled Item already published, with the replayed text appended to that part.
   it.each([
-    ["agentMessage", "complete native tail", "native tail", "native tail", "native tail"],
-    ["agentMessage", "partial native tail", "native ta", "tail plus", "native tail plus"],
-    ["agentMessage", "no overlap", "native tail", "different", null],
-    ["reasoning", "complete native tail", "native tail", "native tail", "native tail"],
-    ["reasoning", "partial native tail", "native ta", "tail plus", "native tail plus"],
-    ["reasoning", "one-character prefix", "T", "T1", "T1"],
-    ["reasoning", "no overlap", "native tail", "different", null],
-    ["reasoning", "identical preview only", "native tail", "**native tail**", null],
+    ["agentMessage", "complete native tail", "native tail", "native tail", "native tail", null],
+    ["agentMessage", "partial native tail", "native ta", "tail plus", "native tail plus", null],
+    ["agentMessage", "no overlap", "native tail", "different", null, null],
+    [
+      "reasoning",
+      "complete native tail",
+      "native tail",
+      "native tail",
+      "native tail",
+      ["**native tail**"],
+    ],
+    [
+      "reasoning",
+      "partial native tail",
+      "native ta",
+      "tail plus",
+      "native tail plus",
+      ["**native ta**\n\nil plus"],
+    ],
+    ["reasoning", "one-character prefix", "T", "T1", "T1", ["**T**\n\n1"]],
+    ["reasoning", "no overlap", "native tail", "different", null, ["**native tail**"]],
+    [
+      "reasoning",
+      "identical preview only",
+      "native tail",
+      "**native tail**",
+      null,
+      ["**native tail**"],
+    ],
   ] as const)(
     "aligns %s %s with background text",
-    async (type, _name, historical, live, merged) => {
+    async (type, _name, historical, live, merged, summary) => {
       const fixture = createFixture();
       try {
         const threadId = await startPiThread(fixture);
@@ -474,14 +497,7 @@ describe("Host runtime idle background output on a completed Turn", () => {
           const items = await readHistoryItems(fixture, threadId, request);
           const native = items.find((entry) => entry.id === nativeId);
           expect(native).toMatchObject(
-            type === "reasoning"
-              ? {
-                  summary:
-                    request === 5 && merged !== null && merged !== historical
-                      ? []
-                      : [`**${merged ?? historical}**`],
-                }
-              : { text: merged ?? historical },
+            type === "reasoning" ? { summary } : { text: merged ?? historical },
           );
           if (type === "reasoning") {
             expect(items.find((entry) => entry.id === "native-tail")).toMatchObject({
@@ -498,12 +514,21 @@ describe("Host runtime idle background output on a completed Turn", () => {
     },
   );
 
+  // The replayed text only grows the published part: the title derived from the
+  // settled Item stays, and the new text follows it as the part's body.
   it.each([
-    ["short prefix", "R", ""],
-    ["suffix overlap", "Earlier notes: Reading the ", "Earlier notes: "],
+    ["short prefix", "R", "", "**R**", "eading the con", "eading the config. Next"],
+    [
+      "suffix overlap",
+      "Earlier notes: Reading the ",
+      "Earlier notes: ",
+      "**Earlier notes: Reading the**",
+      "con",
+      "config. Next",
+    ],
   ] as const)(
     "keeps the paired Reasoning title stable while appending a %s",
-    async (_name, historical, prefix) => {
+    async (_name, historical, prefix, published, appended, appendedAfterUpdate) => {
       const fixture = createFixture();
       try {
         const threadId = await startPiThread(fixture);
@@ -542,7 +567,8 @@ describe("Host runtime idle background output on a completed Turn", () => {
             aggregatedOutput: prefix + text,
           });
         };
-        await expectPairedText(3, item.text, []);
+        const first = `${published}\n\n${appended}`;
+        await expectPairedText(3, item.text, [first]);
 
         const delta = "fig. Next";
         session.emitEvent({
@@ -558,7 +584,7 @@ describe("Host runtime idle background output on a completed Turn", () => {
             (message.params as { delta?: string }).delta === delta,
         );
         const text = item.text + delta;
-        const summary = [`**${prefix}Reading the config**\n\nNext`];
+        const summary = [`${published}\n\n${appendedAfterUpdate}`];
         await expectPairedText(4, text, summary);
         session.emitEvent({
           type: "item.completed",
@@ -572,6 +598,93 @@ describe("Host runtime idle background output on a completed Turn", () => {
       }
     },
   );
+
+  it("keeps a Reasoning summary that history already published when the replay grows", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = hostTurnIdSchema.parse(await completePiTurn(fixture, threadId, 2));
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const nativeId = hostItemIdSchema.parse("published-native-reasoning");
+      const liveId = hostItemIdSchema.parse("published-live-reasoning");
+      const readSnapshot = session.readSnapshot.bind(session);
+      session.readSnapshot = async () => {
+        const snapshot = await readSnapshot();
+        if (!snapshot.ok) return snapshot;
+        const turns = snapshot.value.turns.map((turn) => ({
+          ...turn,
+          items: [
+            ...turn.items,
+            {
+              item: { type: "reasoning" as const, itemId: nativeId, text: "R" },
+              outcome: { status: "succeeded" as const },
+            },
+          ],
+        }));
+        return { ...snapshot, value: { ...snapshot.value, turns } };
+      };
+
+      // The settled Item is read before the background replay continues it, so its
+      // title is already on screen when the replay appends to the same text.
+      const published = async (request: number) =>
+        (await readHistoryItems(fixture, threadId, request)).find(
+          (entry) => entry.id === `${nativeId}-summary`,
+        )?.summary as string[];
+      const history = await published(3);
+      expect(history).toEqual(["**R**"]);
+
+      const item = { type: "reasoning" as const, itemId: liveId, text: "R" };
+      session.emitEvent({ type: "item.background.started", turnId, item });
+      await fixture.collector.waitFor((message) => itemStarted(message, liveId));
+      // A published summary only grows: the Web view rejects a shorter or retitled one.
+      const expectAppendOnly = async (request: number, previous: string[]) => {
+        const summary = await published(request);
+        expect(summary.join("\n\n").startsWith(previous.join("\n\n"))).toBe(true);
+        return summary;
+      };
+      let summary = await expectAppendOnly(4, history);
+
+      for (const [request, delta] of [
+        [5, "eading the con"],
+        [6, "fig. Next"],
+      ] as const) {
+        session.emitEvent({
+          type: "item.updated",
+          turnId,
+          itemId: liveId,
+          update: { type: "text.append", text: delta },
+        });
+        await fixture.collector.waitFor(
+          (message) =>
+            message.method === "item/commandExecution/outputDelta" &&
+            (message.params as { itemId?: string }).itemId === liveId &&
+            (message.params as { delta?: string }).delta === delta,
+        );
+        summary = await expectAppendOnly(request, summary);
+      }
+
+      session.emitEvent({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { ...item, text: "Reading the config. Next" },
+          outcome: { status: "succeeded" },
+        },
+      });
+      await fixture.collector.waitFor((message) => itemCompleted(message, `${liveId}-summary`));
+      summary = await expectAppendOnly(7, summary);
+
+      const items = await readHistoryItems(fixture, threadId, 8);
+      expect(items.find((entry) => entry.id === nativeId)).toMatchObject({
+        command: REASONING_TRANSCRIPT_COMMAND,
+        aggregatedOutput: "Reading the config. Next",
+      });
+      expect(summary.join("\n\n")).toContain("Next");
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
 
   it.each(["after restart", "a"])("aligns replayed text ending in %j", async (tail) => {
     const fixture = createFixture();
@@ -978,7 +1091,10 @@ describe("Host runtime idle background output on a completed Turn", () => {
       }
       const items = await readHistoryItems(fixture, threadId, 3);
       expect(items.filter((item) => item.type === "reasoning")).toEqual([
-        expect.objectContaining({ id: `${reasoningId}-summary`, summary: [] }),
+        expect.objectContaining({
+          id: `${reasoningId}-summary`,
+          summary: ["**analysis: ta**\n\nil"],
+        }),
         expect.objectContaining({ id: "live-overlap-1-summary", summary: [] }),
       ]);
       expect(

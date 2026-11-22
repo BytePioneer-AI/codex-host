@@ -1,6 +1,7 @@
 import type { HarnessModelRef } from "@codexhost/shared-contracts";
 
 import type { DelegationCliCommand } from "./delegation-cli-help.js";
+import { formatDelegationModel } from "./delegation-model-argument.js";
 import {
   type DelegationStartResult,
   type DelegationThreadListResult,
@@ -13,7 +14,6 @@ import {
   type ThreadWatchResult,
 } from "./delegation-types.js";
 import { originClientName } from "./external-client-origin.js";
-import { formatOfficialDelegationModel } from "./official-delegation-model.js";
 
 /** A Thread as a link; a client origin is no Thread, so it is shown as is. */
 function targetLink(identifier: string): string {
@@ -42,11 +42,9 @@ function watchOutput(watch: DelegationStartResult["watch"]): { watch?: unknown }
 export function jsonDelegationOutput(command: DelegationCliCommand, body: unknown): unknown {
   if (command !== "harness inspect") return body;
   const result = body as HarnessInspectResult;
-  if (result.harnessId !== "codex" || result.inspection.status !== "ready") return body;
+  if (result.inspection.status !== "ready") return body;
   const { catalog } = result.inspection;
-  const displayRef = (ref: HarnessModelRef) => ({
-    id: formatOfficialDelegationModel(ref),
-  });
+  const displayRef = (ref: HarnessModelRef) => ({ id: formatDelegationModel(ref) });
   return {
     ...result,
     inspection: {
@@ -67,28 +65,26 @@ export function jsonDelegationOutput(command: DelegationCliCommand, body: unknow
 function inspectOutput({ harnessId, inspection }: HarnessInspectResult): unknown {
   if (inspection.status !== "ready") return { harnessId, ...inspection };
   const { catalog } = inspection;
-  const modelId = (ref: HarnessModelRef) =>
-    harnessId === "codex" ? formatOfficialDelegationModel(ref) : ref.id;
   return {
     harnessId,
     status: inspection.status,
     models: catalog.models.flatMap(({ ref, label, fastModel, supportedThinkingOptionIds }) => [
       {
-        id: modelId(ref),
+        id: formatDelegationModel(ref),
         label,
         ...(supportedThinkingOptionIds ? { thinking: supportedThinkingOptionIds } : {}),
       },
       ...(fastModel
         ? [
             {
-              id: modelId(fastModel),
+              id: formatDelegationModel(fastModel),
               label: `${label} (Fast)`,
               ...(supportedThinkingOptionIds ? { thinking: supportedThinkingOptionIds } : {}),
             },
           ]
         : []),
     ]),
-    ...(catalog.defaultModel ? { defaultModel: modelId(catalog.defaultModel) } : {}),
+    ...(catalog.defaultModel ? { defaultModel: formatDelegationModel(catalog.defaultModel) } : {}),
     thinkingOptions: catalog.thinkingOptions,
     ...(catalog.defaultThinkingOptionId
       ? { defaultThinkingOptionId: catalog.defaultThinkingOptionId }
@@ -155,10 +151,9 @@ export function compactDelegationOutput(
     case "delegate start": {
       const result = body as DelegationStartResult;
       const effective = result.configuration?.effective;
-      const model =
-        result.harnessId === "codex" && effective?.effectiveModel
-          ? formatOfficialDelegationModel(effective.effectiveModel)
-          : effective?.resolvedModelLabel;
+      const model = effective?.effectiveModel
+        ? formatDelegationModel(effective.effectiveModel)
+        : effective?.resolvedModelLabel;
       return {
         thread: result.deepLink,
         harnessId: result.harnessId,

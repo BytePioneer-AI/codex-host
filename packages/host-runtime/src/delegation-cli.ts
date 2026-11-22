@@ -453,11 +453,7 @@ export async function runDelegationCli(input: {
           ? { taskName: value(parsed, "--task-name") }
           : {}),
         ...(cwdOption(parsed) ? { cwd: cwdOption(parsed) } : {}),
-        ...(model === undefined
-          ? {}
-          : harnessId === "codex"
-            ? { officialModelArgument: model }
-            : { model: { id: model } }),
+        ...(model === undefined ? {} : { model }),
         ...(value(parsed, "--thinking") ? { thinkingOptionId: value(parsed, "--thinking") } : {}),
         ...(parentThread ? { parentThreadId: normalizeThreadId(parentThread) } : {}),
         ...(value(parsed, "--request-id") ? { requestId: value(parsed, "--request-id") } : {}),

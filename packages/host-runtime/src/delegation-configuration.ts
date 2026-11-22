@@ -6,13 +6,11 @@ import {
   sameHarnessModelRef,
   type HarnessDelegationDefault,
   type HarnessModelRef,
+  type HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 
-import {
-  DelegationControlError,
-  type DelegationStartInput,
-  type HarnessInspectResult,
-} from "./delegation-types.js";
+import { formatDelegationModel } from "./delegation-model-argument.js";
+import { DelegationControlError, type HarnessInspectResult } from "./delegation-types.js";
 
 export async function resolveDelegationConfiguration(input: {
   harnessId: RoutedHarnessId;
@@ -20,7 +18,7 @@ export async function resolveDelegationConfiguration(input: {
   explicit: HarnessDelegationDefault;
   readDefault: () => Promise<HarnessDelegationDefault | undefined>;
   inspect: () => Promise<HarnessInspectResult>;
-}): Promise<Pick<DelegationStartInput, "model" | "thinkingOptionId">> {
+}): Promise<{ model?: HarnessModelRef; thinkingOptionId?: HarnessThinkingOptionId }> {
   const official = input.harnessId === "codex";
   const { model: explicitModel, thinkingOptionId: explicitThinking } = input.explicit;
   const saved =
@@ -71,7 +69,9 @@ export async function resolveDelegationConfiguration(input: {
         official ? "Official Model is unavailable" : "Model is unavailable for the target Harness",
         {
           validModelIds: catalog.models.flatMap(({ ref, fastModel }) =>
-            !official && fastModel ? [ref.id, fastModel.id] : [ref.id],
+            fastModel
+              ? [formatDelegationModel(ref), formatDelegationModel(fastModel)]
+              : [formatDelegationModel(ref)],
           ),
         },
       );

@@ -475,7 +475,12 @@ describe("Host runtime idle background output on a completed Turn", () => {
           const native = items.find((entry) => entry.id === nativeId);
           expect(native).toMatchObject(
             type === "reasoning"
-              ? { summary: [`**${merged ?? historical}**`] }
+              ? {
+                  summary:
+                    request === 5 && merged !== null && merged !== historical
+                      ? []
+                      : [`**${merged ?? historical}**`],
+                }
               : { text: merged ?? historical },
           );
           if (type === "reasoning") {
@@ -487,6 +492,81 @@ describe("Host runtime idle background output on a completed Turn", () => {
             merged === null ? 1 : 0,
           );
         }
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it.each([
+    ["short prefix", "R", ""],
+    ["suffix overlap", "Earlier notes: Reading the ", "Earlier notes: "],
+  ] as const)(
+    "keeps the paired Reasoning title stable while appending a %s",
+    async (_name, historical, prefix) => {
+      const fixture = createFixture();
+      try {
+        const threadId = await startPiThread(fixture);
+        const turnId = hostTurnIdSchema.parse(await completePiTurn(fixture, threadId, 2));
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Pi Session was not opened");
+        const nativeId = hostItemIdSchema.parse("stable-native-reasoning");
+        const liveId = hostItemIdSchema.parse("stable-live-reasoning");
+        const readSnapshot = session.readSnapshot.bind(session);
+        session.readSnapshot = async () => {
+          const snapshot = await readSnapshot();
+          if (!snapshot.ok) return snapshot;
+          const turns = snapshot.value.turns.map((turn) => ({
+            ...turn,
+            items: [
+              ...turn.items,
+              {
+                item: { type: "reasoning" as const, itemId: nativeId, text: historical },
+                outcome: { status: "succeeded" as const },
+              },
+            ],
+          }));
+          return { ...snapshot, value: { ...snapshot.value, turns } };
+        };
+        const item = { type: "reasoning" as const, itemId: liveId, text: "Reading the con" };
+        session.emitEvent({ type: "item.background.started", turnId, item });
+        await fixture.collector.waitFor((message) => itemStarted(message, liveId));
+
+        const expectPairedText = async (request: number, text: string, summary: string[]) => {
+          const items = await readHistoryItems(fixture, threadId, request);
+          expect(items.filter((entry) => entry.type === "reasoning")).toEqual([
+            expect.objectContaining({ id: `${nativeId}-summary`, summary }),
+          ]);
+          expect(items.find((entry) => entry.id === nativeId)).toMatchObject({
+            command: REASONING_TRANSCRIPT_COMMAND,
+            aggregatedOutput: prefix + text,
+          });
+        };
+        await expectPairedText(3, item.text, []);
+
+        const delta = "fig. Next";
+        session.emitEvent({
+          type: "item.updated",
+          turnId,
+          itemId: liveId,
+          update: { type: "text.append", text: delta },
+        });
+        await fixture.collector.waitFor(
+          (message) =>
+            message.method === "item/commandExecution/outputDelta" &&
+            (message.params as { itemId?: string; delta?: string }).itemId === liveId &&
+            (message.params as { delta?: string }).delta === delta,
+        );
+        const text = item.text + delta;
+        const summary = [`**${prefix}Reading the config**\n\nNext`];
+        await expectPairedText(4, text, summary);
+        session.emitEvent({
+          type: "item.completed",
+          turnId,
+          snapshot: { item: { ...item, text }, outcome: { status: "succeeded" } },
+        });
+        await fixture.collector.waitFor((message) => itemCompleted(message, `${liveId}-summary`));
+        await expectPairedText(5, text, summary);
       } finally {
         await stopFixture(fixture);
       }
@@ -897,9 +977,10 @@ describe("Host runtime idle background output on a completed Turn", () => {
         await fixture.collector.waitFor((message) => itemStarted(message, itemId));
       }
       const items = await readHistoryItems(fixture, threadId, 3);
-      expect(items.filter((item) => item.type === "reasoning").map((item) => item.summary)).toEqual(
-        [["**analysis: tail**"], []],
-      );
+      expect(items.filter((item) => item.type === "reasoning")).toEqual([
+        expect.objectContaining({ id: `${reasoningId}-summary`, summary: [] }),
+        expect.objectContaining({ id: "live-overlap-1-summary", summary: [] }),
+      ]);
       expect(
         items.find((item) => item.command === REASONING_TRANSCRIPT_COMMAND)?.aggregatedOutput,
       ).toBe("analysis: tail");

@@ -522,6 +522,7 @@ function appendBackgroundText(
   items: JsonObject[],
   { index, text }: BackgroundTextRunItem,
   suffix: string,
+  complete: boolean,
 ): void {
   const item = items[index];
   if (!item) return;
@@ -532,7 +533,7 @@ function appendBackgroundText(
   }
   const transcript = items[index + 1];
   if (!isReasoningTranscript(item, transcript)) return;
-  items[index] = { ...item, summary: reasoningSummaryParts(merged, true) };
+  items[index] = { ...item, summary: reasoningSummaryParts(merged, complete) };
   items[index + 1] = { ...transcript, aggregatedOutput: merged };
 }
 
@@ -574,7 +575,7 @@ function alignBackgroundTextRun(
   liveText: string,
   consumedEnd: number,
   foregroundText: string,
-  allowPartialTail: boolean,
+  { allowPartialTail, complete }: { allowPartialTail: boolean; complete: boolean },
 ): number | null {
   const run = backgroundTextCandidates(items, historicalCount, type);
   if (!run) return null;
@@ -592,7 +593,7 @@ function alignBackgroundTextRun(
     );
     const prefix = run.text.slice(searchStart);
     if (tail.index === lastIndex && prefix && liveText.startsWith(prefix)) {
-      appendBackgroundText(items, tail, liveText.slice(prefix.length));
+      appendBackgroundText(items, tail, liveText.slice(prefix.length), complete);
       return searchStart + liveText.length;
     }
   }
@@ -603,7 +604,7 @@ function alignBackgroundTextRun(
     const unread = item.text.slice(Math.max(0, searchStart - item.start));
     const overlap = longestSuffixPrefixOverlap(unread, liveText);
     if (overlap < 2) continue;
-    appendBackgroundText(items, item, liveText.slice(overlap));
+    appendBackgroundText(items, item, liveText.slice(overlap), complete);
     return itemEnd + liveText.length - overlap;
   }
   return null;
@@ -5513,7 +5514,7 @@ export class AppServerHost {
       settledItemId !== undefined && projector.hasOpenDetachedItems
         ? []
         : [...background]
-            .map(([id, item]) => ({ item, text: projectionText(id, item) }))
+            .map(([id, item]) => ({ id, item, text: projectionText(id, item) }))
             .filter(({ text }) => text !== "");
     if (remaining.size === 0 && liveItems.length === 0) return turn;
 
@@ -5533,7 +5534,7 @@ export class AppServerHost {
         foregroundText.set(item.type, (foregroundText.get(item.type) ?? "") + text);
       }
     }
-    for (const [index, { item: live, text: liveText }] of liveItems.entries()) {
+    for (const [index, { id, item: live, text: liveText }] of liveItems.entries()) {
       if (liveText === null || typeof live.type !== "string") {
         items.push(live);
         continue;
@@ -5545,7 +5546,10 @@ export class AppServerHost {
         liveText,
         consumedEnd.get(live.type) ?? 0,
         foregroundText.get(live.type) ?? "",
-        index === liveItems.length - 1 && items.length === historicalCount,
+        {
+          allowPartialTail: index === liveItems.length - 1 && items.length === historicalCount,
+          complete: !projector.hasOpenDetachedItem(id),
+        },
       );
       if (aligned === null) {
         // A retained projector may revisit an Item already folded into the cache.

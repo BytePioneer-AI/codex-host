@@ -24,6 +24,7 @@ import {
   catalogCapabilities,
   categoryLabelForLocale,
   deriveHostCapabilityBadges,
+  derivePlatformBadge,
   formatExtensionCount,
   hasHostCatalogUpdate,
   hostDescription,
@@ -40,7 +41,7 @@ import {
   type HostExtensionValidItem,
   type Translate,
 } from "./web-extensions-helpers.ts";
-import { ExtensionIcon } from "./WebExtensionCard.tsx";
+import { ExtensionIcon, WebExtensionPlatformBadge } from "./WebExtensionCard.tsx";
 import { WebExtensionMarkdown } from "./WebExtensionMarkdown.tsx";
 import { WebExtensionSettingsForm } from "./WebExtensionSettingsForm.tsx";
 import css from "./WebExtensionDetailModal.module.css";
@@ -155,7 +156,8 @@ export function WebExtensionDetailModal({
       ? catalogCapabilities(catalogEntry)
       : null;
   const targets = validItem ? itemTargets(validItem) : (catalogEntry?.targets ?? []);
-  const capabilityBadges = deriveHostCapabilityBadges(capabilities, targets, t);
+  const platformBadge = derivePlatformBadge(targets, t);
+  const capabilityBadges = deriveHostCapabilityBadges(capabilities, t);
 
   const statusBadge = (() => {
     if (!item) return null;
@@ -246,6 +248,20 @@ export function WebExtensionDetailModal({
                     <span className={css.updateChip}>{t("extensions.updateAvailable")}</span>
                   )}
                 </div>
+
+                {platformBadge && (
+                  <div>
+                    <div className={css.platformRow}>
+                      <span>{t("extensions.platform.label")}</span>
+                      <WebExtensionPlatformBadge badge={platformBadge} />
+                    </div>
+                    {platformBadge.kind === "desktop" && (
+                      <p className={css.platformNotice}>
+                        {t("extensions.platform.desktopOnlyNotice")}
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {capabilityBadges.length > 0 && (
                   <div className={css.capabilityChips}>
@@ -576,7 +592,7 @@ export function WebExtensionDetailModal({
                 <span className={css.capabilityChip}>{t("extensions.capability.webUi")}</span>
               )}
               {capabilities?.hasDesktop && (
-                <span className={css.capabilityChip}>{t("extensions.badge.desktop")}</span>
+                <span className={css.capabilityChip}>{t("extensions.capability.desktopUi")}</span>
               )}
               {capabilities?.hasBackend && (
                 <span className={css.capabilityChip}>

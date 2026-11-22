@@ -4707,7 +4707,8 @@ dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
   flex: none;
 }
 
-.settings-extensions-card__capabilities {
+.settings-extensions-card__capabilities,
+.settings-extensions-detail-modal__capabilities:not([hidden]) {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -4729,7 +4730,7 @@ dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
   white-space: nowrap;
 }
 
-.settings-extensions-cap-badge[data-capability="all"],
+.settings-extensions-cap-badge[data-platform="both"],
 .settings-extensions-cap-badge[data-capability="page"],
 .settings-extensions-cap-badge[data-capability="widget"] {
   color: var(--settings-focus);
@@ -4737,8 +4738,40 @@ dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
   background: color-mix(in srgb, var(--settings-focus) 10%, transparent);
 }
 
+.settings-extensions-cap-badge[data-platform] {
+  font-weight: 600;
+}
+
+.settings-extensions-cap-badge[data-platform="web"] {
+  color: var(--settings-warning);
+  border-color: var(--settings-warning-border);
+  background: var(--settings-warning-bg);
+}
+
 .settings-extensions-cap-badge[data-capability="backend"] {
   color: var(--settings-text);
+}
+
+.settings-extensions-detail-modal__platform {
+  flex-basis: 100%;
+  min-width: 0;
+}
+
+.settings-extensions-detail-modal__platform-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.settings-extensions-detail-modal__platform-notice {
+  margin: 4px 0 0;
+  color: var(--settings-warning);
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .settings-extensions-detail-modal__settings {

@@ -25,6 +25,7 @@ import {
   parseSafeIconUrl,
   type ExtensionCapabilityBadge,
   type ExtensionLocale,
+  type ExtensionPlatformBadge,
   type Translate,
 } from "./web-extensions-helpers.ts";
 import css from "./WebExtensionsSection.module.css";
@@ -86,6 +87,14 @@ export function ExtensionIcon({
   );
 }
 
+export function WebExtensionPlatformBadge({ badge }: { badge: ExtensionPlatformBadge }) {
+  return (
+    <span className={css.capBadge} data-platform={badge.kind}>
+      {badge.label}
+    </span>
+  );
+}
+
 export interface WebExtensionCardProps {
   readonly cardKey: string;
   readonly extensionId: string;
@@ -100,6 +109,7 @@ export interface WebExtensionCardProps {
   readonly downloads?: number | undefined;
   readonly trustTier?: DesktopExtensionTrustTier | undefined;
   readonly categories?: readonly DesktopExtensionCategory[] | undefined;
+  readonly platformBadge: ExtensionPlatformBadge | null;
   readonly capabilityBadges?: readonly ExtensionCapabilityBadge[] | undefined;
   readonly statusDot?:
     { readonly tone: "info" | "warning" | "danger"; readonly label: string } | undefined;
@@ -137,7 +147,8 @@ export function WebExtensionCard({
   downloads,
   trustTier,
   categories,
-  capabilityBadges,
+  platformBadge,
+  capabilityBadges = [],
   statusDot,
   updateHint,
   attention,
@@ -182,6 +193,7 @@ export function WebExtensionCard({
       role="button"
       aria-haspopup="dialog"
       aria-label={t("extensions.openDetailsLabel", { name: displayName })}
+      aria-description={platformBadge?.label}
       onClick={onOpenDetails}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -225,9 +237,10 @@ export function WebExtensionCard({
         </div>
       </div>
 
-      {/* Capability badges row */}
-      {capabilityBadges !== undefined && capabilityBadges.length > 0 && (
+      {/* Platform and capability badges */}
+      {(platformBadge || capabilityBadges.length > 0) && (
         <div className={css.cardCapabilities}>
+          {platformBadge && <WebExtensionPlatformBadge badge={platformBadge} />}
           {capabilityBadges.map((badge) => (
             <span key={badge.kind} className={css.capBadge} data-capability={badge.kind}>
               {badge.label}

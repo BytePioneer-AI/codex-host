@@ -49,9 +49,11 @@ export interface DesktopExtensionsMessages {
   readonly filterWeb: string;
   readonly filterDesktop: string;
   readonly filterBackend: string;
-  readonly badgeAllTargets: string;
-  readonly badgeWeb: string;
-  readonly badgeDesktop: string;
+  readonly platformLabel: string;
+  readonly platformBoth: string;
+  readonly platformDesktopOnly: string;
+  readonly platformWebOnly: string;
+  readonly platformWebOnlyNotice: string;
   readonly badgePage: string;
   readonly badgeWidget: string;
   readonly badgeBackend: string;
@@ -70,11 +72,7 @@ export interface DesktopExtensionsMessages {
   readonly noMatchesDescription: string;
   readonly clearFilters: string;
   readonly categories: Readonly<Record<DesktopExtensionCategory, string>>;
-  readonly groups: Readonly<{
-    attention: string;
-    enabled: string;
-    disabled: string;
-  }>;
+  readonly attentionHeading: string;
   readonly updateAvailable: string;
   readonly trustOfficial: string;
   readonly trustCommunity: string;
@@ -240,16 +238,18 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   emptyPathHint: "$CODEXHOST_DATA_DIR/host-extensions/<id>/",
   categoryAll: "All",
   categoryFilterLabel: "Filter by category",
-  capabilityFilterLabel: "Filter by capability",
+  capabilityFilterLabel: "Filter by platform or capability",
   filterAll: "All",
   filterPage: "Page",
   filterWidget: "Widget",
   filterWeb: "Web",
   filterDesktop: "Desktop",
   filterBackend: "Backend",
-  badgeAllTargets: "All",
-  badgeWeb: "Web",
-  badgeDesktop: "Desktop",
+  platformLabel: "Supported platforms",
+  platformBoth: "Desktop & Web",
+  platformDesktopOnly: "Desktop Only",
+  platformWebOnly: "Web Only",
+  platformWebOnlyNotice: "Runs in Web UI only. You can still install or toggle it from Desktop.",
   badgePage: "Page",
   badgeWidget: "Widget",
   badgeBackend: "Backend",
@@ -275,11 +275,7 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
     integrations: "Integrations",
     tools: "Tools",
   }),
-  groups: Object.freeze({
-    attention: "Needs Attention",
-    enabled: "Enabled",
-    disabled: "Disabled",
-  }),
+  attentionHeading: "Needs Attention",
   updateAvailable: "Update available",
   trustOfficial: "Official",
   trustCommunity: "Community",
@@ -466,16 +462,18 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   emptyPathHint: "$CODEXHOST_DATA_DIR/host-extensions/<id>/",
   categoryAll: "全部",
   categoryFilterLabel: "按分类筛选",
-  capabilityFilterLabel: "按能力筛选",
+  capabilityFilterLabel: "按适用平台或能力筛选",
   filterAll: "全部",
   filterPage: "独立页面",
   filterWidget: "挂件",
-  filterWeb: "Web",
-  filterDesktop: "Desktop",
+  filterWeb: "网页端",
+  filterDesktop: "桌面端",
   filterBackend: "后台",
-  badgeAllTargets: "全端",
-  badgeWeb: "Web",
-  badgeDesktop: "Desktop",
+  platformLabel: "适用平台",
+  platformBoth: "桌面端 · 网页端",
+  platformDesktopOnly: "仅桌面端",
+  platformWebOnly: "仅网页端",
+  platformWebOnlyNotice: "此插件仅在网页端界面生效，桌面端仅支持安装与启停管理。",
   badgePage: "独立页面",
   badgeWidget: "挂件",
   badgeBackend: "后台",
@@ -501,11 +499,7 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
     integrations: "外部集成",
     tools: "实用工具",
   }),
-  groups: Object.freeze({
-    attention: "需关注",
-    enabled: "已启用",
-    disabled: "未启用",
-  }),
+  attentionHeading: "需要关注",
   updateAvailable: "可更新",
   trustOfficial: "官方",
   trustCommunity: "社区",

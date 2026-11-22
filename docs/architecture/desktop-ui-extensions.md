@@ -155,7 +155,7 @@ Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 
   - `POST /api/extensions/upload`（`Content-Type: application/zip`，≤ 64 MiB）：流式读取 ZIP 后转为 `install` / `update` RPC；
   - `GET` / `HEAD /api/extensions/assets/:id/:activationId/:digest/*`：向 Host 请求资产并返回 `Cache-Control: private, max-age=31536000, immutable`、`X-Content-Type-Options: nosniff`、`Cross-Origin-Resource-Policy: same-origin`；对缺失、代次不匹配及 `backend.entry` 统一返回 `404`。
 - **Console 转发（`packages/console-server`）**：`/api/extensions/*` 写操作转发至共享 Host RPC，共享 Host 未运行时返回 `503`；只读列表与市场查询在离线时支持直接读取磁盘/拉取目录。
-- **双端统一 UI**：Desktop「设置 → 插件」和 Web「插件」工作区内的插件中心提供统一的管理界面和能力角标（`全端` / `Web` / `Desktop` / `独立页面` / `挂件` / `后台`），支持按能力和分类筛选。已启用且含 `page` 的扩展可以从中心点击「打开页面」，或从 Web 主工作区顶部的切页栏直接打开。含 `settingsSchema` 的扩展可在详情中编辑共享设置。
+- **双端统一 UI**：Desktop「设置 → 插件」和 Web「插件」工作区内的插件中心提供统一的管理界面。正常已安装插件在同一网格按本地化名称排列，只有异常插件单独列在顶部。卡片和详情标明适用平台（`桌面端 · 网页端` / `仅桌面端` / `仅网页端`），并支持按适用平台、能力（`独立页面` / `挂件` / `后台`）和分类筛选。已启用且含 `page` 的扩展可以从中心点击「打开页面」，或从 Web 主工作区顶部的切页栏直接打开。含 `settingsSchema` 的扩展可在详情中编辑共享设置。
 
 ## 作者与打包指南
 

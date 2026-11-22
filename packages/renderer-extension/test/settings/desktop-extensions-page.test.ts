@@ -589,6 +589,7 @@ describe("Unified Host extensions settings page", () => {
       (element) => element.tagName === "section" && Boolean(element.dataset.extensionGroup),
     );
     expect(groups.map((group) => group.dataset.extensionGroup)).toEqual(["attention"]);
+    expect(textOf(must(groups[0]))).toContain("需要关注");
 
     const cards = descendants(mounted.content).filter(
       (element) => element.tagName === "article" && Boolean(element.dataset.extensionId),
@@ -600,6 +601,13 @@ describe("Unified Host extensions settings page", () => {
       "sidebar-delegation-badges",
     ]);
 
+    const attentionGrid = must(cards[0]?.parent);
+    const normalGrid = must(cards[2]?.parent);
+    expect(attentionGrid.parent).toBe(groups[0]);
+    expect(cards[1]?.parent).toBe(attentionGrid);
+    expect(cards[3]?.parent).toBe(normalGrid);
+    expect(normalGrid.parent).toBe(groups[0]?.parent);
+
     const incompatibleSwitch = must(
       descendants(must(cards[0])).find((el) => el.tagName === "input"),
     );
@@ -609,11 +617,13 @@ describe("Unified Host extensions settings page", () => {
 
     // The shared page and widget have separate badges; only the page adds an Open Page button.
     const treeCard = must(cards[2]);
+    expect(textOf(descendants(treeCard).find((el) => el.dataset.platform === "both"))).toBe(
+      "桌面端 · 网页端",
+    );
     const treeBadges = descendants(treeCard)
-      .filter((el) => el.className === "settings-extensions-cap-badge")
+      .filter((el) => el.dataset.capability)
       .map((el) => ({ kind: el.dataset.capability, text: textOf(el) }));
     expect(treeBadges).toEqual([
-      { kind: "all", text: "全端" },
       { kind: "page", text: "独立页面" },
       { kind: "widget", text: "挂件" },
       { kind: "backend", text: "后台" },
@@ -625,19 +635,67 @@ describe("Unified Host extensions settings page", () => {
     );
     expect(textOf(openPageBtn)).toBe("打开页面");
 
-    // Disabled Desktop-only card shows Desktop badge and no Open Page button.
+    // The Desktop-only card has no Open Page button.
     const badgesCard = must(cards[3]);
-    expect(
-      descendants(badgesCard)
-        .filter((el) => el.className === "settings-extensions-cap-badge")
-        .map((el) => el.dataset.capability),
-    ).toEqual(["desktop"]);
+    expect(textOf(descendants(badgesCard).find((el) => el.dataset.platform === "desktop"))).toBe(
+      "仅桌面端",
+    );
     expect(descendants(badgesCard).find((el) => el.dataset.action === "open-page")).toBeUndefined();
 
     mounted.dispose();
   });
 
-  it("filters installed plugins by capability pills, category pills, and search query", async () => {
+  it("keeps enabled and disabled plugins in one ordered grid when a switch changes", async () => {
+    const list = sampleList();
+    const [tree, badges] = list.extensions;
+    const disableHostExtension = vi.fn(async () => ({
+      state: "saved" as const,
+      configuration: { revision: 5, enabled: [] },
+    }));
+    const client: RendererDesktopExtensionsClient = {
+      listHostExtensions: vi
+        .fn<() => Promise<HostExtensionsListResult>>()
+        .mockResolvedValueOnce({ ...list, extensions: [must(tree), must(badges)] })
+        .mockResolvedValue({
+          ...list,
+          revision: 5,
+          configuration: { revision: 5, enabled: [] },
+          extensions: [must(badges), { ...must(tree), enabled: false }],
+        }),
+      disableHostExtension,
+    };
+    const mounted = mountPage("en", () => client);
+
+    const assertUnifiedGrid = () => {
+      const elements = descendants(mounted.content);
+      const grids = elements.filter((el) => el.className === "settings-extensions-grid");
+      expect(grids).toHaveLength(1);
+      expect(elements.some((el) => el.dataset.extensionGroup)).toBe(false);
+      const cards = descendants(must(grids[0])).filter((el) => el.tagName === "article");
+      expect(cards.map((el) => el.dataset.extensionId)).toEqual([
+        "sidebar-delegation-badges",
+        "sidebar-thread-tree",
+      ]);
+      return must(descendants(must(cards[1])).find((el) => el.tagName === "input"));
+    };
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("Sidebar Thread Tree"));
+    const toggle = assertUnifiedGrid();
+    expect(toggle.checked).toBe(true);
+    toggle.checked = false;
+    toggle.dispatch("change");
+    await vi.waitFor(() => {
+      const updatedToggle = assertUnifiedGrid();
+      expect(updatedToggle.checked).toBe(false);
+      expect(updatedToggle.disabled).toBe(false);
+    });
+    expect(disableHostExtension).toHaveBeenCalledWith({
+      id: "sidebar-thread-tree",
+      expectedRevision: 4,
+    });
+    mounted.dispose();
+  });
+
+  it("filters installed plugins by platform, capability, and search query", async () => {
     const mounted = mountPage("zh-CN", () => ({
       listHostExtensions: vi.fn(async () => sampleList()),
       recoverHostExtensions: vi.fn(),
@@ -648,6 +706,20 @@ describe("Unified Host extensions settings page", () => {
       descendants(mounted.content)
         .filter((el) => el.tagName === "article" && Boolean(el.dataset.extensionId))
         .map((el) => el.dataset.extensionId);
+
+    const desktopPill = must(
+      descendants(mounted.content).find((el) => el.dataset.capabilityFilter === "desktop"),
+    );
+    expect(textOf(desktopPill)).toBe("桌面端");
+    desktopPill.dispatch("click");
+    expect(cardIds()).toEqual(["sidebar-thread-tree", "sidebar-delegation-badges"]);
+
+    const webPill = must(
+      descendants(mounted.content).find((el) => el.dataset.capabilityFilter === "web"),
+    );
+    expect(textOf(webPill)).toBe("网页端");
+    webPill.dispatch("click");
+    expect(cardIds()).toEqual(["sidebar-thread-tree"]);
 
     // Capability filter "page" shows only extensions declaring manifest.page.
     const pagePill = must(
@@ -695,6 +767,84 @@ describe("Unified Host extensions settings page", () => {
     );
     resetButton.dispatch("click");
     expect(cardIds()).toHaveLength(4);
+    mounted.dispose();
+  });
+
+  it.each([
+    {
+      locale: "en",
+      filterDesktop: "Desktop",
+      filterWeb: "Web",
+      label: "Supported platforms",
+      both: "Desktop & Web",
+      desktopOnly: "Desktop Only",
+      webOnly: "Web Only",
+      notice: "Runs in Web UI only. You can still install or toggle it from Desktop.",
+    },
+    {
+      locale: "zh-CN",
+      filterDesktop: "桌面端",
+      filterWeb: "网页端",
+      label: "适用平台",
+      both: "桌面端 · 网页端",
+      desktopOnly: "仅桌面端",
+      webOnly: "仅网页端",
+      notice: "此插件仅在网页端界面生效，桌面端仅支持安装与启停管理。",
+    },
+  ] as const)("shows Marketplace platform filters and detail guidance in $locale", async (copy) => {
+    const mounted = mountPage(copy.locale, () => ({
+      listHostExtensions: async () => sampleList(),
+      listHostExtensionCatalog: async (): Promise<HostExtensionsCatalogResult> => ({
+        schemaVersion: 2,
+        generatedAt: "2026-07-02T00:00:00.000Z",
+        catalogUrl: "https://example.com/catalog.v2.json",
+        fetchedAt: "2026-07-02T00:00:00.000Z",
+        cached: false,
+        extensions: [
+          makeCatalogEntry({ id: "desktop-only" }),
+          makeCatalogEntry({ id: "web-only", targets: ["web"], apis: { web: 1 } }),
+          makeCatalogEntry({ id: "both", targets: ["desktop", "web"], apis: { page: 1 } }),
+        ],
+      }),
+    }));
+    must(descendants(mounted.content).find((el) => el.dataset.tab === "marketplace")).dispatch(
+      "click",
+    );
+
+    const cards = () => descendants(mounted.content).filter((el) => el.tagName === "article");
+    await vi.waitFor(() => expect(cards()).toHaveLength(3));
+    const checkPlatform = (id: string, platform: string, label: string, notice?: string) => {
+      const card = must(cards().find((el) => el.dataset.extensionId === id));
+      expect(textOf(descendants(card).find((el) => el.dataset.platform === platform))).toBe(label);
+      card.dispatch("click");
+      const dialog = must(descendants(mounted.content).find((el) => el.tagName === "dialog"));
+      const platformRow = descendants(dialog).find((el) => el.className.endsWith("__platform-row"));
+      expect(textOf(platformRow)).toBe(`${copy.label} ${label}`);
+      const platformNotice = descendants(dialog).find((el) =>
+        el.className.endsWith("__platform-notice"),
+      );
+      expect(textOf(platformNotice)).toBe(notice ?? "");
+      dialog.close();
+    };
+    checkPlatform("desktop-only", "desktop", copy.desktopOnly);
+    checkPlatform("web-only", "web", copy.webOnly, copy.notice);
+    checkPlatform("both", "both", copy.both);
+
+    for (const [filter, label] of [
+      ["desktop", copy.filterDesktop],
+      ["web", copy.filterWeb],
+    ]) {
+      const pill = must(
+        descendants(mounted.content).find((el) => el.dataset.capabilityFilter === filter),
+      );
+      expect(textOf(pill)).toBe(label);
+      pill.dispatch("click");
+      expect(
+        cards()
+          .map((el) => el.dataset.extensionId)
+          .sort(),
+      ).toEqual(["both", `${filter}-only`]);
+    }
     mounted.dispose();
   });
 

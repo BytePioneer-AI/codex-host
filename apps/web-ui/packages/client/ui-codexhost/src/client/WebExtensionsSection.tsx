@@ -44,21 +44,21 @@ import {
   catalogCapabilities,
   categoryLabelForLocale,
   deriveHostCapabilityBadges,
+  derivePlatformBadge,
   formatManagementError,
   hasHostCatalogUpdate,
   hostDescription,
   hostDisplayName,
   isHostToggleBlocked,
   itemCapabilities,
-  itemGroupOf,
   itemTargets,
   matchesCapabilityFilter,
   matchesCatalogSearch,
   matchesInstalledSearch,
+  needsAttention,
   resolveHostIconUrl,
   resolveOptionalLocalizedText,
   type ExtensionCapabilityFilter,
-  type ExtensionGroupId,
   type ExtensionLocale,
   type HostExtensionValidItem,
 } from "./web-extensions-helpers.ts";
@@ -105,8 +105,6 @@ export interface WebExtensionsFace {
   selectedPage: HostExtensionInstallation | null;
   selectPage: (page: HostExtensionInstallation) => void;
 }
-
-const GROUP_ORDER: readonly ExtensionGroupId[] = ["attention", "enabled", "disabled"];
 
 const INITIAL_MARKET: MarketState = {
   loading: false,
@@ -408,19 +406,23 @@ export function WebExtensionsSection({
   }, [extensions, capabilityFilter, selectedCategory, normalizedQuery, t]);
 
   const groupedInstalled = useMemo(() => {
-    const buckets: Record<ExtensionGroupId, HostExtensionListItem[]> = {
-      attention: [],
-      enabled: [],
-      disabled: [],
-    };
+    const attention: HostExtensionListItem[] = [];
+    const normal: HostExtensionListItem[] = [];
     for (const item of filteredInstalled) {
-      buckets[itemGroupOf(item)].push(item);
+      (needsAttention(item) ? attention : normal).push(item);
     }
-    return GROUP_ORDER.filter((group) => buckets[group].length > 0).map((group) => ({
-      id: group,
-      items: buckets[group],
-    }));
-  }, [filteredInstalled]);
+    normal.sort((left, right) => {
+      const leftName = hostDisplayName(left, contentLocale, catalogById.get(left.id));
+      const rightName = hostDisplayName(right, contentLocale, catalogById.get(right.id));
+      return (
+        leftName.localeCompare(rightName, contentLocale) || left.id.localeCompare(right.id, "en")
+      );
+    });
+    return [
+      { id: "attention", items: attention },
+      { id: "normal", items: normal },
+    ].filter((group) => group.items.length > 0);
+  }, [filteredInstalled, contentLocale, catalogById]);
 
   const filteredMarket = useMemo(() => {
     return market.entries.filter((entry) => {
@@ -844,17 +846,6 @@ export function WebExtensionsSection({
     );
   }
 
-  const groupLabel = (id: ExtensionGroupId): string => {
-    switch (id) {
-      case "attention":
-        return t("extensions.group.attention");
-      case "enabled":
-        return t("extensions.group.enabled");
-      case "disabled":
-        return t("extensions.group.disabled");
-    }
-  };
-
   return (
     <div className={css.page} data-web-extensions>
       {renderHeader({ canMutate: true })}
@@ -1032,13 +1023,9 @@ export function WebExtensionsSection({
           </div>
         ) : (
           <div className={css.groups}>
-            {groupedInstalled.map((group) => (
-              <section key={group.id} className={css.group} data-extension-group={group.id}>
-                <div className={css.groupHead}>
-                  <h3 className={css.groupTitle}>{groupLabel(group.id)}</h3>
-                  <span className={css.groupCount}>{group.items.length}</span>
-                </div>
-                <div className={css.grid}>
+            {groupedInstalled.map((group) => {
+              const grid = (
+                <div key={group.id} className={css.grid}>
                   {group.items.map((item) => {
                     const catalogEntry = catalogById.get(item.id);
                     const validItem = item.state === "valid" ? item : undefined;
@@ -1046,11 +1033,7 @@ export function WebExtensionsSection({
                     const description = hostDescription(item, contentLocale, catalogEntry);
                     const updateAvailable = hasHostCatalogUpdate(item, catalogEntry);
                     const blocked = isHostToggleBlocked(item);
-                    const capabilityBadges = deriveHostCapabilityBadges(
-                      itemCapabilities(item),
-                      itemTargets(item),
-                      t,
-                    );
+                    const capabilityBadges = deriveHostCapabilityBadges(itemCapabilities(item), t);
 
                     const statusDot =
                       item.state !== "valid"
@@ -1104,6 +1087,7 @@ export function WebExtensionsSection({
                         downloads={catalogEntry?.downloads}
                         trustTier={catalogEntry?.trustTier}
                         categories={validItem?.manifest.categories ?? catalogEntry?.categories}
+                        platformBadge={derivePlatformBadge(itemTargets(item), t)}
                         capabilityBadges={capabilityBadges}
                         statusDot={statusDot}
                         updateHint={
@@ -1151,8 +1135,19 @@ export function WebExtensionsSection({
                     );
                   })}
                 </div>
-              </section>
-            ))}
+              );
+              return group.id === "attention" ? (
+                <section key={group.id} className={css.group} data-extension-group="attention">
+                  <div className={css.groupHead}>
+                    <h3 className={css.groupTitle}>{t("extensions.group.attention")}</h3>
+                    <span className={css.groupCount}>{group.items.length}</span>
+                  </div>
+                  {grid}
+                </section>
+              ) : (
+                grid
+              );
+            })}
           </div>
         )
       ) : (
@@ -1237,11 +1232,7 @@ export function WebExtensionsSection({
                 const updateAvailable = hasHostCatalogUpdate(installed, entry);
                 const isInstalling = activeAction === `install:${entry.id}`;
                 const isUpdating = activeAction === `update:${entry.id}`;
-                const capabilityBadges = deriveHostCapabilityBadges(
-                  catalogCapabilities(entry),
-                  entry.targets,
-                  t,
-                );
+                const capabilityBadges = deriveHostCapabilityBadges(catalogCapabilities(entry), t);
 
                 const actionButton = !installed ? (
                   <Button
@@ -1294,6 +1285,7 @@ export function WebExtensionsSection({
                     downloads={entry.downloads}
                     trustTier={entry.trustTier}
                     categories={entry.categories}
+                    platformBadge={derivePlatformBadge(entry.targets, t)}
                     capabilityBadges={capabilityBadges}
                     busy={isInstalling || isUpdating}
                     contentLocale={contentLocale}

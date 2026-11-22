@@ -695,11 +695,21 @@
   white-space: nowrap;
 }
 
-.capBadge[data-capability="all"],
+.capBadge[data-platform="both"],
 .capBadge[data-capability="page"] {
   color: var(--dsw-alias-state-business-primary);
   border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 26%, transparent);
   background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 9%, transparent);
+}
+
+.capBadge[data-platform] {
+  font-weight: 600;
+}
+
+.capBadge[data-platform="desktop"] {
+  color: var(--dsw-alias-state-warn-label);
+  border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 45%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent);
 }
 
 .capBadge[data-capability="backend"] {

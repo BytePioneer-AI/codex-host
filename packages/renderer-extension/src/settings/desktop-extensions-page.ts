@@ -31,10 +31,10 @@ import {
   contentLocaleMessages,
   createEl,
   deriveCapabilityBadges,
+  derivePlatformBadge,
   errorMessage,
   extensionDescription,
   extensionDisplayName,
-  extensionGroupOf,
   formatMessage,
   hasCatalogUpdate,
   isToggleBlocked,
@@ -43,6 +43,7 @@ import {
   itemStatusState,
   itemTargets,
   matchesCapabilityFilter,
+  needsAttention,
   matchesCatalogSearchQuery,
   matchesInstalledSearchQuery,
   resolveAttentionDetail,
@@ -877,11 +878,6 @@ export function createDesktopExtensionsSettingsPage(
             : undefined;
 
         const attention = resolveAttentionDetail(item, allExtensions, messages.locale, copy);
-        const capabilityBadges = deriveCapabilityBadges(
-          itemCapabilities(item),
-          itemTargets(item),
-          copy,
-        );
 
         return renderDesktopExtensionCard({
           document,
@@ -906,7 +902,8 @@ export function createDesktopExtensionsSettingsPage(
           attention,
           attentionId: attention ? errorId : undefined,
           categories: item.state === "valid" ? item.manifest.categories : undefined,
-          capabilityBadges,
+          platformBadge: derivePlatformBadge(itemTargets(item), copy),
+          capabilityBadges: deriveCapabilityBadges(itemCapabilities(item), copy),
           secondaryAction: openPageButton,
           actionControl: toggle,
           busy: activeMutationId === item.id,
@@ -979,7 +976,7 @@ export function createDesktopExtensionsSettingsPage(
         const attentionItems: HostExtensionListItem[] = [];
         const normalItems: HostExtensionListItem[] = [];
         for (const item of visibleExtensions) {
-          if (extensionGroupOf(itemStatusState(item)) === "attention") {
+          if (needsAttention(itemStatusState(item))) {
             attentionItems.push(item);
           } else {
             normalItems.push(item);
@@ -988,15 +985,12 @@ export function createDesktopExtensionsSettingsPage(
 
         const contentLocale = resolveContentLocale();
         normalItems.sort((left, right) => {
-          const leftRank = left.enabled ? 0 : 1;
-          const rightRank = right.enabled ? 0 : 1;
-          if (leftRank !== rightRank) return leftRank - rightRank;
           const nameCmp = extensionDisplayName(left, contentLocale).localeCompare(
             extensionDisplayName(right, contentLocale),
             contentLocale,
           );
           if (nameCmp !== 0) return nameCmp;
-          return left.id.localeCompare(right.id);
+          return left.id.localeCompare(right.id, "en");
         });
 
         const allExtensions = listing.extensions;
@@ -1028,7 +1022,7 @@ export function createDesktopExtensionsSettingsPage(
           document,
           "h2",
           "settings-extensions__group-title",
-          copy.groups.attention,
+          copy.attentionHeading,
         );
         groupTitle.id = headingId;
         const groupCount = createEl(

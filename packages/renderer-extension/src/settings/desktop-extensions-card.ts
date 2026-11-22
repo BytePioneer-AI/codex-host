@@ -16,6 +16,7 @@ import {
   type DesktopExtensionAttentionDetail,
   type DesktopExtensionContentLocale,
   type ExtensionCapabilityBadge,
+  type ExtensionPlatformBadge,
 } from "./desktop-extensions-shared.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
@@ -42,6 +43,7 @@ export interface DesktopExtensionCardOptions {
   readonly attention?: DesktopExtensionAttentionDetail | null | undefined;
   readonly attentionId?: string | undefined;
   readonly categories?: readonly DesktopExtensionCategory[] | undefined;
+  readonly platformBadge: ExtensionPlatformBadge | null;
   readonly capabilityBadges?: readonly ExtensionCapabilityBadge[] | undefined;
   readonly secondaryAction?: HTMLElement | undefined;
   readonly actionControl: HTMLElement;
@@ -65,6 +67,15 @@ function shouldShowStatusDot(state: DesktopExtensionStatus["state"] | undefined)
   return Boolean(state && state !== "running" && state !== "disabled");
 }
 
+export function createExtensionPlatformBadgeElement(
+  document: Document,
+  badge: ExtensionPlatformBadge,
+): HTMLSpanElement {
+  const element = createEl(document, "span", "settings-extensions-cap-badge", badge.label);
+  element.dataset.platform = badge.kind;
+  return element;
+}
+
 export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions): HTMLElement {
   const {
     document,
@@ -86,7 +97,8 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     attention,
     attentionId,
     categories,
-    capabilityBadges,
+    platformBadge,
+    capabilityBadges = [],
     secondaryAction,
     actionControl,
     busy,
@@ -109,6 +121,7 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
   card.setAttribute("role", "button");
   card.setAttribute("aria-haspopup", "dialog");
   card.setAttribute("aria-label", formatMessage(copy.openDetailsLabel, { name: displayName }));
+  if (platformBadge) card.setAttribute("aria-description", platformBadge.label);
 
   // Row 1: 32x32 rounded icon + Title + optional official shield / status dot on left, actions on right.
   const topRow = createEl(document, "div", "settings-extensions-card__top");
@@ -161,9 +174,11 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
   topRow.append(identity, actionWrap);
   card.append(topRow);
 
-  // Capability badges row (compact, subtle pills derived from targets & manifest entries).
-  if (capabilityBadges && capabilityBadges.length > 0) {
+  // Platform and capability badges.
+  if (platformBadge || capabilityBadges.length > 0) {
     const badgesRow = createEl(document, "div", "settings-extensions-card__capabilities");
+    if (platformBadge)
+      badgesRow.append(createExtensionPlatformBadgeElement(document, platformBadge));
     for (const badge of capabilityBadges) {
       const chip = createEl(document, "span", "settings-extensions-cap-badge", badge.label);
       chip.dataset.capability = badge.kind;

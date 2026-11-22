@@ -1,6 +1,7 @@
 import {
   harnessIdSchema,
   harnessPluginDescriptorSchema,
+  harnessModelRefKey,
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
   type AccountCreditsSnapshot,
@@ -1264,6 +1265,110 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(currentHostId).toHaveBeenCalledTimes(1);
     currentHostId.mockReturnValue("remote-host");
     expect(getAgent({ hostId: "local", threadId: "thread-a", draftId: null })).toBeNull();
+  });
+
+  it.each([
+    { description: "keeps the confirmed Fast pair through refresh", advertised: true },
+    { description: "rejects an unadvertised tier even for the same Model ID", advertised: false },
+  ])("uses the live Thread Session catalog and $description", async ({ advertised }) => {
+    installFakeBrowser();
+    const normal = harnessModelRefSchema.parse({ id: "model-alpha" });
+    const fast = harnessModelRefSchema.parse({ id: normal.id, serviceTier: "priority" });
+    const liveNormal = harnessModelRefSchema.parse({ id: "model-alpha.with-context" });
+    const liveFast = harnessModelRefSchema.parse({ id: liveNormal.id, serviceTier: "priority" });
+    const confirmed = advertised
+      ? liveFast
+      : harnessModelRefSchema.parse({ id: normal.id, serviceTier: "ultrafast" });
+    const initialCatalog = {
+      models: [{ ref: normal, fastModel: fast, label: "Alpha" }],
+      defaultModel: normal,
+      thinkingOptions: [],
+    };
+    const confirmedCatalog = advertised
+      ? {
+          ...initialCatalog,
+          models: [{ ref: liveNormal, fastModel: liveFast, label: "Alpha with context" }],
+          defaultModel: liveNormal,
+        }
+      : initialCatalog;
+    let catalog = initialCatalog;
+    let effectiveModel = normal;
+    const host = {
+      listHarnessPlugins,
+      inspectHarness: async () => readyInspection("catalog-only"),
+      inspectThread: async () => ({
+        owner: "external" as const,
+        harnessId: "claude-code",
+        transportModelId:
+          "codexhost/claude-code-native@claude-model-v1.b3B1cw@bypassPermissions@auto",
+        effectiveModel,
+        catalog,
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+        locked: true,
+      }),
+      inspectThreadCommands: async () => ({ commands: [] }),
+      inspectThreadUsage: async () => ({ threadId: "thread-a", usage: null }),
+      selectThreadModel: vi.fn(async () => {
+        catalog = confirmedCatalog;
+        effectiveModel = confirmed;
+        return { effectiveModel };
+      }),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => host } as never,
+    );
+    const latest = () => testState.renderedModelViews.at(-1);
+    try {
+      await vi.waitFor(() => expect(latest()).toMatchObject({ status: "ready", selected: normal }));
+      expect(latest()?.catalog).toEqual(initialCatalog);
+      const { selectModel, refreshModels } = testState;
+      assert(selectModel && refreshModels);
+      selectModel(harnessModelRefKey(fast));
+      expect(host.selectThreadModel).toHaveBeenCalledWith({ threadId: "thread-a", model: fast });
+      if (!advertised) {
+        await vi.waitFor(() =>
+          expect(latest()).toMatchObject({
+            status: "error",
+            error: "External Harness activated a Model outside the current catalog",
+            selectionRejected: "model",
+            selected: normal,
+          }),
+        );
+        expect(latest()?.catalog).toEqual(initialCatalog);
+        expect(probe.lockedSelection()?.model).toEqual(normal);
+        return;
+      }
+      await vi.waitFor(() =>
+        expect(latest()).toMatchObject({ status: "ready", selected: liveFast }),
+      );
+      expect(latest()?.catalog).toEqual(confirmedCatalog);
+      expect(probe.lockedSelection()?.model).toEqual(liveFast);
+
+      const refreshedCatalog = {
+        ...confirmedCatalog,
+        models: [
+          ...confirmedCatalog.models,
+          ...readyInspection("another-session-model").catalog.models,
+        ],
+      };
+      catalog = refreshedCatalog;
+      refreshModels();
+      expect(latest()?.refreshing).toBe(true);
+      await vi.waitFor(() => expect(latest()?.refreshing).not.toBe(true));
+      expect(latest()).toMatchObject({ status: "ready", selected: liveFast });
+      expect(latest()?.catalog).toEqual(refreshedCatalog);
+      expect(probe.lockedSelection()?.model).toEqual(liveFast);
+    } finally {
+      probe.dispose();
+    }
   });
 
   it("keeps the latest catalog selectable until a locked Thread explicitly replaces its missing Model", async () => {

@@ -5,15 +5,7 @@
  * badges and filters, ZIP / GitHub / local-directory import, declarative settings, recovery
  * actions, and the cross-platform standalone `page` container.
  */
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Button,
   IconCheckOutlineRegular,
@@ -65,7 +57,6 @@ import {
   matchesInstalledSearch,
   resolveHostIconUrl,
   resolveOptionalLocalizedText,
-  toExtensionLocale,
   type ExtensionCapabilityFilter,
   type ExtensionGroupId,
   type ExtensionLocale,
@@ -82,7 +73,7 @@ import { HostExtensionPageView } from "./HostExtensionPageView.tsx";
 import css from "./WebExtensionsSection.module.css";
 
 type ActiveTab = "installed" | "market";
-type ContentLocalePreference = "system" | ExtensionLocale;
+export type ContentLocalePreference = "system" | ExtensionLocale;
 
 type ListView =
   | { readonly kind: "loading" }
@@ -108,12 +99,14 @@ type Feedback = { readonly tone: "success" | "warning" | "danger"; readonly text
 export interface WebExtensionsFace {
   locale: HostSettingsSource<string>;
   colorScheme: HostSettingsSource<"light" | "dark">;
+  contentLocale: ExtensionLocale;
+  contentLocalePref: ContentLocalePreference;
+  selectContentLocale: (next: ContentLocalePreference) => void;
   selectedPage: HostExtensionInstallation | null;
-  selectPage: (page: HostExtensionInstallation | null) => void;
+  selectPage: (page: HostExtensionInstallation) => void;
 }
 
 const GROUP_ORDER: readonly ExtensionGroupId[] = ["attention", "enabled", "disabled"];
-const CONTENT_LOCALE_STORAGE_KEY = "codexhost.webExtensions.contentLocale";
 
 const INITIAL_MARKET: MarketState = {
   loading: false,
@@ -122,27 +115,6 @@ const INITIAL_MARKET: MarketState = {
   cached: false,
   error: null,
 };
-
-function readContentLocalePreference(): ContentLocalePreference {
-  try {
-    const stored =
-      typeof localStorage !== "undefined" ? localStorage.getItem(CONTENT_LOCALE_STORAGE_KEY) : null;
-    if (stored === "system" || stored === "zh-CN" || stored === "en") return stored;
-  } catch {
-    // Ignore restricted storage environments.
-  }
-  return "system";
-}
-
-function writeContentLocalePreference(preference: ContentLocalePreference): void {
-  try {
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(CONTENT_LOCALE_STORAGE_KEY, preference);
-    }
-  } catch {
-    // Ignore restricted storage environments.
-  }
-}
 
 function UploadArrowIcon(): ReactNode {
   return (
@@ -168,17 +140,12 @@ export function WebExtensionsSection({
   t,
   locale,
   colorScheme,
+  contentLocale,
+  contentLocalePref,
+  selectContentLocale,
   selectedPage,
   selectPage,
 }: PropsLocale<"codexhostImport"> & WebExtensionsFace): ReactNode {
-  const activeLocaleRaw = useSyncExternalStore(locale.subscribe, locale.get);
-  const systemLocale = toExtensionLocale(activeLocaleRaw);
-  const [contentLocalePref, setContentLocalePref] = useState<ContentLocalePreference>(() =>
-    readContentLocalePreference(),
-  );
-  const contentLocale: ExtensionLocale =
-    contentLocalePref === "system" ? systemLocale : contentLocalePref;
-
   const [listView, setListView] = useState<ListView>({ kind: "loading" });
   const [market, setMarket] = useState<MarketState>(INITIAL_MARKET);
   const [activeTab, setActiveTab] = useState<ActiveTab>("installed");
@@ -235,12 +202,6 @@ export function WebExtensionsSection({
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [localeMenuOpen, moreMenuOpen]);
-
-  const selectContentLocale = (next: ContentLocalePreference) => {
-    setContentLocalePref(next);
-    writeContentLocalePreference(next);
-    setLocaleMenuOpen(false);
-  };
 
   const refreshList = useCallback(
     async (signal?: AbortSignal): Promise<HostExtensionsListResult | null> => {
@@ -655,7 +616,6 @@ export function WebExtensionsSection({
           colorScheme={colorScheme}
           contentLocale={contentLocale}
           t={t}
-          onBack={() => selectPage(null)}
         />
       </div>
     );
@@ -710,7 +670,10 @@ export function WebExtensionsSection({
                     role="menuitemradio"
                     aria-checked={selected}
                     className={`${css.menuItem} ${css.menuItemRadio}`}
-                    onClick={() => selectContentLocale(value)}
+                    onClick={() => {
+                      selectContentLocale(value);
+                      setLocaleMenuOpen(false);
+                    }}
                   >
                     <span>{label}</span>
                     {selected && (

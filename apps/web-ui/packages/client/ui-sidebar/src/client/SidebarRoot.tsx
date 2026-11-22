@@ -384,20 +384,6 @@ export function SidebarRoot({
         })}
       </nav>
 
-      {renderSlot("sidebar.plugins", {
-        wide,
-        renderGroup: ({ label, rows }) => (
-          <nav className={css.pluginsGroup} aria-label={label}>
-            {wide && <div className={clsx(css.pluginsHeading, css.wide)}>{label}</div>}
-            <div className={css.pluginsRows}>
-              {rows.map(({ id, ...row }) => (
-                <PanelNavigationRow key={id} {...row} wide={wide} />
-              ))}
-            </div>
-          </nav>
-        ),
-      })}
-
       {/* The browsing region fills the column between the controls and the
           foot in both states; its rail icon column rides the same slot. */}
       <div className={css.regionArea}>

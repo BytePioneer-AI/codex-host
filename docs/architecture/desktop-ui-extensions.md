@@ -88,7 +88,7 @@ TypeScript 类型与 Zod 校验以 [`packages/shared-contracts/src/host-extensio
 
 ## 跨端独立管理页（`page`）
 
-声明 `page` 的插件只需编写一份标准 ESM 前端代码。Desktop 在设置中以 Shadow DOM 打开；Web 在左侧一级目录「插件」中列出已启用的独立页，在主工作区打开而非设置弹窗。
+声明 `page` 的插件只需编写一份标准 ESM 前端代码。Desktop 在设置中以 Shadow DOM 打开；Web 左侧一级导航只有一行「插件」入口，进入主工作区后可在顶部切页栏切换「插件中心」与已启用的独立页。没有可打开的独立页时，主工作区直接展示插件中心。
 
 - 入口模块导出 `mount(root: HTMLElement, api: HostExtensionPageApi)`，可返回同步或异步清理函数。
 - 宿主在容器上暴露统一的主题 CSS 变量（`HOST_EXTENSION_PAGE_CSS_VARIABLES`）：
@@ -155,7 +155,7 @@ Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 
   - `POST /api/extensions/upload`（`Content-Type: application/zip`，≤ 64 MiB）：流式读取 ZIP 后转为 `install` / `update` RPC；
   - `GET` / `HEAD /api/extensions/assets/:id/:activationId/:digest/*`：向 Host 请求资产并返回 `Cache-Control: private, max-age=31536000, immutable`、`X-Content-Type-Options: nosniff`、`Cross-Origin-Resource-Policy: same-origin`；对缺失、代次不匹配及 `backend.entry` 统一返回 `404`。
 - **Console 转发（`packages/console-server`）**：`/api/extensions/*` 写操作转发至共享 Host RPC，共享 Host 未运行时返回 `503`；只读列表与市场查询在离线时支持直接读取磁盘/拉取目录。
-- **双端统一 UI**：Desktop「设置 → 插件」和 Web 一级目录「插件 → 插件中心」提供统一的管理界面和能力角标（`全端` / `Web` / `Desktop` / `独立页面` / `挂件` / `后台`），支持按能力和分类筛选。已启用且含 `page` 的扩展可以从中心点击「打开页面」，或从 Web 左侧「插件」专区直接打开。含 `settingsSchema` 的扩展可在详情中编辑共享设置。
+- **双端统一 UI**：Desktop「设置 → 插件」和 Web「插件」工作区内的插件中心提供统一的管理界面和能力角标（`全端` / `Web` / `Desktop` / `独立页面` / `挂件` / `后台`），支持按能力和分类筛选。已启用且含 `page` 的扩展可以从中心点击「打开页面」，或从 Web 主工作区顶部的切页栏直接打开。含 `settingsSchema` 的扩展可在详情中编辑共享设置。
 
 ## 作者与打包指南
 

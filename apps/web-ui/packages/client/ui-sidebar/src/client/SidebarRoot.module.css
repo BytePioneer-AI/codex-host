@@ -106,7 +106,6 @@
 }
 
 :global([data-windows-titlebar]) .collapsed .panelList,
-:global([data-windows-titlebar]) .collapsed .pluginsGroup,
 :global([data-windows-titlebar]) .collapsed .regionArea,
 :global([data-windows-titlebar]) .collapsed .footArea {
   display: none;
@@ -184,7 +183,6 @@
 .railIn .iconButton,
 .railIn .newSession,
 .railIn .panelList,
-.railIn .pluginsGroup,
 .railIn .regionArea {
   animation: rail-in 150ms var(--ds-ease-in-out) backwards;
 }
@@ -615,50 +613,6 @@
   color: var(--dsw-alias-label-primary);
 }
 
-/* Cap long plugin lists so they leave space for workspaces and Settings. */
-.pluginsGroup {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  max-height: 35%;
-  margin-bottom: 16px;
-}
-
-.pluginsHeading {
-  flex: none;
-  display: flex;
-  align-items: center;
-  height: 36px;
-  margin: 2px 0 6px;
-  padding-inline: 4px;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 21px;
-}
-
-.pluginsRows {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-height: 0;
-  overflow: auto;
-  overscroll-behavior-y: contain;
-}
-
-.pluginsRows .panelRow {
-  flex: none;
-}
-
-.collapsed .pluginsGroup {
-  flex: none;
-  margin-bottom: 12px;
-}
-
-.collapsed .pluginsRows {
-  overflow: visible;
-}
-
 /* Region seat: always mounted so the foot never moves. Its trailing margin
    cancels the wide shell inset so the nested scrollbar can sit at the sidebar
    edge; the browser restores that inset inside its own rows. */
@@ -715,7 +669,6 @@
   .railIn .iconButton,
   .railIn .newSession,
   .railIn .panelList,
-  .railIn .pluginsGroup,
   .railIn .footArea,
   .railIn .regionArea {
     transition: none;

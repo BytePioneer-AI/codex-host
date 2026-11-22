@@ -45,8 +45,6 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
       scope: "root";
       owner: SidebarPrimaryActionOwnerProps;
     };
-    /** Optional first-level plugin navigation using the shell's native row chrome. */
-    "sidebar.plugins": { kind: "single"; scope: "root"; owner: SidebarPluginsOwnerProps };
     /**
      * The workspace/session browsing region: section header, search, the
      * grouped/flat session list, and every workspace dialog. Declared by this
@@ -94,19 +92,6 @@ export interface SidebarPrimaryActionOwnerProps {
   size: number;
   /** Render a navigation action without changing the active main panel. */
   renderAction: (action: { label: string; icon: ReactNode; onClick: () => void }) => ReactNode;
-}
-
-export interface SidebarPluginsOwnerProps {
-  wide: boolean;
-  renderGroup: (group: { label: string; rows: readonly SidebarPluginRow[] }) => ReactNode;
-}
-
-interface SidebarPluginRow {
-  id: string;
-  label: string;
-  icon: ReactNode;
-  active: boolean;
-  onClick: () => void;
 }
 
 /** Serializable metadata for one active global panel list registration. */
@@ -179,7 +164,6 @@ export type SidebarRootComponentProps = PropsRuntime<"sidebar"> &
     | "sidebar.toggle.badge"
     | "sidebar.panellist"
     | "sidebar.primary.action"
-    | "sidebar.plugins"
     | "sidebar.workspaces"
     | "sidebar.settings"
     | "sidebar.footer.action"

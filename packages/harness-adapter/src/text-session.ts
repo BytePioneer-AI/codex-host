@@ -680,6 +680,11 @@ export interface HarnessSession {
    * A read is advisory: turn.steer must recheck admission before handing input to the Harness.
    */
   readCapabilities?(): Promise<HarnessSessionCapabilities>;
+  /**
+   * Catalog that contains this Session's effective Model. Thread inspection uses it
+   * when that Model is more specific than the Adapter's separate inspection catalog.
+   */
+  modelCatalog?(): HarnessModelCatalog;
   refreshUsage?(): Promise<void>;
   /** Account quota attributed to this Session, rather than shared across the Adapter. */
   readAccountCredits?(): Promise<AccountCreditsSnapshot | null>;

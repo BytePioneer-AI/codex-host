@@ -18,7 +18,7 @@ import {
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { AppServerHost } from "../src/app-server-host.js";
 import { startClientChannelServer } from "../src/client-channel-server.js";
-import type { HostExtensionManager } from "../src/host-extension-manager.js";
+import { HostExtensionManager } from "../src/host-extension-manager.js";
 import { JsonLineCollector, writeRequest } from "./app-server-host-fixture.js";
 
 let root: string;
@@ -157,6 +157,46 @@ const journal = () => readFile(path.join(location(), "life.txt"), "utf8");
 function reaped(pid: number) {
   expect(() => process.kill(pid, 0)).toThrow(/ESRCH/u);
 }
+
+it("migrates enabled v1 backends before starting them and diagnoses a broken install", async () => {
+  const legacyRoot = path.join(dataDir, "desktop-extensions");
+  const sample = path.join(legacyRoot, "sample");
+  await mkdir(sample, { recursive: true, mode: 0o700 });
+  await mkdir(path.join(legacyRoot, "broken"), { mode: 0o700 });
+  await writeFile(
+    path.join(sample, "manifest.json"),
+    JSON.stringify({
+      manifestVersion: 1,
+      id: "sample",
+      desktopApi: 1,
+      name: "Legacy backend",
+      version: "1",
+      backend: { script: "worker.mjs" },
+    }),
+  );
+  await writeFile(path.join(sample, "worker.mjs"), backend("1"));
+  await writeFile(
+    path.join(legacyRoot, "enabled.json"),
+    JSON.stringify({ version: 1, revision: 1, enabled: ["broken", "sample"] }),
+  );
+  const diagnostics: string[] = [];
+  const manager = new HostExtensionManager(
+    dataDir,
+    () => undefined,
+    (message) => {
+      diagnostics.push(message);
+    },
+  );
+  cleanup.push(() => manager.close());
+
+  await manager.start();
+  expect(await manager.list()).toMatchObject({
+    configuration: { enabled: ["sample"] },
+    extensions: [{ id: "sample", state: "valid", enabled: true, backendState: "running" }],
+  });
+  expect(await journal()).toMatch(/^start 1 \d+\n$/u);
+  expect(diagnostics).toEqual([expect.stringContaining('Legacy Desktop extension "broken"')]);
+});
 
 it("starts once before any clients connect and shares the process and settings across Desktop and client-channel", async () => {
   const { activationId } = await installHostExtension({

@@ -10,6 +10,7 @@ export {
   readDesktopExtensionScreenshot,
 } from "./desktop-extension-artwork.js";
 export { HarnessPreferencesStore, HarnessPreferenceConflict } from "./preferences.js";
+export { migrateLegacyDesktopExtensionsOnce } from "./host-extension-legacy-migration.js";
 export {
   desktopExtensionsStatusPath,
   hostExtensionsRoot,

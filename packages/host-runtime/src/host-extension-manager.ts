@@ -7,6 +7,7 @@ import {
   hostExtensionDataDirectory,
   HostExtensionInstallConflict,
   HostExtensionRevisionConflict,
+  migrateLegacyDesktopExtensionsOnce,
   prepareHostExtension,
   readHostExtension,
   readHostExtensionAsset,
@@ -56,6 +57,10 @@ export class HostExtensionManager {
   start(): Promise<void> {
     if (this.#closing) return this.#closing;
     return (this.#startup ??= this.#serialize(async () => {
+      await migrateLegacyDesktopExtensionsOnce(this.dataDir, this.diagnose).catch(
+        (error: unknown) =>
+          this.diagnose(`Legacy Desktop extension migration: ${errorMessage(error)}`),
+      );
       const { installations, configuration } = await discoverHostExtensions(this.dataDir);
       await Promise.all(
         installations

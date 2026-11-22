@@ -16,7 +16,7 @@ import {
   type HostExtensionManifest,
   type HostExtensionManifestResult,
 } from "@codexhost/shared-contracts";
-import { readHostFile, utf8 } from "./host-extension-io.js";
+import { assertPrivateExtensionEntry, readHostFile, utf8 } from "./host-extension-io.js";
 
 export const PACKAGE_INDEX = ".host-extension-generation.json";
 const MAX_INDEX_BYTES = 8 * 1024 * 1024;
@@ -59,7 +59,11 @@ export function indexHostPackage(files: Map<string, Buffer>) {
 }
 
 /** Walk without following links; count directory entries as well as files. */
-async function* packageFiles(root: string, skipIndex = false): AsyncGenerator<string> {
+async function* packageFiles(
+  root: string,
+  skipIndex = false,
+  owned = false,
+): AsyncGenerator<string> {
   let count = 0;
   const canonical = new Set<string>();
   async function* walk(prefix: string): AsyncGenerator<string> {
@@ -72,24 +76,28 @@ async function* packageFiles(root: string, skipIndex = false): AsyncGenerator<st
       const key = hostExtensionCanonicalPath(resource);
       if (canonical.has(key)) throw new Error(`Conflicting extension package paths at ${resource}`);
       canonical.add(key);
-      if (entry.isDirectory() && (await lstat(path.join(root, resource))).isDirectory())
+      if (entry.isDirectory()) {
+        const directory = path.join(root, resource);
+        const info = await lstat(directory);
+        if (owned) assertPrivateExtensionEntry(directory, info, true);
+        if (!info.isDirectory()) throw new Error(`Unsafe directory for ${resource}`);
         yield* walk(resource);
-      else if (entry.isFile()) {
+      } else if (entry.isFile()) {
         if (!skipIndex || resource !== PACKAGE_INDEX) yield resource;
       } else throw new Error(`Symlink or special file in extension package: ${resource}`);
     }
   }
   yield* walk("");
 }
-export async function readLocalHostPackage(root: string) {
+export async function readLocalHostPackage(root: string, { owned = false } = {}) {
   const files = new Map<string, Buffer>();
   let size = 0;
-  for await (const resource of packageFiles(root)) {
+  for await (const resource of packageFiles(root, false, owned)) {
     const bytes = await readHostFile(
       root,
       resource,
       Math.min(packageLimit(resource), MAX_PACKAGE_BYTES - size),
-      false,
+      owned,
     );
     size += bytes.length;
     files.set(resource, bytes);

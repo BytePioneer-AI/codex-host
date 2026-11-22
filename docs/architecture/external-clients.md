@@ -22,9 +22,10 @@ codexhost delegate start --harness codex --cwd "$PWD" \
 ```
 
 - 只有目标 Host 的原生 Codex 模型目录为该 Model 公布了相应档位时，后缀才表示档位；否则整个值按原生 Model ID 处理。
-- 含 `/`、`[` 等字符的自定义 Provider Model ID 也可直接传入。
-- 内部和 Host RPC 仍使用编码后的 Model Ref（`codex-model-v1.…` 等），这类旧 ID 照常接受。少数会与后缀或参数语法冲突的原生 ID 在 `inspect` 中显示为编码 Ref。
-- 设置页的委派默认模型显示目录名称；目录未加载时显示原生 Model ID 和档位，保存值仍是 Model Ref。
+- 含 `/`、`[`、空格或中文等字符的原生 Model ID 都可直接传入。
+- 后缀只是 CLI 简写。Host RPC、HTTP 和 MCP 传的是 Model Ref 对象：`id` 为原生 Model ID，档位放在可选的 `serviceTier`（`priority` 或 `ultrafast`）字段。
+- 旧版本的编码 Ref（`codex-model-v1.…`、`codex-fast-model-v1.…`、`codex-ultra-v1.…`）照常接受，读取时转为原生 ID 加档位。
+- 设置页的委派默认模型显示目录名称；目录未加载时显示原生 Model ID 和档位。
 
 ### CLI 输出格式
 

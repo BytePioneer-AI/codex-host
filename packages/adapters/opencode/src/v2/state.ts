@@ -10,13 +10,18 @@ import {
 import {
   harnessPermissionModeIdSchema,
   harnessIdSchema,
-  harnessModelCatalogSchema,
   nativeSessionRefSchema,
+  harnessModelCatalogSchema,
   type HarnessModelCatalog,
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 import { decodeOpenCodePermissionModeId } from "../permission-modes.js";
-import { encodeOpenCodeModelRef, encodeOpenCodeVariant } from "../model-catalog.js";
+import {
+  type OpenCodeModelCatalogSnapshot,
+  encodeOpenCodeModelRef,
+  encodeOpenCodeVariant,
+  openCodeModelIndex,
+} from "../model-catalog.js";
 
 export const harnessId = harnessIdSchema.parse("opencode");
 export function failure(
@@ -81,30 +86,34 @@ export function v2Locator(ref: NativeSessionRef): {
 export function v2Catalog(
   models: ModelInfo[],
   defaultModel: ModelInfo | null,
-): HarnessModelCatalog {
+): OpenCodeModelCatalogSnapshot {
   const enabled = models.filter((model) => model.enabled);
   const variants = [...new Set(enabled.flatMap((model) => model.variants.map((v) => v.id)))].sort();
-  const ref = (model: ModelInfo) =>
-    encodeOpenCodeModelRef({ providerID: model.providerID, modelID: model.id });
-  return harnessModelCatalogSchema.parse({
-    models: enabled.map((model) => ({
-      ref: ref(model),
-      label: `${model.providerID} / ${model.name}`,
-      resolvedModelLabel: `${model.providerID}/${model.id}`,
-      supportedThinkingOptionIds: [
-        encodeOpenCodeVariant(undefined),
-        ...model.variants.map((v) => encodeOpenCodeVariant(v.id)),
-      ],
-    })),
-    ...(defaultModel && enabled.some((m) => ref(m).id === ref(defaultModel).id)
-      ? { defaultModel: ref(defaultModel) }
-      : {}),
-    thinkingOptions: [undefined, ...variants].map((v) => ({
-      id: encodeOpenCodeVariant(v),
-      label: v ?? "Default",
-    })),
-    defaultThinkingOptionId: encodeOpenCodeVariant(undefined),
-  });
+  const identity = (model: ModelInfo) => ({ providerID: model.providerID, modelID: model.id });
+  const index = openCodeModelIndex(enabled.map(identity));
+  const ref = (model: ModelInfo) => index.encode(identity(model));
+  return {
+    catalog: harnessModelCatalogSchema.parse({
+      models: enabled.map((model) => ({
+        ref: ref(model),
+        label: `${model.providerID} / ${model.name}`,
+        resolvedModelLabel: `${model.providerID}/${model.id}`,
+        supportedThinkingOptionIds: [
+          encodeOpenCodeVariant(undefined),
+          ...model.variants.map((v) => encodeOpenCodeVariant(v.id)),
+        ],
+      })),
+      ...(defaultModel && enabled.some((m) => ref(m).id === ref(defaultModel).id)
+        ? { defaultModel: ref(defaultModel) }
+        : {}),
+      thinkingOptions: [undefined, ...variants].map((v) => ({
+        id: encodeOpenCodeVariant(v),
+        label: v ?? "Default",
+      })),
+      defaultThinkingOptionId: encodeOpenCodeVariant(undefined),
+    }),
+    index,
+  };
 }
 export function v2Permissions(
   current: PermissionRuleset = [],
@@ -121,11 +130,14 @@ export function v2Permissions(
 }
 export function v2State(
   session: SessionInfo,
-  catalog: HarnessModelCatalog,
+  { catalog, index }: OpenCodeModelCatalogSnapshot,
   policy: HarnessExecutionPolicy,
 ): HarnessSessionState {
   const model = session.model
-    ? encodeOpenCodeModelRef({ providerID: session.model.providerID, modelID: session.model.id })
+    ? encodeOpenCodeModelRef(
+        { providerID: session.model.providerID, modelID: session.model.id },
+        index,
+      )
     : undefined;
   const entry = catalog.models.find((candidate) => candidate.ref.id === model?.id);
   const mode = session.permissions?.findLast(

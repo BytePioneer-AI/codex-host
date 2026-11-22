@@ -8,6 +8,7 @@ import {
 
 import {
   normalizeDeepSeekModelCatalog,
+  type DeepSeekModelIndex,
   type DeepSeekModelProviderGroup,
   type DeepSeekModelSelection,
 } from "../model-catalog.js";
@@ -63,6 +64,7 @@ export interface ModernModelCatalogRemote {
 /** Validated Modern catalog facts needed by inspection and Session configuration. */
 export interface ModernModelCatalogSnapshot {
   readonly catalog: HarnessModelCatalog;
+  readonly index: DeepSeekModelIndex;
   readonly defaultSelection: DeepSeekModelSelection;
   readonly routableProviders: readonly string[];
   readonly groups: readonly DeepSeekModelProviderGroup[];
@@ -385,21 +387,19 @@ export function parseModernModelCatalog(value: unknown): ModernModelCatalogSnaps
   const parsedGroups = groups(value.groups, routable);
   validateFailures(value.failures, routable, new Set(parsedGroups.map(({ id }) => id)));
 
-  let catalog: HarnessModelCatalog;
   try {
-    catalog = normalizeDeepSeekModelCatalog(
-      parsedGroups,
-      routable.has(defaultSelection.provider) ? defaultSelection : undefined,
-    );
+    return {
+      ...normalizeDeepSeekModelCatalog(
+        parsedGroups,
+        routable.has(defaultSelection.provider) ? defaultSelection : undefined,
+      ),
+      defaultSelection,
+      routableProviders,
+      groups: parsedGroups,
+    };
   } catch {
     throw catalogError("protocolError", "DeepSeek Harness returned an unusable model catalog");
   }
-  return {
-    catalog,
-    defaultSelection,
-    routableProviders,
-    groups: parsedGroups,
-  };
 }
 
 /** Read the exact no-argument Modern Model catalog endpoint. */

@@ -85,6 +85,10 @@ class DelegateSelectionError extends Error {
 /** Public DeepSeek Adapter that gates the local CLI version and delegates to the managed Web. */
 export class DeepSeekHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog = deepSeekHarnessCommandCatalog();
+  readonly normalizeStoredModelRef: NonNullable<HarnessAdapter["normalizeStoredModelRef"]> = (
+    ref,
+    catalog,
+  ) => this.#delegate?.adapter.normalizeStoredModelRef?.(ref, catalog);
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
   readonly usageStatistics: ReturnType<typeof createDshUsageStatistics>;
   readonly sessionImport = Object.freeze({

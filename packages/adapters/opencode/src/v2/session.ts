@@ -35,7 +35,11 @@ import {
   type HarnessSessionCapabilities,
 } from "@codexhost/harness-adapter";
 import type { HarnessModelCatalog, HostTurnId } from "@codexhost/shared-contracts";
-import { decodeOpenCodeModelRef, decodeOpenCodeVariant } from "../model-catalog.js";
+import {
+  decodeOpenCodeModelRef,
+  decodeOpenCodeVariant,
+  type OpenCodeModelCatalogSnapshot,
+} from "../model-catalog.js";
 import { openCodeCommandCatalog } from "../opencode-adapter.js";
 import type { V2Connection } from "./connection.js";
 import { contentId, readHistory, readMessages, terminalItemOutcome } from "./history.js";
@@ -110,14 +114,14 @@ export class V2Session implements HarnessSession {
     readonly client: OpenCodeClient,
     readonly connection: Pick<V2Connection, "options" | "close">,
     private info: SessionInfo,
-    readonly catalog: HarnessModelCatalog,
+    private readonly models: OpenCodeModelCatalogSnapshot,
     readonly policy: HarnessExecutionPolicy,
     readonly limit: number,
     readonly onClosed: () => void,
   ) {
-    this.initialState = v2State(info, catalog, policy);
+    this.initialState = v2State(info, models, policy);
     this.initialUsage = v2Usage(info);
-    this.capabilities = v2Capabilities(catalog);
+    this.capabilities = v2Capabilities(models.catalog);
     this.commands = {
       list: async () => ({ ok: true, value: openCodeCommandCatalog }),
       execute: async (command) => {
@@ -168,10 +172,10 @@ export class V2Session implements HarnessSession {
       return { ok: false as const, error: failure("OpenCode Session is busy", "sessionBusy") };
     try {
       this.info = await this.client.session.get({ sessionID: this.info.id });
-      const { snapshot } = await readHistory(this.client, this.info, this.limit);
+      const { snapshot } = await readHistory(this.client, this.info, this.limit, this.models.index);
       return {
         ok: true as const,
-        value: { ...snapshot, state: v2State(this.info, this.catalog, this.policy) },
+        value: { ...snapshot, state: v2State(this.info, this.models, this.policy) },
       };
     } catch (error) {
       return errorResult(error);
@@ -255,13 +259,11 @@ export class V2Session implements HarnessSession {
       } else {
         let model = this.info.model;
         if (command.type === "model.select") {
-          if (!this.catalog.models.some((m) => m.ref.id === command.model.id))
-            throw new Error("OpenCode Model is not available");
-          const decoded = decodeOpenCodeModelRef(command.model);
+          const decoded = decodeOpenCodeModelRef(command.model, this.models.index);
           model = { providerID: decoded.providerID, id: decoded.modelID };
         } else {
           if (!model) throw new Error("Select a Model before a Thinking option");
-          const state = v2State(this.info, this.catalog, this.policy);
+          const state = v2State(this.info, this.models, this.policy);
           if (!state.availableThinkingOptions?.some((v) => v.id === command.thinkingOptionId))
             throw new Error("Thinking option is unavailable for this Model");
           const variant = decodeOpenCodeVariant(command.thinkingOptionId);
@@ -272,7 +274,7 @@ export class V2Session implements HarnessSession {
       this.info = await this.client.session.get({ sessionID: this.info.id });
       this.#emit({
         type: "session.state.changed",
-        state: v2State(this.info, this.catalog, this.policy),
+        state: v2State(this.info, this.models, this.policy),
       });
       return { ok: true, value: { completed: true } };
     } catch (error) {
@@ -321,7 +323,7 @@ export class V2Session implements HarnessSession {
       if ((await this.client.session.active())[this.info.id])
         throw new Error("OpenCode Session is already running");
       this.info = await this.client.session.get({ sessionID: this.info.id });
-      const before = await readHistory(this.client, this.info, this.limit);
+      const before = await readHistory(this.client, this.info, this.limit, this.models.index);
       if (before.snapshot.turns.some((turn) => turn.outcome.status === "unknown"))
         throw new Error("OpenCode history contains an incomplete execution");
       active.baseline = new Set(before.snapshot.turns.map((t) => t.nativeTurnRef.nativeTurnKey));
@@ -474,7 +476,12 @@ export class V2Session implements HarnessSession {
     const active = this.#active;
     if (!active?.admitted) return;
     const info = await this.client.session.get({ sessionID: this.info.id });
-    const { snapshot, messages } = await readHistory(this.client, info, this.limit);
+    const { snapshot, messages } = await readHistory(
+      this.client,
+      info,
+      this.limit,
+      this.models.index,
+    );
     if (this.#active !== active || this.#closed) return;
     this.info = info;
     this.#meterUsage(messages, false);
@@ -589,7 +596,7 @@ export class V2Session implements HarnessSession {
     }
     this.#emit({
       type: "session.state.changed",
-      state: v2State(this.info, this.catalog, this.policy),
+      state: v2State(this.info, this.models, this.policy),
     });
     this.#emit({
       type: "session.usage.changed",

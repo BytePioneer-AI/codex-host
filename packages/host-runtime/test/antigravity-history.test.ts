@@ -20,7 +20,7 @@ import {
   planModeSwitch,
   systemStep,
   userStep,
-} from "../../adapters/antigravity/test/support/native-history-fixture.js";
+} from "../../../tests/fixtures/antigravity/native-history-fixture.js";
 import type { DelegationControlRegistration } from "../src/delegation-types.js";
 import { createExternalThreadRecordInput } from "../src/external-thread-repository.js";
 import { createFixture, startExternalThread, stopFixture } from "./app-server-host-fixture.js";

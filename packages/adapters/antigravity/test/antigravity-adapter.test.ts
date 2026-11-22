@@ -45,8 +45,12 @@ import {
   systemStep,
   textField,
   userStep,
-} from "./support/native-history-fixture.js";
-import { bytes, nanoseconds, writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
+} from "../../../../tests/fixtures/antigravity/native-history-fixture.js";
+import {
+  bytes,
+  nanoseconds,
+  writeNativeTimingDatabase,
+} from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
 
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof fs>();

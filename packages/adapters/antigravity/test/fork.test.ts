@@ -22,8 +22,12 @@ import {
   systemStep,
   textField,
   userStep,
-} from "./support/native-history-fixture.js";
-import { bytes, integer, varint } from "./support/native-timing-fixture.js";
+} from "../../../../tests/fixtures/antigravity/native-history-fixture.js";
+import {
+  bytes,
+  integer,
+  varint,
+} from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
 
 const metadataRows = {
   gen_metadata: [[2], [5], [6, 8]].map((steps) => bytes(2, Buffer.concat(steps.map(varint)))),

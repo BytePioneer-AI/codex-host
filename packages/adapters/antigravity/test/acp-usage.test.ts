@@ -6,7 +6,7 @@ import { parseHostUsage, parseHostUsageRequest } from "@codexhost/harness-adapte
 import { UsageMeter } from "@codexhost/session-runtime/usage-metering";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
+import { writeNativeTimingDatabase } from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
 
 import {
   AntigravitySessionUsageTracker,

@@ -1,11 +1,10 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { nativeConversationDbPath } from "../../src/fork.js";
 import { bytes } from "./native-timing-fixture.js";
 
 export async function createNativeHistoryDatabase(home: string, sessionId: string) {
-  const file = nativeConversationDbPath(sessionId, home);
+  const file = path.join(home, ".gemini", "antigravity-cli", "conversations", `${sessionId}.db`);
   await mkdir(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec(`

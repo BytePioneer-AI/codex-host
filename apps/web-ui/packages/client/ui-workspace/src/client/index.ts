@@ -84,7 +84,12 @@ import {
 } from "./thread-tree-catalog.ts";
 
 export { ReferenceSessionMenuItem } from "./session-actions/ReferenceSession.tsx";
-export type { StartSessionOptions, UiWorkspace } from "./navigation.ts";
+export type {
+  SessionCreationFailureReason,
+  SessionCreationState,
+  StartSessionOptions,
+  UiWorkspace,
+} from "./navigation.ts";
 export type {
   DirectoryFlowOwnerProps,
   DirectoryFlowSlotName,

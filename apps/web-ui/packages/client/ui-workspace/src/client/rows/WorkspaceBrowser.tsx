@@ -444,6 +444,7 @@ function SessionTree({
   loadMoreSessions,
 }: SessionTreeProps) {
   const threadView = useThreadTreeView();
+  const phoneSidebar = usePhoneSidebar();
   const panelActive = usePanelInfo((info) => info.activePanelId !== null);
   const statuses = useSessionStatus((s) => s);
   const current = panelActive
@@ -747,6 +748,7 @@ function SessionTree({
                     icon: <IconNewChatOutlineRegular size={16} />,
                     onActivate: () => {
                       setGroupExpanded(group.key, true);
+                      phoneSidebar?.close();
                       startSession();
                     },
                   }
@@ -766,6 +768,7 @@ function SessionTree({
               if (group.workspaceId !== undefined) {
                 // Preserve even the implicit default against current-session auto-expansion.
                 setGroupExpanded(group.key, group.expanded);
+                phoneSidebar?.close();
                 startSession(group.workspaceId);
               }
             }}

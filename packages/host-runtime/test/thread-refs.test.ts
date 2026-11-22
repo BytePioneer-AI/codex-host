@@ -212,7 +212,7 @@ describe("Thread references", () => {
     const registry = new DelegationControlRegistry({ refs: store });
     registry.register(host);
     const route = externalClientRouter({ api: registry, watchApi: registry });
-    const call = { client: "grok-bot" } as Parameters<typeof route>[0];
+    const call = { client: "grok-bot", scope: "dispatch" } as Parameters<typeof route>[0];
 
     await expect(
       route(call, "/v1/delegate/start", { harnessId: "pi", task: "triage", cwd: "/w" }),
@@ -307,7 +307,7 @@ describe("Thread references", () => {
       next: { read: "r", wait: "w" },
     }) as { watch?: { notify?: string } };
     expect(watched.watch?.notify).toBe("client:grok-bot");
-    expect(DELEGATION_HELP).toContain("codexhost client add|list|remove");
+    expect(DELEGATION_HELP).toContain("codexhost client add|list|set|remove");
     expect(DELEGATION_HELP).toContain("codexhost events");
   });
 });

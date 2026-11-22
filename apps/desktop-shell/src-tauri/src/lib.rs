@@ -54,6 +54,12 @@ enum Page {
     Web,
 }
 
+impl Page {
+    fn accepts_web_events(&self) -> bool {
+        matches!(self, Self::Loading(_, _) | Self::Web)
+    }
+}
+
 struct View {
     page: Page,
     last_login: Option<Url>,
@@ -120,6 +126,9 @@ fn web_event(app: &AppHandle, event: WebEvent) {
         return;
     }
     let mut view = shell.view.lock().unwrap();
+    if !view.page.accepts_web_events() {
+        return;
+    }
     let status = match event {
         WebEvent::Connected(ready) => {
             view.page = Page::Web;
@@ -525,4 +534,19 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         _ => (),
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Page, Status};
+
+    #[test]
+    fn onboarding_and_dormant_ignore_background_web_events() {
+        assert!(!Page::Onboarding.accepts_web_events());
+        assert!(!Page::Dormant.accepts_web_events());
+        assert!(Page::Loading(Status::Starting, None).accepts_web_events());
+        assert!(Page::Loading(Status::Reconnecting, None).accepts_web_events());
+        assert!(Page::Loading(Status::Error, Some("err".into())).accepts_web_events());
+        assert!(Page::Web.accepts_web_events());
+    }
 }

@@ -9,6 +9,7 @@ export { parseHarnessAccountBalance, parseHarnessAccountCredits } from "./accoun
 export { validateHostApprovalResponse } from "./approval.js";
 export { validateHostInteractionResponse } from "./interaction.js";
 export { normalizeLegacyBase64ModelRef } from "./legacy-model-ref.js";
+export { compositeModelRefIds, type CompositeModelIdentity } from "./composite-model-ref.js";
 export { HarnessOutputChannel } from "./output-channel.js";
 export { sanitizeDiagnosticTail, filterAmbientNodeWarnings } from "./diagnostics.js";
 export { validateHostQuestionResponse } from "./question.js";

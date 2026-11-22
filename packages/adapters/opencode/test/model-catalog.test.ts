@@ -52,15 +52,17 @@ function provider(id: string, connectedModels: Model[]): Provider {
 }
 
 describe("OpenCode Model catalog", () => {
-  it("round-trips exact Provider, Model, and variant identities", () => {
-    const native = { providerID: "local/provider-一", modelID: "family/model-v1.2" };
+  it.each([
+    [{ providerID: "local/provider-一", modelID: "family/model-v1.2" }, "reasoning/high-一"],
+    [{ providerID: "本地/提供方.v1", modelID: "系列/模型~高" }, "推理/高"],
+  ])("round-trips exact Provider, Model, and variant identities: %j", (native, variantId) => {
     const ref = encodeOpenCodeModelRef(native);
-    const variant = encodeOpenCodeVariant("reasoning/high-一");
+    const variant = encodeOpenCodeVariant(variantId);
 
     expect(ref.id).toMatch(/^opencode-model-v1\.[A-Za-z0-9_-]+$/u);
     expect(decodeOpenCodeModelRef(ref)).toEqual(native);
     expect(variant).toMatch(/^ocv\.[A-Za-z0-9_-]+$/u);
-    expect(decodeOpenCodeVariant(variant)).toBe("reasoning/high-一");
+    expect(decodeOpenCodeVariant(variant)).toBe(variantId);
     expect(decodeOpenCodeVariant(encodeOpenCodeVariant(undefined))).toBeUndefined();
   });
 

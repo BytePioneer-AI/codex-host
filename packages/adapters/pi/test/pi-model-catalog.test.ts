@@ -11,8 +11,10 @@ import {
 } from "../src/pi-model-catalog.js";
 
 describe("Pi Model Catalog normalization", () => {
-  it("round-trips exact Provider and Model identities with separators and Unicode", () => {
-    const native = { provider: "local/provider-一", id: "family/model-v1.2" };
+  it.each([
+    { provider: "local/provider-一", id: "family/model-v1.2" },
+    { provider: "本地/提供方.v1", id: "系列/模型~高", fast: true },
+  ])("round-trips exact Provider and Model identities: %j", (native) => {
     const ref = encodePiModelRef(native);
 
     expect(ref.id).toMatch(/^pi-model-v1\.[A-Za-z0-9_-]+$/u);

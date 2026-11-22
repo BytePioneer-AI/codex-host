@@ -13,9 +13,9 @@
 
 ## 3. Adapter
 
-- [ ] 3.1 单值 Adapter 停止编码，并各自提供"旧 Ref 转当前 Ref"的只读入口：Claude Code、Qoder、Qoder CN、Kimi、Copilot、Hermes、CodeBuddy、WorkBuddy、Devin、Grok。验证：每个 Adapter 的目录测试断言 Ref 等于原生 ID，旧 Ref 输入仍选中同一 Model；用 argv 传 Model 的 Adapter 补一个含空格和特殊字符的参数测试。
-- [ ] 3.2 Qwen 去掉字符替换和映射表；旧别名能唯一对应就归一，不能则视为不可用。验证：`GLM-5.3-flash(openai)` 原样往返；歧义的旧别名回退到默认，且不阻断 Thread。
-- [ ] 3.3 组合身份 Adapter（Pi、OMP、OpenCode、DeepSeek、ZCode、Cursor）保持现有方案，只验证放宽后各组成部分能无损往返。验证：每个 Adapter 增加一个含 `/` 和中文的组成部分用例。
+- [x] 3.1 单值 Adapter 停止编码，并各自提供"旧 Ref 转当前 Ref"的只读入口：Claude Code、Qoder、Qoder CN、Kimi、Copilot、Hermes、CodeBuddy、WorkBuddy、Devin、Grok。验证：每个 Adapter 的目录测试断言 Ref 等于原生 ID，旧 Ref 输入仍选中同一 Model；用 argv 传 Model 的 Adapter 补一个含空格和特殊字符的参数测试。
+- [x] 3.2 Qwen 去掉字符替换和映射表；旧别名能唯一对应就归一，不能则视为不可用。验证：`GLM-5.3-flash(openai)` 原样往返；歧义的旧别名回退到默认，且不阻断 Thread。
+- [x] 3.3 组合身份 Adapter（Pi、OMP、OpenCode、DeepSeek、ZCode、Cursor）保持现有方案，只验证放宽后各组成部分能无损往返。验证：每个 Adapter 增加一个含 `/` 和中文的组成部分用例。
 
 ## 4. 已保存数据与文档
 

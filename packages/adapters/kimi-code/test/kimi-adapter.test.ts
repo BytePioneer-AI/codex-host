@@ -16,7 +16,7 @@ import { KimiAdapter, type KimiAcpTransportLike } from "../src/kimi-adapter.js";
 import { KimiExecutableError } from "../src/command.js";
 import { KimiTransportError } from "../src/acp-transport.js";
 import type { SessionEventHandler } from "../src/acp-transport.js";
-import { encodeKimiModelRef } from "../src/models.js";
+import { kimiModelRef as encodeKimiModelRef } from "../src/models.js";
 import { KIMI_DEFAULT_COMMAND_CATALOG } from "../src/slash-commands.js";
 
 class FakeTransport implements KimiAcpTransportLike {

@@ -1,25 +1,28 @@
 import type { CopilotClient, CopilotSession, GetAuthStatusResponse } from "@github/copilot-sdk";
 import { z } from "zod";
 import { bounded, CopilotOperationError } from "./errors.js";
-import type { HarnessSessionState } from "@codexhost/harness-adapter";
+import {
+  normalizeLegacyBase64ModelRef,
+  type HarnessSessionState,
+} from "@codexhost/harness-adapter";
 import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
+  type HarnessModelCatalog,
   type HarnessModelRef,
 } from "@codexhost/shared-contracts";
 
 export function modelRef(id: string): HarnessModelRef {
-  return harnessModelRefSchema.parse({ id: Buffer.from(id).toString("base64url") });
+  return harnessModelRefSchema.parse({ id });
 }
 
-export function modelId(ref: HarnessModelRef): string {
-  const parsed = harnessModelRefSchema.parse(ref);
-  const id = Buffer.from(parsed.id, "base64url").toString("utf8");
-  if (!id || modelRef(id).id !== parsed.id)
-    throw new CopilotOperationError("invalidRequest", "Invalid Copilot Model reference.");
-  return id;
+export function normalizeStoredCopilotModelRef(
+  ref: HarnessModelRef,
+  catalog: HarnessModelCatalog,
+): HarnessModelRef | undefined {
+  return normalizeLegacyBase64ModelRef(ref, catalog, "");
 }
 
 const modelSchema = z.object({

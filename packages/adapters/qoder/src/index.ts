@@ -6,9 +6,8 @@ export {
   resolveQoderExecutable,
 } from "./qoder-command.js";
 export {
-  decodeQoderModelRef,
-  encodeQoderModelRef,
   parseQoderModelCatalog,
+  qoderModelRef,
   qoderAvailableThinkingOptions,
   QODER_DEFAULT_MODEL_REF,
   QODER_EFFORT_LABELS,

@@ -40,14 +40,14 @@ export function parseWorkBuddyProductModels(value: unknown): WorkBuddyProductMod
   if (!Array.isArray(models) || !Array.isArray(agents)) return [];
   const cli = agents.map(record).find((agent) => nonBlank(agent.name) === "cli");
   if (!Array.isArray(cli?.models)) return [];
-  const configuredIds = new Set(cli.models.map(nonBlank).filter((id): id is string => !!id));
+  const configuredIds = new Set(cli.models);
   const parsed: WorkBuddyProductModel[] = [];
   const ids = new Set<string>();
   for (const value of models) {
     const source = record(value);
-    const id = nonBlank(source.id);
+    const id = source.id;
     const name = nonBlank(source.name);
-    if (!id || !name || !configuredIds.has(id) || ids.has(id)) continue;
+    if (typeof id !== "string" || !name || !configuredIds.has(id) || ids.has(id)) continue;
     try {
       modelRef(id);
     } catch {

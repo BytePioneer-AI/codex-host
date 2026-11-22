@@ -270,6 +270,7 @@ interface ManualCompaction {
 interface CancellationRecovery {
   timer: NodeJS.Timeout;
   probe: Promise<void> | null;
+  nativeStartGeneration: number;
 }
 
 interface ActiveTurn {
@@ -1247,9 +1248,16 @@ export class PiRpcSession {
     if (this.#activeTurn !== active) return;
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
     active.cancellationTimeout = null;
+    // Pi reports idle while an input hook is still preparing an unacknowledged Prompt.
+    // An Abort acknowledgement can therefore precede that Prompt starting a native run.
+    if ([...this.#pending.values()].some(({ command }) => command === "prompt")) {
+      void this.#faultAfterProcessCleanup(fault, "Pi RPC unacknowledged Prompt cleanup failed");
+      return;
+    }
     active.cancellation = "abandoned";
     const recovery: CancellationRecovery = {
       probe: null,
+      nativeStartGeneration: 0,
       timer: setTimeout(() => {
         void this.#expireCancellationRecovery(recovery, fault);
       }, CANCELLATION_RECOVERY_TIMEOUT_MS).unref(),
@@ -1285,11 +1293,13 @@ export class PiRpcSession {
   }
 
   #probeCancellationRecovery(recovery: CancellationRecovery): Promise<void> {
+    const generation = recovery.nativeStartGeneration;
     recovery.probe ??= this.#send("get_state", {}, undefined, this.#options.closeTimeoutMs)
       .then((response) => {
         const state = sessionStateData(response);
         if (
           this.#cancellationRecovery === recovery &&
+          recovery.nativeStartGeneration === generation &&
           state.isStreaming === false &&
           state.isCompacting === false
         ) {
@@ -1410,6 +1420,10 @@ export class PiRpcSession {
     if (this.#subagents.handle(value)) return;
     const recovery = this.#cancellationRecovery;
     if (recovery) {
+      this.#observeUsage(value);
+      if (value.type === "agent_start" || value.type === "compaction_start") {
+        recovery.nativeStartGeneration += 1;
+      }
       if (value.type === "agent_settled" || value.type === "compaction_end") {
         // An in-flight probe may describe the state before this terminal frame.
         void Promise.resolve(recovery.probe).then(() => {

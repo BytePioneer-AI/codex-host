@@ -57,7 +57,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-chat/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { ConnectDevicesSection } from "./ConnectDevicesSection.tsx";
 import { PluginsSection, type PluginsSectionFace } from "./PluginsSection.tsx";
-import { PluginsIcon } from "./PluginsIcon.tsx";
+import { PluginsAction, type PluginsActionFace } from "./PluginsIcon.tsx";
 import { PluginsSettingsEntry } from "./PluginsSettingsEntry.tsx";
 import { createPluginsNavigation, PLUGINS_PANEL_ID } from "./plugins-navigation.ts";
 import { webExtensionAppearance } from "./native-extensions/surface.ts";
@@ -369,16 +369,18 @@ export function apply(ctx: ClientContext): void {
       ImportIcon,
     ),
   );
-  ctx.slots.inject("sidebar.panellist", () =>
+  ctx.slots.inject("sidebar.primary.action", () =>
     ctx.slots.register(
       {
-        name: "sidebar.panellist",
+        name: "sidebar.primary.action",
         id: PLUGINS_PANEL_ID,
         order: 20,
-        label: () => t("settings.extensions"),
         locale: NS,
+        inject: (): PluginsActionFace => ({
+          openPlugins: () => ctx.layout.selectPanel(PLUGINS_PANEL_ID),
+        }),
       },
-      PluginsIcon,
+      PluginsAction,
     ),
   );
   ctx.inject(["settingsNavigation"], (scope) => {
@@ -400,6 +402,7 @@ export function apply(ctx: ClientContext): void {
         {
           name: "sidebar.primary.action",
           id: "codexhost-remote-access",
+          order: 10,
           locale: NS,
           inject: (): RemoteAccessActionFace => ({
             openSection: (id) => scope.settingsNavigation.openSection(id),

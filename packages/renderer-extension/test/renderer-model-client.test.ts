@@ -549,6 +549,7 @@ describe("Renderer fixed Model request client", () => {
       "subscribeCodexAccounts",
       "subscribeHarnessDisplaySettings",
       "subscribeHarnessPreferences",
+      "subscribeHostExtensionsChanged",
       "subscribeSkillsChanged",
       "subscribeThreadUsage",
       "uninstallHostExtension",

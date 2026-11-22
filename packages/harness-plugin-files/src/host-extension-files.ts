@@ -428,7 +428,7 @@ export async function readHostExtensionAsset({
     throw new Error("Resource is not a public extension asset");
   let mimeType: string | undefined;
   let max = DESKTOP_EXTENSION_ASSET_MAX_BYTES;
-  if (hostFrontendEntries(manifest).includes(resource)) {
+  if (resource.endsWith(".mjs") || hostFrontendEntries(manifest).includes(resource)) {
     mimeType = "text/javascript";
     max = DESKTOP_EXTENSION_SCRIPT_MAX_BYTES;
   } else if (hostFrontendStyles(manifest).includes(resource)) {

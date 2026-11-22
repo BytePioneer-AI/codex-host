@@ -33,6 +33,7 @@ import {
 const label = { en: "Fixture", "zh-CN": "测试" };
 const desktop = { apiVersion: 1, script: "desktop.js" };
 const page = { apiVersion: 1, entry: "page.mjs", style: "page.css" };
+const widget = { apiVersion: 1, entry: "widget/index.mjs", style: "widget/style.css" };
 const backend = { apiVersion: 1, entry: "assets/backend.mjs" };
 const slots = ["appearance.theme"];
 const png = Buffer.from("89504e470d0a1a0a", "hex");
@@ -221,14 +222,16 @@ it("publishes only on commit and rolls back to a verified generation with a new 
   expect(await readHostExtension(location)).toMatchObject({ activationId: restored.activationId });
 });
 
-it("returns only active declared frontend files and static assets; rejects traversal, private and tampered files", async () => {
+it("reads indexed frontend modules, styles and static assets; rejects traversal, private and tampered files", async () => {
   const location = { dataDir, id: "sample" };
-  const source = zipSource(manifest(location.id, { backend, page }), {
+  const source = zipSource(manifest(location.id, { backend, page, widget }), {
     [backend.entry]: script,
     [page.entry]: script,
     [page.style]: "body {}",
+    [widget.entry]: 'import "../shared/timer.mjs";',
+    [widget.style]: ".timer {}",
     "assets/panel.json": "{}",
-    "assets/other.mjs": script,
+    "shared/timer.mjs": script,
     "outside.json": "{}",
   });
   const current = await installHostExtension({ dataDir, source });
@@ -245,10 +248,15 @@ it("returns only active declared frontend files and static assets; rejects trave
     base64: Buffer.from(script).toString("base64"),
   });
   expect(await get("assets/panel.json")).toMatchObject({ mimeType: "application/json" });
+  expect(await get(widget.entry)).toMatchObject({ mimeType: "text/javascript" });
+  expect(await get(widget.style)).toMatchObject({ mimeType: "text/css" });
+  expect(await get("shared/timer.mjs")).toMatchObject({ mimeType: "text/javascript" });
+  await writeFile(path.join(current.directory, widget.style), ".tampered {}");
+  await expect(get(widget.style)).rejects.toThrow("digest mismatch");
   for (const resource of [
     backend.entry,
     "assets/BACKEND.mjs",
-    "assets/other.mjs",
+    "shared/missing.mjs",
     "outside.json",
     "manifest.json",
     "assets/../page.mjs",
@@ -262,6 +270,20 @@ it("returns only active declared frontend files and static assets; rejects trave
   );
   await expect(get("assets/panel.json")).rejects.toThrow("Unsafe file");
 });
+
+it.each([widget.entry, widget.style])(
+  "requires declared widget resource %s in the ZIP",
+  async (missing) => {
+    const files =
+      missing === widget.entry ? { [widget.style]: ".timer {}" } : { [widget.entry]: script };
+    await expect(
+      installHostExtension({
+        dataDir,
+        source: zipSource(manifest("widget", { widget }), files),
+      }),
+    ).rejects.toThrow(`Missing required extension file: ${missing}`);
+  },
+);
 
 it("guards local ZIPs and directory copies, rejects unsafe archive content and never publishes invalid packages", async () => {
   const source = zipSource(manifest("sample", { page }), {

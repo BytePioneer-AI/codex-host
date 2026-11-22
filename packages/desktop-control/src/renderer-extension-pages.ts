@@ -3,12 +3,12 @@ import {
   readHostExtensionAsset,
   readHostExtensionConfiguration,
 } from "@codexhost/harness-plugin-files";
-import { hostExtensionsAssetParamsSchema } from "@codexhost/shared-contracts";
-import type { RendererModuleCdpClient } from "./renderer-loaded-modules.js";
 import {
-  DESKTOP_EXTENSION_PAGE_PREFIX as PREFIX,
-  desktopExtensionPageModuleUrl,
-} from "./renderer-extension-page-url.js";
+  hostExtensionCanonicalPath,
+  hostExtensionsAssetParamsSchema,
+} from "@codexhost/shared-contracts";
+import { DESKTOP_EXTENSION_PAGE_PREFIX as PREFIX } from "./renderer-extension-page-url.js";
+import type { RendererModuleCdpClient } from "./renderer-loaded-modules.js";
 
 const DOCUMENT = "app://-/index.html";
 
@@ -18,7 +18,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-/** Serve only current page.entry bytes on the app's existing script-src 'self'.
+/** Serve modules from the enabled package generation on the app's existing script-src 'self'.
  * No CSP changes, arbitrary evaluation, or caller-supplied filesystem paths. */
 export async function installRendererExtensionPages(
   renderer: RendererModuleCdpClient,
@@ -49,13 +49,10 @@ export async function installRendererExtensionPages(
       }
       let base64: string | undefined;
       try {
-        const [id, activationId, digest] = url.slice(PREFIX.length).split("/");
-        const match = hostExtensionsAssetParamsSchema.safeParse({
-          id,
-          activationId,
-          digest,
-          path: "page.mjs",
-        });
+        const [id, activationId, digest, ...segments] = url.slice(PREFIX.length).split("/");
+        const decoded = segments.map(decodeURIComponent);
+        const path = decoded.join("/");
+        const match = hostExtensionsAssetParamsSchema.safeParse({ id, activationId, digest, path });
         if (
           closed ||
           request?.method !== "GET" ||
@@ -64,7 +61,9 @@ export async function installRendererExtensionPages(
           !id ||
           !activationId ||
           !digest ||
-          url !== desktopExtensionPageModuleUrl({ id, activationId, digest })
+          !path.endsWith(".mjs") ||
+          /[?#]/u.test(url) ||
+          decoded.some((segment) => segment.includes("/"))
         ) {
           await fulfill(404);
           return;
@@ -78,20 +77,30 @@ export async function installRendererExtensionPages(
             entry?.state === "valid" &&
             entry.enabled &&
             entry.activationId === activationId &&
-            entry.digest === digest &&
-            entry.manifest.page
+            entry.digest === digest
           ) {
-            base64 = (
-              await readHostExtensionAsset({
+            const { page, widget, backend } = entry.manifest;
+            // Compatibility aliases must not shadow the backend entry.
+            if (
+              !backend ||
+              hostExtensionCanonicalPath(path) !== hostExtensionCanonicalPath(backend.entry)
+            ) {
+              const aliasEntry =
+                path === "page.mjs"
+                  ? page?.entry
+                  : path === "widget.mjs"
+                    ? widget?.entry
+                    : undefined;
+              const asset = await readHostExtensionAsset({
                 dataDir,
                 id,
                 activationId,
                 digest,
-                path: entry.manifest.page.entry,
-              })
-            ).base64;
-            if (!(await readHostExtensionConfiguration(dataDir)).enabled.includes(id))
-              base64 = undefined;
+                path: aliasEntry ?? path,
+              });
+              if ((await readHostExtensionConfiguration(dataDir)).enabled.includes(id))
+                base64 = asset.base64;
+            }
           }
         }
       } catch {

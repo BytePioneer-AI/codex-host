@@ -9,6 +9,7 @@ import {
   HOST_EXTENSIONS_RPC,
   hostExtensionAssetUrl,
   hostExtensionCapabilities,
+  hostExtensionCatalogEntrySchema,
   hostExtensionListItemSchema,
   hostExtensionManifestV2Schema,
   hostExtensionTargets,
@@ -29,6 +30,7 @@ const desktop = { apiVersion: 1, script: "desktop.js" };
 const web = { apiVersion: 1, style: "web.css" };
 const page = { apiVersion: 1, entry: "ui/page.mjs", style: "page.css", title: localized };
 const backend = { apiVersion: 1, entry: "backend.mjs" };
+const widget = { apiVersion: 1, entry: "widget/index.mjs", style: "widget/style.css" };
 
 it.each([
   ["data:image/png;base64,YQ==", true, true],
@@ -58,18 +60,21 @@ it.each([
 });
 
 it.each([
-  [{ desktop }, ["desktop"], [false, true, false, false]],
-  [{ web }, ["web"], [false, false, true, false]],
-  [{ page }, ["desktop", "web"], [true, false, false, false]],
-  [{ backend }, ["desktop", "web"], [false, false, false, true]],
-  [{ desktop, backend }, ["desktop"], [false, true, false, true]],
-  [{ page, desktop, web, backend }, ["desktop", "web"], [true, true, true, true]],
+  [{ desktop }, ["desktop"], [false, false, true, false, false]],
+  [{ web }, ["web"], [false, false, false, true, false]],
+  [{ page }, ["desktop", "web"], [true, false, false, false, false]],
+  [{ widget }, ["desktop", "web"], [false, true, false, false, false]],
+  [{ widget, desktop }, ["desktop", "web"], [false, true, true, false, false]],
+  [{ backend }, ["desktop", "web"], [false, false, false, false, true]],
+  [{ desktop, backend }, ["desktop"], [false, false, true, false, true]],
+  [{ page, widget, desktop, web, backend }, ["desktop", "web"], [true, true, true, true, true]],
 ] as const)(
   "derives the capabilities and targets for %j",
-  (entries, targets, [hasPage, hasDesktop, hasWeb, hasBackend]) => {
+  (entries, targets, [hasPage, hasWidget, hasDesktop, hasWeb, hasBackend]) => {
     const manifest = hostExtensionManifestV2Schema.parse({ ...header, ...entries });
     expect(hostExtensionCapabilities(manifest)).toEqual({
       hasPage,
+      hasWidget,
       hasDesktop,
       hasWeb,
       hasBackend,
@@ -87,10 +92,35 @@ it.each([
   { web: { ...web, entry: "C:\\entry.mjs" } },
   { desktop: { ...desktop, script: "app.mjs" } },
   { page: { ...page, entry: "BACKEND.mjs" }, backend },
+  { widget: { ...widget, entry: "BACKEND.mjs" }, backend },
+  { widget: { ...widget, entry: "widget.js" } },
+  { widget: { ...widget, style: "../app.css" } },
+  { widget: { ...widget, apiVersion: 2 } },
+  { widget: { ...widget, title: localized } },
   { backend: { ...backend, targets: ["web"] } },
   { id: "con", desktop },
 ])("rejects invalid v2 input %j", (fields) => {
   expect(parseHostExtensionManifest({ ...header, ...fields }).state).toBe("invalid");
+});
+
+it("validates widget catalog targets", () => {
+  const entry = {
+    id: header.id,
+    name: localized,
+    description: localized,
+    version: header.version,
+    author: "Sample Author",
+    repository: "https://example.org/sample",
+    sha256: "a".repeat(64),
+    format: "codexhost",
+    targets: ["desktop", "web"],
+    apis: { widget: 1 },
+    downloadUrl: "https://example.org/sample.zip",
+  };
+  expect(hostExtensionCatalogEntrySchema.parse(entry).apis).toEqual({ widget: 1 });
+  expect(
+    hostExtensionCatalogEntrySchema.safeParse({ ...entry, targets: ["desktop"] }).success,
+  ).toBe(false);
 });
 
 it("normalizes an existing v1 Desktop manifest and reports future versions", () => {

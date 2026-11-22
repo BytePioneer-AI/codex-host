@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { desktopExtensionPageModuleUrl } from "@codexhost/desktop-control/renderer-bindings";
+import { desktopExtensionModuleUrl } from "@codexhost/desktop-control/renderer-bindings";
 import {
   HOST_EXTENSION_PAGE_API_VERSION,
   HOST_EXTENSION_PAGE_CSS_VARIABLES,
@@ -62,7 +62,7 @@ afterEach(() => {
 });
 
 describe("Desktop standalone extension page host", () => {
-  it("mounts page.entry via same-origin desktopExtensionPageModuleUrl + page.style in Shadow DOM with CSS variables, full HostExtensionPageApi, and cleans up on close/disable/generation change", async () => {
+  it("mounts page.entry via its same-origin package path + page.style in Shadow DOM with CSS variables, full HostExtensionPageApi, and cleans up on close/disable/generation change", async () => {
     const readHostExtensionAsset = vi.fn(async ({ path }: { path: string }) => {
       if (path === "page/style.css") {
         return {
@@ -142,13 +142,14 @@ describe("Desktop standalone extension page host", () => {
     });
 
     const itemV1 = makePageItem();
-    const expectedUrlV1 = desktopExtensionPageModuleUrl({
+    const expectedUrlV1 = desktopExtensionModuleUrl({
       id: itemV1.id,
       activationId: itemV1.activationId,
       digest: itemV1.digest,
+      path: "page/index.mjs",
     });
     expect(expectedUrlV1).toBe(
-      `app://-/.codexhost/extension-pages/notes-board/act-notes-1/${"d".repeat(64)}/page.mjs`,
+      `app://-/.codexhost/extension-pages/notes-board/act-notes-1/${"d".repeat(64)}/page/index.mjs`,
     );
 
     controller.open(itemV1);
@@ -215,10 +216,11 @@ describe("Desktop standalone extension page host", () => {
     controller.sync([itemV2]);
     await vi.waitFor(() => expect(capturedApis).toHaveLength(2));
     expect(importModule).toHaveBeenLastCalledWith(
-      desktopExtensionPageModuleUrl({
+      desktopExtensionModuleUrl({
         id: itemV2.id,
         activationId: itemV2.activationId,
         digest: itemV2.digest,
+        path: "page/index.mjs",
       }),
     );
     expect(api.signal.aborted).toBe(true);
@@ -299,10 +301,11 @@ describe("Desktop standalone extension page host", () => {
 
     await vi.waitFor(() => expect(capturedApi).not.toBeNull());
     expect(importModule).toHaveBeenCalledWith(
-      desktopExtensionPageModuleUrl({
+      desktopExtensionModuleUrl({
         id: "pure-page",
         activationId: "act-pure-1",
         digest: "e".repeat(64),
+        path: "page.mjs",
       }),
     );
     await expect(must(capturedApi).backend.invoke("ping")).rejects.toThrow(

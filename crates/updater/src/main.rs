@@ -73,19 +73,37 @@ fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
         .transpose()?;
     let mut service_stop_output = None;
     let mut stopping_started = false;
+    let mut update_backup = None;
     let result = (|| -> Result<(), Box<dyn Error>> {
+        install::preflight(&request)?;
         wait_for_launcher_exit(&request)?;
         stopping_started = true;
         service_stop_output = services::stop(&request)?;
         write_status(&request, "installing", None, service_stop_output.as_deref())?;
-        install(&request)?;
+        update_backup = install(&request)?;
         write_status(&request, "restarting", None, service_stop_output.as_deref())?;
         restart::restore(&request, Some(&request.version))?;
         write_status(&request, "succeeded", None, service_stop_output.as_deref())?;
         Ok(())
     })();
+    if result.is_ok()
+        && let Some(backup) = &update_backup
+    {
+        let backup_path = backup.path().display().to_string();
+        if let Err(error) = backup.cleanup() {
+            eprintln!(
+                "codexhost updater: update succeeded but backup cleanup failed for '{backup_path}': {error}"
+            );
+        }
+    }
     if let Err(error) = &result {
         let mut message = error.to_string();
+        if let Some(backup) = &update_backup {
+            message.push_str(&format!(
+                "; previous installation backup retained at '{}'",
+                backup.path().display()
+            ));
+        }
         if stopping_started {
             match restart::restore(&request, None) {
                 Ok(()) => message.push_str("; service recovery succeeded"),

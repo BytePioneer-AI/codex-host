@@ -120,6 +120,8 @@ pub use windows_desktop::resume_packaged_application;
 #[cfg(target_os = "windows")]
 pub use windows_installer::shutdown_processes_for_executables;
 #[cfg(target_os = "windows")]
+pub use windows_process::current_process_is_elevated;
+#[cfg(target_os = "windows")]
 pub use windows_ui::{
     RunningDesktopChoice, hide_console_window, prompt_running_desktop, show_error_dialog,
 };

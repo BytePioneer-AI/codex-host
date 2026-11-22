@@ -1064,6 +1064,13 @@ fn supervise_desktop(
         }
         result => {
             let _ = stop_desktop_controller(&mut controller);
+            if let Ok(Some(desktop_status)) = desktop.try_wait() {
+                let _ = desktop.wait();
+                return Err(format!(
+                    "Codex Desktop exited before starting the codexhost Host chain: {desktop_status}"
+                )
+                .into());
+            }
             let _ = desktop.kill();
             let _ = desktop.wait();
             return match result {
@@ -1085,9 +1092,19 @@ fn supervise_desktop(
                         Err(message.into())
                     }
                 }
-                Ok(_) => Err(
-                    "Codex Desktop did not start the codexhost Host chain before timeout".into(),
-                ),
+                Ok(_) => {
+                    let mut message =
+                        "Codex Desktop did not start the codexhost Host chain before timeout"
+                            .to_string();
+                    if codexhost_platform::current_process_is_elevated() {
+                        message.push_str(
+                            "; the current terminal is elevated (administrator), which prevents the \
+                             official Desktop from starting: relaunch codexhost from a non-elevated \
+                             PowerShell 7 and retry",
+                        );
+                    }
+                    Err(message.into())
+                }
             };
         }
     }

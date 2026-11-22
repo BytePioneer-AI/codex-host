@@ -79,9 +79,56 @@ struct ExtendedLimitInformation {
     peak_job_memory_used: usize,
 }
 
+#[repr(C)]
+struct TokenElevation {
+    token_is_elevated: u32,
+}
+
+const TOKEN_QUERY: u32 = 0x0000_0008;
+// TOKEN_INFORMATION_CLASS::TokenElevation.
+const TOKEN_INFORMATION_ELEVATION: i32 = 20;
+
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    fn OpenProcessToken(process: Handle, desired_access: u32, token: *mut Handle) -> i32;
+    fn GetTokenInformation(
+        token: Handle,
+        information_class: i32,
+        information: *mut c_void,
+        information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
+}
+
+/// Returns true when the current process runs with an elevated (administrator)
+/// token. Best effort: any query failure reports the process as not elevated.
+pub fn current_process_is_elevated() -> bool {
+    unsafe {
+        let mut token: Handle = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let elevation = TokenElevation {
+            token_is_elevated: 0,
+        };
+        let mut return_length: u32 = 0;
+        let elevated = GetTokenInformation(
+            token,
+            TOKEN_INFORMATION_ELEVATION,
+            &elevation as *const TokenElevation as *mut c_void,
+            size_of::<TokenElevation>() as u32,
+            &mut return_length,
+        ) != 0
+            && elevation.token_is_elevated != 0;
+        CloseHandle(token);
+        elevated
+    }
+}
+
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn CloseHandle(handle: Handle) -> i32;
+    fn GetCurrentProcess() -> Handle;
     fn CreateToolhelp32Snapshot(flags: u32, process_id: u32) -> Handle;
     fn Process32FirstW(snapshot: Handle, entry: *mut NativeProcessEntry) -> i32;
     fn Process32NextW(snapshot: Handle, entry: *mut NativeProcessEntry) -> i32;

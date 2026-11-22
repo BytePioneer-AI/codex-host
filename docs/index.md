@@ -202,6 +202,7 @@
 | [`proposals/Reasoning 实时预览与持久 Transcript 的后续方案.md`](proposals/Reasoning%20实时预览与持久%20Transcript%20的后续方案.md) | Reasoning 实时预览与持久留痕方案；规划 Reasoning 展示时阅读。 |
 | [`proposals/外部 Harness 回合文件变更汇总问题与后续方案.md`](proposals/外部%20Harness%20回合文件变更汇总问题与后续方案.md) | Turn 文件变更重复汇总问题、语义分层和候选方案；设计净 diff 时阅读。 |
 | [`proposals/独立 Web 控制台方案.md`](proposals/独立%20Web%20控制台方案.md) | 不依赖 Codex 启动的本地控制台：方案、第一阶段实现与后续阶段；扩展控制台时阅读。 |
+| [`proposals/unified-client-entrypoints-roadmap.md`](proposals/unified-client-entrypoints-roadmap.md) | 统一用户入口收口、单安装包双桌面模式（自有薄壳 + 托盘 + 官方 Codex Desktop 共存）、Console 退居幕后及 Android 轻量 APK / iOS PWA 移动端路线图；尚未实施。 |
 
 ## 历史归档
 

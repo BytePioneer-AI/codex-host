@@ -128,7 +128,7 @@ jobs:
             runner: macos-26
             rustTarget: aarch64-apple-darwin
           - target: macos-x64
-            runner: macos-15-intel
+            runner: macos-26
             rustTarget: x86_64-apple-darwin
           - target: windows-x64
             runner: windows-latest
@@ -261,12 +261,6 @@ jobs:
 
       - name: Setup npm
         run: npm install --global npm@11.8.0
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build TypeScript prerequisites
-        run: npm run build:typescript
 
       - name: Download npm artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

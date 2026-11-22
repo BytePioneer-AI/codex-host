@@ -1147,7 +1147,7 @@ describe("npm package release", () => {
       path.resolve(import.meta.dirname, "../../scripts/release/prepare-npm.mjs"),
       "utf8",
     );
-    expect(source).toContain('NPM_PACKAGE_NAME = "@codexhost/cli"');
+    expect(NPM_PACKAGE_NAME).toBe("@codexhost/cli");
     expect(Object.values(NPM_PLATFORM_PACKAGE_NAMES)).toEqual([
       "@codexhost/cli-darwin-arm64",
       "@codexhost/cli-darwin-x64",

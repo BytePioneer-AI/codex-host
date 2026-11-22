@@ -18,6 +18,8 @@ const VERSION: u8 = 1;
 pub enum Surface {
     NativeShell,
     CodexDesktop,
+    #[cfg(target_os = "windows")]
+    Both,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,7 +100,9 @@ fn parse(arguments: &[String]) -> Result<Action, Box<dyn Error>> {
                 surface = Some(match value.as_str() {
                     "native-shell" => Surface::NativeShell,
                     "codex-desktop" => Surface::CodexDesktop,
-                    _ => return Err("--surface must be native-shell or codex-desktop".into()),
+                    #[cfg(target_os = "windows")]
+                    "both" => Surface::Both,
+                    _ => return Err("invalid --surface".into()),
                 });
             }
             "--onboarding-completed" if onboarding_completed.is_none() => {
@@ -195,6 +199,11 @@ mod tests {
         assert_eq!(
             action(&["set", "--surface", "native-shell"]).unwrap(),
             Action::Set(Preferences::new(Surface::NativeShell, true))
+        );
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            action(&["set", "--surface", "both"]).unwrap(),
+            Action::Set(Preferences::new(Surface::Both, true))
         );
         assert_eq!(
             action(&[

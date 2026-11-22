@@ -1,0 +1,25 @@
+.root {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow: auto;
+  padding: calc(20px + var(--dsh-frame-top-clearance, 0px)) clamp(12px, 3vw, 32px) 24px;
+}
+
+.root[data-standalone] {
+  overflow: hidden;
+  padding-inline: clamp(12px, 2vw, 24px);
+  padding-bottom: 12px;
+}
+
+:global([data-windows-titlebar]) .root {
+  padding-top: 20px;
+}
+
+:global([data-phone]) .root {
+  padding-top: max(52px, calc(env(safe-area-inset-top) + 48px));
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+}

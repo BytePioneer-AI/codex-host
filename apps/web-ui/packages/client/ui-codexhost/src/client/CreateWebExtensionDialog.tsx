@@ -1,4 +1,4 @@
-/** Guided modal for creating and publishing a codexhost Web native extension. */
+/** Guided modal for creating and publishing a unified codexhost plugin. */
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   Button,
@@ -13,7 +13,7 @@ import type { ExtensionLocale } from "./web-extensions-helpers.ts";
 import css from "./CreateWebExtensionDialog.module.css";
 
 const EXTENSION_DOCS_URL =
-  "https://github.com/BytePioneer-AI/codex-host/blob/main/docs/proposals/web-native-extensions.md";
+  "https://github.com/BytePioneer-AI/codex-host/blob/main/.agents/skills/codexhost-add-desktop-extension/SKILL.md";
 const MARKETPLACE_SUBMIT_URL =
   "https://github.com/BytePioneer-AI/codexhost-extensions-registry/issues/new/choose";
 

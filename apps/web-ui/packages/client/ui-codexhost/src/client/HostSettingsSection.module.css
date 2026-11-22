@@ -4,6 +4,13 @@
   min-width: 0;
 }
 
+.loading {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
 .error {
   padding: 16px 0;
   color: var(--dsw-alias-state-error-primary);

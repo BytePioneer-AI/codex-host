@@ -254,6 +254,9 @@ export class HarnessDelegationCoordinator {
       inspection: await adapter.inspect({
         ...(input.cwd ? { cwd: path.resolve(input.cwd) } : {}),
         ...(input.refresh !== undefined ? { refresh: input.refresh } : {}),
+        ...(input.credentialAccess === "allow" || input.credentialAccess === "retry"
+          ? { credentialAccess: input.credentialAccess }
+          : {}),
       }),
     };
   }

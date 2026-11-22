@@ -4,6 +4,7 @@ import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import { IconSettingsOutlineMedium, Tooltip } from "@deepseek-ai/dsh-client-ui-primitives";
 import { checkHostUpdate } from "./api.ts";
+import { preloadHostSettings } from "./HostSettingsSection.tsx";
 import css from "./SettingsLauncher.module.css";
 
 export interface SettingsLauncherFace {
@@ -23,6 +24,9 @@ export function SettingsLauncher({
   const connected =
     useSyncExternalStore(connection.state.subscribe, connection.state.getSnapshot) === "connected";
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  useEffect(() => {
+    if (settingsOpen) preloadHostSettings();
+  }, [settingsOpen]);
   useEffect(() => {
     if (!connected || settingsOpen) return;
     const controller = new AbortController();

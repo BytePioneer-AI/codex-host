@@ -2367,7 +2367,7 @@ describe("Renderer Connections page", () => {
     refresh.dispatch("click");
     expect(refresh.disabled).toBe(true);
     expect(visibleNotesText(refresh)).toContain("正在诊断...");
-    expect(diagnostics.refresh).toHaveBeenCalledWith();
+    expect(diagnostics.refresh).toHaveBeenCalledWith(undefined, "retry");
     refreshRequest.resolve(undefined);
     await vi.waitFor(() => expect(refresh.disabled).toBe(false));
     expect(visibleNotesText(refresh)).toContain("重新诊断连接");

@@ -43,3 +43,20 @@ export function systemStep(db: DatabaseSync, idx: number, run: string): void {
     runField(run),
   );
 }
+
+export function checkpointStep(
+  db: DatabaseSync,
+  idx: number,
+  options: { status?: number; run?: string; summary?: string; error?: string } = {},
+): void {
+  const { status = 3, run = "", summary, error } = options;
+  db.prepare("INSERT INTO steps (idx, step_type, status, step_payload) VALUES (?, 23, ?, ?)").run(
+    idx,
+    status,
+    Buffer.concat([
+      runField(run),
+      ...(summary === undefined ? [] : [bytes(30, textField(1, summary))]),
+      ...(error === undefined ? [] : [bytes(31, textField(2, error))]),
+    ]),
+  );
+}

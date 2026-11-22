@@ -32,11 +32,13 @@ function adapterWith(
   available: unknown[] = [],
   startPlanChecked = true,
   codingPlanIssue?: string,
+  credentialIssue?: string,
 ) {
   const transport = {
     signedIn,
     startPlanChecked,
     codingPlanIssue,
+    credentialIssue,
     startPlan: false,
     start: async () => undefined,
     close: async () => undefined,
@@ -99,6 +101,16 @@ describe("ZCode connection check without available models", () => {
       },
     ]);
     expect((await adapter.inspect({ cwd: tmpdir() })).status).toBe("ready");
+    await adapter.close();
+  });
+
+  it("marks credential read failures non-retryable to avoid automatic Keychain prompt loops", async () => {
+    const issue = "ZCode could not read credentials: macOS Keychain read timed out.";
+    const adapter = adapterWith(false, [], false, undefined, issue);
+    expect(await adapter.inspect({ cwd: tmpdir() })).toMatchObject({
+      status: "unavailable",
+      error: { code: "configurationRequired", message: issue, retryable: false },
+    });
     await adapter.close();
   });
 });

@@ -95,7 +95,9 @@ function resolveReadyAgents(
 ): DelegationReadyAgent[] {
   const localHost =
     snapshot?.hosts.find((host) => host.hostId === "local") ?? snapshot?.hosts[0] ?? null;
-  const readyExternal = (localHost?.agents ?? []).filter((agent) => agent.availability === "ready");
+  const readyExternal = (localHost?.agents ?? []).filter(
+    (agent) => agent.availability === "ready" || agent.error?.code === "credentialAccessRequired",
+  );
   const externalById = new Map(readyExternal.map((agent) => [agent.agent, agent]));
   const catalog = readyExternal.map((agent) => ({
     id: agent.agent,
@@ -435,7 +437,10 @@ export function createDelegationSettingsPage(
 
         const promise = Promise.resolve()
           .then(async () => {
-            const inspection = await client.inspectHarness({ harnessId: parsedHarnessId.data });
+            const inspection = await client.inspectHarness({
+              harnessId: parsedHarnessId.data,
+              credentialAccess: forceRetry ? "retry" : "allow",
+            });
             if (!isActive()) return;
             if (inspection.status === "ready") {
               catalogs.set(harnessId, {

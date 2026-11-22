@@ -1,4 +1,4 @@
-/** Declarative `settingsSchema` form for installed `codexhost` Web native extensions. */
+/** Declarative `settingsSchema` form for unified Host extensions with optimistic revision control. */
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   resolveLocalizedExtensionText,
@@ -7,7 +7,10 @@ import {
   type JsonValue,
 } from "@codexhost/shared-contracts";
 import { Button, Switch } from "@deepseek-ai/dsh-client-ui-primitives";
-import { webNativeExtensionsApi } from "./web-native-extension-management-api.ts";
+import {
+  hostExtensionsApi,
+  isHostExtensionRevisionConflictError,
+} from "./web-native-extension-management-api.ts";
 import {
   buildDefaultSettings,
   formatManagementError,
@@ -18,7 +21,11 @@ import {
 import css from "./WebExtensionDetailModal.module.css";
 
 type SaveStatus =
-  { kind: "idle" } | { kind: "saving" } | { kind: "saved" } | { kind: "error"; message: string };
+  | { kind: "idle" }
+  | { kind: "saving" }
+  | { kind: "saved" }
+  | { kind: "conflict"; message: string }
+  | { kind: "error"; message: string };
 
 interface Props {
   extensionId: string;
@@ -43,8 +50,9 @@ export function WebExtensionSettingsForm({
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: "idle" });
   const baseId = useId();
 
-  // Serialized write queue so rapid edits always converge to the latest values.
+  // Serialized write queue with `expectedSettingsRevision` optimistic concurrency.
   const latestValuesRef = useRef<JsonObject>(values);
+  const settingsRevisionRef = useRef<number>(0);
   const pendingRef = useRef<JsonObject | null>(null);
   const drainingRef = useRef(false);
   const writeVersionRef = useRef(0);
@@ -79,9 +87,10 @@ export function WebExtensionSettingsForm({
       setPhase("loading");
       setLoadError(null);
       setSaveStatus({ kind: "idle" });
-      void webNativeExtensionsApi.settingsGet({ id: extensionId }, signal).then(
+      void hostExtensionsApi.settingsGet({ id: extensionId }, signal).then(
         (result) => {
           if (signal?.aborted || !mountedRef.current) return;
+          settingsRevisionRef.current = result.settingsRevision;
           const merged = mergeSettingsWithDefaults(schema, result.values);
           latestValuesRef.current = merged;
           setValues(merged);
@@ -113,11 +122,13 @@ export function WebExtensionSettingsForm({
         const sentVersion = writeVersionRef.current;
         pendingRef.current = null;
         try {
-          const saved = await webNativeExtensionsApi.settingsSet({
+          const saved = await hostExtensionsApi.settingsSet({
             id: extensionId,
+            expectedSettingsRevision: settingsRevisionRef.current,
             values: nextToSave,
           });
           if (!mountedRef.current) return;
+          settingsRevisionRef.current = saved.settingsRevision;
           const isLatest = sentVersion === writeVersionRef.current && pendingRef.current === null;
           if (isLatest) {
             const merged = mergeSettingsWithDefaults(schema, saved.values);
@@ -134,6 +145,25 @@ export function WebExtensionSettingsForm({
           }
         } catch (cause: unknown) {
           if (!mountedRef.current) return;
+          if (isHostExtensionRevisionConflictError(cause)) {
+            pendingRef.current = null;
+            setSaveStatus({
+              kind: "conflict",
+              message: t("extensions.settings.conflict"),
+            });
+            try {
+              const latest = await hostExtensionsApi.settingsGet({ id: extensionId });
+              if (!mountedRef.current) return;
+              settingsRevisionRef.current = latest.settingsRevision;
+              const merged = mergeSettingsWithDefaults(schema, latest.values);
+              latestValuesRef.current = merged;
+              setValues(merged);
+              syncDraftsFromValues(merged);
+            } catch {
+              // Keep conflict banner visible.
+            }
+            return;
+          }
           const isLatest = sentVersion === writeVersionRef.current && pendingRef.current === null;
           if (isLatest) {
             setSaveStatus({
@@ -215,6 +245,12 @@ export function WebExtensionSettingsForm({
             {t("extensions.retry")}
           </Button>
         </div>
+      )}
+
+      {saveStatus.kind === "conflict" && (
+        <p className={css.inlineNotice} data-tone="warning" role="alert">
+          {saveStatus.message}
+        </p>
       )}
 
       {saveStatus.kind === "error" && (

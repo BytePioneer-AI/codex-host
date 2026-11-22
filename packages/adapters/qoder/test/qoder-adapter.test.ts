@@ -2447,9 +2447,14 @@ describe("QoderAdapter", () => {
       (_label, context) => {
         const tracker = new QoderUsageTracker();
         tracker.setConfiguredContextWindows({ windows: { gmodel: 400_000 } });
+        const usage = { input_tokens: 100, output_tokens: 20, context_usage_ratio: 0.11 };
         tracker.observeAssistant({
-          message: { usage: { input_tokens: 100, output_tokens: 20, context_usage_ratio: 0.11 } },
-        } as SDKAssistantMessage);
+          type: "assistant",
+          uuid: "asst-1",
+          session_id: "sess-1",
+          parent_tool_use_id: null,
+          message: { role: "assistant", content: [], usage },
+        });
         tracker.observeContextUsage(context);
         expect(tracker.snapshot()?.contextUsagePercent).toBe(11);
 

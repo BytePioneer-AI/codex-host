@@ -394,6 +394,7 @@ export async function runDelegationCli(input: {
             ...(caller ? { parentThreadId: normalizeThreadId(caller) } : {}),
             ...(cwdOption(parsed) ? { cwd: cwdOption(parsed) } : {}),
             ...(refresh !== undefined ? { refresh: refresh === "true" } : {}),
+            ...(!caller ? { credentialAccess: refresh === "true" ? "retry" : "allow" } : {}),
           },
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
         }),

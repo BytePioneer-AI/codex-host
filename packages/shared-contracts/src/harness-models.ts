@@ -295,6 +295,7 @@ export const harnessInspectParamsSchema = z
     refresh: z.boolean().optional(),
     /** `availability` asks only whether the Harness can run; see `InspectHarnessInput.purpose`. */
     purpose: z.literal("availability").optional(),
+    credentialAccess: z.enum(["allow", "retry"]).optional(),
   })
   .strict();
 

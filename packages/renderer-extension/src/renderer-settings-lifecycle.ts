@@ -126,12 +126,12 @@ export function installRendererSettingsLifecycle(
       scheduleNextPluginPagesSync(targetPluginPages, generation);
       return;
     }
-    const client = options.getDesktopExtensionsClient?.() ?? null;
-    if (!client?.listDesktopExtensions) return;
+    const client = options.getDesktopExtensionsClient?.();
+    if (!client?.listHostExtensions) return;
     pluginPagesSyncInFlight = true;
     let stopPolling = false;
     void client
-      .listDesktopExtensions()
+      .listHostExtensions()
       .then((result) => {
         if (disposed || !settingsOpen || generation !== pluginPagesSyncGeneration) return;
         targetPluginPages.syncInstalledExtensions?.(

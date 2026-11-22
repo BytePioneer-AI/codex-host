@@ -66,26 +66,30 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
     };
     /**
      * Header toolbar contributions acting on the previewed file, rendered
-     * after the preview's own controls once the file's Host path is known.
+     * after the preview's own controls.
      */
     "sidebar.right.tab.document.actions": {
       kind: "list";
       scope: "session";
       owner: {
-        /** Absolute path in the file's execution environment; native actions must verify a Host mapping. */
-        readonly absolutePath: string;
+        /** Workspace-relative or absolute path from the tab address, available immediately. */
+        readonly filePath: string;
+        /** Absolute path in the file's execution environment once file metadata or content resolves. */
+        readonly absolutePath?: string;
       };
     };
     /**
      * Empty-state contributions for a file this preview cannot render,
-     * offered where Retry would stand once the file's Host path is known.
+     * offered where Retry would stand.
      */
     "sidebar.right.tab.document.unpreviewable": {
       kind: "list";
       scope: "session";
       owner: {
-        /** Absolute path in the file's execution environment; native actions must verify a Host mapping. */
-        readonly absolutePath: string;
+        /** Workspace-relative or absolute path from the tab address, available immediately. */
+        readonly filePath: string;
+        /** Absolute path in the file's execution environment once file metadata or content resolves. */
+        readonly absolutePath?: string;
       };
     };
     /** Renderer-specific controls before the document toolbar's reload button. */

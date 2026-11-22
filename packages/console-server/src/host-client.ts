@@ -3,6 +3,7 @@ import path from "node:path";
 
 import {
   harnessInstallationRequestTimeoutMs,
+  HOST_EXTENSIONS_RPC,
   updateCheckResultSchema,
   updateStartResultSchema,
   updateStatusResultSchema,
@@ -130,7 +131,11 @@ export function createConsoleHostClient(
         if (hostDirectory !== requestedDirectory)
           throw new Error("The running Host belongs to a different codexhost installation");
       }
-      const response = await fetch(`http://127.0.0.1:${host.port}/rpc`, {
+      const route =
+        method === HOST_EXTENSIONS_RPC.install || method === HOST_EXTENSIONS_RPC.update
+          ? "/extensions/rpc"
+          : "/rpc";
+      const response = await fetch(`http://127.0.0.1:${host.port}${route}`, {
         method: "POST",
         headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" },
         body: JSON.stringify({ method, params: params ?? {} }),

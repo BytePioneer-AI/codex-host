@@ -64,7 +64,7 @@ Antigravity 通过官方 `agy acp`（要求 `agy >= 1.5.8`，已用本机 `1.5.9
 - **空闲唤醒**：定时器或后台任务唤起的独立原生运行（`step_type = 101` 系统消息起始，同一运行 ID 的连续系统消息合并）有已提交的最终回答时，作为无用户消息的独立 Turn 展示，保留上一轮的最终回答。ACP 的空闲输出通知触发有界的 SQLite 提交观察，不显示未提交的逐字流，也不占用前台执行位。已有 Turn 所属的迟到输出不创建自主 Turn；已归属的尾部后台消息仍可成为该 Turn 的最终回答。
 - **历史身份与检查点**：读取时保留每条原生用户输入的序号。合并展示的 Turn 使用其覆盖的最后一条原生用户输入生成分叉检查点，不使用界面分组下标；例如 15 条原生输入显示为 14 组，末组的检查点仍保留完整的 15 条输入。有效的已有身份可以与检查点不同，稀疏编号和非数字旧身份继续保留；没有已有映射时，依据原生边界生成身份，使首次读取与带映射重读保持一致。
 - **历史派生（Fork / Rollback）**：`agy acp` 1.5.9 未提供 `session/fork` RPC。Adapter 克隆原生 SQLite，按用户输入或已结算的独立唤醒边界裁剪并同步 `conversation_summaries.db`，再经 `session/resume` 打开派生会话。Rollback 只在空闲态可用；运行中 Fork 仅支持当前会话已确认、严格早于活动 Turn 的用户检查点，要求源库为 WAL 且无正在运行的子代理。
-- **压缩与实时命令**：命令目录保留内置 `antigravity.compact`（`/compact`）并通过 ACP `available_commands_update` 合并原生实时命令。在 ACP 模式下，`/compact` 作为原生斜杠命令随 `session/prompt` 发送给 `agy acp` 执行，但 ACP 流不推送旧 PrintMode 专有的 `checkpoint` 步骤事件，因此不合成独立的 `contextCompaction` Item。
+- **压缩与实时命令**：命令目录保留内置 `antigravity.compact`（`/compact`）并通过 ACP `available_commands_update` 合并原生实时命令。在 ACP 模式下，`/compact` 作为原生斜杠命令随 `session/prompt` 发送给 `agy acp` 执行；ACP 流本身不推送旧 PrintMode 专有的“进行中” `checkpoint` 通知，但 Adapter 会从原生 SQLite 已提交的 `step_type = 23`（`DONE` / `ERROR`）记录中投影已结算的 `contextCompaction` Item（包括被动自动压缩与 `/compact`，覆盖实时轮内/轮末及历史回放），不以用量回落或文本内容猜测进行中状态。
 
 ## Copilot 原生接入
 

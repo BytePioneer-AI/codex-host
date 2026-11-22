@@ -390,6 +390,50 @@ describe("Renderer binding native draft routing", () => {
 });
 
 describe("Renderer binding Harness directory diagnostics", () => {
+  it("lets a user select a Harness whose background probe requires authorization", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    const inspectHarness = vi.fn(async ({ credentialAccess }: { credentialAccess?: string }) =>
+      credentialAccess
+        ? readyInspection()
+        : {
+            status: "unavailable",
+            error: {
+              code: "credentialAccessRequired",
+              message: "Authorize in Connections",
+              retryable: false,
+            },
+          },
+    );
+    const client = {
+      listHarnessPlugins: async () => ({ plugins: [{ id: "zcode", name: "ZCode", version: "1" }] }),
+      inspectHarness,
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({});
+    try {
+      probe.setAdapter(
+        { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+        undefined,
+        () => true,
+        { currentHostId: () => "local", clientForHost: () => client } as never,
+      );
+      const agent = () => testState.getConnectionDiagnostics?.()?.snapshot().hosts[0]?.agents[0];
+      await vi.waitFor(() => expect(agent()?.availability).toBe("unavailable"));
+      expect(
+        inspectHarness.mock.calls.every(([params]) => params.credentialAccess === undefined),
+      ).toBe(true);
+      testState.selectAgent?.("zcode");
+      await vi.waitFor(() => expect(agent()).toMatchObject({ availability: "ready", error: null }));
+      expect(inspectHarness).toHaveBeenCalledWith({
+        harnessId: "zcode",
+        credentialAccess: "allow",
+      });
+      expect(testState.renderedModelViews.at(-1)).toMatchObject({ status: "ready" });
+    } finally {
+      probe.dispose();
+    }
+  });
   it("keeps stock Codex usable and probes a replacement local connection", async () => {
     installFakeBrowser();
     const request = vi.fn(async (method: string) => {
@@ -497,7 +541,7 @@ describe("Renderer binding Harness directory diagnostics", () => {
 
       const notify = testState.notifyMutations;
       assert(notify);
-      notify([{ type: "attributes", target: testState.editor } as MutationRecord]);
+      notify([{ type: "attributes", target: testState.editor } as unknown as MutationRecord]);
       for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
       expect(sendRequest).toHaveBeenCalledWith(HARNESS_PLUGIN_LIST_METHOD, {});
       await vi.waitFor(() => {
@@ -1987,7 +2031,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       catalog: original.catalog,
     });
     expect(client.inspectHarness.mock.calls.flat().filter(({ refresh }) => refresh)).toEqual([
-      { harnessId: "claude-code", refresh: true },
+      { harnessId: "claude-code", refresh: true, credentialAccess: "retry" },
     ]);
     pending.resolve({
       ...original,

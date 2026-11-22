@@ -182,7 +182,7 @@ function recordFile(files: Map<string, Buffer>, entry: ZipEntry, bytes: Buffer) 
   if (!entry.directory) files.set(entry.name, bytes);
 }
 
-/** Preserve the synchronous Desktop installation path. */
+/** Synchronous reader for the standalone Desktop extension registry validator. */
 export function readDesktopExtensionZip(zip: Buffer, subpath?: string): Map<string, Buffer> {
   const entries = [...indexExtensionZip(zip, false)];
   const files = new Map<string, Buffer>();
@@ -201,9 +201,12 @@ const inflate = promisify(inflateRaw);
 export async function readExtensionZip(
   zip: Buffer,
   subpath?: string,
+  maxEntryBytes?: number,
 ): Promise<Map<string, Buffer>> {
   const entries: ZipEntry[] = [];
   for (const entry of indexExtensionZip(zip, true)) {
+    if (maxEntryBytes !== undefined)
+      check(entry.size <= maxEntryBytes, "entry exceeds the size limit");
     entries.push(entry);
     if (entries.length % 32 === 0) await yieldToEventLoop();
   }

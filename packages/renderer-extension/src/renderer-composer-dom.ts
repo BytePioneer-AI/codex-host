@@ -2,7 +2,7 @@ import type {
   ComposerAgentPhase,
   ExternalRendererAgent,
   RendererAgent,
-  RendererAgentAvailability,
+  PickerAgentAvailability,
 } from "./agent-selection-state.js";
 import { catalogModelForRef } from "@codexhost/shared-contracts";
 import type {
@@ -818,7 +818,7 @@ export function renderComposerAgentControl(
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
-  availability: Partial<Record<ExternalRendererAgent, RendererAgentAvailability>> = {},
+  availability: Partial<Record<ExternalRendererAgent, PickerAgentAvailability>> = {},
   modelView: ExternalModelControlView = { status: "idle" },
   permissionModeView: RendererPermissionModeControlView = { status: "idle" },
   usage: ThreadUsageSnapshot | null = null,

@@ -67,6 +67,17 @@ function resourcesPage(
   };
 }
 
+let cachedSettingsSheet: CSSStyleSheet | undefined;
+function getWebSettingsStyleSheet(): CSSStyleSheet {
+  if (!cachedSettingsSheet) {
+    cachedSettingsSheet = new CSSStyleSheet();
+    cachedSettingsSheet.replaceSync(
+      `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${delegationCss}\n${consoleComponentsCss}\n${usageCss}\n${coloredBrandCss}\n${WEB_LAYOUT_CSS}`,
+    );
+  }
+  return cachedSettingsSheet;
+}
+
 function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptions): () => void {
   const messages = rendererSettingsMessages(resolveRendererSettingsLocale([options.locale]));
   const manager = webRequestManager();
@@ -105,11 +116,7 @@ function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptio
 
   host.style.colorScheme = options.colorScheme;
   const shadow = host.shadowRoot ?? host.attachShadow({ mode: "open" });
-  const sheet = new CSSStyleSheet();
-  sheet.replaceSync(
-    `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${delegationCss}\n${consoleComponentsCss}\n${usageCss}\n${coloredBrandCss}\n${WEB_LAYOUT_CSS}`,
-  );
-  shadow.adoptedStyleSheets = [sheet];
+  shadow.adoptedStyleSheets = [getWebSettingsStyleSheet()];
   const content = document.createElement("div");
   content.className = "settings-page__content";
   const root = document.createElement("div");

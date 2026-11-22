@@ -1089,7 +1089,11 @@ describe("npm package release", () => {
       expect(paths).not.toContain("runtime/node");
       expect(paths).toContain("bin/codexhost");
       expect(paths).toContain("libexec/codexhost-shim");
-      expect(paths).toContain("libexec/codexhost-shell");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/Info.plist");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/MacOS/CodexHost");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/PkgInfo");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/Resources/AppIcon.icns");
+      expect(paths).not.toContain("libexec/codexhost-shell");
       expect(expectedNpmPackagePaths(releaseTarget("windows-x64"))).toContain(
         "libexec/codexhost-node-repl.exe",
       );

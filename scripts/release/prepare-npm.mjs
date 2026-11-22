@@ -21,6 +21,7 @@ import {
   preinstalledHarnessPluginPaths,
 } from "./harness-plugins.mjs";
 import { linuxGlibcCargoArguments, stripLinuxDebugInfo } from "./linux-glibc.mjs";
+import { MACOS_SHELL_BUNDLE_PATHS, stageMacosShellBundle } from "./macos-shell-bundle.mjs";
 import {
   NPM_PACKAGE_NAME,
   NPM_PLATFORM_PACKAGE_NAMES,
@@ -289,9 +290,11 @@ export function expectedNpmPackagePaths(target) {
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
     ...(target.hostPlatform === "win32" ? ["libexec/codexhost-node-repl.exe"] : []),
-    ...(target.hostPlatform !== "linux"
-      ? [`libexec/codexhost-shell${target.executableSuffix}`]
-      : []),
+    ...(target.hostPlatform === "darwin"
+      ? MACOS_SHELL_BUNDLE_PATHS
+      : target.hostPlatform !== "linux"
+        ? [`libexec/codexhost-shell${target.executableSuffix}`]
+        : []),
     `libexec/codexhost-updater${target.executableSuffix}`,
     "app/codexhost-distribution.json",
     "app/console-server.mjs",
@@ -1256,12 +1259,21 @@ export async function prepareNpmPackage({
       target.rustTarget,
       "release",
     );
-    await copyReleaseFile(
-      path.join(shellOutput, `codexhost-shell${target.executableSuffix}`),
-      path.join(packageRoot, "libexec", `codexhost-shell${target.executableSuffix}`),
-      "npm Desktop shell",
-      true,
-    );
+    if (target.hostPlatform === "darwin") {
+      await stageMacosShellBundle({
+        sourceExecutable: path.join(shellOutput, `codexhost-shell${target.executableSuffix}`),
+        iconSource: path.join(root, "apps/desktop-shell/src-tauri/icons/AppIcon.icns"),
+        destinationRoot: packageRoot,
+        version,
+      });
+    } else {
+      await copyReleaseFile(
+        path.join(shellOutput, `codexhost-shell${target.executableSuffix}`),
+        path.join(packageRoot, "libexec", `codexhost-shell${target.executableSuffix}`),
+        "npm Desktop shell",
+        true,
+      );
+    }
   }
   if (target.hostPlatform === "linux") stripLinuxDebugInfo({ packageRoot });
 

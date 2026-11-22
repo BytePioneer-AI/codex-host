@@ -88,10 +88,14 @@ impl InstalledResources {
         let executable_suffix = env::consts::EXE_SUFFIX;
         let shell_name = format!("codexhost-shell{executable_suffix}");
         let desktop_shell = [
-            resource_root.join("libexec").join(&shell_name),
-            bin.join(shell_name),
+            macos_bundle
+                .then(|| installation_root.join("Helpers/CodexHost.app/Contents/MacOS/CodexHost")),
+            Some(resource_root.join("libexec/CodexHost.app/Contents/MacOS/CodexHost")),
+            Some(resource_root.join("libexec").join(&shell_name)),
+            Some(bin.join(shell_name)),
         ]
         .into_iter()
+        .flatten()
         .find(|path| path.is_file());
 
         Ok(Self {
@@ -274,22 +278,30 @@ mod tests {
 
         let root = env::temp_dir().join(format!("codexhost-shell-layout-{}", std::process::id()));
         let shell = format!("codexhost-shell{}", env::consts::EXE_SUFFIX);
-        for (launcher_dir, shell_dir) in [
-            ("install/bin", "install/bin"),
-            ("install/bin", "install/libexec"),
+        for (launcher_dir, shell_rel) in [
+            ("install/bin", format!("install/bin/{shell}")),
+            ("install/bin", format!("install/libexec/{shell}")),
             (
-                "codexhost.app/Contents/MacOS",
-                "codexhost.app/Contents/MacOS",
+                "install/bin",
+                "install/libexec/CodexHost.app/Contents/MacOS/CodexHost".to_string(),
             ),
             (
                 "codexhost.app/Contents/MacOS",
-                "codexhost.app/Contents/Resources/libexec",
+                format!("codexhost.app/Contents/MacOS/{shell}"),
             ),
-            ("target/debug", "target/debug"),
-            ("target/release", "target/release"),
+            (
+                "codexhost.app/Contents/MacOS",
+                format!("codexhost.app/Contents/Resources/libexec/{shell}"),
+            ),
+            (
+                "codexhost.app/Contents/MacOS",
+                "codexhost.app/Contents/Helpers/CodexHost.app/Contents/MacOS/CodexHost".to_string(),
+            ),
+            ("target/debug", format!("target/debug/{shell}")),
+            ("target/release", format!("target/release/{shell}")),
         ] {
             let launcher = root.join(launcher_dir).join("codexhost");
-            let candidate = root.join(shell_dir).join(&shell);
+            let candidate = root.join(&shell_rel);
             fs::create_dir_all(candidate.parent().unwrap()).unwrap();
             fs::write(&candidate, "fixture").unwrap();
             let locate = |override_path| {

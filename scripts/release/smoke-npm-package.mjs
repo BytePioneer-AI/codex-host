@@ -9,6 +9,7 @@ import {
   verifyLinuxGlibcBaseline,
   verifyLinuxGlibcLoad,
 } from "./linux-glibc.mjs";
+import { MACOS_SHELL_EXECUTABLE_PATH } from "./macos-shell-bundle.mjs";
 import {
   NPM_PLATFORM_PACKAGE_NAMES,
   npmTarballFileName,
@@ -87,7 +88,7 @@ export async function smokeNpmPackage({ targetName, version, workDirectory }) {
         ...executablePaths,
         ...(target.hostPlatform === "darwin"
           ? [
-              "libexec/codexhost-shell",
+              MACOS_SHELL_EXECUTABLE_PATH,
               `app/web-modules/node_modules/node-pty/prebuilds/darwin-${architecture}/spawn-helper`,
             ]
           : []),

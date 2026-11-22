@@ -115,7 +115,7 @@ describe("release Payload", () => {
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
       expect(paths).toHaveLength(
-        34 + preinstalledHarnessPluginPaths().length + expectedWebPaths(target).length,
+        37 + preinstalledHarnessPluginPaths().length + expectedWebPaths(target).length,
       );
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
         36 +
@@ -136,7 +136,10 @@ describe("release Payload", () => {
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "bin/codexhost-start.exe",
       );
-      expect(paths).toContain("libexec/codexhost-shell");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/Info.plist");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/MacOS/CodexHost");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/Resources/AppIcon.icns");
+      expect(paths).not.toContain("libexec/codexhost-shell");
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "libexec/codexhost-shell.exe",
       );

@@ -78,8 +78,14 @@ chmod 755 \
   "$RESOURCES/libexec/codexhost-updater" \
   "$RESOURCES/runtime/node"
 
-# The libexec copy includes the desktop shell when the payload provides it.
-if [[ -f "$PAYLOAD_ROOT/libexec/codexhost-shell" ]]; then
+# Move the embedded desktop shell bundle into Contents/Helpers so strict
+# macOS deep signing accepts the nested app bundle.
+if [[ -d "$RESOURCES/libexec/CodexHost.app" ]]; then
+  mkdir -p "$CONTENTS/Helpers"
+  mv "$RESOURCES/libexec/CodexHost.app" "$CONTENTS/Helpers/CodexHost.app"
+  chmod 755 "$CONTENTS/Helpers/CodexHost.app/Contents/MacOS/CodexHost"
+  /usr/bin/plutil -lint "$CONTENTS/Helpers/CodexHost.app/Contents/Info.plist" >/dev/null
+elif [[ -f "$PAYLOAD_ROOT/libexec/codexhost-shell" ]]; then
   chmod 755 "$RESOURCES/libexec/codexhost-shell"
 fi
 
@@ -134,7 +140,10 @@ PLIST
 /usr/bin/codesign --force --sign - "$RESOURCES/runtime/node"
 /usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-shim"
 /usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-updater"
-if [[ -f "$RESOURCES/libexec/codexhost-shell" ]]; then
+if [[ -d "$CONTENTS/Helpers/CodexHost.app" ]]; then
+  /usr/bin/codesign --force --sign - "$CONTENTS/Helpers/CodexHost.app/Contents/MacOS/CodexHost"
+  /usr/bin/codesign --force --sign - "$CONTENTS/Helpers/CodexHost.app"
+elif [[ -f "$RESOURCES/libexec/codexhost-shell" ]]; then
   /usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-shell"
 fi
 /usr/bin/codesign --force --sign - "$CONTENTS/MacOS/codexhost"

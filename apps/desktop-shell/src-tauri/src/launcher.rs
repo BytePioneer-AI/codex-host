@@ -69,6 +69,24 @@ impl Options {
     }
 }
 
+fn is_same_executable(candidate: &Path, shell: &Path) -> bool {
+    if candidate == shell {
+        return true;
+    }
+    if let (Ok(left), Ok(right)) = (
+        std::fs::canonicalize(candidate),
+        std::fs::canonicalize(shell),
+    ) {
+        return left == right;
+    }
+    cfg!(any(target_os = "macos", windows))
+        && candidate.parent() == shell.parent()
+        && candidate
+            .file_name()
+            .zip(shell.file_name())
+            .is_some_and(|(left, right)| left.eq_ignore_ascii_case(right))
+}
+
 fn find_launcher(shell: &Path, override_path: Option<PathBuf>) -> Option<PathBuf> {
     let name = if cfg!(windows) {
         "codexhost.exe"
@@ -79,13 +97,13 @@ fn find_launcher(shell: &Path, override_path: Option<PathBuf>) -> Option<PathBuf
     std::iter::once(override_path)
         .flatten()
         .chain(std::iter::once(directory.join(name)))
-        .chain(directory.ancestors().skip(1).take(2).flat_map(|parent| {
+        .chain(directory.ancestors().skip(1).take(4).flat_map(|parent| {
             [
                 parent.join("bin").join(name),
                 parent.join("MacOS").join(name),
             ]
         }))
-        .find(|path| path.is_absolute() && path.is_file())
+        .find(|path| path.is_absolute() && path.is_file() && !is_same_executable(path, shell))
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -407,10 +425,18 @@ esac
             "codexhost"
         };
         for (shell, launcher) in [
-            ("install/bin", "install/bin"),
-            ("install/libexec", "install/bin"),
+            ("install/bin/codexhost-shell", "install/bin"),
+            ("install/libexec/codexhost-shell", "install/bin"),
             (
-                "bundle.app/Contents/Resources/libexec",
+                "install/libexec/CodexHost.app/Contents/MacOS/CodexHost",
+                "install/bin",
+            ),
+            (
+                "bundle.app/Contents/Resources/libexec/codexhost-shell",
+                "bundle.app/Contents/MacOS",
+            ),
+            (
+                "bundle.app/Contents/Helpers/CodexHost.app/Contents/MacOS/CodexHost",
                 "bundle.app/Contents/MacOS",
             ),
         ] {
@@ -418,11 +444,14 @@ esac
             std::fs::create_dir_all(&directory).unwrap();
             let launcher = directory.join(name);
             std::fs::write(&launcher, "fixture").unwrap();
-            let shell = root.path().join(shell).join("codexhost-shell");
+            let shell = root.path().join(shell);
+            std::fs::create_dir_all(shell.parent().unwrap()).unwrap();
+            std::fs::write(&shell, "shell-fixture").unwrap();
             assert_eq!(
                 find_launcher(&shell, Some(root.path().join("missing"))),
                 Some(launcher)
             );
+            std::fs::remove_file(&shell).unwrap();
         }
     }
 

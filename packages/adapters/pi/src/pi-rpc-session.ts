@@ -274,6 +274,7 @@ interface ActiveTurn {
   autonomousMessage?: Record<string, unknown>;
   nativeTurnKey: string | null;
   nativeCancellationObserved: boolean;
+  nativeAcknowledged: boolean;
   text: string;
   assistantMessageId: string | null;
   assistantNativeMessageIdentity: PiMessageIdentity | undefined;
@@ -1116,6 +1117,7 @@ export class PiRpcSession {
         autonomousEvents: null,
         nativeTurnKey: null,
         nativeCancellationObserved: false,
+        nativeAcknowledged: false,
         text: "",
         assistantMessageId: null,
         assistantNativeMessageIdentity: undefined,
@@ -1142,6 +1144,9 @@ export class PiRpcSession {
     try {
       this.#drainProgress(onEvent);
       await this.#send("prompt", { message: text });
+      // The native acknowledgement bounds what a late cancellation may still recover.
+      const acknowledged = this.#activeTurn;
+      if (acknowledged) acknowledged.nativeAcknowledged = true;
     } catch (error) {
       this.#rejectActiveTurn(error instanceof Error ? error : new Error(message(error)));
     }
@@ -1225,12 +1230,39 @@ export class PiRpcSession {
     return aborting;
   }
 
-  #terminateFailedCancellation(active: ActiveTurn, fault: PiRpcFaultError): void {
+  async #terminateFailedCancellation(active: ActiveTurn, fault: PiRpcFaultError): Promise<void> {
+    if (this.#activeTurn !== active) return;
+    if (active.nativeAcknowledged && (await this.#settleIdleAfterFailedCancellation(active))) {
+      return;
+    }
     if (this.#activeTurn !== active) return;
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
     active.cancellationTimeout = null;
     this.#fail(fault);
     void this.close().catch(() => undefined);
+  }
+
+  /**
+   * A cancellation of an acknowledged native Turn can outlive its bound while Pi
+   * finishes in-flight work such as compaction. Once Pi is confirmed idle, settle
+   * the Turn as cancelled and keep the Session usable instead of faulting it.
+   * A Prompt still awaiting its native acknowledgement keeps admission closed.
+   */
+  async #settleIdleAfterFailedCancellation(active: ActiveTurn): Promise<boolean> {
+    if (this.#closed || this.#failed) return false;
+    try {
+      const response = await this.#send("get_state", {});
+      if (this.#activeTurn !== active || this.#closed || this.#failed) return false;
+      if (parseSessionStreaming(response)) return false;
+      if (this.#compactionActive || this.#manualCompaction) return false;
+      this.#state = parseSessionState(response);
+      active.settlement = "confirmed";
+      active.cancellation = "accepted";
+      this.#finishSettledTurn(active);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   close(): Promise<void> {
@@ -1327,8 +1359,11 @@ export class PiRpcSession {
       return;
     }
     if (value.type === "agent_start") {
-      if (this.#activeTurn) this.#activeTurn.runGeneration = generation;
-      else if (
+      if (this.#activeTurn) {
+        this.#activeTurn.runGeneration = generation;
+        // A native run fence proves the original Prompt was acknowledged by Pi.
+        this.#activeTurn.nativeAcknowledged = true;
+      } else if (
         !this.#manualCompaction &&
         !this.#compactionActive &&
         (this.#autonomousTurnHandler || this.#autonomousLifecycleHandler)
@@ -1519,6 +1554,7 @@ export class PiRpcSession {
       ...(isRecord(value) ? { autonomousMessage: value } : {}),
       nativeTurnKey: null,
       nativeCancellationObserved: false,
+      nativeAcknowledged: true,
       text: "",
       assistantMessageId: null,
       assistantNativeMessageIdentity: undefined,

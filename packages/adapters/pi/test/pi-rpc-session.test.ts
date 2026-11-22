@@ -42,6 +42,7 @@ type Scenario =
   | "prompt-auto-compaction"
   | "prompt-preflight-compaction"
   | "prompt-preflight-compaction-timeout"
+  | "cancel-compaction-idle"
   | "manual-compaction"
   | "manual-compaction-stalled"
   | "empty"
@@ -583,6 +584,18 @@ class FakePiRpcProcess extends EventEmitter {
       }, 2_500);
       return;
     }
+    if (command.type === "abort" && this.#scenario === "cancel-compaction-idle") {
+      this.#respond(command);
+      this.#output({
+        type: "compaction_end",
+        reason: "threshold",
+        aborted: true,
+        willRetry: false,
+      });
+      // Pi finished compaction after the Abort and is idle without settling the Turn.
+      this.#isStreaming = false;
+      return;
+    }
     this.#respond(command);
     if (
       command.type === "abort" &&
@@ -603,6 +616,10 @@ class FakePiRpcProcess extends EventEmitter {
     }
     if (command.type !== "prompt") return;
     this.#promptCount += 1;
+    if (this.#scenario === "cancel-compaction-idle" && this.#promptCount === 1) {
+      this.#output({ type: "compaction_start", reason: "threshold" });
+      return;
+    }
     if (this.#scenario === "manual-run") return;
     if (this.#scenario === "compact-native-wire") {
       // Captured from Pi 1.4: message_update has neither message nor partial.
@@ -728,12 +745,14 @@ class FakePiRpcProcess extends EventEmitter {
       this.#scenario === "settled-streaming" ||
       ((this.#scenario === "cancel" ||
         this.#scenario === "cancel-slow-settle" ||
+        this.#scenario === "cancel-compaction-idle" ||
         this.#scenario === "long-running") &&
         this.#promptCount > 1)
     ) {
       const text =
         this.#scenario === "cancel" ||
         this.#scenario === "cancel-slow-settle" ||
+        this.#scenario === "cancel-compaction-idle" ||
         this.#scenario === "long-running"
           ? "continued"
           : "synthetic final text";
@@ -3452,6 +3471,29 @@ describe("Pi RPC Turn aggregation", () => {
       await rpc.close();
       vi.useRealTimers();
     }
+  });
+
+  it("reuses the Session when a timed-out cancellation leaves Pi idle after compaction", async () => {
+    const onFault = vi.fn();
+    const rpc = session("cancel-compaction-idle", onFault, { cancelTimeoutMs: 50 });
+    const events: PiTurnEvent[] = [];
+    await rpc.start();
+
+    const turn = rpc.runTurn("compact and cancel", (event) => events.push(event));
+    await waitFor(() => events.some(({ type }) => type === "compaction.started"));
+    await expect(rpc.abort()).resolves.toBeUndefined();
+    await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+    expect(onFault).not.toHaveBeenCalled();
+    expect(events.filter(({ type }) => type.startsWith("compaction."))).toEqual([
+      { type: "compaction.started" },
+      { type: "compaction.completed", outcome: "cancelled" },
+    ]);
+
+    await expect(rpc.runTurn("continue", () => undefined)).resolves.toEqual({
+      text: "continued",
+      cancelled: false,
+    });
+    await rpc.close();
   });
 
   it("round-trips an Interaction that arrives before the Prompt response", async () => {

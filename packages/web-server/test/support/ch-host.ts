@@ -330,6 +330,13 @@ export class FakeChHost implements ChHostClient {
       case "turn/interrupt":
         value = {};
         break;
+      case "turn/steer": {
+        const turn = row?.turns.at(-1);
+        if (row?.status.type !== "active" || !turn || turn.id !== params.expectedTurnId)
+          throw new Error("The selected Turn has ended or changed.");
+        value = { turnId: turn.id };
+        break;
+      }
       default:
         throw new Error("Unhandled CH fixture method: " + method);
     }

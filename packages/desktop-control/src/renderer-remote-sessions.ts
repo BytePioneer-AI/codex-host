@@ -1,4 +1,5 @@
 import type { RemoteSessionOperation } from "@codexhost/shared-contracts";
+import { rendererRemoteDelivery } from "./renderer-remote-delivery.js";
 
 interface Request {
   id: string | number;
@@ -47,6 +48,7 @@ export interface RemoteSessionTarget {
 export async function rendererRemoteSession(
   target: RemoteSessionTarget,
   operation: RemoteSessionOperation,
+  delivery = rendererRemoteDelivery,
 ): Promise<unknown> {
   const routing = target.__codexhostHostRoutingV1;
   if (!routing)
@@ -269,6 +271,16 @@ export async function rendererRemoteSession(
     return loaded ? { ...(page as object), loaded: loaded.data, epoch: generation.epoch } : page;
   }
   const threadId = operation.threadId;
+  if (operation.kind === "delivery" || operation.kind === "queue")
+    return delivery(
+      operation,
+      (method, params) => read(() => manager.sendRequest(method, params)),
+      async (method, params) => {
+        if (routing.forHost(operation.hostId) !== route)
+          throw connectionError("Remote connection changed before dispatch", true);
+        return manager.sendRequest(method, params);
+      },
+    );
   if (operation.kind === "usage")
     return read(() => manager.sendRequest("codexhost/thread/usage/inspect", { threadId }));
   if (operation.kind === "status") {
@@ -278,7 +290,7 @@ export async function rendererRemoteSession(
         includeTurns: false,
       }),
     )) as {
-      thread?: { id?: string; status?: { type?: string } };
+      thread?: { id?: string; status?: { type?: string }; canAcceptDirectInput?: boolean };
     };
     if (result.thread?.id !== threadId || typeof result.thread.status?.type !== "string")
       throw new Error("Invalid remote Thread status");
@@ -297,7 +309,14 @@ export async function rendererRemoteSession(
       const latest = page.data[0];
       if (latest?.status === "inProgress" && typeof latest.id === "string") turnId = latest.id;
     }
-    return { threadId, status: result.thread.status.type, turnId, epoch: generation.epoch };
+    return {
+      threadId,
+      status: result.thread.status.type,
+      turnId,
+      epoch: generation.epoch,
+      supportsDelivery: true,
+      ...(result.thread.canAcceptDirectInput === false ? { readOnly: true } : {}),
+    };
   }
   const pendingRequests = async (): Promise<Request[]> => {
     const conversation = (await read(() => manager.getConversation?.(threadId))) as

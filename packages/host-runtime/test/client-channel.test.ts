@@ -9,7 +9,11 @@ import {
   discoverHostClientChannel,
   type HostClientUpdate,
 } from "@codexhost/desktop-control";
-import { jsonObjectSchema, type ClientChannelEvent } from "@codexhost/shared-contracts";
+import {
+  THREAD_STEER_STRICT_TARGET_PARAM,
+  jsonObjectSchema,
+  type ClientChannelEvent,
+} from "@codexhost/shared-contracts";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
 import { routeDelegationRequest } from "../src/delegation-control-server.js";
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
@@ -388,11 +392,15 @@ describe("public authenticated owner channel", () => {
         ),
       ).scopes.external.favorites.pi,
     ).toEqual([model.id]);
-    const codexPatch = a.request(patchMethod, {
-      operations: [
-        { kind: "newThread", harnessId: "codex", configuration: { model: { id: "gpt" } } },
-      ],
-    });
+    const codexDefault = { newThread: { byHarness: { codex: { model: { id: "gpt" } } } } };
+    await expect(
+      a.request(patchMethod, {
+        operations: [
+          { kind: "newThread", harnessId: "codex", configuration: { model: { id: "gpt" } } },
+        ],
+      }),
+    ).resolves.toMatchObject({ values: codexDefault });
+    const codexPreferences = b.request(getMethod, {});
     let request = await readJsonLine(fixture.official.stdin);
     if (request.method === "initialize") {
       fixture.official.stdout.write(
@@ -405,9 +413,7 @@ describe("public authenticated owner channel", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: request.id, result: { data: [{ model: "gpt", isDefault: true }] } })}\n`,
     );
-    await expect(codexPatch).resolves.toMatchObject({
-      values: { newThread: { byHarness: { codex: { model: { id: "gpt" } } } } },
-    });
+    await expect(codexPreferences).resolves.toMatchObject({ values: codexDefault });
     expect(fixture.adapter.sessions).toHaveLength(0);
   });
   it("rejects unauthenticated/browser-origin traffic and official Thread execution", async () => {
@@ -752,7 +758,7 @@ describe("public authenticated owner channel", () => {
     expect((await a.snapshot(id)).queue?.items).toEqual([]);
     current(fixture).succeedTurn();
   });
-  it("keeps a late Web Steer as a queued follow-up after the busy window closes", async () => {
+  it("rejects a late targeted steer while retaining the older client-channel behavior", async () => {
     const { fixture, a } = await setup();
     const id = await startPiThread(fixture);
     const completedTurnId = await startPiTurn(fixture, id);
@@ -761,6 +767,21 @@ describe("public authenticated owner channel", () => {
       (value) =>
         value.method === "turn/completed" && JSON.stringify(value).includes(completedTurnId),
     );
+    await expect(
+      a.request("turn/steer", {
+        threadId: id,
+        expectedTurnId: completedTurnId,
+        [THREAD_STEER_STRICT_TARGET_PARAM]: true,
+        clientUserMessageId: "targeted-web-steer",
+        input: [{ type: "text", text: "keep this draft" }],
+      }),
+    ).rejects.toMatchObject({
+      code: -32074,
+      message: "External steering must reference the active Turn",
+    });
+    const idle = await a.snapshot(id);
+    expect(idle.thread.status.type).toBe("idle");
+    expect(idle.queue?.items).toEqual([]);
     await expect(
       a.request("turn/steer", {
         threadId: id,

@@ -13,6 +13,8 @@ import { THREAD_ARCHIVE_CONFIRM_METHOD } from "./thread-archive-confirm.js";
 export const CLIENT_CHANNEL_VERSION = 1;
 /** Request-body ceiling of the channel's POST routes; large enough for an inline image prompt. */
 export const CLIENT_REQUEST_LIMIT_BYTES = 128 * 1024 * 1024;
+/** Permit an external Host to start an input admitted to its empty, idle queue. */
+export const THREAD_QUEUE_START_IF_EMPTY_PARAM = "codexhostQueueStartIfEmpty";
 export const CLIENT_CHANNEL_METHODS = [
   "codexhost/skills/list",
   "codexhost/voice/status",

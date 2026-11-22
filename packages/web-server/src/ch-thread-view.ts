@@ -1,6 +1,8 @@
 /** In-memory projection of the CH protocol onto the existing Web UI wire format. */
 import {
   REASONING_TRANSCRIPT_COMMAND,
+  WEB_ACTIVE_TURN_PROJECTION,
+  type THREAD_STEER_STRICT_TARGET_FIELD,
   type ClientFileOperation,
   type ClientThreadImportSource,
   type ClientThreadSnapshot,
@@ -56,6 +58,7 @@ export interface ChThread {
   parentThreadId?: string | null;
   forkedFromId?: string | null;
   canAcceptDirectInput?: boolean;
+  [THREAD_STEER_STRICT_TARGET_FIELD]?: boolean;
   codexhostImportSource?: ClientThreadImportSource | undefined;
 }
 
@@ -373,7 +376,7 @@ export class ChThreadView {
     this.publishFileChanges();
   }
 
-  update(thread: ChThread): void {
+  update(thread: ChThread, activeTurnId?: string | null): void {
     this.ensureCurrent();
     const projectionsByTurn = new Map<string, ReadonlyMap<string, HostItem | undefined>>();
     // The journal is append-only. Same-Turn input can append in place; input
@@ -445,6 +448,14 @@ export class ChThreadView {
     } finally {
       this.log.clock = undefined;
     }
+    this.log.setProjection(
+      WEB_ACTIVE_TURN_PROJECTION,
+      activeTurnId !== undefined
+        ? activeTurnId
+        : thread.status.type === "active"
+          ? (thread.turns.findLast((turn) => !finished(turn.status))?.id ?? null)
+          : null,
+    );
     this.log.setProjection("codexhostToolOutput", Object.fromEntries(this.liveOutput));
     this.publishMessageTimes();
     this.publishFileChanges();

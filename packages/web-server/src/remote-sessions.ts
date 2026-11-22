@@ -4,11 +4,13 @@ import { requestRemoteSession, RemoteSessionError } from "@codexhost/desktop-con
 import { z } from "zod";
 import {
   harnessConfigurationStateSchema,
+  remoteQueueSnapshotSchema,
   remoteSessionOperationSchema,
   remoteSessionRequestBytes,
   threadUsageInspectionSchema,
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
   REMOTE_IDENTITY_MAX_LENGTH,
+  WEB_FOLLOW_PROJECTION_KEYS,
   webToolOutputReferenceSchema,
   type RemoteSessionOperation,
 } from "@codexhost/shared-contracts";
@@ -32,6 +34,13 @@ import {
   remoteThreadRowSchema as rowSchema,
   type RemotePendingRequest as PendingRequest,
 } from "./remote-session-history.ts";
+import {
+  deliverRemoteInput,
+  readRemoteThreadStatus,
+  remoteOutcomeUnknown,
+  remotePromptText,
+  type RemoteSessionCall,
+} from "./remote-session-delivery.ts";
 import { requestOf } from "./store.ts";
 import {
   RpcError,
@@ -114,6 +123,7 @@ interface Entry {
   viewHarnessId?: string;
   viewOrigin?: number;
   reading?: Promise<ChThreadView>;
+  queueReading?: Promise<void>;
   controls?: RemoteControls;
   historyError?: { code: string; message: string };
   usageRequest?: {
@@ -124,7 +134,6 @@ interface Entry {
     pending: boolean;
   };
 }
-type Call = (operation: RemoteSessionOperation) => Promise<unknown>;
 
 /** Separate remote ownership facade. Local ChSessions and native shared-backend discovery
  * retain their own lifecycle; remote cwd and attachment paths never reach local tools. */
@@ -144,7 +153,7 @@ export class RemoteSessions {
   private readonly timer: NodeJS.Timeout;
   constructor(
     private readonly events: EventHub,
-    private readonly call: Call = requestRemoteSession,
+    private readonly call: RemoteSessionCall = requestRemoteSession,
     private readonly workspaces?: Workspaces,
   ) {
     this.timer = setInterval(() => {
@@ -178,25 +187,25 @@ export class RemoteSessions {
         "read",
         "status",
         "usage",
+        "queue",
         "projectHarnesses",
         "inspectHarness",
       ].includes(operation.kind);
+      if (error instanceof RemoteSessionError && error.code === -32096)
+        throw new RpcError("remote/controller-rejected", error.message);
       if (!write && error instanceof RemoteSessionError && ![-32090, -32093].includes(error.code))
         throw new RpcError(
           error.code === -32094
             ? "remote/history-too-large"
             : error.code === -32095
               ? "remote/connection-changed"
-              : error.code === -32096
-                ? "remote/controller-rejected"
-                : "remote/read-failed",
+              : "remote/read-failed",
           error.message,
         );
+      if (write) throw remoteOutcomeUnknown();
       throw new RpcError(
-        write ? "remote/outcome-unknown" : "remote/offline",
-        write
-          ? "Remote operation was not confirmed; its outcome may be unknown. Refresh before deciding whether to retry."
-          : "Desktop remote connection is unavailable. Reconnect in Codex Desktop and refresh. If Desktop cannot be discovered, configure CODEXHOST_DESKTOP_RUNTIME_DESCRIPTOR with its private descriptor path.",
+        "remote/offline",
+        "Desktop remote connection is unavailable. Reconnect in Codex Desktop and refresh. If Desktop cannot be discovered, configure CODEXHOST_DESKTOP_RUNTIME_DESCRIPTOR with its private descriptor path.",
       );
     }
   }
@@ -571,6 +580,8 @@ export class RemoteSessions {
     const changed = entry.online;
     entry.online = false;
     if (changed) delete entry.usageRequest;
+    delete entry.queueReading;
+    if (changed) entry.view?.log.setProjection("queueState", { previewOnly: true, stale: true });
     const id = remoteSessionId(entry.identity.hostId, entry.identity.threadId);
     this.clearPending(id);
     if (changed && !this.closed) this.events.emit("api-session/added", this.summary(id, entry));
@@ -607,7 +618,10 @@ export class RemoteSessions {
         );
     };
     requireCurrent();
+    this.loadQueue(id, current);
     const configurationRevision = current.configurationRevision;
+    const previousView = current.view;
+    const previousReadOnly = previousView?.thread.canAcceptDirectInput === false;
     current.reading ??= (async () => {
       try {
         const before = JSON.stringify(this.summary(id, current));
@@ -684,6 +698,11 @@ export class RemoteSessions {
             current.view.log.setProjection(key, value);
         current.view.log.setProjection("harnessIdentity", remoteHarnessIdentity(current) ?? null);
         applyRemoteControls(current, current.view);
+        if (
+          current.view !== previousView ||
+          (current.view.thread.canAcceptDirectInput === false) !== previousReadOnly
+        )
+          this.loadQueue(id, current);
         this.loadUsage(id, current, current.view, snapshot.epoch);
         this.interactions(id, current, snapshot.requests);
         if (
@@ -723,6 +742,60 @@ export class RemoteSessions {
       delete current.reading;
     });
     return current.reading;
+  }
+  private loadQueue(id: string, entry: Entry): void {
+    const { view, epoch } = entry;
+    if (this.closed || this.entries.get(id) !== entry || !entry.online || !view || !epoch) return;
+    const project = (key: "inbox" | "queueState", value: unknown) => {
+      if (JSON.stringify(view.log.projections[key]) !== JSON.stringify(value))
+        view.log.setProjection(key, value);
+    };
+    if (view.thread.canAcceptDirectInput === false) {
+      project("queueState", { previewOnly: true });
+      project("inbox", { "next-turn": [], "next-step": [] });
+      return;
+    }
+    if (entry.queueReading) return;
+    const isCurrent = () =>
+      !this.closed &&
+      this.entries.get(id) === entry &&
+      entry.online &&
+      entry.view === view &&
+      entry.epoch === epoch &&
+      entry.queueReading === loading;
+    const loading = this.invoke({ kind: "queue", ...entry.identity, epoch })
+      .then((raw) => {
+        if (!isCurrent() || view.thread.canAcceptDirectInput === false) return;
+        const queue = remoteQueueSnapshotSchema.parse(raw);
+        project("queueState", { previewOnly: true });
+        project("inbox", {
+          "next-turn": (queue.available ? queue.items : []).map((item) => ({
+            id: item.id,
+            role: "user",
+            content: [{ type: "text", text: item.preview }],
+            source: { kind: "user", rpcId: item.clientUserMessageId },
+          })),
+          "next-step": [],
+        });
+      })
+      .catch(() => {
+        if (isCurrent() && view.thread.canAcceptDirectInput !== false)
+          project("queueState", { previewOnly: true, stale: true });
+      })
+      .finally(() => {
+        if (entry.queueReading === loading) delete entry.queueReading;
+      });
+    entry.queueReading = loading;
+  }
+  private refreshAfterDelivery(id: string, entry: Entry): void {
+    if (!entry.view) return;
+    // Queue receipts can confirm delivery even while history is unavailable.
+    void Promise.resolve(entry.queueReading).then(() => this.loadQueue(id, entry));
+    void Promise.allSettled([entry.reading])
+      .then(() => {
+        if (!this.closed && this.entries.get(id) === entry) return this.read(id);
+      })
+      .catch(() => undefined);
   }
   private loadUsage(id: string, entry: Entry, view: ChThreadView, epoch: string): void {
     const updatedAt = view.thread.updatedAt;
@@ -776,6 +849,7 @@ export class RemoteSessions {
     delete entry.view;
     delete entry.viewHarnessId;
     delete entry.usageRequest;
+    delete entry.queueReading;
   }
   private createView(row: ChThread, harnessId: string, origin = 0): ChThreadView {
     const view = new ChThreadView(
@@ -783,6 +857,7 @@ export class RemoteSessions {
       harnessId,
       (sessionId, key, value, seq) => {
         view.log.pushProjection(key, value, seq);
+        if (WEB_FOLLOW_PROJECTION_KEYS.has(key)) return;
         for (const sink of this.controls)
           sink.push({ type: "projection", sessionId, key, value, seq });
       },
@@ -965,6 +1040,10 @@ export class RemoteSessions {
         this.followLifetime.signal,
         () => this.entries.get(threadId)?.historyError,
         (view) => this.entries.get(threadId)?.view === view,
+        (view) => {
+          const entry = this.entries.get(threadId);
+          if (entry?.view === view) this.loadQueue(threadId, entry);
+        },
       );
       return true;
     });
@@ -974,17 +1053,44 @@ export class RemoteSessions {
     id: string,
     request: Record<string, unknown>,
   ): Promise<unknown> {
+    if (
+      (method === "session/prompt" && request.mode !== undefined) ||
+      method === "session/updateQueue"
+    ) {
+      const identity = remoteSessionIdentity(id);
+      if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
+      if (!this.entries.has(id)) await this.refresh();
+      const entry = this.entries.get(id);
+      if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
+      const invoke = (operation: RemoteSessionOperation) => {
+        if (this.entries.get(id) !== entry)
+          throw new RpcError("remote/connection-changed", "Remote Thread changed before dispatch.");
+        return this.invoke(operation);
+      };
+      try {
+        return await deliverRemoteInput(invoke, identity, method, request, async () => {
+          const view = await this.read(id);
+          if (this.entries.get(id) !== entry || !entry.epoch)
+            throw new RpcError(
+              "remote/connection-changed",
+              "Remote Thread changed before dispatch.",
+            );
+          return {
+            threadId: identity.threadId,
+            status: view.thread.status.type,
+            turnId: null,
+            epoch: entry.epoch,
+            ...(view.thread.canAcceptDirectInput === false ? { readOnly: true } : {}),
+          };
+        });
+      } finally {
+        this.refreshAfterDelivery(id, entry);
+      }
+    }
     if (method === "session/cancel") {
       const identity = remoteSessionIdentity(id);
       if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
-      const status = z
-        .object({
-          threadId: z.literal(identity.threadId),
-          status: z.string(),
-          turnId: z.string().min(1).nullable(),
-          epoch: z.string().min(1),
-        })
-        .parse(await this.invoke({ kind: "status", ...identity }));
+      const status = await readRemoteThreadStatus((operation) => this.invoke(operation), identity);
       if (status.status !== "active" || status.turnId === null)
         throw new RpcError("remote/stop-unavailable", "No confirmed current Turn to interrupt");
       await this.invoke({
@@ -1035,22 +1141,18 @@ export class RemoteSessions {
     let operation: RemoteSessionOperation;
     switch (method) {
       case "session/prompt": {
-        const content = request.content as Array<{ type: string; text?: string }>;
-        if (
-          !Array.isArray(content) ||
-          content.some((part) => part.type !== "text") ||
-          request.mode === "steer"
-        )
+        const text = remotePromptText(request.content);
+        if (view.thread.canAcceptDirectInput === false)
           throw new RpcError(
-            "remote/unsupported",
-            "Remote follow-up accepts text only; steering and uploads are unavailable",
+            "remote/send-rejected",
+            "This remote Thread does not accept direct input.",
           );
         if (entry.row.status.type === "active")
           throw new RpcError("remote/busy", "Wait for the remote turn or stop it before sending");
         operation = {
           kind: "prompt",
           ...base,
-          text: content.map((part) => part.text ?? "").join("\n"),
+          text,
           ...(typeof request.requestId === "string" ? { requestId: request.requestId } : {}),
         };
         break;

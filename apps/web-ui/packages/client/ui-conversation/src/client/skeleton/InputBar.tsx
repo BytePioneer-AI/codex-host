@@ -174,6 +174,7 @@ export const InputBar = memo(function InputBar({
   // is composed — the pre-check below then defers entirely to the host).
   const imageLimits = useProjection("imageLimits");
   const attachmentInput = useProjection("attachmentInput");
+  const queueState = useProjection("queueState");
   const attachmentsEnabled = attachmentInput?.enabled !== false;
   const imagesOnly = attachmentInput?.imagesOnly === true;
   // Prompt failures are ordinary failures (no create/attach transaction exists
@@ -189,6 +190,14 @@ export const InputBar = memo(function InputBar({
     const { error } = promptError;
     if (error.code === "session/writer-held") {
       showToast(t("error.sessionInUse"));
+      return;
+    }
+    if (error.code === "remote/turn-changed") {
+      showToast(t("error.steerTurnChanged"));
+      return;
+    }
+    if (error.code === "remote/steer-unavailable") {
+      showToast(t("error.remoteSteerUnavailable"));
       return;
     }
     showToast(
@@ -242,7 +251,13 @@ export const InputBar = memo(function InputBar({
   const editorDisabled = removed || (!editable && !workspaceTrigger);
   const steeringAvailable = subagent === null || subagent.address.mode === "continuable";
   const canSteerQueue =
-    !locked && !machineBusy && empty && running && steeringAvailable && input.queue.length > 0;
+    !locked &&
+    !machineBusy &&
+    empty &&
+    running &&
+    steeringAvailable &&
+    queueState?.previewOnly !== true &&
+    input.queue.length > 0;
 
   const wasPendingCreation = useRef(pendingCreation);
   const preservePendingFocus = useRef(false);

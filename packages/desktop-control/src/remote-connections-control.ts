@@ -1,5 +1,6 @@
 import { createConnection } from "node:net";
 import { rendererRemoteSession } from "./renderer-remote-sessions.js";
+import { rendererRemoteDelivery } from "./renderer-remote-delivery.js";
 import {
   REMOTE_THREAD_REPLY_MAX_BYTES,
   REMOTE_THREAD_CONTROL_TIMEOUT_MS,
@@ -15,7 +16,7 @@ const MAX_REPLY_BYTES = 1024 * 1024;
 export function remoteConnectionsExpression(input: RemoteConnectionsRequest): string {
   const request = remoteConnectionsRequestSchema.parse(input);
   if (request.action === "session")
-    return `(async () => { try { return {result:await (${rendererRemoteSession.toString()})(window,${JSON.stringify(request.operation)})}; } catch(error) {return {error:{code:typeof error?.code === "number" ? error.code : -32603,message:String(error?.message ?? error)}};} })()`;
+    return `(async () => { try { return {result:await (${rendererRemoteSession.toString()})(window,${JSON.stringify(request.operation)},${rendererRemoteDelivery.toString()})}; } catch(error) {return {error:{code:typeof error?.code === "number" ? error.code : -32603,message:String(error?.message ?? error)}};} })()`;
   return `(async () => {
     try {
       const api = window.__codexhostRendererBindingProbeV1;

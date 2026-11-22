@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { it } from "node:test";
 import {
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  THREAD_STEER_STRICT_TARGET_FIELD,
   decodeHarnessPluginRoute,
 } from "@codexhost/shared-contracts";
 import { DataDir } from "../src/store.ts";
@@ -405,7 +406,7 @@ it("searches the displayed title at every fallback level", async (t) => {
   }
 });
 
-it("starts a late steer directly when CH is already idle, preserving its delivery policy", async (t) => {
+it("rejects a late Web steer when CH is already idle", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-late-steer-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const host = new FakeChHost();
@@ -428,16 +429,72 @@ it("starts a late steer directly when CH is already idle, preserving its deliver
       },
     },
   });
-  assert.ok(result.ok, result.ok ? undefined : result.error.message);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "remote/turn-changed");
   assert.equal(
-    host.requests.some((request) => request.method === "turn/steer"),
+    host.requests.some((request) => request.method.startsWith("turn/")),
     false,
   );
-  assert.deepEqual(host.requests.find((request) => request.method === "turn/start")?.params, {
-    threadId: "idle-thread",
-    input: [{ type: "text", text: "keep this message", text_elements: [] }],
-    clientUserMessageId: "late-steer",
+});
+
+it("binds local Web steer to the displayed Turn and a supporting external Host", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-strict-steer-"));
+  const host = new FakeChHost();
+  const thread = host.add("active-thread", root);
+  thread.status = { type: "active" };
+  thread.turns.push({ id: "current-turn", status: "inProgress", items: [] });
+  const sessions = new ChSessions(
+    host,
+    new Workspaces(new DataDir(root), root),
+    new EventHub(root),
+  );
+  t.after(async () => {
+    await sessions.close();
+    rmSync(root, { recursive: true, force: true });
   });
+  const rpc = new RpcRegistry();
+  sessions.register(rpc, new StreamRegistry());
+  const steer = (expectedTurnId: string) =>
+    rpc.dispatch("session/prompt", {
+      args: {
+        request: {
+          sessionId: thread.id,
+          requestId: "message",
+          content: [{ type: "text", text: "keep this message" }],
+          mode: "steer",
+          expectedTurnId,
+        },
+      },
+    });
+
+  const changed = await steer("previous-turn");
+  assert.equal(changed.ok, false);
+  assert.equal(changed.error.code, "remote/turn-changed");
+  const unsupported = await steer("current-turn");
+  assert.equal(unsupported.ok, false);
+  assert.equal(unsupported.error.code, "remote/steer-unavailable");
+  assert.deepEqual(
+    host.requests.filter(({ method }) => method.startsWith("turn/")),
+    [],
+  );
+
+  thread[THREAD_STEER_STRICT_TARGET_FIELD] = true;
+  assert.deepEqual(await steer("current-turn"), { ok: true, value: { accepted: true } });
+  assert.deepEqual(
+    host.requests.filter(({ method }) => method.startsWith("turn/")),
+    [
+      {
+        method: "turn/steer",
+        params: {
+          threadId: thread.id,
+          expectedTurnId: "current-turn",
+          clientUserMessageId: "message",
+          codexhostSteerStrictTarget: true,
+          input: [{ type: "text", text: "keep this message", text_elements: [] }],
+        },
+      },
+    ],
+  );
 });
 
 it("shares one native history read across concurrent browser consumers", async (t) => {

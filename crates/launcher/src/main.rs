@@ -513,6 +513,14 @@ fn resolve_resource_path(
     }
 }
 
+fn default_node_with_npm(bundled: PathBuf, npm_node: Option<OsString>) -> PathBuf {
+    if bundled.is_file() {
+        bundled
+    } else {
+        npm_node.map(PathBuf::from).unwrap_or(bundled)
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn macos_default_node(
     desktop_root: Option<&Path>,
@@ -525,10 +533,8 @@ fn macos_default_node(
         .filter(|node| node.is_file());
     if let Some(desktop_node) = desktop_node {
         desktop_node
-    } else if bundled.is_file() {
-        bundled
     } else {
-        npm_node.map(PathBuf::from).unwrap_or(bundled)
+        default_node_with_npm(bundled, npm_node)
     }
 }
 
@@ -540,7 +546,10 @@ fn select_host_node(
     #[cfg(target_os = "macos")]
     let bundled = macos_default_node(desktop_root, bundled, env::var_os(NPM_NODE_PATH_ENV));
     #[cfg(not(target_os = "macos"))]
-    let _ = desktop_root;
+    let bundled = {
+        let _ = desktop_root;
+        default_node_with_npm(bundled, env::var_os(NPM_NODE_PATH_ENV))
+    };
     explicit.unwrap_or(bundled)
 }
 
@@ -1546,7 +1555,7 @@ fn start_launch_console(options: &LaunchOptions) {
         #[cfg(target_os = "macos")]
         let default_node = macos_default_node(None, installed.node, env::var_os(NPM_NODE_PATH_ENV));
         #[cfg(not(target_os = "macos"))]
-        let default_node = installed.node;
+        let default_node = default_node_with_npm(installed.node, env::var_os(NPM_NODE_PATH_ENV));
         console::start_for_launch(console::console_command_for(
             options.node.as_deref().unwrap_or(&default_node),
             options
@@ -1568,7 +1577,7 @@ fn run_console_command(action: &str) -> Result<(), Box<dyn Error>> {
         .into());
     }
     let command = console::ConsoleCommand {
-        node: installed.node,
+        node: default_node_with_npm(installed.node, env::var_os(NPM_NODE_PATH_ENV)),
         console_server: installed.console_server,
     };
     if console::run(&command, action)? {

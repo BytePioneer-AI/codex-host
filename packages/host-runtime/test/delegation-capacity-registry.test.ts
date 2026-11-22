@@ -80,6 +80,8 @@ function session() {
         .filter(([, thread]) => thread.status === "running")
         .map(([threadId]) => threadId),
     start: vi.fn(async (input: DelegationStartInput, admitted?: DelegationStartIdentity) => {
+      const { model } = input;
+      if (typeof model === "string") throw new Error("Fixture requires a resolved model reference");
       created += 1;
       const identity = admitted ?? {
         delegationId: `delegation-${created}`,
@@ -89,7 +91,7 @@ function session() {
       const admission = admitted
         ? undefined
         : await gate?.admit({
-            input: { ...input, parentThreadId: PARENT, cwd: "/work" },
+            input: { ...input, parentThreadId: PARENT, cwd: "/work", model },
             title: input.taskName ?? input.task,
             taskDigest: input.task,
             identity,

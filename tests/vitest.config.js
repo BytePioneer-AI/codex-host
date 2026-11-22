@@ -13,6 +13,8 @@ const include = [
   "apps/web-ui/packages/client/ui-conversation/test/*.test.ts",
   "apps/web-ui/packages/client/ui-input-trigger/test/*.test.ts",
   "apps/web-ui/packages/client/ui-sidebar-browser/test/*.test.ts",
+  "apps/web-ui/packages/client/connection/test/*.test.ts",
+  "tests/dsh/**/*.spec.ts",
   "apps/web-ui/packages/client/hmr/tests/*.spec.ts",
   "packages/repository-automation/test/**/*.test.mjs",
   "tests/release/**/*.test.mjs",

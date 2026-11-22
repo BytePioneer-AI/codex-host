@@ -2,9 +2,9 @@
 
 import { Context } from "@deepseek-ai/cordis";
 import { describe, expect, it } from "vitest";
-import { HostConnectionService } from "../../apps/web-ui/packages/client/connection/src/rpc-host.ts";
-import type { BrowserAuth } from "../../apps/web-ui/packages/client/connection/src/browser-auth.ts";
-import type { ConnectionTrustRequest } from "../../apps/web-ui/packages/client/connection/src/rpc.ts";
+import { HostConnectionService } from "../src/rpc-host.ts";
+import type { BrowserAuth } from "../src/browser-auth.ts";
+import type { ConnectionTrustRequest } from "../src/rpc.ts";
 
 function request(origin: string | undefined): ConnectionTrustRequest {
   const headers: Record<string, string> = { host: "127.0.0.1:4400" };

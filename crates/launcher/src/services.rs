@@ -140,9 +140,24 @@ fn web_browser_url(login_url: &str, connect_devices: bool) -> String {
 fn open_web(
     options: &Options,
     settings: &[String],
+    update_recovery: bool,
     connect_devices: bool,
 ) -> Result<(), Box<dyn Error>> {
-    ensure_current(options, settings, false)?;
+    // Update recovery threads through so orphan cleanup is scoped to this
+    // installation's runtime; device connection stays closed on this entry.
+    open_web_with(options, settings, update_recovery, connect_devices, &ensure_current)
+}
+
+type EnsureFn<'a> = dyn Fn(&Options, &[String], bool) -> Result<(), Box<dyn Error>> + 'a;
+
+fn open_web_with(
+    options: &Options,
+    settings: &[String],
+    update_recovery: bool,
+    connect_devices: bool,
+    ensure: &EnsureFn<'_>,
+) -> Result<(), Box<dyn Error>> {
+    ensure(options, settings, update_recovery)?;
     let ready =
         web_service::owner(&options.data)?.ok_or("Web exited before its address could be read")?;
     println!("codexhost web: {}", ready.access.login_url);
@@ -172,7 +187,7 @@ pub fn open_for_launch(options: &LaunchOptions) -> Result<(), Box<dyn Error>> {
     if console::presentation() == Some(console::Presentation::Print) {
         ensure_current(&resolved, &[], options.update_recovery)
     } else {
-        open_web(&resolved, &[], options.update_recovery)
+        open_web(&resolved, &[], options.update_recovery, false)
     }
 }
 
@@ -499,7 +514,7 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
             }
             result
         } else {
-            open_web(&options, &settings, connect_devices)
+            open_web(&options, &settings, update_recovery, connect_devices)
         }
     } else if action == "stop-for-update" {
         stop_for_update(&options)
@@ -530,6 +545,43 @@ mod tests {
             !*WEB_ANNOUNCED.lock().unwrap(),
             "joining must not announce Web"
         );
+    }
+
+    #[test]
+    fn open_web_recovery_forwards_update_recovery_without_device_connection() {
+        let root = env::temp_dir().join(format!(
+            "codexhost-open-web-flags-{}",
+            std::process::id()
+        ));
+        let options = Options {
+            node: root.clone(),
+            host_node: root.clone(),
+            runtime: root.clone(),
+            host_runtime: root.clone(),
+            data: root.clone(),
+            ready: None,
+        };
+        let captured = Mutex::new(None);
+        let ensure = |_: &Options, settings: &[String], update_recovery: bool| {
+            *captured.lock().unwrap() = Some((settings.to_vec(), update_recovery));
+            Ok(())
+        };
+        // Recovery launch: ensure must see update_recovery=true, and the
+        // device-connection page must stay closed (connect_devices=false).
+        let result = open_web_with(&options, &[], true, false, &ensure);
+        assert_eq!(
+            captured.lock().unwrap().as_ref().map(|(s, r)| (s.as_slice(), *r)),
+            Some((&[][..], true)),
+            "ensure_current must receive update_recovery=true on the recovery path"
+        );
+        assert!(result.is_err());
+        // Plain interactive launch keeps device connection opt-in.
+        let ensure = |_: &Options, _: &[String], update_recovery: bool| {
+            assert!(!update_recovery, "plain launch is not update recovery");
+            Ok(())
+        };
+        assert!(open_web_with(&options, &[], false, true, &ensure).is_err());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

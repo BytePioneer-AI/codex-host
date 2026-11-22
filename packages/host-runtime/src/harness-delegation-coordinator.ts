@@ -51,6 +51,7 @@ import {
   type ThreadExportResult,
 } from "./delegation-thread-export.js";
 import { resolveDelegationConfiguration } from "./delegation-configuration.js";
+import { normalizeStoredModelRef } from "./stored-model-ref.js";
 import { originClientName } from "./external-client-origin.js";
 import { delegationTitle } from "./delegation-title.js";
 import { projectDelegationThreadSnapshot, validateReadOptions } from "./delegation-snapshot.js";
@@ -99,7 +100,7 @@ function taskDigest(
       JSON.stringify({
         task: input.task,
         cwd: path.resolve(input.cwd),
-        modelId: input.model?.id ?? null,
+        model: input.model ? [input.model.id, input.model.serviceTier ?? null] : null,
         thinkingOptionId: input.thinkingOptionId ?? null,
       }),
     )
@@ -287,15 +288,28 @@ export class HarnessDelegationCoordinator {
         title: result.title ?? title,
       };
     }
-    const startInput = { ...input, parentThreadId, cwd: path.resolve(selectedCwd) };
-    if (!this.#adapters.has(input.harnessId)) {
+    const targetHarnessId = input.harnessId;
+    const adapter = this.#adapters.get(targetHarnessId);
+    if (!adapter) {
       throw new DelegationControlError(
         "HARNESS_NOT_FOUND",
         `Harness '${input.harnessId}' is unavailable`,
         { validHarnessIds: ["codex", ...this.#adapters.keys()] },
       );
     }
-    const targetHarnessId = input.harnessId as ExternalHarnessId;
+    const startInput = { ...input, parentThreadId, cwd: path.resolve(selectedCwd) };
+    const inspected = input.model
+      ? await this.inspect(startInput).catch(() => undefined)
+      : undefined;
+    if (input.model && inspected?.inspection.status === "ready") {
+      const model = await normalizeStoredModelRef(
+        input.model,
+        inspected.inspection.catalog,
+        targetHarnessId,
+        adapter,
+      );
+      if (model) startInput.model = model;
+    }
     const digest = taskDigest(startInput);
     const duplicate = input.requestId
       ? await this.#repository.findDelegationByRequest(input.requestId)
@@ -317,17 +331,7 @@ export class HarnessDelegationCoordinator {
     }
     if (duplicate) return this.#existingResult(duplicate);
 
-    const adapter = this.#adapters.get(targetHarnessId);
-    if (!adapter) {
-      throw new DelegationControlError(
-        "HARNESS_NOT_FOUND",
-        `Harness '${targetHarnessId}' is unavailable`,
-        {
-          validHarnessIds: ["codex", ...this.#adapters.keys()],
-        },
-      );
-    }
-    const selection = await this.#resolveConfiguration(startInput, input.model);
+    const selection = await this.#resolveConfiguration(startInput, startInput.model, inspected);
     const { model, thinkingOptionId } = selection;
     const transportModelId =
       model || thinkingOptionId
@@ -770,6 +774,7 @@ export class HarnessDelegationCoordinator {
   ) {
     return resolveDelegationConfiguration({
       harnessId,
+      adapter: this.#adapters.get(harnessId),
       explicit: { model, thinkingOptionId },
       readDefault: async () => this.#readDelegationDefault?.(harnessId),
       inspect: async () => inspected ?? this.inspect({ harnessId, cwd }),

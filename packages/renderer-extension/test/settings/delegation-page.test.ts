@@ -1,7 +1,10 @@
 import {
-  encodeOfficialCodexModelRef,
+  officialCodexModelRef,
+  harnessModelRefKey,
+  type HarnessModelRef,
   harnessIdSchema,
   harnessModelRefIdSchema,
+  harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
   type HarnessDelegationDefault,
   type HarnessInspection,
@@ -226,7 +229,12 @@ function makeDiagnostics(snapshot: RendererConnectionSnapshot): {
 }
 
 function readyInspection(options: {
-  models: Array<{ id: string; label: string; fastModelId?: string; supportedThinking?: string[] }>;
+  models: Array<{
+    id: string;
+    label: string;
+    fastModel?: HarnessModelRef;
+    supportedThinking?: string[];
+  }>;
   defaultModelId?: string;
   thinkingOptions?: Array<{ id: string; label: string }>;
   selectThinkingOption: boolean;
@@ -237,9 +245,7 @@ function readyInspection(options: {
       models: options.models.map((m) => ({
         ref: { id: harnessModelRefIdSchema.parse(m.id) },
         label: m.label,
-        ...(m.fastModelId
-          ? { fastModel: { id: harnessModelRefIdSchema.parse(m.fastModelId) } }
-          : {}),
+        ...(m.fastModel ? { fastModel: m.fastModel } : {}),
         ...(m.supportedThinking !== undefined
           ? {
               supportedThinkingOptionIds: m.supportedThinking.map((id) =>
@@ -413,10 +419,14 @@ describe("Delegation settings page", () => {
 
   it("loads catalog on demand when interacting with a dropdown, hides thinking when unsupported, and clears incompatible thinking on model switch", async () => {
     const { diagnostics } = makeDiagnostics(baseSnapshot());
-    const base = encodeOfficialCodexModelRef("gpt-5.4");
-    const fast = encodeOfficialCodexModelRef("gpt-5.4", "priority");
-    const mini = encodeOfficialCodexModelRef("gpt-5.4-mini");
-    const savedState: Record<string, HarnessDelegationDefault> = { codex: { model: fast } };
+    const base = officialCodexModelRef("gpt-5.4");
+    const fast = officialCodexModelRef("gpt-5.4", "priority");
+    const mini = officialCodexModelRef("gpt-5.4-mini");
+    const native = harnessModelRefSchema.parse({ id: "provider/模型@preview" });
+    const savedState: Record<string, HarnessDelegationDefault> = {
+      codex: { model: fast },
+      grok: { model: native },
+    };
     let revision = 1;
 
     const inspectHarness = vi.fn(async ({ harnessId }: { harnessId: string }) => {
@@ -426,7 +436,7 @@ describe("Delegation settings page", () => {
             {
               id: base.id,
               label: "GPT-5.4",
-              fastModelId: fast.id,
+              fastModel: fast,
               supportedThinking: ["low", "high"],
             },
             { id: mini.id, label: "GPT-5.4 Mini", supportedThinking: ["low"] },
@@ -442,7 +452,7 @@ describe("Delegation settings page", () => {
       return readyInspection({
         models: [
           { id: "grok-4", label: "Grok 4" },
-          { id: "grok-4-fast", label: "Grok 4 Fast" },
+          { id: native.id, label: "Grok Preview" },
         ],
         defaultModelId: "grok-4",
         selectThinkingOption: false,
@@ -491,9 +501,10 @@ describe("Delegation settings page", () => {
         el.classList.contains("settings-delegation__lane") && el.dataset.harnessId === "codex",
     );
     await vi.waitFor(() => expect(selectOptionLabels(codexModel)).toContain("gpt-5.4 · Fast"));
-    expect(codexModel.value).toBe(fast.id);
+    expect(codexModel.value).toBe(harnessModelRefKey(fast));
     expect(textOf(codexRow)).toContain("当前生效：gpt-5.4 · Fast");
     expect(textOf(codexLane)).toContain("gpt-5.4 · Fast");
+    expect(textOf(rowFor(content, "grok"))).toContain(`当前生效：${native.id}`);
     expect(inspectHarness).not.toHaveBeenCalled();
 
     codexModel.dispatch("focus");
@@ -571,8 +582,10 @@ describe("Delegation settings page", () => {
     const grokThinking = selectIn(grokRow, "thinking");
     grokModel.dispatch("focus");
     await vi.waitFor(() =>
-      expect(selectOptionLabels(grokModel)).toEqual(["跟随 Agent 默认", "Grok 4", "Grok 4 Fast"]),
+      expect(selectOptionLabels(grokModel)).toEqual(["跟随 Agent 默认", "Grok 4", "Grok Preview"]),
     );
+    expect(grokModel.value).toBe(native.id);
+    expect(textOf(rowFor(content, "grok"))).toContain("当前生效：Grok Preview");
     expect(grokThinking.parent?.hidden).toBe(true);
 
     cleanup?.();

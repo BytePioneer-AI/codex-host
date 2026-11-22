@@ -69,7 +69,10 @@ export class HarnessPreferencesStore {
       values: structuredClone(document.scopes[scope] ?? { favorites: {} }),
     };
   }
-  patch(input: HarnessPreferencePatch): Promise<HarnessPreferenceSnapshot> {
+  patch(
+    input: HarnessPreferencePatch,
+    resolveFavorite?: (harnessId: string, key: string) => Promise<string | undefined>,
+  ): Promise<HarnessPreferenceSnapshot> {
     const request = harnessPreferencePatchSchema.parse(input);
     const work = this.tail.then(async () => {
       if (this.closed) throw new Error("Harness preferences store is closed");
@@ -88,7 +91,15 @@ export class HarnessPreferencesStore {
         } else if (operation.kind === "favorite") {
           const favorites = new Set(values.favorites[operation.harnessId] ?? []);
           if (operation.enabled) favorites.add(operation.modelId);
-          else favorites.delete(operation.modelId);
+          else {
+            favorites.delete(operation.modelId);
+            if (resolveFavorite) {
+              for (const key of favorites) {
+                if ((await resolveFavorite(operation.harnessId, key)) === operation.modelId)
+                  favorites.delete(key);
+              }
+            }
+          }
           values.favorites[operation.harnessId] = [...favorites];
         } else if (operation.kind === "delegation") {
           const { harnessId, configuration } = operation;

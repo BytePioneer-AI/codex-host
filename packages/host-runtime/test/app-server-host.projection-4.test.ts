@@ -7,8 +7,7 @@ import { MappingStore } from "@codexhost/mapping-store";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   decodeExternalTransportSelection,
-  encodeClaudeTransportModel,
-  encodePiTransportModel,
+  encodeExternalTransportSelection,
   type ExternalHarnessId,
   type JsonObject,
 } from "@codexhost/protocol-core";
@@ -1269,12 +1268,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
     const firstThreadId = await startExternalThread(
       fixture,
-      encodeClaudeTransportModel(secondModel),
+      encodeExternalTransportSelection("claude-code", { model: secondModel }),
       20,
     );
     const secondThreadId = await startExternalThread(
       fixture,
-      encodeClaudeTransportModel(firstModel),
+      encodeExternalTransportSelection("claude-code", { model: firstModel }),
       21,
     );
     expect(claudeAdapter.sessions[0]?.initialState.effectiveModel).toEqual(secondModel);
@@ -1324,7 +1323,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       method: "turn/start",
       params: {
         threadId: secondThreadId,
-        model: encodePiTransportModel(piAdapter.catalog.defaultModel),
+        model: encodeExternalTransportSelection("pi", { model: piAdapter.catalog.defaultModel }),
         input: [{ type: "text", text: "foreign" }],
       },
     });

@@ -1,6 +1,7 @@
 /** Native plugin/model metadata from the same Host as the shared Threads, never local Adapter instances. */
 import {
   harnessInspectionSchema,
+  harnessModelRefKey,
   harnessIdSchema,
   harnessPluginListResultSchema,
   type HarnessPluginDescriptor,
@@ -209,10 +210,9 @@ export class ChHarnessCatalog {
       first?.inspection.status === "ready"
         ? {
             provider: first.id,
-            model:
-              first.inspection.catalog.defaultModel?.id ??
-              first.inspection.catalog.models[0]?.ref.id ??
-              "",
+            model: harnessModelRefKey(
+              first.inspection.catalog.defaultModel ?? first.inspection.catalog.models[0]!.ref,
+            ),
           }
         : undefined;
     // Keep the targeted authorization action reachable even with no routable Harness.

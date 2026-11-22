@@ -55,6 +55,7 @@ import {
   type HostInteractionId,
   type NativeSessionRef,
   type NativeTurnRef,
+  catalogModelForRef,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -72,7 +73,7 @@ import {
   decodeQwenCodePermissionModeId,
 } from "./permission-modes.js";
 import {
-  nativeModelIdForRef,
+  normalizeStoredQwenCodeModelRef,
   parseQwenCodeModelState,
   stateForQwenCodeModel,
   type QwenCodeModelState,
@@ -433,8 +434,7 @@ class QwenCodeHarnessSession implements HarnessSession {
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    const nativeModelId = nativeModelIdForRef(this.#modelState, command.model);
-    if (!nativeModelId) {
+    if (!catalogModelForRef(this.#modelState.catalog, command.model)) {
       return {
         ok: false,
         error: {
@@ -456,7 +456,7 @@ class QwenCodeHarnessSession implements HarnessSession {
     }
     this.#configuring = true;
     try {
-      await this.#transport.setModel(nativeModelId);
+      await this.#transport.setModel(command.model.id);
       this.#modelState = { ...this.#modelState, currentModel: command.model };
       this.#state = stateForQwenCodeModel(
         this.#modelState,
@@ -916,6 +916,7 @@ class QwenCodeHarnessSession implements HarnessSession {
 }
 
 export class QwenCodeAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredQwenCodeModelRef;
   readonly harnessId: HarnessId = qwenCodeHarnessId;
   readonly #closeTimeoutMs: number;
   readonly #dependencies: QwenCodeAdapterDependencies;
@@ -1115,8 +1116,7 @@ export class QwenCodeAdapter implements HarnessAdapter {
         input.kind === "create"
           ? (input.model ?? modelState.currentModel)
           : modelState.currentModel;
-      const nativeModelId = nativeModelIdForRef(modelState, selectedModel);
-      if (!nativeModelId) {
+      if (!catalogModelForRef(modelState.catalog, selectedModel)) {
         throw new QwenCodeTransportError(
           "protocolError",
           "Requested Qwen Code Model is unavailable",
@@ -1124,7 +1124,7 @@ export class QwenCodeAdapter implements HarnessAdapter {
       }
       // Pin the SDK Session to the Model observed through getContextUsage(), or
       // to the explicit create selection, before any Host Turn can start.
-      await transport.setModel(nativeModelId);
+      await transport.setModel(selectedModel.id);
       modelState.currentModel = selectedModel;
       const history: HostTurnSnapshot[] =
         input.kind === "resume"

@@ -7,7 +7,7 @@ import {
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
 import { DevinAdapter, DevinSession } from "../src/adapter.js";
-import { devinModelRef } from "../src/models.js";
+import { devinCatalog, devinModelRef } from "../src/models.js";
 import { DevinTransport, type DevinSessionInfo } from "../src/transport.js";
 
 const info = {
@@ -189,7 +189,12 @@ describe("Devin configuration during an active Turn", () => {
     f.configure.mockReturnValue(config.promise);
     try {
       expect((await f.session.execute(start)).ok).toBe(true);
-      const selection = f.session.execute({ type: "model.select", model });
+      const catalog = devinCatalog(info);
+      const saved = devinModelRef("devin.Z3B0LTUtNC1taW5pLWxvdw");
+      const normalized = new DevinAdapter().normalizeStoredModelRef(saved, catalog);
+      expect(normalized).toEqual({ id: "gpt-5-4-mini-low" });
+      if (!normalized) throw new Error("Expected a normalized Devin Model Ref");
+      const selection = f.session.execute({ type: "model.select", model: normalized });
       expect(f.configure).toHaveBeenCalledWith("model", "gpt-5-4-mini-low");
       expect(f.session.initialState.effectiveModel).toEqual(devinModelRef("swe-2-high"));
       expect(

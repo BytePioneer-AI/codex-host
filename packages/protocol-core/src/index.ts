@@ -98,14 +98,7 @@ export {
   decodeOpenCodeTransportSelection,
   decodePiTransportModel,
   decodePiTransportSelection,
-  encodeClaudeTransportModel,
-  encodeAntigravityTransportModel,
-  encodeDeepSeekHarnessTransportModel,
   encodeExternalTransportSelection,
-  encodeGrokTransportModel,
-  encodeOmpTransportModel,
-  encodeOpenCodeTransportModel,
-  encodePiTransportModel,
   transportModelIdForHarness,
 } from "./model-routing.js";
 export type {

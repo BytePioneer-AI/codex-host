@@ -174,93 +174,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function piTransportModelId(
-  model?: HarnessModelRef,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (thinkingOptionId) throw new Error("Pi transport Thinking requires a Model Ref");
-    return PI_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  return `${PI_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
-}
-
-export function ompTransportModelId(
-  model?: HarnessModelRef,
-  thinkingOptionId?: HarnessThinkingOptionId,
-  permissionModeId?: HarnessPermissionModeId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("OMP transport configuration requires a Model Ref");
-    }
-    return OMP_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionMode = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedPermissionMode) {
-    return `${OMP_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode}@${parsedThinking ?? ""}`;
-  }
-  return `${OMP_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
-}
-
-export function antigravityTransportModelId(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("Antigravity transport configuration requires a Model Ref");
-    }
-    return ANTIGRAVITY_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermission = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedThinking) {
-    return `${ANTIGRAVITY_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermission ?? ""}@${parsedThinking}`;
-  }
-  return `${ANTIGRAVITY_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermission ? `@${parsedPermission}` : ""}`;
-}
-
-export function openCodeTransportModelId(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("OpenCode transport configuration requires a Model Ref");
-    }
-    return OPENCODE_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionMode = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedThinking) {
-    return `${OPENCODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode ?? ""}@${parsedThinking}`;
-  }
-  return `${OPENCODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
-}
-
 export function decodeOpenCodeTransportModelId(value: unknown): {
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
@@ -292,54 +205,6 @@ export function decodeOpenCodeTransportModelId(value: unknown): {
 
 export function isOpenCodeTransportModelId(value: unknown): value is string {
   return decodeOpenCodeTransportModelId(value) !== null;
-}
-
-export function claudeTransportModelId(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("Claude Code transport configuration requires a Model Ref");
-    }
-    return CLAUDE_CODE_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionMode = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinkingOption = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedThinkingOption) {
-    return `${CLAUDE_CODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode ?? ""}@${parsedThinkingOption}`;
-  }
-  return `${CLAUDE_CODE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
-}
-
-export function grokTransportModelId(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("Grok transport configuration requires a Model Ref");
-    }
-    return GROK_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionMode = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedThinking) {
-    return `${GROK_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode ?? ""}@${parsedThinking}`;
-  }
-  return `${GROK_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
 }
 
 export function decodeGrokTransportModelId(value: unknown): {
@@ -408,22 +273,6 @@ export function isGrokTransportModelId(value: unknown): value is string {
 
 export function isClaudeTransportModelId(value: unknown): value is string {
   return decodeClaudeTransportModelId(value) !== null;
-}
-
-export function deepSeekHarnessTransportModelId(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-): string {
-  if (!model) {
-    if (permissionModeId) {
-      throw new Error("DeepSeek Harness transport Permission Mode requires a Model Ref");
-    }
-    return DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID;
-  }
-  const parsedPermissionModeId = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  return `${DEEPSEEK_HARNESS_TRANSPORT_MODEL_PREFIX}${harnessModelRefSchema.parse(model).id}${parsedPermissionModeId ? `@${parsedPermissionModeId}` : ""}`;
 }
 
 export function decodeDeepSeekHarnessTransportModelId(value: unknown): {

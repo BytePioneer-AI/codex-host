@@ -6,6 +6,9 @@ import {
   harnessPreferenceSnapshotSchema,
   harnessPreferenceOperationSchema,
   harnessIdSchema,
+  harnessModelRefFromKey,
+  sameHarnessModelRef,
+  type HarnessModelServiceTier,
   type HarnessPreferenceOperation,
   type HarnessPreferenceSnapshot,
 } from "@codexhost/shared-contracts";
@@ -66,7 +69,7 @@ export class WebHarnessPreferences {
   async remember(
     harnessId: string,
     configuration: {
-      model?: { id: string };
+      model?: { id: string; serviceTier?: HarnessModelServiceTier | undefined };
       thinkingOptionId?: string | undefined;
       permissionModeId?: string | undefined;
     },
@@ -99,17 +102,15 @@ export class WebHarnessPreferences {
         fallbackModelId?: string,
       ): { provider: string; model: string; reasoningEffort?: string } | undefined => {
         const configuration = configurationFor(group.id);
-        const modelId = configuration?.model?.id;
+        const modelRef = configuration?.model;
         const model =
           // A remembered speed variant restores its base Model.
-          (modelId === undefined
-            ? undefined
-            : group.models.find(
-                (model) =>
-                  model.id === modelId ||
-                  model.fastModel === modelId ||
-                  model.ultrafastModel === modelId,
-              )) ??
+          group.models.find((model) =>
+            [model.id, model.fastModel, model.ultrafastModel].some(
+              (key) =>
+                key !== undefined && sameHarnessModelRef(harnessModelRefFromKey(key), modelRef),
+            ),
+          ) ??
           group.models.find((model) => model.id === fallbackModelId) ??
           group.models[0];
         if (!model) return undefined;

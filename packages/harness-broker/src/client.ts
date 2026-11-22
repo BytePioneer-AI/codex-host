@@ -46,6 +46,9 @@ import {
   accountCreditsSnapshotSchema,
   type AccountCreditsSnapshot,
   harnessInspectionSchema,
+  harnessModelRefSchema,
+  type HarnessModelCatalog,
+  type HarnessModelRef,
   harnessSessionCapabilitiesSchema,
   type HarnessCommandCatalog,
 } from "@codexhost/shared-contracts";
@@ -846,6 +849,11 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
         return { status: "notInstalled", error: this.#error(error) };
       return failedInspection(describeBrokerFailure(error, this.harnessId));
     }
+  }
+
+  async normalizeStoredModelRef(ref: HarnessModelRef, catalog: HarnessModelCatalog) {
+    const result = await this.#request("adapter.normalizeStoredModelRef", { ref, catalog }, true);
+    return harnessModelRefSchema.nullable().parse(result) ?? undefined;
   }
 
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {

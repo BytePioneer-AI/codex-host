@@ -627,6 +627,7 @@ describe("HarnessDelegationCoordinator", () => {
   const primary = { model: harnessModelRefSchema.parse({ id: "fake-model-v1.primary" }) };
   const secondary = { model: harnessModelRefSchema.parse({ id: "fake-model-v1.secondary" }) };
   const retired = { model: harnessModelRefSchema.parse({ id: "retired" }) };
+  const legacy = { model: harnessModelRefSchema.parse({ id: "legacy-model" }) };
   const low = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("low") };
   const high = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("high") };
   const off = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("off") };
@@ -639,15 +640,29 @@ describe("HarnessDelegationCoordinator", () => {
     ["explicit Thinking supported by the saved Model", secondary, low, secondaryLow],
     ["explicit Thinking only supported by the native default", secondaryLow, high, high],
     ["a retired saved Model", retiredHigh, {}, {}],
+    ["a legacy saved Model", { ...legacy, ...low }, {}, secondaryLow],
+    [
+      "a legacy saved Model matching an explicit Model",
+      { ...legacy, ...low },
+      secondary,
+      secondaryLow,
+    ],
     ["a retired saved Model with explicit Thinking", retiredHigh, high, high],
     ["unsupported saved Thinking", { ...secondary, ...high }, {}, secondary],
     ["saved Thinking without a saved Model", off, {}, off],
     ["an explicit Model with only saved Thinking", off, primary, primary],
   ])("resolves delegation selection with %s", async (_name, saved, explicit, expected) => {
-    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const adapter = Object.assign(new RecordingAdapter(harnessIdSchema.parse("pi")), {
+      normalizeStoredModelRef: ((ref) =>
+        ref.id === legacy.model.id ? secondary.model : undefined) satisfies NonNullable<
+        HarnessAdapter["normalizeStoredModelRef"]
+      >,
+    });
     const value = await fixture(adapter);
     try {
       await value.setDelegationDefault(saved);
+      const file = path.join(value.directory, "harness-preferences-v1.json");
+      const before = await readFile(file, "utf8");
       const result = await value.coordinator.start({
         harnessId: "pi",
         task: "fixture task",
@@ -661,6 +676,34 @@ describe("HarnessDelegationCoordinator", () => {
       if (opened?.kind !== "create") throw new Error("Expected a new session");
       expect(opened.model).toEqual(expected.model);
       expect(opened.thinkingOptionId).toEqual(expected.thinkingOptionId);
+      expect(await readFile(file, "utf8")).toBe(before);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("deduplicates a legacy and current explicit Ref for the same request ID", async () => {
+    const adapter = Object.assign(new RecordingAdapter(harnessIdSchema.parse("pi")), {
+      normalizeStoredModelRef: ((ref) =>
+        ref.id === legacy.model.id ? secondary.model : undefined) satisfies NonNullable<
+        HarnessAdapter["normalizeStoredModelRef"]
+      >,
+    });
+    const value = await fixture(adapter);
+    const request = {
+      harnessId: "pi",
+      task: "same task",
+      cwd: "/synthetic",
+      parentThreadId: "parent-thread",
+      requestId: "same-request",
+    };
+    try {
+      const first = await value.coordinator.start({ ...request, ...legacy });
+      expect(first.configuration?.requested).toEqual(secondary);
+      await expect(value.coordinator.start({ ...request, ...secondary })).resolves.toMatchObject({
+        threadId: first.threadId,
+        delegationId: first.delegationId,
+      });
     } finally {
       await value.close();
     }

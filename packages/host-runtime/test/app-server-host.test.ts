@@ -7,6 +7,8 @@ import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapt
 import { decodeExternalTransportSelection, type JsonObject } from "@codexhost/protocol-core";
 import {
   encodeHarnessPluginRoute,
+  HARNESS_PREFERENCES_GET_METHOD,
+  HARNESS_PREFERENCES_PATCH_METHOD,
   harnessPluginRouteSchema,
   harnessIdSchema,
   harnessPermissionModeCatalogSchema,
@@ -30,6 +32,87 @@ import {
   completePiTurn,
   stopFixture,
 } from "./app-server-host-fixture.js";
+
+it("projects saved Model defaults and favorites without modifying the preferences file", async () => {
+  const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+  const model = adapter.catalog.models[1]!.ref;
+  const fixture = createFixture({
+    externalAdapters: new Map([
+      [
+        "pi",
+        Object.assign(adapter, {
+          normalizeStoredModelRef: (ref: { id: string }) =>
+            ref.id === "legacy-model" ? model : undefined,
+        }),
+      ],
+    ]),
+  });
+  const file = path.join(fixture.mappingStoreDirectory, "harness-preferences-v1.json");
+  const before =
+    JSON.stringify({
+      version: 1,
+      revision: 7,
+      scopes: {
+        external: {
+          favorites: { pi: ["legacy-model", model.id, "retired"] },
+          newThread: {
+            lastHarness: "pi",
+            byHarness: { pi: { model: { id: "retired" }, thinkingOptionId: "low" } },
+          },
+          delegation: { byHarness: { pi: { model: { id: "legacy-model" } } } },
+        },
+      },
+    }) + "\n";
+  try {
+    await fixture.ready;
+    writeFileSync(file, before);
+    writeRequest(fixture.desktopInput, {
+      id: 81,
+      method: HARNESS_PREFERENCES_GET_METHOD,
+      params: {},
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 81))).toMatchObject({
+      result: {
+        revision: 7,
+        values: {
+          favorites: { pi: [model.id] },
+          newThread: { lastHarness: "pi", byHarness: {} },
+          delegation: { byHarness: { pi: { model } } },
+        },
+      },
+    });
+    vi.spyOn(adapter, "inspect").mockRejectedValueOnce(new Error("Catalog unavailable"));
+    writeRequest(fixture.desktopInput, {
+      id: 83,
+      method: HARNESS_PREFERENCES_GET_METHOD,
+      params: {},
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 83))).toMatchObject({
+      result: { revision: 7, values: JSON.parse(before).scopes.external },
+    });
+    expect(readFileSync(file, "utf8")).toBe(before);
+    writeRequest(fixture.desktopInput, {
+      id: 82,
+      method: HARNESS_PREFERENCES_PATCH_METHOD,
+      params: {
+        expectedRevision: 7,
+        operations: [{ kind: "favorite", harnessId: "pi", modelId: model.id, enabled: false }],
+      },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 82))).toMatchObject({
+      result: {
+        revision: 8,
+        values: { favorites: { pi: [] } },
+      },
+    });
+    expect(JSON.parse(readFileSync(file, "utf8")).scopes.external).toEqual({
+      ...JSON.parse(before).scopes.external,
+      favorites: { pi: ["retired"] },
+    });
+  } finally {
+    await stopFixture(fixture);
+  }
+});
 
 describe("AppServerHost idle resource release", () => {
   it.each(["auto", "default"] as const)(

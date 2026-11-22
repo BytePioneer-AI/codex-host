@@ -445,6 +445,7 @@ export async function runDelegationCli(input: {
           "--watch-timeout-ms requires --watch true",
         );
       // Validate all local options before creating a worktree or making a Runtime request.
+      const model = value(parsed, "--model");
       const body = {
         harnessId,
         task,
@@ -452,7 +453,11 @@ export async function runDelegationCli(input: {
           ? { taskName: value(parsed, "--task-name") }
           : {}),
         ...(cwdOption(parsed) ? { cwd: cwdOption(parsed) } : {}),
-        ...(value(parsed, "--model") ? { model: { id: value(parsed, "--model") } } : {}),
+        ...(model === undefined
+          ? {}
+          : harnessId === "codex"
+            ? { officialModelArgument: model }
+            : { model: { id: model } }),
         ...(value(parsed, "--thinking") ? { thinkingOptionId: value(parsed, "--thinking") } : {}),
         ...(parentThread ? { parentThreadId: normalizeThreadId(parentThread) } : {}),
         ...(value(parsed, "--request-id") ? { requestId: value(parsed, "--request-id") } : {}),

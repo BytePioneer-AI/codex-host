@@ -1,7 +1,9 @@
-import type {
-  HarnessModelRef,
-  HarnessSessionCapabilities,
-  HarnessSessionState,
+import {
+  normalizeLegacyBase64ModelRef,
+  type HarnessModelCatalog,
+  type HarnessModelRef,
+  type HarnessSessionCapabilities,
+  type HarnessSessionState,
 } from "@codexhost/harness-adapter";
 import {
   harnessModelCatalogSchema,
@@ -41,14 +43,14 @@ export function capabilitiesForProfile(
 }
 
 export function modelRef(modelId: string): HarnessModelRef {
-  return harnessModelRefSchema.parse({ id: `cb.${Buffer.from(modelId).toString("base64url")}` });
+  return harnessModelRefSchema.parse({ id: modelId });
 }
 
-export function nativeModel(ref: HarnessModelRef): string {
-  const value = Buffer.from(ref.id.slice(3), "base64url").toString("utf8");
-  if (!value || !ref.id.startsWith("cb.") || modelRef(value).id !== ref.id)
-    throw new CodeBuddyError("invalidRequest", "Invalid native Model Ref");
-  return value;
+export function normalizeStoredCodeBuddyModelRef(
+  ref: HarnessModelRef,
+  catalog: HarnessModelCatalog,
+): HarnessModelRef | undefined {
+  return normalizeLegacyBase64ModelRef(ref, catalog, "cb.");
 }
 
 export function configuration(
@@ -135,7 +137,7 @@ export async function restoreConfiguration(
   request: (id: string, value: string) => Promise<unknown>,
 ): Promise<Configuration> {
   const selections = [
-    ["model", saved.effectiveModel && nativeModel(saved.effectiveModel)],
+    ["model", saved.effectiveModel?.id],
     ["thought_level", saved.effectiveThinkingOptionId],
     ["mode", saved.effectivePermissionModeId],
   ] as const;

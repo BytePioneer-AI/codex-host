@@ -8,6 +8,8 @@ import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js"
 import { handleRemoteConnectionsRequest } from "./remote-connections-request.js";
 import {
   catalogModelForRef,
+  harnessModelRefFromKey,
+  sameHarnessModelRef,
   decodeHarnessPluginRoute,
   harnessIdSchema,
   permissionModeFixedAtCreate,
@@ -2060,11 +2062,8 @@ export function installRendererBindingProbe(
     if (current.agent === "codex") return;
     const agent = current.agent;
     const catalog = mounted.modelView.catalog;
-    const entry = catalog?.models.find(
-      (model) => model.ref.id === modelId || model.fastModel?.id === modelId,
-    );
-    const selected = entry?.ref.id === modelId ? entry.ref : entry?.fastModel;
-    if (!catalog || !selected || !modelControl) return;
+    const selected = harnessModelRefFromKey(modelId);
+    if (!catalog || !catalogModelForRef(catalog, selected) || !modelControl) return;
     const previousModel = controller.modelForAgent(mounted.composer, agent);
     const previousThinking = controller.thinkingOptionForAgent(mounted.composer, agent);
     const previousPermissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
@@ -2425,7 +2424,7 @@ export function installRendererBindingProbe(
         ) {
           return;
         }
-        if (state.effectiveModel && state.effectiveModel.id !== model.id) {
+        if (state.effectiveModel && !sameHarnessModelRef(state.effectiveModel, model)) {
           throw new Error("External Harness changed Model during Thinking selection");
         }
         if (!state.effectiveThinkingOptionId) {

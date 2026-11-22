@@ -7,6 +7,7 @@ import type {
   HarnessCommandCatalog,
   HarnessId,
   HarnessInspection,
+  HarnessModelCatalog,
   HarnessModelRef,
   HarnessPermissionModeId,
   HarnessSessionCapabilities,
@@ -778,6 +779,16 @@ export interface HarnessAdapter {
   inspectAccounts?(): Promise<readonly HarnessAccountSnapshot[]>;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
+  /**
+   * Maps a Model Ref saved by an earlier release to the matching entry of `catalog`.
+   * Host calls it only for a saved Ref that the catalog does not contain. Return
+   * undefined when the saved value matches no single current Model. Local implementations
+   * are pure; a Broker proxy may return a Promise.
+   */
+  normalizeStoredModelRef?(
+    ref: HarnessModelRef,
+    catalog: HarnessModelCatalog,
+  ): HarnessModelRef | undefined | Promise<HarnessModelRef | undefined>;
   open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>>;
   close(): Promise<void>;
 }

@@ -23,11 +23,7 @@ export {
   decodeQwenCodePermissionModeId,
 } from "./permission-modes.js";
 export type { QwenCodePermissionMode } from "./permission-modes.js";
-export {
-  nativeModelIdForRef,
-  parseQwenCodeModelState,
-  sanitizeQwenCodeModelRefId,
-} from "./qwen-models.js";
+export { parseQwenCodeModelState } from "./qwen-models.js";
 export type { QwenCodeModelState } from "./qwen-models.js";
 export { qwenCodeTurnKey } from "./qwen-history.js";
 export { combineUsage, usageFromMetadata } from "./qwen-usage.js";

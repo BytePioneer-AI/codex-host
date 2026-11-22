@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { decodeOmpModelRef, normalizeOmpModelCatalog } from "../src/omp-model-catalog.js";
 import { listOmpModels, parseOmpModelList } from "../src/omp-model-list.js";
 
 describe("parseOmpModelList", () => {
@@ -21,6 +22,13 @@ describe("parseOmpModelList", () => {
       { provider: "local", id: "tiny", reasoning: false },
     ]);
     expect(parseOmpModelList('{"models":[]}')).toEqual([]);
+  });
+
+  it("round-trips exact Provider and Model IDs through the catalog", () => {
+    const native = { provider: "本地/提供方.v1", id: "系列/模型~高" };
+    const catalog = normalizeOmpModelCatalog([native], native, undefined, undefined);
+    if (!catalog.defaultModel) throw new Error("Expected an OMP Model Ref");
+    expect(decodeOmpModelRef(catalog.defaultModel)).toEqual(native);
   });
 
   it.each(["not json", "{}", '{"models":[{"provider":"p","id":"m"}]}', '{"models":[{"id":"m"}]}'])(

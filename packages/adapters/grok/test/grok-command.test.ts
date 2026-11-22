@@ -10,10 +10,14 @@ describe("Grok invocation", () => {
     });
   });
 
-  it("passes the requested startup Model through the native CLI flag", () => {
-    expect(grokInvocation("/opt/grok", "darwin", "grok-4.5")).toMatchObject({
+  it("passes the exact startup Model as one native argument", () => {
+    const id = " xai/模型 [1m] & (test) ";
+    expect(grokInvocation("/opt/grok", "darwin", id)).toMatchObject({
       command: "/opt/grok",
-      arguments: ["agent", "--no-leader", "--model", "grok-4.5", "stdio"],
+      arguments: ["agent", "--no-leader", "--model", id, "stdio"],
     });
+    expect(grokInvocation("C:\\bin\\grok.cmd", "win32", id).arguments.at(-1)).toBe(
+      `""C:\\bin\\grok.cmd" "agent" "--no-leader" "--model" "${id}" "stdio""`,
+    );
   });
 });

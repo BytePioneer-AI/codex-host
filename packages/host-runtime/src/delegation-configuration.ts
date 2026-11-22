@@ -1,7 +1,9 @@
+import type { HarnessAdapter } from "@codexhost/harness-adapter";
+import { normalizeStoredModelRef } from "./stored-model-ref.js";
 import type { RoutedHarnessId } from "@codexhost/protocol-core";
 import {
-  canonicalizeOfficialCodexModelRef,
   catalogModelForRef,
+  sameHarnessModelRef,
   type HarnessDelegationDefault,
   type HarnessModelRef,
 } from "@codexhost/shared-contracts";
@@ -14,29 +16,18 @@ import {
 
 export async function resolveDelegationConfiguration(input: {
   harnessId: RoutedHarnessId;
+  adapter?: HarnessAdapter | undefined;
   explicit: HarnessDelegationDefault;
   readDefault: () => Promise<HarnessDelegationDefault | undefined>;
   inspect: () => Promise<HarnessInspectResult>;
 }): Promise<Pick<DelegationStartInput, "model" | "thinkingOptionId">> {
   const official = input.harnessId === "codex";
   const { model: explicitModel, thinkingOptionId: explicitThinking } = input.explicit;
-  let saved =
+  const saved =
     explicitModel && explicitThinking
       ? undefined
       : await input.readDefault().catch(() => undefined);
-  if (official && saved?.model) {
-    try {
-      saved = { ...saved, model: canonicalizeOfficialCodexModelRef(saved.model) };
-    } catch {
-      saved = undefined;
-    }
-  }
-
-  let model = explicitModel ?? saved?.model;
-  let thinkingOptionId =
-    explicitThinking ??
-    (!explicitModel || explicitModel.id === saved?.model?.id ? saved?.thinkingOptionId : undefined);
-  if (!model && !thinkingOptionId) return {};
+  if (!explicitModel && !explicitThinking && !saved?.model && !saved?.thinkingOptionId) return {};
 
   const inspected = await input.inspect().catch((error: unknown) => {
     if (explicitModel || explicitThinking) throw error;
@@ -56,6 +47,17 @@ export async function resolveDelegationConfiguration(input: {
     catalog,
     capabilities: { configuration },
   } = inspection;
+  const savedModel =
+    saved?.model && configuration.selectModel
+      ? await normalizeStoredModelRef(saved.model, catalog, input.harnessId, input.adapter)
+      : undefined;
+  let model = explicitModel ?? savedModel;
+  let thinkingOptionId =
+    explicitThinking ??
+    ((!saved?.model || savedModel) &&
+    (!explicitModel || sameHarnessModelRef(explicitModel, savedModel))
+      ? saved?.thinkingOptionId
+      : undefined);
   if (model && (!configuration.selectModel || !catalogModelForRef(catalog, model))) {
     if (explicitModel) {
       if (!official && !configuration.selectModel) {

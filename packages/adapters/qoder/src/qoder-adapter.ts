@@ -21,7 +21,11 @@ import { projectQoderAccount } from "./qoder-account.js";
 import { mapQoderException } from "./qoder-errors.js";
 import { checkQoderLogin, qoderLoginRequired } from "./qoder-login-check.js";
 import { mapQoderSnapshot } from "./qoder-history.js";
-import { decodeQoderModelRef, parseQoderModelCatalog } from "./qoder-models.js";
+import {
+  normalizeStoredQoderModelRef,
+  parseQoderModelCatalog,
+  qoderModelValue,
+} from "./qoder-models.js";
 import {
   mapToQoderPermissionMode,
   QODER_PERMISSION_MODE_CATALOG,
@@ -82,6 +86,7 @@ type QoderInspection =
   | { status: "unavailable" | "notInstalled"; error: HarnessError };
 
 export class QoderAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredQoderModelRef;
   readonly harnessId: HarnessId;
   readonly #variant: QoderVariant;
   readonly commandCatalog = QODER_FALLBACK_COMMAND_CATALOG;
@@ -368,7 +373,7 @@ export class QoderAdapter implements HarnessAdapter {
   }
 
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
-    if ("model" in input && input.model && !decodeQoderModelRef(input.model)) {
+    if ("model" in input && input.model && !qoderModelValue(input.model)) {
       return {
         ok: false,
         error: { code: "invalidRequest", message: "Invalid Qoder Model Ref", retryable: false },

@@ -38,6 +38,7 @@ import {
   brokerCommandInvocationSchema,
   brokerHostCommandSchema,
   brokerInspectInputSchema,
+  brokerNormalizeStoredModelRefSchema,
   brokerOpenInputSchema,
   brokerSessionImportListParamsSchema,
   brokerSessionImportResolveParamsSchema,
@@ -537,6 +538,10 @@ export async function startHarnessBrokerServer(input: {
         // An unusable Harness gains nothing from a resident broker; exit once idle.
         retireWhenIdle = inspection.status !== "ready";
         return inspection;
+      }
+      if (request.method === "adapter.normalizeStoredModelRef") {
+        const { ref, catalog } = brokerNormalizeStoredModelRefSchema.parse(request.params);
+        return (await input.adapter.normalizeStoredModelRef?.(ref, catalog)) ?? null;
       }
       if (request.method === "adapter.sessionImport.list") {
         const { limit, offset } = brokerSessionImportListParamsSchema.parse(request.params);

@@ -18,6 +18,7 @@ import {
   createDefaultRendererSettingsPages,
   type RendererConnectionDiagnostics,
   type RendererCodexAccountClient,
+  type RendererDelegationClient,
   type RendererDesktopExtensionsClient,
   type RendererUpdateClient,
 } from "./settings/pages.js";
@@ -40,6 +41,7 @@ export interface RendererSettingsLifecycleOptions {
   getUpdateClient?(): RendererUpdateClient | null;
   getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
   getAccountClient?(): RendererCodexAccountClient | null;
+  getDelegationClient?(): RendererDelegationClient | null;
   getSessionImportClient?(hostId?: string): RendererSessionImportClient | null;
   getLoadedSessionsClient?(): LoadedSessionsClient | null;
   getDesktopExtensionsClient?(): RendererDesktopExtensionsClient | null;
@@ -124,12 +126,12 @@ export function installRendererSettingsLifecycle(
       scheduleNextPluginPagesSync(targetPluginPages, generation);
       return;
     }
-    const client = options.getDesktopExtensionsClient?.() ?? null;
-    if (!client?.listDesktopExtensions) return;
+    const client = options.getDesktopExtensionsClient?.();
+    if (!client?.listHostExtensions) return;
     pluginPagesSyncInFlight = true;
     let stopPolling = false;
     void client
-      .listDesktopExtensions()
+      .listHostExtensions()
       .then((result) => {
         if (disposed || !settingsOpen || generation !== pluginPagesSyncGeneration) return;
         targetPluginPages.syncInstalledExtensions?.(
@@ -190,6 +192,7 @@ export function installRendererSettingsLifecycle(
         : undefined,
       getDesktopExtensionsClient,
       nextPluginPages,
+      options.getDelegationClient ?? (() => null),
     );
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document, {
       pluginPages: nextPluginPages,

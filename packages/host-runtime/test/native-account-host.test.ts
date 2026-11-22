@@ -381,19 +381,29 @@ describe("local Codex read-only identity startup", () => {
       remoteControl: true,
     });
     prepared.add(local);
+    await configureStartup(local, {
+      stockCodexPath: "/synthetic/broken",
+      arguments: ["app-server"],
+      environment: { BROWSER_USE_ACCESS_PIPE_PATH: "first" },
+    });
     await expect(local.officialRuntimeScope.start()).rejects.toThrow("unavailable");
+    const attachment = new AbortController();
     const configuration = {
       stockCodexPath: "/synthetic/desktop-codex",
       arguments: ["-c", "features.recovered=true", "app-server"],
-      environment: {},
+      environment: { BROWSER_USE_ACCESS_PIPE_PATH: "recovered" },
     };
-    await configureStartup(local, configuration);
+    await configureStartup(local, configuration, attachment.signal);
     await local.officialRuntimeScope.start();
     expect(createOwnedLoopbackBackend).toHaveBeenCalledTimes(2);
+    attachment.abort();
+    nativeFixture();
+    await local.officialRuntimeScope.refreshBeforeRequest();
     expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
       expect.objectContaining({
         stockCodexPath: configuration.stockCodexPath,
         arguments: configuration.arguments,
+        environment: expect.objectContaining({ BROWSER_USE_ACCESS_PIPE_PATH: "first" }),
       }),
     );
   });
@@ -476,6 +486,55 @@ describe("local Codex read-only identity startup", () => {
     expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
       expect.objectContaining({ stockCodexPath: "/synthetic/codex", arguments: ["app-server"] }),
     );
+  });
+
+  it("keeps the Remote Control invocation while Desktop tool connections attach and detach", async () => {
+    nativeFixture();
+    const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-tools-"));
+    temporaryDirectories.add(directory);
+    const local = await prepareLocalCodex({
+      stockCodexPath: "/synthetic/remote-codex",
+      arguments: ["app-server", "--analytics-default-enabled"],
+      environment: { CODEX_HOME: directory },
+      diagnosticOutput: new PassThrough(),
+      deferStart: true,
+      remoteControl: true,
+    });
+    prepared.add(local);
+    const scope = local.officialRuntimeScope;
+    await scope.start();
+    const attach = async (pipe: string) => {
+      const attachment = new AbortController();
+      await configureStartup(
+        local,
+        {
+          stockCodexPath: "/synthetic/desktop-codex",
+          arguments: ["app-server"],
+          environment: { BROWSER_USE_ACCESS_PIPE_PATH: pipe },
+        },
+        attachment.signal,
+      );
+      return attachment;
+    };
+    const verify = (pipe?: string) => {
+      const options = vi.mocked(createOwnedLoopbackBackend).mock.lastCall?.[0];
+      expect(options?.stockCodexPath).toBe("/synthetic/remote-codex");
+      expect(options?.arguments).toEqual(["app-server", "--analytics-default-enabled"]);
+      expect(options?.environment.BROWSER_USE_ACCESS_PIPE_PATH).toBe(pipe);
+    };
+    const first = await attach("first");
+    const second = await attach("second");
+    nativeFixture();
+    await scope.start();
+    verify("second");
+    second.abort();
+    nativeFixture();
+    await scope.refreshBeforeRequest();
+    verify("first");
+    first.abort();
+    nativeFixture();
+    await scope.refreshBeforeRequest();
+    verify();
   });
 
   it.each([false, true])(

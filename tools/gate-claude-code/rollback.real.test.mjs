@@ -10,10 +10,10 @@ import vm from "node:vm";
 import { describe, it, vi } from "vitest";
 import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import { ClaudeCodeAdapter } from "../../packages/adapters/claude-code/dist/index.js";
-import { encodeClaudeModelRef } from "../../packages/adapters/claude-code/dist/model-catalog.js";
+import { claudeModelRef } from "../../packages/adapters/claude-code/dist/model-catalog.js";
 import { AppServerHost } from "../../packages/host-runtime/dist/index.js";
 import { MappingStore } from "../../packages/mapping-store/dist/index.js";
-import { encodeClaudeTransportModel } from "../../packages/protocol-core/dist/index.js";
+import { encodeExternalTransportSelection } from "../../packages/protocol-core/dist/index.js";
 
 const command = process.env.CODEXHOST_CLAUDE_REAL_COMMAND;
 const live = process.env.CODEXHOST_CLAUDE_REAL_LIVE === "1";
@@ -321,15 +321,16 @@ describe.runIf(Boolean(command))("Claude message editing through Host", () => {
     };
     const history = async (id) => getSessionMessages(id, { dir: cwd });
     try {
-      const model = encodeClaudeModelRef(live ? "default" : "claude-sonnet-4-6");
+      const model = claudeModelRef(live ? "default" : "claude-sonnet-4-6");
       threadId = (
         await host.rpc("thread/start", {
           cwd,
-          model: encodeClaudeTransportModel(
+          model: encodeExternalTransportSelection("claude-code", {
             model,
-            scenario === "first interrupted during tool" ? "bypassPermissions" : "default",
-            "off",
-          ),
+            permissionModeId:
+              scenario === "first interrupted during tool" ? "bypassPermissions" : "default",
+            thinkingOptionId: "off",
+          }),
           historyMode: "paginated",
         })
       ).thread.id;

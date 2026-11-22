@@ -8,6 +8,18 @@ body,
   margin: 0;
 }
 
+/* Suppress the WebKit/Blink dark tap-highlight flash across interactive
+   controls; components provide their own subtle :active feedback. */
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Remove mobile double-tap zoom delay on common interactive controls with zero
+   specificity so component gesture rules (pan-x, none) always win. */
+:where(button, a, [role="button"], [role="tab"]) {
+  touch-action: manipulation;
+}
+
 body {
   font-family: var(
     --dsw-font-family,

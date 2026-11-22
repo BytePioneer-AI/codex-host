@@ -7,7 +7,7 @@ import {
   type DelegationCapacityGate,
   type DelegationControlApi,
   type DelegationControlRegistration,
-  type DelegationStartIdentity,
+  type AdmittedDelegationStart,
   type DelegationStartInput,
   type DelegationWatchApi,
   type HarnessInspectInput,
@@ -447,7 +447,7 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
    * A queued start may run after its parent's Turn ended, so a session that no
    * longer recognizes the parent still takes it as the catalog or the only one.
    */
-  async #startQueued(input: DelegationStartInput, identity: DelegationStartIdentity) {
+  async #startQueued(input: DelegationStartInput, identity: AdmittedDelegationStart) {
     const matches = originClientName(input.parentThreadId)
       ? []
       : await this.#matching((registration) => registration.canHandleStart(input));

@@ -117,18 +117,13 @@ export function Modal({
           children
         ) : (
           <>
+            <div className={css.header}>
+              <h2 className={css.title}>{title}</h2>
+              <button type="button" className={css.close} aria-label={closeLabel} onClick={onClose}>
+                <IconCloseOutlineRegular size={14} />
+              </button>
+            </div>
             <div className={clsx(css.content, contentClassName)}>
-              <div className={css.header}>
-                <h2 className={css.title}>{title}</h2>
-                <button
-                  type="button"
-                  className={css.close}
-                  aria-label={closeLabel}
-                  onClick={onClose}
-                >
-                  <IconCloseOutlineRegular size={14} />
-                </button>
-              </div>
               {description !== undefined && description !== "" && (
                 <p className={css.description}>{description}</p>
               )}

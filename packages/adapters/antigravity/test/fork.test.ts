@@ -14,7 +14,9 @@ import {
   nativeConversationDbPath,
 } from "../src/fork.js";
 import { readNativeTurnCount } from "../src/native-turn-boundaries.js";
-import { textField } from "./support/native-history-fixture.js";
+import { readNativeHistory } from "../src/native-replay.js";
+import { rollbackAntigravityLastTurn } from "../src/rollback.js";
+import { answerStep, systemStep, textField, userStep } from "./support/native-history-fixture.js";
 import { bytes, integer, varint } from "./support/native-timing-fixture.js";
 
 const metadataRows = {
@@ -23,11 +25,13 @@ const metadataRows = {
   parent_references: [2, 5, 8].map((step) =>
     Buffer.concat([textField(1, `ancestor-${step}`), integer(2, step)]),
   ),
-  battle_mode_infos: [
-    [0, 2],
-    [3, 5],
-    [5, 8],
-  ].map(([start, end]) => Buffer.concat([integer(3, start), integer(4, end), integer(9, 1)])),
+  battle_mode_infos: (
+    [
+      [0, 2],
+      [3, 5],
+      [5, 8],
+    ] as const
+  ).map(([start, end]) => Buffer.concat([integer(3, start), integer(4, end), integer(9, 1)])),
 };
 const homes: string[] = [];
 afterEach(async () => {
@@ -149,6 +153,48 @@ describe("native SQLite Fork", () => {
       }
     },
   );
+  it("forks on either side of a wake and rolls it back without losing the preceding user Turn", async () => {
+    const f = await fixture();
+    const db = new DatabaseSync(f.file);
+    try {
+      db.exec(
+        "PRAGMA user_version = 1; DROP TABLE steps; CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB)",
+      );
+      userStep(db, 0, "hello", "prompt");
+      answerStep(db, 1, "hello there", "prompt");
+      systemStep(db, 2, "wake");
+      answerStep(db, 3, "wake answer", "wake");
+    } finally {
+      db.close();
+    }
+    const prefix = (id: string) => readNativeHistory(id, f.home).then(({ events }) => events);
+    const source = await prefix(f.sourceRef.nativeSessionId);
+    for (const checkpointId of ["turn-0", "wake-2"]) {
+      const result = await forkAntigravitySession({
+        ...f.options,
+        input: {
+          kind: "fork",
+          cwd: f.home,
+          sourceRef: f.sourceRef,
+          checkpoint: { ...f.sourceRef, checkpointId },
+        },
+      });
+      assert(result.ok && result.value.initialState.nativeRef);
+      expect(await prefix(result.value.initialState.nativeRef.nativeSessionId)).toEqual(
+        checkpointId === "turn-0" ? source.slice(0, 2) : source,
+      );
+    }
+    const rolledBack = await rollbackAntigravityLastTurn({
+      ...f.options,
+      input: { kind: "rollbackLastTurn", cwd: f.home, sourceRef: f.sourceRef },
+    });
+    assert(rolledBack.ok && rolledBack.value.initialState.nativeRef);
+    expect(await prefix(rolledBack.value.initialState.nativeRef.nativeSessionId)).toEqual(
+      source.slice(0, 2),
+    );
+    expect(await prefix(f.sourceRef.nativeSessionId)).toEqual(source);
+  });
+
   it.each([
     "turn-3",
     "turn--1",

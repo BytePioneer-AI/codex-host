@@ -46,11 +46,11 @@ Host 可以限制本机同时运行的顶层 Thread 数量。开启后，`delega
 
 ## 自动开始
 
-队列每 2 秒检查一次正在运行的 Thread（与 `thread wait`、watch 一样基于轮询），有空位就按先后启动队首，直到名额用完。上限调高或关闭后，等待中的启动随之开始。启动沿用排队时记录的参数（任务、任务名、工作区、父 Thread、Model 与 Thinking 选择）和已分配的 Thread 标识。启动失败时，该 Thread 读取为 `failed` 并附失败原因，同时写入 Host Runtime 日志。
+队列每 2 秒检查一次正在运行的 Thread（与 `thread wait`、watch 一样基于轮询），有空位就按先后启动队首，直到名额用完。上限调高或关闭后，等待中的启动随之开始。启动沿用排队时记录的参数和 Thread 标识。外部 Harness 直到拿到名额才创建 Thread，因此在实际创建时解析当时的委派默认 Model / Thinking。请求显式指定的参数不被默认设置覆盖；请求摘要仍来自原始请求。启动失败时，该 Thread 读取为 `failed` 并附失败原因，同时写入 Host Runtime 日志。
 
 ## 原生 Codex 的排队
 
-官方后端不接受调用方指定的 Thread 标识，所以 `--harness codex` 需要排队时，Host 先用官方 `thread/start` 与 `thread/name/set` 建好 Thread，只把第一条 Turn 排队。返回的标识就是真实的原生 Thread，深链接、父子关系和子进程环境不需要别名。没有排队、直接放行的启动仍按原流程创建。
+官方后端不接受调用方指定的 Thread 标识，所以 `--harness codex` 需要排队时，Host 先用官方 `thread/start` 与 `thread/name/set` 建好 Thread，只把第一条 Turn 排队。创建时确定的 Model / Thinking 单独随队列保存，恢复运行时不会读取后来修改的委派默认值。返回的标识就是真实的原生 Thread，深链接、父子关系和子进程环境不需要别名。没有排队、直接放行的启动仍按原流程创建。
 
 - 没有 Turn 的原生 Thread 会写入 rollout，官方后端重启后仍能 `thread/resume` 并开始 Turn。官方 `thread/list` 不列出没有 Turn 的 Thread，因此 Desktop 重启后，排队中的原生 Thread 可能不在线程列表中出现，直到第一条 Turn 开始；`codexhost thread list` 仍由队列给出。空闲释放只作用于外部 Harness，不会卸载它。
 - 开始时，Host 先 `thread/resume`，再读取最新 Turn；已经有 Turn 时沿用它补建委派记录，不再发送任务。

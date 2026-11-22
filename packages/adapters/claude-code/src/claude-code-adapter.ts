@@ -109,8 +109,9 @@ import { readClaudeTranscript } from "./claude-transcript.js";
 import { readClaudeQueuedCommand } from "./claude-queued-command.js";
 import {
   CLAUDE_DEFAULT_MODEL_REF,
-  decodeClaudeModelRef,
+  claudeModelValue,
   normalizeClaudeModelCatalog,
+  normalizeStoredClaudeModelRef,
 } from "./model-catalog.js";
 import {
   CLAUDE_BYPASS_PERMISSIONS_UNAVAILABLE_MESSAGE,
@@ -673,6 +674,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #openMode: "create" | "resume";
   readonly #pendingSessions: ClaudePendingSessions;
   #pendingClaimed = false;
+  #claimRelease: Promise<void> | null = null;
   #submittedInput = false;
   #startupTask: Promise<ClaudeTurnTransport> | null = null;
   readonly #randomUUID: () => string;
@@ -699,6 +701,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #statePublished = false;
   #unpersistedMessageIds: string[] = [];
   #transport: ClaudeTurnTransport | null = null;
+  readonly #transportCloses = new WeakMap<ClaudeTurnTransport, Promise<void>>();
   #hardCancelTask: Promise<void> | null = null;
   #usageGeneration = 0;
   #latestUsage: HostUsage | null = null;
@@ -829,7 +832,7 @@ class ClaudeHarnessSession implements HarnessSession {
 
   #subagentConfiguration(): SubagentConfiguration {
     const state = this.#state;
-    const model = state.effectiveModel ? decodeClaudeModelRef(state.effectiveModel) : undefined;
+    const model = state.effectiveModel ? claudeModelValue(state.effectiveModel) : undefined;
     return {
       ...(model ? { model } : {}),
       ...(state.effectiveThinkingOptionId
@@ -1397,8 +1400,15 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   close(): Promise<void> {
-    if (!this.#closePromise) this.#closePromise = this.#close();
-    return this.#closePromise;
+    if (this.#closePromise) return this.#closePromise;
+    const first = this.#phase !== "closing";
+    this.#phase = "closing";
+    const attempt = Promise.resolve().then(() => this.#close(first));
+    this.#closePromise = attempt;
+    void attempt.catch(() => {
+      if (this.#closePromise === attempt) this.#closePromise = null;
+    });
+    return attempt;
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
@@ -1414,7 +1424,7 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     let model: string | undefined;
     try {
-      model = decodeClaudeModelRef(command.model);
+      model = claudeModelValue(command.model);
     } catch {
       return {
         ok: false,
@@ -1843,18 +1853,31 @@ class ClaudeHarnessSession implements HarnessSession {
     cancellation.quiet = null;
   }
 
-  async #close(): Promise<void> {
-    if (this.#phase === "closed") return;
-    this.#phase = "closing";
-    this.#usageGeneration += 1;
-    this.#contextUsageFreshUntilMs = 0;
-    this.#contextUsageCooldownUntilMs = 0;
-    this.#contextRefreshPending = null;
-    this.#requestUsageBoundary += 1;
-    this.#contextRefreshWake?.();
-    this.#contextRefreshWake = null;
-    this.#clearCancelEscalation();
-    this.#clearContinuationQuiescence();
+  #closeTransport(transport: ClaudeTurnTransport | null): Promise<void> | undefined {
+    if (!transport) return undefined;
+    const pending = this.#transportCloses.get(transport);
+    if (pending) return pending;
+    // A Session timeout does not cancel native cleanup. Only a rejection permits another attempt.
+    const attempt = Promise.resolve().then(() => transport.close());
+    this.#transportCloses.set(transport, attempt);
+    void attempt.catch(() => {
+      if (this.#transportCloses.get(transport) === attempt) this.#transportCloses.delete(transport);
+    });
+    return attempt;
+  }
+
+  async #close(first: boolean): Promise<void> {
+    if (first) {
+      this.#usageGeneration += 1;
+      this.#contextUsageFreshUntilMs = 0;
+      this.#contextUsageCooldownUntilMs = 0;
+      this.#contextRefreshPending = null;
+      this.#requestUsageBoundary += 1;
+      this.#contextRefreshWake?.();
+      this.#contextRefreshWake = null;
+      this.#clearCancelEscalation();
+      this.#clearContinuationQuiescence();
+    }
     const failures: unknown[] = [];
     const settle = async (task: Promise<unknown> | undefined): Promise<void> => {
       if (!task) return;
@@ -1869,7 +1892,7 @@ class ClaudeHarnessSession implements HarnessSession {
     };
     // Closing the transport also releases in-flight configuration/initialization RPCs.
     const closingTransport = this.#transport;
-    await settle(closingTransport?.close());
+    await settle(this.#closeTransport(closingTransport));
     await settle(this.#configurationTask ?? undefined);
     await settle(
       this.#startupTask?.then(
@@ -1877,17 +1900,19 @@ class ClaudeHarnessSession implements HarnessSession {
         () => undefined,
       ),
     );
-    if (this.#transport !== closingTransport) await settle(this.#transport?.close());
+    if (this.#transport !== closingTransport) await settle(this.#closeTransport(this.#transport));
     if (failures.length === 0) await settle(this.#releaseUnusedClaim());
-    const active = this.#active;
-    if (active)
-      this.#finishFailed(active, invalidState("Claude Code Session closed during active Turn"));
-    this.#backgroundCommands.abandonAll("Claude Code Session closed");
-    this.#phase = "closed";
-    this.#channel.end();
-    this.#onClosed();
+    if (first) {
+      const active = this.#active;
+      if (active)
+        this.#finishFailed(active, invalidState("Claude Code Session closed during active Turn"));
+      this.#backgroundCommands.abandonAll("Claude Code Session closed");
+      this.#channel.end();
+    }
     if (failures.length > 0)
       throw new AggregateError(failures, "Claude Code Session could not stop safely");
+    this.#phase = "closed";
+    this.#onClosed();
   }
 
   #ensureTransport(): Promise<ClaudeTurnTransport> {
@@ -1907,6 +1932,7 @@ class ClaudeHarnessSession implements HarnessSession {
     if (this.#openMode === "create" && isPendingClaudeSession(this.#nativeRef)) {
       await this.#pendingSessions.claim(this.#nativeRef, this.#cwd);
       this.#pendingClaimed = true;
+      this.#claimRelease = null;
     }
     if (this.#phase !== "open") {
       await this.#releaseUnusedClaim();
@@ -1914,7 +1940,7 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     const selectedModel =
       this.#requestedModel ?? (this.#openMode === "create" ? CLAUDE_DEFAULT_MODEL_REF : undefined);
-    const model = selectedModel ? decodeClaudeModelRef(selectedModel) : undefined;
+    const model = selectedModel ? claudeModelValue(selectedModel) : undefined;
     const permissionMode = decodeClaudePermissionModeId(this.#requestedPermissionModeId);
     let transport: ClaudeTurnTransport;
     try {
@@ -1960,10 +1986,11 @@ class ClaudeHarnessSession implements HarnessSession {
         effectivePermissionModeId: encodeClaudePermissionModeId(transport.getPermissionMode()),
       };
     } catch (error) {
+      if (this.#phase !== "open") throw error;
       try {
-        await this.#transport?.close();
+        await this.#closeTransport(this.#transport);
       } catch (closeError) {
-        this.#fault(faultError());
+        this.#fault(faultError(), false);
         throw closeError;
       }
       this.#transport = null;
@@ -1977,7 +2004,9 @@ class ClaudeHarnessSession implements HarnessSession {
 
   async #releaseUnusedClaim(): Promise<void> {
     if (!this.#pendingClaimed || this.#submittedInput) return;
-    await this.#pendingSessions.release(this.#nativeRef, this.#cwd);
+    // Unlink may already have succeeded even if the durability step failed. Never unlink
+    // again for the same claim: another owner could have acquired it in the meantime.
+    await (this.#claimRelease ??= this.#pendingSessions.release(this.#nativeRef, this.#cwd));
     this.#pendingClaimed = false;
     this.#openMode = "create";
   }
@@ -3163,8 +3192,7 @@ class ClaudeHarnessSession implements HarnessSession {
     const transport = this.#transport;
     // Retain both the active Turn and its Transport until shutdown is confirmed. Session close
     // must still own this resource, and no new Turn may resume the same native history yet.
-    this.#hardCancelTask = Promise.resolve()
-      .then(() => transport?.close())
+    this.#hardCancelTask = Promise.resolve(this.#closeTransport(transport))
       .then(
         () => {
           if (this.#phase !== "open" || this.#active !== active) return;
@@ -3172,14 +3200,14 @@ class ClaudeHarnessSession implements HarnessSession {
           this.#openMode = "resume";
           this.#finish(active, { status: "cancelled", reason: "Cancelled by user" });
         },
-        () => this.#fault(faultError()),
+        () => this.#fault(faultError(), false),
       )
       .finally(() => {
         this.#hardCancelTask = null;
       });
   }
 
-  #fault(error: HarnessError): void {
+  #fault(error: HarnessError, stopTransport = true): void {
     if (this.#phase === "closed" || this.#phase === "closing" || this.#phase === "faulted") return;
     this.#clearCancelEscalation();
     this.#usageGeneration += 1;
@@ -3195,7 +3223,7 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#phase = "faulted";
     this.#event({ type: "session.faulted", error });
     this.#channel.end();
-    void this.#transport?.close().catch(() => undefined);
+    if (stopTransport) void this.#closeTransport(this.#transport)?.catch(() => undefined);
     // Keep faulted resources owned until explicit close confirms resource shutdown.
   }
 
@@ -3206,6 +3234,7 @@ class ClaudeHarnessSession implements HarnessSession {
 }
 
 export class ClaudeCodeAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredClaudeModelRef;
   readonly commandCatalog = claudeCommandCatalog;
   readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = claudeCodeHarnessId;
@@ -3285,6 +3314,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #continuationQuiescenceMs: number;
   readonly #inspectionCache = new Map<string, HarnessInspection>();
   readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
+  readonly #inspectionTasks = new Set<Promise<HarnessInspection>>();
   readonly #inspectors = new Set<ClaudeModelInspector>();
   readonly #sessions = new Set<ClaudeHarnessSession>();
   #closePromise: Promise<void> | null = null;
@@ -3381,21 +3411,27 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       };
     }
     const cwd = path.resolve(input.cwd ?? process.cwd());
-    if (!input.refresh) {
+    const current = this.#inspectionInFlight.get(cwd);
+    if (input.refresh) {
+      this.#inspectionCache.clear();
+      this.#inspectionInFlight.clear();
+      if (current) this.#inspectionInFlight.set(cwd, current);
+    } else {
       const cached = this.#inspectionCache.get(cwd);
       if (cached) return cached;
     }
-    const current = this.#inspectionInFlight.get(cwd);
     if (current) return current;
     const inspection = this.#inspectModels(cwd).then((result) => {
-      if (result.status === "ready") {
+      if (result.status === "ready" && this.#inspectionInFlight.get(cwd) === inspection) {
         this.#inspectionCache.set(cwd, result);
         for (const session of this.#sessions) session.refitThinking(cwd);
       }
       return result;
     });
     this.#inspectionInFlight.set(cwd, inspection);
+    this.#inspectionTasks.add(inspection);
     void inspection.finally(() => {
+      this.#inspectionTasks.delete(inspection);
       if (this.#inspectionInFlight.get(cwd) === inspection) {
         this.#inspectionInFlight.delete(cwd);
       }
@@ -3577,7 +3613,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       input.model
     ) {
       try {
-        decodeClaudeModelRef(input.model);
+        claudeModelValue(input.model);
       } catch {
         return {
           ok: false,
@@ -3696,7 +3732,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           openMode = "create";
         }
         if (pending.configuration.effectiveModel)
-          decodeClaudeModelRef(pending.configuration.effectiveModel);
+          claudeModelValue(pending.configuration.effectiveModel);
         if (pending.configuration.effectiveThinkingOptionId)
           parseClaudeThinkingOptionId(pending.configuration.effectiveThinkingOptionId);
         if (pending.configuration.effectivePermissionModeId)
@@ -3827,7 +3863,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         this.#importScope.close(),
         ...[...this.#inspectors].map((inspector) => inspector.close()),
         ...[...this.#sessions].map((session) => session.close()),
-        ...this.#inspectionInFlight.values(),
+        ...this.#inspectionTasks,
       ]).then(() => undefined);
     }
     return this.#closePromise;

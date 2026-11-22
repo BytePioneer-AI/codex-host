@@ -36,3 +36,13 @@
 .input::placeholder {
   color: var(--dsw-alias-label-dimmed);
 }
+
+@media (pointer: coarse) {
+  .wrap {
+    min-height: 44px;
+  }
+
+  .input {
+    font-size: 16px;
+  }
+}

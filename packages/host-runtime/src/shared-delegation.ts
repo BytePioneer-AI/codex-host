@@ -8,7 +8,7 @@ import {
   DelegationControlError,
   type DelegationControlApi,
   type DelegationControlRegistration,
-  type DelegationStartIdentity,
+  type AdmittedDelegationStart,
   type DelegationStartInput,
 } from "./delegation-types.js";
 
@@ -39,7 +39,7 @@ export function sharedDelegationRegistration(
   async function call<K extends Operation>(
     operation: K,
     input: Parameters<OperationApi[K]>[0],
-    admitted?: DelegationStartIdentity,
+    admitted?: AdmittedDelegationStart,
   ): Promise<Awaited<ReturnType<OperationApi[K]>>> {
     const response = await owner.request(SHARED_DELEGATION_METHOD, {
       operation,
@@ -184,7 +184,9 @@ export async function dispatchSharedDelegation(
         Array.isArray(admitted) ||
         typeof admitted.delegationId !== "string" ||
         typeof admitted.threadId !== "string" ||
-        typeof admitted.turnId !== "string"
+        typeof admitted.turnId !== "string" ||
+        typeof admitted.taskDigest !== "string" ||
+        !/^[a-f0-9]{64}$/.test(admitted.taskDigest)
       ) {
         return {
           error: { code: "INVALID_ARGUMENT", message: "Invalid shared delegation identity" },
@@ -196,6 +198,7 @@ export async function dispatchSharedDelegation(
             delegationId: admitted.delegationId,
             threadId: admitted.threadId,
             turnId: admitted.turnId,
+            taskDigest: admitted.taskDigest,
           }),
         ),
       };

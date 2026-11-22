@@ -44,6 +44,7 @@ import type { RendererSettingsPluginPagesSource } from "./desktop-extension-sett
 import type { LoadedSessionsClient } from "./loaded-sessions-table.js";
 import { createReleaseNotesElement } from "./release-notes.js";
 import { createAccountsSettingsPage, type RendererCodexAccountClient } from "./accounts-page.js";
+import { createDelegationSettingsPage, type RendererDelegationClient } from "./delegation-page.js";
 import {
   createHarnessSchedulesPage,
   type HarnessSchedulesPageOptions,
@@ -98,6 +99,7 @@ export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "mobile-web",
   "remote-connections",
   "accounts",
+  "delegation",
   "session-import",
   "usage-statistics",
   "appearance",
@@ -706,6 +708,7 @@ export function createDefaultRendererSettingsPages(
   harnessSchedules?: HarnessSchedulesPageOptions,
   getDesktopExtensionsClient: () => RendererDesktopExtensionsClient | null = () => null,
   pluginPages?: RendererSettingsPluginPagesSource,
+  getDelegationClient: () => RendererDelegationClient | null = () => null,
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections),
@@ -716,6 +719,7 @@ export function createDefaultRendererSettingsPages(
     }),
     createRemoteConnectionsPage(messages, getRemoteConnections),
     createAccountsSettingsPage(messages, getAccountClient),
+    createDelegationSettingsPage(messages, getDiagnostics, getDelegationClient),
     ...(harnessSchedules ? [createHarnessSchedulesPage(messages, harnessSchedules)] : []),
     createSessionImportSettingsPage(
       messages,
@@ -745,6 +749,7 @@ export function createDefaultRendererSettingsRegistry(
   requestUsageStatistics?: RendererUsageStatisticsRequest,
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
   getDesktopExtensionsClient?: () => RendererDesktopExtensionsClient | null,
+  getDelegationClient?: () => RendererDelegationClient | null,
 ): RendererSettingsPageRegistry {
   return createRendererSettingsPageRegistry(
     createDefaultRendererSettingsPages(
@@ -760,9 +765,12 @@ export function createDefaultRendererSettingsRegistry(
       usageStatisticsHosts,
       undefined,
       getDesktopExtensionsClient,
+      undefined,
+      getDelegationClient,
     ),
   );
 }
 
 export type { RendererCodexAccountClient } from "./accounts-page.js";
+export type { RendererDelegationClient } from "./delegation-page.js";
 export type { RendererDesktopExtensionsClient } from "./desktop-extensions-page.js";

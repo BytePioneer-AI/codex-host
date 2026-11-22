@@ -2,7 +2,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import { QoderAdapter } from "../src/qoder-adapter.js";
-import { encodeQoderModelRef } from "../src/qoder-models.js";
+import {
+  parseQoderModelCatalog,
+  qoderModelRef as encodeQoderModelRef,
+} from "../src/qoder-models.js";
 import type { QoderSdkDaemon } from "../src/qoder-daemon-pool.js";
 import type {
   QoderModelInfo,
@@ -44,7 +47,7 @@ afterEach(async () => {
 });
 
 describe.each(["global", "cn"] as const)("Qoder %s Session models", (variant) => {
-  it.each([undefined, "explicit-model"])(
+  it.each([undefined, "qoder/模型 [1m] & (test)"])(
     "loads the project's own catalog after Desktop inspects without cwd (selection: %s)",
     async (selection) => {
       const cwd = path.join(process.cwd(), "project-not-host-cwd");
@@ -83,19 +86,23 @@ describe.each(["global", "cn"] as const)("Qoder %s Session models", (variant) =>
       const desktopInspection = await adapter.inspect();
       expect(desktopInspection).toMatchObject({
         status: "ready",
-        catalog: { defaultModel: encodeQoderModelRef("host-default") },
+        catalog: { defaultModel: { id: "host-default" } },
       });
 
+      const saved = selection
+        ? encodeQoderModelRef(`qoder-model-v1.${Buffer.from(selection).toString("base64url")}`)
+        : undefined;
+      const model =
+        saved && selection
+          ? adapter.normalizeStoredModelRef(saved, parseQoderModelCatalog(models(selection)))
+          : undefined;
+      expect(model).toEqual(selection ? { id: selection } : undefined);
       for (let i = 0; i < 2; i += 1) {
-        const opened = await adapter.open({
-          kind: "create",
-          cwd,
-          ...(selection ? { model: encodeQoderModelRef(selection) } : {}),
-        });
+        const opened = await adapter.open({ kind: "create", cwd, ...(model ? { model } : {}) });
         if (!opened.ok) throw new Error(opened.error.message);
-        expect(opened.value.initialState.effectiveModel).toEqual(
-          encodeQoderModelRef(selection ?? "project-default"),
-        );
+        expect(opened.value.initialState.effectiveModel).toEqual({
+          id: selection ?? "project-default",
+        });
         expect(sessionOptions.at(-1)?.model).toBe(selection);
         if (!selection) {
           expect(opened.value.initialState.availableThinkingOptions).toEqual([

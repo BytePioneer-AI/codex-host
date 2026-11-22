@@ -25,7 +25,11 @@ import {
   text,
   type CodeBuddyRuntimeProfile,
 } from "./common.js";
-import { capabilitiesForProfile, configuration } from "./configuration.js";
+import {
+  capabilitiesForProfile,
+  configuration,
+  normalizeStoredCodeBuddyModelRef,
+} from "./configuration.js";
 import { deriveCodeBuddySession } from "./derivation.js";
 import { codeBuddyCanonicalCwd, validateNativeRef } from "./history.js";
 import { CodeBuddySessionImport } from "./session-import.js";
@@ -43,6 +47,7 @@ export interface CodeBuddyAdapterOptions {
 }
 
 export class CodeBuddyAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredCodeBuddyModelRef;
   readonly harnessId;
   readonly commandCatalog?: HarnessCommandCatalog;
   readonly liveCommandCatalog = true;
@@ -101,7 +106,7 @@ export class CodeBuddyAdapter implements HarnessAdapter {
 
   inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     const cwd = input.cwd ?? process.cwd();
-    if (input.refresh) this.#cache.delete(cwd);
+    if (input.refresh) this.#cache.clear();
     let inspection = this.#cache.get(cwd);
     if (!inspection) {
       inspection = this.#inspect(cwd);

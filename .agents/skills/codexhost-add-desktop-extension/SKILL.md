@@ -1,140 +1,148 @@
 ---
 name: codexhost-add-desktop-extension
-description: 开发、打包、验收或排查 codexhost Desktop 扩展：侧栏、全皮肤、静态资源、声明式设置与可选 Node 后端。不用于接入 Harness、编写 Web 插件或改变 Thread 行为。
+description: 开发、打包、验收或排查 codexhost 统一 Host 扩展：跨端独立管理页（page）与挂件（widget）、Desktop/Web 宿主注入、静态资源、声明式设置与可选单实例 Node 后端。不用于接入 Agent Harness 或改变 Thread 行为。
 ---
 
-# 新增 codexhost Desktop 扩展
+# 新增 codexhost Host 扩展
 
-目标：交付一个能独立安装、热启停、完整卸载的可信扩展。路径以仓库根目录为基准；字段、签名以 [`packages/shared-contracts/src/desktop-extensions.ts`](../../../packages/shared-contracts/src/desktop-extensions.ts) 为准。
+目标：交付一个由共享 `codexhost Host` 统一托管、可在 Desktop 与 Web 按需运行、支持热启停与干净卸载的可信扩展。路径以仓库根目录为基准；契约以 [`packages/shared-contracts/src/host-extensions.ts`](../../../packages/shared-contracts/src/host-extensions.ts) 与 [`packages/shared-contracts/src/host-extension-management.ts`](../../../packages/shared-contracts/src/host-extension-management.ts) 为准。
 
-| 需求                                                        | 改动位置                                          |
-| ----------------------------------------------------------- | ------------------------------------------------- |
-| 本机侧栏、全皮肤或带设置的 Desktop 工具                       | Desktop 扩展，默认只改扩展自己的目录              |
+| 需求 | 改动位置 |
+| --- | --- |
+| 独立管理页、工具面板、皮肤、侧栏增强或本机后台能力 | 统一 Host 扩展包（`manifestVersion: 2`），默认只改扩展自己的目录 |
 | 接入 Agent Harness，提供 Session 执行、历史、模型或账号能力 | [Harness 插件](../codexhost-add-harness/SKILL.md) |
-| 改变 Thread 归属、执行、持久化，或增加通用宿主原语          | 在主干设计公共能力，不在扩展里绕过 API            |
+| 改变 Thread 归属、执行、持久化，或增加通用宿主原语 | 在主干设计公共能力，不在扩展里绕过 API |
 
-## 1. 声明扩展元数据和槽位
+## 1. 选择入口形态并编写 `manifest.json`
 
-在扩展自己的仓库中准备源码目录 `<source-dir>`：在根放 `manifest.json`，入口放 `src/index.ts`，可选样式放 `src/desktop.css`。安装目录是 `$CODEXHOST_DATA_DIR/desktop-extensions/<id>/`，内有 `manifest.json`、`desktop.js`、可选 `desktop.css`。目录名与 `id` 一致；复制文件不等于启用。
+统一扩展安装在 `$CODEXHOST_DATA_DIR/host-extensions/<id>/generations/<activationId>/`，配置与后端数据持久化在 `$CODEXHOST_DATA_DIR/host-extension-data/<id>/`。五种入口均为可选，**至少声明其一**；不声明 `backend` 的纯前端插件不会启动任何 Node 后台进程：
+
+- **`page`**（跨端独立管理页）：写一份标准 ESM + CSS，Desktop 与 Web 两端打开都能直接运行；
+- **`widget`**（跨端主窗口挂件）：已启用时自动挂载，复用 `page` 的 `mount(root, api)` 和主题变量，无需打开设置；
+- **`desktop`**（Desktop 宿主 DOM 注入）：在 Codex Desktop 主窗口注入侧栏/主题等原生增强；
+- **`web`**（Web/PWA 宿主 DOM 注入）：在 Web 界面挂载区域组件或样式；
+- **`backend`**（共享 Host 单实例 Node 后端）：由共享 Host 唯一托管并常驻，Desktop 与 Web 共用同一实例和同一份数据。
+
+`manifest.json` 示例（全栈：`page` + `backend`；纯前端小组件直接省略 `backend` 即可）：
 
 ```json
 {
-  "manifestVersion": 1,
-  "id": "example.tree_v1",
-  "name": { "en": "Example Thread Tree", "zh-CN": "示例委派树" },
-  "version": "0.1.0",
-  "description": { "en": "Groups delegated Threads", "zh-CN": "归组委派的 Thread" },
-  "details": {
-    "en": "Expand a parent Thread to see its delegated work.\n\nOnly local sidebar rows are affected.",
-    "zh-CN": "展开父 Thread，查看委派的工作。\n\n仅影响本机侧栏行。"
+  "manifestVersion": 2,
+  "id": "prompt-vault",
+  "name": { "en": "Prompt Vault", "zh-CN": "本地提示词库" },
+  "version": "1.0.0",
+  "description": {
+    "en": "Local Markdown prompt library backed by shared Host",
+    "zh-CN": "基于共享 Host 的本机 Markdown 提示词库"
   },
-  "desktopApi": 1,
-  "desktop": { "script": "desktop.js", "style": "desktop.css" },
-  "slots": ["sidebar.thread-layout"],
-  "categories": ["interface", "workflow"],
-  "icon": "images/logo.png",
-  "screenshots": ["images/sidebar.png"]
+  "details": {
+    "en": "Search, edit, and copy local Markdown prompts across Desktop and Web.",
+    "zh-CN": "在 Desktop 与 Web 间同步检索、编辑并复制本机 Markdown 提示词。"
+  },
+  "categories": ["tools", "workflow"],
+  "icon": "assets/icon.png",
+  "screenshots": ["assets/preview.png"],
+  "settingsSchema": [
+    {
+      "key": "vaultDir",
+      "type": "string",
+      "label": { "en": "Vault Directory", "zh-CN": "提示词目录" }
+    }
+  ],
+  "page": {
+    "apiVersion": 1,
+    "entry": "page/index.mjs",
+    "style": "page/style.css",
+    "title": { "en": "Prompt Vault", "zh-CN": "本地提示词库" }
+  },
+  "backend": {
+    "apiVersion": 1,
+    "entry": "backend/index.mjs"
+  }
 }
 ```
 
-新扩展的 `name` 和 `description` **必须各自提供非空的 `en` 和 `zh-CN` 文案**，方便用户切换中英文界面。旧 manifest 的字符串名称和不完整的描述仅用于兼容。
-
-- `author` 可选，去掉首尾空白后为 1–128 字符。`repository` 可选，只接受 `http://` 或 `https://` URL（至多 2048 字符），推荐填写公开的 GitHub 仓库 HTTPS 链接。
-- 推荐填写双语 `details`（`{ en, "zh-CN" }`），详情弹窗会按**安全子集 Markdown** 渲染：支持 `#` / `##` / `###` 标题、无序/有序列表、`**加粗**`、`*斜体*`、`` `行内代码` ``、```` ``` ```` 围栏代码块、`>` 引用块以及 `http://` / `https://` 链接（非法协议与原始 HTML 会安全降级为纯文本）。提供时 `en` 必填，`zh-CN` 可省略，每种语言最多 16384 字符；写清用途、操作和适用范围。
-- **强烈推荐**在 `manifest.json` 中附带 `screenshots`（1–4 张界面截图，详情弹窗会自动展示截图画廊并支持点击大图预览）。将图片放在 `<source-dir>/` 下，如 `images/sidebar.png`，与示例路径一致；暂时没有截图时可省略字段。最多 4 张、不重复，每张 ≤ 512 KiB，只能用 PNG、JPEG（`.jpg` / `.jpeg`）或 WebP，扩展名须匹配文件签名。使用 `/` 分隔路径，不用绝对路径、`..`、以点或空格结尾的路径段或指向目录外的链接。工具会校验并原样复制，管理列表提供 `screenshotDataUrls` 供 `<img>` 使用。
-
-- `icon` 是可选的 Logo 文件路径，推荐正方形 PNG 或 WebP，文件 ≤ 128 KiB。支持的格式、相对路径和签名规则与 `screenshots` 相同。不填时，设置页按分类自动展示与界面协调的矢量图标（由设置页实现）。
-
-`categories` 是可选的多选标签。只选能说明扩展主要用途的项，允许跨类但不能重复；没有适合的标签时省略或填 `[]`。标签只用于归类，不授予 API 能力，也不参与槽位互斥。六个预置值如下：
-
-| 标签 | 用途 |
-| --- | --- |
-| `appearance` | 外观主题：皮肤、样式、排版或视觉密度 |
-| `interface` | 界面增强：侧栏、输入区或会话界面的操作与展示 |
-| `workflow` | 效率与协作：任务流转、委派或跨 Thread 协作 |
-| `analytics` | 数据与统计：用量、成本、额度或趋势分析 |
-| `integrations` | 外部集成：外部工具、服务或工作空间 |
-| `tools` | 实用工具：辅助操作、记忆、笔记或知识检索 |
-
-`sidebar.thread-badge` 用于角标与计数，`sidebar.thread-layout` 用于改变行布局，`appearance.theme` 用于整套皮肤（同一时间只能启用一套）。只声明实际使用的槽位；纯工具或后端可省略 `slots` 或填 `[]`。扩展必须取得全部声明的槽位才会激活。没有样式时省略 `desktop.style`；纯后端可省略 `desktop`，但至少声明 `desktop` 或 `backend` 之一。
-
-完成条件：manifest 通过 v1 schema；名称和描述均有中英文文案；标签与用途相符，目录名、入口和槽位与实际产物一致；声明的 Logo 和截图均通过打包校验。
+- `id` 最长 128 字符，匹配 `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`；`name` 与 `description` 须提供非空 `en` 与 `zh-CN` 文案。
+- `settingsSchema` 为可选字段，只在 Desktop 与 Web 的「插件详情」弹窗中自动渲染设置表单（读写 `api.storage`）；不需要配置项、或已将参数调整做在 `page` / `widget` 内的插件应省略 `settingsSchema`，详情弹窗不会显示空白设置区。
+- `categories` 可选多选：`appearance`、`interface`、`workflow`、`analytics`、`integrations`、`tools`。
+- `icon`（≤ 128 KiB）与 `screenshots`（最多 4 张，每张 ≤ 512 KiB，合计 ≤ 2 MiB）仅允许 PNG / JPEG / WebP，相对路径须使用 `/` 且不得越界。
+- `backend.entry` 不可与 `page.entry`、`widget.entry` 或 `web.entry` 指向同一文件，且不会被静态资产接口对外暴露。
+- 若声明 `desktop` 入口并占用独占区域，通过 `slots` 声明实际用到的槽位（`sidebar.thread-badge`、`sidebar.thread-layout`、`appearance.theme`）；不需要时省略。
 
 ## 2. 实现所声明的入口
 
-纯后端跳过 `define`，直接看下方的 Node 入口。界面入口的构建产物为经典 JavaScript，不是 ESM 入口；脚本加载时同步调用一次 `define`。`activate` 可返回清理函数，也可以异步返回清理函数或 `void`。用下列原语实现，不接入私有 React 对象、通用 Host RPC 或原生进程。
+### 2.1 跨端独立管理页（`page`）
 
-最小 TypeScript 入口（`src/index.ts`）：
+`page.entry` 是标准 ESM（`.mjs`），导出 `mount(root, api)` 并可返回同步或异步清理函数。遵守严格 CSP（不得使用 `eval` / `new Function` / 外部 CDN 脚本）：
 
-```ts
-import type { DesktopExtensionDefine } from "@codexhost/shared-contracts";
-
-declare const define: DesktopExtensionDefine;
-define({ activate() {} });
+```js
+export async function mount(root, api) {
+  root.innerHTML = `<div class="pv-card">Hello ${api.hostTarget}</div>`;
+  const settings = await api.storage.get();
+  const stopWatching = api.storage.onChange((next) => {
+    // React to settings saved from Desktop, Web, or backend.
+  });
+  return () => {
+    stopWatching();
+    root.replaceChildren();
+  };
+}
 ```
 
-| v1 原语                                                            | 用法                                                                                                 |
-| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| `api.sidebar.observeRows(cb)`                                      | 观察行；跳过 `isLocal === false`、没有 `threadId` 的草稿行和已断开的行。返回取消函数。               |
-| `api.threads.watchTree(cb)`                                        | 订阅本机 Thread 树；正确处理 `unknown` 和 `truncated`，不要把它们当作空闲或完整快照。返回取消函数。  |
-| `api.navigate.openThread(threadId)`                                | 原生导航；只接受本机 Thread。                                                                        |
-| `api.harnesses.describe(harnessId)`                                | 从本机 Harness 目录缓存读名称和可选图标；处理 `undefined`。                                          |
-| `api.dom.mount(node, target, position?)`                           | 受管挂载扩展自建节点；位置为 `append`、`prepend`、`before` 或 `after`。                              |
-| `api.dom.mark(element, name)` / `api.dom.unmark(element, name)`    | 添加或移除受管标记 `data-cx-<id>-<name>`。                                                           |
-| `desktop.style`                                                    | 通过 manifest 声明样式表，由宿主管理安装与移除；没有运行时 `api.dom.style`。                         |
-| `api.id` / `api.apiVersion` / `api.signal` / `api.track(teardown)` | 读取身份和版本；给事件监听器传 `{ signal: api.signal }`；用 `track` 登记定时器等额外资源的同步清理。 |
+- **主题变量**：在 `page.style` 中只依赖宿主提供的 8 个标准 CSS 变量（Desktop Shadow DOM 与 Web 容器保持一致）：`--cx-page-bg`、`--cx-page-surface`、`--cx-page-text`、`--cx-page-text-muted`、`--cx-page-border`、`--cx-page-accent`、`--cx-page-danger`、`--cx-page-radius`。
+- **可用能力（`HostExtensionPageApi`）**：
+  - `api.id` / `api.apiVersion` / `api.hostTarget`（`"desktop"` \| `"web"`）
+  - `api.locale` / `api.onLocaleChange(cb)`、`api.colorScheme` / `api.onColorSchemeChange(cb)`
+  - `api.signal`（页面关闭、扩展禁用/卸载或代次切换时触发；传给事件监听器与定时器清理）
+  - `api.assets.url(relativePath)`（异步返回图片/字体等包内资源 URL）
+  - `api.storage.get()` / `set(values)` / `onChange(cb)`（读写共享 Host `settings.json`，**纯前端无后端插件也能使用**；临时前端运行态如倒计时可直接存 `localStorage`）
+  - `api.backend.invoke(method, params?)`（仅含 `backend` 的插件可调用；无 `backend` 时抛出明确错误）
 
-- 只用 `dom.mark` + 扩展样式表装饰或隐藏原生行；绝不直接写原生行的 `style` 或 `class`。ID 含 `.` 或 `_` 时用 `CSS.escape` 转义完整属性名，例如 `` `[${CSS.escape(`data-cx-${api.id}-hidden`)}]` ``；静态 CSS 使用等价转义，如 `[data-cx-example\.tree\_v1-hidden]`。
-- `src` 只能导入扩展包内的相对路径和 `@codexhost/shared-contracts`。遵守 Desktop CSP，不能用 `eval` 或 `new Function`。
-- API 是稳定性边界而不是沙箱；只安装信任的代码。锚点没有出现时安全降级。
+### 2.2 主窗口挂件（`widget`）
 
-完成条件：远程行不受影响；禁用时原生行恢复，扩展节点、监听器、订阅和定时器均被回收。
+在清单中声明 `widget: { apiVersion: 1, entry: "widget/index.mjs", style: "widget/style.css" }`（`style` 可省略）。用同一份 `mount(root, api)` 代码在 Desktop 和 Web 主页面运行；双端均使用 Shadow DOM。只在交互区域设置 `pointer-events: auto`，让覆盖层其余区域透传点击。`page` 和 `widget` 入口可相对导入同一个包内 `.mjs`，例如 `../shared/timer.mjs`；打包时包含该模块。
 
-### 全皮肤、设置与 Node 入口
+### 2.3 Desktop 宿主注入（`desktop`）
 
-- **静态资源**：把壁纸、字体等放在包内，如 `assets/wallpaper.webp`。通过 Host `asset` RPC 传相对路径并读取 `dataUrl`；原样打包，不需要 `assets` manifest 字段。不要把 SVG 内容挂成 HTML。
-- **设置**：在 `settingsSchema` 声明唯一标识符 `key`、双语 `label` 和字段类型（`boolean`、`string`、`number`、`range`、`select`）；例如用 `range` 表达壁纸模糊度。保存时提交整份 JSON 对象。默认值是 UI 元数据，不会自动写入。Host 在安装目录之外持久化，覆盖安装和卸载都保留设置。
-- **Node 入口**：声明 `"backend": { "script": "backend.mjs" }`，将构建好的 JS 与依赖一起打包。导出 `activate(ctx)` 或 `default.activate(ctx)`；在激活时用 `ctx.handle` 登记方法，用 `ctx.readSettings` / `ctx.writeSettings` 访问配置。返回清理函数或 `{ dispose() }` 以释放资源。后端只在启用且取得槽位时加载，运行在本机用户权限的独立子进程中，不是沙箱。
+经典脚本（`.js`，非 ESM），加载时同步调用 `define({ activate(api) { … } })`。只通过 `api.dom.mount` 与 `api.dom.mark` + `desktop.style` 增强界面，不直接改写原生元素的 `style` / `class`，不接入私有 React 对象。支持 `sidebar.observeRows`、`threads.watchTree`、`navigate.openThread`、`harnesses.describe`、`assets.readDataUrl`、`storage`、`backend.invoke`、`settings.registerPage`、`signal` 与 `track`。
 
-- **Renderer 侧新 API（v1 已上线）**：
-  - `api.assets.readDataUrl(relativePath)`：读取包内静态资源并返回 `{ mimeType, dataUrl }`（单文件 ≤ 16 MiB，适合全皮肤壁纸/字体）。
-  - `api.storage.get()` / `api.storage.set(values)` / `api.storage.onChange(cb)`：读写独立持久化的扩展设置并订阅实时变更。
-  - `api.backend.invoke(method, params?)`：调用本扩展在 Host 子进程中通过 `ctx.handle(method, fn)` 注册的后端方法。
-  - `api.settings.registerPage({ title?, icon?, mount(container, ctx) })`：在设置页左侧「插件设置」分组中注册最多 1 个自定义页面（禁用/卸载自动注销）；若仅需轻量表单，可直接在 `manifest.json` 声明 `settingsSchema` 由宿主自动渲染。
+### 2.4 Web 宿主注入（`web`）
 
-字段、大小限制和四个 [Host RPC](../../../docs/architecture/desktop-ui-extensions.md#资源设置与后端-rpc) 以契约为准。
+ESM 模块（`.mjs`），导出 `activate(api)` 并可返回清理函数（也可只声明 `web.style` 纯 CSS 扩展）。通过 `api.dom.mount(regionOrEl)`、`api.dom.mark`、`api.assets.url`、`api.storage`、`api.backend.invoke`、`api.settings.registerPage`、`api.panels.register` 与 `api.signal` / `api.track` 集成，停用时自动回收全部节点、标记与订阅。
 
-完成条件：资源可从实际安装包读取；改写设置后覆盖安装仍可读回；已登记的方法可调用，禁用后不可调用，重载前完成旧实例清理。
+### 2.5 单实例 Node 后端（`backend`）
 
-## 3. 构建、隔离验收与恢复
+包内 ESM（`.mjs`，≤ 2 MiB，自行打包运行依赖），导出 `activate(ctx)` 或 `default.activate(ctx)`：
 
-1. 用 [隔离实测 Skill](../codexhost-isolated-testing/SKILL.md) 选取单独的数据目录，在同一工作树以该目录运行 Desktop 和 Console。先确认允许启动测试 Desktop，且不会占用正在使用的端口或数据目录。
-2. 在仓库根直接构建到扩展根，不用符号链接：
+```js
+export async function activate(ctx) {
+  ctx.handle("ping", async () => ({ pid: process.pid, dataDir: ctx.dataDir }));
+  return () => {
+    // Release timers, watchers, or handles before process shutdown.
+  };
+}
+```
 
+- `ctx.extensionId`、`ctx.extensionDir`、`ctx.dataDir`（`$CODEXHOST_DATA_DIR/host-extension-data/<id>`）、`ctx.readSettings()`、`ctx.writeSettings(values)`、`ctx.handle(method, handler)`。
+- 后端随共享 Host 唯一运行 1 个进程，与前端开闭无关；**进程隔离不是权限沙箱**，只运行信任的代码。
+
+## 3. 打包与隔离实测
+
+1. 将 `manifest.json`、构建后的 `page`/`widget`/`desktop`/`web`/`backend` 文件以及声明的图标、截图与静态资源打入 `.zip`（`manifest.json` 位于 ZIP 根或唯一顶层目录；ZIP ≤ 64 MiB）。如仅构建 `desktop` 经典入口，也可复用：
    ```bash
-   : "${CODEXHOST_DATA_DIR:?请先设置独立的测试数据目录}"
-   : "${EXTENSION_SOURCE_DIR:?请先设置扩展源码目录}"
    npx tsc -b packages/harness-plugin-files
-   node tools/build-desktop-extension.mjs "$EXTENSION_SOURCE_DIR" \
-     "$CODEXHOST_DATA_DIR/desktop-extensions"
+   node tools/build-desktop-extension.mjs "$EXTENSION_SOURCE_DIR" "<输出目录>"
    ```
+2. 使用 [隔离实测 Skill](../codexhost-isolated-testing/SKILL.md) 以独立数据目录与空闲端口启动测试 Web / Desktop（不碰 `~/.codexhost` 与用户正在运行的端口）。
+3. 从 Desktop「设置 → 插件」或 Web 一级目录「插件 → 插件中心」导入 `.zip`（或开发期填入本机目录 `localDir`）并启用：
+   - 验证能力角标显示准确；含 `widget` 的扩展启用后确认主窗口自动出现挂件，禁用后确认挂件移除且未拦截非挂件区域的点击；
+   - 含 `page` 的扩展点击「打开页面」（Desktop 也可从「设置」左侧「插件页面」分组打开，Web 也可从左侧「插件」主工作区顶部切页栏打开）；验证样式、交互、设置持久化与关闭清理；
+   - 含 `backend` 的扩展确认共享 Host 仅起 1 个子进程、多标签页/双端共享同一 PID 与数据、禁用后进程立即退出；
+   - 纯前端无 `backend` 扩展确认零后端子进程；
+   - 如需兜底，可通过管理界面的「禁用全部扩展」（`codexhost/extensions/recover`）一键恢复。
+4. 实测完毕按隔离实测 Skill 停止测试服务与测试 Host 并删除临时数据目录。
 
-   此工具只构建界面入口和样式，并原样复制声明的 Logo 和截图。含后端或其他资源时，自行构建并按 manifest 的相对路径放入 ZIP，再通过 Console 安装。安装不启用新扩展；目录和文件须归当前用户所有，不允许同组或其他用户写入。
+## 4. 分发与投稿市场
 
-3. 在 Console 的扩展页启用。确认从等待进入运行中；重复构建一次确认热更新且没有旧实例；禁用后原生行恢复。验证远程行不变；用另一个声明同一槽位的测试扩展验证冲突提示包含占用者。记录实际验证范围。
-4. 看不到扩展时，核对数据目录、目录名、manifest 与权限。等待状态时确认 Desktop 主窗口已建立界面控制；失败时先看状态原因和声明的文件，修复后重新构建。若 Desktop 无法操作，在独立的 **Console → 扩展** 选择「禁用全部扩展并重载 Desktop」；选择会立即保存，有在线 Controller 时才执行窗口重载。
-
-完成条件：报告构建产物位置、启停/热更新/冲突结果，以及未验证项。
-
-## 4. 通过 GitHub 分发与投稿官方市场
-
-将 `manifest.json` 和声明的 `desktop.script` / `backend.script`（构建好的 JS，不只是 `.ts` 源码）一并提交到公开 GitHub 仓库的默认分支。把样式、Logo、截图及其他静态资源也提交到对应路径。上架索引时，若使用 Release ZIP，Logo 和截图还须各自作为同名文件资产上传，且与 ZIP 内的字节一致。发给用户仓库主页即可安装，无需手动打包 Release `.zip`；若最新稳定 Release 有 `.zip` 资产，主页会优先安装该资产。扩展放在仓库子目录时，可分享 `/tree/<ref>/<subdir>` 链接。
-
-**投稿到官方插件市场（`BytePioneer-AI/codexhost-extensions-registry`）**：
-1. 打开 [投稿表单（GitHub Issue Form）](https://github.com/BytePioneer-AI/codexhost-extensions-registry/issues/new/choose) 填写你的公开 GitHub 仓库地址（或直接向 `sources.json` 提交 PR）。
-2. 仓库 Actions 会自动校验 `manifest.json`、双语字段、Logo/截图与静态安全检查并生成报告；维护者首次审核合并后即上架。
-3. 上架后每 30 分钟自动同步你的新版本、GitHub Star 数与下载量，后续发版无需重复提 PR。
-
-完成条件：确认选中的 GitHub 目录同时包含 manifest 和声明的入口 JS，安装时不需要构建。
-
-更多约束见 [Desktop 界面扩展](../../../docs/architecture/desktop-ui-extensions.md)。
+- 推荐使用公开 GitHub Release 附带构建好的 `.zip` 资产（市场索引 `catalog.v2.json` 优先拉取最新正式 Release，无 Release 时兜底默认分支源码），或直接分享 `.zip` / GitHub 仓库链接供用户在「插件」中心导入。
+- 完整架构、RPC 与安全边界见 [Host 扩展架构](../../../docs/architecture/desktop-ui-extensions.md)。

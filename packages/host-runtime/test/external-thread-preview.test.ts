@@ -92,7 +92,7 @@ describe("first user message preview", () => {
     ).toBe("");
   });
 
-  it("persists accepted input while running and serves it without history after restart", async () => {
+  it("persists successful input and serves it without history after restart", async () => {
     const fixture = createFixture();
     let closed = false;
     try {
@@ -101,10 +101,11 @@ describe("first user message preview", () => {
       expect(await fixture.mappingStore.getThread(threadId)).not.toHaveProperty("preview");
       const turnId = await startPiTurn(fixture, id);
       await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
-      expect(await fixture.mappingStore.getThread(threadId)).toMatchObject({
-        title: "",
-        preview: "synthetic",
-      });
+      expect(await fixture.mappingStore.getThread(threadId)).not.toHaveProperty("preview");
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Missing fake Session");
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
       writeRequest(fixture.desktopInput, {
         id: 10,
         method: "thread/list",
@@ -119,10 +120,6 @@ describe("first user message preview", () => {
           data: [expect.objectContaining({ id, name: null, preview: "synthetic", turns: [] })],
         },
       });
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Missing fake Session");
-      session.succeedTurn();
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
       writeRequest(fixture.desktopInput, {
         id: 11,
         method: "thread/name/set",
@@ -164,6 +161,47 @@ describe("first user message preview", () => {
     } finally {
       if (!closed) await closeFixture(fixture);
       await rm(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("never backfills a failed prompt from native history, but previews a later successful one", async () => {
+    const fixture = createFixture();
+    try {
+      const id = await startPiThread(fixture);
+      const hostId = hostThreadIdSchema.parse(id);
+      const first = await startPiTurn(fixture, id);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Missing fake Session");
+      session.failTurn({ code: "nativeFailure", message: "failure", retryable: false });
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", first));
+      writeRequest(fixture.desktopInput, {
+        id: 10,
+        method: "thread/read",
+        params: { threadId: id, includeTurns: true },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 10)),
+      ).resolves.toMatchObject({
+        result: { thread: { turns: [{ id: first, status: "failed" }] } },
+      });
+      const record = await fixture.mappingStore.getThread(hostId);
+      expect(record).not.toHaveProperty("preview");
+      expect(record?.turnMappings).toMatchObject([{ hostTurnId: first }]);
+      expect(JSON.stringify(record)).not.toContain('"synthetic"');
+      writeRequest(fixture.desktopInput, {
+        id: 11,
+        method: "turn/start",
+        params: { threadId: id, input: [{ type: "text", text: "successful prompt" }] },
+      });
+      const reply = await fixture.collector.waitFor((message) => requestId(message, 11));
+      const second = String(((reply.result as JsonObject).turn as JsonObject).id);
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", second));
+      await expect(fixture.mappingStore.getThread(hostId)).resolves.toMatchObject({
+        preview: "successful prompt",
+      });
+    } finally {
+      await stopFixture(fixture);
     }
   });
 

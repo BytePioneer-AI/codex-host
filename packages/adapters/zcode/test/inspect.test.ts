@@ -1,5 +1,6 @@
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
+import { harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { ZcodeAdapter } from "../src/adapter.js";
 import type { CliTransport } from "../src/transport.js";
 
@@ -32,11 +33,13 @@ function adapterWith(
   available: unknown[] = [],
   startPlanChecked = true,
   codingPlanIssue?: string,
+  credentialIssue?: string,
 ) {
   const transport = {
     signedIn,
     startPlanChecked,
     codingPlanIssue,
+    credentialIssue,
     startPlan: false,
     start: async () => undefined,
     close: async () => undefined,
@@ -98,7 +101,28 @@ describe("ZCode connection check without available models", () => {
         label: "Start Plan / GLM-5.3-Flash",
       },
     ]);
-    expect((await adapter.inspect({ cwd: tmpdir() })).status).toBe("ready");
+    const inspected = await adapter.inspect({ cwd: tmpdir() });
+    expect(inspected).toMatchObject({
+      status: "ready",
+      catalog: { models: [{ ref: { id: "account:bigmodel-start-plan/GLM-5.3-Flash" } }] },
+    });
+    if (inspected.status !== "ready") throw new Error("expected ready");
+    const saved = harnessModelRefSchema.parse({
+      id: "zcode-local-v1.WyJhY2NvdW50OmJpZ21vZGVsLXN0YXJ0LXBsYW4iLCJHTE0tNS4zLUZsYXNoIl0",
+    });
+    expect(adapter.normalizeStoredModelRef(saved, structuredClone(inspected.catalog))).toEqual({
+      id: "account:bigmodel-start-plan/GLM-5.3-Flash",
+    });
+    await adapter.close();
+  });
+
+  it("marks credential read failures non-retryable to avoid automatic Keychain prompt loops", async () => {
+    const issue = "ZCode could not read credentials: macOS Keychain read timed out.";
+    const adapter = adapterWith(false, [], false, undefined, issue);
+    expect(await adapter.inspect({ cwd: tmpdir() })).toMatchObject({
+      status: "unavailable",
+      error: { code: "configurationRequired", message: issue, retryable: false },
+    });
     await adapter.close();
   });
 });

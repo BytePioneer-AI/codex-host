@@ -9,7 +9,7 @@ import type {
   HostThreadSnapshot,
   HostTurnSnapshot,
 } from "@codexhost/harness-adapter";
-import { ZCODE_ID, encodeModel, sessionState } from "./models.js";
+import { ZCODE_ID, encodeModel, modelCatalog, sessionState } from "./models.js";
 import { projectPart } from "./projection.js";
 import {
   record,
@@ -75,6 +75,7 @@ export function history(
   snapshot: NativeSnapshot,
   events: readonly NativeEvent[] = [],
   locator?: JsonObject,
+  index = modelCatalog(snapshot.settings).index,
 ): HostThreadSnapshot {
   const outcomes = new Map<string, { outcome: HistoricalTurnOutcome; completedAtMs: number }>();
   const nativeKeys = new Map<string, string>();
@@ -117,7 +118,7 @@ export function history(
       outcome,
       ...(user.info.model
         ? {
-            model: encodeModel(user.info.model),
+            model: encodeModel(user.info.model, index),
           }
         : {}),
       startedAtMs: user.info.time.created,
@@ -143,5 +144,5 @@ export function history(
       current.assistants.push(message);
   }
   finish();
-  return { turns, state: sessionState(snapshot, locator) };
+  return { turns, state: sessionState(snapshot, locator, index) };
 }

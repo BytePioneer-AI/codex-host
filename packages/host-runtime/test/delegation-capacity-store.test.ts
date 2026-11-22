@@ -107,7 +107,7 @@ describe("FileDelegationQueueStore", () => {
     await mkdir(directory, { recursive: true });
     const exited = { pid: exitedPid(), boot: bootSeconds(), instance: "exited" };
     await writeForeign(directory, "one.json", exited, [
-      entry("late", { queuedAt: 3_000 }),
+      entry("late", { harnessId: "codex", queuedAt: 3_000, nativeConfiguration: {} }),
       entry("early", { queuedAt: 1_000 }),
     ]);
     await writeForeign(directory, "two.json", { ...exited, instance: "second" }, [
@@ -119,6 +119,7 @@ describe("FileDelegationQueueStore", () => {
     const adopted = await store.adopt();
     expect(adopted.map((queued) => queued.threadId)).toEqual(["early", "middle", "late"]);
     expect(adopted[1]).toMatchObject({ starting: true });
+    expect(adopted[2]).toMatchObject({ nativeConfiguration: {} });
     const names = await readdir(directory);
     expect(names).toHaveLength(1);
     const file = JSON.parse(await readFile(path.join(directory, names[0] ?? ""), "utf8"));

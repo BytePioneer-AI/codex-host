@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { compactDelegationOutput } from "../src/delegation-cli-output.js";
+import { compactDelegationOutput, jsonDelegationOutput } from "../src/delegation-cli-output.js";
+import { textDelegationOutput } from "../src/delegation-cli-text.js";
 
 describe("compact delegation output", () => {
   it.each([
@@ -87,43 +88,74 @@ describe("compact delegation output", () => {
     ).toHaveProperty("pendingQuestions", []);
   });
 
-  it("exposes discoverable Model IDs and native Thinking restrictions", () => {
-    const inspection = {
-      status: "ready",
-      catalog: {
+  it.each(["codex", "pi"])(
+    "exposes discoverable Model IDs and Thinking restrictions for %s",
+    (harnessId) => {
+      const id = "provider/vendor/model: v1";
+      const fastModel = { id, serviceTier: "priority" };
+      const inspection = {
+        status: "ready",
+        catalog: {
+          models: [
+            {
+              ref: { id },
+              label: "Model",
+              fastModel,
+              supportedThinkingOptionIds: ["high"],
+            },
+            {
+              ref: { id, serviceTier: "ultrafast" },
+              label: "Model · Ultrafast",
+              supportedThinkingOptionIds: [],
+            },
+          ],
+          defaultModel: fastModel,
+          thinkingOptions: [{ id: "high", label: "High" }],
+          defaultThinkingOptionId: "high",
+        },
+        capabilities: { configuration: { selectModel: true, selectThinkingOption: true } },
+      };
+      const result = { harnessId, inspection };
+      expect(compactDelegationOutput("harness inspect", result)).toEqual({
+        harnessId,
+        status: "ready",
         models: [
-          {
-            ref: { id: "opaque-a" },
-            label: "Provider / Model A",
-            fastModel: { id: "opaque-a-fast" },
-            supportedThinkingOptionIds: ["high"],
-          },
-          { ref: { id: "opaque-b" }, label: "Provider / Model B", supportedThinkingOptionIds: [] },
+          { id, label: "Model", thinking: ["high"] },
+          { id: `${id}~fast`, label: "Model (Fast)", thinking: ["high"] },
+          { id: `${id}~ultrafast`, label: "Model · Ultrafast", thinking: [] },
         ],
-        defaultModel: { id: "opaque-a" },
-        thinkingOptions: [{ id: "high", label: "High" }],
+        defaultModel: `${id}~fast`,
+        thinkingOptions: inspection.catalog.thinkingOptions,
         defaultThinkingOptionId: "high",
-      },
-      capabilities: { configuration: { selectModel: true, selectThinkingOption: true } },
-    };
-    expect(compactDelegationOutput("harness inspect", { harnessId: "pi", inspection })).toEqual({
-      harnessId: "pi",
-      status: "ready",
-      models: [
-        { id: "opaque-a", label: "Provider / Model A", thinking: ["high"] },
-        { id: "opaque-a-fast", label: "Provider / Model A (Fast)", thinking: ["high"] },
-        { id: "opaque-b", label: "Provider / Model B", thinking: [] },
-      ],
-      defaultModel: "opaque-a",
-      thinkingOptions: inspection.catalog.thinkingOptions,
-      defaultThinkingOptionId: "high",
-      capabilities: inspection.capabilities,
-    });
-    const unavailable = { status: "unavailable", error: { message: "Missing executable" } };
-    expect(
-      compactDelegationOutput("harness inspect", { harnessId: "pi", inspection: unavailable }),
-    ).toEqual({ harnessId: "pi", ...unavailable });
-  });
+        capabilities: inspection.capabilities,
+      });
+      expect(jsonDelegationOutput("harness inspect", result)).toEqual({
+        harnessId,
+        inspection: {
+          ...inspection,
+          catalog: {
+            ...inspection.catalog,
+            models: [
+              { ...inspection.catalog.models[0], fastModel: { id: `${id}~fast` } },
+              { ...inspection.catalog.models[1], ref: { id: `${id}~ultrafast` } },
+            ],
+            defaultModel: { id: `${id}~fast` },
+          },
+        },
+      });
+      expect(textDelegationOutput("harness inspect", result)).toContain(`defaultModel: ${id}~fast`);
+      expect(
+        compactDelegationOutput("delegate start", {
+          harnessId,
+          configuration: { effective: { effectiveModel: fastModel, resolvedModelLabel: "Model" } },
+        }),
+      ).toHaveProperty("model", `${id}~fast`);
+      const unavailable = { status: "unavailable", error: { message: "Missing executable" } };
+      expect(
+        compactDelegationOutput("harness inspect", { harnessId, inspection: unavailable }),
+      ).toEqual({ harnessId, ...unavailable });
+    },
+  );
 
   it("exposes pending Questions and the answer receipt without claiming success", () => {
     const question = {

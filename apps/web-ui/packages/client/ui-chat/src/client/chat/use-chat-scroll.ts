@@ -1,5 +1,6 @@
 /** Composes viewport operations, reading policy, and history navigation for Chat. */
 import { useCallback, useLayoutEffect, useMemo, useRef, type RefObject } from "react";
+import type { DraftResponseAnnotation } from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type { ChatSnapshot } from "../contract/snapshot.ts";
 import type { ChatViewSlotProps } from "../contract/slots.ts";
 import {
@@ -29,6 +30,7 @@ interface ChatScrollState extends ChatReadingState {
   readonly columnRef: RefObject<HTMLDivElement>;
   readonly busyTurn: number | null;
   readonly navigateToTurn: ChatNavigation["navigateToTurn"];
+  readonly revealResponseAnnotation: (annotation: DraftResponseAnnotation) => void;
   readonly loadEarlier: ChatNavigation["loadEarlier"];
   readonly returnToBottom: () => void;
 }
@@ -207,6 +209,16 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
     navigation.cancel();
     reading.followTail();
   }, [navigation, reading]);
+  const revealResponseAnnotation = useCallback(
+    (annotation: DraftResponseAnnotation): void => {
+      navigation.cancel();
+      const landing = viewport.scrollToResponseAnnotation(annotation);
+      if (landing === null) return;
+      reading.acceptNavigation(landing);
+      if (content.current.input.loadingOlder) viewport.beginPreserving(landing.position);
+    },
+    [navigation, reading, viewport],
+  );
 
   return {
     listRef,
@@ -214,6 +226,7 @@ export function useChatScroll(input: ChatScrollInput): ChatScrollState {
     ...state,
     busyTurn,
     navigateToTurn: navigation.navigateToTurn,
+    revealResponseAnnotation,
     loadEarlier: navigation.loadEarlier,
     returnToBottom,
   };

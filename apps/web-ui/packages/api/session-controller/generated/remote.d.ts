@@ -49,7 +49,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'session/fork': (request: SessionForkRequest) => Promise<RemoteResult<SessionForkValue>>
     'session/initializeDefaultModel': () => Promise<RemoteResult<void>>
     'session/list': (_request: SessionListRequest, signal?: AbortSignal) => Promise<RemoteResult<SessionListValue>>
-    'session/modelCatalog': (request?: { readonly sessionId: SessionId; }) => Promise<RemoteResult<ModelCatalog>>
+    'session/modelCatalog': (request?: { readonly sessionId: SessionId; } | { readonly refresh: true; readonly harnessId?: string; }) => Promise<RemoteResult<ModelCatalog>>
     'session/openWorkspacePath': (request: SessionOpenWorkspacePathRequest, signal?: AbortSignal) => Promise<RemoteResult<SessionOpenWorkspacePathValue>>
     'session/page': (request: SessionPageRequest, signal?: AbortSignal) => Promise<RemoteResult<SessionPage>>
     'session/projections': (request: SessionProjectionsRequest, signal?: AbortSignal) => Promise<RemoteResult<SessionProjectionsValue>>

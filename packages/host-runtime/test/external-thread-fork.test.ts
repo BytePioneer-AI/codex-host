@@ -15,6 +15,7 @@ import {
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
+  jsonObjectSchema,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 import {
@@ -243,7 +244,7 @@ describe("External selected Model persistence", () => {
       writeRequest(fixture.desktopInput, {
         id: 5,
         method: "codexhost/thread/model/select",
-        params: { threadId: sourceId, model: opus },
+        params: jsonObjectSchema.parse({ threadId: sourceId, model: opus }),
       });
       await expect(
         fixture.collector.waitFor((message) => requestId(message, 5)),

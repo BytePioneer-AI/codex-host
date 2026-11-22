@@ -70,7 +70,13 @@ function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose }: PanelP
   const titleId = useId();
 
   const panel = useRef<HTMLDivElement>(null);
+  const navList = useRef<HTMLDivElement>(null);
   useModalLayer(panel, true, onClose);
+
+  useEffect(() => {
+    const activeButton = navList.current?.querySelector<HTMLButtonElement>('[aria-current="true"]');
+    activeButton?.scrollIntoView({ inline: "nearest", block: "nearest" });
+  }, [active]);
 
   // Portalled beside #root like the Modal primitive: a covering surface mounted
   // inside the root would precede the columns' chrome in document order, so a
@@ -97,7 +103,7 @@ function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose }: PanelP
           >
             {renderSlot("settings.header", {})}
           </div>
-          <div className={css.navList}>
+          <div ref={navList} className={css.navList}>
             {rows.map((row) => (
               <button
                 key={row.id}

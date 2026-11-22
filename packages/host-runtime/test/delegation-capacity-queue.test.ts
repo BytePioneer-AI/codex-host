@@ -234,7 +234,12 @@ describe("DelegationCapacityQueue", () => {
 
     value.running.delete("busy");
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(value.starts).toEqual([{ input: firstRequest.input, identity: firstRequest.identity }]);
+    expect(value.starts).toEqual([
+      {
+        input: firstRequest.input,
+        identity: { ...firstRequest.identity, taskDigest: firstRequest.taskDigest },
+      },
+    ]);
     expect(
       await queue.read({ threadId: firstRequest.identity.threadId, view: "result" }),
     ).toBeUndefined();
@@ -344,8 +349,8 @@ describe("DelegationCapacityQueue", () => {
     restored.configure({ enabled: true, maxRunning: 2 });
     await flush();
     expect(after.starts).toEqual([
-      { input: head.input, identity: head.identity },
-      { input: tail.input, identity: tail.identity },
+      { input: head.input, identity: { ...head.identity, taskDigest: head.taskDigest } },
+      { input: tail.input, identity: { ...tail.identity, taskDigest: tail.taskDigest } },
     ]);
     expect(restoredStore.saved.map((entry) => entry.threadId)).toEqual([
       newcomer.identity.threadId,

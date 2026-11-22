@@ -14,6 +14,17 @@ pub fn process_instance(process_id: u32, started_at_micros: u64) -> Option<Proce
         .filter(|live| live.started_at_micros == started_at_micros)
 }
 
+/// Distinguishes a confirmed absent PID from a process that could not be inspected.
+/// This does not pin a PID for signal delivery.
+#[cfg(target_os = "linux")]
+pub fn observe_process_identity(process_id: u32) -> Result<Option<ProcessIdentity>, PlatformError> {
+    match process_identity(process_id) {
+        Ok(identity) => Ok(Some(identity)),
+        Err(PlatformError::NotFound(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 impl From<&ProcessSnapshot> for ProcessIdentity {
     fn from(process: &ProcessSnapshot) -> Self {
         Self {
@@ -26,22 +37,51 @@ impl From<&ProcessSnapshot> for ProcessIdentity {
 
 #[cfg(target_os = "macos")]
 pub fn process_identity(process_id: u32) -> Result<ProcessIdentity, PlatformError> {
-    use libproc::libproc::bsd_info::BSDInfo;
-    use libproc::libproc::proc_pid::pidinfo;
-
     let native_id = i32::try_from(process_id)
         .map_err(|_| PlatformError::Invalid(format!("PID {process_id} exceeds i32::MAX")))?;
-    let info = pidinfo::<BSDInfo>(native_id, 0).map_err(|error| {
-        PlatformError::NotFound(format!("cannot inspect PID {process_id}: {error}"))
-    })?;
-    Ok(ProcessIdentity {
-        id: info.pbi_pid,
-        parent_id: info.pbi_ppid,
-        started_at_micros: info
-            .pbi_start_tvsec
-            .saturating_mul(1_000_000)
-            .saturating_add(info.pbi_start_tvusec),
-    })
+    macos_identity(native_id)
+        .map(|(identity, _)| identity)
+        .map_err(|error| {
+            PlatformError::NotFound(format!("cannot inspect PID {process_id}: {error}"))
+        })
+}
+
+/// BSDInfo errors do not establish absence; ESRCH or a zombie state do.
+#[cfg(target_os = "macos")]
+pub fn observe_process_identity(process_id: u32) -> Result<Option<ProcessIdentity>, PlatformError> {
+    use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
+
+    let native_id = i32::try_from(process_id)
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| PlatformError::Invalid(format!("PID {process_id} is invalid")))?;
+    match macos_identity(native_id) {
+        Ok((identity, zombie)) => Ok((!zombie).then_some(identity)),
+        Err(error) => match kill(Pid::from_raw(native_id), None) {
+            Err(Errno::ESRCH) => Ok(None),
+            _ => Err(PlatformError::Invalid(format!(
+                "process presence is unconfirmed for PID {process_id}: {error}"
+            ))),
+        },
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_identity(process_id: i32) -> Result<(ProcessIdentity, bool), String> {
+    use libproc::libproc::bsd_info::BSDInfo;
+    use libproc::libproc::proc_pid::pidinfo;
+    let info = pidinfo::<BSDInfo>(process_id, 0)?;
+    Ok((
+        ProcessIdentity {
+            id: info.pbi_pid,
+            parent_id: info.pbi_ppid,
+            started_at_micros: info
+                .pbi_start_tvsec
+                .saturating_mul(1_000_000)
+                .saturating_add(info.pbi_start_tvusec),
+        },
+        info.pbi_status == nix::libc::SZOMB,
+    ))
 }
 
 #[cfg(target_os = "linux")]

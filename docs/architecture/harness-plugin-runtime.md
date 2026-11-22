@@ -274,9 +274,18 @@ Renderer 的 `listHarnessPlugins()` 使用绑定的 RequestManager 发送此固�
 
 Composer 配置按动态插件 ID 存储，不再为每个 Harness 增加字段。新 Thread 偏好按 Host 保存，本地保留 v1 键与旧 Claude 权限偏好的读取兼容；远端不读取本地偏好，草稿切换 Host 时清除上一 Host 的内存配置。插件不注入 SVG 文本或脚本；图标保留主分支原有的图片或安全 path 原语渲染。侧栏已识别的远程 Thread 会主动加载所属 Host 的插件目录，无须先打开该 Thread；不使用本地图片覆盖远端插件资源。旧远端未提供 `iconStyle` 时，仅当插件身份和图片数据与本地插件完全一致，才复用该相同资源的显示元数据；远端名称、版本、图片和显式样式仍保留。图片或身份不匹配时不补充样式。
 
-新 ID 使用共享的 `encodeHarnessPluginRoute` / `decodeHarnessPluginRoute`，保留 Harness ID、Model Ref、Thinking 和 Permission Mode；结果是 `codexhost/plugin-v1@` 加规范 JSON 的小写十六进制编码，可放入 `thread/start.params.model`。这是运输编码，**不是加密，不能放入凭据**。
+新 ID 使用共享的 `encodeHarnessPluginRoute` / `decodeHarnessPluginRoute`，保留 Harness ID、Model Ref、Thinking 和 Permission Mode；结果是 `codexhost/plugin-v1@` 加规范 JSON 的 UTF-8 字节小写十六进制编码，可放入 `thread/start.params.model`。这是运输编码，**不是加密，不能放入凭据**。载体、Mapping Store 的 `transportModelId` 和 Thread Inspection 共用同一长度上限（`HARNESS_TRANSPORT_MODEL_ID_MAX_LENGTH`），能容纳最长的 Model Ref 加其他字段。
 
-此前缀下的非法数据直接报错，不回落到官方 Codex。有效但未安装的插件路由同样不会交给官方 app-server。普通官方模型路由不受影响。既有七种专用编码暂时保留，后续迁移不得直接删除历史读取能力。
+此前缀下的非法数据直接报错，不回落到官方 Codex。有效但未安装的插件路由同样不会交给官方 app-server。普通官方模型路由不受影响。所有新写入都使用这一载体；既有七种按 `@` 拼接的专用编码只保留读取，用于旧 Thread 和计划任务。
+
+### Model Ref
+
+- Model Ref 的 `id` 接受任何非空、无控制字符、最长 512 个 UTF-16 单元的字符串。原生用一个值标识 Model 的 Harness，`id` 直接等于原生 Model ID，不裁剪、不编码。Pi、OMP、OpenCode、DeepSeek、ZCode 由 Provider 和 Model 两部分确定身份，`id` 是 `<provider>/<model>`；两部分都可能含 `/`，所以 Adapter 用 `harness-adapter` 的 `compositeModelRefIds` 按原生模型列表整串查找，不切分字符串。两个身份拼出同一字符串时，只有这几个条目改用 Adapter 的编码 ID。
+- 同一 Model 的速度档位放在可选的 `serviceTier` 字段，`fastModel` 与普通条目共用 `id`。目录匹配、收藏、偏好和委派去重比较完整的 Ref（`sameHarnessModelRef`、`catalogModelForRef`），不只比较 `id`。
+- 旧版本保存的编码 Ref 不在当前目录时，Host 调用该 Adapter 的 `normalizeStoredModelRef(ref, catalog)`（Codex 用内置转换）。
+  - 偏好文件（收藏、新会话默认值、委派默认值）按 Harness 只迁移一次：拿到目录后把转换结果写回 `harness-preferences-v1.json`，并在文件的 `model-ref-migration-v1` 条目记下该 Harness；之后读取偏好不再读取目录。目录暂时读不到的 Harness 保留原值、不记录，下次读取时重试。
+  - Thread 记录中的 Ref 在读取时转换，不改写文件。
+  - 转换后仍不能唯一对应目录中 Model 的值保留在文件里，使用方按 Harness 默认 Model 处理。前缀加 base64url 的旧编码共用 `harness-adapter` 的 `normalizeLegacyBase64ModelRef`。
 
 ### 只读账号额度
 
@@ -308,7 +317,13 @@ Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和
 
 支持配置选择的 Adapter 不因已有活动 Turn 而拒绝 `model.select` / `thinking.select`；通过原生配置接口执行，或更新供下一次原生调用使用的配置。生效时机由 Harness 决定，Host 不承诺当前 Turn 中途换模型，也不统一排队到 Turn 结束。原生拒绝仍作为失败返回，配置成功后发布已确认的 `session.state.changed`。
 
-仅放开运行中配置选择：初始化/Turn 接收过程、并行配置写入和历史读取的一致性保护仍保留；第二个 Turn、历史变更、关闭/故障和 Permission Mode 的既有约束不变。Antigravity 通过 ACP `session/set_config_option` 切换模型与推理档位，并按原生 `transcript.jsonl` 每条 `PLANNER_RESPONSE` 记录的实际 `model` 逐请求计费，后续配置选择不会重标已完成请求。
+第二个 Turn、历史变更、关闭/故障和 Permission Mode 的既有约束不变。Antigravity 按会话串行处理配置选择；冷态首个 Model 选择以新 Model 打开会话，不重放已被替换的旧 Model 或 Thinking。如果打开已经在进行，选择等待打开结果，期间不发布中间配置。Model 和 Thinking 以 ACP `session/set_config_option` 的响应为准。已经完成的请求仍按原生 `transcript.jsonl` 每条 `PLANNER_RESPONSE` 记录的实际 `model` 计费。
+
+Host 按 Thread 串行处理配置 RPC（包括观察确认状态和写入映射）。切换 Model 后，映射保存当前确认的 Thinking；原生未报告 Thinking 时清除旧值。Model 或 Thinking 已生效但映射写入失败时，RPC 返回错误，不承诺重启后能恢复这次选择。
+
+## 已结算的自主 Turn
+
+原生只在提交后才能确认边界的 Adapter，可以在 `outputs` 上发送 `turn.autonomous.completed`，携带与原生 `readSnapshot()` 一致的 `HostTurnSnapshot`（无用户输入用 `[]`）。同一个原生 Turn 不应再发送流式自主 Turn 生命周期。Host 按 `nativeTurnRef` 对齐和去重，把快照作为独立历史 Turn 追加，不占用前台执行位，也不改写前一轮的回答。自主快照无法写入映射或投影时记录诊断，可由后续历史读取恢复，不终止输出流或结算前台 Turn。能观测完整实时生命周期的插件继续使用 `turn.autonomous.started` 和普通 Item/终态事件。
 
 ## 运行中调整方向
 

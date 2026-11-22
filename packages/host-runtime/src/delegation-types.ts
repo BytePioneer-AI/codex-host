@@ -114,7 +114,8 @@ export interface DelegationStartInput {
   cwd?: string;
   parentThreadId?: string;
   requestId?: string;
-  model?: HarnessModelRef;
+  model?: HarnessModelRef | string;
+  officialModelArgument?: string;
   thinkingOptionId?: HarnessThinkingOptionId;
   /** Absolute URIs of where the work came from; children inherit them. */
   refs?: string[];
@@ -124,6 +125,7 @@ export interface HarnessInspectInput {
   harnessId: RoutedHarnessId;
   cwd?: string;
   refresh?: boolean;
+  credentialAccess?: "allow" | "retry";
   /** Calling Thread; an official parent cannot inspect a Harness Desktop must not present. */
   parentThreadId?: string;
 }
@@ -178,9 +180,25 @@ export interface DelegationStartIdentity {
   turnId: string;
 }
 
+export interface ResolvedDelegationConfiguration {
+  model?: HarnessModelRef;
+  thinkingOptionId?: HarnessThinkingOptionId;
+}
+
+/** Internal continuation of a previously admitted request. */
+export interface AdmittedDelegationStart extends DelegationStartIdentity {
+  taskDigest: string;
+  /** Selection captured when the queued native Thread was created, including native fallback. */
+  nativeConfiguration?: ResolvedDelegationConfiguration;
+}
+
 /** A validated start with its parent and workspace resolved, offered to the capacity limit. */
 export interface DelegationAdmissionRequest {
-  input: DelegationStartInput & { parentThreadId: string; cwd: string };
+  input: Omit<DelegationStartInput, "model"> & {
+    parentThreadId: string;
+    cwd: string;
+    model?: HarnessModelRef | undefined;
+  };
   title: string;
   taskDigest: string;
   identity: DelegationStartIdentity;
@@ -188,7 +206,9 @@ export interface DelegationAdmissionRequest {
    * Creates the Thread a queued start waits in, when its identity comes from the
    * Harness; called only once the start must queue, and its identity replaces `identity`.
    */
-  prepare?(): Promise<DelegationStartIdentity>;
+  prepare?(): Promise<
+    DelegationStartIdentity & { nativeConfiguration?: ResolvedDelegationConfiguration }
+  >;
 }
 
 /** A start waiting in the queue, with what its session needs to start or adopt it. */
@@ -429,7 +449,7 @@ export interface DelegationControlRegistration extends DelegationControlApi {
   /** `admitted` starts a queued delegation under its identity, bypassing the limit and deduplication. */
   start(
     input: DelegationStartInput,
-    admitted?: DelegationStartIdentity,
+    admitted?: AdmittedDelegationStart,
   ): Promise<DelegationStartResult>;
   /** Thread and Harness subagent ancestors active in an incoming Harness event. */
   subscribeActivity?(listener: (threadIds: readonly string[]) => void): () => void;

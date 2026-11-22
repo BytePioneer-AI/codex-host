@@ -94,6 +94,33 @@ describe("Copilot inspection", () => {
     await adapter.close();
   });
 
+  it("does not reuse or republish an old default inspection after refreshing a project", async () => {
+    const old = client();
+    const gate = Promise.withResolvers<undefined>();
+    old.start.mockReturnValue(gate.promise);
+    const transient = client();
+    transient.getAuthStatus.mockResolvedValue({ isAuthenticated: false, authType: "gh-cli" });
+    vi.mocked(createCopilotClient)
+      .mockReturnValueOnce(old as unknown as CopilotClient)
+      .mockReturnValueOnce(client() as unknown as CopilotClient)
+      .mockReturnValueOnce(transient as unknown as CopilotClient)
+      .mockReturnValue(client() as unknown as CopilotClient);
+    const adapter = new CopilotAdapter({});
+    try {
+      const pending = adapter.inspect();
+      await adapter.inspect({ cwd: "/other-project", refresh: true });
+      const next = adapter.inspect();
+      gate.resolve(undefined);
+      expect(await next).toMatchObject({ status: "unavailable" });
+      expect(await pending).toMatchObject({ status: "ready" });
+      expect(await adapter.inspect()).toMatchObject({ status: "ready" });
+      expect(transient.start).toHaveBeenCalledOnce();
+    } finally {
+      gate.resolve(undefined);
+      await adapter.close();
+    }
+  });
+
   it("joins a refresh rather than serving stale cache and retries after a failed refresh", async () => {
     const native = client();
     vi.mocked(createCopilotClient).mockReturnValue(native as unknown as CopilotClient);

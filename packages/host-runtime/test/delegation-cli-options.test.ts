@@ -18,10 +18,13 @@ function outputText(stream: PassThrough): string {
   return stream.read()?.toString() ?? "";
 }
 
-async function sentBody(arguments_: string[]): Promise<Record<string, unknown>> {
-  const fetchImpl = vi.fn(
-    async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
-  ) as unknown as typeof fetch;
+async function sentBody(
+  arguments_: string[],
+  result: unknown = {},
+): Promise<Record<string, unknown>> {
+  const fetchImpl = vi.fn<typeof fetch>(
+    async () => new Response(JSON.stringify(result), { status: 200 }),
+  );
   const diagnosticOutput = new PassThrough();
   const exitCode = await runDelegationCli({
     arguments: arguments_,
@@ -31,10 +34,7 @@ async function sentBody(arguments_: string[]): Promise<Record<string, unknown>> 
     fetchImpl,
   });
   if (exitCode !== 0) throw new Error(outputText(diagnosticOutput));
-  return JSON.parse(String(vi.mocked(fetchImpl).mock.calls[0]?.[1]?.body)) as Record<
-    string,
-    unknown
-  >;
+  return JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
 }
 
 async function rejection(arguments_: string[]): Promise<{ code: string; message: string }> {
@@ -124,9 +124,16 @@ describe("delegation CLI option values", () => {
     await expect(
       sentBody(["delegate", "start", "--harness", "pi", "--task", "work", "--cwd", "./sub"]),
     ).resolves.toMatchObject({ cwd: path.resolve(process.cwd(), "sub") });
-    await expect(sentBody(["harness", "inspect", "pi", "--cwd", "."])).resolves.toMatchObject({
-      cwd: process.cwd(),
-    });
+    await expect(
+      sentBody(["harness", "inspect", "pi", "--cwd", "."], {
+        harnessId: "pi",
+        inspection: {
+          status: "ready",
+          catalog: { models: [], thinkingOptions: [] },
+          capabilities: {},
+        },
+      }),
+    ).resolves.toMatchObject({ cwd: process.cwd() });
     await expect(sentBody(["thread", "list", "--cwd", "../other"])).resolves.toMatchObject({
       cwd: path.resolve(process.cwd(), "../other"),
     });

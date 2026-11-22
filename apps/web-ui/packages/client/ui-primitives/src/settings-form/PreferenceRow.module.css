@@ -53,10 +53,16 @@
   line-height: 20px;
   color: var(--dsw-alias-label-secondary);
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
 }
 
-.choice:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+.choice:active:not([aria-disabled="true"]) {
+  background: var(--dsw-alias-interactive-bg-active);
 }
 
 .choice[aria-pressed="true"],
@@ -75,4 +81,42 @@
 .choice:focus-visible {
   outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: 2px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .choice:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+@media (max-width: 640px) {
+  .row {
+    min-height: 44px;
+    padding: 12px 0;
+    gap: 10px 12px;
+  }
+
+  .choices {
+    border-radius: 10px;
+    padding: 3px;
+  }
+
+  .choice {
+    min-height: 38px;
+    padding: 6px 12px;
+    border-radius: 7px;
+    font-size: 13.5px;
+  }
+}
+
+@media (pointer: coarse) {
+  .choice {
+    min-height: 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .choice {
+    transition: none;
+  }
 }

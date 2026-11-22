@@ -186,7 +186,8 @@ describe("Renderer Settings lifecycle", () => {
   it("passes the local statistics transport to settings pages", () => {
     const requestUsageStatistics = vi.fn(async () => ({}));
     const usageStatisticsHosts = vi.fn(async () => []);
-    const desktopExtensionsClient = { listDesktopExtensions: vi.fn() };
+    const desktopExtensionsClient = { listHostExtensions: vi.fn() };
+    const delegationClient = { inspectHarness: vi.fn() };
     const ownerWindow = {
       navigator: { languages: ["en"] },
       document: {},
@@ -197,11 +198,13 @@ describe("Renderer Settings lifecycle", () => {
       requestUsageStatistics,
       usageStatisticsHosts,
       getDesktopExtensionsClient: () => desktopExtensionsClient,
+      getDelegationClient: () => delegationClient,
     });
     const call = vi.mocked(createDefaultRendererSettingsPages).mock.calls.at(-1);
     expect(call?.[8]).toBe(requestUsageStatistics);
     expect(call?.[9]).toBe(usageStatisticsHosts);
     expect(call?.[11]?.()).toBe(desktopExtensionsClient);
+    expect(call?.[13]?.()).toBe(delegationClient);
     lifecycle.dispose();
   });
 
@@ -289,67 +292,37 @@ describe("Renderer Settings lifecycle", () => {
     lifecycle.dispose();
   });
 
-  it("periodically syncs installed Desktop extensions while Settings is open and stops on close", async () => {
+  it("periodically syncs installed Host extension pages while Settings is open and stops on close", async () => {
     vi.useFakeTimers();
-    const listDesktopExtensions = vi
+    const title = { en: "Ext A", "zh-CN": "扩展 A" };
+    const extension = {
+      id: "ext-a",
+      state: "valid",
+      activationId: "00000000-0000-4000-8000-000000000000",
+      digest: "a".repeat(64),
+      installedAt: "2026-01-01T00:00:00.000Z",
+      manifest: {
+        manifestVersion: 2,
+        id: "ext-a",
+        name: title,
+        description: title,
+        version: "1.0.0",
+        page: { apiVersion: 1, entry: "page/index.mjs" },
+      },
+    } as const;
+    const listHostExtensions = vi
       .fn()
       .mockResolvedValueOnce({
-        configuration: { version: 1, revision: 1, enabled: ["ext-a"] },
-        desktopConnected: true,
+        revision: 1,
+        configuration: { revision: 1, enabled: [extension.id] },
         diagnostics: [],
-        extensions: [
-          {
-            id: "ext-a",
-            enabled: true,
-            status: { state: "running" },
-            manifest: {
-              manifestVersion: 1,
-              id: "ext-a",
-              name: { en: "Ext A", "zh-CN": "扩展 A" },
-              version: "1.0.0",
-              desktopApi: 1,
-              desktop: { script: "desktop.js" },
-              slots: [],
-              settingsSchema: [
-                {
-                  key: "flag",
-                  type: "boolean",
-                  label: { en: "Flag", "zh-CN": "开关" },
-                  default: true,
-                },
-              ],
-            },
-          },
-        ],
+        extensions: [{ ...extension, enabled: true }],
       })
       .mockResolvedValueOnce({
-        configuration: { version: 1, revision: 2, enabled: [] },
-        desktopConnected: true,
+        revision: 2,
+        configuration: { revision: 2, enabled: [] },
         diagnostics: [],
-        extensions: [
-          {
-            id: "ext-a",
-            enabled: false,
-            status: { state: "disabled" },
-            manifest: {
-              manifestVersion: 1,
-              id: "ext-a",
-              name: { en: "Ext A", "zh-CN": "扩展 A" },
-              version: "1.0.0",
-              desktopApi: 1,
-              desktop: { script: "desktop.js" },
-              slots: [],
-              settingsSchema: [
-                {
-                  key: "flag",
-                  type: "boolean",
-                  label: { en: "Flag", "zh-CN": "开关" },
-                  default: true,
-                },
-              ],
-            },
-          },
-        ],
+        extensions: [{ ...extension, enabled: false }],
       });
 
     const ownerWindow = {
@@ -360,7 +333,7 @@ describe("Renderer Settings lifecycle", () => {
     } as unknown as Window;
 
     const lifecycle = installRendererSettingsLifecycle(ownerWindow, {
-      getDesktopExtensionsClient: () => ({ listDesktopExtensions }),
+      getDesktopExtensionsClient: () => ({ listHostExtensions }),
     });
 
     const shellCall = vi.mocked(installRendererSettingsShell).mock.calls.at(-1);
@@ -370,21 +343,21 @@ describe("Renderer Settings lifecycle", () => {
       throw new Error("Expected shell onOpenChange and pluginPages options");
     }
 
-    // Opening Settings triggers an immediate sync and registers ext-a's declarative page.
+    // Opening Settings triggers an immediate sync and lists ext-a's standalone page.
     shellOptions.onOpenChange(true);
     await vi.advanceTimersByTimeAsync(0);
-    expect(listDesktopExtensions).toHaveBeenCalledTimes(1);
+    expect(listHostExtensions).toHaveBeenCalledTimes(1);
     expect(pluginPages.hasPageForExtension("ext-a")).toBe(true);
 
     // Periodic sync detects external disable while Settings remains open and removes ext-a.
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(listDesktopExtensions).toHaveBeenCalledTimes(2);
+    expect(listHostExtensions).toHaveBeenCalledTimes(2);
     expect(pluginPages.hasPageForExtension("ext-a")).toBe(false);
 
     // Closing Settings stops further periodic polling.
     shellOptions.onOpenChange(false);
     await vi.advanceTimersByTimeAsync(15_000);
-    expect(listDesktopExtensions).toHaveBeenCalledTimes(2);
+    expect(listHostExtensions).toHaveBeenCalledTimes(2);
 
     lifecycle.dispose();
   });

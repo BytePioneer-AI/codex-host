@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
 import type { JsonObject } from "@codexhost/protocol-core";
+import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 
 import type { PersistedQueuedDelegation } from "../src/delegation-capacity-store.js";
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
@@ -33,6 +34,14 @@ function serveOfficial(fixture: Fixture, threadIds: string[]) {
       return { error: { code: -32000, message: "synthetic refusal" } };
     }
     switch (request.method) {
+      case "model/list":
+        return {
+          data: ["model-original", "model-updated"].map((model, index) => ({
+            model,
+            isDefault: index === 0,
+            supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+          })),
+        };
       case "thread/start": {
         const id = threadIds.shift();
         if (!id) throw new Error("No synthetic native Thread left");
@@ -442,12 +451,102 @@ describe("AppServerHost native delegation capacity", () => {
     }
   });
 
+  it("keeps the queued native Thread's creation preferences and original request identity", async () => {
+    let saved: readonly PersistedQueuedDelegation[] = [];
+    const { registry, fixture, running } = setup({
+      adopt: async () => [],
+      save: async (entries) => {
+        saved = entries;
+      },
+    });
+    const backend = serveOfficial(fixture, ["queued-native"]);
+    const settings = async (id: number, model: string) => {
+      writeRequest(fixture.desktopInput, {
+        id,
+        method: "codexhost/harness/preferences/patch",
+        params: {
+          operations: [
+            {
+              kind: "delegation",
+              harnessId: "codex",
+              configuration: {
+                model: { id: model },
+                thinkingOptionId: "high",
+              },
+            },
+          ],
+        },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, id))).toHaveProperty(
+        "result",
+      );
+    };
+    try {
+      await fixture.ready;
+      await limit(fixture, 1);
+      official(fixture, "turn/started", { threadId: "busy-native", turn: { id: "busy-turn" } });
+      await vi.waitFor(() => expect(running()).toEqual(["busy-native"]));
+      await settings(961, "model-original");
+      const input = {
+        harnessId: "codex" as const,
+        task: "native defaults",
+        cwd: "/synthetic",
+        parentThreadId: "client:claude-desktop",
+        requestId: "native-preference-retry",
+      };
+      const queued = await registry.start(input);
+      expect(queued).toMatchObject({ status: "queued", threadId: "queued-native" });
+      expect(saved[0]).toMatchObject({
+        nativeConfiguration: { model: { id: "model-original" }, thinkingOptionId: "high" },
+        taskDigest: createHash("sha256")
+          .update(
+            JSON.stringify({
+              task: input.task,
+              cwd: input.cwd,
+              model: null,
+              thinkingOptionId: null,
+            }),
+          )
+          .digest("hex"),
+      });
+      expect(saved[0]).not.toHaveProperty("model");
+      expect(backend.seen.filter(({ method }) => method === "thread/start")).toMatchObject([
+        { params: { model: "model-original" } },
+      ]);
+
+      await settings(962, "model-updated");
+      expect(await registry.start(input)).toMatchObject({
+        status: "queued",
+        threadId: "queued-native",
+      });
+      expect(backend.seen.filter(({ method }) => method === "thread/start")).toHaveLength(1);
+      official(fixture, "turn/completed", {
+        threadId: "busy-native",
+        turn: { id: "busy-turn", status: "completed" },
+      });
+      await vi.waitFor(() => expect(running()).toEqual(["queued-native"]), { timeout: 5_000 });
+      expect(backend.calls("turn/start", "queued-native")).toMatchObject([
+        { params: { model: "model-original", effort: "high" } },
+      ]);
+    } finally {
+      await registry.close();
+      await backend.stop();
+      await stopFixture(fixture);
+    }
+  });
+
   it("adopts a restored native start whose Turn already began, and starts the rest", async () => {
     const saved: (readonly PersistedQueuedDelegation[])[] = [];
     const { registry, fixture, running } = setup({
       adopt: async () => [
         stored("begun-native", "begun work", true),
-        stored("waiting-native", "waiting work"),
+        {
+          ...stored("waiting-native", "waiting work"),
+          nativeConfiguration: {
+            model: harnessModelRefSchema.parse({ id: "model-original" }),
+            thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+          },
+        },
       ],
       save: async (entries) => {
         saved.push(entries);
@@ -470,7 +569,13 @@ describe("AppServerHost native delegation capacity", () => {
       expect(backend.calls("thread/resume", "begun-native")).toHaveLength(1);
       expect(backend.calls("turn/start", "begun-native")).toHaveLength(0);
       expect(backend.calls("turn/start", "waiting-native")).toMatchObject([
-        { params: { input: [{ type: "text", text: "waiting work" }] } },
+        {
+          params: {
+            model: "model-original",
+            effort: "high",
+            input: [{ type: "text", text: "waiting work" }],
+          },
+        },
       ]);
       await vi.waitFor(() => expect(saved.at(-1)).toEqual([]));
     } finally {

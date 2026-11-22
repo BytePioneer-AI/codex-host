@@ -247,7 +247,12 @@ describe("delegation capacity in the registry", () => {
     });
     expect(registration.start).toHaveBeenLastCalledWith(
       { harnessId: "pi", task: "queued", cwd: "/work", parentThreadId: PARENT },
-      { delegationId: queued.delegationId, threadId: queued.threadId, turnId: queued.turnId },
+      {
+        delegationId: queued.delegationId,
+        threadId: queued.threadId,
+        turnId: queued.turnId,
+        taskDigest: "queued",
+      },
     );
     expect(await registry.read({ threadId: queued.threadId, view: "result" })).toMatchObject({
       status: "running",
@@ -383,7 +388,12 @@ describe("delegation capacity in the registry", () => {
     await vi.waitFor(() =>
       expect(after.registration.start).toHaveBeenCalledWith(
         expect.objectContaining({ task: "queued", parentThreadId: PARENT }),
-        { delegationId: queued.delegationId, threadId: queued.threadId, turnId: queued.turnId },
+        {
+          delegationId: queued.delegationId,
+          threadId: queued.threadId,
+          turnId: queued.turnId,
+          taskDigest: "queued",
+        },
       ),
     );
     expect(await after.registry.read({ threadId: queued.threadId, view: "result" })).toMatchObject({

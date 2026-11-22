@@ -14,6 +14,7 @@ import type {
 import { projectDelegationThreadSnapshot } from "./delegation-snapshot.js";
 import {
   DelegationControlError,
+  type AdmittedDelegationStart,
   type DelegationAdmission,
   type DelegationAdmissionRequest,
   type DelegationCapacityGate,
@@ -60,7 +61,7 @@ export interface DelegationCapacityRuntime {
   runningThreadIds(): Iterable<string>;
   /** False while no session could take a start. */
   canStart(): boolean;
-  start(input: DelegationStartInput, identity: DelegationStartIdentity): Promise<unknown>;
+  start(input: DelegationStartInput, admitted: AdmittedDelegationStart): Promise<unknown>;
   /**
    * Whether the Thread a waiting start was given already has a Turn, adopting it as
    * the start when it does; undefined when no session can tell.
@@ -126,7 +127,7 @@ function syntheticQueueTurn(
 
 function recordFor(
   request: DelegationAdmissionRequest,
-  identity: DelegationStartIdentity,
+  identity: DelegationStartIdentity & Pick<AdmittedDelegationStart, "nativeConfiguration">,
 ): PersistedQueuedDelegation {
   const { input } = request;
   return {
@@ -578,7 +579,13 @@ export class DelegationCapacityQueue implements DelegationCapacityGate {
     void this.#persist();
     this.#notify();
     entry.started = this.#runtime
-      .start(inputOf(record), identityOf(record))
+      .start(inputOf(record), {
+        ...identityOf(record),
+        taskDigest: record.taskDigest,
+        ...(record.nativeConfiguration !== undefined
+          ? { nativeConfiguration: record.nativeConfiguration }
+          : {}),
+      })
       .then(
         () => this.#remove(entry),
         (error: unknown) => {

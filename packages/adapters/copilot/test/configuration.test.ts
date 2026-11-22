@@ -4,6 +4,7 @@ import {
   confirmedConfiguration,
   modelCatalog,
   modelRef,
+  normalizeStoredCopilotModelRef,
   readModels,
   requireModel,
   selectThinking,
@@ -29,6 +30,11 @@ describe("Copilot native model choices", () => {
     expect(modelCatalog([first, second]).defaultModel).toEqual(modelRef("first"));
     expect(modelCatalog([first]).defaultModel).toEqual(modelRef("first"));
     expect(modelCatalog([]).defaultModel).toBeUndefined();
+    const id = "provider/模型 [1m]";
+    const catalog = modelCatalog([auto, { id, name: "Custom" }]);
+    const saved = modelRef(Buffer.from(id).toString("base64url"));
+    expect(catalog.models[1]?.ref).toEqual({ id });
+    expect(normalizeStoredCopilotModelRef(saved, catalog)).toEqual({ id });
   });
   it("does not present a stored but unadvertised Auto effort as effective Thinking", async () => {
     const session = {

@@ -8,7 +8,11 @@ Reservations live under `CLAUDE_CONFIG_DIR/codexhost/pending-sessions` (default 
 
 Native interruption markers belong to their matching human prompt; literal user text is retained. An immediate history read waits for known completed native messages to reach the transcript and returns a retryable busy error if persistence remains delayed.
 
-The Claude transport waits for its owned Unix process group and observed background tasks during close. Failed termination or output drain is reported to the caller. This does not stop unrelated CLIs or establish lifecycle guarantees for other Harnesses. Windows process-tree handling requires platform validation.
+Closing Claude requires confirmation that its owned processes stopped and its output drained. If close cannot confirm release, a later close request can recheck it; the old Session stays unavailable and the Host cannot resume that Thread until release is confirmed. Delegation reads report the shutdown error, not a missing Thread.
+
+On Unix, a retry cannot signal a still-present process group after its original root has exited: the group ID may have been reused. The retry can confirm release once the group is absent and output has drained.
+
+On Windows the current process-tree check still needs the original root process to be present. If the root has exited before the tree could be checked, retries cannot establish shutdown. Verify that no old Claude or descendant process can still write the Session before restarting Codex Desktop.
 
 Empty reservations are a new Adapter-owned format. Versions without this reader cannot recover those empty identities; retain metadata/transcripts and use a compatible version when rolling back an installation. Optional saved selection hints in resume and rollback also require the matching Broker build for brokered Sessions. Existing native transcript identities keep their original format.
 

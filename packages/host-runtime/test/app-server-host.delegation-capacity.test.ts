@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { JsonObject } from "@codexhost/protocol-core";
+import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
 import type { DelegationControlRegistration } from "../src/delegation-types.js";
@@ -138,6 +139,80 @@ describe("AppServerHost delegation capacity", () => {
       await stopFixture(fixture);
     }
   });
+
+  it.each(["default", "explicit"] as const)(
+    "uses creation-time external defaults while retaining a queued %s request identity",
+    async (mode) => {
+      const registry = new DelegationControlRegistry({ capacity: { pollIntervalMs: 10 } });
+      const fixture = createFixture({ onDelegationApi: (api) => registry.register(api) });
+      const settings = async (id: number, model: string, thinkingOptionId: string) => {
+        writeRequest(fixture.desktopInput, {
+          id,
+          method: "codexhost/harness/preferences/patch",
+          params: {
+            operations: [
+              {
+                kind: "delegation",
+                harnessId: "pi",
+                configuration: { model: { id: model }, thinkingOptionId },
+              },
+            ],
+          },
+        });
+        expect(await fixture.collector.waitFor((message) => requestId(message, id))).toHaveProperty(
+          "result",
+        );
+      };
+      try {
+        await fixture.ready;
+        registry.capacity.configure({ enabled: true, maxRunning: 1 });
+        const manual = await startPiThread(fixture);
+        const turn = await startPiTurn(fixture, manual);
+        await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turn));
+
+        const [original, newer] = fixture.adapter.catalog.models;
+        if (!original || !newer) throw new Error("Expected two synthetic Models");
+        await settings(951, original.ref.id, "high");
+        const input = {
+          harnessId: "pi" as const,
+          task: "queued defaults",
+          cwd: "/synthetic",
+          parentThreadId: "client:claude-desktop",
+          requestId: "external-default-retry",
+          ...(mode === "explicit"
+            ? { model: original.ref, thinkingOptionId: harnessThinkingOptionIdSchema.parse("high") }
+            : {}),
+        };
+        const queued = await registry.start(input);
+        expect(queued).toMatchObject({ status: "queued" });
+        expect(fixture.adapter.sessions).toHaveLength(1);
+        await settings(952, newer.ref.id, "low");
+        expect(await registry.start(input)).toMatchObject({
+          threadId: queued.threadId,
+          status: "queued",
+        });
+
+        fixture.adapter.sessions[0]?.succeedTurn();
+        await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turn));
+        await vi.waitFor(() =>
+          expect(fixture.adapter.sessions[1]?.initialState).toMatchObject({
+            effectiveModel: mode === "default" ? newer.ref : original.ref,
+            effectiveThinkingOptionId: mode === "default" ? "low" : "high",
+          }),
+        );
+        await vi.waitFor(async () =>
+          expect(await registry.read({ threadId: queued.threadId, view: "result" })).toMatchObject({
+            status: "running",
+          }),
+        );
+        expect((await registry.start(input)).threadId).toBe(queued.threadId);
+        expect(fixture.adapter.sessions).toHaveLength(2);
+      } finally {
+        await registry.close();
+        await stopFixture(fixture);
+      }
+    },
+  );
 
   it("counts running native top-level Threads but not native subagents or Fork children", async () => {
     const registry = new DelegationControlRegistry({ capacity: { pollIntervalMs: 10 } });

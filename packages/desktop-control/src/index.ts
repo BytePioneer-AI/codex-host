@@ -85,17 +85,6 @@ export {
 } from "./renderer-draft-prewarm-policy.js";
 export type { RendererDraftPrewarmPolicyStatus } from "./renderer-draft-prewarm-policy.js";
 
-export {
-  parseDesktopControllerArguments,
-  runDesktopController,
-  serializeDesktopControllerReadiness,
-} from "./production-controller.js";
-export type {
-  DesktopControllerDependencies,
-  DesktopControllerOptions,
-  DesktopControllerReadiness,
-} from "./production-controller.js";
-
 export const packageMetadata = {
   name: "@codexhost/desktop-control",
   contractVersion: WORKSPACE_CONTRACT_VERSION,

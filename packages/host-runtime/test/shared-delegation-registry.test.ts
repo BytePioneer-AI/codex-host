@@ -161,6 +161,31 @@ it("selects only the SSH proxy for a shared parent with multiple attached client
   expect(await ssh.mappingStore.listThreads()).toHaveLength(2);
 });
 
+it("keeps a queued request's digest when the shared owner starts it", async () => {
+  const { sshApi, sharedParent, store } = await setup();
+  const admitted = {
+    delegationId: "shared-queued-delegation",
+    threadId: "shared-queued-thread",
+    turnId: "shared-queued-turn",
+    taskDigest: "a".repeat(64),
+  };
+  const result = await sshApi.start(
+    { harnessId: "pi", parentThreadId: sharedParent, task: "shared queued work" },
+    admitted,
+  );
+  expect(result).toMatchObject({
+    delegationId: admitted.delegationId,
+    threadId: admitted.threadId,
+    turnId: admitted.turnId,
+    status: "running",
+  });
+  expect(
+    await store.getDelegationByChild(hostThreadIdSchema.parse(admitted.threadId)),
+  ).toMatchObject({
+    taskDigest: admitted.taskDigest,
+  });
+});
+
 it("exports a shared Thread through its same-Host owner instead of the legacy coordinator", async () => {
   const { registry, sharedApi, sharedParent } = await setup();
   const child = await sharedApi.start({

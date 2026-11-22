@@ -1,11 +1,13 @@
 /** Native plugin/model metadata from the same Host as the shared Threads, never local Adapter instances. */
 import {
   harnessInspectionSchema,
+  harnessModelRefKey,
   harnessIdSchema,
   harnessPluginListResultSchema,
   type HarnessPluginDescriptor,
   type HarnessInspection,
   type HarnessDisplayEntries,
+  type HarnessPreferenceSnapshot,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient } from "./ch-host-client.ts";
 import { groupOf, type Inspection } from "./harnesses.ts";
@@ -21,6 +23,14 @@ import type { WebHarnessPreferences } from "./harness-preferences.ts";
 export class ChHarnessCatalog {
   private plugins: Promise<HarnessPluginDescriptor[]> | undefined;
   private inspections = new Map<string, Promise<HarnessInspection>>();
+  private readonly pendingRefreshes = new Map<
+    string,
+    { inspection: Promise<HarnessInspection>; notified: boolean; retryCredentials: boolean }
+  >();
+  private readonly refreshing = new Map<
+    string | undefined,
+    ReturnType<ChHarnessCatalog["readModels"]>
+  >();
   private readonly stop: (() => void) | undefined;
   constructor(
     private readonly host: ChHostClient,
@@ -32,13 +42,19 @@ export class ChHarnessCatalog {
   ) {
     this.stop = host.realtime?.subscribe((event) => {
       if (event.type === "harness-inspection-changed") {
-        for (const key of this.inspections.keys()) {
-          if (JSON.parse(key)[0] === event.harnessId) this.inspections.delete(key);
-        }
+        // The Host can announce a local refresh before returning its result.
+        const refresh = this.pendingRefreshes.get(event.harnessId);
+        this.invalidate(
+          event.harnessId,
+          refresh?.notified === false ? refresh.inspection : undefined,
+        );
+        if (refresh) refresh.notified = true;
         events.emit("codexhost/harness-inspection-changed");
       } else if (event.type === "hello") {
         this.inspections.clear();
+        this.pendingRefreshes.clear();
         this.plugins = undefined;
+        this.refreshing.clear();
         events.emit("codexhost/harness-inspection-changed");
       }
     });
@@ -66,15 +82,49 @@ export class ChHarnessCatalog {
     this.plugins = plugins;
     return plugins;
   }
-  async inspect(id: string, cwd?: string): Promise<HarnessInspection> {
+  private invalidate(id: string, preserve?: Promise<HarnessInspection>): void {
+    for (const [key, inspection] of this.inspections) {
+      if (inspection !== preserve && JSON.parse(key)[0] === id) this.inspections.delete(key);
+    }
+  }
+  async inspect(
+    id: string,
+    cwd?: string,
+    refresh: boolean | "re-detect" = false,
+  ): Promise<HarnessInspection> {
     const key = JSON.stringify([id, cwd]);
+    const retryCredentials = refresh === "re-detect";
+    if (refresh) {
+      const pending = this.pendingRefreshes.get(id);
+      if (pending && this.inspections.get(key) === pending.inspection) {
+        if (!retryCredentials || pending.retryCredentials) return pending.inspection;
+        await Promise.allSettled([pending.inspection]);
+        return this.inspect(id, cwd, refresh);
+      }
+      this.invalidate(id);
+    }
     let inspection = this.inspections.get(key);
     if (!inspection) {
-      inspection = this.host
-        .request("codexhost/harness/inspect", {
-          harnessId: id,
-          ...(cwd ? { cwd } : {}),
-        })
+      const params = {
+        harnessId: id,
+        ...(cwd ? { cwd } : {}),
+        ...(refresh ? { refresh: true } : {}),
+      };
+      const request = retryCredentials
+        ? this.host
+            .request("codexhost/harness/inspect", { ...params, credentialAccess: "retry" })
+            .catch((error: unknown) => {
+              // A preview can reuse an older shared Host. Retry only a rejected parameter, not an uncertain result.
+              if (!(
+                error instanceof RpcError &&
+                error.code === "host/rejected" &&
+                (error.details as { hostCode?: unknown }).hostCode === -32602
+              ))
+                throw error;
+              return this.host.request("codexhost/harness/inspect", params);
+            })
+        : this.host.request("codexhost/harness/inspect", params);
+      inspection = request
         .then((value) => {
           const result = harnessInspectionSchema.parse(value);
           if (
@@ -89,21 +139,57 @@ export class ChHarnessCatalog {
           if (this.inspections.get(key) === inspection) this.inspections.delete(key);
           throw error;
         });
+      if (refresh) {
+        inspection = inspection.finally(() => {
+          if (this.pendingRefreshes.get(id)?.inspection === inspection)
+            this.pendingRefreshes.delete(id);
+        });
+        this.pendingRefreshes.set(id, { inspection, notified: false, retryCredentials });
+      }
       this.inspections.set(key, inspection);
     }
     return inspection;
   }
-  async models() {
+  async models(
+    refresh = false,
+    harnessId?: string,
+    preferences?: Promise<HarnessPreferenceSnapshot | undefined>,
+  ) {
+    if (!refresh) {
+      // A notification during a batch may invalidate one of its earlier results.
+      await Promise.allSettled(this.refreshing.values());
+      return this.readModels(false, undefined, preferences);
+    }
+    const pending = this.refreshing.get(harnessId);
+    if (pending) return pending;
+    const operation = this.readModels(true, harnessId).finally(() => {
+      if (this.refreshing.get(harnessId) === operation) this.refreshing.delete(harnessId);
+    });
+    this.refreshing.set(harnessId, operation);
+    return operation;
+  }
+  private async readModels(
+    refresh: boolean,
+    harnessId?: string,
+    preferences?: Promise<HarnessPreferenceSnapshot | undefined>,
+  ) {
+    const shouldRefresh = (id: string) => refresh && (harnessId === undefined || harnessId === id);
     const plugins = await this.list();
     const values = await Promise.all(
-      plugins.map(async (plugin) => ({
-        id: plugin.id,
-        name: plugin.name,
-        inspection: await this.inspect(plugin.id),
+      plugins.map(async ({ id, name }) => ({
+        id,
+        name,
+        inspection: await this.inspect(
+          id,
+          undefined,
+          refresh && id === harnessId ? "re-detect" : shouldRefresh(id),
+        ),
       })),
     );
     if (this.restrictTo === undefined || this.restrictTo.has("codex")) {
-      const inspection = await this.inspect("codex").catch(() => undefined);
+      const inspection = await this.inspect("codex", undefined, shouldRefresh("codex")).catch(
+        () => undefined,
+      );
       if (inspection)
         values.unshift({ id: harnessIdSchema.parse("codex"), name: "Codex", inspection });
     }
@@ -115,29 +201,41 @@ export class ChHarnessCatalog {
     const first = values.find(
       (value) => value.inspection.status === "ready" && value.inspection.catalog.models.length,
     );
-    if (!first || first.inspection.status !== "ready")
+    const failures = values.flatMap(({ id, name, inspection }) =>
+      inspection.status !== "ready" && inspection.status !== "notInstalled"
+        ? [
+            {
+              id,
+              name,
+              message: inspection.error.message,
+              ...(inspection.error.code === "credentialAccessRequired"
+                ? { credentialAccessRequired: true as const }
+                : {}),
+            },
+          ]
+        : [],
+    );
+    let selection: ModelSelection | undefined;
+    if (first?.inspection.status === "ready") {
+      const { defaultModel, models } = first.inspection.catalog;
+      const ref = defaultModel ?? models[0]?.ref;
+      if (ref) selection = { provider: first.id, model: harnessModelRefKey(ref) };
+    }
+    // Keep the targeted authorization action reachable even with no routable Harness.
+    if (!selection && !failures.some((failure) => failure.credentialAccessRequired))
       throw new RpcError("host/no-harness", "CH has no ready session Harness.");
-    const selection: ModelSelection = {
-      provider: first.id,
-      model:
-        first.inspection.catalog.defaultModel?.id ??
-        first.inspection.catalog.models[0]?.ref.id ??
-        "",
-    };
     const catalog = withHarnessDisplayOrder(
       {
-        default: selection,
+        ...(selection ? { default: selection } : {}),
         groups,
         routableProviders: groups.map((group) => group.id),
-        failures: values.flatMap(({ id, name, inspection }) =>
-          inspection.status !== "ready" && inspection.status !== "notInstalled"
-            ? [{ id, name, message: inspection.error.message }]
-            : [],
-        ),
+        failures,
       },
       await this.displayEntries(),
     );
-    return this.preferences ? this.preferences.decorate(catalog) : catalog;
+    return this.preferences && selection
+      ? this.preferences.decorate({ ...catalog, default: selection }, preferences)
+      : catalog;
   }
   async name(id: string): Promise<string> {
     if (id === "codex") return "Codex";

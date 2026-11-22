@@ -5,8 +5,13 @@ import path from "node:path";
 
 import type { HarnessModelRef, HarnessThinkingOptionId } from "@codexhost/harness-adapter";
 import type { RoutedHarnessId } from "@codexhost/protocol-core";
-import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessDelegationDefaultSchema,
+  harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
+} from "@codexhost/shared-contracts";
 
+import type { ResolvedDelegationConfiguration } from "./delegation-types.js";
 import { codexhostDataDirectory } from "./external-clients.js";
 import { withRemoteAppServerSocketInitializationLock as withFileMutationLock } from "./remote-socket-lock.js";
 
@@ -26,6 +31,7 @@ export interface PersistedQueuedDelegation {
   requestId?: string;
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
+  nativeConfiguration?: ResolvedDelegationConfiguration;
   title: string;
   taskDigest: string;
   /** Epoch milliseconds; orders the queue. */
@@ -96,6 +102,17 @@ function text(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+function nativeConfiguration(value: unknown): boolean {
+  // Empty is a meaningful selection: the native default had no Host override.
+  return (
+    (value !== null &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      Object.keys(value).length === 0) ||
+    harnessDelegationDefaultSchema.safeParse(value).success
+  );
+}
+
 function parseEntry(value: unknown): PersistedQueuedDelegation {
   const entry = value as Partial<Record<keyof PersistedQueuedDelegation, unknown>> | null;
   if (
@@ -108,6 +125,8 @@ function parseEntry(value: unknown): PersistedQueuedDelegation {
     (entry.model !== undefined && !harnessModelRefSchema.safeParse(entry.model).success) ||
     (entry.thinkingOptionId !== undefined &&
       !harnessThinkingOptionIdSchema.safeParse(entry.thinkingOptionId).success) ||
+    (entry.nativeConfiguration !== undefined &&
+      (entry.harnessId !== "codex" || !nativeConfiguration(entry.nativeConfiguration))) ||
     (entry.starting !== undefined && typeof entry.starting !== "boolean")
   ) {
     throw new Error("unrecognized queued delegation");

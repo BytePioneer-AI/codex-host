@@ -1,166 +1,173 @@
 // @vitest-environment jsdom
-import type {
-  DesktopExtensionSettingField,
-  DesktopExtensionsListResult,
+import { moduleEntry } from "../fixtures/desktop-extension-modules.js";
+import {
+  type HostExtensionPageApi,
+  type HostExtensionsListResult,
+  type JsonObject,
 } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-  DesktopExtensionBridge,
-  DesktopExtensionRuntimeApiV1,
-  DesktopExtensionSettingsPageContext,
-} from "../../src/desktop-extension-api.js";
+import type { DesktopExtensionRuntimeApiV1 } from "../../src/desktop-extension-api.js";
 import {
-  createDesktopExtensionHost,
+  installDesktopExtensionHost,
   type DesktopExtensionEntry,
 } from "../../src/desktop-extension-host.js";
+import { createRendererSettingsPageRegistry } from "../../src/settings/core.js";
 import { createDesktopExtensionPluginPagesSource } from "../../src/settings/desktop-extension-settings-pages.js";
+import {
+  CONTENT_LOCALE_STORAGE_KEY,
+  type HostExtensionValidItem,
+} from "../../src/settings/desktop-extensions-shared.js";
 import { rendererSettingsMessages } from "../../src/settings/localization.js";
 import { createDefaultRendererSettingsPages } from "../../src/settings/pages.js";
-import { createRendererSettingsPageRegistry } from "../../src/settings/core.js";
-import {
-  mountRendererSettingsShell,
-  type RendererSettingsShell,
-} from "../../src/settings/shell.js";
+import { mountRendererSettingsShell } from "../../src/settings/shell.js";
 
 const disposables: Array<() => void | Promise<void>> = [];
+const iconDataUrl = "data:image/png;base64,iVBORw0KGgo=";
 
-function must<T>(value: T | null | undefined, label = "value"): T {
-  if (value === null || value === undefined) throw new Error(`Expected ${label} to be defined`);
+function must<T>(value: T | null | undefined): T {
+  if (value == null) throw new Error("Expected value to be defined");
   return value;
 }
 
-if (typeof HTMLDialogElement !== "undefined") {
-  if (typeof HTMLDialogElement.prototype.showModal !== "function") {
-    HTMLDialogElement.prototype.showModal = function showModal() {
-      this.open = true;
-    };
-  }
-  if (typeof HTMLDialogElement.prototype.close !== "function") {
-    HTMLDialogElement.prototype.close = function close() {
-      if (!this.open) return;
-      this.open = false;
-      this.dispatchEvent(new Event("close"));
-    };
-  }
+if (typeof HTMLDialogElement.prototype.showModal !== "function") {
+  HTMLDialogElement.prototype.showModal = function showModal() {
+    this.open = true;
+  };
+}
+if (typeof HTMLDialogElement.prototype.close !== "function") {
+  HTMLDialogElement.prototype.close = function close() {
+    if (!this.open) return;
+    this.open = false;
+    this.dispatchEvent(new Event("close"));
+  };
 }
 
 afterEach(async () => {
-  for (const dispose of disposables.splice(0).reverse()) {
-    await dispose();
-  }
+  for (const dispose of disposables.splice(0).reverse()) await dispose();
   document.body.replaceChildren();
+  window.localStorage.removeItem(CONTENT_LOCALE_STORAGE_KEY);
 });
 
-const SAMPLE_SCHEMA: readonly DesktopExtensionSettingField[] = [
-  {
-    key: "enabledBlur",
-    type: "boolean",
-    label: { en: "Enable blur", "zh-CN": "开启毛玻璃" },
-    description: { en: "Soften window backdrop", "zh-CN": "柔化窗口背景" },
-    default: true,
-  },
-  {
-    key: "wallpaperUrl",
-    type: "string",
-    label: { en: "Wallpaper path", "zh-CN": "壁纸路径" },
-    placeholder: { en: "assets/bg.png", "zh-CN": "assets/bg.png" },
-    default: "assets/default.png",
-  },
-  {
-    key: "refreshInterval",
-    type: "number",
-    label: { en: "Refresh interval", "zh-CN": "刷新间隔" },
-    min: 5,
-    max: 120,
-    step: 5,
-    default: 30,
-  },
-  {
-    key: "opacity",
-    type: "range",
-    label: { en: "Backdrop opacity", "zh-CN": "背景透明度" },
-    min: 0,
-    max: 100,
-    step: 5,
-    default: 80,
-  },
-  {
-    key: "preset",
-    type: "select",
-    label: { en: "Color preset", "zh-CN": "配色预设" },
-    options: [
-      { value: "nord", label: { en: "Nord", "zh-CN": "极光北欧" } },
-      { value: "solar", label: { en: "Solar", "zh-CN": "暖阳" } },
-    ],
-    default: "nord",
-  },
-];
-
-function createHarness(locale: "en" | "zh-CN" = "zh-CN") {
-  const host = createDesktopExtensionHost(document);
-  let settingsStore: Record<string, Record<string, unknown>> = {
-    "schema-theme": {
-      enabledBlur: false,
-      wallpaperUrl: "assets/custom.png",
-      refreshInterval: 60,
-      opacity: 65,
-      preset: "solar",
+function schemaExtension(id = "schema-theme"): HostExtensionValidItem {
+  const name = { en: "Schema Theme", "zh-CN": "声明式主题" };
+  return {
+    id,
+    state: "valid",
+    enabled: true,
+    activationId: "00000000-0000-4000-8000-000000000001",
+    digest: "a".repeat(64),
+    installedAt: "2026-07-01T00:00:00.000Z",
+    manifest: {
+      manifestVersion: 2,
+      id,
+      name,
+      description: name,
+      version: "1.0.0",
+      desktop: { apiVersion: 1, script: "desktop.js" },
+      settingsSchema: [
+        {
+          key: "opacity",
+          type: "range",
+          label: { en: "Opacity", "zh-CN": "不透明度" },
+          min: 0,
+          max: 100,
+          default: 80,
+        },
+      ],
     },
   };
-  let listResponse: DesktopExtensionsListResult = {
-    configuration: { version: 1, revision: 1, enabled: [] },
-    desktopConnected: true,
-    diagnostics: [],
-    extensions: [],
+}
+
+function pageExtension(id = "pomodoro"): HostExtensionValidItem {
+  const item = schemaExtension(id);
+  return {
+    ...item,
+    iconDataUrl,
+    manifest: {
+      ...item.manifest,
+      name: { en: "Pomodoro", "zh-CN": "番茄钟" },
+      page: {
+        apiVersion: 1,
+        entry: "page/index.mjs",
+        title: { en: "Focus Timer", "zh-CN": "专注番茄钟" },
+      },
+    },
   };
+}
 
-  const readAsset = vi.fn(async (_id: string, path: string) => ({
-    mimeType: "image/png",
-    dataUrl: `data:image/png;base64,${path}`,
-  }));
-  const getSettings = vi.fn(async (id: string) => settingsStore[id] ?? {});
-  const setSettings = vi.fn(async (id: string, values: Record<string, unknown>) => {
-    settingsStore = { ...settingsStore, [id]: { ...values } };
-    return must(settingsStore[id]);
-  });
-  const invokeBackend = vi.fn(async (id: string, method: string, params?: unknown) => ({
+function listing(
+  extensions: HostExtensionsListResult["extensions"],
+  revision = 1,
+): HostExtensionsListResult {
+  return {
+    revision,
+    configuration: {
+      revision,
+      enabled: extensions.filter((ext) => ext.enabled).map((ext) => ext.id),
+    },
+    diagnostics: [],
+    extensions,
+  };
+}
+
+function legacyPage(id: string, version: string, cleanup: () => void): DesktopExtensionEntry {
+  return {
     id,
-    method,
-    params,
-  }));
+    hash: version,
+    slots: [],
+    defineScript: (define) =>
+      define({
+        activate(api) {
+          (api as DesktopExtensionRuntimeApiV1).settings.registerPage({
+            title: { en: `Aurora ${version}`, "zh-CN": `极光 ${version}` },
+            icon: "dashboard",
+            mount(container, context) {
+              container.textContent = `Custom Studio ${version} (${context.locale})`;
+              return cleanup;
+            },
+          });
+        },
+      }),
+  };
+}
 
-  const bridge: DesktopExtensionBridge = {
+function createHarness(locale: "en" | "zh-CN" = "zh-CN") {
+  const host = installDesktopExtensionHost(window);
+  const unbind = host.bind({
     ready: () => true,
     sidebar: { rows: () => [], observe: () => () => undefined },
     watchTree: () => () => undefined,
     describe: () => undefined,
     openThread: vi.fn(),
-    readAsset,
-    getSettings,
-    setSettings,
-    invokeBackend,
-  };
-  const unbind = host.bind(bridge);
-
+  });
+  let listResponse = listing([]);
+  let storedValues: JsonObject = { opacity: 65 };
+  let settingsRevision = 1;
   const desktopClient = {
-    listDesktopExtensions: vi.fn(async () => listResponse),
-    readDesktopExtensionAsset: vi.fn(({ id, path }: { id: string; path: string }) =>
-      readAsset(id, path),
-    ),
-    getDesktopExtensionSettings: vi.fn(async ({ id }: { id: string }) => ({
-      values: await getSettings(id),
-    })),
-    setDesktopExtensionSettings: vi.fn(
-      async ({ id, values }: { id: string; values: Record<string, unknown> }) => ({
-        values: await setSettings(id, values),
-      }),
-    ),
-    invokeDesktopExtensionBackend: vi.fn(
-      async ({ id, method, params }: { id: string; method: string; params?: unknown }) => ({
-        result: await invokeBackend(id, method, params),
-      }),
-    ),
+    listHostExtensions: async () => listResponse,
+    getHostExtensionSettings: async () => ({ settingsRevision, values: storedValues }),
+    setHostExtensionSettings: vi.fn(async ({ values }: { values: JsonObject }) => {
+      storedValues = values;
+      return { settingsRevision: ++settingsRevision, values };
+    }),
   };
+  const mountedPages: Array<{ api: HostExtensionPageApi; cleanup: ReturnType<typeof vi.fn> }> = [];
+  const modulesFor = (next: HostExtensionsListResult) =>
+    next.extensions.flatMap((item) => {
+      if (item.state !== "valid" || !item.enabled || !item.manifest.page) return [];
+      return [
+        moduleEntry("page", item, async () => ({
+          namespace: {
+            mount(root: HTMLElement, api: HostExtensionPageApi) {
+              root.textContent = `Standalone ${api.hostTarget} page: ${item.activationId}/${item.digest}`;
+              const cleanup = vi.fn();
+              mountedPages.push({ api, cleanup });
+              return cleanup;
+            },
+          },
+        })),
+      ];
+    });
 
   const messages = rendererSettingsMessages(locale);
   const pluginPages = createDesktopExtensionPluginPagesSource({
@@ -183,152 +190,152 @@ function createHarness(locale: "en" | "zh-CN" = "zh-CN") {
     () => desktopClient,
     pluginPages,
   );
-  const registry = createRendererSettingsPageRegistry(pages);
-  const shell: RendererSettingsShell = mountRendererSettingsShell(registry, document, messages, {
-    pluginPages,
-  });
-
+  const shell = mountRendererSettingsShell(
+    createRendererSettingsPageRegistry(pages),
+    document,
+    messages,
+    {
+      pluginPages,
+    },
+  );
   disposables.push(
-    () => shell.dispose(),
-    () => pluginPages.dispose?.(),
-    () => unbind(),
     () => host.disposeAll(),
+    unbind,
+    () => pluginPages.dispose?.(),
+    () => shell.dispose(),
   );
 
+  const shadow = must(shell.root.shadowRoot);
+  const content = must(shadow.querySelector<HTMLElement>(".settings-page__content"));
   return {
     host,
     shell,
     pluginPages,
     desktopClient,
-    setSettings,
-    getSettings,
-    setListResponse(next: DesktopExtensionsListResult) {
+    mountedPages,
+    content,
+    setListing(next: HostExtensionsListResult) {
       listResponse = next;
+      host.modules.replace(modulesFor(next));
+    },
+    sync(next: HostExtensionsListResult) {
+      listResponse = next;
+      pluginPages.syncInstalledExtensions?.(next.extensions, next.configuration.revision);
+      host.modules.replace(modulesFor(next));
     },
     navSections() {
       return Array.from(
-        must(shell.root.shadowRoot).querySelectorAll<HTMLElement>(".settings-nav-section-label"),
-      ).map((el) => ({ id: el.dataset.navSection, text: el.textContent }));
-    },
-    navButtons() {
-      return Array.from(
-        must(shell.root.shadowRoot).querySelectorAll<HTMLButtonElement>(
-          "button.settings-nav-button",
-        ),
+        shadow.querySelectorAll<HTMLElement>(".settings-nav-section-label"),
+        (el) => ({
+          id: el.dataset.navSection,
+          text: el.textContent,
+        }),
       );
     },
-    contentRoot() {
-      return must(
-        must(shell.root.shadowRoot).querySelector<HTMLElement>(".settings-page__content"),
+    navButton(id: string) {
+      return shadow.querySelector<HTMLButtonElement>(`button[data-extension-id="${id}"]`);
+    },
+    async card(id: string) {
+      return vi.waitFor(() =>
+        must(content.querySelector<HTMLElement>(`article[data-extension-id="${id}"]`)),
       );
     },
   };
 }
 
-describe("Settings shell dynamic Plugins section and declarative schema form", () => {
-  it("hides the Plugins section when empty, inserts it between General and Other when registered, mounts custom page, and falls back on disable", async () => {
-    const harness = createHarness("zh-CN");
-    harness.shell.openSettings(undefined, "desktop-extensions");
+describe("Settings shell plugin pages", () => {
+  it("mounts the standalone page instead of schema or legacy UI and updates it in place across generations", async () => {
+    const harness = createHarness();
+    const standalone = pageExtension();
+    const legacyCleanup = vi.fn();
+    await harness.host.reconcile([legacyPage(standalone.id, "v1", legacyCleanup)]);
+    harness.sync(listing([standalone]));
+    harness.shell.openSettings();
 
-    // Sidebar places Plugins right after Connections at index 1.
-    const initialNavIds = harness.navButtons().map((btn) => btn.dataset.pageId);
-    expect(initialNavIds.slice(0, 3)).toEqual(["connections", "desktop-extensions", "mobile-web"]);
-    expect(harness.navButtons()[1]?.textContent).toBe("插件");
-
-    // Empty state: Plugins section is completely hidden.
     expect(harness.navSections()).toEqual([
       { id: "general", text: "通用" },
+      { id: "plugins", text: "插件页面" },
       { id: "other", text: "其他" },
     ]);
-
-    let mountedContext: DesktopExtensionSettingsPageContext | null = null;
-    const cleanup = vi.fn();
-    const customEntry: DesktopExtensionEntry = {
-      id: "aurora.dashboard",
-      hash: "h1",
-      slots: [],
-      defineScript: (define) =>
-        define({
-          activate(api) {
-            (api as DesktopExtensionRuntimeApiV1).settings.registerPage({
-              title: { en: "Aurora Studio", "zh-CN": "极光看板" },
-              icon: "dashboard",
-              mount(container, context) {
-                mountedContext = context;
-                const heading = container.ownerDocument.createElement("h2");
-                heading.textContent = `Custom Studio (${context.locale})`;
-                container.append(heading);
-                return cleanup;
-              },
-            });
-          },
-        }),
-    };
-
-    await harness.host.reconcile([customEntry]);
-
-    // Plugin Settings section now sits cleanly between General and Other.
-    expect(harness.navSections()).toEqual([
-      { id: "general", text: "通用" },
-      { id: "plugins", text: "插件设置" },
-      { id: "other", text: "其他" },
-    ]);
-    const pluginButton = must(
-      harness.navButtons().find((btn) => btn.dataset.extensionId === "aurora.dashboard"),
+    const nav = must(harness.navButton(standalone.id));
+    expect(nav.textContent).toBe("专注番茄钟");
+    const icon = must(nav.querySelector("img"));
+    expect([icon.src, icon.width, icon.height, icon.alt]).toEqual([iconDataUrl, 16, 16, ""]);
+    nav.click();
+    expect(nav.getAttribute("aria-current")).toBe("page");
+    expect(harness.content.querySelector(".settings-extensions-page-view h1")?.textContent).toBe(
+      "专注番茄钟",
     );
-    expect(pluginButton).toBeDefined();
-    expect(pluginButton.textContent).toBe("极光看板");
+    expect(
+      harness.content.querySelector(".settings-extensions-page-view__version")?.textContent,
+    ).toBe("v1.0.0");
+    expect(
+      harness.content.querySelector(".settings-extensions-page-view img")?.getAttribute("src"),
+    ).toBe(iconDataUrl);
+    expect(
+      harness.content.querySelector(
+        "[data-action=page-back], [data-settings-mode], [role=tablist]",
+      ),
+    ).toBeNull();
 
-    // Clicking the plugin nav button mounts the custom page with full context.
-    pluginButton.click();
-    expect(harness.shell.activePageId).toBe(pluginButton.dataset.pageId);
-    expect(harness.contentRoot().textContent).toContain("Custom Studio (zh-CN)");
-    const context = must<DesktopExtensionSettingsPageContext>(mountedContext, "mounted context");
-    await expect(context.assets.readDataUrl("hero.png")).resolves.toEqual({
-      mimeType: "image/png",
-      dataUrl: "data:image/png;base64,hero.png",
-    });
-    await expect(context.backend.invoke("ping", { n: 1 })).resolves.toEqual({
-      id: "aurora.dashboard",
-      method: "ping",
-      params: { n: 1 },
-    });
+    const shadow = await vi.waitFor(() =>
+      must(harness.content.querySelector("[data-extension-page-host]")?.shadowRoot),
+    );
+    expect(shadow.textContent).toContain(
+      `Standalone desktop page: ${standalone.activationId}/${standalone.digest}`,
+    );
+    expect(shadow.textContent).toContain("--cx-page-bg");
+    const pageId = harness.shell.activePageId;
 
-    // Disabling the extension removes the Plugin Settings section, cleans up the custom page, and falls back to desktop-extensions.
-    await harness.host.reconcile([]);
-    expect(cleanup).toHaveBeenCalledTimes(1);
-    expect(harness.navSections()).toEqual([
-      { id: "general", text: "通用" },
-      { id: "other", text: "其他" },
-    ]);
+    // Identical polls and changes to a shadowed legacy registration leave the page running.
+    harness.sync(listing([{ ...standalone }]));
+    await harness.host.reconcile([legacyPage(standalone.id, "v2", legacyCleanup)]);
+    expect(harness.content.querySelector("[data-extension-page-host]")?.shadowRoot).toBe(shadow);
+
+    for (const [index, updated] of [
+      { ...standalone, activationId: "00000000-0000-4000-8000-000000000002" },
+      {
+        ...standalone,
+        activationId: "00000000-0000-4000-8000-000000000002",
+        digest: "b".repeat(64),
+      },
+    ].entries()) {
+      const old = must(harness.mountedPages.at(-1));
+      harness.sync(listing([updated], index + 2));
+      expect(old.api.signal.aborted).toBe(true);
+      expect(old.cleanup).toHaveBeenCalledOnce();
+      expect(harness.shell.activePageId).toBe(pageId);
+      await vi.waitFor(() => expect(harness.mountedPages).toHaveLength(index + 2));
+      expect(
+        harness.content.querySelector("[data-extension-page-host]")?.shadowRoot?.textContent,
+      ).toContain(`Standalone desktop page: ${updated.activationId}/${updated.digest}`);
+    }
+
+    const beforeReload = must(harness.mountedPages.at(-1));
+    must(harness.content.querySelector<HTMLButtonElement>("[data-action=page-reload]")).click();
+    expect(beforeReload.cleanup).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(harness.mountedPages).toHaveLength(4));
+
+    // The list can report uninstall before the legacy script is reclaimed.
+    const beforeUninstall = must(harness.mountedPages.at(-1));
+    harness.sync(listing([], 4));
+    expect(beforeUninstall.api.signal.aborted).toBe(true);
+    expect(beforeUninstall.cleanup).toHaveBeenCalledOnce();
+    expect(legacyCleanup).not.toHaveBeenCalled();
+    expect(harness.navButton(standalone.id)).toBeNull();
     expect(harness.shell.activePageId).toBe("desktop-extensions");
-    harness.shell.dispose();
-
-    // English locale uses "Plugins" for the page item and "Plugin Settings" for the dynamic group heading.
-    const enHarness = createHarness("en");
-    enHarness.shell.openSettings(undefined, "desktop-extensions");
-    expect(enHarness.navButtons()[1]?.dataset.pageId).toBe("desktop-extensions");
-    expect(enHarness.navButtons()[1]?.textContent).toBe("Plugins");
-    await enHarness.host.reconcile([customEntry]);
-    expect(enHarness.navSections()).toEqual([
-      { id: "general", text: "General" },
-      { id: "plugins", text: "Plugin Settings" },
-      { id: "other", text: "Other" },
-    ]);
   });
 
-  it("auto-generates a native preference form from manifest.settingsSchema, saves changes to storage, and jumps from detail modal Open settings button", async () => {
-    const harness = createHarness("zh-CN");
+  it("opens schema-only settings in the detail dialog without a sidebar entry", async () => {
+    const harness = createHarness();
+    const schemaOnly = schemaExtension();
     const onStorageChange = vi.fn();
-
-    // Register a running extension that listens to storage updates but does NOT call registerPage().
     await harness.host.reconcile([
       {
-        id: "schema-theme",
-        hash: "h-schema",
-        slots: ["appearance.theme"],
-        name: { en: "Schema Theme", "zh-CN": "声明式主题" },
-        settingsSchema: SAMPLE_SCHEMA,
+        id: schemaOnly.id,
+        hash: "v1",
+        slots: [],
+        settingsSchema: must(schemaOnly.manifest.settingsSchema),
         defineScript: (define) =>
           define({
             activate(api) {
@@ -337,528 +344,109 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
           }),
       },
     ]);
-
-    harness.setListResponse({
-      configuration: { version: 1, revision: 2, enabled: ["schema-theme"] },
-      desktopConnected: true,
-      diagnostics: [],
-      extensions: [
-        {
-          id: "schema-theme",
-          enabled: true,
-          status: { state: "running" },
-          manifest: {
-            manifestVersion: 1,
-            id: "schema-theme",
-            name: { en: "Schema Theme", "zh-CN": "声明式主题" },
-            version: "1.0.0",
-            description: { en: "Declarative theme", "zh-CN": "声明式主题扩展" },
-            desktopApi: 1,
-            desktop: { script: "desktop.js" },
-            slots: ["appearance.theme"],
-            settingsSchema: [...SAMPLE_SCHEMA],
-          },
-        },
-      ],
-    });
-
+    harness.setListing(listing([schemaOnly]));
     harness.shell.openSettings(undefined, "desktop-extensions");
-    await vi.waitFor(() => expect(harness.contentRoot().textContent).toContain("声明式主题"));
-
-    // Open extension detail modal -> verify "打开设置" button appears and jumps directly to the plugin page.
-    const card = must(
-      harness.contentRoot().querySelector<HTMLElement>('article[data-extension-id="schema-theme"]'),
-    );
-    card.click();
-
-    const detailDialog = must(
-      harness
-        .contentRoot()
-        .querySelector<HTMLDialogElement>("dialog.settings-extensions-detail-dialog"),
-    );
-    expect(detailDialog).not.toBeNull();
-    const openSettingsButton = must(
-      detailDialog.querySelector<HTMLButtonElement>('button[data-action="open-settings"]'),
-    );
-    expect(openSettingsButton).not.toBeNull();
-    expect(openSettingsButton.textContent).toContain("打开设置");
-
-    openSettingsButton.click();
-    const expectedPageId = harness.pluginPages.getPageIdForExtension("schema-theme");
-    expect(harness.shell.activePageId).toBe(expectedPageId);
-
-    // Wait for initial storage values to hydrate the auto-generated form controls.
-    await vi.waitFor(() => {
-      const textInput = harness
-        .contentRoot()
-        .querySelector<HTMLInputElement>('input[data-setting-key="wallpaperUrl"]');
-      expect(textInput?.value).toBe("assets/custom.png");
+    (await harness.card(schemaOnly.id)).click();
+    expect(harness.navButton(schemaOnly.id)).toBeNull();
+    expect(harness.navSections().map(({ id }) => id)).toEqual(["general", "other"]);
+    const dialog = must(harness.content.querySelector("dialog[open]"));
+    expect(dialog.querySelector("[data-action=open-page], [data-action=open-settings]")).toBeNull();
+    const range = must(dialog.querySelector<HTMLInputElement>("input[type=range]"));
+    await vi.waitFor(() => expect(range.value).toBe("65"));
+    range.value = "90";
+    range.dispatchEvent(new Event("change"));
+    expect(harness.desktopClient.setHostExtensionSettings).toHaveBeenCalledWith({
+      id: schemaOnly.id,
+      expectedSettingsRevision: 1,
+      values: { opacity: 90 },
     });
-
-    const boolInput = must(
-      harness
-        .contentRoot()
-        .querySelector<HTMLInputElement>('input[data-setting-key="enabledBlur"]'),
-    );
-    const numberInput = must(
-      harness
-        .contentRoot()
-        .querySelector<HTMLInputElement>('input[data-setting-key="refreshInterval"]'),
-    );
-    const rangeInput = must(
-      harness.contentRoot().querySelector<HTMLInputElement>('input[data-setting-key="opacity"]'),
-    );
-    const selectInput = must(
-      harness.contentRoot().querySelector<HTMLSelectElement>('select[data-setting-key="preset"]'),
-    );
-
-    expect(boolInput.checked).toBe(false);
-    expect(numberInput.value).toBe("60");
-    expect(rangeInput.value).toBe("65");
-    expect(selectInput.value).toBe("solar");
-
-    // Mutate range slider and select -> persists via RPC and fans out to extension's api.storage.onChange.
-    rangeInput.value = "90";
-    rangeInput.dispatchEvent(new Event("change"));
-    await vi.waitFor(() =>
-      expect(onStorageChange).toHaveBeenCalledWith(expect.objectContaining({ opacity: 90 })),
-    );
-    expect(harness.setSettings).toHaveBeenLastCalledWith(
-      "schema-theme",
-      expect.objectContaining({ opacity: 90, preset: "solar" }),
-    );
-
-    selectInput.value = "nord";
-    selectInput.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(harness.setSettings).toHaveBeenCalledTimes(2));
-    expect(harness.setSettings).toHaveBeenLastCalledWith(
-      "schema-theme",
-      expect.objectContaining({ opacity: 90, preset: "nord" }),
-    );
+    await vi.waitFor(() => expect(onStorageChange).toHaveBeenCalledWith({ opacity: 90 }));
+    expect(harness.shell.activePageId).toBe("desktop-extensions");
   });
 
-  it("remounts an open plugin page in place on hot-reload and unmounts with fallback when externally disabled", async () => {
-    const harness = createHarness("zh-CN");
+  it("keeps legacy registered pages mountable and refreshes or disposes them with the legacy host", async () => {
+    const harness = createHarness("en");
     const cleanupV1 = vi.fn();
     const cleanupV2 = vi.fn();
-
-    await harness.host.reconcile([
-      {
-        id: "aurora.dashboard",
-        hash: "h-v1",
-        slots: [],
-        defineScript: (define) =>
-          define({
-            activate(api) {
-              (api as DesktopExtensionRuntimeApiV1).settings.registerPage({
-                title: { en: "Aurora v1", "zh-CN": "极光 v1" },
-                mount(container) {
-                  const el = container.ownerDocument.createElement("p");
-                  el.textContent = "Custom Page v1";
-                  container.append(el);
-                  return cleanupV1;
-                },
-              });
-            },
-          }),
-      },
+    const item = schemaExtension("aurora.dashboard");
+    expect(harness.navSections().map(({ text }) => text)).toEqual(["General", "Other"]);
+    await harness.host.reconcile([legacyPage(item.id, "v1", cleanupV1)]);
+    harness.setListing(listing([item]));
+    harness.shell.openSettings(undefined, "desktop-extensions");
+    (await harness.card(item.id)).click();
+    expect(harness.navSections().map(({ text }) => text)).toEqual([
+      "General",
+      "Plugin Pages",
+      "Other",
     ]);
-
-    const pluginPageId = must(harness.pluginPages.getPageIdForExtension("aurora.dashboard"));
-    harness.shell.openSettings(undefined, pluginPageId);
-    expect(harness.shell.activePageId).toBe(pluginPageId);
-    expect(harness.contentRoot().textContent).toContain("Custom Page v1");
-
-    // Hot-reload same extension ID with a new contribution: disposes v1 and remounts v2 in place.
-    await harness.host.reconcile([
-      {
-        id: "aurora.dashboard",
-        hash: "h-v2",
-        slots: [],
-        defineScript: (define) =>
-          define({
-            activate(api) {
-              (api as DesktopExtensionRuntimeApiV1).settings.registerPage({
-                title: { en: "Aurora v2", "zh-CN": "极光 v2" },
-                mount(container) {
-                  const el = container.ownerDocument.createElement("p");
-                  el.textContent = "Custom Page v2";
-                  container.append(el);
-                  return cleanupV2;
-                },
-              });
-            },
-          }),
-      },
-    ]);
-
-    expect(cleanupV1).toHaveBeenCalledTimes(1);
-    expect(cleanupV2).not.toHaveBeenCalled();
-    expect(harness.shell.activePageId).toBe(pluginPageId);
-    expect(harness.contentRoot().textContent).not.toContain("Custom Page v1");
-    expect(harness.contentRoot().textContent).toContain("Custom Page v2");
-
-    // Schema extension running in host + cached in installedSchemaExtensions:
-    // 1) Updating schema remounts the open schema page with new fields.
-    // 2) Disabling via host evicts the cached declarative page and falls back to desktop-extensions.
-    const initialSchema: readonly DesktopExtensionSettingField[] = [must(SAMPLE_SCHEMA[0])];
-    await harness.host.reconcile([
-      {
-        id: "schema-theme",
-        hash: "schema-v1",
-        slots: [],
-        name: { en: "Schema Theme", "zh-CN": "声明式主题" },
-        settingsSchema: initialSchema,
-        defineScript: (define) => define({ activate() {} }),
-      },
-    ]);
-    harness.pluginPages.syncInstalledExtensions?.([
-      {
-        id: "schema-theme",
-        enabled: true,
-        status: { state: "running" },
-        manifest: {
-          manifestVersion: 1,
-          id: "schema-theme",
-          name: { en: "Schema Theme", "zh-CN": "声明式主题" },
-          version: "1.0.0",
-          desktopApi: 1,
-          desktop: { script: "desktop.js" },
-          slots: [],
-          settingsSchema: [...initialSchema],
-        },
-      },
-    ]);
-
-    const schemaPageId = must(harness.pluginPages.getPageIdForExtension("schema-theme"));
-    expect(harness.shell.navigateToPage(schemaPageId)).toBe(true);
-    expect(cleanupV2).toHaveBeenCalledTimes(1);
-    expect(harness.contentRoot().querySelector('select[data-setting-key="preset"]')).toBeNull();
-
-    // Hot-reload schema extension with an extra field -> remounts with the new control.
-    const updatedSchema: readonly DesktopExtensionSettingField[] = [
-      must(SAMPLE_SCHEMA[0]),
-      must(SAMPLE_SCHEMA[4]),
-    ];
-    await harness.host.reconcile([
-      {
-        id: "schema-theme",
-        hash: "schema-v2",
-        slots: [],
-        name: { en: "Schema Theme", "zh-CN": "声明式主题" },
-        settingsSchema: updatedSchema,
-        defineScript: (define) => define({ activate() {} }),
-      },
-    ]);
-    expect(harness.shell.activePageId).toBe(schemaPageId);
-    expect(harness.contentRoot().querySelector('select[data-setting-key="preset"]')).not.toBeNull();
-
-    // Host disables schema-theme -> evicts stale installedSchemaExtensions entry and falls back.
-    await harness.host.reconcile([]);
-    expect(harness.pluginPages.hasPageForExtension("schema-theme")).toBe(false);
-    expect(harness.shell.activePageId).toBe("desktop-extensions");
-
-    // Declarative-only page (synced without a live host instance) also unmounts & falls back when
-    // an external sync reports enabled: false.
-    harness.pluginPages.syncInstalledExtensions?.([
-      {
-        id: "external-schema-ext",
-        enabled: true,
-        status: { state: "waiting" },
-        manifest: {
-          manifestVersion: 1,
-          id: "external-schema-ext",
-          name: { en: "External Schema", "zh-CN": "外部声明式扩展" },
-          version: "1.0.0",
-          desktopApi: 1,
-          desktop: { script: "desktop.js" },
-          slots: [],
-          settingsSchema: [...initialSchema],
-        },
-      },
-    ]);
-    const externalPageId = must(harness.pluginPages.getPageIdForExtension("external-schema-ext"));
-    expect(harness.shell.navigateToPage(externalPageId)).toBe(true);
-    expect(harness.shell.activePageId).toBe(externalPageId);
-
-    harness.pluginPages.syncInstalledExtensions?.([
-      {
-        id: "external-schema-ext",
-        enabled: false,
-        status: { state: "disabled" },
-        manifest: {
-          manifestVersion: 1,
-          id: "external-schema-ext",
-          name: { en: "External Schema", "zh-CN": "外部声明式扩展" },
-          version: "1.0.0",
-          desktopApi: 1,
-          desktop: { script: "desktop.js" },
-          slots: [],
-          settingsSchema: [...initialSchema],
-        },
-      },
-    ]);
-    expect(harness.pluginPages.hasPageForExtension("external-schema-ext")).toBe(false);
-    expect(harness.shell.activePageId).toBe("desktop-extensions");
-  });
-
-  it("disables declarative form controls until initial load completes and serializes rapid edits so older writes cannot clobber newer values", async () => {
-    const harness = createHarness("zh-CN");
-
-    let resolveInitialGet!: (values: Record<string, unknown>) => void;
-    harness.getSettings.mockImplementationOnce(
-      () =>
-        new Promise<Record<string, unknown>>((resolve) => {
-          resolveInitialGet = resolve;
-        }),
-    );
-
-    await harness.host.reconcile([
-      {
-        id: "schema-theme",
-        hash: "h-race",
-        slots: [],
-        name: { en: "Schema Theme", "zh-CN": "声明式主题" },
-        settingsSchema: SAMPLE_SCHEMA,
-        defineScript: (define) => define({ activate() {} }),
-      },
-    ]);
-
-    const schemaPageId = must(harness.pluginPages.getPageIdForExtension("schema-theme"));
-    harness.shell.openSettings(undefined, schemaPageId);
-
-    const boolInput = must(
-      harness
-        .contentRoot()
-        .querySelector<HTMLInputElement>('input[data-setting-key="enabledBlur"]'),
-    );
-    const textInput = must(
-      harness
-        .contentRoot()
-        .querySelector<HTMLInputElement>('input[data-setting-key="wallpaperUrl"]'),
-    );
-    const numberInput = must(
-      harness
-        .contentRoot()
-        .querySelector<HTMLInputElement>('input[data-setting-key="refreshInterval"]'),
-    );
-    const rangeInput = must(
-      harness.contentRoot().querySelector<HTMLInputElement>('input[data-setting-key="opacity"]'),
-    );
-    const selectInput = must(
-      harness.contentRoot().querySelector<HTMLSelectElement>('select[data-setting-key="preset"]'),
-    );
-
-    // Before initial settings/get resolves, all controls stay disabled and edits cannot overwrite disk.
-    expect(boolInput.disabled).toBe(true);
-    expect(textInput.disabled).toBe(true);
-    expect(numberInput.disabled).toBe(true);
-    expect(rangeInput.disabled).toBe(true);
-    expect(selectInput.disabled).toBe(true);
-
-    boolInput.checked = false;
-    boolInput.dispatchEvent(new Event("change"));
-    expect(harness.setSettings).not.toHaveBeenCalled();
-
-    // Complete initial load -> controls hydrate and unlock.
-    resolveInitialGet({
-      enabledBlur: false,
-      wallpaperUrl: "assets/persisted.png",
-      refreshInterval: 45,
-      opacity: 50,
-      preset: "solar",
-    });
-
-    await vi.waitFor(() => expect(boolInput.disabled).toBe(false));
-    expect(textInput.disabled).toBe(false);
-    expect(numberInput.disabled).toBe(false);
-    expect(rangeInput.disabled).toBe(false);
-    expect(selectInput.disabled).toBe(false);
-    expect(textInput.value).toBe("assets/persisted.png");
-    expect(rangeInput.value).toBe("50");
-    expect(selectInput.value).toBe("solar");
-
-    // Simulate a slow first write while the user performs rapid follow-up edits.
-    const persistedSnapshots: Array<Record<string, unknown>> = [];
-    let resolveFirstWrite!: (values: Record<string, unknown>) => void;
-    harness.setSettings
-      .mockImplementationOnce(
-        (_id: string, values: Record<string, unknown>) =>
-          new Promise<Record<string, unknown>>((resolve) => {
-            const snapshot = { ...values };
-            resolveFirstWrite = () => {
-              persistedSnapshots.push(snapshot);
-              resolve(snapshot);
-            };
-          }),
-      )
-      .mockImplementationOnce(async (_id: string, values: Record<string, unknown>) => {
-        const snapshot = { ...values };
-        persistedSnapshots.push(snapshot);
-        return snapshot;
-      });
-
-    // Edit 1 starts first write; edits 2 & 3 queue/coalesce instead of racing concurrently.
-    rangeInput.value = "90";
-    rangeInput.dispatchEvent(new Event("change"));
-    expect(harness.setSettings).toHaveBeenCalledTimes(1);
-
-    selectInput.value = "nord";
-    selectInput.dispatchEvent(new Event("change"));
-    rangeInput.value = "95";
-    rangeInput.dispatchEvent(new Event("change"));
-    expect(harness.setSettings).toHaveBeenCalledTimes(1);
-
-    // Finish the slow first write -> queued latest state flushes next and becomes the final persisted state.
-    resolveFirstWrite({});
-    await vi.waitFor(() => expect(harness.setSettings).toHaveBeenCalledTimes(2));
-
-    expect(persistedSnapshots).toHaveLength(2);
-    expect(persistedSnapshots[0]).toMatchObject({ opacity: 90, preset: "solar" });
-    expect(persistedSnapshots[1]).toMatchObject({
-      enabledBlur: false,
-      wallpaperUrl: "assets/persisted.png",
-      refreshInterval: 45,
-      opacity: 95,
-      preset: "nord",
-    });
-    expect(rangeInput.value).toBe("95");
-    expect(selectInput.value).toBe("nord");
-  });
-
-  it("ignores out-of-order syncInstalledExtensions responses with a stale configRevision", () => {
-    const harness = createHarness("zh-CN");
-    const extEnabled: DesktopExtensionsListResult["extensions"] = [
-      {
-        id: "stale-sync-ext",
-        enabled: true,
-        status: { state: "waiting" },
-        manifest: {
-          manifestVersion: 1,
-          id: "stale-sync-ext",
-          name: { en: "Stale Sync", "zh-CN": "同步防回退" },
-          version: "1.0.0",
-          desktopApi: 1,
-          desktop: { script: "desktop.js" },
-          slots: [],
-          settingsSchema: [must(SAMPLE_SCHEMA[0])],
-        },
-      },
-    ];
-    const extDisabled: DesktopExtensionsListResult["extensions"] = [
-      {
-        ...must(extEnabled[0]),
-        enabled: false,
-        status: { state: "disabled" },
-      },
-    ];
-
-    harness.pluginPages.syncInstalledExtensions?.(extEnabled, 2);
-    const pageId = must(harness.pluginPages.getPageIdForExtension("stale-sync-ext"));
-    harness.shell.openSettings(undefined, pageId);
+    must(
+      harness.content.querySelector<HTMLButtonElement>("dialog[open] [data-action=open-settings]"),
+    ).click();
+    const pageId = must(harness.navButton(item.id)).dataset.pageId;
     expect(harness.shell.activePageId).toBe(pageId);
+    expect(harness.content.textContent).toContain("Custom Studio v1 (en)");
 
-    // Newer revision 3 disables the extension and removes its declarative page.
-    harness.pluginPages.syncInstalledExtensions?.(extDisabled, 3);
-    expect(harness.pluginPages.hasPageForExtension("stale-sync-ext")).toBe(false);
+    await harness.host.reconcile([legacyPage(item.id, "v2", cleanupV2)]);
+    expect(cleanupV1).toHaveBeenCalledOnce();
+    expect(harness.shell.activePageId).toBe(pageId);
+    expect(harness.content.textContent).toContain("Custom Studio v2 (en)");
+
+    await harness.host.reconcile([]);
+    expect(cleanupV2).toHaveBeenCalledOnce();
+    expect(harness.navButton(item.id)).toBeNull();
     expect(harness.shell.activePageId).toBe("desktop-extensions");
-
-    // Late out-of-order response from revision 2 must not re-inject the disabled declarative page.
-    harness.pluginPages.syncInstalledExtensions?.(extEnabled, 2);
-    expect(harness.pluginPages.hasPageForExtension("stale-sync-ext")).toBe(false);
-
-    // A newer revision 4 re-enabling the extension is applied normally.
-    harness.pluginPages.syncInstalledExtensions?.(extEnabled, 4);
-    expect(harness.pluginPages.hasPageForExtension("stale-sync-ext")).toBe(true);
   });
 
-  it("waits for pending extension-scoped writes before re-reading settings across unmount/remount", async () => {
-    const harness = createHarness("zh-CN");
-    await harness.host.reconcile([
-      {
-        id: "schema-theme",
-        hash: "h-remount-1",
-        slots: [],
-        name: { en: "Schema Theme", "zh-CN": "声明式主题" },
-        settingsSchema: SAMPLE_SCHEMA,
-        defineScript: (define) => define({ activate() {} }),
-      },
-    ]);
+  it.each(["card", "detail"] as const)(
+    "routes Open Page from the %s to the selected sidebar page",
+    async (entry) => {
+      const harness = createHarness();
+      const item = pageExtension();
+      window.localStorage.setItem(CONTENT_LOCALE_STORAGE_KEY, "en");
+      harness.setListing(listing([item]));
+      harness.shell.openSettings(undefined, "desktop-extensions");
+      const card = await harness.card(item.id);
+      if (entry === "detail") card.click();
+      const buttonScope =
+        entry === "card" ? card : must(harness.content.querySelector("dialog[open]"));
+      expect(buttonScope.querySelector("[data-action=open-settings]")).toBeNull();
+      must(buttonScope.querySelector<HTMLButtonElement>("[data-action=open-page]")).click();
 
-    const schemaPageId = must(harness.pluginPages.getPageIdForExtension("schema-theme"));
-    harness.shell.openSettings(undefined, schemaPageId);
+      const nav = must(harness.navButton(item.id));
+      expect(harness.shell.activePageId).toBe(nav.dataset.pageId);
+      expect(nav.getAttribute("aria-current")).toBe("page");
+      expect(
+        harness.content.querySelector("dialog[open], .settings-extensions__list-view"),
+      ).toBeNull();
+      expect(harness.content.querySelector("h1")?.textContent).toBe("Focus Timer");
+      await vi.waitFor(() => expect(harness.mountedPages[0]?.api.locale).toBe("en"));
+    },
+  );
 
-    await vi.waitFor(() => {
-      const input = harness
-        .contentRoot()
-        .querySelector<HTMLInputElement>('input[data-setting-key="opacity"]');
-      expect(input?.disabled).toBe(false);
-      expect(input?.value).toBe("65");
-    });
-
-    let diskState: Record<string, unknown> = {
-      enabledBlur: false,
-      wallpaperUrl: "assets/custom.png",
-      refreshInterval: 60,
-      opacity: 65,
-      preset: "solar",
+  it("uses the manifest name and puzzle icon as fallbacks and ignores stale snapshots after disable", async () => {
+    const harness = createHarness();
+    const base = pageExtension();
+    const item: HostExtensionValidItem = {
+      ...base,
+      manifest: { ...base.manifest, page: { apiVersion: 1, entry: "page/index.mjs" } },
     };
-    let resolveFirstWrite!: () => void;
-    harness.getSettings.mockImplementation(async () => ({ ...diskState }));
-    harness.setSettings
-      .mockImplementationOnce(
-        (_id: string, values: Record<string, unknown>) =>
-          new Promise<Record<string, unknown>>((resolve) => {
-            const snapshot = { ...values };
-            resolveFirstWrite = () => {
-              diskState = snapshot;
-              resolve(snapshot);
-            };
-          }),
-      )
-      .mockImplementationOnce(async (_id: string, values: Record<string, unknown>) => {
-        diskState = { ...values };
-        return { ...diskState };
-      });
+    harness.sync(listing([item], 2));
+    const nav = must(harness.navButton(item.id));
+    must(nav.querySelector("img")).dispatchEvent(new Event("error"));
+    expect(nav.querySelector("img")).toBeNull();
+    expect(nav.querySelector("svg.codexhost-settings-icon")).not.toBeNull();
+    expect(nav.textContent).toBe("番茄钟");
+    harness.shell.openSettings(undefined, nav.dataset.pageId);
+    await vi.waitFor(() => expect(harness.mountedPages).toHaveLength(1));
 
-    const rangeInput = must(
-      harness.contentRoot().querySelector<HTMLInputElement>('input[data-setting-key="opacity"]'),
-    );
-    const selectInput = must(
-      harness.contentRoot().querySelector<HTMLSelectElement>('select[data-setting-key="preset"]'),
-    );
+    harness.sync(listing([{ ...item, enabled: false }], 3));
+    const { api, cleanup } = must(harness.mountedPages[0]);
+    expect(api.signal.aborted).toBe(true);
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(harness.shell.activePageId).toBe("desktop-extensions");
+    expect(harness.navButton(item.id)).toBeNull();
 
-    // Trigger two rapid edits: write 1 is in flight, write 2 is queued in the extension-scoped queue.
-    rangeInput.value = "90";
-    rangeInput.dispatchEvent(new Event("change"));
-    selectInput.value = "nord";
-    selectInput.dispatchEvent(new Event("change"));
-    expect(harness.setSettings).toHaveBeenCalledTimes(1);
-
-    // Close and immediately reopen the schema settings page while write 1 is still pending.
-    harness.getSettings.mockClear();
-    harness.shell.close();
-    harness.shell.openSettings(undefined, schemaPageId);
-
-    // Mount #2 must stay locked and wait for the extension-scoped write queue before calling storage.get().
-    const remountedRange = must(
-      harness.contentRoot().querySelector<HTMLInputElement>('input[data-setting-key="opacity"]'),
-    );
-    const remountedSelect = must(
-      harness.contentRoot().querySelector<HTMLSelectElement>('select[data-setting-key="preset"]'),
-    );
-    expect(remountedRange.disabled).toBe(true);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(harness.getSettings).not.toHaveBeenCalled();
-
-    // Let write 1 finish -> write 2 flushes next -> mount #2 reads the latest persisted state and unlocks.
-    resolveFirstWrite();
-    await vi.waitFor(() => expect(remountedRange.disabled).toBe(false));
-    expect(harness.setSettings).toHaveBeenCalledTimes(2);
-    expect(harness.getSettings).toHaveBeenCalledTimes(1);
-    expect(remountedRange.value).toBe("90");
-    expect(remountedSelect.value).toBe("nord");
-    expect(diskState).toMatchObject({ opacity: 90, preset: "nord" });
+    harness.pluginPages.syncInstalledExtensions?.([item], 2);
+    expect(harness.navButton(item.id)).toBeNull();
   });
 });

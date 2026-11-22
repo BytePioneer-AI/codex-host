@@ -11,6 +11,9 @@ import {
   encodeHarnessPluginRoute,
   harnessPluginRouteSchema,
   harnessModelSelectionStateSchema,
+  harnessModelRefFromKey,
+  harnessModelRefKey,
+  sameHarnessModelRef,
   threadInspectionSchema,
   threadArchiveConfirmResultSchema,
   threadUsageInspectionSchema,
@@ -655,7 +658,7 @@ export class ChSessions {
         );
         const selection = {
           provider: harnessId,
-          model: owner.effectiveModel?.id ?? "harness",
+          model: owner.effectiveModel ? harnessModelRefKey(owner.effectiveModel) : "harness",
           ...(owner.effectiveThinkingOptionId
             ? { reasoningEffort: owner.effectiveThinkingOptionId }
             : {}),
@@ -772,14 +775,20 @@ export class ChSessions {
       return { sessionId: id, agentPreset: "standard" };
     if (existing || this.rows.has(id))
       throw new RpcError("session/busy", "This Session already exists; start a new draft.");
-    const selection = configuration?.selection ?? (await this.catalog.models()).default;
+    const preferences = configuration ? undefined : this.preferences?.get().catch(() => undefined);
+    const selection =
+      configuration?.selection ??
+      (await this.catalog.models(false, undefined, preferences)).default;
+    if (!selection)
+      throw new RpcError(
+        "host/no-harness",
+        "No models are available. Re-detect the Harness in Connections to authorize access.",
+      );
     const draft: Draft = { id, ...(cwd ? { cwd } : {}), selection, createdAt: Date.now() };
     if (configuration) {
       if (configuration.permissionModeId) draft.permissionModeId = configuration.permissionModeId;
     } else {
-      const config = await this.preferences
-        ?.configuration(selection.provider)
-        .catch(() => undefined);
+      const config = (await preferences)?.values.newThread?.byHarness[selection.provider];
       const inspection = await this.catalog.inspect(selection.provider, cwd);
       const permissionModeId = draftPermissionMode(
         selection.provider,
@@ -827,7 +836,7 @@ export class ChSessions {
               model: encodeHarnessPluginRoute(
                 harnessPluginRouteSchema.parse({
                   harnessId: draft.selection.provider,
-                  model: { id: draft.selection.model },
+                  model: harnessModelRefFromKey(draft.selection.model),
                   ...(draft.selection.reasoningEffort
                     ? { thinkingOptionId: draft.selection.reasoningEffort }
                     : {}),
@@ -836,7 +845,7 @@ export class ChSessions {
               ),
             }
           : {
-              model: { id: draft.selection.model },
+              model: harnessModelRefFromKey(draft.selection.model),
               ...(draft.selection.reasoningEffort
                 ? { config: { model_reasoning_effort: draft.selection.reasoningEffort } }
                 : {}),
@@ -1174,9 +1183,13 @@ export class ChSessions {
       await this.refresh().catch(() => undefined);
       return result;
     });
-    rpc.register("session/modelCatalog", () => this.catalog.models());
+    rpc.register("session/modelCatalog", (args) => {
+      const request = requestOf<{ refresh?: true; harnessId?: string } | undefined>(args);
+      return this.catalog.models(request?.refresh === true, request?.harnessId);
+    });
     rpc.register("session/selectModel", async (args) => {
       const request = requestOf<ModelSelection & { sessionId: string }>(args);
+      const model = harnessModelRefFromKey(request.model);
       const draft = this.drafts.get(request.sessionId);
       if (draft && !draft.canonicalId) {
         if (draft.creating) throw new RpcError("session/busy", "Draft creation is in progress.");
@@ -1199,7 +1212,7 @@ export class ChSessions {
         draft.selection = request;
         await this.preferences
           ?.remember(request.provider, {
-            model: { id: request.model },
+            model,
             thinkingOptionId: request.reasoningEffort,
             permissionModeId: draft.permissionModeId,
           })
@@ -1235,7 +1248,7 @@ export class ChSessions {
         state.configurationRevision = (state.configurationRevision ?? 0) + 1;
         const selection = {
           provider: owner.harnessId,
-          model: configuration.effectiveModel.id,
+          model: harnessModelRefKey(configuration.effectiveModel),
           ...(configuration.effectiveThinkingOptionId
             ? { reasoningEffort: configuration.effectiveThinkingOptionId }
             : {}),
@@ -1245,14 +1258,14 @@ export class ChSessions {
       };
       // Unchanged native settings may not emit a confirmation notification.
       const configuration = publish(
-        owner.owner === "codex" && owner.effectiveModel?.id === request.model
+        owner.owner === "codex" && sameHarnessModelRef(owner.effectiveModel, model)
           ? {
               effectiveModel: owner.effectiveModel,
               effectiveThinkingOptionId: owner.effectiveThinkingOptionId,
             }
           : await this.host.request("codexhost/thread/model/select", {
               threadId: id,
-              model: { id: request.model },
+              model,
             }),
       );
       if (
@@ -1720,7 +1733,7 @@ export class ChSessions {
         draft.permissionModeId = modeId;
         await this.preferences
           ?.remember(harnessId, {
-            model: { id: draft.selection.model },
+            model: harnessModelRefFromKey(draft.selection.model),
             thinkingOptionId: draft.selection.reasoningEffort,
             permissionModeId: modeId,
           })

@@ -4,7 +4,6 @@ import type { JsonObject } from "@codexhost/protocol-core";
 
 import { ClientChannelEvents } from "../src/client-channel-events.js";
 import { NativeClientChannel, type NativeClientReply } from "../src/native-client-channel.js";
-import { encodeOfficialCodexModelRef } from "../src/official-codex-model-ref.js";
 
 const thread: JsonObject = {
   id: "native-thread",
@@ -60,7 +59,7 @@ it("captures the native snapshot cursor before resume/read I/O and keeps real co
 
   expect(first.cursor.sequence).toBe(0);
   expect(first.configuration).toEqual({
-    effectiveModel: encodeOfficialCodexModelRef("gpt-5.4"),
+    effectiveModel: { id: "gpt-5.4" },
     effectiveThinkingOptionId: "high",
     effectivePermissionModeId: ":workspace",
   });
@@ -213,7 +212,7 @@ it("does not carry a pending metadata read retry into a new Host generation", as
 it("serves client inspection and snapshots from confirmed configuration without repeated resume", async () => {
   const { channel, request, calls } = snapshotChannel();
   const before = {
-    effectiveModel: encodeOfficialCodexModelRef("gpt-5.4"),
+    effectiveModel: { id: "gpt-5.4" },
     effectiveThinkingOptionId: "high",
     effectivePermissionModeId: ":workspace",
   };
@@ -247,7 +246,7 @@ it("serves client inspection and snapshots from confirmed configuration without 
     },
   });
   const after = {
-    effectiveModel: encodeOfficialCodexModelRef("new-model"),
+    effectiveModel: { id: "new-model" },
     effectiveThinkingOptionId: "low",
     effectivePermissionModeId: ":read-only",
   };
@@ -279,7 +278,7 @@ it("registers a native fork's subscription and actual configuration on the child
   expect(changed).toHaveBeenCalledExactlyOnceWith("forked-thread", "thread/fork");
   expect(await inspect("forked-thread")).toMatchObject({
     result: {
-      effectiveModel: encodeOfficialCodexModelRef("child-model", "priority"),
+      effectiveModel: { id: "child-model", serviceTier: "priority" },
       effectiveThinkingOptionId: "low",
       effectivePermissionModeId: ":read-only",
     },
@@ -331,7 +330,7 @@ it("does not retain or retry a fork response from a retired native generation", 
   });
   expect(
     await channel.request("codexhost/thread/inspect", { threadId: "forked-thread" }),
-  ).toMatchObject({ result: { effectiveModel: encodeOfficialCodexModelRef("confirmed-model") } });
+  ).toMatchObject({ result: { effectiveModel: { id: "confirmed-model" } } });
   expect(request).toHaveBeenLastCalledWith("thread/resume", {
     threadId: "forked-thread",
     excludeTurns: true,
@@ -475,9 +474,7 @@ it("discards snapshots and resumed state from a retired backend generation", asy
   expect(request.mock.calls.map(([method]) => method)).toEqual(["thread/resume"]);
   const snapshot = await channel.snapshot("native-thread", {});
   expect(request.mock.calls.filter(([method]) => method === "thread/resume")).toHaveLength(2);
-  expect(snapshot.configuration.effectiveModel).toEqual(
-    encodeOfficialCodexModelRef("provider/model:preview"),
-  );
+  expect(snapshot.configuration.effectiveModel).toEqual({ id: "provider/model:preview" });
 });
 
 it("does not expose native permission grants as generic approvals", () => {

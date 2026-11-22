@@ -113,8 +113,10 @@
                     android:layout_height="wrap_content"
                     android:background="@drawable/bg_pill_secure"
                     android:fontFamily="sans-serif-medium"
+                    android:maxLines="1"
                     android:paddingHorizontal="6dp"
                     android:paddingVertical="2dp"
+                    android:singleLine="true"
                     android:textColor="@color/brand_emerald_text"
                     android:textSize="10.5sp" />
             </LinearLayout>

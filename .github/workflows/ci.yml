@@ -263,3 +263,60 @@ jobs:
         run: |
           npm run build:typescript
           node scripts/release/smoke-npm-package.mjs --target linux-arm64 --version 0.1.6-ci.0
+
+  windows-fix-preview:
+    name: Build Windows fix preview
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: 1.97.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Setup npm
+        run: npm install --global npm@11.8.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        with:
+          toolchain: 1.97.1
+          targets: x86_64-pc-windows-msvc
+
+      - name: Setup Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test Windows npm staging
+        run: cargo test -p codexhost-updater --locked
+
+      - name: Test explicit Windows npm Node selection
+        run: cargo test -p codexhost-launcher --bin codexhost --locked npm_node_is_shared_with_host_when_launch_options_omit_node
+
+      - name: Test desktop shell initialization
+        run: cargo test --manifest-path apps/desktop-shell/src-tauri/Cargo.toml --locked installs_bridge_before_document_element_is_available
+
+      - name: Build TypeScript prerequisites
+        run: npm run build:typescript
+
+      - name: Build Windows fix preview
+        run: npm run release:package -- --target windows-x64
+
+      - name: Upload Windows fix preview
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codexhost-fix-preview-windows-x64
+          path: build/release/*/windows-x64/codexhost-*-windows-x64.exe
+          if-no-files-found: error
+          retention-days: 7

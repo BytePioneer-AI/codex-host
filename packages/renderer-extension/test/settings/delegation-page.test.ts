@@ -1,5 +1,7 @@
 import {
-  encodeOfficialCodexModelRef,
+  officialCodexModelRef,
+  harnessModelRefKey,
+  type HarnessModelRef,
   harnessIdSchema,
   harnessModelRefIdSchema,
   harnessThinkingOptionIdSchema,
@@ -226,7 +228,12 @@ function makeDiagnostics(snapshot: RendererConnectionSnapshot): {
 }
 
 function readyInspection(options: {
-  models: Array<{ id: string; label: string; fastModelId?: string; supportedThinking?: string[] }>;
+  models: Array<{
+    id: string;
+    label: string;
+    fastModel?: HarnessModelRef;
+    supportedThinking?: string[];
+  }>;
   defaultModelId?: string;
   thinkingOptions?: Array<{ id: string; label: string }>;
   selectThinkingOption: boolean;
@@ -237,9 +244,7 @@ function readyInspection(options: {
       models: options.models.map((m) => ({
         ref: { id: harnessModelRefIdSchema.parse(m.id) },
         label: m.label,
-        ...(m.fastModelId
-          ? { fastModel: { id: harnessModelRefIdSchema.parse(m.fastModelId) } }
-          : {}),
+        ...(m.fastModel ? { fastModel: m.fastModel } : {}),
         ...(m.supportedThinking !== undefined
           ? {
               supportedThinkingOptionIds: m.supportedThinking.map((id) =>
@@ -413,9 +418,9 @@ describe("Delegation settings page", () => {
 
   it("loads catalog on demand when interacting with a dropdown, hides thinking when unsupported, and clears incompatible thinking on model switch", async () => {
     const { diagnostics } = makeDiagnostics(baseSnapshot());
-    const base = encodeOfficialCodexModelRef("gpt-5.4");
-    const fast = encodeOfficialCodexModelRef("gpt-5.4", "priority");
-    const mini = encodeOfficialCodexModelRef("gpt-5.4-mini");
+    const base = officialCodexModelRef("gpt-5.4");
+    const fast = officialCodexModelRef("gpt-5.4", "priority");
+    const mini = officialCodexModelRef("gpt-5.4-mini");
     const savedState: Record<string, HarnessDelegationDefault> = { codex: { model: fast } };
     let revision = 1;
 
@@ -426,7 +431,7 @@ describe("Delegation settings page", () => {
             {
               id: base.id,
               label: "GPT-5.4",
-              fastModelId: fast.id,
+              fastModel: fast,
               supportedThinking: ["low", "high"],
             },
             { id: mini.id, label: "GPT-5.4 Mini", supportedThinking: ["low"] },
@@ -491,7 +496,7 @@ describe("Delegation settings page", () => {
         el.classList.contains("settings-delegation__lane") && el.dataset.harnessId === "codex",
     );
     await vi.waitFor(() => expect(selectOptionLabels(codexModel)).toContain("gpt-5.4 · Fast"));
-    expect(codexModel.value).toBe(fast.id);
+    expect(codexModel.value).toBe(harnessModelRefKey(fast));
     expect(textOf(codexRow)).toContain("当前生效：gpt-5.4 · Fast");
     expect(textOf(codexLane)).toContain("gpt-5.4 · Fast");
     expect(inspectHarness).not.toHaveBeenCalled();

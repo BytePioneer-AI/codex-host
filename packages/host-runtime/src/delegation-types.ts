@@ -107,6 +107,7 @@ export interface DelegationStartInput {
   parentThreadId?: string;
   requestId?: string;
   model?: HarnessModelRef;
+  officialModelArgument?: string;
   thinkingOptionId?: HarnessThinkingOptionId;
   /** Absolute URIs of where the work came from; children inherit them. */
   refs?: string[];

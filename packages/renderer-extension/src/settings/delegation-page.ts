@@ -1,8 +1,10 @@
 import {
   catalogModelForRef,
-  decodeOfficialCodexModelSelection,
+  normalizeOfficialCodexModelRef,
   harnessIdSchema,
-  harnessModelRefIdSchema,
+  harnessModelRefFromKey,
+  harnessModelRefKey,
+  sameHarnessModelRef,
   harnessThinkingOptionIdSchema,
   type HarnessDelegationDefault,
   type HarnessModelCatalog,
@@ -138,7 +140,7 @@ function supportedThinkingOptions(
   if (!entry || entry.status !== "ready") return null;
   if (!entry.capabilities.configuration.selectThinkingOption) return [];
   const ref = selectedModelId
-    ? { id: harnessModelRefIdSchema.parse(selectedModelId) }
+    ? harnessModelRefFromKey(selectedModelId)
     : entry.catalog.defaultModel;
   const model = catalogModelForRef(entry.catalog, ref);
   const supportedIds = model?.supportedThinkingOptionIds ?? [];
@@ -153,20 +155,16 @@ function resolveModelLabel(
   harnessId: string,
   entry: CatalogCacheEntry | undefined,
   ref: HarnessModelRef,
-  copy: DelegationMessages,
 ): string {
   const found = catalogModelForRef(entry?.status === "ready" ? entry.catalog : undefined, ref);
   if (harnessId !== "codex") return found?.label ?? ref.id;
-  if (found) return found.fastModel?.id === ref.id ? `${found.label} · Fast` : found.label;
-  try {
-    const { model, serviceTier } = decodeOfficialCodexModelSelection(ref);
-    return (
-      model +
-      (serviceTier === "priority" ? " · Fast" : serviceTier === "ultrafast" ? " · Ultrafast" : "")
-    );
-  } catch {
-    return copy.loadFailed;
-  }
+  if (found)
+    return sameHarnessModelRef(found.fastModel, ref) ? `${found.label} · Fast` : found.label;
+  const { id, serviceTier } = normalizeOfficialCodexModelRef(ref);
+  return (
+    id +
+    (serviceTier === "priority" ? " · Fast" : serviceTier === "ultrafast" ? " · Ultrafast" : "")
+  );
 }
 
 function resolveThinkingLabel(
@@ -188,7 +186,7 @@ function formatEffectiveSummary(
   copy: DelegationMessages,
   compactDefault: boolean,
 ): { text: string; overridden: boolean } {
-  const modelLabel = saved?.model ? resolveModelLabel(harnessId, entry, saved.model, copy) : null;
+  const modelLabel = saved?.model ? resolveModelLabel(harnessId, entry, saved.model) : null;
   const thinkingLabel = resolveThinkingLabel(entry, saved?.thinkingOptionId);
   if (!modelLabel && !thinkingLabel) {
     return {
@@ -491,6 +489,21 @@ export function createDelegationSettingsPage(
         const parsedHarnessId = harnessIdSchema.safeParse(harnessId);
         if (!parsedHarnessId.success) return;
 
+        const entry = catalogs.get(harnessId);
+        if (
+          harnessId === "codex" &&
+          configuration?.model &&
+          !catalogModelForRef(
+            entry?.status === "ready" ? entry.catalog : undefined,
+            configuration.model,
+          )
+        ) {
+          configuration = {
+            ...configuration,
+            model: normalizeOfficialCodexModelRef(configuration.model),
+          };
+        }
+
         const nextSeq = (patchSeqByHarness.get(harnessId) ?? 0) + 1;
         patchSeqByHarness.set(harnessId, nextSeq);
         inFlightPatchCount.set(harnessId, (inFlightPatchCount.get(harnessId) ?? 0) + 1);
@@ -636,9 +649,7 @@ export function createDelegationSettingsPage(
           const nextConfig: HarnessDelegationDefault | null =
             nextModelId || nextThinkingId
               ? {
-                  ...(nextModelId
-                    ? { model: { id: harnessModelRefIdSchema.parse(nextModelId) } }
-                    : {}),
+                  ...(nextModelId ? { model: harnessModelRefFromKey(nextModelId) } : {}),
                   ...(nextThinkingId
                     ? { thinkingOptionId: harnessThinkingOptionIdSchema.parse(nextThinkingId) }
                     : {}),
@@ -650,13 +661,11 @@ export function createDelegationSettingsPage(
         effortSelect.addEventListener("change", () => {
           const nextThinkingId = effortSelect.value;
           const saved = delegationByHarness[agent.id];
-          const nextModelId = saved?.model?.id;
+          const nextModel = saved?.model;
           const nextConfig: HarnessDelegationDefault | null =
-            nextModelId || nextThinkingId
+            nextModel || nextThinkingId
               ? {
-                  ...(nextModelId
-                    ? { model: { id: harnessModelRefIdSchema.parse(nextModelId) } }
-                    : {}),
+                  ...(nextModel ? { model: nextModel } : {}),
                   ...(nextThinkingId
                     ? { thinkingOptionId: harnessThinkingOptionIdSchema.parse(nextThinkingId) }
                     : {}),
@@ -709,19 +718,19 @@ export function createDelegationSettingsPage(
 
         // Model options
         const savedModel = saved?.model;
-        const savedModelId = savedModel?.id ?? "";
+        const savedModelId = savedModel ? harnessModelRefKey(savedModel) : "";
         const modelOptions: Array<{ value: string; label: string; disabled?: boolean }> = [
           { value: "", label: copy.followAgentDefault },
         ];
         if (entry?.status === "ready") {
           for (const model of entry.catalog.models) {
-            modelOptions.push({ value: model.ref.id, label: model.label });
+            modelOptions.push({ value: harnessModelRefKey(model.ref), label: model.label });
           }
         }
         if (savedModel && !modelOptions.some(({ value }) => value === savedModelId)) {
           modelOptions.push({
             value: savedModelId,
-            label: resolveModelLabel(harnessId, entry, savedModel, copy),
+            label: resolveModelLabel(harnessId, entry, savedModel),
           });
         }
         if (entry?.status === "loading") {

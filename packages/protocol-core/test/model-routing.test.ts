@@ -156,7 +156,6 @@ describe("external Harness transport model routing", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.cHJvdmlkZXItaWQ" });
     const transportModelId = encodePiTransportModel(model);
 
-    expect(transportModelId).toBe(`${PI_NATIVE_TRANSPORT_MODEL_ID}@${model.id}`);
     expect(decodePiTransportModel(transportModelId)).toEqual(model);
     expect(
       decodeCreateRoute({
@@ -173,7 +172,7 @@ describe("external Harness transport model routing", () => {
   });
 
   it("round-trips an OMP Model, Permission Mode, and Thinking selection", () => {
-    const model = harnessModelRefSchema.parse({ id: "omp-model-v1.b21wZW4" });
+    const model = harnessModelRefSchema.parse({ id: "模型 @/: A", serviceTier: "priority" });
     const permissionModeId = harnessPermissionModeIdSchema.parse("write");
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
     const transportModelId = encodeOmpTransportModel(model, thinkingOptionId, permissionModeId);
@@ -259,13 +258,10 @@ describe("external Harness transport model routing", () => {
   });
 
   it("round-trips a request-scoped Pi Model and Thinking pair", () => {
-    const model = harnessModelRefSchema.parse({ id: "pi-model-v1.cHJvdmlkZXItaWQ" });
+    const model = harnessModelRefSchema.parse({ id: "模型 @/: A", serviceTier: "priority" });
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("xhigh");
     const transportModelId = encodePiTransportModel(model, thinkingOptionId);
 
-    expect(transportModelId).toBe(
-      `${PI_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@${thinkingOptionId}`,
-    );
     expect(decodePiTransportSelection(transportModelId)).toEqual({
       model,
       thinkingOptionId,
@@ -403,7 +399,8 @@ describe("external Harness transport model routing", () => {
 
   it("round-trips request-scoped OpenCode configuration", () => {
     const model = harnessModelRefSchema.parse({
-      id: "opencode-model-v1.WyJvcGVuYWkiLCJnZW1pbmkiXQ",
+      id: "模型 @/: A",
+      serviceTier: "ultrafast",
     });
     const permissionModeId = harnessPermissionModeIdSchema.parse("ask");
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("ocv.aGlnaA");
@@ -413,9 +410,6 @@ describe("external Harness transport model routing", () => {
       thinkingOptionId,
     );
 
-    expect(transportModelId).toBe(
-      `${OPENCODE_NATIVE_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}@${thinkingOptionId}`,
-    );
     expect(decodeOpenCodeTransportSelection(transportModelId)).toEqual({
       model,
       permissionModeId,
@@ -431,7 +425,7 @@ describe("external Harness transport model routing", () => {
 
   it("decodes existing Thread carriers only for their owning Harness", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.cHJvdmlkZXItaWQ" });
-    const selectedPi = encodePiTransportModel(model);
+    const selectedPi = `${PI_NATIVE_TRANSPORT_MODEL_ID}@${model.id}`;
 
     expect(decodeExternalTransportModel("pi", PI_NATIVE_TRANSPORT_MODEL_ID)).toBeUndefined();
     expect(decodeExternalTransportModel("pi", selectedPi)).toEqual(model);

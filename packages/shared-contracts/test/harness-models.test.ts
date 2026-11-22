@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   catalogModelForRef,
+  sameHarnessModelRef,
+  decodeHarnessPluginRoute,
+  encodeHarnessPluginRoute,
+  harnessPluginRouteSchema,
   HARNESS_MODEL_REF_MAX_LENGTH,
   HARNESS_THINKING_OPTION_ID_MAX_LENGTH,
   THREAD_OWNERSHIP_LIST_MAX_LENGTH,
@@ -58,7 +62,7 @@ function readyInspection() {
 
 describe("Harness Model runtime contracts", () => {
   it("resolves an advertised Fast ref to the same Model without adding a menu row", () => {
-    const fast = { id: "priority" };
+    const fast = { ...firstRef, serviceTier: "priority" };
     const catalog = harnessModelCatalogSchema.parse({
       models: [{ ref: firstRef, fastModel: fast, label: "Model" }],
       defaultModel: fast,
@@ -66,15 +70,24 @@ describe("Harness Model runtime contracts", () => {
     });
     expect(catalog.models).toHaveLength(1);
     expect(catalogModelForRef(catalog, harnessModelRefSchema.parse(fast))).toBe(catalog.models[0]);
+    expect(sameHarnessModelRef(harnessModelRefSchema.parse(firstRef), catalog.defaultModel)).toBe(
+      false,
+    );
     expect(
-      catalogModelForRef(catalog, harnessModelRefSchema.parse({ id: "unknown" })),
+      catalogModelForRef(
+        catalog,
+        harnessModelRefSchema.parse({ ...firstRef, serviceTier: "ultrafast" }),
+      ),
     ).toBeUndefined();
-    expect(
-      harnessModelCatalogSchema.safeParse({
-        ...catalog,
-        models: [{ ref: firstRef, fastModel: firstRef, label: "Model" }],
-      }).success,
-    ).toBe(false);
+    for (const fastModel of [firstRef, { ...secondRef, serviceTier: "priority" }]) {
+      expect(
+        harnessModelCatalogSchema.safeParse({
+          ...catalog,
+          defaultModel: firstRef,
+          models: [{ ref: firstRef, fastModel, label: "Model" }],
+        }).success,
+      ).toBe(false);
+    }
     expect(
       harnessModelCatalogSchema.safeParse({
         ...catalog,
@@ -188,15 +201,10 @@ describe("Harness Model runtime contracts", () => {
     }
   });
 
-  it("requires bounded transport-safe opaque Model refs", () => {
-    for (const id of [
-      "",
-      "   ",
-      "provider/model",
-      "provider:model",
-      "provider model",
-      "x".repeat(HARNESS_MODEL_REF_MAX_LENGTH + 1),
-    ]) {
+  it("preserves non-empty native Model IDs without control characters", () => {
+    for (const id of ["provider@model", "provider/model", "provider:model", " 模型 A ", "   "])
+      expect(harnessModelRefSchema.parse({ id })).toEqual({ id });
+    for (const id of ["", "model\n", "model\u0085", "x".repeat(HARNESS_MODEL_REF_MAX_LENGTH + 1)]) {
       expect(harnessModelRefSchema.safeParse({ id }).success).toBe(false);
     }
     expect(harnessModelRefSchema.parse(firstRef)).toEqual(firstRef);
@@ -305,6 +313,30 @@ describe("Harness Model runtime contracts", () => {
       }).success,
     ).toBe(false);
   });
+
+  it.each(["模型 @/: A ", "模".repeat(512), "\ud800".repeat(512)])(
+    "round-trips the entire plugin route through Thread inspection (%#)",
+    (id) => {
+      const route = harnessPluginRouteSchema.parse({
+        harnessId: "a".repeat(128),
+        model: { id, serviceTier: "ultrafast" },
+        thinkingOptionId: "h".repeat(128),
+        permissionModeId: "p".repeat(128),
+        prewarm: true,
+      });
+      const inspection = threadInspectionSchema.parse({
+        owner: "external",
+        harnessId: route.harnessId,
+        transportModelId: encodeHarnessPluginRoute(route),
+        effectiveModel: route.model,
+        history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: false },
+        locked: true,
+      });
+      expect(
+        inspection.owner === "external" && decodeHarnessPluginRoute(inspection.transportModelId),
+      ).toEqual(route);
+    },
+  );
 
   it("validates fixed Thread ownership inspection without Native details", () => {
     expect(threadInspectionParamsSchema.parse({ threadId: "thread-1" })).toEqual({

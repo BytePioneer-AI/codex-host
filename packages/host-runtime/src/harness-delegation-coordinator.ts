@@ -99,7 +99,7 @@ function taskDigest(
       JSON.stringify({
         task: input.task,
         cwd: path.resolve(input.cwd),
-        modelId: input.model?.id ?? null,
+        model: input.model ? [input.model.id, input.model.serviceTier ?? null] : null,
         thinkingOptionId: input.thinkingOptionId ?? null,
       }),
     )

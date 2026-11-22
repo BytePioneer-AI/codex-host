@@ -7,7 +7,6 @@ import { HarnessPreferencesStore } from "@codexhost/harness-plugin-files";
 import { MappingStore } from "@codexhost/mapping-store";
 import type { JsonObject } from "@codexhost/protocol-core";
 import {
-  encodeOfficialCodexModelRef,
   harnessModelRefSchema,
   harnessPreferencePatchSchema,
   harnessThinkingOptionIdSchema,
@@ -184,9 +183,9 @@ it("supports native and saved defaults for headless Codex delegations and export
     expect(threadStarts[0]).not.toHaveProperty("model");
     expect(turnStarts[0]).not.toHaveProperty("effort");
 
-    const canonicalModel = encodeOfficialCodexModelRef("delegated");
+    const canonicalModel = { id: "delegated" };
     const delegatedInput = { ...input, requestId: "headless-saved" };
-    await save({ model: canonicalModel, thinkingOptionId: "high" });
+    await save({ model: { id: "codex-model-v1.ZGVsZWdhdGVk" }, thinkingOptionId: "high" });
     const delegated = await api.start(delegatedInput);
     expect(delegated.configuration?.requested).toEqual({
       model: canonicalModel,
@@ -256,13 +255,26 @@ it("supports native and saved defaults for headless Codex delegations and export
     ).toContain("model: delegated~fast\n");
     expect(threadStarts.at(-1)).toMatchObject({ model: "delegated", serviceTier: "priority" });
     const count = threadStarts.length;
-    await cli(
-      ...args,
-      "--model",
-      encodeOfficialCodexModelRef("delegated", "priority").id,
-      "--request-id",
-      "fast",
-    );
+    const retry = { ...input, task: "fast", requestId: "fast" };
+    const native = await api.start({
+      ...retry,
+      model: harnessModelRefSchema.parse({ id: "delegated", serviceTier: "priority" }),
+    });
+    await expect(
+      api.start({
+        ...retry,
+        model: harnessModelRefSchema.parse({ id: "codex-fast-model-v1.ZGVsZWdhdGVk" }),
+      }),
+    ).resolves.toMatchObject({
+      delegationId: native.delegationId,
+      threadId: native.threadId,
+    });
+    await expect(
+      api.start({
+        ...retry,
+        model: harnessModelRefSchema.parse({ id: "delegated", serviceTier: "ultrafast" }),
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     expect(threadStarts).toHaveLength(count);
     await cli(...args, "--model", discovered.inspection.catalog.models[2].ref.id);
     expect(threadStarts.at(-1)).toMatchObject({ model: "delegated", serviceTier: "ultrafast" });

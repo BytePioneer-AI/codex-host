@@ -45,7 +45,7 @@ export function jsonDelegationOutput(command: DelegationCliCommand, body: unknow
   if (result.harnessId !== "codex" || result.inspection.status !== "ready") return body;
   const { catalog } = result.inspection;
   const displayRef = (ref: HarnessModelRef) => ({
-    id: formatOfficialDelegationModel(ref, catalog),
+    id: formatOfficialDelegationModel(ref),
   });
   return {
     ...result,
@@ -68,7 +68,7 @@ function inspectOutput({ harnessId, inspection }: HarnessInspectResult): unknown
   if (inspection.status !== "ready") return { harnessId, ...inspection };
   const { catalog } = inspection;
   const modelId = (ref: HarnessModelRef) =>
-    harnessId === "codex" ? formatOfficialDelegationModel(ref, catalog) : ref.id;
+    harnessId === "codex" ? formatOfficialDelegationModel(ref) : ref.id;
   return {
     harnessId,
     status: inspection.status,

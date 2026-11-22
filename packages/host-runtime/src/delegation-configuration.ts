@@ -1,7 +1,8 @@
 import type { RoutedHarnessId } from "@codexhost/protocol-core";
 import {
-  canonicalizeOfficialCodexModelRef,
+  normalizeOfficialCodexModelRef,
   catalogModelForRef,
+  sameHarnessModelRef,
   type HarnessDelegationDefault,
   type HarnessModelRef,
 } from "@codexhost/shared-contracts";
@@ -20,23 +21,11 @@ export async function resolveDelegationConfiguration(input: {
 }): Promise<Pick<DelegationStartInput, "model" | "thinkingOptionId">> {
   const official = input.harnessId === "codex";
   const { model: explicitModel, thinkingOptionId: explicitThinking } = input.explicit;
-  let saved =
+  const saved =
     explicitModel && explicitThinking
       ? undefined
       : await input.readDefault().catch(() => undefined);
-  if (official && saved?.model) {
-    try {
-      saved = { ...saved, model: canonicalizeOfficialCodexModelRef(saved.model) };
-    } catch {
-      saved = undefined;
-    }
-  }
-
-  let model = explicitModel ?? saved?.model;
-  let thinkingOptionId =
-    explicitThinking ??
-    (!explicitModel || explicitModel.id === saved?.model?.id ? saved?.thinkingOptionId : undefined);
-  if (!model && !thinkingOptionId) return {};
+  if (!explicitModel && !explicitThinking && !saved?.model && !saved?.thinkingOptionId) return {};
 
   const inspected = await input.inspect().catch((error: unknown) => {
     if (explicitModel || explicitThinking) throw error;
@@ -56,6 +45,16 @@ export async function resolveDelegationConfiguration(input: {
     catalog,
     capabilities: { configuration },
   } = inspection;
+  const savedModel =
+    official && saved?.model && !catalogModelForRef(catalog, saved.model)
+      ? normalizeOfficialCodexModelRef(saved.model)
+      : saved?.model;
+  let model = explicitModel ?? savedModel;
+  let thinkingOptionId =
+    explicitThinking ??
+    (!explicitModel || sameHarnessModelRef(explicitModel, savedModel)
+      ? saved?.thinkingOptionId
+      : undefined);
   if (model && (!configuration.selectModel || !catalogModelForRef(catalog, model))) {
     if (explicitModel) {
       if (!official && !configuration.selectModel) {

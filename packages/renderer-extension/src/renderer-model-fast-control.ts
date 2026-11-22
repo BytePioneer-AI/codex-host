@@ -1,5 +1,7 @@
 import {
   catalogModelForRef,
+  harnessModelRefKey,
+  sameHarnessModelRef,
   type HarnessModelCatalog,
   type HarnessModelRef,
 } from "@codexhost/shared-contracts";
@@ -56,7 +58,7 @@ export function mountRendererModelFastControl(
   let next: HarnessModelRef | undefined;
   const click = (event: MouseEvent): void => {
     event.stopPropagation();
-    if (next && !button.disabled) onSelect(next.id);
+    if (next && !button.disabled) onSelect(harnessModelRefKey(next));
   };
   button.addEventListener("click", click);
   return {
@@ -64,7 +66,7 @@ export function mountRendererModelFastControl(
     render(catalog, selected, disabled, zh) {
       const model = catalogModelForRef(catalog, selected);
       const available = model?.fastModel !== undefined;
-      const enabled = available && model?.fastModel?.id === selected?.id;
+      const enabled = available && sameHarnessModelRef(model?.fastModel, selected);
       next = available ? (enabled ? model?.ref : model?.fastModel) : undefined;
       button.hidden = !available;
       button.style.display = available ? "inline-flex" : "none";

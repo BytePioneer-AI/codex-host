@@ -2519,7 +2519,13 @@ export function installRendererBindingProbe(
     }
     controller.invalidateModelRequests(mounted.composer);
     const switching = controller.switchAgent(mounted.composer, agent, {
-      applyAgent: (nextAgent) => applyDraftAgentCarrier(mounted.composer, nextAgent),
+      applyAgent: (nextAgent) => {
+        const applied = applyDraftAgentCarrier(mounted.composer, nextAgent);
+        if (!applied && credentialAccess && nextAgent === agent) {
+          mounted.control.picker.showSwitchFailure();
+        }
+        return applied;
+      },
       clearPrewarm: () => clearDraftPrewarm(mounted.composer),
     });
     renderMounted(mounted);

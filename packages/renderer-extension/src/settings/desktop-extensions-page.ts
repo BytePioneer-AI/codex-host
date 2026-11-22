@@ -24,6 +24,7 @@ import {
 import {
   CAPABILITY_FILTER_ORDER,
   CATEGORY_ORDER,
+  CONTENT_LOCALE_STORAGE_KEY,
   blockedToggleReason,
   capabilityFilterLabel,
   catalogCapabilities,
@@ -46,6 +47,7 @@ import {
   needsAttention,
   matchesCatalogSearchQuery,
   matchesInstalledSearchQuery,
+  readContentLocalePreference,
   resolveAttentionDetail,
   resolveInstalledExtensionIconUrl,
   type DesktopExtensionContentLocale,
@@ -61,23 +63,8 @@ import { createPreferenceSwitch, preferenceId } from "./preference-ui.js";
 
 const POLL_INTERVAL_MS = 5_000;
 const EXTENSIONS_ROOT_DISPLAY = "$CODEXHOST_DATA_DIR/host-extensions/";
-const CONTENT_LOCALE_STORAGE_KEY = "codexhost.desktopExtensions.contentLocale";
 
 type ActiveTab = "installed" | "marketplace";
-
-function readContentLocalePreference(
-  ownerWindow: Window | null,
-): DesktopExtensionContentLocalePreference {
-  try {
-    const storage =
-      ownerWindow?.localStorage ?? (typeof localStorage !== "undefined" ? localStorage : undefined);
-    const stored = storage?.getItem(CONTENT_LOCALE_STORAGE_KEY);
-    if (stored === "system" || stored === "zh-CN" || stored === "en") return stored;
-  } catch {
-    // Ignore restricted storage environments.
-  }
-  return "system";
-}
 
 function writeContentLocalePreference(
   ownerWindow: Window | null,
@@ -132,7 +119,7 @@ export interface RendererDesktopExtensionsClient {
 
 export interface CreateDesktopExtensionsSettingsPageOptions {
   /** Optional dynamic ESM importer seam for testing standalone `page` loading. */
-  readonly importPageModule?: (blobUrl: string) => Promise<unknown>;
+  readonly importPageModule?: (url: string) => Promise<unknown>;
 }
 
 function resolveAvailableClient(
@@ -500,6 +487,8 @@ export function createDesktopExtensionsSettingsPage(
         detailModal.close();
         importModal.close();
         createModal.close();
+        const pageId = pluginPages?.getPageIdForExtension(item.id);
+        if (pageId && context.navigateToPage?.(pageId)) return;
         const catalogEntry = catalogById.get(item.id);
         listViewWrap.hidden = true;
         pageViewHost.hidden = false;
@@ -548,6 +537,7 @@ export function createDesktopExtensionsSettingsPage(
         },
         onSettingsSaved: (extensionId, values, revision) => {
           pageHost.notifySettingsChanged(extensionId, values, revision);
+          pluginPages?.notifySettingsChanged?.(extensionId, values);
         },
         onToggle: (item, enable) => {
           void toggleExtension(item, enable);
@@ -561,12 +551,13 @@ export function createDesktopExtensionsSettingsPage(
         onOpenPage: (item) => {
           openExtensionPage(item);
         },
-        onOpenSettings: pluginPages
-          ? (extensionId) => {
-              const pageId = pluginPages.getPageIdForExtension(extensionId);
-              if (pageId) context.navigateToPage?.(pageId);
-            }
-          : undefined,
+        onOpenSettings:
+          pluginPages && context.navigateToPage
+            ? (extensionId) => {
+                const pageId = pluginPages.getPageIdForExtension(extensionId);
+                if (pageId) context.navigateToPage?.(pageId);
+              }
+            : undefined,
         onClose: () => {
           modalFeedbackExtensionId = null;
         },

@@ -239,6 +239,14 @@
   opacity: 0.9;
 }
 
+.settings-nav-button__plugin-icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
 .settings-nav-button:hover {
   background: var(--settings-hover);
 }
@@ -309,13 +317,15 @@
 }
 
 .settings-page__content {
-  width: min(930px, calc(100% - 80px));
+  width: calc(100% - 80px);
+  max-width: 930px;
   margin-inline: auto;
-}
-
-.settings-page__content {
   min-width: 0;
   padding: 28px 0 36px;
+}
+
+.settings-page__content:has(> .settings-extensions-page-view) {
+  max-width: none;
 }
 
 .settings-section-label {
@@ -4562,37 +4572,6 @@ dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
   display: grid;
   gap: 14px;
   min-width: 0;
-}
-
-.settings-extension-plugin-page__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 0;
-}
-
-.settings-extension-plugin-page__header .settings-section-label {
-  padding-bottom: 0;
-}
-
-.settings-extension-plugin-page__status {
-  flex: none;
-  color: var(--settings-subtle);
-  font-size: 12px;
-  line-height: 16px;
-}
-
-.settings-extension-plugin-page__status[hidden] {
-  display: none;
-}
-
-.settings-extension-plugin-page__status[data-tone="success"] {
-  color: var(--settings-success);
-}
-
-.settings-extension-plugin-page__status[data-tone="danger"] {
-  color: var(--settings-danger);
 }
 
 .settings-extension-schema__input,

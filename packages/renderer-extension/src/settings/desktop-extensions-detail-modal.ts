@@ -744,7 +744,13 @@ export function createDesktopExtensionDetailModal(options: {
         nodes.push(openPageButton);
       }
 
-      if (onOpenSettings && state.hasSettingsPage?.(extensionId)) {
+      if (
+        onOpenSettings &&
+        installed.state === "valid" &&
+        installed.enabled &&
+        !installed.manifest.page &&
+        state.hasSettingsPage?.(extensionId)
+      ) {
         const openSettingsButton = createEl(
           document,
           "button",

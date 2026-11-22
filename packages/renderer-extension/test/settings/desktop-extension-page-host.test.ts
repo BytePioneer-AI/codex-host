@@ -238,6 +238,44 @@ describe("Desktop standalone extension page host", () => {
     controller.dispose();
   });
 
+  it("discards a pending sidebar page import when its settings scope is aborted", async () => {
+    const host = document.createElement("div");
+    const scope = new RendererSettingsPageScope();
+    const item = makePageItem();
+    const mount = vi.fn();
+    let completeImport!: (module: { mount: typeof mount }) => void;
+    const importModule = vi.fn(
+      () =>
+        new Promise<{ mount: typeof mount }>((resolve) => {
+          completeImport = resolve;
+        }),
+    );
+    const controller = createDesktopExtensionPageHost({
+      document,
+      host,
+      signal: scope.signal,
+      messages: rendererSettingsMessages("en"),
+      getClient: () => ({
+        readHostExtensionAsset: async () => ({
+          mimeType: "text/css",
+          base64: "",
+          digest: item.digest,
+        }),
+      }),
+      importModule,
+    });
+    controller.open(item);
+    await vi.waitFor(() => expect(importModule).toHaveBeenCalled());
+    expect(host.querySelector("[data-action=page-back]")).toBeNull();
+
+    scope.dispose();
+    completeImport({ mount });
+    await Promise.resolve();
+    expect(mount).not.toHaveBeenCalled();
+    expect(host.childElementCount).toBe(0);
+    controller.dispose();
+  });
+
   it("mounts without readHostExtensionAsset when page.style is omitted, rejects backend.invoke clearly without manifest.backend, and isolates mount errors", async () => {
     const invokeHostExtensionBackend = vi.fn();
 

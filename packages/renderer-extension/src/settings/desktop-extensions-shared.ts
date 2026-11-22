@@ -28,6 +28,22 @@ export type DesktopExtensionBannerTone = "info" | "success" | "warning" | "dange
 export type DesktopExtensionMutationAction = "toggle" | "install" | "update" | "uninstall";
 export type DesktopExtensionContentLocale = RendererSettingsMessages["locale"];
 export type DesktopExtensionContentLocalePreference = "system" | DesktopExtensionContentLocale;
+
+export const CONTENT_LOCALE_STORAGE_KEY = "codexhost.desktopExtensions.contentLocale";
+
+export function readContentLocalePreference(
+  ownerWindow: Window | null,
+): DesktopExtensionContentLocalePreference {
+  try {
+    const storage =
+      ownerWindow?.localStorage ?? (typeof localStorage !== "undefined" ? localStorage : undefined);
+    const stored = storage?.getItem(CONTENT_LOCALE_STORAGE_KEY);
+    if (stored === "system" || stored === "zh-CN" || stored === "en") return stored;
+  } catch {
+    // Ignore restricted storage environments.
+  }
+  return "system";
+}
 export type ExtensionCapabilityFilter = "all" | "page" | "widget" | "web" | "desktop" | "backend";
 
 export interface ExtensionPlatformBadge {

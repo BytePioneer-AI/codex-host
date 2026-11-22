@@ -1014,6 +1014,8 @@ describe("Unified Host extensions settings page", () => {
       ),
     );
     expect(dialog.open).toBe(true);
+    expect(descendants(dialog).filter((el) => el.dataset.action === "open-page")).toHaveLength(1);
+    expect(descendants(dialog).some((el) => el.dataset.action === "open-settings")).toBe(false);
     await vi.waitFor(() => expect(getHostExtensionSettings).toHaveBeenCalledTimes(1));
 
     // Inline declarative setting toggle submits expectedSettingsRevision: 2, hits conflict, reloads rev 3.

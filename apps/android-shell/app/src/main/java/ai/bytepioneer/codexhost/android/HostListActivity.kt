@@ -70,11 +70,13 @@ internal class HostListActivity : NativeActivity() {
         findViewById<MaterialButton>(R.id.checkUpdateButton).setOnClickListener {
             HostActions.checkForUpdates(this, { checking }, { checking = it }, ::openInBrowser)
         }
+        ApkUpdater.checkOnStartup(this, ::openInBrowser)
     }
 
     override fun onResume() {
         super.onResume()
         refresh()
+        ApkUpdater.resumePendingInstall(this)
     }
 
     private fun refresh() {

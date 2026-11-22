@@ -2,16 +2,10 @@ package ai.bytepioneer.codexhost.android
 
 import android.text.InputFilter
 import android.widget.LinearLayout
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.lifecycleScope
 import ai.bytepioneer.codexhost.android.core.HostProfile
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 internal object HostActions {
     fun showRenameDialog(
@@ -56,37 +50,6 @@ internal object HostActions {
         setBusy: (Boolean) -> Unit,
         openUrl: (String) -> Unit,
     ) {
-        if (isBusy()) return
-        setBusy(true)
-        activity.tell(R.string.update_checking)
-        activity.lifecycleScope.launch {
-            try {
-                val installed = activity.packageManager.getPackageInfo(activity.packageName, 0).versionName.orEmpty()
-                val update = withContext(Dispatchers.IO) { ReleaseUpdates.check(installed) }
-                if (!activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return@launch
-                if (update == null) {
-                    activity.tell(R.string.update_current)
-                } else {
-                    val apk = update.apkUrl
-                    val dialog = MaterialAlertDialogBuilder(activity)
-                        .setTitle(R.string.check_update)
-                        .setNegativeButton(android.R.string.cancel, null)
-                    if (apk == null) {
-                        dialog.setMessage(activity.getString(R.string.update_no_apk, update.version))
-                            .setPositiveButton(R.string.view_release) { _, _ -> openUrl(update.releaseUrl) }
-                    } else {
-                        dialog.setMessage(activity.getString(R.string.update_available, update.version))
-                            .setPositiveButton(R.string.download_apk) { _, _ -> openUrl(apk) }
-                    }
-                    dialog.show()
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                activity.tell(R.string.update_failed)
-            } finally {
-                setBusy(false)
-            }
-        }
+        ApkUpdater.checkManually(activity, isBusy, setBusy, openUrl)
     }
 }

@@ -179,6 +179,7 @@ internal class SessionWebActivity : NativeActivity() {
     override fun onResume() {
         super.onResume()
         refreshHostUi()
+        ApkUpdater.resumePendingInstall(this)
     }
 
     private fun isOnline() = connectivity?.activeNetwork != null

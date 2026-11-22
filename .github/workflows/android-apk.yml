@@ -38,3 +38,23 @@ jobs:
           name: codexhost-android-debug
           path: apps/android-shell/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - name: Build signed release APK
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYSTORE_FILE="${RUNNER_TEMP}/codexhost-release.jks"
+          trap 'rm -f "$KEYSTORE_FILE"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+          ANDROID_KEYSTORE_FILE="$KEYSTORE_FILE" ./gradlew assembleRelease
+      - name: Upload signed release APK
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: codexhost-android-release
+          path: apps/android-shell/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error

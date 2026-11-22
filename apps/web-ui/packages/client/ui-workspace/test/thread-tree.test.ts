@@ -15,7 +15,7 @@ import {
   reconcileManualOrder,
   type SessionRowState,
 } from "../src/client/tree.ts";
-import { threadTreeOrderSource } from "../src/client/thread-tree-order.ts";
+import { threadTreeOrderSource, workspaceTreeMembers } from "../src/client/thread-tree-order.ts";
 import {
   isLocalThreadTreeMember,
   runningSubagentsInThreadSubtree,
@@ -173,6 +173,37 @@ it("pins a whole subtree once, outside ordinary workspace and flat roots", () =>
     groups[0]?.sessions.map((node) => node.id),
     ["other"],
   );
+});
+
+it("also shows a tree, once, in the Workspace of a child whose root lives elsewhere", () => {
+  const list = catalog(
+    row("root", null, 1),
+    row("child", "root", 5),
+    row("grandchild", "child", 6),
+    row("other", null, 2),
+  );
+  const order = threadTreeOrderSource(list, state);
+  const own = workspaceTreeMembers([id("root")], order);
+  const elsewhere = workspaceTreeMembers([id("child"), id("grandchild"), id("other")], order);
+  assert.deepEqual(own.memberIds, ["root"]);
+  assert.equal(own.linkedRootIds.size, 0);
+  assert.deepEqual(elsewhere.memberIds, ["root", "other"]);
+  assert.deepEqual([...elsewhere.linkedRootIds], ["root"]);
+  // A tree that stays in one Workspace keeps its single root row there.
+  assert.deepEqual(workspaceTreeMembers([id("root"), id("child")], order).memberIds, ["root"]);
+  const groups = deriveGroups(
+    list,
+    [workspace("x", ...own.memberIds), workspace("y", ...elsewhere.memberIds)],
+    state,
+    new Map(),
+    { expandedGroups: ["x", "y"] },
+  );
+  assert.deepEqual(
+    groups[1]?.sessions.map((node) => node.id),
+    ["root", "other"],
+  );
+  for (const group of groups.slice(0, 2))
+    assert.deepEqual(group.sessions[0]?.tree?.descendantIds, ["child", "grandchild"]);
 });
 
 it("uses subtree recency for roots but own recency for children, and reconciles only root manual slots", () => {

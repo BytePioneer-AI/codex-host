@@ -67,7 +67,13 @@ export function navigateSidebar(event: KeyboardEvent<HTMLDivElement>): void {
       else {
         const parent = row.dataset.threadParent;
         if (parent !== undefined) {
-          const prefix = row.dataset.rowKey?.startsWith("recent:") ? "recent:" : "session:";
+          // A tree's rows share one key prefix: `recent:`, `session:` or `linked:<group>:`.
+          const key = row.dataset.rowKey ?? "";
+          const prefix = key.startsWith("linked:")
+            ? key.slice(0, key.indexOf(":", "linked:".length) + 1)
+            : key.startsWith("recent:")
+              ? "recent:"
+              : "session:";
           next = rows.find((candidate) => candidate.dataset.rowKey === `${prefix}${parent}`);
           break;
         }

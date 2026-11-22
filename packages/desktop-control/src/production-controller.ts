@@ -1,9 +1,12 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { openRendererLocalPage } from "./renderer-local-page.js";
-import { listCdpTargets } from "./cdp-client.js";
+import { CdpConnectionClosedError, listCdpTargets } from "./cdp-client.js";
 import { remoteConnectionsExpression } from "./remote-connections-control.js";
-import { remoteConnectionsReplySchema } from "@codexhost/shared-contracts";
+import {
+  REMOTE_THREAD_CONTROL_TIMEOUT_MS,
+  remoteConnectionsReplySchema,
+} from "@codexhost/shared-contracts";
 
 import {
   startControllerAttachmentServer,
@@ -13,12 +16,14 @@ import {
 import {
   createControllerStatusPublisher,
   createRendererStatusReporter,
+  defaultControllerStatusPath,
   type DesktopControllerStatusDocument,
 } from "./controller-status.js";
 import {
   installRendererCdpControlSession,
   type RendererCdpControlSession,
 } from "./renderer-cdp-control-session.js";
+import { RendererDesktopExtensions } from "./renderer-desktop-extensions.js";
 
 export interface DesktopControllerOptions {
   rendererCdpEndpoint: string;
@@ -41,6 +46,7 @@ export interface DesktopControllerDependencies {
     enabledAgents?: readonly string[];
     timeoutMs: number;
     signal?: AbortSignal;
+    desktopExtensions?: RendererDesktopExtensions;
   }): Promise<RendererCdpControlSession>;
   startAttachmentServer(
     options: StartControllerAttachmentServerOptions,
@@ -61,6 +67,23 @@ const TRANSIENT_INSTALL_ATTEMPTS = 3;
 const TRANSIENT_INSTALL_RETRY_MS = 250;
 const RECOVERY_RETRY_INITIAL_MS = 30_000;
 const RECOVERY_RETRY_MAX_MS = 300_000;
+const REMOTE_CONNECTION_RECOVERY_INTERVAL_MS = 5_000;
+// Below `npm stop`'s 10s exit bound, so a stuck Renderer evaluation cannot hold the controller.
+const SHUTDOWN_OPERATION_WAIT_MS = 3_000;
+
+async function settleWithin(promise: Promise<unknown>, milliseconds: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, milliseconds);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const startupTraceStartedAt = Date.now();
 
 function startupTrace(stage: string, detail?: unknown): void {
@@ -185,6 +208,7 @@ export function parseDesktopControllerArguments(
 function isTransientRendererInstallError(error: unknown): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 4; depth += 1) {
+    if (current instanceof CdpConnectionClosedError) return true;
     const message = current instanceof Error ? current.message : String(current);
     if (
       message.includes("Execution context was destroyed") ||
@@ -219,8 +243,18 @@ export async function runDesktopController(
   options: DesktopControllerOptions,
   signal: AbortSignal,
   dependencies: DesktopControllerDependencies = defaultDependencies,
+  lifecycle?: StartControllerAttachmentServerOptions["lifecycle"],
 ): Promise<void> {
   const now = dependencies.now ?? Date.now;
+  const desktopExtensions =
+    dependencies === defaultDependencies
+      ? new RendererDesktopExtensions(
+          path.dirname(path.dirname(defaultControllerStatusPath())),
+          (error) => {
+            process.stderr.write(`codexhost Desktop extensions: ${String(error)}\n`);
+          },
+        )
+      : undefined;
   let session: RendererCdpControlSession | undefined;
   let nextRecoveryAt = 0;
   let recoveryDelayMs = RECOVERY_RETRY_INITIAL_MS;
@@ -251,6 +285,7 @@ export async function runDesktopController(
         // External Agents are discovered from each target Host after installation.
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
         signal,
+        ...(desktopExtensions ? { desktopExtensions } : {}),
       },
       dependencies,
     );
@@ -267,6 +302,25 @@ export async function runDesktopController(
       () => undefined,
     );
     return next;
+  };
+  let remoteRecovery: Promise<unknown> | undefined;
+  let nextRemoteRecoveryAt = 0;
+  const restoreRemoteConnections = (current: RendererCdpControlSession): void => {
+    if (signal.aborted || remoteRecovery || now() < nextRemoteRecoveryAt) return;
+    nextRemoteRecoveryAt = now() + REMOTE_CONNECTION_RECOVERY_INTERVAL_MS;
+    // Share the hosts recovery policy with Web; native SSH work must not block monitoring.
+    remoteRecovery = Promise.resolve()
+      .then(() => {
+        if (!signal.aborted && session === current)
+          return current.executeRenderer(
+            remoteConnectionsExpression({ action: "session", operation: { kind: "hosts" } }),
+          );
+        return undefined;
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        remoteRecovery = undefined;
+      });
   };
   const resetSession = (): void => {
     session?.close();
@@ -295,12 +349,18 @@ export async function runDesktopController(
     attachmentServer = await dependencies.startAttachmentServer({
       port: options.attachmentPort,
       nonce: options.attachmentNonce,
+      ...(lifecycle ? { lifecycle } : {}),
       remoteConnections: async (request) => {
         // Serialize session recovery, not the native request: the renderer can await Host
         // responses while other settings reads run. Never retry a submitted mutation.
         const current = await useSession(() => recoverSession());
         return remoteConnectionsReplySchema.parse(
-          await current.executeRenderer(remoteConnectionsExpression(request)),
+          await current.executeRenderer(
+            remoteConnectionsExpression(request),
+            request.action === "read-thread" || request.action === "session"
+              ? REMOTE_THREAD_CONTROL_TIMEOUT_MS
+              : 30_000,
+          ),
         );
       },
       openLocalPage: (url) =>
@@ -328,6 +388,7 @@ export async function runDesktopController(
       try {
         session = await createSession();
         recordRecoverySuccess();
+        restoreRemoteConnections(session);
       } catch (error) {
         startupTrace("initial Renderer Session unavailable", error);
         session = undefined;
@@ -340,15 +401,19 @@ export async function runDesktopController(
       await useSession(async () => {
         if (!session && now() < nextRecoveryAt) return;
         try {
-          await recoverSession();
+          restoreRemoteConnections(await recoverSession());
         } catch {
           // Renderer integration remains unavailable until a later bounded retry succeeds.
         }
       });
     }
   } finally {
+    desktopExtensions?.close();
     await attachmentServer?.close();
-    await operation;
+    // Closing the session below releases an evaluation still waiting on the Renderer.
+    await settleWithin(operation, SHUTDOWN_OPERATION_WAIT_MS);
     resetSession();
+    // An operation that outlives the wait may still open a session; close it once it settles.
+    void operation.then(resetSession);
   }
 }

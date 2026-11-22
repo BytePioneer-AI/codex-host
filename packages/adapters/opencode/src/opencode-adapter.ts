@@ -13,6 +13,7 @@ import type {
 } from "@opencode-ai/sdk/v2";
 
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
@@ -55,6 +56,8 @@ import {
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
@@ -85,6 +88,7 @@ import {
   encodeOpenCodeModelRef,
   encodeOpenCodeVariant,
   normalizeOpenCodeModelCatalog,
+  type OpenCodeModelCatalogSnapshot,
   type OpenCodeNativeModelRef,
   type OpenCodeProviderCatalog,
 } from "./model-catalog.js";
@@ -236,13 +240,13 @@ function sameCwd(left: string, right: string): boolean {
 
 function sessionState(
   session: Session,
-  modelCatalog: ReturnType<typeof normalizeOpenCodeModelCatalog>,
+  { catalog: modelCatalog, index }: OpenCodeModelCatalogSnapshot,
   model?: OpenCodeNativeModelRef,
   variant?: string,
   executionPolicy: OpenCodeExecutionPolicy = "default",
   permissionModeId: HarnessPermissionModeId = OPENCODE_DEFAULT_PERMISSION_MODE_ID,
 ): HarnessSessionState {
-  const effectiveModel = model ? encodeOpenCodeModelRef(model) : undefined;
+  const effectiveModel = model ? encodeOpenCodeModelRef(model, index) : undefined;
   const modelEntry = effectiveModel
     ? modelCatalog.models.find(({ ref }) => ref.id === effectiveModel.id)
     : undefined;
@@ -365,10 +369,10 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     this.initialState = this.#state;
     this.#usage = input.projection.usage;
     this.initialUsage = this.#usage;
-    const thinkingSelectable = this.#modelCatalog.thinkingOptions.length > 1;
+    const thinkingSelectable = this.#modelCatalog.catalog.thinkingOptions.length > 1;
     this.capabilities = {
       configuration: {
-        selectModel: this.#modelCatalog.models.length > 0,
+        selectModel: this.#modelCatalog.catalog.models.length > 0,
         selectThinkingOption: thinkingSelectable,
         selectPermissionMode: true,
         permissionModeScope: "live",
@@ -413,6 +417,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         this.#session.id,
         this.#providerCatalog,
         this.#toolOutputLimit,
+        this.#modelCatalog.index,
       );
       this.#applyProjection(projection);
       return { ok: true, value: { ...this.#snapshot, state: this.#state } };
@@ -422,6 +427,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -434,6 +440,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -444,6 +451,9 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("OpenCode Session is not open") };
     }
+    // Busy prompt_async is undocumented, and the live user-message binding drops the reply
+    // that follows an inserted message. This Session does not declare native steer.
+    if (command.type === "turn.steer") return unsupportedSteer("OpenCode");
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
@@ -668,20 +678,9 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     }
     let native: OpenCodeNativeModelRef;
     try {
-      native = decodeOpenCodeModelRef(command.model);
+      native = decodeOpenCodeModelRef(command.model, this.#modelCatalog.index);
     } catch (error) {
       return { ok: false, error: normalizeError(error, "invalidRequest") };
-    }
-    const entry = this.#modelCatalog.models.find(({ ref }) => ref.id === command.model.id);
-    if (!entry) {
-      return {
-        ok: false,
-        error: {
-          code: "invalidRequest",
-          message: "OpenCode Model is absent from the current catalog",
-          retryable: false,
-        },
-      };
     }
     this.#configuring = true;
     try {
@@ -716,9 +715,11 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         },
       };
     }
-    const modelRef = this.#model ? encodeOpenCodeModelRef(this.#model) : undefined;
+    const modelRef = this.#model
+      ? encodeOpenCodeModelRef(this.#model, this.#modelCatalog.index)
+      : undefined;
     const model = modelRef
-      ? this.#modelCatalog.models.find(({ ref }) => ref.id === modelRef.id)
+      ? this.#modelCatalog.catalog.models.find(({ ref }) => ref.id === modelRef.id)
       : undefined;
     if (!model?.supportedThinkingOptionIds?.includes(command.thinkingOptionId)) {
       return {
@@ -1381,6 +1382,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         this.#session.id,
         this.#providerCatalog,
         this.#toolOutputLimit,
+        this.#modelCatalog.index,
       );
       this.#applyProjection(projection, observedForTurnId);
     } catch {
@@ -1531,14 +1533,18 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   }
 }
 
+type OpenCodeInspection =
+  | (Extract<HarnessInspection, { status: "ready" }> & OpenCodeModelCatalogSnapshot)
+  | Exclude<HarnessInspection, { status: "ready" }>;
+
 export class OpenCodeAdapter implements HarnessAdapter {
   readonly commandCatalog = openCodeCommandCatalog;
   readonly harnessId: HarnessId = openCodeHarnessId;
   readonly #closeTimeoutMs: number;
   readonly #createConnection: OpenCodeAdapterDependencies["createConnection"];
   readonly #createTransport: OpenCodeAdapterDependencies["createTransport"];
-  readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
-  readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
+  readonly #inspectionCache = new Map<string, Extract<OpenCodeInspection, { status: "ready" }>>();
+  readonly #inspectionInFlight = new Map<string, Promise<OpenCodeInspection>>();
   readonly #options: OpenCodeServerOptions;
   readonly #sessions = new Set<OpenCodeHarnessSession>();
   readonly #toolOutputLimit: number;
@@ -1559,7 +1565,18 @@ export class OpenCodeAdapter implements HarnessAdapter {
     this.#closeTimeoutMs = options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
   }
 
-  async inspect(input: { cwd?: string; refresh?: boolean } = {}): Promise<HarnessInspection> {
+  async inspect(
+    input: { cwd?: string; refresh?: boolean } = {},
+    onModels?: (models: OpenCodeModelCatalogSnapshot) => void,
+  ): Promise<HarnessInspection> {
+    const result = await this.#inspect(input);
+    if (result.status !== "ready") return result;
+    const { index, ...inspection } = result;
+    onModels?.({ catalog: result.catalog, index });
+    return inspection;
+  }
+
+  async #inspect(input: { cwd?: string; refresh?: boolean }): Promise<OpenCodeInspection> {
     if (this.#closePromise) {
       return {
         status: "unavailable",
@@ -1568,13 +1585,17 @@ export class OpenCodeAdapter implements HarnessAdapter {
     }
     const cwd = input.cwd ?? process.cwd();
     const inFlight = this.#inspectionInFlight.get(cwd);
-    if (inFlight) return inFlight;
-    if (!input.refresh) {
-      const cached = this.#inspectionCache.get(cwd);
-      if (cached) return cached;
+    if (input.refresh) {
+      this.#inspectionCache.clear();
+      this.#inspectionInFlight.clear();
+      if (inFlight) this.#inspectionInFlight.set(cwd, inFlight);
     }
+    if (inFlight) return inFlight;
+    const cached = this.#inspectionCache.get(cwd);
+    if (cached) return cached;
     const inspection = this.#inspectCwd(cwd).then((result) => {
-      if (result.status === "ready") this.#inspectionCache.set(cwd, result);
+      if (result.status === "ready" && this.#inspectionInFlight.get(cwd) === inspection)
+        this.#inspectionCache.set(cwd, result);
       return result;
     });
     this.#inspectionInFlight.set(cwd, inspection);
@@ -1583,7 +1604,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
     });
   }
 
-  async #inspectCwd(cwd: string): Promise<HarnessInspection> {
+  async #inspectCwd(cwd: string): Promise<OpenCodeInspection> {
     const startedAt = Date.now();
     let stage = "startup";
     const connection = this.#createConnection(this.#options);
@@ -1595,10 +1616,11 @@ export class OpenCodeAdapter implements HarnessAdapter {
       }
       stage = "model-catalog";
       const providers = await transport.providers();
-      const catalog = normalizeOpenCodeModelCatalog(providers);
+      const { catalog, index } = normalizeOpenCodeModelCatalog(providers);
       return {
         status: "ready",
         catalog,
+        index,
         capabilities: {
           configuration: {
             selectModel: catalog.models.length > 0,
@@ -1700,16 +1722,12 @@ export class OpenCodeAdapter implements HarnessAdapter {
       const modelCatalog = normalizeOpenCodeModelCatalog(providers);
       let session: Session;
       if (input.kind === "create") {
-        const model = input.model ? decodeOpenCodeModelRef(input.model) : undefined;
+        const model = input.model
+          ? decodeOpenCodeModelRef(input.model, modelCatalog.index)
+          : undefined;
         const variant = input.thinkingOptionId
           ? decodeOpenCodeVariant(input.thinkingOptionId)
           : undefined;
-        if (input.model && !modelCatalog.models.some(({ ref }) => ref.id === input.model?.id)) {
-          throw new OpenCodeTransportError(
-            "protocolError",
-            "Requested OpenCode Model is absent from the connected Provider catalog",
-          );
-        }
         const permission =
           requestedPermissionMode && requestedPermissionMode !== "default"
             ? requestedPermissionRules(undefined, requestedPermissionMode)
@@ -1759,6 +1777,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
             source,
             input,
             providers,
+            modelIndex: modelCatalog.index,
             toolOutputLimit: this.#toolOutputLimit,
             onCreated: (candidate) => {
               createdForCleanup = candidate;
@@ -1771,6 +1790,7 @@ export class OpenCodeAdapter implements HarnessAdapter {
         session.id,
         providers,
         this.#toolOutputLimit,
+        modelCatalog.index,
       );
       const harnessSession = new OpenCodeHarnessSession({
         transport,

@@ -13,6 +13,9 @@ export type {
 } from "./harness-plugin-loader.js";
 export { HarnessPluginRegistry } from "./harness-plugin-registry.js";
 export { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
+export { ClientChannelEvents } from "./client-channel-events.js";
+export { startClientChannelServer } from "./client-channel-server.js";
+export type { ClientChannelTarget } from "./client-channel-server.js";
 export {
   AppServerHost,
   classifyCreateRequestRoute,
@@ -48,14 +51,18 @@ export {
 } from "./delegation-types.js";
 export type {
   DelegationControlApi,
+  DelegationPendingQuestion,
   DelegationStartInput,
   DelegationStartResult,
   DelegationThreadListResult,
   DelegationThreadSnapshot,
+  ThreadAnswerInput,
+  ThreadAnswerResult,
   ThreadListInput,
   ThreadReadInput,
   ThreadWaitInput,
 } from "./delegation-types.js";
+export type { ThreadExportInput, ThreadExportResult } from "./delegation-thread-export.js";
 export { hasLauncherManagedUpdateRuntime, runHostRuntime } from "./run-host-runtime.js";
 export { runClaudeAquaHarnessBroker } from "./aqua-harness-broker.js";
 export {
@@ -93,6 +100,7 @@ export type {
   RemoteHostStatus,
 } from "./remote-host-lifecycle.js";
 export { createHostUpdateCoordinator } from "./update-coordinator.js";
+export { HostExtensionManager } from "./host-extension-manager.js";
 export type {
   CreateHostUpdateCoordinatorOptions,
   HostUpdateCoordinator,

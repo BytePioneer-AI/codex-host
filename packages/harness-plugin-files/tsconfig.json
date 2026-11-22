@@ -4,6 +4,7 @@
     "composite": true,
     "types": ["node"],
     "rootDir": "src",
+    "resolveJsonModule": true,
     "outDir": "dist",
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },

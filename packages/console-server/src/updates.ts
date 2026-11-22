@@ -1,4 +1,5 @@
 import path from "node:path";
+import { dataDirectory } from "./paths.js";
 
 import type {
   UpdateCheckResult,
@@ -13,6 +14,7 @@ import {
   createBackgroundUpdateManager,
   defaultUpdateStateDirectory,
   discoverActiveUpdateStatus,
+  discoverRecentCompletedUpdateStatus,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
   recoverUpdateOperationLock,
@@ -46,6 +48,8 @@ export interface ConsoleUpdateTarget {
   /** Launcher runtime descriptor path from `inspect --json`. */
   runtimeDescriptorPath: string | null;
   codexhostRunning: boolean;
+  dataDirectory?: string;
+  restartTarget?: "desktop" | "web";
 }
 
 export interface ConsoleUpdates {
@@ -83,6 +87,9 @@ function publicStatus(status: BackgroundUpdateStatus): UpdateStatus {
     ...(status.downloadedBytes === undefined ? {} : { downloadedBytes: status.downloadedBytes }),
     ...(status.totalBytes === undefined ? {} : { totalBytes: status.totalBytes }),
     error: status.error?.slice(0, ERROR_MAX_LENGTH) ?? null,
+    ...(status.serviceStopOutput === undefined
+      ? {}
+      : { serviceStopOutput: status.serviceStopOutput }),
   };
 }
 
@@ -132,7 +139,10 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
   async function latestStatus(): Promise<UpdateStatus | null> {
     if (!currentStatusPath) {
       const active = await discoverActiveUpdateStatus(stateDirectory());
-      if (!active) return null;
+      if (!active) {
+        const completed = await discoverRecentCompletedUpdateStatus(stateDirectory());
+        return completed ? publicStatus(completed.status) : null;
+      }
       currentStatusPath = active.statusPath;
     }
     const status = await manager.readStatus(currentStatusPath);
@@ -169,6 +179,8 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         platform === "win32" ? "codexhost-updater.exe" : "codexhost-updater",
       ),
       stateDirectory: stateDirectory(),
+      dataDirectory: target.dataDirectory ?? dataDirectory(environment),
+      restartTarget: target.restartTarget ?? "desktop",
       onPrepared,
     };
     const kind = installationKind(metadata);
@@ -306,7 +318,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
             // The console runs outside the Codex Desktop process tree on every
             // platform, so it starts the Updater itself and then exits so the
             // Updater's wait on this process completes.
-            await manager.start(prepared);
+            await manager.start(prepared, (pid) => lock.transferTo(pid));
             handedOff = true;
             options.onHandedOff();
           } catch (error) {

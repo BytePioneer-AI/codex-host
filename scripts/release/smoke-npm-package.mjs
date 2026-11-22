@@ -83,7 +83,13 @@ export async function smokeNpmPackage({ targetName, version, workDirectory }) {
       throw new Error(`installed package cpu is invalid: ${JSON.stringify(manifest.cpu)}`);
     }
     if (process.platform !== "win32") {
-      for (const relative of executablePaths) {
+      const executables = [
+        ...executablePaths,
+        ...(target.hostPlatform === "darwin"
+          ? [`app/web-modules/node_modules/node-pty/prebuilds/darwin-${architecture}/spawn-helper`]
+          : []),
+      ];
+      for (const relative of executables) {
         const mode = (await stat(path.join(packageRoot, relative))).mode & 0o777;
         if ((mode & 0o111) === 0) throw new Error(`${relative} is not executable`);
       }

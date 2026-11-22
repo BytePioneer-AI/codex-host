@@ -1,0 +1,33 @@
+.host {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+.loading {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.error {
+  padding: 16px 0;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+@media (max-width: 640px) {
+  .host {
+    overflow-x: clip;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .error {
+    padding: 14px;
+    border: 0.5px solid var(--dsw-alias-border-l2);
+    border-radius: 16px;
+    background: var(--dsw-alias-bg-layer-2);
+  }
+}

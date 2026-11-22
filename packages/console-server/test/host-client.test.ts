@@ -10,11 +10,16 @@ import { createConsoleHostClient, findHost } from "../src/host-client.js";
 
 let directory: string;
 
-async function descriptor(pid: number, port: number, startedAt: number): Promise<string> {
+async function descriptor(
+  pid: number,
+  port: number,
+  startedAt: number,
+  runtimePath?: string,
+): Promise<string> {
   const token = String(pid % 10).repeat(64);
   await writeFile(
     path.join(directory, `host-${pid}.json`),
-    JSON.stringify({ schemaVersion: 1, pid, port, token, startedAt }),
+    JSON.stringify({ schemaVersion: 1, pid, port, token, startedAt, runtimePath }),
   );
   return token;
 }
@@ -29,6 +34,49 @@ afterEach(async () => {
 });
 
 describe("console Host client", () => {
+  it.each(["matching", "other", "unknown"])(
+    "checks the %s installation before forwarding updates",
+    async (kind) => {
+      const appDirectory = path.join(directory, "app");
+      const other = path.join(directory, "other-app");
+      await Promise.all([mkdir(appDirectory), mkdir(other)]);
+      let requests = 0;
+      const server = createServer((_request, response) => {
+        requests++;
+        response.end(JSON.stringify({ result: { status: null } }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        await descriptor(
+          14,
+          (server.address() as AddressInfo).port,
+          1,
+          kind === "unknown"
+            ? undefined
+            : path.join(kind === "matching" ? appDirectory : other, "host-runtime.mjs"),
+        );
+        const client = createConsoleHostClient(directory, {
+          isAlive: () => true,
+          updateAppDirectory: appDirectory,
+        });
+        if (kind === "matching") {
+          await expect(client.request("codexhost/update/status", {})).resolves.toEqual({
+            result: { status: null },
+          });
+          expect(requests).toBe(1);
+        } else {
+          await expect(client.request("codexhost/update/start", {})).rejects.toThrow(
+            kind === "other"
+              ? "different codexhost installation"
+              : "does not identify its installation",
+          );
+          expect(requests).toBe(0);
+        }
+      } finally {
+        server.close();
+      }
+    },
+  );
   it("picks the newest live Host and removes descriptors of exited Hosts", async () => {
     await descriptor(11, 1001, 1);
     await descriptor(12, 1002, 3);

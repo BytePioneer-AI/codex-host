@@ -1,0 +1,26 @@
+{
+  "manifestVersion": 1,
+  "id": "copilot",
+  "name": "GitHub Copilot",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "links": {
+    "website": "https://github.com/features/copilot",
+    "documentation": "https://docs.github.com/en/copilot/get-started/cli-quickstart",
+    "installation": "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli"
+  },
+  "installation": {
+    "commands": [
+      {
+        "terminal": "npm · macOS / Linux / Windows",
+        "command": "npm install -g @github/copilot"
+      }
+    ],
+    "after": {
+      "en": "Run copilot; use /login only if authentication is unavailable. Existing native authentication on the target Host can be reused. CODEXHOST_COPILOT_COMMAND selects an existing CLI installation. Windows npm launchers resolve to that installation's actual JavaScript or executable entrypoint; arbitrary shell wrappers are not supported.",
+      "zh-CN": "运行 copilot；若缺少认证，再使用 /login。可复用目标 Host 已有的原生登录；CODEXHOST_COPILOT_COMMAND 可指定已有 CLI 安装。Windows npm 启动器会解析到同一安装的实际 JavaScript 或可执行入口，不支持任意 shell 包装脚本。"
+    }
+  },
+  "icon": "./assets/icon.png"
+}

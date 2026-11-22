@@ -10,6 +10,10 @@ export type ExternalRendererAgent = string;
 export const DEFAULT_RENDERER_AGENTS: readonly RendererAgent[] = ["codex"];
 export type RendererAgentAvailability =
   "checking" | "ready" | "notInstalled" | "unavailable" | "error";
+export type PickerAgentAvailability = RendererAgentAvailability | "credentialAccessRequired";
+export function isPickerAgentSelectable(status?: PickerAgentAvailability): boolean {
+  return status === "ready" || status === "credentialAccessRequired";
+}
 export type ComposerAgentPhase = "draft" | "locked";
 
 interface AgentConfiguration {
@@ -122,8 +126,11 @@ export class DraftAgentController<Composer extends object> {
   invalidateModelRequests(composer: Composer): void {
     this.beginModelRequest(composer);
   }
+  modelRequestGeneration(composer: Composer): number {
+    return this.#modelRequestGenerations.get(this.#state(composer)) ?? 0;
+  }
   isCurrentModelRequest(composer: Composer, generation: number): boolean {
-    return (this.#modelRequestGenerations.get(this.#state(composer)) ?? 0) === generation;
+    return this.modelRequestGeneration(composer) === generation;
   }
   beginOwnershipRequest(composer: Composer): number {
     const generation = ++this.#ownershipRequestSequence;
@@ -253,9 +260,10 @@ export class DraftAgentController<Composer extends object> {
   clearPendingSubmission(composer: Composer): void {
     this.#pendingSubmissions.delete(this.#state(composer));
   }
+  /** Only a draft's submission creates a Thread, so only it sets the next new-Thread Agent. */
   recordSubmission(composer: Composer): Readonly<DraftComposerState> {
     const state = this.#state(composer);
-    this.#lastSubmittedAgent = state.agent;
+    if (state.phase === "draft") this.#lastSubmittedAgent = state.agent;
     return state;
   }
   transfer(

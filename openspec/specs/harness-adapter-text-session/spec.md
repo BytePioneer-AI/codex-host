@@ -185,3 +185,45 @@ A concrete Adapter SHALL publish a Native Session Ref only when the native Harne
 - **WHEN** 具体 Harness 不提供可靠的 Usage Telemetry
 - **THEN** 其 Session MUST 将 `initialUsage` 暴露为 `null`，并且不发出 Usage 快照
 - **AND** 所有现有文本、cancel、state、fault 和 close 行为 MUST 保持不变
+
+### Requirement: Pi and OMP admit native steering only into the current Turn
+
+Pi and OMP SHALL advertise native steering only while their current Turn has an unfinished root Tool and is not cancelling, compacting, or settling. They SHALL recheck the target and admission window before submission. Acceptance SHALL confirm current-Turn delivery, not merely native queue admission. Completed history SHALL bind the original prompt and account for accepted steers without manufacturing a new Host Turn.
+
+#### Scenario: Input is accepted at a Tool boundary
+
+- **WHEN** steering is accepted while an unfinished root Tool keeps the current Turn open
+- **THEN** the Tool continues without cancellation and the input belongs to that Host Turn
+- **AND** history settlement waits for in-flight steering receipts and counts each accepted input once
+
+#### Scenario: The current Turn cannot accept input
+
+- **WHEN** the target changed, the admission window closed before writing, or the native Harness explicitly refused the input
+- **THEN** the Adapter reports that the input was not taken
+- **AND** the Host may use its existing stop-and-start path unless the client already selected active-Turn delivery
+
+### Requirement: Late Pi queue admission preserves the completed Turn
+
+If Pi confirms queue admission only after the target execution ended, the Adapter SHALL report an unknown delivery outcome, retain the original Turn's native history and outcome, and close only that Thread's Pi process before recovery. It SHALL NOT count the input as accepted, replay it, or claim to undo input-hook side effects. The same Native Session SHALL remain recoverable for later explicit input.
+
+#### Scenario: An asynchronous input hook outlives the execution
+
+- **WHEN** the original execution settles before the input hook produces a queue receipt
+- **THEN** the original Turn completes from its native history before the Session faults
+- **AND** recovery does not run the leftover queued input as a later Turn
+
+### Requirement: Unknown steering outcomes cannot trigger automatic replay
+
+The Host SHALL retain unknown steering outcomes in its bounded message-identity receipts, so a retry with the same Thread, identity, target and input returns that outcome without resubmission. Explicitly rejected input MAY release its identity for retry. Queued input with an unknown outcome SHALL remain visible but ineligible for automatic advancement, including after another queued input is sent explicitly; the user may explicitly send or remove it.
+
+#### Scenario: A steering receipt is lost
+
+- **WHEN** a native steering call may have accepted input but its outcome is unknown
+- **THEN** retrying the same message identity does not invoke the native insertion or a replacement Turn again
+- **AND** the Host does not claim exactly-once delivery across receipt eviction or Host restart
+
+#### Scenario: A later explicit queue send resumes the queue
+
+- **WHEN** input A has an unknown steering outcome and the user explicitly starts queued input B
+- **THEN** completing B does not automatically start A
+- **AND** A can still be sent or removed explicitly by the user

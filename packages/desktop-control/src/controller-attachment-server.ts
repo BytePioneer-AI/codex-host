@@ -2,13 +2,16 @@ import { createServer, type Server, type Socket } from "node:net";
 import {
   REMOTE_THREAD_REPLY_MAX_BYTES,
   REMOTE_THREAD_CONTROL_TIMEOUT_MS,
+  REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
   remoteConnectionsRequestSchema,
   type RemoteConnectionsRequest,
   type RemoteConnectionsReply,
 } from "@codexhost/shared-contracts";
 import { isLocalPageUrl, serveLocalPage, type LocalPageHandle } from "./local-page-control.js";
 
-const MAX_REQUEST_BYTES = 16 * 1024;
+import type { ControllerLifecycle } from "./controller-lifecycle.js";
+
+const MAX_REQUEST_BYTES = REMOTE_CONTROLLER_REQUEST_MAX_BYTES;
 
 export interface ControllerAttachmentServer {
   close(): Promise<void>;
@@ -18,6 +21,7 @@ export interface StartControllerAttachmentServerOptions {
   port: number;
   nonce: string;
   attach(): Promise<void>;
+  lifecycle?: ControllerLifecycle;
   openLocalPage?(url: string): Promise<LocalPageHandle>;
   remoteConnections?(request: RemoteConnectionsRequest): Promise<RemoteConnectionsReply>;
 }
@@ -74,6 +78,11 @@ export async function startControllerAttachmentServer(
       if (newline < 0) return;
       handled = true;
       const line = request.slice(0, newline).replace(/\r$/, "");
+      if (options.lifecycle && line.startsWith("LIFECYCLE ")) {
+        socket.off("data", receive);
+        options.lifecycle(socket, line, request.slice(newline + 1));
+        return;
+      }
       const remotePrefix = `REMOTE ${options.nonce} `;
       if (options.remoteConnections && line.startsWith(remotePrefix)) {
         let input;
@@ -88,7 +97,9 @@ export async function startControllerAttachmentServer(
           return;
         }
         socket.setTimeout(
-          input.action === "read-thread" ? REMOTE_THREAD_CONTROL_TIMEOUT_MS : 30_000,
+          input.action === "read-thread" || input.action === "session"
+            ? REMOTE_THREAD_CONTROL_TIMEOUT_MS
+            : 30_000,
           () => socket.destroy(),
         );
         // The operation is not retried on connection loss: mutations may already have applied.
@@ -99,7 +110,7 @@ export async function startControllerAttachmentServer(
             (reply) => {
               const serialized = JSON.stringify(reply) + "\n";
               if (
-                input.action === "read-thread" &&
+                (input.action === "read-thread" || input.action === "session") &&
                 Buffer.byteLength(serialized) > REMOTE_THREAD_REPLY_MAX_BYTES
               ) {
                 socket.end(
@@ -107,7 +118,9 @@ export async function startControllerAttachmentServer(
                     error: {
                       code: -32094,
                       message:
-                        "Thread snapshot exceeds the 16 MiB response limit; reduce the message page size. Oversized individual results are not supported.",
+                        input.action === "session"
+                          ? "Remote history reply exceeds the 16 MiB limit; update codexhost on this computer to use paged history, or open this chat in Codex Desktop."
+                          : "Thread snapshot exceeds the 16 MiB response limit; reduce the message page size. Oversized individual results are not supported.",
                     },
                   }) + "\n",
                 );

@@ -10,12 +10,15 @@ import {
   hostThreadIdSchema,
   nativeSessionRefSchema,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   aggregateThreadList,
   officialThreadListPageFromResponse,
 } from "../src/thread-list-aggregator.js";
+import { ThreadListTiming } from "../src/thread-list-timing.js";
+
+afterEach(() => vi.unstubAllEnvs());
 
 const harnessId = harnessIdSchema.parse("pi");
 
@@ -151,6 +154,40 @@ describe("aggregated Thread list", () => {
     expect(cursor).toBeNull();
   });
 
+  it("records failed official calls without logging their error payload or masking failures", async () => {
+    vi.stubEnv("CODEXHOST_TRACE_SESSION_LIST", "1");
+    let now = 0;
+    const timing = new ThreadListTiming(() => now);
+    const decoded = query({ limit: 200, archived: true });
+    const failure = new Error("private upstream details");
+    await expect(
+      aggregateThreadList({
+        query: decoded,
+        records: [],
+        runtimeFor: () => null,
+        timing,
+        requestOfficialPage: async () => {
+          now += 12;
+          throw failure;
+        },
+      }),
+    ).rejects.toBe(failure);
+    const lines: string[] = [];
+    timing.report("failed-page", decoded, false, (line) => lines.push(line));
+    expect(JSON.parse(lines[0]?.slice("[thread/list] ".length) ?? "")).toMatchObject({
+      ok: false,
+      archived: true,
+      stages: { official_page: { ms: 12, calls: 1, maxMs: 12 } },
+      officialCalls: [{ kind: "page", ms: 12, rows: 0, ok: false }],
+    });
+    expect(lines[0]).not.toContain("private upstream details");
+    expect(() =>
+      timing.report("failed-page", decoded, false, () => {
+        throw new Error("log unavailable");
+      }),
+    ).not.toThrow();
+  });
+
   it("terminates after an empty final official page", async () => {
     const source = officialSource([]);
     const page = await aggregateThreadList({
@@ -165,14 +202,39 @@ describe("aggregated Thread list", () => {
   });
 
   it("re-requests a partially consumed official batch for an exact cursor", async () => {
+    vi.stubEnv("CODEXHOST_TRACE_SESSION_LIST", "1");
     const source = officialSource([official("official-5", 5), official("official-3", 3)]);
     const decoded = query({ limit: 2, sortKey: "created_at", sortDirection: "desc" });
+    let now = 0;
+    const timing = new ThreadListTiming(() => now);
     const page = await aggregateThreadList({
       query: decoded,
       records: [external("external-4", 4)],
       runtimeFor: () => null,
-      requestOfficialPage: source.request,
+      timing,
+      requestOfficialPage: async (params) => {
+        now += params.limit === 2 ? 20 : 7;
+        return source.request(params);
+      },
     });
+    const lines: string[] = [];
+    timing.report("timed-page", decoded, true, (line) => lines.push(line));
+    const log = JSON.parse(lines[0]?.slice("[thread/list] ".length) ?? "");
+    expect(log).toMatchObject({
+      ok: true,
+      totalMs: 27,
+      hasCursor: false,
+      stages: {
+        external: { calls: 1 },
+        official_page: { ms: 20, calls: 1, maxMs: 20 },
+        official_cursor_repair: { ms: 7, calls: 1, maxMs: 7 },
+      },
+      officialCalls: [
+        { kind: "page", limit: 2, hasCursor: false, ms: 20, rows: 2, ok: true },
+        { kind: "cursor_repair", limit: 1, hasCursor: false, ms: 7, rows: 1, ok: true },
+      ],
+    });
+    expect(lines[0]).not.toMatch(/official-5|external-4|workspace/);
     expect(page.data.map((row) => row.id)).toEqual(["official-5", "external-4"]);
     expect(source.calls).toEqual([
       expect.objectContaining({ cursor: null, limit: 2 }),

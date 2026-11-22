@@ -58,6 +58,11 @@ describe("short terminal CI comments", () => {
     expect(body).not.toContain("类型不匹配");
     expect(render(state)).not.toContain("```text");
   });
+  it("labels a failed macOS matrix job with its platform name", () => {
+    const state = ci({ conclusion: "failure" });
+    state.jobs[1].conclusion = "failure";
+    expect(render(state)).toContain("❌ macOS CI 失败。");
+  });
   it("edits only the authenticated bot's own marker, including old summaries", () => {
     expect(isMaintenanceComment(comment({ body: COMMENT_MARKER }))).toBe(false);
     expect(isMaintenanceComment(comment({ body: COMMENT_MARKER, user: bot }))).toBe(true);

@@ -8,10 +8,13 @@ import {
   type HarnessLaunchSettings,
 } from "@codexhost/shared-contracts";
 
+/** The value captured for an Adapter, or why the file could not be read at that moment. */
+type InitialSnapshot = { readonly path: string | null } | { readonly error: Error };
+
 /** Per-plugin files avoid lost updates between independently running Host connections. */
 export class HarnessLaunchSettingsStore {
   readonly #directory: string;
-  readonly #initial = new Map<string, Promise<string | null>>();
+  readonly #initial = new Map<string, Promise<InitialSnapshot>>();
 
   constructor(environment: NodeJS.ProcessEnv) {
     this.#directory = path.join(
@@ -27,37 +30,67 @@ export class HarnessLaunchSettingsStore {
   }
 
   async #read(id: string): Promise<string | null> {
+    const file = this.#file(id);
+    let text: string;
     try {
-      const value = harnessLaunchPathSchema.parse(
-        JSON.parse(await readFile(this.#file(id), "utf8")),
-      );
-      if (!path.isAbsolute(value)) throw new Error("Expected an absolute entrypoint path");
-      return value;
+      text = await readFile(file, "utf8");
     } catch (error) {
       if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
         return null;
-      throw new Error("Could not read Harness launch settings");
+      throw new Error(`Could not read Harness launch settings at ${file}`, { cause: error });
     }
+    let parsed: string | undefined;
+    try {
+      parsed = harnessLaunchPathSchema.parse(JSON.parse(text));
+    } catch {
+      // Reported below with the file path.
+    }
+    if (parsed === undefined || !path.isAbsolute(parsed)) {
+      throw new Error(
+        `Could not read Harness launch settings at ${file}: expected an absolute installation path; save a new path or reset it`,
+      );
+    }
+    return parsed;
   }
 
-  /** Capture the value used to construct this Host's Adapter; changes require a restart. */
-  async initialCommand(id: string): Promise<string | undefined> {
+  #snapshot(id: string): Promise<InitialSnapshot> {
     let initial = this.#initial.get(id);
     if (!initial) {
-      initial = this.#read(id);
+      initial = this.#read(id).then(
+        (value) => ({ path: value }),
+        (error: unknown) => ({ error: error instanceof Error ? error : new Error(String(error)) }),
+      );
       this.#initial.set(id, initial);
     }
-    return (await initial) ?? undefined;
+    return initial;
+  }
+
+  /**
+   * Capture the value used to construct this Host's Adapter; changes require a restart. A failed
+   * read is remembered for restart reporting but not reused: the next call reads the file again.
+   */
+  async initialCommand(id: string): Promise<string | undefined> {
+    const cached = this.#initial.get(id);
+    if (cached && "error" in (await cached)) this.#initial.delete(id);
+    const snapshot = await this.#snapshot(id);
+    if ("error" in snapshot) throw snapshot.error;
+    return snapshot.path ?? undefined;
+  }
+
+  /** The Adapter was built without a readable setting, so any saved value needs a restart. */
+  #restartRequired(snapshot: InitialSnapshot, value: string | null): boolean {
+    return "error" in snapshot || value !== snapshot.path;
   }
 
   async get(id: string): Promise<HarnessLaunchSettings> {
-    const initial = (await this.initialCommand(id)) ?? null;
+    const snapshot = await this.#snapshot(id);
     const value = await this.#read(id);
-    return { path: value, restartRequired: value !== initial };
+    return { path: value, restartRequired: this.#restartRequired(snapshot, value) };
   }
 
+  /** Replaces the file without reading it, so an unreadable file can always be repaired. */
   async set(id: string, value: string | null): Promise<HarnessLaunchSettings> {
-    const initial = (await this.initialCommand(id)) ?? null;
+    const snapshot = await this.#snapshot(id);
     const file = this.#file(id);
     if (value === null) {
       await rm(file, { force: true });
@@ -77,6 +110,6 @@ export class HarnessLaunchSettingsStore {
         await rm(temporary, { force: true });
       }
     }
-    return { path: value, restartRequired: value !== initial };
+    return { path: value, restartRequired: this.#restartRequired(snapshot, value) };
   }
 }

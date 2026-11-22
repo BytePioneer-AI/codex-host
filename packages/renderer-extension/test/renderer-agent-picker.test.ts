@@ -183,6 +183,50 @@ describe("Renderer Agent picker presentation", () => {
     });
   });
 
+  it.each([
+    { name: "power selection owner", expected: true },
+    { name: "missing owner", noOwner: true, expected: false },
+    { name: "missing power callback", props: { onCommitPower: undefined }, expected: false },
+    { name: "invalid power choices", props: { powerSelections: {} }, expected: false },
+    { name: "missing Model callback", props: { onSelectModel: undefined }, expected: false },
+    { name: "missing effort", omitEffort: true, expected: false },
+    { name: "unrelated menu", navigation: "permissions", expected: false },
+    { name: "missing semantic target", navigation: null, expected: false },
+    { name: "non-menu button", menu: false, expected: false },
+    { name: "Host Model control", owned: "data-codexhost-model-control", expected: false },
+    { name: "Host Agent control", owned: "data-codexhost-agent-control", expected: false },
+  ])("identifies a native power Model menu: $name", (testCase) => {
+    const attributes: Record<string, string> = {
+      "data-composer-navigation-target": "reasoning",
+    };
+    if (testCase.navigation === null) delete attributes["data-composer-navigation-target"];
+    else if (testCase.navigation) {
+      attributes["data-composer-navigation-target"] = testCase.navigation;
+    }
+    if (testCase.owned) attributes[testCase.owned] = "fixture";
+    const props: Record<string, unknown> = {
+      onSelectModel: () => undefined,
+      onCommitPower: () => undefined,
+      reasoningEffort: "high",
+      powerSelections: [],
+      ...testCase.props,
+    };
+    if (testCase.omitEffort) delete props.reasoningEffort;
+    const element = {
+      getAttribute: (name: string) => attributes[name] ?? null,
+      hasAttribute: (name: string) => name in attributes,
+      matches: () => testCase.menu !== false,
+    } as unknown as Element;
+    Object.defineProperty(element, "__reactFiber$test", {
+      value: {
+        memoizedProps: {},
+        return: { memoizedProps: testCase.noOwner ? {} : props, return: null },
+      },
+    });
+
+    expect(isNativeModelControlCandidate(element)).toBe(testCase.expected);
+  });
+
   it("recognizes only the native React Model menu as the Model candidate", () => {
     const element = (
       ownAttributes: readonly string[],

@@ -10,8 +10,6 @@ import {
   ANTIGRAVITY_TRANSPORT_MODEL_ID,
   GROK_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_ID,
-  antigravityTransportModelId,
-  claudeTransportModelId,
   decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
@@ -28,18 +26,12 @@ import {
   isDraftPrewarmPolicyReady,
   isMainProcessTitlePolicyReady,
   modelSelectionForAgent,
-  deepSeekHarnessTransportModelId,
-  grokTransportModelId,
   hermesTransportModelId,
-  openCodeTransportModelId,
-  piTransportModelId,
   threadIdFromComposerModelTarget,
 } from "../src/index.js";
 import {
-  OMP_TRANSPORT_MODEL_ID,
   decodeOmpTransportModelId,
   isOmpTransportModelId,
-  ompTransportModelId,
   transitionRendererAdapterStatus,
   installCurrentRendererAdapter,
 } from "../src/versioned-renderer-adapter.js";
@@ -391,8 +383,8 @@ describe("current Codex Renderer Agent adapter", () => {
   });
 
   it.each(["local", "remote-ssh-discovered:mac"])(
-    "installs for %s and only sends resource settings to local",
-    (hostId) => {
+    "installs for %s and reads Host-owned settings without overwriting them",
+    async (hostId) => {
       const requestTarget = {
         hostId,
         sendRequest: vi.fn(),
@@ -408,6 +400,9 @@ describe("current Codex Renderer Agent adapter", () => {
       };
       const listeners = new Map<string, EventListener>();
       const fakeWindow = {
+        get document() {
+          return fakeDocument;
+        },
         __codexhostDraftPrewarmPolicyV1: policy,
         dispatchEvent: vi.fn(),
         addEventListener: vi.fn((type: string, listener: EventListener) => {
@@ -470,17 +465,14 @@ describe("current Codex Renderer Agent adapter", () => {
         },
       });
 
+      const adapter = installCurrentRendererAdapter();
       try {
-        const adapter = installCurrentRendererAdapter();
         expect(adapter.status).toMatchObject({ state: "ready", reason: "ready" });
         expect("__codexhostMainProcessTitlePolicyV1" in fakeWindow).toBe(false);
         if (hostId === "local") {
           expect(requestTarget.sendRequest).toHaveBeenCalledWith(
-            "codexhost/settings/idle-release/set",
-            {
-              enabled: false,
-              timeoutMinutes: 30,
-            },
+            "codexhost/harness/preferences/get",
+            { scope: "external" },
           );
           const localClient = adapter.modelControl?.clientForHost?.("local");
           expect(localClient).toBeTruthy();
@@ -512,7 +504,22 @@ describe("current Codex Renderer Agent adapter", () => {
             "codexhost/harness/display-settings/get",
             {},
           );
-          expect(remoteTarget.sendRequest).not.toHaveBeenCalled();
+          expect(remoteTarget.sendRequest.mock.calls).toEqual([
+            ["codexhost/harness/preferences/get", { scope: "external" }],
+            ["codexhost/harness/preferences/get", { scope: "external" }],
+          ]);
+          fakeWindow.__codexhostDraftPrewarmPolicyV1 = {
+            ...policy,
+            hostId: remoteTarget.hostId,
+            requestTarget: () => remoteTarget,
+          };
+          requestTarget.sendRequest.mockResolvedValueOnce({});
+          await expect(adapter.modelControl?.openWeb?.()).resolves.toEqual({});
+          expect(requestTarget.sendRequest).toHaveBeenLastCalledWith("codexhost/web/open", {});
+          expect(
+            remoteTarget.sendRequest.mock.calls.some(([method]) => method === "codexhost/web/open"),
+          ).toBe(false);
+          fakeWindow.__codexhostDraftPrewarmPolicyV1 = policy;
           // Auxiliary lookups must not disable real connection or explicit policy invalidation.
           Object.defineProperty(requestTarget, "requestClient", { value: { ...requestTarget } });
           const reconnected = adapter.modelControl?.clientForHost?.("local");
@@ -521,10 +528,26 @@ describe("current Codex Renderer Agent adapter", () => {
           fakeWindow.__codexhostDraftPrewarmPolicyV1 = { ...policy };
           expect(adapter.modelControl?.clientForHost?.("local")).not.toBe(reconnected);
         } else {
-          expect(requestTarget.sendRequest).not.toHaveBeenCalled();
+          expect(requestTarget.sendRequest).toHaveBeenCalledExactlyOnceWith(
+            "codexhost/harness/preferences/get",
+            { scope: "external" },
+          );
         }
-        adapter.dispose();
+        if (hostId !== "local") {
+          await expect(adapter.modelControl?.openWeb?.()).rejects.toThrow(
+            "The local Host is unavailable",
+          );
+          expect(
+            requestTarget.sendRequest.mock.calls.some(
+              ([method]) => method === "codexhost/web/open",
+            ),
+          ).toBe(false);
+        }
+        expect(
+          requestTarget.sendRequest.mock.calls.some(([method]) => method.endsWith("/set")),
+        ).toBe(false);
       } finally {
+        adapter.dispose();
         for (const [name, descriptor] of [
           ["window", priorWindow],
           ["document", priorDocument],
@@ -574,9 +597,6 @@ describe("current Codex Renderer Agent adapter", () => {
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" });
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("xhigh");
 
-    expect(piTransportModelId(model, thinkingOptionId)).toBe(
-      `${PI_TRANSPORT_MODEL_ID}@${model.id}@${thinkingOptionId}`,
-    );
     expect(
       decodeHarnessPluginRoute(
         modelSelectionForAgent(null, null, "pi", model, thinkingOptionId)?.model,
@@ -594,11 +614,7 @@ describe("current Codex Renderer Agent adapter", () => {
     const model = harnessModelRefSchema.parse({ id: "omp-model-v1.synthetic" });
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
     const permissionModeId = harnessPermissionModeIdSchema.parse("write");
-    const carrier = ompTransportModelId(model, thinkingOptionId, permissionModeId);
-
-    expect(carrier).toBe(
-      `${OMP_TRANSPORT_MODEL_ID}@${model.id}@${permissionModeId}@${thinkingOptionId}`,
-    );
+    const carrier = "codexhost/omp-native@omp-model-v1.synthetic@write@high";
     expect(isOmpTransportModelId(carrier)).toBe(true);
     expect(decodeOmpTransportModelId(carrier)).toEqual({
       model,
@@ -616,7 +632,7 @@ describe("current Codex Renderer Agent adapter", () => {
     const model = harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" });
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("xhigh");
     const permissionModeId = harnessPermissionModeIdSchema.parse("acceptEdits");
-    const carrier = claudeTransportModelId(model, permissionModeId, thinkingOptionId);
+    const carrier = "codexhost/claude-code-native@claude-model-v1.c29ubmV0@acceptEdits@xhigh";
 
     expect(isClaudeTransportModelId(carrier)).toBe(true);
     expect(decodeClaudeTransportModelId(carrier)).toEqual({
@@ -635,13 +651,17 @@ describe("current Codex Renderer Agent adapter", () => {
   it("encodes DeepSeek Harness Model and Permission Mode in the transport carrier", () => {
     const model = harnessModelRefSchema.parse({ id: "deepseek-harness-model-v1.Zmxhc2g" });
     const permissionModeId = harnessPermissionModeIdSchema.parse("team-safe");
-    const carrier = deepSeekHarnessTransportModelId(model, permissionModeId);
+    const carrier = "codexhost/deepseek-harness-native@deepseek-harness-model-v1.Zmxhc2g@team-safe";
 
     expect(decodeDeepSeekHarnessTransportModelId(carrier)).toEqual({
       model,
       permissionModeId,
     });
-    expect(decodeDeepSeekHarnessTransportModelId(deepSeekHarnessTransportModelId(model))).toEqual({
+    expect(
+      decodeDeepSeekHarnessTransportModelId(
+        "codexhost/deepseek-harness-native@deepseek-harness-model-v1.Zmxhc2g",
+      ),
+    ).toEqual({
       model,
     });
     expect(
@@ -656,7 +676,7 @@ describe("current Codex Renderer Agent adapter", () => {
     const model = harnessModelRefSchema.parse({ id: "grok-4.6" });
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("high");
     const permissionModeId = harnessPermissionModeIdSchema.parse("auto");
-    const carrier = grokTransportModelId(model, permissionModeId, thinkingOptionId);
+    const carrier = "codexhost/grok-native@grok-4.6@auto@high";
 
     expect(isGrokTransportModelId(carrier)).toBe(true);
     expect(decodeGrokTransportModelId(carrier)).toEqual({
@@ -681,7 +701,8 @@ describe("current Codex Renderer Agent adapter", () => {
     });
     const permissionModeId = harnessPermissionModeIdSchema.parse("ask");
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("ocv.aGlnaA");
-    const carrier = openCodeTransportModelId(model, permissionModeId, thinkingOptionId);
+    const carrier =
+      "codexhost/opencode-native@opencode-model-v1.WyJwcm92aWRlci0xIiwibW9kZWwtMSJd@ask@ocv.aGlnaA";
 
     expect(isOpenCodeTransportModelId(carrier)).toBe(true);
     expect(decodeOpenCodeTransportModelId(carrier)).toEqual({
@@ -716,10 +737,7 @@ describe("current Codex Renderer Agent adapter", () => {
     const model = harnessModelRefSchema.parse({ id: "gemini-3.1-pro" });
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("low");
     const permissionModeId = harnessPermissionModeIdSchema.parse("configured");
-    const carrier = antigravityTransportModelId(model, permissionModeId, thinkingOptionId);
-
-    // The composer encodes three components, so the decoder in the same file
-    // has to read them back or Thread ownership fails on reload.
+    const carrier = "codexhost/antigravity-native@gemini-3.1-pro@configured@low";
     expect(isAntigravityTransportModelId(carrier)).toBe(true);
     expect(decodeAntigravityTransportModelId(carrier)).toEqual({
       model,

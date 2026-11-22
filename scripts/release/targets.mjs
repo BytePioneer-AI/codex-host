@@ -1,4 +1,4 @@
-export const NODE_VERSION = "24.13.1";
+export const NODE_VERSION = "24.22.1";
 export const NODE_DIST_BASE_URL = `https://nodejs.org/dist/v${NODE_VERSION}`;
 
 export const RELEASE_TARGETS = Object.freeze({
@@ -9,7 +9,7 @@ export const RELEASE_TARGETS = Object.freeze({
     installerArchitecture: "arm64",
     executableSuffix: "",
     nodeArchive: `node-v${NODE_VERSION}-darwin-arm64.tar.gz`,
-    nodeArchiveSha256: "8c039d59f2fec6195e4281ad5b0d02b9a940897b4df7b849c6fb48be6787bba6",
+    nodeArchiveSha256: "89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7",
     nodeArchiveFormat: "tar.gz",
     nodeArchiveRoot: `node-v${NODE_VERSION}-darwin-arm64`,
     nodeExecutable: "bin/node",
@@ -21,7 +21,7 @@ export const RELEASE_TARGETS = Object.freeze({
     installerArchitecture: "x64",
     executableSuffix: "",
     nodeArchive: `node-v${NODE_VERSION}-darwin-x64.tar.gz`,
-    nodeArchiveSha256: "527f0578d9812e7dfa225121bda0b1546a6a0e4b5f556295fc8299c272de5fbf",
+    nodeArchiveSha256: "d132557e7ee2b85af08b0c8c34338e65c6430f2238d01f727728ef42dc83b035",
     nodeArchiveFormat: "tar.gz",
     nodeArchiveRoot: `node-v${NODE_VERSION}-darwin-x64`,
     nodeExecutable: "bin/node",
@@ -33,7 +33,7 @@ export const RELEASE_TARGETS = Object.freeze({
     installerArchitecture: "x64",
     executableSuffix: ".exe",
     nodeArchive: `node-v${NODE_VERSION}-win-x64.zip`,
-    nodeArchiveSha256: "fba577c4bb87df04d54dd87bbdaa5a2272f1f99a2acbf9152e1a91b8b5f0b279",
+    nodeArchiveSha256: "d2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5",
     nodeArchiveFormat: "zip",
     nodeArchiveRoot: `node-v${NODE_VERSION}-win-x64`,
     nodeExecutable: "node.exe",
@@ -45,7 +45,7 @@ export const RELEASE_TARGETS = Object.freeze({
     installerArchitecture: "arm64",
     executableSuffix: ".exe",
     nodeArchive: `node-v${NODE_VERSION}-win-arm64.zip`,
-    nodeArchiveSha256: "0cd29eeb64f3c649db2c4c868779ca277f5a4c49e26c69e5928d01fe0ae06da8",
+    nodeArchiveSha256: "a0c807319fede24c4a0d8f84564c82a619bd313b16b10c007c383c2609e99171",
     nodeArchiveFormat: "zip",
     nodeArchiveRoot: `node-v${NODE_VERSION}-win-arm64`,
     nodeExecutable: "node.exe",

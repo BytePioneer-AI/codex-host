@@ -25,9 +25,9 @@ The plugin uses the shared executable-discovery mechanism, including npm shims o
 
 Inspection creates a disposable protocol Session with `--no-session-persistence`, reads native configuration and closes the process. It sends no prompt and persists no user transcript. Results, including negative results, are cached by cwd until explicit refresh; there is no periodic discovery loop.
 
-Each writable Session owns one CLI connection. Model IDs are encoded as opaque `cb.<base64url>` refs. Model, thought-level and permission changes wait for native configuration confirmation. A Model change refreshes the complete available thought configuration. Ordinary prompts never travel through shell arguments.
+Each writable Session owns one CLI connection. Model Refs use the native Model ID unchanged; refs saved as `cb.<base64url>` by earlier releases are read through `normalizeStoredModelRef`. Model, thought-level and permission changes wait for native configuration confirmation. A Model change refreshes the complete available thought configuration. Ordinary prompts never travel through shell arguments.
 
-CodeBuddy 2.148.0 can retain cancellation state after returning a cancelled prompt. After an acknowledged cancellation, the plugin closes that owned CLI, loads the same Native Session in a fresh process, restores confirmed Model/Thinking/Permission values, and only then completes the Host Turn. Connection generations prevent old updates or replay from contaminating the next Turn. Cancellation has a bounded recovery deadline; recovery failure faults the Session rather than reporting a usable connection.
+CodeBuddy 2.148.0 can retain cancellation state after returning a cancelled prompt. Once ACP reports cancellation, the plugin retires the owned CLI and confirms shutdown before completing the Turn. Connection generations isolate late updates, configuration responses, and interactions. Reading history does not start a replacement process. The next prompt, native command, or configuration change loads the same Native Session in a fresh process, restores any pending rewind, and confirms the saved Model, Thinking, and Permission Mode before publishing the restored configuration. An open or configuration failure rejects that operation without changing the cancelled Turn. The plugin allows an explicit retry only after the failed process has been retired.
 
 ## Capability boundaries
 
@@ -40,7 +40,7 @@ CodeBuddy 2.148.0 can retain cancellation state after returning a cancelled prom
 | Model, Thinking, Permission Mode | Live configuration, from the native catalog. At verification ACP exposed `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`, `fullAccess`, and `delegate`. This list is not hardcoded as a catalog. |
 | Unattended execution | Requests the advertised native `fullAccess` mode. `bypassPermissions` is not assumed to bypass CodeBuddy's high-risk checks. Policy acceptance is tested; destructive operations are not used for acceptance. |
 | Usage | Reads native model-request usage once per request, exposes context size/used, and reports CodeBuddy credits as credits, not USD. Account quota is not implemented. |
-| Native history | Read-only JSONL projection follows the current parent chain. Persisted user-message IDs identify Turns. Prompt completion and snapshots must agree on identity. A Tool result written before its call — CodeBuddy records a refused call and its result from separate writers — is applied when its call arrives; a result whose call never appears is dropped instead of failing the read. Missing, ambiguous, corrupt or oversized history produces an explicit error. Incomplete native history remains `unknown`; it is not labeled successful. |
+| Native history | Read-only JSONL projection follows the current parent chain. A cache-expired automatic compaction's summary is reached through `logicalParentId`, so pre-compaction Turns stay visible and the summary projects as a compaction Item. Persisted user-message IDs identify Turns. Prompt completion and snapshots must agree on identity. A Tool result written before its call — CodeBuddy records a refused call and its result from separate writers — is applied when its call arrives; a result whose call never appears is dropped instead of failing the read. Missing, ambiguous, corrupt or oversized history produces an explicit error. Incomplete native history remains `unknown`; it is not labeled successful. |
 | File diffs | Standard ACP diff content is understood when supplied. Native tools still expose their calls/results when no diff is available. This is not a claim that every CodeBuddy Edit/Write supplies a complete historical diff. |
 | Fork / rollback | Native derived Sessions at a Turn boundary, in the same cwd. A model-free CLI copy isolates the source; native `/fork` gives the final Session independent native identities, then `_codebuddy.ai/session/rollback` retains the exact requested prefix. See the version-specific lifecycle below. |
 | Native Agent subagents | Running/completed collaboration cards and read-only child Threads, with real child messages/tools read from the native transcript. Native Agent IDs survive resume. A background launch acknowledgement completes its tool Item but not the child lifecycle; observation continues without mutating that completed Item, and becomes interrupted when the parent exits without a proven native child-completion signal. |
@@ -138,10 +138,24 @@ of fabricating it. CodeBuddy's persisted local-command caveat, command, and stdo
 records project as one command Turn. Its internal compaction prompt, reasoning,
 and summary project as `/compact` and a compaction Item, rather than appearing as
 user instructions or a normal assistant reply. Native automatic compaction does
-not create an extra user Turn. Compaction Items start only from native evidence;
+not create an extra user Turn. A cache-expired pre-message compaction records its
+summary with no `parentId` but a `logicalParentId`; the projection follows that
+logical edge so the pre-compaction Turns remain readable, and projects the
+`<cb_summary>` row as the compaction Item rather than as a user prompt.
+Compaction Items start only from native evidence;
 a successful Item requires a newly persisted `isCompacted` summary, and native
 failure/cancellation preserves the corresponding Item outcome. Ordinary prompts still require
 exactly one persisted Native Turn.
+
+Outside command and compaction records, history rows with
+`startsNewUserRequest: false` continue the active Turn. Explicit `isMeta: true`
+rows and rows consisting entirely of `<system-reminder data-role="user-context">`
+blocks are hidden, even when their contents quote `<user_query>`. Other continuation
+text, including native steer messages, is retained in the active Turn's input
+without changing its native ID, checkpoint or pending Tools. An explicit
+`startsNewUserRequest: true` still opens a new Turn, including on meta rows;
+`<user_query>` text alone does not override continuation metadata. This is history
+projection, not support for sending Host `turn.steer` commands.
 
 Focused adapter tests cover catalog refresh, removed/invalid commands, native
 arguments, busy rejection, cancellation recovery, command histories, compaction

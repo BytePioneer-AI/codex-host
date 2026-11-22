@@ -1,0 +1,35 @@
+/* The canvas is drawn at physical pixels and sized to its CSS viewport, so it maps 1:1. */
+.root {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-base);
+}
+
+.root:focus-within {
+  outline: 1px solid var(--dsw-alias-border-l3);
+  outline-offset: -1px;
+}
+
+.canvas {
+  display: block;
+  touch-action: none;
+  user-select: none;
+}
+
+/* Keyboard and IME focus target; 16px keeps mobile browsers from zooming on focus. */
+.input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  resize: none;
+  font-size: 16px;
+  pointer-events: none;
+}

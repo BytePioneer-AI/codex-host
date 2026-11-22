@@ -5,6 +5,7 @@ import type {
   SessionMessageInfo,
 } from "@opencode/client";
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   type HarnessSession,
   type HarnessOutput,
@@ -12,6 +13,8 @@ import {
   type HostCommand,
   type TurnStartCommand,
   type TurnStartAccepted,
+  type TurnSteerCommand,
+  type TurnSteerAccepted,
   type TurnCancelCommand,
   type TurnCancelAccepted,
   type InteractionRespondCommand,
@@ -31,12 +34,17 @@ import {
   type HarnessError,
   type HarnessSessionCapabilities,
 } from "@codexhost/harness-adapter";
+import { sessionImportTitle } from "@codexhost/harness-adapter/session-import";
 import type { HarnessModelCatalog, HostTurnId } from "@codexhost/shared-contracts";
-import { decodeOpenCodeModelRef, decodeOpenCodeVariant } from "../model-catalog.js";
+import {
+  decodeOpenCodeModelRef,
+  decodeOpenCodeVariant,
+  type OpenCodeModelCatalogSnapshot,
+} from "../model-catalog.js";
 import { openCodeCommandCatalog } from "../opencode-adapter.js";
 import type { V2Connection } from "./connection.js";
 import { contentId, readHistory, readMessages, terminalItemOutcome } from "./history.js";
-import { v2UsageRequest } from "./usage.js";
+import { v2UsageRequest, type V2OutputTiming } from "./usage.js";
 import { errorResult, failure, harnessId, v2Permissions, v2State, v2Usage } from "./state.js";
 import {
   formInteraction,
@@ -52,6 +60,7 @@ interface ActiveTurn {
   baseline: Set<string>;
   live: Map<string, HostItem>;
   assistants: Set<string>;
+  outputTiming: Map<string, V2OutputTiming>;
   transient: Map<string, Extract<HostItem, { type: "agentMessage" | "reasoning" }>>;
   interactions: Map<string, V2Interaction>;
   replying: Set<string>;
@@ -101,21 +110,19 @@ export class V2Session implements HarnessSession {
   #cacheHitRatePercent: number | undefined;
   /** Assistant messages already published as usage requests. */
   readonly #meteredMessages = new Set<string>();
-  /** Adapter receive time of each assistant message's first reasoning, text or tool input. */
-  readonly #firstOutputAt = new Map<string, number>();
 
   constructor(
     readonly client: OpenCodeClient,
     readonly connection: Pick<V2Connection, "options" | "close">,
     private info: SessionInfo,
-    readonly catalog: HarnessModelCatalog,
+    private readonly models: OpenCodeModelCatalogSnapshot,
     readonly policy: HarnessExecutionPolicy,
     readonly limit: number,
     readonly onClosed: () => void,
   ) {
-    this.initialState = v2State(info, catalog, policy);
+    this.initialState = v2State(info, models, policy);
     this.initialUsage = v2Usage(info);
-    this.capabilities = v2Capabilities(catalog);
+    this.capabilities = v2Capabilities(models.catalog);
     this.commands = {
       list: async () => ({ ok: true, value: openCodeCommandCatalog }),
       execute: async (command) => {
@@ -166,10 +173,10 @@ export class V2Session implements HarnessSession {
       return { ok: false as const, error: failure("OpenCode Session is busy", "sessionBusy") };
     try {
       this.info = await this.client.session.get({ sessionID: this.info.id });
-      const { snapshot } = await readHistory(this.client, this.info, this.limit);
+      const { snapshot } = await readHistory(this.client, this.info, this.limit, this.models.index);
       return {
         ok: true as const,
-        value: { ...snapshot, state: v2State(this.info, this.catalog, this.policy) },
+        value: { ...snapshot, state: v2State(this.info, this.models, this.policy) },
       };
     } catch (error) {
       return errorResult(error);
@@ -177,6 +184,7 @@ export class V2Session implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -188,11 +196,17 @@ export class V2Session implements HarnessSession {
     command: HostCommand,
   ): Promise<
     HarnessResult<
-      TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted | ModelSelectCompleted
+      | TurnStartAccepted
+      | TurnSteerAccepted
+      | TurnCancelAccepted
+      | InteractionRespondAccepted
+      | ModelSelectCompleted
     >
   > {
     if (this.#closed)
       return { ok: false, error: failure("OpenCode Session is closed", "invalidState") };
+    // Same as v1: this Session does not declare native steer.
+    if (command.type === "turn.steer") return unsupportedSteer("OpenCode");
     if (command.type === "turn.start") return this.#start(command, false);
     if (command.type === "turn.cancel") {
       const active = this.#active;
@@ -246,13 +260,11 @@ export class V2Session implements HarnessSession {
       } else {
         let model = this.info.model;
         if (command.type === "model.select") {
-          if (!this.catalog.models.some((m) => m.ref.id === command.model.id))
-            throw new Error("OpenCode Model is not available");
-          const decoded = decodeOpenCodeModelRef(command.model);
+          const decoded = decodeOpenCodeModelRef(command.model, this.models.index);
           model = { providerID: decoded.providerID, id: decoded.modelID };
         } else {
           if (!model) throw new Error("Select a Model before a Thinking option");
-          const state = v2State(this.info, this.catalog, this.policy);
+          const state = v2State(this.info, this.models, this.policy);
           if (!state.availableThinkingOptions?.some((v) => v.id === command.thinkingOptionId))
             throw new Error("Thinking option is unavailable for this Model");
           const variant = decodeOpenCodeVariant(command.thinkingOptionId);
@@ -263,7 +275,7 @@ export class V2Session implements HarnessSession {
       this.info = await this.client.session.get({ sessionID: this.info.id });
       this.#emit({
         type: "session.state.changed",
-        state: v2State(this.info, this.catalog, this.policy),
+        state: v2State(this.info, this.models, this.policy),
       });
       return { ok: true, value: { completed: true } };
     } catch (error) {
@@ -298,6 +310,7 @@ export class V2Session implements HarnessSession {
       baseline: new Set(),
       live: new Map(),
       assistants: new Set(),
+      outputTiming: new Map(),
       transient: new Map(),
       interactions: new Map(),
       replying: new Set(),
@@ -311,7 +324,7 @@ export class V2Session implements HarnessSession {
       if ((await this.client.session.active())[this.info.id])
         throw new Error("OpenCode Session is already running");
       this.info = await this.client.session.get({ sessionID: this.info.id });
-      const before = await readHistory(this.client, this.info, this.limit);
+      const before = await readHistory(this.client, this.info, this.limit, this.models.index);
       if (before.snapshot.turns.some((turn) => turn.outcome.status === "unknown"))
         throw new Error("OpenCode history contains an incomplete execution");
       active.baseline = new Set(before.snapshot.turns.map((t) => t.nativeTurnRef.nativeTurnKey));
@@ -347,21 +360,27 @@ export class V2Session implements HarnessSession {
   }
 
   #onEvent(event: OpenCodeEvent) {
-    const active = this.#active;
-    if (
-      !active ||
-      !("data" in event) ||
-      !("sessionID" in event.data) ||
-      event.data.sessionID !== this.info.id
-    )
+    if (!("data" in event) || !("sessionID" in event.data) || event.data.sessionID !== this.info.id)
       return;
+    if (event.type === "session.renamed") this.#publishTitle(event.data.title);
+    const active = this.#active;
+    if (!active) return;
     if (
       FIRST_OUTPUT_EVENTS.has(event.type) &&
       "assistantMessageID" in event.data &&
       typeof event.data.assistantMessageID === "string" &&
-      !this.#firstOutputAt.has(event.data.assistantMessageID)
-    )
-      this.#firstOutputAt.set(event.data.assistantMessageID, Date.now());
+      !this.#meteredMessages.has(event.data.assistantMessageID) &&
+      (!event.type.endsWith(".delta") || ("delta" in event.data && event.data.delta.length > 0))
+    ) {
+      const id = event.data.assistantMessageID;
+      const timing = active.outputTiming.get(id) ?? {
+        firstOutputAtMs: Date.now(),
+        reasoningObserved: false,
+      };
+      if (event.type === "session.reasoning.started" || event.type === "session.reasoning.delta")
+        timing.reasoningObserved = true;
+      active.outputTiming.set(id, timing);
+    }
     if (event.type === "session.step.started") active.assistants.add(event.data.assistantMessageID);
     if (
       (event.type === "session.text.delta" || event.type === "session.reasoning.delta") &&
@@ -391,8 +410,9 @@ export class V2Session implements HarnessSession {
     for (const message of messages) {
       let request;
       try {
-        request = v2UsageRequest(message, historical, this.#firstOutputAt.get(message.id));
+        request = v2UsageRequest(message, historical, this.#active?.outputTiming.get(message.id));
       } catch {
+        this.#active?.outputTiming.delete(message.id);
         this.#cacheHitRatePercent = undefined;
         if (this.#meteredMessages.has(message.id)) continue;
         this.#meteredMessages.add(message.id);
@@ -408,7 +428,7 @@ export class V2Session implements HarnessSession {
           : undefined;
       if (this.#meteredMessages.has(message.id)) continue;
       this.#meteredMessages.add(message.id);
-      this.#firstOutputAt.delete(message.id);
+      this.#active?.outputTiming.delete(message.id);
       this.#emit({ type: "usage.request", request });
     }
     if (this.#cacheHitRatePercent !== previousCacheHitRate)
@@ -454,7 +474,12 @@ export class V2Session implements HarnessSession {
     const active = this.#active;
     if (!active?.admitted) return;
     const info = await this.client.session.get({ sessionID: this.info.id });
-    const { snapshot, messages } = await readHistory(this.client, info, this.limit);
+    const { snapshot, messages } = await readHistory(
+      this.client,
+      info,
+      this.limit,
+      this.models.index,
+    );
     if (this.#active !== active || this.#closed) return;
     this.info = info;
     this.#meterUsage(messages, false);
@@ -569,8 +594,9 @@ export class V2Session implements HarnessSession {
     }
     this.#emit({
       type: "session.state.changed",
-      state: v2State(this.info, this.catalog, this.policy),
+      state: v2State(this.info, this.models, this.policy),
     });
+    this.#publishTitle(this.info.title);
     this.#emit({
       type: "session.usage.changed",
       usage: this.#usage(),
@@ -584,6 +610,12 @@ export class V2Session implements HarnessSession {
       outcome: { ...turn.outcome, ...(turn.checkpoint ? { checkpoint: turn.checkpoint } : {}) },
     });
     active.resolve();
+  }
+
+  #publishTitle(value: string | undefined) {
+    const title = sessionImportTitle(value);
+    if (title && !/^New session - \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(title))
+      this.#emit({ type: "session.title.changed", title });
   }
 
   #closeInteraction(active: ActiveTurn, id: string, reason: "responded" | "cancelled" | "expired") {

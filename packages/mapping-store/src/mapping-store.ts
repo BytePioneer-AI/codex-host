@@ -1,4 +1,8 @@
-import { execFileSync } from "node:child_process";
+import {
+  usageMeasurementsSchema,
+  mergeUsageOutputTimings,
+  type UsageMeasurementsSnapshot,
+} from "@codexhost/shared-contracts";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -22,6 +26,12 @@ import type {
 } from "@codexhost/shared-contracts";
 
 import {
+  hasDisplacedAntigravityTurn,
+  planAntigravityTurnRepair,
+  type SnapshotTurnIdentity,
+} from "./antigravity-turn-repair.js";
+import {
+  MAX_PENDING_INJECTED_TEXTS,
   THREAD_METADATA_FIELDS,
   storedDelegationRecordV1Schema,
   storedThreadMetadataV1Schema,
@@ -31,12 +41,14 @@ import {
   type CreateProvisionalThreadInput,
   type DelegationStatus,
   type FindRecentDelegationInput,
+  type InjectedTurnPrefix,
   type RebindSubagentSessionInput,
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
   type StoredThreadMetadataV1,
   type StoredThreadRecordV1,
+  type StoredThreadSummaryV1,
   type StoredTurnMappingV1,
   type ThreadMetadataPatch,
 } from "./records.js";
@@ -50,6 +62,13 @@ import {
   writeSupersededSessionsFile,
   type StoredSupersededSessionV1,
 } from "./superseded-sessions.js";
+import {
+  createLockFile,
+  currentLockIdentity,
+  lockOwnerIsLive,
+  removeStaleLock,
+  type LockRecord,
+} from "./lock-file.js";
 
 export type MappingStoreErrorCode =
   | "STORE_LOCKED"
@@ -82,19 +101,6 @@ export interface MappingStoreOptions {
   beforeReplace?: (record: StoredThreadRecordV1) => Promise<void> | void;
 }
 
-interface LockRecord {
-  pid: number;
-  instanceId: string;
-  startedAt: string;
-  executablePath?: string;
-  processStartedAt?: string;
-}
-
-interface ProcessIdentity {
-  executablePath: string | null;
-  startedAt: number | null;
-}
-
 function cloneRecord<T>(record: T): T {
   return JSON.parse(JSON.stringify(record)) as T;
 }
@@ -110,6 +116,42 @@ function nativeTurnKey(mapping: StoredTurnMappingV1): string {
 
 function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** The same Turns in the same order; what the Harness records about each may differ. */
+function sameTurns(left: StoredTurnMappingV1[], right: StoredTurnMappingV1[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((mapping, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        mapping.hostTurnId === other.hostTurnId &&
+        sameJson(mapping.nativeTurnRef, other.nativeTurnRef)
+      );
+    })
+  );
+}
+
+function failuresBeforeRollback(
+  record: StoredThreadRecordV1,
+  retained: StoredTurnMappingV1[],
+): StoredThreadRecordV1["failedTurns"] {
+  if (!record.failedTurns) return;
+  const undone = new Set(
+    record.turnMappings.slice(retained.length).map(({ hostTurnId }) => hostTurnId),
+  );
+  const kept = record.failedTurns
+    .filter(
+      ({ hostTurnId, afterTurnId }) =>
+        !undone.has(hostTurnId) && (afterTurnId === undefined || !undone.has(afterTurnId)),
+    )
+    .map((failure) => ({
+      ...failure,
+      nativeTurnRef: retained.find(({ hostTurnId }) => hostTurnId === failure.hostTurnId)
+        ?.nativeTurnRef,
+    }));
+  return kept.length ? kept : undefined;
 }
 
 /** Records must not persist credentials, such as a token embedded in a Git remote URL. */
@@ -167,8 +209,8 @@ function threadMetadataOf(record: StoredThreadRecordV1): StoredThreadMetadataV1 
 
 /** The record as written to the Thread file, which older releases must still accept. */
 function withoutThreadMetadata(record: StoredThreadRecordV1): StoredThreadRecordV1 {
-  const { projectId, daybreakEnabled, gitInfo, ...core } = record;
-  void [projectId, daybreakEnabled, gitInfo];
+  const { preview, projectId, projectlessWorkspace, daybreakEnabled, gitInfo, ...core } = record;
+  void [preview, projectId, projectlessWorkspace, daybreakEnabled, gitInfo];
   return core;
 }
 
@@ -188,9 +230,17 @@ function applyThreadMetadataPatch(
   patch: ThreadMetadataPatch,
 ): StoredThreadRecordV1 {
   const next = { ...current };
+  if (patch.preview !== undefined) {
+    if (patch.preview === null) delete next.preview;
+    else next.preview = patch.preview;
+  }
   if (patch.projectId !== undefined) {
     if (patch.projectId === null) delete next.projectId;
     else next.projectId = patch.projectId;
+  }
+  if (patch.projectlessWorkspace !== undefined) {
+    if (patch.projectlessWorkspace === null) delete next.projectlessWorkspace;
+    else next.projectlessWorkspace = patch.projectlessWorkspace;
   }
   if (patch.daybreakEnabled !== undefined) next.daybreakEnabled = patch.daybreakEnabled;
   if (patch.gitInfo !== undefined) {
@@ -222,106 +272,6 @@ async function exists(file: string): Promise<boolean> {
   }
 }
 
-function processIdentity(pid: number): ProcessIdentity | null {
-  try {
-    process.kill(pid, 0);
-  } catch (error) {
-    if (systemErrorCode(error) !== "EPERM") return null;
-  }
-
-  if (process.platform !== "win32" && process.platform !== "darwin") {
-    return { executablePath: null, startedAt: null };
-  }
-
-  try {
-    if (process.platform === "darwin") {
-      // PID existence is insufficient after reuse. Query only on lock contention;
-      // lstart has second precision, covered by the existing start-time tolerance.
-      const result = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        env: { ...process.env, LC_ALL: "C" },
-        timeout: 1_000,
-      }).trim();
-      const startedAt = Date.parse(result);
-      return { executablePath: null, startedAt: Number.isFinite(startedAt) ? startedAt : null };
-    }
-    const query = [
-      "$ErrorActionPreference = 'Stop'",
-      `$process = Get-Process -Id ${pid}`,
-      "$process | Select-Object Path, StartTime | ConvertTo-Json -Compress",
-    ].join("; ");
-    const result = execFileSync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", query],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true },
-    ).trim();
-    if (!result) return { executablePath: null, startedAt: null };
-    const parsed = JSON.parse(result) as { Path?: unknown; StartTime?: unknown };
-    const executablePath = typeof parsed.Path === "string" ? parsed.Path : null;
-    const startedAt = typeof parsed.StartTime === "string" ? Date.parse(parsed.StartTime) : NaN;
-    return { executablePath, startedAt: Number.isFinite(startedAt) ? startedAt : null };
-  } catch {
-    // If process metadata cannot be queried, preserve the live-lock failure mode.
-    return { executablePath: null, startedAt: null };
-  }
-}
-
-function normalizeExecutablePath(value: string): string {
-  return process.platform === "win32" ? value.replaceAll("/", "\\").toLowerCase() : value;
-}
-
-function isNodeExecutable(value: string): boolean {
-  const normalized = normalizeExecutablePath(value);
-  return normalized.endsWith("\\node.exe") || normalized.endsWith("/node");
-}
-
-function lockOwnerIsLive(lock: Partial<LockRecord>): boolean {
-  if (typeof lock.pid !== "number") return false;
-  if (lock.pid === process.pid) {
-    if (
-      lock.executablePath &&
-      normalizeExecutablePath(lock.executablePath) !== normalizeExecutablePath(process.execPath)
-    ) {
-      return false;
-    }
-    if (lock.processStartedAt) {
-      const expected = Date.parse(lock.processStartedAt);
-      const actual = Date.now() - process.uptime() * 1_000;
-      if (Number.isFinite(expected) && Math.abs(actual - expected) > 5_000) return false;
-    }
-    return true;
-  }
-  const identity = processIdentity(lock.pid);
-  if (!identity) return false;
-  if (process.platform !== "win32" && process.platform !== "darwin") return true;
-
-  if (identity.executablePath && lock.executablePath) {
-    if (
-      normalizeExecutablePath(identity.executablePath) !==
-      normalizeExecutablePath(lock.executablePath)
-    ) {
-      return false;
-    }
-  } else if (
-    identity.executablePath &&
-    !lock.executablePath &&
-    !isNodeExecutable(identity.executablePath)
-  ) {
-    // Legacy locks have no executable identity. A reused PID owned by a non-Node
-    // process cannot be a live Host Runtime lock.
-    return false;
-  }
-
-  if (lock.processStartedAt && identity.startedAt !== null) {
-    const expected = Date.parse(lock.processStartedAt);
-    if (Number.isFinite(expected) && Math.abs(identity.startedAt - expected) > 5_000) {
-      return false;
-    }
-  }
-  return true;
-}
-
 export class MappingStore {
   readonly #backupsDirectory: string;
   readonly #delegationsDirectory: string;
@@ -347,7 +297,6 @@ export class MappingStore {
   // ponytail: A Store-wide queue caps write concurrency at one; shard only if measured throughput requires it.
   #writeTail: Promise<void> = Promise.resolve();
   #initialized = false;
-  #lockHandle: FileHandle | null = null;
 
   constructor(options: MappingStoreOptions) {
     this.#directory = path.resolve(options.directory);
@@ -379,6 +328,7 @@ export class MappingStore {
       const names = (await readdir(this.#threadsDirectory)).filter((name) =>
         name.endsWith(".json"),
       );
+      const pendingQuarantines = new Set<string>();
       for (const name of names) {
         const primary = path.join(this.#threadsDirectory, name);
         const backup = path.join(this.#backupsDirectory, name);
@@ -394,13 +344,32 @@ export class MappingStore {
               this.#quarantineDirectory,
               `${name}.${this.#now().getTime()}.invalid`,
             );
-            await rename(primary, quarantine).catch(() => undefined);
+            const metadataSource = path.join(this.#metadataDirectory, name);
+            pendingQuarantines.add(name);
+            try {
+              // Preserve existing archives, including a copy left by an interrupted quarantine.
+              if (await exists(quarantine)) continue;
+              try {
+                // Keep the source metadata until the record moves; no rollback is needed if
+                // that rename fails. Orphan cleanup can remove it once the pair is archived.
+                await copyFile(metadataSource, `${quarantine}.metadata`, constants.COPYFILE_EXCL);
+              } catch (error) {
+                // ENOENT also means a missing quarantine/; skip only absent metadata.
+                if (systemErrorCode(error) !== "ENOENT" || (await exists(metadataSource)))
+                  throw error;
+              }
+              await rename(primary, quarantine);
+              pendingQuarantines.delete(name);
+            } catch {
+              // Leave the source pair for a later startup and protect its metadata below.
+              // One failed quarantine must not block access to healthy Threads.
+            }
             void primaryError;
             void backupError;
             continue;
           }
         }
-        if (record.state === "creating" && !record.nativeSessionRef) {
+        if (record.state === "creating" && !record.nativeSessionRef && !record.importSourceRef) {
           await rm(primary, { force: true });
           await rm(backup, { force: true });
           await rm(this.#metadataPath(record.hostThreadId), { force: true });
@@ -421,9 +390,14 @@ export class MappingStore {
         (await readdir(this.#metadataDirectory))
           .filter(
             (name) =>
-              name.endsWith(".json") && !this.#records.has(name.slice(0, -5) as HostThreadId),
+              name.endsWith(".json") &&
+              !this.#records.has(name.slice(0, -5) as HostThreadId) &&
+              !pendingQuarantines.has(name),
           )
-          .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
+          // Cleanup is best effort, including a source whose quarantine copy is already safe.
+          .map((name) =>
+            rm(path.join(this.#metadataDirectory, name), { force: true }).catch(() => undefined),
+          ),
       );
       const delegationNames = (await readdir(this.#delegationsDirectory)).filter((name) =>
         name.endsWith(".json"),
@@ -473,6 +447,12 @@ export class MappingStore {
       this.#rebuildIndexes();
       this.#initialized = true;
     } catch (error) {
+      // A retry on this instance must reload from disk, not reuse a partial load.
+      this.#records.clear();
+      this.#delegations.clear();
+      this.#sectionPlacements = [];
+      this.#supersededSessions = [];
+      this.#rebuildIndexes();
       await this.close().catch(() => undefined);
       throw error;
     }
@@ -487,6 +467,16 @@ export class MappingStore {
   async listThreads(): Promise<StoredThreadRecordV1[]> {
     this.#requireInitialized();
     return [...this.#records.values()].map(cloneRecord);
+  }
+
+  /** Every Thread without Turn mappings, which dominate record size and no catalog reads. */
+  async listThreadSummaries(): Promise<StoredThreadSummaryV1[]> {
+    this.#requireInitialized();
+    return [...this.#records.values()].map((record) => {
+      const summary: Partial<StoredThreadRecordV1> = { ...record };
+      delete summary.turnMappings;
+      return cloneRecord(summary as StoredThreadSummaryV1);
+    });
   }
 
   async getThreadByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null> {
@@ -626,6 +616,7 @@ export class MappingStore {
         hostThreadId: input.hostThreadId,
         createRequestId: input.createRequestId,
         harnessId: input.harnessId,
+        ...(input.importSourceRef ? { importSourceRef: input.importSourceRef } : {}),
         state: "creating",
         cwd: input.cwd,
         title: input.title ?? "",
@@ -633,7 +624,12 @@ export class MappingStore {
         transportModelId: input.transportModelId,
         ephemeral: input.ephemeral,
         historyMode: input.historyMode,
+        ...(input.projectlessWorkspace ? { projectlessWorkspace: input.projectlessWorkspace } : {}),
         ...(input.forkSource ? { forkSource: input.forkSource } : {}),
+        ...(input.attachedToThreadId ? { attachedToThreadId: input.attachedToThreadId } : {}),
+        ...(input.inheritedTurnCount !== undefined
+          ? { inheritedTurnCount: input.inheritedTurnCount }
+          : {}),
         ...(input.subagent ? { subagent: input.subagent } : {}),
         turnMappings: [],
         createdAt: timestamp,
@@ -733,6 +729,7 @@ export class MappingStore {
         nativeSessionRef: input.nativeSessionRef,
         turnMappings: input.turnMappings,
         forkSource: input.forkSource,
+        failedTurns: failuresBeforeRollback(current, input.turnMappings),
       };
     });
   }
@@ -768,8 +765,62 @@ export class MappingStore {
         ...current,
         nativeSessionRef: input.nativeSessionRef,
         turnMappings: input.turnMappings,
+        failedTurns: failuresBeforeRollback(current, input.turnMappings),
       };
     });
+  }
+
+  /** Optional telemetry updates only the existing metadata file, never activity or identity. */
+  async saveUsageMeasurements(
+    hostThreadId: HostThreadId,
+    expectedNativeSessionRef: NativeSessionRef,
+    values: UsageMeasurementsSnapshot,
+  ): Promise<StoredThreadRecordV1> {
+    this.#requireInitialized();
+    const parsed = usageMeasurementsSchema.parse(values);
+    let result: StoredThreadRecordV1 | undefined;
+    await this.#enqueue(async () => {
+      const current = this.#records.get(hostThreadId);
+      if (!current)
+        throw new MappingStoreError("THREAD_NOT_FOUND", "External Thread was not found");
+      result = current;
+      if (
+        current.state !== "ready" ||
+        !sameJson(current.nativeSessionRef, expectedNativeSessionRef)
+      )
+        return;
+      const retained = new Set<string>(current.turnMappings.map((mapping) => mapping.hostTurnId));
+      const prior = current.usageMeasurements;
+      const merged: UsageMeasurementsSnapshot = {};
+      if (prior && sameJson(prior.nativeSessionRef, expectedNativeSessionRef)) {
+        for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
+          const value = prior.values[field];
+          if (value && retained.has(value.turnId)) merged[field] = value;
+        }
+      }
+      for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
+        const value = parsed[field];
+        if (value && retained.has(value.turnId) && (!merged[field] || value.at >= merged[field].at))
+          merged[field] = value;
+      }
+      const outputTimings = mergeUsageOutputTimings(
+        prior && sameJson(prior.nativeSessionRef, expectedNativeSessionRef)
+          ? prior.values.outputTimings
+          : undefined,
+        parsed.outputTimings,
+      ).filter((value) => retained.has(value.turnId));
+      if (outputTimings.length) merged.outputTimings = outputTimings;
+      const next = { ...current };
+      if (Object.keys(merged).length)
+        next.usageMeasurements = { nativeSessionRef: expectedNativeSessionRef, values: merged };
+      else delete next.usageMeasurements;
+      if (sameJson(current.usageMeasurements, next.usageMeasurements)) return;
+      await this.#writeMetadataFile(hostThreadId, threadMetadataOf(next));
+      this.#records.set(hostThreadId, next);
+      result = next;
+    });
+    if (!result) throw new MappingStoreError("IO_ERROR", "Measurement update produced no record");
+    return cloneRecord(result);
   }
 
   async upsertTurnMappings(
@@ -782,11 +833,62 @@ export class MappingStore {
     }));
   }
 
+  async saveFailedTurn(
+    hostThreadId: HostThreadId,
+    failure: NonNullable<StoredThreadRecordV1["failedTurns"]>[number],
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (record) => {
+      const ref = failure.nativeTurnRef;
+      if (
+        ref &&
+        (ref.harnessId !== record.harnessId ||
+          ref.nativeSessionId !== record.nativeSessionRef?.nativeSessionId)
+      ) {
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Failed Turn belongs to another Native Session",
+        );
+      }
+      if (record.failedTurns?.some((turn) => turn.hostTurnId === failure.hostTurnId)) return null;
+      return { ...record, failedTurns: [...(record.failedTurns ?? []), failure] };
+    });
+  }
+
+  /** Rekey only confirmed Antigravity foreground boundaries, without replacing Host identities. */
+  async repairAntigravityTurnMappings(
+    hostThreadId: HostThreadId,
+    expectedRevision: number,
+    snapshot: readonly SnapshotTurnIdentity[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(
+      hostThreadId,
+      (current) => {
+        if (current.revision !== expectedRevision) {
+          throw new MappingStoreError(
+            "MAPPING_CONFLICT",
+            "Antigravity boundary repair source is stale",
+          );
+        }
+        if (!current.turnMappings.some(hasDisplacedAntigravityTurn)) return null;
+        const repaired = planAntigravityTurnRepair(current, snapshot);
+        if (!repaired) {
+          throw new MappingStoreError(
+            "MAPPING_CONFLICT",
+            "Antigravity Turn boundaries cannot be repaired unambiguously",
+          );
+        }
+        return { ...current, turnMappings: repaired };
+      },
+      true,
+      "antigravityBoundaryRepair",
+    );
+  }
+
   async reconcileTurnMappings(
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
   ): Promise<StoredThreadRecordV1> {
-    return this.#update(hostThreadId, (current) => {
+    const reconcile = (current: StoredThreadRecordV1): StoredThreadRecordV1 | null => {
       if (current.state !== "ready" || !current.nativeSessionRef) {
         throw new MappingStoreError(
           "MAPPING_CONFLICT",
@@ -826,11 +928,30 @@ export class MappingStore {
       });
 
       return sameJson(current.turnMappings, ordered) ? null : { ...current, turnMappings: ordered };
-    });
+    };
+    // Clients sort by updatedAt. Rewriting what the Harness records about the same Turns, such as
+    // checkpoints a newer Harness version writes, is not conversation activity; adding, removing
+    // or reordering Turns is.
+    return this.#update(hostThreadId, reconcile, (current, next) =>
+      sameTurns(current.turnMappings, next.turnMappings),
+    );
   }
 
-  async setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1> {
-    return this.#update(hostThreadId, (current) => ({ ...current, title }));
+  async setTitle(
+    hostThreadId: HostThreadId,
+    title: string,
+    options?: { ifUnnamed?: boolean },
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(
+      hostThreadId,
+      (current) => (options?.ifUnnamed && current.title ? null : { ...current, title }),
+      options?.ifUnnamed === true,
+    );
+  }
+
+  /** Marks conversation activity that changes nothing else in the record, such as a Turn starting or ending. */
+  async touch(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (current) => current);
   }
 
   async setTransportModelId(
@@ -848,6 +969,58 @@ export class MappingStore {
     );
   }
 
+  /** Hold `thread/inject_items` text for the next Turn; over the limit, fail and keep the queue. */
+  async appendPendingInjectedText(
+    hostThreadId: HostThreadId,
+    texts: readonly string[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(
+      hostThreadId,
+      (current) => {
+        if (texts.length === 0) return null;
+        const pending = [...(current.pendingInjectedText ?? []), ...texts];
+        if (pending.length > MAX_PENDING_INJECTED_TEXTS) {
+          throw new MappingStoreError(
+            "INVALID_RECORD",
+            `At most ${MAX_PENDING_INJECTED_TEXTS} injected texts can wait for the next Turn`,
+          );
+        }
+        return { ...current, pendingInjectedText: pending };
+      },
+      true,
+    );
+  }
+
+  /**
+   * Record that a started Turn delivered the held texts before position `through`, counted over
+   * every text ever held, and release the ones still queued. Another Turn may have released
+   * them already; texts held after that keep their own positions, even with the same content.
+   */
+  async consumePendingInjectedText(
+    hostThreadId: HostThreadId,
+    through: number,
+    prefix: InjectedTurnPrefix,
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(
+      hostThreadId,
+      (current) => {
+        const released = current.releasedInjectedTexts ?? 0;
+        const queued = current.pendingInjectedText ?? [];
+        const count = Math.min(Math.max(through - released, 0), queued.length);
+        const pending = queued.slice(count);
+        const next: StoredThreadRecordV1 = {
+          ...current,
+          releasedInjectedTexts: released + count,
+          injectedTurnPrefixes: [...(current.injectedTurnPrefixes ?? []), prefix],
+        };
+        if (pending.length > 0) next.pendingInjectedText = pending;
+        else delete next.pendingInjectedText;
+        return next;
+      },
+      true,
+    );
+  }
+
   /**
    * Patch Desktop metadata. With `ifProjectId`, the patch applies only while the
    * stored assignment still equals it; otherwise the current record is returned.
@@ -857,13 +1030,18 @@ export class MappingStore {
     patch: ThreadMetadataPatch,
     options: { ifProjectId?: string } = {},
   ): Promise<StoredThreadRecordV1> {
-    return this.#update(hostThreadId, (current) => {
-      if (options.ifProjectId !== undefined && current.projectId !== options.ifProjectId) {
-        return null;
-      }
-      const next = applyThreadMetadataPatch(current, patch);
-      return sameJson(next, current) ? null : next;
-    });
+    return this.#update(
+      hostThreadId,
+      (current) => {
+        if (options.ifProjectId !== undefined && current.projectId !== options.ifProjectId) {
+          return null;
+        }
+        const next = applyThreadMetadataPatch(current, patch);
+        return sameJson(next, current) ? null : next;
+      },
+      // Backfilling a display hint is not new conversation activity.
+      Object.keys(patch).every((key) => key === "preview"),
+    );
   }
 
   /** Section placements of stored External Threads, in insertion order. */
@@ -974,22 +1152,25 @@ export class MappingStore {
   }
 
   async #remove(hostThreadId: HostThreadId): Promise<void> {
-    if (!this.#records.has(hostThreadId)) return;
-    await Promise.all([
-      rm(this.#recordPath(hostThreadId), { force: true }),
-      rm(this.#backupPath(hostThreadId), { force: true }),
-      rm(this.#metadataPath(hostThreadId), { force: true }),
-    ]);
+    const current = this.#records.get(hostThreadId);
+    if (!current) return;
+    await rm(this.#recordPath(hostThreadId), { force: true });
+    try {
+      await rm(this.#backupPath(hostThreadId), { force: true });
+      // Metadata is removed last so any failed unlink leaves it intact.
+      await rm(this.#metadataPath(hostThreadId), { force: true });
+    } catch (error) {
+      // Startup discovers Threads by their primary record, not by orphan auxiliary files.
+      await this.#replaceFile(this.#recordPath(hostThreadId), current, false);
+      throw error;
+    }
     this.#records.delete(hostThreadId);
     this.#rebuildIndexes();
   }
 
   async close(): Promise<void> {
     await this.#writeTail;
-    const handle = this.#lockHandle;
-    this.#lockHandle = null;
     this.#initialized = false;
-    if (handle) await handle.close().catch(() => undefined);
     try {
       const current = JSON.parse(await readFile(this.#lockPath, "utf8")) as Partial<LockRecord>;
       if (current.instanceId === this.#instanceId) await rm(this.#lockPath, { force: true });
@@ -1001,6 +1182,9 @@ export class MappingStore {
   async #update(
     hostThreadId: HostThreadId,
     change: (current: StoredThreadRecordV1) => StoredThreadRecordV1 | null,
+    preserveUpdatedAt:
+      boolean | ((current: StoredThreadRecordV1, next: StoredThreadRecordV1) => boolean) = false,
+    mode?: "antigravityBoundaryRepair",
   ): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
     let result: StoredThreadRecordV1 | null = null;
@@ -1013,12 +1197,16 @@ export class MappingStore {
         result = cloneRecord(current);
         return;
       }
+      const preserve =
+        typeof preserveUpdatedAt === "function"
+          ? preserveUpdatedAt(current, changed)
+          : preserveUpdatedAt;
       const next = storedThreadRecordV1Schema.parse({
         ...changed,
         revision: current.revision + 1,
-        updatedAt: this.#now().toISOString(),
+        updatedAt: preserve ? current.updatedAt : this.#now().toISOString(),
       }) as StoredThreadRecordV1;
-      this.#validateGlobal(next, hostThreadId);
+      this.#validateGlobal(next, hostThreadId, mode === "antigravityBoundaryRepair");
       await this.#replaceFile(this.#recordPath(hostThreadId), next, true);
       const metadata = threadMetadataOf(next);
       if (!sameJson(threadMetadataOf(current), metadata)) {
@@ -1081,7 +1269,17 @@ export class MappingStore {
 
   async #writeNew(record: StoredThreadRecordV1): Promise<void> {
     this.#validateGlobal(record, null);
-    await this.#replaceFile(this.#recordPath(record.hostThreadId), record, false);
+    // Publish placement metadata first. A crash may leave an orphan sidecar
+    // (initialize removes it), never an admitted Thread missing its no-project fact.
+    const metadata = threadMetadataOf(record);
+    if (metadata) await this.#writeMetadataFile(record.hostThreadId, metadata);
+    try {
+      await this.#replaceFile(this.#recordPath(record.hostThreadId), record, false);
+    } catch (error) {
+      if (metadata)
+        await rm(this.#metadataPath(record.hostThreadId), { force: true }).catch(() => undefined);
+      throw error;
+    }
     this.#records.set(record.hostThreadId, record);
     this.#rebuildIndexes();
   }
@@ -1114,7 +1312,7 @@ export class MappingStore {
     }
   }
 
-  /** Atomically writes, or with null removes, a Thread's Desktop metadata file. */
+  /** Atomically patches owned metadata fields, retaining unknown fields on disk. */
   async #writeMetadataFile(
     hostThreadId: HostThreadId,
     metadata: StoredThreadMetadataV1 | null,
@@ -1123,12 +1321,18 @@ export class MappingStore {
     const temp = `${target}.tmp-${randomUUID()}`;
     let handle: FileHandle | null = null;
     try {
-      if (!metadata) {
+      const retained = Object.fromEntries(
+        Object.entries((await this.#readMetadata(hostThreadId)) ?? {}).filter(
+          ([name]) => !["formatVersion", "hostThreadId", ...THREAD_METADATA_FIELDS].includes(name),
+        ),
+      );
+      if (!metadata && Object.keys(retained).length === 0) {
         await rm(target, { force: true });
         return;
       }
+      const next = { ...retained, formatVersion: 1, hostThreadId, ...metadata };
       handle = await open(temp, "wx", constants.S_IRUSR | constants.S_IWUSR);
-      await handle.writeFile(`${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+      await handle.writeFile(`${JSON.stringify(next, null, 2)}\n`, "utf8");
       await handle.sync();
       await handle.close();
       handle = null;
@@ -1227,7 +1431,7 @@ export class MappingStore {
       ...metadataNames
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
-      // Renamed aside by #acquireLock; nothing reads them back, and they accumulate one per run.
+      // Stale locks renamed aside by older releases are no longer needed.
       ...rootNames
         .filter((name) => name.startsWith(`${path.basename(this.#lockPath)}.stale-`))
         .map((name) => rm(path.join(this.#directory, name), { force: true })),
@@ -1235,39 +1439,40 @@ export class MappingStore {
   }
 
   async #acquireLock(): Promise<void> {
-    const attempt = async (): Promise<FileHandle> => {
-      const handle = await open(this.#lockPath, "wx", constants.S_IRUSR | constants.S_IWUSR);
+    const attempt = async (): Promise<void> => {
       const lock: LockRecord = {
         pid: process.pid,
         instanceId: this.#instanceId,
         startedAt: this.#now().toISOString(),
         executablePath: process.execPath,
-        processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+        ...currentLockIdentity(),
       };
-      await handle.writeFile(`${JSON.stringify(lock)}\n`, "utf8");
-      await handle.sync();
-      return handle;
+      return createLockFile(this.#lockPath, `${JSON.stringify(lock)}\n`);
     };
     try {
-      this.#lockHandle = await attempt();
+      await attempt();
       return;
     } catch (error) {
       if (systemErrorCode(error) !== "EEXIST") throw error;
     }
     let existing: Partial<LockRecord> = {};
+    const inspected = await readFile(this.#lockPath, "utf8").catch(() => null);
     try {
-      existing = JSON.parse(await readFile(this.#lockPath, "utf8")) as Partial<LockRecord>;
+      existing = JSON.parse(inspected ?? "") as Partial<LockRecord>;
     } catch {
       // An invalid lock cannot prove a live owner and is treated as stale.
     }
     if (typeof existing.pid === "number" && lockOwnerIsLive(existing)) {
-      throw new MappingStoreError("STORE_LOCKED", "Another codexhost process owns Mapping Store");
+      throw new MappingStoreError(
+        "STORE_LOCKED",
+        `Another codexhost process owns Mapping Store at ${this.#directory} (owner PID ${existing.pid}; startedAt: ${typeof existing.startedAt === "string" ? existing.startedAt : "unknown"})`,
+      );
     }
-    await rename(this.#lockPath, `${this.#lockPath}.stale-${this.#now().getTime()}`).catch(
-      () => undefined,
-    );
     try {
-      this.#lockHandle = await attempt();
+      if (inspected !== null) {
+        await removeStaleLock(this.#lockPath, inspected);
+      }
+      await attempt();
     } catch (error) {
       throw new MappingStoreError("STORE_LOCKED", "Mapping Store lock could not be acquired", {
         cause: error,
@@ -1275,7 +1480,11 @@ export class MappingStore {
     }
   }
 
-  #validateGlobal(record: StoredThreadRecordV1, replacing: HostThreadId | null): void {
+  #validateGlobal(
+    record: StoredThreadRecordV1,
+    replacing: HostThreadId | null,
+    allowOwnNativeTurnRekeys = false,
+  ): void {
     const duplicateCreate = this.#createRequests.get(record.createRequestId);
     if (duplicateCreate && duplicateCreate !== replacing) {
       throw new MappingStoreError("DUPLICATE_CREATE_REQUEST", "Create request is already stored");
@@ -1292,7 +1501,11 @@ export class MappingStore {
         throw new MappingStoreError("MAPPING_CONFLICT", "Host Turn is already mapped");
       }
       const duplicateNativeTurn = this.#nativeTurns.get(nativeTurnKey(mapping));
-      if (duplicateNativeTurn && duplicateNativeTurn !== mapping.hostTurnId) {
+      if (
+        duplicateNativeTurn &&
+        duplicateNativeTurn !== mapping.hostTurnId &&
+        !(allowOwnNativeTurnRekeys && this.#hostTurns.get(duplicateNativeTurn) === replacing)
+      ) {
         throw new MappingStoreError("MAPPING_CONFLICT", "Native Turn is already mapped");
       }
     }

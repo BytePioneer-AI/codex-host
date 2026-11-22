@@ -1,4 +1,8 @@
 import {
+  NATIVE_SCHEDULE_SIDEBAR_ROW_SELECTOR,
+  readNativeScheduleSidebarThread,
+} from "@codexhost/desktop-control/renderer-bindings";
+import {
   THREAD_OWNERSHIP_LIST_MAX_LENGTH,
   hostThreadIdSchema,
   type ThreadOwnership,
@@ -15,6 +19,7 @@ export const SIDEBAR_THREAD_ROW_SELECTOR = `[${SIDEBAR_THREAD_ROW_ATTRIBUTE}]`;
 export const SIDEBAR_THREAD_ID_ATTRIBUTE = "data-app-action-sidebar-thread-id";
 export const SIDEBAR_THREAD_HOST_ID_ATTRIBUTE = "data-app-action-sidebar-thread-host-id";
 export const SIDEBAR_AGENT_ICON_ATTRIBUTE = "data-codexhost-sidebar-agent-icon";
+export const SIDEBAR_AGENT_ICON_ROW_SELECTOR = `${SIDEBAR_THREAD_ROW_SELECTOR}, ${NATIVE_SCHEDULE_SIDEBAR_ROW_SELECTOR}`;
 
 export interface RendererSidebarContractInspection {
   rowCount: number;
@@ -114,7 +119,8 @@ export interface SidebarAgentIconRow {
   hostId(): string | null;
   threadId(): string | null;
   draftId(): string | null;
-  render(agent: Exclude<RendererAgent, "codex">, plugin?: HarnessPluginDescriptor): void;
+  placeholderPath?(): string | null;
+  render(agent: RendererAgent, plugin?: HarnessPluginDescriptor): void;
   clear(): void;
 }
 
@@ -127,21 +133,32 @@ export interface SidebarAgentIconDom {
 
 export interface RendererSidebarAgentIcons {
   refresh(): void;
+  remoteThreadClosed(hostId: string, threadId: string): void;
   dispose(): void;
 }
 
-export function rendererAgentForThreadOwnership(
-  ownership: ThreadOwnership,
-): Exclude<RendererAgent, "codex"> | null {
-  if (ownership.owner === "codex") return null;
+export function rendererAgentForThreadOwnership(ownership: ThreadOwnership): RendererAgent {
+  if (ownership.owner === "codex") return "codex";
   return ownership.harnessId;
 }
 
-// Desktop wraps some titles (hover label, secondary line), so the title is not always a direct
-// child of the trigger. Anchor the icon to the title's outermost wrapper that still sits in a
-// horizontal flex row, keeping it on the title line.
 function sidebarAgentIconAnchor(titleTrigger: HTMLElement, title: HTMLElement): HTMLElement {
   const view = title.ownerDocument.defaultView;
+  if (
+    titleTrigger.hasAttribute("data-thread-title-trigger") &&
+    titleTrigger.parentElement &&
+    titleTrigger.contains(
+      title.closest("button[data-interactive-row-button], a[data-interactive-row-link]"),
+    )
+  ) {
+    // The button/link has no gap. Use the native leading position in the content row instead.
+    const style = view?.getComputedStyle(titleTrigger.parentElement);
+    if (style?.display.includes("flex") && !style.flexDirection.startsWith("column")) {
+      return titleTrigger;
+    }
+  }
+
+  // Older and scheduled rows can wrap the title; keep the icon on the title line.
   let anchor = title;
   while (anchor.parentElement && anchor.parentElement !== titleTrigger) {
     const style = view?.getComputedStyle(anchor.parentElement);
@@ -151,29 +168,53 @@ function sidebarAgentIconAnchor(titleTrigger: HTMLElement, title: HTMLElement): 
   return anchor;
 }
 
-class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
-  constructor(private readonly element: HTMLElement) {}
+export class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
+  #scheduledThread: string | null | undefined;
+
+  constructor(readonly element: HTMLElement) {}
 
   isConnected(): boolean {
     return this.element.isConnected;
   }
 
   hostId(): string | null {
-    return sidebarThreadAttributes(this.element)?.hostId ?? null;
+    const attributes = sidebarThreadAttributes(this.element);
+    this.#scheduledThread = attributes ? undefined : readNativeScheduleSidebarThread(this.element);
+    return attributes?.hostId ?? (this.#scheduledThread ? "local" : null);
   }
 
   threadId(): string | null {
-    return threadIdFromSidebarRowElement(this.element);
+    const threadId = sidebarThreadAttributes(this.element)
+      ? threadIdFromSidebarRowElement(this.element)
+      : this.#scheduledThread !== undefined
+        ? this.#scheduledThread
+        : readNativeScheduleSidebarThread(this.element);
+    this.#scheduledThread = undefined;
+    return threadId;
+  }
+
+  placeholderPath(): string | null {
+    const title = this.element.getAttribute("data-app-action-sidebar-thread-title");
+    return title?.startsWith("/") ? title : null;
   }
 
   draftId(): string | null {
     return draftIdFromSidebarRowElement(this.element);
   }
 
-  render(agent: Exclude<RendererAgent, "codex">, plugin?: HarnessPluginDescriptor): void {
+  render(agent: RendererAgent, plugin?: HarnessPluginDescriptor): void {
     const presentation = JSON.stringify([agent, plugin?.name, plugin?.icon, plugin?.iconStyle]);
-    const titleTrigger = this.element.querySelector<HTMLElement>("[data-thread-title-trigger]");
-    const title = titleTrigger?.querySelector<HTMLElement>("[data-thread-title]");
+    const scheduled =
+      !this.element.hasAttribute(SIDEBAR_THREAD_ROW_ATTRIBUTE) &&
+      this.element.matches(NATIVE_SCHEDULE_SIDEBAR_ROW_SELECTOR);
+    const titleTrigger = scheduled
+      ? this.element
+      : this.element.querySelector<HTMLElement>("[data-thread-title-trigger]");
+    const title = scheduled
+      ? [...this.element.querySelectorAll<HTMLElement>("[data-thread-title][id]")].find(
+          (node) => node.id === this.element.getAttribute("aria-labelledby"),
+        )
+      : titleTrigger?.querySelector<HTMLElement>("[data-thread-title]");
     if (!titleTrigger || !title) {
       this.clear();
       return;
@@ -202,8 +243,10 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
     marker.style.display = "inline-flex";
     marker.style.alignItems = "center";
     marker.style.justifyContent = "center";
-    marker.style.width = "14px";
-    marker.style.height = "14px";
+    const leadingSlot = anchor === titleTrigger;
+    const slotSize = leadingSlot ? "var(--icon-leading-size, 16px)" : "14px";
+    marker.style.width = slotSize;
+    marker.style.height = slotSize;
     marker.style.flex = "none";
     marker.style.pointerEvents = "none";
     marker.append(createRendererAgentIcon(agent, 14, this.element.ownerDocument, plugin));
@@ -217,7 +260,7 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
   }
 }
 
-class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
+export class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
   readonly #rowsByElement = new WeakMap<HTMLElement, BrowserSidebarAgentIconRow>();
   readonly #trackedRows = new Set<BrowserSidebarAgentIconRow>();
 
@@ -229,17 +272,17 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
       row = new BrowserSidebarAgentIconRow(element);
       this.#rowsByElement.set(element, row);
     }
-    if (element.isConnected && element.matches(SIDEBAR_THREAD_ROW_SELECTOR))
+    if (element.isConnected && element.matches(SIDEBAR_AGENT_ICON_ROW_SELECTOR))
       this.#trackedRows.add(row);
     else this.#trackedRows.delete(row);
     return row;
   }
 
-  rows(): readonly SidebarAgentIconRow[] {
+  rows(): readonly BrowserSidebarAgentIconRow[] {
     for (const row of this.#trackedRows) {
       if (!row.isConnected()) this.#trackedRows.delete(row);
     }
-    return [...this.root.querySelectorAll<HTMLElement>(SIDEBAR_THREAD_ROW_SELECTOR)].map(
+    return [...this.root.querySelectorAll<HTMLElement>(SIDEBAR_AGENT_ICON_ROW_SELECTOR)].map(
       (element) => this.#row(element),
     );
   }
@@ -249,14 +292,15 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
       const changed = new Set<SidebarAgentIconRow>();
       const collect = (node: Node): void => {
         if (!(node instanceof Element)) return;
-        if (node.matches(SIDEBAR_THREAD_ROW_SELECTOR)) changed.add(this.#row(node as HTMLElement));
-        for (const element of node.querySelectorAll<HTMLElement>(SIDEBAR_THREAD_ROW_SELECTOR))
+        if (node.matches(SIDEBAR_AGENT_ICON_ROW_SELECTOR))
+          changed.add(this.#row(node as HTMLElement));
+        for (const element of node.querySelectorAll<HTMLElement>(SIDEBAR_AGENT_ICON_ROW_SELECTOR))
           changed.add(this.#row(element));
       };
       for (const mutation of mutations) {
         const target =
           mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
-        const row = target?.closest<HTMLElement>(SIDEBAR_THREAD_ROW_SELECTOR);
+        const row = target?.closest<HTMLElement>(SIDEBAR_AGENT_ICON_ROW_SELECTOR);
         if (row) changed.add(this.#row(row));
         // Removing the row marker must also clear its old decoration and identity.
         else if (target && this.#rowsByElement.has(target as HTMLElement))
@@ -272,6 +316,10 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
         SIDEBAR_THREAD_ROW_ATTRIBUTE,
         SIDEBAR_THREAD_ID_ATTRIBUTE,
         SIDEBAR_THREAD_HOST_ID_ATTRIBUTE,
+        "data-app-action-sidebar-thread-title",
+        "data-sidebar-cycle-item",
+        "aria-labelledby",
+        "role",
       ],
       childList: true,
       subtree: true,
@@ -287,6 +335,7 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
 
 export function installRendererSidebarAgentIcons(options: {
   getClient(hostId: string): RendererModelClient | null;
+  checkRemotePlaceholder?(hostId: string, threadId: string, cwd: string): void | Promise<void>;
   getPlugins?(hostId: string): readonly HarnessPluginDescriptor[] | undefined;
   getLocalAgent?(input: {
     hostId: string;
@@ -296,13 +345,21 @@ export function installRendererSidebarAgentIcons(options: {
   dom?: SidebarAgentIconDom;
 }): RendererSidebarAgentIcons {
   const dom = options.dom ?? new BrowserSidebarAgentIconDom(document);
-  const ownershipByThread = new Map<string, Exclude<RendererAgent, "codex"> | null>();
+  const ownershipByThread = new Map<
+    string,
+    { agent: RendererAgent; stale: boolean; client?: RendererModelClient }
+  >();
   const pending = new Set<string>();
   const failed = new Set<string>();
   const provisionalCodex = new Set<string>();
   const ownershipRetryAttempts = new Map<string, number>();
   const ownershipRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const dirtyRows = new Set<SidebarAgentIconRow>();
+  const checked = new WeakMap<
+    SidebarAgentIconRow,
+    { key: string; client: RendererModelClient; cwd: string; retry: boolean; waiting: boolean }
+  >();
+  const placeholderRetryTimers = new Set<ReturnType<typeof setTimeout>>();
   // Index mounted row identities so replies/retries update only the affected
   // Thread, including duplicate rows, without retaining stale recycled identities.
   const rowsByThread = new Map<string, Set<SidebarAgentIconRow>>();
@@ -365,7 +422,8 @@ export function installRendererSidebarAgentIcons(options: {
       ownershipRetryTimers.delete(key);
       if (disposed) return;
       failed.delete(key);
-      ownershipByThread.delete(key);
+      const cached = ownershipByThread.get(key);
+      if (cached) cached.stale = true;
       scheduleScan(rowsByThread.get(key) ?? []);
     }, delay);
     ownershipRetryTimers.set(key, timer);
@@ -385,7 +443,11 @@ export function installRendererSidebarAgentIcons(options: {
         if (disposed) return;
         for (const ownership of threads) {
           const key = ownershipKey(hostId, ownership.threadId);
-          ownershipByThread.set(key, rendererAgentForThreadOwnership(ownership));
+          ownershipByThread.set(key, {
+            client,
+            agent: rendererAgentForThreadOwnership(ownership),
+            stale: false,
+          });
           failed.delete(key);
           if (ownership.owner === "codex") {
             provisionalCodex.add(key);
@@ -413,6 +475,56 @@ export function installRendererSidebarAgentIcons(options: {
       });
   };
 
+  function checkPlaceholder(
+    row: SidebarAgentIconRow,
+    hostId: string,
+    threadId: string,
+    client: RendererModelClient,
+  ) {
+    const check = options.checkRemotePlaceholder;
+    if (!check || !hostId.startsWith("remote-ssh")) return;
+    const cwd = row.placeholderPath?.();
+    if (!cwd) {
+      checked.delete(row);
+      return;
+    }
+    const key = ownershipKey(hostId, threadId);
+    let state = checked.get(row);
+    if (!state || state.key !== key || state.cwd !== cwd || state.client !== client) {
+      state = { key, cwd, client, retry: false, waiting: false };
+      checked.set(row, state);
+    }
+    if (state.waiting) return;
+    const attempt = state;
+    attempt.waiting = true;
+    void Promise.resolve()
+      .then(() => {
+        if (
+          !disposed &&
+          checked.get(row) === attempt &&
+          row.isConnected() &&
+          row.hostId() === hostId &&
+          row.threadId() === threadId &&
+          row.placeholderPath?.() === cwd &&
+          options.getClient(hostId) === client
+        )
+          return check(hostId, threadId, cwd);
+        if (checked.get(row) === attempt) checked.delete(row);
+      })
+      .catch(() => {
+        if (disposed || checked.get(row) !== attempt) return;
+        const automaticRetry = !attempt.retry;
+        attempt.retry = true;
+        const timer = setTimeout(() => {
+          placeholderRetryTimers.delete(timer);
+          if (checked.get(row) !== attempt) return;
+          attempt.waiting = false;
+          if (automaticRetry) scheduleScan([row]);
+        }, 300);
+        placeholderRetryTimers.add(timer);
+      });
+  }
+
   const scan = (): void => {
     scanScheduled = false;
     if (disposed) return;
@@ -423,6 +535,7 @@ export function installRendererSidebarAgentIcons(options: {
     // this synchronous scan, never retain it across frames or connection changes.
     const pluginsByHost = new Map<string, readonly HarnessPluginDescriptor[] | undefined>();
     const getPlugin = (hostId: string, agent: string): HarnessPluginDescriptor | undefined => {
+      if (agent === "codex") return undefined;
       if (!pluginsByHost.has(hostId)) pluginsByHost.set(hostId, options.getPlugins?.(hostId));
       return pluginsByHost.get(hostId)?.find(({ id }) => id === agent);
     };
@@ -439,34 +552,43 @@ export function installRendererSidebarAgentIcons(options: {
         continue;
       }
       const threadId = hostThreadIdSchema.safeParse(row.threadId());
-      trackRowThread(row, threadId.success ? ownershipKey(hostId, threadId.data) : undefined);
+      const key = threadId.success ? ownershipKey(hostId, threadId.data) : undefined;
+      trackRowThread(row, key);
       const localAgent = options.getLocalAgent?.({
         hostId,
         threadId: threadId.success ? threadId.data : null,
         draftId: row.draftId(),
       });
+      const cached = key ? ownershipByThread.get(key) : undefined;
       if (localAgent !== null && localAgent !== undefined) {
-        if (threadId.success) {
-          const key = ownershipKey(hostId, threadId.data);
-          ownershipByThread.set(key, localAgent === "codex" ? null : localAgent);
-          clearOwnershipRetry(key);
+        // A duplicate Composer row shares the same ownership entry as the path row.
+        const verifyPlaceholder =
+          key &&
+          (cached?.stale || cached?.client) &&
+          hostId.startsWith("remote-ssh") &&
+          [...(rowsByThread.get(key) ?? [])].some((candidate) => candidate.placeholderPath?.());
+        if (!verifyPlaceholder) {
+          if (key) {
+            ownershipByThread.set(key, { agent: localAgent, stale: false });
+            clearOwnershipRetry(key);
+          }
+          row.render(localAgent, getPlugin(hostId, localAgent));
+          continue;
         }
-        if (localAgent === "codex") row.clear();
-        else row.render(localAgent, getPlugin(hostId, localAgent));
-        continue;
       }
-      if (!threadId.success) {
+      if (!threadId.success || !key) {
         row.clear();
         continue;
       }
-      const key = ownershipKey(hostId, threadId.data);
-      if (ownershipByThread.has(key)) {
-        const agent = ownershipByThread.get(key);
-        if (agent) row.render(agent, getPlugin(hostId, agent));
-        else row.clear();
-        continue;
-      }
-      row.clear();
+      if (cached) {
+        // Revalidation must not remove a known icon while its reply is pending.
+        row.render(cached.agent, getPlugin(hostId, cached.agent));
+        if (!cached.stale) {
+          if (cached.agent === "codex" && cached.client)
+            checkPlaceholder(row, hostId, threadId.data, cached.client);
+          continue;
+        }
+      } else row.clear();
       if (!pending.has(key) && !failed.has(key)) {
         let unresolved = unresolvedByHost.get(hostId);
         if (!unresolved) {
@@ -502,13 +624,26 @@ export function installRendererSidebarAgentIcons(options: {
   scan();
 
   return {
+    remoteThreadClosed(hostId, threadId) {
+      const key = ownershipKey(hostId, threadId);
+      const rows = rowsByThread.get(key);
+      if (!rows || ![...rows].some((row) => row.placeholderPath?.())) return;
+      for (const row of rows) checked.delete(row);
+      const cached = ownershipByThread.get(key);
+      if (cached) cached.stale = true;
+      failed.delete(key);
+      scheduleScan(rows);
+    },
     refresh() {
       if (disposed) return;
       failed.clear();
       for (const timer of ownershipRetryTimers.values()) clearTimeout(timer);
       ownershipRetryTimers.clear();
       ownershipRetryAttempts.clear();
-      for (const key of provisionalCodex) ownershipByThread.delete(key);
+      for (const key of provisionalCodex) {
+        const cached = ownershipByThread.get(key);
+        if (cached) cached.stale = true;
+      }
       provisionalCodex.clear();
       scheduleScan(dom.rows());
     },
@@ -516,6 +651,8 @@ export function installRendererSidebarAgentIcons(options: {
       if (disposed) return;
       disposed = true;
       stopObserving();
+      for (const timer of placeholderRetryTimers) clearTimeout(timer);
+      placeholderRetryTimers.clear();
       for (const row of dirtyRows) row.clear();
       dirtyRows.clear();
       rowsByThread.clear();

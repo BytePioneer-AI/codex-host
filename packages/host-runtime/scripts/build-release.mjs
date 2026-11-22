@@ -19,9 +19,25 @@ const forbiddenBundleReferences = ["sourceMappingURL="];
 const allowedRuntimePackages = new Set([
   "@deepseek-ai/cordis",
   "@deepseek-ai/cosmokit",
+  "@modelcontextprotocol/sdk",
+  "content-type",
+  "cross-spawn",
   "diff",
+  "eventsource-parser",
+  "isexe",
+  "path-key",
+  "pkce-challenge",
+  "shebang-command",
+  "shebang-regex",
+  "which",
   "ws",
+  "yaml",
   "zod",
+  // Cross-process writes to the shared Desktop extension selection.
+  "proper-lockfile",
+  "graceful-fs",
+  "retry",
+  "signal-exit",
 ]);
 
 function normalizedInputPath(value) {

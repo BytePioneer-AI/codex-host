@@ -70,7 +70,7 @@ export function mapQoderSlashCommands(
     if (typeof rawName !== "string") continue;
     const cleanName = rawName.replace(/^\//, "").trim().toLowerCase();
     // Qoder does not tell skills and commands apart.
-    if (!cleanName || isExcludedLiveCommand(cleanName, "command")) continue;
+    if (!cleanName || isExcludedLiveCommand(cleanName)) continue;
     const id = `qoder.${cleanName}`;
     if (seenIds.has(id)) continue;
     seenIds.add(id);

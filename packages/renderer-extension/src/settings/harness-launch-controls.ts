@@ -89,6 +89,8 @@ export function createHarnessLaunchControls(
       show(value);
     })
     .catch(() => {
+      // Saving or resetting replaces unreadable settings without reading them first.
+      loaded = true;
       status.textContent = messages.launchPathLoadError;
     })
     .finally(() => {

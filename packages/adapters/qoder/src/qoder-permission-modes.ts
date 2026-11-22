@@ -70,3 +70,16 @@ export function mapToQoderPermissionMode(
   }
   return undefined;
 }
+
+/** Plan is a separate SDK control (`planMode` / `setPlanMode`), not `permissionMode: "plan"`. */
+export function isQoderPlanModeId(id: HarnessPermissionModeId | undefined): boolean {
+  return String(id ?? "") === "plan";
+}
+
+/** Map harness mode to SDK permissionMode, excluding plan (use planMode instead). */
+export function mapToQoderPermissionModeExcludingPlan(
+  id: HarnessPermissionModeId | undefined,
+): QoderPermissionMode | undefined {
+  if (isQoderPlanModeId(id)) return undefined;
+  return mapToQoderPermissionMode(id);
+}

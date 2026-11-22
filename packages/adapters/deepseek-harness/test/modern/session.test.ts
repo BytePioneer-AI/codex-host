@@ -1,3 +1,7 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexTurnProjector } from "@codexhost/protocol-core";
 
@@ -1365,6 +1369,225 @@ describe("DeepSeek Harness Modern Session", () => {
       outcome: { status: "succeeded", checkpoint: { checkpointId: "v4-turn-end:11" } },
     });
     await test.session.close();
+  });
+
+  it("keeps a live Turn healthy through DSH 0.2.2-rc.2 named children and Team records", async () => {
+    const test = setup([() => accepted()], [], ["request-1"]);
+    const outputs = lifecycleOutputs(test.session);
+    const id = turnId("host-turn-1");
+    await test.session.execute({
+      type: "turn.start",
+      turnId: id,
+      input: [{ type: "text", text: "delegate" }],
+    });
+    test.feed.push(event(0, "team/mode", { enabled: true }));
+    test.feed.push(event(1, "turn/start", { turn: 1 }));
+    test.feed.push(event(2, "step/start", { turn: 1, step: 1 }));
+    test.feed.push(userMessage(3, "delegate", "request-1"));
+    expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
+    test.feed.push(
+      event(4, "subagent/catalog", {
+        version: 3,
+        childId: "child",
+        childCreatedAt: 1,
+        mode: "continuable",
+        label: "review",
+        name: "reviewer",
+      }),
+    );
+    test.feed.push(
+      event(5, "team/task", {
+        version: 2,
+        teamId: SESSION_ID,
+        task: {
+          id: "task-1",
+          revision: 2,
+          subject: "review",
+          description: "review the change",
+          status: "in_progress",
+          ownerId: "child",
+          ownerName: "reviewer",
+          blockedBy: [],
+          writeScopes: [],
+        },
+      }),
+    );
+    test.feed.push(finalAssistantMessage(6, 1, "delegated", "think"));
+    test.feed.push(event(7, "step/end", { turn: 1, step: 1 }));
+    test.feed.push(event(8, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+
+    const emitted = await eventsThrough(outputs, "turn.completed");
+    expect(emitted.some((item) => item.type === "session.faulted")).toBe(false);
+    expect(emitted.at(-1)).toMatchObject({
+      type: "turn.completed",
+      turnId: id,
+      outcome: { status: "succeeded", checkpoint: { checkpointId: "v4-turn-end:8" } },
+    });
+    await test.session.close();
+  });
+
+  it("streams relative local media as absolute paths, live and in history", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexhost-dsh-media-"));
+    const shots = path.join(workspace, "shots");
+    try {
+      await mkdir(shots);
+      await writeFile(path.join(shots, "a.png"), "png");
+      await writeFile(path.join(shots, "b.png"), "png");
+      const feed = new EventFeed();
+      const remote = new FakeRemote([() => accepted()]);
+      const session = new ModernHarnessSession({
+        remote,
+        journal: {
+          header: { version: 4, id: SESSION_ID, createdAt: 1, isSeeded: false, cwd: workspace },
+          cursor: -1,
+          projections: { asOfSeq: -1, values: {} },
+          events: [],
+          live: feed,
+          close: () => {
+            feed.finish();
+            return Promise.resolve();
+          },
+        },
+        control: new FakeControl(),
+        eventGateway: new ModernEventGateway(remote),
+        modelCatalog: MODEL_CATALOG,
+        permissionModes: null,
+        sessionId: SESSION_ID,
+        randomUUID: () => "request-1",
+        now: () => 10,
+      });
+      const outputs = lifecycleOutputs(session);
+      const id = turnId("host-turn-1");
+      await session.execute({
+        type: "turn.start",
+        turnId: id,
+        input: [{ type: "text", text: "show" }],
+      });
+      feed.push(event(0, "turn/start", { turn: 1 }));
+      feed.push(event(1, "step/start", { turn: 1, step: 1 }));
+      feed.push(userMessage(2, "show", "request-1"));
+      expect(await nextEvent(outputs)).toEqual({ type: "turn.started", turnId: id });
+      // Relative paths resolve against the agent's current directory, then the Session's.
+      feed.push(event(3, "working-directory/change", { cwd: shots }));
+      const stream = new LiveAttempts(feed);
+      stream.start("attempt-1", 3);
+      stream.chunk({ type: "text-delta", index: 0, text: "![a](shots/" });
+      stream.chunk({ type: "text-delta", index: 0, text: "a.png) and ![b](b.p" });
+      stream.chunk({ type: "text-delta", index: 0, text: "ng)" });
+      feed.push(finalAssistantMessage(4, 1, "![a](shots/a.png) and ![b](b.png)", "think"));
+      stream.commit(4);
+      feed.push(event(5, "step/end", { turn: 1, step: 1 }));
+      feed.push(event(6, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+      const emitted = await eventsThrough(outputs, "turn.completed");
+
+      const a = path.join(shots, "a.png").replaceAll("\\", "/");
+      const b = path.join(shots, "b.png").replaceAll("\\", "/");
+      const agent = emitted.find(
+        (entry) => entry.type === "item.started" && entry.item.type === "agentMessage",
+      );
+      const agentId = agent?.type === "item.started" ? agent.item.itemId : undefined;
+      expect(
+        emitted.flatMap((entry) =>
+          entry.type === "item.updated" &&
+          entry.itemId === agentId &&
+          entry.update.type === "text.append"
+            ? [entry.update.text]
+            : [],
+        ),
+      ).toEqual(["![a](", `${a}) and ![b](`, `${b})`]);
+      const text = `![a](${a}) and ![b](${b})`;
+      expect(emitted).toContainEqual(
+        expect.objectContaining({
+          type: "item.completed",
+          snapshot: {
+            item: expect.objectContaining({ itemId: agentId, text }),
+            outcome: { status: "succeeded" },
+          },
+        }),
+      );
+      // The Host accepts a completion only when it matches the appended text.
+      const ui = new CodexTurnProjector({
+        threadId: "dsh-media",
+        turnId: id,
+        cwd: workspace,
+        startedAtMs: 1_000,
+      });
+      ui.project({ type: "turn.started", turnId: id });
+      for (const entry of emitted) {
+        if (
+          entry.type === "item.started" ||
+          entry.type === "item.updated" ||
+          entry.type === "item.completed"
+        ) {
+          ui.project(entry);
+        }
+      }
+
+      const snapshot = await session.readSnapshot();
+      expect(snapshot.ok && snapshot.value.turns[0]?.items.map(({ item }) => item)).toContainEqual(
+        expect.objectContaining({ type: "agentMessage", text }),
+      );
+      await session.close();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves resumed media against the directory of its message, not a later one", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexhost-dsh-media-"));
+    const shots = path.join(workspace, "shots");
+    const later = path.join(workspace, "later");
+    try {
+      await mkdir(shots);
+      await mkdir(later);
+      await writeFile(path.join(shots, "a.png"), "png");
+      const feed = new EventFeed();
+      const session = new ModernHarnessSession({
+        remote: new FakeRemote([]),
+        journal: {
+          header: { version: 4, id: SESSION_ID, createdAt: 1, isSeeded: false, cwd: workspace },
+          cursor: 6,
+          projections: { asOfSeq: -1, values: {} },
+          // The incomplete Turn changes directory after the message naming the media.
+          events: [
+            event(0, "turn/start", { turn: 1 }),
+            event(1, "step/start", { turn: 1, step: 1 }),
+            userMessage(2, "show", "old-request"),
+            event(3, "working-directory/change", { cwd: shots }),
+            finalAssistantMessage(4, 1, "![a](a.png)", "think"),
+            event(5, "step/end", { turn: 1, step: 1 }),
+            event(6, "working-directory/change", { cwd: later }),
+          ],
+          live: feed,
+          close: () => {
+            feed.finish();
+            return Promise.resolve();
+          },
+        },
+        control: new FakeControl(),
+        eventGateway: new ModernEventGateway(new FakeRemote([])),
+        modelCatalog: MODEL_CATALOG,
+        permissionModes: null,
+        sessionId: SESSION_ID,
+        randomUUID: () => "autonomous-resume",
+        now: () => 10,
+      });
+      const outputs = lifecycleOutputs(session);
+      const a = path.join(shots, "a.png").replaceAll("\\", "/");
+      let agentText: string | undefined;
+      while (agentText === undefined) {
+        const entry = await nextEvent(outputs);
+        if (entry.type === "item.completed" && entry.snapshot.item.type === "agentMessage") {
+          agentText = entry.snapshot.item.text;
+        }
+      }
+      expect(agentText).toBe(`![a](${a})`);
+      feed.push(event(7, "turn/end", { turn: 1, reason: { kind: "completed" } }));
+      await eventsThrough(outputs, "turn.completed");
+      await session.close();
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 
   it("keeps a live Turn healthy through the DSH 0.2.1-rc.2 search request with disabled thinking", async () => {
@@ -3704,7 +3927,14 @@ describe("DeepSeek Harness Modern Session", () => {
       turnId: hostTurnId,
       input: [{ type: "text", text: "go" }],
     });
-    test.session.onDelivery(approvalDelivery("event-allow", allow));
+    test.session.onDelivery(
+      approvalDelivery("event-allow", allow, {
+        toolName: "write",
+        callId: "call-1",
+        reason: "escalate sandbox",
+        displayReason: { en: "Allow write?", zh: "允许写入？" },
+      }),
+    );
     test.feed.push(event(0, "turn/start", { turn: 1 }));
     test.feed.push(event(1, "step/start", { turn: 1, step: 1 }));
     test.feed.push(userMessage(2, "go", "request-early"));
@@ -3808,6 +4038,13 @@ describe("DeepSeek Harness Modern Session", () => {
               options: [{ label: "Apply" }, { label: "Revise" }],
               intent: { kind: "plan-review", approve: "Apply" },
             },
+            {
+              id: "consent",
+              question: "Allow Calculator?",
+              detail: "Calculator: view and control",
+              options: [{ label: "Allow" }, { label: "Deny" }],
+              intent: { kind: "approval", approve: "Allow", reject: "Deny" },
+            },
           ],
         },
         respond,
@@ -3881,6 +4118,18 @@ describe("DeepSeek Harness Modern Session", () => {
           allowOther: false,
           optional: false,
         },
+        {
+          id: "consent",
+          type: "choice",
+          prompt: "Allow Calculator?\n\nCalculator: view and control",
+          options: [
+            { value: "Allow", label: "Allow" },
+            { value: "Deny", label: "Deny" },
+          ],
+          multiple: false,
+          allowOther: false,
+          optional: false,
+        },
       ],
     });
     await expect(
@@ -3895,6 +4144,7 @@ describe("DeepSeek Harness Modern Session", () => {
             multi: ["Tests", "Docs"],
             custom: ["Elsewhere"],
             plan: ["Apply"],
+            consent: ["Deny"],
           },
         },
       }),
@@ -3906,6 +4156,7 @@ describe("DeepSeek Harness Modern Session", () => {
         { id: "multi", selected: ["Tests", "Docs"] },
         { id: "custom", selected: [], custom: "Elsewhere" },
         { id: "plan", selected: ["Apply"] },
+        { id: "consent", selected: ["Deny"] },
       ],
     });
     expect(await nextEvent(outputs)).toMatchObject({

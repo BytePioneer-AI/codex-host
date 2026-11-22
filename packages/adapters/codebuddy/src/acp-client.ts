@@ -9,6 +9,7 @@ import {
   type SessionNotification,
 } from "@agentclientprotocol/sdk";
 import { CodeBuddyCopyCleanup } from "./copy-cleanup.js";
+import { codeBuddyAcpOutput } from "./acp-stdio.js";
 import { codeBuddyInvocation } from "./command.js";
 import { bounded, CodeBuddyError, record } from "./common.js";
 
@@ -120,7 +121,10 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
       ndJsonStream(
         Writable.toWeb(this.#child.stdin) as Parameters<typeof ndJsonStream>[0],
         Readable.toWeb(
-          this.#copyCleanup?.protocolOutput(this.#child.stdout) ?? this.#child.stdout,
+          this.#copyCleanup?.protocolOutput(this.#child.stdout) ??
+            (invocation.arguments.includes("--serve")
+              ? codeBuddyAcpOutput(this.#child.stdout)
+              : this.#child.stdout),
         ) as Parameters<typeof ndJsonStream>[1],
       ),
     );

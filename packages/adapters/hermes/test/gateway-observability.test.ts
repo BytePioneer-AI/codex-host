@@ -33,6 +33,7 @@ function fixture() {
       commands: {
         "/audit": { desktop: null, argument_mode: "text" },
         "/late-plugin": { desktop: null, argument_mode: null },
+        "/skill": { desktop: null, argument_mode: "text" },
         "/model": { desktop: "hidden", argument_mode: "text" },
         "/hb": { desktop: null, argument_mode: "text" },
         "/future-builtin": { desktop: null, argument_mode: "text" },
@@ -44,6 +45,7 @@ function fixture() {
           pairs: [
             ["/audit", "Plugin audit"],
             ["/late-plugin", "Beyond completion cap"],
+            ["/skill", "Skill"],
           ],
         },
         { name: "User commands", pairs: [["/alias", "Quick alias"]] },
@@ -57,7 +59,7 @@ function fixture() {
     if (method === "session.usage") return await state.usage;
     if (method === "complete.slash") return { items: state.items };
     if (method === "commands.catalog") return state.catalog;
-    if (method === "prompt.submit") return { status: "streaming" };
+    if (method === "prompt.submit") return { status: "queued" };
     if (method === "slash.exec") return { output: "Native plugin output" };
     if (method === "session.compress") return { status: "compressed", summary: { noop: false } };
     return {};
@@ -267,10 +269,12 @@ describe("Hermes safe dynamic command directory", () => {
     ).toBe("text");
     expect(f.request).toHaveBeenCalledWith(
       "complete.slash",
-      { session_id: "runtime", cwd: "/workspace", text: "/" },
+      { session_id: "runtime", text: "/" },
       f.raw.timeoutMs,
       false,
     );
+    expect(catalog.value.commands.every((command) => command.kind === undefined)).toBe(true);
+    expect((await f.start("/skill arguments")).ok).toBe(false);
     expect((await f.start("/hb every minute")).ok).toBe(false);
     expect((await f.start("/alias")).ok).toBe(false);
     expect((await f.start("/future-builtin")).ok).toBe(false);
@@ -279,6 +283,16 @@ describe("Hermes safe dynamic command directory", () => {
         ([method]) => method === "prompt.submit" || method === "slash.exec",
       ),
     ).toBe(false);
+    await f.session.close();
+  });
+  it("excludes completion-reported skills even when plugin metadata advertises the same entry", async () => {
+    const f = fixture();
+    f.state.items.push({ text: "audit", kind: "skill" });
+    const catalog = await f.session.commands.list();
+    expect(catalog).toMatchObject({ ok: true });
+    if (!catalog.ok) throw new Error("catalog unavailable");
+    expect(catalog.value.commands.map(({ invocation }) => invocation)).not.toContain("/audit");
+    expect(catalog.value.commands.map(({ invocation }) => invocation)).toContain("/late-plugin");
     await f.session.close();
   });
   it("dispatches the advertised plugin with intact arguments and no fabricated history identity", async () => {

@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import { parseHostUsage, parseHostUsageRequest } from "../src/index.js";
 
+it("preserves and validates declarative Composer countdowns", () => {
+  const composerIndicators = [{ kind: "countdown", id: "cache", expiresAtUnix: 1234 }];
+  expect(parseHostUsage({ composerIndicators })).toEqual({ composerIndicators });
+  expect(() =>
+    parseHostUsage({ composerIndicators: [{ ...composerIndicators[0], kind: "action" }] }),
+  ).toThrow();
+});
+
 describe("Harness Usage", () => {
   it("accepts complete normalized session cache totals independently of billing", () => {
     const sessionCacheUsage = { inputTokens: 100, cachedInputTokens: 40 };
@@ -21,7 +29,7 @@ describe("Harness Usage", () => {
       expect(() => parseHostUsage({ sessionCacheUsage: invalid })).toThrow();
     }
   });
-  it.each(["outputTokensPerSecond", "apiOutputTokensPerSecond"])(
+  it.each(["outputTokensPerSecond", "apiOutputTokensPerSecond", "sessionOutputTokensPerSecond"])(
     "accepts fractional %s without relaxing token counts",
     (field) => {
       expect(parseHostUsage({ [field]: 42.7 })).toEqual({ [field]: 42.7 });
@@ -150,7 +158,24 @@ describe("Harness Usage request", () => {
     expect(parseHostUsageRequest(base)).toEqual(base);
   });
 
+  it.each([0, 15, 20])(
+    "accepts timed output Tokens within the output total: %i",
+    (timedOutputTokens) => {
+      const request = { ...base, timedOutputTokens, startedAtMs: 1_000, completedAtMs: 2_000 };
+      expect(parseHostUsageRequest(request)).toEqual(request);
+    },
+  );
+
   it.each([
+    { ...base, timedOutputTokens: 15 },
+    { ...base, timedOutputTokens: 15, startedAtMs: 1_000 },
+    { ...base, timedOutputTokens: 15, completedAtMs: 2_000 },
+    ...[-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "15", 21].map((timedOutputTokens) => ({
+      ...base,
+      timedOutputTokens,
+      startedAtMs: 1_000,
+      completedAtMs: 2_000,
+    })),
     { ...base, requestId: "" },
     { ...base, inputTokens: undefined },
     { ...base, outputTokens: -1 },

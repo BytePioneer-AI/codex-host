@@ -15,7 +15,13 @@ afterEach(async () => {
   );
 });
 
-async function fixture(provider: string, cli: string, extraEnvironment: NodeJS.ProcessEnv = {}) {
+async function fixture(
+  provider: string,
+  cli: string,
+  extraEnvironment: NodeJS.ProcessEnv = {},
+  argumentsOverride?: string[],
+  cliVersion?: string,
+) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "wb-bootstrap-"));
   directories.push(directory);
   const platform = process.platform === "win32" ? "win32" : "darwin";
@@ -31,10 +37,23 @@ async function fixture(provider: string, cli: string, extraEnvironment: NodeJS.P
   const preload = path.join(directory, "binding.cjs");
   await mkdir(path.dirname(script), { recursive: true });
   await writeFile(script, cli);
+  if (cliVersion !== undefined) {
+    await writeFile(
+      path.join(path.dirname(path.dirname(script)), "package.json"),
+      JSON.stringify({
+        name: "@genie/agent-cli",
+        version: "0.0.0",
+        publishConfig: { customPackage: { version: cliVersion } },
+      }),
+    );
+  }
   await writeFile(preload, `process._linkedBinding = (name) => { ${provider} };`);
   const environment: NodeJS.ProcessEnv = Object.fromEntries(
     Object.entries(process.env).filter(
-      ([name]) => !name.startsWith("CODEBUDDY_SIDECAR_") && name !== "WORKBUDDY_AT_REST_ENCRYPTION",
+      ([name]) =>
+        !name.startsWith("CODEXHOST_") &&
+        !name.startsWith("CODEBUDDY_SIDECAR_") &&
+        name !== "WORKBUDDY_AT_REST_ENCRYPTION",
     ),
   );
   Object.assign(environment, extraEnvironment);
@@ -42,6 +61,7 @@ async function fixture(provider: string, cli: string, extraEnvironment: NodeJS.P
     { ...environment, CODEXHOST_WORKBUDDY_COMMAND: bundle },
     false,
     { platform, isExecutable: () => true, isDirectory: () => false },
+    argumentsOverride,
   );
   // Node simulates the selected Electron runtime; its native binding is the only mocked boundary.
   return run(process.execPath, ["--require", preload, ...invocation.arguments], {
@@ -52,6 +72,55 @@ async function fixture(provider: string, cli: string, extraEnvironment: NodeJS.P
 }
 
 describe("WorkBuddy bundled credential startup", () => {
+  it("authenticates runtime readiness before removing the bootstrap directory", async () => {
+    const secret = Buffer.alloc(32, 7).toString("base64");
+    const { stdout, stderr } = await fixture(
+      `return { loggerGet: () => ${JSON.stringify(JSON.stringify({ version: 1, atRestSecretKey: secret }))} };`,
+      `
+      const assert = require('node:assert/strict');
+      const net = require('node:net');
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const env = process.env;
+      const readyPath = env.CODEBUDDY_SIDECAR_READY_SOCKET;
+      const readyParams = { protocolVersion:1, sessionId:env.CODEBUDDY_SIDECAR_READY_SESSION_ID, token:env.CODEBUDDY_SIDECAR_READY_TOKEN, pid:process.pid, port:12345 };
+      const report = overrides => new Promise((resolve, reject) => {
+        const socket = net.createConnection(readyPath);
+        let output = '';
+        socket.on('error', reject);
+        socket.on('connect', () => socket.write(JSON.stringify({jsonrpc:'2.0',id:'native-ready',method:'session.ready',params:{...readyParams,...overrides}})+'\\n'));
+        socket.on('data', data => { output += data; });
+        socket.on('close', () => resolve(output));
+      });
+      const server = net.createServer(socket => {
+        let input = '';
+        socket.on('data', chunk => {
+          input += chunk;
+          if (!input.includes('\\n')) return;
+          socket.end(JSON.stringify({ok:true,policy:'fields'})+'\\n');
+          server.close();
+        });
+        socket.on('close', async () => {
+          if (process.platform !== 'win32') assert.equal(fs.existsSync(path.dirname(readyPath)), true);
+          for (const invalid of [{token:'wrong'}, {pid:process.pid+1}, {port:0}, {sessionId:'wrong'}, {protocolVersion:2}]) assert.equal(await report(invalid), '');
+          const reply = JSON.parse(await report({}));
+          assert.deepEqual(reply, {jsonrpc:'2.0',id:'native-ready',result:{ok:true}});
+          setImmediate(() => {
+            if (process.platform !== 'win32') assert.equal(fs.existsSync(path.dirname(readyPath)), false);
+            console.log('ready-accepted');
+          });
+        });
+      });
+      server.listen(env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET);
+      `,
+      {},
+      ["--acp", "--serve"],
+    );
+    expect(stdout.trim()).toBe("ready-accepted");
+    expect(stderr).toBe("");
+    expect(stdout + stderr).not.toContain(secret);
+  });
+
   it.each([
     ["unset", undefined],
     ["fields", "fields"],
@@ -106,6 +175,68 @@ describe("WorkBuddy bundled credential startup", () => {
     expect(stdout + stderr).not.toContain("fixture-login-token");
   });
 
+  it.each([
+    ["legacy", "2.137.1", "mode", "required", undefined],
+    ["legacy with an explicit fields policy", "2.137.1", "mode", "required", "fields"],
+    ["legacy with an explicit required policy", "2.137.1", "mode", "required", "required"],
+    ["new", "2.156.0", "policy", "fields", undefined],
+    ["new", "2.161.0", "policy", "fields", undefined],
+    ["new with an explicit required policy", "2.161.0", "policy", "fields", "required"],
+    ["placeholder", "0.0.0", "policy", "fields", undefined],
+  ] as const)(
+    "selects the credential bootstrap protocol for %s (CLI %s)",
+    async (_name, version, field, value, requestedPolicy) => {
+      const secret = Buffer.alloc(32, 7).toString("base64");
+      const { stdout, stderr } = await fixture(
+        `return { loggerGet: () => ${JSON.stringify(JSON.stringify({ version: 1, atRestSecretKey: secret }))} };`,
+        `
+        const assert = require('node:assert/strict');
+        const net = require('node:net');
+        const env = process.env;
+        const expectedField = ${JSON.stringify(field)};
+        const expectedValue = ${JSON.stringify(value)};
+        assert.equal(env.WORKBUDDY_AT_REST_ENCRYPTION, expectedValue);
+        const server = net.createServer(socket => {
+          let data = '';
+          socket.on('data', chunk => {
+            data += chunk;
+            if (!data.includes('\\n')) return;
+            const request = JSON.parse(data);
+            assert.deepEqual(
+              Object.keys(request.bootstrap).sort(),
+              ['asymmetricUnavailable', 'symmetricKey', expectedField, 'version'].sort(),
+            );
+            assert.equal(request.bootstrap[expectedField], expectedValue);
+            socket.end(JSON.stringify({ok:true,[expectedField]:expectedValue}) + (expectedField === 'policy' ? '\\n' : ' '));
+            server.close();
+            console.log('protocol');
+          });
+        });
+        server.listen(env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET);
+        `,
+        requestedPolicy === undefined ? {} : { WORKBUDDY_AT_REST_ENCRYPTION: requestedPolicy },
+        undefined,
+        version,
+      );
+      expect(stdout.trim()).toBe("protocol");
+      expect(stderr).toBe("");
+    },
+  );
+
+  it("fails closed when the native server never reports readiness", async () => {
+    const secret = Buffer.alloc(32, 7).toString("base64");
+    await expect(
+      fixture(
+        `const timer = global.setTimeout; global.setTimeout = (callback, delay, ...args) => timer(callback, delay === 15000 ? 50 : delay, ...args); return {loggerGet: () => ${JSON.stringify(JSON.stringify({ version: 1, atRestSecretKey: secret }))}};`,
+        `const net = require('node:net'); const server = net.createServer(socket => {
+        socket.once('data', () => { socket.end(JSON.stringify({ok:true,policy:'fields'})+'\\n'); server.close(); });
+      }); server.listen(process.env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET);`,
+        {},
+        ["--acp", "--serve"],
+      ),
+    ).rejects.toMatchObject({ code: 1, stderr: "WorkBuddy runtime readiness timed out\n" });
+  });
+
   it("keeps older Electron runtimes without the key provider usable", async () => {
     const { stdout } = await fixture(
       `throw Error('No such binding was linked: ' + name);`,
@@ -133,14 +264,14 @@ describe("WorkBuddy bundled credential startup", () => {
     expect(stderr).toBe("");
   });
 
-  it.each(["disabled", "required"])("preserves the native %s encryption policy", async (policy) => {
+  it("preserves the native disabled encryption policy", async () => {
     const { stdout, stderr } = await fixture(
       `process.stderr.write('Unexpected key provider access'); throw Error('Native policy');`,
       `const assert = require('node:assert/strict');
-      assert.equal(process.env.WORKBUDDY_AT_REST_ENCRYPTION, ${JSON.stringify(policy)});
+      assert.equal(process.env.WORKBUDDY_AT_REST_ENCRYPTION, 'disabled');
       assert.equal(process.env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET, undefined);
       console.log('native');`,
-      { WORKBUDDY_AT_REST_ENCRYPTION: policy },
+      { WORKBUDDY_AT_REST_ENCRYPTION: "disabled" },
     );
     expect(stdout.trim()).toBe("native");
     expect(stderr).toBe("");
@@ -202,12 +333,23 @@ describe("WorkBuddy bundled credential startup", () => {
     });
   });
 
-  it("stops when the native receiver does not acknowledge credential protection", async () => {
+  it.each([
+    ["rejects credential protection", '{"ok":false}\n'],
+    ["echoes the wrong policy", '{"ok":true,"policy":"disabled"}\n'],
+    ["omits the newline in the fields protocol", '{"ok":true,"policy":"fields"} '],
+  ])("stops when the native receiver %s", async (_name, reply) => {
     const secret = Buffer.alloc(32, 7).toString("base64");
     await expect(
       fixture(
         `return {loggerGet: () => ${JSON.stringify(JSON.stringify({ version: 1, atRestSecretKey: secret }))}};`,
-        `require('node:net').createServer(socket => socket.on('data', () => socket.end('{"ok":false}\\n'))).listen(process.env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET);`,
+        `const net = require('node:net');
+        const server = net.createServer(socket => {
+          socket.once('data', () => {
+            socket.end(${JSON.stringify(reply)});
+            server.close();
+          });
+        });
+        server.listen(process.env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET);`,
       ),
     ).rejects.toMatchObject({
       code: 1,

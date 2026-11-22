@@ -2,10 +2,11 @@ import type {
   ComposerAgentPhase,
   ExternalRendererAgent,
   RendererAgent,
-  RendererAgentAvailability,
+  PickerAgentAvailability,
 } from "./agent-selection-state.js";
 import { catalogModelForRef } from "@codexhost/shared-contracts";
 import type {
+  AccountBalanceSnapshot,
   AccountCreditsSnapshot,
   CodexAccountSummary,
   HarnessPluginDescriptor,
@@ -43,13 +44,20 @@ import {
   renderRendererUsageControl,
   type RendererUsageControl,
 } from "./renderer-usage-control.js";
+import {
+  mountRendererComposerIndicators,
+  type RendererComposerIndicators,
+} from "./renderer-composer-indicators.js";
 import type { RendererSettingsLocale } from "./settings/localization.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 import { isOrbitComposer } from "./renderer-composer-kind.js";
+import { hasNativeComposerRequest, isNativeComposerRequest } from "./renderer-composer-request.js";
 import {
   mountRendererHarnessCommandControl,
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
+import { observeRendererCompactComposer } from "./renderer-trigger-chip-style.js";
+import { isNativeModelRetryButton } from "./renderer-native-model-retry.js";
 
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
@@ -93,11 +101,13 @@ export interface ComposerAgentControl {
   nativeContextUsageControl?: NativeControlState | null;
   nativePermissionModeControlVerified: boolean;
   credits: RendererCreditsControl;
+  composerIndicators: RendererComposerIndicators;
   usage: RendererUsageControl | null;
   composerId: string;
   harnessCommands: RendererHarnessCommandControl;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
+  stopCompactLayout?: () => void;
 }
 
 export function eventElement(target: EventTarget | null): Element | null {
@@ -126,6 +136,7 @@ function isOwnedRendererControl(element: Element): boolean {
     element.hasAttribute("data-codexhost-permission-mode-control") ||
     element.hasAttribute("data-codexhost-usage-control") ||
     element.hasAttribute("data-codexhost-credits-control") ||
+    element.hasAttribute("data-codexhost-composer-indicators") ||
     element.hasAttribute("data-codexhost-harness-command-control")
   );
 }
@@ -164,12 +175,14 @@ function isTrailingActionNode(element: Element): boolean {
   return buttons.length > 0 && buttons.every((button) => isComposerTrailingActionButton(button));
 }
 
-export function sendButtonWithin(root: Element): HTMLButtonElement | null {
-  return (
-    [...root.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
-      isComposerSubmitButton(button),
-    ) ?? null
+export function composerButtonsWithin(root: Element): HTMLButtonElement[] {
+  return [...root.querySelectorAll<HTMLButtonElement>("button")].filter(
+    (button) => !isNativeComposerRequest(button),
   );
+}
+
+export function sendButtonWithin(root: Element): HTMLButtonElement | null {
+  return composerButtonsWithin(root).find(isComposerSubmitButton) ?? null;
 }
 
 function leftmostTrailingSibling(container: Element, before: Element): HTMLElement | null {
@@ -219,7 +232,9 @@ export function composerForEditor(editor: Element): Element | null {
 
 export function composerForElement(element: Element): Element | null {
   const composer = element.closest(CODEX_COMPOSER_SELECTOR);
-  return composer && !isOrbitComposer(composer) ? composer : null;
+  return composer && !hasNativeComposerRequest(composer) && !isOrbitComposer(composer)
+    ? composer
+    : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -254,9 +269,12 @@ export function isNativeModelControlCandidate(element: Element): boolean {
     if (
       isRecord(props) &&
       typeof props.onSelectModel === "function" &&
-      typeof props.onSelectReasoningEffort === "function" &&
       "reasoningEffort" in props &&
-      isRecord(props.fallbackPowerSelection)
+      ((typeof props.onSelectReasoningEffort === "function" &&
+        isRecord(props.fallbackPowerSelection)) ||
+        (element.getAttribute("data-composer-navigation-target") === "reasoning" &&
+          typeof props.onCommitPower === "function" &&
+          Array.isArray(props.powerSelections)))
     ) {
       return true;
     }
@@ -330,8 +348,15 @@ function nativePermissionModeControlForComposer(composer: Element): HTMLElement 
 
 function nativeModelControlForComposer(composer: Element): HTMLElement | null {
   const candidates = [
-    ...composer.querySelectorAll<HTMLElement>('button[aria-haspopup="menu"]'),
-  ].filter((element) => isNativeModelControlCandidate(element));
+    ...composer.querySelectorAll<HTMLElement>(
+      'button[aria-haspopup="menu"], button[data-composer-navigation-target="reasoning"]',
+    ),
+  ].filter(
+    (button) =>
+      !isOwnedRendererControl(button) &&
+      button.closest(CODEX_COMPOSER_SELECTOR) === composer &&
+      (isNativeModelControlCandidate(button) || isNativeModelRetryButton(button, composer)),
+  );
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
@@ -358,7 +383,7 @@ export function nativeContextUsageControlForComposer(composer: Element): HTMLEle
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
-function contractElementVisible(element: Element): boolean {
+export function contractElementVisible(element: Element): boolean {
   const typed = element as HTMLElement;
   const bounds = typed.getBoundingClientRect?.();
   if (!bounds || bounds.width <= 0 || bounds.height <= 0) return false;
@@ -386,11 +411,12 @@ export function inspectRendererComposerContract(
     trailingActionOwnerCount: 0,
   };
   for (const composer of composers) {
+    if (hasNativeComposerRequest(composer)) continue;
     if (contractElementVisible(composer)) result.visibleComposerCount += 1;
     const editors = [...composer.querySelectorAll<HTMLElement>(EDITOR_SELECTOR)].filter(
       contractElementVisible,
     );
-    const allButtons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
+    const allButtons = composerButtonsWithin(composer);
     const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
     if (editors.length === 1 && sendButton !== null) result.activeComposerCount += 1;
     if (sendButton) {
@@ -454,12 +480,10 @@ function refreshNativeContextUsageControl(control: ComposerAgentControl): void {
 
 function refreshNativeModelControl(control: ComposerAgentControl): void {
   const candidate = nativeModelControlForComposer(control.composer);
-  if (!candidate) return;
-  if (candidate !== control.nativeModelControl?.element) {
-    restoreNativeControl(control.nativeModelControl);
-    control.nativeModelControl = captureNativeControl(candidate);
-    syncRendererModelTriggerClass(control.modelPicker);
-  }
+  if (candidate === (control.nativeModelControl?.element ?? null)) return;
+  restoreNativeControl(control.nativeModelControl);
+  control.nativeModelControl = captureNativeControl(candidate);
+  if (candidate) syncRendererModelTriggerClass(control.modelPicker);
 }
 
 function usagePlacementAnchor(control: ComposerAgentControl): HTMLElement | null {
@@ -496,7 +520,7 @@ export function creditsPlacementAnchor(control: ComposerAgentControl): HTMLEleme
  * the Composer also contains our own controls, so skip their buttons.
  */
 function lastNativeButtonWithin(composer: Element): HTMLButtonElement | null {
-  const buttons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
+  const buttons = composerButtonsWithin(composer);
   for (let index = buttons.length - 1; index >= 0; index -= 1) {
     const button = buttons[index];
     if (button && !isInsideOwnedRendererControl(button, composer)) return button;
@@ -519,6 +543,7 @@ function isInsideOwnedRendererControl(element: Element, composer: Element): bool
  * next scan would dispose and remount the whole control (closing open menus).
  */
 export function refreshSendButton(control: ComposerAgentControl): HTMLButtonElement | null {
+  if (hasNativeComposerRequest(control.composer)) return null;
   const current = control.sendButton;
   if (current?.isConnected && control.composer.contains(current)) return current;
   // Only a Composer that was mounted through the unlabelled fallback keeps
@@ -643,6 +668,11 @@ export function reconcileComposerNativeControls(
   refreshTrailingClusterPlacement(control);
   refreshUsagePlacement(control);
   refreshCreditsPlacement(control);
+  control.composerIndicators?.place(
+    control.nativePermissionModeControlVerified
+      ? (control.nativePermissionModeControl?.element ?? null)
+      : null,
+  );
   setNativeControlHidden(control.nativeModelControl, hideModel);
   // Context usage is shared by Codex and external Harnesses. External Usage
   // data is projected into the same native Codex indicator, so it must remain
@@ -663,6 +693,7 @@ export function mountComposerAgentControl(
   onSelectThinking: (thinkingOptionId: string) => void,
   onSelectPermissionMode: (permissionModeId: string) => void,
   onOpenCommandMenu: () => void,
+  onRefreshModels?: () => void,
 ): ComposerAgentControl {
   // External Harnesses inject more footer chips than native Codex. Let the
   // thread column shrink under sidebar / narrow-window pressure so those chips
@@ -685,12 +716,18 @@ export function mountComposerAgentControl(
     onDownload,
     onOpenProviderPicker,
   );
-  const modelPicker = mountRendererModelPicker(composerId, onSelectModel, onSelectThinking);
+  const modelPicker = mountRendererModelPicker(
+    composerId,
+    onSelectModel,
+    onSelectThinking,
+    onRefreshModels,
+  );
   const permissionModePicker = mountRendererPermissionModePicker(
     composerId,
     onSelectPermissionMode,
   );
   const credits = mountRendererCreditsControl(composerId);
+  const composerIndicators = mountRendererComposerIndicators(composer);
 
   const toolbar = sendButton.parentElement;
   const harnessCommands = mountRendererHarnessCommandControl(
@@ -707,7 +744,7 @@ export function mountComposerAgentControl(
   }
 
   if (!toolbar) composer.append(modelPicker.root, picker.root);
-  const control = {
+  const control: ComposerAgentControl = {
     composer,
     composerId,
     root: picker.root,
@@ -748,14 +785,16 @@ export function mountComposerAgentControl(
     nativeContextUsageControl,
     nativePermissionModeControlVerified,
     credits,
+    composerIndicators,
     usage: null,
     harnessCommands,
     sendButton,
     sendDisabledBeforeSwitch: null,
-  } satisfies ComposerAgentControl;
+  };
   refreshTrailingClusterPlacement(control);
   refreshUsagePlacement(control);
   refreshCreditsPlacement(control);
+  control.stopCompactLayout = observeRendererCompactComposer(composer);
   return control;
 }
 
@@ -779,7 +818,7 @@ export function renderComposerAgentControl(
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
-  availability: Partial<Record<ExternalRendererAgent, RendererAgentAvailability>> = {},
+  availability: Partial<Record<ExternalRendererAgent, PickerAgentAvailability>> = {},
   modelView: ExternalModelControlView = { status: "idle" },
   permissionModeView: RendererPermissionModeControlView = { status: "idle" },
   usage: ThreadUsageSnapshot | null = null,
@@ -787,6 +826,7 @@ export function renderComposerAgentControl(
   locale: RendererSettingsLocale = "en",
   currentCodexAccount: CodexAccountSummary | null = null,
   ownershipError = false,
+  accountBalance: AccountBalanceSnapshot | null = null,
 ): boolean {
   if (control.usage === null) {
     control.usage = mountRendererUsageControl(control.composerId, locale);
@@ -809,7 +849,12 @@ export function renderComposerAgentControl(
   // native ownership verification still guards picker visibility and placement.
   const permissionModeBlocked =
     state.agent !== "codex" && !isPermissionModeControlReady(permissionModeView);
-  const submissionBlocked = switching || ownershipError || modelBlocked || permissionModeBlocked;
+  const submissionBlocked =
+    switching ||
+    ownershipError ||
+    (state.agent !== "codex" && adapterState !== "ready") ||
+    modelBlocked ||
+    permissionModeBlocked;
   if (submissionBlocked && control.sendDisabledBeforeSwitch === null) {
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;
     control.sendButton.disabled = true;
@@ -855,17 +900,22 @@ export function renderComposerAgentControl(
     permissionModeVisible,
     locale,
   );
+  control.composerIndicators?.render(
+    permissionModeVisible ? (usage?.composerIndicators ?? []) : [],
+    locale,
+  );
   if (control.usage) {
     renderRendererUsageControl(control.usage, usage, locale);
   }
   control.harnessCommands.setLocale(locale);
   control.harnessCommands.root.hidden = state.agent === "codex";
   control.harnessCommands.root.style.display = state.agent === "codex" ? "none" : "inline-flex";
-  renderRendererCreditsControl(control.credits, accountCredits, locale);
+  renderRendererCreditsControl(control.credits, accountCredits, locale, accountBalance);
   return state.agent !== "codex" && adapterState === "ready" && !submissionBlocked;
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {
+  control.stopCompactLayout?.();
   if (control.sendDisabledBeforeSwitch !== null) {
     control.sendButton.disabled = nativeSendDisabled(
       control.sendButton,
@@ -875,6 +925,7 @@ export function disposeComposerAgentControl(control: ComposerAgentControl): void
   restoreNativeControl(control.nativeModelControl);
   restoreNativeControl(control.nativeContextUsageControl);
   restoreNativeControl(control.nativePermissionModeControl);
+  control.composerIndicators?.dispose();
   control.credits.dispose();
   control.usage?.dispose();
   control.usage = null;

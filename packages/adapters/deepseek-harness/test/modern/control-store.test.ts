@@ -99,6 +99,20 @@ function projection(sessionId: string, key: string, value: unknown, seq: number)
   return { type: "projection", sessionId, key, value, seq };
 }
 
+/** DSH 0.2.2 lists every key one committed event changed in a single frame. */
+function projectionChanges(
+  sessionId: string,
+  seq: number,
+  changes: Readonly<Record<string, unknown>>,
+) {
+  return {
+    type: "projection",
+    sessionId,
+    seq,
+    changes: Object.entries(changes).map(([key, val]) => ({ key, val })),
+  };
+}
+
 async function openedStore(
   feed = new ControlFeed(),
   opening: unknown = baseline(),
@@ -794,6 +808,103 @@ describe("Modern control validation and lifecycle", () => {
     expect(() =>
       store.attach("s1", { asOfSeq: 2, values: { first: true, second: true } }),
     ).toThrowError(expect.objectContaining({ code: "resourceLimit" }));
+    await store.close();
+  });
+});
+
+describe("Modern multi-key projection frames", () => {
+  it("applies every key one committed event changed at the frame sequence", async () => {
+    const { feed, store } = await openedStore();
+    store.attach("s1", {
+      asOfSeq: 2,
+      values: { modelSelection: { model: "v4" }, inbox: [], title: "old" },
+    });
+    const model = vi.fn();
+    const inbox = vi.fn();
+    const title = vi.fn();
+    store.subscribe("s1", "modelSelection", model);
+    store.subscribe("s1", "inbox", inbox);
+    store.subscribe("s1", "title", title);
+    const waiting = store.waitFor("s1", "inbox", 2, (value) => Array.isArray(value), {
+      timeoutMs: 1_000,
+    });
+
+    feed.push(projectionChanges("s1", 3, { modelSelection: { model: "v4-pro" }, inbox: [1] }));
+
+    await expect(waiting).resolves.toEqual({ value: [1], seq: 3 });
+    expect(store.snapshot("s1")).toEqual({
+      modelSelection: { value: { model: "v4-pro" }, seq: 3 },
+      inbox: { value: [1], seq: 3 },
+      title: { value: "old", seq: 2 },
+    });
+    expect(model).toHaveBeenCalledOnce();
+    expect(inbox).toHaveBeenCalledOnce();
+    expect(title).not.toHaveBeenCalled();
+    expect(store.fault).toBeUndefined();
+    await store.close();
+  });
+
+  it("keeps per-key stale, identity, and conflict rules inside one frame", async () => {
+    const { feed, store } = await openedStore();
+    store.attach("s1", { asOfSeq: 5, values: { permission: { mode: "write" } } });
+    feed.push(projectionChanges("s1", 7, { plan: true }));
+    feed.push(projectionChanges("s1", 6, { plan: false, permission: { mode: "full" } }));
+    feed.push(projectionChanges("s1", 7, { plan: true }));
+    await vi.waitFor(() => {
+      expect(store.snapshot("s1")).toEqual({
+        permission: { value: { mode: "full" }, seq: 6 },
+        plan: { value: true, seq: 7 },
+      });
+    });
+    expect(store.fault).toBeUndefined();
+
+    feed.push(projectionChanges("s1", 7, { plan: false }));
+    await expectFault(store, "protocolError");
+    await store.close();
+  });
+
+  it.each([
+    { type: "projection", sessionId: "s1", seq: 1, changes: [] },
+    { type: "projection", sessionId: "s1", seq: 1, changes: {} },
+    {
+      type: "projection",
+      sessionId: "s1",
+      seq: 1,
+      changes: [
+        { key: "a", val: 1 },
+        { key: "a", val: 2 },
+      ],
+    },
+    { type: "projection", sessionId: "s1", seq: 1, changes: [{ key: "a", value: 1 }] },
+    { type: "projection", sessionId: "s1", seq: 1, changes: [{ key: "a" }] },
+    { type: "projection", sessionId: "s1", seq: 1, changes: [{ key: "a", val: 1, extra: 1 }] },
+    { type: "projection", sessionId: "s1", seq: 1, changes: [{ key: "", val: 1 }] },
+    { type: "projection", sessionId: "s1", seq: 1, changes: [{ key: "a", val: Number.NaN }] },
+    { type: "projection", sessionId: "s1", seq: -2, changes: [{ key: "a", val: 1 }] },
+    { type: "projection", seq: 1, changes: [{ key: "a", val: 1 }] },
+    {
+      type: "projection",
+      sessionId: "s1",
+      key: "a",
+      value: 1,
+      seq: 1,
+      changes: [{ key: "a", val: 1 }],
+    },
+  ])("faults on malformed multi-key frame %#", async (frame) => {
+    const { feed, store } = await openedStore();
+    store.attach("s1");
+    feed.push(frame);
+    await expectFault(store, "protocolError");
+    await store.close();
+  });
+
+  it("bounds the change list by the projection-key limit", async () => {
+    const { feed, store } = await openedStore(new ControlFeed(), baseline(), {
+      maxKeysPerSession: 1,
+    });
+    store.attach("s1");
+    feed.push(projectionChanges("s1", 1, { first: true, second: true }));
+    await expectFault(store, "resourceLimit");
     await store.close();
   });
 });

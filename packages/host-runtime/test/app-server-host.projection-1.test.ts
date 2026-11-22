@@ -190,8 +190,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
-  it("refreshes native-derived Account selection before returning an Account list", async () => {
-    const stale: CodexAccountListResult = {
+  it("returns the cached Account list and refreshes native selection only on request", async () => {
+    const cached: CodexAccountListResult = {
       version: 2,
       currentAccountId: null,
       phase: "ready",
@@ -199,19 +199,30 @@ describe("AppServerHost HarnessAdapter projection", () => {
       accounts: [],
     };
     const fresh: CodexAccountListResult = {
-      ...stale,
+      ...cached,
       currentAccountId: "native",
       revision: 2,
       accounts: [{ accountId: "native", label: "Observed native Account" }],
     };
     const refresh = vi.fn(async () => fresh);
-    const accountControl = Object.assign(new SingleNativeCodexAccount(() => stale), { refresh });
+    const accountControl = Object.assign(new SingleNativeCodexAccount(() => cached), { refresh });
     const fixture = createFixture({ accountControl });
     try {
       await fixture.ready;
       writeRequest(fixture.desktopInput, { id: 908, method: "codexhost/account/list", params: {} });
-      await expect(fixture.collector.waitFor((message) => message.id === 908)).resolves.toEqual({
+      expect(await fixture.collector.waitFor((message) => message.id === 908)).toEqual({
         id: 908,
+        result: cached,
+      });
+      expect(refresh).not.toHaveBeenCalled();
+
+      writeRequest(fixture.desktopInput, {
+        id: 909,
+        method: "codexhost/account/refresh",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => message.id === 909)).toEqual({
+        id: 909,
         result: fresh,
       });
       expect(refresh).toHaveBeenCalledOnce();
@@ -986,6 +997,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       (error: unknown) => outcomes.push(error),
     );
     try {
+      await fixture.ready;
       await vi.waitFor(() => expect(stopProcess).toHaveBeenCalled());
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(outcomes).toEqual([]);
@@ -1180,7 +1192,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const fixture = createFixture();
 
     try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      await fixture.ready;
+      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
       fixture.official.stdout.end();
 
       const outcome = await Promise.race([
@@ -1204,14 +1217,16 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const fixture = createFixture({ desktopOutput: new PassThrough({ highWaterMark: 1 }) });
 
     try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      await fixture.ready;
+      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
       fixture.desktopOutput.pause();
       fixture.official.stdout.write(
         `${JSON.stringify({ method: "synthetic/event", params: { payload: "x".repeat(32_768) } })}\n`,
       );
-      await vi.waitFor(() =>
-        expect(fixture.desktopOutput.listenerCount("drain")).toBeGreaterThan(0),
-      );
+      await vi.waitFor(() => {
+        expect(fixture.desktopOutput.writableNeedDrain).toBe(true);
+        expect(fixture.desktopOutput.writableLength).toBeGreaterThan(0);
+      });
       fixture.official.stdout.end();
 
       const outcome = await Promise.race([
@@ -1236,7 +1251,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const fixture = createFixture();
 
     try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      await fixture.ready;
+      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
       expect(
         fixture.official.stdin.write(Buffer.alloc(fixture.official.stdin.writableHighWaterMark)),
       ).toBe(false);
@@ -1270,7 +1286,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const fixture = createFixture();
 
     try {
-      await vi.waitFor(() => expect(fixture.spawnOfficial).toHaveBeenCalledOnce());
+      await fixture.ready;
+      expect(fixture.spawnOfficial).toHaveBeenCalledOnce();
       fixture.desktopInput.end();
 
       await expect(fixture.running).resolves.toBe(0);
@@ -1469,6 +1486,50 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await expect(
       remote.collector.waitFor((message) => requestId(message, 29)),
     ).resolves.toMatchObject({ error: { code: -32090 } });
+    await stopFixture(remote);
+  });
+
+  it("opens Web locally and rejects remote requests, invalid params and launch failures", async () => {
+    const webOpener = {
+      open: vi
+        .fn()
+        .mockResolvedValueOnce({})
+        .mockRejectedValueOnce(new Error("Web startup failed")),
+    };
+    const local = createFixture({ webOpener });
+    const officialWrite = vi.fn();
+    local.official.stdin.on("data", officialWrite);
+    writeRequest(local.desktopInput, { id: 30, method: "codexhost/web/open", params: {} });
+    await expect(local.collector.waitFor((message) => requestId(message, 30))).resolves.toEqual({
+      id: 30,
+      result: {},
+    });
+    writeRequest(local.desktopInput, {
+      id: 31,
+      method: "codexhost/web/open",
+      params: { url: "https://example.com" },
+    });
+    await expect(
+      local.collector.waitFor((message) => requestId(message, 31)),
+    ).resolves.toMatchObject({ error: { code: -32602 } });
+    expect(webOpener.open).toHaveBeenCalledOnce();
+    writeRequest(local.desktopInput, { id: 32, method: "codexhost/web/open", params: {} });
+    await expect(
+      local.collector.waitFor((message) => requestId(message, 32)),
+    ).resolves.toMatchObject({ error: { code: -32092, message: "Web startup failed" } });
+    expect(officialWrite).not.toHaveBeenCalled();
+    await stopFixture(local);
+
+    const remote = createFixture();
+    const remoteWrite = vi.fn();
+    remote.official.stdin.on("data", remoteWrite);
+    writeRequest(remote.desktopInput, { id: 33, method: "codexhost/web/open", params: {} });
+    await expect(
+      remote.collector.waitFor((message) => requestId(message, 33)),
+    ).resolves.toMatchObject({
+      error: { code: -32090, message: "Web can be opened on the local Host only" },
+    });
+    expect(remoteWrite).not.toHaveBeenCalled();
     await stopFixture(remote);
   });
 

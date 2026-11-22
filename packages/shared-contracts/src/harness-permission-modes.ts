@@ -14,7 +14,7 @@ const nonBlankTextSchema = z.string().refine((value) => value.trim().length > 0,
 
 export const harnessPermissionModeIdSchema = nonBlankTextSchema
   .max(HARNESS_PERMISSION_MODE_ID_MAX_LENGTH)
-  .regex(/^[A-Za-z0-9._~-]+$/u, "Permission Mode ID must use transport-safe characters")
+  .regex(/^[A-Za-z0-9._~:-]+$/u, "Permission Mode ID must use transport-safe characters")
   .brand<"HarnessPermissionModeId">();
 
 export type HarnessPermissionModeId = z.infer<typeof harnessPermissionModeIdSchema>;

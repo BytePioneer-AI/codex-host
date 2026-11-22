@@ -1,0 +1,727 @@
+/* The takeover seats where the input card sits, centered on the InputBar
+   axis at the shared content width (input card - 32): sides = clearance +
+   16px so the relation also holds on narrow viewports. */
+.frame {
+  display: flex;
+  justify-content: center;
+  padding: 6px calc(var(--dsh-composer-side-clearance) + 16px) 10px;
+}
+
+/* Shared question surface: fixed top chrome and footer frame the scrolling content. */
+.card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: var(--dsh-chat-content-width);
+  /* Cap the card against the viewport so header and footer stay accessible. */
+  max-height: min(60vh, 520px);
+  max-height: min(60dvh, 520px);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l2-darkmode-thin);
+  border-radius: var(--dsw-radius-xl);
+  background: var(--dsw-specific-input-major);
+  box-shadow: var(--dsw-elevation-panel);
+  color: var(--dsw-alias-label-primary);
+  overflow: hidden;
+  /* The scroll area inherits the scrollbar colors of the elevated surface. */
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+}
+
+.card,
+.card * {
+  box-sizing: border-box;
+}
+
+/* Fixed top bar: eyebrow, countdown status, minimize and close never scroll away. */
+.topBar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  gap: 8px 12px;
+  padding: 12px 16px 4px 20px;
+}
+
+.cardMinimized .topBar {
+  padding-bottom: 14px;
+}
+
+.topBarLeading {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+  gap: 2px;
+}
+
+.eyebrow {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.minimizedTitle {
+  margin: 0;
+  font-size: 15px;
+  line-height: 21px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.iconActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.waitButton {
+  white-space: nowrap;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.waitStatus {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.scrollArea {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.scrollArea:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: -2px;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+}
+
+.promptBlock {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 20px 0;
+}
+
+.promptContent {
+  position: relative;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 22px;
+  font-weight: 500;
+}
+
+.detail {
+  min-width: 0;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.detail pre {
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.promptToggle {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
+  corner-shape: round;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-state-business-primary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 120ms ease;
+}
+
+.promptToggle:active {
+  background: var(--dsw-alias-interactive-bg-active);
+}
+
+.promptToggle:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+}
+
+.footerActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.progress {
+  padding: 0 4px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 24px;
+  font-weight: 400;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  /* Narrow the plain spaces around the slash without touching glyph tracking. */
+  word-spacing: -2px;
+}
+
+.iconButton {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  corner-shape: round;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.iconButton:active:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-active);
+  color: var(--dsw-alias-label-primary);
+}
+
+.iconButton:focus-visible,
+.option:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+}
+
+.iconButton:disabled {
+  color: var(--dsw-alias-label-dimmed);
+  cursor: default;
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0;
+  padding: 2px 20px;
+}
+
+.option {
+  display: flex;
+  /* flex-start, not center: with a wrapped description the indicator must
+     stay on the FIRST line (centering drifts it down the taller copy block).
+     .number/.checkbox re-center against the first line box. */
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  /* Rows are the scroll content, never the slack absorber: a shrinkable row
+     collapses to min-height while its wrapped copy keeps the taller
+     intrinsic height, and centered content then paints outside the row box —
+     over the title and the next row. Overflow belongs to .options. */
+  flex-shrink: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    transform 100ms ease;
+}
+
+.optionSelected {
+  background: var(--dsw-alias-interactive-bg-hover);
+  border-color: var(--dsw-alias-label-secondary);
+}
+
+.option:active:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-active);
+}
+
+.optionSelected .number {
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-label-primary-foreground);
+}
+
+.option:disabled {
+  cursor: default;
+}
+
+/* Leading indicator (20×20): single-select shows the option
+   number, multi-select swaps in a checkbox; the custom-answer row follows —
+   its checkbox mirrors the typed draft (styling only, exclusivity holds). */
+.number {
+  display: grid;
+  place-items: center;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  /* (24px first-line box − 20px indicator) / 2: centers the indicator against
+     the first text line under the row's flex-start alignment. */
+  margin-top: 2px;
+  border-radius: var(--dsw-radius-xs);
+  background: var(--dsw-alias-bg-overlay);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+/* Multi-select box (figma 1055:41594, user-tuned down to 14×14): a radius-4
+   box centered in the 20px indicator seat; the box itself is the ::before
+   layer so the check icon stacks over it in the same grid cell. */
+.checkbox {
+  display: grid;
+  place-items: center;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  /* Same first-line centering as .number under flex-start alignment. */
+  margin-top: 2px;
+}
+
+.checkbox::before {
+  content: "";
+  grid-area: 1 / 1;
+  width: 14px;
+  height: 14px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-xs);
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.checkbox > svg {
+  grid-area: 1 / 1;
+}
+
+/* Checked: label-primary fill with a primary-foreground check — the pair
+   inverts with the theme (dark fill in light mode, light fill in dark mode). */
+.checkboxChecked {
+  color: var(--dsw-alias-label-primary-foreground);
+}
+
+.checkboxChecked::before {
+  border-color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-label-primary);
+}
+
+.optionCopy {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.optionLine {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+}
+
+.optionLabel {
+  font-size: 14px;
+  line-height: 24px;
+  font-weight: 500;
+}
+
+.badge {
+  padding: 0 4px;
+  border-radius: var(--dsw-radius-xs);
+  background: var(--dsw-specific-sidebar-nav-item-active-accent);
+  color: var(--dsw-alias-button-info-fill);
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 600;
+}
+
+.description {
+  flex-basis: 100%;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 14px;
+  line-height: 24px;
+  font-weight: 400;
+}
+
+/* Read-only note standing in for a question the user skipped: it takes the
+   option rows' horizontal padding so it lines up with the choices above it. */
+.reviewNote {
+  margin: 0;
+  padding: 8px 12px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 14px;
+  line-height: 24px;
+}
+
+/* Custom answer row (figma 973:36427): an option-shaped row whose copy is an
+   inline text input; focus or a typed draft lifts it to the selected look. */
+.customRow {
+  display: flex;
+  /* Same first-line alignment as .option — the indicator seat carries the
+     2px re-centering margin. */
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  /* Same reason as .option: the custom row is scroll content, and shrinking
+     it pushes the inline input past the footer. */
+  flex-shrink: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.customRow:focus-within,
+.customRowActive {
+  background: var(--dsw-alias-interactive-bg-hover);
+  border-color: var(--dsw-alias-border-l2);
+}
+
+/* Auto-growing free-text answer (see AnswerField): mirror and textarea share
+   one grid cell, the mirror sizes it, and the textarea stretches to it. The
+   two layers MUST keep identical type, padding and wrapping — a mismatch
+   makes the box the wrong height for the text the user is typing. */
+.field {
+  display: grid;
+  min-width: 0;
+  --dsh-answer-field-padding: 0;
+}
+
+.field > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+  padding: var(--dsh-answer-field-padding);
+  font: inherit;
+  font-size: 14px;
+  line-height: 24px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* The height ruler, never painted. Growth stops at 6 lines: the card body is
+   capped at 520px and still owes that budget to the title, the option rows and
+   the footer actions, so a long answer scrolls in the textarea instead of
+   pushing the choices it belongs to out of view.
+   content-box overrides the card-wide border-box so the cap counts TEXT lines
+   in both variants: under border-box the block variant's 16px of vertical
+   padding eats two thirds of a line and the sixth one arrives as an 8px sliver.
+   Width is unaffected — a stretched grid item's used width comes from the
+   track, not from this box-sizing. */
+.fieldMirror {
+  box-sizing: content-box;
+  max-height: 144px;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+.fieldInput {
+  resize: none;
+  /* The stack's only scrollport: past the mirror's cap the field stops growing
+     and this scrolls. */
+  overflow-y: auto;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  caret-color: var(--dsw-alias-state-business-primary);
+}
+
+.fieldInput::placeholder {
+  color: var(--dsw-alias-label-caption);
+}
+
+/* Inline variant: the custom row's copy column, borrowing the row's chrome. */
+.customInline {
+  flex: 1;
+}
+
+/* Optionless questions use the same content edges as choice rows. */
+.customBlock {
+  min-height: 64px;
+  flex-shrink: 0;
+  margin: 0;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-lg);
+  background: var(--dsw-alias-bg-module-platform);
+  --dsh-answer-field-padding: 8px 12px;
+}
+
+.customBlock:focus-within {
+  border-color: var(--dsw-alias-state-business-primary);
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  flex-shrink: 0;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  padding: 10px 16px;
+}
+
+.feedback {
+  flex-basis: 100%;
+  order: -1;
+  min-width: 0;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 11px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.feedback:empty {
+  display: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .iconButton:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+    color: var(--dsw-alias-label-primary);
+  }
+
+  .option:hover:not(:disabled),
+  .customRow:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+
+  .promptToggle:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+@media (pointer: coarse) {
+  .field > * {
+    font-size: 16px;
+    line-height: 24px;
+  }
+
+  .iconButton {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+@media (max-width: 720px) {
+  .frame {
+    padding: 4px 8px 8px;
+  }
+
+  .card {
+    max-width: 100%;
+    max-height: min(78vh, 640px);
+    max-height: min(78dvh, 640px);
+    border-radius: 22px;
+  }
+
+  .topBar {
+    gap: 0 4px;
+    padding: 4px 4px 4px 14px;
+    border-bottom: 1px solid var(--dsw-alias-border-l1);
+  }
+
+  .cardMinimized .topBar {
+    border-bottom: none;
+    padding-bottom: 4px;
+  }
+
+  .eyebrow {
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 18px;
+    color: var(--dsw-alias-label-secondary);
+  }
+
+  .iconButton {
+    width: 44px;
+    height: 44px;
+  }
+
+  .statusGroup {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: space-between;
+    margin-right: 10px;
+    padding: 6px 0 6px;
+    border-top: 1px solid var(--dsw-alias-border-l1);
+  }
+
+  .waitButton {
+    min-height: 36px;
+    padding: 0 12px;
+    font-size: 12.5px;
+    border-radius: 999px;
+    corner-shape: round;
+  }
+
+  .promptBlock {
+    padding: 12px 14px 4px;
+  }
+
+  .promptCollapsed {
+    max-height: 92px;
+    overflow: hidden;
+  }
+
+  .promptFaded::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0;
+    height: 32px;
+    pointer-events: none;
+    background: linear-gradient(to bottom, transparent, var(--dsw-specific-input-major) 90%);
+  }
+
+  .promptToggle {
+    min-height: 36px;
+    padding: 4px 12px;
+    margin-top: 8px;
+    font-size: 12.5px;
+  }
+
+  .title {
+    font-size: 15px;
+    line-height: 22px;
+    font-weight: 600;
+  }
+
+  .detail {
+    margin-top: 10px;
+    padding: 10px 12px;
+    font-size: 13px;
+    line-height: 19px;
+  }
+
+  .options {
+    margin: 8px 0 12px;
+    padding: 2px 14px;
+    gap: 8px;
+  }
+
+  .option,
+  .customRow {
+    min-height: 46px;
+    padding: 10px 12px;
+    border-radius: 14px;
+  }
+
+  .optionLabel {
+    font-size: 14px;
+    line-height: 20px;
+  }
+
+  .description {
+    font-size: 13px;
+    line-height: 19px;
+    margin-top: 2px;
+  }
+
+  .number,
+  .checkbox {
+    margin-top: 1px;
+  }
+
+  .footer {
+    padding: 8px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+    gap: 6px 8px;
+  }
+
+  .footerActions {
+    flex-shrink: 0;
+    gap: 6px;
+  }
+
+  .footerActions > button {
+    min-height: 44px;
+    padding: 0 16px;
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .pager {
+    gap: 0;
+  }
+
+  .progress {
+    padding: 0 2px;
+    font-size: 12.5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .option,
+  .customRow,
+  .iconButton,
+  .promptToggle {
+    transition: none;
+  }
+}

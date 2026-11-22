@@ -9,6 +9,7 @@ export const AUDIT_VERDICTS = Object.freeze([
 export const AUDIT_SURFACE_IDS = Object.freeze([
   "composer",
   "model",
+  "draft-harness-binding",
   "permission",
   "request-prewarm",
   "title",
@@ -286,6 +287,25 @@ export function buildSurfaceResults(contracts, baseline = null, controlled = nul
     reason: activeComposer ? "composer-model-target" : "composer-state-not-active",
     baseline,
   });
+  const draftBinding = contracts.draftHarnessBinding;
+  const draftBindingActive = draftBinding.visibleDraftCount > 0;
+  const draftBindingReady =
+    draftBinding.boundCount === draftBinding.visibleDraftCount &&
+    draftBinding.missingCreationModeCount === 0;
+  const draftHarnessBinding = classifySurface({
+    id: "draft-harness-binding",
+    observed: draftBinding,
+    live: !draftBindingActive ? "inactive" : draftBindingReady ? "pass" : "fail",
+    active: draftBindingActive,
+    reason: !draftBindingActive
+      ? "new-draft-not-visible"
+      : draftBinding.boundCount !== draftBinding.visibleDraftCount
+        ? "draft-writer-unverified"
+        : draftBinding.missingCreationModeCount > 0
+          ? "draft-submit-mode-unverified"
+          : "draft-writer-verified",
+    baseline,
+  });
   const permissionActive = contracts.composer.permissionCandidateCount > 0;
   const permission = classifySurface({
     id: "permission",
@@ -446,6 +466,7 @@ export function buildSurfaceResults(contracts, baseline = null, controlled = nul
   return [
     composer,
     model,
+    draftHarnessBinding,
     permission,
     request,
     title,

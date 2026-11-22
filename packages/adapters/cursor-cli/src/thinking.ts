@@ -10,11 +10,25 @@ const choices = (option: SessionConfigOption) =>
     ? option.options.flatMap((entry) => ("value" in entry ? [entry] : entry.options))
     : [];
 
+/**
+ * Native parameters Host offers as Thinking although Cursor files them under `model_config`.
+ * Cursor's Auto (`auto-smart`) has no thought level; its router preference
+ * (`optimize_for`: Intelligence / Balance / Cost) is its only reasoning trade-off.
+ */
+const CURSOR_THINKING_MODEL_CONFIG_IDS = new Set(["optimize_for"]);
+
+/** Whether a native parameter is presented as Thinking rather than kept in the Model Ref. */
+export function isCursorThinkingOption(option: SessionConfigOption): boolean {
+  return (
+    option.type === "select" &&
+    (option.category === "thought_level" ||
+      (option.category === "model_config" && CURSOR_THINKING_MODEL_CONFIG_IDS.has(option.id)))
+  );
+}
+
 /** A Host Thinking choice preserves every native thought-level parameter (e.g. thinking + effort). */
 export function cursorThinking(options: SessionConfigOption[] | null | undefined) {
-  const native = (options ?? []).filter(
-    (option) => option.category === "thought_level" && option.type === "select",
-  );
+  const native = (options ?? []).filter(isCursorThinkingOption);
   let combinations: Array<{ values: Array<[string, string]>; labels: string[] }> = [
     { values: [], labels: [] },
   ];

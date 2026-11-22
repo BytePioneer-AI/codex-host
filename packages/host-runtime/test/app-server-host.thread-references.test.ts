@@ -17,9 +17,14 @@ import {
   writeRequest,
 } from "./app-server-host-fixture.js";
 
-it.each(["turn/start", "turn/steer"])(
-  "reads original Host-qualified references through the CLI after %s",
-  async (method) => {
+it.each([
+  ["turn/start", "desktop"],
+  ["turn/steer", "desktop"],
+  ["turn/start", "client"],
+  ["turn/steer", "client"],
+] as const)(
+  "reads original Host-qualified references through the CLI after %s from %s",
+  async (method, origin) => {
     const remoteRead = vi.fn(async () => {
       throw new Error("Desktop forwarding unavailable");
     });
@@ -46,25 +51,44 @@ it.each(["turn/start", "turn/steer"])(
       const expectedTurnId = method === "turn/steer" ? await startPiTurn(f, threadId) : undefined;
       const execute = vi.spyOn(session, "execute");
       const reference = `thread://${targetThreadId}?hostId=remote-ssh-discovered%3Amac`;
-      writeRequest(f.desktopInput, {
-        id: 100,
-        method,
-        params: {
-          threadId,
-          ...(expectedTurnId ? { expectedTurnId } : {}),
-          clientUserMessageId: "reference-message",
-          codexhostSourceHostId: "remote-ssh-discovered:mac",
-          input: [{ type: "text", text: reference }],
-        },
-      });
+      const params = {
+        threadId,
+        ...(expectedTurnId ? { expectedTurnId } : {}),
+        clientUserMessageId: "reference-message",
+        codexhostSourceHostId: "remote-ssh-discovered:mac",
+        input: [{ type: "text", text: reference }],
+      };
+      const clientReply = origin === "client" ? f.host.handleClientRequest(method, params) : null;
+      if (!clientReply) writeRequest(f.desktopInput, { id: 100, method, params });
       if (expectedTurnId) {
         await vi.waitFor(() =>
           expect(execute).toHaveBeenCalledWith({ type: "turn.cancel", turnId: expectedTurnId }),
         );
         session.completeCancellation();
       }
-      const response = await f.collector.waitFor((message) => requestId(message, 100));
+      const response = (await (clientReply ??
+        f.collector.waitFor((message) => requestId(message, 100)))) as JsonObject;
       expect(response).not.toHaveProperty("error");
+      if (origin === "client") {
+        const started = await f.collector.waitFor(
+          (message) =>
+            message.method === "turn/started" &&
+            JSON.stringify(message).includes("reference-message"),
+        );
+        expect(started).toMatchObject({
+          params: {
+            turn: {
+              items: [
+                {
+                  type: "userMessage",
+                  clientId: "reference-message",
+                  content: [{ text: reference }],
+                },
+              ],
+            },
+          },
+        });
+      }
       expect(execute).toHaveBeenCalledWith(
         expect.objectContaining({ type: "turn.start", input: [{ type: "text", text: reference }] }),
       );

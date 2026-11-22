@@ -1,3 +1,8 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import type {
   HarnessCommandAccepted,
   HarnessCommandCapability,
@@ -24,7 +29,10 @@ import type {
   TurnOutcome,
   TurnStartAccepted,
   TurnStartCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
 } from "@codexhost/harness-adapter";
+import { unsupportedSteer } from "@codexhost/harness-adapter";
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import {
   nativeSessionRefSchema,
@@ -47,8 +55,8 @@ import {
 import {
   capabilitiesForProfile,
   configuration,
-  confirmedConfiguration,
-  nativeModel,
+  restoreConfiguration,
+  selectConfiguration,
 } from "./configuration.js";
 import {
   codeBuddyCanonicalCwd,
@@ -70,6 +78,10 @@ import {
 
 type SessionInput = Extract<OpenSessionInput, { kind: "create" | "resume" }>;
 export type CodeBuddyHistoryReader = typeof readNativeHistory;
+interface SessionReplay {
+  fault?: { error: unknown };
+  commands?: HarnessCommandCatalog;
+}
 interface ActiveTurn {
   command: TurnStartCommand;
   output: CodeBuddyTurnOutput;
@@ -94,7 +106,8 @@ export class CodeBuddySession implements HarnessSession {
   readonly subagents: CodeBuddySubagents;
   #client: CodeBuddyClient;
   #generation = 0;
-  #replaying = false;
+  #needsResume = false;
+  #replay: SessionReplay | undefined;
   readonly #interactions: CodeBuddyInteractions;
   #config: ReturnType<typeof configuration> | undefined;
   #ref: NativeSessionRef | undefined;
@@ -158,10 +171,12 @@ export class CodeBuddySession implements HarnessSession {
       ephemeral: false,
       handlers: {
         fault: (error) => {
-          if (generation === this.#generation) this.#onFault(error);
+          if (generation !== this.#generation || this.#closed) return;
+          if (this.#replay) this.#replay.fault ??= { error };
+          else this.#onFault(error);
         },
         update: (notification) => {
-          if (generation !== this.#generation || this.#closed) return;
+          if (generation !== this.#generation || this.#closed || this.#fault) return;
           if (this.#ref && notification.sessionId !== this.#ref.nativeSessionId) return;
           try {
             const update = record(notification.update);
@@ -171,12 +186,21 @@ export class CodeBuddySession implements HarnessSession {
             ) {
               // WorkBuddy deliberately exposes only its reviewed static catalog;
               // CodeBuddy keeps main's live native command discovery (including /cost).
-              if (!this.profile.staticCommandCatalog)
-                this.#commands = commandCatalog(update.availableCommands, this.profile);
+              if (!this.profile.staticCommandCatalog) {
+                const commands = commandCatalog(update.availableCommands, this.profile);
+                if (this.#replay) this.#replay.commands = commands;
+                else this.#commands = commands;
+              }
               return;
             }
-            if (this.#replaying) return;
-            if (this.subagents.update(update)) return;
+            if (this.#replay) return;
+            // A started Tool keeps its owner even when later fragments change its metadata.
+            if (
+              (text(record(update._meta)["codebuddy.ai/parentToolCallId"]) ||
+                !this.#active?.output.hasItem(`tool-${text(update.toolCallId)}`)) &&
+              this.subagents.update(update)
+            )
+              return;
             if (update.sessionUpdate === "config_option_update" && this.#config)
               this.#apply(configuration(update.configOptions, this.profile));
             if (
@@ -190,28 +214,32 @@ export class CodeBuddySession implements HarnessSession {
                 contextWindowTokens: update.size,
                 contextUsagePercent: (update.used / update.size) * 100,
               };
-              this.#emit({
-                type: "session.usage.changed",
-                usage: { ...this.#usage, ...this.#context },
-              });
+              this.#emitUsage();
               void this.refreshUsage();
             }
             this.#active?.output.update(update);
           } catch (error) {
-            this.#onFault(error);
+            if (this.#replay) this.#replay.fault ??= { error };
+            else this.#onFault(error);
           }
         },
         permission: (request) =>
           generation === this.#generation &&
-          !this.#replaying &&
+          !this.#closed &&
+          !this.#fault &&
+          !this.#replay &&
           this.#active &&
+          !this.#active.cancelled &&
           request.sessionId === this.#ref?.nativeSessionId
             ? this.#interactions.permission(this.#active.command.turnId, request)
             : Promise.resolve({ outcome: { outcome: "cancelled" } }),
         question: (params) =>
           generation === this.#generation &&
-          !this.#replaying &&
+          !this.#closed &&
+          !this.#fault &&
+          !this.#replay &&
           this.#active &&
+          !this.#active.cancelled &&
           params.sessionId === this.#ref?.nativeSessionId
             ? this.#interactions.question(this.#active.command.turnId, params)
             : Promise.resolve({ outcome: "cancelled" }),
@@ -219,16 +247,20 @@ export class CodeBuddySession implements HarnessSession {
     });
   }
 
+  #assertClient(generation: number) {
+    if (this.#closed || this.#fault || generation !== this.#generation)
+      throw new CodeBuddyError("invalidState", "ACP client is no longer current");
+    if (this.#replay?.fault) throw this.#replay.fault.error;
+  }
+
   /** Every fresh process must restore an unanchored rewind before it can accept prompts. */
   async #openClient(): Promise<Record<string, unknown>> {
+    const client = this.#client;
+    const generation = this.#generation;
     let rewind: ReturnType<typeof pendingNativeHistoryRewind>;
     if (this.#ref) {
-      const history = await this.readHistory(
-        this.input.cwd,
-        this.#ref,
-        this.environment,
-        this.profile,
-      );
+      const history = await this.#history(this.#ref);
+      this.#assertClient(generation);
       this.#hasTurn =
         snapshotFromHistory(history, this.#ref, this.input.cwd, this.profile).turns.length > 0;
       this.#usage = historyUsage(history);
@@ -238,15 +270,19 @@ export class CodeBuddySession implements HarnessSession {
       // A new Session has no native requests yet.
       this.#emit({ type: "usage.history", complete: true });
     }
-    await this.#client.initialize();
-    const opened = await this.#client.open(this.input.cwd, this.#ref?.nativeSessionId);
+    this.#assertClient(generation);
+    await client.initialize();
+    this.#assertClient(generation);
+    const opened = await client.open(this.input.cwd, this.#ref?.nativeSessionId);
+    this.#assertClient(generation);
     const sessionId = this.#ref?.nativeSessionId ?? text(opened.sessionId);
     if (!sessionId || (opened.sessionId && opened.sessionId !== sessionId))
       throw new CodeBuddyError("protocolError", "ACP returned a different Native Session identity");
     if (rewind) {
-      if (!this.#client.rollback)
+      if (!client.rollback)
         throw new CodeBuddyError("unsupported", "Native history rewind is unavailable");
-      const result = await this.#client.rollback(sessionId, rewind.forkPointId);
+      const result = await client.rollback(sessionId, rewind.forkPointId);
+      this.#assertClient(generation);
       if (result.applied !== true || (result.actualForkPointId ?? null) !== rewind.forkPointId)
         throw new CodeBuddyError("nativeFailure", "Native history rewind was not confirmed");
     }
@@ -282,10 +318,7 @@ export class CodeBuddySession implements HarnessSession {
     } else if (this.input.permissionModeId || text(saved.mode))
       await this.#configure("mode", this.input.permissionModeId ?? text(saved.mode));
     if (this.input.model || text(saved.model))
-      await this.#configure(
-        "model",
-        this.input.model ? nativeModel(this.input.model) : text(saved.model),
-      );
+      await this.#configure("model", this.input.model?.id ?? text(saved.model));
     if (this.input.thinkingOptionId || text(saved.thinking))
       await this.#configure("thought_level", this.input.thinkingOptionId ?? text(saved.thinking));
     if (this.#fault || this.#closed)
@@ -295,7 +328,16 @@ export class CodeBuddySession implements HarnessSession {
   }
 
   #emit(event: HostEvent) {
+    event = configureSubagentEvent(event, this.#subagentConfiguration());
     this.#channel.emit({ kind: "event", event });
+  }
+
+  #emitUsage() {
+    const usage = { ...this.#usage, ...this.#context };
+    this.#emit({
+      type: "session.usage.changed",
+      usage: Object.keys(usage).length ? usage : null,
+    });
   }
 
   /** Publishes native requests not yet metered; the first read also declares completeness. */
@@ -309,6 +351,15 @@ export class CodeBuddySession implements HarnessSession {
     if (historical || !complete) this.#emit({ type: "usage.history", complete });
   }
   #apply(config: ReturnType<typeof configuration>, emit = true) {
+    // Context belongs to the last confirmed Model. Reconfirming that Model must
+    // preserve usage received after its config update but before the response.
+    if (
+      this.#state.effectiveModel &&
+      this.#state.effectiveModel.id !== config.state.effectiveModel?.id
+    ) {
+      this.#context = {};
+      this.#emitUsage();
+    }
     this.#config = config;
     if (this.#ref && record(this.#ref.locator).codebuddyDerived === 1)
       this.#ref = nativeSessionRefSchema.parse({
@@ -316,7 +367,7 @@ export class CodeBuddySession implements HarnessSession {
         locator: {
           ...record(this.#ref.locator),
           configuration: {
-            model: config.state.effectiveModel ? nativeModel(config.state.effectiveModel) : "",
+            model: config.state.effectiveModel?.id ?? "",
             mode: config.state.effectivePermissionModeId ?? "",
             thinking: config.state.effectiveThinkingOptionId ?? "",
           },
@@ -326,58 +377,67 @@ export class CodeBuddySession implements HarnessSession {
     if (emit) this.#emit({ type: "session.state.changed", state: this.#state });
   }
 
-  async #configure(id: string, value: string) {
-    const option = this.#config?.options.find((option) => option.id === id);
-    const listed =
-      Array.isArray(option?.options) &&
-      option.options.some((option) => record(option).value === value);
-    const allowedProductModel = id === "model" && this.profile.allowUnlistedModelSelection;
-    if (!listed && !allowedProductModel)
-      throw new CodeBuddyError(
-        "invalidRequest",
-        `Unavailable ${this.profile.displayName} ${id} selection`,
-      );
-    if (!this.#ref) throw new CodeBuddyError("invalidState", "Session is not open");
-    const result = await this.#client.configure(this.#ref.nativeSessionId, id, value);
-    if (this.#closed || this.#fault)
-      throw new CodeBuddyError("invalidState", "Session closed during configuration");
-    this.#apply(confirmedConfiguration(result, id, value, this.profile));
+  #configurationRequest() {
+    const generation = this.#generation;
+    const client = this.#client;
+    const sessionId = this.#ref?.nativeSessionId;
+    if (!sessionId) throw new CodeBuddyError("invalidState", "Session is not open");
+    return async (id: string, value: string) => {
+      this.#assertClient(generation);
+      const result = await client.configure(sessionId, id, value);
+      this.#assertClient(generation);
+      return result;
+    };
   }
 
-  async #snapshot(): Promise<HostThreadSnapshot> {
-    if (!this.#ref) throw new CodeBuddyError("invalidState", "Session is not open");
+  async #configure(id: string, value: string) {
+    const generation = this.#generation;
+    const confirmed = await selectConfiguration(
+      this.#config,
+      id,
+      value,
+      this.profile,
+      this.#configurationRequest(),
+    );
+    this.#assertClient(generation);
+    this.#apply(confirmed);
+  }
+
+  async #history(ref: NativeSessionRef): Promise<string> {
     try {
-      const history = await this.readHistory(
-        this.input.cwd,
-        this.#ref,
-        this.environment,
-        this.profile,
-      );
-      this.#usage = historyUsage(history);
-      // Requests the last Turn added, now persisted; CodeBuddy ACP reports no per-request usage.
-      this.#meterHistory(history, false);
-      return {
-        ...this.subagents.project(
-          snapshotFromHistory(history, this.#ref, this.input.cwd, this.profile),
-        ),
-        state: this.#state,
-      };
+      return await this.readHistory(this.input.cwd, ref, this.environment, this.profile);
     } catch (error) {
+      // A newly created Session may not have written anything, even after a quick Stop.
       if (
         !this.#hasTurn &&
         this.input.kind === "create" &&
         error instanceof CodeBuddyError &&
         error.code === "sessionNotFound"
       )
-        return { turns: [], state: this.#state };
+        return "";
       throw error;
     }
   }
 
+  async #snapshot(historyTimeout?: number): Promise<HostThreadSnapshot> {
+    if (!this.#ref) throw new CodeBuddyError("invalidState", "Session is not open");
+    const read = this.#history(this.#ref);
+    const history = historyTimeout
+      ? await bounded(read, historyTimeout, "Native Turn history read")
+      : await read;
+    if (this.#closed || this.#fault)
+      throw new CodeBuddyError("invalidState", "Session closed during history read");
+    const snapshot = snapshotFromHistory(history, this.#ref, this.input.cwd, this.profile);
+    if (snapshot.turns.length) this.#hasTurn = true;
+    this.#usage = historyUsage(history);
+    // Requests the last Turn added, now persisted; CodeBuddy ACP reports no per-request usage.
+    this.#meterHistory(history, false);
+    return { ...this.subagents.project(snapshot), state: this.#state };
+  }
+
   /** Read persisted request usage without waiting for the ACP prompt (including tool waits). */
   async refreshUsage(): Promise<void> {
-    if (this.#refreshingUsage || this.#closed || this.#fault || this.#replaying || !this.#ref)
-      return;
+    if (this.#refreshingUsage || this.#closed || this.#fault || this.#replay || !this.#ref) return;
     this.#refreshingUsage = true;
     const active = this.#active,
       generation = this.#generation;
@@ -392,7 +452,7 @@ export class CodeBuddySession implements HarnessSession {
         return;
       this.#usage = historyUsage(history);
       this.#meterHistory(history, false);
-      this.#emit({ type: "session.usage.changed", usage: { ...this.#usage, ...this.#context } });
+      this.#emitUsage();
     } catch {
       // The native file may not exist yet or may be mid-append. Telemetry must not fail a Turn;
       // the next native usage notification, explicit refresh or terminal snapshot retries.
@@ -401,7 +461,25 @@ export class CodeBuddySession implements HarnessSession {
     }
   }
 
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state;
+    const model = state.effectiveModel?.id;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed || this.#fault)
       return failure("invalidState", "Session is closed or faulted", this.profile);
     if (this.#busy || this.#active)
@@ -419,16 +497,12 @@ export class CodeBuddySession implements HarnessSession {
   async #executeCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
-    const parsed = commandPrompt(command, this.#commands, this.profile);
-    if (!parsed.ok) return parsed;
-    const result = await this.#execute(
-      { type: "turn.start", turnId: command.turnId, input: [{ type: "text", text: parsed.value }] },
-      true,
-    );
+    const result = await this.#execute({ ...command, type: "command.execute" });
     return result.ok ? { ok: true, value: { turnId: command.turnId } } : result;
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -440,7 +514,11 @@ export class CodeBuddySession implements HarnessSession {
     command: HostCommand,
   ): Promise<
     HarnessResult<
-      TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted | ModelSelectCompleted
+      | TurnStartAccepted
+      | TurnSteerAccepted
+      | TurnCancelAccepted
+      | InteractionRespondAccepted
+      | ModelSelectCompleted
     >
   > {
     const invocation =
@@ -453,23 +531,24 @@ export class CodeBuddySession implements HarnessSession {
         : undefined;
     if (nativeCommandsEnabled(this.profile) && isExcludedInvocation(invocation))
       return failure("unsupported", "Command is not available in this Session", this.profile);
-    return this.#execute(
-      command,
-      nativeCommandsEnabled(this.profile) &&
-        this.#commands.commands.some((entry) => entry.invocation === invocation),
-    );
+    return this.#execute(command, invocation);
   }
 
   async #execute(
-    command: HostCommand,
-    nativeCommand = false,
+    command: HostCommand | (HarnessCommandInvocation & { type: "command.execute" }),
+    invocation?: string,
   ): Promise<
     HarnessResult<
-      TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted | ModelSelectCompleted
+      | TurnStartAccepted
+      | TurnSteerAccepted
+      | TurnCancelAccepted
+      | InteractionRespondAccepted
+      | ModelSelectCompleted
     >
   > {
     if (this.#closed || this.#fault)
       return failure("invalidState", "Session is closed or faulted", this.profile);
+    if (command.type === "turn.steer") return unsupportedSteer(this.profile.displayName);
     if (command.type === "interaction.respond") return this.#interactions.respond(command);
     if (command.type === "turn.cancel") {
       const active = this.#active;
@@ -477,37 +556,62 @@ export class CodeBuddySession implements HarnessSession {
         return failure("invalidRequest", "Turn is not active", this.profile);
       if (!active.cancelled) {
         active.cancelled = true;
+        const generation = this.#generation;
         try {
-          await this.#client.cancel(this.#ref.nativeSessionId);
+          const requested = this.#client.cancel(this.#ref.nativeSessionId);
+          this.#interactions.close();
+          await requested;
         } catch (error) {
-          this.#onFault(error);
-          return { ok: false, error: nativeError(error, this.profile) };
+          // The prompt may have returned and retired its process while cancel was in flight.
+          if (generation === this.#generation) {
+            if (this.#active === active) this.#onFault(error);
+            return { ok: false, error: nativeError(error, this.profile) };
+          }
         }
-        this.#interactions.close();
-        void bounded(active.completion, 30_000, "ACP cancel acknowledgement").catch((error) =>
-          this.#onFault(error),
-        );
+        if (this.#active === active && !this.#closed) {
+          void bounded(active.completion, 30_000, "ACP cancel acknowledgement").catch((error) => {
+            // Once the process has exited, only best-effort history remains.
+            if (this.#active === active && !this.#needsResume) this.#onFault(error);
+          });
+        }
       }
       return { ok: true, value: { cancellationRequested: true } };
     }
     if (
       this.#busy ||
-      (this.#active && command.type !== "model.select" && command.type !== "thinking.select")
+      (this.#active &&
+        (this.#active.cancelled ||
+          (command.type !== "model.select" && command.type !== "thinking.select")))
     )
       return failure("sessionBusy", "Session is executing an operation", this.profile);
     this.#busy = true;
     try {
-      if (command.type === "turn.start") {
+      if (command.type === "turn.start" || command.type === "command.execute") {
         if (
           !command.turnId.trim() ||
-          !command.input.length ||
-          command.input.some((item) => item.type !== "text") ||
-          !command.input
-            .map((item) => item.text)
-            .join("")
-            .trim()
+          (command.type === "turn.start" &&
+            (!command.input.length ||
+              command.input.some((item) => item.type !== "text") ||
+              !command.input
+                .map((item) => item.text)
+                .join("")
+                .trim()))
         )
           return failure("invalidRequest", "A nonempty text prompt is required", this.profile);
+        if (this.#needsResume) await this.#resumeClient();
+        const nativeCommand =
+          command.type === "command.execute" ||
+          (nativeCommandsEnabled(this.profile) &&
+            this.#commands.commands.some((entry) => entry.invocation === invocation));
+        if (command.type === "command.execute") {
+          const parsed = commandPrompt(command, this.#commands, this.profile);
+          if (!parsed.ok) return parsed;
+          command = {
+            type: "turn.start",
+            turnId: command.turnId,
+            input: [{ type: "text", text: parsed.value }],
+          };
+        }
         const snapshot = await this.#snapshot();
         const before = new Set(snapshot.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey));
         const beforeItems = new Set(
@@ -532,11 +636,11 @@ export class CodeBuddySession implements HarnessSession {
         };
         this.#active = active;
         this.subagents.begin(command.turnId);
-        if (!nativeCommand) this.#hasTurn = true;
         this.#emit({ type: "turn.started", turnId: command.turnId });
         active.completion = this.#run(active);
         return { ok: true, value: { turnId: command.turnId } };
       }
+      if (this.#needsResume) await this.#resumeClient();
       await this.#configure(
         command.type === "model.select"
           ? "model"
@@ -544,7 +648,7 @@ export class CodeBuddySession implements HarnessSession {
             ? "thought_level"
             : "mode",
         command.type === "model.select"
-          ? nativeModel(command.model)
+          ? command.model.id
           : command.type === "thinking.select"
             ? command.thinkingOptionId
             : command.permissionModeId,
@@ -558,13 +662,14 @@ export class CodeBuddySession implements HarnessSession {
   }
 
   async #run(active: ActiveTurn) {
+    let cancellationConfirmed = false;
     try {
       if (!this.#ref) throw new CodeBuddyError("invalidState", "Session is not open");
       const response = await this.#client.prompt(
         this.#ref.nativeSessionId,
         active.command.input.map((item) => item.text).join("\n"),
       );
-      if (active.done) return;
+      if (active.done || this.#closed) return;
       const stop = response.stopReason,
         meta = record(response._meta);
       const outcome: TurnOutcome =
@@ -581,7 +686,23 @@ export class CodeBuddySession implements HarnessSession {
                 status: "failed",
                 error: nativeTurnError(stop, meta, this.profile),
               };
-      const snapshot = await this.#snapshot();
+      if (outcome.status === "cancelled") {
+        active.cancelled = true;
+        ++this.#generation;
+        this.#interactions.close();
+        try {
+          await this.#client.close();
+        } catch (error) {
+          this.#onFault(error);
+          return;
+        }
+        if (active.done || this.#closed) return;
+        this.#needsResume = true;
+        cancellationConfirmed = true;
+      }
+      // After shutdown, history can enrich cancellation but cannot change its outcome.
+      const snapshot = await this.#snapshot(cancellationConfirmed ? 1_000 : undefined);
+      if (active.done || this.#closed) return;
       const added = snapshot.turns.filter(
         (turn) => !active.before.has(turn.nativeTurnRef.nativeTurnKey),
       );
@@ -593,21 +714,23 @@ export class CodeBuddySession implements HarnessSession {
           "protocolError",
           "Could not identify exactly one persisted Native Turn",
         );
-      active.output.confirmCompaction(
-        snapshot.turns
-          .flatMap((turn) => turn.items)
-          .filter((snapshot) => !active.beforeItems.has(snapshot.item.itemId)),
-      );
-      if (active.nativeCommand) active.output.replayCommandResult(added[0]?.items ?? []);
       const nativeTurnRef = added[0]?.nativeTurnRef;
-      if (nativeTurnRef) this.#hasTurn = true;
       if (response.userMessageId && nativeTurnRef?.nativeTurnKey !== response.userMessageId)
         throw new CodeBuddyError(
           "protocolError",
           "ACP terminal and native history disagree on Turn identity",
         );
-      if (outcome.status === "cancelled") await this.#resumeAfterCancel();
+      active.output.confirmCompaction(
+        snapshot.turns
+          .flatMap((turn) => turn.items)
+          .filter((snapshot) => !active.beforeItems.has(snapshot.item.itemId)),
+      );
+      if (active.nativeCommand)
+        active.output.replayCommandResult(
+          (added[0]?.items ?? []).filter(({ item }) => !this.subagents.hasItem(item.itemId)),
+        );
       const compactCommand =
+        outcome.status !== "cancelled" &&
         active.nativeCommand &&
         /^\/compact(?:\s|$)/u.test(
           active.command.input
@@ -631,37 +754,48 @@ export class CodeBuddySession implements HarnessSession {
         },
         nativeTurnRef,
       );
-      if (this.#usage)
-        this.#emit({ type: "session.usage.changed", usage: { ...this.#usage, ...this.#context } });
+      if (this.#usage) this.#emitUsage();
     } catch (error) {
-      if (!active.done)
-        this.#finish(active, { status: "failed", error: nativeError(error, this.profile) });
+      if (!active.done && !this.#closed)
+        this.#finish(
+          active,
+          cancellationConfirmed
+            ? { status: "cancelled" }
+            : { status: "failed", error: nativeError(error, this.profile) },
+        );
     }
   }
 
-  async #resumeAfterCancel() {
-    if (!this.#ref)
-      throw new CodeBuddyError("invalidState", "Missing Native Session after cancellation");
-    const saved = this.#state;
-    this.#interactions.close();
-    this.#replaying = true;
-    ++this.#generation;
+  /** Runs only under the native operation gate, after the old process has exited. */
+  async #resumeClient() {
+    const replay: SessionReplay = {};
+    this.#replay = replay;
+    let candidate: CodeBuddyClient | undefined;
     try {
-      await this.#client.close();
-      if (this.#closed) return;
-      this.#client = this.#createClient();
+      this.#client = candidate = this.#createClient();
+      const generation = this.#generation;
       const loaded = await this.#openClient();
-      this.#apply(configuration(loaded.configOptions, this.profile));
-      if (saved.effectiveModel) await this.#configure("model", nativeModel(saved.effectiveModel));
-      if (saved.effectiveThinkingOptionId)
-        await this.#configure("thought_level", saved.effectiveThinkingOptionId);
-      if (saved.effectivePermissionModeId)
-        await this.#configure("mode", saved.effectivePermissionModeId);
+      const restored = await restoreConfiguration(
+        configuration(loaded.configOptions, this.profile),
+        this.#state,
+        this.profile,
+        this.#configurationRequest(),
+      );
+      this.#assertClient(generation);
+      this.#apply(restored);
+      if (!this.profile.staticCommandCatalog) this.#commands = replay.commands ?? { commands: [] };
+      this.#needsResume = false;
     } catch (error) {
-      this.#onFault(error);
+      ++this.#generation;
+      try {
+        await candidate?.close();
+      } catch (closeError) {
+        // Do not open a successor if this process could still own the Native Session.
+        this.#onFault(closeError);
+      }
       throw error;
     } finally {
-      this.#replaying = false;
+      this.#replay = undefined;
     }
   }
 
@@ -696,12 +830,17 @@ export class CodeBuddySession implements HarnessSession {
   }
   async #close() {
     this.#closed = true;
-    this.subagents.close();
-    if (this.#active) this.#finish(this.#active, { status: "cancelled", reason: "Session closed" });
     this.#interactions.close();
     try {
       await this.#client.close();
+      if (this.#active)
+        this.#finish(this.#active, { status: "cancelled", reason: "Session closed" });
+    } catch (error) {
+      if (this.#active)
+        this.#finish(this.#active, { status: "failed", error: nativeError(error, this.profile) });
+      throw error;
     } finally {
+      this.subagents.close();
       this.#channel.end();
       this.onClose();
     }

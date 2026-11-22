@@ -126,13 +126,15 @@ export class HarnessAccountInspectionCache {
       return Promise.resolve(cached.result);
     }
     const active = this.#flights.get(adapter.harnessId);
-    if (active) return active;
+    if (!refresh && active) return active;
     const flight = inspectHarnessAccount(adapter, descriptors)
       .then((result) => {
-        this.#results.set(adapter.harnessId, {
-          result,
-          freshUntil: this.now() + this.ttlMs,
-        });
+        if (this.#flights.get(adapter.harnessId) === flight) {
+          this.#results.set(adapter.harnessId, {
+            result,
+            freshUntil: this.now() + this.ttlMs,
+          });
+        }
         return result;
       })
       .finally(() => {

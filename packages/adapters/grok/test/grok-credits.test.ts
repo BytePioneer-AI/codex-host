@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   fetchGrokAccount,
   fetchGrokCredits,
+  GROK_CREDITS_ENDPOINT,
+  GROK_SETTINGS_ENDPOINT,
   parseGrokCreditsResponse,
 } from "../src/grok-credits.js";
 
@@ -35,7 +37,7 @@ describe("Grok account discovery", () => {
     environment: {},
     now,
     readAuthFile: vi.fn(async () => JSON.stringify(auth)),
-    fetch: vi.fn(
+    fetch: vi.fn<(url: string, init: RequestInit) => Promise<Response>>(
       async () =>
         new Response(
           JSON.stringify({ config: { creditUsagePercent: 0, currentPeriod: { type: "WEEKLY" } } }),
@@ -50,7 +52,58 @@ describe("Grok account discovery", () => {
       label: "native-user",
       credits: { usedPercent: 0, periodType: "weekly" },
     });
-    expect(input.fetch).toHaveBeenCalledOnce();
+    expect(input.fetch.mock.calls.map(([url]) => url)).toEqual([
+      GROK_CREDITS_ENDPOINT,
+      GROK_SETTINGS_ENDPOINT,
+    ]);
+  });
+
+  it("shows the native subscription name next to the quota", async () => {
+    const input = fixture();
+    const billing = input.fetch.getMockImplementation() ?? (async () => Response.error());
+    input.fetch.mockImplementation(async (url: string, init: RequestInit) =>
+      url === GROK_SETTINGS_ENDPOINT
+        ? new Response(JSON.stringify({ subscription_tier_display: " X Premium " }))
+        : billing(url, init),
+    );
+    expect(await fetchGrokAccount(input)).toMatchObject({
+      plan: "X Premium",
+      credits: { usedPercent: 0, periodType: "weekly" },
+    });
+    // Composer polling reads only the quota.
+    input.fetch.mockClear();
+    expect(await fetchGrokCredits(input)).not.toBeNull();
+    expect(input.fetch.mock.calls.map(([url]) => url)).toEqual([GROK_CREDITS_ENDPOINT]);
+  });
+
+  it.each([
+    ["an HTTP error", async () => new Response("{}", { status: 401 })],
+    ["a network error", async () => Promise.reject(new Error("offline"))],
+    ["invalid JSON", async () => new Response("not json")],
+    ["a missing name", async () => new Response(JSON.stringify({ tier: 2 }))],
+    [
+      "a control character",
+      async () => new Response(JSON.stringify({ subscription_tier_display: "X\u0000" })),
+    ],
+    [
+      "a request slower than the plan limit",
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) =>
+          init.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
+        ),
+    ],
+  ])("keeps the account and quota without a plan on %s", async (_label, settings) => {
+    const input = fixture();
+    const billing = input.fetch.getMockImplementation() ?? (async () => Response.error());
+    input.fetch.mockImplementation((url: string, init: RequestInit) =>
+      url === GROK_SETTINGS_ENDPOINT ? settings(url, init) : billing(url, init),
+    );
+    const account = await fetchGrokAccount({ ...input, planTimeoutMs: 20 });
+    expect(account).toEqual({
+      email: "user@example.com",
+      label: "native-user",
+      credits: { usedPercent: 0, periodType: "weekly" },
+    });
   });
 
   it("keeps a native zero-usage account when billing omits the percentage", async () => {

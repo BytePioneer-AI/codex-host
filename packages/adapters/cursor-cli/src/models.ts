@@ -5,7 +5,7 @@ import {
 import type { HarnessModelCatalog, HarnessSessionCapabilities } from "@codexhost/harness-adapter";
 import type { CursorSessionInfo, CursorNativeModel } from "./transport.js";
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
-import { cursorThinking, cursorThinkingState } from "./thinking.js";
+import { cursorThinking, cursorThinkingState, isCursorThinkingOption } from "./thinking.js";
 import { cursorForkAvailable } from "./fork-support.js";
 
 export const CURSOR_CAPABILITIES: HarnessSessionCapabilities = {
@@ -67,14 +67,18 @@ export function cursorCatalog(info: CursorSessionInfo): HarnessModelCatalog {
     { id: ReturnType<typeof cursorThinking>[number]["id"]; label: string }
   >();
   const models = native.models.map((model) => {
-    const config =
-      model.value === native.current
-        ? info.configOptions
-        : info.nativeModels?.find((entry) => entry.value === model.value)?.configOptions;
+    const live = model.value === native.current;
+    const config = live
+      ? info.configOptions
+      : info.nativeModels?.find((entry) => entry.value === model.value)?.configOptions;
     const options = cursorThinking(config);
     for (const { id, label } of options) thinking.set(id, { id, label });
     return {
-      ref: cursorConfiguredModelRef(model.value, config),
+      // Only the live model's parameters reflect the user's Cursor settings. The parameterized
+      // catalog reports Cursor's built-in defaults for every other model (for example
+      // `fast=true`), so pinning them would override the user's remembered per-model parameters.
+      // A bare Ref selects only the model and lets Cursor apply those parameters itself.
+      ref: live ? cursorConfiguredModelRef(model.value, config) : cursorModelRef(model.value),
       label: model.name,
       supportedThinkingOptionIds: options.map(({ id }) => id),
     };
@@ -201,8 +205,12 @@ export function cursorCapabilities(info: CursorSessionInfo): HarnessSessionCapab
 
 /** Keep native non-Thinking parameters in the persisted Model Ref across Host restarts. */
 export function cursorConfiguredModelRef(model: string, options?: SessionConfigOption[] | null) {
+  // Parameters offered as Thinking must stay out of the Ref; otherwise changing them would
+  // produce a Ref absent from the catalog and the selection could never be confirmed.
   const parameters = (options ?? []).flatMap((option) =>
-    option.category === "model_config" && option.type === "select"
+    option.category === "model_config" &&
+    option.type === "select" &&
+    !isCursorThinkingOption(option)
       ? [`${option.id}=${option.currentValue}`]
       : [],
   );

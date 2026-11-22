@@ -1,4 +1,5 @@
-import { mkdir, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { Writable } from "node:stream";
@@ -10,11 +11,44 @@ import {
 import { officialEnvironment } from "./app-server-host.js";
 import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
 import { createOwnedLoopbackBackend } from "./codex-runtime/owned-official-backends.js";
+import { resolveOfficialCodexExecutable } from "./codex-runtime/command.js";
+import {
+  DESKTOP_TOOL_CONTEXT_ENV,
+  desktopBrowserMcpArguments,
+  withoutDesktopToolContext,
+} from "./desktop-context-environment.js";
+import {
+  assertCodexRuntimeFilesPresent,
+  captureCodexRuntimeFiles,
+  codexRuntimeFilesChanged,
+  type CodexRuntimeFile,
+} from "./codex-runtime/backend-files.js";
+
+interface NativeStartup {
+  stockCodexPath: string;
+  arguments: string[];
+  environment: NodeJS.ProcessEnv;
+}
 
 export interface PreparedLocalCodex {
   officialRuntimeScope: OfficialRuntimeScope;
   accountControl: CodexAccountControl;
+  /** Record Desktop's invocation and scope tool access to its live attachment. */
+  configureStartup(input: NativeStartup, attachment: AbortSignal): Promise<void>;
   close(): Promise<void>;
+}
+
+function desktopToolContextChanged(current: NativeStartup, next: NativeStartup): boolean {
+  return DESKTOP_TOOL_CONTEXT_ENV.some((key) => current.environment[key] !== next.environment[key]);
+}
+
+function withDesktopTools(startup: NativeStartup, desktop: NodeJS.ProcessEnv): NativeStartup {
+  const environment = withoutDesktopToolContext(startup.environment);
+  for (const key of DESKTOP_TOOL_CONTEXT_ENV) {
+    const value = desktop[key];
+    if (value !== undefined) environment[key] = value;
+  }
+  return { ...startup, environment };
 }
 
 async function canonicalCodexHome(home: string): Promise<string> {
@@ -34,23 +68,98 @@ export async function prepareLocalCodex(input: {
   arguments: string[];
   environment: NodeJS.ProcessEnv;
   diagnosticOutput: Writable;
+  /** Shared service: Web-only use need not start the official Codex process. */
+  deferStart?: boolean;
+  /** Remote Control retains its supplied arguments and first-invocation-only configuration. */
+  remoteControl?: boolean;
 }): Promise<PreparedLocalCodex> {
   const home = await canonicalCodexHome(
     input.environment.CODEX_HOME ?? path.join(homedir(), ".codex"),
   );
   await mkdir(home, { recursive: true });
+  const sharedDesktop = input.deferStart && !input.remoteControl;
+  const startupFile =
+    sharedDesktop && input.environment.CODEXHOST_DATA_DIR
+      ? path.join(input.environment.CODEXHOST_DATA_DIR, "official-startup-v1.json")
+      : undefined;
+  let startup: NativeStartup = {
+    stockCodexPath: input.stockCodexPath,
+    arguments: sharedDesktop
+      ? ["-c", "features.code_mode_host=true", "app-server"]
+      : [...input.arguments],
+    environment: input.deferStart
+      ? withoutDesktopToolContext(input.environment)
+      : input.environment,
+  };
+  if (startupFile) {
+    try {
+      const saved = JSON.parse(await readFile(startupFile, "utf8"));
+      if (
+        typeof saved.stockCodexPath === "string" &&
+        path.isAbsolute(saved.stockCodexPath) &&
+        Array.isArray(saved.arguments) &&
+        saved.arguments.every((argument: unknown) => typeof argument === "string")
+      ) {
+        startup.stockCodexPath =
+          input.stockCodexPath ||
+          (await access(saved.stockCodexPath, constants.X_OK).then(
+            () => saved.stockCodexPath,
+            () => "",
+          ));
+        startup.arguments = saved.arguments;
+      }
+    } catch {
+      // Missing or damaged startup records use the baseline invocation.
+    }
+  }
+  startup.stockCodexPath =
+    (await resolveOfficialCodexExecutable(startup.stockCodexPath, input.environment)) ?? "";
+  const desktopStartups = new Map<AbortSignal, NativeStartup>();
+  const nextStartup = () => [...desktopStartups.values()].at(-1) ?? startup;
+  let startupQueue = Promise.resolve();
+  let running: NativeStartup | undefined;
+  let startupConfigured = false;
+  let backendFiles: CodexRuntimeFile[] = [];
   const scope = new OfficialRuntimeScope({
     permanentHome: home,
     diagnosticOutput: input.diagnosticOutput,
     // Local Desktop connections outlive a failed official backend generation.
     recovery: {},
-    createBackend: () =>
-      createOwnedLoopbackBackend({
-        stockCodexPath: input.stockCodexPath,
-        cwd: home,
-        arguments: input.arguments,
-        environment: { ...officialEnvironment(input.environment), CODEX_HOME: home },
-      }),
+    shouldReplaceIdleBackend: () =>
+      running !== undefined &&
+      ((input.deferStart && desktopToolContextChanged(running, nextStartup())) ||
+        codexRuntimeFilesChanged(backendFiles)),
+    createBackend: () => {
+      try {
+        const next = nextStartup();
+        // An older attachment can outlive a failed first launch and its subsequent recovery.
+        const configuration =
+          input.remoteControl && next !== startup
+            ? withDesktopTools(startup, next.environment)
+            : next;
+        if (!configuration.stockCodexPath) throw new Error("Official Codex is unavailable");
+        backendFiles = captureCodexRuntimeFiles(configuration.stockCodexPath);
+        running = configuration;
+        const backend = createOwnedLoopbackBackend({
+          stockCodexPath: configuration.stockCodexPath,
+          cwd: home,
+          arguments: [
+            ...configuration.arguments,
+            ...desktopBrowserMcpArguments(configuration.environment),
+          ],
+          environment: { ...officialEnvironment(configuration.environment), CODEX_HOME: home },
+        });
+        startupConfigured = true;
+        // Before the first successful start, a failed backend may release this provisional choice.
+        void backend.closed.then(() => {
+          startupConfigured = false;
+        });
+        return backend;
+      } catch (error) {
+        startupConfigured = false;
+        throw error;
+      }
+    },
   });
   // controlRequest requires an initialized client on this same owned backend.
   // This connection only reads native identity; it does not own authentication.
@@ -60,7 +169,7 @@ export async function prepareLocalCodex(input: {
     capabilities: { experimentalApi: true },
   });
   try {
-    await scope.start();
+    if (!input.deferStart) await scope.start();
   } catch (error) {
     await scope.close();
     identityReader.close();
@@ -75,18 +184,87 @@ export async function prepareLocalCodex(input: {
     accounts: current ? [current] : [],
   });
   const accounts = new SingleNativeCodexAccount(snapshot, async () => {
+    await scope.start();
     const response = await scope.owner.controlRequest("account/read", { refreshToken: false });
     if (response.error) throw new Error("Official Account read failed");
     current = currentCodexAccountFromOfficialRead(response.result);
     return snapshot();
   });
-  void accounts.refresh?.()?.catch(() => {
-    input.diagnosticOutput.write("codexhost: Codex Account identity could not be read\n");
-  });
+  const remoteInvocationFixed = () =>
+    input.remoteControl && (startupConfigured || scope.owner.hasStartedSuccessfully);
+
+  async function applyStartup(configuration: NativeStartup, attachment: AbortSignal) {
+    if (!input.deferStart || scope.closed || attachment.aborted) return;
+    let next = startup;
+    if (!remoteInvocationFixed()) {
+      const stockCodexPath = await resolveOfficialCodexExecutable(
+        configuration.stockCodexPath,
+        configuration.environment,
+      );
+      if (scope.closed || attachment.aborted) return;
+      if (!remoteInvocationFixed()) {
+        if (!stockCodexPath) throw new Error("Official Codex executable is a shim or proxy");
+        next = { ...configuration, stockCodexPath, arguments: [...configuration.arguments] };
+      }
+    }
+    if (input.remoteControl) {
+      // The listener pins the native invocation. Tool endpoints belong to each attached Desktop.
+      next = withDesktopTools(next, configuration.environment);
+      startupConfigured = true;
+    }
+    if (startupFile) {
+      try {
+        await mkdir(path.dirname(startupFile), { recursive: true });
+        await writeFile(
+          startupFile,
+          JSON.stringify({
+            stockCodexPath: next.stockCodexPath,
+            arguments: next.arguments,
+          }),
+          { mode: 0o600 },
+        );
+      } catch {
+        input.diagnosticOutput.write(
+          "codexhost: could not record official Codex startup arguments\n",
+        );
+      }
+    }
+    if (scope.closed || attachment.aborted) return;
+    const current = scope.owner.running && running ? running : nextStartup();
+    const changed =
+      current.stockCodexPath !== next.stockCodexPath ||
+      JSON.stringify(current.arguments) !== JSON.stringify(next.arguments) ||
+      desktopToolContextChanged(current, next) ||
+      (scope.owner.running && codexRuntimeFilesChanged(backendFiles));
+    startup = { ...next, environment: withoutDesktopToolContext(next.environment) };
+    if (desktopStartups.has(attachment)) desktopStartups.delete(attachment);
+    else {
+      attachment.addEventListener("abort", () => desktopStartups.delete(attachment), {
+        once: true,
+      });
+    }
+    desktopStartups.set(attachment, next);
+    // The running generation owns the files it started with.
+    if (scope.owner.running && (!changed || scope.owner.hasActiveWork))
+      assertCodexRuntimeFilesPresent(backendFiles);
+    if (changed && scope.owner.generation > 0 && scope.owner.hasActiveWork) {
+      input.diagnosticOutput.write(
+        "codexhost: Desktop startup differs; preserving active official Codex work\n",
+      );
+      return;
+    }
+    if (changed && scope.owner.generation > 0) await scope.stop();
+  }
   return {
     officialRuntimeScope: scope,
     accountControl: accounts,
+    configureStartup: (configuration, attachment) => {
+      const configured = startupQueue.then(() => applyStartup(configuration, attachment));
+      startupQueue = configured.catch(() => undefined);
+      return configured;
+    },
     close: async () => {
+      desktopStartups.clear();
       await scope.close();
       identityReader.close();
     },

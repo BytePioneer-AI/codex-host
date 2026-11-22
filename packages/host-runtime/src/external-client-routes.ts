@@ -1,0 +1,241 @@
+import { routeDelegationRequest } from "./delegation-control-server.js";
+import {
+  DEFAULT_LIST_LIMIT,
+  DEFAULT_LIST_SORT,
+  DEFAULT_WAIT_TIMEOUT_MS,
+  DEFAULT_WATCH_TIMEOUT_MS,
+  DelegationControlError,
+  type DelegationControlApi,
+  type DelegationWatchApi,
+} from "./delegation-types.js";
+import type { ClientEventLog } from "./external-client-events.js";
+import { clientOrigin, originClientName } from "./external-client-origin.js";
+import type {
+  ExternalClientCall,
+  ExternalClientRouter,
+  ExternalClientStreamHandler,
+} from "./external-client-server.js";
+import type { ExternalClientRegistry } from "./external-clients.js";
+import type { HostInventory } from "./host-inventory.js";
+
+const MAX_POLL_MS = 60_000;
+const MAX_EVENTS_PER_READ = 100;
+const HEARTBEAT_MS = 25_000;
+
+/** A client may name only itself where an identifier stands for the caller. */
+function ownOrigin(client: string, value: unknown, field: string): string {
+  if (value === undefined) return clientOrigin(client);
+  const other = typeof value === "string" ? originClientName(value) : undefined;
+  if (other !== undefined && other !== client)
+    throw new DelegationControlError(
+      "INVALID_ARGUMENT",
+      `${field} may name only the calling client`,
+    );
+  return value as string;
+}
+
+/**
+ * Routes a `read` client may use: they observe Threads, the Host and the client's
+ * own events. Every other route, including any added later, needs `dispatch`.
+ */
+const READ_ROUTES = new Set([
+  "/v1/host/info",
+  "/v1/project/list",
+  "/v1/harness/list",
+  "/v1/harness/inspect",
+  "/v1/thread/read",
+  "/v1/thread/file",
+  "/v1/thread/wait",
+  "/v1/thread/watches",
+  "/v1/thread/list",
+  "/v1/events/poll",
+]);
+
+/** External watch=true is shorthand for the timeout-based control protocol used by the CLI. */
+function withWatch(body: Record<string, unknown>): Record<string, unknown> {
+  const { watch, ...rest } = body;
+  if (watch !== undefined && typeof watch !== "boolean")
+    throw new DelegationControlError("INVALID_ARGUMENT", "watch must be a boolean");
+  if (watch === false && body.watchTimeoutMs !== undefined)
+    throw new DelegationControlError("INVALID_ARGUMENT", "watchTimeoutMs requires watch true");
+  const timeout =
+    body.watchTimeoutMs !== undefined
+      ? body.watchTimeoutMs
+      : watch === true
+        ? DEFAULT_WATCH_TIMEOUT_MS
+        : undefined;
+  if (timeout !== undefined && (!Number.isSafeInteger(timeout) || (timeout as number) <= 0))
+    throw new DelegationControlError(
+      "INVALID_ARGUMENT",
+      "watchTimeoutMs must be a positive integer",
+    );
+  return { ...rest, ...(timeout !== undefined ? { watchTimeoutMs: timeout } : {}) };
+}
+
+/**
+ * Fills the optional fields the CLI and MCP tools default on their side, so a
+ * plain HTTP request behaves the same. Only absent fields are filled; a field
+ * the caller sent is left for the Runtime to validate.
+ */
+function withHttpDefaults(route: string, body: Record<string, unknown>): Record<string, unknown> {
+  switch (route) {
+    case "/v1/delegate/start": {
+      // The CLI flag and the documented field are `harness`; the Runtime reads `harnessId`.
+      const { harness, ...rest } = body;
+      if (harness !== undefined && rest.harnessId !== undefined && harness !== rest.harnessId)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "harness and harnessId must name the same Harness",
+        );
+      const harnessId = rest.harnessId === undefined ? harness : rest.harnessId;
+      if (harnessId === undefined)
+        throw new DelegationControlError("INVALID_ARGUMENT", "harnessId is required");
+      // A worktree is created before the Runtime resolves the Harness, so a malformed id must not get that far.
+      if (typeof harnessId !== "string" || harnessId === "")
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "harnessId must be a non-empty string",
+        );
+      return { ...rest, harnessId };
+    }
+    case "/v1/thread/read":
+      return { view: "result", ...body };
+    case "/v1/thread/wait":
+      return { view: "result", timeoutMs: DEFAULT_WAIT_TIMEOUT_MS, ...body };
+    case "/v1/thread/watch":
+      return { timeoutMs: DEFAULT_WATCH_TIMEOUT_MS, ...body };
+    case "/v1/thread/list":
+      return { limit: DEFAULT_LIST_LIMIT, sort: DEFAULT_LIST_SORT, ...body };
+    default:
+      return body;
+  }
+}
+
+/** Applies the caller's identity: work and watches without a parent or target belong to the client. */
+function forClient(
+  client: string,
+  route: string,
+  rawBody: Record<string, unknown>,
+): Record<string, unknown> {
+  let body = withHttpDefaults(route, rawBody);
+  if (route === "/v1/delegate/start" || route === "/v1/thread/send") body = withWatch(body);
+  if (route === "/v1/delegate/start")
+    return { ...body, parentThreadId: ownOrigin(client, body.parentThreadId, "parentThreadId") };
+  if (
+    route === "/v1/thread/watch" ||
+    (route === "/v1/thread/send" && body.watchTimeoutMs !== undefined)
+  )
+    return { ...body, notifyThreadId: ownOrigin(client, body.notifyThreadId, "notifyThreadId") };
+  return body;
+}
+
+function nonNegativeInteger(
+  value: unknown,
+  name: string,
+  fallback: number,
+  maximum?: number,
+): number {
+  if (value === undefined) return fallback;
+  if (
+    !Number.isSafeInteger(value) ||
+    (value as number) < 0 ||
+    (maximum !== undefined && (value as number) > maximum)
+  )
+    throw new DelegationControlError(
+      "INVALID_ARGUMENT",
+      `${name} must be a non-negative integer${maximum !== undefined ? ` no greater than ${maximum}` : ""}`,
+    );
+  return value as number;
+}
+
+/** Events after a cursor; waits up to timeoutMs for the first one when none is there yet. */
+async function pollEvents(events: ClientEventLog, client: string, body: Record<string, unknown>) {
+  const after = nonNegativeInteger(body.after, "after", 0);
+  const timeoutMs = nonNegativeInteger(body.timeoutMs, "timeoutMs", 0, MAX_POLL_MS);
+  const limit =
+    nonNegativeInteger(body.limit, "limit", MAX_EVENTS_PER_READ, MAX_EVENTS_PER_READ) ||
+    MAX_EVENTS_PER_READ;
+  const page = await events.read(client, after, limit);
+  if (page.events.length > 0 || timeoutMs === 0) return page;
+  await events.waitForEvent(client, timeoutMs);
+  return events.read(client, after, limit);
+}
+
+/** The delegation routes as an external client sees them, plus event polling. */
+export function externalClientRouter(handlers: {
+  api: DelegationControlApi;
+  watchApi?: DelegationWatchApi;
+  events?: ClientEventLog;
+  inventory?: HostInventory;
+}): ExternalClientRouter {
+  return async (call, route, body) => {
+    if (call.scope !== "dispatch" && !READ_ROUTES.has(route))
+      throw new DelegationControlError(
+        "FORBIDDEN",
+        `Client '${call.client}' has read scope and cannot use ${route}`,
+      );
+    if (route === "/v1/events/poll") {
+      if (!handlers.events)
+        throw new DelegationControlError("INVALID_ARGUMENT", "This Runtime keeps no client events");
+      return pollEvents(handlers.events, call.client, body);
+    }
+    return routeDelegationRequest(handlers, route, forClient(call.client, route, body));
+  };
+}
+
+function writeEvent(call: ExternalClientCall, id: number, event: string, data: unknown): void {
+  call.response.write(`id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+/**
+ * Server-sent events: replays everything after Last-Event-ID (or ?after=), then
+ * pushes new events. A heartbeat keeps the connection open and ends it once the
+ * client has been removed.
+ */
+export function externalClientEventStream(
+  events: ClientEventLog,
+  clients: ExternalClientRegistry,
+): ExternalClientStreamHandler {
+  return async (call, url) => {
+    if (call.request.method !== "GET")
+      throw new DelegationControlError("INVALID_ARGUMENT", "GET is required");
+    const header = call.request.headers["last-event-id"];
+    const raw =
+      (Array.isArray(header) ? header[0] : header) ?? url.searchParams.get("after") ?? "0";
+    let cursor = /^[0-9]+$/u.test(raw) ? Number(raw) : Number.NaN;
+    if (!Number.isSafeInteger(cursor))
+      throw new DelegationControlError("INVALID_ARGUMENT", "Last-Event-ID must be an event id");
+    const closed = new AbortController();
+    call.request.on("close", () => closed.abort());
+    call.response.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      connection: "keep-alive",
+    });
+    call.response.write(": connected\n\n");
+    while (!closed.signal.aborted) {
+      let page;
+      try {
+        page = await events.read(call.client, cursor, MAX_EVENTS_PER_READ);
+      } catch (error) {
+        if (error instanceof DelegationControlError) {
+          writeEvent(call, cursor, "error", {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+          });
+          break;
+        }
+        throw error;
+      }
+      for (const event of page.events) writeEvent(call, event.id, event.type, event);
+      cursor = page.cursor;
+      if (page.events.length === MAX_EVENTS_PER_READ) continue;
+      await events.waitForEvent(call.client, HEARTBEAT_MS, closed.signal);
+      if (closed.signal.aborted) break;
+      if (!(await clients.has(call.client))) break;
+      call.response.write(": ping\n\n");
+    }
+    call.response.end();
+  };
+}

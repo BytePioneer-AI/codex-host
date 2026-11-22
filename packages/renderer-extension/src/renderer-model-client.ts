@@ -1,4 +1,16 @@
 import {
+  HOST_EXTENSIONS_RPC,
+  hostExtensionsRpcSchemas,
+  type HostExtensionsRpcParams,
+  type HostExtensionsRpcResult,
+  SKILLS_LIST_METHOD,
+  SKILLS_CHANGED_METHOD,
+  skillsListParamsSchema,
+  skillsListResultSchema,
+  skillsChangedParamsSchema,
+  type SkillsListParams,
+  type SkillsListResult,
+  type SkillsChangedParams,
   DELEGATION_READ_METHOD,
   delegationReadParamsSchema,
   type DelegationReadParams,
@@ -13,17 +25,21 @@ import {
   type RuntimeStatus,
 } from "@codexhost/shared-contracts";
 import {
-  HARNESS_INSTALLATION_METHOD,
-  harnessInstallationParamsSchema,
-  harnessInstallationStateSchema,
   type HarnessInstallationParams,
   type HarnessInstallationState,
   HARNESS_DISPLAY_GET_METHOD,
+  HARNESS_DISPLAY_CHANGED_METHOD,
+  HARNESS_DISPLAY_CAPABILITIES_METHOD,
+  harnessDisplayCapabilitiesSchema,
   HARNESS_DISPLAY_SET_METHOD,
   harnessDisplaySettingsSchema,
   type HarnessDisplaySet,
   type HarnessDisplaySettings,
   CONSOLE_OPEN_METHOD,
+  WEB_OPEN_METHOD,
+  webOpenParamsSchema,
+  webOpenResultSchema,
+  type WebOpenResult,
   consoleOpenParamsSchema,
   consoleOpenResultSchema,
   type ConsoleOpenResult,
@@ -82,6 +98,14 @@ import {
   threadOwnershipListResultSchema,
   threadUsageInspectionParamsSchema,
   threadUsageInspectionSchema,
+  RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
+  RELEASE_ANNOUNCEMENT_GET_METHOD,
+  releaseAnnouncementAcknowledgeParamsSchema,
+  releaseAnnouncementGetParamsSchema,
+  releaseAnnouncementGetResultSchema,
+  type ReleaseAnnouncementAcknowledgeParams,
+  type ReleaseAnnouncementGetParams,
+  type ReleaseAnnouncementGetResult,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
   updateStartResultSchema,
@@ -113,6 +137,7 @@ import {
   type UpdateStartResult,
   type UpdateStatusResult,
 } from "@codexhost/shared-contracts";
+import { runRendererInstallation } from "./renderer-installation-client.js";
 
 import {
   createRendererRequestSender,
@@ -121,6 +146,16 @@ import {
   type RendererRequestOptions,
 } from "./renderer-request-sender.js";
 import { verifyNativeCodexThread } from "./renderer-native-thread.js";
+import {
+  HARNESS_PREFERENCES_GET_METHOD,
+  HARNESS_PREFERENCES_PATCH_METHOD,
+  HARNESS_PREFERENCES_CHANGED_METHOD,
+  harnessPreferenceSnapshotSchema,
+  harnessPreferencePatchSchema,
+  harnessPreferenceGetSchema,
+  type HarnessPreferenceSnapshot,
+  type HarnessPreferencePatch,
+} from "@codexhost/shared-contracts";
 import {
   createRendererSessionImportClient,
   type RendererSessionImportClient,
@@ -170,6 +205,14 @@ export const CODEX_ACCOUNT_LIST_METHOD = "codexhost/account/list";
 export const CODEX_ACCOUNT_REFRESH_METHOD = "codexhost/account/refresh";
 export const CODEX_ACCOUNT_CHANGED_METHOD = "codexhost/account/changed";
 
+import {
+  THREAD_TREE_SNAPSHOT_METHOD,
+  THREAD_TREE_UNWATCH_METHOD,
+  THREAD_TREE_WATCH_METHOD,
+  threadTreeWatchResultSchema,
+  type ThreadTreeSnapshot,
+} from "@codexhost/shared-contracts";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -203,16 +246,62 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 }
 
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
+  watchThreadTree?(receive: (snapshot: ThreadTreeSnapshot) => void): () => void;
+  hasDesktopThread?(id: string): Promise<boolean>;
+  getHarnessPreferences?(scope?: string): Promise<HarnessPreferenceSnapshot>;
+  patchHarnessPreferences?(input: HarnessPreferencePatch): Promise<HarnessPreferenceSnapshot>;
+  subscribeHarnessPreferences?(listener: () => void): () => void;
   installation?(input: HarnessInstallationParams): Promise<HarnessInstallationState>;
+  getHarnessDisplayCapabilities?(): Promise<{ events: boolean }>;
+  subscribeHarnessDisplaySettings?(listener: () => void): () => void;
   getHarnessDisplaySettings?(): Promise<HarnessDisplaySettings>;
   setHarnessDisplaySettings?(input: HarnessDisplaySet): Promise<HarnessDisplaySettings>;
   getHarnessLaunchSettings?(input: HarnessLaunchSettingsGet): Promise<HarnessLaunchSettings>;
   setHarnessLaunchSettings?(input: HarnessLaunchSettingsSet): Promise<HarnessLaunchSettings>;
   setIdleReleaseSettings?(settings: IdleReleaseSettings): Promise<IdleReleaseSettings>;
   listLoadedSessions?(): Promise<LoadedSession[]>;
+  /** Use the local Host client, independent of the active Composer. */
+  listHostExtensions?(): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.list>>;
+  snapshotHostExtensions?(): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.snapshot>>;
+  subscribeHostExtensionsChanged?(listener: () => void): () => void;
+  listHostExtensionCatalog?(
+    input?: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.catalog>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.catalog>>;
+  installHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.install>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.install>>;
+  updateHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.update>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.update>>;
+  enableHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.enable>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.enable>>;
+  disableHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.disable>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.disable>>;
+  uninstallHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.uninstall>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.uninstall>>;
+  recoverHostExtensions?(
+    input?: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.recover>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.recover>>;
+  readHostExtensionAsset?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.asset>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.asset>>;
+  getHostExtensionSettings?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsGet>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.settingsGet>>;
+  setHostExtensionSettings?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsSet>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.settingsSet>>;
+  invokeHostExtensionBackend?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.backendInvoke>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.backendInvoke>>;
   currentHostId?(composer?: Element): string | null;
   knownHostIds?(): readonly string[];
   listHarnessPlugins?(): Promise<HarnessPluginListResult>;
+  listSkills?(params: SkillsListParams): Promise<SkillsListResult>;
+  subscribeSkillsChanged?(listener: (params: SkillsChangedParams) => void): () => void;
   clientForHost?(hostId: string): RendererModelClient | null;
   forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
   inspectHarness(
@@ -239,7 +328,12 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
+  getReleaseAnnouncement?(
+    input?: ReleaseAnnouncementGetParams,
+  ): Promise<ReleaseAnnouncementGetResult | null>;
+  acknowledgeReleaseAnnouncement?(input: ReleaseAnnouncementAcknowledgeParams): Promise<void>;
   openConsole?(): Promise<ConsoleOpenResult>;
+  openWeb?(): Promise<WebOpenResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
   listHarnessAccountSources?(): Promise<HarnessAccountSourceListResult>;
   inspectHarnessAccount?(input: HarnessAccountInspectParams): Promise<HarnessAccountInspectResult>;
@@ -320,12 +414,81 @@ export function createRendererModelClient(
     ),
   };
 
+  const extensionListeners = new Set<() => void>();
+  const extensionsChanged = <T>(result: T): T => {
+    for (const listener of [...extensionListeners]) {
+      try {
+        listener();
+      } catch {
+        // A renderer subscriber must not invalidate a successful Host mutation.
+      }
+    }
+    return result;
+  };
+
+  const watchThreadTree = (receive: (snapshot: ThreadTreeSnapshot) => void) => {
+    let closed = false;
+    let subscriptionId: string | undefined;
+    let revision = -1;
+    const unwatch = (id: string) =>
+      void manager
+        .sendRequest(THREAD_TREE_UNWATCH_METHOD, { subscriptionId: id })
+        .catch(() => undefined);
+    const remove = notificationTarget(source)?.addNotificationCallback?.(
+      THREAD_TREE_SNAPSHOT_METHOD,
+      (message) => {
+        const result = threadTreeWatchResultSchema.safeParse(
+          isRecord(message) ? message.params : undefined,
+        );
+        if (
+          !closed &&
+          result.success &&
+          subscriptionId === result.data.subscriptionId &&
+          result.data.snapshot.revision > revision
+        ) {
+          revision = result.data.snapshot.revision;
+          receive(result.data.snapshot);
+        }
+      },
+    );
+    if (remove)
+      void manager
+        .sendRequest(THREAD_TREE_WATCH_METHOD, {})
+        .then((value) => {
+          const result = threadTreeWatchResultSchema.parse(value);
+          if (closed) {
+            unwatch(result.subscriptionId);
+            return;
+          }
+          subscriptionId = result.subscriptionId;
+          revision = result.snapshot.revision;
+          receive(result.snapshot);
+        })
+        .catch(() => remove());
+    return () => {
+      if (closed) return;
+      closed = true;
+      remove?.();
+      if (subscriptionId) unwatch(subscriptionId);
+    };
+  };
+
   const inspectHarness = async (
     input: HarnessInspectParams,
     options?: RendererRequestOptions,
   ): Promise<HarnessInspection> => {
     const params = harnessInspectParamsSchema.parse(input);
-    const result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params, options);
+    let result: unknown;
+    try {
+      result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params, options);
+    } catch (error) {
+      // Older Hosts only accept the base inspection parameters.
+      if ((!params.purpose && !params.credentialAccess) || !isInvalidParams(error)) throw error;
+      const full = { ...params };
+      delete full.purpose;
+      delete full.credentialAccess;
+      result = await manager.sendRequest(HARNESS_INSPECT_METHOD, full, options);
+    }
     return harnessInspectionSchema.parse(result);
   };
   const inspectHarnessCommands = async (
@@ -379,13 +542,50 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
-    async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {
-      return harnessInstallationStateSchema.parse(
+    async getHarnessPreferences(scope = "external") {
+      return harnessPreferenceSnapshotSchema.parse(
         await manager.sendRequest(
-          HARNESS_INSTALLATION_METHOD,
-          harnessInstallationParamsSchema.parse(input),
-          { priority: "interactive" },
+          HARNESS_PREFERENCES_GET_METHOD,
+          harnessPreferenceGetSchema.parse({ scope }),
         ),
+      );
+    },
+    async patchHarnessPreferences(input: HarnessPreferencePatch) {
+      return harnessPreferenceSnapshotSchema.parse(
+        await manager.sendRequest(
+          HARNESS_PREFERENCES_PATCH_METHOD,
+          harnessPreferencePatchSchema.parse(input),
+        ),
+      );
+    },
+    watchThreadTree,
+    async hasDesktopThread(threadId: string) {
+      const result = await manager.sendRequest("thread/read", { threadId, includeTurns: false });
+      return isRecord(result) && isRecord(result.thread) && result.thread.id === threadId;
+    },
+    subscribeHarnessPreferences(listener: () => void) {
+      return (
+        notificationTarget(source)?.addNotificationCallback?.(
+          HARNESS_PREFERENCES_CHANGED_METHOD,
+          listener,
+        ) ?? (() => {})
+      );
+    },
+    async installation(input: HarnessInstallationParams): Promise<HarnessInstallationState> {
+      return runRendererInstallation(manager.sendRequest, input);
+    },
+    async getHarnessDisplayCapabilities() {
+      if (!notificationTarget(source)) return { events: false };
+      return harnessDisplayCapabilitiesSchema.parse(
+        await manager.sendRequest(HARNESS_DISPLAY_CAPABILITIES_METHOD, {}),
+      );
+    },
+    subscribeHarnessDisplaySettings(listener: () => void) {
+      return (
+        notificationTarget(source)?.addNotificationCallback?.(
+          HARNESS_DISPLAY_CHANGED_METHOD,
+          listener,
+        ) ?? (() => {})
       );
     },
     async getHarnessDisplaySettings() {
@@ -436,6 +636,20 @@ export function createRendererModelClient(
       return externalThreadForkResultSchema.parse(result);
     },
     inspectHarness,
+    async listSkills(params: SkillsListParams): Promise<SkillsListResult> {
+      return skillsListResultSchema.parse(
+        await manager.sendRequest(SKILLS_LIST_METHOD, skillsListParamsSchema.parse(params)),
+      );
+    },
+    subscribeSkillsChanged(listener: (params: SkillsChangedParams) => void) {
+      return (
+        notificationTarget(source)?.addNotificationCallback?.(SKILLS_CHANGED_METHOD, (value) => {
+          if (!isRecord(value) || value.method !== SKILLS_CHANGED_METHOD) return;
+          const parsed = skillsChangedParamsSchema.safeParse(value.params);
+          if (parsed.success) listener(parsed.data);
+        }) ?? (() => {})
+      );
+    },
     async listHarnessPlugins(): Promise<HarnessPluginListResult> {
       return harnessPluginListResultSchema.parse(
         await manager.sendRequest(HARNESS_PLUGIN_LIST_METHOD, {}),
@@ -534,6 +748,116 @@ export function createRendererModelClient(
         await manager.sendRequest(REMOTE_UPDATE_METHOD, { version }),
       );
     },
+    async listHostExtensions() {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.list];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.list, schema.params.parse({})),
+      );
+    },
+    async snapshotHostExtensions() {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.snapshot];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.snapshot, schema.params.parse({})),
+      );
+    },
+    subscribeHostExtensionsChanged(listener: () => void) {
+      extensionListeners.add(listener);
+      return () => {
+        extensionListeners.delete(listener);
+      };
+    },
+    async listHostExtensionCatalog(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.catalog> = {},
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.catalog];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.catalog, schema.params.parse(input)),
+      );
+    },
+    async installHostExtension(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.install>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.install];
+      return extensionsChanged(
+        schema.result.parse(
+          await manager.sendRequest(HOST_EXTENSIONS_RPC.install, schema.params.parse(input)),
+        ),
+      );
+    },
+    async updateHostExtension(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.update>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.update];
+      return extensionsChanged(
+        schema.result.parse(
+          await manager.sendRequest(HOST_EXTENSIONS_RPC.update, schema.params.parse(input)),
+        ),
+      );
+    },
+    async enableHostExtension(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.enable>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.enable];
+      return extensionsChanged(
+        schema.result.parse(
+          await manager.sendRequest(HOST_EXTENSIONS_RPC.enable, schema.params.parse(input)),
+        ),
+      );
+    },
+    async disableHostExtension(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.disable>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.disable];
+      return extensionsChanged(
+        schema.result.parse(
+          await manager.sendRequest(HOST_EXTENSIONS_RPC.disable, schema.params.parse(input)),
+        ),
+      );
+    },
+    async uninstallHostExtension(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.uninstall>,
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.uninstall];
+      return extensionsChanged(
+        schema.result.parse(
+          await manager.sendRequest(HOST_EXTENSIONS_RPC.uninstall, schema.params.parse(input)),
+        ),
+      );
+    },
+    async recoverHostExtensions(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.recover> = {},
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.recover];
+      return extensionsChanged(
+        schema.result.parse(
+          await manager.sendRequest(HOST_EXTENSIONS_RPC.recover, schema.params.parse(input)),
+        ),
+      );
+    },
+    async readHostExtensionAsset(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.asset>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.asset];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.asset, schema.params.parse(input)),
+      );
+    },
+    async getHostExtensionSettings(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsGet>,
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.settingsGet];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.settingsGet, schema.params.parse(input)),
+      );
+    },
+    async setHostExtensionSettings(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsSet>,
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.settingsSet];
+      return extensionsChanged(
+        schema.result.parse(
+          await manager.sendRequest(HOST_EXTENSIONS_RPC.settingsSet, schema.params.parse(input)),
+        ),
+      );
+    },
+    async invokeHostExtensionBackend(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.backendInvoke>,
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.backendInvoke];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.backendInvoke, schema.params.parse(input)),
+      );
+    },
     async checkUpdate(): Promise<UpdateCheckResult | null> {
       const result = await manager.sendRequest(
         UPDATE_CHECK_METHOD,
@@ -554,6 +878,23 @@ export function createRendererModelClient(
         updateEmptyParamsSchema.parse({}),
       );
       return updateStatusResultSchema.parse(result);
+    },
+    async getReleaseAnnouncement(
+      input: ReleaseAnnouncementGetParams = {},
+    ): Promise<ReleaseAnnouncementGetResult | null> {
+      const params = releaseAnnouncementGetParamsSchema.parse(input);
+      const result = await manager.sendRequest(RELEASE_ANNOUNCEMENT_GET_METHOD, params);
+      return releaseAnnouncementGetResultSchema.parse(result);
+    },
+    async acknowledgeReleaseAnnouncement(
+      input: ReleaseAnnouncementAcknowledgeParams,
+    ): Promise<void> {
+      const params = releaseAnnouncementAcknowledgeParamsSchema.parse(input);
+      await manager.sendRequest(RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD, params);
+    },
+    async openWeb(): Promise<WebOpenResult> {
+      const result = await manager.sendRequest(WEB_OPEN_METHOD, webOpenParamsSchema.parse({}));
+      return webOpenResultSchema.parse(result);
     },
     async openConsole(): Promise<ConsoleOpenResult> {
       const result = await manager.sendRequest(
@@ -627,4 +968,8 @@ export function createRendererModelClient(
       });
     },
   });
+}
+
+function isInvalidParams(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === -32602;
 }

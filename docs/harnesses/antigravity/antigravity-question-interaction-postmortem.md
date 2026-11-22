@@ -5,7 +5,7 @@
 - **涉及组件**：`@codexhost/adapter-antigravity`, `packages/host-runtime`, `packages/protocol-core`
 - **关联原生会话**：`8f08ea60-ce53-4568-813c-ae739a5af63e`（线程 ID：`3c4601e6-f089-4f75-8aa7-38aa8b135a4f`）
 
-> **后续状态（2026-09-05）**：第 1–7 节保留原 stdout 映射失败时的历史复盘，其中“只能退回文字或使用 MCP”的判断已被后续实测修正。当前已实现前置 Hook 问答桥，实测依据、交互限制及验收边界见第 8 节；不应把桥接成功等同于原生 `ask_question` 工具正常成功返回。
+> **历史归档说明（现行实现见 [`antigravity-tool-approval.md`](antigravity-tool-approval.md)）**：本文档保留 `agy 1.1.x` PrintMode 阶段对 `ask_question` 交互失败与临时 Hook 问答桥的历史调研记录。自 `agy >= 1.5.8` 起，官方 `agy acp` 原生支持客户端 `elicitation/create`（表单模式），`@codexhost/adapter-antigravity` 已直接通过原生 ACP `elicitation` 承载单选、多选与自由文本提问，不再使用外部 Hook 桥。
 
 ---
 
@@ -205,8 +205,9 @@ if (isAntigravityQuestionTool(rawToolName)) { ... }
 ### 8.2 当前实现
 
 - `packages/adapters/antigravity/src/question-bridge.ts`：每个 Turn 创建独立的本地桥，仅监听 `127.0.0.1`，使用内存中的随机鉴权值，验证原生会话身份并拒绝重复或重叠请求。
-- `question-hook-client.ts`：内嵌的轻量 Hook 客户端，随发布 Bundle 打包；运行时写入独立临时目录，不需要额外安装依赖。
-- 临时目录通过 `--add-dir` 加入该次 CLI 运行。真实 `/hooks` 查询已验证附加目录可以提供 Hooks，不修改项目或全局 `hooks.json`。
+- `question-hook-client.ts`：内嵌的轻量 Hook 客户端，随发布 Bundle 打包；运行时写入 Hook 目录，不需要额外安装依赖。
+- Hook 目录通过 `--add-dir` 加入每次 CLI 运行。真实 `/hooks` 查询已验证附加目录可以提供 Hooks，不修改项目或全局 `hooks.json`。
+- 有 Thread ID 时，每个 Thread 固定使用 `<数据目录>/antigravity-history/hooks/<Thread ID>`，跨 Turn 及恢复会话保留，每轮只重写其中的 Hook 文件。下一轮先等上一轮的清理（CLI 退出、桥关闭）完成再准备。清理在 CLI 收到结束信号后最多再等 5 秒进程关闭，避免占着输出不退出的子进程卡住后续轮次和关闭会话；保留的目录不会被删除。同一原生会话的后续 Turn 仍可能引用此前加入的目录：每轮删除再换新目录时，曾出现终端命令以已删除的 Hook 目录为工作目录而失败。目录中不保存鉴权值；没有 Thread ID 时退回每轮私有临时目录，Turn 结束后删除；这个目录不与其他 Turn 共用，所以下一轮无需等待上一轮清理。
 - Adapter 通过已有 `HostQuestionInteraction`、`interaction.respond`、`interaction.closed` 和 `CodexTurnProjector` 完成双向交互，Host 与 Renderer 不新增 Antigravity 专用请求分支。
 - 桥接条目命名为 `codexhost.ask_question`，保存问题与响应，明确区分桥接动作和原生工具结果。
 - 当前支持一批单选或文本问题，单选允许自由填写其他答案。现有 Desktop 投影没有多选字段，因此多选请求明确拒绝，不静默伪装成单选。

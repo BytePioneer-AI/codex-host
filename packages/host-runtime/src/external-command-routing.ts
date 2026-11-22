@@ -67,11 +67,7 @@ export async function resolveExternalCommand(
     });
   if (!matched) {
     const name = /^\/(\S+)/u.exec(commandText)?.[1] ?? "";
-    if (
-      name &&
-      !isExcludedLiveCommand(name, "command") &&
-      options.liveCatalogPending?.(catalog.value)
-    ) {
+    if (name && !isExcludedLiveCommand(name) && options.liveCatalogPending?.(catalog.value)) {
       return null;
     }
     throw new ExternalCommandError(

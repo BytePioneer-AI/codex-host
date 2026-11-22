@@ -47,6 +47,13 @@ describe("Codex thread/fork protocol boundary", () => {
         params: { threadId: "thread-1", beforeTurnId: "turn-2" },
       }),
     ).toMatchObject({ beforeTurnId: "turn-2", excludeTurns: false });
+    expect(
+      decodeThreadForkRequest({
+        id: 4,
+        method: "thread/fork",
+        params: { threadId: "thread-1", attachToSource: true, excludeTurns: true },
+      }),
+    ).toMatchObject({ attachToSource: true, excludeTurns: true });
     expect(decodeThreadForkRequest({ id: 3, method: "thread/read", params: {} })).toBeNull();
   });
 
@@ -65,6 +72,13 @@ describe("Codex thread/fork protocol boundary", () => {
         params: { threadId: "thread-1", excludeTurns: "yes" },
       }),
     ).toThrow("excludeTurns must be boolean");
+    expect(() =>
+      decodeThreadForkRequest({
+        id: 3,
+        method: "thread/fork",
+        params: { threadId: "thread-1", attachToSource: true, ephemeral: true },
+      }),
+    ).toThrow("cannot combine attachToSource with ephemeral");
   });
 
   it("decodes the current paginated thread/revert boundary", () => {
@@ -135,6 +149,23 @@ describe("Codex thread/fork protocol boundary", () => {
         "create",
       ),
     ).toEqual({ code: -32077, message: "External Harness is unavailable" });
+  });
+
+  it("explains a busy native resume without exposing diagnostics or changing active-Turn errors", () => {
+    const error = {
+      code: "sessionBusy" as const,
+      message: "private native Session path and diagnostics",
+      retryable: true,
+    };
+    expect(mapExternalThreadHarnessError(error, "resume")).toEqual({
+      code: -32072,
+      message:
+        "External Native Session is busy. Close it in the other client or wait for its active operation to finish, then retry.",
+    });
+    expect(mapExternalThreadHarnessError(error, "turn")).toEqual({
+      code: -32072,
+      message: "External Thread has an active operation",
+    });
   });
 
   it("builds the paginated ThreadRevertResponse without embedding history", () => {

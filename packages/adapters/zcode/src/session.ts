@@ -1,5 +1,11 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import { randomUUID } from "node:crypto";
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   parseHostUsage,
   type HarnessCommandInvocation,
@@ -14,12 +20,14 @@ import {
   type TurnOutcome,
   type HostItemOutcome,
   type TurnStartCommand,
+  type TurnSteerCommand,
   type TurnCancelCommand,
   type InteractionRespondCommand,
   type ModelSelectCommand,
   type ThinkingSelectCommand,
   type PermissionModeSelectCommand,
   type TurnStartAccepted,
+  type TurnSteerAccepted,
   type TurnCancelAccepted,
   type InteractionRespondAccepted,
   type ModelSelectCompleted,
@@ -94,7 +102,7 @@ export class ZcodeSession implements HarnessSession {
   #lastSeq = 0;
   #closePromise: Promise<void> | undefined;
   #terminalTask: Promise<void> | undefined;
-  readonly catalog: ReturnType<typeof modelCatalog>;
+  readonly #models: ReturnType<typeof modelCatalog>;
   constructor(
     readonly transport: CliTransport,
     snapshot: NativeSnapshot,
@@ -103,13 +111,13 @@ export class ZcodeSession implements HarnessSession {
     readonly isLocked = () => false,
   ) {
     this.capabilities = ZCODE_CAPABILITIES;
-    this.catalog = modelCatalog(nativeCatalog);
+    this.#models = modelCatalog(nativeCatalog);
     this.#snapshot = snapshot;
     this.#usage = new ZcodeUsage(snapshot.session.sessionId, (event) => this.#emit(event));
     this.#goalActive =
       (snapshot.target === undefined ? snapshot.projection.target : snapshot.target)?.status ===
       "active";
-    this.#state = sessionState(snapshot, transport.locator);
+    this.#state = sessionState(snapshot, transport.locator, this.#models.index);
     this.initialState = structuredClone(this.#state);
     this.initialUsage = sessionUsage(snapshot, nativeCatalog);
     this.#lastSeq = typeof snapshot.runtime.eventSeq === "number" ? snapshot.runtime.eventSeq : 0;
@@ -122,6 +130,7 @@ export class ZcodeSession implements HarnessSession {
     return Boolean(this.#active || this.#configuring || this.isLocked());
   }
   #emit(event: HostEvent) {
+    event = configureSubagentEvent(event, this.#subagentConfiguration());
     this.#channel.emit({ kind: "event", event });
   }
   async subscribe() {
@@ -214,7 +223,7 @@ export class ZcodeSession implements HarnessSession {
     this.#goalActive =
       (snapshot.target === undefined ? snapshot.projection.target : snapshot.target)?.status ===
       "active";
-    this.#state = sessionState(snapshot, this.transport.locator);
+    this.#state = sessionState(snapshot, this.transport.locator, this.#models.index);
     this.#emit({ type: "session.state.changed", state: structuredClone(this.#state) });
   }
   async refreshUsage() {
@@ -241,18 +250,37 @@ export class ZcodeSession implements HarnessSession {
       /* Usage is optional; the transport separately reports fatal failures. */
     }
   }
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state;
+    const model = state.effectiveModel ? this.#snapshot.settings.model.current?.modelId : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed || this.#faulted) return failure("invalidState", "ZCode session is closed");
     if (this.busy) return failure("sessionBusy", "ZCode is executing an operation", true);
     try {
       const snapshot = await this.#readNative();
       this.#apply(snapshot);
-      return { ok: true, value: await readHistory(this.transport, snapshot) };
+      return { ok: true, value: await readHistory(this.transport, snapshot, this.#models.index) };
     } catch (error) {
       return { ok: false, error: nativeError(error) };
     }
   }
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -265,6 +293,7 @@ export class ZcodeSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -274,6 +303,7 @@ export class ZcodeSession implements HarnessSession {
   > {
     if (this.#closed || this.#faulted) return failure("invalidState", "ZCode session is closed");
     try {
+      if (command.type === "turn.steer") return unsupportedSteer("ZCode");
       if (command.type === "turn.start") {
         if (
           !hostTurnIdSchema.safeParse(command.turnId).success ||
@@ -318,17 +348,13 @@ export class ZcodeSession implements HarnessSession {
       try {
         let method: "setModel" | "setThoughtLevel" | "setMode", params: Record<string, unknown>;
         if (command.type === "model.select") {
-          if (!this.catalog.models.some((model) => model.ref.id === command.model.id))
-            return failure("invalidRequest", "ZCode model is not available");
           method = "setModel";
           params = {
-            model: selectNativeModel(command.model, {
-              ...this.#snapshot.settings,
-              model: {
-                ...this.#snapshot.settings.model,
-                available: this.nativeCatalog.model.available,
-              },
-            }),
+            model: selectNativeModel(
+              command.model,
+              this.#models.index,
+              this.#snapshot.settings.model.current,
+            ),
             persistAsWorkspaceLastUsed: false,
           };
         } else if (command.type === "thinking.select") {
@@ -560,7 +586,12 @@ export class ZcodeSession implements HarnessSession {
       const snapshot = await this.#readNative();
       if (this.#active !== active || this.#closed || this.#faulted) return;
       const turns = (
-        await readHistory(this.transport, snapshot, active.terminal ? [active.terminal] : [])
+        await readHistory(
+          this.transport,
+          snapshot,
+          this.#models.index,
+          active.terminal ? [active.terminal] : [],
+        )
       ).turns;
       const turn = turns.find((turn) => turn.nativeTurnRef.nativeTurnKey === active.messageId);
       if (turn) active.projection.reconcile(turn.items);

@@ -4,10 +4,15 @@ import {
   jsonRpcRequestSchema,
   parseJsonFrame,
   readLfFrames,
-  writeJsonFrame,
+  encodeJsonFrame,
   type JsonObject,
   type JsonRpcId,
 } from "@codexhost/protocol-core";
+import {
+  THREAD_TREE_WATCH_METHOD,
+  THREAD_TREE_UNWATCH_METHOD,
+  THREAD_TREE_SNAPSHOT_METHOD,
+} from "@codexhost/shared-contracts";
 import type { RemoteAppServerSession, RemoteAppServerSessionStreams } from "./remote-app-server.js";
 import { object, rpcId, StreamThreadPeer, type SharedThreadPeer } from "./shared-thread-peer.js";
 
@@ -18,11 +23,18 @@ export class SharedThreadOwner {
   readonly #peer = new StreamThreadPeer(this.output, this.input, () => this.input.end());
   readonly #prefix = `shared-interaction:${randomUUID()}:`;
   readonly #interactions = new Map<string, { nativeId: JsonRpcId; message: JsonObject }>();
-  readonly #listeners = new Set<(message: JsonObject) => void>();
+  readonly #clients = new Map<(message: JsonObject) => void, () => void>();
+  readonly #treeClients = new Map<string, (message: JsonObject) => void>();
+  #closed = false;
   readonly #receipts = new Map<string, { fingerprint: string; result: Promise<JsonObject> }>();
 
   constructor() {
     this.#peer.subscribe((message) => {
+      if (message.method === THREAD_TREE_SNAPSHOT_METHOD) {
+        const id = object(message.params) ? message.params.subscriptionId : undefined;
+        if (typeof id === "string") this.#treeClients.get(id)?.(message);
+        return;
+      }
       let event = message;
       if (rpcId(message.id)) {
         const id = `${this.#prefix}${message.id}`;
@@ -33,8 +45,11 @@ export class SharedThreadOwner {
         this.#interactions.delete(id);
         event = { ...message, params: { ...message.params, requestId: id } };
       }
-      for (const listener of this.#listeners) listener(event);
+      for (const listener of this.#clients.keys()) listener(event);
     });
+    // Only the owner subscribes to this long-lived promise. Viewer close callbacks
+    // live in the removable client registry, not in accumulating Promise reactions.
+    void this.#peer.closed.then(() => this.close());
   }
 
   #request(method: string, params: JsonObject): Promise<JsonObject> {
@@ -80,13 +95,31 @@ export class SharedThreadOwner {
         }
       }
     };
-    this.#listeners.add(publish);
     const peer: SharedThreadPeer = {
       closed: ended.promise,
-      request: (method, params) =>
-        closed
-          ? Promise.reject(new Error("Shared Thread client is closed"))
-          : this.#request(method, params),
+      request: async (method, params) => {
+        if (closed) throw new Error("Shared Thread client is closed");
+        if (method === THREAD_TREE_UNWATCH_METHOD) {
+          const id = params.subscriptionId;
+          if (typeof id !== "string" || this.#treeClients.get(id) !== publish)
+            return { result: {} };
+          this.#treeClients.delete(id);
+        }
+        const response = await this.#request(method, params);
+        if (
+          method === THREAD_TREE_WATCH_METHOD &&
+          object(response.result) &&
+          typeof response.result.subscriptionId === "string"
+        ) {
+          const id = response.result.subscriptionId;
+          if (closed)
+            void this.#request(THREAD_TREE_UNWATCH_METHOD, { subscriptionId: id }).catch(
+              () => undefined,
+            );
+          else this.#treeClients.set(id, publish);
+        }
+        return response;
+      },
       respond: async (message) => {
         if (closed || typeof message.id !== "string") return;
         const pending = this.#interactions.get(message.id);
@@ -103,12 +136,21 @@ export class SharedThreadOwner {
       close: () => {
         if (closed) return;
         closed = true;
-        this.#listeners.delete(publish);
+        this.#clients.delete(publish);
+        for (const [id, listener] of this.#treeClients) {
+          if (listener !== publish) continue;
+          this.#treeClients.delete(id);
+          if (!this.#closed)
+            void this.#request(THREAD_TREE_UNWATCH_METHOD, { subscriptionId: id }).catch(
+              () => undefined,
+            );
+        }
         listeners.clear();
         ended.resolve(undefined);
       },
     };
-    void this.#peer.closed.then(() => peer.close());
+    this.#clients.set(publish, peer.close);
+    if (this.#closed) peer.close();
     return peer;
   }
 
@@ -118,13 +160,18 @@ export class SharedThreadOwner {
     let detached = false;
     const send = (message: JsonObject): void => {
       if (detached || streams.output.destroyed) return;
-      // Detach if the session's output stream stops draining.
-      if (streams.output.writableLength > 8 * 1024 * 1024) {
+      // The viewer transport bounds its queue independently of an in-flight frame.
+      const failed = () => {
         peer.close();
         streams.input.destroy();
-        return;
+      };
+      try {
+        streams.output.write(encodeJsonFrame(message), (error) => {
+          if (error) failed();
+        });
+      } catch {
+        failed();
       }
-      void writeJsonFrame(streams.output, message).catch(() => peer.close());
     };
     const unsubscribe = peer.subscribe(send);
     return {
@@ -172,7 +219,10 @@ export class SharedThreadOwner {
   }
 
   close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
     this.#peer.close();
+    for (const close of this.#clients.values()) close();
     this.#receipts.clear();
     this.#interactions.clear();
   }

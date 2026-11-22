@@ -40,6 +40,7 @@ describe("WorkBuddy cross-Harness delegation", () => {
   it("exposes fixed native instructions while keeping Runtime credentials in the ACP environment", () => {
     const invocation = workBuddyInvocation({ HOME: "/Users/test", ...runtimeEnvironment }, false, {
       platform: "darwin",
+      isFile: () => false,
       isExecutable: (candidate) =>
         candidate === WORKBUDDY_MACOS_ELECTRON || candidate === WORKBUDDY_MACOS_CLI,
     });
@@ -81,6 +82,7 @@ describe("WorkBuddy cross-Harness delegation", () => {
     expect(
       workBuddyInvocation({ HOME: "/Users/test", ...runtimeEnvironment }, true, {
         platform: "darwin",
+        isFile: () => false,
         isExecutable: () => true,
       }).arguments,
     ).toEqual([
@@ -98,7 +100,7 @@ describe("WorkBuddy cross-Harness delegation", () => {
           CODEXHOST_RUNTIME_TOKEN: undefined,
         },
         false,
-        { platform: "darwin", isExecutable: () => true },
+        { platform: "darwin", isExecutable: () => true, isFile: () => false },
       ).arguments,
     ).toEqual(["--eval", expect.any(String), WORKBUDDY_MACOS_CLI, "--acp"]);
   });

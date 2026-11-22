@@ -714,14 +714,25 @@ function validateV4Event(event: ModernJournalEvent): void {
           throw invalid("delivered file description");
       }
       break;
-    case "subagent/catalog":
-      requiredOptionalKeys(data, ["version", "childId", "childCreatedAt", "mode"], ["label"]);
-      // DSH 0.2.1 records executions delegated to an external agent as v2.
+    case "subagent/catalog": {
+      // DSH 0.2.2-rc.2 writes v3 for every new child, adding a name unique among its siblings.
+      const named = data.version === 3;
+      requiredOptionalKeys(
+        data,
+        ["version", "childId", "childCreatedAt", "mode", ...(named ? ["name"] : [])],
+        ["label"],
+      );
+      // v1 adds `unknown`, which the DSH v3-to-v4 Session format migration writes for a child it cannot
+      // describe; DSH 0.2.1 records executions delegated to an external agent as v2.
       if (!(
         (data.version === 0 && (data.mode === "one-shot" || data.mode === "continuable")) ||
-        (data.version === 2 && data.mode === "external")
+        (data.version === 1 &&
+          (data.mode === "one-shot" || data.mode === "continuable" || data.mode === "unknown")) ||
+        (data.version === 2 && data.mode === "external") ||
+        (named && (data.mode === "continuable" || data.mode === "external"))
       ))
         throw invalid("subagent catalog");
+      if (named && !isSubagentName(data.name)) throw invalid("subagent catalog name");
       identifier(data.childId, "subagent catalog childId");
       nonNegativeInteger(data.childCreatedAt, "subagent catalog childCreatedAt");
       if (
@@ -731,6 +742,7 @@ function validateV4Event(event: ModernJournalEvent): void {
       )
         throw invalid("subagent catalog label");
       break;
+    }
     case "team/member":
     case "team/task":
     case "team/message/queued":
@@ -787,6 +799,11 @@ function validateFeedbackCategory(value: unknown): void {
     throw invalid("feedback category");
 }
 
+/** A DSH child name: one lower-case segment of 1–32 characters, never the root's `lead`. */
+function isSubagentName(value: unknown): boolean {
+  return typeof value === "string" && /^[a-z][a-z0-9-]{0,31}$/u.test(value) && value !== "lead";
+}
+
 function validateTeamPayload(type: string, data: Record<string, unknown>): void {
   const key = type === "team/member" ? "member" : type === "team/task" ? "task" : "message";
   const value = data[key];
@@ -810,7 +827,8 @@ function validateTeamPayload(type: string, data: Record<string, unknown>): void 
     requiredOptionalKeys(
       value,
       ["id", "revision", "subject", "description", "status", "blockedBy", "writeScopes"],
-      ["ownerId"],
+      // DSH 0.2.2-rc.2 records the owner's agent path with every new assignment.
+      ["ownerId", "ownerName"],
     );
     nonNegativeInteger(value.revision, "team task revision");
     if (
@@ -820,6 +838,13 @@ function validateTeamPayload(type: string, data: Record<string, unknown>): void 
     )
       throw invalid("team task");
     if (value.ownerId !== undefined) identifier(value.ownerId, "team task ownerId");
+    if (
+      value.ownerName !== undefined &&
+      (value.ownerId === undefined ||
+        typeof value.ownerName !== "string" ||
+        value.ownerName.length === 0)
+    )
+      throw invalid("team task ownerName");
     stringArray(value.blockedBy, "team task blockedBy");
     stringArray(value.writeScopes, "team task writeScopes");
   } else {

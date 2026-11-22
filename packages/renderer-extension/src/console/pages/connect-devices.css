@@ -1,0 +1,133 @@
+.console-connect {
+  display: grid;
+  gap: 16px;
+}
+.console-connect-main {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.console-connect-routes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 260px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.console-connect-routes legend {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  padding: 0;
+}
+.console-connect-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.console-connect-group + .console-connect-group,
+.console-connect-route + .console-connect-group {
+  margin-top: 10px;
+}
+.console-connect-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.console-connect-route {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--settings-border);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.console-connect-route:has(input:checked) {
+  border-color: var(--settings-muted);
+  background: var(--settings-panel);
+}
+.console-connect-route input {
+  flex: none;
+  margin: 3px 0 0;
+}
+.console-connect-route-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.console-connect-route-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.console-connect-address {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--settings-muted);
+  overflow-wrap: anywhere;
+}
+.console-connect-hint,
+.console-connect-other summary {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--settings-muted);
+  overflow-wrap: anywhere;
+}
+.console-connect-other summary {
+  padding: 4px 2px;
+  cursor: pointer;
+}
+.console-connect-other .console-connect-route {
+  margin-top: 6px;
+}
+.console-connect-field .console-actions {
+  flex-wrap: wrap;
+}
+.console-connect-field .console-input {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.console-connect-qr {
+  flex: none;
+  width: 196px;
+  margin: 0 auto;
+}
+.console-connect-qr:empty {
+  display: none;
+}
+.console-connect-qr.is-enlarged {
+  width: min(320px, 72vw);
+  max-width: 100%;
+}
+.console-connect-qr button {
+  display: block;
+  padding: 0;
+  width: 100%;
+  overflow: hidden;
+  border: 0;
+  border-radius: 12px;
+  line-height: 0;
+  cursor: zoom-in;
+}
+.console-connect-qr.is-enlarged button {
+  cursor: zoom-out;
+}
+.console-connect-qr svg {
+  display: block;
+  width: 100%;
+  shape-rendering: crispEdges;
+}

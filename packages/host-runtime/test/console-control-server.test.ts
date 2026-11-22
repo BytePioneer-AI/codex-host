@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { HOST_EXTENSIONS_RPC } from "@codexhost/shared-contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -25,7 +26,10 @@ describe("Host console channel", () => {
     const target = {
       handleConsoleRequest: vi.fn(async (method: string) => ({ result: { method } })),
     };
-    const environment = { CODEXHOST_DATA_DIR: dataDirectory };
+    const environment = {
+      CODEXHOST_DATA_DIR: dataDirectory,
+      CODEXHOST_HOST_RUNTIME_PATH: path.join(dataDirectory, "app", "host-runtime.mjs"),
+    };
     const server = await startConsoleControlServer({ target, environment, pid: 4242 });
     try {
       expect(server.descriptorPath).toBe(
@@ -34,7 +38,11 @@ describe("Host console channel", () => {
       const descriptor = JSON.parse(
         await readFile(server.descriptorPath, "utf8"),
       ) as ConsoleHostDescriptor;
-      expect(descriptor).toMatchObject({ schemaVersion: 1, pid: 4242 });
+      expect(descriptor).toMatchObject({
+        schemaVersion: 1,
+        pid: 4242,
+        runtimePath: environment.CODEXHOST_HOST_RUNTIME_PATH,
+      });
       if (process.platform !== "win32") {
         expect((await stat(server.descriptorPath)).mode & 0o777).toBe(0o600);
       }
@@ -58,9 +66,58 @@ describe("Host console channel", () => {
       });
       expect(await response.json()).toEqual({ result: { method: "codexhost/account/list" } });
       expect(target.handleConsoleRequest).toHaveBeenCalledWith("codexhost/account/list", {});
+
+      const upload = `http://127.0.0.1:${descriptor.port}/extensions/rpc`;
+      const headers = { authorization: `Bearer ${descriptor.token}` };
+      const params = { source: { type: "zip", base64: "AAAA".repeat(300_000) } };
+      const uploadBody = JSON.stringify({ method: HOST_EXTENSIONS_RPC.install, params });
+      expect((await fetch(upload, { method: "POST", body: uploadBody })).status).toBe(401);
+      expect((await fetch(upload, { method: "POST", body, headers })).status).toBe(400);
+      expect(
+        await (await fetch(upload, { method: "POST", body: uploadBody, headers })).json(),
+      ).toEqual({
+        result: { method: HOST_EXTENSIONS_RPC.install },
+      });
+      expect(target.handleConsoleRequest).toHaveBeenLastCalledWith(
+        HOST_EXTENSIONS_RPC.install,
+        params,
+      );
     } finally {
       await server.close();
     }
     await expect(stat(server.descriptorPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
+});
+
+it("streams authenticated display invalidations and cleans up on disconnect", async () => {
+  const { ClientChannelEvents } = await import("../src/client-channel-events.js");
+  const events = new ClientChannelEvents();
+  const server = await startConsoleControlServer({
+    environment: { CODEXHOST_DATA_DIR: dataDirectory },
+    target: { clientEvents: events, handleConsoleRequest: async () => ({ result: {} }) },
+  });
+  const controller = new AbortController();
+  try {
+    const descriptor = JSON.parse(
+      await readFile(server.descriptorPath, "utf8"),
+    ) as ConsoleHostDescriptor;
+    const url = `http://127.0.0.1:${descriptor.port}/display-events`;
+    expect((await fetch(url)).status).toBe(401);
+    const response = await fetch(url, {
+      headers: { authorization: `Bearer ${descriptor.token}` },
+      signal: controller.signal,
+    });
+    if (!response.body) throw new Error("Missing event stream");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    expect(decoder.decode((await reader.read()).value)).toContain('"type":"hello"');
+    events.displaySettingsChanged();
+    expect(decoder.decode((await reader.read()).value)).toContain(
+      '"type":"display-settings-changed"',
+    );
+    controller.abort();
+  } finally {
+    controller.abort();
+    await server.close();
+  }
 });

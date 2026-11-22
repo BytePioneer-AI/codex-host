@@ -1,16 +1,20 @@
 #[cfg(not(target_os = "linux"))]
 use std::env;
 #[cfg(not(target_os = "linux"))]
+use std::fs;
+use std::fs::File;
+#[cfg(not(target_os = "linux"))]
 use std::fs::OpenOptions;
-use std::fs::{self, File};
-#[cfg(target_os = "linux")]
-use std::io::Read;
-use std::io::{self, Write};
+use std::io;
+#[cfg(not(target_os = "linux"))]
+use std::io::Write;
+#[cfg(all(unix, not(target_os = "linux")))]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "linux")]
 use crate::secure_storage::{
-    SecureFileOpen, open_secure_file, remove_secure_file, replace_secure_file, runtime_directory,
+    SecureFileOpen, open_secure_file, publish_private, remove_secure_file, runtime_directory,
 };
 
 #[cfg(not(target_os = "linux"))]
@@ -24,6 +28,7 @@ const LAUNCHER_GUARD_FILE: &str = "launcher-v1.lock";
 #[cfg(target_os = "linux")]
 const MAX_RUNTIME_DESCRIPTOR_BYTES: usize = 4 * 1024;
 
+#[cfg(any(target_os = "windows", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartupState {
     RecoverStale,
@@ -31,6 +36,7 @@ pub enum StartupState {
     Attach,
 }
 
+#[cfg(any(target_os = "windows", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StartupObservation {
     pub desktop_running: bool,
@@ -38,6 +44,7 @@ pub struct StartupObservation {
     pub control_endpoint_ready: bool,
 }
 
+#[cfg(any(target_os = "windows", test))]
 pub fn classify_startup(observation: StartupObservation) -> StartupState {
     if observation.desktop_running {
         return StartupState::Attach;
@@ -76,7 +83,7 @@ impl RuntimeDescriptor {
         Ok(descriptor)
     }
 
-    fn validate(&self) -> Result<(), String> {
+    pub(super) fn validate(&self) -> Result<(), String> {
         if self.schema_version != RUNTIME_DESCRIPTOR_VERSION {
             return Err(format!(
                 "unsupported runtime descriptor version {}",
@@ -115,6 +122,14 @@ pub fn default_descriptor_path() -> io::Result<PathBuf> {
     Ok(runtime_directory()?.join(RUNTIME_DESCRIPTOR_FILE))
 }
 
+#[cfg(target_os = "linux")]
+pub(super) fn existing_descriptor_path() -> io::Result<PathBuf> {
+    Ok(crate::secure_storage::runtime_path(false)?.join(RUNTIME_DESCRIPTOR_FILE))
+}
+
+#[cfg(target_os = "macos")]
+pub(super) use default_descriptor_path as existing_descriptor_path;
+
 #[cfg(target_os = "windows")]
 pub fn default_descriptor_path() -> io::Result<PathBuf> {
     let root = env::var_os("LOCALAPPDATA")
@@ -140,8 +155,8 @@ pub fn default_descriptor_path() -> io::Result<PathBuf> {
     ))
 }
 
-pub fn default_guard_path() -> io::Result<PathBuf> {
-    default_descriptor_path().map(|path| path.with_file_name(LAUNCHER_GUARD_FILE))
+pub(super) fn guard_path(descriptor: &Path) -> PathBuf {
+    descriptor.with_file_name(LAUNCHER_GUARD_FILE)
 }
 
 pub struct LauncherGuard {
@@ -186,17 +201,7 @@ pub fn try_acquire_launcher_guard(path: &Path) -> io::Result<Option<LauncherGuar
 
 #[cfg(target_os = "linux")]
 fn read_bounded_descriptor(file: &mut File) -> io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    (&mut *file)
-        .take((MAX_RUNTIME_DESCRIPTOR_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_RUNTIME_DESCRIPTOR_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "runtime descriptor exceeds 4 KiB",
-        ));
-    }
-    Ok(bytes)
+    crate::secure_storage::read_bounded(file, MAX_RUNTIME_DESCRIPTOR_BYTES)
 }
 
 pub fn read_descriptor(path: &Path) -> io::Result<Option<RuntimeDescriptor>> {
@@ -221,50 +226,37 @@ pub fn write_descriptor(path: &Path, descriptor: &RuntimeDescriptor) -> io::Resu
     descriptor
         .validate()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    #[cfg(not(target_os = "linux"))]
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "descriptor has no parent"))?;
+    let mut bytes = serde_json::to_vec(descriptor).map_err(io::Error::other)?;
+    bytes.push(b'\n');
     #[cfg(target_os = "linux")]
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "runtime path has no parent"))?;
-    #[cfg(not(target_os = "linux"))]
-    fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(
-        ".{RUNTIME_DESCRIPTOR_FILE}.{}.{}.tmp",
-        std::process::id(),
-        random_nonce()?
-    ));
-    let bytes = serde_json::to_vec(descriptor).map_err(io::Error::other)?;
-    let result = (|| {
-        #[cfg(target_os = "linux")]
-        if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "runtime descriptor path is a symbolic link",
-            ));
-        }
-        #[cfg(target_os = "linux")]
-        let mut file = open_secure_file(&temporary, SecureFileOpen::WriteNew)?;
-        #[cfg(not(target_os = "linux"))]
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        file.write_all(&bytes)?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
-        #[cfg(target_os = "linux")]
-        replace_secure_file(&temporary, path)?;
-        #[cfg(not(target_os = "linux"))]
-        atomic_replace_file(&temporary, path).map_err(io::Error::other)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+    {
+        publish_private(path, &bytes)
     }
-    result
+    #[cfg(not(target_os = "linux"))]
+    {
+        let parent = path.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "descriptor has no parent")
+        })?;
+        fs::create_dir_all(parent)?;
+        let temporary = parent.join(format!(
+            ".{RUNTIME_DESCRIPTOR_FILE}.{}.tmp",
+            random_nonce()?
+        ));
+        let result = (|| {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut file = options.open(&temporary)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            atomic_replace_file(&temporary, path).map_err(io::Error::other)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
 }
 
 pub fn remove_matching_descriptor(path: &Path, expected: &RuntimeDescriptor) -> io::Result<bool> {
@@ -300,11 +292,13 @@ pub fn remove_matching_descriptor(path: &Path, expected: &RuntimeDescriptor) -> 
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 pub struct RuntimeDescriptorGuard {
     path: PathBuf,
     descriptor: RuntimeDescriptor,
 }
 
+#[cfg(any(target_os = "windows", test))]
 impl RuntimeDescriptorGuard {
     pub fn publish(path: PathBuf, descriptor: RuntimeDescriptor) -> io::Result<Self> {
         write_descriptor(&path, &descriptor)?;
@@ -312,6 +306,7 @@ impl RuntimeDescriptorGuard {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 impl Drop for RuntimeDescriptorGuard {
     fn drop(&mut self) {
         let _ = remove_matching_descriptor(&self.path, &self.descriptor);
@@ -322,8 +317,10 @@ impl Drop for RuntimeDescriptorGuard {
 mod tests {
     use std::env;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     #[cfg(target_os = "linux")]
-    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::os::unix::fs::symlink;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
@@ -434,6 +431,20 @@ mod tests {
             assert!(path.exists());
         }
         assert!(!path.exists());
+        fs::remove_dir_all(path.parent().expect("fixture parent")).expect("remove fixture");
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn unix_runtime_descriptor_is_created_with_private_mode() {
+        let path = fixture_path("runtime-private-mode");
+        write_descriptor(&path, &descriptor(45)).expect("write private descriptor");
+        let file_mode = fs::metadata(&path)
+            .expect("descriptor metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o600);
         fs::remove_dir_all(path.parent().expect("fixture parent")).expect("remove fixture");
     }
 

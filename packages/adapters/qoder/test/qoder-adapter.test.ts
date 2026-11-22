@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
 import {
   harnessInspectionSchema,
-  harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostTurnIdSchema,
@@ -21,11 +20,11 @@ import {
 import { mapQoderException, mapQoderExitCode, mapQoderResultError } from "../src/qoder-errors.js";
 import { mapQoderSnapshot } from "../src/qoder-history.js";
 import {
-  decodeQoderModelRef,
-  encodeQoderModelRef,
+  qoderModelRef as encodeQoderModelRef,
   parseQoderModelCatalog,
   qoderAvailableThinkingOptions,
 } from "../src/qoder-models.js";
+import { QoderSession } from "../src/qoder-sdk-transport.js";
 import type {
   QoderModelInfo,
   QoderOptions,
@@ -38,11 +37,7 @@ import type {
   SDKUserMessage,
   SessionMessage,
 } from "../src/qoder-sdk-types.js";
-import {
-  QODER_DEFAULT_CONTEXT_WINDOW_TOKENS,
-  QoderUsageTracker,
-  resolveQoderContextWindow,
-} from "../src/qoder-usage.js";
+import { QoderUsageTracker } from "../src/qoder-usage.js";
 
 class FakeQoderQuery implements QoderQuery {
   readonly interrupt = vi.fn(async () => undefined);
@@ -63,7 +58,10 @@ class FakeQoderQuery implements QoderQuery {
   }));
   readonly setModel = vi.fn(async () => undefined);
   readonly setPermissionMode = vi.fn(async () => undefined);
-  readonly request = vi.fn(async () => ({}));
+  readonly setPlanMode = vi.fn(async () => undefined);
+  readonly request = vi.fn<(request: Record<string, unknown>) => Promise<unknown>>(
+    async () => ({}),
+  );
 
   #closed = false;
   #messages: SDKMessage[] = [];
@@ -322,6 +320,7 @@ describe("QoderAdapter", () => {
     it("opens session with create and resume, and rejects rollbackLastTurn", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -422,6 +421,7 @@ describe("QoderAdapter", () => {
       ];
 
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
         forkSession: mockForkSession,
@@ -516,6 +516,7 @@ describe("QoderAdapter", () => {
       ]);
 
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
         forkSession: mockForkSession,
@@ -619,6 +620,7 @@ describe("QoderAdapter", () => {
       };
 
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory,
       });
@@ -707,6 +709,7 @@ describe("QoderAdapter", () => {
     it("deduplicates streamed text deltas when assistant message arrives", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -783,6 +786,7 @@ describe("QoderAdapter", () => {
     it("invokes query.interrupt() and marks turn cancelled without closing session", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -841,6 +845,7 @@ describe("QoderAdapter", () => {
     it("completes active streaming message and reasoning items on turn.cancel", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -931,6 +936,7 @@ describe("QoderAdapter", () => {
       let canUseToolCb: NonNullable<QoderOptions["canUseTool"]> | undefined;
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: (input) => {
           canUseToolCb = input.options?.canUseTool;
@@ -1022,6 +1028,7 @@ describe("QoderAdapter", () => {
       let canUseToolCb: NonNullable<QoderOptions["canUseTool"]> | undefined;
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: (input) => {
           canUseToolCb = input.options?.canUseTool;
@@ -1229,31 +1236,7 @@ describe("QoderAdapter", () => {
     });
   });
 
-  describe("Model catalog encoding and decoding", () => {
-    it.each(["qoder-model-v1.", "qoder-model-v1.YQ.", "qoder-model-v1.YR", "other-model"])(
-      "rejects invalid model ref %s before starting a query",
-      async (id) => {
-        const model = harnessModelRefSchema.parse({ id });
-        expect(decodeQoderModelRef(model)).toBeUndefined();
-        const queryFactory = vi.fn();
-        const adapter = new QoderAdapter({ queryFactory });
-        expect(await adapter.open({ kind: "create", cwd: "/project", model })).toMatchObject({
-          ok: false,
-          error: { code: "invalidRequest" },
-        });
-        expect(queryFactory).not.toHaveBeenCalled();
-        await adapter.close();
-      },
-    );
-
-    it("encodes and decodes model refs to opaque transport-safe strings", () => {
-      const modelRef = encodeQoderModelRef("claude-3-7-sonnet@20250219/thinking");
-      expect(/^[A-Za-z0-9._~-]+$/.test(modelRef.id)).toBe(true);
-
-      const decoded = decodeQoderModelRef(modelRef);
-      expect(decoded).toBe("claude-3-7-sonnet@20250219/thinking");
-    });
-
+  describe("Model catalog", () => {
     it("parses model catalog from dynamic model list", () => {
       const catalog = parseQoderModelCatalog([
         { value: "qoder-1", displayName: "Qoder Model 1" },
@@ -1358,13 +1341,13 @@ describe("QoderAdapter", () => {
       ]);
       expect(catalog.defaultThinkingOptionId).toBe("high");
 
-      const claude = catalog.models.find((m) => decodeQoderModelRef(m.ref) === "claude-3-7-sonnet");
+      const claude = catalog.models.find((m) => m.ref.id === "claude-3-7-sonnet");
       expect(claude?.supportedThinkingOptionIds).toEqual(["off", "low", "medium", "high", "max"]);
 
-      const r1 = catalog.models.find((m) => decodeQoderModelRef(m.ref) === "deepseek-r1");
+      const r1 = catalog.models.find((m) => m.ref.id === "deepseek-r1");
       expect(r1?.supportedThinkingOptionIds).toEqual(["off", "low", "medium"]);
 
-      const gpt4o = catalog.models.find((m) => decodeQoderModelRef(m.ref) === "gpt-4o");
+      const gpt4o = catalog.models.find((m) => m.ref.id === "gpt-4o");
       expect(gpt4o?.supportedThinkingOptionIds).toBeUndefined();
 
       expect(qoderAvailableThinkingOptions(catalog, claude?.ref)).toHaveLength(5);
@@ -1377,6 +1360,7 @@ describe("QoderAdapter", () => {
       let capturedOptions: QoderOptions | undefined;
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: (input) => {
           capturedOptions = input.options;
@@ -1557,6 +1541,7 @@ describe("QoderAdapter", () => {
     it("routes thinking stream events to reasoning item instead of agentMessage", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -1658,6 +1643,7 @@ describe("QoderAdapter", () => {
       async (nativeToolId) => {
         const fakeQuery = new FakeQoderQuery();
         const adapter = new QoderAdapter({
+          getAvailableModels: async () => [],
           resolveExecutable: () => "D:/tools/qodercli.exe",
           queryFactory: () => fakeQuery,
         });
@@ -1818,6 +1804,7 @@ describe("QoderAdapter", () => {
     it("tags pre-tool message as commentary and post-tool terminal message as final_answer", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -1931,6 +1918,7 @@ describe("QoderAdapter", () => {
     it("calls query.setPermissionMode and notifies session state changed", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -1973,6 +1961,7 @@ describe("QoderAdapter", () => {
     it("closes open sessions and terminates queries cleanly", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -2002,6 +1991,7 @@ describe("QoderAdapter", () => {
       const fakeQuery = new FakeQoderQuery();
       let userMessages: AsyncIterable<SDKUserMessage> | undefined;
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: ({ prompt }) => {
           if (typeof prompt !== "string") userMessages = prompt;
@@ -2049,6 +2039,7 @@ describe("QoderAdapter", () => {
     it("falls back to user message UUID when result has no uuid", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -2088,6 +2079,7 @@ describe("QoderAdapter", () => {
     it("attaches nativeTurnRef when turn is cancelled", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -2128,6 +2120,7 @@ describe("QoderAdapter", () => {
     it("attaches checkpoint with assistant UUID to turn.completed outcome", async () => {
       const fakeQuery = new FakeQoderQuery();
       const adapter = new QoderAdapter({
+        getAvailableModels: async () => [],
         resolveExecutable: () => "D:/tools/qodercli.exe",
         queryFactory: () => fakeQuery,
       });
@@ -2280,6 +2273,7 @@ describe("QoderAdapter", () => {
           },
         } as SDKAssistantMessage);
       }
+      tracker.observeContextUsage({ model: "dfmodel", maxTokens: 500_000 });
       expect(tracker.snapshot()).toMatchObject({
         inputTokens: 300,
         outputTokens: 20,
@@ -2287,14 +2281,6 @@ describe("QoderAdapter", () => {
         cacheWriteInputTokens: 50,
         contextUsedTokens: 275,
       });
-    });
-
-    it("resolves context window for default and gemini models", () => {
-      expect(resolveQoderContextWindow()).toBe(QODER_DEFAULT_CONTEXT_WINDOW_TOKENS);
-      expect(resolveQoderContextWindow("claude-3-5-sonnet")).toBe(200_000);
-      expect(resolveQoderContextWindow("gemini-2.5-pro")).toBe(1_048_576);
-      expect(resolveQoderContextWindow("gemini-1.5-flash")).toBe(1_048_576);
-      expect(resolveQoderContextWindow("custom-model", 500_000)).toBe(500_000);
     });
 
     it("tracks assistant message usage, context window, and context ratio", () => {
@@ -2330,8 +2316,8 @@ describe("QoderAdapter", () => {
       expect(snapshot?.cacheWriteInputTokens).toBe(200);
       expect(snapshot?.totalCredits).toBe(0.02);
       expect(snapshot?.contextUsagePercent).toBe(8);
-      expect(snapshot?.contextWindowTokens).toBe(200_000);
-      expect(snapshot?.contextUsedTokens).toBe(16_000);
+      expect(snapshot?.contextWindowTokens).toBeUndefined();
+      expect(snapshot?.contextUsedTokens).toBeUndefined();
     });
 
     it("tracks result message total_credits, total_cost_usd and replaces previous snapshot", () => {
@@ -2357,8 +2343,8 @@ describe("QoderAdapter", () => {
       expect(snapshot?.outputTokens).toBe(800);
       expect(snapshot?.totalTokens).toBe(2800);
       expect(snapshot?.contextUsagePercent).toBe(10);
-      expect(snapshot?.contextWindowTokens).toBe(200_000);
-      expect(snapshot?.contextUsedTokens).toBe(20_000);
+      expect(snapshot?.contextWindowTokens).toBeUndefined();
+      expect(snapshot?.contextUsedTokens).toBeUndefined();
 
       // Second result replaces cumulative total_credits, does not accumulate
       tracker.observeResult({
@@ -2397,6 +2383,9 @@ describe("QoderAdapter", () => {
 
     it("updates context window when setModel is called", () => {
       const tracker = new QoderUsageTracker({ modelId: "claude-3-5-sonnet" });
+      tracker.setConfiguredContextWindows({
+        windows: { "claude-3-5-sonnet": 500_000, "gemini-2.5-flash": 900_000 },
+      });
       tracker.observeAssistant({
         type: "assistant",
         uuid: "asst-1",
@@ -2413,13 +2402,51 @@ describe("QoderAdapter", () => {
         parent_tool_use_id: null,
         parent_agent_id: null,
       } as unknown as SDKAssistantMessage);
-      expect(tracker.snapshot()?.contextWindowTokens).toBe(200_000);
-      expect(tracker.snapshot()?.contextUsedTokens).toBe(20_000);
+      expect(tracker.snapshot()?.contextWindowTokens).toBe(500_000);
+      expect(tracker.snapshot()?.contextUsedTokens).toBe(50_000);
 
       tracker.setModel("gemini-2.5-flash");
-      expect(tracker.snapshot()?.contextWindowTokens).toBe(1_048_576);
-      expect(tracker.snapshot()?.contextUsedTokens).toBe(104_858);
+      expect(tracker.snapshot()).not.toHaveProperty("contextUsagePercent");
+      expect(tracker.snapshot()).not.toHaveProperty("contextUsedTokens");
+      tracker.observeContextUsage({ usedPercentage: 10 });
+      expect(tracker.snapshot()?.contextWindowTokens).toBe(900_000);
+      expect(tracker.snapshot()?.contextUsedTokens).toBe(90_000);
     });
+
+    it.each([
+      ["percentage only", {}],
+      ["with a native window and token count", { maxTokens: 200_000, totalTokens: 22_000 }],
+    ])(
+      "clears context from an unknown default Model (%s) on explicit selection",
+      (_label, context) => {
+        const tracker = new QoderUsageTracker();
+        tracker.setConfiguredContextWindows({ windows: { gmodel: 400_000 } });
+        const usage = { input_tokens: 100, output_tokens: 20, context_usage_ratio: 0.11 };
+        tracker.observeAssistant({
+          type: "assistant",
+          uuid: "asst-1",
+          session_id: "sess-1",
+          parent_tool_use_id: null,
+          message: { role: "assistant", content: [], usage },
+        });
+        tracker.observeContextUsage(context);
+        expect(tracker.snapshot()?.contextUsagePercent).toBe(11);
+
+        tracker.setModel("gmodel");
+        expect(tracker.snapshot()).toEqual({
+          inputTokens: 100,
+          outputTokens: 20,
+          totalTokens: 120,
+        });
+
+        tracker.observeContextUsage({ model: "gmodel", usedPercentage: 5 });
+        expect(tracker.snapshot()).toMatchObject({
+          contextUsagePercent: 5,
+          contextWindowTokens: 400_000,
+          contextUsedTokens: 20_000,
+        });
+      },
+    );
 
     it("tracks cache hit rate and calculates percentage correctly", () => {
       const tracker = new QoderUsageTracker();
@@ -2443,8 +2470,8 @@ describe("QoderAdapter", () => {
 
       const snapshot = tracker.snapshot();
       expect(snapshot?.cacheHitRatePercent).toBe(75);
-      expect(snapshot?.contextUsedTokens).toBe(20_000);
-      expect(snapshot?.contextWindowTokens).toBe(200_000);
+      expect(snapshot?.contextUsagePercent).toBe(10);
+      expect(snapshot?.contextWindowTokens).toBeUndefined();
     });
 
     it("parses userQuota and expiresAt from getUsageInfo envelope", () => {
@@ -2474,8 +2501,9 @@ describe("QoderAdapter", () => {
       expect(snapshot?.planFiveHourResetsAtUnix).toBe(1741824000);
     });
 
-    it("derives contextUsedTokens when getContextUsage only reports usedPercentage", () => {
-      const tracker = new QoderUsageTracker({ modelId: "gpt-5.6-sol" });
+    it("derives contextUsedTokens for an exactly configured custom model", () => {
+      const tracker = new QoderUsageTracker({ modelId: "qoder-custom/gpt-5.6-sol" });
+      tracker.setConfiguredContextWindows({ windows: { "qoder-custom/gpt-5.6-sol": 252_000 } });
       tracker.observeContextUsage({
         model: "qoder-custom/gpt-5.6-sol",
         contextWindow: {
@@ -2487,6 +2515,345 @@ describe("QoderAdapter", () => {
       expect(snapshot?.contextWindowTokens).toBe(252_000);
       expect(snapshot?.contextUsagePercent).toBe(10);
       expect(snapshot?.contextUsedTokens).toBe(25_200);
+    });
+
+    it.each([
+      ["qmodel_latest_preview", "qoder/qmodel_latest_preview"],
+      ["qoder/qmodel_latest_preview", "qmodel_latest_preview"],
+    ])("finds the exact Qoder alias for %s", (modelId, key) => {
+      const tracker = new QoderUsageTracker({ modelId });
+      tracker.setConfiguredContextWindows({ windows: { [key]: 1_000_000, "qoder/auto": 400_000 } });
+      tracker.observeContextUsage({ model: modelId, usedPercentage: 11 });
+      expect(tracker.snapshot()).toMatchObject({
+        contextWindowTokens: 1_000_000,
+        contextUsedTokens: 110_000,
+      });
+    });
+
+    it.each([
+      "qoder-custom/qmodel_latest_preview",
+      "other/qmodel_latest_preview",
+      "qoder/QMODEL_LATEST_PREVIEW",
+      "qoder/qoder/qmodel_latest_preview",
+      "auto",
+    ])("does not borrow a window for %s", (modelId) => {
+      const tracker = new QoderUsageTracker({ modelId });
+      tracker.setConfiguredContextWindows({ windows: { qmodel_latest_preview: 1_000_000 } });
+      tracker.observeContextUsage({ model: modelId, usedPercentage: 11 });
+      expect(tracker.snapshot()).toEqual({ contextUsagePercent: 11 });
+    });
+
+    it("prefers exact settings keys and preserves native readings across alias changes", () => {
+      const tracker = new QoderUsageTracker({ modelId: "qmodel_latest_preview" });
+      const configured = {
+        windows: { qmodel_latest_preview: 700_000, "qoder/qmodel_latest_preview": 1_000_000 },
+      };
+      tracker.setConfiguredContextWindows(configured);
+      tracker.observeContextUsage({ usedPercentage: 11 });
+      expect(tracker.snapshot()?.contextWindowTokens).toBe(700_000);
+      tracker.observeContextUsage({ model: "qoder/qmodel_latest_preview", usedPercentage: 11 });
+      expect(tracker.snapshot()?.contextWindowTokens).toBe(1_000_000);
+      tracker.observeContextUsage({ model: "qmodel_latest_preview", maxTokens: 300_000 });
+      tracker.setConfiguredContextWindows(configured);
+      tracker.observeContextUsage({ model: "qoder/qmodel_latest_preview", maxTokens: -1 });
+      expect(tracker.snapshot()).toMatchObject({
+        contextWindowTokens: 300_000,
+        contextUsedTokens: 33_000,
+      });
+    });
+
+    it("ignores invalid window sizes and removes obsolete settings", () => {
+      const tracker = new QoderUsageTracker({ modelId: "dfmodel" });
+      tracker.setConfiguredContextWindows({ windows: { "qoder/dfmodel": 1_000_000 } });
+      tracker.observeContextUsage({ usedPercentage: 11, maxTokens: 1.5 });
+      expect(tracker.snapshot()?.contextWindowTokens).toBe(1_000_000);
+      tracker.setConfiguredContextWindows({ windows: { "qoder/dfmodel": -1, dfmodel: Infinity } });
+      expect(tracker.snapshot()).toEqual({ contextUsagePercent: 11 });
+    });
+  });
+
+  describe("configured context window (get_settings)", () => {
+    const qoderCnSettings = {
+      effective: {
+        model: {
+          name: "dfmodel",
+          preferences: {
+            "qoder/dfmodel": { contextWindow: 1_000_000 },
+            "qoder/gmodel": { contextWindow: 500_000 },
+          },
+        },
+      },
+    };
+
+    function contextQuery(settings: unknown | Error): FakeQoderQuery {
+      const fakeQuery = new FakeQoderQuery();
+      let model = "dfmodel";
+      fakeQuery.request.mockImplementation(async (request: Record<string, unknown>) => {
+        if (request.type === "get_settings") {
+          if (settings instanceof Error) throw settings;
+          return settings;
+        }
+        if (request.type === "set_model" && typeof request.model === "string") {
+          model = request.model;
+        }
+        return {};
+      });
+      fakeQuery.getContextUsage.mockImplementation(
+        async () =>
+          ({
+            model,
+            contextWindow: { usedPercentage: 11 },
+          }) as never,
+      );
+      return fakeQuery;
+    }
+
+    function usageEvents(collector: OutputCollector) {
+      return collector.outputs.flatMap((output) =>
+        output.kind === "event" && output.event.type === "session.usage.changed"
+          ? [output.event.usage]
+          : [],
+      );
+    }
+
+    function isUsageWithWindow(window: number) {
+      return (output: HarnessOutput) =>
+        output.kind === "event" &&
+        output.event.type === "session.usage.changed" &&
+        output.event.usage?.contextWindowTokens === window;
+    }
+
+    it.each([
+      ["an explicit model", encodeQoderModelRef("dfmodel")],
+      ["the native default model", undefined],
+    ])("uses the get_settings contextWindow for %s", async (_label, model) => {
+      const fakeQuery = contextQuery(qoderCnSettings);
+      const adapter = new QoderAdapter({
+        variant: "cn",
+        getAvailableModels: async () => [],
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "D:/project",
+        ...(model ? { model } : {}),
+      });
+      if (!opened.ok) throw new Error("open failed");
+      const collector = new OutputCollector(opened.value.outputs);
+
+      try {
+        const output = await collector.waitFor(isUsageWithWindow(1_000_000), 1000);
+        if (output.kind !== "event" || output.event.type !== "session.usage.changed") {
+          throw new Error("unexpected output");
+        }
+        expect(output.event.usage?.contextUsagePercent).toBe(11);
+        expect(output.event.usage?.contextUsedTokens).toBe(110_000);
+        expect(fakeQuery.request).toHaveBeenCalledWith({ type: "get_settings" });
+        expect(usageEvents(collector).map((usage) => usage?.contextWindowTokens)).not.toContain(
+          200_000,
+        );
+      } finally {
+        await opened.value.close();
+        await adapter.close();
+      }
+    });
+
+    it("keeps the configured window after model.select", async () => {
+      const fakeQuery = contextQuery(qoderCnSettings);
+      const adapter = new QoderAdapter({
+        variant: "cn",
+        getAvailableModels: async () => [],
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "D:/project",
+        model: encodeQoderModelRef("dfmodel"),
+      });
+      if (!opened.ok) throw new Error("open failed");
+      const collector = new OutputCollector(opened.value.outputs);
+
+      try {
+        await collector.waitFor(isUsageWithWindow(1_000_000), 1000);
+        const before = usageEvents(collector).length;
+        const selected = await opened.value.execute({
+          type: "model.select",
+          model: encodeQoderModelRef("gmodel"),
+        });
+        expect(selected.ok).toBe(true);
+        await collector.waitFor(
+          (output) =>
+            output.kind === "event" &&
+            output.event.type === "session.usage.changed" &&
+            usageEvents(collector).length > before &&
+            output.event.usage?.contextWindowTokens === 500_000,
+          1000,
+        );
+        const latest = usageEvents(collector).at(-1);
+        expect(latest?.contextWindowTokens).toBe(500_000);
+        expect(latest?.contextUsedTokens).toBe(55_000);
+      } finally {
+        await opened.value.close();
+        await adapter.close();
+      }
+    });
+
+    it("emits the configured window when get_settings answers after the wait", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const fakeQuery = contextQuery(qoderCnSettings);
+      let answerSettings: (() => void) | undefined;
+      const defaultRequest = fakeQuery.request.getMockImplementation();
+      fakeQuery.request.mockImplementation(async (request: Record<string, unknown>) => {
+        if (request.type === "get_settings") {
+          await new Promise<void>((resolve) => {
+            answerSettings = resolve;
+          });
+        }
+        return defaultRequest?.(request);
+      });
+      const adapter = new QoderAdapter({
+        variant: "cn",
+        getAvailableModels: async () => [],
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+      try {
+        const opened = await adapter.open({
+          kind: "create",
+          cwd: "D:/project",
+          model: encodeQoderModelRef("dfmodel"),
+        });
+        if (!opened.ok) throw new Error("open failed");
+        const collector = new OutputCollector(opened.value.outputs);
+        try {
+          await vi.advanceTimersByTimeAsync(2_999);
+          expect(fakeQuery.getContextUsage).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
+          expect(usageEvents(collector).at(-1)).toEqual({ contextUsagePercent: 11 });
+
+          const session = opened.value;
+          if (!(session instanceof QoderSession)) throw new Error("unexpected session");
+          for (let refresh = 0; refresh < 3; refresh++) {
+            const before = fakeQuery.getContextUsage.mock.calls.length;
+            void session.refreshUsage();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(fakeQuery.getContextUsage).toHaveBeenCalledTimes(before + 1);
+            expect(usageEvents(collector).at(-1)).toEqual({ contextUsagePercent: 11 });
+          }
+
+          expect(answerSettings).toBeTypeOf("function");
+          answerSettings?.();
+          await vi.advanceTimersByTimeAsync(0);
+          const latest = usageEvents(collector).at(-1);
+          expect(latest?.contextWindowTokens).toBe(1_000_000);
+          expect(latest?.contextUsedTokens).toBe(110_000);
+        } finally {
+          await opened.value.close();
+        }
+      } finally {
+        await adapter.close();
+        vi.useRealTimers();
+      }
+    });
+
+    it("waits for new model settings after a timeout and ignores superseded settings", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const fakeQuery = contextQuery(qoderCnSettings);
+      const answerSettings: Array<(settings: unknown) => void> = [];
+      const defaultRequest = fakeQuery.request.getMockImplementation();
+      fakeQuery.request.mockImplementation(async (request: Record<string, unknown>) => {
+        if (request.type === "get_settings") {
+          return new Promise<unknown>((resolve) => answerSettings.push(resolve));
+        }
+        return defaultRequest?.(request);
+      });
+      const adapter = new QoderAdapter({
+        variant: "cn",
+        getAvailableModels: async () => [],
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+      try {
+        const opened = await adapter.open({
+          kind: "create",
+          cwd: "D:/project",
+          model: encodeQoderModelRef("dfmodel"),
+        });
+        if (!opened.ok) throw new Error("open failed");
+        const collector = new OutputCollector(opened.value.outputs);
+        try {
+          await vi.advanceTimersByTimeAsync(3_000);
+          const before = fakeQuery.getContextUsage.mock.calls.length;
+          const selected = await opened.value.execute({
+            type: "model.select",
+            model: encodeQoderModelRef("gmodel"),
+          });
+          expect(selected.ok).toBe(true);
+          expect(answerSettings).toHaveLength(2);
+          await vi.advanceTimersByTimeAsync(2_999);
+          expect(fakeQuery.getContextUsage).toHaveBeenCalledTimes(before);
+
+          answerSettings[1]?.({
+            effective: {
+              model: {
+                name: "gmodel",
+                preferences: { gmodel: { contextWindow: 500_000 } },
+              },
+            },
+          });
+          await vi.advanceTimersByTimeAsync(0);
+          expect(usageEvents(collector).at(-1)?.contextWindowTokens).toBe(500_000);
+          expect(usageEvents(collector).at(-1)?.contextUsedTokens).toBe(55_000);
+
+          // The older request must not overwrite the new model's configured window.
+          answerSettings[0]?.(qoderCnSettings);
+          await vi.advanceTimersByTimeAsync(0);
+          const session = opened.value;
+          if (!(session instanceof QoderSession)) throw new Error("unexpected session");
+          await session.refreshUsage();
+          await vi.advanceTimersByTimeAsync(0);
+          expect(usageEvents(collector).at(-1)?.contextWindowTokens).toBe(500_000);
+          expect(usageEvents(collector).at(-1)?.contextUsedTokens).toBe(55_000);
+        } finally {
+          await opened.value.close();
+        }
+      } finally {
+        await adapter.close();
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps the measured percentage but omits the unknown window when get_settings fails", async () => {
+      const fakeQuery = contextQuery(new Error("unknown control request: get_settings"));
+      const adapter = new QoderAdapter({
+        variant: "cn",
+        getAvailableModels: async () => [],
+        resolveExecutable: () => "D:/tools/qodercli.exe",
+        queryFactory: () => fakeQuery,
+      });
+      const opened = await adapter.open({
+        kind: "create",
+        cwd: "D:/project",
+        model: encodeQoderModelRef("dfmodel"),
+      });
+      if (!opened.ok) throw new Error("open failed");
+      const collector = new OutputCollector(opened.value.outputs);
+
+      try {
+        const output = await collector.waitFor(
+          (event) => event.kind === "event" && event.event.type === "session.usage.changed",
+          1000,
+        );
+        if (output.kind !== "event" || output.event.type !== "session.usage.changed") {
+          throw new Error("unexpected output");
+        }
+        expect(output.event.usage).toEqual({ contextUsagePercent: 11 });
+      } finally {
+        await opened.value.close();
+        await adapter.close();
+      }
     });
   });
 });

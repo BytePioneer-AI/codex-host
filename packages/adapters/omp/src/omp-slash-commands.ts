@@ -32,15 +32,16 @@ export function parseOmpAvailableCommands(value: unknown): OmpAvailableCommand[]
 
 /**
  * `/context` is a local text report. Other built-ins drive OMP's terminal UI
- * or Session state, so only skills and extension commands join it in the
+ * or Session state, so only extension commands join it in the
  * Composer. `/compact` keeps its dedicated Adapter handling.
  */
 export function ompLiveCommands(native: readonly OmpAvailableCommand[]): LiveHarnessCommand[] {
   return native
-    .filter(({ source, name }) => source !== "builtin" || name === "context")
+    .filter(
+      ({ source, name }) => source !== "skill" && (source !== "builtin" || name === "context"),
+    )
     .map((command) => ({
       name: command.name,
       description: command.description,
-      kind: command.source === "skill" ? "skill" : "command",
     }));
 }

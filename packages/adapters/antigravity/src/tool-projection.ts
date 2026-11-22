@@ -7,7 +7,20 @@ import type {
 } from "@codexhost/harness-adapter";
 import type { HostItemId, JsonValue } from "@codexhost/shared-contracts";
 
-import type { AntigravityStepUpdateEvent } from "./stream-events.js";
+interface AntigravityToolStep {
+  conversation_id?: string;
+  step_index?: number;
+  step_type?: string;
+  tool_name?: string;
+  state: string;
+  duration_seconds?: number;
+  tool_info?: {
+    name?: string;
+    parameters?: unknown;
+    output?: unknown;
+    error?: unknown;
+  };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -148,13 +161,7 @@ export function isAntigravityFileMutatingTool(toolName: string): boolean {
   return COMPACT_WRITE_TOOLS.has(compact) || COMPACT_REPLACE_TOOLS.has(compact);
 }
 
-/**
- * The file a mutating tool step is about to change.
- *
- * agy's stream carries the target path but never the content, so this is all a
- * tool step can contribute; the patch itself is read from the Language Server
- * trajectory by `code-action-diff`.
- */
+/** The target path declared by a file-mutating tool's native arguments. */
 export function toolTargetFile(toolName: string, params: unknown): string | null {
   if (!isAntigravityFileMutatingTool(toolName)) return null;
   const record = unwrapParameters(params);
@@ -214,7 +221,7 @@ export function synthesizeAntigravityCommand(
 
 export function startAntigravityToolItem(
   newItemId: HostItemId,
-  step: AntigravityStepUpdateEvent["step_update"],
+  step: AntigravityToolStep,
   cwd?: string,
 ): HostItem {
   const toolName = step.tool_name ?? step.tool_info?.name ?? "antigravity.tool";
@@ -242,7 +249,7 @@ export function startAntigravityToolItem(
 
 export function completeAntigravityToolItem(
   item: HostItem,
-  step: AntigravityStepUpdateEvent["step_update"],
+  step: AntigravityToolStep,
   toolOutputLimit: number,
   cwd?: string,
 ): HostItem {

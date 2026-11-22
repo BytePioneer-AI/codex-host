@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { modelCatalog } from "../src/models.js";
 import { snapshotSchema } from "../src/protocol.js";
 import { readHistory } from "../src/read-history.js";
 import { CliTransport } from "../src/transport.js";
@@ -48,6 +49,8 @@ const snapshot = snapshotSchema.parse({
   ],
 });
 
+const { index } = modelCatalog(snapshot.settings);
+
 // History reads never ask for Start Plan headers.
 const noVerifier = (): never => {
   throw new Error("unexpected verification");
@@ -69,7 +72,7 @@ describe("ZCode subagent history", () => {
         running: [],
         ended: { items: [{ childSessionId: "two", toolCallId: "last", status: "success" }] },
       });
-    const result = await readHistory(transport, snapshot);
+    const result = await readHistory(transport, snapshot, index);
     expect(request).toHaveBeenLastCalledWith("listSessionSubagents", {
       sessionId: "parent",
       endedLimit: 100,
@@ -88,6 +91,8 @@ describe("ZCode subagent history", () => {
   it("rejects a repeated cursor instead of returning incomplete history", async () => {
     const transport = new CliTransport({ cwd: "/fixture", environment: {}, verifier: noVerifier });
     vi.spyOn(transport, "request").mockResolvedValue({ ended: { items: [], nextCursor: "same" } });
-    await expect(readHistory(transport, snapshot)).rejects.toMatchObject({ code: "protocolError" });
+    await expect(readHistory(transport, snapshot, index)).rejects.toMatchObject({
+      code: "protocolError",
+    });
   });
 });

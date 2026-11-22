@@ -1,5 +1,6 @@
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 
+export { hasDisplacedAntigravityTurn } from "./antigravity-turn-repair.js";
 export { MappingStore, MappingStoreError } from "./mapping-store.js";
 export type { MappingStoreErrorCode, MappingStoreOptions } from "./mapping-store.js";
 export {
@@ -16,12 +17,14 @@ export type {
   CreateProvisionalThreadInput,
   DelegationStatus,
   FindRecentDelegationInput,
+  InjectedTurnPrefix,
   RebindSubagentSessionInput,
   ReplaceReadySessionAfterLastTurnInput,
   ReplaceReadySessionInput,
   StoredDelegationRecordV1,
   StoredThreadMetadataV1,
   StoredThreadRecordV1,
+  StoredThreadSummaryV1,
   StoredTurnMappingV1,
   ThreadMetadataPatch,
 } from "./records.js";

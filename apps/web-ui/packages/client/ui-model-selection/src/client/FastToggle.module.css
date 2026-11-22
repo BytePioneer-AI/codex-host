@@ -1,0 +1,86 @@
+/* Compact sibling of the Model trigger: outlined caption-tone bolt when off,
+   filled bolt in the Model text tone when on. */
+.toggle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--dsw-radius-sm);
+  outline: none;
+  background: transparent;
+  color: var(--dsw-alias-label-caption);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.toggle[data-enabled] {
+  color: var(--dsw-alias-label-secondary);
+}
+
+@media (hover: hover) {
+  .toggle:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.toggle:active:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.toggle:focus-visible {
+  box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+
+.toggle:disabled {
+  color: var(--dsw-alias-label-dimmed);
+  cursor: default;
+}
+
+.toggle.speed {
+  position: relative;
+  width: auto;
+  gap: 4px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.speed:focus-within {
+  box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+
+:global(html[data-input-modality="pointer"]) .speed:focus-within {
+  box-shadow: none;
+}
+
+@media (forced-colors: active) {
+  .speed:focus-within {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+.speedSelect {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.speedSelect:disabled {
+  cursor: default;
+}
+
+@media (max-width: 600px), (pointer: coarse) {
+  .toggle {
+    width: 36px;
+    height: 44px;
+  }
+}

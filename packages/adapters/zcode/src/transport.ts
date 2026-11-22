@@ -4,6 +4,7 @@ import { ZcodeError } from "./errors.js";
 import { record, text } from "./protocol.js";
 import { resolveInstallation, type ZcodeInstallation } from "./installation.js";
 import { accountConfig, providerRuntimeHeaders } from "./account.js";
+import type { ReadSystemKeyOptions } from "./credential-keyring.js";
 import type { PersonalCodingPlanAccount } from "./personal-coding-plan.js";
 import { DEFAULT_TIMEOUT_MS, nativeCall, type CallContext, type NativeMethod } from "./methods.js";
 import type { ZcodeVerifier } from "./verification/index.js";
@@ -23,6 +24,7 @@ export interface TransportOptions {
   /** ZCode application location saved as the plugin launch path. */
   app?: string;
   timeoutMs?: number;
+  keyOptions?: ReadSystemKeyOptions;
   /** The Host's shared verifier for this installation; the transport never closes it. */
   verifier: (appVersion: string) => ZcodeVerifier;
 }
@@ -48,6 +50,10 @@ export class CliTransport {
   // Aborting these cancels only this transport's running and queued shared verifications.
   #headerRequests = new Map<string, AbortController>();
   #startPlan = false;
+  #signedIn = false;
+  #startPlanChecked = true;
+  #credentialIssue: string | undefined;
+  #credentialAccessRequired = false;
   #codingPlan!: PersonalCodingPlanAccount;
   #fault: Error | undefined;
   #closed = false;
@@ -59,6 +65,23 @@ export class CliTransport {
   /** Whether the signed-in ZCode account contributed Start Plan providers. */
   get startPlan() {
     return this.#startPlan;
+  }
+  /** Whether ZCode Desktop is signed in to a Zhipu account, whatever that account is entitled to. */
+  get signedIn() {
+    return this.#signedIn;
+  }
+  /** False when the Start Plan balance could not be read, so its entitlement is unknown. */
+  get startPlanChecked() {
+    return this.#startPlanChecked;
+  }
+  get credentialIssue() {
+    return this.#credentialIssue ?? this.#codingPlan?.credentialIssue;
+  }
+  get credentialAccessRequired() {
+    return this.#credentialAccessRequired || this.#codingPlan?.credentialAccessRequired === true;
+  }
+  get codingPlanIssue() {
+    return this.#codingPlan?.issue;
   }
   constructor(readonly options: TransportOptions) {
     this.#context = {
@@ -74,10 +97,18 @@ export class CliTransport {
     const {
       params: accountParams,
       startPlan,
+      signedIn,
+      startPlanChecked,
+      credentialIssue,
+      credentialAccessRequired,
       codingPlan,
-    } = await accountConfig(installation, this.options.environment);
+    } = await accountConfig(installation, this.options.environment, this.options.keyOptions);
     this.#installation = installation;
     this.#startPlan = startPlan;
+    this.#signedIn = signedIn;
+    this.#startPlanChecked = startPlanChecked;
+    this.#credentialIssue = credentialIssue;
+    this.#credentialAccessRequired = credentialAccessRequired;
     this.#codingPlan = codingPlan;
     // ZCode Desktop runs its Agent CLI on its own Electron build as Node; the CLI's native
     // plugin modules are built for that runtime. Its tool children inherit the variable, as there.
@@ -89,6 +120,10 @@ export class CliTransport {
         env: {
           ...this.options.environment,
           ELECTRON_RUN_AS_NODE: "1",
+          // Desktop injects the App version the same way; without it the CLI self-reports its
+          // internal version in the request fingerprint headers (User-Agent, X-ZCode-App-Version),
+          // and the Start Plan gateway rejects those requests as unusual activity.
+          ZCODE_APP_VERSION: installation.version,
           ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: installation.builtinProviderConfig,
           ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: installation.personalProviderConfig,
         },

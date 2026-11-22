@@ -70,6 +70,15 @@ async function requestShutdown(port: number): Promise<void> {
   if (!response.ok) throw new Error(`console shutdown failed: HTTP ${response.status}`);
 }
 
+export async function stopConsole(environment: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  const port = consolePort(environment);
+  if ((await probeConsole(port)).kind !== "console") return false;
+  await requestShutdown(port);
+  const probe = await waitFor(port, (next) => next.kind !== "console", 5_000);
+  if (probe.kind === "console") throw new Error(`codexhost console did not stop on port ${port}`);
+  return true;
+}
+
 export interface OpenConsoleOptions {
   appDirectory: string;
   entryPath: string;

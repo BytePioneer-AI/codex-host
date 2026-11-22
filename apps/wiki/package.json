@@ -1,0 +1,25 @@
+{
+  "name": "@codexhost/wiki",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "dev": "vitepress dev --port 3000",
+    "build": "vitepress build",
+    "preview": "vitepress preview --port 3000",
+    "start": "npm run preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/node": "^24.13.3",
+    "eslint": "^9.39.4",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.62.0",
+    "vitepress": "1.6.4"
+  }
+}

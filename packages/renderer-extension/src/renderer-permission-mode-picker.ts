@@ -187,10 +187,12 @@ export function mountRendererPermissionModePicker(
   applyRendererTriggerChipSqueezeTrigger(trigger);
 
   const shield = document.createElement("span");
+  shield.dataset.codexhostPermissionShield = "";
   shield.className = "inline-flex shrink-0 items-center";
   shield.append(icon(Shield, 15));
 
   const label = document.createElement("span");
+  label.dataset.codexhostPermissionLabel = "";
   label.className = "truncate";
   label.style.flex = "1 1 auto";
   label.style.minWidth = "0";
@@ -199,15 +201,18 @@ export function mountRendererPermissionModePicker(
   label.style.whiteSpace = "nowrap";
 
   const chevron = document.createElement("span");
+  chevron.dataset.codexhostPermissionChevron = "";
   chevron.className = "inline-flex shrink-0 items-center";
   chevron.style.color = "var(--color-text-tertiary, #8f8f8f)";
   chevron.append(icon(ChevronDown, 14));
   const lockMark = document.createElement("span");
+  lockMark.dataset.codexhostPermissionLock = "";
   lockMark.className = "inline-flex shrink-0 items-center";
   lockMark.style.color = "var(--color-text-tertiary, #8f8f8f)";
   lockMark.hidden = true;
   lockMark.append(icon(Lock, 14));
   const errorMark = document.createElement("span");
+  errorMark.dataset.codexhostPermissionError = "";
   errorMark.className = "inline-flex shrink-0 items-center";
   errorMark.style.color = "var(--color-text-danger, #c2413b)";
   errorMark.hidden = true;

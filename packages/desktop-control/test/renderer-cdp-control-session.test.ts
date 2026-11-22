@@ -4,7 +4,7 @@ import {
   createRendererCdpControlSession,
   selectPrimaryRendererTarget,
 } from "../src/renderer-cdp-control-session.js";
-import type { CdpTarget } from "../src/cdp-client.js";
+import { CdpConnectionClosedError, type CdpTarget } from "../src/cdp-client.js";
 
 function target(id: string, url = "app://-/index.html"): CdpTarget {
   return {
@@ -26,20 +26,22 @@ function readyBinding() {
 
 function rendererClient(binding = readyBinding()) {
   const commands: Array<{ method: string; params?: Record<string, unknown> }> = [];
-  const evaluateSpy = vi.fn(async (expression: string) => {
+  const evaluateSpy = vi.fn(async (expression: string, timeoutMs?: number) => {
     void expression;
+    void timeoutMs;
     return binding as unknown;
   });
   return {
     commands,
     evaluateSpy,
+    on: vi.fn(() => () => {}),
     command: vi.fn(async (method: string, params?: Record<string, unknown>) => {
       commands.push({ method, ...(params ? { params } : {}) });
       if (method === "Runtime.evaluate") return { result: { type: "undefined" } };
       return {};
     }),
-    async evaluate<T>(expression: string): Promise<T> {
-      return (await evaluateSpy(expression)) as T;
+    async evaluate<T>(expression: string, timeoutMs?: number): Promise<T> {
+      return (await evaluateSpy(expression, timeoutMs)) as T;
     },
     close: vi.fn(),
   };
@@ -84,6 +86,7 @@ describe("Renderer CDP Control Session", () => {
 
     expect(client.commands).toEqual([
       { method: "Runtime.enable" },
+      { method: "Debugger.enable", params: { maxScriptsCacheSize: 0 } },
       { method: "Page.enable" },
       { method: "Page.addScriptToEvaluateOnNewDocument", params: { source } },
       {
@@ -93,6 +96,30 @@ describe("Renderer CDP Control Session", () => {
     ]);
     expect(session.snapshot.binding).toEqual(readyBinding());
     session.close();
+  });
+
+  it("stops waiting for binding when the target connection closes", async () => {
+    const client = rendererClient();
+    const closed = new CdpConnectionClosedError("CDP WebSocket closed");
+    client.evaluateSpy.mockRejectedValueOnce(closed);
+    await expect(
+      createRendererCdpControlSession({
+        rendererCdpEndpoint: "http://127.0.0.1:43123",
+        rendererSource: "production renderer",
+        pollIntervalMs: 1,
+        timeoutMs: 100,
+        operations: {
+          listTargets: async () => [target("page-1")],
+          connect: async () => client,
+          installDraftPrewarmPolicy: async () => ({
+            state: "ready" as const,
+            reason: "owned-request-bridge" as const,
+          }),
+        },
+      }),
+    ).rejects.toBe(closed);
+    expect(client.evaluateSpy).toHaveBeenCalledOnce();
+    expect(client.close).toHaveBeenCalledOnce();
   });
 
   it("reconciles a changed Host before judging the previous Adapter readiness", async () => {
@@ -268,7 +295,9 @@ describe("Renderer CDP Control Session", () => {
     expect(first.close).toHaveBeenCalledOnce();
     expect(connect).toHaveBeenCalledTimes(2);
     await session.executeRenderer("42");
-    expect(replacement.evaluateSpy).toHaveBeenLastCalledWith("42");
+    expect(replacement.evaluateSpy).toHaveBeenLastCalledWith("42", undefined);
+    await session.executeRenderer("longRemoteOperation()", 40_000);
+    expect(replacement.evaluateSpy).toHaveBeenLastCalledWith("longRemoteOperation()", 40_000);
     session.close();
     expect(replacement.close).toHaveBeenCalledOnce();
   });

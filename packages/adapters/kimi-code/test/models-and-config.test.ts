@@ -2,14 +2,14 @@ import type { SessionConfigOption } from "@agentclientprotocol/sdk";
 import { describe, expect, it } from "vitest";
 import {
   harnessModelCatalogSchema,
+  harnessModelRefSchema,
   harnessPermissionModeCatalogSchema,
 } from "@codexhost/shared-contracts";
 
 import {
   buildModelCatalogFromAcp,
   buildModelCatalogFromConfig,
-  decodeKimiModelRefId,
-  encodeKimiModelRef,
+  normalizeStoredKimiModelRef,
   formatThinkingLabel,
   isKimiModeId,
   kimiPermissionModeCatalog,
@@ -20,31 +20,14 @@ import {
 } from "../src/models.js";
 
 describe("Kimi Code Models & Config", () => {
-  describe("ModelRef Encoding & Decoding", () => {
-    it("encodes and decodes standard model aliases", () => {
-      const alias = "claude-sonnet-5";
-      const ref = encodeKimiModelRef(alias);
-      expect(ref.id).toMatch(/^kimi\.[A-Za-z0-9_-]+$/);
-      const decoded = decodeKimiModelRefId(ref.id);
-      expect(decoded).toBe(alias);
+  it("preserves native aliases and resolves a stored encoded alias to the same Model", () => {
+    const id = " moonshot/模型 [1m] ";
+    const catalog = buildModelCatalogFromConfig({ defaultModel: id, models: [{ alias: id }] });
+    const saved = harnessModelRefSchema.parse({
+      id: `kimi.${Buffer.from(id).toString("base64url")}`,
     });
-
-    it("encodes and decodes aliases with slashes and special characters without collision", () => {
-      const aliasWithSlash = "moonshot/kimi-k2.5-preview";
-      const ref = encodeKimiModelRef(aliasWithSlash);
-      expect(decodeKimiModelRefId(ref.id)).toBe(aliasWithSlash);
-
-      const aliasWithDash = "moonshot-kimi-k2.5-preview";
-      const ref2 = encodeKimiModelRef(aliasWithDash);
-      expect(decodeKimiModelRefId(ref2.id)).toBe(aliasWithDash);
-
-      // Slashes and dashes must not produce the same ref
-      expect(ref.id).not.toBe(ref2.id);
-    });
-
-    it("throws on invalid model ref id", () => {
-      expect(() => decodeKimiModelRefId("other.invalid")).toThrow(/Invalid Kimi model ref ID/);
-    });
+    expect(catalog.defaultModel).toEqual({ id });
+    expect(normalizeStoredKimiModelRef(saved, catalog)).toEqual({ id });
   });
 
   describe("Permission Modes", () => {
@@ -75,6 +58,9 @@ default_model = "relay"
 model = "claude-sonnet-5"
 provider = "bedrock"
 max_context_size = 200000
+capabilities = ["thinking"]
+support_efforts = ["low", "high"]
+default_effort = "high"
 
 [models.kimi]
 model = "kimi-k2"
@@ -92,6 +78,9 @@ effort = "high"
         model: "claude-sonnet-5",
         provider: "bedrock",
         maxContextSize: 200000,
+        capabilities: ["thinking"],
+        supportEfforts: ["low", "high"],
+        defaultEffort: "high",
       });
       expect(config.models[1]).toEqual({
         alias: "kimi",
@@ -138,13 +127,65 @@ default_model = "test"
       const firstModel = validated.models[0];
       expect(firstModel).toBeDefined();
       if (!firstModel) return;
-      expect(decodeKimiModelRefId(firstModel.ref.id)).toBe("relay");
+      expect(firstModel.ref.id).toBe("relay");
       expect(firstModel.label).toBe("relay (claude-sonnet-5)");
       expect(firstModel.resolvedModelLabel).toBe("claude-sonnet-5");
       expect(validated.defaultModel?.id).toBe(firstModel.ref.id);
       expect(validated.defaultThinkingOptionId).toBeUndefined();
       expect(validated.thinkingOptions).toEqual([]);
-      expect(firstModel.supportedThinkingOptionIds).toBeUndefined();
+      expect(firstModel.supportedThinkingOptionIds).toEqual([]);
+    });
+
+    it("maps declared Thinking per model without sharing options with undeclared models", () => {
+      const config = parseKimiConfigToml(`
+default_model = "effort"
+[models.effort]
+capabilities = ["thinking"]
+support_efforts = ["low", "high", "high"]
+default_effort = "high"
+[models.toggle]
+capabilities = ["thinking"]
+[models.always]
+capabilities = ["always_thinking"]
+support_efforts = ["low", "high"]
+[models.always_toggle]
+capabilities = ["thinking", "always_thinking"]
+[models.unknown]
+[models.efforts_only]
+support_efforts = ["max"]
+`);
+      const catalog = harnessModelCatalogSchema.parse(buildModelCatalogFromConfig(config));
+      expect(catalog.models.map((model) => model.supportedThinkingOptionIds)).toEqual([
+        ["off", "low", "high"],
+        ["off", "on"],
+        ["low", "high"],
+        ["on"],
+        [],
+        [],
+      ]);
+      expect(catalog.thinkingOptions).toEqual([
+        { id: "off", label: "Off" },
+        { id: "low", label: "Low" },
+        { id: "high", label: "High" },
+        { id: "on", label: "On" },
+      ]);
+      expect(catalog.defaultThinkingOptionId).toBe("high");
+    });
+
+    it.each([
+      { thinking: { enabled: false, effort: "high" }, expected: "off" },
+      { thinking: { enabled: true, effort: "low" }, expected: "low" },
+      { thinking: { effort: "max" }, expected: undefined },
+    ])("uses only the selected model's declared default: $thinking", ({ thinking, expected }) => {
+      const catalog = buildModelCatalogFromConfig({
+        defaultModel: "selected",
+        models: [
+          { alias: "selected", capabilities: ["thinking"], supportEfforts: ["low", "high"] },
+          { alias: "other", capabilities: ["thinking"], supportEfforts: ["max"] },
+        ],
+        thinking,
+      });
+      expect(catalog.defaultThinkingOptionId).toBe(expected);
     });
 
     it("does not infer selectable options from a disabled config setting", () => {
@@ -165,7 +206,7 @@ default_model = "test"
       const fallbackModel = catalog.models[0];
       expect(fallbackModel).toBeDefined();
       if (fallbackModel) {
-        expect(decodeKimiModelRefId(fallbackModel.ref.id)).toBe("default");
+        expect(fallbackModel.ref.id).toBe("default");
       }
     });
   });
@@ -232,7 +273,7 @@ default_model = "test"
       const firstModel = validated.models[0];
       expect(firstModel).toBeDefined();
       if (!firstModel) return;
-      expect(decodeKimiModelRefId(firstModel.ref.id)).toBe("relay");
+      expect(firstModel.ref.id).toBe("relay");
       expect(firstModel.label).toBe("Claude Sonnet 5 (Relay)");
       expect(validated.defaultModel?.id).toBe(firstModel.ref.id);
       expect(validated.defaultThinkingOptionId).toBe("high");
@@ -258,15 +299,17 @@ default_model = "test"
     it("falls back to config if ACP models are empty", () => {
       const fallbackConfig: KimiNativeConfig = {
         defaultModel: "fallback-m",
-        models: [{ alias: "fallback-m" }],
+        models: [{ alias: "fallback-m", capabilities: ["thinking"], supportEfforts: ["high"] }],
       };
 
       const catalog = buildModelCatalogFromAcp([], fallbackConfig);
+      expect(catalog.thinkingOptions).toEqual([]);
+      expect(catalog.models[0]?.supportedThinkingOptionIds).toEqual([]);
       expect(catalog.models).toHaveLength(1);
       const fallbackModel = catalog.models[0];
       expect(fallbackModel).toBeDefined();
       if (fallbackModel) {
-        expect(decodeKimiModelRefId(fallbackModel.ref.id)).toBe("fallback-m");
+        expect(fallbackModel.ref.id).toBe("fallback-m");
       }
     });
   });

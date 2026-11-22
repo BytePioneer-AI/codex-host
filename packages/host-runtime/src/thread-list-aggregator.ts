@@ -1,4 +1,4 @@
-import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
+import type { StoredSectionPlacementV1, StoredThreadSummaryV1 } from "@codexhost/mapping-store";
 import {
   decodeOfficialThreadListPage,
   encodeHostThreadListCursor,
@@ -19,6 +19,8 @@ import {
   type ExternalThreadListRuntimeState,
   type ThreadListEntry,
 } from "./external-thread-list.js";
+
+import type { ThreadListTiming } from "./thread-list-timing.js";
 
 const MAX_OFFICIAL_PAGE_REQUESTS = 256;
 const OFFICIAL_TIE_ANCHOR = "\uffff";
@@ -83,11 +85,12 @@ function cursorValue(input: {
 
 export async function aggregateThreadList(input: {
   query: DecodedThreadListRequest;
-  records: readonly StoredThreadRecordV1[];
+  records: readonly StoredThreadSummaryV1[];
   sharedThreads?: readonly JsonObject[];
   runtimeFor(threadId: string): ExternalThreadListRuntimeState | null;
   placementOf?(threadId: string): StoredSectionPlacementV1 | undefined;
   requestOfficialPage(params: JsonObject): Promise<OfficialThreadListPage>;
+  timing?: ThreadListTiming;
 }): Promise<AggregatedThreadListPage> {
   const { query } = input;
   if (!query.supportsExternal || query.sortKey === "section_position") {
@@ -102,17 +105,19 @@ export async function aggregateThreadList(input: {
     externalAnchor: null,
     externalDone: false,
   };
-  const externalPage = start.externalDone
-    ? { data: [], hasMore: false }
-    : listExternalThreadMetadata({
-        records: input.records,
-        ...(input.sharedThreads ? { sharedThreads: input.sharedThreads } : {}),
-        query,
-        runtimeFor: input.runtimeFor,
-        ...(input.placementOf ? { placementOf: input.placementOf } : {}),
-        anchor: start.externalAnchor,
-        limit: query.limit,
-      });
+  const readExternal = () =>
+    start.externalDone
+      ? { data: [], hasMore: false }
+      : listExternalThreadMetadata({
+          records: input.records,
+          ...(input.sharedThreads ? { sharedThreads: input.sharedThreads } : {}),
+          query,
+          runtimeFor: input.runtimeFor,
+          ...(input.placementOf ? { placementOf: input.placementOf } : {}),
+          anchor: start.externalAnchor,
+          limit: query.limit,
+        });
+  const externalPage = input.timing ? input.timing.external(readExternal) : readExternal();
   let externalIndex = 0;
 
   let officialCursor = start.officialCursor;
@@ -126,12 +131,18 @@ export async function aggregateThreadList(input: {
   const externalIds = new Set<string>(input.records.map((record) => record.hostThreadId));
   for (const thread of input.sharedThreads ?? []) externalIds.add(String(thread.id));
 
-  const requestOfficial = async (cursor: string | null, limit: number) => {
+  const requestOfficial = async (
+    cursor: string | null,
+    limit: number,
+    kind: "page" | "cursor_repair" = "page",
+  ) => {
     officialRequestCount += 1;
     if (officialRequestCount > MAX_OFFICIAL_PAGE_REQUESTS) {
       throw new Error("Official thread/list pagination exceeded its request bound");
     }
-    return input.requestOfficialPage(officialParams(query, cursor, limit));
+    const params = officialParams(query, cursor, limit);
+    const request = () => input.requestOfficialPage(params);
+    return input.timing ? input.timing.official(kind, params, request) : request();
   };
 
   const ensureOfficial = async (): Promise<ThreadListEntry | null> => {
@@ -196,7 +207,7 @@ export async function aggregateThreadList(input: {
       nextOfficialCursor = officialBatchStart;
       nextOfficialDone = false;
     } else if (officialIndex < officialEntries.length) {
-      const exact = await requestOfficial(officialBatchStart, officialIndex);
+      const exact = await requestOfficial(officialBatchStart, officialIndex, "cursor_repair");
       if (exact.data.length !== officialIndex || exact.nextCursor === null) {
         throw new Error("Official thread/list did not return an exact consumed prefix cursor");
       }

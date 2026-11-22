@@ -1,7 +1,11 @@
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-import { isConsoleHostMethod, type ConsoleAnnouncement } from "@codexhost/shared-contracts";
+import {
+  HOST_EXTENSION_ZIP_MAX_BYTES,
+  isConsoleHostMethod,
+  type ConsoleAnnouncement,
+} from "@codexhost/shared-contracts";
 import { readAnnouncement } from "./announcement.js";
 import { allowedChange, allowedHost, CONSOLE_REQUEST_HEADER } from "./request-guard.js";
 import {
@@ -20,13 +24,18 @@ import {
 } from "./installation.js";
 import { buildDiagnosticReport, issueUrl, serializeDiagnosticReport } from "./diagnostic-report.js";
 import { ConsoleHarnessError, type ConsoleHarnesses } from "./harnesses.js";
+import { extensionsRoute, isExtensionUploadRoute } from "./extensions.js";
 import { HostUnavailableError, type ConsoleHostClient } from "./host-client.js";
 import { CONSOLE_PAGE_CSS, CONSOLE_PAGE_HTML } from "./page.js";
 import type { ConsolePaths } from "./paths.js";
 import { ConsoleUpdateError, type ConsoleUpdates } from "./updates.js";
+import { runServiceCommand, serviceCommand } from "./services.js";
+import { webConnectionRequest, WEB_CONNECTION_METHODS } from "./web-client.js";
 
 export const CONSOLE_SERVICE = "codexhost-console";
 const MAX_BODY_BYTES = 16 * 1024;
+const MAX_EXTENSION_INSTALL_BODY_BYTES =
+  4 * Math.ceil(HOST_EXTENSION_ZIP_MAX_BYTES / 3) + MAX_BODY_BYTES;
 const INSPECT_CACHE_MS = 2_000;
 
 export interface ConsoleServerOptions {
@@ -48,6 +57,7 @@ export interface ConsoleServerOptions {
   idleTimeoutMs?: number;
   inspect?(launcherExecutable: string): Promise<InspectDocument>;
   launch?(command: string, args: string[]): void;
+  service?(command: string, args: string[], environment: NodeJS.ProcessEnv): Promise<void>;
   onExit(): void;
 }
 
@@ -91,13 +101,16 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
 class RequestBodyError extends Error {}
 
 /** Bounded JSON object body; an empty body is `{}`. */
-async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function readJsonBody(
+  request: IncomingMessage,
+  limit = MAX_BODY_BYTES,
+): Promise<Record<string, unknown>> {
   let size = 0;
   const chunks: Buffer[] = [];
-  for await (const chunk of request) {
+  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     const buffer = chunk as Buffer;
     size += buffer.length;
-    if (size > MAX_BODY_BYTES) throw new RequestBodyError("Request body is too large");
+    if (size > limit) throw new RequestBodyError("Request body is too large");
     chunks.push(buffer);
   }
   if (size === 0) return {};
@@ -131,6 +144,14 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
   let inspectCache: { at: number; value: Promise<InspectDocument> } | null = null;
   let idleTimer: NodeJS.Timeout | undefined;
   let exiting = false;
+  let stopping = false;
+  let shutdownRequested = false;
+  const service = options.service ?? runServiceCommand;
+  const serviceEnvironment = (): NodeJS.ProcessEnv => ({
+    ...environment,
+    CODEXHOST_DATA_DIR: options.paths.dataDirectory,
+    CODEXHOST_CONSOLE_PORT: String(port),
+  });
 
   // The console stays available while codexhost runs; afterwards it exits when idle.
   const scheduleIdleExit = (): void => {
@@ -164,6 +185,8 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       appDirectory: options.installation.appDirectory,
       runtimeDescriptorPath: document?.runtime.descriptorPath ?? null,
       codexhostRunning: document?.runtime.running ?? false,
+      dataDirectory: options.paths.dataDirectory,
+      restartTarget: document?.desktop === null ? ("web" as const) : ("desktop" as const),
     };
   };
 
@@ -252,13 +275,47 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       return;
     }
     scheduleIdleExit();
-    const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
+    // A malformed request target (such as "//%%", read as an invalid authority) is the client's error.
+    const url = URL.parse(request.url ?? "/", `http://127.0.0.1:${port}`);
+    if (!url) {
+      sendJson(response, 400, { error: "Bad Request" });
+      return;
+    }
     const method = request.method ?? "GET";
     const route = `${method} ${url.pathname}`;
 
+    if (route === "GET /api/host/display-capabilities") {
+      sendJson(response, 200, { events: typeof options.host.displayEvents === "function" });
+      return;
+    }
+    if (route === "GET /api/host/display-events" && options.host.displayEvents) {
+      const controller = new AbortController();
+      response.on("close", () => controller.abort());
+      try {
+        const upstream = await options.host.displayEvents(controller.signal);
+        if (!upstream.ok || !upstream.body) {
+          sendJson(response, upstream.status, {});
+          return;
+        }
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-store",
+        });
+        for await (const chunk of upstream.body) {
+          if (!response.write(chunk)) {
+            controller.abort();
+            break;
+          }
+        }
+      } catch {
+        /* EventSource reconnects through current Host discovery. */
+      }
+      response.end();
+      return;
+    }
     if (route === "GET /api/health") {
       sendJson(response, 200, {
-        service: CONSOLE_SERVICE,
+        service: shutdownRequested ? `${CONSOLE_SERVICE}-stopping` : CONSOLE_SERVICE,
         schemaVersion: 1,
         version: options.version,
         pid: process.pid,
@@ -284,6 +341,10 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     let body: Record<string, unknown> = {};
     if (method !== "GET") {
       if (
+        !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(request.socket.remoteAddress ?? "") ||
+        request.headers.forwarded !== undefined ||
+        Object.keys(request.headers).some((name) => name.startsWith("x-forwarded-")) ||
+        request.headers["sec-fetch-site"] === "cross-site" ||
         !allowedChange(
           request.headers.origin,
           headerValue(request.headers[CONSOLE_REQUEST_HEADER]),
@@ -294,16 +355,85 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
         return;
       }
       try {
-        body = await readJsonBody(request);
+        body = await readJsonBody(
+          request,
+          isExtensionUploadRoute(route) ? MAX_EXTENSION_INSTALL_BODY_BYTES : MAX_BODY_BYTES,
+        );
       } catch (error) {
+        if (!request.complete) response.setHeader("connection", "close");
         sendJson(response, 400, { error: (error as Error).message });
         return;
       }
     }
 
+    const extensions = await extensionsRoute(
+      route,
+      body,
+      options.paths.dataDirectory,
+      url.searchParams,
+      options.host,
+    );
+    if (extensions) {
+      sendJson(response, extensions.status, extensions.body);
+      return;
+    }
+
     if (route === "POST /api/shutdown") {
       sendJson(response, 200, { ok: true });
-      setImmediate(exit);
+      // stop_all waits for Console to stop answering health probes. Keep the
+      // initiating request alive to report its real result before this process exits.
+      if (stopping) shutdownRequested = true;
+      else setImmediate(exit);
+      return;
+    }
+    if (route === "POST /api/stop") {
+      if (stopping) {
+        sendJson(response, 409, { error: "正在停止 codexhost" });
+        return;
+      }
+      const command = serviceCommand(options.installation, "stop");
+      stopping = true;
+      try {
+        await service(command.command, command.args, serviceEnvironment());
+        response.once("finish", () => setImmediate(exit));
+        sendJson(response, 200, { stopped: true });
+      } catch (error) {
+        stopping = false;
+        shutdownRequested = false;
+        sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    if (route === "POST /api/web/open") {
+      const command = serviceCommand(options.installation, "web", {
+        connectDevices: body.connectDevices === true,
+      });
+      await service(command.command, command.args, serviceEnvironment());
+      sendJson(response, 200, { opened: true });
+      return;
+    }
+    if (route === "POST /api/web/request") {
+      if (
+        typeof body.method !== "string" ||
+        !(WEB_CONNECTION_METHODS as readonly string[]).includes(body.method)
+      ) {
+        sendJson(response, 400, { error: "Web method is not available" });
+        return;
+      }
+      const args = body.params ?? {};
+      if (typeof args !== "object" || args === null || Array.isArray(args)) {
+        sendJson(response, 400, { error: "Expected params object" });
+        return;
+      }
+      sendJson(
+        response,
+        200,
+        await webConnectionRequest(
+          options.paths.dataDirectory,
+          body.method,
+          args as Record<string, unknown>,
+        ),
+      );
       return;
     }
     if (route === "GET /api/announcement") {
@@ -319,9 +449,8 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       route === "GET /api/update/status" ||
       route === "POST /api/update/start"
     ) {
-      // A running codexhost updates through its Host so the Launcher can hand over.
-      const target = await updateTarget();
-      if (target.codexhostRunning && (await options.host.available())) {
+      // The independent Host owns one update operation for all connected clients.
+      if (await options.host.available()) {
         const method =
           route === "POST /api/update/check"
             ? "codexhost/update/check"

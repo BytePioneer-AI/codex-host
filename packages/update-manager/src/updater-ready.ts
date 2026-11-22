@@ -8,6 +8,7 @@ export async function waitForUpdaterReady(
   child: ChildProcess,
   readStatus: () => Promise<BackgroundUpdateStatus | null>,
   timeoutMs = 10_000,
+  beforeWait?: () => Promise<void>,
 ): Promise<void> {
   let failure: Error | undefined;
   const onError = (error: Error): void => {
@@ -20,6 +21,7 @@ export async function waitForUpdaterReady(
   child.on("exit", onExit);
   const deadline = performance.now() + timeoutMs;
   try {
+    await beforeWait?.();
     while (true) {
       const status = await readStatus();
       if (status?.phase === "failed") throw new Error(status.error ?? "Background Updater failed");

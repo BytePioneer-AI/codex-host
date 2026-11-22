@@ -5,7 +5,8 @@ import {
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
 } from "./harness-permission-modes.js";
-import { harnessIdSchema, hostThreadIdSchema } from "./ids.js";
+import { HARNESS_TRANSPORT_MODEL_ID_MAX_LENGTH } from "./harness-route-limit.js";
+import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "./ids.js";
 import { threadUsageSnapshotSchema } from "./thread-usage.js";
 
 export const HARNESS_MODEL_REF_MAX_LENGTH = 512;
@@ -17,18 +18,45 @@ const nonBlankTextSchema = z.string().refine((value) => value.trim().length > 0,
   message: "Value must not be empty or whitespace",
 });
 
-export const harnessModelRefIdSchema = nonBlankTextSchema
+export const harnessModelRefIdSchema = z
+  .string()
+  .min(1)
   .max(HARNESS_MODEL_REF_MAX_LENGTH)
-  .regex(/^[A-Za-z0-9._~-]+$/u, "Model Ref must use transport-safe opaque characters")
+  .refine((id) => !/\p{Cc}/u.test(id), "Model Ref must not contain control characters")
   .brand<"HarnessModelRefId">();
+
+export const harnessModelServiceTierSchema = z.enum(["priority", "ultrafast"]);
+export type HarnessModelServiceTier = z.infer<typeof harnessModelServiceTierSchema>;
 
 export const harnessModelRefSchema = z
   .object({
     id: harnessModelRefIdSchema,
+    serviceTier: harnessModelServiceTierSchema.optional(),
   })
   .strict();
 
 export type HarnessModelRef = z.infer<typeof harnessModelRefSchema>;
+
+export function sameHarnessModelRef(
+  left: HarnessModelRef | undefined,
+  right: HarnessModelRef | undefined,
+): boolean {
+  return left?.id === right?.id && left?.serviceTier === right?.serviceTier;
+}
+
+/** String key for UI controls that cannot carry a Ref object. */
+export function harnessModelRefKey(ref: HarnessModelRef): string {
+  return ref.serviceTier === undefined ? ref.id : `${ref.id}\u001f${ref.serviceTier}`;
+}
+
+export function harnessModelRefFromKey(key: string): HarnessModelRef {
+  const separator = key.indexOf("\u001f");
+  return harnessModelRefSchema.parse(
+    separator === -1
+      ? { id: key }
+      : { id: key.slice(0, separator), serviceTier: key.slice(separator + 1) },
+  );
+}
 
 export const harnessThinkingOptionIdSchema = nonBlankTextSchema
   .max(HARNESS_THINKING_OPTION_ID_MAX_LENGTH)
@@ -59,7 +87,14 @@ export const harnessModelSchema = z
     fastModel: harnessModelRefSchema.optional(),
     supportedThinkingOptionIds: z.array(harnessThinkingOptionIdSchema).optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (model) => model.fastModel?.serviceTier === undefined || model.fastModel.id === model.ref.id,
+    {
+      path: ["fastModel", "id"],
+      message: "A tiered Fast Model must share the base Model ID",
+    },
+  );
 
 export type HarnessModel = z.infer<typeof harnessModelSchema>;
 
@@ -69,7 +104,9 @@ export function catalogModelForRef(
   ref: HarnessModelRef | undefined,
 ): HarnessModel | undefined {
   if (!ref) return undefined;
-  return catalog?.models.find((model) => model.ref.id === ref.id || model.fastModel?.id === ref.id);
+  return catalog?.models.find(
+    (model) => sameHarnessModelRef(model.ref, ref) || sameHarnessModelRef(model.fastModel, ref),
+  );
 }
 
 const harnessThinkingOptionsSchema = z
@@ -97,29 +134,26 @@ export const harnessModelCatalogSchema = z
   })
   .strict()
   .superRefine((catalog, context) => {
-    const refs = new Set<string>();
+    const refs: HarnessModelRef[] = [];
     const thinkingIds = new Set(catalog.thinkingOptions.map(({ id }) => id));
     for (const [index, model] of catalog.models.entries()) {
-      if (refs.has(model.ref.id)) {
+      if (refs.some((ref) => sameHarnessModelRef(ref, model.ref))) {
         context.addIssue({
           code: "custom",
           message: "Model Catalog refs must be unique",
           path: ["models", index, "ref", "id"],
         });
       }
-      refs.add(model.ref.id);
+      refs.push(model.ref);
       if (model.fastModel) {
-        if (
-          refs.has(model.fastModel.id) ||
-          catalog.models.some((entry) => entry.ref.id === model.fastModel?.id)
-        ) {
+        if (refs.some((ref) => sameHarnessModelRef(ref, model.fastModel))) {
           context.addIssue({
             code: "custom",
             message: "Fast Model refs must be distinct and unique",
             path: ["models", index, "fastModel"],
           });
         }
-        refs.add(model.fastModel.id);
+        refs.push(model.fastModel);
       }
       const supportedThinkingIds = new Set<string>();
       for (const [optionIndex, optionId] of (model.supportedThinkingOptionIds ?? []).entries()) {
@@ -140,7 +174,7 @@ export const harnessModelCatalogSchema = z
         }
       }
     }
-    if (catalog.defaultModel && !refs.has(catalog.defaultModel.id)) {
+    if (catalog.defaultModel && !catalogModelForRef(catalog, catalog.defaultModel)) {
       context.addIssue({
         code: "custom",
         message: "Default Model must exist in the Model Catalog",
@@ -204,6 +238,13 @@ export const harnessSessionCapabilitiesSchema = z
       })
       .strict()
       .optional(),
+    /** True only when `turn.steer` delivers input into the active Turn through a native primitive. */
+    steer: z.boolean().optional(),
+    /**
+     * True when the native plan (task list) outlives the Turn that changed it, so a reopened
+     * Thread gets its latest plan again. Otherwise a plan stays with the Turn that made it.
+     */
+    persistentPlan: z.boolean().optional(),
   })
   .strict();
 
@@ -286,6 +327,9 @@ export const harnessInspectParamsSchema = z
     harnessId: harnessIdSchema,
     cwd: nonBlankTextSchema.max(16_384).optional(),
     refresh: z.boolean().optional(),
+    /** `availability` asks only whether the Harness can run; see `InspectHarnessInput.purpose`. */
+    purpose: z.literal("availability").optional(),
+    credentialAccess: z.enum(["allow", "retry"]).optional(),
   })
   .strict();
 
@@ -333,7 +377,12 @@ export type ThreadInspectionParams = z.infer<typeof threadInspectionParamsSchema
 const codexThreadInspectionSchema = z
   .object({
     owner: z.literal("codex"),
-    locked: z.literal(true),
+    locked: z.boolean(),
+    effectiveModel: harnessModelRefSchema.optional(),
+    resolvedModelLabel: harnessResolvedModelLabelSchema.optional(),
+    effectiveThinkingOptionId: harnessThinkingOptionIdSchema.optional(),
+    effectivePermissionModeId: harnessPermissionModeIdSchema.optional(),
+    history: harnessHistoryCapabilitiesSchema.optional(),
     supportsThreadReferences: z.literal(true).optional(),
   })
   .strict();
@@ -342,7 +391,7 @@ const externalThreadInspectionSchema = z
   .object({
     owner: z.literal("external"),
     harnessId: nonBlankTextSchema.max(256),
-    transportModelId: nonBlankTextSchema.max(1_024),
+    transportModelId: nonBlankTextSchema.max(HARNESS_TRANSPORT_MODEL_ID_MAX_LENGTH),
     effectiveModel: harnessModelRefSchema.optional(),
     resolvedModelLabel: harnessResolvedModelLabelSchema.optional(),
     effectiveThinkingOptionId: harnessThinkingOptionIdSchema.optional(),
@@ -424,3 +473,62 @@ export const threadOwnershipListResultSchema = z
   });
 
 export type ThreadOwnershipListResult = z.infer<typeof threadOwnershipListResultSchema>;
+
+export const threadSteeringInspectParamsSchema = z
+  .object({
+    threadId: hostThreadIdSchema,
+    /** The text about to be steered; a Harness command always stops and restarts. */
+    text: z.string().optional(),
+  })
+  .strict();
+
+/**
+ * `turn/steer` parameter naming the delivery the Renderer already presented, so the Host follows
+ * it instead of deciding again: `activeTurn` inserts natively, `newTurn` stops and restarts.
+ */
+export const THREAD_STEER_DELIVERY_PARAM = "codexhostSteerDelivery";
+/** A Web steer may only be accepted while its selected Turn can still take the steer. */
+export const THREAD_STEER_STRICT_TARGET_PARAM = "codexhostSteerStrictTarget";
+/** External Thread header field advertising Host enforcement of the strict target. */
+export const THREAD_STEER_STRICT_TARGET_FIELD = "codexhostSupportsStrictSteer";
+/** Native RPC preparation retains additionalContext across its start/steer choice. */
+export const THREAD_STEERING_CONTEXT_PARAM = "codexhost_external_steering";
+export const threadSteeringContextSchema = z
+  .object({
+    kind: z.literal("application"),
+    value: z
+      .string()
+      .transform((text, context): unknown => {
+        try {
+          return JSON.parse(text);
+        } catch {
+          context.addIssue({ code: "custom", message: "Invalid steering context JSON" });
+          return z.NEVER;
+        }
+      })
+      .pipe(
+        z
+          .object({
+            expectedTurnId: hostTurnIdSchema,
+            clientUserMessageId: z.string().min(1),
+            delivery: z.enum(["newTurn", "activeTurn"]),
+          })
+          .strict(),
+      ),
+  })
+  .strict()
+  .transform((context) => context.value);
+export const threadSteerDeliverySchema = z.enum(["activeTurn", "newTurn"]);
+export type ThreadSteerDelivery = z.infer<typeof threadSteerDeliverySchema>;
+
+/**
+ * How a steer submitted now reaches the Thread: `official` keeps Codex's own steer,
+ * `activeTurn` joins the running Turn natively, `newTurn` stops it and starts the input next.
+ */
+export const threadSteeringInspectResultSchema = z
+  .object({
+    delivery: z.enum(["official", "activeTurn", "newTurn"]),
+  })
+  .strict();
+
+export type ThreadSteeringInspectResult = z.infer<typeof threadSteeringInspectResultSchema>;

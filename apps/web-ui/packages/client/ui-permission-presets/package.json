@@ -1,0 +1,39 @@
+{
+  "name": "@deepseek-ai/dsh-client-ui-permission-presets",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./client": {
+      "types": "./src/client/index.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-client-store": "*",
+    "react": "^18.2.0",
+    "@deepseek-ai/dsh-client-ui-primitives": "*",
+    "clsx": "^2.0.0"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-commands",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  }
+}

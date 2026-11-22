@@ -77,7 +77,7 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 - **AND** each caller-assigned User UUID is submitted once
 
 ### Requirement: Claude Native history maps deterministically
-`readSnapshot()` SHALL read only the identified Native Session through the official Claude SDK history API and SHALL deterministically map each human User message and its following supported Assistant text and explicit visible thinking into one Host Turn. The caller-assigned User UUID SHALL remain the Native Turn identity. Claude Tool-result User messages, synthetic or metadata User records, local-command output or caveat records, native Model-selection and Compact command envelopes, and background task-notification records SHALL NOT become human Host Turns. Other genuine human slash-command prompts SHALL remain eligible for projection. codexhost SHALL NOT persist a second Transcript.
+`readSnapshot()` SHALL read only the identified Native Session and SHALL deterministically preserve the live execution boundaries, including independent task-notification continuations. A requested Turn SHALL use its caller-assigned User UUID; an autonomous continuation SHALL use its triggering notification User UUID, matching the live Adapter. Claude Tool-result User messages, synthetic or metadata User records, local-command output or caveat records, native Model-selection and Compact command envelopes, and background task-notification records SHALL NOT become human Host Turns. Other genuine human slash-command prompts SHALL remain eligible for projection. codexhost SHALL NOT persist a second Transcript.
 
 #### Scenario: Completed Claude history is read repeatedly
 - **WHEN** a Claude Session containing completed text Turns and visible Assistant thinking is read more than once
@@ -107,8 +107,10 @@ The first accepted text Turn SHALL resolve the user-installed Claude Code execut
 
 #### Scenario: Native history contains background task-notification records
 - **WHEN** Claude history contains a User record whose origin is `task-notification` or whose text is a complete `<task-notification>` wrapper
-- **THEN** that native control record SHALL NOT create a Host Turn or appear as User input
-- **AND** following Assistant continuations SHALL remain on the preceding human Turn
+- **THEN** a notification that triggers independent Root execution SHALL start a historical Turn with empty User input and its own notification UUID as Native Turn identity
+- **AND** each Turn's Checkpoint SHALL be its last Root message UUID, so the preceding Turn's Checkpoint stays before the independent notification
+- **AND** notifications and continuations owned by a Turn held for background Agent or Workflow occupancy SHALL stay on that same Turn, using the same native delegation and settlement evidence as the live Adapter
+- **AND** nested Subagent messages SHALL NOT advance a Root Checkpoint
 - **AND** ordinary human text that only mentions these tags SHALL remain eligible for projection
 
 #### Scenario: Native history contains another human slash command
@@ -188,14 +190,25 @@ Every accepted Claude text Turn SHALL emit one Turn start, retain the establishe
 - **THEN** it SHALL request adaptive Thinking with summarized display
 - **AND** redacted `thinking_delta` frames carrying empty text SHALL NOT start a Reasoning Item
 
-#### Scenario: Streamed thinking has a complete Assistant counterpart
-- **WHEN** Root SDK stream events emit non-empty `thinking_delta` text for one Assistant message and the complete Assistant wrapper with the same native `message.id` contains thinking blocks
-- **THEN** the Adapter SHALL append only the `thinking_delta` text through one Reasoning Item for that message
-- **AND** it SHALL ignore the complete `thinking` blocks without appending their suffix
+#### Scenario: Thinking streams before its signature is known
+- **WHEN** a Root SDK stream emits a non-empty `thinking_delta`
+- **THEN** the Adapter SHALL immediately append it to the block's Reasoning Item without waiting for the signature or block completion
+- **AND** interruption SHALL leave emitted Reasoning intact without replaying it
+
+#### Scenario: A thinking block is confirmed as narration
+- **WHEN** `content_block_stop` confirms a thinking block whose signature metadata marks narration, or the complete Assistant wrapper supplies that confirmation as a fallback
+- **THEN** the Adapter SHALL emit a separate Agent Message with `phase: "commentary"` before the following Tool or Question, without modifying or retracting the streamed Reasoning
+- **AND** the fallback MAY include a matching complete-message suffix in commentary only, and SHALL NOT emit commentary if the stop already emitted it for that block
 
 #### Scenario: Thinking streaming is unavailable
 - **WHEN** no Root partial thinking event is emitted but a complete Assistant message contains non-empty visible thinking text
-- **THEN** the Adapter SHALL emit no Reasoning Item from the complete `thinking` blocks
+- **THEN** signed narration SHALL become a commentary Agent Message without starting a Reasoning Item
+- **AND** ordinary, unknown, or protected complete-only thinking SHALL emit no live Reasoning Item
+
+#### Scenario: History contains signed narration
+- **WHEN** `readSnapshot()` or a Subagent transcript read maps a Root or Subagent thinking block whose signature marks narration
+- **THEN** each thinking block SHALL keep its native position and its own Item: narration becomes a commentary Agent Message, and every other explicit visible thinking block remains its own Reasoning Item
+- **AND** the Root history projection SHALL reserve a Reasoning ordinal for each narration block without emitting a duplicate Reasoning Item, preserving the identities of subsequent streamed Reasoning Items
 
 #### Scenario: One Turn contains multiple Assistant messages
 - **WHEN** a Claude Tool loop or retry produces Root `thinking_delta` text in more than one native Assistant message

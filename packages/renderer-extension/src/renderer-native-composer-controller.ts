@@ -11,10 +11,21 @@
 interface NativeEditorView {
   dom: Element;
   state: {
-    doc: { textBetween(from: number, to: number): string };
-    schema: { nodes: Record<string, unknown> };
+    doc: {
+      textBetween(from: number, to: number): string;
+      cut?(from: number, to: number): unknown;
+    };
+    schema: {
+      nodes: Record<string, unknown>;
+      marks?: Record<string, { create(): unknown }>;
+      text?(text: string, marks?: readonly unknown[]): unknown;
+    };
     selection: { from: number; to: number };
-    tr: { delete(from: number, to: number): unknown; insertText(text: string): unknown };
+    tr: {
+      delete(from: number, to: number): unknown;
+      insertText(text: string): unknown;
+      replaceWith?(from: number, to: number, content: readonly unknown[]): unknown;
+    };
   };
   posAtDOM(node: Node, offset: number): number;
   dispatch(transaction: unknown): void;
@@ -22,6 +33,7 @@ interface NativeEditorView {
 
 interface NativeComposerController {
   view: NativeEditorView;
+  getMarkdownSerializer?(format: "markdown"): ((content: unknown) => string) | undefined;
   insertMentionNodeInRange(
     nodeType: unknown,
     attrs: Record<string, unknown>,
@@ -113,6 +125,57 @@ export function deleteNativeRange(editor: Element, range: NativeTextRange): bool
   }
 }
 
+/** Serialize the selected native document rather than its display-only mention labels. */
+export function nativeSelectionMarkdown(editor: Element): string | null {
+  const controller = findNativeComposerController(editor);
+  if (!controller?.getMarkdownSerializer) return null;
+  const { doc, selection } = controller.view.state;
+  const cut = doc.cut;
+  if (!cut) return null;
+  try {
+    const serialize = controller.getMarkdownSerializer("markdown");
+    return serialize?.(cut.call(doc, selection.from, selection.to)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export interface NativeAgentMention {
+  name: string;
+  displayName: string;
+  path: string;
+}
+
+/** Paste literal text and mentions in one native transaction, retaining their order. */
+export function insertNativeMentionContent(
+  editor: Element,
+  parts: readonly (string | NativeAgentMention)[],
+): boolean {
+  const controller = findNativeComposerController(editor);
+  if (!controller) return false;
+  const { schema, selection, tr } = controller.view.state;
+  const nodeType = schema.nodes.agentMention as
+    { create?: (attrs: unknown) => unknown } | undefined;
+  const text = schema.text;
+  const create = nodeType?.create;
+  const replace = tr.replaceWith;
+  if (!text || !create || !replace) return false;
+  try {
+    const literal = schema.marks?.literalPaste?.create();
+    const content = parts
+      .filter((part) => part !== "")
+      .map((part) =>
+        typeof part === "string"
+          ? text.call(schema, part, literal ? [literal] : undefined)
+          : create.call(nodeType, { conversationId: null, ...part }),
+      );
+    controller.view.dispatch(replace.call(tr, selection.from, selection.to, content));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Replace the DOM text range with a native `agentMention` node. Returns false
  * when the controller is unavailable or the range no longer holds `expected`.
@@ -120,7 +183,7 @@ export function deleteNativeRange(editor: Element, range: NativeTextRange): bool
 export function insertNativeAgentMention(
   editor: Element,
   range: NativeTextRange,
-  mention: { name: string; displayName: string; path: string },
+  mention: NativeAgentMention,
 ): boolean {
   const controller = findNativeComposerController(editor);
   const nodeType = controller?.view.state.schema.nodes.agentMention;

@@ -4,6 +4,7 @@ import { WorkBuddyAdapter } from "./workbuddy-adapter.js";
 import { WORKBUDDY_COMMAND_CATALOG } from "./common.js";
 import { workBuddyInvocation } from "./command.js";
 import { CodeBuddyError } from "@codexhost/adapter-codebuddy";
+import { createWorkBuddyInstallation } from "./installation.js";
 
 export function createHarnessAdapter(context: HarnessPluginContext) {
   if (context.platform === "darwin" && context.managedRemoteHost) {
@@ -12,6 +13,7 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
       ...(context.launchCommand ? { CODEXHOST_WORKBUDDY_COMMAND: context.launchCommand } : {}),
     };
     return new BrokeredHarnessAdapter({
+      sessionImport: true,
       accountCredits: false,
       harnessId: "workbuddy",
       commandCatalog: WORKBUDDY_COMMAND_CATALOG,
@@ -28,10 +30,11 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
       ...(context.brokerDescriptorPath ? { descriptorPath: context.brokerDescriptorPath } : {}),
     });
   }
-  return new WorkBuddyAdapter({
-    environment: {
-      ...context.environment,
-      ...(context.launchCommand ? { CODEXHOST_WORKBUDDY_COMMAND: context.launchCommand } : {}),
-    },
+  const environment = {
+    ...context.environment,
+    ...(context.launchCommand ? { CODEXHOST_WORKBUDDY_COMMAND: context.launchCommand } : {}),
+  };
+  return Object.assign(new WorkBuddyAdapter({ environment }), {
+    installation: createWorkBuddyInstallation(environment),
   });
 }

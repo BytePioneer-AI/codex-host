@@ -1,8 +1,12 @@
-use super::PlatformError;
-use super::process::{ProcessSnapshot, process_snapshot, same_process_instance};
+use super::process::ProcessSnapshot;
+use super::{PlatformError, ProcessIdentity};
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use super::process::{ObservedProcessTree, process_snapshots};
+use super::process::{
+    ObservedProcessTree, process_snapshot, process_snapshots, same_process_instance,
+};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use super::process_identity;
 #[cfg(target_os = "windows")]
 use super::windows_process;
 
@@ -10,16 +14,15 @@ pub fn terminate_process_instance(
     expected: &ProcessSnapshot,
     _force: bool,
 ) -> Result<(), PlatformError> {
+    terminate_process_identity(&expected.into(), _force)
+}
+
+pub fn terminate_process_identity(
+    expected: &ProcessIdentity,
+    _force: bool,
+) -> Result<(), PlatformError> {
     #[cfg(target_os = "windows")]
     {
-        let current = match process_snapshot(expected.id) {
-            Ok(current) => current,
-            Err(PlatformError::NotFound(_)) => return Ok(()),
-            Err(error) => return Err(error),
-        };
-        if !same_process_instance(expected, &current) {
-            return Ok(());
-        }
         let _ = windows_process::terminate_process_instance(
             expected.id,
             expected.started_at_micros,
@@ -34,8 +37,7 @@ pub fn terminate_process_instance(
         } else {
             nix::sys::signal::Signal::SIGTERM
         };
-        ObservedProcessTree::new(expected.clone())
-            .signal_processes(std::slice::from_ref(expected), signal)
+        signal_process_identity(expected, signal)
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
@@ -44,6 +46,60 @@ pub fn terminate_process_instance(
             "exact process termination requires Windows, macOS, or Linux",
         ))
     }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) fn signal_process_identity(
+    expected: &ProcessIdentity,
+    signal: nix::sys::signal::Signal,
+) -> Result<(), PlatformError> {
+    #[cfg(target_os = "linux")]
+    let descriptor = {
+        use rustix::process::{Pid, PidfdFlags, pidfd_open};
+        let process_id = Pid::from_raw(expected.id as i32)
+            .ok_or_else(|| PlatformError::Invalid(format!("PID {} is invalid", expected.id)))?;
+        match pidfd_open(process_id, PidfdFlags::empty()) {
+            Ok(descriptor) => descriptor,
+            Err(error) if error == rustix::io::Errno::SRCH => return Ok(()),
+            Err(error) => return Err(PlatformError::Io(error.into())),
+        }
+    };
+    let current = match process_identity(expected.id) {
+        Ok(current) => current,
+        Err(PlatformError::NotFound(_)) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if current.started_at_micros != expected.started_at_micros {
+        return Err(PlatformError::Invalid(format!(
+            "PID {} was reused before signal delivery",
+            expected.id
+        )));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use rustix::process::{Signal, pidfd_send_signal};
+        let signal = Signal::from_named_raw(signal as i32)
+            .ok_or_else(|| PlatformError::Invalid(format!("unsupported Unix signal {signal}")))?;
+        if let Err(error) = pidfd_send_signal(descriptor, signal)
+            && error != rustix::io::Errno::SRCH
+        {
+            return Err(PlatformError::Io(error.into()));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
+        let process_id = i32::try_from(expected.id)
+            .map_err(|_| PlatformError::Invalid(format!("PID {} exceeds i32::MAX", expected.id)))?;
+        if let Err(error) = kill(Pid::from_raw(process_id), signal)
+            && error != Errno::ESRCH
+        {
+            return Err(PlatformError::Io(std::io::Error::from_raw_os_error(
+                error as i32,
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub fn terminate_process_group_instance(
@@ -94,7 +150,8 @@ pub fn terminate_process_group_instance(
 
 #[cfg(all(test, target_os = "windows"))]
 mod windows_tests {
-    use super::{process_snapshot, terminate_process_instance};
+    use super::terminate_process_instance;
+    use crate::process_snapshot;
 
     #[test]
     fn refuses_to_terminate_a_reused_windows_process_id() {

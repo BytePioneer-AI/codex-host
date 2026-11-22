@@ -11,7 +11,6 @@ import { contentText } from "./projection.js";
 import { codeBuddyChildId, codeBuddyDelegation } from "./subagent-tool.js";
 import { CodeBuddyChildObserver } from "./subagent-history.js";
 import type { locateCodeBuddyChild, readCodeBuddyChild } from "./subagent-history.js";
-import { nativeModel } from "./configuration.js";
 
 interface Delegation {
   turnId: HostTurnId;
@@ -48,6 +47,11 @@ export class CodeBuddySubagents {
 
   begin(turnId: HostTurnId) {
     this.#turnId = turnId;
+  }
+  hasItem(itemId: string): boolean {
+    return [...this.#calls.values()].some(
+      (call) => call.turnId === this.#turnId && call.item.itemId === itemId,
+    );
   }
   state(id: string) {
     return [...this.#calls.values()]
@@ -220,8 +224,13 @@ export class CodeBuddySubagents {
               )
             : this.#observer.read(id, "running"));
           if (this.#closed || call.observationDone) continue;
-          const observedModel = snapshot.turns.at(-1)?.model;
-          if (observedModel) this.#update(call, { model: nativeModel(observedModel) });
+          const observedModel = snapshot.turns.at(-1)?.model ?? snapshot.state?.effectiveModel;
+          const reasoningEffort = snapshot.state?.effectiveThinkingOptionId;
+          if (observedModel || reasoningEffort)
+            this.#update(call, {
+              ...(observedModel ? { model: observedModel.id } : {}),
+              ...(reasoningEffort ? { reasoningEffort } : {}),
+            });
           const signature = JSON.stringify(snapshot);
           if (signature !== call.signature) {
             call.signature = signature;

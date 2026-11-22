@@ -178,6 +178,8 @@ export async function openModernJournal(
           request: {
             address,
             maxMessages: limits.pageMaxMessages,
+            // DSH 0.2.2 follows passively unless asked; earlier releases ignore the member.
+            activate: true,
             assistantStream: true,
           },
         },
@@ -330,7 +332,7 @@ export async function openModernJournal(
       );
       if (pumpFailure) throw pumpFailure;
       if (!result.ok) throw remoteResultError("session/page", result.error);
-      const page = parsePage(result.value, oldestSeq - 1, limits, profile);
+      const page = parsePage(result.value, opening.cursor, oldestSeq - 1, limits, profile);
       const firstSeq = page.events[0]?.seq;
       if (firstSeq === undefined || firstSeq >= oldestSeq) {
         throw protocolError("journal page made no backwards progress");
@@ -438,13 +440,18 @@ function parseOpeningSnapshot(
 
 function parsePage(
   value: unknown,
+  throughSeq: number,
   expectedLastSeq: number,
   limits: ResolvedOptions,
   profile: DeepSeekModernProfile,
 ): ParsedWindow {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["records", "hasMore"]) ||
+    // DSH 0.2.2 echoes the inclusive cut the page was read at.
+    !(
+      hasExactKeys(value, ["records", "hasMore"]) ||
+      (hasExactKeys(value, ["cursor", "records", "hasMore"]) && value.cursor === throughSeq)
+    ) ||
     typeof value.hasMore !== "boolean"
   ) {
     throw protocolError("session/page returned an invalid page");

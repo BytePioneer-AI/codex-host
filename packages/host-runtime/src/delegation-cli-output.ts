@@ -1,17 +1,26 @@
+import type { HarnessModelRef } from "@codexhost/shared-contracts";
+
 import type { DelegationCliCommand } from "./delegation-cli-help.js";
+import { formatDelegationModel } from "./delegation-model-argument.js";
 import {
-  DelegationControlError,
   type DelegationStartResult,
   type DelegationThreadListResult,
   type DelegationThreadSnapshot,
   type HarnessInspectResult,
+  type ThreadAnswerResult,
   type ThreadCancelResult,
   type ThreadSendResult,
   type ThreadWatchListResult,
   type ThreadWatchResult,
 } from "./delegation-types.js";
+import { originClientName } from "./external-client-origin.js";
 
-export type DelegationCliFormat = "json" | "compact";
+/** A Thread as a link; a client origin is no Thread, so it is shown as is. */
+function targetLink(identifier: string): string {
+  return originClientName(identifier) !== undefined ? identifier : threadLink(identifier);
+}
+
+export type DelegationCliFormat = "json" | "compact" | "text";
 
 function threadLink(threadId: string): string {
   return `codex://threads/${threadId}`;
@@ -19,15 +28,37 @@ function threadLink(threadId: string): string {
 
 function watchOutput(watch: DelegationStartResult["watch"]): { watch?: unknown } {
   if (!watch) return {};
+  if (watch.state === "notRegistered") return { watch };
   return {
-    watch:
-      watch.state === "notRegistered"
-        ? watch
-        : {
-            state: watch.state,
-            notify: threadLink(watch.notifyThreadId),
-            timeoutMs: watch.timeoutMs,
-          },
+    watch: {
+      state: watch.state,
+      notify: targetLink(watch.notifyThreadId),
+      timeoutMs: watch.timeoutMs,
+      ...(watch.pendingQuestions?.length ? { pendingQuestions: watch.pendingQuestions } : {}),
+    },
+  };
+}
+
+export function jsonDelegationOutput(command: DelegationCliCommand, body: unknown): unknown {
+  if (command !== "harness inspect") return body;
+  const result = body as HarnessInspectResult;
+  if (result.inspection.status !== "ready") return body;
+  const { catalog } = result.inspection;
+  const displayRef = (ref: HarnessModelRef) => ({ id: formatDelegationModel(ref) });
+  return {
+    ...result,
+    inspection: {
+      ...result.inspection,
+      catalog: {
+        ...catalog,
+        models: catalog.models.map((model) => ({
+          ...model,
+          ref: displayRef(model.ref),
+          ...(model.fastModel ? { fastModel: displayRef(model.fastModel) } : {}),
+        })),
+        ...(catalog.defaultModel ? { defaultModel: displayRef(catalog.defaultModel) } : {}),
+      },
+    },
   };
 }
 
@@ -37,12 +68,23 @@ function inspectOutput({ harnessId, inspection }: HarnessInspectResult): unknown
   return {
     harnessId,
     status: inspection.status,
-    models: catalog.models.map(({ ref, label, supportedThinkingOptionIds }) => ({
-      id: ref.id,
-      label,
-      ...(supportedThinkingOptionIds ? { thinking: supportedThinkingOptionIds } : {}),
-    })),
-    ...(catalog.defaultModel ? { defaultModel: catalog.defaultModel.id } : {}),
+    models: catalog.models.flatMap(({ ref, label, fastModel, supportedThinkingOptionIds }) => [
+      {
+        id: formatDelegationModel(ref),
+        label,
+        ...(supportedThinkingOptionIds ? { thinking: supportedThinkingOptionIds } : {}),
+      },
+      ...(fastModel
+        ? [
+            {
+              id: formatDelegationModel(fastModel),
+              label: `${label} (Fast)`,
+              ...(supportedThinkingOptionIds ? { thinking: supportedThinkingOptionIds } : {}),
+            },
+          ]
+        : []),
+    ]),
+    ...(catalog.defaultModel ? { defaultModel: formatDelegationModel(catalog.defaultModel) } : {}),
     thinkingOptions: catalog.thinkingOptions,
     ...(catalog.defaultThinkingOptionId
       ? { defaultThinkingOptionId: catalog.defaultThinkingOptionId }
@@ -62,23 +104,25 @@ function snapshotOutput(
     harnessId: snapshot.harnessId,
     status: snapshot.status,
     ...(snapshot.timedOut !== undefined ? { timedOut: snapshot.timedOut } : {}),
+    ...(snapshot.pendingQuestions !== undefined
+      ? { pendingQuestions: snapshot.pendingQuestions }
+      : {}),
   };
   if (view === "messages") {
-    if (typeof snapshot.hasMore !== "boolean") {
-      throw new DelegationControlError(
-        "INTERNAL_ERROR",
-        "Compact message pagination requires an updated Host Runtime; use --format json with this Runtime.",
-      );
-    }
     return {
       ...common,
-      messages: (snapshot.messages ?? []).map(({ role, phase, text }) => ({
-        role,
-        ...(phase ? { phase } : {}),
-        text,
+      totalTurns: snapshot.totalTurns,
+      from: snapshot.from,
+      to: snapshot.to,
+      turns: (snapshot.turns ?? []).map(({ turnNumber, status, messages }) => ({
+        turnNumber,
+        status,
+        messages: messages.map(({ role, phase, text }) => ({
+          role,
+          ...(phase ? { phase } : {}),
+          text,
+        })),
       })),
-      hasMore: snapshot.hasMore,
-      nextCursor: snapshot.nextCursor,
       ...(snapshot.result.message ? { error: snapshot.result.message } : {}),
     };
   }
@@ -90,14 +134,16 @@ function snapshotOutput(
   };
 }
 
-// JSON bodies cross the CLI HTTP boundary as unknown; these projections use the
-// owning Runtime contracts and leave the compatible full JSON response untouched.
 export function compactDelegationOutput(
   command: DelegationCliCommand,
   body: unknown,
   view: "result" | "messages" = "result",
 ): unknown {
   switch (command) {
+    case "host info":
+    case "project list":
+    case "thread file":
+    case "thread export":
     case "harness list":
       return body;
     case "harness inspect":
@@ -105,13 +151,21 @@ export function compactDelegationOutput(
     case "delegate start": {
       const result = body as DelegationStartResult;
       const effective = result.configuration?.effective;
+      const model = effective?.effectiveModel
+        ? formatDelegationModel(effective.effectiveModel)
+        : effective?.resolvedModelLabel;
       return {
         thread: result.deepLink,
         harnessId: result.harnessId,
         status: result.status,
         ...(result.cwd ? { cwd: result.cwd } : {}),
-        ...(result.parentThreadId ? { parent: threadLink(result.parentThreadId) } : {}),
-        ...(effective?.resolvedModelLabel ? { model: effective.resolvedModelLabel } : {}),
+        ...(result.worktree ? { worktree: result.worktree } : {}),
+        ...(result.parentThreadId
+          ? {
+              parent: targetLink(result.parentThreadId),
+            }
+          : {}),
+        ...(model ? { model } : {}),
         ...(effective?.effectiveThinkingOptionId
           ? { thinking: effective.effectiveThinkingOptionId }
           : {}),
@@ -124,6 +178,7 @@ export function compactDelegationOutput(
         thread: threadLink(result.threadId),
         harnessId: result.harnessId,
         status: result.status,
+        ...watchOutput(result.watch),
       };
     }
     case "thread cancel": {
@@ -137,26 +192,55 @@ export function compactDelegationOutput(
     case "thread read":
     case "thread wait":
       return snapshotOutput(body as DelegationThreadSnapshot, view);
+    case "thread answer": {
+      const result = body as ThreadAnswerResult;
+      return {
+        thread: threadLink(result.threadId),
+        interaction: result.interactionId,
+        turn: result.turnId,
+        harnessId: result.harnessId,
+        status: result.status,
+      };
+    }
     case "thread watch": {
       const result = body as ThreadWatchResult;
       return {
         thread: threadLink(result.threadId),
-        notify: threadLink(result.notifyThreadId),
+        notify: targetLink(result.notifyThreadId),
         state: result.state,
         status: result.status,
         timeoutMs: result.timeoutMs,
+        ...(result.pendingQuestions?.length ? { pendingQuestions: result.pendingQuestions } : {}),
       };
     }
     case "thread watches": {
       const result = body as ThreadWatchListResult;
       return {
-        watches: result.watches.map(({ threadId, notifyThreadId, state, outcome, reason }) => ({
-          thread: threadLink(threadId),
-          notify: threadLink(notifyThreadId),
-          state,
-          ...(outcome ? { outcome } : {}),
-          ...(reason ? { reason } : {}),
-        })),
+        watches: result.watches.map(
+          ({
+            threadId,
+            notifyThreadId,
+            state,
+            outcome,
+            turnId,
+            reason,
+            interactionId,
+            taskName,
+            threadStatus,
+            watchedForMs,
+          }) => ({
+            thread: threadLink(threadId),
+            notify: targetLink(notifyThreadId),
+            state,
+            ...(outcome ? { outcome } : {}),
+            ...(outcome === "needsInput" && turnId ? { turn: turnId } : {}),
+            ...(outcome === "needsInput" && interactionId ? { interaction: interactionId } : {}),
+            ...(reason ? { reason } : {}),
+            ...(taskName ? { taskName } : {}),
+            ...(threadStatus ? { threadStatus } : {}),
+            ...(watchedForMs !== undefined ? { watchedForMs } : {}),
+          }),
+        ),
       };
     }
     case "thread list": {

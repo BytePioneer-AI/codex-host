@@ -30,16 +30,28 @@ function taskStatus(value: unknown): ClaudeTask["status"] | "deleted" | undefine
 }
 
 export function isClaudeTaskTool(toolName: string): boolean {
-  return toolName === "TaskCreate" || toolName === "TaskUpdate" || toolName === "TaskList";
+  return (
+    toolName === "TaskCreate" ||
+    toolName === "TaskUpdate" ||
+    toolName === "TaskList" ||
+    toolName === "TaskGet"
+  );
 }
 
 export class ClaudeTaskTracker {
   readonly #tasks = new Map<string, ClaudeTask>();
 
+  /** Adopts the task state replayed from native history, e.g. for a resumed Session. */
+  replaceWith(source: ClaudeTaskTracker): void {
+    this.#tasks.clear();
+    for (const [id, task] of source.#tasks) this.#tasks.set(id, task);
+  }
+
   apply(toolName: string, args: JsonValue, result: JsonValue | undefined): JsonValue | null {
     if (toolName === "TaskCreate") this.#create(args, result);
     else if (toolName === "TaskUpdate") this.#update(args);
     else if (toolName === "TaskList") this.#replace(result);
+    else if (toolName === "TaskGet") this.#refresh(args, result);
     else return null;
 
     return {
@@ -83,6 +95,22 @@ export class ClaudeTaskTracker {
       ...(activeForm ? { activeForm } : {}),
       status: status ?? existing?.status ?? "pending",
     });
+  }
+
+  /** A read of one task is authoritative for that task, as TaskList is for all of them. */
+  #refresh(args: JsonValue, result: JsonValue | undefined): void {
+    if (!isRecord(result) || !("task" in result)) return;
+    if (result.task === null) {
+      const id = stringField(args, ["taskId", "id", "task_id"]);
+      if (id) this.#tasks.delete(id);
+      return;
+    }
+    const id = stringField(result.task, ["id"]);
+    const subject = stringField(result.task, ["subject"]);
+    const status = isRecord(result.task) ? taskStatus(result.task.status) : undefined;
+    if (!id || !subject || !status || status === "deleted") return;
+    const activeForm = this.#tasks.get(id)?.activeForm;
+    this.#tasks.set(id, { id, subject, ...(activeForm ? { activeForm } : {}), status });
   }
 
   #replace(result: JsonValue | undefined): void {

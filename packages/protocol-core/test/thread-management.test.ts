@@ -20,6 +20,7 @@ describe("Codex Thread list and management protocol boundary", () => {
       method: "thread/list",
       params: {
         archived: true,
+        attachedToThreadId: "source",
         cwd: ["/one", "/two"],
         isPinned: false,
         limit: 250,
@@ -33,6 +34,7 @@ describe("Codex Thread list and management protocol boundary", () => {
     });
     expect(decoded).toMatchObject({
       archived: true,
+      attachedToThreadId: "source",
       cwd: ["/one", "/two"],
       isPinned: false,
       limit: 100,
@@ -65,6 +67,20 @@ describe("Codex Thread list and management protocol boundary", () => {
         params: { parentThreadId: "parent", ancestorThreadId: "ancestor" },
       }),
     ).toThrow("cannot combine");
+    expect(() =>
+      decodeThreadListRequest({
+        id: 4,
+        method: "thread/list",
+        params: { attachedToThreadId: "source", parentThreadId: "parent" },
+      }),
+    ).toThrow("cannot combine attachedToThreadId");
+    expect(() =>
+      decodeThreadListRequest({
+        id: 5,
+        method: "thread/list",
+        params: { includeAttachedThreads: true },
+      }),
+    ).toThrow("requires a non-empty searchTerm");
   });
 
   it("omits External aggregation for future filters and legacy official cursors", () => {
@@ -243,12 +259,18 @@ describe("Codex Thread list and management protocol boundary", () => {
     const any = decode({});
     const unassigned = decode({ projectId: null });
     const project = decode({ projectId: "project-a" });
-    expect(any).toMatchObject({ projectId: undefined, supportsExternal: true });
+    const attached = decode({ attachedToThreadId: "source" });
+    expect(any).toMatchObject({
+      projectId: undefined,
+      attachedToThreadId: null,
+      supportsExternal: true,
+    });
     expect(unassigned).toMatchObject({ projectId: null, supportsExternal: true });
     expect(project).toMatchObject({ projectId: "project-a", supportsExternal: true });
-    expect(new Set([any, unassigned, project].map((value) => value?.queryFingerprint)).size).toBe(
-      3,
-    );
+    expect(attached).toMatchObject({ attachedToThreadId: "source", supportsExternal: true });
+    expect(
+      new Set([any, unassigned, project, attached].map((value) => value?.queryFingerprint)).size,
+    ).toBe(4);
   });
 
   it("observes only official project deletion notifications", () => {

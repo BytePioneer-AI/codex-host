@@ -1,6 +1,5 @@
 import { createReadStream } from "node:fs";
 import { open, realpath } from "node:fs/promises";
-import readline from "node:readline";
 
 import type { JsonObject } from "@codexhost/shared-contracts";
 
@@ -34,6 +33,33 @@ function historyEntry(value: unknown): JsonObject | null {
   return value as JsonObject;
 }
 
+async function* sessionLines(sessionFile: string, maxBytes?: number): AsyncGenerator<string> {
+  const input = createReadStream(sessionFile, {
+    encoding: "utf8",
+    ...(maxBytes === undefined ? {} : { end: maxBytes - 1 }),
+  });
+  let pending = "";
+  try {
+    for await (const chunk of input) {
+      const contents = chunk as string;
+      let start = 0;
+      let newline: number;
+      // JSONL is LF-delimited. Node 26 readline also splits on U+2028/U+2029,
+      // which are valid unescaped characters inside JSON strings.
+      while ((newline = contents.indexOf("\n", start)) !== -1) {
+        const line = pending + contents.slice(start, newline);
+        pending = "";
+        yield line.endsWith("\r") ? line.slice(0, -1) : line;
+        start = newline + 1;
+      }
+      pending += contents.slice(start);
+    }
+    if (pending.length > 0) yield pending.endsWith("\r") ? pending.slice(0, -1) : pending;
+  } finally {
+    input.destroy();
+  }
+}
+
 export async function readOmpSessionHistory(
   sessionFile: string,
   maxBytes?: number,
@@ -41,35 +67,24 @@ export async function readOmpSessionHistory(
   const entries: JsonObject[] = [];
   let leafId: string | null = null;
   let incomplete = false;
-  const lines = readline.createInterface({
-    input: createReadStream(sessionFile, {
-      encoding: "utf8",
-      ...(maxBytes === undefined ? {} : { end: maxBytes - 1 }),
-    }),
-    crlfDelay: Number.POSITIVE_INFINITY,
-  });
-  try {
-    for await (const line of lines) {
-      if (line.length === 0) continue;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        incomplete = true;
-        continue;
-      }
-      const entry = historyEntry(parsed);
-      if (!entry) {
-        if (!isRecord(parsed) || (parsed.type !== "title" && parsed.type !== "session")) {
-          incomplete = true;
-        }
-        continue;
-      }
-      entries.push(entry);
-      leafId = entry.id as string;
+  for await (const line of sessionLines(sessionFile, maxBytes)) {
+    if (line.length === 0) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      incomplete = true;
+      continue;
     }
-  } finally {
-    lines.close();
+    const entry = historyEntry(parsed);
+    if (!entry) {
+      if (!isRecord(parsed) || (parsed.type !== "title" && parsed.type !== "session")) {
+        incomplete = true;
+      }
+      continue;
+    }
+    entries.push(entry);
+    leafId = entry.id as string;
   }
   return { entries, leafId, ...(incomplete ? { incomplete: true } : {}) };
 }

@@ -1,0 +1,119 @@
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import {
+  identifyStopTarget,
+  isRemoteAppServerListener,
+  launcherProcess,
+  listUserProcesses,
+  stopProcess,
+  waitForExit,
+} from "./stop-processes.mjs";
+
+export const usage = `usage: npm stop
+
+Stop this user's local codexhost services across worktrees:
+  Web previews/watchers and background Web, managed Codex Desktop, Hosts and Console.
+Running tasks and Web terminals are interrupted. No data or build files are removed.
+The invoking worktree does not need to be built. Run from a separate terminal,
+not a task hosted by the Host you are stopping. Do not start another interface concurrently.
+
+options:
+  --help    show this help without stopping anything`;
+
+/** Stop reconnecting clients first; native supervisors retain ownership of task cleanup. */
+export async function stopDevelopment({
+  arguments_ = process.argv.slice(2),
+  list = listUserProcesses,
+  identify = identifyStopTarget,
+  stop = stopProcess,
+  wait = waitForExit,
+  log = console.log,
+} = {}) {
+  if (arguments_.length === 1 && ["--help", "-h"].includes(arguments_[0])) {
+    log(usage);
+    return;
+  }
+  if (arguments_.length) throw new Error("npm stop takes no arguments (use --help for usage)");
+  const processes = await list();
+  const targets = (await Promise.all(processes.map((candidate) => identify(candidate)))).filter(
+    Boolean,
+  );
+  const supervisors = new Map();
+  for (const target of targets) {
+    const parent = processes.find((candidate) => candidate.pid === target.parentPid);
+    const launcher = launcherProcess(parent);
+    // Snapshot payloads need not contain repository metadata or a surviving ready file.
+    // Their shared Host must still belong to the native Host supervisor before we stop it.
+    if (target.kind === "shared-host" && !launcher?.rest.startsWith("host serve ")) {
+      throw new Error(
+        `Cannot verify the supervisor of Host PID ${target.pid}; nothing was stopped`,
+      );
+    }
+    if (["desktop", "shared-host"].includes(target.kind) && launcher) {
+      supervisors.set(target.pid, parent);
+    }
+  }
+  if (targets.length === 0) {
+    log("codexhost stop: no managed local services are running");
+    return;
+  }
+  log(
+    "codexhost stop: stopping local services across worktrees; running tasks will be interrupted",
+  );
+  // An SSH client's listener is not stopped here, but it relaunches the shared Host on demand.
+  const remoteListeners = processes.filter(isRemoteAppServerListener);
+  for (const listener of remoteListeners) {
+    log(
+      `codexhost stop: an SSH client is connected through remote listener PID ${listener.pid}; ` +
+        "it restarts the shared Host until that client disconnects",
+    );
+  }
+  const failures = [];
+  // Stop Web supervisors before their children so a child exit cannot restart Web.
+  for (const kind of [
+    "watch",
+    "web-supervisor",
+    "web",
+    "desktop",
+    "shared-host",
+    "host",
+    "console",
+  ]) {
+    for (const target of targets.filter((candidate) => candidate.kind === kind)) {
+      log(`codexhost stop: stopping ${kind} (PID ${target.pid})`);
+      // One stuck service must not leave every later service running.
+      try {
+        await stop(target, { list });
+        const supervisor = supervisors.get(target.pid);
+        // Controller exit closes its managed Desktop; Host exit reaps its Harness tree.
+        if (supervisor) await wait(supervisor, { list });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        log(`codexhost stop: ${kind} (PID ${target.pid}) was not stopped: ${reason}`);
+        failures.push(`${kind} PID ${target.pid}`);
+      }
+    }
+  }
+  if (failures.length) {
+    throw new Error(`Some services were not stopped: ${failures.join(", ")}`);
+  }
+  const remaining = (
+    await Promise.all((await list()).map((candidate) => identify(candidate)))
+  ).filter(Boolean);
+  if (remaining.length) {
+    throw new Error(
+      remoteListeners.length
+        ? "Managed services are still running; disconnect the SSH client, then stop again"
+        : "Managed services are still running or were started during stop; do not start interfaces concurrently",
+    );
+  }
+  log("codexhost stop: local services stopped; session data and configuration were preserved");
+}
+
+const invoked = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : null;
+if (invoked === import.meta.url) {
+  stopDevelopment().catch((error) => {
+    console.error(`codexhost stop: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  });
+}

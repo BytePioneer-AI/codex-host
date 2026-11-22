@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { HarnessOutput, HostEvent, HostUsage } from "@codexhost/harness-adapter";
 import {
+  harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   nativeCheckpointRefSchema,
@@ -14,6 +15,7 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 
+import { OmpAccountCredits } from "../src/omp-account-credits.js";
 import {
   OmpAdapter,
   type OmpAdapterDependencies,
@@ -212,6 +214,8 @@ class FakeOmpTransport implements OmpTurnTransport {
       });
     });
   }
+
+  readonly steer = vi.fn(async () => undefined);
 
   async abort(): Promise<void> {
     this.#resolveTurn?.({ text: "", cancelled: true, agentInvoked: true });
@@ -676,6 +680,37 @@ describe("OMP Adapter Session environment", () => {
 });
 
 describe("OMP Adapter inspection", () => {
+  it("does not publish Thinking support from an older cwd after a refresh", async () => {
+    const pending = Promise.withResolvers<null>();
+    const oldTransport = new FakeOmpTransport();
+    vi.spyOn(oldTransport, "getAvailableThinkingLevels").mockReturnValueOnce(pending.promise);
+    const createTransport = vi.fn(() => new FakeOmpTransport()).mockReturnValueOnce(oldTransport);
+    const adapter = new OmpAdapter({}, { createTransport });
+    const stale = adapter.inspect({ cwd: "/synthetic" });
+
+    const refreshed = await adapter.inspect({ cwd: "/other", refresh: true });
+    expect(refreshed).toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+    });
+    pending.resolve(null);
+    await expect(stale).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: false } },
+    });
+    await expect(adapter.inspect({ cwd: "/other" })).resolves.toBe(refreshed);
+    await expect(adapter.open({ kind: "create", cwd: "/other" })).resolves.toMatchObject({
+      ok: true,
+      value: { capabilities: { configuration: { selectThinkingOption: true } } },
+    });
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+    });
+    expect(createTransport).toHaveBeenCalledTimes(3);
+    await adapter.close();
+  });
+
   it.each([
     [
       "No models available. Use /login or set an API key environment variable. Then use /model to select a model.",
@@ -720,6 +755,173 @@ describe("OMP Adapter inspection", () => {
     });
     expect(close).toHaveBeenCalledOnce();
   });
+});
+
+describe("OMP Adapter availability inspection", () => {
+  const listedModels: OmpNativeModel[] = [
+    { provider: "openai-codex", id: "gpt-5.6-luna", reasoning: true },
+  ];
+
+  it("answers from the Model list without starting a Session or caching the result", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const listModels = vi.fn().mockResolvedValue({ kind: "models", models: listedModels });
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      await expect(
+        adapter.inspect({ cwd: "/synthetic", purpose: "availability" }),
+      ).resolves.toMatchObject({
+        status: "ready",
+        catalog: { models: [expect.objectContaining({ label: "openai-codex / gpt-5.6-luna" })] },
+      });
+      expect(listModels).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/synthetic" }));
+      expect(createTransport).not.toHaveBeenCalled();
+
+      // A full inspection still starts a Session: the availability result is not its cache.
+      await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+        status: "ready",
+      });
+      expect(createTransport).toHaveBeenCalledOnce();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("reuses a cached full inspection instead of listing Models", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const listModels = vi.fn();
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      const full = await adapter.inspect({ cwd: "/synthetic" });
+      await expect(adapter.inspect({ cwd: "/synthetic", purpose: "availability" })).resolves.toBe(
+        full,
+      );
+      expect(listModels).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each([
+    [{ kind: "notInstalled", message: "omp missing" }, "notInstalled", "notInstalled", false],
+    [{ kind: "timedOut" }, "error", "unavailable", true],
+  ] as const)("reports %j without starting a Session", async (listed, status, code, retryable) => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const adapter = new OmpAdapter({}, { createTransport, listModels: async () => listed });
+    try {
+      await expect(
+        adapter.inspect({ cwd: "/synthetic", purpose: "availability" }),
+      ).resolves.toMatchObject({ status, error: { code, retryable, stage: "model-list" } });
+      expect(createTransport).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("makes an explicit availability re-check drop the cached full catalog", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    const listModels = vi.fn().mockResolvedValue({ kind: "models", models: listedModels });
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      await adapter.inspect({ cwd: "/synthetic" });
+      await adapter.inspect({ cwd: "/synthetic", purpose: "availability", refresh: true });
+      expect(listModels).toHaveBeenCalledOnce();
+      await adapter.inspect({ cwd: "/synthetic" });
+      expect(createTransport).toHaveBeenCalledTimes(2);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("stops a pending Model list on close and starts no Session afterwards", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    let aborted = false;
+    const listModels = vi.fn(
+      ({ signal }: { signal?: AbortSignal }) =>
+        new Promise<{ kind: "unanswered" }>((resolve) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            resolve({ kind: "unanswered" });
+          });
+        }),
+    );
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    const pending = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+    await vi.waitFor(() => expect(listModels).toHaveBeenCalledOnce());
+    await adapter.close();
+
+    await expect(pending).resolves.toMatchObject({
+      status: "unavailable",
+      error: { code: "invalidState" },
+    });
+    expect(aborted).toBe(true);
+    expect(createTransport).not.toHaveBeenCalled();
+  });
+
+  it("shares one Model list and joins the in-flight full inspection on fallback", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    let answer: (value: { kind: "unanswered" }) => void = () => undefined;
+    const listModels = vi.fn(
+      () =>
+        new Promise<{ kind: "unanswered" }>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      const first = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+      const second = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+      await vi.waitFor(() => expect(listModels).toHaveBeenCalledOnce());
+      const full = adapter.inspect({ cwd: "/synthetic" });
+      answer({ kind: "unanswered" });
+
+      const [firstResult, secondResult, fullResult] = await Promise.all([first, second, full]);
+      expect(firstResult).toBe(fullResult);
+      expect(secondResult).toBe(fullResult);
+      expect(listModels).toHaveBeenCalledOnce();
+      expect(createTransport).toHaveBeenCalledOnce();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("reuses a full inspection that finished while the Model list ran", async () => {
+    const createTransport = vi.fn(() => new FakeOmpTransport());
+    let answer: (value: { kind: "unanswered" }) => void = () => undefined;
+    const listModels = vi.fn(
+      () =>
+        new Promise<{ kind: "unanswered" }>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const adapter = new OmpAdapter({}, { createTransport, listModels });
+    try {
+      const availability = adapter.inspect({ cwd: "/synthetic", purpose: "availability" });
+      await vi.waitFor(() => expect(listModels).toHaveBeenCalledOnce());
+      const full = await adapter.inspect({ cwd: "/synthetic" });
+      answer({ kind: "unanswered" });
+
+      await expect(availability).resolves.toBe(full);
+      expect(createTransport).toHaveBeenCalledOnce();
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each([{ kind: "unanswered" }, { kind: "models", models: [] }] as const)(
+    "falls back to Session inspection for %j",
+    async (listed) => {
+      const createTransport = vi.fn(() => new FakeOmpTransport());
+      const adapter = new OmpAdapter({}, { createTransport, listModels: async () => listed });
+      try {
+        await expect(
+          adapter.inspect({ cwd: "/synthetic", purpose: "availability" }),
+        ).resolves.toMatchObject({ status: "ready" });
+        expect(createTransport).toHaveBeenCalledOnce();
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
 });
 
 describe("OMP Adapter Fork", () => {
@@ -945,6 +1147,208 @@ async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
 }
 
 describe("OMP Adapter usage metering", () => {
+  it("switches quota when a response starts and restores the confirmed account on failure", async () => {
+    const root = path.join(tmpdir(), `codexhost-omp-quota-${randomUUID()}`);
+    await mkdir(root);
+    const project = path.join(root, "project");
+    await mkdir(project);
+    await writeFile(path.join(project, ".env"), "TEST_QUOTA=0.4", "utf8");
+    const command = path.join(root, "omp.cjs");
+    const reports = [
+      {
+        provider: "synthetic",
+        metadata: { credentialId: 1 },
+        limits: [
+          { amount: { usedFraction: 0.25 }, window: { durationMs: 18_000_000 } },
+          { amount: { usedFraction: 0.5 }, window: { durationMs: 604_800_000 } },
+        ],
+      },
+      {
+        provider: "synthetic",
+        metadata: { credentialId: 2 },
+        limits: [{ amount: { usedFraction: 0.75 } }],
+      },
+      {
+        provider: "other",
+        metadata: { credentialId: 1 },
+        limits: [{ amount: { usedFraction: 0.9 } }],
+      },
+    ];
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const launches: OmpRpcSessionOptions[] = [];
+    const probes = path.join(root, "probes");
+    let onAssistantStart: OmpRpcSessionOptions["onAssistantStart"];
+    let onAssistantSummary: OmpRpcSessionOptions["onAssistantSummary"];
+    let onUsage: OmpRpcSessionOptions["onUsage"];
+    const adapter = new OmpAdapter(
+      { command, environment: { HOME: root, OMP_QUOTA_TEST_BASE: "base" } },
+      {
+        createTransport: (options) => {
+          launches.push(options);
+          onAssistantSummary = options.onAssistantSummary;
+          onAssistantStart = options.onAssistantStart;
+          onUsage = options.onUsage;
+          return transport;
+        },
+      },
+    );
+    try {
+      await writeFile(
+        command,
+        `require("node:fs").appendFileSync(${JSON.stringify(probes)}, process.env.OMP_QUOTA_TEST_PROFILE || "-");
+const reports = ${JSON.stringify(reports)};
+if (process.env.OMP_QUOTA_TEST_PROFILE === "b") reports[0].limits[0].amount.usedFraction = 0.6;
+const dotenv = require("node:fs").existsSync(".env") && require("node:fs").readFileSync(".env", "utf8");
+if (dotenv) reports[0].limits[0].amount.usedFraction = Number(dotenv.split("=")[1]);
+console.log(JSON.stringify({ reports }));`,
+        "utf8",
+      );
+      const opened = await adapter.open({ kind: "create", cwd: root });
+      if (!opened.ok || !opened.value.readAccountCredits) throw new Error("No session credits");
+      const session = opened.value;
+      expect(await session.readAccountCredits?.()).toBeNull();
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute({
+        type: "turn.start",
+        turnId: "turn-quota" as HostTurnId,
+        input: [{ type: "text", text: "hi" }],
+      });
+      const assistant = { role: "assistant", provider: "synthetic", stopReason: "stop" };
+      if (!onAssistantStart || !onAssistantSummary || !onUsage)
+        throw new Error("Missing account observers");
+      onAssistantStart({ ...assistant, credentialId: 1 });
+      expect(await session.readAccountCredits?.()).toMatchObject({
+        usedPercent: 25,
+        periodType: "five_hour",
+        productUsage: [{ usagePercent: 50, periodType: "seven_day" }],
+      });
+      onUsage({ message: { ...assistant, credentialId: 1 }, completedAtMs: 20, startedAtMs: null });
+      onAssistantStart({ ...assistant, credentialId: 2 });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
+      onAssistantStart({ ...assistant, provider: "other", credentialId: 1 });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 90 });
+      const failure = { ...assistant, provider: "other", credentialId: 1, stopReason: "error" };
+      onAssistantSummary([{ ...assistant, credentialId: 2 }, failure]);
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
+      onAssistantSummary([{ ...assistant, credentialId: 2 }, assistant, failure]);
+      expect(await session.readAccountCredits?.()).toBeNull();
+      onUsage({ message: { ...assistant, credentialId: 2 }, completedAtMs: 40, startedAtMs: null });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
+      onUsage({
+        message: { ...assistant, credentialId: 99 },
+        completedAtMs: 50,
+        startedAtMs: null,
+      });
+      expect(await session.readAccountCredits?.()).toBeNull();
+      onUsage({ message: { ...assistant, credentialId: 1 }, completedAtMs: 60, startedAtMs: null });
+      onAssistantStart({ ...assistant, credentialId: 2 });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
+      transport.history = {
+        entries: historyTurn({
+          userId: "cancelled-user",
+          assistantId: "cancelled-assistant",
+          parentId: null,
+          text: "Partial response",
+        }),
+        leafId: "cancelled-assistant",
+      };
+      transport.completeWithoutHistory({ text: "", cancelled: true, agentInvoked: true });
+      expect((await nextTurnEvents(iterator)).at(-1)).toMatchObject({
+        type: "turn.completed",
+        outcome: { status: "cancelled" },
+      });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 25 });
+      await session.close();
+
+      transport.state = { ...transport.state, sessionFile: path.join(root, "session.jsonl") };
+      const nativeRef = nativeSessionRefSchema.parse({
+        harnessId: "omp",
+        nativeSessionId: transport.state.sessionId,
+        formatVersion: 1,
+        locator: { sessionFile: transport.state.sessionFile },
+      });
+      transport.history = {
+        entries: [
+          {
+            id: "active",
+            parentId: null,
+            type: "message",
+            message: { ...assistant, credentialId: 1 },
+          },
+          {
+            id: "other",
+            parentId: null,
+            type: "message",
+            message: { ...assistant, credentialId: 2 },
+          },
+        ],
+        leafId: "active",
+      };
+      const resume = (profile: string, threadId: string, cwd = root) =>
+        adapter.open({
+          kind: "resume",
+          cwd,
+          nativeRef,
+          environment: { OMP_QUOTA_TEST_PROFILE: profile, CODEXHOST_THREAD_ID: threadId },
+        });
+      const resumed = await Promise.all([
+        resume("a", "thread-1"),
+        resume("a", "thread-2"),
+        resume("b", "thread-3"),
+        resume("a", "thread-4", project),
+      ]);
+      expect(resumed.every((result) => result.ok)).toBe(true);
+      expect(
+        launches.slice(-4).map((launch) => launch.environment?.OMP_QUOTA_TEST_PROFILE),
+      ).toEqual(["a", "a", "b", "a"]);
+      expect(launches.at(-1)?.environment?.OMP_QUOTA_TEST_BASE).toBe("base");
+      const credits = await Promise.all(
+        resumed.map((result) => result.ok && result.value.readAccountCredits?.()),
+      );
+      expect(credits.map((value) => (value ? value.usedPercent : undefined))).toEqual([
+        25, 25, 60, 40,
+      ]);
+      expect([...(await readFile(probes, "utf8"))].sort().join("")).toBe("-aab");
+
+      expect((await adapter.inspectAccounts())[0]?.credits?.usedPercent).toBe(25);
+      await writeFile(path.join(root, ".env"), "TEST_QUOTA=0.55", "utf8");
+      expect((await adapter.inspectAccounts())[0]?.credits?.usedPercent).toBeCloseTo(55);
+    } finally {
+      await adapter.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes account credits during an older probe without letting it overwrite the cache", async () => {
+    const stale = Promise.withResolvers<string>();
+    const report = (usedFraction: number) =>
+      JSON.stringify({
+        reports: [
+          {
+            provider: "synthetic",
+            metadata: { credentialId: 1 },
+            limits: [{ amount: { usedFraction } }],
+          },
+        ],
+      });
+    let response = stale.promise;
+    const credits = new OmpAccountCredits(() => response);
+    const key = JSON.stringify(["synthetic", 1]);
+    const original = credits.forAccount(key);
+
+    response = Promise.resolve(report(0.75));
+    try {
+      expect(await credits.inspectAccounts()).toMatchObject([{ credits: { usedPercent: 75 } }]);
+    } finally {
+      stale.resolve(report(0.25));
+    }
+    expect(await original).toMatchObject({ usedPercent: 25 });
+
+    response = Promise.resolve(report(1));
+    expect(await credits.forAccount(key)).toMatchObject({ usedPercent: 75 });
+  });
+
   it("declares empty history on create and meters live assistant messages", async () => {
     const transport = new FakeOmpTransport();
     let onUsage: OmpRpcSessionOptions["onUsage"];
@@ -1410,7 +1814,7 @@ describe("OMP Adapter Subagents", () => {
     await adapter.close();
   });
 
-  it("materializes a background Subagent that starts after the parent Turn is idle", async () => {
+  it("reports idle Subagent notifications without inventing a Root Turn", async () => {
     const transport = new FakeOmpTransport();
     const dependencies: OmpAdapterDependencies = {
       createTransport: (options: OmpRpcSessionOptions) => {
@@ -1430,6 +1834,16 @@ describe("OMP Adapter Subagents", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
+    const beforeBackground = await opened.value.readSnapshot();
+    expect(beforeBackground.ok).toBe(true);
+    const parentCompletion = observed.find(
+      (output) => output.kind === "event" && output.event.type === "turn.completed",
+    );
+    expect(parentCompletion).toMatchObject({
+      event: { nativeTurnRef: { nativeTurnKey: "user-1" } },
+    });
+    expect(parentCompletion).not.toHaveProperty("event.ephemeral");
+
     transport.onSubagentEvent?.({
       type: "subagent.started",
       callId: "background-tool",
@@ -1446,22 +1860,12 @@ describe("OMP Adapter Subagents", () => {
       )
       .map((output) => output.event);
     const autonomous = startedEvents.find((event) => event.type === "turn.autonomous.started");
-    expect(autonomous).toMatchObject({ type: "turn.autonomous.started" });
-    expect(startedEvents).toContainEqual(
-      expect.objectContaining({
-        type: "item.started",
-        item: expect.objectContaining({
-          type: "subagentDelegation",
-          subagents: [
-            expect.objectContaining({
-              nativeSubagentId: "background-subagent",
-              status: "running",
-              background: true,
-            }),
-          ],
-        }),
-      }),
-    );
+    expect(autonomous).toBeUndefined();
+    expect(startedEvents).toContainEqual({
+      type: "subagent.state.changed",
+      nativeSubagentId: "background-subagent",
+      status: "running",
+    });
 
     transport.onSubagentEvent?.({
       type: "subagent.completed",
@@ -1476,23 +1880,19 @@ describe("OMP Adapter Subagents", () => {
         (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
       )
       .map((output) => output.event);
-    expect(completedEvents).toContainEqual(
-      expect.objectContaining({
-        type: "item.completed",
-        snapshot: expect.objectContaining({
-          item: expect.objectContaining({
-            type: "subagentDelegation",
-            subagents: [expect.objectContaining({ status: "completed" })],
-          }),
-        }),
-      }),
-    );
-    expect(completedEvents.some((event) => event.type === "turn.completed")).toBe(true);
+    expect(completedEvents).toContainEqual({
+      type: "subagent.state.changed",
+      nativeSubagentId: "background-subagent",
+      status: "completed",
+      resultSummary: "finished in background",
+    });
+    expect(completedEvents.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(await opened.value.readSnapshot()).toEqual(beforeBackground);
     await opened.value.close();
     await adapter.close();
   });
 
-  it("keeps an autonomous Turn open until all background Subagents settle", async () => {
+  it("keeps idle notifications from multiple Subagents out of Root history", async () => {
     const transport = new FakeOmpTransport();
     const dependencies: OmpAdapterDependencies = {
       createTransport: (options: OmpRpcSessionOptions) => {
@@ -1544,11 +1944,14 @@ describe("OMP Adapter Subagents", () => {
           event.type === "turn.autonomous.started",
       )
       .map((event) => event.turnId);
-    expect(
-      afterFirst.filter(
-        (event) => event.type === "turn.completed" && autonomousTurnIds.includes(event.turnId),
-      ),
-    ).toHaveLength(0);
+    expect(autonomousTurnIds).toEqual([]);
+    expect(afterFirst).toContainEqual(
+      expect.objectContaining({
+        type: "subagent.state.changed",
+        nativeSubagentId: "background-subagent-1",
+        status: "completed",
+      }),
+    );
     transport.onSubagentEvent?.({
       type: "subagent.completed",
       callId: "background-tool-2",
@@ -1557,18 +1960,70 @@ describe("OMP Adapter Subagents", () => {
       resultSummary: "failed",
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const completed = observed
+    const events = observed
       .filter(
         (output): output is Extract<HarnessOutput, { kind: "event" }> => output.kind === "event",
       )
-      .map((output) => output.event)
-      .filter(
-        (event) => event.type === "turn.completed" && autonomousTurnIds.includes(event.turnId),
-      );
-    expect(completed).toHaveLength(1);
-    expect(completed[0]).toMatchObject({ outcome: { status: "failed" } });
+      .map((output) => output.event);
+    expect(events.filter((event) => event.type === "turn.autonomous.started")).toHaveLength(0);
+    expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(observed).toContainEqual({
+      kind: "event",
+      event: {
+        type: "subagent.state.changed",
+        nativeSubagentId: "background-subagent-2",
+        status: "failed",
+        resultSummary: "failed",
+      },
+    });
     await opened.value.close();
     await adapter.close();
+  });
+
+  it.each([false, true])("selects the exact native Model (collision: %s)", async (collision) => {
+    const transport = new FakeOmpTransport();
+    const native = { provider: "example/team", id: "family/model A:1" };
+    const other = { provider: "example", id: "team/family/model A:1" };
+    vi.spyOn(transport, "getAvailableModels").mockResolvedValue(
+      [{ provider: "synthetic", id: "model" }, native, ...(collision ? [other] : [])].map(
+        (entry) => ({ ...entry, reasoning: true }),
+      ),
+    );
+    const selectModel = vi
+      .spyOn(transport as OmpTurnTransport, "selectModel")
+      .mockImplementation(async ({ provider, id }) => {
+        transport.state = { ...transport.state, provider, modelId: id };
+        return transport.state;
+      });
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    try {
+      await opened.value.readSnapshot();
+      const readable = harnessModelRefSchema.parse({ id: "example/team/family/model A:1" });
+      const encoded = harnessModelRefSchema.parse({
+        id: `omp-model-v1.${Buffer.from(JSON.stringify([native.provider, native.id])).toString("base64url")}`,
+      });
+      const ambiguousOrLegacy = collision ? readable : encoded;
+      await expect(
+        opened.value.execute({ type: "model.select", model: ambiguousOrLegacy }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: "invalidRequest" },
+      });
+      expect(selectModel).not.toHaveBeenCalled();
+      const model = collision ? encoded : readable;
+      await expect(opened.value.execute({ type: "model.select", model })).resolves.toMatchObject({
+        ok: true,
+      });
+      expect(selectModel).toHaveBeenCalledWith(native);
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: { state: { effectiveModel: model } },
+      });
+    } finally {
+      await adapter.close();
+    }
   });
 
   it("forwards Model and Thinking selection during a Turn without admitting another Turn", async () => {

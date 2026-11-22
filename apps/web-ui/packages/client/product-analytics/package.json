@@ -1,0 +1,41 @@
+{
+  "name": "@deepseek-ai/dsh-client-product-analytics",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./client": {
+      "types": "./src/client/index.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./typert": {
+      "types": "./src/typert.host.ts",
+      "default": "./src/typert.host.ts"
+    },
+    "./remote": {
+      "types": "./generated/remote.d.ts",
+      "default": "./generated/remote.js"
+    },
+    "./types": {
+      "types": "./src/events.ts"
+    }
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-gateway"
+      ],
+      "platform": "web"
+    }
+  }
+}

@@ -6,7 +6,7 @@ Claude Code 从 2.1.154 起提供会话级的 Ultracode：开启后 Claude 会�
 
 ### 档位
 
-- 档位菜单在 Max 之后新增 **Ultracode**，所有模型都会显示。它的含义固定为原生 effort `xhigh` 加会话级 `ultracode`，在 Claude Code 2.1.284 前后两种原生语义下行为一致。
+- 档位菜单在 Max 之后新增 **Ultracode**，只在 Claude Code 报告支持 `xhigh` 的模型上显示（Claude Code 未报告档位能力的模型照旧显示）。它的含义固定为原生 effort `xhigh` 加会话级 `ultracode`，在 Claude Code 2.1.284 前后两种原生语义下行为一致。
 - Ultracode 需要同时满足三个条件：Claude Code 2.1.154 及以上；Dynamic workflows 已打开（Claude Pro 默认关闭，在 Claude Code 中运行 `/config` 打开，或在 `~/.claude/settings.json` 中设置 `"enableWorkflows": true`）；当前模型支持 Ultracode。codexhost 不会替用户打开 Workflows。
 - Ultracode 会明显增加额度消耗，请按需选择。
 
@@ -18,7 +18,7 @@ Claude Code 对 Ultracode 请求一律"接受"，不可用时也不报错，旧�
 |---|---|
 | 选择 Ultracode 后发送消息 | 消息不发送给 Claude，直接显示原因；档位仍为 Ultracode，满足条件或改档位后重发即可 |
 | 会话中切换到 Ultracode | 显示原因，档位保持原来的选项 |
-| Ultracode 下切换模型 | 显示原因，撤回模型切换，保持原模型与 Ultracode |
+| Ultracode 下切换模型 | 显示原因，撤回模型切换，保持原模型与 Ultracode。目标模型的档位列表没有 Ultracode 时不做此检查，档位降为该模型不高于 Extra High 的最高档位（如 High），一个都没有时改为 Auto |
 
 会话中切换被拒绝时，模型按钮上方会弹出提示，标题为"无法切换模型"或"无法切换思考选项"，正文是 Claude Code 给出的原因；按钮旁显示红色标记，直到下一次切换成功。提示约 8 秒后自动消失，鼠标停在上面时不消失，点击或按 Esc 可关闭。
 

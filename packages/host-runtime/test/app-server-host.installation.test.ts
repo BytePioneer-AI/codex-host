@@ -1,6 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { HARNESS_INSTALLATION_METHOD } from "@codexhost/shared-contracts";
-import { createFixture, requestId, stopFixture, writeRequest } from "./app-server-host-fixture.js";
+import {
+  HARNESS_INSTALLATION_METHOD,
+  HARNESS_INSTALLATION_START_METHOD,
+  HARNESS_INSTALLATION_STATUS_METHOD,
+  harnessInstallationTaskSchema,
+  type HarnessInstallationState,
+} from "@codexhost/shared-contracts";
+import {
+  createFixture,
+  requestId,
+  startPiThread,
+  startPiTurn,
+  stopFixture,
+  writeRequest,
+} from "./app-server-host-fixture.js";
 
 const state = {
   currentVersion: "1.0.0",
@@ -10,6 +23,72 @@ const state = {
 };
 
 describe("Host Harness CLI installation routing", () => {
+  it("preserves application version and manual installer metadata without starting an update", async () => {
+    const fixture = createFixture();
+    const manual = {
+      ...state,
+      canUpdate: false,
+      versionKind: "application" as const,
+      manualUpdateUrl: "https://download.codebuddy.ai/WorkBuddy.dmg",
+      notice: { en: "Complete installation with the official installer." },
+    };
+    const installation = vi.fn(async () => manual);
+    Object.assign(fixture.adapter, { installation });
+    try {
+      await fixture.ready;
+      expect(
+        await fixture.host.handleConsoleRequest(HARNESS_INSTALLATION_METHOD, {
+          harnessId: "pi",
+          action: "check",
+        }),
+      ).toEqual({ result: manual });
+      expect(installation.mock.calls).toEqual([["check"]]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("answers task submission and status before the update ends and admits chat messages meanwhile", async () => {
+    const fixture = createFixture();
+    const update = Promise.withResolvers<HarnessInstallationState>();
+    const installation = vi.fn(() => update.promise);
+    Object.assign(fixture.adapter, { installation });
+    try {
+      const threadId = await startPiThread(fixture);
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: HARNESS_INSTALLATION_START_METHOD,
+        params: { harnessId: "pi", action: "update", confirmedVersion: "1.1.0" },
+      });
+      const response = await fixture.collector.waitFor((m) => requestId(m, 2));
+      const task = harnessInstallationTaskSchema.parse(response.result);
+      expect(task.status).toBe("running");
+      expect(installation).toHaveBeenCalledExactlyOnceWith("update", "1.1.0");
+      expect(
+        await fixture.host.handleConsoleRequest(HARNESS_INSTALLATION_STATUS_METHOD, {
+          taskId: task.taskId,
+        }),
+      ).toEqual({ result: task });
+      await startPiTurn(fixture, threadId, 4);
+      fixture.adapter.sessions[0]?.succeedTurn();
+      const preflight = {
+        ...state,
+        latestVersion: "1.2.0",
+        confirmationRequired: true,
+      } satisfies HarnessInstallationState;
+      update.resolve(preflight);
+      await vi.waitFor(async () =>
+        expect(
+          await fixture.host.handleConsoleRequest(HARNESS_INSTALLATION_STATUS_METHOD, {
+            taskId: task.taskId,
+          }),
+        ).toEqual({ result: { taskId: task.taskId, status: "succeeded", result: preflight } }),
+      );
+    } finally {
+      update.resolve(state);
+      await stopFixture(fixture);
+    }
+  });
   it.each(["install", "check", "update"] as const)(
     "allows console %s through the Host channel",
     async (action) => {

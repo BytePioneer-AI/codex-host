@@ -21,6 +21,7 @@ export interface BackgroundUpdateStatus {
   downloadedBytes?: number;
   totalBytes?: number;
   error?: string;
+  serviceStopOutput?: string;
 }
 
 export function requireSemanticVersion(value: string): string {
@@ -53,6 +54,7 @@ export function parseUpdateStatus(value: unknown): BackgroundUpdateStatus {
     "installation",
     "phase",
     "schemaVersion",
+    "serviceStopOutput",
     "totalBytes",
     "updatedAt",
     "version",
@@ -86,7 +88,8 @@ export function parseUpdateStatus(value: unknown): BackgroundUpdateStatus {
     (typeof status.downloadedBytes === "number" &&
       typeof status.totalBytes === "number" &&
       status.downloadedBytes > status.totalBytes) ||
-    (status.error !== undefined && typeof status.error !== "string")
+    (status.error !== undefined && typeof status.error !== "string") ||
+    (status.serviceStopOutput !== undefined && typeof status.serviceStopOutput !== "string")
   ) {
     throw new Error("background update status is invalid");
   }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { piUsageHistory, piUsageRecord } from "../src/pi-usage.js";
+import { parsePiSessionUsage, piUsageHistory, piUsageRecord } from "../src/pi-usage.js";
 
 const assistant = {
   role: "assistant",
@@ -12,6 +12,22 @@ const assistant = {
 };
 
 describe("Pi usage records", () => {
+  it("normalizes cumulative native input to include both cache buckets", () => {
+    expect(
+      parsePiSessionUsage({
+        data: {
+          tokens: { input: 100, output: 40, cacheRead: 900, cacheWrite: 50, total: 1_090 },
+        },
+      }),
+    ).toEqual({
+      inputTokens: 1_050,
+      cachedInputTokens: 900,
+      cacheWriteInputTokens: 50,
+      outputTokens: 40,
+      totalTokens: 1_090,
+    });
+  });
+
   it("adds cache back into input and keeps reasoning inside output", () => {
     expect(piUsageRecord(assistant, { startedAtMs: 10, completedAtMs: 30 })).toEqual({
       kind: "request",

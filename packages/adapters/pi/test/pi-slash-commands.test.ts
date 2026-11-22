@@ -23,12 +23,11 @@ describe("Pi live command catalog", () => {
     },
   });
 
-  it("appends live commands, marks skills and hides internal RPC helpers", () => {
+  it("appends live commands while excluding native skills and internal RPC helpers", () => {
     const catalog = piLiveCommandCatalog(builtIns, native);
     expect(catalog.commands.map(({ invocation, kind }) => [invocation, kind])).toEqual([
       ["/compact", undefined],
-      ["/review", "command"],
-      ["/skill:brave-search", "skill"],
+      ["/review", undefined],
     ]);
   });
 
@@ -40,9 +39,8 @@ describe("Pi live command catalog", () => {
 
   it("builds prompt text for dynamic commands", () => {
     const catalog = piLiveCommandCatalog(builtIns, native);
-    expect(piDynamicCommandPrompt(catalog, "pi.slash.skill:brave-search", "cats")).toBe(
-      "/skill:brave-search cats",
-    );
+    expect(piDynamicCommandPrompt(catalog, "pi.slash.review", "changes")).toBe("/review changes");
+    expect(piDynamicCommandPrompt(catalog, "pi.slash.skill:brave-search", "cats")).toBeNull();
     expect(piDynamicCommandPrompt(catalog, "pi.compact", undefined)).toBeNull();
   });
 });

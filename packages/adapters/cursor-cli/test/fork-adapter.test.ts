@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { harnessPermissionModeIdSchema } from "@codexhost/shared-contracts";
+import { harnessPermissionModeIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import type { ForkSessionInput } from "@codexhost/harness-adapter";
 import { CursorAdapter } from "../src/adapter.js";
 import { CursorTransport, type CursorSessionInfo } from "../src/transport.js";
@@ -389,6 +389,80 @@ describe("Cursor Adapter fork adoption", () => {
     });
     expect(await selection).toMatchObject({ ok: true });
     expect(await f.adapter.open(f.input)).toMatchObject({ ok: true });
+  });
+
+  it("forks a completed boundary while a later source Turn keeps running", async () => {
+    const f = await fixture();
+    const running = Promise.withResolvers<{ stopReason: "end_turn" }>();
+    vi.spyOn(CursorTransport.prototype, "prompt").mockReturnValueOnce(running.promise);
+    const turnId = hostTurnIdSchema.parse(randomUUID());
+    expect(
+      await f.source.execute({ type: "turn.start", turnId, input: [{ type: "text", text: "go" }] }),
+    ).toMatchObject({ ok: true });
+    native.target = structuredClone(native.turns);
+    native.turns.push({ id: randomUUID(), text: "go", rewindRoot: "a".repeat(64) });
+    f.transaction.sourceTurns = structuredClone(native.turns);
+    vi.mocked(forkCursorSession).mockImplementationOnce(async () => {
+      native.turns.push({ id: randomUUID(), text: "native follow-up" });
+      return f.transaction;
+    });
+    expect(await f.adapter.open(f.input)).toMatchObject({
+      ok: true,
+      value: { initialState: { nativeRef: { nativeSessionId: targetId } } },
+    });
+    expect(vi.mocked(forkCursorSession).mock.calls[0]?.[4]).toEqual({ sourceRunning: true });
+    expect(f.transaction.commit).toHaveBeenCalledOnce();
+    expect(
+      await f.source.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse(randomUUID()),
+        input: [{ type: "text", text: "again" }],
+      }),
+    ).toMatchObject({ error: { code: "sessionBusy" } });
+    running.resolve({ stopReason: "end_turn" });
+  });
+
+  it("discards a fork whose retained prefix changed while the source Turn was running", async () => {
+    const f = await fixture();
+    const running = Promise.withResolvers<{ stopReason: "end_turn" }>();
+    vi.spyOn(CursorTransport.prototype, "prompt").mockReturnValueOnce(running.promise);
+    await f.source.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse(randomUUID()),
+      input: [{ type: "text", text: "go" }],
+    });
+    native.target = structuredClone(native.turns);
+    vi.mocked(forkCursorSession).mockImplementationOnce(async () => {
+      native.turns = [{ id: randomUUID(), text: "rewritten" }];
+      return f.transaction;
+    });
+    expect(await f.adapter.open(f.input)).toMatchObject({
+      ok: false,
+      error: { message: "Cursor source changed before fork adoption" },
+    });
+    expect(f.transaction.discard).toHaveBeenCalledOnce();
+    expect(f.transaction.commit).not.toHaveBeenCalled();
+    running.resolve({ stopReason: "end_turn" });
+  });
+
+  it("does not roll back a source while its Turn is running", async () => {
+    const f = await fixture();
+    const running = Promise.withResolvers<{ stopReason: "end_turn" }>();
+    vi.spyOn(CursorTransport.prototype, "prompt").mockReturnValueOnce(running.promise);
+    await f.source.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse(randomUUID()),
+      input: [{ type: "text", text: "go" }],
+    });
+    expect(
+      await f.adapter.open({
+        kind: "rollbackLastTurn",
+        sourceRef: f.input.sourceRef,
+        cwd: f.input.cwd,
+      }),
+    ).toMatchObject({ error: { code: "sessionBusy" } });
+    expect(forkCursorSession).not.toHaveBeenCalled();
+    running.resolve({ stopReason: "end_turn" });
   });
 
   it("rejects boundaries without native anchors or missing identities before staging and releases the lock", async () => {

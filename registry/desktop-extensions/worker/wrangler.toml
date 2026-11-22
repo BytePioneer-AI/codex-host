@@ -1,0 +1,9 @@
+name = "codexhost-desktop-extension-stats"
+main = "worker.js"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+# Replace with the ID from `npx wrangler kv namespace create STATS_KV`.
+[[kv_namespaces]]
+binding = "STATS_KV"
+id = "YOUR_KV_NAMESPACE_ID"

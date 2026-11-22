@@ -1,9 +1,14 @@
+import { composerIndicatorsSchema, type ThreadUsageSnapshot } from "@codexhost/shared-contracts";
+
 export interface HostUsage {
+  composerIndicators?: ThreadUsageSnapshot["composerIndicators"];
   inputTokens?: number;
   cachedInputTokens?: number;
   cacheWriteInputTokens?: number;
   outputTokens?: number;
   outputTokensPerSecond?: number;
+  /** Host-derived: timed request output / generation time across the retained Session. */
+  sessionOutputTokensPerSecond?: number;
   /** Latest Turn output / native API duration, including first-output wait; not generation TPS. */
   apiOutputTokensPerSecond?: number;
   reasoningOutputTokens?: number;
@@ -29,6 +34,8 @@ export interface HostUsage {
   sessionCacheHitRatePercent?: number;
   /** Host-derived: latest Turn start to its first reasoning or text output, as observed by Host. */
   timeToFirstOutputMs?: number;
+  /** Host-derived: latest verified native request's time to first output. */
+  latestRequestTimeToFirstOutputMs?: number;
   /** How `totalCostUsd` was obtained; present only with `totalCostUsd`. */
   costSource?: HostUsageCostSource;
   /**
@@ -43,7 +50,9 @@ export type HostUsageCostSource = "publicPrice" | "native";
 /** Fields only Host metering may publish; Adapter snapshots carrying them are stripped by Host. */
 export const hostDerivedUsageFields = [
   "sessionCacheHitRatePercent",
+  "sessionOutputTokensPerSecond",
   "timeToFirstOutputMs",
+  "latestRequestTimeToFirstOutputMs",
   "costSource",
   "unpricedModels",
 ] as const satisfies ReadonlyArray<keyof HostUsage>;
@@ -63,6 +72,7 @@ const safeIntegerFields = [
   "planFiveHourResetsAtUnix",
   "planSevenDayResetsAtUnix",
   "timeToFirstOutputMs",
+  "latestRequestTimeToFirstOutputMs",
 ] as const satisfies ReadonlyArray<keyof HostUsage>;
 
 const percentFields = [
@@ -77,10 +87,12 @@ const usageFields = new Set<keyof HostUsage>([
   ...safeIntegerFields,
   ...percentFields,
   "sessionCacheUsage",
+  "composerIndicators",
   "totalCostUsd",
   "totalCredits",
   "contextUsagePercent",
   "outputTokensPerSecond",
+  "sessionOutputTokensPerSecond",
   "apiOutputTokensPerSecond",
   "costSource",
   "unpricedModels",
@@ -99,9 +111,14 @@ export function parseHostUsage(value: unknown): HostUsage {
       throw new Error(`Harness Usage contains unknown field '${key}'`);
     }
   }
+  const indicators =
+    value.composerIndicators === undefined
+      ? {}
+      : { composerIndicators: composerIndicatorsSchema.parse(value.composerIndicators) };
   for (const field of [
     "totalCredits",
     "contextUsagePercent",
+    "sessionOutputTokensPerSecond",
     "apiOutputTokensPerSecond",
   ] as const) {
     const candidate = value[field];
@@ -214,9 +231,9 @@ export function parseHostUsage(value: unknown): HostUsage {
     if (value.costSource !== "publicPrice") {
       throw new Error("Harness Usage 'unpricedModels' must be provided with a 'publicPrice' cost");
     }
-    return { ...value, unpricedModels: [...models] } as HostUsage;
+    return { ...value, ...indicators, unpricedModels: [...models] } as HostUsage;
   }
-  return { ...value } as HostUsage;
+  return { ...value, ...indicators } as HostUsage;
 }
 
 /**
@@ -243,10 +260,25 @@ export interface HostUsageRequest {
   cacheWrite1hInputTokens?: number;
   outputTokens: number;
   reasoningOutputTokens?: number;
+  /** Output Tokens generated within [startedAtMs, completedAtMs]; defaults to outputTokens. */
+  timedOutputTokens?: number;
   /** Unix ms of this request's first output token and of its completion; both or neither. */
   startedAtMs?: number;
   completedAtMs?: number;
 }
+
+type RequestOutputInterval = { startedAtMs: number; completedAtMs: number; outputTokens: number };
+
+/** Timing that can arrive independently of billable request usage. */
+export type HostUsageRequestTiming = { requestId: string } & (
+  | {
+      /** Native request start (Unix ms), used to order TTFT independent of delivery order. */
+      requestStartedAtMs: number;
+      timeToFirstOutputMs: number;
+      output?: RequestOutputInterval;
+    }
+  | { requestStartedAtMs?: never; timeToFirstOutputMs?: never; output: RequestOutputInterval }
+);
 
 const requestTokenFields = [
   "inputTokens",
@@ -255,6 +287,7 @@ const requestTokenFields = [
   "cacheWrite1hInputTokens",
   "outputTokens",
   "reasoningOutputTokens",
+  "timedOutputTokens",
   "startedAtMs",
   "completedAtMs",
 ] as const satisfies ReadonlyArray<keyof HostUsageRequest>;
@@ -318,6 +351,14 @@ export function parseHostUsageRequest(value: unknown): HostUsageRequest {
   }
   if ((request.startedAtMs === undefined) !== (request.completedAtMs === undefined)) {
     throw new Error("Harness Usage request timing fields must be provided together");
+  }
+  if (request.timedOutputTokens !== undefined) {
+    if (request.startedAtMs === undefined) {
+      throw new Error("Harness Usage request 'timedOutputTokens' requires timing fields");
+    }
+    if (request.timedOutputTokens > request.outputTokens) {
+      throw new Error("Harness Usage request 'timedOutputTokens' must not exceed 'outputTokens'");
+    }
   }
   if (
     request.startedAtMs !== undefined &&

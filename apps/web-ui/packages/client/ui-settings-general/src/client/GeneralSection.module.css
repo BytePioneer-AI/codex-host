@@ -1,0 +1,105 @@
+.section {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.heading {
+  margin-bottom: 28px;
+}
+
+.title {
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 32px;
+  letter-spacing: -0.5px;
+}
+
+.description {
+  margin: 8px 0 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.group + .group {
+  margin-top: 28px;
+}
+
+.groupTitle {
+  margin: 0 0 10px;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.card {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.item {
+  min-width: 0;
+  margin: 0 20px;
+}
+
+.item + .item {
+  border-top: 1px solid var(--dsw-alias-border-l1);
+}
+
+/* Group cards own separators; contributed controls keep their existing styling. */
+.item > :global([data-slot="settings.general.item"]) > * {
+  border-bottom: none;
+}
+
+.footer {
+  margin-top: 8px;
+}
+
+@media (max-width: 640px) {
+  .heading {
+    margin-bottom: 16px;
+    padding: 0 4px;
+  }
+
+  .title {
+    font-size: 19px;
+    line-height: 26px;
+    letter-spacing: -0.3px;
+  }
+
+  .description {
+    margin-top: 3px;
+    font-size: 13px;
+    line-height: 19px;
+  }
+
+  .group + .group {
+    margin-top: 20px;
+  }
+
+  .groupTitle {
+    margin: 0 0 8px;
+    padding: 0 12px;
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 16px;
+    letter-spacing: 0.02em;
+  }
+
+  .card {
+    border: 0.5px solid var(--dsw-alias-border-l2);
+    border-radius: 16px;
+    background: var(--dsw-alias-bg-layer-2);
+    overflow: hidden;
+  }
+
+  .item {
+    margin: 0 14px;
+  }
+}

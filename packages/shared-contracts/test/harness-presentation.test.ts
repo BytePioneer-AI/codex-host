@@ -101,6 +101,32 @@ describe("plugin-owned presentation", () => {
     ).toBe(false);
   });
 
+  it("allows manual update downloads only through bounded credential-free HTTPS URLs", () => {
+    const state = {
+      currentVersion: "5.5.2",
+      latestVersion: "5.8.4",
+      updateAvailable: true,
+      canUpdate: false,
+    };
+    expect(
+      harnessInstallationStateSchema.parse({
+        ...state,
+        manualUpdateUrl: "https://download.codebuddy.ai/WorkBuddy.dmg",
+      }).manualUpdateUrl,
+    ).toBe("https://download.codebuddy.ai/WorkBuddy.dmg");
+    for (const manualUpdateUrl of [
+      "javascript:alert(1)",
+      "file:///tmp/installer",
+      "http://example.com/app.exe",
+      "https://user:password@example.com/app.exe",
+      "not a URL",
+      `https://example.com/${"x".repeat(2048)}`,
+    ])
+      expect(harnessInstallationStateSchema.safeParse({ ...state, manualUpdateUrl }).success).toBe(
+        false,
+      );
+  });
+
   it("preserves structured quota scope and never parses a translated product name", () => {
     const quota = accountCreditsSnapshotSchema.parse({
       usedPercent: 10,

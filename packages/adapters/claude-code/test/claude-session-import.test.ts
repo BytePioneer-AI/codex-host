@@ -226,7 +226,7 @@ describe("Claude Code native Session import discovery", () => {
 
     await f.save();
     await f.save(f.entries(), f.sessionId, path.join(f.projects, "-other-project"));
-    await expect(index.list(f.signal())).rejects.toThrow("ambiguous");
+    expect(await index.list(f.signal())).toEqual([]);
     await expect(index.resolve(f.sessionId, f.signal())).rejects.toThrow("ambiguous");
 
     const adapter = new ClaudeCodeAdapter({ environment: f.environment });
@@ -235,6 +235,66 @@ describe("Claude Code native Session import discovery", () => {
       ok: false,
       error: { code: "invalidState" },
     });
+  });
+
+  it("keeps unrelated Sessions importable across duplicate discovery, refresh and removal", async () => {
+    const f = await fixture();
+    const original = await f.save();
+    const originalText = await readFile(original, "utf8");
+    const uniqueId = "99999999-9999-4999-8999-999999999999";
+    await f.save(f.entries(uniqueId), uniqueId);
+    const adapter = new ClaudeCodeAdapter({ environment: f.environment });
+    try {
+      expect(await adapter.sessionImport.listCandidates()).toMatchObject({
+        ok: true,
+        value: expect.arrayContaining([
+          expect.objectContaining({ nativeSessionId: f.sessionId }),
+          expect.objectContaining({ nativeSessionId: uniqueId }),
+        ]),
+      });
+      const duplicates = await Promise.all(
+        ["-other-project", "-third-project"].map((directory) =>
+          f.save(f.entries(), f.sessionId, path.join(f.projects, directory)),
+        ),
+      );
+      // Both fresh and cached scans must hide every copy, including the first one seen.
+      for (let refresh = 0; refresh < 2; refresh++) {
+        const listed = await adapter.sessionImport.listCandidates();
+        expect(listed).toMatchObject({ ok: true, value: [{ nativeSessionId: uniqueId }] });
+        expect(listed.ok && listed.value).toHaveLength(1);
+      }
+      expect(await adapter.sessionImport.resolveCandidate(f.sessionId)).toMatchObject({
+        ok: false,
+        error: { code: "unavailable" },
+      });
+      expect(await adapter.sessionImport.resolveCandidate(uniqueId)).toMatchObject({
+        ok: true,
+        value: { nativeRef: { nativeSessionId: uniqueId } },
+      });
+      await Promise.all(duplicates.map((file) => rm(file)));
+      const restored = await adapter.sessionImport.listCandidates();
+      expect(restored.ok && restored.value).toHaveLength(2);
+      expect(await adapter.sessionImport.resolveCandidate(f.sessionId)).toMatchObject({
+        ok: true,
+        value: { nativeRef: { nativeSessionId: f.sessionId } },
+      });
+      expect(await readFile(original, "utf8")).toBe(originalText);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("does not list an identity that resolve would reject because of an invalid duplicate", async () => {
+    const f = await fixture();
+    await f.save();
+    await f.save([], f.sessionId, path.join(f.projects, "-invalid-copy"));
+    const uniqueId = "99999999-9999-4999-8999-999999999999";
+    await f.save(f.entries(uniqueId), uniqueId);
+    const index = f.index();
+    expect(await index.list(f.signal())).toMatchObject([
+      { candidate: { nativeSessionId: uniqueId } },
+    ]);
+    await expect(index.resolve(f.sessionId, f.signal())).rejects.toThrow("ambiguous");
   });
 
   it("exposes only browser metadata and reports a removed Session as not found", async () => {

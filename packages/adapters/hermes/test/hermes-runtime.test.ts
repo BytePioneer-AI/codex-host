@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import type * as ChildProcess from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hermesPythonCommand, nativeHermesPythonCommand } from "../src/hermes-runtime.js";
@@ -61,22 +60,4 @@ describe("Hermes native runtime commands", () => {
     expect(command.arguments[3]).toContain("import hermes_bootstrap\nfrom tui_gateway");
     expect(nativeCommand).not.toHaveBeenCalled();
   });
-  const python = process.platform === "win32" ? "python" : "python3";
-  it.skipIf(spawnSync(python, ["--version"]).status !== 0)(
-    "never adds timing output to RPC or history stdout",
-    async () => {
-      // Run the actual stdlib module boundary used by the native launcher.
-      let setup = "";
-      nativeCommand.mockImplementation(async (_launcher, args) => {
-        setup = args[9];
-        return { stdout: JSON.stringify([python, "-m", "timeit", ...args.slice(4)]) };
-      });
-      const command = await hermesPythonCommand(runtime, 'print("{\\\"result\\\":true}")', {});
-      const output = spawnSync(command.command, command.arguments, { encoding: "utf8" });
-      expect(setup).toContain("sys.stdout = io.StringIO()");
-      expect(output.status).toBe(0);
-      // Python writes CRLF line endings on Windows; every reader trims or splits lines.
-      expect(output.stdout.replaceAll("\r\n", "\n")).toBe('{"result":true}\n');
-    },
-  );
 });

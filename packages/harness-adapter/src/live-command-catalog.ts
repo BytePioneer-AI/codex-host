@@ -13,9 +13,8 @@ import {
  * outlives the Turn (loops, schedules, background jobs, goals).
  *
  * Applied to live commands only; curated Adapter built-ins are not filtered.
- * Skills are never matched by this list, so a user skill is not hidden because
- * it shares a name with a native command. A command left out of the catalog is
- * also rejected when typed, because the Host only runs catalog commands.
+ * A command left out of the catalog is also rejected when typed, because the
+ * Host only runs catalog commands.
  */
 export const COMMON_EXCLUDED_LIVE_COMMANDS: ReadonlySet<string> = new Set([
   // Session lifecycle
@@ -84,33 +83,27 @@ export const COMMON_EXCLUDED_LIVE_COMMANDS: ReadonlySet<string> = new Set([
 /** Name prefixes excluded like {@link COMMON_EXCLUDED_LIVE_COMMANDS}: internal and hook management. */
 export const COMMON_EXCLUDED_LIVE_COMMAND_PREFIXES: readonly string[] = ["__", "hooks-"];
 
-/** Adapter-specific exclusions; these apply to commands and skills alike. */
+/** Adapter-specific command exclusions. */
 export interface LiveCommandExclusions {
   names?: Iterable<string>;
   prefixes?: readonly string[];
 }
 
-export function isExcludedLiveCommand(
-  name: string,
-  kind: "command" | "skill",
-  extra: LiveCommandExclusions = {},
-): boolean {
+export function isExcludedLiveCommand(name: string, extra: LiveCommandExclusions = {}): boolean {
   const normalized = name.trim().replace(/^\//u, "");
   if (new Set(extra.names ?? []).has(normalized)) return true;
   if (extra.prefixes?.some((prefix) => normalized.startsWith(prefix))) return true;
-  if (kind === "skill") return false;
   return (
     COMMON_EXCLUDED_LIVE_COMMANDS.has(normalized) ||
     COMMON_EXCLUDED_LIVE_COMMAND_PREFIXES.some((prefix) => normalized.startsWith(prefix))
   );
 }
 
-/** A command or skill reported by a running native Session. */
+/** A command reported by a running native Session. */
 export interface LiveHarnessCommand {
   /** Native name without the leading slash. */
   name: string;
   description?: string;
-  kind: "command" | "skill";
 }
 
 /**
@@ -192,7 +185,7 @@ export function mergeLiveHarnessCommands(
     const name = command.name.trim().replace(/^\//u, "");
     // Slash invocations are single tokens for Host matching and Composer chips.
     if (!name || /\s/u.test(name)) continue;
-    if (isExcludedLiveCommand(name, command.kind, exclusions)) continue;
+    if (isExcludedLiveCommand(name, exclusions)) continue;
     const invocation = `/${name}`;
     const id = `${idPrefix}${name.replace(/[^A-Za-z0-9._:-]/gu, "-")}`.slice(0, 128);
     if (invocations.has(invocation) || ids.has(id)) continue;
@@ -203,7 +196,6 @@ export function mergeLiveHarnessCommands(
       label: name.slice(0, 128),
       ...(description ? { description } : {}),
       argumentMode: "text",
-      kind: command.kind,
     });
     if (!parsed.success) continue;
     invocations.add(invocation);

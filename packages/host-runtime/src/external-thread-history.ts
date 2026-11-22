@@ -134,9 +134,11 @@ function* turnEntries(
 }
 
 function turnWithItemsView(turn: JsonObject, view: ItemsView): JsonObject {
-  if (view === "notLoaded") return { ...turn, items: [], itemsView: "notLoaded" };
   const items = Array.isArray(turn.items) ? turn.items : [];
   if (view === "full") return { ...turn, items: items.filter(isItem), itemsView: "full" };
+  const metadata = { ...turn };
+  delete metadata.codexhostFileOperations;
+  if (view === "notLoaded") return { ...metadata, items: [], itemsView: "notLoaded" };
   const user = items.find(
     (item): item is JsonObject => isItem(item) && item.type === "userMessage",
   );
@@ -144,7 +146,7 @@ function turnWithItemsView(turn: JsonObject, view: ItemsView): JsonObject {
     (item): item is JsonObject => isItem(item) && item.type === "agentMessage",
   );
   return {
-    ...turn,
+    ...metadata,
     items:
       user && agent && user.id !== agent.id ? [user, agent] : user ? [user] : agent ? [agent] : [],
     itemsView: "summary",
@@ -232,10 +234,23 @@ function* itemEntries(
   }
 }
 
+/**
+ * Official `thread/items/list` also accepts `{ type: "item", itemId }`: an exclusive position
+ * inside the requested `turnId`. It resolves to the same anchor as this module's string cursor.
+ */
+function parseItemsCursor(value: JsonValue | undefined, turnId: string | null): Cursor | null {
+  if (!isItem(value)) return parseCursor(value);
+  if (value.type !== "item" || typeof value.itemId !== "string" || value.itemId.length === 0) {
+    throw new ExternalHistoryRequestError("cursor is invalid");
+  }
+  if (!turnId) throw new ExternalHistoryRequestError("an item cursor requires turnId");
+  return { anchor: JSON.stringify([turnId, value.itemId]), includeAnchor: false };
+}
+
 export function listExternalItems(turns: JsonObject[], params: JsonObject): ExternalHistoryPage {
   const turnId = optionalText(params.turnId, "turnId");
   const direction = sortDirection(params.sortDirection, "asc");
-  const cursor = parseCursor(params.cursor);
+  const cursor = parseItemsCursor(params.cursor, turnId);
   const page = pageEntries(
     itemEntries(turns, direction, cursor, turnId),
     (entry) => entry.key,

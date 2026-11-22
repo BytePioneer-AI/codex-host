@@ -7,6 +7,8 @@ import {
   type DelegationStartInput,
   type DelegationWatchApi,
   type HarnessInspectInput,
+  type HarnessListInput,
+  type ThreadAnswerInput,
   type ThreadCancelInput,
   type ThreadListInput,
   type ThreadSendInput,
@@ -14,10 +16,16 @@ import {
   type ThreadWaitInput,
   type ThreadWatchInput,
 } from "./delegation-types.js";
+import { matchesBearerToken } from "./bearer-token.js";
+import type { HostInventory } from "./host-inventory.js";
+import { validateThreadExportInput, type ThreadExportInput } from "./delegation-thread-export.js";
+import { readThreadResultFile } from "./thread-result-file.js";
+import { validateReadOptions } from "./delegation-snapshot.js";
+import { startWithDelegationWorktree } from "./delegation-worktree.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
-function errorBody(error: unknown): {
+export function errorBody(error: unknown): {
   error: { code: string; message: string; details?: unknown };
 } {
   if (error instanceof DelegationControlError) {
@@ -37,18 +45,21 @@ function errorBody(error: unknown): {
   };
 }
 
-function writeJson(response: ServerResponse, status: number, value: unknown): void {
+export function writeJson(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(`${JSON.stringify(value)}\n`);
 }
 
-async function jsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+export async function jsonBody(
+  request: IncomingMessage,
+  maximumBytes = MAX_REQUEST_BYTES,
+): Promise<Record<string, unknown>> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.length;
-    if (size > MAX_REQUEST_BYTES)
+    if (size > maximumBytes)
       throw new DelegationControlError("INVALID_ARGUMENT", "Request body is too large");
     chunks.push(buffer);
   }
@@ -103,10 +114,110 @@ async function startWithWatch(
   return { ...result, watch };
 }
 
+/** Send first; optional notification targets the calling Thread resolved by the CLI/listener. */
+async function sendWithWatch(
+  api: DelegationControlApi,
+  watches: DelegationWatchApi,
+  body: Record<string, unknown>,
+): Promise<unknown> {
+  const { watchTimeoutMs, notifyThreadId, ...send } = body;
+  const result = await api.send(send as unknown as ThreadSendInput);
+  const watch = await watchStartedTurn(watches, {
+    threadId: result.threadId,
+    notifyThreadId: (notifyThreadId ?? "") as string,
+    timeoutMs: watchTimeoutMs as number,
+  });
+  return { ...result, watch };
+}
+
+/** The delegation routes shared by the Host control server and the external client listener. */
+export async function routeDelegationRequest(
+  handlers: { api: DelegationControlApi; watchApi?: DelegationWatchApi; inventory?: HostInventory },
+  route: string | undefined,
+  body: Record<string, unknown>,
+): Promise<unknown> {
+  switch (route) {
+    case "/v1/host/info":
+    case "/v1/project/list":
+      if (!handlers.inventory)
+        throw new DelegationControlError("UNSUPPORTED", "Host inventory is unavailable");
+      return route === "/v1/host/info"
+        ? handlers.inventory.info(body)
+        : handlers.inventory.projects(body);
+    case "/v1/thread/file":
+      return readThreadResultFile(handlers.api, body);
+    case "/v1/harness/list":
+      return handlers.api.listHarnesses(body as HarnessListInput);
+    case "/v1/harness/inspect":
+      return handlers.api.inspect(body as unknown as HarnessInspectInput);
+    case "/v1/delegate/start": {
+      const { worktree, base, ...start } = body;
+      return startWithDelegationWorktree(
+        {
+          cwd: start.cwd as string | undefined,
+          branch: worktree as string | undefined,
+          base: base as string | undefined,
+        },
+        (cwd) => {
+          const input: Record<string, unknown> = {
+            ...start,
+            ...(cwd !== undefined ? { cwd } : {}),
+          };
+          return input.watchTimeoutMs === undefined
+            ? handlers.api.start(input as unknown as DelegationStartInput)
+            : startWithWatch(handlers.api, watchApi(handlers.watchApi), input);
+        },
+      );
+    }
+    case "/v1/thread/send":
+      return body.watchTimeoutMs === undefined
+        ? handlers.api.send(body as unknown as ThreadSendInput)
+        : sendWithWatch(handlers.api, watchApi(handlers.watchApi), body);
+    case "/v1/thread/cancel":
+      return handlers.api.cancel(body as unknown as ThreadCancelInput);
+    case "/v1/thread/export": {
+      const input = body as unknown as ThreadExportInput;
+      validateThreadExportInput(input);
+      if (!handlers.api.exportThread)
+        throw new DelegationControlError("UNSUPPORTED", "Thread export is unavailable");
+      return handlers.api.exportThread(input);
+    }
+    case "/v1/thread/read":
+    case "/v1/thread/wait": {
+      const allowed = new Set([
+        "threadId",
+        "view",
+        "from",
+        "to",
+        ...(route === "/v1/thread/read" ? ["hostId", "callerThreadId"] : ["timeoutMs"]),
+      ]);
+      for (const key of Object.keys(body)) {
+        if (!allowed.has(key))
+          throw new DelegationControlError("INVALID_ARGUMENT", `Unknown read option: ${key}`);
+      }
+      validateReadOptions(body as unknown as ThreadReadInput);
+      return route === "/v1/thread/read"
+        ? handlers.api.read(body as unknown as ThreadReadInput)
+        : handlers.api.wait(body as unknown as ThreadWaitInput);
+    }
+    case "/v1/thread/answer":
+      return handlers.api.answer(body as unknown as ThreadAnswerInput);
+    case "/v1/thread/watch":
+      return watchApi(handlers.watchApi).watch(body as unknown as ThreadWatchInput);
+    case "/v1/thread/watches":
+      return watchApi(handlers.watchApi).watches();
+    case "/v1/thread/list":
+      return handlers.api.list(body as unknown as ThreadListInput);
+    default:
+      throw new DelegationControlError("INVALID_ARGUMENT", "Unknown Runtime control route");
+  }
+}
+
 export async function startDelegationControlServer(input: {
   token: string;
   api: DelegationControlApi;
   watchApi?: DelegationWatchApi;
+  inventory?: HostInventory;
 }): Promise<DelegationControlServer> {
   const server = createServer((request, response) => {
     void (async () => {
@@ -116,57 +227,14 @@ export async function startDelegationControlServer(input: {
         });
         return;
       }
-      if (request.headers.authorization !== `Bearer ${input.token}`) {
+      if (!matchesBearerToken(request.headers.authorization, input.token)) {
         writeJson(response, 401, {
           error: { code: "RUNTIME_UNREACHABLE", message: "Runtime token is invalid" },
         });
         return;
       }
       const body = await jsonBody(request);
-      switch (request.url) {
-        case "/v1/harness/list":
-          writeJson(response, 200, await input.api.listHarnesses());
-          return;
-        case "/v1/harness/inspect":
-          writeJson(response, 200, await input.api.inspect(body as unknown as HarnessInspectInput));
-          return;
-        case "/v1/delegate/start":
-          writeJson(
-            response,
-            200,
-            body.watchTimeoutMs === undefined
-              ? await input.api.start(body as unknown as DelegationStartInput)
-              : await startWithWatch(input.api, watchApi(input.watchApi), body),
-          );
-          return;
-        case "/v1/thread/send":
-          writeJson(response, 200, await input.api.send(body as unknown as ThreadSendInput));
-          return;
-        case "/v1/thread/cancel":
-          writeJson(response, 200, await input.api.cancel(body as unknown as ThreadCancelInput));
-          return;
-        case "/v1/thread/read":
-          writeJson(response, 200, await input.api.read(body as unknown as ThreadReadInput));
-          return;
-        case "/v1/thread/wait":
-          writeJson(response, 200, await input.api.wait(body as unknown as ThreadWaitInput));
-          return;
-        case "/v1/thread/watch":
-          writeJson(
-            response,
-            200,
-            await watchApi(input.watchApi).watch(body as unknown as ThreadWatchInput),
-          );
-          return;
-        case "/v1/thread/watches":
-          writeJson(response, 200, await watchApi(input.watchApi).watches());
-          return;
-        case "/v1/thread/list":
-          writeJson(response, 200, await input.api.list(body as unknown as ThreadListInput));
-          return;
-        default:
-          throw new DelegationControlError("INVALID_ARGUMENT", "Unknown Runtime control route");
-      }
+      writeJson(response, 200, await routeDelegationRequest(input, request.url, body));
     })().catch((error) => {
       writeJson(response, error instanceof DelegationControlError ? 400 : 500, errorBody(error));
     });

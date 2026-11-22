@@ -14,6 +14,10 @@ function errorMessage(error: unknown): string {
     : "Could not install the Harness. Check the official installation guide and retry.";
 }
 
+function unknownInstallOutcome(message: string): boolean {
+  return /outcome is unknown|do not retry automatically|did not answer in time/i.test(message);
+}
+
 const stores = new WeakMap<RendererConnectionDiagnostics, ReturnType<typeof createStore>>();
 function createStore(diagnostics: RendererConnectionDiagnostics) {
   const states = new Map<string, InstallState>();
@@ -56,7 +60,17 @@ function createStore(diagnostics: RendererConnectionDiagnostics) {
           ?.agents.find((candidate) => candidate.agent === agent);
         // A successful fresh diagnosis is authoritative even when version
         // readback (e.g. its latest-version endpoint) failed after installation.
+        // A timed-out installer may still have written the CLI; protocol or
+        // Provider setup can remain incomplete without that being an install miss.
         if (refreshed?.availability === "ready") failure = undefined;
+        else if (
+          failure &&
+          unknownInstallOutcome(failure) &&
+          refreshed &&
+          refreshed.availability !== "notInstalled"
+        ) {
+          failure = undefined;
+        }
       } catch (error) {
         failure ??= errorMessage(error);
       }

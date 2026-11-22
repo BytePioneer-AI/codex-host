@@ -20,13 +20,18 @@ export function createConsoleConnectionDiagnostics(
   const errors = new Map<string, CodexhostError | null>();
   const webUi = new Map<string, boolean>();
   const listeners = new Set<() => void>();
-  let pending: Promise<void> | null = null;
+  let pending: { promise: Promise<void>; refresh: boolean; credentialAccess?: "retry" } | null =
+    null;
   const publish = (): void => {
     for (const listener of [...listeners]) listener();
   };
-  const inspectAll = (refresh: boolean): Promise<void> => {
-    if (pending) return pending;
-    pending = Promise.resolve()
+  const inspectAll = (refresh: boolean, credentialAccess?: "retry"): Promise<void> => {
+    if (pending) {
+      if (!refresh || (pending.refresh && (!credentialAccess || pending.credentialAccess)))
+        return pending.promise;
+      return pending.promise.then(() => inspectAll(refresh, credentialAccess));
+    }
+    const promise = Promise.resolve()
       .then(async () => {
         try {
           if (!client.listHarnessPlugins)
@@ -44,7 +49,12 @@ export function createConsoleConnectionDiagnostics(
         await Promise.all(
           plugins.map(async ({ id }) => {
             try {
-              const inspection = await client.inspectHarness({ harnessId: id, refresh });
+              const inspection = await client.inspectHarness({
+                harnessId: id,
+                refresh,
+                purpose: "availability",
+                ...(credentialAccess ? { credentialAccess } : {}),
+              });
               availability.set(id, inspection.status);
               webUi.set(id, inspection.status === "ready" && inspection.webUi?.open === true);
               const error = inspection.status === "ready" ? null : inspection.error;
@@ -80,7 +90,8 @@ export function createConsoleConnectionDiagnostics(
         pending = null;
         publish();
       });
-    return pending;
+    pending = { promise, refresh, ...(credentialAccess ? { credentialAccess } : {}) };
+    return promise;
   };
   let started = false;
   const installation = client.installation?.bind(client);
@@ -91,10 +102,15 @@ export function createConsoleConnectionDiagnostics(
             hostId: string,
             agent: string,
             action: "check" | "update" | "install",
+            confirmedVersion?: string,
           ) => {
             if (hostId !== "local")
               throw new Error("Web console installation only supports the local Host");
-            return installation({ harnessId: harnessIdSchema.parse(agent), action });
+            return installation({
+              harnessId: harnessIdSchema.parse(agent),
+              action,
+              ...(confirmedVersion === undefined ? {} : { confirmedVersion }),
+            });
           },
         }
       : {}),
@@ -121,7 +137,7 @@ export function createConsoleConnectionDiagnostics(
         ],
       };
     },
-    refresh: () => inspectAll(true),
+    refresh: (_hostId, credentialAccess) => inspectAll(true, credentialAccess),
     async openWebUi(_hostId, agent) {
       if (!client.openHarnessWebUi) throw new Error("Harness Web UI is unavailable");
       await client.openHarnessWebUi({ harnessId: harnessIdSchema.parse(agent) });

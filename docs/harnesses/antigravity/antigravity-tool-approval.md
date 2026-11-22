@@ -1,54 +1,42 @@
-# Antigravity Permissions
+# Antigravity Permissions and Interactions
 
-Antigravity exposes only **Skip permissions (dangerous)**, which is also the
-new-session default. Every Turn starts agy with its native
-`--dangerously-skip-permissions` flag. codexhost does not add tool approvals,
-allow/ask/deny matching, a read-only allowlist, or workspace path restrictions.
-Use this Harness only in an environment where unrestricted tool execution is
-acceptable. This does not grant administrator privileges or bypass OS controls.
+Antigravity integrates through `agy acp` (`agy >= 1.5.8`, validated with `1.5.9`) and exposes native ACP permission modes, tool approvals, and form-based user questions without Host-invented permission rules or external Hook bridges.
 
-## Why only Skip permissions?
+## Permission Modes
 
-Native agy 1.1.27 print mode cannot consume interactive permission responses.
-The previous Configured permissions mode could therefore deny a tool and leave
-an empty response. The former Desktop approvals workaround disabled native
-permission checks and gated tools through a private Hook. Reimplementing agy's
-permission policy in codexhost is not a supported replacement for a native
-permission interface.
+The Adapter exposes five permission modes matching `agy acp`:
 
-Configured permissions and Desktop approvals are no longer offered. Explicit
-legacy mode IDs on create, resume, rollback, or live selection are rejected with
-an instruction to select Skip permissions; they are not silently translated.
-When the Host restores a saved legacy selection, restoration fails rather than
-executing a Turn with broader permissions. Start a new Thread with Skip
-permissions if the old Thread cannot be opened to change its selection.
+- **`default` (Ask permissions)**: Native new-session default (`currentModeId: "default"`). Read/search operations run directly; mutating edits, command execution, and gated tools trigger native `session/request_permission` requests.
+- **`accept-edits` (Accept edits)**: Auto-approves workspace file edits while still requesting permission for shell commands and external side effects.
+- **`auto` (Auto)**: Uses Antigravity's native automatic safety classifier via `session/set_mode`.
+- **`plan` (Plan)**: Restricts execution to planning and read-only exploration until switched out of Plan mode.
+- **`dangerously-skip-permissions` (Skip permissions)**: Starts `agy acp --dangerously-skip-permissions` so native permission prompts are bypassed. Required when `executionPolicy` is `"unattended-full-access"`.
 
-The Adapter does not inspect `/config`, verify an all-tool `/hooks` gate, or
-promise that native allow/ask/deny rules remain effective under skip. Actual CLI
-behavior, independently configured native Hooks, and OS restrictions remain
-outside codexhost's permission policy. A native denial is still reported with
-sanitized diagnostics, not treated as success.
+Switching among `default`, `accept-edits`, `auto`, and `plan` calls `session/set_mode` live on the active ACP connection and updates `nativeRef.locator.permissionModeId`. Because `dangerously-skip-permissions` is a CLI startup flag rather than an ACP mode ID, switching into or out of `dangerously-skip-permissions` requires an idle Session: the Adapter closes the current `agy acp` child process and reopens the same `nativeSessionId` via `session/resume` with or without `--dangerously-skip-permissions`. Explicit unknown or retired mode IDs are rejected rather than silently remapped.
 
-## Questions are not tool approvals
+## Native Tool Approvals
 
-The private `PreToolUse` Hook is retained **only for `^ask_question$`** to bridge
-single-choice and text questions to Desktop. Its `deny.reason` carries the real
-user answer and prevents native automatic question skipping; it does not grant
-or refuse permission for ordinary tools. Authentication, bounded payloads,
-deadlines, duplicate-question checks, and cleanup remain in place.
+When `agy acp` sends `session/request_permission`, the Adapter projects `HostApprovalInteraction`:
 
-Ordinary parent and child tools do not enter this bridge, do not consume its
-128-question budget, and do not incur a Host Hook process or HTTP round trip.
-The Question mechanism still depends on private CLI behavior and should be
-revalidated after CLI updates.
+- Native options (`allow_once`, `allow_always`, `allow_session`, `reject_once`, `reject_always`) map directly to `HostApprovalAction` effects (`allowOnce`, `allowAlways`, `allowForSession`, `deny`) while preserving native `optionId` values for `RequestPermissionResponse`.
+- Command executions (`run_command` / `kind: "execute"`) and file-mutating calls (`write_file`, `edit_file`, `kind: "edit" | "delete"`) receive categorized titles and descriptions synthesized from the native `toolCall` payload.
+- Cancelling a Turn or closing a Session resolves pending permission callbacks with `{ outcome: { outcome: "cancelled" } }` and emits `interaction.closed` before `turn.completed`.
+
+Actual permission evaluation belongs entirely to `agy acp`; `codexhost` does not maintain a parallel allow/ask/deny ruleset or workspace path filter.
+
+## Native Question Elicitation
+
+The Adapter declares `clientCapabilities.elicitation: { form: {} }` during ACP initialization. When the model invokes `ask_question`, `agy acp` sends `elicitation/create` (`mode: "form"`):
+
+- Single-choice (`oneOf` / `enum`), multi-select (`type: "array"`), free-text (`<key>_other`), and text/password fields are projected into `HostQuestionInteraction` (honoring `required` when listed and keeping unlisted fields optional) and bound to the active `ask_question` `toolExecution` item when present.
+- User answers map back to `{ action: "accept", content }`; Turn cancellation or explicit dismissal maps to `{ action: "cancel" }`.
 
 ## Validation
 
-Focused tests cover the single dangerous/default mode, rejection of legacy
-selections, native skip startup without permission probes, and 160 ordinary tool
-calls followed by a Desktop Question in one Turn. Existing Question tests cover
-responses, expiry, cancellation, authentication, and cleanup.
+Focused unit tests cover permission mode catalog decoding, live `session/set_mode`, idle transport restart across `dangerously-skip-permissions`, `session/request_permission` option mapping, and `elicitation/create` form projection:
 
-The long-Turn test uses a stand-in CLI to verify Adapter wiring, not to establish
-agy's native permission-rule semantics. The obsolete opt-in Desktop approval
-real test was removed because that mode is no longer supported.
+```bash
+npx vitest run -c tests/vitest.config.js packages/adapters/antigravity/test/permission-modes.test.ts packages/adapters/antigravity/test/skip-permissions.test.ts packages/adapters/antigravity/test/acp-projection.test.ts packages/adapters/antigravity/test/antigravity-adapter.test.ts
+```
+
+Opt-in real CLI integration (`CODEXHOST_RUN_ANTIGRAVITY_QUESTION_REAL=1`) verifies live `elicitation/create` round-trip, Turn cancellation while a question is open, and `session/resume` history restoration against an installed `agy` binary.

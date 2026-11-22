@@ -23,6 +23,20 @@ function fixture() {
 }
 
 describe("Updater handoff", () => {
+  it("stops the helper when transferring the update operation fails", async () => {
+    const { child, status } = fixture();
+    await expect(
+      waitForUpdaterReady(
+        child as unknown as ChildProcess,
+        async () => status,
+        1000,
+        async () => {
+          throw new Error("lock transfer failed");
+        },
+      ),
+    ).rejects.toThrow("lock transfer failed");
+    expect(child.kill).toHaveBeenCalledOnce();
+  });
   it("does not accept a PID as readiness", async () => {
     const { child, status, wait } = fixture();
     let ready = false;

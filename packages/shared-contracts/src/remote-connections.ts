@@ -2,6 +2,7 @@ import { z } from "zod";
 import { delegationReadParamsSchema } from "./delegation-read.js";
 import { jsonValueSchema } from "./json-value.js";
 import { remoteUpdateParamsSchema } from "./remote-runtime.js";
+import { remoteSessionOperationSchema } from "./remote-sessions.js";
 
 export const CONSOLE_REMOTE_CONNECTIONS_METHOD = "codexhost/console/remote-connections";
 const hostId = z.string().min(1).max(1024);
@@ -23,9 +24,11 @@ export const codexSshDraftSchema = z.strictObject({
   identity: z.string().max(4096).nullable(),
 });
 
-/** Fixed settings operations and explicit read-only Thread access; no arbitrary requests. */
+/** Fixed settings and existing remote session operations; no arbitrary RPC or expressions. */
 export const remoteConnectionsRequestSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("session"), operation: remoteSessionOperationSchema }),
   z.strictObject({ action: z.literal("list") }),
+  z.strictObject({ action: z.literal("catalog") }),
   z.strictObject({
     action: z.literal("read-thread"),
     hostId: hostId.refine((id) => id !== "local"),

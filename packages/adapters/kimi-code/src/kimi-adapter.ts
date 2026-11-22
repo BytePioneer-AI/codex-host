@@ -41,8 +41,8 @@ import {
 import { KimiSessionImport } from "./session-import.js";
 import {
   buildModelCatalogFromConfig,
-  decodeKimiModelRefId,
-  encodeKimiModelRef,
+  kimiModelRef,
+  normalizeStoredKimiModelRef,
   isKimiModeId,
   kimiPermissionModeCatalog,
   parseKimiConfigToml,
@@ -146,7 +146,7 @@ function stateFromConfig(
   return {
     nativeRef: createKimiNativeSessionRef(sessionId, cwd),
     availableThinkingOptions: readKimiThinkingOptions(configOptions),
-    ...(effective.modelAlias ? { effectiveModel: encodeKimiModelRef(effective.modelAlias) } : {}),
+    ...(effective.modelAlias ? { effectiveModel: kimiModelRef(effective.modelAlias) } : {}),
     ...(effective.thinkingOptionId
       ? { effectiveThinkingOptionId: effective.thinkingOptionId }
       : {}),
@@ -161,6 +161,7 @@ function stateFromConfig(
 }
 
 export class KimiAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredKimiModelRef;
   readonly harnessId: HarnessId = kimiHarnessId;
   readonly sessionImport: KimiSessionImport;
 
@@ -316,8 +317,13 @@ export class KimiAdapter implements HarnessAdapter {
       return err("invalidState", "Adapter is closed");
     }
 
-    if (input.kind === "create" && input.executionPolicy === "unattended-full-access") {
-      return err("unsupported", "Kimi Code cannot guarantee unattended-full-access");
+    const unattended =
+      input.kind === "create" && input.executionPolicy === "unattended-full-access";
+    if (unattended && input.permissionModeId && input.permissionModeId !== "yolo") {
+      return err(
+        "invalidRequest",
+        "Kimi Code unattended execution requires the yolo Permission Mode",
+      );
     }
     if (
       (input.kind === "resume" && input.nativeRef.harnessId !== this.harnessId) ||
@@ -332,13 +338,7 @@ export class KimiAdapter implements HarnessAdapter {
     ) {
       return err("invalidRequest", `Unsupported permission mode: ${input.permissionModeId}`);
     }
-    let requestedModelAlias: string | undefined;
-    try {
-      if ("model" in input && input.model)
-        requestedModelAlias = decodeKimiModelRefId(input.model.id);
-    } catch (error) {
-      return err("invalidRequest", error instanceof Error ? error.message : String(error));
-    }
+    const requestedModelAlias = "model" in input ? input.model?.id : undefined;
     const environment = { ...process.env, ...this.#options.environment, ...input.environment };
     const cwd = input.cwd ?? process.cwd();
     const kimiCodeHome = getKimiCodeHome(this.#options.homeDirectory, environment);
@@ -392,16 +392,13 @@ export class KimiAdapter implements HarnessAdapter {
         if (input.permissionModeId && !isKimiModeId(input.permissionModeId)) {
           throw new Error(`Unsupported permission mode: ${input.permissionModeId}`);
         }
+        const permissionModeId = input.permissionModeId ?? (unattended ? "yolo" : undefined);
         const requested = [
-          ...(input.model
-            ? [{ id: "model" as const, value: decodeKimiModelRefId(input.model.id) }]
-            : []),
+          ...(input.model ? [{ id: "model" as const, value: input.model.id }] : []),
           ...(input.thinkingOptionId
             ? [{ id: "thinking" as const, value: input.thinkingOptionId }]
             : []),
-          ...(input.permissionModeId
-            ? [{ id: "mode" as const, value: input.permissionModeId }]
-            : []),
+          ...(permissionModeId ? [{ id: "mode" as const, value: permissionModeId }] : []),
         ];
         const configOptions = await applyRequestedConfig(
           transport,
@@ -563,9 +560,7 @@ export class KimiAdapter implements HarnessAdapter {
           throw new Error(`Unsupported permission mode: ${input.permissionModeId}`);
         }
         const requested = [
-          ...(input.model
-            ? [{ id: "model" as const, value: decodeKimiModelRefId(input.model.id) }]
-            : []),
+          ...(input.model ? [{ id: "model" as const, value: input.model.id }] : []),
           ...(input.thinkingOptionId
             ? [{ id: "thinking" as const, value: input.thinkingOptionId }]
             : []),
@@ -676,7 +671,7 @@ export class KimiAdapter implements HarnessAdapter {
         nativeRef: createKimiNativeSessionRef(derivedId, input.cwd),
         cwd: input.cwd,
         environment,
-        model: input.model ?? encodeKimiModelRef(rolledBack.model),
+        model: input.model ?? kimiModelRef(rolledBack.model),
         thinkingOptionId:
           input.thinkingOptionId ?? harnessThinkingOptionIdSchema.parse(rolledBack.thinking),
         permissionModeId:

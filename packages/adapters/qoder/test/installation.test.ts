@@ -46,6 +46,26 @@ describe("Qoder native version maintenance", () => {
     expect(mocks.run.mock.calls.some((call) => call[1][1] === "--check")).toBe(false);
   });
 
+  it("keeps an installation whose updater cannot identify itself manual", async () => {
+    mocks.resolve.mockReturnValue("/chosen/qoderclicn");
+    mocks.run.mockImplementation(async (_command, args) => {
+      if (args[0] === "--version") return "1.1.90";
+      if (args[1] === "--help") return "--check";
+      return [
+        "Qoder CLI CN update (check only)",
+        "",
+        "Unable to determine installation method. Please reinstall with:",
+        "  curl -fsSL https://example.invalid/install.sh | bash",
+      ].join("\n");
+    });
+    await expect(createQoderInstallation({}, undefined, "cn")("check")).resolves.toMatchObject({
+      currentVersion: "1.1.90",
+      latestVersion: "Unknown",
+      updateAvailable: false,
+      canUpdate: false,
+    });
+  });
+
   it("uses native check/update and rejects unfamiliar check output", async () => {
     mocks.resolve.mockReturnValue("/chosen/qoder");
     let version = "1.0.0";

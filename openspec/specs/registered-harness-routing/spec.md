@@ -218,12 +218,17 @@ Host Runtime SHALL pass Claude Model and Permission Mode selections decoded from
 
 ### Requirement: Host retains the current external transport configuration
 
-After a successful current-Thread Permission Mode selection, Host Runtime SHALL update the Thread's transport carrier and request Mapping Store persistence. A later Claude Turn carrying a valid Permission Mode component SHALL also refresh that stored carrier. Persistence failure SHALL be diagnosed without changing the native Session result into another mode or routing the Thread to Codex.
+After a successful current-Thread Model or Permission Mode selection, Host Runtime SHALL update the Thread's transport carrier with the Session's confirmed value and request Mapping Store persistence, so resume and Fork continue with it. A Fork whose derived Session confirms no Model SHALL be given the source Thread's current Model. A later Claude Turn carrying a valid Permission Mode component SHALL also refresh that stored carrier. Persistence failure SHALL be diagnosed without changing the native Session result into another mode or routing the Thread to Codex.
 
 #### Scenario: Claude Thread changes Permission Mode
 
 - **WHEN** the owning Claude Session reports the current mode after a successful selection
 - **THEN** Host SHALL encode that mode with the Thread's opaque Model Ref and persist the resulting carrier
+
+#### Scenario: Claude Thread changes Model
+
+- **WHEN** the owning Claude Session confirms a Model selected for an existing Thread
+- **THEN** Host SHALL persist that Model in the carrier, resume the Thread with it after restart, and open a Fork of the Thread with it
 
 #### Scenario: Host restores the Thread after restart
 

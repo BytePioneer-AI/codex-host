@@ -31,8 +31,11 @@ import type {
   TurnCancelCommand,
   TurnStartAccepted,
   TurnStartCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
@@ -72,11 +75,14 @@ import { mapQoderException, mapQoderResultError } from "./qoder-errors.js";
 import { qoderEnvironment } from "./qoder-command.js";
 import { mapQoderSnapshot } from "./qoder-history.js";
 import {
-  decodeQoderModelRef,
+  qoderModelValue,
   QODER_DEFAULT_MODEL_REF,
   qoderAvailableThinkingOptions,
 } from "./qoder-models.js";
-import { mapToQoderPermissionMode } from "./qoder-permission-modes.js";
+import {
+  isQoderPlanModeId,
+  mapToQoderPermissionModeExcludingPlan,
+} from "./qoder-permission-modes.js";
 import type {
   CanUseToolContext,
   GetSessionMessagesOptions,
@@ -95,7 +101,7 @@ import type {
   SDKUserMessage,
   SessionMessage,
 } from "./qoder-sdk-types.js";
-import { QoderUsageTracker } from "./qoder-usage.js";
+import { parseQoderConfiguredContextWindows, QoderUsageTracker } from "./qoder-usage.js";
 
 export class PushableInput<T> implements AsyncIterable<T> {
   #queue: T[] = [];
@@ -135,6 +141,8 @@ export class PushableInput<T> implements AsyncIterable<T> {
 interface ActiveTurnState {
   turnId: HostTurnId;
   userMessageUuid: string;
+  startedToolIds: Set<string>;
+  projectedTextSnapshots: Set<string>;
   lastAssistantMessageUuid?: string | undefined;
   activeStreamingMessageItemId?: HostItemId | undefined;
   accumulatedStreamingText: string;
@@ -177,8 +185,13 @@ export interface QoderSessionOptions {
     options?: GetSessionMessagesOptions,
   ) => Promise<SessionMessage[]>;
   pathToQoderCLIExecutable?: string;
+  /** Daemon that owns env, auth and the CLI path for this Session's launch config. */
+  daemon?: NonNullable<QoderOptions["daemon"]>;
   onClosed?: () => void;
 }
+
+/** Upper bound on how long a usage refresh waits for `get_settings`. */
+const QODER_SETTINGS_WAIT_MS = 3_000;
 
 export class QoderSession implements HarnessSession {
   readonly harnessId: HarnessId;
@@ -208,6 +221,10 @@ export class QoderSession implements HarnessSession {
   #activeTurn: ActiveTurnState | null = null;
   #closed = false;
   #consumerLoopDone: Promise<void>;
+  #configuredContextWindows: Promise<void> | undefined;
+  /** Set when a usage refresh stopped waiting for `get_settings`. */
+  #usageRefreshedWithoutSettings = false;
+  #usageModelRevision = 0;
 
   constructor(options: QoderSessionOptions) {
     const variant = options.variant ?? "global";
@@ -230,7 +247,9 @@ export class QoderSession implements HarnessSession {
       formatVersion: 1,
     });
 
-    const effectiveModel = options.model ?? QODER_DEFAULT_MODEL_REF;
+    // Without an explicit Model the CLI runs its native default, which the catalog reports.
+    const effectiveModel =
+      options.model ?? options.catalog?.defaultModel ?? QODER_DEFAULT_MODEL_REF;
     const availableThinkingOptions = qoderAvailableThinkingOptions(options.catalog, effectiveModel);
     let effectiveThinkingOptionId: HarnessThinkingOptionId | undefined;
     if (options.thinkingOptionId) {
@@ -280,9 +299,10 @@ export class QoderSession implements HarnessSession {
     };
     this.initialState = { ...this.#state };
 
-    const nativeModel = options.model ? decodeQoderModelRef(options.model) : undefined;
+    const nativeModel = options.model ? qoderModelValue(options.model) : undefined;
     this.#usageTracker = new QoderUsageTracker(nativeModel ? { modelId: nativeModel } : undefined);
-    const permissionMode = mapToQoderPermissionMode(options.permissionModeId);
+    const planMode = isQoderPlanModeId(options.permissionModeId);
+    const permissionMode = mapToQoderPermissionModeExcludingPlan(options.permissionModeId);
 
     const environment = qoderEnvironment(options.environment);
     const auth = qoderAuthForEnvironment(variant, environment);
@@ -295,18 +315,24 @@ export class QoderSession implements HarnessSession {
     const qoderOptions: QoderOptions = {
       cwd: options.cwd,
       ...(options.resume ? {} : { sessionId: options.sessionId }),
-      ...(options.pathToQoderCLIExecutable
-        ? { pathToQoderCLIExecutable: options.pathToQoderCLIExecutable }
-        : {}),
-      env: environment,
+      // SDK 1.0.58 rejects launch options on a daemon-bound Query; the daemon owns them.
+      ...(options.daemon
+        ? { daemon: options.daemon }
+        : {
+            ...(options.pathToQoderCLIExecutable
+              ? { pathToQoderCLIExecutable: options.pathToQoderCLIExecutable }
+              : {}),
+            env: environment,
+            auth,
+          }),
       ...(nativeModel ? { model: nativeModel } : {}),
       ...(permissionMode ? { permissionMode } : {}),
+      ...(planMode ? { planMode: true } : {}),
       ...(permissionMode === "bypassPermissions" || permissionMode === "yolo"
         ? { allowDangerouslySkipPermissions: true }
         : {}),
       ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
       ...(options.resume ? { resume: options.resume } : {}),
-      auth,
       includePartialMessages: true,
       canUseTool: this.#handleCanUseTool.bind(this),
     };
@@ -318,6 +344,7 @@ export class QoderSession implements HarnessSession {
 
     void this.#initSupportedCommands();
     this.#consumerLoopDone = this.#consumeMessages();
+    void this.#loadConfiguredContextWindows();
     void this.refreshUsage();
   }
 
@@ -368,6 +395,14 @@ export class QoderSession implements HarnessSession {
   }
 
   async #dispatchMessage(message: SDKMessage): Promise<void> {
+    if (
+      (message.type === "assistant" ||
+        message.type === "stream_event" ||
+        message.type === "user") &&
+      message.parent_tool_use_id !== null &&
+      message.parent_tool_use_id !== undefined
+    )
+      return;
     switch (message.type) {
       case "system":
         this.#handleSystemMessage(message as SDKSystemMessage);
@@ -566,7 +601,17 @@ export class QoderSession implements HarnessSession {
         (block as Record<string, unknown>).type === "tool_use",
     );
 
-    for (const block of content) {
+    for (const [index, block] of content.entries()) {
+      if (message.uuid && typeof block === "object" && block !== null) {
+        const raw = block as Record<string, unknown>;
+        const text =
+          raw.type === "text" ? raw.text : raw.type === "thinking" ? raw.thinking : undefined;
+        if (typeof text === "string") {
+          const key = JSON.stringify([message.uuid, index, raw.type, text]);
+          if (this.#activeTurn.projectedTextSnapshots.has(key)) continue;
+          this.#activeTurn.projectedTextSnapshots.add(key);
+        }
+      }
       this.#projectAssistantBlock(block, hasToolUseInMessage);
     }
   }
@@ -693,6 +738,11 @@ export class QoderSession implements HarnessSession {
         });
       }
     } else if (rawBlock.type === "tool_use") {
+      if (typeof rawBlock.id === "string" && rawBlock.id.trim()) {
+        if (this.#activeTurn.startedToolIds.has(rawBlock.id)) return;
+        this.#activeTurn.startedToolIds.add(rawBlock.id);
+      }
+
       if (this.#activeTurn.activeStreamingMessageItemId) {
         this.#emitEvent({
           type: "item.completed",
@@ -1161,11 +1211,59 @@ export class QoderSession implements HarnessSession {
     }
   }
 
+  /**
+   * `get_context_usage` may report only a percentage, so read the effective per-model
+   * `contextWindow` from `get_settings`. If no window is known, report only the measured usage.
+   */
+  #loadConfiguredContextWindows(): Promise<void> {
+    if (typeof this.#query.request !== "function") return Promise.resolve();
+    this.#usageRefreshedWithoutSettings = false;
+    const loading = Promise.resolve().then(async () => {
+      try {
+        const settings = await this.#query.request?.({ type: "get_settings" });
+        const configured = parseQoderConfiguredContextWindows(settings);
+        if (configured && !this.#closed && loading === this.#configuredContextWindows) {
+          this.#usageTracker.setConfiguredContextWindows(configured);
+          // Publish the configured window even if a refresh already stopped waiting for it.
+          if (this.#usageRefreshedWithoutSettings) {
+            this.#usageRefreshedWithoutSettings = false;
+            void this.refreshUsage();
+          }
+        }
+      } catch {
+        // Optional telemetry; a settings failure cannot fail a Turn.
+      }
+    });
+    this.#configuredContextWindows = loading;
+    return loading;
+  }
+
+  async #awaitConfiguredContextWindows(): Promise<void> {
+    const loading = this.#configuredContextWindows;
+    // Only the first wait for this request pays the timeout; new requests reset the flag.
+    if (!loading || this.#usageRefreshedWithoutSettings) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      loading.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), QODER_SETTINGS_WAIT_MS);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!settled && loading === this.#configuredContextWindows) {
+      this.#usageRefreshedWithoutSettings = true;
+    }
+  }
+
   async refreshUsage(forTurnId?: HostTurnId): Promise<void> {
+    const revision = this.#usageModelRevision;
+    await this.#awaitConfiguredContextWindows();
+    if (revision !== this.#usageModelRevision || this.#closed) return;
     let changed = false;
     if (this.#query.getContextUsage) {
       try {
         const usage = await this.#query.getContextUsage();
+        if (revision !== this.#usageModelRevision || this.#closed) return;
         if (usage) {
           this.#usageTracker.observeContextUsage(usage as QoderContextUsage);
           changed = true;
@@ -1177,6 +1275,7 @@ export class QoderSession implements HarnessSession {
     if (this.#query.getUsageInfo) {
       try {
         const info = await this.#query.getUsageInfo();
+        if (revision !== this.#usageModelRevision || this.#closed) return;
         if (info) {
           this.#usageTracker.observeUsageInfo(info);
           changed = true;
@@ -1185,7 +1284,7 @@ export class QoderSession implements HarnessSession {
         // Diagnostic failure only, never fails turn
       }
     }
-    if (changed && !this.#closed) {
+    if (changed && !this.#closed && revision === this.#usageModelRevision) {
       const snapshot = this.#usageTracker.snapshot();
       if (snapshot) {
         const targetTurnId = forTurnId ?? this.#activeTurn?.turnId;
@@ -1199,6 +1298,7 @@ export class QoderSession implements HarnessSession {
   }
 
   async execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  async execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   async execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   async execute(
     command: InteractionRespondCommand,
@@ -1217,6 +1317,8 @@ export class QoderSession implements HarnessSession {
     }
 
     switch (command.type) {
+      case "turn.steer":
+        return unsupportedSteer("Qoder");
       case "turn.start": {
         if (this.#activeTurn) {
           return {
@@ -1233,6 +1335,8 @@ export class QoderSession implements HarnessSession {
         this.#activeTurn = {
           turnId: command.turnId,
           userMessageUuid,
+          startedToolIds: new Set(),
+          projectedTextSnapshots: new Set(),
           accumulatedStreamingText: "",
           accumulatedStreamingReasoning: "",
         };
@@ -1426,7 +1530,7 @@ export class QoderSession implements HarnessSession {
           };
         }
 
-        const nativeModel = decodeQoderModelRef(command.model);
+        const nativeModel = qoderModelValue(command.model);
         if (!nativeModel) {
           return {
             ok: false,
@@ -1495,7 +1599,10 @@ export class QoderSession implements HarnessSession {
           delete nextState.availableThinkingOptions;
         }
         this.#state = nextState;
+        this.#usageModelRevision += 1;
         this.#usageTracker.setModel(nativeModel);
+        this.#emitEvent({ type: "session.usage.changed", usage: this.#usageTracker.snapshot() });
+        void this.#loadConfiguredContextWindows();
         void this.refreshUsage();
         this.#emitEvent({
           type: "session.state.changed",
@@ -1536,7 +1643,7 @@ export class QoderSession implements HarnessSession {
         }
 
         const nativeModel = this.#state.effectiveModel
-          ? decodeQoderModelRef(this.#state.effectiveModel)
+          ? qoderModelValue(this.#state.effectiveModel)
           : undefined;
         if (this.#state.effectiveModel && !nativeModel) {
           return {
@@ -1584,8 +1691,9 @@ export class QoderSession implements HarnessSession {
           };
         }
 
-        const mode = mapToQoderPermissionMode(command.permissionModeId);
-        if (!mode) {
+        const planMode = isQoderPlanModeId(command.permissionModeId);
+        const mode = mapToQoderPermissionModeExcludingPlan(command.permissionModeId);
+        if (!planMode && !mode) {
           return {
             ok: false,
             error: {
@@ -1596,15 +1704,44 @@ export class QoderSession implements HarnessSession {
           };
         }
 
-        if (this.#query.setPermissionMode) {
-          try {
-            await this.#query.setPermissionMode(mode);
-          } catch (err) {
-            return {
-              ok: false,
-              error: mapQoderException(err),
-            };
+        const wasPlan = isQoderPlanModeId(this.#state.effectivePermissionModeId);
+        if ((planMode || wasPlan) && !this.#query.setPlanMode) {
+          return {
+            ok: false,
+            error: {
+              code: "unsupported",
+              message: "This Qoder SDK does not support switching Plan mode",
+              retryable: false,
+            },
+          };
+        }
+
+        try {
+          if (planMode) {
+            await this.#query.setPlanMode?.(true);
+          } else {
+            if (wasPlan) await this.#query.setPlanMode?.(false);
+            if (mode && this.#query.setPermissionMode) {
+              try {
+                await this.#query.setPermissionMode(mode);
+              } catch (err) {
+                if (wasPlan) {
+                  try {
+                    // Keep the live Session in Plan so it matches the unchanged state.
+                    await this.#query.setPlanMode?.(true);
+                  } catch {
+                    // Report the original failure.
+                  }
+                }
+                throw err;
+              }
+            }
           }
+        } catch (err) {
+          return {
+            ok: false,
+            error: mapQoderException(err),
+          };
         }
 
         this.#state = {
@@ -1671,6 +1808,8 @@ export class QoderSession implements HarnessSession {
     this.#activeTurn = {
       turnId: command.turnId,
       userMessageUuid,
+      startedToolIds: new Set(),
+      projectedTextSnapshots: new Set(),
       accumulatedStreamingText: "",
       accumulatedStreamingReasoning: "",
       isCompaction,

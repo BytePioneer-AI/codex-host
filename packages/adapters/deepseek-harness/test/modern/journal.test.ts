@@ -214,6 +214,45 @@ describe("DeepSeek Harness Modern journal", () => {
     }
   });
 
+  it("requests activation so following a cold Session resumes its Agent", async () => {
+    const setup = await openWith(snapshot(0, records(0, 0), false));
+    try {
+      expect(setup.remote.followCalls[0]?.args).toEqual({
+        request: { address: ADDRESS, maxMessages: 200, activate: true, assistantStream: true },
+      });
+    } finally {
+      await setup.journal.close();
+    }
+  });
+
+  it("accepts DSH 0.2.2 pages that echo the fixed opening cut", async () => {
+    const setup = await openWith(snapshot(5, records(4, 5), true), [
+      () => ({ ok: true, value: { cursor: 5, records: records(1, 3), hasMore: true } }),
+      () => ({ ok: true, value: { cursor: 5, records: records(0, 0), hasMore: false } }),
+    ]);
+    try {
+      expect(setup.journal.events.map(({ seq }) => seq)).toEqual([0, 1, 2, 3, 4, 5]);
+    } finally {
+      await setup.journal.close();
+    }
+  });
+
+  it.each([
+    ["another cut", 4],
+    ["a string cut", "5"],
+    ["a null cut", null],
+  ])("rejects a page that echoes %s and returns the follow iterator", async (_label, cursor) => {
+    const feed = new FollowFeed();
+    feed.push(snapshot(5, records(4, 5), true));
+    const remote = new FakeRemote(feed, [
+      () => ({ ok: true, value: { cursor, records: records(0, 3), hasMore: false } }),
+    ]);
+    await expect(
+      openModernJournal(remote, { sessionId: SESSION_ID, cwd: CWD }),
+    ).rejects.toMatchObject({ code: "protocolError" });
+    expect(feed.returnCalls).toBe(1);
+  });
+
   it("drains and buffers live events while historical paging is still running", async () => {
     const feed = new FollowFeed();
     feed.push(snapshot(5, records(4, 5), true));

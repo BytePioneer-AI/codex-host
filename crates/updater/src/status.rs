@@ -20,6 +20,8 @@ struct UpdateStatus<'a> {
     updated_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_stop_output: Option<&'a str>,
 }
 
 pub(crate) fn unix_seconds() -> u64 {
@@ -33,6 +35,7 @@ pub(crate) fn write_status(
     request: &UpdateRequest,
     phase: &str,
     error: Option<&str>,
+    service_stop_output: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
     let parent = request
         .status_path
@@ -51,6 +54,7 @@ pub(crate) fn write_status(
         phase,
         updated_at: unix_seconds(),
         error,
+        service_stop_output,
     };
     let result = (|| -> Result<(), Box<dyn Error>> {
         let mut file = OpenOptions::new()

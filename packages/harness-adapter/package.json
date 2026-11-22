@@ -15,6 +15,10 @@
       "types": "./dist/plugin.d.ts",
       "import": "./dist/plugin.js"
     },
+    "./local-media-markdown": {
+      "types": "./dist/local-media-markdown.d.ts",
+      "import": "./dist/local-media-markdown.js"
+    },
     "./session-import": {
       "types": "./dist/session-import.d.ts",
       "import": "./dist/session-import.js"

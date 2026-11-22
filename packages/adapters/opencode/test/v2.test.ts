@@ -14,7 +14,7 @@ import {
   type HostEvent,
 } from "@codexhost/harness-adapter";
 import { CodexTurnProjector } from "@codexhost/protocol-core";
-import { harnessModelCatalogSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { encodeOpenCodeVariant } from "../src/model-catalog.js";
 import { openCodeMajor } from "../src/version.js";
 import { assistantItems, projectHistory, readMessages } from "../src/v2/history.js";
@@ -50,7 +50,7 @@ const assistant = (text: string): SessionMessageAssistant => ({
 const idle = (
   outcome: "succeeded" | "failed" | "interrupted" = "succeeded",
 ): SessionMessageInfo => ({ id: "idle", type: "idle", time: { created: 3 }, outcome });
-const catalog = harnessModelCatalogSchema.parse({ models: [], thinkingOptions: [] });
+const models = v2Catalog([], null);
 const sessions: V2Session[] = [];
 afterEach(async () => {
   await Promise.all(sessions.splice(0).map((s) => s.close()));
@@ -90,7 +90,7 @@ function fixture() {
     client as unknown as OpenCodeClient,
     connection,
     info,
-    catalog,
+    models,
     "default",
     64_000,
     () => {},
@@ -276,6 +276,32 @@ describe("OpenCode v2 native history", () => {
 });
 
 describe("OpenCode v2 Session lifecycle", () => {
+  it.each(["at completion", "after completion"])("publishes the native title %s", async (when) => {
+    const f = fixture();
+    const placeholder = "New session - 2026-11-21T12:00:00.000Z";
+    const title = "Explain the host protocol";
+    f.client.session.get.mockResolvedValue({ ...info, title: placeholder });
+    await f.start();
+    expect((await f.turn()).ok).toBe(true);
+    if (when === "at completion") f.client.session.get.mockResolvedValue({ ...info, title });
+    f.messages.push(assistant("Done."), idle());
+    f.emit("session.execution.succeeded");
+    await vi.waitFor(() => expect(f.completed()).toHaveLength(1));
+
+    if (when === "after completion") {
+      f.emit("session.renamed", { title: placeholder });
+      f.emit("session.renamed", { sessionID: "other", title: "Other Session" });
+      f.emit("session.renamed", { title });
+    }
+    await vi.waitFor(() =>
+      expect(
+        f.events.filter(
+          (output) => output.kind === "event" && output.event.type === "session.title.changed",
+        ),
+      ).toEqual([{ kind: "event", event: { type: "session.title.changed", title } }]),
+    );
+  });
+
   it.each([false, true])(
     "completes reasoning and text with independent ordinals (before admission: %s)",
     async (beforeAdmission) => {
@@ -504,6 +530,128 @@ describe("OpenCode v2 Session lifecycle", () => {
     expect(started).toBeGreaterThanOrEqual(beforeOutput);
     expect(started).toBeLessThan(streamed);
   });
+  it.each([
+    [
+      "hidden body with reasoning start",
+      "session.reasoning.started",
+      800,
+      400,
+      1000,
+      21000,
+      31000,
+      "think",
+    ],
+    [
+      "sample-like observed reasoning",
+      "session.reasoning.delta",
+      477,
+      423,
+      1794764248416,
+      1794764252308,
+      1794764256401,
+      "think",
+    ],
+    ["unobserved positive reasoning", undefined, 800, 400, 1000, 21000, 31000, "think"],
+    ["known-zero text", undefined, 0, 400, 1000, 21000, 31000, "think"],
+    ["empty reasoning delta", "session.reasoning.delta", 800, 400, 1000, 21000, 31000, ""],
+  ] as const)(
+    "only times a reliable reasoning-inclusive boundary: %s",
+    async (_name, reasoningEvent, reasoning, output, first, text, streamed, delta) => {
+      const f = fixture();
+      await f.start();
+      await f.turn();
+      const now = vi.spyOn(Date, "now").mockReturnValue(first);
+      try {
+        f.emit("session.step.started", { assistantMessageID: "assistant" });
+        if (reasoningEvent)
+          f.emit(reasoningEvent, {
+            assistantMessageID: "assistant",
+            ordinal: 0,
+            ...(reasoningEvent === "session.reasoning.delta" ? { delta } : {}),
+          });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        now.mockReturnValue(text);
+        f.emit("session.text.delta", {
+          assistantMessageID: "assistant",
+          ordinal: 0,
+          delta: "answer",
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        f.messages.push({
+          ...assistant("answer"),
+          time: { created: first - 500, streamed, completed: streamed + 68000 },
+          tokens: { input: 1, output, reasoning, cache: { read: 0, write: 0 } },
+        });
+        f.emit("session.step.ended", { assistantMessageID: "assistant" });
+      } finally {
+        now.mockRestore();
+      }
+      const requests = () => f.usage.filter((e) => e.type === "usage.request");
+      await vi.waitFor(() => expect(requests()).toHaveLength(1));
+      const request = requests()[0];
+      expect(request).toMatchObject({
+        request: { outputTokens: output + reasoning, reasoningOutputTokens: reasoning },
+      });
+      if (reasoning === 0 || (reasoningEvent && delta))
+        expect(request).toMatchObject({
+          request: { startedAtMs: reasoningEvent ? first : text, completedAtMs: streamed },
+        });
+      else {
+        expect(request).not.toHaveProperty("request.startedAtMs");
+        expect(request).not.toHaveProperty("request.completedAtMs");
+      }
+      // Reconciliation and repeated completion notifications must not publish the step twice.
+      f.messages.push(idle());
+      f.emit("session.step.ended", { assistantMessageID: "assistant" });
+      f.emit("session.execution.succeeded");
+      await vi.waitFor(() => expect(f.completed()).toHaveLength(1));
+      expect(requests()).toHaveLength(1);
+    },
+  );
+
+  it("does not reuse reasoning provenance across steps or poison later known-zero text", async () => {
+    const f = fixture();
+    await f.start();
+    await f.turn();
+    const requests = () => f.usage.filter((e) => e.type === "usage.request");
+    for (const [index, reasoning] of [800, 800, 0].entries()) {
+      const id = `step-${index}`;
+      const first = 1000 + index * 40000;
+      const now = vi.spyOn(Date, "now").mockReturnValue(first);
+      try {
+        f.emit("session.step.started", { assistantMessageID: id });
+        if (index === 0)
+          f.emit("session.reasoning.started", { assistantMessageID: id, ordinal: 0 });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        now.mockReturnValue(first + 20000);
+        f.emit("session.text.delta", { assistantMessageID: id, ordinal: 0, delta: "answer" });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        f.messages.push({
+          ...assistant("answer"),
+          id,
+          time: { created: first - 500, streamed: first + 30000 },
+          tokens: { input: 1, output: 400, reasoning, cache: { read: 0, write: 0 } },
+        });
+        f.emit("session.step.ended", { assistantMessageID: id });
+      } finally {
+        now.mockRestore();
+      }
+      await vi.waitFor(() => expect(requests()).toHaveLength(index + 1));
+    }
+    expect(requests()[0]).toMatchObject({
+      request: { outputTokens: 1200, startedAtMs: 1000, completedAtMs: 31000 },
+    });
+    expect(requests()[1]).toMatchObject({ request: { outputTokens: 1200 } });
+    expect(requests()[1]).not.toHaveProperty("request.startedAtMs");
+    expect(requests()[1]).not.toHaveProperty("request.completedAtMs");
+    expect(requests()[2]).toMatchObject({
+      request: { outputTokens: 400, startedAtMs: 101000, completedAtMs: 111000 },
+    });
+    f.messages.push(idle());
+    f.emit("session.execution.succeeded");
+    await vi.waitFor(() => expect(f.completed()).toHaveLength(1));
+  });
+
   it("restores recent CH and updates it before tool waits end, retaining it at Turn completion", async () => {
     const f = fixture();
     f.messages.push(
@@ -617,12 +765,25 @@ describe("OpenCode v2 Session lifecycle", () => {
         tokens: { input: 1, output: 8, reasoning: 0, cache: { read: 0, write: 0 } },
       },
       false,
-      1_000,
+      { firstOutputAtMs: 1_000, reasoningObserved: false },
     );
     expect(request).toMatchObject({ outputTokens: 8 });
     expect(request).not.toHaveProperty("startedAtMs");
     expect(request).not.toHaveProperty("completedAtMs");
   });
+  it("does not treat a missing native reasoning count as known zero", () => {
+    const message = {
+      ...assistant("answer"),
+      time: { created: 1, streamed: 31000 },
+      tokens: { input: 1, output: 400, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    // OpenCode requires reasoning in its token schema; a malformed response stays unusable.
+    Reflect.deleteProperty(message.tokens, "reasoning");
+    expect(() =>
+      v2UsageRequest(message, false, { firstOutputAtMs: 21000, reasoningObserved: false }),
+    ).toThrow();
+  });
+
   it("rejects concurrent starts and emits no lifecycle for rejected admission", async () => {
     const f = fixture();
     await f.start();
@@ -634,6 +795,19 @@ describe("OpenCode v2 Session lifecycle", () => {
     expect(
       f.events.filter((e) => e.kind === "event" && e.event.type === "turn.started"),
     ).toHaveLength(1);
+  });
+  it("rejects turn.steer without submitting another prompt", async () => {
+    const f = fixture();
+    await f.start();
+    await f.turn();
+    const calls = f.prompt.mock.calls.length;
+    const steered = await f.session.execute({
+      type: "turn.steer",
+      turnId: hostTurnIdSchema.parse("host-turn"),
+      input: [{ type: "text", text: "change direction" }],
+    });
+    expect(steered).toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(f.prompt.mock.calls.length).toBe(calls);
   });
   it("closes the owned connection if rejected admission cannot be interrupted", async () => {
     const f = fixture();
@@ -694,7 +868,7 @@ describe("OpenCode v2 catalog readiness", () => {
     } as unknown as OpenCodeClient;
     const reading = readCatalog(client, "/workspace", 1000);
     expect(models).not.toHaveBeenCalled();
-    await expect(reading).resolves.toMatchObject({ models: [] });
+    await expect(reading).resolves.toMatchObject({ catalog: { models: [] } });
     expect(list).toHaveBeenCalledTimes(2);
     expect(models).toHaveBeenCalledTimes(1);
   });

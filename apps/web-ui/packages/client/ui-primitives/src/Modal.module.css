@@ -1,0 +1,246 @@
+/* Full-viewport layer (figma Mask + Dialog 451:18655): mask + centered card.
+   24px of air on every side; the top/bottom widen to the frame's published
+   overlay inset so a tall card stays clear of it.
+   Cards size against this padding box: consumers cap growth with
+   `max-height: 100%`, never their own viewport calc. */
+.root {
+  pointer-events: auto;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(24px, var(--dsh-frame-overlay-top, 24px)) 24px;
+}
+
+/* Only paint excludes the native caption; the root still blocks background clicks. */
+.mask {
+  position: absolute;
+  inset: var(--dsh-frame-chrome-top, 0px) 0 0;
+  backdrop-filter: var(--dsw-mask-blur);
+}
+
+.mask::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--dsw-alias-bg-mask-1);
+  animation: modalEnter var(--ds-transition-duration) var(--ds-ease-in-out);
+}
+
+/* Dialogs use the prominent elevation on the secondary layer. */
+.dialog {
+  box-sizing: border-box;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: min(380px, 100%);
+  max-height: 100%;
+  padding: 0 0 24px;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--dsw-radius-panel);
+  background: var(--dsw-alias-bg-layer-2);
+  box-shadow: var(--dsw-elevation-prominent);
+  animation: modalEnter var(--ds-transition-duration) var(--ds-ease-in-out);
+}
+
+@keyframes modalEnter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modalCardEnter {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.dialog:focus {
+  outline: none;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Header row (figma Title row): pad l24/t22/r14/b12, SPACE_BETWEEN —
+ * title left, close button right. */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 22px 14px 12px 24px;
+}
+
+.title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500; /* figma wt510, rendered 500 */
+  color: var(--dsw-alias-label-primary);
+}
+
+.close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  cursor: pointer;
+  color: var(--dsw-alias-label-secondary);
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.close:active {
+  background: var(--dsw-alias-interactive-bg-active);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Description and body share the 332px content column (24px side pads). */
+.description {
+  margin: 0;
+  padding: 0 24px;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 400;
+  color: var(--dsw-alias-label-primary);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin-top: 20px;
+  padding: 0 24px;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 20px 24px 0;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .close:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+@media (pointer: coarse) {
+  .close {
+    width: 44px;
+    height: 44px;
+    border-radius: 999px;
+    corner-shape: round;
+  }
+}
+
+@media (max-width: 640px) {
+  .root {
+    align-items: flex-end;
+    padding: max(16px, env(safe-area-inset-top, 16px)) 8px
+      max(8px, env(safe-area-inset-bottom, 8px));
+  }
+
+  .dialog {
+    width: 100%;
+    max-width: 100%;
+    max-height: min(86vh, calc(100vh - 24px));
+    max-height: min(
+      86dvh,
+      calc(100dvh - max(24px, env(safe-area-inset-top, 16px) + env(safe-area-inset-bottom, 8px)))
+    );
+    padding: 0;
+    border-radius: 24px;
+    animation: modalCardEnter var(--ds-transition-duration) var(--ds-ease-in-out);
+  }
+
+  .header {
+    padding: 10px 6px 10px 18px;
+    border-bottom: 1px solid var(--dsw-alias-border-l1);
+  }
+
+  .title {
+    font-size: 16px;
+    line-height: 22px;
+    font-weight: 600;
+  }
+
+  .close {
+    width: 44px;
+    height: 44px;
+    border-radius: 999px;
+    corner-shape: round;
+  }
+
+  .content {
+    padding: 14px 0;
+  }
+
+  .description {
+    padding: 0 18px;
+    font-size: 13.5px;
+    line-height: 21px;
+    color: var(--dsw-alias-label-secondary);
+  }
+
+  .body {
+    margin-top: 14px;
+    padding: 0 18px;
+  }
+
+  .body:first-child {
+    margin-top: 0;
+  }
+
+  .footer {
+    padding: 12px 18px max(14px, env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--dsw-alias-border-l1);
+    gap: 10px;
+  }
+
+  .footer > button {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mask::after,
+  .dialog,
+  .close {
+    animation: none;
+    transition: none;
+  }
+}

@@ -164,6 +164,68 @@ describe("installed plugin presentation through Host RPC", () => {
     }
   });
 
+  it("passes a cached prepaid balance only when no percentage quota exists", async () => {
+    const balance = { amount: 12.34, currency: "CNY", label: "DeepSeek API" };
+    const f = await fixtureFor(
+      `balance: () => (${JSON.stringify(balance)}), refreshBalance: async () => null,`,
+    );
+    try {
+      const threadId = await startExternalThread(
+        f.fixture,
+        encodeHarnessPluginRoute({ harnessId: id }),
+      );
+      const usage = threadUsageInspectionSchema.parse(
+        await f.rpc("codexhost/thread/usage/inspect", { threadId }),
+      );
+      expect(usage.accountCreditsSupported).toBe(true);
+      expect(usage.accountBalance).toEqual(balance);
+      expect(usage).not.toHaveProperty("accountCredits");
+    } finally {
+      await f.close();
+    }
+    const both = await fixtureFor(
+      `credits: () => (${JSON.stringify(quota)}), balance: () => (${JSON.stringify(balance)}),`,
+    );
+    try {
+      const threadId = await startExternalThread(
+        both.fixture,
+        encodeHarnessPluginRoute({ harnessId: id }),
+      );
+      const usage = threadUsageInspectionSchema.parse(
+        await both.rpc("codexhost/thread/usage/inspect", { threadId }),
+      );
+      expect(usage.accountCredits).toEqual(quota);
+      expect(usage).not.toHaveProperty("accountBalance");
+    } finally {
+      await both.close();
+    }
+  });
+
+  it.each([
+    ["pending balance", "balance: () => null,"],
+    ["bad balance", "balance: () => ({ amount: -1, currency: 'must-not-escape' }),"],
+    ["throwing balance", "balance: () => { throw new Error('secret'); },"],
+    [
+      "throwing balance refresh",
+      "balance: () => null, refreshBalance: async () => { throw new Error('secret'); },",
+    ],
+  ] as const)("isolates %s without losing Thread usage", async (_label, code) => {
+    const f = await fixtureFor(code);
+    try {
+      const threadId = await startExternalThread(
+        f.fixture,
+        encodeHarnessPluginRoute({ harnessId: id }),
+      );
+      const response = await f.rpc("codexhost/thread/usage/inspect", { threadId });
+      expect(response).toMatchObject({ accountCreditsSupported: true, usage: { totalTokens: 10 } });
+      expect(response).not.toHaveProperty("accountBalance");
+      expect(JSON.stringify(response)).not.toContain("secret");
+      expect(JSON.stringify(response)).not.toContain("must-not-escape");
+    } finally {
+      await f.close();
+    }
+  });
+
   it.each([
     ["no capability", "", false],
     ["pending quota", "credits: () => null,", true],

@@ -222,7 +222,54 @@ describe("exact-commit CI release gate", () => {
   it("combines trusted metadata with exact-head CI provenance", async () => {
     const f = await repository();
     const result = await resolveRelease({ ...f, repo, github: githubFixture(f.sha) });
-    expect(result).toMatchObject({ sha: f.sha, ciRunId: 42, ciRunAttempt: 1 });
+    expect(result).toMatchObject({ sha: f.sha, ciRunId: 42, ciRunAttempt: 1, ciSkipped: false });
+  });
+
+  it("skips CI reads only when explicitly selected and records the decision", async () => {
+    const f = await repository();
+    const result = await resolveRelease({ ...f, repo, github: {}, waitForCi: true, skipCi: true });
+    expect(result).toMatchObject({ sha: f.sha, ciSkipped: true });
+    expect(result).not.toHaveProperty("ciRunId");
+    expect(result).not.toHaveProperty("ciRunAttempt");
+    expect(result).not.toHaveProperty("ciUrl");
+  });
+
+  it("still rejects invalid release metadata when CI is skipped", async () => {
+    const f = await repository({ cargoVersion: "1.2.4" });
+    await expect(resolveRelease({ ...f, repo, github: {}, skipCi: true })).rejects.toThrow(
+      "Cargo workspace version",
+    );
+  });
+
+  it.each([undefined, false, "true"])("retains the CI gate for skipCi=%s", async (skipCi) => {
+    const f = await repository();
+    const github = githubFixture(f.sha);
+    github.rest.actions.listWorkflowRuns.mockResolvedValue({ data: [] });
+    await expect(resolveRelease({ ...f, repo, github, skipCi })).rejects.toThrow("CI evidence");
+    await expect(
+      verifyRelease({
+        github,
+        repo,
+        tag: f.tag,
+        sha: f.sha,
+        tagObjectSha: oldHead,
+        skipCi,
+      }),
+    ).rejects.toThrow("CI evidence");
+  });
+
+  it("revalidates tags and main membership without reading CI when explicitly skipped", async () => {
+    const github = githubFixture();
+    const input = { github, repo, tag: "v1.2.3", sha: head, tagObjectSha: oldHead, skipCi: true };
+    expect(await verifyRelease(input)).toEqual({ ciSkipped: true });
+    expect(github.rest.actions.getWorkflow).not.toHaveBeenCalled();
+    expect(github.rest.actions.listWorkflowRuns).not.toHaveBeenCalled();
+    expect(github.rest.actions.listJobsForWorkflowRun).not.toHaveBeenCalled();
+    await expect(verifyRelease({ ...input, tagObjectSha: head })).rejects.toThrow("tag changed");
+    github.rest.repos.compareCommits.mockResolvedValue({
+      data: { status: "diverged", merge_base_commit: { sha: oldHead } },
+    });
+    await expect(verifyRelease(input)).rejects.toThrow("no longer on main");
   });
 
   it("rejects publication if main was rewritten to remove the prepared commit", async () => {

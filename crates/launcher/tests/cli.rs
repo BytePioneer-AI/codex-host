@@ -34,6 +34,10 @@ fn production_launcher_uses_the_three_state_running_desktop_flow() {
     assert!(source.contains("acquire_launcher_ownership"));
     assert!(source.contains("completely quit it before starting codexhost"));
     assert!(!source.contains("attach_unmanaged_desktop"));
+    assert!(source.contains("RunningDesktopChoice::Cancel => return Ok(())"));
+    assert!(source.contains(
+        "let result = launch_gui(options, installation, interactive);\n    services::finish_launch(false);\n    result"
+    ), "every GUI outcome, including cancellation, must join Web before returning");
 }
 
 #[test]
@@ -84,14 +88,20 @@ fn production_launcher_resolves_resources_beside_its_installed_location() {
     let output = output_of_copied_binary(
         Command::new(&installed)
             .args(["launch"])
-            .env("CODEXHOST_DATA_DIR", root.join("data")),
+            .env("HOME", &root)
+            .env("USERPROFILE", &root)
+            .env("LOCALAPPDATA", &root)
+            .env("CODEXHOST_WEB_SERVICE", "0")
+            .env("CODEXHOST_DATA_DIR", root.join("data"))
+            .env("CODEXHOST_CONSOLE", "0")
+            .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop")),
     )
     .expect("run installed launcher");
     fs::remove_dir_all(&root).expect("remove release layout");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("bundled Shim"));
+    assert!(stderr.contains("bundled Shim"), "{stderr}");
     assert!(stderr.contains("libexec"));
     assert!(stderr.contains("codexhost-shim"));
     assert!(!stderr.contains("--shim is required"));
@@ -114,14 +124,172 @@ fn finder_launch_resolves_standard_app_resources_and_defaults_to_codex() {
     fs::copy(launcher_path(), &installed).expect("copy app launcher");
 
     let output = output_of_copied_binary(
-        Command::new(&installed).env("CODEXHOST_DATA_DIR", root.join("data")),
+        Command::new(&installed)
+            .env("HOME", &root)
+            .env("CODEXHOST_WEB_SERVICE", "0")
+            .env("CODEXHOST_DATA_DIR", root.join("data"))
+            .env("CODEXHOST_CONSOLE", "0")
+            .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop")),
     )
     .expect("run Finder-style launcher");
     fs::remove_dir_all(&root).expect("remove app layout");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("bundled Shim"));
+    assert!(stderr.contains("bundled Shim"), "{stderr}");
     assert!(stderr.contains("Contents/Resources/libexec/codexhost-shim"));
     assert!(!stderr.contains("invalid launcher arguments"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn npm_launch_starts_recovery_console_without_desktop_or_bundled_node() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "codexhost npm console {} {unique}",
+        std::process::id()
+    ));
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let installed = bin.join("codexhost");
+    fs::copy(launcher_path(), &installed).unwrap();
+    let host_runtime = root.join("host-runtime.mjs");
+    fs::write(&host_runtime, "fixture").unwrap();
+    fs::write(root.join("console-server.mjs"), "fixture").unwrap();
+    let node = root.join("npm-node");
+    let calls = root.join("calls");
+    fs::write(&node, "#!/bin/sh\nprintf '%s\n' \"$3\" >> \"$TEST_CONSOLE_CALLS\"\necho 'codexhost console: http://127.0.0.1:4399/'\n").unwrap();
+    fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = output_of_copied_binary(
+        Command::new(&installed)
+            .args(["launch", "--host-runtime"])
+            .arg(&host_runtime)
+            .env("HOME", &root)
+            .env("CODEXHOST_WEB_SERVICE", "0")
+            .env("CODEXHOST_DATA_DIR", root.join("data"))
+            .env("CODEXHOST_INSTALL_ROOT", root.join("missing-desktop"))
+            .env("CODEXHOST_CONSOLE", "1")
+            .env("CODEXHOST_NPM_NODE_PATH", &node)
+            .env("TEST_CONSOLE_CALLS", &calls),
+    )
+    .unwrap();
+    let calls = fs::read_to_string(calls).unwrap_or_default();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(!output.status.success());
+    assert!(calls.lines().any(|action| action == "ensure"), "{calls}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("bundled Shim"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("codexhost console: http://127.0.0.1:4399/")
+    );
+}
+
+#[test]
+fn help_prints_usage_to_stdout_and_succeeds() {
+    for argument in ["--help", "-h", "help"] {
+        let output = Command::new(launcher_path())
+            .arg(argument)
+            .output()
+            .expect("run launcher");
+        assert!(output.status.success(), "{argument}");
+        assert!(output.stderr.is_empty(), "{argument}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.starts_with("usage:\n"), "{argument}");
+        for command in [
+            "codexhost --version",
+            "codexhost desktop-screenshot",
+            "codexhost host info ...",
+            "codexhost project list ...",
+            "codexhost harness list|inspect ...",
+            "codexhost thread send|cancel|read|wait|watch|watches|list|file ...",
+            "codexhost broker install|status|stop|uninstall",
+        ] {
+            assert!(stdout.contains(command), "{argument}: {command}");
+        }
+    }
+}
+
+#[test]
+fn desktop_screenshot_rejects_arguments_before_capturing() {
+    let output = Command::new(launcher_path())
+        .args(["desktop-screenshot", "--output", "untrusted.png"])
+        .output()
+        .expect("run launcher");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("desktop-screenshot accepts no arguments")
+    );
+}
+
+#[test]
+fn version_prints_the_plain_release_version() {
+    for argument in ["--version", "-V", "-v"] {
+        let output = Command::new(launcher_path())
+            .arg(argument)
+            .output()
+            .expect("run launcher");
+        assert!(output.status.success(), "{argument}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{}\n", env!("CARGO_PKG_VERSION")),
+            "{argument}"
+        );
+    }
+    let output = Command::new(launcher_path())
+        .args(["--version", "extra"])
+        .output()
+        .expect("run launcher");
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn broker_without_a_subcommand_prints_broker_usage() {
+    // The npm wrapper appends its runtime options after the user's broker arguments.
+    let injected = ["--node", "/usr/bin/node", "--host-runtime", "/opt/host.mjs"];
+    for user in [&[][..], &["--help"], &["-h"], &["help"]] {
+        for with_injected in [false, true] {
+            let mut command = Command::new(launcher_path());
+            command.arg("broker").args(user);
+            if with_injected {
+                command.args(injected);
+            }
+            let output = command.output().expect("run launcher");
+            assert!(output.status.success(), "{user:?} {with_injected}");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout.starts_with("usage: codexhost broker install|status|stop|uninstall"),
+                "{user:?} {with_injected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn unknown_commands_remain_errors() {
+    let injected = ["--node", "/usr/bin/node", "--host-runtime", "/opt/host.mjs"];
+    let bogus_option_with_injected: Vec<&str> =
+        ["broker", "--bogus"].into_iter().chain(injected).collect();
+    for arguments in [
+        &["bogus"][..],
+        &["broker", "bogus"],
+        &["broker", "nonexistent", "--help"],
+        &["broker", "nonexistent", "-h"],
+        &["broker", "--bogus"],
+        bogus_option_with_injected.as_slice(),
+    ] {
+        let output = Command::new(launcher_path())
+            .args(arguments)
+            .output()
+            .expect("run launcher");
+        assert_eq!(output.status.code(), Some(1), "{arguments:?}");
+        assert!(output.stdout.is_empty(), "{arguments:?}");
+    }
 }

@@ -4,7 +4,7 @@ import type {
   RemoteStreamHandle,
   TypertRemoteContribution,
 } from '@deepseek-ai/dsh-typert-protocol'
-import type { WorkspaceArchiveSessionRequest, WorkspaceArchiveValue, WorkspaceCreateRequest, WorkspaceCreateValue, WorkspaceDeleteRequest, WorkspaceDeleteValue, WorkspaceFollowFrame, WorkspaceInsertBeforeRequest, WorkspaceInsertSessionBeforeRequest, WorkspaceOrderValue, WorkspacePinSessionRequest, WorkspacePinValue, WorkspaceRenameRequest, WorkspaceUnarchiveSessionRequest, WorkspaceUnpinSessionRequest, WorkspaceValue } from '@deepseek-ai/dsh-api-workspace-controller/types'
+import type { WorkspaceArchiveSessionRequest, WorkspaceArchiveValue, WorkspaceCreateRequest, WorkspaceCreateValue, WorkspaceDeleteRequest, WorkspaceDeleteValue, WorkspaceFollowFrame, WorkspaceInsertBeforeRequest, WorkspaceInsertSessionBeforeRequest, WorkspaceOrderValue, WorkspaceMoveSessionToSectionRequest, WorkspaceMoveSessionToSectionValue, WorkspacePinSessionRequest, WorkspacePinValue, WorkspaceRenameRequest, WorkspaceUnarchiveSessionRequest, WorkspaceUnpinSessionRequest, WorkspaceValue } from '@deepseek-ai/dsh-api-workspace-controller/types'
 import type { DirectoryListing } from '@deepseek-ai/dsh-host-directory-picker/types'
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
@@ -21,6 +21,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     initializeDefault: (signal?: AbortSignal) => Promise<RemoteResult<WorkspaceValue | undefined>>
     insertBefore: (request: WorkspaceInsertBeforeRequest) => Promise<RemoteResult<WorkspaceOrderValue>>
     insertSessionBefore: (request: WorkspaceInsertSessionBeforeRequest) => Promise<RemoteResult<WorkspaceValue>>
+    moveSessionToSection: (request: WorkspaceMoveSessionToSectionRequest) => Promise<RemoteResult<WorkspaceMoveSessionToSectionValue>>
     pinSession: (request: WorkspacePinSessionRequest) => Promise<RemoteResult<WorkspacePinValue>>
     rename: (request: WorkspaceRenameRequest) => Promise<RemoteResult<WorkspaceValue>>
     unarchiveSession: (request: WorkspaceUnarchiveSessionRequest) => Promise<RemoteResult<WorkspaceArchiveValue>>
@@ -37,6 +38,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'workspace/initializeDefault': (signal?: AbortSignal) => Promise<RemoteResult<WorkspaceValue | undefined>>
     'workspace/insertBefore': (request: WorkspaceInsertBeforeRequest) => Promise<RemoteResult<WorkspaceOrderValue>>
     'workspace/insertSessionBefore': (request: WorkspaceInsertSessionBeforeRequest) => Promise<RemoteResult<WorkspaceValue>>
+    'workspace/moveSessionToSection': (request: WorkspaceMoveSessionToSectionRequest) => Promise<RemoteResult<WorkspaceMoveSessionToSectionValue>>
     'workspace/pinSession': (request: WorkspacePinSessionRequest) => Promise<RemoteResult<WorkspacePinValue>>
     'workspace/rename': (request: WorkspaceRenameRequest) => Promise<RemoteResult<WorkspaceValue>>
     'workspace/unarchiveSession': (request: WorkspaceUnarchiveSessionRequest) => Promise<RemoteResult<WorkspaceArchiveValue>>

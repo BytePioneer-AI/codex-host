@@ -15,7 +15,15 @@ import { canReorderLocalWorkspaces } from "./workspace-reorder.ts";
  * are slot entries with their own behavior, so this component threads no
  * action callbacks and hosts no action surface.
  */
-import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ComponentProps,
+  type CSSProperties,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import clsx from "clsx";
 import {
   Button,
@@ -45,6 +53,7 @@ import type {
   SessionSearchResultItem,
 } from "@deepseek-ai/dsh-api-session-controller/client";
 import type { WorkspaceId, WorkspaceView } from "@deepseek-ai/dsh-api-workspace-controller/client";
+import type { WorkspaceThreadSection } from "@deepseek-ai/dsh-api-workspace-controller/types";
 import { workspaceDisplayTitle } from "@deepseek-ai/dsh-api-workspace-controller/default-workspace";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { ShortcutCatalogEntry } from "@deepseek-ai/dsh-client-shortcuts/client";
@@ -56,11 +65,13 @@ import type {
   SessionNode,
   SessionOrderBy,
   SessionRowState,
+  SessionStatuses,
 } from "../tree.ts";
 import {
   deriveFlat,
   deriveGroups,
   deriveSearchResults,
+  deriveThreadForest,
   orderByRecency,
   owningGroupKey,
   owningParentFolder,
@@ -368,6 +379,7 @@ type SessionTreeProps = Pick<
     setSessionOrder: (accountKey: string, order: readonly string[]) => void;
     /** Registry-global pin and archive sets plus the archived-visibility choice. */
     rowState: SessionRowState;
+    nativeSections: readonly WorkspaceThreadSection[];
     /** Switch the archived filter back to the default hide-archived view. */
     onLeaveArchivedOnly: () => void;
     /** Open the browser-owned rename dialog for a real Workspace group. */
@@ -423,6 +435,7 @@ function SessionTree({
   linkedRoots,
   ungroupedSessionIds,
   rowState,
+  nativeSections,
   onLeaveArchivedOnly,
   workspaceReady,
   canStartProjectless,
@@ -625,6 +638,13 @@ function SessionTree({
   );
   const shownWorkspaceRoots = allWorkspacesShown ? workspaceRoots : collapsedWorkspaces.rows;
   const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
+  const nativeLayout = nativeSectionLayout(
+    nativeSections,
+    list,
+    rowState,
+    statuses,
+    sectionExpansion,
+  );
   const workspacesSectionExpanded = sectionExpanded(sectionExpansion, WORKSPACES_SECTION_KEY);
 
   // Folding a group returns its Session window to the default, so reopening it
@@ -645,7 +665,9 @@ function SessionTree({
     if (pinnedSectionExpanded)
       for (const node of threadView.rows(pinnedRows)) rowKeys.push(`session:${node.id}`);
   }
-  if (groups.length === 0 && pinnedRows.length === 0) rowKeys.push("empty");
+  rowKeys.push(...nativeSectionRowKeys(nativeLayout, threadView.rows));
+  if (groups.length === 0 && pinnedRows.length === 0 && nativeSections.length === 0)
+    rowKeys.push("empty");
   const renderGroup = (group: GroupNode, depth: number): ReactNode => {
     const workspaceId = group.workspaceId;
     const children = childrenByParent.get(group.key) ?? [];
@@ -981,7 +1003,18 @@ function SessionTree({
           }}
           t={t}
         />
-        {groups.length === 0 && pinnedRows.length === 0 && (
+        <NativeSections
+          sections={nativeLayout}
+          currentId={current}
+          onOpen={open}
+          onRenameRequest={onSessionRenameRequest}
+          renderSlot={renderSlot}
+          revealSessionId={revealSessionId}
+          onSessionRevealed={onSessionRevealed}
+          setSectionExpanded={setSectionExpanded}
+          t={t}
+        />
+        {groups.length === 0 && pinnedRows.length === 0 && nativeSections.length === 0 && (
           <EmptySessions
             rowState={rowState}
             onLeaveArchivedOnly={onLeaveArchivedOnly}
@@ -1008,10 +1041,70 @@ function SessionTree({
 }
 
 /** The flat "In one list" body: every session is one draggable top-level row. */
+const NO_THREAD_SECTIONS: readonly WorkspaceThreadSection[] = [];
+
+function nativeSectionLayout(
+  sections: readonly WorkspaceThreadSection[],
+  list: SessionListState,
+  rowState: SessionRowState,
+  statuses: SessionStatuses,
+  expansion: SessionTreeProps["sectionExpansion"],
+) {
+  if (!sections.length) return [];
+  const roots = new Map(
+    deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]),
+  );
+  const placed = new Set<SessionId>();
+  return sections.map(({ id, name, threadIds }) => {
+    const key = `native-section:${id}`;
+    const rows = threadIds.flatMap((threadId) => {
+      const row = roots.get(threadId);
+      if (!row || row.pinned || placed.has(threadId)) return [];
+      placed.add(threadId);
+      return [row];
+    });
+    return { key, name, rows, expanded: sectionExpanded(expansion, key) };
+  });
+}
+
+function nativeSectionRowKeys(
+  sections: ReturnType<typeof nativeSectionLayout>,
+  visibleRows: (roots: readonly SessionNode[]) => SessionNode[],
+): string[] {
+  return sections.flatMap(({ key, rows, expanded }) => [
+    `section:${key}`,
+    ...(expanded ? visibleRows(rows).map((row) => `session:${row.id}`) : []),
+  ]);
+}
+
+function NativeSections({
+  sections,
+  setSectionExpanded,
+  ...rowProps
+}: Omit<
+  ComponentProps<typeof PinnedSection>,
+  "rows" | "expanded" | "onToggle" | "customSection"
+> & {
+  sections: ReturnType<typeof nativeSectionLayout>;
+  setSectionExpanded: SessionTreeProps["setSectionExpanded"];
+}) {
+  return sections.map(({ key, name, rows, expanded }) => (
+    <PinnedSection
+      key={key}
+      {...rowProps}
+      rows={rows}
+      customSection={{ key, name }}
+      expanded={expanded}
+      onToggle={() => setSectionExpanded(key, !expanded)}
+    />
+  ));
+}
+
 function FlatList({
   list,
   sessionIds,
   rowState,
+  nativeSections,
   onLeaveArchivedOnly,
   useSessionStatus,
   open,
@@ -1042,6 +1135,7 @@ function FlatList({
   | "revealSessionId"
   | "onSessionRevealed"
   | "rowState"
+  | "nativeSections"
   | "onLeaveArchivedOnly"
   | "loadMoreSessions"
   | "t"
@@ -1053,7 +1147,10 @@ function FlatList({
   const statuses = useSessionStatus((s) => s);
   const threadView = useThreadTreeView();
   const rows = useMemo(
-    () => deriveFlat(list, sessionIds, rowState, statuses).filter((node) => !node.pinned),
+    () =>
+      deriveFlat(list, sessionIds, rowState, statuses).filter(
+        (node) => !node.pinned && !rowState.sectionedSessionIds?.has(node.id),
+      ),
     [list, sessionIds, rowState, statuses],
   );
   const pinnedRows = deriveFlat(list, rowState.pinnedSessionIds, rowState, statuses).filter(
@@ -1078,6 +1175,13 @@ function FlatList({
   };
   const now = Date.now();
   const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
+  const nativeLayout = nativeSectionLayout(
+    nativeSections,
+    list,
+    rowState,
+    statuses,
+    sectionExpansion,
+  );
   return (
     <div className={clsx(css.treeBody, css.wide)}>
       <AnimatedRows
@@ -1088,7 +1192,10 @@ function FlatList({
           ...(pinnedSectionExpanded
             ? threadView.rows(pinnedRows).map((row) => `session:${row.id}`)
             : []),
-          ...(rows.length === 0 && pinnedRows.length === 0 ? ["empty"] : []),
+          ...nativeSectionRowKeys(nativeLayout, threadView.rows),
+          ...(rows.length === 0 && pinnedRows.length === 0 && nativeSections.length === 0
+            ? ["empty"]
+            : []),
           ...threadView.rows(visible.rows).map((row) => `session:${row.id}`),
           ...(hasOverflow || list.hasMore ? ["overflow:flat"] : []),
         ]}
@@ -1109,8 +1216,21 @@ function FlatList({
           }}
           t={t}
         />
-        {pinnedRows.length > 0 && <SectionHeading label={t("section.sessions")} />}
-        {rows.length === 0 && pinnedRows.length === 0 && (
+        <NativeSections
+          sections={nativeLayout}
+          currentId={currentId}
+          onOpen={open}
+          onRenameRequest={onSessionRenameRequest}
+          renderSlot={renderSlot}
+          revealSessionId={revealSessionId}
+          onSessionRevealed={onSessionRevealed}
+          setSectionExpanded={setSectionExpanded}
+          t={t}
+        />
+        {(pinnedRows.length > 0 || nativeSections.length > 0) && (
+          <SectionHeading label={t("section.sessions")} />
+        )}
+        {rows.length === 0 && pinnedRows.length === 0 && nativeSections.length === 0 && (
           <EmptySessions
             rowState={rowState}
             onLeaveArchivedOnly={onLeaveArchivedOnly}
@@ -1376,6 +1496,7 @@ function WorkspaceBrowserContent({
   const workspaceStreamState = useWorkspaces((state) => state.state);
   const archivedSessionIds = useWorkspaces((state) => state.archivedSessionIds);
   const pinnedSessionIds = useWorkspaces((state) => state.pinnedSessionIds);
+  const threadSections = useWorkspaces((state) => state.threadSections ?? NO_THREAD_SECTIONS);
   // Live occupancy of this surface's directory-flow hole (the same source the
   // flow reads): a composition without a picking affordance can add nothing.
   const directoryFlowAvailable = useDirectoryFlow((occupied) => occupied);
@@ -1415,9 +1536,14 @@ function WorkspaceBrowserContent({
     () => ({ pinnedSessionIds, archivedSessionIds }),
     [archivedSessionIds, pinnedSessionIds],
   );
+  const nativeSections = archivedFilter === "only" ? NO_THREAD_SECTIONS : threadSections;
   const rowState = useMemo<SessionRowState>(
-    () => ({ ...orderState, archivedFilter }),
-    [orderState, archivedFilter],
+    () => ({
+      ...orderState,
+      archivedFilter,
+      sectionedSessionIds: new Set(nativeSections.flatMap((section) => section.threadIds)),
+    }),
+    [orderState, archivedFilter, nativeSections],
   );
   const flatMemberIds = useMemo(
     () => sessionMemberIds(list, archivedSessionIds),
@@ -1595,6 +1721,10 @@ function WorkspaceBrowserContent({
       notifyArchivedNotOpenable();
       return;
     }
+    const section = nativeSections.find(({ threadIds }) =>
+      threadIds.includes(threadView.rootId(sessionId)),
+    );
+    if (section) actions.setSectionExpanded(`native-section:${section.id}`, true);
     setRevealSessionId(sessionId);
     setQuery("");
     setSearchExpanded(false);
@@ -1982,6 +2112,7 @@ function WorkspaceBrowserContent({
               list={list}
               sessionIds={orderedFlatSessionIds}
               rowState={rowState}
+              nativeSections={nativeSections}
               onLeaveArchivedOnly={leaveArchivedOnly}
               workspaceReady={workspaceReady}
               animationResetKey={`${groupBy}/${orderBy}/${archivedFilter}`}
@@ -2018,6 +2149,7 @@ function WorkspaceBrowserContent({
               setSectionExpanded={actions.setSectionExpanded}
               setSessionOrder={saveSessionOrder}
               rowState={rowState}
+              nativeSections={nativeSections}
               onLeaveArchivedOnly={leaveArchivedOnly}
               startSession={startSession}
               open={guardedOpen}

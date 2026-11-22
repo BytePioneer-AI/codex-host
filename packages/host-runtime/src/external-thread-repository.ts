@@ -25,6 +25,7 @@ import {
 } from "@codexhost/mapping-store";
 import type { JsonObject, TodoPlan } from "@codexhost/protocol-core";
 import {
+  THREAD_STEER_STRICT_TARGET_FIELD,
   hostThreadIdSchema,
   hostTurnIdSchema,
   type HarnessId,
@@ -681,6 +682,7 @@ export function externalThreadValue(input: {
     threadSource: record.subagent ? "subAgentThreadSpawn" : null,
     modelProvider: "codexhost",
     cliVersion: "codexhost",
+    [THREAD_STEER_STRICT_TARGET_FIELD]: true,
     createdAt,
     updatedAt,
     recencyAt: updatedAt,

@@ -7,7 +7,11 @@ import type {
 } from "@codexhost/harness-adapter";
 
 import { FakeHarnessSession } from "@codexhost/harness-adapter/testing";
-import { harnessIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  THREAD_STEER_STRICT_TARGET_PARAM,
+  harnessIdSchema,
+  hostTurnIdSchema,
+} from "@codexhost/shared-contracts";
 
 import {
   ExternalSteerNotTakenError,
@@ -370,20 +374,35 @@ describe("Host native steering", () => {
     expect(host.project).not.toHaveBeenCalled();
   });
 
-  it("starts the next Turn when untaken input arrives after the active Turn ended", async () => {
-    const f = fixture();
-    f.thread.session.capabilities.steer = true;
-    f.insert.mockImplementationOnce(async () => {
-      f.thread.running = false;
-      f.thread.activeTurnId = null;
-      throw new ExternalSteerNotTakenError("Turn ended first");
-    });
-    await expect(f.coordinator.run(f.thread, f.params, f.start, f.insert)).resolves.toEqual(
-      f.replaced,
-    );
-    expect(f.execute).not.toHaveBeenCalled();
-    expect(f.start).toHaveBeenCalledOnce();
-  });
+  it.each([true, false])(
+    "honors the strict target policy (%s) when the Harness refuses an ended Turn",
+    async (strictTarget) => {
+      const f = fixture();
+      f.thread.session.capabilities.steer = true;
+      f.insert.mockImplementationOnce(async () => {
+        f.thread.running = false;
+        f.thread.activeTurnId = null;
+        throw new ExternalSteerNotTakenError("Turn ended first");
+      });
+      const result = f.coordinator.run(
+        f.thread,
+        { ...f.params, ...(strictTarget ? { [THREAD_STEER_STRICT_TARGET_PARAM]: true } : {}) },
+        f.start,
+        f.insert,
+      );
+      if (strictTarget) {
+        await expect(result).rejects.toMatchObject({
+          code: -32074,
+          message: "External steering target is no longer active",
+        });
+        expect(f.start).not.toHaveBeenCalled();
+      } else {
+        await expect(result).resolves.toEqual(f.replaced);
+        expect(f.start).toHaveBeenCalledOnce();
+      }
+      expect(f.execute).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not cancel a different Turn when native refusal arrives late", async () => {
     const f = fixture();
@@ -396,6 +415,25 @@ describe("Host native steering", () => {
       code: -32074,
     });
     expect(f.execute).not.toHaveBeenCalled();
+    expect(f.start).not.toHaveBeenCalled();
+  });
+
+  it("leaves the queue transition to normal completion if a strict target finishes naturally", async () => {
+    const f = fixture();
+    const result = f.coordinator.run(
+      f.thread,
+      { ...f.params, [THREAD_STEER_STRICT_TARGET_PARAM]: true },
+      f.start,
+      f.insert,
+    );
+    await vi.waitFor(() => expect(f.execute).toHaveBeenCalledOnce());
+    f.thread.running = false;
+    f.thread.activeTurnId = null;
+    expect(f.coordinator.terminal("thread", "old", { status: "succeeded" })).toBe(false);
+    await expect(result).rejects.toMatchObject({
+      code: -32074,
+      message: "External steering target is no longer active",
+    });
     expect(f.start).not.toHaveBeenCalled();
   });
 

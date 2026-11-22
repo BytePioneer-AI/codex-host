@@ -230,6 +230,8 @@ export {
   threadSteeringInspectParamsSchema,
   threadSteeringInspectResultSchema,
   THREAD_STEER_DELIVERY_PARAM,
+  THREAD_STEER_STRICT_TARGET_PARAM,
+  THREAD_STEER_STRICT_TARGET_FIELD,
   THREAD_STEERING_CONTEXT_PARAM,
   threadSteeringContextSchema,
   threadSteerDeliverySchema,
@@ -480,9 +482,13 @@ export {
   type WebUiExtensionsState,
 } from "./web-ui-extensions.js";
 export {
+  remoteDeliveryReplySchema,
+  remoteQueueSnapshotSchema,
   remoteSessionOperationSchema,
   remoteSessionRequestBytes,
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
+  type RemoteDeliveryReply,
+  type RemoteQueueSnapshot,
   type RemoteSessionOperation,
 } from "./remote-sessions.js";
 

@@ -22,6 +22,7 @@ import {
   type HarnessPermissionModeId,
   type HarnessPermissionModeScope,
   type HarnessThinkingOptionId,
+  type HostThreadId,
   type AccountBalanceSnapshot,
   type AccountCreditsSnapshot,
   type ThreadInspection,
@@ -779,13 +780,13 @@ function catalogWithConfigurationState(
   state: HarnessModelSelectionState,
 ): HarnessModelCatalog {
   if (!state.availableThinkingOptions) return catalog;
+  const selectedModel = catalogModelForRef(catalog, model);
+  if (!selectedModel) return catalog;
   const supportedThinkingOptionIds = state.availableThinkingOptions.map(({ id }) => id);
   const models = catalog.models.map((candidate) => {
     const normalized = { ...candidate };
     delete normalized.supportedThinkingOptionIds;
-    return candidate === catalogModelForRef(catalog, model)
-      ? { ...normalized, supportedThinkingOptionIds }
-      : normalized;
+    return candidate === selectedModel ? { ...normalized, supportedThinkingOptionIds } : normalized;
   });
   const normalized = {
     ...catalog,
@@ -801,32 +802,16 @@ function catalogWithConfigurationState(
   return normalized;
 }
 
-/** Keep a confirmed ref on the catalog entry the user selected. */
-function catalogWithConfirmedModel(
-  catalog: HarnessModelCatalog,
-  requested: HarnessModelRef,
-  effective: HarnessModelRef,
-): HarnessModelCatalog {
-  if (catalogModelForRef(catalog, effective)) return catalog;
-  let replaced = false;
-  const models = catalog.models.map((model) => {
-    if (model.ref.id === requested.id) {
-      replaced = true;
-      return { ...model, ref: effective };
-    }
-    if (model.fastModel?.id === requested.id) {
-      replaced = true;
-      return { ...model, fastModel: effective };
-    }
-    return model;
-  });
-  return replaced
-    ? {
-        ...catalog,
-        models,
-        defaultModel: catalog.defaultModel?.id === requested.id ? effective : catalog.defaultModel,
-      }
-    : catalog;
+async function inspectThreadModelCatalog(
+  client: RendererModelClient,
+  threadId: HostThreadId,
+  agent: ExternalRendererAgent,
+): Promise<HarnessModelCatalog | undefined> {
+  const inspection = await client.inspectThread({ threadId });
+  if (inspection.owner !== "external" || inspection.harnessId !== agent) {
+    throw new Error("Thread inspection did not confirm the current Harness");
+  }
+  return inspection.catalog;
 }
 
 export function installRendererBindingProbe(
@@ -1938,7 +1923,7 @@ export function installRendererBindingProbe(
         : undefined;
       if (
         current.phase === "draft" &&
-        (previousModel?.id !== selected.id ||
+        (!sameHarnessModelRef(previousModel, selected) ||
           previousThinkingOptionId !== selectedThinkingOptionId ||
           previousPermissionModeId !== selectedPermissionModeId)
       ) {
@@ -2068,48 +2053,62 @@ export function installRendererBindingProbe(
       catalogRequests.set(candidate, request);
       renderMounted(candidate);
     }
-    try {
-      const inspection = await client.inspectHarness({
-        harnessId: harnessIdSchema.parse(agent),
-        refresh: true,
-        credentialAccess: "retry",
-      });
-      if (inspection.status !== "ready") return;
-      for (const [candidate, request] of targets) {
-        if (
-          catalogRequests.get(candidate) !== request ||
-          !matchesTarget(candidate) ||
-          !isCurrentModelRequest(candidate, request.generation)
-        )
-          continue;
-        // A catalog refresh does not write the Composer's confirmed selection.
-        const { selected, selectedThinkingOptionId, resolvedModelLabel } = candidate.modelView;
-        const catalog =
-          selected && candidate.threadConfiguration
-            ? catalogWithConfigurationState(
-                inspection.catalog,
-                selected,
-                candidate.threadConfiguration,
-              )
-            : inspection.catalog;
-        candidate.modelView = {
-          status: "ready",
-          catalog,
-          ...(selected ? { selected } : {}),
-          ...(selectedThinkingOptionId ? { selectedThinkingOptionId } : {}),
-          ...(resolvedModelLabel ? { resolvedModelLabel } : {}),
-          thinkingSelectionSupported: inspection.capabilities.configuration.selectThinkingOption,
-        };
-      }
-    } catch {
-      // Keep the usable catalog when the Host could not refresh it.
-    } finally {
-      for (const [candidate, request] of targets) {
-        if (catalogRequests.get(candidate) !== request) continue;
-        catalogRequests.delete(candidate);
-        finishModelRequest(candidate, request.generation);
-      }
-    }
+    const harnessInspection = client.inspectHarness({
+      harnessId: harnessIdSchema.parse(agent),
+      refresh: true,
+      credentialAccess: "retry",
+    });
+    await Promise.all(
+      [...targets].map(async ([candidate, request]) => {
+        const isCurrent = () =>
+          catalogRequests.get(candidate) === request &&
+          matchesTarget(candidate) &&
+          isCurrentModelRequest(candidate, request.generation);
+        try {
+          const inspection = await harnessInspection;
+          if (inspection.status !== "ready" || !isCurrent()) return;
+          const locked = controller.get(candidate.composer).phase === "locked";
+          const threadId = locked
+            ? threadIdFromComposerModelTarget(candidate.modelTarget)
+            : undefined;
+          let modelCatalog = inspection.catalog;
+          if (threadId) {
+            const sessionCatalog = await inspectThreadModelCatalog(client, threadId, agent);
+            if (!isCurrent() || threadIdFromComposerModelTarget(candidate.modelTarget) !== threadId)
+              return;
+            candidate.sessionCatalog = sessionCatalog;
+            modelCatalog = sessionCatalog ?? modelCatalog;
+          }
+          // A catalog refresh does not write the Composer's confirmed selection.
+          const { selected, selectedThinkingOptionId, resolvedModelLabel } = candidate.modelView;
+          const missingModel = locked && selected && !catalogModelForRef(modelCatalog, selected);
+          const catalog =
+            selected && candidate.threadConfiguration
+              ? catalogWithConfigurationState(modelCatalog, selected, candidate.threadConfiguration)
+              : modelCatalog;
+          candidate.modelView = {
+            ...(missingModel
+              ? {
+                  status: "error",
+                  error: "Existing Thread Model is absent from the current Catalog",
+                }
+              : { status: "ready" }),
+            catalog,
+            ...(selected ? { selected } : {}),
+            ...(selectedThinkingOptionId ? { selectedThinkingOptionId } : {}),
+            ...(resolvedModelLabel ? { resolvedModelLabel } : {}),
+            thinkingSelectionSupported: inspection.capabilities.configuration.selectThinkingOption,
+          };
+        } catch {
+          // Keep the usable catalog when the Host could not refresh it.
+        } finally {
+          if (catalogRequests.get(candidate) === request) {
+            catalogRequests.delete(candidate);
+            finishModelRequest(candidate, request.generation);
+          }
+        }
+      }),
+    );
   };
 
   const selectExternalModel = async (mounted: MountedComposer, modelId: string): Promise<void> => {
@@ -2126,6 +2125,20 @@ export function installRendererBindingProbe(
     const previousPermissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
     const supportsThinkingSelection = mounted.modelView.thinkingSelectionSupported === true;
     const generation = controller.beginModelRequest(mounted.composer);
+    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    const hostId = mounted.hostId;
+    const requestControl = modelControl;
+    const client = composerClient(mounted);
+    const isCurrent = () =>
+      isCurrentModelRequest(mounted, generation) &&
+      controller.get(mounted.composer).agent === agent &&
+      (current.phase === "draft" ||
+        (threadIdFromComposerModelTarget(mounted.modelTarget) === threadId &&
+          mounted.hostId === hostId &&
+          activeModelHostId(mounted.composer) === hostId &&
+          modelControl === requestControl &&
+          composerClient(mounted) === client));
+    let confirmedCatalog = catalog;
     mounted.modelView = {
       status: "selecting",
       catalog,
@@ -2172,31 +2185,23 @@ export function installRendererBindingProbe(
         }
         if (!isCurrentModelRequest(mounted, generation)) return;
       } else {
-        const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
         if (!threadId) {
           throw new Error("External Thread identity is unavailable for Model selection");
         }
-        const client = composerClient(mounted);
         if (!client) throw new Error("Thread Host is unavailable");
         const state = await client.selectThreadModel({ threadId, model: selected });
-        if (composerClient(mounted) !== client) return;
-        if (
-          !isCurrentModelRequest(mounted, generation) ||
-          controller.get(mounted.composer).agent !== agent
-        ) {
-          return;
-        }
+        if (!isCurrent()) return;
         if (!state.effectiveModel) {
           throw new Error("External Harness did not confirm an effective Model");
         }
         effectiveModel = state.effectiveModel;
-        const confirmedCatalog = catalogModelForRef(catalog, effectiveModel)
-          ? catalog
-          : catalogWithConfirmedModel(catalog, selected, effectiveModel);
+        const sessionCatalog = await inspectThreadModelCatalog(client, threadId, agent);
+        if (!isCurrent()) return;
+        mounted.sessionCatalog = sessionCatalog;
+        confirmedCatalog = sessionCatalog ?? catalog;
         if (!catalogModelForRef(confirmedCatalog, effectiveModel)) {
           throw new Error("External Harness activated a Model outside the current catalog");
         }
-        if (mounted.sessionCatalog) mounted.sessionCatalog = confirmedCatalog;
         effectiveThinkingOptionId = supportsThinkingSelection
           ? selectableThinkingOptionId(state)
           : undefined;
@@ -2247,7 +2252,7 @@ export function installRendererBindingProbe(
         thinkingSelectionSupported: supportsThinkingSelection,
       };
     } catch (error) {
-      if (!isCurrentModelRequest(mounted, generation)) return;
+      if (!isCurrent()) return;
       if (previousModel) {
         applyExternalConfiguration(
           mounted,
@@ -2259,7 +2264,7 @@ export function installRendererBindingProbe(
       }
       mounted.modelView = {
         status: "error",
-        catalog,
+        catalog: confirmedCatalog,
         ...(previousModel ? { selected: previousModel } : {}),
         ...(previousThinking ? { selectedThinkingOptionId: previousThinking } : {}),
         thinkingSelectionSupported: supportsThinkingSelection,

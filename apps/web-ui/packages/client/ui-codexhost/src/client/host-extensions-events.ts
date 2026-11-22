@@ -30,7 +30,10 @@ interface SharedStreamHandle {
   subscribe(listener: EventListener): () => void;
 }
 
-const streamsByDocument = new WeakMap<Document, SharedStreamHandle>();
+// The Web bootstrap and the CodexHost UI plugin bundle this module separately.
+// Put the ref-counted stream on the document so both bundles use the same connection.
+const STREAM_KEY = Symbol.for("codexhost.host-extension-events.v1");
+type StreamDocument = Document & { [STREAM_KEY]?: SharedStreamHandle };
 let fallbackStream: SharedStreamHandle | undefined;
 
 function canCoordinateAcrossTabs(): boolean {
@@ -287,17 +290,15 @@ function createSharedEventStream(
 export function subscribeHostExtensionEvents(
   options: SubscribeHostExtensionEventsOptions,
 ): () => void {
-  const { document: doc, onExtensionsChanged, onReconnect } = options;
-  let shared = doc ? streamsByDocument.get(doc) : fallbackStream;
+  const { onExtensionsChanged, onReconnect } = options;
+  const doc: StreamDocument | undefined = options.document;
+  let shared = doc ? doc[STREAM_KEY] : fallbackStream;
   if (!shared) {
     shared = createSharedEventStream(doc, () => {
-      if (doc) {
-        if (streamsByDocument.get(doc) === shared) streamsByDocument.delete(doc);
-      } else if (fallbackStream === shared) {
-        fallbackStream = undefined;
-      }
+      if (doc) delete doc[STREAM_KEY];
+      else fallbackStream = undefined;
     });
-    if (doc) streamsByDocument.set(doc, shared);
+    if (doc) doc[STREAM_KEY] = shared;
     else fallbackStream = shared;
   }
   return shared.subscribe({ onExtensionsChanged, onReconnect });

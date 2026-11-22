@@ -10,7 +10,9 @@ import {
   type HostExtensionCapabilities,
   type HostExtensionCatalogEntry,
   type HostExtensionInstallSource,
+  type HostExtensionInstallation,
   type HostExtensionListItem,
+  type HostExtensionManifestV2,
   type HostExtensionTarget,
   type JsonObject,
   type JsonValue,
@@ -22,6 +24,7 @@ import {
   isHostExtensionRevisionConflictError,
   isHostExtensionUnavailableError,
 } from "./web-native-extension-management-api.ts";
+import { resolveHostExtensionAssetUrl } from "./native-extensions/api.ts";
 
 export type Translate = PropsLocale<"codexhostImport">["t"];
 export type ExtensionLocale = "zh-CN" | "en";
@@ -197,6 +200,24 @@ export function hostDescription(
       : null) ??
     (catalogEntry ? resolveOptionalLocalizedText(catalogEntry.description, locale) : null)
   );
+}
+
+export function extensionPageTitle(
+  manifest: HostExtensionManifestV2,
+  locale: ExtensionLocale,
+): string {
+  return resolveLocalizedExtensionText(manifest.page?.title ?? manifest.name, locale);
+}
+
+export function extensionPageIconUrl({
+  id,
+  activationId,
+  digest,
+  manifest,
+}: HostExtensionInstallation): string | undefined {
+  return manifest.icon === undefined
+    ? undefined
+    : resolveHostExtensionAssetUrl({ id, activationId, digest, path: manifest.icon }, document);
 }
 
 export function resolveHostIconUrl(

@@ -57,6 +57,9 @@ import type {} from "@deepseek-ai/dsh-client-ui-chat/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { ConnectDevicesSection } from "./ConnectDevicesSection.tsx";
 import { PluginsSection, type PluginsSectionFace } from "./PluginsSection.tsx";
+import { PluginsSidebar, type PluginsSidebarFace } from "./PluginsSidebar.tsx";
+import { PluginsSettingsEntry } from "./PluginsSettingsEntry.tsx";
+import { createPluginsNavigation, PLUGINS_PANEL_ID } from "./plugins-navigation.ts";
 import { watchAuthentication } from "./auth-watch.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
@@ -412,7 +415,29 @@ export function apply(ctx: ClientContext): void {
     get: () => ctx.theme.getTheme().active.colorScheme,
     subscribe: (listener) => ctx.on("theme/change", listener),
   };
-  // Local management entries stay visible to remote users with access guidance.
+  const plugins = createPluginsNavigation(document, () => ctx.layout.selectPanel(PLUGINS_PANEL_ID));
+  ctx.effect(() => plugins.dispose, "ui-codexhost: plugin navigation snapshot");
+  ctx.slots.inject("main", () =>
+    ctx.slots.register(
+      {
+        name: "main",
+        key: PLUGINS_PANEL_ID,
+        locale: NS,
+        inject: (): PluginsSectionFace => ({ locale, colorScheme, navigation: plugins }),
+      },
+      PluginsSection,
+    ),
+  );
+  ctx.slots.inject("sidebar.plugins", () =>
+    ctx.slots.register(
+      {
+        name: "sidebar.plugins",
+        locale: NS,
+        inject: (): PluginsSidebarFace => ({ navigation: plugins, locale }),
+      },
+      PluginsSidebar,
+    ),
+  );
   ctx.slots.inject("settings.section", () =>
     ctx.slots.register(
       {
@@ -421,12 +446,9 @@ export function apply(ctx: ClientContext): void {
         order: 6,
         label: () => t("settings.extensions"),
         locale: NS,
-        inject: (): PluginsSectionFace => ({
-          locale,
-          colorScheme,
-        }),
+        inject: () => ({ openWorkspace: () => plugins.open() }),
       },
-      PluginsSection,
+      PluginsSettingsEntry,
     ),
   );
   ctx.slots.inject("settings.section", () =>

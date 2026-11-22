@@ -3,10 +3,12 @@
   flex-direction: column;
   gap: 14px;
   min-width: 0;
+  min-height: 0;
   width: 100%;
 }
 
 .header {
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -31,7 +33,7 @@
   min-height: 30px;
   padding: 0 10px 0 7px;
   border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
+  border-radius: var(--dsw-radius-sm);
   background: transparent;
   color: var(--dsw-alias-label-primary);
   font: inherit;
@@ -102,7 +104,7 @@
   height: 30px;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--dsw-radius-sm);
   background: transparent;
   color: var(--dsw-alias-label-secondary);
   cursor: pointer;
@@ -125,24 +127,26 @@
   --cx-page-border: var(--dsw-alias-border-l2);
   --cx-page-accent: var(--dsw-alias-state-business-primary);
   --cx-page-danger: var(--dsw-alias-state-error-primary);
-  --cx-page-radius: 12px;
+  --cx-page-radius: var(--dsw-radius-md);
 
   position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
   min-width: 0;
-  width: 100%;
-  min-height: 240px;
+  min-height: 0;
   padding: 16px;
   box-sizing: border-box;
   border: 1px solid var(--cx-page-border);
   border-radius: var(--cx-page-radius);
-  background: var(--cx-page-bg);
   color: var(--cx-page-text);
-  overflow-x: auto;
+  overflow: auto;
 }
 
 .mountRoot {
+  flex: 1 0 0;
   min-width: 0;
-  width: 100%;
+  min-height: min-content;
 }
 
 .status {

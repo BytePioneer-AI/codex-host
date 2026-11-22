@@ -36,7 +36,7 @@ export function ExtensionIcon({
 }: {
   src?: string | undefined;
   categories?: readonly DesktopExtensionCategory[] | undefined;
-  size: "card" | "detail";
+  size: "card" | "detail" | "sidebar";
 }): ReactNode {
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const safeUrl = parseSafeIconUrl(src);
@@ -64,9 +64,9 @@ export function ExtensionIcon({
 
   return (
     <span
-      className={`${css.icon} ${size === "detail" ? css.iconDetail : css.iconCard}`}
+      className={`${css.icon} ${size === "detail" ? css.iconDetail : size === "sidebar" ? css.iconSidebar : css.iconCard}`}
       data-icon-kind={showImage ? "image" : "fallback"}
-      data-icon-category={category}
+      data-icon-category={size === "sidebar" ? undefined : category}
       aria-hidden="true"
     >
       {showImage ? (

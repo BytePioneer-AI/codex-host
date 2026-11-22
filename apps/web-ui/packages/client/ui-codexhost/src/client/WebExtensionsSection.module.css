@@ -6,6 +6,13 @@
   min-width: 0;
 }
 
+.standalone {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
 /* Single-line header matching Desktop Plugins page */
 .header {
   position: relative;
@@ -38,7 +45,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  flex: none;
+  max-width: 100%;
 }
 
 .toolbarButton {
@@ -842,6 +849,13 @@
   width: 44px;
   height: 44px;
   border-radius: 11px;
+}
+
+.iconSidebar {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--dsw-radius-xs);
+  box-sizing: border-box;
 }
 
 .iconImg {

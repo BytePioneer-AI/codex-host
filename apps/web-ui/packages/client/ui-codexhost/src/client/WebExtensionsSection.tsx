@@ -1,5 +1,5 @@
 /**
- * Unified Plugins settings section backed by the shared Host (`codexhost/extensions/*`).
+ * Unified Plugins workspace backed by the shared Host (`codexhost/extensions/*`).
  *
  * Displays all installed plugins and the unified Marketplace (`catalog.v2.json`), capability
  * badges and filters, ZIP / GitHub / local-directory import, declarative settings, recovery
@@ -33,6 +33,7 @@ import {
   resolveLocalizedExtensionText,
   type DesktopExtensionCategory,
   type HostExtensionCatalogEntry,
+  type HostExtensionInstallation,
   type HostExtensionListItem,
   type HostExtensionsListResult,
 } from "@codexhost/shared-contracts";
@@ -107,6 +108,8 @@ type Feedback = { readonly tone: "success" | "warning" | "danger"; readonly text
 export interface WebExtensionsFace {
   locale: HostSettingsSource<string>;
   colorScheme: HostSettingsSource<"light" | "dark">;
+  selectedPage: HostExtensionInstallation | null;
+  selectPage: (page: HostExtensionInstallation | null) => void;
 }
 
 const GROUP_ORDER: readonly ExtensionGroupId[] = ["attention", "enabled", "disabled"];
@@ -165,6 +168,8 @@ export function WebExtensionsSection({
   t,
   locale,
   colorScheme,
+  selectedPage,
+  selectPage,
 }: PropsLocale<"codexhostImport"> & WebExtensionsFace): ReactNode {
   const activeLocaleRaw = useSyncExternalStore(locale.subscribe, locale.get);
   const systemLocale = toExtensionLocale(activeLocaleRaw);
@@ -187,7 +192,6 @@ export function WebExtensionsSection({
   const [createOpen, setCreateOpen] = useState(false);
   const [recoverOpen, setRecoverOpen] = useState(false);
   const [selectedRef, setSelectedRef] = useState<SelectedRef | null>(null);
-  const [openPageId, setOpenPageId] = useState<string | null>(null);
 
   const [activeAction, setActiveAction] = useState<string | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
@@ -362,7 +366,6 @@ export function WebExtensionsSection({
           setListView({ kind: "disabled" });
           setInstallOpen(false);
           setSelectedRef(null);
-          setOpenPageId(null);
           return false;
         }
         const message = formatManagementError(cause, t);
@@ -405,22 +408,6 @@ export function WebExtensionsSection({
     }
     return map;
   }, [market.entries]);
-
-  // Resolve active standalone page item; automatically close if disabled/removed/no page.
-  const openPageItem: HostExtensionValidItem | null = useMemo(() => {
-    if (openPageId === null) return null;
-    const found = installedById.get(openPageId);
-    if (!found || found.state !== "valid" || !found.enabled || !found.manifest.page) {
-      return null;
-    }
-    return found;
-  }, [installedById, openPageId]);
-
-  useEffect(() => {
-    if (openPageId !== null && listView.kind === "ready" && openPageItem === null) {
-      setOpenPageId(null);
-    }
-  }, [openPageId, listView.kind, openPageItem]);
 
   const availableCategories = useMemo(() => {
     const present = new Set<DesktopExtensionCategory>();
@@ -575,7 +562,6 @@ export function WebExtensionsSection({
         successText: t("extensions.uninstalledSuccess", { name }),
         onSuccess: () => {
           if (!hasCatalog) setSelectedRef(null);
-          if (openPageId === item.id) setOpenPageId(null);
           setModalFeedback(null);
         },
       },
@@ -593,10 +579,7 @@ export function WebExtensionsSection({
       {
         target: "page",
         successText: t("extensions.recover.success"),
-        onSuccess: () => {
-          setRecoverOpen(false);
-          setOpenPageId(null);
-        },
+        onSuccess: () => setRecoverOpen(false),
       },
     );
   };
@@ -661,18 +644,18 @@ export function WebExtensionsSection({
     }
   };
 
-  // When an extension standalone `page` is open, render it cleanly full-width.
-  if (openPageItem !== null) {
+  if (selectedPage !== null) {
     return (
-      <div className={css.page} data-web-extensions data-page-open={openPageItem.id}>
+      <div className={css.standalone} data-web-extensions data-page-open={selectedPage.id}>
         <HostExtensionPageView
-          item={openPageItem}
-          catalogIcon={catalogById.get(openPageItem.id)?.icon}
+          key={`${selectedPage.id}:${selectedPage.activationId}:${selectedPage.digest}`}
+          item={selectedPage}
+          catalogIcon={catalogById.get(selectedPage.id)?.icon}
           locale={locale}
           colorScheme={colorScheme}
           contentLocale={contentLocale}
           t={t}
-          onBack={() => setOpenPageId(null)}
+          onBack={() => selectPage(null)}
         />
       </div>
     );
@@ -681,7 +664,7 @@ export function WebExtensionsSection({
   const renderHeader = (options: { readonly canMutate: boolean }) => (
     <header className={css.header}>
       <div className={css.headerLeft}>
-        <h2 className={css.title}>{t("settings.extensions")}</h2>
+        <h2 className={css.title}>{t("extensions.center")}</h2>
       </div>
 
       <div className={css.toolbar}>
@@ -1182,7 +1165,7 @@ export function WebExtensionsSection({
                               data-action="open-page"
                               data-extension-id={validItem.id}
                               disabled={busy}
-                              onClick={() => setOpenPageId(validItem.id)}
+                              onClick={() => selectPage(validItem)}
                             >
                               {t("extensions.page.open")}
                             </button>
@@ -1396,7 +1379,7 @@ export function WebExtensionsSection({
         onInstallMarket={(entry) => handleInstallMarket(entry, true)}
         onUpdate={(item, entry) => handleUpdate(item, entry, true)}
         onUninstall={handleUninstall}
-        onOpenPage={(item) => setOpenPageId(item.id)}
+        onOpenPage={selectPage}
       />
 
       <Modal

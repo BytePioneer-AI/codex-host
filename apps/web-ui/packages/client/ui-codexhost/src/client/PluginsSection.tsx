@@ -1,26 +1,33 @@
-/**
- * Unified Plugins settings section backed by the shared Host extension manager.
- * Manages all Desktop, Web, standalone `page`, and Node backend plugins in a single surface.
- */
-import type { ReactNode } from "react";
+import { useSyncExternalStore, type ReactNode } from "react";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
-import type { HostSettingsSource } from "./HostSettingsSection.tsx";
-import { WebExtensionsSection } from "./WebExtensionsSection.tsx";
+import { WebExtensionsSection, type WebExtensionsFace } from "./WebExtensionsSection.tsx";
+import type { PluginsNavigation } from "./plugins-navigation.ts";
 import css from "./PluginsSection.module.css";
 
-export interface PluginsSectionFace {
-  locale: HostSettingsSource<string>;
-  colorScheme: HostSettingsSource<"light" | "dark">;
+export interface PluginsSectionFace extends Pick<WebExtensionsFace, "locale" | "colorScheme"> {
+  navigation: PluginsNavigation;
 }
 
+/** The plugin center and standalone pages occupy the same main panel. */
 export function PluginsSection({
-  t,
-  locale,
-  colorScheme,
+  navigation,
+  ...props
 }: PropsLocale<"codexhostImport"> & PluginsSectionFace): ReactNode {
+  const { selectedPage } = useSyncExternalStore(
+    navigation.store.subscribe,
+    navigation.store.getSnapshot,
+  );
   return (
-    <div className={css.root} data-plugins-section>
-      <WebExtensionsSection t={t} locale={locale} colorScheme={colorScheme} />
+    <div
+      className={css.root}
+      data-plugins-section
+      data-standalone={selectedPage !== null || undefined}
+    >
+      <WebExtensionsSection
+        {...props}
+        selectedPage={selectedPage}
+        selectPage={navigation.selectPage}
+      />
     </div>
   );
 }

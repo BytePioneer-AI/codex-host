@@ -14,9 +14,8 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   HOST_EXTENSION_PAGE_API_VERSION,
-  HOST_EXTENSION_PAGE_CSS_VARIABLES,
-  resolveLocalizedExtensionText,
   type DesktopExtensionDispose,
+  type HostExtensionInstallation,
   type HostExtensionPageApi,
   type HostExtensionPageColorScheme,
   type HostExtensionPageModule,
@@ -31,10 +30,10 @@ import {
   isHostExtensionRevisionConflictError,
 } from "./web-native-extension-management-api.ts";
 import {
-  resolveHostIconUrl,
+  extensionPageIconUrl,
+  extensionPageTitle,
   toExtensionLocale,
   type ExtensionLocale,
-  type HostExtensionValidItem,
   type Translate,
 } from "./web-extensions-helpers.ts";
 import { ExtensionIcon } from "./WebExtensionCard.tsx";
@@ -49,7 +48,7 @@ function cloneJsonObject(values: JsonObject): JsonObject {
 }
 
 export interface HostExtensionPageViewProps {
-  readonly item: HostExtensionValidItem;
+  readonly item: HostExtensionInstallation;
   readonly catalogIcon?: string | undefined;
   readonly locale: HostSettingsSource<string>;
   readonly colorScheme: HostSettingsSource<HostExtensionPageColorScheme>;
@@ -75,55 +74,23 @@ export function HostExtensionPageView({
   const [errorText, setErrorText] = useState<string | null>(null);
 
   const mountRef = useRef<HTMLDivElement | null>(null);
-  const stageRef = useRef<HTMLDivElement | null>(null);
+  const translate = useRef(t);
+  translate.current = t;
 
-  const pageSpec = item.manifest.page;
-  const pageTitle = pageSpec?.title
-    ? resolveLocalizedExtensionText(pageSpec.title, contentLocale)
-    : resolveLocalizedExtensionText(item.manifest.name, contentLocale);
-  const version = item.manifest.version.replace(/^v/u, "");
-  const iconUrl = resolveHostIconUrl(item, catalogIcon);
-
-  // Keep CSS variables explicitly synced on the stage element per contract.
-  useEffect(() => {
-    const stage = stageRef.current;
-    if (!stage) return;
-    stage.style.setProperty(
-      HOST_EXTENSION_PAGE_CSS_VARIABLES.background,
-      "var(--dsw-alias-bg-layer-1)",
-    );
-    stage.style.setProperty(
-      HOST_EXTENSION_PAGE_CSS_VARIABLES.surface,
-      "var(--dsw-alias-bg-layer-2)",
-    );
-    stage.style.setProperty(
-      HOST_EXTENSION_PAGE_CSS_VARIABLES.text,
-      "var(--dsw-alias-label-primary)",
-    );
-    stage.style.setProperty(
-      HOST_EXTENSION_PAGE_CSS_VARIABLES.mutedText,
-      "var(--dsw-alias-label-secondary)",
-    );
-    stage.style.setProperty(HOST_EXTENSION_PAGE_CSS_VARIABLES.border, "var(--dsw-alias-border-l2)");
-    stage.style.setProperty(
-      HOST_EXTENSION_PAGE_CSS_VARIABLES.accent,
-      "var(--dsw-alias-state-business-primary)",
-    );
-    stage.style.setProperty(
-      HOST_EXTENSION_PAGE_CSS_VARIABLES.danger,
-      "var(--dsw-alias-state-error-primary)",
-    );
-    stage.style.setProperty(HOST_EXTENSION_PAGE_CSS_VARIABLES.radius, "12px");
-  }, [activeScheme]);
+  const { id, activationId, digest, manifest } = item;
+  const pageEntry = manifest.page?.entry;
+  const pageStyle = manifest.page?.style;
+  const hasBackend = manifest.backend !== undefined;
+  const pageTitle = extensionPageTitle(manifest, contentLocale);
+  const version = manifest.version.replace(/^v/u, "");
+  const iconUrl = extensionPageIconUrl(item) ?? catalogIcon;
 
   useEffect(() => {
     const mountRoot = mountRef.current;
-    if (!mountRoot || !pageSpec) return;
+    if (!mountRoot || pageEntry === undefined) return;
 
     const doc = mountRoot.ownerDocument;
     const controller = new AbortController();
-    const { id, activationId, digest } = item;
-    const hasBackend = Boolean(item.manifest.backend);
 
     let disposed = false;
     let activeDisposer: DesktopExtensionDispose | undefined;
@@ -184,20 +151,22 @@ export function HostExtensionPageView({
     });
 
     // Propagate external settings changes (e.g. from Desktop or declarative settings form).
+    const syncStorage = () => {
+      if (disposed || controller.signal.aborted || storageListeners.size === 0) return;
+      void hostExtensionsApi
+        .settingsGet({ id, activationId }, controller.signal)
+        .then((result) => {
+          if (disposed || controller.signal.aborted) return;
+          if (result.settingsRevision === settingsRevision) return;
+          settingsRevision = result.settingsRevision;
+          notifyStorageListeners(result.values);
+        })
+        .catch(() => undefined);
+    };
     const unsubEvents = subscribeHostExtensionEvents({
-      document,
-      onExtensionsChanged: () => {
-        if (disposed || controller.signal.aborted || storageListeners.size === 0) return;
-        void hostExtensionsApi
-          .settingsGet({ id, activationId }, controller.signal)
-          .then((result) => {
-            if (disposed || controller.signal.aborted) return;
-            if (settingsRevision !== null && result.settingsRevision === settingsRevision) return;
-            settingsRevision = result.settingsRevision;
-            notifyStorageListeners(result.values);
-          })
-          .catch(() => undefined);
-      },
+      document: doc,
+      onExtensionsChanged: syncStorage,
+      onReconnect: syncStorage,
     });
 
     const pageApi: HostExtensionPageApi = {
@@ -296,7 +265,7 @@ export function HostExtensionPageView({
         async invoke(method: string, params?: JsonValue): Promise<JsonValue> {
           guard();
           if (!hasBackend) {
-            throw new Error(t("extensions.page.noBackend", { id }));
+            throw new Error(translate.current("extensions.page.noBackend", { id }));
           }
           const reply = await hostExtensionsApi.backendInvoke(
             {
@@ -324,13 +293,13 @@ export function HostExtensionPageView({
       }
     };
 
-    if (pageSpec.style) {
+    if (pageStyle !== undefined) {
       const styleUrl = resolveHostExtensionAssetUrl(
         {
           id,
           activationId,
           digest,
-          path: pageSpec.style,
+          path: pageStyle,
         },
         doc,
       );
@@ -347,7 +316,7 @@ export function HostExtensionPageView({
         id,
         activationId,
         digest,
-        path: pageSpec.entry,
+        path: pageEntry,
       },
       doc,
     );
@@ -395,15 +364,15 @@ export function HostExtensionPageView({
       mountRoot.replaceChildren();
     };
   }, [
-    item.id,
-    item.activationId,
-    item.digest,
-    item.manifest.page,
-    item.manifest.backend,
+    id,
+    activationId,
+    digest,
+    pageEntry,
+    pageStyle,
+    hasBackend,
     locale,
     colorScheme,
     reloadNonce,
-    t,
   ]);
 
   return (
@@ -445,7 +414,7 @@ export function HostExtensionPageView({
         </div>
       </header>
 
-      <div ref={stageRef} className={css.stage}>
+      <div className={css.stage}>
         {phase === "loading" && (
           <p className={css.status} role="status">
             {t("extensions.page.loading")}

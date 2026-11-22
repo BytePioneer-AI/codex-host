@@ -319,7 +319,7 @@ export function apply(ctx: Context): void {
       const preference = workspacePreferences.getSnapshot().value?.archiveChildren ?? "ask";
       const list = sessions.list.getSnapshot();
       const rows = document.querySelectorAll<HTMLElement>(
-        "[data-sidebar-session-list] [data-sidebar-session-id]",
+        "[data-sidebar-session-list] [data-sidebar-session-id][data-row-key]",
       );
       const visible = [...rows].flatMap((row) =>
         row.getClientRects().length && row.dataset.sidebarSessionId

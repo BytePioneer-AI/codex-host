@@ -38,6 +38,7 @@ export class ChThreadHistory extends ChThreadView {
     onProjection: ProjectionListener,
     origin = RENDER_ORIGIN,
     projectInput?: (content: unknown[]) => unknown[],
+    projectImage?: (path: string, projectionKey: string) => unknown,
   ) {
     const pagination = { cursor: null as string | null };
     super(
@@ -48,6 +49,7 @@ export class ChThreadHistory extends ChThreadView {
       origin,
       () => pagination.cursor !== null,
       projectInput,
+      projectImage,
     );
     this.pagination = pagination;
     this.commands = new ChCommandPresentation(this.log);

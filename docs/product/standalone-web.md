@@ -264,6 +264,8 @@ Codex Desktop 的 codexhost 设置提供独立的“手机与浏览器”菜单�
 
 **用户文件：** 所有响应带 `X-Content-Type-Options: nosniff`。`GET/HEAD /api/file` 只返回 PNG/JPEG/WebP/GIF 栅格图片，按文件内容判断，HTML 和 SVG 一律拒绝。HTML 预览运行在 `sandbox="allow-scripts"` 的不透明来源 iframe 中，无法读取 Cookie 或调用 Web 接口。
 
+**已查看图片：** 原生 `imageView` 只从当前 Thread 中对应的 Turn 与 Item 获取路径，浏览器不能提交路径或伪造附件身份。投影时读取并记录图片内容的 SHA-256 指纹，后续读取必须与记录版本一致；首次投影失败的图片保持不可读，即使文件随后出现或路径被覆盖也不会返回新内容。连续图片按相邻已查看项组成可展开分组，文件变化或暂时不可读时保留占位，不重建原生历史。
+
 ## Web 数据目录
 
 Web 网关自有数据默认位于 `~/.codexhost/web/`，源码入口与打包预览使用相同默认值；指定 `--ch-data <root>` 或对应的 `--ch-control-directory <root>/client-hosts` 时，默认跟随为 `<root>/web`。显式 `--data`（直接 server 入口也支持 `CODEXHOST_WEB_DATA`）仍可选择独立目录，不修改 Host 的 Mapping Store 位置。

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { basename, resolve, isAbsolute } from "node:path";
 import {
   imagePath,
+  localImagePath,
   nativeUserInput,
   type NativeImage,
   type NativeImageSource,
@@ -14,7 +15,7 @@ import {
   WEB_IMAGE_LIMITS,
   type WebImageRef,
 } from "./web-images.ts";
-import type { ChThreadView } from "./ch-thread-view.ts";
+import { imageViewProjectionKey, type ChThreadView } from "./ch-thread-view.ts";
 import type { WebFiles } from "./web-files.ts";
 import type { WireEvent } from "./session-log.ts";
 import { RpcError } from "./transport.ts";
@@ -37,13 +38,18 @@ export class ChAttachments {
     private readonly files?: WebFiles,
   ) {}
 
-  private id(threadId: string, source: NativeImageSource): string {
+  private id(threadId: string, source: NativeImageSource, observationId?: string): string {
     const path = imagePath(source);
-    const owned = path ? this.images.idForPath(path) : undefined;
+    const owned = !observationId && path ? this.images.idForPath(path) : undefined;
     if (owned) return owned;
     // Native IDs are opaque, stable across Web restarts and scoped to a Thread.
     // They cannot be decoded into a user-supplied path by the download endpoint.
-    const key = path ? { path: isAbsolute(path) ? resolve(path) : path } : source;
+    const key = path
+      ? {
+          path: isAbsolute(path) ? resolve(path) : path,
+          ...(observationId === undefined ? {} : { observationId }),
+        }
+      : source;
     return `ch-image:${hash(JSON.stringify([threadId, key]))}`;
   }
 
@@ -69,6 +75,37 @@ export class ChAttachments {
     return inspectImage(bytes, match[1]);
   }
 
+  private image(
+    threadId: string,
+    source: NativeImageSource,
+    name?: string,
+    observationId?: string,
+  ): ImageRef {
+    const attachmentId = this.id(threadId, source, observationId);
+    const path = imagePath(source);
+    const label = name ?? (path ? basename(path.replaceAll("\\", "/")) : "image");
+    const fallback: ImageRef = {
+      attachmentId,
+      name: label,
+      mediaType: "image/png",
+      bytes: 0,
+      width: 64,
+      height: 64,
+    };
+    try {
+      const image = this.bytes(source);
+      return { ...image.ref, attachmentId, name: label, fingerprint: image.leaf };
+    } catch {
+      // Keep a placeholder so a transiently unavailable native file can be retried.
+      return fallback;
+    }
+  }
+
+  /** Project one native ImageView display item into the assistant image wire shape. */
+  projectImageView(threadId: string, path: string, observationId?: string): ImageRef {
+    return this.image(threadId, { path }, undefined, observationId);
+  }
+
   project(threadId: string, content: readonly unknown[]): unknown[] {
     return nativeUserInput(content).map((part) => {
       if (part.type === "other") return part.value;
@@ -90,31 +127,7 @@ export class ChAttachments {
           },
         };
       }
-      const attachmentId = this.id(threadId, part.source);
-      const path = imagePath(part.source);
-      const name = part.name ?? (path ? basename(path.replaceAll("\\", "/")) : "image");
-      const fallback: ImageRef = {
-        attachmentId,
-        name,
-        mediaType: "image/png",
-        bytes: 0,
-        width: 64,
-        height: 64,
-      };
-      try {
-        const image = this.bytes(part.source);
-        const attachment: ImageRef = {
-          ...image.ref,
-          attachmentId,
-          name,
-          fingerprint: image.leaf,
-        };
-        return { type: "image", attachment };
-      } catch {
-        // Keep the user's request and an image placeholder even if a native temp
-        // file has disappeared. A subsequent explicit retry may recover it.
-        return { type: "image", attachment: fallback };
-      }
+      return { type: "image", attachment: this.image(threadId, part.source, part.name) };
     });
   }
 
@@ -122,6 +135,14 @@ export class ChAttachments {
    * No browser path, label, metadata or guessed ID can extend that authority.
    */
   read(view: ChThreadView, attachmentId: string): { attachment: ImageRef; data: string } {
+    const imageView = this.imageView(view, attachmentId);
+    if (imageView !== undefined) {
+      const expected = this.assistantAttachment(view.log.events, attachmentId);
+      // An imageView is an immutable snapshot of one displayed image. If its first
+      // projection could not read a fingerprint, later bytes must not become readable.
+      if (!expected?.fingerprint) return unavailable();
+      return this.readSource(imageView, expected, attachmentId);
+    }
     return this.readInputs(
       view.thread.id,
       view.thread.turns.map((turn) =>
@@ -132,6 +153,61 @@ export class ChAttachments {
       this.message(view.log.events, attachmentId),
       attachmentId,
     );
+  }
+
+  private imageView(view: ChThreadView, attachmentId: string): NativeImageSource | undefined {
+    for (const turn of view.thread.turns) {
+      for (const item of turn.items) {
+        if (item.type !== "imageView" || typeof item.path !== "string") continue;
+        const path = localImagePath(item.path);
+        if (path === undefined) continue;
+        const source: NativeImageSource = { path };
+        const observationId = imageViewProjectionKey(turn.id, item.id);
+        if (this.id(view.thread.id, source, observationId) === attachmentId) return source;
+      }
+    }
+    return undefined;
+  }
+
+  private assistantAttachment(
+    events: readonly Pick<WireEvent, "type" | "data">[],
+    attachmentId: string,
+  ): ImageRef | undefined {
+    for (const event of events) {
+      if (event.type !== "assistant/message") continue;
+      const data = event.data as {
+        message?: { content?: Array<{ type?: string; attachment?: ImageRef }> };
+      };
+      const expected = data.message?.content?.find(
+        (part) => part.type === "image" && part.attachment?.attachmentId === attachmentId,
+      )?.attachment;
+      if (expected) return expected;
+    }
+    return undefined;
+  }
+
+  private readSource(
+    source: NativeImageSource,
+    expected: ImageRef,
+    attachmentId: string,
+  ): { attachment: ImageRef; data: string } {
+    try {
+      const image = this.bytes(source);
+      if (expected.fingerprint && expected.fingerprint !== image.leaf) return unavailable();
+      return {
+        attachment: { ...expected, ...image.ref, attachmentId, fingerprint: image.leaf },
+        data: image.bytes.toString("base64"),
+      };
+    } catch (error) {
+      if (
+        error instanceof RpcError &&
+        "reason" in error.details &&
+        (error.details.reason === "IMAGE_TOO_LARGE" ||
+          error.details.reason === "IMAGE_TOO_MANY_PIXELS")
+      )
+        throw error;
+      return unavailable();
+    }
   }
 
   readEvents(threadId: string, events: readonly WireEvent[], attachmentId: string) {
@@ -163,23 +239,7 @@ export class ChAttachments {
       if (source) break;
     }
     if (!source) return unavailable();
-    try {
-      const image = this.bytes(source.source);
-      if (expected.fingerprint && expected.fingerprint !== image.leaf) return unavailable();
-      return {
-        attachment: { ...expected, ...image.ref, attachmentId, fingerprint: image.leaf },
-        data: image.bytes.toString("base64"),
-      };
-    } catch (error) {
-      if (
-        error instanceof RpcError &&
-        "reason" in error.details &&
-        (error.details.reason === "IMAGE_TOO_LARGE" ||
-          error.details.reason === "IMAGE_TOO_MANY_PIXELS")
-      )
-        throw error;
-      return unavailable();
-    }
+    return this.readSource(source.source, expected, attachmentId);
   }
 
   private message(

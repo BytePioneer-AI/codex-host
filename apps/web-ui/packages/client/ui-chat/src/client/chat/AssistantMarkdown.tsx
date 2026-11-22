@@ -1,7 +1,9 @@
-import { Fragment, memo, useMemo } from "react";
+import { Fragment, memo, useMemo, useState } from "react";
 import { fileMediaUrl } from "@deepseek-ai/dsh-util-workspace-path";
 import type { ReactNode } from "react";
 import {
+  IconChevronDownOutlineRegular,
+  IconChevronUpOutlineRegular,
   JsonBlock,
   MarkdownText,
   useMarkdownDelegate,
@@ -22,6 +24,45 @@ import { markdownLabels } from "../markdown-labels.ts";
 import { ReasoningRow } from "./ReasoningRow.tsx";
 import { useSearchableHidden } from "./searchable-hidden.ts";
 import css from "./AssistantMarkdown.module.css";
+
+function ViewedImages({
+  images,
+  renderMessageImages,
+  t,
+}: {
+  images: readonly {
+    attachment: Extract<AssistantBlock, { kind: "viewed-images" }>["attachment"];
+  }[];
+  renderMessageImages: ChatNodeOwnerProps["renderMessageImages"];
+  t: ChatViewSlotProps["t"];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const title =
+    images.length === 1
+      ? t("message.imageViews.one")
+      : t("message.imageViews.many", { count: images.length });
+  return (
+    <div className={css.viewedImages}>
+      <button
+        type="button"
+        className={css.viewedImagesToggle}
+        aria-expanded={expanded}
+        onClick={() => {
+          setExpanded((open) => !open);
+        }}
+      >
+        <span className={css.viewedImagesIcon} aria-hidden="true" />
+        <span>{title}</span>
+        {expanded ? (
+          <IconChevronUpOutlineRegular className={css.viewedImagesChevron} />
+        ) : (
+          <IconChevronDownOutlineRegular className={css.viewedImagesChevron} />
+        )}
+      </button>
+      {expanded && renderMessageImages({ images, align: "start" })}
+    </div>
+  );
+}
 
 /**
  * Standalone fallback for image destinations (query/fragment suffixes are ignored).
@@ -157,6 +198,27 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
               align: "start",
             })}
           </Fragment>,
+        );
+        break;
+      }
+      case "viewed-images": {
+        // Native view_image results share one collapsed disclosure while keeping
+        // every image available through the existing gallery/lightbox.
+        const start = i;
+        const group = [block];
+        while (i + 1 < blocks.length) {
+          const next = blocks[i + 1];
+          if (next === undefined || next.kind !== "viewed-images") break;
+          group.push(next);
+          i += 1;
+        }
+        rendered.push(
+          <ViewedImages
+            key={start}
+            images={group.map(({ attachment }) => ({ attachment }))}
+            renderMessageImages={renderMessageImages}
+            t={t}
+          />,
         );
         break;
       }

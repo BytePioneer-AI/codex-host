@@ -20,6 +20,7 @@ export {
 } from "./host-extension-io.js";
 export {
   discoverHostExtensions,
+  hostExtensionInstallationMetadata,
   readHostExtension,
   readHostExtensionBackend,
   readHostExtensionAsset,

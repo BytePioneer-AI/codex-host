@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, request, type RequestOptions } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { finished } from "node:stream/promises";
 import { test, type TestContext } from "node:test";
 import {
   HOST_EXTENSION_ASSETS_PREFIX,
@@ -54,10 +55,12 @@ async function fixture(
   t: TestContext,
   { noAuth = false, safeMode = false, offline = false, result = {} as unknown } = {},
 ) {
-  const mock = t.mock.fn(async (_method: string, _params: Record<string, unknown>) => {
-    if (result instanceof Error) throw result;
-    return result;
-  });
+  const mock = t.mock.fn<(method: string, params: Record<string, unknown>) => Promise<unknown>>(
+    async () => {
+      if (result instanceof Error) throw result;
+      return result;
+    },
+  );
   const channel: NonNullable<ChHostClient["realtime"]> = {
     request: mock as NonNullable<ChHostClient["realtime"]>["request"],
     subscribe(listener) {
@@ -115,9 +118,8 @@ async function fixture(
     }
     req.end();
     const [res] = await reply;
-    for await (const _ of res) {
-      /* drain */
-    }
+    res.resume();
+    await finished(res);
     return res.statusCode;
   };
   return { origin, auth, calls, raw };

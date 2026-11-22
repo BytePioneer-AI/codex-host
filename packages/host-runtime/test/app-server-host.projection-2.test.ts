@@ -16,6 +16,7 @@ import {
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,
   hostThreadIdSchema,
+  jsonObjectSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 import type { DelegationControlApi, DelegationThreadSnapshot } from "../src/delegation-types.js";
@@ -2708,7 +2709,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 31,
       method: "codexhost/thread/model/select",
-      params: { threadId, model },
+      params: jsonObjectSchema.parse({ threadId, model }),
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 31)),

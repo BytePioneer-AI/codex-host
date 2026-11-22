@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 
 import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
@@ -21,8 +22,9 @@ describe("Pi Model Catalog normalization", () => {
       ...(collision ? [{ ...other, reasoning: false }] : []),
     ];
     const catalog = normalizePiModelCatalog(models, native, null, null, null, true);
-    const base = catalog.defaultModel!;
+    const base = catalog.defaultModel;
     const fast = catalog.models.find(({ fastModel }) => fastModel)?.fastModel;
+    assert(base && fast, "Expected base and Fast Model Refs");
     const legacy = (tuple: unknown[]) =>
       harnessModelRefSchema.parse({
         id: `pi-model-v1.${Buffer.from(JSON.stringify(tuple)).toString("base64url")}`,
@@ -38,7 +40,7 @@ describe("Pi Model Catalog normalization", () => {
     expect(
       normalizeStoredPiModelRef(legacy([native.provider, native.id, false]), catalog),
     ).toBeUndefined();
-    expect(resolvePiModelRef(fast!, createPiModelIndex(models))).toEqual({ ...native, fast: true });
+    expect(resolvePiModelRef(fast, createPiModelIndex(models))).toEqual({ ...native, fast: true });
     const otherRef = legacy([other.provider, other.id]);
     if (collision) {
       expect(resolvePiModelRef(otherRef, createPiModelIndex(models))).toEqual(other);

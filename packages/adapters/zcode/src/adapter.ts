@@ -241,16 +241,17 @@ export class ZcodeAdapter implements HarnessAdapter {
         input.environment,
         prewarm ? undefined : { access: "allow" },
       );
+      const credentialIssue = transport.credentialIssue ?? "ZCode credential access is required";
       // A prewarm without the account overlay cannot be reused for the first real turn.
       if (prewarm && transport.credentialAccessRequired)
-        throw new ZcodeError("credentialAccessRequired", transport.credentialIssue!);
+        throw new ZcodeError("credentialAccessRequired", credentialIssue);
       let snapshot, settings;
       let requestedModel: NativeModel | undefined;
       if (input.kind === "create") {
         settings = await readCatalog(transport);
         const { catalog, index } = modelCatalog(settings);
         if (transport.credentialAccessRequired && !catalog.models.length)
-          throw new ZcodeError("credentialAccessRequired", transport.credentialIssue!);
+          throw new ZcodeError("credentialAccessRequired", credentialIssue);
         if (
           input.permissionModeId &&
           !permissionModes().modes.some((m) => m.id === input.permissionModeId)

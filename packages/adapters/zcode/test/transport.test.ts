@@ -1,3 +1,4 @@
+import type * as ChildProcess from "node:child_process";
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { copyFile, link, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -10,7 +11,7 @@ import type { ZcodeVerifier } from "../src/verification/index.js";
 
 const { execute } = vi.hoisted(() => ({ execute: vi.fn() }));
 vi.mock("node:child_process", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:child_process")>();
+  const actual = await importOriginal<typeof ChildProcess>();
   const { promisify } = await import("node:util");
   return { ...actual, execFile: Object.assign(() => {}, { [promisify.custom]: execute }) };
 });
@@ -286,7 +287,7 @@ describe("ZCode installed CLI transport", () => {
   ])(
     "isolates unreadable account credentials (personal model: $personal, coding plan: $codingPlan)",
     async ({ personal, codingPlan }) => {
-      const { root, options, log } = await fixture(`
+      const { root, options, appDir, log } = await fixture(`
 if(method==='session/create')return reply(${JSON.stringify({
         protocol: { name: "ZCode Protocol", version: 1 },
         session: {
@@ -329,7 +330,7 @@ if(method==='session/create')return reply(${JSON.stringify({
             providerFamilyConnectionSelections: { zai: { kind: "individual-coding-plan" } },
           }),
         );
-      const adapter = new ZcodeAdapter({ environment: options().environment, app: options().app! });
+      const adapter = new ZcodeAdapter({ environment: options().environment, app: appDir });
       try {
         const result = await adapter.inspect({ cwd: root });
         expect(fetch).not.toHaveBeenCalled();
@@ -370,7 +371,7 @@ if(method==='session/create')return reply(${JSON.stringify({
     async (failure) => {
       const late = failure === "timeout";
       vi.stubGlobal("process", Object.create(process, { platform: { value: "darwin" } }));
-      const { root, options, log } = await fixture(`
+      const { root, options, appDir, log } = await fixture(`
 if(method==='session/create'){
 while(fs.existsSync(process.env.FAKE_DRAFT_GATE))await new Promise(r=>setTimeout(r,10));
 const snapshot=${JSON.stringify({
@@ -432,7 +433,7 @@ return reply(snapshot);}reply(null);`);
         }
         return { stdout: `${key.toString("base64url")}\n` };
       });
-      const adapter = new ZcodeAdapter({ environment, app: options().app! });
+      const adapter = new ZcodeAdapter({ environment, app: appDir });
       try {
         const cold = late
           ? {

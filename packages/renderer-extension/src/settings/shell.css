@@ -4769,17 +4769,17 @@ dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
   line-height: 18px;
 }
 
-.settings-extensions-detail-modal__settings {
+.settings-extensions-detail-settings {
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 12px 14px;
   border: 1px solid var(--settings-border);
   border-radius: 10px;
-  background: var(--settings-surface-subtle);
+  background: var(--settings-panel);
 }
 
-.settings-extensions-detail-modal__settings[hidden] {
+.settings-extensions-detail-settings[hidden] {
   display: none;
 }
 
@@ -4840,6 +4840,70 @@ dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
   border-radius: 9px;
   background: var(--settings-surface);
   overflow: hidden;
+}
+
+.settings-extensions-detail-settings__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 14px;
+}
+
+.settings-extensions-detail-settings__row + .settings-extensions-detail-settings__row {
+  border-top: 1px solid var(--settings-divider);
+}
+
+.settings-extensions-detail-settings__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-extensions-detail-settings__label {
+  color: var(--settings-text);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.settings-extensions-detail-settings__desc {
+  margin: 0;
+  color: var(--settings-muted);
+  font-size: 12px;
+  line-height: 17px;
+  overflow-wrap: anywhere;
+}
+
+.settings-extensions-detail-settings__control {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+.settings-extensions-detail-settings__control .settings-extension-schema__input,
+.settings-extensions-detail-settings__control .settings-extension-schema__select {
+  background: var(--settings-panel);
+}
+
+@media (max-width: 600px) {
+  .settings-extensions-detail-settings__row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .settings-extensions-detail-settings__control {
+    justify-content: flex-start;
+  }
+
+  .settings-extensions-detail-settings__control .settings-extension-schema__input--text,
+  .settings-extensions-detail-settings__control .settings-extension-schema__select {
+    width: 100%;
+  }
 }
 
 /* Standalone cross-platform extension page container */

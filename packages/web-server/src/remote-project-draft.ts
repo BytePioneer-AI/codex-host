@@ -27,11 +27,11 @@ async function loadCatalog(target: Target, call: Call) {
         const inspection = harnessInspectionSchema.parse(
           await call({ kind: "inspectHarness", ...target, harnessId: id }),
         );
-        if (inspection.status === "ready" && inspection.catalog.models.length) {
+        if (inspection.status === "ready" && inspection.catalog.models[0]) {
           return {
             group: groupOf(id, name, inspection),
             preferred: harnessModelRefKey(
-              inspection.catalog.defaultModel ?? inspection.catalog.models[0]!.ref,
+              inspection.catalog.defaultModel ?? inspection.catalog.models[0].ref,
             ),
           };
         }

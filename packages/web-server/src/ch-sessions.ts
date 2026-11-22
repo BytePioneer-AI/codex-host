@@ -775,7 +775,10 @@ export class ChSessions {
       return { sessionId: id, agentPreset: "standard" };
     if (existing || this.rows.has(id))
       throw new RpcError("session/busy", "This Session already exists; start a new draft.");
-    const selection = configuration?.selection ?? (await this.catalog.models()).default;
+    const preferences = configuration ? undefined : this.preferences?.get().catch(() => undefined);
+    const selection =
+      configuration?.selection ??
+      (await this.catalog.models(false, undefined, preferences)).default;
     if (!selection)
       throw new RpcError(
         "host/no-harness",
@@ -785,9 +788,7 @@ export class ChSessions {
     if (configuration) {
       if (configuration.permissionModeId) draft.permissionModeId = configuration.permissionModeId;
     } else {
-      const config = await this.preferences
-        ?.configuration(selection.provider)
-        .catch(() => undefined);
+      const config = (await preferences)?.values.newThread?.byHarness[selection.provider];
       const inspection = await this.catalog.inspect(selection.provider, cwd);
       const permissionModeId = draftPermissionMode(
         selection.provider,

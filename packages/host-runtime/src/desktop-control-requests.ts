@@ -47,7 +47,7 @@ import {
   type LoadedSession,
 } from "@codexhost/shared-contracts";
 
-import { storedPreferenceModels } from "./stored-harness-preferences.js";
+import { storedPreferenceModelMigration } from "./stored-harness-preferences.js";
 import { handleCredentialImports } from "./credential-imports.js";
 import type { HostExtensionManager } from "./host-extension-manager.js";
 import { handleHostExtensionRequest } from "./host-extension-requests.js";
@@ -130,22 +130,22 @@ export class DesktopControlRequests {
     ) {
       this.#host.dispatchReply(request, async () => {
         try {
-          const models = storedPreferenceModels({
+          const migrateModels = storedPreferenceModelMigration({
             adapters: this.#host.externalAdapters,
             loadAdapters: () => this.#host.waitForPlugins(),
             inspectCodex: () => this.#host.inspectCodexModels(),
           });
-          const stored =
+          const result =
             request.method === HARNESS_PREFERENCES_GET_METHOD
               ? await this.#host.preferences.get(
                   harnessPreferenceGetSchema.parse(request.params ?? {}).scope,
+                  migrateModels,
                 )
               : await this.#host.preferences.patch(
                   harnessPreferencePatchSchema.parse(request.params ?? {}),
-                  models.favorite,
+                  migrateModels,
                 );
-          this.#host.applyHarnessPreferences(stored);
-          const result = await models.snapshot(stored);
+          this.#host.applyHarnessPreferences(result);
           await this.#host.writeJson(
             rpcEnvelope(request, { result: jsonValueSchema.parse(result) }),
           );

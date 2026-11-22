@@ -7,6 +7,7 @@ import {
   type HarnessPluginDescriptor,
   type HarnessInspection,
   type HarnessDisplayEntries,
+  type HarnessPreferenceSnapshot,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient } from "./ch-host-client.ts";
 import { groupOf, type Inspection } from "./harnesses.ts";
@@ -149,11 +150,15 @@ export class ChHarnessCatalog {
     }
     return inspection;
   }
-  async models(refresh = false, harnessId?: string) {
+  async models(
+    refresh = false,
+    harnessId?: string,
+    preferences?: Promise<HarnessPreferenceSnapshot | undefined>,
+  ) {
     if (!refresh) {
       // A notification during a batch may invalidate one of its earlier results.
       await Promise.allSettled(this.refreshing.values());
-      return this.readModels(false);
+      return this.readModels(false, undefined, preferences);
     }
     const pending = this.refreshing.get(harnessId);
     if (pending) return pending;
@@ -163,7 +168,11 @@ export class ChHarnessCatalog {
     this.refreshing.set(harnessId, operation);
     return operation;
   }
-  private async readModels(refresh: boolean, harnessId?: string) {
+  private async readModels(
+    refresh: boolean,
+    harnessId?: string,
+    preferences?: Promise<HarnessPreferenceSnapshot | undefined>,
+  ) {
     const shouldRefresh = (id: string) => refresh && (harnessId === undefined || harnessId === id);
     const plugins = await this.list();
     const values = await Promise.all(
@@ -225,7 +234,7 @@ export class ChHarnessCatalog {
       await this.displayEntries(),
     );
     return this.preferences && selection
-      ? this.preferences.decorate({ ...catalog, default: selection })
+      ? this.preferences.decorate({ ...catalog, default: selection }, preferences)
       : catalog;
   }
   async name(id: string): Promise<string> {

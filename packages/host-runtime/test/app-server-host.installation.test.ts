@@ -50,17 +50,19 @@ describe("Host Harness CLI installation routing", () => {
   it("answers task submission and status before the update ends and admits chat messages meanwhile", async () => {
     const fixture = createFixture();
     const update = Promise.withResolvers<typeof state>();
-    Object.assign(fixture.adapter, { installation: vi.fn(() => update.promise) });
+    const installation = vi.fn(() => update.promise);
+    Object.assign(fixture.adapter, { installation });
     try {
       const threadId = await startPiThread(fixture);
       writeRequest(fixture.desktopInput, {
         id: 2,
         method: HARNESS_INSTALLATION_START_METHOD,
-        params: { harnessId: "pi", action: "update" },
+        params: { harnessId: "pi", action: "update", confirmedVersion: "1.1.0" },
       });
       const response = await fixture.collector.waitFor((m) => requestId(m, 2));
       const task = harnessInstallationTaskSchema.parse(response.result);
       expect(task.status).toBe("running");
+      expect(installation).toHaveBeenCalledExactlyOnceWith("update", "1.1.0");
       expect(
         await fixture.host.handleConsoleRequest(HARNESS_INSTALLATION_STATUS_METHOD, {
           taskId: task.taskId,

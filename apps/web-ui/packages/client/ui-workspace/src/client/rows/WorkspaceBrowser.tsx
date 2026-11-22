@@ -70,7 +70,7 @@ import {
   UNGROUPED_KEY,
 } from "../tree.ts";
 import { pinOrderSource } from "../pin-order.ts";
-import { threadTreeOrderSource } from "../thread-tree-order.ts";
+import { threadTreeOrderSource, workspaceTreeMembers } from "../thread-tree-order.ts";
 import { ThreadTreeViewProvider, useThreadTreeView } from "./ThreadTreeView.tsx";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
 import { ThreadTreeRows } from "./ThreadTreeControls.tsx";
@@ -345,6 +345,8 @@ type SessionTreeProps = Pick<
     home?: string | undefined;
     /** Workspaces in Host group order with browser-projected Session order. */
     workspaces: readonly WorkspaceView[];
+    /** Per Workspace, the projected roots that are there only through a descendant. */
+    linkedRoots: ReadonlyMap<string, ReadonlySet<SessionId>>;
     /** Browser-projected order for Sessions outside every Workspace. */
     ungroupedSessionIds: readonly SessionId[];
     /** Whether the current Workspace stream has a complete Host baseline. */
@@ -418,6 +420,7 @@ function SessionTree({
   startSession,
   open,
   workspaces,
+  linkedRoots,
   ungroupedSessionIds,
   rowState,
   onLeaveArchivedOnly,
@@ -450,10 +453,21 @@ function SessionTree({
   const current = panelActive
     ? undefined
     : Object.values(list.byId).find((session) => (session.retainedBy.mainView ?? 0) > 0)?.id;
+  // A tree shown in a descendant's Workspace still belongs to its root's own group.
+  const ownWorkspaces = useMemo(
+    () =>
+      workspaces.map((workspace) => {
+        const linked = linkedRoots.get(workspace.workspaceId);
+        return linked === undefined || linked.size === 0
+          ? workspace
+          : { ...workspace, sessionIds: workspace.sessionIds.filter((id) => !linked.has(id)) };
+      }),
+    [linkedRoots, workspaces],
+  );
   const revealGroup =
     revealSessionId === undefined || !workspaceReady
       ? undefined
-      : owningGroupKey(workspaces, threadView.rootId(revealSessionId));
+      : owningGroupKey(ownWorkspaces, threadView.rootId(revealSessionId));
   const [sessionLimits, setSessionLimits] = useState<Readonly<Record<string, number>>>({});
   // Transient drag marker state; the selected mode owns the resulting order.
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -465,7 +479,7 @@ function SessionTree({
   const currentGroup =
     current === undefined || !workspaceReady
       ? undefined
-      : owningGroupKey(workspaces, threadView.rootId(current));
+      : owningGroupKey(ownWorkspaces, threadView.rootId(current));
   const parents = useMemo(() => {
     if (!nestWorkspaces) return new Map<string, WorkspaceId | undefined>();
     const pathsByHost = new Map<string, Map<string, WorkspaceId>>();
@@ -648,8 +662,22 @@ function SessionTree({
     rowKeys.push(`workspace:${group.key}`);
     const childRows = group.expanded ? children.map((child) => renderGroup(child, depth + 1)) : [];
     const sessions = threadView.rows(visible.rows);
-    for (const node of sessions)
-      rowKeys.push(`${workspaceId === undefined ? "recent" : "session"}:${node.id}`);
+    // A tree shown through a descendant also renders in its root's group; keep its keys unique.
+    const linked = linkedRoots.get(group.key);
+    const linkedRows = new Set<string>(
+      linked === undefined
+        ? []
+        : visible.rows.flatMap((root) =>
+            linked.has(root.id) ? [root.id, ...(root.tree?.descendantIds ?? [])] : [],
+          ),
+    );
+    const rowKeyOf = (id: string): string =>
+      workspaceId === undefined
+        ? `recent:${id}`
+        : linkedRows.has(id)
+          ? `linked:${group.key}:${id}`
+          : `session:${id}`;
+    for (const node of sessions) rowKeys.push(rowKeyOf(node.id));
     const canExpand = group.expanded && (visible.hiddenCount > 0 || list.hasMore);
     if (canExpand) rowKeys.push(`overflow:${group.key}`);
     const workspaceMarker =
@@ -850,7 +878,7 @@ function SessionTree({
                 return (
                   <SessionNodeItem
                     key={node.id}
-                    rowKey={workspaceId === undefined ? `recent:${node.id}` : undefined}
+                    rowKey={rowKeyOf(node.id)}
                     showHost={!group.remote}
                     node={node}
                     currentId={current}
@@ -1396,11 +1424,12 @@ function WorkspaceBrowserContent({
     [archivedSessionIds, list],
   );
   const threadOrder = useMemo(() => threadTreeOrderSource(list, rowState), [list, rowState]);
-  const orderedWorkspaces = useMemo(
+  const projectedWorkspaces = useMemo(
     () =>
       workspaces.map((workspace) => {
-        const memberIds = workspace.sessionIds.filter(
-          (id) => list.byId[id] === undefined || threadOrder.rootIds.has(id),
+        const { memberIds, linkedRootIds } = workspaceTreeMembers(
+          workspace.sessionIds,
+          threadOrder,
         );
         const baseOrder =
           orderBy === "updated"
@@ -1412,16 +1441,33 @@ function WorkspaceBrowserContent({
                 orderState,
               );
         return {
-          ...workspace,
-          sessionIds: pinCurrentBlank(
-            baseOrder,
-            currentBlank !== undefined && memberIds.includes(currentBlank)
-              ? currentBlank
-              : undefined,
-          ),
+          workspace: {
+            ...workspace,
+            sessionIds: pinCurrentBlank(
+              baseOrder,
+              currentBlank !== undefined && memberIds.includes(currentBlank)
+                ? currentBlank
+                : undefined,
+            ),
+          },
+          linkedRootIds,
         };
       }),
-    [currentBlank, list.byId, threadOrder, orderBy, orderState, sessionOrderByAccount, workspaces],
+    [currentBlank, threadOrder, orderBy, orderState, sessionOrderByAccount, workspaces],
+  );
+  const orderedWorkspaces = useMemo(
+    () => projectedWorkspaces.map(({ workspace }) => workspace),
+    [projectedWorkspaces],
+  );
+  const linkedRoots = useMemo(
+    () =>
+      new Map<string, ReadonlySet<SessionId>>(
+        projectedWorkspaces.map(({ workspace, linkedRootIds }) => [
+          workspace.workspaceId,
+          linkedRootIds,
+        ]),
+      ),
+    [projectedWorkspaces],
   );
   const orderedUngroupedSessionIds = useMemo(
     () =>
@@ -1960,6 +2006,7 @@ function WorkspaceBrowserContent({
               onSessionRenameRequest={requestSessionRename}
               renderSlot={renderSlot}
               workspaces={orderedWorkspaces}
+              linkedRoots={linkedRoots}
               ungroupedSessionIds={orderedUngroupedSessionIds}
               canStartProjectless={canStartProjectless}
               workspaceReady={workspaceReady}

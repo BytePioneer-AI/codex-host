@@ -144,6 +144,7 @@ export interface RendererDraftPrewarmPolicy {
   state: "ready";
   hostId: string;
   readonly requestTarget?: () => unknown;
+  readonly requiresCreationMode?: true;
   select(
     model: string | null,
     draftId?: string,
@@ -730,7 +731,7 @@ type ComposerDomIdentity =
   | { kind: "conversation"; threadId: HostThreadId }
   | { kind: "ambiguous" };
 
-function findComposerDomIdentity(composer: Element): ComposerDomIdentity {
+export function findComposerDomIdentity(composer: Element): ComposerDomIdentity {
   // Codex 26.818 renders one direct portal marker inside the Composer root. The
   // conversation attribute is omitted for an unsubmitted client-new-thread and
   // populated once that draft is bound to a real Thread. Prefer this scoped DOM
@@ -1103,19 +1104,27 @@ export function installCurrentRendererAdapter(): {
     );
     const carrier = selection?.model;
     if (carrier !== null && carrier !== undefined && typeof carrier !== "string") return false;
+    const rejectDraftSwitch = (reason: string): false => {
+      console.warn("codexhost draft Agent switch unavailable", { reason, agent });
+      return false;
+    };
     const route = window.__codexhostHostRoutingV1?.forComposer(composer);
-    if (!route) return false;
+    if (!route) return rejectDraftSwitch("draft-route-unavailable");
     try {
       const target = composer ? findComposerModelTarget(composer) : null;
       if (target?.[0] === "conversation") return true;
       if (target?.[0] !== "default" || typeof target[1] !== "string" || !composer)
-        return agent === "codex";
-      const binding = findScopedDraftModelBinding(composer, target[1]);
+        return agent === "codex" || rejectDraftSwitch("draft-identity-unavailable");
       const draftKey = target[1];
-      if (!binding || !route.policy.scopedCreation)
-        return agent === "codex" && !draftModels.has(draftKey);
+      const binding = findScopedDraftModelBinding(composer, draftKey);
+      if (!binding || !route.policy.scopedCreation) {
+        return (
+          (agent === "codex" && !draftModels.has(draftKey)) ||
+          rejectDraftSwitch(binding ? "scoped-creation-unavailable" : "draft-writer-unverified")
+        );
+      }
       if (carrier && route.policy.requiresCreationMode && !binding.creationModes?.length)
-        return false;
+        return rejectDraftSwitch("draft-submit-mode-unverified");
       // The draft write may synchronously render a new creation mode.
       const previous = draftModels.model(draftKey);
       const policyChanged = route.policy.select(carrier ?? null, draftKey, binding.creationModes);
@@ -1137,7 +1146,7 @@ export function installCurrentRendererAdapter(): {
       selectedPolicies.set(route.hostId, route.policy);
     } catch {
       updateStatus("installing", "draft-routing-policy-unavailable", null);
-      return false;
+      return rejectDraftSwitch("draft-routing-policy-unavailable");
     }
     return true;
   };

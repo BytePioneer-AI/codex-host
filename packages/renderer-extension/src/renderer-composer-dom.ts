@@ -383,7 +383,7 @@ export function nativeContextUsageControlForComposer(composer: Element): HTMLEle
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
-function contractElementVisible(element: Element): boolean {
+export function contractElementVisible(element: Element): boolean {
   const typed = element as HTMLElement;
   const bounds = typed.getBoundingClientRect?.();
   if (!bounds || bounds.width <= 0 || bounds.height <= 0) return false;

@@ -251,11 +251,11 @@ it.each([52, 55])("uses a verified %i-slot mode to select the owning draft write
     modelSettings: projected,
     setModelAndReasoningEffort: modelCallback,
   };
-  const identity = (setter: typeof update) =>
+  const identity = (setter: typeof update, storeView = store) =>
     tuple(14, {
       6: draftId,
       7: draftId,
-      8: store,
+      8: storeView,
       9: setter,
       10: original,
       11: true,
@@ -310,7 +310,11 @@ it.each([52, 55])("uses a verified %i-slot mode to select the owning draft write
   const element = {
     parentElement: null,
     __reactFiber$fixture: {
-      updateQueue: { memoCache: { data: [model(otherUpdate), identity(otherUpdate)] } },
+      updateQueue: {
+        memoCache: {
+          data: [model(otherUpdate), identity(otherUpdate, width === 55 ? { ...store } : store)],
+        },
+      },
       return: creationOwner,
     },
   };

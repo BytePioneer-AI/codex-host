@@ -339,7 +339,7 @@ fn update_recovery_reclaim_spares_foreign_orphans_and_same_group_neighbors() {
     // killed), and stays alive until it is signalled.
     if let Some(root) = env::var_os("CODEXHOST_WEB_GROUP_TEST") {
         let root = std::path::PathBuf::from(root);
-        let neighbor = Command::new("sleep")
+        let mut neighbor = Command::new("sleep")
             .arg("120")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -352,6 +352,9 @@ fn update_recovery_reclaim_spares_foreign_orphans_and_same_group_neighbors() {
         while Instant::now() < deadline {
             thread::sleep(Duration::from_millis(50));
         }
+        // Reap the neighbor before the fixture exits so the `sleep` child
+        // never lingers as a zombie of this process.
+        let _ = neighbor.wait();
         return;
     }
     let nonce = SystemTime::now()

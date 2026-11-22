@@ -1,10 +1,12 @@
 import {
   catalogModelForRef,
+  decodeOfficialCodexModelSelection,
   harnessIdSchema,
   harnessModelRefIdSchema,
   harnessThinkingOptionIdSchema,
   type HarnessDelegationDefault,
   type HarnessModelCatalog,
+  type HarnessModelRef,
   type HarnessPluginDescriptor,
   type HarnessSessionCapabilities,
 } from "@codexhost/shared-contracts";
@@ -148,17 +150,23 @@ function supportedThinkingOptions(
 }
 
 function resolveModelLabel(
+  harnessId: string,
   entry: CatalogCacheEntry | undefined,
-  modelId: string | undefined,
-): string | null {
-  if (!modelId) return null;
-  if (entry?.status === "ready") {
-    const found = entry.catalog.models.find(
-      (model) => model.ref.id === modelId || model.fastModel?.id === modelId,
+  ref: HarnessModelRef,
+  copy: DelegationMessages,
+): string {
+  const found = catalogModelForRef(entry?.status === "ready" ? entry.catalog : undefined, ref);
+  if (harnessId !== "codex") return found?.label ?? ref.id;
+  if (found) return found.fastModel?.id === ref.id ? `${found.label} · Fast` : found.label;
+  try {
+    const { model, serviceTier } = decodeOfficialCodexModelSelection(ref);
+    return (
+      model +
+      (serviceTier === "priority" ? " · Fast" : serviceTier === "ultrafast" ? " · Ultrafast" : "")
     );
-    if (found) return found.label;
+  } catch {
+    return copy.loadFailed;
   }
-  return modelId;
 }
 
 function resolveThinkingLabel(
@@ -174,12 +182,13 @@ function resolveThinkingLabel(
 }
 
 function formatEffectiveSummary(
+  harnessId: string,
   saved: HarnessDelegationDefault | undefined,
   entry: CatalogCacheEntry | undefined,
   copy: DelegationMessages,
   compactDefault: boolean,
 ): { text: string; overridden: boolean } {
-  const modelLabel = resolveModelLabel(entry, saved?.model?.id);
+  const modelLabel = saved?.model ? resolveModelLabel(harnessId, entry, saved.model, copy) : null;
   const thinkingLabel = resolveThinkingLabel(entry, saved?.thinkingOptionId);
   if (!modelLabel && !thinkingLabel) {
     return {
@@ -283,6 +292,7 @@ export function createDelegationSettingsPage(
       const diagramAgents = (): DelegationDiagramAgent[] =>
         readyAgents.map((agent) => {
           const summary = formatEffectiveSummary(
+            agent.id,
             delegationByHarness[agent.id],
             catalogs.get(agent.id),
             copy,
@@ -698,26 +708,24 @@ export function createDelegationSettingsPage(
         }
 
         // Model options
-        const savedModelId = saved?.model?.id ?? "";
+        const savedModel = saved?.model;
+        const savedModelId = savedModel?.id ?? "";
         const modelOptions: Array<{ value: string; label: string; disabled?: boolean }> = [
           { value: "", label: copy.followAgentDefault },
         ];
         if (entry?.status === "ready") {
-          const seenModelIds = new Set<string>();
           for (const model of entry.catalog.models) {
-            seenModelIds.add(model.ref.id);
             modelOptions.push({ value: model.ref.id, label: model.label });
           }
-          if (savedModelId && !seenModelIds.has(savedModelId)) {
-            modelOptions.push({ value: savedModelId, label: savedModelId });
-          }
-        } else {
-          if (savedModelId) {
-            modelOptions.push({ value: savedModelId, label: savedModelId });
-          }
-          if (entry?.status === "loading") {
-            modelOptions.push({ value: "__loading__", label: copy.loadingModels, disabled: true });
-          }
+        }
+        if (savedModel && !modelOptions.some(({ value }) => value === savedModelId)) {
+          modelOptions.push({
+            value: savedModelId,
+            label: resolveModelLabel(harnessId, entry, savedModel, copy),
+          });
+        }
+        if (entry?.status === "loading") {
+          modelOptions.push({ value: "__loading__", label: copy.loadingModels, disabled: true });
         }
         setSelectOptions(doc, view.modelSelect, modelOptions, savedModelId);
         view.modelSelect.disabled = !persistable;
@@ -786,7 +794,7 @@ export function createDelegationSettingsPage(
         }
 
         // Effective value + Reset button
-        const summary = formatEffectiveSummary(saved, entry, copy, false);
+        const summary = formatEffectiveSummary(harnessId, saved, entry, copy, false);
         toggleClass(view.root, "is-overridden", summary.overridden);
         const valSpan = doc.createElement("span");
         valSpan.className = "settings-delegation__effective-val";

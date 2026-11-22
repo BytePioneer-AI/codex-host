@@ -70,6 +70,7 @@ type ReadDelegationDefault = (
 ) => Promise<HarnessDelegationDefault | undefined>;
 type ResolveOfficialConfiguration = (
   model: HarnessModelRef | undefined,
+  inspected?: HarnessInspectResult,
 ) => ReturnType<typeof resolveDelegationConfiguration>;
 
 function delay(milliseconds: number): Promise<void> {
@@ -276,8 +277,8 @@ export class HarnessDelegationCoordinator {
     if (input.harnessId === "codex") {
       const startInput = { ...input, parentThreadId, cwd: selectedCwd, title };
       // The official owner resolves preferences only after checking the original request digest.
-      const result = await this.#startOfficial(startInput, (model) =>
-        this.#resolveConfiguration(startInput, model),
+      const result = await this.#startOfficial(startInput, (model, inspected) =>
+        this.#resolveConfiguration(startInput, model, inspected),
       );
       return {
         ...result,
@@ -765,12 +766,13 @@ export class HarnessDelegationCoordinator {
   #resolveConfiguration(
     { harnessId, cwd, thinkingOptionId }: DelegationStartInput & { cwd: string },
     model: HarnessModelRef | undefined,
+    inspected?: HarnessInspectResult,
   ) {
     return resolveDelegationConfiguration({
       harnessId,
       explicit: { model, thinkingOptionId },
       readDefault: async () => this.#readDelegationDefault?.(harnessId),
-      inspect: () => this.inspect({ harnessId, cwd }),
+      inspect: async () => inspected ?? this.inspect({ harnessId, cwd }),
     });
   }
 

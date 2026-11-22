@@ -84,7 +84,13 @@ describe("delegation CLI", () => {
     expect(await runDelegationCli({ arguments: [group, command, help], output, fetchImpl })).toBe(
       0,
     );
-    expect(outputText(output)).toContain(`codexhost ${group} ${command}`);
+    const text = outputText(output);
+    expect(text).toContain(`codexhost ${group} ${command}`);
+    if (`${group} ${command}` === "delegate start") {
+      expect(text).toContain("--model <id>");
+      expect(text).toContain("gpt-6.2-sol~fast");
+      expect(text).toContain("gpt-6.2-sol~ultrafast");
+    }
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 

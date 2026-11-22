@@ -12,16 +12,19 @@
 - 连接优先级：完整的 Host 注入参数 → 显式客户端令牌／令牌文件 → 本机私有凭据。部分缺失的 Host 参数仍报错，不自动改变内部会话身份；显式令牌无效时不会回退到本机凭据。
 - HTTP／MCP 不免认证，仍须显式提供 Bearer 令牌。
 
-### 委派时选择 Codex 速度
+### 委派时选择 Codex Model 与速度
 
-用 `codexhost harness inspect codex --format compact` 查看目标 Host 公布的档位。要指定 Ultrafast，将标有 `· Ultrafast` 的模型条目的 `id` 传给 `--model`。Thinking 由 `--thinking` 单独设置。例如，选择 `GPT-6.2-Sol · Ultrafast` 且该条目支持 `max` 时：
+`codexhost harness inspect codex` 列出的 Model ID 可直接复制给 `--model`：原生 Model ID 表示普通档，加 `~fast` 或 `~ultrafast` 后缀表示对应档位。Thinking 由 `--thinking` 单独设置。例如：
 
 ```sh
 codexhost delegate start --harness codex --cwd "$PWD" \
-  --model '<Ultrafast 条目的 id>' --thinking max --task "执行任务"
+  --model 'gpt-6.2-sol~ultrafast' --thinking max --task "执行任务"
 ```
 
-普通 Fast 使用 `--format json` 中的 `fastModel.id`。可用档位由原生 Codex 模型目录决定。
+- 只有目标 Host 的原生 Codex 模型目录为该 Model 公布了相应档位时，后缀才表示档位；否则整个值按原生 Model ID 处理。
+- 含 `/`、`[` 等字符的自定义 Provider Model ID 也可直接传入。
+- 内部和 Host RPC 仍使用编码后的 Model Ref（`codex-model-v1.…` 等），这类旧 ID 照常接受。少数会与后缀或参数语法冲突的原生 ID 在 `inspect` 中显示为编码 Ref。
+- 设置页的委派默认模型显示目录名称；目录未加载时显示原生 Model ID 和档位，保存值仍是 Model Ref。
 
 ### CLI 输出格式
 

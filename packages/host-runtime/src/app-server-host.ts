@@ -257,10 +257,10 @@ import { rememberNativeListSeconds } from "./delegation-thread-list-merge.js";
 import { QuestionInteractions } from "./question-interactions.js";
 import type { NativeAsyncQuestions } from "./native-async-questions.js";
 import {
-  canonicalizeOfficialCodexModelRef,
   decodeOfficialCodexModelSelection,
   encodeOfficialCodexModelRef,
 } from "./official-codex-model-ref.js";
+import { resolveOfficialDelegationModel } from "./official-delegation-model.js";
 import {
   spawnOfficialAppServerConnection,
   type OfficialAppServerConnection,
@@ -2737,14 +2737,16 @@ export class AppServerHost {
     input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
     resolveConfiguration: (
       model: HarnessModelRef | undefined,
+      inspected?: HarnessInspectResult,
     ) => ReturnType<typeof resolveDelegationConfiguration>,
   ): Promise<DelegationStartResult> {
-    let explicitModel: HarnessModelRef | undefined;
-    try {
-      explicitModel = input.model ? canonicalizeOfficialCodexModelRef(input.model) : undefined;
-    } catch {
-      throw new DelegationControlError("INVALID_ARGUMENT", "Official Model Ref is invalid");
-    }
+    let inspected: HarnessInspectResult | undefined;
+    const explicitModel = input.model
+      ? await resolveOfficialDelegationModel(input.model.id, async () => {
+          inspected = await this.#inspectOfficialDelegationTarget(input);
+          return inspected.inspection.status === "ready" ? inspected.inspection.catalog : undefined;
+        })
+      : undefined;
     const digest = createHash("sha256")
       .update(
         JSON.stringify({
@@ -2788,7 +2790,7 @@ export class AppServerHost {
         },
       };
     }
-    const selection = await resolveConfiguration(explicitModel);
+    const selection = await resolveConfiguration(explicitModel, inspected);
     const { model, thinkingOptionId } = selection;
     const nativeSelection = model ? decodeOfficialCodexModelSelection(model) : undefined;
     const started = await this.#requestOfficial("thread/start", {

@@ -1,4 +1,5 @@
 import {
+  encodeOfficialCodexModelRef,
   harnessIdSchema,
   harnessModelRefIdSchema,
   harnessThinkingOptionIdSchema,
@@ -225,7 +226,7 @@ function makeDiagnostics(snapshot: RendererConnectionSnapshot): {
 }
 
 function readyInspection(options: {
-  models: Array<{ id: string; label: string; supportedThinking?: string[] }>;
+  models: Array<{ id: string; label: string; fastModelId?: string; supportedThinking?: string[] }>;
   defaultModelId?: string;
   thinkingOptions?: Array<{ id: string; label: string }>;
   selectThinkingOption: boolean;
@@ -236,6 +237,9 @@ function readyInspection(options: {
       models: options.models.map((m) => ({
         ref: { id: harnessModelRefIdSchema.parse(m.id) },
         label: m.label,
+        ...(m.fastModelId
+          ? { fastModel: { id: harnessModelRefIdSchema.parse(m.fastModelId) } }
+          : {}),
         ...(m.supportedThinking !== undefined
           ? {
               supportedThinkingOptionIds: m.supportedThinking.map((id) =>
@@ -409,17 +413,25 @@ describe("Delegation settings page", () => {
 
   it("loads catalog on demand when interacting with a dropdown, hides thinking when unsupported, and clears incompatible thinking on model switch", async () => {
     const { diagnostics } = makeDiagnostics(baseSnapshot());
-    const savedState: Record<string, HarnessDelegationDefault> = {};
+    const base = encodeOfficialCodexModelRef("gpt-5.4");
+    const fast = encodeOfficialCodexModelRef("gpt-5.4", "priority");
+    const mini = encodeOfficialCodexModelRef("gpt-5.4-mini");
+    const savedState: Record<string, HarnessDelegationDefault> = { codex: { model: fast } };
     let revision = 1;
 
     const inspectHarness = vi.fn(async ({ harnessId }: { harnessId: string }) => {
       if (harnessId === "codex") {
         return readyInspection({
           models: [
-            { id: "gpt-5.4", label: "GPT-5.4", supportedThinking: ["low", "high"] },
-            { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", supportedThinking: ["low"] },
+            {
+              id: base.id,
+              label: "GPT-5.4",
+              fastModelId: fast.id,
+              supportedThinking: ["low", "high"],
+            },
+            { id: mini.id, label: "GPT-5.4 Mini", supportedThinking: ["low"] },
           ],
-          defaultModelId: "gpt-5.4",
+          defaultModelId: base.id,
           thinkingOptions: [
             { id: "low", label: "低" },
             { id: "high", label: "高" },
@@ -474,7 +486,16 @@ describe("Delegation settings page", () => {
     const codexModel = selectIn(codexRow, "model");
     const codexThinking = selectIn(codexRow, "thinking");
 
-    // Focus triggers a single on-demand inspectHarness without `refresh`.
+    const codexLane = descendants(content).find(
+      (el) =>
+        el.classList.contains("settings-delegation__lane") && el.dataset.harnessId === "codex",
+    );
+    await vi.waitFor(() => expect(selectOptionLabels(codexModel)).toContain("gpt-5.4 · Fast"));
+    expect(codexModel.value).toBe(fast.id);
+    expect(textOf(codexRow)).toContain("当前生效：gpt-5.4 · Fast");
+    expect(textOf(codexLane)).toContain("gpt-5.4 · Fast");
+    expect(inspectHarness).not.toHaveBeenCalled();
+
     codexModel.dispatch("focus");
     codexModel.dispatch("mousedown");
     await vi.waitFor(() =>
@@ -482,8 +503,11 @@ describe("Delegation settings page", () => {
         "跟随 Agent 默认",
         "GPT-5.4",
         "GPT-5.4 Mini",
+        "GPT-5.4 · Fast",
       ]),
     );
+    expect(textOf(codexRow)).toContain("当前生效：GPT-5.4 · Fast");
+    expect(textOf(codexLane)).toContain("GPT-5.4 · Fast");
     expect(inspectHarness).toHaveBeenCalledTimes(1);
     expect(inspectHarness).toHaveBeenCalledWith({
       harnessId: harnessIdSchema.parse("codex"),
@@ -493,7 +517,7 @@ describe("Delegation settings page", () => {
     expect(selectOptionLabels(codexThinking)).toEqual(["默认强度", "低", "高"]);
 
     // Select model + thinking -> persists kind: "delegation" and updates hero diagram model label.
-    codexModel.value = "gpt-5.4";
+    codexModel.value = base.id;
     codexModel.dispatch("change");
     await vi.waitFor(() => expect(patchHarnessPreferences).toHaveBeenCalledTimes(1));
 
@@ -506,20 +530,16 @@ describe("Delegation settings page", () => {
         {
           kind: "delegation",
           harnessId: "codex",
-          configuration: { model: { id: "gpt-5.4" }, thinkingOptionId: "high" },
+          configuration: { model: base, thinkingOptionId: "high" },
         },
       ],
     });
     expect(textOf(codexRow)).toContain("GPT-5.4 · 高");
 
-    const codexLane = descendants(content).find(
-      (el) =>
-        el.classList.contains("settings-delegation__lane") && el.dataset.harnessId === "codex",
-    );
     expect(textOf(codexLane)).toContain("GPT-5.4 · 高");
 
     // Switching to gpt-5.4-mini (only supports "low") drops incompatible "high" thinking automatically.
-    codexModel.value = "gpt-5.4-mini";
+    codexModel.value = mini.id;
     codexModel.dispatch("change");
     await vi.waitFor(() => expect(patchHarnessPreferences).toHaveBeenCalledTimes(3));
     expect(patchHarnessPreferences).toHaveBeenLastCalledWith({
@@ -528,7 +548,7 @@ describe("Delegation settings page", () => {
         {
           kind: "delegation",
           harnessId: "codex",
-          configuration: { model: { id: "gpt-5.4-mini" } },
+          configuration: { model: mini },
         },
       ],
     });

@@ -9,7 +9,7 @@ import {
   parseDelegationTurnRange,
   type DelegationCliArguments,
 } from "./delegation-cli-options.js";
-import { compactDelegationOutput } from "./delegation-cli-output.js";
+import { compactDelegationOutput, jsonDelegationOutput } from "./delegation-cli-output.js";
 import { resolveCliTextInput } from "./delegation-cli-text-input.js";
 import { startWithDelegationWorktree } from "./delegation-worktree.js";
 import { assertDelegationTextCommand, textDelegationOutput } from "./delegation-cli-text.js";
@@ -229,7 +229,12 @@ export async function runDelegationCli(input: {
         const text = textDelegationOutput(name, body, view);
         output.write(text.endsWith("\n") ? text : `${text}\n`);
       } else {
-        writeJson(output, format === "json" ? body : compactDelegationOutput(name, body, view));
+        writeJson(
+          output,
+          format === "json"
+            ? jsonDelegationOutput(name, body)
+            : compactDelegationOutput(name, body, view),
+        );
       }
     };
     if (group === "events") {

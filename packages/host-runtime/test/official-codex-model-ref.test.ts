@@ -1,5 +1,9 @@
 import { HARNESS_MODEL_REF_MAX_LENGTH, harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
+import {
+  formatOfficialDelegationModel,
+  resolveOfficialDelegationModel,
+} from "../src/official-delegation-model.js";
 
 import {
   canonicalizeOfficialCodexModelRef,
@@ -38,10 +42,14 @@ describe("official Codex Model refs", () => {
     ["gpt-5.6-luna", "codex-model-v1.Z3B0LTUuNi1sdW5h"],
     ["xai/grok-4.6", "codex-model-v1.eGFpL2dyb2stNC42"],
     ["kimi/k3[1m]", "codex-model-v1.a2ltaS9rM1sxbV0"],
-  ])("round-trips %s through a canonical opaque ref", (nativeModelId, opaqueId) => {
+  ])("round-trips %s through a canonical opaque ref", async (nativeModelId, opaqueId) => {
     const ref = encodeOfficialCodexModelRef(nativeModelId);
     expect(ref).toEqual({ id: opaqueId });
     expect(decodeOfficialCodexModelRef(ref)).toBe(nativeModelId);
+    expect(formatOfficialDelegationModel(ref)).toBe(nativeModelId);
+    await expect(
+      resolveOfficialDelegationModel(nativeModelId, async () => undefined),
+    ).resolves.toEqual(ref);
   });
 
   it("canonicalizes legacy transport-safe native IDs", () => {
@@ -50,6 +58,33 @@ describe("official Codex Model refs", () => {
     expect(canonicalizeOfficialCodexModelRef(legacy)).toEqual({
       id: "codex-model-v1.Z3B0LTUuNi1sdW5h",
     });
+  });
+
+  it("round-trips readable choices even when a native ID ends in a tier suffix", async () => {
+    const fast = harnessModelRefSchema.parse({ id: "codex-fast-model-v1.Zm9v" });
+    const literal = encodeOfficialCodexModelRef("foo~fast");
+    const unadvertised = encodeOfficialCodexModelRef("bar~ultrafast");
+    const catalog = {
+      models: [
+        { ref: encodeOfficialCodexModelRef("foo"), label: "Foo", fastModel: fast },
+        { ref: literal, label: "Literal" },
+        { ref: encodeOfficialCodexModelRef("bar"), label: "Bar" },
+        { ref: unadvertised, label: "Bar Literal" },
+      ],
+      thinkingOptions: [],
+    };
+    const resolve = (argument: string) =>
+      resolveOfficialDelegationModel(argument, async () => catalog);
+    expect(formatOfficialDelegationModel(fast, catalog)).toBe("foo~fast");
+    const literalArgument = formatOfficialDelegationModel(literal, catalog);
+    expect(literalArgument).toBe(literal.id);
+    expect(formatOfficialDelegationModel(literal)).toBe(literal.id);
+    const unadvertisedArgument = formatOfficialDelegationModel(unadvertised, catalog);
+    expect(unadvertisedArgument).toBe("bar~ultrafast");
+    await expect(resolve("foo~fast")).resolves.toEqual(fast);
+    await expect(resolve(literalArgument)).resolves.toEqual(literal);
+    await expect(resolve(unadvertisedArgument)).resolves.toEqual(unadvertised);
+    await expect(resolve(fast.id)).resolves.toEqual(fast);
   });
 
   it("rejects empty, malformed, non-canonical, and overlong refs", () => {

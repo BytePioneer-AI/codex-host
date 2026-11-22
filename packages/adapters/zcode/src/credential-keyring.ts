@@ -6,22 +6,30 @@ const execute = promisify(execFile);
 const SERVICE = "ZCode Credential Encryption";
 const KEYCHAIN_PASSWORD_TIMEOUT_MS = 30_000;
 export class KeychainReadTimeout extends Error {}
+export class KeychainAccessDeferred extends Error {}
 export interface ReadSystemKeyOptions {
-  /** Allow retrying a Keychain account that was previously denied or timed out. */
-  retryDenied?: boolean;
+  access?: "allow" | "retry";
+  /** A retry cannot override an attempt that completed after this gesture started. */
+  requestedAt?: number;
+  /** Minimum intent required when the caller skipped a read. */
+  skipped?: "allow" | "retry";
 }
 export type ReadSystemKey = (
   account: string,
   options?: ReadSystemKeyOptions,
 ) => Promise<string | undefined>;
 
-const cachedKeys = new Map<string, string>();
-const deniedReads = new Map<string, "denied" | "timeout">();
+const cachedKeys = new Map<string, { value: string; readAt: number; mismatched?: boolean }>();
+const deniedReads = new Map<string, { reason: "denied" | "timeout"; readAt: number }>();
 const inFlightReads = new Map<string, Promise<string | undefined>>();
 
-export function invalidateSystemCredentialKey(account: string): void {
+export function invalidateSystemCredentialKey(account: string, value: string): void {
   const key = `${process.platform}:${account}`;
-  cachedKeys.delete(key);
+  const cached = cachedKeys.get(key);
+  if (cached?.value !== value) return;
+  // A stale or damaged envelope must not open another Keychain prompt on a passive read.
+  if (process.platform === "darwin") cached.mismatched = true;
+  else cachedKeys.delete(key);
 }
 
 export function resetSystemCredentialKeyCache(): void {
@@ -72,18 +80,27 @@ public static class ZCodeKeyReader {
 export const readSystemCredentialKey: ReadSystemKey = async (account, options = {}) => {
   if (!/^[a-f0-9]{64}$/.test(account)) return;
   const cacheKey = `${process.platform}:${account}`;
-  const cached = cachedKeys.get(cacheKey);
-  if (cached !== undefined) return cached;
   const existing = inFlightReads.get(cacheKey);
   if (existing) return existing;
-  const denied = deniedReads.get(cacheKey);
-  if (denied !== undefined) {
-    if (!options.retryDenied) {
-      if (denied === "timeout") throw new KeychainReadTimeout();
-      return undefined;
-    }
-    deniedReads.delete(cacheKey);
+  const mayRetry = (readAt: number) =>
+    options.access === "retry" && (options.requestedAt ?? Infinity) >= readAt;
+  const cached = cachedKeys.get(cacheKey);
+  if (cached && (!cached.mismatched || !mayRetry(cached.readAt))) {
+    if (cached.mismatched && options.access !== "retry") options.skipped = "retry";
+    return cached.value;
   }
+  const denied = deniedReads.get(cacheKey);
+  if (denied && !mayRetry(denied.readAt)) {
+    if (options.access !== "retry") options.skipped = "retry";
+    if (denied.reason === "timeout") throw new KeychainReadTimeout();
+    return undefined;
+  }
+  if (process.platform === "darwin" && !options.access) {
+    options.skipped = "allow";
+    throw new KeychainAccessDeferred();
+  }
+  cachedKeys.delete(cacheKey);
+  deniedReads.delete(cacheKey);
   const read = (async (): Promise<string | undefined> => {
     const env = {
       ...process.env,
@@ -121,7 +138,7 @@ export const readSystemCredentialKey: ReadSystemKey = async (account, options = 
           await run(security, ["default-keychain", "-d", "user"]),
         )?.[1];
         if (!keychain || !path.isAbsolute(keychain)) {
-          deniedReads.set(cacheKey, "denied");
+          deniedReads.set(cacheKey, { reason: "denied", readAt: performance.now() });
           return;
         }
         // Unlike the lookup of the default path, reading the value can prompt the user.
@@ -147,19 +164,19 @@ export const readSystemCredentialKey: ReadSystemKey = async (account, options = 
         ]);
       }
       if (value) {
-        cachedKeys.set(cacheKey, value);
+        cachedKeys.set(cacheKey, { value, readAt: performance.now() });
         deniedReads.delete(cacheKey);
         return value;
       }
-      deniedReads.set(cacheKey, "denied");
+      deniedReads.set(cacheKey, { reason: "denied", readAt: performance.now() });
       return value;
     } catch (error) {
       // Child-process errors can carry stdout, stderr, and command details. Never forward them.
       if (error instanceof KeychainReadTimeout) {
-        deniedReads.set(cacheKey, "timeout");
+        deniedReads.set(cacheKey, { reason: "timeout", readAt: performance.now() });
         throw error;
       }
-      deniedReads.set(cacheKey, "denied");
+      deniedReads.set(cacheKey, { reason: "denied", readAt: performance.now() });
     }
   })();
   inFlightReads.set(cacheKey, read);

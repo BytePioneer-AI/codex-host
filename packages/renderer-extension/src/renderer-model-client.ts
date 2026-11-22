@@ -457,10 +457,11 @@ export function createRendererModelClient(
     try {
       result = await manager.sendRequest(HARNESS_INSPECT_METHOD, params, options);
     } catch (error) {
-      // Hosts that predate `purpose` reject it as an unknown param; they only run full inspection.
-      if (!params.purpose || !isInvalidParams(error)) throw error;
+      // Older Hosts only accept the base inspection parameters.
+      if ((!params.purpose && !params.credentialAccess) || !isInvalidParams(error)) throw error;
       const full = { ...params };
       delete full.purpose;
+      delete full.credentialAccess;
       result = await manager.sendRequest(HARNESS_INSPECT_METHOD, full, options);
     }
     return harnessInspectionSchema.parse(result);

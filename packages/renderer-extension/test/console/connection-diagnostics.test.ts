@@ -94,7 +94,9 @@ describe("console connection diagnostics", () => {
       );
       diagnostics.snapshot();
       await vi.waitFor(() => expect(inspectHarness).toHaveBeenCalledTimes(1));
-      const refreshes = Array.from({ length: clicks }, () => diagnostics.refresh());
+      const refreshes = Array.from({ length: clicks }, () =>
+        diagnostics.refresh(undefined, "retry"),
+      );
       expect(inspectHarness).toHaveBeenCalledExactlyOnceWith({
         harnessId: "pi",
         refresh: false,
@@ -106,6 +108,7 @@ describe("console connection diagnostics", () => {
         harnessId: "pi",
         refresh: true,
         purpose: "availability",
+        credentialAccess: "retry",
       });
       const settled = vi.fn();
       void Promise.all(refreshes).then(settled);

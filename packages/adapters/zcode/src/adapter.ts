@@ -12,6 +12,7 @@ import type {
 } from "@codexhost/harness-adapter";
 import { nativeSessionRefSchema } from "@codexhost/shared-contracts";
 import { CliTransport, type TransportOptions } from "./transport.js";
+import type { ReadSystemKeyOptions } from "./credential-keyring.js";
 import {
   createZcodeVerifier,
   type ZcodeVerifier,
@@ -56,7 +57,10 @@ export class ZcodeAdapter implements HarnessAdapter {
   #sessions = new Set<ZcodeSession>();
   #transports = new Set<CliTransport>();
   #opening = new Set<string>();
-  #inflightInspect = new Map<string, Promise<HarnessInspection>>();
+  #inflightInspect = new Map<
+    string,
+    { keyOptions: ReadSystemKeyOptions; task: Promise<HarnessInspection> }
+  >();
   // One verification page and SDK instance for the whole Host, as in ZCode Desktop.
   #verifier: ZcodeVerifier | undefined;
   #prewarmed = false;
@@ -69,7 +73,11 @@ export class ZcodeAdapter implements HarnessAdapter {
       appVersion,
       ...(this.options.openLocalPage ? { openLocalPage: this.options.openLocalPage } : {}),
     }));
-  async #transport(cwd: string, environment?: NodeJS.ProcessEnv, retryDeniedKeychain = false) {
+  async #transport(
+    cwd: string,
+    environment?: NodeJS.ProcessEnv,
+    keyOptions?: ReadSystemKeyOptions,
+  ) {
     if (this.#closed) throw new ZcodeError("invalidState", "ZCode Adapter is closed");
     if (!(await stat(cwd)).isDirectory())
       throw new ZcodeError("invalidRequest", "ZCode workspace is not a directory");
@@ -78,7 +86,7 @@ export class ZcodeAdapter implements HarnessAdapter {
       environment: { ...(this.options.environment ?? process.env), ...environment },
       ...(this.options.app ? { app: this.options.app } : {}),
       ...(this.options.timeoutMs ? { timeoutMs: this.options.timeoutMs } : {}),
-      ...(retryDeniedKeychain ? { retryDeniedKeychain: true } : {}),
+      ...(keyOptions ? { keyOptions } : {}),
       verifier: this.#sharedVerifier,
     };
     const transport = this.options.createTransport
@@ -96,24 +104,35 @@ export class ZcodeAdapter implements HarnessAdapter {
   }
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     const cwd = path.resolve(input.cwd ?? process.cwd());
-    // Window-focus and startup availability checks pass refresh: true with purpose: "availability".
-    // Only an explicit full re-detect may re-prompt after a Keychain denial or timeout.
-    const retryDeniedKeychain = input.refresh === true && input.purpose !== "availability";
-    const dedupeKey = `${cwd}\0${retryDeniedKeychain ? "retry" : "normal"}`;
-    const existing = this.#inflightInspect.get(dedupeKey);
-    if (existing) return existing;
-    const task = this.#runInspect(cwd, retryDeniedKeychain);
-    this.#inflightInspect.set(dedupeKey, task);
-    try {
-      return await task;
-    } finally {
-      this.#inflightInspect.delete(dedupeKey);
-    }
+    const access = input.credentialAccess;
+    return this.#inspect(cwd, access ? { access, requestedAt: performance.now() } : {});
   }
-  async #runInspect(cwd: string, retryDeniedKeychain: boolean): Promise<HarnessInspection> {
+  async #inspect(cwd: string, keyOptions: ReadSystemKeyOptions): Promise<HarnessInspection> {
+    const { access } = keyOptions;
+    const existing = this.#inflightInspect.get(cwd);
+    if (existing) {
+      if (access) {
+        const { skipped } = existing.keyOptions;
+        if (skipped && (skipped === "allow" || access === "retry")) {
+          await existing.task;
+          return this.#inspect(cwd, keyOptions);
+        }
+        if (
+          !existing.keyOptions.access ||
+          (access === "retry" && existing.keyOptions.access !== "retry")
+        )
+          Object.assign(existing.keyOptions, keyOptions);
+      }
+      return existing.task;
+    }
+    const task = this.#runInspect(cwd, keyOptions).finally(() => this.#inflightInspect.delete(cwd));
+    this.#inflightInspect.set(cwd, { keyOptions, task });
+    return task;
+  }
+  async #runInspect(cwd: string, keyOptions: ReadSystemKeyOptions): Promise<HarnessInspection> {
     let transport: CliTransport | undefined;
     try {
-      transport = await this.#transport(cwd, undefined, retryDeniedKeychain);
+      transport = await this.#transport(cwd, undefined, keyOptions);
       const settings = await readCatalog(transport);
       const catalog = modelCatalog(settings);
       if (!catalog.models.length) {
@@ -124,7 +143,13 @@ export class ZcodeAdapter implements HarnessAdapter {
           // A signed-in account without an active plan is not a login problem; only a signed-out
           // ZCode Desktop needs the login prompt.
           error: issue
-            ? { code: "configurationRequired", message: issue, retryable }
+            ? {
+                code: transport.credentialAccessRequired
+                  ? "credentialAccessRequired"
+                  : "configurationRequired",
+                message: issue,
+                retryable,
+              }
             : !transport.signedIn
               ? {
                   code: "authenticationRequired",
@@ -192,10 +217,20 @@ export class ZcodeAdapter implements HarnessAdapter {
     let transport: CliTransport | undefined;
     let createdId: string | undefined;
     try {
-      transport = await this.#transport(path.resolve(input.cwd), input.environment, true);
+      const prewarm = input.kind === "create" && input.prewarm === true;
+      transport = await this.#transport(
+        path.resolve(input.cwd),
+        input.environment,
+        prewarm ? undefined : { access: "allow" },
+      );
+      // A prewarm without the account overlay cannot be reused for the first real turn.
+      if (prewarm && transport.credentialAccessRequired)
+        throw new ZcodeError("credentialAccessRequired", transport.credentialIssue!);
       let snapshot, settings;
       if (input.kind === "create") {
         settings = await readCatalog(transport);
+        if (transport.credentialAccessRequired && !modelCatalog(settings).models.length)
+          throw new ZcodeError("credentialAccessRequired", transport.credentialIssue!);
         if (
           input.permissionModeId &&
           !permissionModes().modes.some((m) => m.id === input.permissionModeId)

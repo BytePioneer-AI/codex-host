@@ -166,6 +166,7 @@ export interface ModelCatalogFailure {
   readonly id: string;
   readonly name: string;
   readonly message: string;
+  readonly credentialAccessRequired?: true;
 }
 
 /** Host-generation model catalog and the default used by unconfigured Sessions. */
@@ -176,7 +177,7 @@ export interface ModelCatalog {
   readonly preferencesAvailable?: boolean;
   /** Presentation only, shared with Desktop; includes unavailable Harness rows. */
   readonly harnessOrder?: readonly string[];
-  readonly default: ModelSelection;
+  readonly default?: ModelSelection;
   /** Provider routes with at least one currently available catalog model. */
   readonly routableProviders: readonly string[];
   readonly groups: readonly ModelProviderGroup[];

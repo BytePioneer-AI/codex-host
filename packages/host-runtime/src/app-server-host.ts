@@ -3873,6 +3873,7 @@ export class AppServerHost {
         ...(params.data.cwd ? { cwd: params.data.cwd } : {}),
         ...(params.data.refresh !== undefined ? { refresh: params.data.refresh } : {}),
         ...(params.data.purpose ? { purpose: params.data.purpose } : {}),
+        ...(params.data.credentialAccess ? { credentialAccess: params.data.credentialAccess } : {}),
       });
     } catch (error) {
       await this.#writer.json(
@@ -4949,6 +4950,7 @@ export class AppServerHost {
     const sessionResult = await adapter.open({
       kind: "create",
       cwd,
+      ...(prewarm ? { prewarm: true } : {}),
       environment: {
         ...(this.#options.environment ?? process.env),
         [DELEGATION_THREAD_ID_ENV]: record.hostThreadId,

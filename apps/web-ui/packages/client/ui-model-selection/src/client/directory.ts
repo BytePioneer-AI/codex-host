@@ -234,13 +234,15 @@ export class ModelDirectory {
     const selection = projected.next ?? catalog.value.default;
     // Provider is the legacy wire field for Harness identity. Native history fixes it;
     // before the first Turn, the Harness picker may change it through the same selection RPC.
-    const routable = groups.some(
-      (group) =>
-        group.id === selection.provider &&
-        group.models.some((model) => isModelRoute(model, selection.model)),
-    );
+    const routable =
+      selection !== undefined &&
+      groups.some(
+        (group) =>
+          group.id === selection.provider &&
+          group.models.some((model) => isModelRoute(model, selection.model)),
+      );
     this.store.set({
-      current: selection,
+      current: selection ?? null,
       ...(retainedEffort === undefined ? {} : { retainedEffort }),
       routable,
       groups,

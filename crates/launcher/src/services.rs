@@ -25,7 +25,7 @@ pub fn finish_launch(print: bool) {
         return;
     };
     if let Ok(Some(owner)) = web_service::owner(&data)
-        && owner.web_running()
+        && owner.web_running().unwrap_or(false)
         && let Ok(mut announced) = WEB_ANNOUNCED.lock()
         && !*announced
     {
@@ -69,7 +69,11 @@ fn resolve_options(
 }
 
 // Called with the Web lifecycle lock held, before GUI clients can connect.
-fn replace_outdated(options: &Options, changed: bool) -> Result<(), Box<dyn Error>> {
+fn replace_outdated(
+    options: &Options,
+    changed: bool,
+    expected_runtime: Option<&Path>,
+) -> Result<(), Box<dyn Error>> {
     let host = host_service::current_runtime(&options.data);
     let web = web_service::owner(&options.data)?;
     let host_mismatched = host.as_ref().is_some_and(|(runtime, version)| {
@@ -79,7 +83,7 @@ fn replace_outdated(options: &Options, changed: bool) -> Result<(), Box<dyn Erro
         owner.runtime != options.runtime || owner.version != env!("CARGO_PKG_VERSION")
     });
     if changed || host_mismatched || web_mismatched {
-        web_service::stop(options, None)?;
+        web_service::stop(options, expected_runtime)?;
     }
     if host_mismatched {
         println!("codexhost: switching Host to this version and installation");
@@ -117,8 +121,12 @@ fn ensure_current(
     } else {
         false
     };
-    replace_outdated(options, changed)?;
-    web_service::ensure(options)
+    // Update recovery acts on behalf of the Updater: its orphan handling must
+    // be scoped to this installation's runtime, or it could stop an orphan
+    // from another installation that stop-for-update deliberately left alone.
+    let expected_runtime = update_recovery.then_some(options.runtime.as_path());
+    replace_outdated(options, changed, expected_runtime)?;
+    web_service::ensure(options, expected_runtime)
 }
 
 fn web_browser_url(login_url: &str, connect_devices: bool) -> String {
@@ -203,7 +211,7 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
         )?;
         let _guard = host_service::lifecycle_lock(&resolved.data, "web-service-lifecycle.lock")?;
         crate::service_update::ensure_start_allowed(&resolved.data)?;
-        replace_outdated(&resolved, false)?;
+        replace_outdated(&resolved, false, None)?;
         Ok(resolved)
     };
     let resolved = match prepare() {
@@ -218,7 +226,7 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
             let _guard =
                 host_service::lifecycle_lock(&resolved.data, "web-service-lifecycle.lock")?;
             crate::service_update::ensure_start_allowed(&resolved.data)?;
-            web_service::ensure(&resolved)
+            web_service::ensure(&resolved, None)
         };
         if let Err(error) = start() {
             record_failure(&error);
@@ -390,7 +398,7 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
         match web_service::owner(&data)? {
             Some(owner) => println!(
                 "Web: {}; version {}; {}",
-                if owner.web_running() {
+                if owner.web_running().unwrap_or(false) {
                     "running"
                 } else {
                     "stopped"

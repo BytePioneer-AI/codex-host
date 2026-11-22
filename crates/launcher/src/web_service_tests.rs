@@ -187,3 +187,144 @@ fn stop_recovers_an_orphaned_web_child_of_a_dead_supervisor() {
     let _ = Command::new("kill").arg(orphan.to_string()).status();
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn orphan_cleanup_scopes_runtime_ownership_and_frees_the_port() {
+    const TEST: &str =
+        "web_service::tests::orphan_cleanup_scopes_runtime_ownership_and_frees_the_port";
+    // The fixture plays the orphaned Web child: it binds a real ephemeral
+    // port, publishes it, and stays alive until it is signalled.
+    if let Some(root) = env::var_os("CODEXHOST_WEB_PORT_TEST") {
+        let root = std::path::PathBuf::from(root);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        fs::write(
+            root.join("port"),
+            listener.local_addr().unwrap().port().to_string(),
+        )
+        .unwrap();
+        fs::write(root.join("started"), "ready").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        return;
+    }
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = env::temp_dir().join(format!("codexhost-web-port-{}-{nonce}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let executable = env::current_exe().unwrap();
+    let spawn_orphan = || -> (u32, u16) {
+        let mut command = Command::new(&executable);
+        command
+            .args(["--exact", TEST])
+            .env("CODEXHOST_WEB_PORT_TEST", &root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        codexhost_platform::configure_detached_service_command(&mut command).unwrap();
+        let mut child = command.spawn().unwrap();
+        let pid = child.id();
+        thread::spawn(move || child.wait());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !root.join("port").exists() {
+            assert!(Instant::now() < deadline, "fixture did not publish a port");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let port: u16 = fs::read_to_string(root.join("port"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        (pid, port)
+    };
+    let record_for = |pid: u32, started_at_micros: u64, runtime: std::path::PathBuf| ReadyOwner {
+        pid,
+        // Matches no live process: models an already-exited supervisor.
+        started_at_micros: started_at_micros + 1,
+        executable: root.join("deleted-package/codexhost"),
+        web_pid: pid,
+        web_started_at_micros: started_at_micros,
+        version: "0.23.0".into(),
+        runtime,
+        access: WebAccess {
+            address: "http://127.0.0.1:4400/".into(),
+            login_url: String::new(),
+        },
+    };
+    let file = root.join(super::READY);
+
+    // Unprovable ownership: neither the recorded nor the expected runtime can
+    // be canonicalized, so cleanup must fail with the record kept.
+    let (orphan, _port) = spawn_orphan();
+    let started = codexhost_platform::process_identity(orphan)
+        .unwrap()
+        .started_at_micros;
+    let record = record_for(
+        orphan,
+        started,
+        root.join("missing-install-a/web-server.mjs"),
+    );
+    fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
+    let expected = root.join("missing-install-b/web-server.mjs");
+    assert!(
+        super::stop_orphaned_web_service(&root, Some(&expected)).is_err(),
+        "double missing runtime must be rejected, not matched"
+    );
+    assert!(file.exists(), "the record must be kept for retry");
+    assert!(
+        codexhost_platform::process_identity(orphan).is_ok(),
+        "an orphan of unprovable ownership must not be terminated"
+    );
+
+    // A provably foreign installation: cleanup skips it and keeps the record.
+    fs::create_dir_all(root.join("other-install")).unwrap();
+    fs::write(root.join("other-install/web-server.mjs"), "").unwrap();
+    let record = record_for(orphan, started, root.join("other-install/web-server.mjs"));
+    fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
+    let expected = root.join("this-install/web-server.mjs");
+    fs::create_dir_all(root.join("this-install")).unwrap();
+    fs::write(&expected, "").unwrap();
+    assert!(!super::stop_orphaned_web_service(&root, Some(&expected)).unwrap());
+    assert!(file.exists(), "another installation's orphan is left alone");
+    assert!(
+        codexhost_platform::process_identity(orphan).is_ok(),
+        "a foreign installation's orphan must not be terminated"
+    );
+
+    // Same installation without an expected runtime (normal startup): the
+    // orphan is terminated and its port becomes bindable again.
+    let port = fs::read_to_string(root.join("port"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let record = record_for(
+        orphan,
+        started,
+        root.join("missing-install-a/web-server.mjs"),
+    );
+    fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
+    assert!(super::stop_orphaned_web_service(&root, None).unwrap());
+    assert!(!file.exists(), "the stale record must be removed");
+    assert!(
+        codexhost_platform::process_identity(orphan).is_err(),
+        "the confirmed orphan must be terminated"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let rebound = loop {
+        match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => break listener,
+            Err(error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "port {port} never rebindable: {error}"
+                );
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    };
+    drop(rebound);
+    fs::remove_dir_all(&root).unwrap();
+}

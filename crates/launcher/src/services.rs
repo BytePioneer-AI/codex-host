@@ -146,7 +146,13 @@ fn open_web(
 ) -> Result<(), Box<dyn Error>> {
     // Update recovery threads through so orphan cleanup is scoped to this
     // installation's runtime; device connection stays closed on this entry.
-    open_web_with(options, settings, update_recovery, connect_devices, &ensure_current)
+    open_web_with(
+        options,
+        settings,
+        update_recovery,
+        connect_devices,
+        &ensure_current,
+    )
 }
 
 type EnsureFn<'a> = dyn Fn(&Options, &[String], bool) -> Result<(), Box<dyn Error>> + 'a;
@@ -592,10 +598,7 @@ mod tests {
 
     #[test]
     fn open_web_recovery_forwards_update_recovery_without_device_connection() {
-        let root = env::temp_dir().join(format!(
-            "codexhost-open-web-flags-{}",
-            std::process::id()
-        ));
+        let root = env::temp_dir().join(format!("codexhost-open-web-flags-{}", std::process::id()));
         let options = Options {
             node: root.clone(),
             host_node: root.clone(),
@@ -613,7 +616,11 @@ mod tests {
         // device-connection page must stay closed (connect_devices=false).
         let result = open_web_with(&options, &[], true, false, &ensure);
         assert_eq!(
-            captured.lock().unwrap().as_ref().map(|(s, r)| (s.as_slice(), *r)),
+            captured
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|(s, r)| (s.as_slice(), *r)),
             Some((&[][..], true)),
             "ensure_current must receive update_recovery=true on the recovery path"
         );

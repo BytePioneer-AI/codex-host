@@ -60,6 +60,8 @@ import {
   IDLE_RELEASE_SETTINGS_METHOD,
   restoreHarnessCommandMentions,
   LOADED_SESSIONS_METHOD,
+  RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
+  RELEASE_ANNOUNCEMENT_GET_METHOD,
 } from "@codexhost/shared-contracts";
 import { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
 import { isModelPriceOverridesMethod } from "./model-price-overrides-file.js";
@@ -274,6 +276,7 @@ import {
 } from "./codex-runtime/official-runtime-scope.js";
 import { OfficialAdmissionError } from "./codex-runtime/official-work-gate.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
+import type { HostReleaseAnnouncement } from "./release-announcement.js";
 import type { HostConsoleOpener } from "./console-opener.js";
 import type { HostWebOpener } from "./web-opener.js";
 
@@ -432,6 +435,7 @@ export interface AppServerHostOptions {
   onCreateRequestRoute?: (observation: CreateRequestRouteObservation) => void;
   onRequestRoute?: (observation: RequestRouteObservation) => void;
   updateCoordinator?: HostUpdateCoordinator;
+  releaseAnnouncement?: HostReleaseAnnouncement;
   runtimeMaintenance?: RuntimeMaintenance;
   /** Present only on the local Host started by the Launcher. */
   consoleOpener?: HostConsoleOpener;
@@ -1325,6 +1329,7 @@ export class AppServerHost {
       applyHarnessPreferences: (snapshot) => this.#applyHarnessPreferences(snapshot),
       attachUsageStatistics: () => this.#attachUsageStatistics(),
       inspectHarnessAccount: (adapter, refresh) => this.#inspectHarnessAccount(adapter, refresh),
+      releaseAnnouncement: options.releaseAnnouncement,
       handleUpdateRequest: (request) => this.#handleUpdateRequest(request),
       handleConsoleOpen: (request) => this.#handleConsoleOpen(request),
       handleWebOpen: (request) => this.#handleWebOpen(request),
@@ -2091,6 +2096,8 @@ export class AppServerHost {
         // Settings requests from Web clients; the shared service owns these handlers too.
         request.method.startsWith("codexhost/account/") ||
         request.method.startsWith("codexhost/update/") ||
+        request.method === RELEASE_ANNOUNCEMENT_GET_METHOD ||
+        request.method === RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD ||
         isModelPriceOverridesMethod(request.method) ||
         isHostExtensionManagementMethod(request.method)
       )

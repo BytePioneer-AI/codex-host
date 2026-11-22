@@ -38,6 +38,8 @@ import {
   isHostExtensionManagementMethod,
   jsonValueSchema,
   LOADED_SESSIONS_METHOD,
+  RELEASE_ANNOUNCEMENT_GET_METHOD,
+  RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
   USAGE_STATISTICS_METHOD,
   usageStatisticsParamsSchema,
   type HarnessModelCatalog,
@@ -63,6 +65,10 @@ import {
 } from "./model-price-overrides-file.js";
 import type { ModelPriceCatalog } from "./model-prices.js";
 import { isSessionImportRequest } from "./session-import-requests.js";
+import {
+  handleReleaseAnnouncementRequest,
+  type HostReleaseAnnouncement,
+} from "./release-announcement.js";
 import type { UsageStatistics } from "./usage-statistics.js";
 
 /** The Host state and handlers that Host-level Desktop control requests act on. */
@@ -89,6 +95,7 @@ export interface DesktopControlRequestHost {
     adapter: HarnessAdapter,
     refresh?: boolean,
   ): Promise<HarnessAccountInspectResult>;
+  readonly releaseAnnouncement: HostReleaseAnnouncement | undefined;
   handleUpdateRequest(request: JsonRpcRequest): Promise<void>;
   handleConsoleOpen(request: JsonRpcRequest): Promise<void>;
   handleWebOpen(request: JsonRpcRequest): Promise<void>;
@@ -100,7 +107,7 @@ export interface DesktopControlRequestHost {
 
 /**
  * Host-level Desktop requests that are not about one Thread: Harness preferences, display and
- * launch settings, accounts, installation, plugin list, usage statistics, update and console.
+ * launch settings, accounts, installation, plugin list, usage statistics, updates and announcements.
  */
 export class DesktopControlRequests {
   readonly #host: DesktopControlRequestHost;
@@ -258,6 +265,17 @@ export class DesktopControlRequests {
       request.method === "codexhost/update/status"
     ) {
       this.#host.dispatchReply(request, () => this.#host.handleUpdateRequest(request));
+      return true;
+    }
+    if (
+      method === RELEASE_ANNOUNCEMENT_GET_METHOD ||
+      method === RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD
+    ) {
+      this.#host.dispatchReply(request, async () => {
+        await this.#host.writeJson(
+          await handleReleaseAnnouncementRequest(this.#host.releaseAnnouncement, request),
+        );
+      });
       return true;
     }
     if (request.method === WEB_OPEN_METHOD) {

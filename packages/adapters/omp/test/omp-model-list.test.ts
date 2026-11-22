@@ -1,9 +1,15 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { decodeOmpModelRef, normalizeOmpModelCatalog } from "../src/omp-model-catalog.js";
+import {
+  createOmpModelIndex,
+  normalizeOmpModelCatalog,
+  normalizeStoredOmpModelRef,
+  resolveOmpModelRef,
+} from "../src/omp-model-catalog.js";
 import { listOmpModels, parseOmpModelList } from "../src/omp-model-list.js";
 
 describe("parseOmpModelList", () => {
@@ -24,12 +30,35 @@ describe("parseOmpModelList", () => {
     expect(parseOmpModelList('{"models":[]}')).toEqual([]);
   });
 
-  it("round-trips exact Provider and Model IDs through the catalog", () => {
-    const native = { provider: "本地/提供方.v1", id: "系列/模型~高" };
-    const catalog = normalizeOmpModelCatalog([native], native, undefined, undefined);
-    if (!catalog.defaultModel) throw new Error("Expected an OMP Model Ref");
-    expect(decodeOmpModelRef(catalog.defaultModel)).toEqual(native);
-  });
+  it.each([false, true])(
+    "round-trips exact pairs through the catalog (collision: %s)",
+    (collision) => {
+      const native = { provider: "本地/提供方", id: "系列/模型 A:高~fast" };
+      const other = { provider: "本地", id: "提供方/系列/模型 A:高~fast" };
+      const models = [native, native, ...(collision ? [other] : [])].map((model) => ({
+        ...model,
+        reasoning: true,
+      }));
+      const catalog = normalizeOmpModelCatalog(models, native, null, null);
+      const readable = harnessModelRefSchema.parse({ id: "本地/提供方/系列/模型 A:高~fast" });
+      const legacy = ({ provider, id }: typeof native) =>
+        harnessModelRefSchema.parse({
+          id: `omp-model-v1.${Buffer.from(JSON.stringify([provider, id])).toString("base64url")}`,
+        });
+      const base = collision ? legacy(native) : readable;
+      expect(catalog.defaultModel).toEqual(base);
+      expect(catalog.models).toHaveLength(collision ? 2 : 1);
+      const index = createOmpModelIndex(models);
+      expect(resolveOmpModelRef(base, index)).toEqual(native);
+      expect(normalizeStoredOmpModelRef(legacy(native), catalog)).toEqual(base);
+      if (collision) {
+        expect(resolveOmpModelRef(legacy(other), index)).toEqual(other);
+        expect(() => resolveOmpModelRef(readable, index)).toThrow();
+      } else {
+        expect(normalizeStoredOmpModelRef(legacy(other), catalog)).toBeUndefined();
+      }
+    },
+  );
 
   it.each(["not json", "{}", '{"models":[{"provider":"p","id":"m"}]}', '{"models":[{"id":"m"}]}'])(
     "rejects output %j",

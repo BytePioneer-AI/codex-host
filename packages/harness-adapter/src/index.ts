@@ -111,6 +111,7 @@ export type {
   RollbackLastTurnSessionInput,
   SessionFaultedEvent,
   SessionStateChangedEvent,
+  SessionTitleChangedEvent,
   SessionUsageChangedEvent,
   SubagentStateChangedEvent,
   UsageHistoryEvent,

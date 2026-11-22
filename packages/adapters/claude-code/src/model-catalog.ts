@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -5,6 +6,7 @@ import path from "node:path";
 import { normalizeLegacyBase64ModelRef } from "@codexhost/harness-adapter";
 import {
   HARNESS_MODEL_LABEL_MAX_LENGTH,
+  catalogModelForRef,
   harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessResolvedModelLabelSchema,
@@ -19,6 +21,8 @@ import {
   CLAUDE_THINKING_OPTIONS,
   claudeSupportedThinkingOptionIds,
 } from "./thinking-options.js";
+
+const LEGACY_MODEL_REF_PREFIX = "claude-model-v1.";
 
 const modelInfoSchema = z.object({
   value: harnessModelRefSchema.shape.id,
@@ -83,7 +87,26 @@ export function normalizeStoredClaudeModelRef(
   ref: HarnessModelRef,
   catalog: HarnessModelCatalog,
 ): HarnessModelRef | undefined {
-  return normalizeLegacyBase64ModelRef(ref, catalog, "claude-model-v1.");
+  if (catalogModelForRef(catalog, ref)) return ref;
+  if (ref.serviceTier) return undefined;
+  const legacy = normalizeLegacyBase64ModelRef(ref, catalog, LEGACY_MODEL_REF_PREFIX);
+  if (legacy) return legacy;
+
+  let id: string = ref.id;
+  if (id.startsWith(LEGACY_MODEL_REF_PREFIX)) {
+    const encoded = id.slice(LEGACY_MODEL_REF_PREFIX.length);
+    id = Buffer.from(encoded, "base64url").toString("utf8");
+    if (Buffer.from(id).toString("base64url") !== encoded) return undefined;
+  }
+  const alias = /^(?:claude-)?fable(?: *(\[1m\]))?$/iu.exec(id);
+  if (!alias) return undefined;
+
+  // A missing alias can only be restored to a unique catalog entry of the same variant.
+  const matches = catalog.models.filter(({ ref }) => {
+    const fable = /^claude-fable-\d+(?:-\d+)*(?: *(\[1m\]))?$/iu.exec(ref.id);
+    return !ref.serviceTier && fable && Boolean(fable[1]) === Boolean(alias[1]);
+  });
+  return matches.length === 1 ? matches[0]?.ref : undefined;
 }
 
 export function resolveClaudeConfigDirectory(environment: NodeJS.ProcessEnv = process.env): string {

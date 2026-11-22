@@ -34,6 +34,7 @@ import type { ComposerKeyboard } from "../contract/draft-editor.ts";
 import type { InputSubmitMode } from "../contract/composer-submission.ts";
 import type { PopupDismissFace } from "./facade.ts";
 import { SessionInputShell } from "./facade.ts";
+import type { PendingDraftBuffer } from "./pending-draft.ts";
 import { reportMessageSubmission } from "./submission-analytics.ts";
 import { readConversationDraft } from "../stores.ts";
 
@@ -74,6 +75,7 @@ export class InputHub implements SessionInputResolver {
   constructor(
     private readonly rootCtx: Context,
     private readonly t: TranslateNS<"conversation">,
+    private readonly pendingDraft?: PendingDraftBuffer,
   ) {}
 
   /**
@@ -146,6 +148,31 @@ export class InputHub implements SessionInputResolver {
       );
     }
     return this.shellFor(binding).requestDraftInitialization(options);
+  }
+
+  adoptPendingDraft(
+    binding: SessionBinding,
+    options?: DraftInitializationOptions,
+  ): DraftInitializationResult {
+    if (this.sessions().binding(binding.sessionId) !== binding) {
+      throw new Error("conversation.input.adoptPendingDraft requires a retained Session binding");
+    }
+    const pending = this.pendingDraft?.take();
+    const shell = this.shellFor(binding);
+    if (options !== undefined) {
+      if (pending?.modified) {
+        return shell.requestDraftInitialization({
+          prompt: pending.text,
+          clearPreviousDraft: true,
+        });
+      }
+      return shell.requestDraftInitialization(options);
+    }
+    if (pending !== undefined && pending.text !== "") {
+      shell.setDraft(pending.text);
+      return "applied";
+    }
+    return "preserved";
   }
 
   /**

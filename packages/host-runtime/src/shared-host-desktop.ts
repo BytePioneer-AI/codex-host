@@ -19,6 +19,7 @@ import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
 import { createHostWebOpener } from "./web-opener.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
+import type { HostReleaseAnnouncement } from "./release-announcement.js";
 import {
   isDesktopContextVariable,
   withoutDesktopToolContext,
@@ -77,6 +78,7 @@ export function sharedHostDesktop(
     store: ExternalThreadStore;
     prices: ModelPriceCatalog;
     updateCoordinator?: HostUpdateCoordinator;
+    releaseAnnouncement?: HostReleaseAnnouncement;
     delegation(): DelegationControlRegistration | undefined;
     register(api: DelegationControlRegistration): (() => void) | undefined;
     connected: Set<AppServerHost>;
@@ -124,6 +126,7 @@ export function sharedHostDesktop(
             runtimeMaintenance: new RuntimeMaintenance({ runtimePath, remote: false, environment }),
           }
         : {}),
+      ...(options.releaseAnnouncement ? { releaseAnnouncement: options.releaseAnnouncement } : {}),
       ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
       ...(entry
         ? { consoleOpener: createHostConsoleOpener({ entrypoint: entry, environment }) }

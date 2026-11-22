@@ -1,6 +1,8 @@
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { accessSync, constants, statSync } from "node:fs";
+import { accessSync, constants, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
+import { installationVersion } from "@codexhost/harness-discovery";
 
 function environmentValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
   return Object.entries(environment).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
@@ -46,6 +48,23 @@ function resolveExecutable(command: string, environment: NodeJS.ProcessEnv): str
   return null;
 }
 
+export function deepSeekNpxVersionFile(environment: NodeJS.ProcessEnv): string {
+  const dataDirectory =
+    environment.CODEXHOST_DATA_DIR ??
+    path.join(environment.HOME ?? environment.USERPROFILE ?? homedir(), ".codexhost");
+  return path.join(dataDirectory, "deepseek-npx-version");
+}
+
+function deepSeekNpxSpecifier(environment: NodeJS.ProcessEnv): string {
+  try {
+    const version = installationVersion(readFileSync(deepSeekNpxVersionFile(environment), "utf8"));
+    return `@deepseek-ai/dsh@${version}`;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return "@deepseek-ai/dsh";
+  }
+}
+
 export function resolveDeepSeekCommand(
   configured: string | undefined,
   environment: NodeJS.ProcessEnv,
@@ -60,7 +79,7 @@ export function resolveDeepSeekCommand(
   return npx
     ? {
         command: npx,
-        arguments: ["--offline", "--no-install", "@deepseek-ai/dsh"],
+        arguments: ["--offline", "--no-install", deepSeekNpxSpecifier(environment)],
         kind: "npx",
       }
     : null;
@@ -118,6 +137,12 @@ export function killDeepSeekProcessTree(
       },
     );
     if (result.error) throw result.error;
+    if (result.signal) {
+      throw new Error(`Windows taskkill terminated with signal ${result.signal}`);
+    }
+    if (result.status !== 0) {
+      throw new Error(`Windows taskkill exited with status ${String(result.status)}`);
+    }
     return;
   }
   try {

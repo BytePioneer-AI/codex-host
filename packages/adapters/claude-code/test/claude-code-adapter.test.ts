@@ -6286,6 +6286,70 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("resumes a stored Fable alias using the catalog Model and its Thinking options", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    const cwd = "/synthetic";
+    const currentId = "claude-fable-5-1";
+    dependencies.createInspector = () => ({
+      close: async () => undefined,
+      inspect: async () => ({
+        canSelectModel: true,
+        canSelectPermissionMode: true,
+        models: [
+          {
+            value: currentId,
+            displayName: "Fable 5.1",
+            supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+            supportsThinkingOff: false,
+          },
+        ],
+      }),
+    });
+    const inspection = await adapter.inspect({ cwd });
+    if (inspection.status !== "ready" || !inspection.catalog) throw new Error("Missing catalog");
+    const model = adapter.normalizeStoredModelRef(
+      encodeClaudeModelRef("claude-model-v1.ZmFibGU"), // Base64url of the saved native ID `fable`.
+      inspection.catalog,
+    );
+    if (model?.id !== currentId) throw new Error("Stored Fable alias did not resolve");
+
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd,
+      model,
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "restored-fable-session",
+        formatVersion: 1,
+      }),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const events = session.outputs[Symbol.asyncIterator]();
+    await expect(
+      session.execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("max"),
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    const optionIds = ["auto", "low", "medium", "high", "xhigh", "max", "ultracode"];
+    await expect(nextEvent(events)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: {
+        effectiveModel: model,
+        effectiveThinkingOptionId: "max",
+        availableThinkingOptions: optionIds.map((id) => ({ id })),
+      },
+    });
+    await expect(session.execute(textTurn("restored-fable"))).resolves.toMatchObject({ ok: true });
+    expect(dependencies.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ openMode: "resume", model: currentId, thinkingOptionId: "max" }),
+    );
+    expect(transports[0]?.turns.map(({ text }) => text)).toEqual(["restored-fable"]);
+    transports[0]?.finish({ status: "succeeded" });
+    await session.close();
+  });
+
   it("fits Thinking to the selected Model's catalog options", async () => {
     const { adapter, dependencies, transports } = fixture();
     await adapter.inspect({ cwd: "/synthetic" });

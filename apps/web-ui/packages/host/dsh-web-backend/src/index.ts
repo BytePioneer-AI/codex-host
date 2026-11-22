@@ -163,8 +163,11 @@ export async function createDshWebBackend(options: DshWebBackendOptions): Promis
     ctx.provide("workingDirectory", workingDirectory);
     // Web authenticates every request before forwarding it, so Connection is
     // mounted for its shared Fetch handler and Peer, not for its own auth.
+    // Passing undefined keeps extension-visible requestRejection() working:
+    // trusted requests are admitted (already authenticated upstream) and the
+    // Host/Origin fence still refuses untrusted origins.
     await ctx.plugin((scope: Context) => {
-      new HostConnectionService(scope, [], {});
+      new HostConnectionService(scope, [], undefined);
     });
     await ctx.plugin(TypertGateway);
     await ctx.plugin(WorkspaceFiles);

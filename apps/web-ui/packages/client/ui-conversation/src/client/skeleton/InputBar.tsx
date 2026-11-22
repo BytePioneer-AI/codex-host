@@ -21,6 +21,7 @@ import {
   IconWarningOutlineRegular,
   ResponseAnnotationChip,
   shouldAutoFocusTextInput,
+  StateDot,
   Toast,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
@@ -37,6 +38,7 @@ import type { Translate } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ComposerBarProps } from "../contract/slots.ts";
 import type { DraftResponseAnnotation } from "../contract/input.ts";
 import { DraftEditor } from "../input/editor/DraftEditor.tsx";
+import { registerComposerKeymap } from "../input/editor/keymap.ts";
 import {
   focusDraftEditor,
   installDraftFilePicker,
@@ -61,6 +63,7 @@ export const InputBar = memo(function InputBar({
   useInput,
   inputActions,
   keyboard,
+  pendingDraft,
   addFiles,
   removeAttachment,
   resolveDraftAttachments,
@@ -70,6 +73,7 @@ export const InputBar = memo(function InputBar({
   stop,
   t,
   renderSlot,
+  usePendingDraftText,
   useBusyEnter,
   useFileUploads,
   useNotices,
@@ -80,6 +84,9 @@ export const InputBar = memo(function InputBar({
   sessionId,
   variant,
   disabled: inert = false,
+  preparingDraft = false,
+  sessionCreation,
+  onRetrySessionCreation,
   blocked,
   workspacePickerOpen = false,
   onRequestWorkspace,
@@ -87,6 +94,7 @@ export const InputBar = memo(function InputBar({
   accessory,
 }: InputBarProps) {
   const input = useInput((s) => s);
+  const pendingDraftText = usePendingDraftText((s) => s);
   const responseAnnotations = input?.responseAnnotations ?? EMPTY_ANNOTATIONS;
   const annotationLabels = useMemo<ResponseAnnotationLabels>(
     () => ({
@@ -122,10 +130,20 @@ export const InputBar = memo(function InputBar({
   const hasGoal = useProjection("goal", (goal) => goal != null);
   // Session-maybe: the machine faces are absent together while no session is
   // current; the bar renders the same DOM inert instead of a parallel tree.
+  // During New Session creation the Hero surface binds the lightweight pending
+  // draft editor so the user can type immediately while send/upload stay locked.
+  const pendingCreation =
+    sessionId === undefined &&
+    pendingDraft !== undefined &&
+    sessionCreation !== undefined &&
+    sessionCreation.state !== "idle";
+  const pendingCreating = pendingCreation && sessionCreation.state === "creating";
+  const pendingFailed = pendingCreation && sessionCreation.state === "error";
+  const pendingCreationToken = pendingCreation ? sessionCreation.token : undefined;
   const live = input !== undefined && keyboard !== undefined && inputActions !== undefined;
-  const draft = input?.draft ?? "";
+  const draft = pendingCreation ? pendingDraftText : (input?.draft ?? "");
   const primaryAction = input?.primaryAction;
-  const editor = keyboard?.editor ?? null;
+  const editor = pendingCreation ? pendingDraft.editor : (keyboard?.editor ?? null);
   const attachments = useMemo(
     () =>
       input === undefined || resolveDraftAttachments === undefined
@@ -156,6 +174,7 @@ export const InputBar = memo(function InputBar({
   // is composed — the pre-check below then defers entirely to the host).
   const imageLimits = useProjection("imageLimits");
   const attachmentInput = useProjection("attachmentInput");
+  const queueState = useProjection("queueState");
   const attachmentsEnabled = attachmentInput?.enabled !== false;
   const imagesOnly = attachmentInput?.imagesOnly === true;
   // Prompt failures are ordinary failures (no create/attach transaction exists
@@ -171,6 +190,14 @@ export const InputBar = memo(function InputBar({
     const { error } = promptError;
     if (error.code === "session/writer-held") {
       showToast(t("error.sessionInUse"));
+      return;
+    }
+    if (error.code === "remote/turn-changed") {
+      showToast(t("error.steerTurnChanged"));
+      return;
+    }
+    if (error.code === "remote/steer-unavailable") {
+      showToast(t("error.remoteSteerUnavailable"));
       return;
     }
     showToast(
@@ -203,24 +230,46 @@ export const InputBar = memo(function InputBar({
   // inert no-workspace state, the machine faces absent (no session), or a
   // parent-offline continuable child. An owner block also disables input;
   // adjudicating and submitting render read-only so the draft stays visible.
-  const disabled = removed || inert || !live || blocked !== undefined || parentOffline;
+  const disabled =
+    pendingCreation || removed || inert || !live || blocked !== undefined || parentOffline;
   const locked = disabled;
   // The model seat is the ONE control a block leaves live: every block this
   // contract has is cleared by choosing a model, so locking it too would leave
   // the composer asking for the only thing it prevents. The other reasons to
   // be disabled do lock it — there is no session to choose a model for.
-  const modelSeatLocked = removed || inert || !live;
+  const modelSeatLocked = pendingCreation || removed || inert || !live;
   const machineBusy = input?.phase === "adjudicating" || input?.phase === "submitting";
   // The no-workspace surface remains the resident DOM node but acts as the
   // existing picker trigger. Message controls stay locked until a Session
   // exists; the trigger itself is read-only rather than disabled so pointer
   // and keyboard users can reach the recovery action.
-  const workspaceTrigger = inert && !removed && onRequestWorkspace !== undefined;
-  const editorDisabled = removed || (locked && !workspaceTrigger);
-  const editable = live && !locked && !machineBusy;
+  const workspaceTrigger =
+    !pendingCreation && inert && !removed && onRequestWorkspace !== undefined;
+  const preparingLiveDraft =
+    !pendingCreation && preparingDraft && live && !removed && !parentOffline && !workspaceTrigger;
+  const editable = pendingCreation || (live && !machineBusy && (!locked || preparingLiveDraft));
+  const editorDisabled = removed || (!editable && !workspaceTrigger);
   const steeringAvailable = subagent === null || subagent.address.mode === "continuable";
   const canSteerQueue =
-    !locked && !machineBusy && empty && running && steeringAvailable && input.queue.length > 0;
+    !locked &&
+    !machineBusy &&
+    empty &&
+    running &&
+    steeringAvailable &&
+    queueState?.previewOnly !== true &&
+    input.queue.length > 0;
+
+  const wasPendingCreation = useRef(pendingCreation);
+  const preservePendingFocus = useRef(false);
+  if (wasPendingCreation.current && !pendingCreation && sessionId !== undefined) {
+    const active = document.activeElement;
+    if (active !== null && cardRef.current?.contains(active)) {
+      preservePendingFocus.current = true;
+    }
+  }
+  useLayoutEffect(() => {
+    wasPendingCreation.current = pendingCreation;
+  }, [pendingCreation]);
 
   useEffect(() => {
     if (input === undefined || inputActions === undefined) return;
@@ -243,10 +292,21 @@ export const InputBar = memo(function InputBar({
   // Automatic desktop focus restores and reveals the draft selection without
   // scrolling the conversation.
   useEffect(() => {
-    if (locked || editor === null) return;
-    if (!shouldAutoFocusTextInput()) return;
+    if (pendingCreation) {
+      if (editor !== null && shouldAutoFocusTextInput()) {
+        focusDraftEditor(editor, revealSelection);
+      }
+      return;
+    }
+    if (editor === null || !editable) return;
+    if (preservePendingFocus.current) {
+      preservePendingFocus.current = false;
+      focusDraftEditor(editor, revealSelection);
+      return;
+    }
+    if (locked || !shouldAutoFocusTextInput()) return;
     focusDraftEditor(editor, revealSelection);
-  }, [locked, sessionId, editor]);
+  }, [pendingCreation, pendingCreationToken, locked, editable, sessionId, editor]);
 
   // A persisted draft arrives AFTER the unlock effect: DefaultConversationViews
   // adopts it in its own mount effect, and a parent's mount effect runs after
@@ -336,6 +396,7 @@ export const InputBar = memo(function InputBar({
   // registration survives re-renders without re-arming per keystroke.
   const gate = useRef({
     locked,
+    canPasteText: editable,
     machineBusy,
     primaryAction,
     canSteerQueue,
@@ -350,6 +411,7 @@ export const InputBar = memo(function InputBar({
   });
   gate.current = {
     locked,
+    canPasteText: editable,
     machineBusy,
     primaryAction,
     canSteerQueue,
@@ -369,9 +431,25 @@ export const InputBar = memo(function InputBar({
   }, [keyboard]);
 
   useEffect(() => {
-    if (editor === null || keyboard === undefined) return;
+    if (editor === null) return;
+    if (pendingCreation && pendingDraft !== undefined) {
+      return registerComposerKeymap(editor, {
+        arbitrate: () => "pass",
+        space: () => false,
+        dismissPopup: () => {},
+        canSubmit: () => false,
+        submit: () => {},
+        intakeFiles: () => {
+          gate.current.showToast(gate.current.t("newSession.uploadUnavailable"));
+        },
+        pasteText: (text) => {
+          pendingDraft.paste(text);
+        },
+      });
+    }
+    if (keyboard === undefined) return;
     return installDraftKeymap(editor, keyboard, gate);
-  }, [editor, keyboard]);
+  }, [editor, keyboard, pendingCreation, pendingDraft]);
 
   // Button presses steal focus from the editor; suppress at mousedown so
   // typing continues seamlessly. Lexical's focus() carries preventScroll and
@@ -520,6 +598,31 @@ export const InputBar = memo(function InputBar({
           <div className={css.overlayAnchor}>{renderSlot("conversation.input.overlay", {})}</div>
         )}
         {accessory !== undefined && <div className={css.accessory}>{accessory}</div>}
+        {pendingFailed && (
+          <div className={css.creationError} role="alert" data-new-session-error="">
+            <IconWarningOutlineRegular className={css.creationErrorIcon} size={16} />
+            <div className={css.creationErrorCopy}>
+              <span className={css.creationErrorTitle}>{t("newSession.createFailedTitle")}</span>
+              <span className={css.creationErrorDetail}>
+                {sessionCreation.reason === "no-harness"
+                  ? t("newSession.createFailed.noHarness")
+                  : sessionCreation.reason === "workspace-required"
+                    ? t("newSession.createFailed.workspaceRequired")
+                    : (sessionCreation.message ?? t("newSession.createFailed.generic"))}
+              </span>
+            </div>
+            {onRetrySessionCreation !== undefined && (
+              <button
+                type="button"
+                className={css.creationRetry}
+                onMouseDown={keepFocus}
+                onClick={onRetrySessionCreation}
+              >
+                {t("newSession.retry")}
+              </button>
+            )}
+          </div>
+        )}
         {responseAnnotations.length === 0 ? null : (
           <div className={css.annotations} data-composer-annotations>
             {responseAnnotations.map((annotation, index) => (
@@ -573,7 +676,8 @@ export const InputBar = memo(function InputBar({
           scrollRef={scrollRef}
           editable={editable}
           editorDisabled={editorDisabled}
-          phase={input?.phase ?? "inert"}
+          preserveFocus={preservePendingFocus.current}
+          phase={pendingCreation ? "plain" : (input?.phase ?? "inert")}
           placeholderText={placeholderText}
           ariaLabel={workspaceTrigger ? t("hero.chooseWorkspace") : placeholderText}
           workspaceTrigger={workspaceTrigger}
@@ -638,9 +742,34 @@ export const InputBar = memo(function InputBar({
                   : renderSlot("conversation.input.right", {
                       overflowActions: toolbarLayout.overflowActions,
                     })}
-                {sessionId === undefined
-                  ? null
-                  : renderSlot("conversation.input.model", { locked: modelSeatLocked })}
+                {sessionId === undefined ? (
+                  pendingCreating ? (
+                    <div
+                      className={css.pendingControls}
+                      role="status"
+                      aria-live="polite"
+                      data-new-session-loading=""
+                    >
+                      <span className={css.pendingModel}>
+                        <StateDot state="ongoing" />
+                        <span className={css.pendingModelLabel}>
+                          {t("newSession.loadingModel")}
+                        </span>
+                      </span>
+                      <span
+                        className={css.pendingHarness}
+                        role="img"
+                        aria-label={t("newSession.loadingHarness")}
+                        aria-busy="true"
+                        title={t("newSession.loadingHarness")}
+                      >
+                        <StateDot state="ongoing" />
+                      </span>
+                    </div>
+                  ) : null
+                ) : (
+                  renderSlot("conversation.input.model", { locked: modelSeatLocked })
+                )}
               </div>
               {input === undefined || sessionId === undefined ? null : (
                 <div className={activity ? css.activityExpanded : css.activity}>

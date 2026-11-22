@@ -38,6 +38,7 @@ export class ChThreadHistory extends ChThreadView {
     onProjection: ProjectionListener,
     origin = RENDER_ORIGIN,
     projectInput?: (content: unknown[]) => unknown[],
+    projectImage?: (path: string, projectionKey: string) => unknown,
   ) {
     const pagination = { cursor: null as string | null };
     super(
@@ -48,6 +49,7 @@ export class ChThreadHistory extends ChThreadView {
       origin,
       () => pagination.cursor !== null,
       projectInput,
+      projectImage,
     );
     this.pagination = pagination;
     this.commands = new ChCommandPresentation(this.log);
@@ -182,7 +184,7 @@ export class ChThreadHistory extends ChThreadView {
         );
       if (!this.loaded) {
         this.pagination.cursor = recent.nextCursor;
-        this.update({ ...thread, turns: descending.reverse() });
+        this.update({ ...thread, turns: descending.reverse() }, snapshot?.activeTurnId);
         this.loaded = true;
       } else {
         if (!newestKnown) this.pagination.cursor = recent.nextCursor;
@@ -194,13 +196,16 @@ export class ChThreadHistory extends ChThreadView {
           : descending;
         const incoming = new Map(descending.map((turn) => [turn.id, turn]));
         const known = new Set(this.thread.turns.map((turn) => turn.id));
-        this.update({
-          ...thread,
-          turns: [
-            ...this.thread.turns.map((turn) => incoming.get(turn.id) ?? turn),
-            ...newTurns.reverse().filter((turn) => !known.has(turn.id)),
-          ],
-        });
+        this.update(
+          {
+            ...thread,
+            turns: [
+              ...this.thread.turns.map((turn) => incoming.get(turn.id) ?? turn),
+              ...newTurns.reverse().filter((turn) => !known.has(turn.id)),
+            ],
+          },
+          snapshot?.activeTurnId,
+        );
       }
       this.commands.update(snapshot?.command, this.thread.turns);
       this.lastHeadReadAt = Date.now();

@@ -26,6 +26,7 @@ import {
   isDarwinDesktop,
   ShortcutKeys,
   Tooltip,
+  usePhoneSidebar,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { InjectFace, PropsRenderSlots, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type {
@@ -128,6 +129,7 @@ export function SidebarRoot({
   renderSlot,
 }: SidebarRootComponentProps) {
   const panels = usePanels((snapshot) => snapshot);
+  const phoneSidebar = usePhoneSidebar();
   const shortcut = useShortcuts((rows) => rows.find((row) => row.id === "sidebar.left.toggle"));
   const newShortcut = useShortcuts((rows) => rows.find((row) => row.id === "session.new"));
   const toggleLabel = collapsed ? t("toggle.open") : t("toggle.collapse");
@@ -317,6 +319,7 @@ export function SidebarRoot({
                 aria-label={t("session.new.label")}
                 aria-keyshortcuts={newShortcut?.aria}
                 onClick={() => {
+                  phoneSidebar?.close();
                   startSession();
                 }}
               >
@@ -341,6 +344,7 @@ export function SidebarRoot({
           aria-label={t("session.new.label")}
           aria-keyshortcuts={newShortcut?.aria}
           onClick={() => {
+            phoneSidebar?.close();
             startSession();
           }}
         >

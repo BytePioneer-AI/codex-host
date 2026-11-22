@@ -59,6 +59,7 @@ describe("delegation Skill installation", () => {
   });
 
   it.each([
+    ["v15 Skill with broad delegation triggers", "codexhost-delegation-v15.md"],
     ["upstream v14 Skill with split CLI help", "codexhost-delegation-v14.md"],
     ["fork v13 Skill with question instructions", "codexhost-delegation-fork-v13.md"],
     ["v4 Skill shipped in v0.4.0-v0.6.0", "codexhost-delegation-v4.md"],
@@ -115,10 +116,14 @@ describe("delegation Skill installation", () => {
     expect(CODEXHOST_DELEGATION_SKILL).toContain("short task name that tells it apart");
   });
 
-  it("routes natural agent requests and points execution to the authoritative help", () => {
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 15");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("@agent) to independently perform a task");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("session's content, progress, or results");
+  it("scopes delegation requests to CodexHost and points execution to the authoritative help", () => {
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 16");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("Use in a CodexHost-managed session");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain(
+      "when the user explicitly requests\n  delegation or Thread operations through the codexhost CLI bridge",
+    );
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("tasks to other coding agents (including @agent)");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("content, progress, or results");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("Not for recapping the current conversation");
     expect(CODEXHOST_DELEGATION_SKILL).toContain('"$CODEXHOST_CLI_PATH" delegate --help');
     expect(CODEXHOST_DELEGATION_SKILL).toContain("& $env:CODEXHOST_CLI_PATH delegate --help");

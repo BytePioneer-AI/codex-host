@@ -25,6 +25,7 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
   interface SessionProjectionMap {
     threadReference: { hostId: string; threadId?: string } | null;
     threadTreeParent: string | null;
+    archiveForkParent: string | null;
     remoteHost: { hostId: string; displayName: string; state: string } | null;
   }
 }
@@ -47,7 +48,7 @@ export function owningGroupKey(workspaces: readonly WorkspaceView[], sessionId: 
 
 /** Pending interaction kinds with dedicated Workspace-row presentation. */
 export type SessionPendingInteractionStatus = "approval" | "plan-review" | "question";
-type SessionStatuses = SessionStatusSnapshot;
+export type SessionStatuses = SessionStatusSnapshot;
 
 function mainSessionId(list: SessionListState): SessionId | undefined {
   return Object.values(list.byId).find((session) => (session.retainedBy.mainView ?? 0) > 0)?.id;
@@ -285,6 +286,7 @@ function sessionVisible(
 export interface SessionRowState {
   /** Registry-global pin ids; pinned rows lead their section in the local order. */
   pinnedSessionIds: readonly SessionId[];
+  sectionedSessionIds?: ReadonlySet<SessionId>;
   /** Archive set; members keep their slots and show grayed while visible. */
   archivedSessionIds: readonly SessionId[];
   /** Archived-row visibility choice applied to lists and search alike. */
@@ -472,6 +474,7 @@ export function deriveThreadForest(
     return summary === undefined ? [] : [sessionNode(summary, list, statuses, pinned, archived)];
   });
   return buildThreadTree(rows, (row) => {
+    if (rowState.sectionedSessionIds?.has(row.id)) return null;
     const summary = list.byId[row.id];
     return summary === undefined ? null : threadTreeParentOf(summary, list);
   });
@@ -512,7 +515,10 @@ export function deriveGroups(
     const expanded = expandedGroups.has(g.key);
     const members = g.sessions.flatMap((session) => {
       const root = roots.get(session.id);
-      return root === undefined || (view.excludePinned && root.pinned) ? [] : [root];
+      return root === undefined ||
+        (view.excludePinned && (root.pinned || rowState.sectionedSessionIds?.has(root.id)))
+        ? []
+        : [root];
     });
     if (g.key === UNGROUPED_KEY)
       members.sort(

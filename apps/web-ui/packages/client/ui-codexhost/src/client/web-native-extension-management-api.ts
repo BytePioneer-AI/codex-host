@@ -1,88 +1,113 @@
-/** Management RPC and binary ZIP upload client for Web native & DSH extensions. */
-import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
+/**
+ * Unified Host Extensions RPC & ZIP upload client for the Web Plugins center.
+ *
+ * All management calls go through `POST api/ch/v1/rpc` (`codexhost/extensions/*`);
+ * ZIP installs/updates stream binary ZIP payloads to `POST api/extensions/upload`.
+ */
 import {
-  WEB_EXTENSION_RPC_ERRORS,
-  WEB_EXTENSION_UPLOAD_PATH,
-  WEB_EXTENSIONS_RPC,
-  webExtensionZipUploadResultSchema,
-  webExtensionsRpcSchemas,
-  type WebExtensionZipUploadResult,
-  type WebExtensionsRpcMethod,
-  type WebExtensionsRpcParams,
-  type WebExtensionsRpcResult,
+  HOST_EXTENSIONS_RPC,
+  HOST_EXTENSION_UPLOAD_PATH,
+  hostExtensionsRpcSchemas,
+  type HostExtensionManagementMethod,
+  type HostExtensionsRpcParams,
+  type HostExtensionsRpcResult,
 } from "@codexhost/shared-contracts";
-import { ApiError } from "./api.ts";
 
-interface RpcEnvelope {
-  result?:
-    | { ok: true; value: unknown }
-    | { ok: false; error: { message: string; code: string; details?: unknown } };
-}
-
-async function callWebExtensionsRpc<M extends WebExtensionsRpcMethod>(
-  method: M,
-  params: WebExtensionsRpcParams<M>,
-  signal?: AbortSignal,
-): Promise<WebExtensionsRpcResult<M>> {
-  const validatedParams = webExtensionsRpcSchemas[method].params.parse(params);
-  const response = await fetch(`api/${method}`, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      type: "client-request",
-      rpcId: randomUUID(),
-      method,
-      payload: { args: validatedParams },
-    }),
-    signal,
-  });
-  const envelope = (await response.json().catch(() => undefined)) as RpcEnvelope | undefined;
-  if (envelope?.result?.ok === false) {
-    const { message, code, details } = envelope.result.error;
-    throw new ApiError(message, code, details);
+/** Structured error from the Host client channel RPC or upload endpoint. */
+export class HostExtensionRpcError extends Error {
+  constructor(
+    message: string,
+    readonly code: number | string,
+    readonly status?: number,
+  ) {
+    super(message);
+    this.name = "HostExtensionRpcError";
   }
-  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
-  if (envelope?.result?.ok !== true) throw new Error("Invalid extension RPC response");
-  return webExtensionsRpcSchemas[method].result.parse(
-    envelope.result.value,
-  ) as WebExtensionsRpcResult<M>;
 }
 
-const UPLOAD_URL = WEB_EXTENSION_UPLOAD_PATH.replace(/^\/+/u, "");
-
-interface UploadErrorPayload {
-  error?: string | { message?: unknown; code?: unknown; details?: unknown };
-  message?: unknown;
-  code?: unknown;
-}
-
-async function uploadWebExtensionZip(
-  file: Blob,
+async function callHostExtensionsRpc<M extends HostExtensionManagementMethod>(
+  method: M,
+  params: HostExtensionsRpcParams<M>,
   signal?: AbortSignal,
-): Promise<WebExtensionZipUploadResult> {
-  const response = await fetch(UPLOAD_URL, {
+): Promise<HostExtensionsRpcResult<M>> {
+  const schema = hostExtensionsRpcSchemas[method];
+  const validatedParams = schema.params.parse(params);
+  const response = await fetch("api/ch/v1/rpc", {
     method: "POST",
     credentials: "same-origin",
+    cache: "no-store",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ method, params: validatedParams }),
+    ...(signal === undefined ? {} : { signal }),
+  });
+
+  const payload = (await response.json().catch(() => undefined)) as
+    { result?: unknown; error?: { code?: number | string; message?: string } } | undefined;
+
+  if (payload?.error) {
+    throw new HostExtensionRpcError(
+      payload.error.message ?? `HTTP ${String(response.status)}`,
+      payload.error.code ?? response.status,
+      response.status,
+    );
+  }
+  if (!response.ok) {
+    throw new HostExtensionRpcError(
+      `HTTP ${String(response.status)}`,
+      response.status,
+      response.status,
+    );
+  }
+  return schema.result.parse(payload?.result) as HostExtensionsRpcResult<M>;
+}
+
+const UPLOAD_BASE_URL = HOST_EXTENSION_UPLOAD_PATH.replace(/^\/+/u, "");
+
+interface UploadZipOptions {
+  readonly id?: string | undefined;
+  readonly expectedDigest?: string | undefined;
+  readonly expectedActivationId?: string | undefined;
+  readonly signal?: AbortSignal | undefined;
+}
+
+async function uploadHostExtensionZip(
+  file: Blob,
+  options: UploadZipOptions = {},
+): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.install>> {
+  const query = new URLSearchParams();
+  if (options.id) query.set("id", options.id);
+  if (options.expectedDigest) query.set("expectedDigest", options.expectedDigest);
+  if (options.expectedActivationId) {
+    query.set("expectedActivationId", options.expectedActivationId);
+  }
+  const suffix = query.toString();
+  const url = suffix ? `${UPLOAD_BASE_URL}?${suffix}` : UPLOAD_BASE_URL;
+
+  const response = await fetch(url, {
+    method: "POST",
+    credentials: "same-origin",
+    cache: "no-store",
     headers: { "content-type": "application/zip" },
     body: file,
-    signal,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
-  const payload = (await response.json().catch(() => undefined)) as UploadErrorPayload | undefined;
+
+  const payload = (await response.json().catch(() => undefined)) as
+    | {
+        result?: unknown;
+        error?: string | { code?: number | string; message?: string };
+        message?: string;
+        code?: number | string;
+      }
+    | undefined;
+
   if (!response.ok) {
     if (payload && typeof payload.error === "object" && payload.error !== null) {
-      const code =
-        typeof payload.error.code === "string"
-          ? payload.error.code
-          : WEB_EXTENSION_RPC_ERRORS.changeFailed;
-      const message =
-        typeof payload.error.message === "string"
-          ? payload.error.message
-          : `HTTP ${String(response.status)}`;
-      throw new ApiError(message, code, payload.error.details);
-    }
-    if (typeof payload?.code === "string" && typeof payload.message === "string") {
-      throw new ApiError(payload.message, payload.code, undefined);
+      throw new HostExtensionRpcError(
+        payload.error.message ?? `HTTP ${String(response.status)}`,
+        payload.error.code ?? response.status,
+        response.status,
+      );
     }
     const message =
       typeof payload?.error === "string"
@@ -90,66 +115,69 @@ async function uploadWebExtensionZip(
         : typeof payload?.message === "string"
           ? payload.message
           : `HTTP ${String(response.status)}`;
-    throw new Error(message);
+    throw new HostExtensionRpcError(message, payload?.code ?? response.status, response.status);
   }
-  return webExtensionZipUploadResultSchema.parse(payload);
+
+  return hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.install].result.parse(payload?.result);
 }
 
-export function isWebExtensionAuthDisabledError(error: unknown): boolean {
-  return error instanceof ApiError && error.code === WEB_EXTENSION_RPC_ERRORS.authDisabled;
+export function isHostExtensionAuthDisabledError(error: unknown): boolean {
+  if (!(error instanceof HostExtensionRpcError)) return false;
+  if (error.status === 403) return true;
+  return /authentication must be enabled|auth.*disabled/iu.test(error.message);
 }
 
-export function isWebExtensionStaleError(error: unknown): boolean {
-  return error instanceof ApiError && error.code === WEB_EXTENSION_RPC_ERRORS.stale;
+export function isHostExtensionUnavailableError(error: unknown): boolean {
+  if (!(error instanceof HostExtensionRpcError)) return false;
+  return error.code === -32601 || error.status === 503;
 }
 
-export function isWebExtensionMarketUnavailableError(error: unknown): boolean {
-  return error instanceof ApiError && error.code === WEB_EXTENSION_RPC_ERRORS.marketUnavailable;
+export function isHostExtensionRevisionConflictError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /revision|conflict|stale/iu.test(message);
 }
 
-export const webNativeExtensionsApi = {
-  list: (signal?: AbortSignal) => callWebExtensionsRpc(WEB_EXTENSIONS_RPC.list, {}, signal),
+export const hostExtensionsApi = {
+  list: (signal?: AbortSignal) => callHostExtensionsRpc(HOST_EXTENSIONS_RPC.list, {}, signal),
 
-  install: (params: WebExtensionsRpcParams<typeof WEB_EXTENSIONS_RPC.install>) =>
-    callWebExtensionsRpc(WEB_EXTENSIONS_RPC.install, params),
+  snapshot: (signal?: AbortSignal) =>
+    callHostExtensionsRpc(HOST_EXTENSIONS_RPC.snapshot, {}, signal),
 
-  update: (params: WebExtensionsRpcParams<typeof WEB_EXTENSIONS_RPC.update>) =>
-    callWebExtensionsRpc(WEB_EXTENSIONS_RPC.update, params),
+  catalog: (
+    params: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.catalog> = {},
+    signal?: AbortSignal,
+  ) => callHostExtensionsRpc(HOST_EXTENSIONS_RPC.catalog, params, signal),
 
-  setEnabled: (params: WebExtensionsRpcParams<typeof WEB_EXTENSIONS_RPC.setEnabled>) =>
-    callWebExtensionsRpc(WEB_EXTENSIONS_RPC.setEnabled, params),
+  install: (params: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.install>) =>
+    callHostExtensionsRpc(HOST_EXTENSIONS_RPC.install, params),
 
-  uninstall: (params: WebExtensionsRpcParams<typeof WEB_EXTENSIONS_RPC.uninstall>) =>
-    callWebExtensionsRpc(WEB_EXTENSIONS_RPC.uninstall, params),
+  update: (params: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.update>) =>
+    callHostExtensionsRpc(HOST_EXTENSIONS_RPC.update, params),
+
+  enable: (params: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.enable>) =>
+    callHostExtensionsRpc(HOST_EXTENSIONS_RPC.enable, params),
+
+  disable: (params: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.disable>) =>
+    callHostExtensionsRpc(HOST_EXTENSIONS_RPC.disable, params),
+
+  uninstall: (params: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.uninstall>) =>
+    callHostExtensionsRpc(HOST_EXTENSIONS_RPC.uninstall, params),
+
+  recover: (params: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.recover> = {}) =>
+    callHostExtensionsRpc(HOST_EXTENSIONS_RPC.recover, params),
 
   settingsGet: (
-    params: WebExtensionsRpcParams<typeof WEB_EXTENSIONS_RPC.settingsGet>,
+    params: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsGet>,
     signal?: AbortSignal,
-  ) => callWebExtensionsRpc(WEB_EXTENSIONS_RPC.settingsGet, params, signal),
+  ) => callHostExtensionsRpc(HOST_EXTENSIONS_RPC.settingsGet, params, signal),
 
-  settingsSet: (params: WebExtensionsRpcParams<typeof WEB_EXTENSIONS_RPC.settingsSet>) =>
-    callWebExtensionsRpc(WEB_EXTENSIONS_RPC.settingsSet, params),
+  settingsSet: (params: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsSet>) =>
+    callHostExtensionsRpc(HOST_EXTENSIONS_RPC.settingsSet, params),
 
-  marketRefresh: (signal?: AbortSignal) =>
-    callWebExtensionsRpc(WEB_EXTENSIONS_RPC.marketRefresh, {}, signal),
+  backendInvoke: (
+    params: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.backendInvoke>,
+    signal?: AbortSignal,
+  ) => callHostExtensionsRpc(HOST_EXTENSIONS_RPC.backendInvoke, params, signal),
 
-  uploadZip: (file: Blob, signal?: AbortSignal) => uploadWebExtensionZip(file, signal),
-
-  installNativeZip: async (file: Blob, signal?: AbortSignal) => {
-    const { uploadId } = await uploadWebExtensionZip(file, signal);
-    return callWebExtensionsRpc(
-      WEB_EXTENSIONS_RPC.install,
-      { format: "codexhost", source: { type: "zip", uploadId } },
-      signal,
-    );
-  },
-
-  updateNativeZip: async (id: string, expectedDigest: string, file: Blob, signal?: AbortSignal) => {
-    const { uploadId } = await uploadWebExtensionZip(file, signal);
-    return callWebExtensionsRpc(
-      WEB_EXTENSIONS_RPC.update,
-      { format: "codexhost", id, expectedDigest, source: { type: "zip", uploadId } },
-      signal,
-    );
-  },
+  uploadZip: (file: Blob, options?: UploadZipOptions) => uploadHostExtensionZip(file, options),
 };

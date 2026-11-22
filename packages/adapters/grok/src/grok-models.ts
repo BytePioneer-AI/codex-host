@@ -1,21 +1,18 @@
-import { Buffer } from "node:buffer";
-
 import type { InitializeResponse } from "@agentclientprotocol/sdk";
-import type {
-  HarnessModelCatalog,
-  HarnessModelRef,
-  HarnessPermissionModeId,
-  HarnessSessionState,
-  HarnessThinkingOption,
-  HarnessThinkingOptionId,
+import {
+  normalizeLegacyBase64ModelRef,
+  type HarnessModelCatalog,
+  type HarnessModelRef,
+  type HarnessPermissionModeId,
+  type HarnessSessionState,
+  type HarnessThinkingOption,
+  type HarnessThinkingOptionId,
 } from "@codexhost/harness-adapter";
 import {
-  HARNESS_MODEL_REF_MAX_LENGTH,
+  catalogModelForRef,
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
 } from "@codexhost/shared-contracts";
-
-const GROK_MODEL_REF_PREFIX = "grok-model-v1.";
 
 export interface GrokModelState {
   catalog: HarnessModelCatalog;
@@ -33,34 +30,11 @@ function nonBlank(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-export function encodeGrokModelRef(value: string): HarnessModelRef {
-  if (!nonBlank(value)) throw new Error("Grok Model ID must not be blank");
-  const plain = harnessModelRefSchema.safeParse({ id: value });
-  if (plain.success && !value.startsWith(GROK_MODEL_REF_PREFIX)) return plain.data;
-
-  const id = `${GROK_MODEL_REF_PREFIX}${Buffer.from(value, "utf8").toString("base64url")}`;
-  if (id.length > HARNESS_MODEL_REF_MAX_LENGTH) {
-    throw new Error("Grok Model ID is too long for a Model Ref");
-  }
-  return harnessModelRefSchema.parse({ id });
-}
-
-export function decodeGrokModelRef(ref: HarnessModelRef): string {
-  const parsed = harnessModelRefSchema.parse(ref);
-  if (!parsed.id.startsWith(GROK_MODEL_REF_PREFIX)) return parsed.id;
-
-  const encoded = parsed.id.slice(GROK_MODEL_REF_PREFIX.length);
-  if (encoded.length === 0) throw new Error("Grok Model Ref is empty");
-  let value: string;
-  try {
-    value = Buffer.from(encoded, "base64url").toString("utf8");
-  } catch {
-    throw new Error("Grok Model Ref is malformed");
-  }
-  if (!nonBlank(value) || encodeGrokModelRef(value).id !== parsed.id) {
-    throw new Error("Grok Model Ref is not canonical");
-  }
-  return value;
+export function normalizeStoredGrokModelRef(
+  ref: HarnessModelRef,
+  catalog: HarnessModelCatalog,
+): HarnessModelRef | undefined {
+  return normalizeLegacyBase64ModelRef(ref, catalog, "grok-model-v1.");
 }
 
 function thinkingOptions(value: unknown): HarnessThinkingOption[] {
@@ -80,14 +54,14 @@ function thinkingOptions(value: unknown): HarnessThinkingOption[] {
 export function parseGrokModelState(value: unknown): GrokModelState | null {
   if (
     !isRecord(value) ||
-    !nonBlank(value.currentModelId) ||
+    typeof value.currentModelId !== "string" ||
     !Array.isArray(value.availableModels)
   ) {
     return null;
   }
   let currentModel: HarnessModelRef;
   try {
-    currentModel = encodeGrokModelRef(value.currentModelId);
+    currentModel = harnessModelRefSchema.parse({ id: value.currentModelId });
   } catch {
     return null;
   }
@@ -98,10 +72,10 @@ export function parseGrokModelState(value: unknown): GrokModelState | null {
   const models: HarnessModelCatalog["models"] = [];
   let currentThinkingOptionId: HarnessThinkingOptionId | undefined;
   for (const candidate of value.availableModels) {
-    if (!isRecord(candidate) || !nonBlank(candidate.modelId) || !nonBlank(candidate.name)) continue;
+    if (!isRecord(candidate) || !nonBlank(candidate.name)) continue;
     let ref: HarnessModelRef;
     try {
-      ref = encodeGrokModelRef(candidate.modelId);
+      ref = harnessModelRefSchema.parse({ id: candidate.modelId });
     } catch {
       continue;
     }
@@ -162,7 +136,7 @@ export function stateForGrokModel(
   permissionModeId?: HarnessPermissionModeId,
 ): HarnessSessionState {
   const selectedModel = model;
-  const catalogModel = modelState.catalog.models.find(({ ref }) => ref.id === selectedModel.id);
+  const catalogModel = catalogModelForRef(modelState.catalog, selectedModel);
   const availableThinkingOptions = catalogModel?.supportedThinkingOptionIds?.flatMap((id) => {
     const option = modelState.catalog.thinkingOptions.find((candidate) => candidate.id === id);
     return option ? [option] : [];

@@ -1,4 +1,9 @@
-import { catalogModelForRef } from "@codexhost/shared-contracts";
+import {
+  catalogModelForRef,
+  harnessModelRefFromKey,
+  harnessModelRefKey,
+  sameHarnessModelRef,
+} from "@codexhost/shared-contracts";
 import createElement from "lucide/dist/esm/createElement.mjs";
 import CircleAlert from "lucide/dist/esm/icons/circle-alert.mjs";
 import RefreshCw from "lucide/dist/esm/icons/refresh-cw.mjs";
@@ -861,7 +866,7 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
   for (const model of view.catalog?.models ?? []) {
     const button = document.createElement("button");
     button.type = "button";
-    button.dataset.modelId = model.ref.id;
+    button.dataset.modelId = harnessModelRefKey(model.ref);
     button.setAttribute("role", "menuitemradio");
     button.className = OPTION_CLASSES;
 
@@ -881,7 +886,7 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
     favorite.dataset.favoriteModelId = model.ref.id;
     favorite.append(createModelFavoriteIcon(document));
     row.append(button, favorite);
-    control.options.set(model.ref.id, {
+    control.options.set(harnessModelRefKey(model.ref), {
       row,
       favorite,
       label: model.label,
@@ -1018,7 +1023,10 @@ export function renderRendererModelPicker(
   // transient states (e.g. "selecting"). Filtering is client-side and safe.
 
   for (const [modelId, option] of control.options) {
-    const selected = modelId === catalogModelForRef(view.catalog, view.selected)?.ref.id;
+    const selected = sameHarnessModelRef(
+      harnessModelRefFromKey(modelId),
+      catalogModelForRef(view.catalog, view.selected)?.ref,
+    );
     option.button.setAttribute("aria-checked", String(selected));
     option.button.classList.toggle("bg-token-list-hover-background", selected);
     option.button.disabled = control.trigger.disabled;

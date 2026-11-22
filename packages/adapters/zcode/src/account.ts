@@ -209,6 +209,7 @@ export async function accountConfig(
    */
   startPlanChecked: boolean;
   credentialIssue?: string;
+  credentialAccessRequired: boolean;
   codingPlan: PersonalCodingPlanAccount;
 }> {
   const file = installation.builtinProviderConfig;
@@ -219,6 +220,7 @@ export async function accountConfig(
     .digest("hex")}`;
   let channel: LoginChannel | undefined;
   let credentialIssue: string | undefined;
+  let credentialAccessRequired = false;
   let balanceData: BalanceData | undefined;
   let credential: CredentialReader | undefined;
   try {
@@ -235,12 +237,13 @@ export async function accountConfig(
   } catch (error) {
     if (!(error instanceof ZcodeCredentialError)) throw error;
     // Leave the independent Provider catalog usable even without account credentials.
+    credentialAccessRequired = error.code === "credentialAccessRequired";
     credentialIssue = channel
       ? error.message
       : `${error.message} Personal Coding Plan subscription status is unknown.`;
   }
   let startPlan = false;
-  const codingPlan = new PersonalCodingPlanAccount(installation, environment, readSystemKeyOptions);
+  const codingPlan = new PersonalCodingPlanAccount(installation, environment);
   const providers: Record<string, unknown> = {};
   const states: Record<string, unknown> = {};
   for (const rule of builtin.config.providerConfigRules.providerRules) {
@@ -290,6 +293,7 @@ export async function accountConfig(
     signedIn: Boolean(channel),
     startPlanChecked: !credentialIssue && (!channel || balanceData !== undefined),
     ...(credentialIssue ? { credentialIssue } : {}),
+    credentialAccessRequired,
     codingPlan,
   };
 }

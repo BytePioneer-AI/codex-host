@@ -3,8 +3,12 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { NPM_PACKAGE_NAME, npmPlatformPackageName, npmTarballFileName } from "./prepare-npm.mjs";
-import { npmMetaTarballFileName } from "./prepare-npm-meta.mjs";
+import {
+  NPM_PACKAGE_NAME,
+  npmMetaTarballFileName,
+  npmPlatformPackageName,
+  npmTarballFileName,
+} from "./npm-artifacts.mjs";
 import { supportedReleaseTargets, releaseTarget } from "./targets.mjs";
 
 const semverPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;

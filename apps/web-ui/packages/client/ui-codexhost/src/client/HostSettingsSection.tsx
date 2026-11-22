@@ -3,15 +3,29 @@
  * rendered by the same page code as the console from `codexhost-settings.js`.
  */
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import type { ReleaseAnnouncement } from "@codexhost/shared-contracts";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import css from "./HostSettingsSection.module.css";
 
-interface WebSettingsPages {
+export interface WebReleaseAnnouncementControl {
+  setColorScheme(colorScheme: "light" | "dark"): void;
+  dispose(): void;
+}
+
+export interface WebSettingsPages {
   mount(
     pageId: string,
     host: HTMLElement,
     options: { locale: string; colorScheme: "light" | "dark" },
   ): () => void;
+  openReleaseAnnouncement?(
+    announcement: ReleaseAnnouncement,
+    options: {
+      locale: string;
+      colorScheme: "light" | "dark";
+      onClose?: () => void;
+    },
+  ): WebReleaseAnnouncementControl | null;
 }
 
 export interface HostSettingsSource<T> {
@@ -50,6 +64,10 @@ function loadPages(): Promise<WebSettingsPages> {
     throw error;
   });
   return loading;
+}
+
+export function loadHostSettings(): Promise<WebSettingsPages> {
+  return loadPages();
 }
 
 export function preloadHostSettings(): void {

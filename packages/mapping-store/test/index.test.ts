@@ -3,6 +3,10 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  HARNESS_MODEL_REF_MAX_LENGTH,
+  decodeHarnessPluginRoute,
+  encodeHarnessPluginRoute,
+  harnessPluginRouteSchema,
   harnessIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
@@ -707,17 +711,20 @@ describe("mapping-store package", () => {
     const first = new MappingStore({ directory });
     await first.initialize();
     await createReady(first);
-    await first.setTransportModelId(
-      threadId,
-      "codexhost/claude-code-native@claude-model-v1.default@acceptEdits",
-    );
+    const route = harnessPluginRouteSchema.parse({
+      harnessId,
+      model: { id: "模".repeat(HARNESS_MODEL_REF_MAX_LENGTH), serviceTier: "priority" },
+      thinkingOptionId: "high",
+      permissionModeId: "acceptEdits",
+    });
+    const transportModelId = encodeHarnessPluginRoute(route);
+    await first.setTransportModelId(threadId, transportModelId);
     await first.close();
 
     const second = new MappingStore({ directory });
     await second.initialize();
-    await expect(second.getThread(threadId)).resolves.toMatchObject({
-      transportModelId: "codexhost/claude-code-native@claude-model-v1.default@acceptEdits",
-    });
+    const stored = await second.getThread(threadId);
+    expect(decodeHarnessPluginRoute(stored?.transportModelId)).toEqual(route);
     await second.close();
   });
 

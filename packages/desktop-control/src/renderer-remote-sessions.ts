@@ -516,7 +516,13 @@ export async function rendererRemoteSession(
       let method: string, params: Record<string, unknown>;
       if (operation.modelId !== undefined) {
         method = "codexhost/thread/model/select";
-        params = { threadId, model: { id: operation.modelId } };
+        params = {
+          threadId,
+          model: {
+            id: operation.modelId,
+            ...(operation.serviceTier ? { serviceTier: operation.serviceTier } : {}),
+          },
+        };
       } else if (operation.thinkingOptionId !== undefined) {
         method = "codexhost/thread/thinking/select";
         params = { threadId, thinkingOptionId: operation.thinkingOptionId };

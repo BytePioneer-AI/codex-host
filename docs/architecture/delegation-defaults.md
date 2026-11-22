@@ -4,7 +4,7 @@ Codex Desktop 与独立 Web 设置共用「多 Agent 协作」页面（`packages
 
 ## 存储与共享
 
-- 默认委派配置保存在共享偏好文件 `harness-preferences-v1.json` 的 `values.delegation.byHarness[harnessId]` 中，仅保存 opaque Model Ref 与 Thinking Option ID，与普通新会话偏好 `newThread` 隔离，支持官方 `codex` 与外部 Harness。
+- 默认委派配置保存在共享偏好文件 `harness-preferences-v1.json` 的 `values.delegation.byHarness[harnessId]` 中，仅保存 Model Ref 与 Thinking Option ID（旧版本的编码 Ref 读取时按 [Model Ref](harness-plugin-runtime.md#model-ref) 规则转换），与普通新会话偏好 `newThread` 隔离，支持官方 `codex` 与外部 Harness。
 - 设置页通过既有 `codexhost/harness/preferences/{get,patch,changed}` RPC 读写与同步；将某 Harness 的配置设为 `null` 即清空覆盖并恢复跟随 Agent 原生默认。
 
 ## 页面列表与按需目录读取

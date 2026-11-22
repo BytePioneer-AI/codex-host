@@ -288,6 +288,12 @@ export interface RendererSettingsMessages {
   readonly updateCopyFailed: string;
   readonly updateDownloadFromReleases: string;
   readonly updateDownloadWindowsInstaller: string;
+  readonly updateViewAnnouncement: string;
+  readonly releaseAnnouncement: {
+    readonly title: string;
+    readonly acknowledge: string;
+    readonly fullNotes: string;
+  };
   readonly updateStarCallout: string;
   readonly updateStarLink: string;
   readonly aboutTagline: string;
@@ -312,7 +318,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   starOnGitHub: "Star to support",
   sectionsLabel: "Settings sections",
   generalSection: "General",
-  pluginsSection: "Plugin Settings",
+  pluginsSection: "Plugin Pages",
   otherSection: "Other",
   appearanceDescription: "Conversation display and local resource management.",
   appearanceGroup: "Appearance",
@@ -595,6 +601,12 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateCopyFailed: "Copy failed",
   updateDownloadFromReleases: "Download from GitHub Releases",
   updateDownloadWindowsInstaller: "Download Windows installer",
+  updateViewAnnouncement: "View release announcement",
+  releaseAnnouncement: Object.freeze({
+    title: "Release announcement",
+    acknowledge: "Got it",
+    fullNotes: "View full release notes",
+  }),
   updateStarCallout:
     "If CodexHost has helped you, please Star it on GitHub. It means a lot to us 👉",
   updateStarLink: "GitHub",
@@ -637,7 +649,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   starOnGitHub: "Star 支持",
   sectionsLabel: "设置分类",
   generalSection: "通用",
-  pluginsSection: "插件设置",
+  pluginsSection: "插件页面",
   otherSection: "其他",
   appearanceDescription: "会话显示与本地资源管理。",
   appearanceGroup: "外观",
@@ -901,6 +913,12 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateCopyFailed: "复制失败",
   updateDownloadFromReleases: "前往 GitHub Releases 下载",
   updateDownloadWindowsInstaller: "下载 Windows 安装包",
+  updateViewAnnouncement: "查看本版公告",
+  releaseAnnouncement: Object.freeze({
+    title: "更新公告",
+    acknowledge: "我知道了",
+    fullNotes: "查看完整更新说明",
+  }),
   updateStarCallout: "如果 CodexHost 帮到了你，请在 GitHub 点个 Star，这对我们意义重大 👉",
   updateStarLink: "GitHub",
   aboutTagline: "在 Codex Desktop 中运行 Pi 和其他 Harness",

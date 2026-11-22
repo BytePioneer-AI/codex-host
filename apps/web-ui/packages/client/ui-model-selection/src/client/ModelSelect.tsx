@@ -799,7 +799,11 @@ export function ModelSelect({
                   </div>
                 )}
                 {state.failures
-                  .filter((failure) => failure.id === state.current?.provider)
+                  .filter(
+                    (failure) =>
+                      failure.id === state.current?.provider ||
+                      (refreshModels && failure.credentialAccessRequired),
+                  )
                   .map((failure) => (
                     <div className={css.warning} key={failure.id}>
                       <span>
@@ -811,9 +815,25 @@ export function ModelSelect({
                           message: failure.message,
                         })}
                       </span>
-                      <button type="button" className={css.retry} onClick={reload}>
-                        {t("action.reload")}
-                      </button>
+                      {failure.credentialAccessRequired && refreshModels ? (
+                        <button
+                          type="button"
+                          className={css.retry}
+                          disabled={refreshingModels}
+                          onClick={() => {
+                            setRefreshingModels(true);
+                            void refreshModels(failure.id)
+                              .catch(() => undefined)
+                              .finally(() => setRefreshingModels(false));
+                          }}
+                        >
+                          {t("action.refreshModels")}
+                        </button>
+                      ) : (
+                        <button type="button" className={css.retry} onClick={reload}>
+                          {t("action.reload")}
+                        </button>
+                      )}
                     </div>
                   ))}
                 <div

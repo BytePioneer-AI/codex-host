@@ -12,13 +12,14 @@ import type {
   HarnessExecutionPolicy,
   HostThreadSnapshot,
 } from "@codexhost/harness-adapter";
-import {
-  harnessPermissionModeIdSchema,
-  type HarnessModelCatalog,
-} from "@codexhost/shared-contracts";
+import { harnessPermissionModeIdSchema } from "@codexhost/shared-contracts";
 import type { OpenCodeAdapterOptions } from "../opencode-adapter.js";
 import { openCodeCommandCatalog } from "../opencode-adapter.js";
-import { decodeOpenCodeModelRef, decodeOpenCodeVariant } from "../model-catalog.js";
+import {
+  decodeOpenCodeModelRef,
+  decodeOpenCodeVariant,
+  type OpenCodeModelCatalogSnapshot,
+} from "../model-catalog.js";
 import { OPENCODE_PERMISSION_MODE_CATALOG } from "../permission-modes.js";
 import { readCatalog } from "./catalog.js";
 import { V2Connection } from "./connection.js";
@@ -46,14 +47,19 @@ export class V2Adapter implements HarnessAdapter {
     return readCatalog(client, cwd, this.options.startupTimeoutMs ?? 20_000);
   }
 
-  async inspect(input: { cwd?: string; refresh?: boolean } = {}): Promise<HarnessInspection> {
+  async inspect(
+    input: { cwd?: string; refresh?: boolean } = {},
+    onModels?: (models: OpenCodeModelCatalogSnapshot) => void,
+  ): Promise<HarnessInspection> {
     const cwd = input.cwd ?? process.cwd();
     const connection = new V2Connection(this.options, cwd);
     this.#connections.add(connection);
     try {
       if (this.#closed) throw new Error("OpenCode Adapter is closed");
       const client = await connection.client();
-      const catalog = await this.#catalog(client, cwd);
+      const models = await this.#catalog(client, cwd);
+      onModels?.(models);
+      const { catalog } = models;
       return {
         status: "ready",
         catalog,
@@ -146,10 +152,10 @@ export class V2Adapter implements HarnessAdapter {
         policy = locator.executionPolicy;
       }
       client = await connection.client();
-      const catalog = await this.#catalog(client, input.cwd);
+      const models = await this.#catalog(client, input.cwd);
       let info: SessionInfo;
       if (input.kind === "create") {
-        const model = selectedModel(input, catalog);
+        const model = selectedModel(input, models);
         info = await client.session.create({
           location: { directory: input.cwd },
           ...(model ? { model } : {}),
@@ -169,7 +175,12 @@ export class V2Adapter implements HarnessAdapter {
           throw new Error("OpenCode returned a different Native Session or directory");
         if ((await client.session.active())[info.id])
           throw new Error("OpenCode Session is already running");
-        const source = await readHistory(client, info, this.options.toolOutputLimit ?? 64_000);
+        const source = await readHistory(
+          client,
+          info,
+          this.options.toolOutputLimit ?? 64_000,
+          models.index,
+        );
         if (source.snapshot.turns.some((turn) => turn.outcome.status === "unknown"))
           throw new Error("OpenCode history contains an incomplete execution");
         if (input.kind !== "resume") {
@@ -209,7 +220,12 @@ export class V2Adapter implements HarnessAdapter {
           if (parent.model)
             await client.session.switchModel({ sessionID: info.id, model: parent.model });
           info = await client.session.get({ sessionID: info.id });
-          const derived = await readHistory(client, info, this.options.toolOutputLimit ?? 64_000);
+          const derived = await readHistory(
+            client,
+            info,
+            this.options.toolOutputLimit ?? 64_000,
+            models.index,
+          );
           if (
             historyContent(derived.snapshot, false) !==
             historyContent({ turns: turns.slice(0, count) }, false)
@@ -231,6 +247,7 @@ export class V2Adapter implements HarnessAdapter {
             client,
             currentParent,
             this.options.toolOutputLimit ?? 64_000,
+            models.index,
           );
           if (historyContent(unchanged.snapshot) !== historyContent(source.snapshot))
             throw new Error("OpenCode source history changed during derivation");
@@ -241,7 +258,7 @@ export class V2Adapter implements HarnessAdapter {
         client,
         connection,
         info,
-        catalog,
+        models,
         policy,
         this.options.toolOutputLimit ?? 64_000,
         () => {
@@ -277,7 +294,7 @@ export class V2Adapter implements HarnessAdapter {
 
 function selectedModel(
   input: Extract<OpenSessionInput, { kind: "create" }>,
-  catalog: HarnessModelCatalog,
+  { catalog, index }: OpenCodeModelCatalogSnapshot,
 ) {
   const selected = input.model ?? catalog.defaultModel;
   if (!selected) {
@@ -288,7 +305,7 @@ function selectedModel(
   if (!entry) throw new Error("OpenCode Model is not available");
   if (input.thinkingOptionId && !entry.supportedThinkingOptionIds?.includes(input.thinkingOptionId))
     throw new Error("OpenCode Thinking option is not available for this Model");
-  const model = decodeOpenCodeModelRef(selected);
+  const model = decodeOpenCodeModelRef(selected, index);
   const variant = input.thinkingOptionId
     ? decodeOpenCodeVariant(input.thinkingOptionId)
     : undefined;

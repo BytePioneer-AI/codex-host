@@ -1,0 +1,348 @@
+:host {
+  --settings-bg: light-dark(#ffffff, #202020);
+  --settings-panel: light-dark(#ffffff, #222224);
+  --settings-surface: light-dark(#f3f3f4, #2e2e31);
+  --settings-surface-hover: light-dark(#e9e9eb, #38383c);
+  --settings-text: light-dark(#171717, #ececec);
+  --settings-muted: light-dark(#6b6b6b, #9e9ea3);
+  --settings-subtle: light-dark(#8a8a8e, #7e7e84);
+  --settings-border: light-dark(rgb(13 13 13 / 9%), rgb(255 255 255 / 10%));
+  --settings-divider: light-dark(rgb(13 13 13 / 7%), rgb(255 255 255 / 8%));
+  --settings-hover: light-dark(rgb(13 13 13 / 5%), rgb(255 255 255 / 7%));
+  --settings-focus: light-dark(#0b75d1, #66aaf9);
+  --announcement-button-bg: light-dark(#f2f2f3, #303033);
+  --announcement-button-hover: light-dark(#e7e7e9, #3b3b3f);
+  --announcement-button-border: light-dark(rgb(13 13 13 / 10%), rgb(255 255 255 / 12%));
+  --announcement-shadow: light-dark(0 24px 64px rgb(15 23 42 / 18%), 0 24px 64px rgb(0 0 0 / 56%));
+  --announcement-backdrop: light-dark(rgb(15 23 42 / 34%), rgb(0 0 0 / 56%));
+  color: var(--settings-text);
+  color-scheme: inherit;
+  font:
+    13.5px/1.6 system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "PingFang SC",
+    sans-serif;
+  letter-spacing: 0;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  letter-spacing: 0;
+}
+
+@keyframes release-announcement-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes release-announcement-backdrop-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+dialog.release-announcement-dialog {
+  width: min(820px, calc(100vw - 48px));
+  max-width: none;
+  max-height: min(86vh, calc(100dvh - 48px));
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  color: var(--settings-text);
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
+  border-radius: 14px;
+  box-shadow: var(--announcement-shadow);
+  -webkit-app-region: no-drag;
+}
+
+dialog.release-announcement-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  animation: release-announcement-dialog-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+dialog.release-announcement-dialog::backdrop {
+  background: var(--announcement-backdrop);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  animation: release-announcement-backdrop-in 180ms ease-out;
+}
+
+dialog.release-announcement-dialog:focus {
+  outline: none;
+}
+
+.release-announcement__header {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--settings-divider);
+}
+
+.release-announcement__title {
+  grid-column: 2;
+  justify-self: center;
+  margin: 0;
+  color: var(--settings-text);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 24px;
+  text-align: center;
+}
+
+.release-announcement__version-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 5px;
+  padding: 3px 10px 3px 8px;
+  color: var(--settings-text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  background: var(--settings-surface);
+  border-radius: 999px;
+}
+
+.release-announcement__version-badge .codexhost-settings-icon {
+  flex: none;
+  color: var(--settings-muted);
+}
+
+.release-announcement__header-badge {
+  grid-column: 3;
+  justify-self: end;
+}
+
+.release-announcement__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  gap: 24px;
+  padding: 26px 48px 28px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.release-announcement__intro {
+  display: grid;
+  gap: 10px;
+}
+
+.release-announcement__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+}
+
+.release-announcement__date {
+  color: var(--settings-muted);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.release-announcement__summary {
+  margin: 0;
+  color: var(--settings-muted);
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.release-announcement__themes {
+  display: grid;
+  gap: 22px;
+}
+
+.release-announcement__theme {
+  display: grid;
+  gap: 6px;
+}
+
+.release-announcement__theme-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 20px;
+  flex-wrap: wrap;
+}
+
+.release-announcement__theme-heading {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  gap: 7px;
+}
+
+.release-announcement__theme-icon {
+  flex: none;
+  font-size: 14.5px;
+  line-height: 1;
+}
+
+.release-announcement__theme-title {
+  margin: 0;
+  color: var(--settings-text);
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+
+.release-announcement__theme-contributors {
+  color: var(--settings-subtle);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.release-announcement__theme-body {
+  margin: 0;
+  color: var(--settings-text);
+  font-size: 13.5px;
+  line-height: 1.72;
+  overflow-wrap: anywhere;
+}
+
+.release-announcement__theme-body code,
+.release-announcement__summary code {
+  padding: 1px 5px;
+  color: var(--settings-text);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  background: var(--settings-surface);
+  border-radius: 5px;
+}
+
+.release-announcement__more {
+  margin-top: 2px;
+}
+
+.release-announcement__full-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--settings-muted);
+  font-size: 12.5px;
+  line-height: 18px;
+  text-decoration: none;
+  border-radius: 6px;
+}
+
+.release-announcement__full-link:hover {
+  color: var(--settings-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.release-announcement__footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 16px 24px 20px;
+  border-top: 1px solid var(--settings-divider);
+}
+
+.release-announcement__acknowledge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 112px;
+  height: 36px;
+  padding: 0 24px;
+  color: var(--settings-text);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: var(--announcement-button-bg);
+  border: 1px solid var(--announcement-button-border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.release-announcement__acknowledge:hover {
+  background: var(--announcement-button-hover);
+}
+
+.release-announcement__acknowledge:focus,
+.release-announcement__full-link:focus {
+  outline: none;
+}
+
+.release-announcement__acknowledge:focus-visible,
+.release-announcement__full-link:focus-visible {
+  outline: 1.5px solid var(--settings-focus);
+  outline-offset: 2px;
+}
+
+@media (max-width: 600px) {
+  dialog.release-announcement-dialog {
+    width: calc(100vw - 20px);
+    max-height: calc(100dvh - 24px);
+    border-radius: 14px;
+  }
+
+  .release-announcement__header {
+    padding: 14px 16px;
+  }
+
+  .release-announcement__title {
+    font-size: 16px;
+  }
+
+  .release-announcement__body {
+    gap: 20px;
+    padding: 18px 20px 24px;
+  }
+
+  .release-announcement__themes {
+    gap: 18px;
+  }
+
+  .release-announcement__theme-contributors {
+    width: 100%;
+  }
+
+  .release-announcement__footer {
+    padding: 14px 16px 18px;
+  }
+
+  .release-announcement__acknowledge {
+    min-width: 148px;
+    height: 38px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  dialog.release-announcement-dialog[open],
+  dialog.release-announcement-dialog::backdrop {
+    animation: none;
+  }
+}

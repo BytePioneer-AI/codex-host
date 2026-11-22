@@ -9,6 +9,7 @@ import {
 import {
   openCodeContextWindow,
   type OpenCodeNativeModelRef,
+  type OpenCodeModelIndex,
   type OpenCodeProviderCatalog,
 } from "./model-catalog.js";
 import { openCodeFileIdentity, verifiedOpenCodeWorktree } from "./file-change-verification.js";
@@ -172,6 +173,7 @@ export async function readProjection(
   sessionID: string,
   providerCatalog: OpenCodeProviderCatalog,
   toolOutputLimit: number,
+  modelIndex: OpenCodeModelIndex,
   options: { strictFileChanges?: boolean } = {},
 ): Promise<OpenCodeSnapshotProjection> {
   const strictFileChanges = options.strictFileChanges === true;
@@ -215,6 +217,7 @@ export async function readProjection(
     messages,
     diffsByUserMessageId: new Map(diffEntries),
     toolOutputLimit,
+    modelIndex,
   });
   const model = nativeModelFromSession(session, messages);
   const nativeVariant = nativeVariantFromSession(session, messages);

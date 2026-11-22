@@ -2,6 +2,11 @@
 import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
 import {
   harnessSessionImportResultSchema,
+  RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
+  RELEASE_ANNOUNCEMENT_GET_METHOD,
+  releaseAnnouncementAcknowledgeParamsSchema,
+  releaseAnnouncementGetParamsSchema,
+  releaseAnnouncementGetResultSchema,
   updateCheckResultSchema,
   voiceStatusResultSchema,
   voiceTranscribeResultSchema,
@@ -14,6 +19,7 @@ import {
   webTurnDiffsResultSchema,
   skillsListResultSchema,
   type HarnessCommandCatalog,
+  type ReleaseAnnouncementGetParams,
   type ThreadCommandExecuteResult,
   type HarnessSessionImportCandidate,
   type HarnessSessionImportSourcesResult,
@@ -83,34 +89,45 @@ export async function checkHostUpdate(signal: AbortSignal) {
   return updateCheckResultSchema.parse(reply.result);
 }
 
-const DESKTOP_EXTENSIONS_PROBE_TIMEOUT_MS = 5_000;
+export async function getReleaseAnnouncement(
+  signal: AbortSignal,
+  params: ReleaseAnnouncementGetParams = {},
+) {
+  const response = await fetch("api/ch/v1/rpc", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      method: RELEASE_ANNOUNCEMENT_GET_METHOD,
+      params: releaseAnnouncementGetParamsSchema.parse(params),
+    }),
+    signal,
+  });
+  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
+  const reply = (await response.json()) as {
+    result?: unknown;
+    error?: { message?: string };
+  };
+  if (reply.error) throw new Error(reply.error.message ?? "Release announcement check failed");
+  return releaseAnnouncementGetResultSchema.parse(reply.result);
+}
 
-/**
- * Probe whether the connected Host supports Desktop extension management.
- * Non-200 responses, RPC errors (e.g. -32601), timeouts, and transport failures
- * resolve silently to `false`.
- */
-export async function probeDesktopExtensionsSupport(signal: AbortSignal): Promise<boolean> {
-  const probeSignal =
-    typeof AbortSignal.any === "function" && typeof AbortSignal.timeout === "function"
-      ? AbortSignal.any([signal, AbortSignal.timeout(DESKTOP_EXTENSIONS_PROBE_TIMEOUT_MS)])
-      : signal;
-  try {
-    const response = await fetch("api/ch/v1/rpc", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ method: "codexhost/desktop/extensions/list", params: {} }),
-      signal: probeSignal,
-    });
-    if (response.status !== 200) return false;
-    const reply = (await response.json()) as { error?: unknown } | null;
-    return (
-      reply !== null && typeof reply === "object" && !("error" in reply && reply.error != null)
-    );
-  } catch {
-    return false;
-  }
+export async function acknowledgeReleaseAnnouncement(version: string) {
+  const response = await fetch("api/ch/v1/rpc", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      method: RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
+      params: releaseAnnouncementAcknowledgeParamsSchema.parse({ version }),
+    }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
+  const reply = (await response.json()) as {
+    error?: { message?: string };
+  };
+  if (reply.error)
+    throw new Error(reply.error.message ?? "Release announcement acknowledge failed");
 }
 
 export const voiceApi = {

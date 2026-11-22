@@ -9,7 +9,7 @@ import { MappingStore } from "@codexhost/mapping-store";
 import { HostClientChannel } from "@codexhost/desktop-control";
 import {
   CONSOLE_OPEN_METHOD,
-  DESKTOP_EXTENSIONS_LIST_METHOD,
+  HOST_EXTENSIONS_RPC,
   encodeHarnessPluginRoute,
   harnessIdSchema,
   hostThreadIdSchema,
@@ -122,19 +122,19 @@ async function setup(
   return { root, owner, adapter, host, server, web, store, gui, stop };
 }
 
-it("lists Desktop extensions through the local shared Host client channel", async () => {
+it("lists Host extensions through the local shared Host client channel", async () => {
   const { web } = await setup();
-  await expect(web.request(DESKTOP_EXTENSIONS_LIST_METHOD, {})).resolves.toMatchObject({
+  await expect(web.request(HOST_EXTENSIONS_RPC.list, {})).resolves.toMatchObject({
     configuration: { revision: 0, enabled: [] },
     extensions: [],
   });
 });
 
-it("rejects Desktop extension management through the SSH-managed shared Host client channel", async () => {
+it("rejects extension management through the SSH-managed shared Host client channel", async () => {
   const { web } = await setup(undefined, { CODEXHOST_REMOTE_SSH_MANAGED: "1" });
-  await expect(web.request(DESKTOP_EXTENSIONS_LIST_METHOD, {})).rejects.toMatchObject({
+  await expect(web.request(HOST_EXTENSIONS_RPC.list, {})).rejects.toMatchObject({
     code: -32601,
-    message: "Desktop extension settings are only available on the local Host",
+    message: "Extension management is only available on the local Host",
   });
 });
 
@@ -142,7 +142,7 @@ it("keeps unlisted Desktop methods unavailable on the shared Host", async () => 
   const { owner } = await setup();
   const desktop = owner.connect();
   cleanup.push(() => desktop.close());
-  for (const method of [CONSOLE_OPEN_METHOD, "codexhost/desktop/extensions/unknown"]) {
+  for (const method of [CONSOLE_OPEN_METHOD, "codexhost/extensions/unknown"]) {
     await expect(desktop.request(method, {})).resolves.toMatchObject({
       error: { code: -32601, message: "Method is unavailable on the shared Thread service" },
     });

@@ -71,6 +71,7 @@ import { startConsoleControlServer } from "./console-control-server.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
 import { createHostWebOpener } from "./web-opener.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
+import { HostReleaseAnnouncement } from "./release-announcement.js";
 import { ModelPriceCatalog, defaultModelPriceDirectory } from "./model-prices.js";
 import { UsageStatistics } from "./usage-statistics.js";
 import {
@@ -383,6 +384,10 @@ export async function runHostRuntime(input: {
           environment: input.environment,
         })
       : undefined);
+  const releaseAnnouncement = maintenanceRuntimePath
+    ? new HostReleaseAnnouncement(maintenanceRuntimePath, input.environment)
+    : undefined;
+  const announcementOptions = releaseAnnouncement ? { releaseAnnouncement } : {};
   // Only a Launcher-started local Host can open the console on this machine.
   // The development entry does not pass its URL; the Launcher still exports the path.
   const consoleHostRuntimePath = hostRuntimePath ?? input.environment.CODEXHOST_HOST_RUNTIME_PATH;
@@ -443,6 +448,7 @@ export async function runHostRuntime(input: {
               ...shared,
               ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
               onDelegationApi,
+              ...announcementOptions,
               ...(updateCoordinator ? { updateCoordinator } : {}),
               ...(consoleOpener ? { consoleOpener } : {}),
               ...(webOpener ? { webOpener } : {}),
@@ -467,6 +473,7 @@ export async function runHostRuntime(input: {
             ...installedHarnessPluginOptions(delegationEnvironment, false, input.hostRuntimeUrl),
             mappingStore,
             closeMappingStoreOnExit: false,
+            ...announcementOptions,
             ...(updateCoordinator ? { updateCoordinator } : {}),
             ...(consoleOpener ? { consoleOpener } : {}),
             ...(webOpener ? { webOpener } : {}),
@@ -489,7 +496,7 @@ export async function runHostRuntime(input: {
                 modelPrices,
                 usageStatistics,
                 ...common,
-                desktopExtensionBackends: host.desktopExtensionBackends,
+                hostExtensions: host.hostExtensions,
                 arguments: [],
                 desktopInput,
                 desktopOutput,
@@ -570,6 +577,7 @@ export async function runHostRuntime(input: {
         desktopOutput: sharedOwner.output,
         diagnosticOutput: process.stderr,
         externalOnly: true,
+        ...announcementOptions,
         sharedThreads: createRemoteSharedExternalBridge(
           maintenanceRuntimePath,
           delegationEnvironment,
@@ -600,7 +608,7 @@ export async function runHostRuntime(input: {
             modelPrices,
             usageStatistics,
             ...(sharedDelegation ? { sharedDelegation } : {}),
-            desktopExtensionBackends: externalHost.desktopExtensionBackends,
+            hostExtensions: externalHost.hostExtensions,
             sharedThreads: new SharedThreadBridge({
               connect: async () => sharedOwner.connect(),
               delegateCreates: true,
@@ -619,6 +627,7 @@ export async function runHostRuntime(input: {
             officialRuntimeScope,
             accountControl,
             onDelegationApi: (api) => registry.register(api),
+            ...announcementOptions,
             ...(updateCoordinator ? { updateCoordinator } : {}),
           });
         },

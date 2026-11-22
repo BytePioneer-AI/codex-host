@@ -38,7 +38,7 @@ import {
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
-import { encodeOpenCodeModelRef } from "./model-catalog.js";
+import { encodeOpenCodeModelRef, type OpenCodeModelIndex } from "./model-catalog.js";
 
 export interface OpenCodeMessageWithParts {
   info: Message;
@@ -50,6 +50,7 @@ export interface OpenCodeHistoryInput {
   messages: readonly OpenCodeMessageWithParts[];
   diffsByUserMessageId?: ReadonlyMap<string, readonly SnapshotFileDiff[]>;
   toolOutputLimit: number;
+  modelIndex?: OpenCodeModelIndex;
 }
 
 const openCodeHarnessId: HarnessId = harnessIdSchema.parse("opencode");
@@ -316,7 +317,7 @@ export function projectOpenCodeHistory(input: OpenCodeHistoryInput): HostThreadS
       input: [{ type: "text", text: userText(userEntry) }],
       items,
       outcome,
-      model: encodeOpenCodeModelRef(user.model),
+      model: encodeOpenCodeModelRef(user.model, input.modelIndex),
     });
     index = end;
   }

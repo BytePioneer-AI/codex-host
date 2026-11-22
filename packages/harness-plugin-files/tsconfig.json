@@ -9,5 +9,5 @@
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
   "references": [{ "path": "../shared-contracts/tsconfig.json" }],
-  "include": ["src/**/*.ts", "src/desktop-extension-seed-catalog.json"]
+  "include": ["src/**/*.ts"]
 }

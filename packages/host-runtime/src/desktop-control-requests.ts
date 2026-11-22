@@ -35,20 +35,24 @@ import {
   harnessPreferencePatchSchema,
   IDLE_RELEASE_SETTINGS_METHOD,
   idleReleaseSettingsSchema,
-  isDesktopExtensionManagementMethod,
+  isHostExtensionManagementMethod,
   jsonValueSchema,
   LOADED_SESSIONS_METHOD,
+  RELEASE_ANNOUNCEMENT_GET_METHOD,
+  RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
   USAGE_STATISTICS_METHOD,
   usageStatisticsParamsSchema,
+  type HarnessModelCatalog,
   type HarnessAccountInspectResult,
   type HarnessPluginDescriptor,
   type HarnessPreferenceSnapshot,
   type LoadedSession,
 } from "@codexhost/shared-contracts";
 
+import { storedPreferenceModelMigration } from "./stored-harness-preferences.js";
 import { handleCredentialImports } from "./credential-imports.js";
-import type { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
-import { handleDesktopExtensionRequest } from "./desktop-extension-requests.js";
+import type { HostExtensionManager } from "./host-extension-manager.js";
+import { handleHostExtensionRequest } from "./host-extension-requests.js";
 import { errorMessage, rpcEnvelope, rpcError } from "./desktop-rpc.js";
 import { listedHarnessAccounts, listHarnessAccountSources } from "./harness-accounts.js";
 import type { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
@@ -61,6 +65,10 @@ import {
 } from "./model-price-overrides-file.js";
 import type { ModelPriceCatalog } from "./model-prices.js";
 import { isSessionImportRequest } from "./session-import-requests.js";
+import {
+  handleReleaseAnnouncementRequest,
+  type HostReleaseAnnouncement,
+} from "./release-announcement.js";
 import type { UsageStatistics } from "./usage-statistics.js";
 
 /** The Host state and handlers that Host-level Desktop control requests act on. */
@@ -71,8 +79,9 @@ export interface DesktopControlRequestHost {
   waitForPlugins(): Promise<void>;
   diagnose(error: unknown): void;
   readonly environment: NodeJS.ProcessEnv;
-  readonly desktopExtensionBackends: DesktopExtensionBackendManager | undefined;
+  readonly hostExtensions: HostExtensionManager | undefined;
   readonly preferences: HarnessPreferencesStore;
+  inspectCodexModels(): Promise<HarnessModelCatalog | undefined>;
   readonly displaySettings: HarnessDisplaySettingsStore;
   readonly launchSettings: HarnessLaunchSettingsStore;
   readonly modelPrices: ModelPriceCatalog;
@@ -86,6 +95,7 @@ export interface DesktopControlRequestHost {
     adapter: HarnessAdapter,
     refresh?: boolean,
   ): Promise<HarnessAccountInspectResult>;
+  readonly releaseAnnouncement: HostReleaseAnnouncement | undefined;
   handleUpdateRequest(request: JsonRpcRequest): Promise<void>;
   handleConsoleOpen(request: JsonRpcRequest): Promise<void>;
   handleWebOpen(request: JsonRpcRequest): Promise<void>;
@@ -97,7 +107,7 @@ export interface DesktopControlRequestHost {
 
 /**
  * Host-level Desktop requests that are not about one Thread: Harness preferences, display and
- * launch settings, accounts, installation, plugin list, usage statistics, update and console.
+ * launch settings, accounts, installation, plugin list, usage statistics, updates and announcements.
  */
 export class DesktopControlRequests {
   readonly #host: DesktopControlRequestHost;
@@ -110,16 +120,14 @@ export class DesktopControlRequests {
   /** Returns false when `request` is not a control request, leaving it to Thread routing. */
   async handle(request: JsonRpcRequest): Promise<boolean> {
     const method = request.method;
-    if (isDesktopExtensionManagementMethod(method)) {
+    if (isHostExtensionManagementMethod(method)) {
       this.#host.dispatchReply(request, async () => {
-        await this.#host.writeJson(
-          await handleDesktopExtensionRequest(
-            method,
-            request,
-            this.#host.environment,
-            this.#host.desktopExtensionBackends,
-          ),
+        const reply = await handleHostExtensionRequest(
+          this.#host.hostExtensions,
+          method,
+          request.params,
         );
+        await this.#host.writeJson(rpcEnvelope(request, reply));
       });
       return true;
     }
@@ -127,26 +135,37 @@ export class DesktopControlRequests {
       request.method === HARNESS_PREFERENCES_GET_METHOD ||
       request.method === HARNESS_PREFERENCES_PATCH_METHOD
     ) {
-      try {
-        const result =
-          request.method === HARNESS_PREFERENCES_GET_METHOD
-            ? await this.#host.preferences.get(
-                harnessPreferenceGetSchema.parse(request.params ?? {}).scope,
-              )
-            : await this.#host.preferences.patch(
-                harnessPreferencePatchSchema.parse(request.params ?? {}),
-              );
-        this.#host.applyHarnessPreferences(result);
-        await this.#host.writeJson(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
-      } catch (error) {
-        await this.#host.writeJson(
-          rpcError(
-            request,
-            error instanceof HarnessPreferenceConflict ? -32091 : -32602,
-            errorMessage(error),
-          ),
-        );
-      }
+      this.#host.dispatchReply(request, async () => {
+        try {
+          const migrateModels = storedPreferenceModelMigration({
+            adapters: this.#host.externalAdapters,
+            loadAdapters: () => this.#host.waitForPlugins(),
+            inspectCodex: () => this.#host.inspectCodexModels(),
+          });
+          const result =
+            request.method === HARNESS_PREFERENCES_GET_METHOD
+              ? await this.#host.preferences.get(
+                  harnessPreferenceGetSchema.parse(request.params ?? {}).scope,
+                  migrateModels,
+                )
+              : await this.#host.preferences.patch(
+                  harnessPreferencePatchSchema.parse(request.params ?? {}),
+                  migrateModels,
+                );
+          this.#host.applyHarnessPreferences(result);
+          await this.#host.writeJson(
+            rpcEnvelope(request, { result: jsonValueSchema.parse(result) }),
+          );
+        } catch (error) {
+          await this.#host.writeJson(
+            rpcError(
+              request,
+              error instanceof HarnessPreferenceConflict ? -32091 : -32602,
+              errorMessage(error),
+            ),
+          );
+        }
+      });
       return true;
     }
     if (request.method === HARNESS_DISPLAY_CAPABILITIES_METHOD) {
@@ -246,6 +265,17 @@ export class DesktopControlRequests {
       request.method === "codexhost/update/status"
     ) {
       this.#host.dispatchReply(request, () => this.#host.handleUpdateRequest(request));
+      return true;
+    }
+    if (
+      method === RELEASE_ANNOUNCEMENT_GET_METHOD ||
+      method === RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD
+    ) {
+      this.#host.dispatchReply(request, async () => {
+        await this.#host.writeJson(
+          await handleReleaseAnnouncementRequest(this.#host.releaseAnnouncement, request),
+        );
+      });
       return true;
     }
     if (request.method === WEB_OPEN_METHOD) {

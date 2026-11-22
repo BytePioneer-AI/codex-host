@@ -28,10 +28,10 @@ catalog (385 entries when tested) and the permission modes `accept-edits`,
 
 - Native create, resume, text prompt, streaming text/reasoning, tool progress
   and cancellation.
-- Dynamic native model catalog. Native model values are encoded into
-  transport-safe opaque Host refs (`devin.<base64url>`) without losing the
-  original value; `model.select` resolves them back and rejects models outside
-  the session's native catalog. Selection during an active Turn goes directly
+- Dynamic native model catalog. The native model value is the Host Model Ref
+  ID unchanged; `model.select` rejects models outside the session's native
+  catalog. Refs saved as `devin.<base64url>` by earlier releases are read
+  through `normalizeStoredModelRef`. Selection during an active Turn goes directly
   to the native configuration interface; Devin determines when it takes effect.
   Native rejection does not publish the requested value; a complete native
   readback publishes the actual state even when it differs from the request.
@@ -75,8 +75,8 @@ describes model-dependent reasoning levels; wire fields follow
   `configOptions`. Missing/unknown categories, `model_config` speed options,
   selector names/IDs and Model suffixes do not establish Thinking support.
   No usable selector means false capability and typed `unsupported`.
-- Preserve native labels and grouped values. Host IDs encode
-  `devin.<base64url(native value)>`; writes use the advertised selector `id`
+- Preserve native labels and grouped values. Host IDs are the native values;
+  writes use the advertised selector `id`
   and original `value` as `session/set_config_option`'s `configId`/`value`.
 - Complete responses, `config_option_update` notifications and reloads replace
   effective state and available options. Selector removal clears Thinking;

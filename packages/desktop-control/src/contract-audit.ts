@@ -31,6 +31,11 @@ export interface RendererContractAuditInspection {
     missingCount: number;
     ambiguousCount: number;
   };
+  draftHarnessBinding: {
+    visibleDraftCount: number;
+    boundCount: number;
+    missingCreationModeCount: number;
+  };
   settings: {
     railCount: number;
     visibleRailCount: number;
@@ -134,6 +139,7 @@ export function validateRendererContractAuditInspection(
       "schemaVersion",
       "composer",
       "model",
+      "draftHarnessBinding",
       "settings",
       "sidebar",
       "transcript",
@@ -190,6 +196,11 @@ export function validateRendererContractAuditInspection(
       value.model,
       ["draftCount", "conversationCount", "missingCount", "ambiguousCount"] as const,
       "Renderer model contract",
+    ),
+    draftHarnessBinding: integerRecord(
+      value.draftHarnessBinding,
+      ["visibleDraftCount", "boundCount", "missingCreationModeCount"] as const,
+      "Renderer draft Harness binding contract",
     ),
     settings: integerRecord(
       value.settings,

@@ -266,6 +266,17 @@ export interface SessionInputResolver {
     binding: SessionBinding,
     options: DraftInitializationOptions,
   ): DraftInitializationResult;
+  /**
+   * Hand off any text typed on the Hero surface while a New Session was being
+   * created, reconciling with optional programmatic draft initialization.
+   * @param binding - target Session generation, already retained by the caller.
+   * @param options - optional programmatic initial draft options.
+   * @returns applied, preserved, or blocked by a pending submission or disposal.
+   */
+  adoptPendingDraft(
+    binding: SessionBinding,
+    options?: DraftInitializationOptions,
+  ): DraftInitializationResult;
 }
 
 /** Initial text for a target Session; attachments remain under their existing owner. */

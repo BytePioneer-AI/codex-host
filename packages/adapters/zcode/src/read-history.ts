@@ -1,4 +1,5 @@
 import { hostItemIdSchema } from "@codexhost/shared-contracts";
+import type { ZcodeModelIndex } from "./models.js";
 import { history } from "./history.js";
 import { fileChanges, subagent } from "./projection.js";
 import { record, text, type NativeSnapshot, type NativeEvent } from "./protocol.js";
@@ -10,9 +11,10 @@ import { ZcodeError } from "./errors.js";
 export async function readHistory(
   transport: CliTransport,
   snapshot: NativeSnapshot,
+  index: ZcodeModelIndex,
   events: readonly NativeEvent[] = [],
 ) {
-  const result = history(snapshot, events, transport.locator);
+  const result = history(snapshot, events, transport.locator, index);
   const tools = result.turns
     .flatMap((turn) => turn.items)
     .filter(({ item }) => item.type === "toolExecution");

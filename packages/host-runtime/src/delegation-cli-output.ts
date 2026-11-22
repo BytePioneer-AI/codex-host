@@ -1,4 +1,7 @@
+import type { HarnessModelRef } from "@codexhost/shared-contracts";
+
 import type { DelegationCliCommand } from "./delegation-cli-help.js";
+import { formatDelegationModel } from "./delegation-model-argument.js";
 import {
   type DelegationStartResult,
   type DelegationThreadListResult,
@@ -36,6 +39,29 @@ function watchOutput(watch: DelegationStartResult["watch"]): { watch?: unknown }
   };
 }
 
+export function jsonDelegationOutput(command: DelegationCliCommand, body: unknown): unknown {
+  if (command !== "harness inspect") return body;
+  const result = body as HarnessInspectResult;
+  if (result.inspection.status !== "ready") return body;
+  const { catalog } = result.inspection;
+  const displayRef = (ref: HarnessModelRef) => ({ id: formatDelegationModel(ref) });
+  return {
+    ...result,
+    inspection: {
+      ...result.inspection,
+      catalog: {
+        ...catalog,
+        models: catalog.models.map((model) => ({
+          ...model,
+          ref: displayRef(model.ref),
+          ...(model.fastModel ? { fastModel: displayRef(model.fastModel) } : {}),
+        })),
+        ...(catalog.defaultModel ? { defaultModel: displayRef(catalog.defaultModel) } : {}),
+      },
+    },
+  };
+}
+
 function inspectOutput({ harnessId, inspection }: HarnessInspectResult): unknown {
   if (inspection.status !== "ready") return { harnessId, ...inspection };
   const { catalog } = inspection;
@@ -44,21 +70,21 @@ function inspectOutput({ harnessId, inspection }: HarnessInspectResult): unknown
     status: inspection.status,
     models: catalog.models.flatMap(({ ref, label, fastModel, supportedThinkingOptionIds }) => [
       {
-        id: ref.id,
+        id: formatDelegationModel(ref),
         label,
         ...(supportedThinkingOptionIds ? { thinking: supportedThinkingOptionIds } : {}),
       },
       ...(fastModel
         ? [
             {
-              id: fastModel.id,
+              id: formatDelegationModel(fastModel),
               label: `${label} (Fast)`,
               ...(supportedThinkingOptionIds ? { thinking: supportedThinkingOptionIds } : {}),
             },
           ]
         : []),
     ]),
-    ...(catalog.defaultModel ? { defaultModel: catalog.defaultModel.id } : {}),
+    ...(catalog.defaultModel ? { defaultModel: formatDelegationModel(catalog.defaultModel) } : {}),
     thinkingOptions: catalog.thinkingOptions,
     ...(catalog.defaultThinkingOptionId
       ? { defaultThinkingOptionId: catalog.defaultThinkingOptionId }
@@ -108,8 +134,6 @@ function snapshotOutput(
   };
 }
 
-// JSON bodies cross the CLI HTTP boundary as unknown; these projections use the
-// owning Runtime contracts and leave the compatible full JSON response untouched.
 export function compactDelegationOutput(
   command: DelegationCliCommand,
   body: unknown,
@@ -127,6 +151,9 @@ export function compactDelegationOutput(
     case "delegate start": {
       const result = body as DelegationStartResult;
       const effective = result.configuration?.effective;
+      const model = effective?.effectiveModel
+        ? formatDelegationModel(effective.effectiveModel)
+        : effective?.resolvedModelLabel;
       return {
         thread: result.deepLink,
         harnessId: result.harnessId,
@@ -138,7 +165,7 @@ export function compactDelegationOutput(
               parent: targetLink(result.parentThreadId),
             }
           : {}),
-        ...(effective?.resolvedModelLabel ? { model: effective.resolvedModelLabel } : {}),
+        ...(model ? { model } : {}),
         ...(effective?.effectiveThinkingOptionId
           ? { thinking: effective.effectiveThinkingOptionId }
           : {}),

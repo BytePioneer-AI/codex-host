@@ -1,4 +1,4 @@
-/** Desktop-aligned 3-row extension card & category-tinted icon for Installed and Market views. */
+/** Desktop-aligned minimalist extension card & category-tinted icon for Installed and Market views. */
 import { useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import {
   IconCheckCircleFillRegular,
@@ -23,7 +23,9 @@ import {
   isValidExtensionCount,
   parseSafeHttpUrl,
   parseSafeIconUrl,
+  type ExtensionCapabilityBadge,
   type ExtensionLocale,
+  type ExtensionPlatformBadge,
   type Translate,
 } from "./web-extensions-helpers.ts";
 import css from "./WebExtensionsSection.module.css";
@@ -35,7 +37,7 @@ export function ExtensionIcon({
 }: {
   src?: string | undefined;
   categories?: readonly DesktopExtensionCategory[] | undefined;
-  size: "card" | "detail";
+  size: "card" | "detail" | "sidebar";
 }): ReactNode {
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const safeUrl = parseSafeIconUrl(src);
@@ -63,9 +65,9 @@ export function ExtensionIcon({
 
   return (
     <span
-      className={`${css.icon} ${size === "detail" ? css.iconDetail : css.iconCard}`}
+      className={`${css.icon} ${size === "detail" ? css.iconDetail : size === "sidebar" ? css.iconSidebar : css.iconCard}`}
       data-icon-kind={showImage ? "image" : "fallback"}
-      data-icon-category={category}
+      data-icon-category={size === "sidebar" ? undefined : category}
       aria-hidden="true"
     >
       {showImage ? (
@@ -85,10 +87,17 @@ export function ExtensionIcon({
   );
 }
 
+export function WebExtensionPlatformBadge({ badge }: { badge: ExtensionPlatformBadge }) {
+  return (
+    <span className={css.capBadge} data-platform={badge.kind}>
+      {badge.label}
+    </span>
+  );
+}
+
 export interface WebExtensionCardProps {
   readonly cardKey: string;
   readonly extensionId: string;
-  readonly format: "codexhost" | "dsh";
   readonly cardKind: "installed" | "market";
   readonly displayName: string;
   readonly description?: string | null | undefined;
@@ -100,10 +109,13 @@ export interface WebExtensionCardProps {
   readonly downloads?: number | undefined;
   readonly trustTier?: DesktopExtensionTrustTier | undefined;
   readonly categories?: readonly DesktopExtensionCategory[] | undefined;
+  readonly platformBadge: ExtensionPlatformBadge | null;
+  readonly capabilityBadges?: readonly ExtensionCapabilityBadge[] | undefined;
   readonly statusDot?:
     { readonly tone: "info" | "warning" | "danger"; readonly label: string } | undefined;
-  readonly updateHint?: { readonly label: string; readonly title: string } | undefined;
+  readonly update?: { readonly label: string; readonly action: ReactNode } | undefined;
   readonly attention?: { readonly tone: "warning" | "danger"; readonly text: string } | undefined;
+  readonly secondaryAction?: ReactNode;
   readonly actionControl: ReactNode;
   readonly busy?: boolean | undefined;
   readonly contentLocale: ExtensionLocale;
@@ -124,7 +136,6 @@ function formatAuthorVersion(author: string | undefined, version: string | undef
 export function WebExtensionCard({
   cardKey,
   extensionId,
-  format,
   cardKind,
   displayName,
   description,
@@ -136,9 +147,12 @@ export function WebExtensionCard({
   downloads,
   trustTier,
   categories,
+  platformBadge,
+  capabilityBadges = [],
   statusDot,
-  updateHint,
+  update,
   attention,
+  secondaryAction,
   actionControl,
   busy = false,
   contentLocale,
@@ -158,7 +172,6 @@ export function WebExtensionCard({
   const trimmedDescription = description?.trim() ?? "";
   const showMeta =
     authorVersion !== "" ||
-    updateHint !== undefined ||
     repositoryHref !== null ||
     formattedStars !== null ||
     formattedDownloads !== null ||
@@ -173,13 +186,13 @@ export function WebExtensionCard({
       className={css.card}
       data-web-extension={cardKey}
       data-extension-id={extensionId}
-      data-extension-format={format}
       data-card-kind={cardKind}
       data-busy={busy ? "true" : undefined}
       tabIndex={0}
       role="button"
       aria-haspopup="dialog"
       aria-label={t("extensions.openDetailsLabel", { name: displayName })}
+      aria-description={platformBadge?.label}
       onClick={onOpenDetails}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -188,7 +201,7 @@ export function WebExtensionCard({
         }
       }}
     >
-      {/* Row 1: 32x32 icon + title (+ optional official shield / error dot) on left; control on right */}
+      {/* Row 1: 32x32 icon + title (+ optional official shield / error dot) on left; controls on right */}
       <div className={css.cardTop}>
         <div className={css.cardIdentity}>
           <ExtensionIcon src={iconUrl} categories={categories} size="card" />
@@ -218,9 +231,22 @@ export function WebExtensionCard({
           </div>
         </div>
         <div className={css.cardAction} onClick={stopBubble} onKeyDown={stopBubble}>
+          {secondaryAction}
           {actionControl}
         </div>
       </div>
+
+      {/* Platform and capability badges */}
+      {(platformBadge || capabilityBadges.length > 0) && (
+        <div className={css.cardCapabilities}>
+          {platformBadge && <WebExtensionPlatformBadge badge={platformBadge} />}
+          {capabilityBadges.map((badge) => (
+            <span key={badge.kind} className={css.capBadge} data-capability={badge.kind}>
+              {badge.label}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* Row 2: 2-line muted description + compact error callout only when abnormal */}
       {(trimmedDescription !== "" || attention !== undefined) && (
@@ -239,27 +265,22 @@ export function WebExtensionCard({
         </div>
       )}
 
-      {/* Row 3: Borderless muted metadata line matching Desktop card */}
+      {update && (
+        <div className={css.cardUpdate} data-update-available="true">
+          <span>{update.label}</span>
+          <div onClick={stopBubble} onKeyDown={stopBubble}>
+            {update.action}
+          </div>
+        </div>
+      )}
+
+      {/* Borderless muted metadata line */}
       {showMeta && (
         <div className={css.cardMeta}>
           <div className={css.cardMetaLeft}>
-            {(authorVersion !== "" || updateHint !== undefined) && (
-              <span
-                className={css.authorVersion}
-                title={
-                  updateHint
-                    ? authorVersion
-                      ? `${authorVersion} · ${updateHint.title}`
-                      : updateHint.title
-                    : authorVersion
-                }
-              >
-                {authorVersion !== "" && <span>{authorVersion}</span>}
-                {updateHint !== undefined && (
-                  <span className={css.updateCue} data-update-available="true">
-                    {authorVersion !== "" ? ` · ${updateHint.label}` : updateHint.label}
-                  </span>
-                )}
+            {authorVersion !== "" && (
+              <span className={css.authorVersion} title={authorVersion}>
+                {authorVersion}
               </span>
             )}
             {repositoryHref !== null && (

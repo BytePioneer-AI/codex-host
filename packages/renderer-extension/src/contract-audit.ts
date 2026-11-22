@@ -1,5 +1,8 @@
+import { findScopedDraftModelBinding } from "@codexhost/desktop-control/renderer-bindings";
+
 import {
   CODEX_COMPOSER_SELECTOR,
+  contractElementVisible,
   inspectRendererComposerContract,
   type RendererComposerContractInspection,
 } from "./renderer-composer-dom.js";
@@ -7,6 +10,8 @@ import {
   inspectComposerCodexUsageGate,
   type RendererCodexUsageGateInspection,
 } from "./renderer-codex-usage-gate.js";
+import { isOrbitComposer } from "./renderer-composer-kind.js";
+import { hasNativeComposerRequest } from "./renderer-composer-request.js";
 import {
   inspectRendererForkContract,
   type RendererForkContractInspection,
@@ -24,6 +29,9 @@ import {
   type RendererSettingsContractInspection,
 } from "./settings/trigger.js";
 import {
+  findActivePrewarmTargets,
+  findComposerDomIdentity,
+  findComposerModelTarget,
   inspectComposerModelContract,
   type RendererComposerModelContractState,
 } from "./versioned-renderer-adapter.js";
@@ -42,6 +50,11 @@ export interface RendererContractAuditInspection {
     conversationCount: number;
     missingCount: number;
     ambiguousCount: number;
+  };
+  draftHarnessBinding: {
+    visibleDraftCount: number;
+    boundCount: number;
+    missingCreationModeCount: number;
   };
   settings: RendererSettingsContractInspection;
   sidebar: RendererSidebarContractInspection;
@@ -75,6 +88,40 @@ function modelCounts(states: readonly RendererComposerModelContractState[]): {
     missingCount: states.filter((state) => state === "missing").length,
     ambiguousCount: states.filter((state) => state === "ambiguous").length,
   };
+}
+
+function draftHarnessBindingCounts(
+  composers: readonly Element[],
+  rpcPolicyPublished: boolean,
+): RendererContractAuditInspection["draftHarnessBinding"] {
+  const counts = { visibleDraftCount: 0, boundCount: 0, missingCreationModeCount: 0 };
+  for (const composer of composers) {
+    if (
+      !contractElementVisible(composer) ||
+      hasNativeComposerRequest(composer) ||
+      isOrbitComposer(composer)
+    )
+      continue;
+    const target = findComposerModelTarget(composer);
+    if (
+      target?.[0] === "conversation" ||
+      (target?.[0] !== "default" && findComposerDomIdentity(composer).kind !== "draft")
+    )
+      continue;
+    counts.visibleDraftCount += 1;
+    const binding =
+      typeof target?.[1] === "string" ? findScopedDraftModelBinding(composer, target[1]) : null;
+    if (!binding) continue;
+    counts.boundCount += 1;
+    // A published policy or the absence of native request ownership requires RPC-grade evidence.
+    if (
+      (rpcPolicyPublished || findActivePrewarmTargets(composer).length === 0) &&
+      binding.creationModes?.length !== 1
+    ) {
+      counts.missingCreationModeCount += 1;
+    }
+  }
+  return counts;
 }
 
 /** Composers with an editor; each should expose one owner and one reserve gate. */
@@ -112,6 +159,10 @@ export function inspectRendererContracts(
     schemaVersion: RENDERER_CONTRACT_AUDIT_SCHEMA_VERSION,
     composer: inspectRendererComposerContract(ownerWindow.document),
     model: modelCounts(composers.map(inspectComposerModelContract)),
+    draftHarnessBinding: draftHarnessBindingCounts(
+      composers,
+      draftPolicy?.requiresCreationMode === true,
+    ),
     settings: inspectRendererSettingsContract(ownerWindow.document),
     sidebar: inspectRendererSidebarContract(ownerWindow.document),
     transcript: inspectRendererTranscriptContract(ownerWindow.document),

@@ -1,9 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
-import type { ExtensionBackendContext } from "@codexhost/shared-contracts";
+import type { HostExtensionBackendContext } from "@codexhost/shared-contracts";
 
 export type ExtensionBackendEntry = Pick<
-  ExtensionBackendContext,
+  HostExtensionBackendContext,
   "extensionId" | "extensionDir" | "dataDir"
 > & {
   url: string;
@@ -25,7 +25,7 @@ type Command =
 type Reply = { id: number; ok: true; value: unknown } | { id: number; ok: false; error: string };
 type Settings = { op: "read" } | { op: "write"; values: Record<string, unknown> };
 
-type BackendExports = { activate?: (context: ExtensionBackendContext) => unknown };
+type BackendExports = { activate?: (context: HostExtensionBackendContext) => unknown };
 
 const MAX_IPC_BYTES = 2 * 1024 * 1024;
 const MAX_SETTINGS_IN_FLIGHT = 4;
@@ -143,7 +143,7 @@ function backendChild(
       if (typeof owner?.activate !== "function")
         throw new Error("Expected an activate(ctx) export");
       let registering = true;
-      const context: ExtensionBackendContext = {
+      const context: HostExtensionBackendContext = {
         extensionId,
         extensionDir,
         dataDir,

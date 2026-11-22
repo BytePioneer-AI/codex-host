@@ -1,3 +1,4 @@
+import { compositeModelRefIds } from "@codexhost/harness-adapter";
 import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
@@ -47,42 +48,86 @@ function assertNativePart(value: string, name: string): void {
   if (value.trim().length === 0) throw new Error(`Omp ${name} must not be empty`);
 }
 
-export function encodeOmpModelRef(model: OmpNativeModelRef): HarnessModelRef {
-  assertNativePart(model.provider, "Model provider");
-  assertNativePart(model.id, "Model id");
-  const encoded = Buffer.from(JSON.stringify([model.provider, model.id]), "utf8").toString(
-    "base64url",
-  );
-  return harnessModelRefSchema.parse({ id: `${OMP_MODEL_REF_PREFIX}${encoded}` });
+function readableId({ provider, id }: OmpNativeModelRef): string {
+  return `${provider}/${id}`;
 }
 
-export function decodeOmpModelRef(ref: HarnessModelRef): OmpNativeModelRef {
-  const parsedRef = harnessModelRefSchema.parse(ref);
-  if (!parsedRef.id.startsWith(OMP_MODEL_REF_PREFIX)) {
-    throw new Error("Model Ref does not belong to OmpAdapter");
+function modelLabel({ provider, id }: OmpNativeModelRef): string {
+  return `${provider} / ${id}`;
+}
+
+function encodedId({ provider, id }: OmpNativeModelRef): string {
+  return `${OMP_MODEL_REF_PREFIX}${Buffer.from(JSON.stringify([provider, id])).toString("base64url")}`;
+}
+
+export function encodeOmpModelRef(
+  model: OmpNativeModelRef,
+  id = readableId(model),
+): HarnessModelRef {
+  assertNativePart(model.provider, "Model provider");
+  assertNativePart(model.id, "Model id");
+  return harnessModelRefSchema.parse({ id });
+}
+
+export function createOmpModelIndex(models: readonly OmpNativeModelRef[]) {
+  const entries = new Map(
+    models.map(({ provider, id }) => [JSON.stringify([provider, id]), { provider, model: id, id }]),
+  );
+  const byId = compositeModelRefIds([...entries.values()], (entry) => encodedId(entry));
+  const idsByPair = new Map(
+    [...byId].map(([id, entry]) => [JSON.stringify([entry.provider, entry.model]), id]),
+  );
+  return {
+    models,
+    byId,
+    ref: (model: OmpNativeModelRef) => {
+      const id = idsByPair.get(JSON.stringify([model.provider, model.id]));
+      return encodeOmpModelRef(
+        model,
+        id ?? (byId.has(readableId(model)) ? encodedId(model) : readableId(model)),
+      );
+    },
+  };
+}
+
+export function resolveOmpModelRef(
+  ref: HarnessModelRef,
+  index: ReturnType<typeof createOmpModelIndex>,
+): OmpNativeModelRef {
+  const model = index.byId.get(ref.id);
+  if (!model || ref.serviceTier) {
+    throw new Error("Model Ref is not in the current Omp Model catalog");
   }
-  const encoded = parsedRef.id.slice(OMP_MODEL_REF_PREFIX.length);
-  let decoded: unknown;
+  return { provider: model.provider, id: model.id };
+}
+
+export function normalizeStoredOmpModelRef(
+  ref: HarnessModelRef,
+  catalog: HarnessModelCatalog,
+): HarnessModelRef | undefined {
+  if (!ref.id.startsWith(OMP_MODEL_REF_PREFIX) || ref.serviceTier) return undefined;
+  let tuple: unknown;
   try {
-    decoded = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    tuple = JSON.parse(
+      Buffer.from(ref.id.slice(OMP_MODEL_REF_PREFIX.length), "base64url").toString("utf8"),
+    );
   } catch {
-    throw new Error("Omp Model Ref is malformed");
+    return undefined;
   }
   if (
-    !Array.isArray(decoded) ||
-    decoded.length !== 2 ||
-    typeof decoded[0] !== "string" ||
-    typeof decoded[1] !== "string"
-  ) {
-    throw new Error("Omp Model Ref has an invalid native identity");
-  }
-  const native = { provider: decoded[0], id: decoded[1] };
-  assertNativePart(native.provider, "Model provider");
-  assertNativePart(native.id, "Model id");
-  if (encodeOmpModelRef(native).id !== parsedRef.id) {
-    throw new Error("Omp Model Ref is not canonical");
-  }
-  return native;
+    !Array.isArray(tuple) ||
+    tuple.length !== 2 ||
+    typeof tuple[0] !== "string" ||
+    typeof tuple[1] !== "string"
+  )
+    return undefined;
+  const native = { provider: tuple[0], id: tuple[1] };
+  const encoded = encodedId(native);
+  if (encoded !== ref.id) return undefined;
+  const readable = readableId(native);
+  return catalog.models.find(
+    ({ ref, label }) => ref.id === encoded || (ref.id === readable && label === modelLabel(native)),
+  )?.ref;
 }
 
 export function sameOmpModel(
@@ -120,12 +165,13 @@ export function normalizeOmpModelCatalog(
   thinkingLevels: readonly HarnessThinkingOptionId[] | null,
   effectiveThinkingOptionId: HarnessThinkingOptionId | null,
 ): HarnessModelCatalog {
+  const index = createOmpModelIndex(nativeModels);
   const byRef = new Map<
     string,
     { model: HarnessModelCatalog["models"][number]; reasoning: boolean }
   >();
   for (const native of nativeModels) {
-    const ref = encodeOmpModelRef(native);
+    const ref = index.ref(native);
     const existing = byRef.get(ref.id);
     if (existing) {
       if (existing.reasoning !== native.reasoning) {
@@ -136,12 +182,12 @@ export function normalizeOmpModelCatalog(
     byRef.set(ref.id, {
       model: {
         ref,
-        label: `${native.provider} / ${native.id}`,
+        label: modelLabel(native),
       },
       reasoning: native.reasoning,
     });
   }
-  const defaultModel = effectiveModel ? encodeOmpModelRef(effectiveModel) : undefined;
+  const defaultModel = effectiveModel ? index.ref(effectiveModel) : undefined;
   if (defaultModel && !byRef.has(defaultModel.id)) {
     throw new Error("Omp effective Model is absent from the available Model catalog");
   }

@@ -16,7 +16,7 @@
  * scrollbar indirection away while it is elsewhere, so a list the user is not
  * pointing at carries no bar.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import {
   FishLogo,
@@ -26,6 +26,7 @@ import {
   isDarwinDesktop,
   ShortcutKeys,
   Tooltip,
+  usePhoneSidebar,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { InjectFace, PropsRenderSlots, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type {
@@ -65,9 +66,19 @@ type PanelRowProps = Pick<SidebarPanelMetadata, "id" | "label"> &
   Pick<InjectFace<SidebarRootInjected>, "selectPanel"> &
   PropsRenderSlots<"sidebar.panellist">;
 
-/** Each panel row subscribes only to its own selection state. */
-function PanelRow({ id, label, wide, usePanelInfo, selectPanel, renderSlot }: PanelRowProps) {
-  const active = usePanelInfo((info) => info.activePanelId === id);
+function PanelNavigationRow({
+  label,
+  wide,
+  active,
+  icon,
+  onClick,
+}: {
+  label: string;
+  wide: boolean;
+  active?: boolean;
+  icon: ReactNode;
+  onClick: () => void;
+}) {
   return (
     <Tooltip label={label} delayMs={500} disabled={wide}>
       <button
@@ -75,16 +86,28 @@ function PanelRow({ id, label, wide, usePanelInfo, selectPanel, renderSlot }: Pa
         className={clsx(css.panelRow, active && css.panelActive)}
         aria-label={label}
         aria-current={active ? "page" : undefined}
-        onClick={() => {
-          selectPanel(id);
-        }}
+        onClick={onClick}
       >
         <span className={css.panelGlyph} aria-hidden="true">
-          {renderSlot("sidebar.panellist", { size: wide ? 16 : 18, active }, { only: id })}
+          {icon}
         </span>
         {wide && <span className={clsx(css.panelTitle, css.wide)}>{label}</span>}
       </button>
     </Tooltip>
+  );
+}
+
+/** Each panel row subscribes only to its own selection state. */
+function PanelRow({ id, label, wide, usePanelInfo, selectPanel, renderSlot }: PanelRowProps) {
+  const active = usePanelInfo((info) => info.activePanelId === id);
+  return (
+    <PanelNavigationRow
+      label={label}
+      wide={wide}
+      active={active}
+      icon={renderSlot("sidebar.panellist", { size: wide ? 16 : 18, active }, { only: id })}
+      onClick={() => selectPanel(id)}
+    />
   );
 }
 
@@ -106,6 +129,7 @@ export function SidebarRoot({
   renderSlot,
 }: SidebarRootComponentProps) {
   const panels = usePanels((snapshot) => snapshot);
+  const phoneSidebar = usePhoneSidebar();
   const shortcut = useShortcuts((rows) => rows.find((row) => row.id === "sidebar.left.toggle"));
   const newShortcut = useShortcuts((rows) => rows.find((row) => row.id === "session.new"));
   const toggleLabel = collapsed ? t("toggle.open") : t("toggle.collapse");
@@ -295,6 +319,7 @@ export function SidebarRoot({
                 aria-label={t("session.new.label")}
                 aria-keyshortcuts={newShortcut?.aria}
                 onClick={() => {
+                  phoneSidebar?.close();
                   startSession();
                 }}
               >
@@ -319,6 +344,7 @@ export function SidebarRoot({
           aria-label={t("session.new.label")}
           aria-keyshortcuts={newShortcut?.aria}
           onClick={() => {
+            phoneSidebar?.close();
             startSession();
           }}
         >
@@ -357,14 +383,7 @@ export function SidebarRoot({
         {renderSlot("sidebar.primary.action", {
           size: wide ? 16 : 18,
           renderAction: ({ label, icon, onClick }) => (
-            <Tooltip label={label} delayMs={500} disabled={wide}>
-              <button type="button" className={css.panelRow} aria-label={label} onClick={onClick}>
-                <span className={css.panelGlyph} aria-hidden="true">
-                  {icon}
-                </span>
-                {wide && <span className={clsx(css.panelTitle, css.wide)}>{label}</span>}
-              </button>
-            </Tooltip>
+            <PanelNavigationRow label={label} icon={icon} onClick={onClick} wide={wide} />
           ),
         })}
       </nav>

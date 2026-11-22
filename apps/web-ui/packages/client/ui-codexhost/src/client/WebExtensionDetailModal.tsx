@@ -1,4 +1,4 @@
-/** Desktop-aligned detail modal for installed (`codexhost` / `dsh`) and marketplace extensions. */
+/** Unified detail modal for installed Host extensions and Marketplace catalog entries. */
 import { useEffect, useState, type ReactNode } from "react";
 import {
   Button,
@@ -16,50 +16,44 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   resolveLocalizedExtensionText,
-  type ExtensionCatalogV2Entry,
-  type WebNativeExtensionListItem,
-  type WebUiExtension,
-  type WebUiExtensionMeta,
+  type HostExtensionCatalogEntry,
+  type HostExtensionListItem,
 } from "@codexhost/shared-contracts";
-import { formatWebExtensionError } from "./web-extension-errors.ts";
 import {
   backendStateLabel,
+  catalogCapabilities,
   categoryLabelForLocale,
-  dshText,
+  deriveHostCapabilityBadges,
+  derivePlatformBadge,
   formatExtensionCount,
-  hasNativeCatalogUpdate,
-  hasWebBackend,
-  isCatalogEntryWebCompatible,
-  isNativeToggleBlocked,
+  hasHostCatalogUpdate,
+  hostDescription,
+  hostDisplayName,
+  isHostToggleBlocked,
   isValidExtensionCount,
-  nativeDescription,
-  nativeDisplayName,
+  itemCapabilities,
+  itemTargets,
   parseSafeHttpUrl,
-  resolveNativeIconUrl,
+  resolveHostIconUrl,
   resolveOptionalLocalizedText,
   resolveScreenshotUrls,
   type ExtensionLocale,
+  type HostExtensionValidItem,
   type Translate,
 } from "./web-extensions-helpers.ts";
-import { ExtensionIcon } from "./WebExtensionCard.tsx";
+import { ExtensionIcon, WebExtensionPlatformBadge } from "./WebExtensionCard.tsx";
 import { WebExtensionMarkdown } from "./WebExtensionMarkdown.tsx";
 import { WebExtensionSettingsForm } from "./WebExtensionSettingsForm.tsx";
 import css from "./WebExtensionDetailModal.module.css";
 
-export type DetailModalTarget =
-  | {
-      readonly kind: "native";
-      readonly item?: WebNativeExtensionListItem | undefined;
-      readonly catalog?: ExtensionCatalogV2Entry | undefined;
-    }
-  | { readonly kind: "dsh"; readonly item: WebUiExtension };
+export interface DetailModalTarget {
+  readonly item?: HostExtensionListItem | undefined;
+  readonly catalog?: HostExtensionCatalogEntry | undefined;
+}
 
 export interface WebExtensionDetailModalProps {
   readonly open: boolean;
   readonly target: DetailModalTarget | null;
-  readonly dshLoadedIds: readonly string[];
-  readonly safeMode: boolean;
-  readonly storeError?: string | undefined;
   readonly busy: boolean;
   readonly activeAction: string | null;
   readonly feedback: {
@@ -67,18 +61,13 @@ export interface WebExtensionDetailModalProps {
     readonly text: string;
   } | null;
   readonly locale: ExtensionLocale;
-  readonly resolveText: (text: NonNullable<WebUiExtensionMeta["title"]>) => string;
   readonly t: Translate;
   readonly onClose: () => void;
-  readonly onToggleNative: (item: WebNativeExtensionListItem, enabled: boolean) => void;
-  readonly onToggleDsh: (item: WebUiExtension, enabled: boolean) => void;
-  readonly onInstallMarket: (entry: ExtensionCatalogV2Entry) => void;
-  readonly onUpdateNative: (
-    item: WebNativeExtensionListItem,
-    entry: ExtensionCatalogV2Entry,
-  ) => void;
-  readonly onUninstallNative: (item: WebNativeExtensionListItem) => void;
-  readonly onUninstallDsh: (item: WebUiExtension) => void;
+  readonly onToggle: (item: HostExtensionListItem, enabled: boolean) => void;
+  readonly onInstallMarket: (entry: HostExtensionCatalogEntry) => void;
+  readonly onUpdate: (item: HostExtensionValidItem, entry: HostExtensionCatalogEntry) => void;
+  readonly onUninstall: (item: HostExtensionListItem) => void;
+  readonly onOpenPage: (item: HostExtensionValidItem) => void;
 }
 
 const MARKDOWN_CLASSES = {
@@ -98,32 +87,23 @@ const MARKDOWN_CLASSES = {
 export function WebExtensionDetailModal({
   open,
   target,
-  dshLoadedIds,
-  safeMode,
-  storeError,
   busy,
   activeAction,
   feedback,
   locale,
-  resolveText,
   t,
   onClose,
-  onToggleNative,
-  onToggleDsh,
+  onToggle,
   onInstallMarket,
-  onUpdateNative,
-  onUninstallNative,
-  onUninstallDsh,
+  onUpdate,
+  onUninstall,
+  onOpenPage,
 }: WebExtensionDetailModalProps): ReactNode {
   const [confirmingUninstall, setConfirmingUninstall] = useState(false);
   const [activeScreenshot, setActiveScreenshot] = useState<number | null>(null);
 
   const targetSignature =
-    target === null
-      ? ""
-      : target.kind === "dsh"
-        ? `dsh:${target.item.id}`
-        : `codexhost:${target.item?.id ?? target.catalog?.id ?? ""}`;
+    target === null ? "" : `host:${target.item?.id ?? target.catalog?.id ?? ""}`;
 
   useEffect(() => {
     setConfirmingUninstall(false);
@@ -132,36 +112,26 @@ export function WebExtensionDetailModal({
 
   if (!open || target === null) return null;
 
-  const isDsh = target.kind === "dsh";
-  const nativeItem = target.kind === "native" ? target.item : undefined;
-  const catalogEntry = target.kind === "native" ? target.catalog : undefined;
-  const dshItem = target.kind === "dsh" ? target.item : undefined;
+  const item = target.item;
+  const catalogEntry = target.catalog;
+  const validItem = item?.state === "valid" ? item : undefined;
 
-  const displayName = isDsh
-    ? dshText(target.item, resolveText).title
-    : nativeItem
-      ? nativeDisplayName(nativeItem, locale, catalogEntry)
-      : catalogEntry
-        ? resolveLocalizedExtensionText(catalogEntry.name, locale)
-        : "";
+  const displayName = item
+    ? hostDisplayName(item, locale, catalogEntry)
+    : catalogEntry
+      ? resolveLocalizedExtensionText(catalogEntry.name, locale)
+      : "";
 
-  const iconUrl = isDsh ? target.item.meta?.icon : resolveNativeIconUrl(nativeItem, catalogEntry);
+  const iconUrl = resolveHostIconUrl(item, catalogEntry);
+  const categories = validItem?.manifest.categories ?? catalogEntry?.categories;
+  const author = validItem?.manifest.author ?? catalogEntry?.author;
 
-  const categories = isDsh
-    ? undefined
-    : (nativeItem?.manifest?.categories ?? catalogEntry?.categories);
-
-  const author = isDsh ? undefined : (nativeItem?.manifest?.author ?? catalogEntry?.author);
-
-  const installedVersion = isDsh
-    ? target.item.version
-    : (nativeItem?.version ?? nativeItem?.manifest?.version);
+  const installedVersion = validItem?.manifest.version;
   const catalogVersion = catalogEntry?.version;
-  const updateAvailable = hasNativeCatalogUpdate(nativeItem, catalogEntry);
-  const marketCompatible = catalogEntry ? isCatalogEntryWebCompatible(catalogEntry) : true;
+  const updateAvailable = hasHostCatalogUpdate(item, catalogEntry);
 
   const repositoryUrl = parseSafeHttpUrl(
-    isDsh ? target.item.projectUrl : (nativeItem?.manifest?.repository ?? catalogEntry?.repository),
+    validItem?.manifest.repository ?? catalogEntry?.repository,
   );
   const formattedStars = isValidExtensionCount(catalogEntry?.stars)
     ? formatExtensionCount(catalogEntry.stars)
@@ -170,96 +140,68 @@ export function WebExtensionDetailModal({
     ? formatExtensionCount(catalogEntry.downloads)
     : null;
 
-  const screenshots = isDsh ? [] : resolveScreenshotUrls(nativeItem, catalogEntry);
+  const screenshots = resolveScreenshotUrls(item, catalogEntry);
   const clampedScreenshotIndex =
     activeScreenshot !== null && activeScreenshot < screenshots.length ? activeScreenshot : null;
 
-  const rawDetails = isDsh
-    ? dshText(target.item, resolveText).description
-    : (resolveOptionalLocalizedText(nativeItem?.manifest?.details, locale) ??
-      resolveOptionalLocalizedText(catalogEntry?.details, locale) ??
-      (nativeItem ? nativeDescription(nativeItem, locale, catalogEntry) : null) ??
-      (catalogEntry ? resolveOptionalLocalizedText(catalogEntry.description, locale) : null));
+  const rawDetails =
+    resolveOptionalLocalizedText(validItem?.manifest.details, locale) ??
+    resolveOptionalLocalizedText(catalogEntry?.details, locale) ??
+    (item ? hostDescription(item, locale, catalogEntry) : null) ??
+    (catalogEntry ? resolveOptionalLocalizedText(catalogEntry.description, locale) : null);
 
-  const dshEnabled = dshItem ? dshItem.enabledTargets.includes("web") : false;
-  const dshLoaded = dshItem ? dshLoadedIds.includes(dshItem.id) : false;
+  const capabilities = validItem
+    ? itemCapabilities(validItem)
+    : catalogEntry
+      ? catalogCapabilities(catalogEntry)
+      : null;
+  const targets = validItem ? itemTargets(validItem) : (catalogEntry?.targets ?? []);
+  const platformBadge = derivePlatformBadge(targets, t);
+  const capabilityBadges = deriveHostCapabilityBadges(capabilities, t);
 
   const statusBadge = (() => {
-    if (dshItem) {
-      if (dshItem.loadError) return { label: t("extensions.state.error"), tone: "danger" as const };
-      if (dshEnabled && !dshLoaded && !safeMode)
-        return { label: t("extensions.state.pending"), tone: "warning" as const };
-      return dshEnabled
-        ? { label: t("extensions.enabled"), tone: "success" as const }
-        : { label: t("extensions.disabled"), tone: "neutral" as const };
+    if (!item) return null;
+    if (item.state !== "valid") {
+      return { label: t("extensions.state.error"), tone: "danger" as const };
     }
-    if (nativeItem) {
-      if (nativeItem.error || nativeItem.manifest === undefined)
-        return { label: t("extensions.state.error"), tone: "danger" as const };
-      if (nativeItem.backendState === "failed")
-        return { label: t("extensions.backend.failed"), tone: "danger" as const };
-      if (nativeItem.backendState === "starting")
-        return { label: t("extensions.backend.starting"), tone: "info" as const };
-      return nativeItem.enabled
-        ? { label: t("extensions.enabled"), tone: "success" as const }
-        : { label: t("extensions.disabled"), tone: "neutral" as const };
+    if (item.backendState === "failed") {
+      return { label: t("extensions.backend.failed"), tone: "danger" as const };
     }
-    return null;
+    if (item.desktopConflictWith) {
+      return { label: t("extensions.state.conflict"), tone: "warning" as const };
+    }
+    if (item.backendState === "starting") {
+      return { label: t("extensions.backend.starting"), tone: "info" as const };
+    }
+    return item.enabled
+      ? { label: t("extensions.enabled"), tone: "success" as const }
+      : { label: t("extensions.disabled"), tone: "neutral" as const };
   })();
 
   const attentionMessages: { tone: "warning" | "danger"; text: string }[] = [];
-  if (nativeItem?.error) {
+  if (item && item.state !== "valid") {
     attentionMessages.push({
-      tone: "danger",
-      text: t("extensions.extensionError", { message: nativeItem.error }),
-    });
-  } else if (nativeItem && nativeItem.manifest === undefined) {
-    attentionMessages.push({
-      tone: "danger",
-      text: t("extensions.manifestMissing"),
+      tone: item.state === "incompatible" ? "warning" : "danger",
+      text: item.error || t("extensions.manifestMissing"),
     });
   }
-  if (nativeItem?.backendState === "failed") {
+  if (validItem?.backendState === "failed") {
     attentionMessages.push({
       tone: "danger",
-      text: t("extensions.backendFailedNotice"),
+      text: validItem.backendError || t("extensions.backendFailedNotice"),
     });
   }
-  if (dshItem?.loadError) {
-    attentionMessages.push({
-      tone: "danger",
-      text: t("extensions.extensionError", {
-        message: formatWebExtensionError(dshItem.loadError, t),
-      }),
-    });
-  }
-  if (dshItem?.meta?.error) {
+  if (validItem?.desktopConflictWith) {
     attentionMessages.push({
       tone: "warning",
-      text: t("extensions.metadataError", { message: dshItem.meta.error }),
-    });
-  }
-  if (dshItem && dshEnabled && !dshLoaded && !safeMode && !dshItem.loadError) {
-    attentionMessages.push({
-      tone: "warning",
-      text: t("extensions.pendingRestart"),
-    });
-  }
-  if (catalogEntry && !marketCompatible) {
-    attentionMessages.push({
-      tone: "warning",
-      text: t("extensions.marketIncompatible"),
+      text: t("extensions.desktopConflictNotice", { other: validItem.desktopConflictWith }),
     });
   }
 
-  const nativeHasBackend =
-    (nativeItem && hasWebBackend(nativeItem)) || Boolean(catalogEntry?.apis.backend !== undefined);
-  const nativeHasDesktop =
-    Boolean(nativeItem?.manifest?.desktop) || Boolean(catalogEntry?.targets.includes("desktop"));
-  const settingsSchema = nativeItem?.manifest?.settingsSchema;
-
-  const isInstalled = nativeItem !== undefined || dshItem !== undefined;
-  const nativeToggleBlocked = nativeItem ? isNativeToggleBlocked(nativeItem) : false;
+  const settingsSchema = validItem?.manifest.settingsSchema;
+  const isInstalled = item !== undefined;
+  const toggleBlocked = item ? isHostToggleBlocked(item) : false;
+  const canOpenPage = Boolean(validItem && validItem.enabled && validItem.manifest.page);
 
   return (
     <Modal
@@ -283,9 +225,6 @@ export function WebExtensionDetailModal({
               <div className={css.identity}>
                 <div className={css.titleRow}>
                   <h2 className={css.title}>{displayName}</h2>
-                  <span className={css.formatBadge} data-format={isDsh ? "dsh" : "codexhost"}>
-                    {t(isDsh ? "extensions.format.dsh" : "extensions.format.native")}
-                  </span>
                   {catalogEntry && (
                     <span className={css.trustBadge} data-trust-tier={catalogEntry.trustTier}>
                       {catalogEntry.trustTier === "official" && (
@@ -309,6 +248,34 @@ export function WebExtensionDetailModal({
                     <span className={css.updateChip}>{t("extensions.updateAvailable")}</span>
                   )}
                 </div>
+
+                {platformBadge && (
+                  <div>
+                    <div className={css.platformRow}>
+                      <span>{t("extensions.platform.label")}</span>
+                      <WebExtensionPlatformBadge badge={platformBadge} />
+                    </div>
+                    {platformBadge.kind === "desktop" && (
+                      <p className={css.platformNotice}>
+                        {t("extensions.platform.desktopOnlyNotice")}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {capabilityBadges.length > 0 && (
+                  <div className={css.capabilityChips}>
+                    {capabilityBadges.map((badge) => (
+                      <span
+                        key={badge.kind}
+                        className={css.capabilityChip}
+                        data-capability={badge.kind}
+                      >
+                        {badge.label}
+                      </span>
+                    ))}
+                  </div>
+                )}
 
                 <div className={css.metaRow}>
                   {author && (
@@ -380,7 +347,7 @@ export function WebExtensionDetailModal({
                 <Button
                   variant="primary"
                   size="sm"
-                  disabled={busy || !marketCompatible || storeError !== undefined}
+                  disabled={busy}
                   aria-busy={activeAction === `install:${catalogEntry.id}`}
                   onClick={() => onInstallMarket(catalogEntry)}
                 >
@@ -396,43 +363,50 @@ export function WebExtensionDetailModal({
               </>
             )}
 
-            {nativeItem && (
+            {item && (
               <>
-                {updateAvailable && catalogEntry && nativeItem.digest && (
+                {updateAvailable && catalogEntry && validItem && (
                   <Button
                     variant="primary"
                     size="sm"
-                    disabled={busy || storeError !== undefined}
-                    aria-busy={activeAction === `update:${nativeItem.id}`}
-                    onClick={() => onUpdateNative(nativeItem, catalogEntry)}
+                    disabled={busy}
+                    aria-busy={activeAction === `update:${validItem.id}`}
+                    onClick={() => onUpdate(validItem, catalogEntry)}
                   >
-                    {activeAction === `update:${nativeItem.id}`
+                    {activeAction === `update:${validItem.id}`
                       ? t("extensions.updating")
                       : t("extensions.updateToVersion", {
                           version: catalogEntry.version.replace(/^v/u, ""),
                         })}
                   </Button>
                 )}
+
+                {canOpenPage && validItem && (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => {
+                      onClose();
+                      onOpenPage(validItem);
+                    }}
+                  >
+                    {t("extensions.page.open")}
+                  </Button>
+                )}
+
                 <Switch
                   label={displayName}
-                  checked={nativeItem.enabled}
-                  disabled={busy || nativeToggleBlocked || storeError !== undefined}
-                  title={nativeToggleBlocked ? t("extensions.toggleBlockedInvalid") : undefined}
-                  onChange={(next) => onToggleNative(nativeItem, next)}
+                  checked={item.enabled}
+                  disabled={busy || toggleBlocked}
+                  title={toggleBlocked ? t("extensions.toggleBlockedInvalid") : undefined}
+                  onChange={(next) => onToggle(item, next)}
                 />
               </>
             )}
 
-            {dshItem && (
-              <Switch
-                label={displayName}
-                checked={dshEnabled}
-                disabled={busy || storeError !== undefined}
-                onChange={(next) => onToggleDsh(dshItem, next)}
-              />
-            )}
-
             {isInstalled &&
+              item &&
               (confirmingUninstall ? (
                 <div className={css.confirmBox}>
                   <span className={css.confirmText}>{t("extensions.uninstallConfirmPrompt")}</span>
@@ -440,11 +414,8 @@ export function WebExtensionDetailModal({
                     variant="outline"
                     size="sm"
                     className={css.dangerButton}
-                    disabled={busy || storeError !== undefined}
-                    onClick={() => {
-                      if (nativeItem) onUninstallNative(nativeItem);
-                      else if (dshItem) onUninstallDsh(dshItem);
-                    }}
+                    disabled={busy}
+                    onClick={() => onUninstall(item)}
                   >
                     {t(
                       activeAction?.startsWith("uninstall:")
@@ -467,7 +438,7 @@ export function WebExtensionDetailModal({
                   size="sm"
                   className={css.dangerButton}
                   icon={<IconTrashOutlineRegular size={13} />}
-                  disabled={busy || storeError !== undefined}
+                  disabled={busy}
                   onClick={() => setConfirmingUninstall(true)}
                 >
                   {t("extensions.remove")}
@@ -494,11 +465,11 @@ export function WebExtensionDetailModal({
             </div>
           ))}
 
-          {/* Declarative settings form for installed codexhost native extensions */}
-          {nativeItem && settingsSchema && settingsSchema.length > 0 && (
+          {/* Declarative settings form for installed Host extensions */}
+          {validItem && settingsSchema && settingsSchema.length > 0 && (
             <WebExtensionSettingsForm
-              extensionId={nativeItem.id}
-              enabled={nativeItem.enabled}
+              extensionId={validItem.id}
+              enabled={validItem.enabled}
               schema={settingsSchema}
               locale={locale}
               t={t}
@@ -609,49 +580,34 @@ export function WebExtensionDetailModal({
               <IconShieldOutlineRegular size={14} />
               <h3 className={css.sectionTitle}>{t("extensions.trust.title")}</h3>
             </div>
-            <p className={css.trustDescription}>
-              {isDsh ? t("extensions.trust.dshSummary") : t("extensions.trust.nativeSummary")}
-            </p>
+            <p className={css.trustDescription}>{t("extensions.trust.nativeSummary")}</p>
             <div className={css.capabilityChips}>
-              {!isDsh && (
-                <>
-                  <span className={css.capabilityChip}>{t("extensions.capability.webUi")}</span>
-                  {nativeHasBackend && (
-                    <span className={css.capabilityChip}>
-                      {nativeItem
-                        ? t("extensions.capability.backendWithState", {
-                            state: backendStateLabel(nativeItem.backendState, t),
-                          })
-                        : t("extensions.capability.backend")}
-                    </span>
-                  )}
-                  {nativeHasDesktop && (
-                    <span className={css.capabilityChip}>
-                      {t("extensions.capability.crossPlatform")}
-                    </span>
-                  )}
-                </>
+              {capabilities?.hasPage && (
+                <span className={css.capabilityChip}>{t("extensions.badge.page")}</span>
               )}
-              {dshItem && (
-                <>
-                  <span className={css.capabilityChip}>DSH</span>
-                  {dshLoaded && (
-                    <span className={css.capabilityChip}>{t("extensions.includedAtStartup")}</span>
-                  )}
-                </>
+              {capabilities?.hasWidget && (
+                <span className={css.capabilityChip}>{t("extensions.badge.widget")}</span>
+              )}
+              {capabilities?.hasWeb && (
+                <span className={css.capabilityChip}>{t("extensions.capability.webUi")}</span>
+              )}
+              {capabilities?.hasDesktop && (
+                <span className={css.capabilityChip}>{t("extensions.capability.desktopUi")}</span>
+              )}
+              {capabilities?.hasBackend && (
+                <span className={css.capabilityChip}>
+                  {validItem
+                    ? t("extensions.capability.backendWithState", {
+                        state: backendStateLabel(validItem.backendState, t),
+                      })
+                    : t("extensions.capability.backend")}
+                </span>
               )}
             </div>
-            {dshItem && (
-              <p className={css.sourceLine}>{t("extensions.source", { source: dshItem.source })}</p>
-            )}
-            {nativeItem && (
+            {validItem && (
               <p className={css.sourceLine}>
-                ID: <code>{nativeItem.id}</code>
-                {nativeItem.digest ? (
-                  <>
-                    {" · "}SHA-256: <code>{nativeItem.digest.slice(0, 12)}…</code>
-                  </>
-                ) : null}
+                ID: <code>{validItem.id}</code>
+                {" · "}SHA-256: <code>{validItem.digest.slice(0, 12)}…</code>
               </p>
             )}
           </section>

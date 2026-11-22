@@ -17,6 +17,8 @@ export interface ComposerContentEditableProps extends HTMLAttributes<HTMLDivElem
   readonly editor: LexicalEditor | null;
   /** Whether the user may edit (readOnly/disabled states fold in here). */
   readonly editable: boolean;
+  /** Keep an active touch focus across the pending-draft → created-session handoff. */
+  readonly preserveFocus?: boolean;
 }
 
 /**
@@ -27,13 +29,16 @@ export interface ComposerContentEditableProps extends HTMLAttributes<HTMLDivElem
 export function ComposerContentEditable({
   editor,
   editable,
+  preserveFocus = false,
   ...rest
 }: ComposerContentEditableProps): ReactNode {
   const ref = useRef<HTMLDivElement | null>(null);
+  const preserveFocusRef = useRef(preserveFocus);
+  preserveFocusRef.current = preserveFocus;
   useLayoutEffect(() => {
     const el = ref.current;
     if (el === null) return;
-    if (!shouldAutoFocusTextInput()) {
+    if (!shouldAutoFocusTextInput() && !preserveFocusRef.current) {
       // Neither retained DOM focus nor Lexical's restored selection may raise the mobile keyboard.
       if (el.ownerDocument.activeElement === el) el.blur();
       // The editability effect below enables typing after the root is bound.

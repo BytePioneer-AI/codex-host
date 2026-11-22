@@ -3,16 +3,13 @@ import type * as filesystemPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { harnessModelCatalogSchema } from "@codexhost/shared-contracts";
 import {
   ensurePiFastExtension,
   PI_FAST_ACK,
   PI_FAST_COMMAND,
   PI_FAST_EXTENSION,
-  piFastModelKeys,
-  withPiFast,
 } from "../src/pi-fast-mode.js";
-import { decodePiModelRef, encodePiModelRef } from "../src/pi-model-catalog.js";
+import { normalizePiModelCatalog } from "../src/pi-model-catalog.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const filesystem = await importOriginal<typeof filesystemPromises>();
@@ -47,18 +44,11 @@ describe("Pi Host Fast", () => {
       { ...model, api: "openai-completions" },
       { provider: model.provider, id: model.id, reasoning: true },
     ];
-    const keys = piFastModelKeys(models);
-    expect([...keys]).toEqual([encodePiModelRef(model).id, encodePiModelRef(responses).id]);
-    const catalog = withPiFast(
-      harnessModelCatalogSchema.parse({
-        models: [{ ref: encodePiModelRef(model), label: "Custom display name" }],
-        thinkingOptions: [],
-      }),
-      keys,
-    );
-    const fast = catalog.models[0]?.fastModel;
-    if (!fast) throw new Error("Missing Fast choice");
-    expect(decodePiModelRef(fast)).toEqual({ provider: "proxy", id: "gpt-synthetic", fast: true });
+    const catalog = normalizePiModelCatalog(models, null, null, null, null, true);
+    expect(catalog.models.flatMap(({ fastModel }) => (fastModel ? [fastModel] : []))).toEqual([
+      { id: "other/alias-GpT-model", serviceTier: "priority" },
+      { id: "proxy/gpt-synthetic", serviceTier: "priority" },
+    ]);
   });
 
   it.each(["getProvider", "registerProvider"])(

@@ -1702,6 +1702,7 @@ export function installRendererBindingProbe(
   const loadExternalCatalog = async (
     mounted: MountedComposer,
     credentialAccess?: "allow",
+    refresh = false,
   ): Promise<void> => {
     if (!isMountedComposer(mounted.composer)) return;
     modelRecovery.delete(mounted);
@@ -1772,6 +1773,7 @@ export function installRendererBindingProbe(
       catalogRequests.set(mounted, catalogRequest);
       const inspection = await client.inspectHarness({
         harnessId: harnessIdSchema.parse(agent),
+        ...(refresh ? { refresh: true } : {}),
         ...(credentialAccess ? { credentialAccess } : {}),
       });
       if (
@@ -2034,9 +2036,10 @@ export function installRendererBindingProbe(
     ) {
       // The first load failed, so there is no catalog to refresh. Load it again;
       // a Harness whose availability that failure marked unready is rechecked first.
+      // Refresh so an Adapter that cached the failed inspection inspects again.
       const availability = hostHarnessAvailabilityState(hostId).availability[agent];
       if (availability === "ready" || availability === "checking") {
-        void loadExternalCatalog(mounted);
+        void loadExternalCatalog(mounted, undefined, true);
       } else {
         void refreshHarnessAvailabilityForHost(hostId, true, false, true, "retry");
       }

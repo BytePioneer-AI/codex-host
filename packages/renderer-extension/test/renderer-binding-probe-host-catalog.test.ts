@@ -2227,6 +2227,60 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     },
   );
 
+  it("retries a failed first catalog with a full inspection that bypasses cached failures", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    let catalogRequests = 0;
+    const cachedFailure = {
+      status: "unavailable",
+      error: { code: "unavailable", message: "cached handshake failure", retryable: false },
+    } as const;
+    const client = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(
+        async ({ purpose, refresh }: { purpose?: string; refresh?: boolean }) => {
+          if (purpose === "availability") return emptyInspection();
+          catalogRequests += 1;
+          if (catalogRequests === 1) throw new Error("request timed out");
+          // Like Kimi Code, the Adapter answers non-refresh inspections from a cached failure.
+          return refresh === true ? readyInspection() : cachedFailure;
+        },
+      ),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    const availability = () =>
+      testState
+        .getConnectionDiagnostics?.()
+        ?.snapshot()
+        .hosts[0]?.agents.find(({ plugin }) => plugin?.id === "claude-code")?.availability;
+    const latest = () => testState.renderedModelViews.at(-1);
+    await vi.waitFor(() => expect(availability()).toBe("ready"));
+    testState.selectAgent?.("claude-code");
+    await vi.waitFor(() => expect(latest()?.status).toBe("error"));
+    expect(latest()?.catalog).toBeUndefined();
+    expect(availability()).toBe("ready");
+
+    testState.refreshModels?.();
+    await vi.waitFor(() => expect(catalogRequests).toBe(2));
+    const retry = client.inspectHarness.mock.calls
+      .map(([input]) => input)
+      .filter(({ purpose }) => purpose !== "availability")
+      .at(-1);
+    expect(retry).toMatchObject({ harnessId: "claude-code", refresh: true });
+    await vi.waitFor(() => expect(latest()?.status).toBe("ready"));
+    expect(latest()?.selected).toEqual(readyInspection().catalog.defaultModel);
+  });
+
   it("confirms a pending Permission Mode selection while models refresh", async () => {
     installFakeBrowser();
     const inspection = {

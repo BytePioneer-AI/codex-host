@@ -485,7 +485,7 @@ export class ExternalThreadRuntime {
     if (nativeRef) {
       thread.record = await this.#repository.commitNative(thread.id, nativeRef);
     }
-    // If identity is deferred, its later Session event will commit and publish it.
+    // Deferred identity is committed by a later Session event; it need not block Turn output.
     // Keep the draft hidden on persistence failure, without executing user work.
     thread.unsubmittedPrewarm = false;
     return thread.record.state === "ready";

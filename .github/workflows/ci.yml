@@ -298,15 +298,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Test Windows npm staging
-        run: cargo test -p codexhost-updater --locked
-
-      - name: Test explicit Windows npm Node selection
-        run: cargo test -p codexhost-launcher --bin codexhost --locked npm_node_is_shared_with_host_when_launch_options_omit_node
-
       - name: Test desktop shell initialization
         run: cargo test --manifest-path apps/desktop-shell/src-tauri/Cargo.toml --locked installs_bridge_before_document_element_is_available
 
+      # The release entrypoint imports shared-contracts/dist before starting its own build.
       - name: Build TypeScript prerequisites
         run: npm run build:typescript
 

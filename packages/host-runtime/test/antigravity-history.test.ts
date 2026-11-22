@@ -59,12 +59,15 @@ it.each([
   `);
     const insert = db.prepare("INSERT INTO steps VALUES (?, ?, 3, ?)");
     const visible = [...new Set([0, boundary, next - 1])];
+    // Batch fixture writes to avoid a disk sync for every sparse history row.
+    db.exec("BEGIN");
     for (let index = 0; index < next; index++) {
       if (visible.includes(index)) {
         insert.run(index * 2, 14, protoField(19, protoField(2, `history ${index}`)));
         insert.run(index * 2 + 1, 15, protoField(20, protoField(1, `reply ${index}`)));
       } else insert.run(index * 2, 14, protoField(19, ""));
     }
+    db.exec("COMMIT");
     let liveIndex = next;
     const environment = { HOME: home, USERPROFILE: home };
     const adapter = new AntigravityAdapter({

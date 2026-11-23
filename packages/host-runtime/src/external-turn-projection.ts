@@ -191,7 +191,11 @@ export interface ExternalTurnProjectionHost {
   captureCompletedPreview(thread: ExternalThread, turn: JsonObject): Promise<void>;
   resolveDesktopApproval(interactionId: HostInteractionId, thread: ExternalThread): Promise<void>;
   resolveDesktopQuestion(interactionId: HostInteractionId, thread: ExternalThread): Promise<void>;
-  retireSharedQuestions(thread: ExternalThread, turnId: HostTurnId): void;
+  retireSharedQuestions(
+    thread: ExternalThread,
+    turnId: HostTurnId,
+    preserveDetached: boolean,
+  ): void;
   setThreadStatus(thread: ExternalThread, status: ExternalThreadStatus): Promise<void>;
   signalActiveWorkChanged(): void;
   hasRunningSubagents(parentThreadId: string): boolean;
@@ -253,7 +257,6 @@ export class ExternalTurnProjection {
     ) {
       return;
     }
-    if (event.type === "turn.completed") this.#host.retireSharedQuestions(thread, event.turnId);
     if (event.type === "interaction.closed") {
       await this.#host.resolveDesktopApproval(event.interactionId, thread);
       await this.#host.resolveDesktopQuestion(event.interactionId, thread);
@@ -295,6 +298,8 @@ export class ExternalTurnProjection {
       }
     }
     const result = projection.projector.project(event as ProjectableHostEvent);
+    if (event.type === "turn.completed")
+      this.#host.retireSharedQuestions(thread, event.turnId, event.outcome.status === "succeeded");
     // Desktop drops Turn events for unknown Threads. Submitted prewarms may still
     // be waiting for their Native identity when their first Turn starts.
     if (!thread.unsubmittedPrewarm && result.messages.length > 0) {

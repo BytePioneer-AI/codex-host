@@ -60,6 +60,9 @@ export const zh = {
   move: "移动菜单选择",
   select: "选择菜单项",
   dismiss: "关闭菜单或顶层弹窗",
+  "zoom-in": "放大界面",
+  "zoom-out": "缩小界面",
+  "zoom-reset": "重置界面缩放",
 };
 /** Typed English counterpart. */
 export const en: Record<keyof typeof zh, string> = {
@@ -127,4 +130,7 @@ export const en: Record<keyof typeof zh, string> = {
   move: "Move menu selection",
   select: "Select menu item",
   dismiss: "Close menu or top dialog",
+  "zoom-in": "Zoom in",
+  "zoom-out": "Zoom out",
+  "zoom-reset": "Reset zoom",
 };

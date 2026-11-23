@@ -35,7 +35,10 @@ export function apply(ctx: Context): void {
   const recording = (active: boolean) => ctx.shortcuts.recording(active);
   const describeBinding: typeof ctx.shortcuts.describeBinding = (binding) =>
     ctx.shortcuts.describeBinding(binding);
-  for (const command of fixedCommands(t)) {
+  for (const command of fixedCommands(
+    t,
+    ctx.shortcuts.runtime === "desktop" && ctx.shortcuts.platform === "windows",
+  )) {
     ctx.effect(() => ctx.shortcuts.registerFixed(command), `shortcuts: ${command.id}`);
   }
   const injected = () => ({

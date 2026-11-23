@@ -131,7 +131,7 @@ describe.skipIf(process.platform === "win32")("confirmed shared Renderer prefere
     const f = await fixture();
     f.sync.connect("local", f.client);
     await vi.waitFor(() => expect(rendererHarnessPreferenceStatus()).toBe("applied"));
-    expect(readIdleReleasePreference(f.owner)).toEqual({ enabled: false, timeoutMinutes: 10 });
+    expect(readIdleReleasePreference(f.owner)).toEqual({ enabled: true, timeoutMinutes: 10 });
     expect(writeIdleReleasePreference(f.owner, policy)).toBe(true);
     await vi.waitFor(() => expect(readIdleReleasePreference(f.owner)).toEqual(policy));
     for (const timeoutMinutes of [4, 1441, 30.5, NaN])
@@ -191,7 +191,7 @@ describe.skipIf(process.platform === "win32")("confirmed shared Renderer prefere
       writeRendererHarnessPreferences(f.owner, "local", [{ kind: "idleRelease", value: policy }]),
     ).rejects.toThrow("Disk full");
     expect(rendererHarnessPreferenceStatus()).toBe("failed");
-    expect(readIdleReleasePreference(f.owner).enabled).toBe(false);
+    expect(readIdleReleasePreference(f.owner)).toEqual({ enabled: true, timeoutMinutes: 10 });
     f.notify();
     await vi.waitFor(() => expect(f.statuses.at(-1)).toBe("applied"));
     const stalled = Promise.withResolvers<HarnessPreferenceSnapshot>();

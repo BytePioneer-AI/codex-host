@@ -690,8 +690,16 @@ export class PiRpcSession {
       this.#cancellationRecovery !== null ||
       this.#manualCompaction !== null ||
       this.#compactionActive ||
-      this.#deferredRunFrames.length > 0
+      this.#deferredRunFrames.length > 0 ||
+      this.#hasPendingCommand(["steer"])
     );
+  }
+
+  #hasPendingCommand(commands: readonly string[]): boolean {
+    for (const pending of this.#pending.values()) {
+      if (commands.includes(pending.command)) return true;
+    }
+    return false;
   }
 
   setSubagentStatusHandler(handler: (runs: PiSubagentNode[]) => void): void {
@@ -908,7 +916,8 @@ export class PiRpcSession {
       this.#activeTurn ||
       this.#cancellationRecovery ||
       this.#manualCompaction ||
-      this.#compactionActive
+      this.#compactionActive ||
+      this.#hasPendingCommand(["steer"])
     ) {
       throw new Error("Pi RPC Session already has an active operation");
     }
@@ -1248,10 +1257,10 @@ export class PiRpcSession {
     if (this.#activeTurn !== active) return;
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
     active.cancellationTimeout = null;
-    // Pi reports idle while an input hook is still preparing an unacknowledged Prompt.
-    // An Abort acknowledgement can therefore precede that Prompt starting a native run.
-    if ([...this.#pending.values()].some(({ command }) => command === "prompt")) {
-      void this.#faultAfterProcessCleanup(fault, "Pi RPC unacknowledged Prompt cleanup failed");
+    // Pi reports idle while an input hook is still preparing an unacknowledged Prompt or Steer.
+    // An Abort acknowledgement can therefore precede that input enqueuing or starting a native run.
+    if (this.#hasPendingCommand(["prompt", "steer"])) {
+      void this.#faultAfterProcessCleanup(fault, "Pi RPC unacknowledged input cleanup failed");
       return;
     }
     active.cancellation = "abandoned";
@@ -1268,7 +1277,13 @@ export class PiRpcSession {
     this.#deferredRunBytes = 0;
     for (const waiter of this.#runWaiters) waiter.reject(fault);
     for (const [id, pending] of this.#pending) {
-      if (pending.command !== "abort" && pending.command !== "prompt") continue;
+      if (
+        pending.command !== "abort" &&
+        pending.command !== "prompt" &&
+        pending.command !== "steer"
+      ) {
+        continue;
+      }
       if (pending.timeout) clearTimeout(pending.timeout);
       this.#pending.delete(id);
       this.#rememberExpiredCommand(id);
@@ -1420,6 +1435,8 @@ export class PiRpcSession {
     if (this.#subagents.handle(value)) return;
     const recovery = this.#cancellationRecovery;
     if (recovery) {
+      if (this.#handleGotgenesWidget(value)) return;
+      if (this.#handleProgress(value)) return;
       this.#observeUsage(value);
       if (value.type === "agent_start" || value.type === "compaction_start") {
         recovery.nativeStartGeneration += 1;
@@ -1456,18 +1473,7 @@ export class PiRpcSession {
         this.#startAutonomousTurn(undefined, generation);
       return;
     }
-    if (
-      value.type === "extension_ui_request" &&
-      value.method === "setWidget" &&
-      value.widgetKey === GOTGENES_WIDGET
-    ) {
-      const records = parseGotgenesWidget(value);
-      if (records) {
-        this.#gotgenesLatest = records;
-        this.#gotgenesHandler?.(records, this.#activeTurn?.origin ?? "idle");
-      }
-      return;
-    }
+    if (this.#handleGotgenesWidget(value)) return;
     if (this.#handleProgress(value)) return;
     this.#observeUsage(value);
     if (value.type === "compaction_start") {
@@ -1669,6 +1675,22 @@ export class PiRpcSession {
     this.#autonomousLifecycleHandler?.({ type: "started", runId });
     this.#drainProgress(active.onEvent);
     return active;
+  }
+
+  #handleGotgenesWidget(value: Record<string, unknown>): boolean {
+    if (
+      value.type !== "extension_ui_request" ||
+      value.method !== "setWidget" ||
+      value.widgetKey !== GOTGENES_WIDGET
+    ) {
+      return false;
+    }
+    const records = parseGotgenesWidget(value);
+    if (records) {
+      this.#gotgenesLatest = records;
+      this.#gotgenesHandler?.(records, this.#activeTurn?.origin ?? "idle");
+    }
+    return true;
   }
 
   #handleProgress(value: Record<string, unknown>): boolean {
@@ -2321,7 +2343,7 @@ export class PiRpcSession {
       if (this.#pending.get(id) !== pending) return;
       pending.timeout = null;
       const error = new Error(`Pi RPC '${pending.command}' command timed out`);
-      if (pending.command !== "prompt") {
+      if (pending.command !== "prompt" && pending.command !== "steer") {
         this.#pending.delete(id);
         // A timed-out Abort also enters recovery, where native idle is proved separately.
         if (READ_ONLY_COMMANDS.has(pending.command) || pending.command === "abort") {
@@ -2331,7 +2353,12 @@ export class PiRpcSession {
         return;
       }
       const fault = new PiRpcFaultError("protocolError", error.message);
-      void this.#faultAfterProcessCleanup(fault, "Pi RPC timed-out Prompt cleanup failed");
+      void this.#faultAfterProcessCleanup(
+        fault,
+        pending.command === "steer"
+          ? "Pi RPC timed-out Steer cleanup failed"
+          : "Pi RPC timed-out Prompt cleanup failed",
+      );
     }, timeoutMs);
   }
 

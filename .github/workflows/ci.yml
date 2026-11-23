@@ -326,3 +326,11 @@ jobs:
             build/release/*/windows-x64/payload/libexec/codexhost-updater.exe
           if-no-files-found: error
           retention-days: 7
+
+      - name: Upload fixed Web UI
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codexhost-fixed-web-ui
+          path: build/release/*/windows-x64/payload/app/web/
+          if-no-files-found: error
+          retention-days: 7

@@ -259,6 +259,58 @@ describe("Hermes gateway native interactions", () => {
       expect.objectContaining({ payload: { model: "gpt-5" } }),
     );
   });
+  it("reads the latest revision and generation after awaiting model route resolution", async () => {
+    const raw = new HermesGatewayTransport("unused", process.cwd(), {});
+    let resolveRoute!: (selection: { model: string; provider: string }) => void;
+    const bridge = new HermesGatewaySessionTransport(
+      raw,
+      "runtime",
+      "native",
+      { model: "test", provider: "custom", yolo: false },
+      { revision: 0, generation: 0 },
+      null,
+      () =>
+        new Promise((resolve) => {
+          resolveRoute = resolve;
+        }),
+    );
+    const request = vi.spyOn(raw, "request").mockImplementation(async (method, params) => {
+      if (method === "session.mutate") {
+        if (params.expected_revision !== 3 || params.expected_generation !== 2)
+          throw new Error("stale session revision");
+        const payload = params.payload as { model: string; provider?: string };
+        return {
+          session_id: params.session_id,
+          revision: 4,
+          execution_generation: 2,
+          operation: params.operation,
+          model: payload.model,
+          provider: payload.provider,
+        };
+      }
+      return {};
+    });
+
+    const switching = bridge.setModel("relay-b:example/model:tag");
+    await pause();
+    raw.onEvent({
+      type: "session.info",
+      session_id: "runtime",
+      payload: { model: "test", provider: "custom", revision: 3, execution_generation: 2 },
+    });
+    resolveRoute({ model: "example/model:tag", provider: "relay-b" });
+
+    await expect(switching).resolves.toBeUndefined();
+    expect(request).toHaveBeenCalledWith(
+      "session.mutate",
+      expect.objectContaining({
+        expected_revision: 3,
+        expected_generation: 2,
+        operation: "model",
+        payload: { model: "example/model:tag", provider: "relay-b" },
+      }),
+    );
+  });
 });
 
 describe("Hermes gateway native turn projection", () => {

@@ -150,9 +150,13 @@ export class HermesAdapter implements HarnessAdapter {
   ): Promise<HermesGatewayModelSelection | undefined> {
     if (!modelId.includes(":")) return undefined;
     const base = this.#effectiveEnvironment();
-    const sameProfile = ["HOME", "USERPROFILE", "HERMES_HOME", "PATH"].every(
-      (key) => base[key] === environment[key],
-    );
+    const sameProfile = [
+      "HOME",
+      "USERPROFILE",
+      "HERMES_HOME",
+      "HERMES_DATA_DIR_SUFFIX",
+      "PATH",
+    ].every((key) => base[key] === environment[key]);
     const inventory = sameProfile
       ? (this.#lastInventory ?? (await this.#readInventory()))
       : await readHermesModelInventory(

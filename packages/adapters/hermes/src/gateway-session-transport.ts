@@ -287,12 +287,12 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     // Canonical wire: a model pick is the revision-fenced `session.mutate`
     // operation `model` — `config.set key=model` is refused with
     // `use_session_mutation_model` on this channel.
+    const payload = selection ?? (await this.resolveGatewayModel?.(modelId)) ?? { model: modelId };
+    if (this.#closed) throw new Error("Hermes gateway Session is unavailable");
     const revision = this.#revision;
     const generation = this.#generation;
     if (revision === null || generation === null)
       throw new Error("Hermes gateway Session revision is not known yet");
-    const payload = selection ?? (await this.resolveGatewayModel?.(modelId)) ?? { model: modelId };
-    if (this.#closed) throw new Error("Hermes gateway Session is unavailable");
     const result = await this.transport.request("session.mutate", {
       session_id: this.sessionId,
       request_id: `codexhost-model-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,

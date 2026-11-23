@@ -478,7 +478,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             .visible(false)
             .initialization_script(navigation::initialization_script());
             #[cfg(target_os = "windows")]
-            let builder = builder.decorations(false).shadow(true);
+            let builder = builder
+                .decorations(false)
+                .shadow(true)
+                .zoom_hotkeys_enabled(true);
             #[cfg(target_os = "macos")]
             let builder = builder
                 .title_bar_style(tauri::TitleBarStyle::Overlay)

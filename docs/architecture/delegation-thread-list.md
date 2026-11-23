@@ -4,7 +4,7 @@
 
 ## 数据来源与归属
 
-- `--parent` 请求交给拥有该父 Thread 的注册。
+- `--parent` 请求交给拥有该父 Thread 的注册。返回状态以持久化 Delegation 状态为基础，并在读取时叠加 Host 当前运行中的外部 Turn（含停止后重发中的替换）以及共享官方后端的活跃 Turn，避免已终结子 Thread 在后续执行或替换期间仍显示持久化终态。
 - SSH 共享 owner、Windows Remote Control 主 Host 作为 Registry 的 Harness catalog，负责共享后端的全局列表。附加客户端共享同一官方后端和 Mapping Store，不作为独立列表来源；catalog 返回的 native／Host 聚合 cursor 原样透传。
 - 没有 catalog 且只有一个注册时，直接透传该注册的列表和 cursor。
 - 没有 catalog 且有多个独立注册时，Registry 按请求的 created、updated 或 recency 时间升／降序归并各来源。各来源内部的同时间戳顺序由来源维护，不建立新的全局同时间戳次序契约。

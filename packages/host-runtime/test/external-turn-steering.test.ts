@@ -305,6 +305,44 @@ describe("Host stop-then-start coordination", () => {
     await expect(result).rejects.toThrow("start rejected");
     expect(f.start).toHaveBeenCalledOnce();
   });
+
+  it("reports hasActiveReplacement only during live stop-then-start replacement, not capability reads or after failure", async () => {
+    const f = fixture();
+    const read =
+      Promise.withResolvers<Awaited<ReturnType<NonNullable<HarnessSession["readCapabilities"]>>>>();
+    const thread = Object.assign(f.thread, {
+      session: { ...f.thread.session, readCapabilities: () => read.promise },
+    });
+    const replacing = Promise.withResolvers<undefined>();
+    const releaseStart = Promise.withResolvers<undefined>();
+    f.start.mockImplementation(async (_text, assertActive) => {
+      replacing.resolve(undefined);
+      await releaseStart.promise;
+      assertActive();
+      return f.started;
+    });
+    const run = f.coordinator.run(thread, f.params, f.start, f.insert);
+    expect(f.coordinator.hasPending("thread")).toBe(true);
+    expect(f.coordinator.hasActiveReplacement("thread")).toBe(false);
+
+    read.resolve({
+      ...new FakeHarnessSession(harnessIdSchema.parse("pi")).capabilities,
+      steer: false,
+    });
+    await vi.waitFor(() => expect(f.execute).toHaveBeenCalledOnce());
+    expect(f.coordinator.hasActiveReplacement("thread")).toBe(true);
+
+    f.complete();
+    await replacing.promise;
+    expect(f.coordinator.hasActiveReplacement("thread")).toBe(true);
+
+    f.coordinator.interrupt("thread", "old");
+    expect(f.coordinator.hasActiveReplacement("thread")).toBe(false);
+
+    releaseStart.resolve(undefined);
+    await expect(run).rejects.toMatchObject({ code: -32074 });
+    expect(f.coordinator.hasActiveReplacement("thread")).toBe(false);
+  });
 });
 
 describe("Host native steering", () => {

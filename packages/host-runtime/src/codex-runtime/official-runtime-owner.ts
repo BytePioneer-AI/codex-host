@@ -25,10 +25,16 @@ export interface OfficialClientSession {
   send(value: JsonObject): Promise<void>;
   close(): void;
 }
+interface PendingTurnStart {
+  threadId: string;
+  completedTurnIds: Set<string>;
+}
 interface Pending {
   id: string | number;
   method: string;
   params: JsonObject;
+  turnStart?: PendingTurnStart;
+  snapshotStartOrdinal?: number;
   finish(): void;
 }
 interface Client {
@@ -42,6 +48,7 @@ interface Client {
   initialization?: JsonObject;
   initializationResult?: JsonObject;
   pending: Map<string, Pending>;
+  pendingTurnStarts: Set<PendingTurnStart>;
   serverRequests: Map<string, string | number>;
   threads: Map<string, { params: JsonObject; generation: number; restoring?: Promise<void> }>;
 }
@@ -59,6 +66,8 @@ export class RetiredOfficialServerRequestError extends Error {
     super("Retired official server request");
   }
 }
+const COMPLETED_TURNS_LIMIT = 256;
+const MAX_SNAPSHOT_COMPLETED_TO_REMEMBER = 8;
 const RESUME_FIELDS = new Set([
   "model",
   "modelProvider",
@@ -81,7 +90,13 @@ export class OfficialRuntimeOwner {
   readonly #factory: () => OwnedOfficialBackend;
   readonly #diagnosticOutput: Writable;
   readonly #clients = new Set<Client>();
-  readonly #activeTurns = new Set<string>();
+  /** Observed active official Turns per Thread, keyed by Turn ID -> live observer clients. */
+  readonly #activeTurns = new Map<string, Map<string | null, Set<Client>>>();
+  /** Bounded set of recently completed `threadId\0turnId` pairs to reject late starts/responses. */
+  readonly #completedTurns = new Set<string>();
+  /** Per-Thread monotonic ordinal incremented whenever a Turn start is observed. */
+  readonly #threadStartOrdinal = new Map<string, number>();
+  #nextEventOrdinal = 0;
   readonly #threadModelSettings = new Map<string, JsonObject & { model: string }>();
   #backend: OwnedOfficialBackend | undefined;
   #generation = 0;
@@ -105,6 +120,39 @@ export class OfficialRuntimeOwner {
 
   get hasActiveWork(): boolean {
     return this.gate.busy || this.#activeTurns.size > 0;
+  }
+
+  activeThreadIds(): string[] {
+    return [...this.#activeTurns.keys()];
+  }
+
+  hasActiveTurn(threadId: string): boolean {
+    return this.#activeTurns.has(threadId);
+  }
+
+  hasLiveActiveTurn(threadId: string): boolean {
+    const active = this.#activeTurns.get(threadId);
+    if (!active || active.size === 0) return false;
+    for (const observers of active.values()) {
+      if (this.#hasLiveObserver(observers)) return true;
+    }
+    return false;
+  }
+
+  activeTurnId(threadId: string): string | undefined {
+    const active = this.#activeTurns.get(threadId);
+    if (!active || active.size === 0) return undefined;
+    let candidate: string | undefined;
+    for (const id of active.keys()) {
+      if (id === null) continue;
+      if (candidate !== undefined) return undefined;
+      candidate = id;
+    }
+    return candidate;
+  }
+
+  isTurnCompleted(threadId: string, turnId: string): boolean {
+    return this.#completedTurns.has(`${threadId}\u0000${turnId}`);
   }
 
   get running(): boolean {
@@ -205,6 +253,8 @@ export class OfficialRuntimeOwner {
         }
         this.#backend = undefined;
         this.#activeTurns.clear();
+        this.#completedTurns.clear();
+        this.#threadStartOrdinal.clear();
         this.#phase = "stopped";
         retired = true;
       } catch {
@@ -253,6 +303,7 @@ export class OfficialRuntimeOwner {
       output,
       ...(onBackendStopped ? { onBackendStopped } : {}),
       pending: new Map(),
+      pendingTurnStarts: new Set(),
       serverRequests: new Map(),
       threads: new Map(),
     };
@@ -264,6 +315,7 @@ export class OfficialRuntimeOwner {
       send: (value) => this.#send(client, structuredClone(value)),
       close: () => {
         this.#clients.delete(client);
+        this.#removeObserver(client);
         this.#retire(client);
         client.runtime?.close();
       },
@@ -368,21 +420,33 @@ export class OfficialRuntimeOwner {
   async #request(client: Client, method: string, params: JsonObject): Promise<JsonObject> {
     this.#checkMethod(method);
     const finish = this.gate.admit();
+    const turnStart =
+      method === "turn/start" && typeof params.threadId === "string"
+        ? { threadId: params.threadId, completedTurnIds: new Set<string>() }
+        : undefined;
     let response: JsonObject | undefined;
     try {
       const runtime = await this.#connection(client);
       await this.#restoreBeforeRequest(client, runtime, method, params);
       const forwarded = method === "thread/fork" ? this.#forkParams(params) : params;
+      const snapshotStartOrdinal =
+        (method === "thread/read" || method === "thread/resume") &&
+        typeof params.threadId === "string"
+          ? (this.#threadStartOrdinal.get(params.threadId) ?? 0)
+          : undefined;
+      if (turnStart) client.pendingTurnStarts.add(turnStart);
       response = await runtime.request(method, forwarded);
       if (
+        !this.#clients.has(client) ||
         client.runtime !== runtime ||
         runtime.generation !== this.#generation ||
         this.#phase !== "running"
       )
         throw new OfficialAdmissionError("unavailable");
-      this.#remember(client, method, params, response);
+      this.#remember(client, method, params, response, turnStart, snapshotStartOrdinal);
       return response;
     } finally {
+      if (turnStart) client.pendingTurnStarts.delete(turnStart);
       finish();
     }
   }
@@ -408,26 +472,39 @@ export class OfficialRuntimeOwner {
     const params = object(value.params) ? value.params : {};
     this.#checkMethod(method);
     const finish = this.gate.admit();
+    const turnStart =
+      method === "turn/start" && typeof params.threadId === "string"
+        ? { threadId: params.threadId, completedTurnIds: new Set<string>() }
+        : undefined;
     let pendingKey: string | undefined;
     try {
       const runtime = await this.#connection(client);
       await this.#restoreBeforeRequest(client, runtime, method, params);
       if (method === "thread/fork" && object(value.params))
         value = { ...value, params: this.#forkParams(params) };
+      const snapshotStartOrdinal =
+        (method === "thread/read" || method === "thread/resume") &&
+        typeof params.threadId === "string"
+          ? (this.#threadStartOrdinal.get(params.threadId) ?? 0)
+          : undefined;
       if (typeof value.id === "string" || typeof value.id === "number") {
         const key = requestKey(value.id);
         if (client.pending.has(key)) throw new Error("Duplicate official request ID");
         pendingKey = key;
+        if (turnStart) client.pendingTurnStarts.add(turnStart);
         client.pending.set(pendingKey, {
           id: value.id,
           method,
           params,
+          ...(turnStart ? { turnStart } : {}),
+          ...(snapshotStartOrdinal !== undefined ? { snapshotStartOrdinal } : {}),
           finish,
         });
       }
       await runtime.send(value);
       if (!pendingKey) finish();
     } catch (error) {
+      if (turnStart) client.pendingTurnStarts.delete(turnStart);
       if (pendingKey) client.pending.delete(pendingKey);
       finish();
       throw error;
@@ -450,10 +527,35 @@ export class OfficialRuntimeOwner {
     const value = event.value;
     if (!object(value)) return client.output(event);
     if (object(value.params) && typeof value.params.threadId === "string") {
-      if (value.method === "turn/started") this.#activeTurns.add(value.params.threadId);
-      if (value.method === "turn/completed" || value.method === "thread/closed")
-        this.#activeTurns.delete(value.params.threadId);
+      if (value.method === "turn/started") {
+        const turn = object(value.params.turn) ? value.params.turn : null;
+        const turnId = turn && typeof turn.id === "string" ? turn.id : null;
+        if (!turnId || !this.isTurnCompleted(value.params.threadId, turnId)) {
+          this.#markActiveTurn(client, value.params.threadId, turnId);
+        }
+      }
+      if (value.method === "turn/completed") {
+        const turn = object(value.params.turn) ? value.params.turn : null;
+        const turnId = turn && typeof turn.id === "string" ? turn.id : null;
+        if (turnId) {
+          this.#rememberCompletedTurn(value.params.threadId, turnId);
+          for (const attached of this.#clients) {
+            for (const pending of attached.pendingTurnStarts) {
+              if (pending.threadId === value.params.threadId) pending.completedTurnIds.add(turnId);
+            }
+          }
+          const active = this.#activeTurns.get(value.params.threadId);
+          if (active) {
+            active.delete(turnId);
+            if (active.size === 0) this.#activeTurns.delete(value.params.threadId);
+          }
+        } else {
+          this.#activeTurns.delete(value.params.threadId);
+        }
+      }
       if (value.method === "thread/closed") {
+        this.#activeTurns.delete(value.params.threadId);
+        this.#threadStartOrdinal.delete(value.params.threadId);
         client.threads.delete(value.params.threadId);
         this.#threadModelSettings.delete(value.params.threadId);
       }
@@ -488,7 +590,15 @@ export class OfficialRuntimeOwner {
       }
       const pending = client.pending.get(requestKey(value.id));
       if (pending) {
-        this.#remember(client, pending.method, pending.params, value);
+        if (pending.turnStart) client.pendingTurnStarts.delete(pending.turnStart);
+        this.#remember(
+          client,
+          pending.method,
+          pending.params,
+          value,
+          pending.turnStart,
+          pending.snapshotStartOrdinal,
+        );
         client.pending.delete(requestKey(value.id));
         pending.finish();
       }
@@ -496,21 +606,192 @@ export class OfficialRuntimeOwner {
     await client.output(event);
   }
 
-  #remember(client: Client, method: string, params: JsonObject, response: JsonObject): void {
+  #hasLiveObserver(observers: Set<Client>): boolean {
+    for (const observer of observers) {
+      if (this.#clients.has(observer)) return true;
+    }
+    return false;
+  }
+
+  #removeObserver(client: Client, threadId?: string): void {
+    if (threadId !== undefined) {
+      const active = this.#activeTurns.get(threadId);
+      if (!active) return;
+      for (const observers of active.values()) observers.delete(client);
+      return;
+    }
+    for (const active of this.#activeTurns.values()) {
+      for (const observers of active.values()) observers.delete(client);
+    }
+  }
+
+  #markActiveTurn(client: Client, threadId: string, turnId: string | null): void {
+    let active = this.#activeTurns.get(threadId);
+    if (!active) {
+      active = new Map();
+      this.#activeTurns.set(threadId, active);
+    }
+    // Any Turn observed only by already-disconnected clients cannot deliver a completion here.
+    for (const [existingId, observers] of active) {
+      if (existingId === turnId) continue;
+      if (!this.#hasLiveObserver(observers)) active.delete(existingId);
+    }
+    if (turnId !== null) {
+      active.delete(null);
+      let observers = active.get(turnId);
+      if (!observers) {
+        observers = new Set();
+        active.set(turnId, observers);
+      }
+      observers.add(client);
+    } else if (active.size === 0) {
+      active.set(null, new Set([client]));
+    }
+    this.#threadStartOrdinal.set(threadId, ++this.#nextEventOrdinal);
+  }
+
+  #reconcileThreadSnapshot(
+    client: Client,
+    method: "thread/read" | "thread/resume",
+    threadId: string,
+    thread: JsonObject,
+    snapshotStartOrdinal: number,
+  ): void {
+    const snapshotActiveIds = new Set<string>();
+    const snapshotCompletedIds = new Set<string>();
+    if (Array.isArray(thread.turns)) {
+      for (const entry of thread.turns) {
+        if (!object(entry) || typeof entry.id !== "string") continue;
+        if (entry.status === "inProgress" || entry.status === "running") {
+          snapshotActiveIds.add(entry.id);
+        } else if (
+          entry.status === "completed" ||
+          entry.status === "failed" ||
+          entry.status === "interrupted" ||
+          entry.status === "cancelled"
+        ) {
+          snapshotCompletedIds.add(entry.id);
+        }
+      }
+    }
+    const active = this.#activeTurns.get(threadId);
+    if (active) {
+      for (const existingId of [...active.keys()]) {
+        if (existingId === null) continue;
+        if (snapshotCompletedIds.has(existingId)) {
+          active.delete(existingId);
+          this.#rememberCompletedTurn(threadId, existingId);
+        } else if (this.isTurnCompleted(threadId, existingId)) {
+          active.delete(existingId);
+        }
+      }
+      if (active.size === 0) this.#activeTurns.delete(threadId);
+    }
+    for (const recentId of [...snapshotCompletedIds].slice(-MAX_SNAPSHOT_COMPLETED_TO_REMEMBER)) {
+      this.#rememberCompletedTurn(threadId, recentId);
+    }
+    if ((this.#threadStartOrdinal.get(threadId) ?? 0) !== snapshotStartOrdinal) return;
+    const statusType = object(thread.status) ? thread.status.type : undefined;
+    if (
+      (statusType === "idle" || statusType === "notLoaded" || statusType === "systemError") &&
+      snapshotActiveIds.size === 0
+    ) {
+      this.#activeTurns.delete(threadId);
+      return;
+    }
+    if (statusType === "active" && snapshotActiveIds.size > 0) {
+      const subscribed =
+        method === "thread/resume" || client.threads.get(threadId)?.generation === this.#generation;
+      let current = this.#activeTurns.get(threadId);
+      if (current) {
+        for (const existingId of [...current.keys()]) {
+          if (existingId === null || !snapshotActiveIds.has(existingId)) {
+            current.delete(existingId);
+          }
+        }
+      }
+      for (const activeId of snapshotActiveIds) {
+        if (snapshotCompletedIds.has(activeId) || this.isTurnCompleted(threadId, activeId))
+          continue;
+        if (!current) {
+          current = new Map();
+          this.#activeTurns.set(threadId, current);
+        }
+        let observers = current.get(activeId);
+        if (!observers) {
+          observers = new Set();
+          current.set(activeId, observers);
+        }
+        if (subscribed) observers.add(client);
+      }
+      if (current && current.size === 0) {
+        this.#activeTurns.delete(threadId);
+      }
+    }
+  }
+
+  #rememberCompletedTurn(threadId: string, turnId: string): void {
+    const key = `${threadId}\u0000${turnId}`;
+    this.#completedTurns.delete(key);
+    this.#completedTurns.add(key);
+    while (this.#completedTurns.size > COMPLETED_TURNS_LIMIT) {
+      const oldest = this.#completedTurns.values().next().value;
+      if (oldest === undefined) break;
+      this.#completedTurns.delete(oldest);
+    }
+  }
+
+  #remember(
+    client: Client,
+    method: string,
+    params: JsonObject,
+    response: JsonObject,
+    turnStart?: PendingTurnStart,
+    snapshotStartOrdinal?: number,
+  ): void {
     if (response.error) return;
     if (object(response.result)) {
+      const turn = object(response.result.turn) ? response.result.turn : null;
+      const turnId = turn && typeof turn.id === "string" ? turn.id : null;
+      const activeStatus =
+        turn !== null &&
+        (turn.status === "inProgress" || (turn.status === undefined && turnId !== null));
       if (
         method === "turn/start" &&
         typeof params.threadId === "string" &&
-        object(response.result.turn) &&
-        response.result.turn.status === "inProgress"
-      )
-        this.#activeTurns.add(params.threadId);
+        activeStatus &&
+        (!turnId ||
+          (!turnStart?.completedTurnIds.has(turnId) &&
+            !this.isTurnCompleted(params.threadId, turnId)))
+      ) {
+        this.#markActiveTurn(client, params.threadId, turnId);
+      }
+      if (
+        (method === "thread/read" || method === "thread/resume") &&
+        typeof params.threadId === "string" &&
+        object(response.result.thread) &&
+        response.result.thread.id === params.threadId &&
+        snapshotStartOrdinal !== undefined
+      ) {
+        this.#reconcileThreadSnapshot(
+          client,
+          method,
+          params.threadId,
+          response.result.thread,
+          snapshotStartOrdinal,
+        );
+      }
     }
     if (
       ["thread/archive", "thread/unsubscribe", "thread/delete"].includes(method) &&
       typeof params.threadId === "string"
     ) {
+      if (method === "thread/delete") {
+        this.#activeTurns.delete(params.threadId);
+        this.#threadStartOrdinal.delete(params.threadId);
+      } else {
+        this.#removeObserver(client, params.threadId);
+      }
       client.threads.delete(params.threadId);
       this.#threadModelSettings.delete(params.threadId);
       if (method !== "thread/unsubscribe") this.#activeTurns.delete(params.threadId);
@@ -673,6 +954,7 @@ export class OfficialRuntimeOwner {
         .catch(() => undefined);
     }
     client.pending.clear();
+    client.pendingTurnStarts.clear();
     client.serverRequests.clear();
   }
 

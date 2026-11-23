@@ -215,6 +215,8 @@ type InsertSteeredInput = (input: {
 interface PendingSteer {
   turnId: string;
   strictTarget: boolean;
+  replacing: boolean;
+  failed: boolean;
   resolve(outcome: TurnOutcome): void;
   reject(error: Error): void;
 }
@@ -235,6 +237,11 @@ export class ExternalTurnSteering {
 
   hasPending(threadId?: string): boolean {
     return threadId === undefined ? this.#pending.size > 0 : this.#pending.has(threadId);
+  }
+
+  hasActiveReplacement(threadId: string): boolean {
+    const pending = this.#pending.get(threadId);
+    return pending !== undefined && pending.replacing && !pending.failed;
   }
 
   run(
@@ -348,8 +355,11 @@ export class ExternalTurnSteering {
     const pending: PendingSteer = {
       turnId: input.expectedTurnId,
       strictTarget: input.strictTarget,
+      replacing: false,
+      failed: false,
       resolve: () => undefined,
       reject(error) {
+        pending.failed = true;
         failureReason ??= error;
         failure.reject(error);
       },
@@ -419,8 +429,11 @@ export class ExternalTurnSteering {
     const pending: PendingSteer = {
       turnId: input.expectedTurnId,
       strictTarget: input.strictTarget,
+      replacing: true,
+      failed: false,
       resolve: terminal.resolve,
       reject(error) {
+        pending.failed = true;
         failureReason ??= error;
         failure.reject(error);
       },

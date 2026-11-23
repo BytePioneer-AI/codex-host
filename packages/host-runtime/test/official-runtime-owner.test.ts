@@ -1497,4 +1497,552 @@ describe("single official runtime owner", () => {
       await f.owner.stop();
     }
   });
+
+  it.each(["request", "send"] as const)(
+    "does not keep a Thread active when turn/completed precedes the turn/start %s response",
+    async (transport) => {
+      const f = fixture();
+      const a = f.attach();
+      const b = f.attach();
+      try {
+        await f.owner.start();
+        await a.client.initialize(initialization);
+        await b.client.initialize(initialization);
+        f.gate.initialized();
+        let pendingStartId: string | number | null = null;
+        f.connection(0, 0).setResponse((request) => {
+          if (request.method === "turn/start") {
+            pendingStartId = (request.id ?? null) as string | number | null;
+            return null;
+          }
+          return { id: request.id ?? null, result: {} };
+        });
+
+        const started =
+          transport === "request"
+            ? a.client.request("turn/start", { threadId: "thread-fast", input: [] })
+            : a.client.send({
+                id: "fast-start",
+                method: "turn/start",
+                params: { threadId: "thread-fast", input: [] },
+              });
+        await vi.waitFor(() => expect(pendingStartId).not.toBeNull());
+
+        f.connection(0, 1).emit({
+          method: "turn/started",
+          params: { threadId: "thread-fast", turn: { id: "turn-fast", status: "inProgress" } },
+        });
+        await vi.waitFor(() => expect(f.owner.hasActiveTurn("thread-fast")).toBe(true));
+        expect(f.owner.activeThreadIds()).toContain("thread-fast");
+
+        f.connection(0, 1).emit({
+          method: "turn/completed",
+          params: { threadId: "thread-fast", turn: { id: "turn-fast", status: "completed" } },
+        });
+        await vi.waitFor(() => expect(f.owner.hasActiveTurn("thread-fast")).toBe(false));
+
+        f.connection(0, 0).emit({
+          id: pendingStartId,
+          result: { turn: { id: "turn-fast", status: "inProgress" } },
+        });
+        await started;
+        if (transport === "send") {
+          await vi.waitFor(() => expect(a.output.some(({ id }) => id === "fast-start")).toBe(true));
+        }
+
+        expect(f.owner.hasActiveTurn("thread-fast")).toBe(false);
+        expect(f.owner.activeThreadIds()).toEqual([]);
+        expect(f.owner.hasActiveWork).toBe(false);
+      } finally {
+        await f.owner.stop();
+        a.client.close();
+        b.client.close();
+      }
+    },
+  );
+
+  it("does not clear a successor Turn when a stale turn/completed arrives on another connection", async () => {
+    const f = fixture();
+    const a = f.attach();
+    const b = f.attach();
+    try {
+      await f.owner.start();
+      await a.client.initialize(initialization);
+      await b.client.initialize(initialization);
+      f.gate.initialized();
+
+      f.connection(0, 0).emit({
+        method: "turn/started",
+        params: { threadId: "thread-seq", turn: { id: "turn-1", status: "inProgress" } },
+      });
+      f.connection(0, 0).emit({
+        method: "turn/completed",
+        params: { threadId: "thread-seq", turn: { id: "turn-1", status: "completed" } },
+      });
+      f.connection(0, 0).emit({
+        method: "turn/started",
+        params: { threadId: "thread-seq", turn: { id: "turn-2", status: "inProgress" } },
+      });
+      await vi.waitFor(() => expect(f.owner.activeTurnId("thread-seq")).toBe("turn-2"));
+
+      // Late notifications for turn-1 on the second connection must not overwrite or clear turn-2.
+      f.connection(0, 1).emit({
+        method: "turn/started",
+        params: { threadId: "thread-seq", turn: { id: "turn-1", status: "inProgress" } },
+      });
+      f.connection(0, 1).emit({
+        method: "turn/completed",
+        params: { threadId: "thread-seq", turn: { id: "turn-1", status: "completed" } },
+      });
+      await vi.waitFor(() => expect(b.output).toHaveLength(2));
+      expect(f.owner.hasActiveTurn("thread-seq")).toBe(true);
+      expect(f.owner.activeTurnId("thread-seq")).toBe("turn-2");
+
+      f.connection(0, 0).emit({
+        method: "turn/completed",
+        params: { threadId: "thread-seq", turn: { id: "turn-2", status: "completed" } },
+      });
+      await vi.waitFor(() => expect(f.owner.hasActiveTurn("thread-seq")).toBe(false));
+    } finally {
+      await f.owner.stop();
+      a.client.close();
+      b.client.close();
+    }
+  });
+
+  it("keeps a successor Turn active when a second connection delivers backlogged start and completion for an earlier Turn", async () => {
+    const f = fixture();
+    const a = f.attach();
+    const b = f.attach();
+    try {
+      await f.owner.start();
+      await a.client.initialize(initialization);
+      await b.client.initialize(initialization);
+      f.gate.initialized();
+
+      // Connection B observes turn-2 start before Connection A flushes backlogged turn-1 events.
+      f.connection(0, 1).emit({
+        method: "turn/started",
+        params: { threadId: "thread-backlog", turn: { id: "turn-2", status: "inProgress" } },
+      });
+      await vi.waitFor(() => expect(f.owner.activeTurnId("thread-backlog")).toBe("turn-2"));
+
+      f.connection(0, 0).emit({
+        method: "turn/started",
+        params: { threadId: "thread-backlog", turn: { id: "turn-1", status: "inProgress" } },
+      });
+      await vi.waitFor(() => expect(a.output).toHaveLength(1));
+      expect(f.owner.hasActiveTurn("thread-backlog")).toBe(true);
+      // Multiple candidate Turn IDs force callers to read the authoritative snapshot.
+      expect(f.owner.activeTurnId("thread-backlog")).toBeUndefined();
+
+      f.connection(0, 0).emit({
+        method: "turn/completed",
+        params: { threadId: "thread-backlog", turn: { id: "turn-1", status: "interrupted" } },
+      });
+      await vi.waitFor(() => expect(a.output).toHaveLength(2));
+      expect(f.owner.hasActiveTurn("thread-backlog")).toBe(true);
+      expect(f.owner.activeTurnId("thread-backlog")).toBe("turn-2");
+
+      f.connection(0, 1).emit({
+        method: "turn/completed",
+        params: { threadId: "thread-backlog", turn: { id: "turn-2", status: "completed" } },
+      });
+      await vi.waitFor(() => expect(f.owner.hasActiveTurn("thread-backlog")).toBe(false));
+    } finally {
+      await f.owner.stop();
+      a.client.close();
+      b.client.close();
+    }
+  });
+
+  it("clears orphaned active Turns from a disconnected client when another client reads, resumes, or starts a Turn", async () => {
+    const f = fixture();
+    const a = f.attach();
+    const b = f.attach();
+    try {
+      await f.owner.start();
+      await a.client.initialize(initialization);
+      await b.client.initialize(initialization);
+      f.gate.initialized();
+
+      // Path 1: Client A sees turn-1 start, then disconnects before seeing turn/completed.
+      f.connection(0, 0).emit({
+        method: "turn/started",
+        params: { threadId: "thread-orphan-read", turn: { id: "turn-old", status: "inProgress" } },
+      });
+      await vi.waitFor(() => expect(f.owner.hasActiveTurn("thread-orphan-read")).toBe(true));
+      expect(f.owner.hasLiveActiveTurn("thread-orphan-read")).toBe(true);
+      a.client.close();
+      expect(f.owner.hasLiveActiveTurn("thread-orphan-read")).toBe(false);
+      expect(f.owner.hasActiveWork).toBe(true);
+
+      // Client B resumes or reads the idle Thread -> authoritative snapshot clears stale Turn.
+      f.connection(0, 1).setResponse((request) => {
+        if (request.method === "thread/read") {
+          return {
+            id: request.id ?? null,
+            result: {
+              thread: {
+                id: "thread-orphan-read",
+                status: { type: "idle" },
+                turns: [{ id: "turn-old", status: "completed" }],
+              },
+            },
+          };
+        }
+        if (request.method === "turn/start") {
+          return {
+            id: request.id ?? null,
+            result: { turn: { id: "turn-next", status: "inProgress" } },
+          };
+        }
+        return { id: request.id ?? null, result: {} };
+      });
+      await b.client.request("thread/read", { threadId: "thread-orphan-read", includeTurns: true });
+      expect(f.owner.hasActiveTurn("thread-orphan-read")).toBe(false);
+      expect(f.owner.hasActiveWork).toBe(false);
+
+      // Path 2: Client C sees turn-old-2 start and disconnects; Client B directly starts & completes a new Turn.
+      const c = f.attach();
+      await c.client.initialize(initialization);
+      f.connection(0, 2).emit({
+        method: "turn/started",
+        params: {
+          threadId: "thread-orphan-start",
+          turn: { id: "turn-old-2", status: "inProgress" },
+        },
+      });
+      await vi.waitFor(() => expect(f.owner.hasActiveTurn("thread-orphan-start")).toBe(true));
+      c.client.close();
+
+      await b.client.request("turn/start", { threadId: "thread-orphan-start", input: [] });
+      expect(f.owner.activeTurnId("thread-orphan-start")).toBe("turn-next");
+      f.connection(0, 1).emit({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-orphan-start",
+          turn: { id: "turn-next", status: "completed" },
+        },
+      });
+      await vi.waitFor(() => expect(f.owner.hasActiveTurn("thread-orphan-start")).toBe(false));
+      expect(f.owner.hasActiveWork).toBe(false);
+    } finally {
+      await f.owner.stop();
+      b.client.close();
+    }
+  });
+
+  it("adopts an active Turn reported by thread/read after a previous client disconnected", async () => {
+    const f = fixture();
+    const a = f.attach();
+    const b = f.attach();
+    try {
+      await f.owner.start();
+      await a.client.initialize(initialization);
+      await b.client.initialize(initialization);
+      f.gate.initialized();
+
+      f.connection(0, 0).emit({
+        method: "turn/started",
+        params: {
+          threadId: "thread-active-read",
+          turn: { id: "turn-1", status: "inProgress" },
+        },
+      });
+      await vi.waitFor(() => expect(f.owner.activeTurnId("thread-active-read")).toBe("turn-1"));
+      a.client.close();
+
+      // Client B reads the Thread and sees turn-1 finished while turn-2 is already active,
+      // before any turn/started notification for turn-2 arrived on Client B.
+      f.connection(0, 1).setResponse((request) => {
+        if (request.method === "thread/read") {
+          return {
+            id: request.id ?? null,
+            result: {
+              thread: {
+                id: "thread-active-read",
+                status: { type: "active" },
+                turns: [
+                  { id: "turn-1", status: "completed" },
+                  { id: "turn-2", status: "inProgress" },
+                ],
+              },
+            },
+          };
+        }
+        return { id: request.id ?? null, result: {} };
+      });
+      await b.client.request("thread/read", {
+        threadId: "thread-active-read",
+        includeTurns: true,
+      });
+      expect(f.owner.hasActiveTurn("thread-active-read")).toBe(true);
+      expect(f.owner.activeTurnId("thread-active-read")).toBe("turn-2");
+
+      f.connection(0, 1).emit({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-active-read",
+          turn: { id: "turn-2", status: "completed" },
+        },
+      });
+      await vi.waitFor(() => expect(f.owner.hasActiveTurn("thread-active-read")).toBe(false));
+    } finally {
+      await f.owner.stop();
+      b.client.close();
+    }
+  });
+
+  it("lets a concurrent idle snapshot clear a Turn adopted by an earlier snapshot without breaking real start guards", async () => {
+    const f = fixture();
+    const a = f.attach();
+    const b = f.attach();
+    try {
+      await f.owner.start();
+      await a.client.initialize(initialization);
+      await b.client.initialize(initialization);
+      f.gate.initialized();
+
+      let readAId: string | number | null = null;
+      let readBId: string | number | null = null;
+      f.connection(0, 0).setResponse((request) => {
+        if (request.method === "thread/read") {
+          readAId = (request.id ?? null) as string | number | null;
+          return null;
+        }
+        return { id: request.id ?? null, result: {} };
+      });
+      f.connection(0, 1).setResponse((request) => {
+        if (request.method === "thread/read") {
+          readBId = (request.id ?? null) as string | number | null;
+          return null;
+        }
+        return { id: request.id ?? null, result: {} };
+      });
+
+      const reqA = a.client.request("thread/read", {
+        threadId: "thread-race",
+        includeTurns: true,
+      });
+      const reqB = b.client.request("thread/read", {
+        threadId: "thread-race",
+        includeTurns: false,
+      });
+      await vi.waitFor(() => {
+        expect(readAId).not.toBeNull();
+        expect(readBId).not.toBeNull();
+      });
+
+      // Older snapshot with turns arrives first and adopts the Turn; newer turnless idle snapshot follows.
+      f.connection(0, 0).emit({
+        id: readAId,
+        result: {
+          thread: {
+            id: "thread-race",
+            status: { type: "active" },
+            turns: [{ id: "turn-old", status: "inProgress" }],
+          },
+        },
+      });
+      await reqA;
+      expect(f.owner.hasActiveTurn("thread-race")).toBe(true);
+      expect(f.owner.hasLiveActiveTurn("thread-race")).toBe(false);
+
+      f.connection(0, 1).emit({
+        id: readBId,
+        result: { thread: { id: "thread-race", status: { type: "idle" } } },
+      });
+      await reqB;
+      expect(f.owner.hasActiveTurn("thread-race")).toBe(false);
+      expect(f.owner.hasActiveWork).toBe(false);
+
+      // A real turn/started arriving while a snapshot is in flight still blocks stale idle cleanup.
+      readBId = null;
+      const staleIdle = b.client.request("thread/read", {
+        threadId: "thread-race",
+        includeTurns: false,
+      });
+      await vi.waitFor(() => expect(readBId).not.toBeNull());
+      f.connection(0, 0).emit({
+        method: "turn/started",
+        params: { threadId: "thread-race", turn: { id: "turn-live", status: "inProgress" } },
+      });
+      await vi.waitFor(() => expect(f.owner.activeTurnId("thread-race")).toBe("turn-live"));
+
+      f.connection(0, 1).emit({
+        id: readBId,
+        result: { thread: { id: "thread-race", status: { type: "idle" } } },
+      });
+      await staleIdle;
+      expect(f.owner.hasActiveTurn("thread-race")).toBe(true);
+      expect(f.owner.activeTurnId("thread-race")).toBe("turn-live");
+    } finally {
+      await f.owner.stop();
+      a.client.close();
+      b.client.close();
+    }
+  });
+
+  it.each(["path", "history"] as const)(
+    "ignores thread/resume snapshots whose returned thread.id differs when %s is supplied",
+    async (field) => {
+      const f = fixture();
+      const a = f.attach();
+      const b = f.attach();
+      try {
+        await f.owner.start();
+        await a.client.initialize(initialization);
+        await b.client.initialize(initialization);
+        f.gate.initialized();
+
+        f.connection(0, 0).emit({
+          method: "turn/started",
+          params: {
+            threadId: "thread-active",
+            turn: { id: "turn-active", status: "inProgress" },
+          },
+        });
+        await vi.waitFor(() => expect(f.owner.activeTurnId("thread-active")).toBe("turn-active"));
+
+        f.connection(0, 1).setResponse((request) => {
+          if (request.method === "thread/resume") {
+            return {
+              id: request.id ?? null,
+              result: {
+                thread: { id: "thread-different", status: { type: "idle" }, turns: [] },
+              },
+            };
+          }
+          return { id: request.id ?? null, result: {} };
+        });
+
+        await b.client.request("thread/resume", {
+          threadId: "thread-active",
+          ...(field === "path" ? { path: "/synthetic/other.jsonl" } : { history: [] }),
+        });
+
+        expect(f.owner.hasActiveTurn("thread-active")).toBe(true);
+        expect(f.owner.activeTurnId("thread-active")).toBe("turn-active");
+      } finally {
+        await f.owner.stop();
+        a.client.close();
+        b.client.close();
+      }
+    },
+  );
+
+  it.each(["idle", "notLoaded", "systemError"] as const)(
+    "clears orphaned active Turns when a snapshot reports %s with no active Turns",
+    async (statusType) => {
+      const f = fixture();
+      const a = f.attach();
+      const b = f.attach();
+      try {
+        await f.owner.start();
+        await a.client.initialize(initialization);
+        await b.client.initialize(initialization);
+        f.gate.initialized();
+
+        f.connection(0, 0).emit({
+          method: "turn/started",
+          params: {
+            threadId: `thread-${statusType}`,
+            turn: { id: "turn-orphan", status: "inProgress" },
+          },
+        });
+        await vi.waitFor(() => expect(f.owner.hasActiveTurn(`thread-${statusType}`)).toBe(true));
+        a.client.close();
+
+        f.connection(0, 1).setResponse((request) =>
+          request.method === "thread/read"
+            ? {
+                id: request.id ?? null,
+                result: {
+                  thread: {
+                    id: `thread-${statusType}`,
+                    status: { type: statusType },
+                    turns: [],
+                  },
+                },
+              }
+            : { id: request.id ?? null, result: {} },
+        );
+
+        await b.client.request("thread/read", {
+          threadId: `thread-${statusType}`,
+          includeTurns: true,
+        });
+        expect(f.owner.hasActiveTurn(`thread-${statusType}`)).toBe(false);
+        expect(f.owner.hasActiveWork).toBe(false);
+      } finally {
+        await f.owner.stop();
+        b.client.close();
+      }
+    },
+  );
+
+  it("reconciles a long Thread snapshot without evicting recent completed Turns of other Threads", async () => {
+    const f = fixture();
+    const a = f.attach();
+    const b = f.attach();
+    try {
+      await f.owner.start();
+      await a.client.initialize(initialization);
+      await b.client.initialize(initialization);
+      f.gate.initialized();
+
+      // Another Thread completes a recent Turn.
+      f.connection(0, 0).emit({
+        method: "turn/completed",
+        params: { threadId: "thread-recent", turn: { id: "turn-recent", status: "completed" } },
+      });
+      await vi.waitFor(() =>
+        expect(f.owner.isTurnCompleted("thread-recent", "turn-recent")).toBe(true),
+      );
+
+      // Thread-long has an orphaned Turn deep in history (turn-50 out of 300).
+      f.connection(0, 0).emit({
+        method: "turn/started",
+        params: { threadId: "thread-long", turn: { id: "turn-50", status: "inProgress" } },
+      });
+      await vi.waitFor(() => expect(f.owner.hasActiveTurn("thread-long")).toBe(true));
+      a.client.close();
+
+      const longTurns = Array.from({ length: 300 }, (_, index) => ({
+        id: `turn-${index + 1}`,
+        status: "completed",
+      }));
+      f.connection(0, 1).setResponse((request) =>
+        request.method === "thread/read"
+          ? {
+              id: request.id ?? null,
+              result: {
+                thread: {
+                  id: "thread-long",
+                  status: { type: "idle" },
+                  turns: longTurns,
+                },
+              },
+            }
+          : { id: request.id ?? null, result: {} },
+      );
+
+      await b.client.request("thread/read", { threadId: "thread-long", includeTurns: true });
+      expect(f.owner.hasActiveTurn("thread-long")).toBe(false);
+      expect(f.owner.isTurnCompleted("thread-long", "turn-50")).toBe(true);
+      expect(f.owner.isTurnCompleted("thread-recent", "turn-recent")).toBe(true);
+
+      // A late start for thread-recent's completed Turn must still be rejected.
+      f.connection(0, 1).emit({
+        method: "turn/started",
+        params: { threadId: "thread-recent", turn: { id: "turn-recent", status: "inProgress" } },
+      });
+      await vi.waitFor(() => expect(b.output).toHaveLength(1));
+      expect(f.owner.hasActiveTurn("thread-recent")).toBe(false);
+    } finally {
+      await f.owner.stop();
+      b.client.close();
+    }
+  });
 });

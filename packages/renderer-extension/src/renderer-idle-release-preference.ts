@@ -53,7 +53,10 @@ function sameSettings(left: IdleReleaseSettings | undefined, right: IdleReleaseS
 }
 
 /** Settings controls observe confirmed local Host policy and relay it to live SSH connections. */
-export function installIdleReleasePreferenceSync(owner: Window) {
+export function installIdleReleasePreferenceSync(
+  owner: Window,
+  readSshClients?: () => ReadonlyMap<string, RemoteClient>,
+) {
   const remotes = new Map<string, RemoteHost>();
   let disposed = false;
   const publishRemote = () => {
@@ -101,31 +104,39 @@ export function installIdleReleasePreferenceSync(owner: Window) {
     apply();
   };
   owner.addEventListener(HARNESS_PREFERENCES_UPDATED_EVENT, changed);
-  return {
-    connect(clients: ReadonlyMap<string, RemoteClient>) {
-      if (disposed) return;
-      let connectionChanged = false;
-      for (const id of remotes.keys()) {
-        if (!clients.has(id)) {
-          remotes.delete(id);
-          connectionChanged = true;
-        }
-      }
-      for (const [id, client] of clients) {
-        if (remotes.get(id)?.client === client) continue;
-        remotes.set(id, {
-          client,
-          status: client.setIdleReleaseSettings ? "pending" : "unavailable",
-          inFlight: false,
-        });
+  const connect = (clients: ReadonlyMap<string, RemoteClient>): void => {
+    if (disposed) return;
+    let connectionChanged = false;
+    for (const id of remotes.keys()) {
+      if (!clients.has(id)) {
+        remotes.delete(id);
         connectionChanged = true;
       }
-      if (connectionChanged) publishRemote();
-      apply();
-    },
+    }
+    for (const [id, client] of clients) {
+      if (remotes.get(id)?.client === client) continue;
+      remotes.set(id, {
+        client,
+        status: client.setIdleReleaseSettings ? "pending" : "unavailable",
+        inFlight: false,
+      });
+      connectionChanged = true;
+    }
+    if (connectionChanged) publishRemote();
+    apply();
+  };
+  // A reconnect can leave the local Composer and DOM unchanged, so its route event is not sufficient.
+  const timer = readSshClients
+    ? owner.setInterval(() => {
+        if (rendererHarnessPreferences()?.values.idleRelease) connect(readSshClients());
+      }, 5_000)
+    : undefined;
+  return {
+    connect,
     dispose() {
       disposed = true;
       owner.removeEventListener(HARNESS_PREFERENCES_UPDATED_EVENT, changed);
+      if (timer !== undefined) owner.clearInterval(timer);
       remotes.clear();
       remoteStatuses.delete(owner);
     },

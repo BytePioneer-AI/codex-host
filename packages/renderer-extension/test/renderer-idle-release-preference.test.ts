@@ -15,9 +15,19 @@ import type { RendererModelClient } from "../src/renderer-model-client.js";
 const enabled = { enabled: true, timeoutMinutes: 10 };
 const disabled = { enabled: false, timeoutMinutes: 15 };
 
-async function fixture() {
+async function fixture(
+  readSshClients?: () => ReadonlyMap<string, Pick<RendererModelClient, "setIdleReleaseSettings">>,
+) {
+  let tick: (() => void) | undefined;
   const window = Object.assign(new EventTarget(), {
     document: new EventTarget(),
+    setInterval(callback: () => void) {
+      tick = callback;
+      return 1;
+    },
+    clearInterval() {
+      tick = undefined;
+    },
     localStorage: { length: 0, getItem: () => null },
   }) as unknown as Window;
   let settings = enabled;
@@ -39,12 +49,15 @@ async function fixture() {
     },
   } satisfies Pick<RendererModelClient, "getHarnessPreferences" | "patchHarnessPreferences">;
   const preferences = installRendererHarnessPreferenceSync(window);
-  const sync = installIdleReleasePreferenceSync(window);
+  const sync = installIdleReleasePreferenceSync(window, readSshClients);
   preferences.connect("local", local as RendererModelClient);
   await vi.waitFor(() => expect(rendererHarnessPreferenceStatus()).toBe("applied"));
   return {
     window,
     sync,
+    checkTopology() {
+      tick?.();
+    },
     close() {
       sync.dispose();
       preferences.dispose();
@@ -146,6 +159,25 @@ it("ignores a retired connection settling after a replacement and reports mismat
     pending.resolve(enabled);
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(readIdleReleaseRemoteStatus(f.window)).toEqual([{ hostId: id, status: "failed" }]);
+  } finally {
+    f.close();
+  }
+});
+
+it("discovers a newly ready SSH Host without a Composer route change", async () => {
+  let received: IdleReleaseSettings | undefined;
+  const clients = new Map<string, ReturnType<typeof ssh>>();
+  const f = await fixture(() => clients);
+  try {
+    clients.set(
+      "remote-ssh:background",
+      ssh(async (settings) => {
+        received = settings;
+        return settings;
+      }),
+    );
+    f.checkTopology();
+    await vi.waitFor(() => expect(received).toEqual(enabled));
   } finally {
     f.close();
   }

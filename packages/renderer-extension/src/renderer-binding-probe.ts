@@ -842,7 +842,7 @@ export function installRendererBindingProbe(
   let adapterDispose: (() => void) | null = null;
   let applyAdapterAgent: ApplyAdapterAgent | null = null;
   let modelControl: RendererModelClient | null = null;
-  const idleReleaseSync = installIdleReleasePreferenceSync(window);
+  const idleReleaseSync = installIdleReleasePreferenceSync(window, readSshClients);
   const activeModelHostId = (composer?: Element): string | null => {
     if (!modelControl) return null;
     const hostId = modelControl.currentHostId ? modelControl.currentHostId(composer) : "local";
@@ -3039,17 +3039,26 @@ export function installRendererBindingProbe(
     if (changed) sidebarAgentIcons.refresh();
   };
 
+  function readSshClients(
+    hostIds = modelControl?.knownHostIds?.() ?? [],
+  ): ReadonlyMap<string, RendererModelClient> {
+    const clients = new Map<string, RendererModelClient>();
+    for (const hostId of hostIds) {
+      if (!/^remote-ssh(?:-|:)/u.test(hostId)) continue;
+      const client = modelClientForHost(hostId);
+      if (client) clients.set(hostId, client);
+    }
+    return clients;
+  }
+
   function reconcileHarnessAvailabilityHost(retryDraftUsage = false): void {
     // Settings lists observed Hosts even when multiple Composers make the
     // active route ambiguous. Requests still resolve each Host independently.
-    const sshClients = new Map<string, RendererModelClient>();
-    for (const hostId of modelControl?.knownHostIds?.() ?? []) {
+    const hostIds = modelControl?.knownHostIds?.() ?? [];
+    for (const hostId of hostIds) {
       if (isListedConnectionHost(hostId)) hostHarnessAvailabilityState(hostId);
-      if (!/^remote-ssh(?:-|:)/u.test(hostId)) continue;
-      const remote = modelClientForHost(hostId);
-      if (remote) sshClients.set(hostId, remote);
     }
-    idleReleaseSync.connect(sshClients);
+    idleReleaseSync.connect(readSshClients(hostIds));
     // Hidden/native Composers can belong to a different Host. Never rebind
     // every Thread to the globally selected Host when navigating between them.
     reloadMountedOwnershipForHost();

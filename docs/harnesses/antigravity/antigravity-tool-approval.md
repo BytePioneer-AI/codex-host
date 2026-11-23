@@ -32,7 +32,7 @@ An answer is delivered at most once to the original callback. A successor prompt
 
 File-change items derived from a registered detached tool follow that tool's lifetime, including diffs first reported after prompt completion. This does not admit unrelated tools or file changes after a Turn ends. Ordinary single-choice/text questions and shared multi-select cards both retain their registered owner.
 
-These rules cover registered tool and interaction lifetimes. They do not establish a complete planner end signal or a native background-stop API. #1006 provides the protocol projection needed for detached Items; #1007 also supplies the minimal Host Runtime support for detached-owner Questions. Approval remains scoped to the foreground Turn and is cancelled when that Turn ends; only an explicitly owned Question can remain answerable after the owning Turn ends. The local stdio and Host tests use a fake ACP process; installed Desktop approval and question cards still require separate UI acceptance.
+These rules cover registered tool and interaction lifetimes. They do not establish a complete planner end signal or a native background-stop API. #1006 provides the protocol projection needed for detached Items; #1095 supplies the minimal Host Runtime support for detached-owner Questions and merges before #1007. Approval remains scoped to the foreground Turn and is cancelled when that Turn ends; only an explicitly owned Question can remain answerable after the owning Turn ends. The local stdio and Host tests use a fake ACP process; installed Desktop approval and question cards still require separate UI acceptance.
 
 ## Native Question Elicitation
 

@@ -22,14 +22,25 @@ export interface DeepSeekCommandInvocation {
 export function deepSeekEnvironment(
   command: string,
   environment: NodeJS.ProcessEnv,
+  platform = process.platform,
 ): NodeJS.ProcessEnv {
+  const pathFlavor = platform === "win32" ? path.win32 : path.posix;
   const key = Object.keys(environment).find((name) => name.toLowerCase() === "path") ?? "PATH";
-  const directory = path.dirname(command);
-  const directories = (environment[key] ?? "").split(path.delimiter).filter(Boolean);
-  if (!directories.includes(directory)) {
-    directories.push(directory);
+  const directory = pathFlavor.dirname(command);
+  const directories = (environment[key] ?? "").split(pathFlavor.delimiter).filter(Boolean);
+  const equal =
+    platform === "win32" ? (value: string) => value.toLowerCase() : (value: string) => value;
+  if (
+    pathFlavor.isAbsolute(command) &&
+    !directories.some((entry) => equal(entry) === equal(directory))
+  ) {
+    directories.unshift(directory);
   }
-  return withNodeRuntimeOnPath({ ...environment, [key]: directories.join(path.delimiter) });
+  return withNodeRuntimeOnPath(
+    { ...environment, [key]: directories.join(pathFlavor.delimiter) },
+    process.execPath,
+    platform,
+  );
 }
 
 export function deepSeekNpxVersionFile(environment: NodeJS.ProcessEnv): string {

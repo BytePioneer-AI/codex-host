@@ -20,7 +20,7 @@ vi.mock("../src/executable.js", async (original) => ({
   ...(await original<typeof executable>()),
   resolveDeepSeekCommand: mocks.resolve,
 }));
-import { deepSeekNpxVersionFile } from "../src/executable.js";
+import { deepSeekEnvironment, deepSeekNpxVersionFile } from "../src/executable.js";
 import { createDeepSeekInstallation } from "../src/installation.js";
 
 beforeEach(() => {
@@ -126,18 +126,19 @@ describe("DeepSeek installation", () => {
         canUpdate: true,
         updateAvailable: false,
       });
+      const expectedEnvironment = deepSeekEnvironment(npx, environment);
       expect(mocks.run).toHaveBeenNthCalledWith(
         2,
         npx,
         ["--yes", "--prefer-online", "@deepseek-ai/dsh@0.2.1-rc.3", "--version"],
-        environment,
+        expectedEnvironment,
         600_000,
       );
       expect(mocks.run).toHaveBeenNthCalledWith(
         3,
         npx,
         ["--offline", "--no-install", "@deepseek-ai/dsh@0.2.1-rc.3", "--version"],
-        environment,
+        expectedEnvironment,
       );
       expect(resolve(undefined, environment)?.arguments).toEqual([
         "--offline",

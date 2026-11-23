@@ -4,6 +4,7 @@ import type * as filesystem from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  deepSeekEnvironment,
   deepSeekProcessInvocation,
   killDeepSeekProcessTree,
   resolveDeepSeekCommand,
@@ -134,6 +135,23 @@ describe("DeepSeek executable helpers", () => {
       command: String.raw`C:\npm\npx.cmd`,
       kind: "npx",
     });
+  });
+
+  it("prepends absolute executable directories on PATH without adding relative entries", () => {
+    const posix = deepSeekEnvironment("/nvm/v22/bin/dsh", { PATH: "/usr/bin:/bin" }, "linux");
+    expect(posix.PATH?.split(":")[0]).toBe("/nvm/v22/bin");
+
+    const relative = deepSeekEnvironment("dsh", { PATH: "/usr/bin" }, "linux");
+    expect(relative.PATH?.split(":")).not.toContain(".");
+
+    const win = deepSeekEnvironment(
+      String.raw`c:\nvm\v22\dsh.cmd`,
+      { Path: String.raw`C:\NVM\V22;C:\Windows\System32` },
+      "win32",
+    );
+    expect(
+      win.Path?.split(";").filter((entry) => entry.toLowerCase() === String.raw`c:\nvm\v22`),
+    ).toHaveLength(1);
   });
 
   it("quotes Windows shims and preserves direct native invocations", () => {

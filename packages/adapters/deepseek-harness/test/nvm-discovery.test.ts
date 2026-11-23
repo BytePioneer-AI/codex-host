@@ -16,7 +16,7 @@ it.skipIf(process.platform === "win32")(
         mode: 0o755,
       });
       const result = await probeDeepSeekExecutableGeneration({
-        environment: { HOME: home, PATH: "/usr/bin:/bin" },
+        environment: { HOME: home, PATH: "" },
       });
       expect(result.command.command).toBe(path.join(bin, "dsh"));
       expect(result.version).toBe("0.2.2-rc.5");

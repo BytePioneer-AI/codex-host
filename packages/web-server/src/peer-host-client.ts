@@ -6,6 +6,7 @@ export class PeerHostClient {
   private life = new AbortController();
   manifest?: c.RemotePeerManifest;
   latencyMs?: number;
+  lastError?: string;
   state: c.RemotePeerState;
   private timer?: NodeJS.Timeout;
   private cursor?: c.ClientChannelCursor;
@@ -35,6 +36,7 @@ export class PeerHostClient {
       hostname,
       homeDir,
       latencyMs: this.latencyMs,
+      lastError: this.lastError,
       projectCount: projects?.length ?? 0,
     };
   }
@@ -74,15 +76,17 @@ export class PeerHostClient {
         await (await this.fetch("/api/peer/v1/manifest")).json(),
       );
       this.latencyMs = Date.now() - start;
+      delete this.lastError;
       this.state = "connected";
     } catch (e) {
       this.state =
         e instanceof RpcError && e.code === "remote/auth-error" ? "auth-error" : "offline";
-      throw Error(
+      const message =
         this.state === "auth-error"
           ? "Remote peer rejected the access token"
-          : "Remote peer manifest unavailable",
-      );
+          : "Remote peer manifest unavailable";
+      this.lastError = message;
+      throw Error(message);
     }
   }
   async start() {
@@ -129,6 +133,7 @@ export class PeerHostClient {
         }
       } catch (e) {
         if (e instanceof RpcError && e.code === "remote/auth-error") this.state = "auth-error";
+        this.lastError = e instanceof Error ? e.message : "Remote peer stream disconnected";
       }
       if (this.life.signal.aborted) return;
       if (this.state !== "auth-error") this.state = "offline";

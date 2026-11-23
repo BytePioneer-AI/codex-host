@@ -67,10 +67,11 @@ export class PeerHostManager {
           );
           await this.check(conn.origin);
           const now = new Date().toISOString();
+          const explicitName =
+            "name" in p && typeof p.name === "string" && p.name.trim() ? p.name.trim() : undefined;
           const record = {
             peerId: randomUUID(),
-            name:
-              "name" in p && typeof p.name === "string" ? p.name : new URL(conn.origin).hostname,
+            name: explicitName ?? new URL(conn.origin).hostname,
             origin: conn.origin,
             token: conn.token,
             enabled: true,
@@ -84,6 +85,9 @@ export class PeerHostManager {
             if (action === "test")
               return { ok: false, error: e instanceof Error ? e.message : "Probe failed" };
             throw e;
+          }
+          if (!explicitName && client.manifest?.hostname) {
+            record.name = client.manifest.hostname;
           }
           if (action === "test")
             return c.remotePeerTestResultSchema.parse({ ...client.summary(), ok: true });

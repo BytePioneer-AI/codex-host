@@ -1160,7 +1160,7 @@ export function installRendererBindingProbe(
 
   const pendingModelFallbacks = new Map<
     string,
-    { fallback: ModelFallbackNotice; expiresAtMs: number }
+    Map<string, { fallback: ModelFallbackNotice | null; expiresAtMs: number }>
   >();
   const modelFallbackRoute = (hostId: string, threadId: string): string =>
     JSON.stringify([hostId, threadId]);
@@ -1171,30 +1171,37 @@ export function installRendererBindingProbe(
     mounted.control.modelPicker.fallbackNotice?.hide();
   };
   const presentPendingModelFallback = (mounted: MountedComposer): void => {
+    if (!isMountedComposer(mounted.composer)) return;
+    const picker = mounted.control.modelPicker;
+    picker.fallbackNotice?.reposition();
+    if (picker.fallbackNotice?.isOpen()) return;
+
     const { hostId } = mounted;
     const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
     if (!hostId || !threadId || mounted.ownershipStatus !== "ready") return;
-    const key = modelFallbackRoute(hostId, threadId);
-    const pending = pendingModelFallbacks.get(key);
-    if (!pending) return;
-    if (Date.now() >= pending.expiresAtMs) {
-      pendingModelFallbacks.delete(key);
-      return;
-    }
+    const queue = pendingModelFallbacks.get(modelFallbackRoute(hostId, threadId));
     if (
+      !queue ||
       activeModelHostId(mounted.composer) !== hostId ||
-      threadIdFromComposerModelTarget(findComposerModelTarget(mounted.composer)) !== threadId
+      threadIdFromComposerModelTarget(findComposerModelTarget(mounted.composer)) !== threadId ||
+      !picker.trigger.isConnected ||
+      picker.trigger.getClientRects().length === 0
     )
       return;
-    const picker = mounted.control.modelPicker;
-    if (!picker.trigger.isConnected || picker.trigger.getClientRects().length === 0) return;
-    pendingModelFallbacks.delete(key);
-    const { fromModel, toModel } = pending.fallback;
-    picker.fallbackNotice ??= mountRendererModelSelectionNotice(picker.trigger);
-    picker.fallbackNotice.show(
-      rendererHarnessMessages(settingsLifecycle.locale).modelFallbackTitle,
-      `${fromModel} → ${toModel}`,
-    );
+    const now = Date.now();
+    for (const pending of queue.values()) {
+      if (!pending.fallback || now >= pending.expiresAtMs) continue;
+      const { fromModel, toModel } = pending.fallback;
+      // Retain the event ID until expiry to ignore duplicate deliveries.
+      pending.fallback = null;
+      picker.fallbackNotice ??= mountRendererModelSelectionNotice(picker.trigger);
+      picker.fallbackNotice.show(
+        rendererHarnessMessages(settingsLifecycle.locale).modelFallbackTitle,
+        `${fromModel} → ${toModel}`,
+        () => presentPendingModelFallback(mounted),
+      );
+      return;
+    }
   };
 
   const renderMounted = (mounted: MountedComposer): void => {
@@ -3834,12 +3841,16 @@ export function installRendererBindingProbe(
     );
     if (!composers.length) return;
     const now = Date.now();
-    for (const [key, pending] of pendingModelFallbacks)
-      if (now >= pending.expiresAtMs) pendingModelFallbacks.delete(key);
-    pendingModelFallbacks.set(modelFallbackRoute(hostId, threadId), {
-      fallback,
-      expiresAtMs: now + MODEL_FALLBACK_NOTICE_MAX_AGE_MS,
-    });
+    for (const [key, queue] of pendingModelFallbacks) {
+      for (const [id, pending] of queue) if (now >= pending.expiresAtMs) queue.delete(id);
+      if (!queue.size) pendingModelFallbacks.delete(key);
+    }
+    const key = modelFallbackRoute(hostId, threadId);
+    const queue = pendingModelFallbacks.get(key) ?? new Map();
+    if (!queue.has(fallback.id)) {
+      queue.set(fallback.id, { fallback, expiresAtMs: now + MODEL_FALLBACK_NOTICE_MAX_AGE_MS });
+      pendingModelFallbacks.set(key, queue);
+    }
     for (const mounted of composers) presentPendingModelFallback(mounted);
   };
   // Desktop forwards custom Host notifications to the window before its Manager filters them.

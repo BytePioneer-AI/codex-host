@@ -9,7 +9,7 @@ export const RENDERER_MODEL_SELECTION_NOTICE_DURATION_MS = 8000;
 
 export interface RendererModelSelectionNotice {
   readonly element: HTMLElement;
-  show(heading: string, message: string): void;
+  show(heading: string, message: string, onDismiss?: () => void): void;
   hide(): void;
   isOpen(): boolean;
   reposition(): void;
@@ -75,21 +75,28 @@ export function mountRendererModelSelectionNotice(
   document.body.append(notice);
 
   let hideTimer: number | undefined;
+  let onDismiss: (() => void) | undefined;
   const cancelHide = (): void => {
     if (hideTimer !== undefined) view.clearTimeout(hideTimer);
     hideTimer = undefined;
   };
   const isOpen = (): boolean => notice.matches(":popover-open");
   const hide = (): void => {
+    onDismiss = undefined;
     cancelHide();
     if (isOpen()) notice.hidePopover();
     notice.hidden = true;
+  };
+  const dismiss = (): void => {
+    const callback = onDismiss;
+    hide();
+    callback?.();
   };
   const scheduleHide = (): void => {
     cancelHide();
     hideTimer = view.setTimeout(() => {
       hideTimer = undefined;
-      hide();
+      dismiss();
     }, RENDERER_MODEL_SELECTION_NOTICE_DURATION_MS);
   };
   const anchorRendered = (): boolean => anchor.isConnected && anchor.getClientRects().length > 0;
@@ -108,11 +115,12 @@ export function mountRendererModelSelectionNotice(
     notice.style.maxWidth = `${placement.maxWidth}px`;
     notice.style.maxHeight = `${placement.maxHeight}px`;
   };
-  const show = (headingText: string, messageText: string): void => {
+  const show = (headingText: string, messageText: string, dismissed?: () => void): void => {
     if (!anchorRendered()) {
       hide();
       return;
     }
+    onDismiss = dismissed;
     heading.textContent = headingText;
     message.textContent = messageText;
     message.hidden = messageText.length === 0;
@@ -131,11 +139,11 @@ export function mountRendererModelSelectionNotice(
     // Selecting the Host message to copy it must not dismiss the notice.
     const selection = view.getSelection();
     if (selection && !selection.isCollapsed && notice.contains(selection.anchorNode)) return;
-    hide();
+    dismiss();
   };
   const onKeyDown = (event: KeyboardEvent): void => {
     // Dismiss only; the notice is not modal, so Escape keeps its Composer meaning.
-    if (event.key === "Escape" && isOpen()) hide();
+    if (event.key === "Escape" && isOpen()) dismiss();
   };
   const listeners = new AbortController();
   const options = { signal: listeners.signal };

@@ -8,6 +8,10 @@
  */
 
 import { randomUUID } from "node:crypto";
+import {
+  MODEL_FALLBACK_NOTICE_MAX_AGE_MS,
+  modelFallbackNoticeSchema,
+} from "@codexhost/shared-contracts";
 import type { SessionDataStore } from "./contracts.js";
 import type { SessionSink } from "./contracts.js";
 
@@ -232,7 +236,19 @@ export class SessionLog {
   }
 
   projectionBaseline(): { asOfSeq: number; values: Record<string, unknown> } {
-    return { asOfSeq: Math.max(this.lastSeq, 0), values: this.projections };
+    const asOfSeq = Math.max(this.lastSeq, 0);
+    const selection = this.projections.modelSelection;
+    if (selection && typeof selection === "object" && "modelFallback" in selection) {
+      const { modelFallback, ...modelSelection } = selection;
+      const notice = modelFallbackNoticeSchema.safeParse(modelFallback);
+      if (
+        !notice.success ||
+        Date.now() - notice.data.observedAtMs >= MODEL_FALLBACK_NOTICE_MAX_AGE_MS
+      ) {
+        return { asOfSeq, values: { ...this.projections, modelSelection } };
+      }
+    }
+    return { asOfSeq, values: this.projections };
   }
 
   // ---- assistant presentation stream -------------------------------------------------------

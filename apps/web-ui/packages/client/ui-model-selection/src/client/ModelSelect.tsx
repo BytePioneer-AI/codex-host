@@ -28,6 +28,7 @@
  * chevron, and each row whose value that selection carries shows one in place
  * of its check mark.
  */
+import { MODEL_FALLBACK_NOTICE_MAX_AGE_MS } from "@codexhost/shared-contracts";
 import { MenuSurface } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   useEffect,
@@ -143,8 +144,17 @@ export function ModelSelect({
   const toastSeq = useRef(0);
   const [dismissedFallbackId, setDismissedFallbackId] = useState<string | null>(null);
   const fallback = state.modelFallback;
+  const fallbackId = fallback?.id;
+  const fallbackExpiresAt = fallback ? fallback.observedAtMs + MODEL_FALLBACK_NOTICE_MAX_AGE_MS : 0;
+  useEffect(() => {
+    if (!fallbackId || fallbackId === dismissedFallbackId) return;
+    const remaining = fallbackExpiresAt - Date.now();
+    if (remaining <= 0) return;
+    const timer = setTimeout(() => setDismissedFallbackId(fallbackId), remaining);
+    return () => clearTimeout(timer);
+  }, [fallbackId, fallbackExpiresAt, dismissedFallbackId]);
   const notice =
-    fallback && fallback.id !== dismissedFallbackId
+    fallback && fallbackId !== dismissedFallbackId && Date.now() < fallbackExpiresAt
       ? {
           seq: fallback.id,
           text: t("notice.modelFallback", { from: fallback.fromModel, to: fallback.toModel }),

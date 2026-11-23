@@ -60,6 +60,9 @@ const testState = vi.hoisted(() => ({
   sidebarRefresh: vi.fn(),
   showModelFallback: vi.fn(),
   hideModelFallback: vi.fn(),
+  modelFallbackOpen: false,
+  modelFallbackAnchorVisible: true,
+  dismissModelFallback: null as (() => void) | null,
   documentListeners: new Map<string, EventListener>(),
   modelTarget: ["conversation", "thread-a"] as readonly unknown[] | null,
   prewarmClears: 0,
@@ -91,8 +94,29 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
         picker: { root: { isConnected: true } },
         modelPicker: {
           root: { isConnected: true },
-          trigger: { isConnected: true, getClientRects: () => [{}] },
-          fallbackNotice: { show: testState.showModelFallback, hide: testState.hideModelFallback },
+          trigger: {
+            isConnected: true,
+            getClientRects: () => (testState.modelFallbackAnchorVisible ? [{}] : []),
+          },
+          fallbackNotice: {
+            isOpen: () => testState.modelFallbackOpen,
+            show(heading: string, message: string, onDismiss?: () => void) {
+              testState.showModelFallback(heading, message);
+              testState.modelFallbackOpen = true;
+              testState.dismissModelFallback = () => {
+                this.hide();
+                onDismiss?.();
+              };
+            },
+            hide() {
+              testState.hideModelFallback();
+              testState.modelFallbackOpen = false;
+              testState.dismissModelFallback = null;
+            },
+            reposition() {
+              if (testState.modelFallbackOpen && !testState.modelFallbackAnchorVisible) this.hide();
+            },
+          },
         },
         permissionModePicker: { root: { isConnected: true } },
         nativeModelControl: null,
@@ -273,6 +297,9 @@ function installFakeBrowser(): void {
   testState.prewarmClears = 0;
   testState.notifyMutations = null;
   testState.animationFrames = [];
+  testState.modelFallbackOpen = false;
+  testState.modelFallbackAnchorVisible = true;
+  testState.dismissModelFallback = null;
   const window_ = {
     addEventListener: listeners.addEventListener.bind(listeners),
     removeEventListener: listeners.removeEventListener.bind(listeners),
@@ -346,7 +373,7 @@ afterEach(() => {
 });
 
 describe("Renderer binding native draft routing", () => {
-  it("presents a pending model fallback once when the Composer binds to its Thread", async () => {
+  it("queues distinct early model fallbacks and hides a notice when its anchor disappears", async () => {
     installFakeBrowser();
     testState.modelTarget = ["default"];
     const inspection = readyInspection();
@@ -381,7 +408,7 @@ describe("Renderer binding native draft routing", () => {
     testState.documentListeners.get("submit")?.(submit);
     expect(submit.defaultPrevented).toBe(false);
 
-    const notifyFallback = (hostId: string, fromModel: string) =>
+    const notifyFallback = (hostId: string, id: string, fromModel: string) =>
       window.dispatchEvent(
         new MessageEvent("message", {
           data: {
@@ -391,7 +418,7 @@ describe("Renderer binding native draft routing", () => {
             params: {
               threadId: "thread-a",
               fallback: {
-                id: "00000000-0000-4000-8000-000000000012",
+                id,
                 fromModel,
                 toModel: "claude-opus-5",
                 observedAtMs: Date.now(),
@@ -400,8 +427,12 @@ describe("Renderer binding native draft routing", () => {
           },
         }),
       );
-    notifyFallback("local", "claude-fable-5-2");
-    notifyFallback("remote", "unrelated-model");
+    const first = "00000000-0000-4000-8000-000000000012";
+    const second = "00000000-0000-4000-8000-000000000013";
+    notifyFallback("local", first, "claude-fable-5-2");
+    notifyFallback("local", second, "another-primary-model");
+    notifyFallback("local", first, "claude-fable-5-2");
+    notifyFallback("remote", first, "unrelated-model");
     expect(testState.showModelFallback).not.toHaveBeenCalled();
 
     const reconcile = () => {
@@ -420,6 +451,17 @@ describe("Renderer binding native draft routing", () => {
     );
     reconcile();
     expect(testState.showModelFallback).toHaveBeenCalledOnce();
+    testState.dismissModelFallback?.();
+    expect(testState.showModelFallback.mock.calls).toEqual([
+      ["Model fallback", "claude-fable-5-2 → claude-opus-5"],
+      ["Model fallback", "another-primary-model → claude-opus-5"],
+    ]);
+
+    // The queue is drained but the active notice still needs to track its anchor.
+    expect(testState.modelFallbackOpen).toBe(true);
+    testState.modelFallbackAnchorVisible = false;
+    reconcile();
+    expect(testState.modelFallbackOpen).toBe(false);
   });
 
   it("allows editing without a private Model binding but waits for routing before Send", async () => {

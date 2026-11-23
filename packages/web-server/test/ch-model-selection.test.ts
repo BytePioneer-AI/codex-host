@@ -113,7 +113,28 @@ async function fixture(t: TestContext, native = false) {
     });
   const selections = () =>
     frames.filter((frame) => frame.type === "projection" && frame.key === "modelSelection");
-  return { host, sessions, read, select, selections, behavior };
+  const controlBaseline = async () => {
+    const frames: Array<Record<string, unknown>> = [];
+    const freshSink: StreamSink = {
+      ...sink,
+      id: "reconnect",
+      push: (value) => frames.push(value as Record<string, unknown>),
+    };
+    await streams.endpoints.get("session/control")?.({}, freshSink);
+    return frames.find((frame) => frame.type === "baseline")?.value as {
+      projections: Record<string, { values: Record<string, unknown> }>;
+    };
+  };
+  return {
+    host,
+    sessions,
+    read,
+    select,
+    selections,
+    behavior,
+    controlBaseline,
+    threadId: source.id,
+  };
 }
 
 function expectedSelection(model: string, reasoningEffort = "auto", provider = "fake") {
@@ -294,10 +315,14 @@ it("checks model fallback age after asynchronous Harness discovery", async (t) =
   fallback.observedAtMs = Date.now();
   assert.ok((await f.read()).ok);
   await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.deepEqual(f.selections().at(-1)?.value, {
-    ...expectedSelection("native"),
-    modelFallback: fallback,
-  });
+  const recentSelection = { ...expectedSelection("native"), modelFallback: fallback };
+  assert.deepEqual(f.selections().at(-1)?.value, recentSelection);
+
+  const selectionFromNewConnection = async () =>
+    (await f.controlBaseline()).projections[f.threadId]?.values.modelSelection;
+  assert.deepEqual(await selectionFromNewConnection(), recentSelection);
+  t.mock.timers.setTime(fallback.observedAtMs + MODEL_FALLBACK_NOTICE_MAX_AGE_MS);
+  assert.deepEqual(await selectionFromNewConnection(), expectedSelection("native"));
 });
 
 it("preserves the old Model when native selection is rejected", async (t) => {

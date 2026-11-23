@@ -79,6 +79,13 @@ window.__CODEXHOST_DESKTOP_SHELL__ = true;
   const isMacos = {is_macos};
 
   if (isWindows) {{
+    document.addEventListener("keydown", (event) => {{
+      if (!event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+      if (event.code !== "Digit0" && event.code !== "Numpad0") return;
+      event.preventDefault();
+      event.stopPropagation();
+      void invoke("plugin:webview|set_webview_zoom", {{ label: "main", value: 1 }});
+    }}, true);
     let zoomTimer;
     window.__codexhostShowZoom = (percent) => {{
       if (!document.body) return;

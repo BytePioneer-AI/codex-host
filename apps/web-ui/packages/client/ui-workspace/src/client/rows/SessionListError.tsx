@@ -16,7 +16,10 @@ export function SessionListError({ list, refreshSessions, loadMoreSessions, t }:
         type="button"
         className={css.sessionOverflowButton}
         disabled={list.loading}
-        onClick={list.listErrorPage === "more" ? loadMoreSessions : refreshSessions}
+        onClick={() => {
+          if (list.listErrorPage === "more") loadMoreSessions();
+          else refreshSessions();
+        }}
       >
         {t("sessions.retry")}
       </button>

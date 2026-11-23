@@ -937,7 +937,13 @@ function SessionTree({
                     [group.key]: (limits[group.key] ?? GROUP_INITIAL_ROWS) + SIDEBAR_PAGE_ROWS,
                   }));
                 }}
-                loadMoreSessions={loadMoreSessions}
+                // A local project reads on until one of its own Sessions arrives; Recents and
+                // remote projects keep the plain next page.
+                loadMoreSessions={() => {
+                  loadMoreSessions(
+                    workspaceId === undefined || group.remote ? undefined : workspaceId,
+                  );
+                }}
                 t={t}
               />
             )}

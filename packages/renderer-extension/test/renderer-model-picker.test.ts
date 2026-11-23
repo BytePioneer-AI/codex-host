@@ -14,6 +14,7 @@ import {
 } from "../src/renderer-model-picker-positioning.js";
 
 import {
+  canRetryRendererModelCatalog,
   isRendererModelPickerDisabled,
   mountRendererModelPicker,
   renderRendererModelPicker,
@@ -125,6 +126,42 @@ describe("Renderer Model picker refresh", () => {
       }
     },
   );
+
+  it("retries a failed first catalog load from the trigger", () => {
+    const onRefresh = vi.fn();
+    const control = mountRendererModelPicker("retry", vi.fn(), vi.fn(), onRefresh);
+    const failed: RendererModelControlView = { status: "error", error: "request timed out" };
+    try {
+      expect(canRetryRendererModelCatalog(failed)).toBe(true);
+      expect(canRetryRendererModelCatalog({ ...failed, refreshing: true })).toBe(false);
+      expect(
+        canRetryRendererModelCatalog({ ...failed, catalog: catalog([]), selected: model }),
+      ).toBe(false);
+      renderRendererModelPicker(control, failed, true, "antigravity");
+      expect(control.trigger.disabled).toBe(false);
+      expect(control.trigger.title).toBe("request timed out\nRefresh models");
+      expect(control.modelButton.disabled).toBe(true);
+      control.trigger.click();
+      expect(onRefresh).toHaveBeenCalledOnce();
+      expect(control.menu.matches(":popover-open")).toBe(false);
+
+      renderRendererModelPicker(control, { status: "loading" }, true, "antigravity");
+      expect(control.trigger.disabled).toBe(true);
+      expect(control.trigger.hasAttribute("data-codexhost-retry-models")).toBe(false);
+    } finally {
+      control.dispose();
+    }
+  });
+
+  it("keeps a failed first catalog load disabled without a refresh callback", () => {
+    const control = mountRendererModelPicker("no-retry", vi.fn(), vi.fn());
+    try {
+      renderRendererModelPicker(control, { status: "error", error: "failed" }, true, "pi");
+      expect(control.trigger.disabled).toBe(true);
+    } finally {
+      control.dispose();
+    }
+  });
 
   it("does not render the refresh action without a callback", () => {
     const control = mountRendererModelPicker("read-only", vi.fn(), vi.fn());

@@ -118,7 +118,7 @@ describe("workflow and form contracts", () => {
     const workflow = await read(".github/workflows/release-packages.yml");
     expect(workflow).not.toContain("ref: ${{ needs.prepare.outputs.tag }}");
     expect(workflow.match(/ref: \$\{\{ needs\.prepare\.outputs\.commit_sha \}\}/gu)).toHaveLength(
-      3,
+      4,
     );
     expect(
       workflow.match(/ref: \$\{\{ needs\.prepare\.outputs\.automation_sha \}\}/gu),

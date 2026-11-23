@@ -610,6 +610,22 @@
   color: var(--dsw-alias-link);
 }
 
+.filterEmptyHint {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.filterEmptyHint .emptyAction {
+  font-size: 12px;
+  line-height: 18px;
+}
+
 /* Rename dialog form (same figma dialog family as the create modals). */
 .renameInput {
   box-sizing: border-box;

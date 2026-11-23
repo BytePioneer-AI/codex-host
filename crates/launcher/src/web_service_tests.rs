@@ -1,5 +1,6 @@
 use super::{Options, ReadyOwner, WebAccess};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{env, fs, thread};
 
@@ -34,13 +35,26 @@ fn stop_waits_for_the_recorded_instance_without_its_original_image() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
+    let pid = child.id();
+    // A reaper thread waits on the fixture concurrently so it is reaped the
+    // moment it exits; on macOS an unreaped zombie still shows up in process
+    // queries with its original identity, which would make stop() wait out
+    // its whole timeout instead of observing the shutdown.
+    let exited: Arc<Mutex<Option<std::process::ExitStatus>>> = Arc::new(Mutex::new(None));
+    let reaper = {
+        let exited = exited.clone();
+        thread::spawn(move || {
+            let status = child.wait();
+            *exited.lock().unwrap() = status.ok();
+        })
+    };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let deadline = Instant::now() + super::STOP_WAIT;
         while !root.join("started").exists() {
             assert!(Instant::now() < deadline, "fixture did not start");
             thread::sleep(Duration::from_millis(10));
         }
-        let live = codexhost_platform::process_identity(child.id()).unwrap();
+        let live = codexhost_platform::process_identity(pid).unwrap();
         let record = ReadyOwner {
             pid: live.id,
             started_at_micros: live.started_at_micros,
@@ -78,10 +92,19 @@ fn stop_waits_for_the_recorded_instance_without_its_original_image() {
             "stop returned before shutdown completed"
         );
     }));
-    if result.is_err() {
-        let _ = child.kill();
-    }
-    let status = child.wait().unwrap();
+    // Wait for the reaper to observe the fixture's exit (bounded, so a
+    // failing run cannot hang forever); then report its status.
+    let status = {
+        let deadline = Instant::now() + super::STOP_WAIT;
+        loop {
+            if let Some(status) = exited.lock().unwrap().take() {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "fixture did not exit after stop");
+            thread::sleep(Duration::from_millis(10));
+        }
+    };
+    let _ = reaper.join();
     fs::remove_dir_all(&root).unwrap();
     result.unwrap();
     assert!(status.success());

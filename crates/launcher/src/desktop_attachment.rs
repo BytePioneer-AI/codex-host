@@ -9,10 +9,12 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+use codexhost_platform::descendant_executable_pair_exists;
 #[cfg(not(unix))]
 use codexhost_platform::desktop_root_process_ids_for_installation;
 use codexhost_platform::{
-    DesktopInstallation, PlatformError, ProcessSnapshot, descendant_executable_pair_exists,
+    DesktopInstallation, HostChainObservation, PlatformError, ProcessSnapshot, observe_host_chain,
 };
 #[cfg(target_os = "windows")]
 use codexhost_platform::{process_executable_path, process_exists, terminate_process_by_id};
@@ -30,6 +32,16 @@ use crate::runtime_instance::{RuntimeDescriptorGuard, remove_matching_descriptor
 
 const ATTACHMENT_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100);
 const ATTACHMENT_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
+const DIRECT_STOCK_CLI_GRACE: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HostChainWaitOutcome {
+    Ready,
+    Stopped,
+    DesktopExited,
+    DirectStockCliWithoutShim,
+    TimedOut,
+}
 
 #[derive(Debug)]
 pub(super) struct RuntimeControl {
@@ -123,17 +135,37 @@ pub(super) fn endpoint_ready(port: u16, timeout: Duration) -> bool {
     .is_ok()
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 pub(super) fn wait_for_host_chain(
     desktop: &ProcessSnapshot,
     options: &ResolvedLaunchOptions,
     timeout: Duration,
     stopping: impl FnMut() -> Result<bool, Box<dyn Error>>,
 ) -> Result<bool, Box<dyn Error>> {
+    Ok(
+        wait_for_host_chain_outcome(desktop, options, None, timeout, stopping)?
+            == HostChainWaitOutcome::Ready,
+    )
+}
+
+pub(super) fn wait_for_host_chain_outcome(
+    desktop: &ProcessSnapshot,
+    options: &ResolvedLaunchOptions,
+    stock_cli: Option<&Path>,
+    timeout: Duration,
+    stopping: impl FnMut() -> Result<bool, Box<dyn Error>>,
+) -> Result<HostChainWaitOutcome, Box<dyn Error>> {
     let nodes =
         host_runtime_node_candidates(options.node.clone(), env::var_os(crate::NPM_NODE_PATH_ENV));
-    wait_for_host_chain_with_inspector(desktop, &options.shim, &nodes, timeout, stopping, |node| {
-        descendant_executable_pair_exists(desktop, &options.shim, node)
-    })
+    wait_for_host_chain_with_observer(
+        desktop,
+        &options.shim,
+        &nodes,
+        timeout,
+        DIRECT_STOCK_CLI_GRACE,
+        stopping,
+        || observe_host_chain(desktop, &options.shim, &nodes, stock_cli),
+    )
 }
 
 /// The Shim runs the Host Runtime on the Node selected at launch
@@ -173,6 +205,87 @@ fn wait_for_host_chain_with_nodes(
     )
 }
 
+fn wait_for_host_chain_with_observer(
+    desktop: &ProcessSnapshot,
+    shim: &Path,
+    nodes: &[PathBuf],
+    timeout: Duration,
+    direct_stock_cli_grace: Duration,
+    mut stopping: impl FnMut() -> Result<bool, Box<dyn Error>>,
+    mut observe: impl FnMut() -> Result<HostChainObservation, PlatformError>,
+) -> Result<HostChainWaitOutcome, Box<dyn Error>> {
+    let started = Instant::now();
+    // `unresolved_error` belongs to the latest round that could not inspect
+    // the Desktop subtree and alone decides whether a timeout is an error.
+    let mut unresolved_error = None;
+    let mut last_error = None;
+    let mut last_observation = None;
+    let mut direct_stock_cli_since: Option<Instant> = None;
+    while started.elapsed() < timeout {
+        if stopping()? {
+            return Ok(HostChainWaitOutcome::Stopped);
+        }
+        match observe() {
+            Ok(observation) => {
+                unresolved_error = None;
+                let ready = observation.pair_exists;
+                let root_alive = observation.root_alive;
+                let direct_stock_cli = observation.direct_stock_cli_without_shim;
+                last_observation = Some(observation);
+                if ready {
+                    return Ok(HostChainWaitOutcome::Ready);
+                }
+                if !root_alive {
+                    crate::startup_trace(&host_chain_failure_diagnostic(
+                        "Host chain wait ended early (Desktop exited)",
+                        desktop,
+                        shim,
+                        nodes,
+                        last_observation.as_ref(),
+                        last_error.as_deref(),
+                    ));
+                    return Ok(HostChainWaitOutcome::DesktopExited);
+                }
+                if direct_stock_cli {
+                    let first_seen = *direct_stock_cli_since.get_or_insert_with(Instant::now);
+                    if first_seen.elapsed() >= direct_stock_cli_grace {
+                        crate::startup_trace(&host_chain_failure_diagnostic(
+                            "Host chain wait ended early (official CLI started without Shim)",
+                            desktop,
+                            shim,
+                            nodes,
+                            last_observation.as_ref(),
+                            last_error.as_deref(),
+                        ));
+                        return Ok(HostChainWaitOutcome::DirectStockCliWithoutShim);
+                    }
+                } else {
+                    direct_stock_cli_since = None;
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                last_error = Some(message.clone());
+                unresolved_error = Some(message);
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    crate::startup_trace(&host_chain_failure_diagnostic(
+        "Host chain wait timed out",
+        desktop,
+        shim,
+        nodes,
+        last_observation.as_ref(),
+        last_error.as_deref(),
+    ));
+    if let Some(error) = unresolved_error {
+        return Err(error.into());
+    }
+    Ok(HostChainWaitOutcome::TimedOut)
+}
+
+#[cfg(test)]
 fn wait_for_host_chain_with_inspector(
     desktop: &ProcessSnapshot,
     shim: &Path,
@@ -211,10 +324,12 @@ fn wait_for_host_chain_with_inspector(
     // launch, a stalled Controller, or an unobservable process tree (#882).
     // Record what the wait was matching against and what was last observed so
     // the next report can pin the failing stage.
-    crate::startup_trace(&host_chain_timeout_diagnostic(
+    crate::startup_trace(&host_chain_failure_diagnostic(
+        "Host chain wait timed out",
         desktop,
         shim,
         nodes,
+        None,
         last_error.as_deref(),
     ));
     if let Some(error) = unresolved_error {
@@ -223,11 +338,13 @@ fn wait_for_host_chain_with_inspector(
     Ok(false)
 }
 
-/// One-shot diagnostic snapshot taken when the Host chain wait times out.
-fn host_chain_timeout_diagnostic(
+/// One-shot diagnostic snapshot taken when the Host chain wait ends unsuccessfully.
+fn host_chain_failure_diagnostic(
+    reason: &str,
     desktop: &ProcessSnapshot,
     shim: &Path,
     nodes: &[PathBuf],
+    observation: Option<&HostChainObservation>,
     last_error: Option<&str>,
 ) -> String {
     let nodes_display = nodes
@@ -236,35 +353,49 @@ fn host_chain_timeout_diagnostic(
         .collect::<Vec<_>>()
         .join(", ");
     let mut diagnostic = format!(
-        "Host chain wait timed out: Desktop root pid {} ({}), expected shim '{}' and node candidates [{}]",
+        "{reason}: Desktop root pid {} ({}), expected shim '{}' and node candidates [{}]",
         desktop.id,
         desktop.executable.display(),
         shim.display(),
         nodes_display,
     );
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    match codexhost_platform::process_snapshots() {
-        Ok(snapshots) => match snapshots_in_desktop_tree(desktop, &snapshots) {
-            Some(tree) => {
-                let shim_running = tree.iter().any(|process| process.executable == shim);
-                let node_running = tree
-                    .iter()
-                    .any(|process| nodes.iter().any(|node| &process.executable == node));
-                diagnostic = format!(
-                    "{diagnostic}; {} live processes observed, {} in this Desktop tree, shim running in this Desktop tree: {shim_running}, node running in this Desktop tree: {node_running}",
-                    snapshots.len(),
-                    tree.len()
-                );
+    if let Some(observation) = observation {
+        if observation.root_alive {
+            diagnostic = format!(
+                "{diagnostic}; {} in this Desktop tree, shim running in this Desktop tree: {}, node running in this Desktop tree: {}, direct official CLI without shim: {}",
+                observation.tree_size,
+                observation.shim_running,
+                observation.node_running,
+                observation.direct_stock_cli_without_shim,
+            );
+        } else {
+            diagnostic = format!("{diagnostic}; original Desktop instance is not visible");
+        }
+    } else {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        match codexhost_platform::process_snapshots() {
+            Ok(snapshots) => match snapshots_in_desktop_tree(desktop, &snapshots) {
+                Some(tree) => {
+                    let shim_running = tree.iter().any(|process| process.executable == shim);
+                    let node_running = tree
+                        .iter()
+                        .any(|process| nodes.iter().any(|node| &process.executable == node));
+                    diagnostic = format!(
+                        "{diagnostic}; {} live processes observed, {} in this Desktop tree, shim running in this Desktop tree: {shim_running}, node running in this Desktop tree: {node_running}",
+                        snapshots.len(),
+                        tree.len()
+                    );
+                }
+                None => {
+                    diagnostic = format!(
+                        "{diagnostic}; {} live processes observed, original Desktop instance is not visible",
+                        snapshots.len()
+                    );
+                }
+            },
+            Err(error) => {
+                diagnostic = format!("{diagnostic}; live process enumeration failed: {error}");
             }
-            None => {
-                diagnostic = format!(
-                    "{diagnostic}; {} live processes observed, original Desktop instance is not visible",
-                    snapshots.len()
-                );
-            }
-        },
-        Err(error) => {
-            diagnostic = format!("{diagnostic}; live process enumeration failed: {error}");
         }
     }
     if let Some(error) = last_error {
@@ -793,6 +924,85 @@ mod tests {
         })
         .expect_err("a trailing incomplete round keeps the error");
         assert!(error.to_string().contains("tree not observable"));
+    }
+
+    #[test]
+    fn host_chain_observer_aborts_early_on_desktop_exit_or_persistent_direct_stock_cli() {
+        let desktop = snapshot(10, 1, 100);
+        let shim = Path::new("/fixture/shim");
+        let nodes = [PathBuf::from("/fixture/node")];
+
+        // Exited root must abort immediately without waiting for timeout.
+        let started = Instant::now();
+        let outcome = wait_for_host_chain_with_observer(
+            &desktop,
+            shim,
+            &nodes,
+            Duration::from_secs(5),
+            Duration::from_millis(150),
+            || Ok(false),
+            || {
+                Ok(HostChainObservation {
+                    root_alive: false,
+                    tree_size: 0,
+                    pair_exists: false,
+                    shim_running: false,
+                    node_running: false,
+                    direct_stock_cli_without_shim: false,
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome, HostChainWaitOutcome::DesktopExited);
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        // Persistent direct stock CLI without shim aborts once grace elapses.
+        let started = Instant::now();
+        let outcome = wait_for_host_chain_with_observer(
+            &desktop,
+            shim,
+            &nodes,
+            Duration::from_secs(5),
+            Duration::from_millis(150),
+            || Ok(false),
+            || {
+                Ok(HostChainObservation {
+                    root_alive: true,
+                    tree_size: 3,
+                    pair_exists: false,
+                    shim_running: false,
+                    node_running: false,
+                    direct_stock_cli_without_shim: true,
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome, HostChainWaitOutcome::DirectStockCliWithoutShim);
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        // A transient direct stock CLI probe followed by a real Host chain becomes Ready.
+        let mut calls = 0_usize;
+        let outcome = wait_for_host_chain_with_observer(
+            &desktop,
+            shim,
+            &nodes,
+            Duration::from_secs(5),
+            Duration::from_secs(2),
+            || Ok(false),
+            || {
+                calls += 1;
+                Ok(HostChainObservation {
+                    root_alive: true,
+                    tree_size: 4,
+                    pair_exists: calls >= 2,
+                    shim_running: calls >= 2,
+                    node_running: calls >= 2,
+                    direct_stock_cli_without_shim: calls == 1,
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome, HostChainWaitOutcome::Ready);
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

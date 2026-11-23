@@ -335,7 +335,9 @@ impl Launcher {
             });
         }
 
-        let deadline = Instant::now() + Duration::from_secs(60);
+        // Match the Launcher's Windows startup budget (AppX activation,
+        // Controller startup, 90s Host chain wait, and at most one AppX retry).
+        let deadline = Instant::now() + Duration::from_secs(150);
         let result = loop {
             if signal.try_recv().is_ok() {
                 capture_stderr.store(false, Ordering::Release);
@@ -554,8 +556,10 @@ exit 1
             Some("cannot install the temporary AppX environment")
         );
         assert_eq!(
-            Launcher::summarize_stderr(b"codexhost launcher: codexhost console could not be started\n")
-                .as_deref(),
+            Launcher::summarize_stderr(
+                b"codexhost launcher: codexhost console could not be started\n"
+            )
+            .as_deref(),
             Some("codexhost console could not be started")
         );
         assert_eq!(

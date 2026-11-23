@@ -1,9 +1,9 @@
-/* Codex-Desktop-style two-part Hero location + project selector & searchable popovers. */
+/* Codex-Desktop-style recessed top-rail location + project selector & searchable popovers. */
 
 .root {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   min-width: 0;
   max-width: 100%;
 }
@@ -11,19 +11,19 @@
 .trigger {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   min-width: 0;
   max-width: 240px;
-  height: 26px;
-  padding: 0 8px;
+  height: 30px;
+  padding: 0 10px;
   border: none;
-  border-radius: 7px;
+  border-radius: 9999px;
   background: transparent;
   color: var(--dsw-alias-label-primary);
   font: inherit;
-  font-size: 13px;
-  line-height: 18px;
-  font-weight: 500;
+  font-size: 13.5px;
+  line-height: 20px;
+  font-weight: 450;
   cursor: pointer;
   transition:
     background-color 110ms ease,
@@ -32,7 +32,7 @@
 
 .trigger:hover:not(:disabled),
 .triggerOpen {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent);
 }
 
 .trigger:disabled {
@@ -49,13 +49,13 @@
 }
 
 .triggerPlaceholder {
-  color: var(--dsw-alias-label-secondary);
-  font-weight: 450;
+  color: var(--dsw-alias-label-tertiary);
+  font-weight: 400;
 }
 
 .triggerPlaceholder:hover:not(:disabled),
 .triggerPlaceholder.triggerOpen {
-  color: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .triggerLocation {
@@ -70,11 +70,12 @@
 
 .triggerIcon {
   flex: none;
-  color: var(--dsw-alias-label-secondary);
+  color: currentColor;
+  opacity: 0.9;
 }
 
 .triggerPlaceholder .triggerIcon {
-  color: var(--dsw-alias-label-tertiary);
+  opacity: 0.8;
 }
 
 .triggerLabel {
@@ -104,17 +105,17 @@
   opacity: 0.92;
 }
 
-/* Shared searchable popover shell (Codex Desktop geometry). */
+/* Codex Desktop `.menu-o5IS9p` geometry: 16px outer radius, 6px gutter, 11px inner pill radius. */
 .popover {
   position: fixed;
   z-index: 1100;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  padding: 5px;
-  border: 0;
-  border-radius: 12px;
-  --dsw-elevation-stroke-color: var(--dsw-alias-border-l2);
+  padding: 6px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: 16px;
+  --dsw-elevation-stroke-color: transparent;
   box-shadow: var(--dsw-elevation-prominent);
   --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
@@ -122,19 +123,19 @@
 }
 
 .popoverLocation {
-  width: min(244px, calc(100vw - 24px));
+  width: min(264px, calc(100vw - 24px));
 }
 
 .popoverProject {
-  width: min(276px, calc(100vw - 24px));
+  width: min(280px, calc(100vw - 24px));
 }
 
 .searchRow {
   display: flex;
   align-items: center;
-  gap: 7px;
-  height: 30px;
-  padding: 0 7px;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px;
 }
 
 .searchIcon {
@@ -152,43 +153,52 @@
   background: transparent;
   color: var(--dsw-alias-label-primary);
   font: inherit;
-  font-size: 13px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 20px;
 }
 
 .searchInput::placeholder {
   color: var(--dsw-alias-label-tertiary);
 }
 
+/* Inset horizontal hairline matching Codex Desktop's searchable dropdown menus. */
 .divider {
   flex: none;
   height: 0.5px;
-  margin: 4px -5px;
+  margin: 4px 10px 6px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.footerDivider {
+  flex: none;
+  height: 0.5px;
+  margin: 6px 10px 4px;
   background: var(--dsw-alias-border-l2);
 }
 
 .list {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  max-height: 248px;
+  gap: 2px;
+  max-height: 260px;
   overflow-y: auto;
 }
 
 .row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   width: 100%;
-  min-height: 32px;
-  padding: 4px 8px;
+  min-height: 36px;
+  padding: 6px 10px;
   border: none;
-  border-radius: 8px;
+  border-radius: 11px;
   background: transparent;
   color: var(--dsw-alias-label-primary);
   font: inherit;
-  font-size: 13px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 450;
   text-align: left;
   cursor: pointer;
   transition: background-color 90ms ease;
@@ -196,7 +206,7 @@
 
 .row:hover,
 .rowActive {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent);
 }
 
 .rowIcon {
@@ -204,8 +214,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   color: var(--dsw-alias-label-secondary);
 }
 
@@ -214,7 +224,7 @@
   min-width: 0;
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 7px;
 }
 
 .rowTitle {
@@ -230,22 +240,23 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  line-height: 16px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 400;
   color: var(--dsw-alias-label-tertiary);
 }
 
 .rowStatus {
   flex: none;
-  font-size: 11px;
-  line-height: 15px;
+  font-size: 11.5px;
+  line-height: 16px;
   color: var(--dsw-alias-label-tertiary);
 }
 
 .checkSlot {
   flex: none;
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -253,9 +264,9 @@
 }
 
 .emptyState {
-  padding: 14px 8px;
+  padding: 16px 10px;
   text-align: center;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
 }
@@ -263,24 +274,25 @@
 .footerAction {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   width: 100%;
-  min-height: 32px;
-  padding: 4px 8px;
+  min-height: 36px;
+  padding: 6px 10px;
   border: none;
-  border-radius: 8px;
+  border-radius: 11px;
   background: transparent;
   color: var(--dsw-alias-label-primary);
   font: inherit;
-  font-size: 13px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 450;
   text-align: left;
   cursor: pointer;
   transition: background-color 90ms ease;
 }
 
 .footerAction:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent);
 }
 
 .footerAction:disabled {
@@ -306,13 +318,13 @@
 
 @media (hover: none), (pointer: coarse) {
   .trigger {
-    min-height: 32px;
-    padding: 0 9px;
+    min-height: 34px;
+    padding: 0 11px;
   }
 
   .row,
   .footerAction {
-    min-height: 38px;
+    min-height: 40px;
   }
 }
 

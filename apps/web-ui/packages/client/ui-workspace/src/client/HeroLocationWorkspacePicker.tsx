@@ -61,8 +61,8 @@ interface PendingRemoteCreateTarget {
 function LaptopIcon({ className }: { className?: string }) {
   return (
     <svg
-      width={14}
-      height={14}
+      width={15}
+      height={15}
       viewBox="0 0 16 16"
       fill="none"
       stroke="currentColor"
@@ -72,7 +72,7 @@ function LaptopIcon({ className }: { className?: string }) {
       className={className}
       aria-hidden="true"
     >
-      <rect x="2.5" y="3" width="11" height="7.75" rx="1.4" />
+      <rect x="2.25" y="2.75" width="11.5" height="8" rx="1.5" />
       <path d="M1.25 12.75h13.5" />
     </svg>
   );
@@ -81,8 +81,8 @@ function LaptopIcon({ className }: { className?: string }) {
 function RemoteHostIcon({ className }: { className?: string }) {
   return (
     <svg
-      width={14}
-      height={14}
+      width={15}
+      height={15}
       viewBox="0 0 16 16"
       fill="none"
       stroke="currentColor"
@@ -177,8 +177,8 @@ export function HeroLocationWorkspacePicker({
   const [localProjectOpen, setLocalProjectOpen] = useState(false);
   const [locationQuery, setLocationQuery] = useState("");
   const [projectQuery, setProjectQuery] = useState("");
-  const [locationHighlight, setLocationHighlight] = useState(0);
-  const [projectHighlight, setProjectHighlight] = useState(0);
+  const [locationHighlight, setLocationHighlight] = useState(-1);
+  const [projectHighlight, setProjectHighlight] = useState(-1);
 
   const [flowOpen, setFlowOpen] = useState(false);
   const [pickingFolder, setPickingFolder] = useState(false);
@@ -354,11 +354,11 @@ export function HeroLocationWorkspacePicker({
     projectPanelRef,
   );
 
-  // Focus search inputs and reset queries/highlights on popover open.
+  // Focus search inputs and reset queries/highlights on popover open (no forced initial hover).
   useEffect(() => {
     if (!locationOpen) return;
     setLocationQuery("");
-    setLocationHighlight(0);
+    setLocationHighlight(-1);
     const frame = requestAnimationFrame(() => {
       locationSearchRef.current?.focus({ preventScroll: true });
     });
@@ -368,7 +368,7 @@ export function HeroLocationWorkspacePicker({
   useEffect(() => {
     if (!projectOpen) return;
     setProjectQuery("");
-    setProjectHighlight(0);
+    setProjectHighlight(-1);
     const frame = requestAnimationFrame(() => {
       projectSearchRef.current?.focus({ preventScroll: true });
     });
@@ -425,13 +425,13 @@ export function HeroLocationWorkspacePicker({
 
   useEffect(() => {
     setLocationHighlight((prev) =>
-      filteredLocations.length === 0 ? 0 : Math.min(prev, filteredLocations.length - 1),
+      filteredLocations.length === 0 ? -1 : prev >= filteredLocations.length ? 0 : prev,
     );
   }, [filteredLocations.length]);
 
   useEffect(() => {
     setProjectHighlight((prev) =>
-      projectRows.length === 0 ? 0 : Math.min(prev, projectRows.length - 1),
+      projectRows.length === 0 ? -1 : prev >= projectRows.length ? 0 : prev,
     );
   }, [projectRows.length]);
 
@@ -552,13 +552,17 @@ export function HeroLocationWorkspacePicker({
     if (filteredLocations.length === 0) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setLocationHighlight((i) => (i + 1) % filteredLocations.length);
+      setLocationHighlight((i) => (i < 0 ? 0 : (i + 1) % filteredLocations.length));
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setLocationHighlight((i) => (i - 1 + filteredLocations.length) % filteredLocations.length);
+      setLocationHighlight((i) =>
+        i < 0
+          ? filteredLocations.length - 1
+          : (i - 1 + filteredLocations.length) % filteredLocations.length,
+      );
     } else if (event.key === "Enter") {
       event.preventDefault();
-      const target = filteredLocations[locationHighlight];
+      const target = filteredLocations[locationHighlight >= 0 ? locationHighlight : 0];
       if (target !== undefined) handleSelectLocation(target);
     }
   };
@@ -567,13 +571,15 @@ export function HeroLocationWorkspacePicker({
     if (projectRows.length === 0) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setProjectHighlight((i) => (i + 1) % projectRows.length);
+      setProjectHighlight((i) => (i < 0 ? 0 : (i + 1) % projectRows.length));
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setProjectHighlight((i) => (i - 1 + projectRows.length) % projectRows.length);
+      setProjectHighlight((i) =>
+        i < 0 ? projectRows.length - 1 : (i - 1 + projectRows.length) % projectRows.length,
+      );
     } else if (event.key === "Enter") {
       event.preventDefault();
-      const target = projectRows[projectHighlight];
+      const target = projectRows[projectHighlight >= 0 ? projectHighlight : 0];
       if (target !== undefined) handleSelectProject(target.id);
     }
   };
@@ -625,9 +631,9 @@ export function HeroLocationWorkspacePicker({
         }}
       >
         {projectIsPlaceholder ? (
-          <IconFolderCloseRegular size={14} className={css.triggerIcon} />
+          <IconFolderCloseRegular size={15} className={css.triggerIcon} />
         ) : (
-          <IconFolderOpenOutlineRegular size={14} className={css.triggerIcon} />
+          <IconFolderOpenOutlineRegular size={15} className={css.triggerIcon} />
         )}
         <span className={css.triggerLabel}>{projectTriggerLabel}</span>
       </button>
@@ -647,7 +653,7 @@ export function HeroLocationWorkspacePicker({
             }}
           >
             <div className={css.searchRow}>
-              <IconSearchOutlineRegular size={14} className={css.searchIcon} />
+              <IconSearchOutlineRegular size={15} className={css.searchIcon} />
               <input
                 ref={locationSearchRef}
                 type="text"
@@ -659,7 +665,7 @@ export function HeroLocationWorkspacePicker({
                 autoComplete="off"
                 onChange={(event) => {
                   setLocationQuery(event.target.value);
-                  setLocationHighlight(0);
+                  setLocationHighlight(event.target.value.trim() === "" ? -1 : 0);
                 }}
                 onKeyDown={handleLocationSearchKeyDown}
               />
@@ -671,6 +677,7 @@ export function HeroLocationWorkspacePicker({
               className={css.list}
               role="listbox"
               aria-label={t("heroPicker.location.placeholder")}
+              onMouseLeave={() => setLocationHighlight(-1)}
             >
               {filteredLocations.length === 0 ? (
                 <div className={css.emptyState}>{t("heroPicker.location.empty")}</div>
@@ -699,7 +706,7 @@ export function HeroLocationWorkspacePicker({
                         <span className={css.rowStatus}>{statusText}</span>
                       )}
                       <span className={css.checkSlot}>
-                        {selected && <IconCheckOutlineRegular size={14} />}
+                        {selected && <IconCheckOutlineRegular size={15} />}
                       </span>
                     </button>
                   );
@@ -707,13 +714,13 @@ export function HeroLocationWorkspacePicker({
               )}
             </div>
 
-            <div className={css.divider} role="separator" />
+            <div className={css.footerDivider} role="separator" />
 
             <button type="button" className={css.footerAction} onClick={handleOpenRemoteSettings}>
               {hasRemoteLocations ? (
-                <IconSettingsOutlineRegular size={14} className={css.footerIcon} />
+                <IconSettingsOutlineRegular size={15} className={css.footerIcon} />
               ) : (
-                <IconPlusOutlineRegular size={14} className={css.footerIcon} />
+                <IconPlusOutlineRegular size={15} className={css.footerIcon} />
               )}
               <span>
                 {t(
@@ -742,7 +749,7 @@ export function HeroLocationWorkspacePicker({
             }}
           >
             <div className={css.searchRow}>
-              <IconSearchOutlineRegular size={14} className={css.searchIcon} />
+              <IconSearchOutlineRegular size={15} className={css.searchIcon} />
               <input
                 ref={projectSearchRef}
                 type="text"
@@ -754,7 +761,7 @@ export function HeroLocationWorkspacePicker({
                 autoComplete="off"
                 onChange={(event) => {
                   setProjectQuery(event.target.value);
-                  setProjectHighlight(0);
+                  setProjectHighlight(event.target.value.trim() === "" ? -1 : 0);
                 }}
                 onKeyDown={handleProjectSearchKeyDown}
               />
@@ -766,6 +773,7 @@ export function HeroLocationWorkspacePicker({
               className={css.list}
               role="listbox"
               aria-label={t("heroPicker.project.placeholder")}
+              onMouseLeave={() => setProjectHighlight(-1)}
             >
               {workspaceSnapshot.phase === "pending" && projectRows.length === 0 ? (
                 <div className={css.emptyState} role="status">
@@ -798,12 +806,15 @@ export function HeroLocationWorkspacePicker({
                       onMouseEnter={() => setProjectHighlight(index)}
                       onClick={() => handleSelectProject(entry.id)}
                     >
+                      <span className={css.rowIcon}>
+                        <IconFolderCloseRegular size={15} />
+                      </span>
                       <span className={css.rowMain}>
                         <span className={css.rowTitle}>{label}</span>
                         {hint !== undefined && <span className={css.rowHint}>{hint}</span>}
                       </span>
                       <span className={css.checkSlot}>
-                        {selected && <IconCheckOutlineRegular size={14} />}
+                        {selected && <IconCheckOutlineRegular size={15} />}
                       </span>
                     </button>
                   );
@@ -813,14 +824,14 @@ export function HeroLocationWorkspacePicker({
 
             {canCreateProjectOnActiveHost && (
               <>
-                <div className={css.divider} role="separator" />
+                <div className={css.footerDivider} role="separator" />
                 <button
                   type="button"
                   className={css.footerAction}
                   disabled={flowBusy}
                   onClick={handleNewProject}
                 >
-                  <IconPlusOutlineRegular size={14} className={css.footerIcon} />
+                  <IconPlusOutlineRegular size={15} className={css.footerIcon} />
                   <span>{t("heroPicker.project.new")}</span>
                 </button>
               </>

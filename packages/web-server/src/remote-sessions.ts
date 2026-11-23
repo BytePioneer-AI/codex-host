@@ -1188,11 +1188,11 @@ export class RemoteSessions {
       const identity = remoteSessionIdentity(id);
       if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
       let entry = this.entries.get(id);
-      let epoch = entry?.epoch ?? this.hosts.get(identity.hostId)?.epoch;
+      let epoch = this.hosts.get(identity.hostId)?.epoch ?? entry?.epoch;
       if (!epoch) {
         await this.refresh(identity.hostId);
         entry = this.entries.get(id);
-        epoch = entry?.epoch ?? this.hosts.get(identity.hostId)?.epoch;
+        epoch = this.hosts.get(identity.hostId)?.epoch ?? entry?.epoch;
       }
       if (!epoch) {
         await this.read(id);

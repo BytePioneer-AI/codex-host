@@ -193,6 +193,49 @@ it("recovers gracefully from corrupt remote-peers-v1.json, skips 0.0.0 version, 
     ),
     (err: unknown) => err instanceof PeerEndpointError && err.status === 403,
   );
+  // Tilde and relative paths are rejected consistently across /dirs and /workspaces.
+  for (const relativeOrTilde of ["~/../..", "~/../../etc", "../outside"]) {
+    await assert.rejects(
+      peerEndpoint(
+        "POST",
+        new URL("http://localhost/api/peer/v1/workspaces"),
+        { path: relativeOrTilde },
+        ws,
+        rpc,
+        "epoch-1",
+        "1",
+        [root],
+      ),
+      (err: unknown) => err instanceof PeerEndpointError && err.status === 400,
+    );
+    await assert.rejects(
+      peerEndpoint(
+        "GET",
+        new URL(`http://localhost/api/peer/v1/dirs?path=${encodeURIComponent(relativeOrTilde)}`),
+        {},
+        ws,
+        rpc,
+        "epoch-1",
+        "1",
+        [root],
+      ),
+      (err: unknown) => err instanceof PeerEndpointError && err.status === 400,
+    );
+    await assert.rejects(
+      peerEndpoint(
+        "POST",
+        new URL("http://localhost/api/peer/v1/dirs"),
+        { parentPath: relativeOrTilde, name: "nope" },
+        ws,
+        rpc,
+        "epoch-1",
+        "1",
+        [root],
+      ),
+      (err: unknown) => err instanceof PeerEndpointError && err.status === 400,
+    );
+  }
+  assert.equal(ws.list().filter((w) => !w.remote).length, 0);
 });
 it("pairs authenticated mobile callers with independent peers and recovers event streams", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "hub-"));

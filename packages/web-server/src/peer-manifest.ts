@@ -140,6 +140,9 @@ export async function peerEndpoint(
   if (method === "GET" && route === "manifest") return manifest();
   if (route === "dirs" && method === "GET") {
     const rawPath = url.searchParams.get("path");
+    if (rawPath !== null && rawPath.length > 0 && !isAbsolute(rawPath)) {
+      throw new PeerEndpointError(400, "Directory path must be absolute");
+    }
     const path = resolve(rawPath !== null && rawPath.length > 0 ? rawPath : homedir());
     try {
       const roots = await collectAllowedRoots();
@@ -196,6 +199,9 @@ export async function peerEndpoint(
     if (name === "." || name === ".." || /[\\/\0]/u.test(name)) {
       throw new PeerEndpointError(400, "Invalid directory name");
     }
+    if (!isAbsolute(parentPath)) {
+      throw new PeerEndpointError(400, "Parent directory path must be absolute");
+    }
     try {
       const roots = await collectAllowedRoots();
       const resolvedParent = resolve(parentPath);
@@ -219,9 +225,16 @@ export async function peerEndpoint(
     try {
       if (method === "POST") {
         const p = c.remotePeerCreateWorkspaceParamsSchema.omit({ peerId: true }).parse(body);
+        if (!isAbsolute(p.path)) {
+          throw new PeerEndpointError(400, "Workspace path must be absolute");
+        }
         const roots = await collectAllowedRoots();
-        await assertWithinAllowedRoots(p.path, roots, "Workspace path is outside allowed roots");
-        workspaceId = workspaces.create(p.path).workspace.workspaceId;
+        const canonicalPath = await assertWithinAllowedRoots(
+          p.path,
+          roots,
+          "Workspace path is outside allowed roots",
+        );
+        workspaceId = workspaces.create(canonicalPath).workspace.workspaceId;
         title = p.title;
       } else if (method === "PATCH") {
         ({ workspaceId, title } = c.remotePeerRenameWorkspaceParamsSchema

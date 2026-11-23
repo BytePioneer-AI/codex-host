@@ -109,6 +109,7 @@ export class ChSessions {
   private refreshingTiming: SessionListTiming | undefined;
   private catalogReadAt = -Infinity;
   private timer?: NodeJS.Timeout;
+  private idleViewTimer?: NodeJS.Timeout;
   private closed = false;
   private readonly realtime: ChRealtime | undefined;
   private readonly skills: WebSkills;
@@ -494,6 +495,26 @@ export class ChSessions {
       log?.setProjection("threadTreeParent", this.tree.parent(id));
       log?.setProjection("archiveForkParent", this.archiveForkParent(row));
       log?.setProjection("codexhostImportSource", row.codexhostImportSource ?? null);
+    }
+    // A Thread whose view was dropped has no journal to publish through, yet browsers
+    // keep its sequenced values. Publish at the sequence reserved below its next view.
+    for (const { sessionId, projections } of changed) {
+      const origin = this.threads.get(sessionId)?.viewOrigin;
+      if (origin === undefined || this.threads.view(sessionId)) continue;
+      for (const key of [
+        "title",
+        "threadTreeParent",
+        "archiveForkParent",
+        "codexhostImportSource",
+      ] as const)
+        for (const sink of this.controls)
+          sink.push({
+            type: "projection",
+            sessionId,
+            key,
+            value: projections.values[key],
+            seq: origin - 1,
+          });
     }
     for (const row of changed) this.events.emit("api-session/added", row);
     if (before)
@@ -1788,6 +1809,13 @@ export class ChSessions {
       }
     }, 10000);
     this.timer.unref();
+    this.idleViewTimer = setInterval(() => {
+      this.threads.discardIdleViews(
+        Date.now(),
+        (id) => this.rows.get(id)?.status.type === "active",
+      );
+    }, 60_000);
+    this.idleViewTimer.unref();
   }
 
   registerCommands(rpc: RpcRegistry): void {
@@ -1928,6 +1956,7 @@ export class ChSessions {
     this.realtime?.close();
     this.interactions?.clear();
     clearInterval(this.timer);
+    clearInterval(this.idleViewTimer);
     this.host.close();
     for (const sink of this.controls) sink.end();
   }

@@ -7,7 +7,13 @@ import type { ClientThreadSnapshot } from "@codexhost/shared-contracts";
 import { ChSessions } from "../src/ch-sessions.ts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
-import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
+import {
+  EventHub,
+  RpcRegistry,
+  StreamRegistry,
+  type StreamHandler,
+  type StreamSink,
+} from "../src/transport.ts";
 import { FakeChChannel } from "./support/ch-channel.ts";
 import { nativeCodex } from "./support/native-codex.ts";
 
@@ -158,5 +164,131 @@ it("keeps queue projection watermarks increasing after native history is rebuilt
     assert.ok(consumed.asOfSeq >= rebuilt.asOfSeq);
     assert.deepEqual(consumed.values.inbox["next-turn"], []);
     previous = consumed;
+  }
+});
+
+it("drops a view nobody followed for ten minutes and reopens it above the browser's cursor", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1_800_000_000_000 });
+  const directory = mkdtempSync(join(tmpdir(), "ch-idle-view-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const host = new FakeChChannel();
+  const idle = host.add("idle", directory, "Idle title");
+  const followed = host.add("followed", directory);
+  const running = host.add("running", directory);
+  running.status = { type: "active" };
+  const sessions = new ChSessions(
+    host,
+    new Workspaces(new DataDir(directory), directory),
+    new EventHub(directory),
+  );
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  const endpoints = new Map<string, StreamHandler>();
+  const streams = new StreamRegistry();
+  streams.register = (name, handler) => endpoints.set(name, handler);
+  sessions.register(rpc, streams);
+  interface Frame {
+    type: string;
+    sessionId?: string;
+    key?: string;
+    value?: unknown;
+    seq?: number;
+    epoch?: string;
+    resumedAfter?: number;
+    cursor?: number;
+    records?: Array<{ event: { seq: number; type: string; data: unknown } }>;
+    projections?: { asOfSeq: number; values: Record<string, unknown> };
+  }
+  const open = async (endpoint: string, request: object = {}) => {
+    const frames: Frame[] = [];
+    const cleanups: Array<() => void> = [];
+    let closed = false;
+    const sink: StreamSink = {
+      id: "browser",
+      get closed() {
+        return closed;
+      },
+      push: (frame) => frames.push(structuredClone(frame) as Frame),
+      onClose: (cleanup) => cleanups.push(cleanup),
+      end: () => {
+        closed = true;
+        for (const cleanup of cleanups.splice(0)) cleanup();
+      },
+      fail: (code, message) => {
+        throw new Error(`${code}: ${message}`);
+      },
+    };
+    t.after(() => sink.end());
+    await endpoints.get(endpoint)?.({ request }, sink);
+    return { frames, close: () => sink.end() };
+  };
+  const follow = async (id: string, resume?: { epoch: string; cursor: number }) => {
+    const stream = await open("session/follow", { address: { sessionId: id }, resume });
+    const snapshot = stream.frames[0];
+    assert.equal(snapshot?.type, "snapshot");
+    return { ...stream, snapshot: snapshot as Required<Frame> };
+  };
+  // Turn coordinates and message identities belong to one journal generation.
+  const history = (snapshot: Frame) =>
+    snapshot.records?.map(({ event }) => [
+      event.type,
+      JSON.stringify(event.data, (key, value: unknown) =>
+        key === "id" || key === "turn" ? undefined : value,
+      ),
+    ]);
+  const list = async () => assert.ok((await rpc.dispatch("session/list", { args: {} })).ok);
+  const control = await open("session/control");
+  const titles = () =>
+    control.frames.filter((frame) => frame.sessionId === idle.id && frame.key === "title");
+  await list();
+  const first = {
+    idle: await follow(idle.id),
+    followed: await follow(followed.id),
+    running: await follow(running.id),
+  };
+  first.idle.close();
+  first.running.close();
+  const resumeFrom = (opened: typeof first.idle) => ({
+    epoch: opened.snapshot.epoch,
+    cursor: opened.snapshot.cursor,
+  });
+  const minutes = async (count: number) => {
+    for (let minute = 0; minute < count; minute++) {
+      t.mock.timers.tick(60_000);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  };
+
+  // The first check starts the ten minutes, so the tenth still finds the view.
+  await minutes(10);
+  const warm = await follow(idle.id, resumeFrom(first.idle));
+  assert.equal(warm.snapshot.resumedAfter, first.idle.snapshot.cursor);
+  warm.close();
+  await minutes(10);
+  const reads = host.snapshots;
+
+  // Browsers keep the dropped Thread's sequenced title; the catalog still replaces it.
+  idle.name = "Renamed while dropped";
+  await list();
+  const renamed = titles().at(-1);
+  assert.equal(renamed?.value, idle.name);
+  assert.ok((renamed?.seq ?? 0) > first.idle.snapshot.cursor);
+  assert.equal(host.snapshots, reads, "a dropped view is not read until it is reopened");
+
+  const reopened = await follow(idle.id, resumeFrom(first.idle));
+  assert.notEqual(reopened.snapshot.epoch, first.idle.snapshot.epoch);
+  assert.equal(reopened.snapshot.resumedAfter, undefined);
+  assert.deepEqual(history(reopened.snapshot), history(first.idle.snapshot));
+  assert.ok((reopened.snapshot.records?.[0]?.event.seq ?? 0) > first.idle.snapshot.cursor);
+  assert.ok(reopened.snapshot.projections.asOfSeq >= (renamed?.seq ?? 0));
+  assert.equal(reopened.snapshot.projections.values.title, idle.name);
+
+  // A followed view and a running Thread's view keep their generation.
+  for (const [row, kept] of [
+    [followed, first.followed],
+    [running, first.running],
+  ] as const) {
+    const again = await follow(row.id, resumeFrom(kept));
+    assert.equal(again.snapshot.resumedAfter, kept.snapshot.cursor);
   }
 });

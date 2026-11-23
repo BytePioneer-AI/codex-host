@@ -176,6 +176,8 @@ export interface WorkspaceThreadSection {
   readonly id: string;
   readonly name: string;
   readonly threadIds: readonly SessionId[];
+  /** Workspaces of the Desktop projects placed in this section, in Desktop order. */
+  readonly workspaceIds?: readonly WorkspaceId[];
 }
 
 /** Complete reconnect baseline for Workspace browser state. */

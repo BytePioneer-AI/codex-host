@@ -323,7 +323,6 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   #permissionMode: OpenCodePermissionMode;
   #phase: SessionPhase = "open";
   #session: Session;
-  #snapshot: HostThreadSnapshot;
   #state: HarnessSessionState;
   #usage: HostUsage | null;
   #variant: string | undefined;
@@ -343,7 +342,6 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   }) {
     this.#transport = input.transport;
     this.#session = input.projection.session;
-    this.#snapshot = input.projection.snapshot;
     this.#providerCatalog = input.providerCatalog;
     this.#modelCatalog = input.modelCatalog;
     this.#model = input.projection.model;
@@ -420,7 +418,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
         this.#modelCatalog.index,
       );
       this.#applyProjection(projection);
-      return { ok: true, value: { ...this.#snapshot, state: this.#state } };
+      return { ok: true, value: { ...projection.snapshot, state: this.#state } };
     } catch (error) {
       return { ok: false, error: normalizeError(error, "nativeFailure") };
     }
@@ -1396,7 +1394,6 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   ): void {
     const previousState = this.#state;
     this.#session = projection.session;
-    this.#snapshot = projection.snapshot;
     for (const { info } of projection.messages) {
       if (info.role === "user") this.#knownUserMessageIds.add(info.id);
     }

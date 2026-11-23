@@ -119,25 +119,42 @@ export class PushNotifier {
       this.save();
       return { subscribed: false, subscriptions: this.subscriptions.length };
     });
-    rpc.register("codexhost/pushTest", async () => {
-      const sent = await this.notify({
-        kind: "test",
-        title: "通知测试",
-        body: "这台设备可以正常接收通知。",
-        tag: "codexhost-test",
-      });
+    rpc.register("codexhost/pushTest", async (args, context) => {
+      const endpoint = args.endpoint;
+      if (typeof endpoint !== "string" || endpoint.trim().length === 0)
+        throw new RpcError(
+          "push/invalid-subscription",
+          "A PushSubscription endpoint is required",
+          {},
+        );
+      const subscription = this.subscriptions.find((entry) => entry.endpoint === endpoint);
+      if (!subscription || (context.auth && subscription.owner !== context.auth.credential))
+        return { sent: 0 };
+      const sent = await this.notify(
+        {
+          kind: "test",
+          title: "通知测试",
+          body: "这台设备可以正常接收通知。",
+          tag: "codexhost-test",
+        },
+        endpoint,
+      );
       return { sent };
     });
   }
 
   /** Deliver one message to every subscription; drops subscriptions the push service rejects as gone. */
-  async notify(message: PushMessage): Promise<number> {
-    if (this.subscriptions.length === 0) return 0;
+  async notify(message: PushMessage, endpoint?: string): Promise<number> {
+    const subscriptions =
+      endpoint === undefined
+        ? this.subscriptions
+        : this.subscriptions.filter((entry) => entry.endpoint === endpoint);
+    if (subscriptions.length === 0) return 0;
     const payload = JSON.stringify(message);
     let sent = 0;
     const gone: string[] = [];
     await Promise.all(
-      this.subscriptions.map(async (subscription) => {
+      subscriptions.map(async (subscription) => {
         try {
           // web-push's explicit proxy works even before Node's HTTPS environment-proxy support.
           const proxy =

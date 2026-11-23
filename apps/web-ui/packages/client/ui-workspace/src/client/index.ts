@@ -462,8 +462,8 @@ export function apply(ctx: Context): void {
     refreshSessions: () => {
       void sessions.refresh();
     },
-    loadMoreSessions: () => {
-      void sessions.loadMore();
+    loadMoreSessions: (workspaceId) => {
+      void sessions.loadMore(workspaceId);
     },
     searchResultLimit: sessions.searchResultLimit,
     requestSessionRename,

@@ -2,7 +2,7 @@ import {
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   rendererHarnessMessages,
@@ -14,6 +14,10 @@ import {
   rendererPermissionModeMenuPlacement,
   rendererPermissionModeSelectionFailed,
 } from "../src/renderer-permission-mode-picker.js";
+import {
+  ensureRendererTriggerChipStyle,
+  observeRendererCompactComposer,
+} from "../src/renderer-trigger-chip-style.js";
 
 const catalog = harnessPermissionModeCatalogSchema.parse({
   modes: [
@@ -457,5 +461,80 @@ describe("Renderer Permission Mode picker presentation", () => {
     expect(rendererHarnessMessages("zh-CN").permissionModeFixedAtCreate).toBe(
       "此权限模式在会话创建时确定，如需更改请新建会话",
     );
+  });
+
+  it("collapses permission mode labels before the full compact composer threshold", () => {
+    let width = 640;
+    const attributes = new Set<string>();
+    let resizeCallback: (() => void) | undefined;
+    const disconnect = vi.fn();
+    class FakeResizeObserver {
+      constructor(callback: () => void) {
+        resizeCallback = callback;
+      }
+      observe(): void {}
+      disconnect(): void {
+        disconnect();
+      }
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    try {
+      const composer = {
+        getBoundingClientRect: () => ({ width }),
+        toggleAttribute: (name: string, force?: boolean) => {
+          if (force) attributes.add(name);
+          else attributes.delete(name);
+          return force ?? false;
+        },
+        removeAttribute: (name: string) => {
+          attributes.delete(name);
+        },
+      } as unknown as Element;
+
+      const stop = observeRendererCompactComposer(composer);
+      expect([...attributes]).toEqual([]);
+
+      width = 560;
+      resizeCallback?.();
+      expect([...attributes]).toEqual(["data-codexhost-compact-permission-composer"]);
+
+      width = 420;
+      resizeCallback?.();
+      expect([...attributes].sort()).toEqual([
+        "data-codexhost-compact-composer",
+        "data-codexhost-compact-permission-composer",
+      ]);
+
+      width = 620;
+      resizeCallback?.();
+      expect([...attributes]).toEqual([]);
+
+      width = 500;
+      resizeCallback?.();
+      stop();
+      expect(disconnect).toHaveBeenCalledTimes(1);
+      expect([...attributes]).toEqual([]);
+
+      let injectedStyle = "";
+      const fakeDocument = {
+        querySelector: () => null,
+        createElement: () => ({
+          setAttribute: () => {},
+          set textContent(value: string) {
+            injectedStyle = value;
+          },
+        }),
+        head: { append: () => {} },
+      } as unknown as Document;
+      ensureRendererTriggerChipStyle(fakeDocument);
+      expect(injectedStyle).toContain(
+        "[data-codexhost-compact-permission-composer] [data-codexhost-permission-label]",
+      );
+      expect(injectedStyle).toContain(
+        "[data-codexhost-compact-permission-composer] [data-codexhost-permission-chevron]",
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

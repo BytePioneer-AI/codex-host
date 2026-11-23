@@ -464,6 +464,7 @@ export class UsageStatistics {
   }
 
   async #readCaches(): Promise<void> {
+    await this.#removeOutdatedCaches();
     let names: string[];
     try {
       names = await readdir(this.#directory);
@@ -501,6 +502,27 @@ export class UsageStatistics {
         // A broken cache file is rebuilt from native storage.
       }
       await yieldToEventLoop();
+    }
+  }
+
+  /**
+   * Caches of older formats are never read again. The previous format is kept so a
+   * downgraded or concurrently running older Host still starts warm; newer ones are left alone.
+   */
+  async #removeOutdatedCaches(): Promise<void> {
+    let names: string[];
+    try {
+      names = await readdir(this.#options.directory);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const version = /^v(\d+)$/.exec(name)?.[1];
+      if (version === undefined || Number(version) >= CACHE_VERSION - 1) continue;
+      await rm(path.join(this.#options.directory, name), { recursive: true, force: true }).catch(
+        (error: unknown) =>
+          this.#options.diagnose?.(`Usage statistics old cache ${name}: ${message(error)}`),
+      );
     }
   }
 

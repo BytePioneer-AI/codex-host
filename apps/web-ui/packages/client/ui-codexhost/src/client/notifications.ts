@@ -71,6 +71,13 @@ export async function disableNotifications(): Promise<NotificationState> {
   return "off";
 }
 
+export async function sendTestNotification(): Promise<boolean> {
+  const worker = await navigator.serviceWorker.getRegistration("./");
+  const subscription = await worker?.pushManager.getSubscription();
+  if (!subscription) return false;
+  return (await pushApi.test(subscription.endpoint)).sent > 0;
+}
+
 /** Keep the service worker installed so notification clicks can reach the app. */
 export function ensureServiceWorker(): void {
   if (!("serviceWorker" in navigator)) return;

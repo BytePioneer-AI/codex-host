@@ -83,6 +83,26 @@ export function claudeModelValue(ref: HarnessModelRef): string | undefined {
   return id === "default" ? undefined : id;
 }
 
+interface FableCatalogCandidate {
+  ref: HarnessModelRef;
+  version: readonly bigint[];
+  date: number | undefined;
+}
+
+function compareFableCandidate(left: FableCatalogCandidate, right: FableCatalogCandidate): number {
+  const length = Math.max(left.version.length, right.version.length);
+  for (let index = 0; index < length; index++) {
+    const leftPart = left.version[index] ?? 0n;
+    const rightPart = right.version[index] ?? 0n;
+    if (leftPart !== rightPart) return leftPart < rightPart ? -1 : 1;
+  }
+  // An undated release outranks a pinned YYYYMMDD snapshot of the same version.
+  const leftDate = left.date ?? Number.POSITIVE_INFINITY;
+  const rightDate = right.date ?? Number.POSITIVE_INFINITY;
+  if (leftDate !== rightDate) return leftDate < rightDate ? -1 : 1;
+  return 0;
+}
+
 export function normalizeStoredClaudeModelRef(
   ref: HarnessModelRef,
   catalog: HarnessModelCatalog,
@@ -101,12 +121,34 @@ export function normalizeStoredClaudeModelRef(
   const alias = /^(?:claude-)?fable(?: *(\[1m\]))?$/iu.exec(id);
   if (!alias) return undefined;
 
-  // A missing alias can only be restored to a unique catalog entry of the same variant.
-  const matches = catalog.models.filter(({ ref }) => {
-    const fable = /^claude-fable-\d+(?:-\d+)*(?: *(\[1m\]))?$/iu.exec(ref.id);
-    return !ref.serviceTier && fable && Boolean(fable[1]) === Boolean(alias[1]);
-  });
-  return matches.length === 1 ? matches[0]?.ref : undefined;
+  // A missing floating alias resolves to the latest versioned catalog entry of the same variant.
+  let best: FableCatalogCandidate | undefined;
+  let tied = false;
+  for (const { ref: candidateRef } of catalog.models) {
+    if (candidateRef.serviceTier) continue;
+    const fable = /^claude-fable-(\d+(?:-\d+)*?)(?:-(\d{8}))?(?: *(\[1m\]))?$/iu.exec(
+      candidateRef.id,
+    );
+    const versionText = fable?.[1];
+    if (!fable || !versionText || Boolean(fable[3]) !== Boolean(alias[1])) continue;
+    const candidate: FableCatalogCandidate = {
+      ref: candidateRef,
+      version: versionText.split("-").map((part) => BigInt(part)),
+      date: fable[2] === undefined ? undefined : Number(fable[2]),
+    };
+    if (!best) {
+      best = candidate;
+      continue;
+    }
+    const order = compareFableCandidate(candidate, best);
+    if (order > 0) {
+      best = candidate;
+      tied = false;
+    } else if (order === 0) {
+      tied = true;
+    }
+  }
+  return tied ? undefined : best?.ref;
 }
 
 export function resolveClaudeConfigDirectory(environment: NodeJS.ProcessEnv = process.env): string {

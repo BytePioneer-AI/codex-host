@@ -25,6 +25,8 @@ export const TRIGGER_CHIP_CLASS = "codexhost-trigger-chip";
 export const TRIGGER_CHIP_ROOT_CLASS = "codexhost-trigger-chip-root";
 const COMPACT_COMPOSER_ATTRIBUTE = "data-codexhost-compact-composer";
 const COMPACT_COMPOSER_WIDTH = 420;
+const COMPACT_PERMISSION_COMPOSER_ATTRIBUTE = "data-codexhost-compact-permission-composer";
+const COMPACT_PERMISSION_COMPOSER_WIDTH = 600;
 
 /** Floor so a squeezed chip remains clickable. */
 export const TRIGGER_CHIP_SQUEEZE_MIN_WIDTH = "48px";
@@ -83,17 +85,24 @@ export function observeRendererCompactComposer(composer: Element): () => void {
   const update = (): void => {
     const width = composer.getBoundingClientRect().width;
     if (width > 0) {
+      composer.toggleAttribute(
+        COMPACT_PERMISSION_COMPOSER_ATTRIBUTE,
+        width <= COMPACT_PERMISSION_COMPOSER_WIDTH,
+      );
       composer.toggleAttribute(COMPACT_COMPOSER_ATTRIBUTE, width <= COMPACT_COMPOSER_WIDTH);
     }
   };
+  const clear = (): void => {
+    composer.removeAttribute(COMPACT_PERMISSION_COMPOSER_ATTRIBUTE);
+    composer.removeAttribute(COMPACT_COMPOSER_ATTRIBUTE);
+  };
   update();
-  if (typeof ResizeObserver === "undefined")
-    return () => composer.removeAttribute(COMPACT_COMPOSER_ATTRIBUTE);
+  if (typeof ResizeObserver === "undefined") return clear;
   const observer = new ResizeObserver(update);
   observer.observe(composer, { box: "border-box" });
   return () => {
     observer.disconnect();
-    composer.removeAttribute(COMPACT_COMPOSER_ATTRIBUTE);
+    clear();
   };
 }
 
@@ -138,19 +147,25 @@ export function ensureRendererTriggerChipStyle(ownerDocument: Document): void {
     [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-model-control] [data-codexhost-model-thinking] {
       display: none !important;
     }
+    [${COMPACT_PERMISSION_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control],
     [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control] {
       min-width: 30px !important;
       max-width: 30px !important;
     }
+    [${COMPACT_PERMISSION_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control] .${TRIGGER_CHIP_CLASS},
     [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control] .${TRIGGER_CHIP_CLASS} {
       padding-inline: 6px !important;
     }
+    [${COMPACT_PERMISSION_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-label],
+    [${COMPACT_PERMISSION_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-chevron],
     [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-label],
     [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-chevron],
     [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-credits-label],
     [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-usage-label] {
       display: none !important;
     }
+    [${COMPACT_PERMISSION_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control]:has([data-codexhost-permission-lock]:not([hidden])) [data-codexhost-permission-shield],
+    [${COMPACT_PERMISSION_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control]:has([data-codexhost-permission-error]:not([hidden])) [data-codexhost-permission-shield],
     [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control]:has([data-codexhost-permission-lock]:not([hidden])) [data-codexhost-permission-shield],
     [${COMPACT_COMPOSER_ATTRIBUTE}] [data-codexhost-permission-mode-control]:has([data-codexhost-permission-error]:not([hidden])) [data-codexhost-permission-shield] {
       display: none !important;

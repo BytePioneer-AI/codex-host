@@ -2,7 +2,6 @@ import { harnessPermissionModeIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 import {
   ANTIGRAVITY_ACP_SESSION_MODES,
-  ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID,
   ANTIGRAVITY_PERMISSION_MODE_CATALOG,
   decodeAntigravityPermissionModeId,
   isAntigravityAcpSessionMode,
@@ -21,7 +20,7 @@ describe("native ACP permission modes", () => {
     expect(ANTIGRAVITY_PERMISSION_MODE_CATALOG.modes.find(({ id }) => id === skip)?.dangerous).toBe(
       true,
     );
-    expect(ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID).toBe("default");
+    expect(ANTIGRAVITY_PERMISSION_MODE_CATALOG.defaultModeId).toBe(skip);
   });
   it.each([null, undefined, 1, {}, "default ", "bypassPermissions", "all"])(
     "rejects non-native mode %j",

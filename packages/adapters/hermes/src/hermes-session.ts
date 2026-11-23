@@ -729,7 +729,10 @@ export class HermesSession implements HarnessSession {
         nativeTurnKey: active.turnKey,
         formatVersion: 1,
       });
-    const turnSnapshot = active.toSnapshot(nativeTurnRef, outcome, true);
+    const turnSnapshot =
+      active.persistsHistory && !this.#transport.readNativeSnapshot
+        ? active.toSnapshot(nativeTurnRef, outcome, true)
+        : null;
     for (const pending of active.drainPendingItems()) {
       this.#emit({ type: "item.completed", turnId: active.turnId, snapshot: pending });
     }
@@ -745,7 +748,7 @@ export class HermesSession implements HarnessSession {
         : {}),
       outcome,
     });
-    if (active.persistsHistory) this.#completedTurns.push(turnSnapshot);
+    if (turnSnapshot) this.#completedTurns.push(turnSnapshot);
     void this.#usage.refresh(true);
   }
 

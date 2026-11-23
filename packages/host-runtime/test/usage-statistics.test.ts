@@ -616,6 +616,22 @@ describe("UsageStatistics", () => {
     expect((await settledGet(next)).totals.requests).toBe(2);
     expect(storage.reads).toEqual(["one"]);
   });
+
+  it("removes caches older than the previous format and keeps the previous and newer ones", async () => {
+    const root = path.join(directory, "usage-statistics");
+    for (const name of ["v1", "v6", "v7", "v9"]) {
+      await mkdir(path.join(root, name), { recursive: true });
+      await writeFile(path.join(root, name, "pi.json"), "{}");
+    }
+    const storage = new FakeStorage(
+      new Map([["one", { fingerprint: "1", entries: [entry("a")] }]]),
+    );
+    const usage = statistics();
+    usage.attach(() => [{ harness: "antigravity", capability: storage }]);
+    await settledGet(usage);
+    expect((await readdir(root)).sort()).toEqual(["v7", "v8", "v9"]);
+  });
+
   it("rebuilds a deleted or broken cache from native storage", async () => {
     const storage = new FakeStorage(
       new Map([["one", { fingerprint: "1", entries: [entry("a")] }]]),

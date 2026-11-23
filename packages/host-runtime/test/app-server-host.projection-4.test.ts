@@ -345,7 +345,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 4,
       method: "thread/name/set",
-      params: { threadId, name: "Automatic title", codexhostIfUnnamed: true },
+      params: { threadId, name: "Automatic title", codexhostAutoTitle: "generated" },
     });
     await expect(fixture.collector.waitFor((message) => requestId(message, 4))).resolves.toEqual({
       id: 4,
@@ -363,9 +363,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it.each([false, true])(
-    "uses the native title for an unnamed Thread (renamed: %s)",
-    async (renamed) => {
+  it.each(["unnamed", "fallback", "renamed"] as const)(
+    "applies a native title according to the existing title source (%s)",
+    async (existing) => {
       const fixture = createFixture();
       try {
         const threadId = await startPiThread(fixture);
@@ -373,13 +373,30 @@ describe("AppServerHost HarnessAdapter projection", () => {
         if (!session) throw new Error("Fake Session was not opened");
         const nativeTitle = "Native task title";
         const userTitle = "User title";
+        const renamed = existing === "renamed";
+        if (existing !== "unnamed") {
+          writeRequest(fixture.desktopInput, {
+            id: 5,
+            method: "thread/name/set",
+            params: { threadId, name: "First prompt", codexhostAutoTitle: "fallback" },
+          });
+          await fixture.collector.waitFor(
+            (message) =>
+              method(message, "thread/name/updated") &&
+              messageParams(message).threadName === "First prompt",
+          );
+        }
         if (renamed) {
           writeRequest(fixture.desktopInput, {
             id: 2,
             method: "thread/name/set",
             params: { threadId, name: userTitle },
           });
-          await fixture.collector.waitFor((message) => method(message, "thread/name/updated"));
+          await fixture.collector.waitFor(
+            (message) =>
+              method(message, "thread/name/updated") &&
+              messageParams(message).threadName === userTitle,
+          );
         }
 
         const changes: string[] = [];

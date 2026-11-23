@@ -151,7 +151,7 @@ import {
   THREAD_QUEUE_START_IF_EMPTY_PARAM,
   THREAD_STEERING_CONTEXT_PARAM,
   THREAD_STEER_DELIVERY_PARAM,
-  THREAD_NAME_IF_UNNAMED_PARAM,
+  THREAD_NAME_AUTO_SOURCE_PARAM,
   THREAD_STEER_STRICT_TARGET_PARAM,
   REASONING_TRANSCRIPT_COMMAND,
   permissionModeFixedAtCreate,
@@ -5376,14 +5376,22 @@ export class AppServerHost {
       );
       return;
     }
-    const ifUnnamed = requestObject(request)[THREAD_NAME_IF_UNNAMED_PARAM] === true;
+    const automatic = requestObject(request)[THREAD_NAME_AUTO_SOURCE_PARAM];
+    if (automatic !== undefined && automatic !== "generated" && automatic !== "fallback") {
+      await this.#writer.json(rpcError(request, -32602, "Invalid automatic Thread title source"));
+      return;
+    }
+    const ifUnnamed = automatic !== undefined;
     if (ifUnnamed && location.record.title) {
       await this.#writer.json(rpcEnvelope(request, { result: {} }));
       return;
     }
     let record: StoredThreadRecordV1;
     try {
-      record = await this.#repository.setTitle(location.record.hostThreadId, name, { ifUnnamed });
+      record = await this.#repository.setTitle(location.record.hostThreadId, name, {
+        ifUnnamed,
+        ...(automatic === "fallback" ? { source: "prompt-fallback" } : {}),
+      });
     } catch {
       await this.#writer.json(
         rpcError(request, -32081, "External Thread title could not be persisted"),
@@ -6802,13 +6810,16 @@ export class AppServerHost {
       if (
         this.#externalRuntime.get(thread.id) !== thread ||
         thread.record.state !== "ready" ||
-        thread.record.title ||
+        (thread.record.title && !thread.record.titleIsPromptFallback) ||
         typeof event.title !== "string" ||
         !event.title.trim()
       )
         return;
       try {
-        const record = await this.#repository.setTitle(thread.id, event.title, { ifUnnamed: true });
+        const record = await this.#repository.setTitle(thread.id, event.title, {
+          ifUnnamed: true,
+          source: "native",
+        });
         if (record.title !== event.title) return;
         thread.record = record;
         thread.thread.name = record.title;

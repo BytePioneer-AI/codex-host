@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /** Conditional thread/name/set for automatic titles on external Threads. */
-export const THREAD_NAME_IF_UNNAMED_PARAM = "codexhostIfUnnamed";
+export const THREAD_NAME_AUTO_SOURCE_PARAM = "codexhostAutoTitle";
 
 export const threadTitleInputSchema = z.strictObject({
   prompt: z.string().trim().min(1).max(2000),

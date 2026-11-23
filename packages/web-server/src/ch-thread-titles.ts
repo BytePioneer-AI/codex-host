@@ -1,4 +1,7 @@
-import { THREAD_NAME_IF_UNNAMED_PARAM, threadTitleResultSchema } from "@codexhost/shared-contracts";
+import {
+  THREAD_NAME_AUTO_SOURCE_PARAM,
+  threadTitleResultSchema,
+} from "@codexhost/shared-contracts";
 import type { ChHostClient } from "./ch-host-client.ts";
 import type { ChThread } from "./ch-thread-view.ts";
 
@@ -40,7 +43,9 @@ export async function tryGenerateThreadTitle(
     await host.request("thread/name/set", {
       threadId: row.id,
       name: title,
-      ...(external ? { [THREAD_NAME_IF_UNNAMED_PARAM]: true } : {}),
+      ...(external
+        ? { [THREAD_NAME_AUTO_SOURCE_PARAM]: generated === null ? "fallback" : "generated" }
+        : {}),
     });
     return true;
   } catch {

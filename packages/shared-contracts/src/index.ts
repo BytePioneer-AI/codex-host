@@ -456,7 +456,7 @@ export {
 } from "./remote-connections.js";
 
 export {
-  THREAD_NAME_IF_UNNAMED_PARAM,
+  THREAD_NAME_AUTO_SOURCE_PARAM,
   threadTitleInputSchema,
   threadTitleResultSchema,
   type ThreadTitleInput,

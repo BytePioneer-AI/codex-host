@@ -20,6 +20,8 @@
   gap: 12px;
   max-width: 100%;
   padding-top: 4px;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .hero .dock:empty {
@@ -294,6 +296,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   pointer-events: none;
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -353,6 +356,8 @@
      on purpose: CSS modules hash container-name per module, so a name declared
      here can never match a query in another module's sheet. */
   container-type: inline-size;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .row[data-model-compact] {

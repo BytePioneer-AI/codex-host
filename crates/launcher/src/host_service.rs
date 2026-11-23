@@ -294,7 +294,7 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
                 let _ = fs::remove_file(&node_ready);
             }
             // Retain exact descendant identities before a root crash reparents them.
-            child.has_live_processes()?;
+            child.retain_descendants()?;
             if published
                 && let Err(error) = crate::active_update::start_pending_service_update(
                     &mut started_update,

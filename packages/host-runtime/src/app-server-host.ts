@@ -6694,9 +6694,13 @@ export class AppServerHost {
     }
     let event = output.event;
     if (event.type === "turn.modelFallback") {
-      if (thread.modelFallback?.id === event.fallback.id) return;
       await waitForTurnResponse(thread, event.turnId);
-      if (this.#externalRuntime.get(thread.id) !== thread) return;
+      const turn = thread.projectedTurns.get(event.turnId);
+      if (this.#externalRuntime.get(thread.id) !== thread || !turn || turn.projector.completed)
+        return;
+      const seen = (turn.modelFallbackIds ??= new Set());
+      if (seen.has(event.fallback.id)) return;
+      seen.add(event.fallback.id);
       const fallback = { ...event.fallback, observedAtMs: Date.now() };
       thread.modelFallback = fallback;
       await this.#writer.json({

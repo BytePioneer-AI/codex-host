@@ -39,7 +39,7 @@ import {
 } from "./app-server-host-fixture.js";
 
 describe("AppServerHost HarnessAdapter projection", () => {
-  it("publishes one model fallback notice without changing the selected model or Turn", async () => {
+  it("deduplicates interleaved model fallbacks without changing the selected model or Turn", async () => {
     const fixture = createFixture();
     try {
       const threadId = await startPiThread(fixture);
@@ -58,30 +58,41 @@ describe("AppServerHost HarnessAdapter projection", () => {
         toModel: "secondary",
       };
 
+      const secondFallback = {
+        id: "00000000-0000-4000-8000-000000000013",
+        fromModel: "secondary",
+        toModel: "third",
+      };
+
       session.publishModelFallback(fallback);
+      session.publishModelFallback(secondFallback);
       session.publishModelFallback(fallback);
       await expect(
-        fixture.collector.waitFor((message) => method(message, THREAD_MODEL_FALLBACK_METHOD)),
-      ).resolves.toMatchObject({ params: { threadId, fallback } });
+        fixture.collector.waitFor(
+          (message) =>
+            method(message, THREAD_MODEL_FALLBACK_METHOD) &&
+            (messageParams(message).fallback as JsonObject).id === secondFallback.id,
+        ),
+      ).resolves.toMatchObject({ params: { threadId, fallback: secondFallback } });
       expect((await fixture.host.clientSnapshot(threadId)).configuration).toMatchObject({
         effectiveModel: selected,
-        modelFallback: fallback,
+        modelFallback: secondFallback,
       });
       await expect(
         fixture.host.handleClientRequest("codexhost/thread/inspect", { threadId }),
-      ).resolves.toMatchObject({ result: { modelFallback: fallback } });
+      ).resolves.toMatchObject({ result: { modelFallback: secondFallback } });
 
       session.appendText("Completed with the fallback model.");
       session.succeedTurn();
       await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
       expect(
-        fixture.collector.messages.filter((message) =>
-          method(message, THREAD_MODEL_FALLBACK_METHOD),
-        ),
-      ).toHaveLength(1);
+        fixture.collector.messages
+          .filter((message) => method(message, THREAD_MODEL_FALLBACK_METHOD))
+          .map((message) => messageParams(message).fallback),
+      ).toMatchObject([fallback, secondFallback]);
       unsubscribe();
       expect(notifications.filter((value) => value === THREAD_MODEL_FALLBACK_METHOD)).toHaveLength(
-        1,
+        2,
       );
     } finally {
       await stopFixture(fixture);

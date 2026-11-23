@@ -14,6 +14,7 @@ import {
   decodeHarnessPluginRoute,
   harnessIdSchema,
   permissionModeFixedAtCreate,
+  MODEL_FALLBACK_NOTICE_MAX_AGE_MS,
   THREAD_MODEL_FALLBACK_METHOD,
   threadModelFallbackNotificationSchema,
   type HarnessCommandDescriptor,
@@ -28,6 +29,7 @@ import {
   type HostThreadId,
   type AccountBalanceSnapshot,
   type AccountCreditsSnapshot,
+  type ModelFallbackNotice,
   type ThreadInspection,
   type ThreadUsageInspection,
   type ThreadUsageSnapshot,
@@ -1156,6 +1158,45 @@ export function installRendererBindingProbe(
       : "installing";
   };
 
+  const pendingModelFallbacks = new Map<
+    string,
+    { fallback: ModelFallbackNotice; expiresAtMs: number }
+  >();
+  const modelFallbackRoute = (hostId: string, threadId: string): string =>
+    JSON.stringify([hostId, threadId]);
+  const resetModelFallback = (mounted: MountedComposer): void => {
+    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    if (mounted.hostId && threadId)
+      pendingModelFallbacks.delete(modelFallbackRoute(mounted.hostId, threadId));
+    mounted.control.modelPicker.fallbackNotice?.hide();
+  };
+  const presentPendingModelFallback = (mounted: MountedComposer): void => {
+    const { hostId } = mounted;
+    const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    if (!hostId || !threadId || mounted.ownershipStatus !== "ready") return;
+    const key = modelFallbackRoute(hostId, threadId);
+    const pending = pendingModelFallbacks.get(key);
+    if (!pending) return;
+    if (Date.now() >= pending.expiresAtMs) {
+      pendingModelFallbacks.delete(key);
+      return;
+    }
+    if (
+      activeModelHostId(mounted.composer) !== hostId ||
+      threadIdFromComposerModelTarget(findComposerModelTarget(mounted.composer)) !== threadId
+    )
+      return;
+    const picker = mounted.control.modelPicker;
+    if (!picker.trigger.isConnected || picker.trigger.getClientRects().length === 0) return;
+    pendingModelFallbacks.delete(key);
+    const { fromModel, toModel } = pending.fallback;
+    picker.fallbackNotice ??= mountRendererModelSelectionNotice(picker.trigger);
+    picker.fallbackNotice.show(
+      rendererHarnessMessages(settingsLifecycle.locale).modelFallbackTitle,
+      `${fromModel} → ${toModel}`,
+    );
+  };
+
   const renderMounted = (mounted: MountedComposer): void => {
     if (!isMountedComposer(mounted.composer)) return;
     restorePendingDraftPreference(mounted);
@@ -1191,6 +1232,7 @@ export function installRendererBindingProbe(
       mounted.accountBalance,
     );
     showCodexUsageGateStatus(mounted, mounted.codexUsageGate.update(externalSubmissionReady));
+    presentPendingModelFallback(mounted);
     if (mounted.control.usage) {
       mounted.control.usage.onOpen = () => {
         void refreshThreadUsage(
@@ -1666,7 +1708,7 @@ export function installRendererBindingProbe(
     const previousTarget = mounted.modelTarget;
     const nextHostId = activeModelHostId(mounted.composer);
     const nextControllerTarget = controllerTarget(currentTarget, nextHostId);
-    mounted.control.modelPicker.fallbackNotice?.hide();
+    resetModelFallback(mounted);
     mounted.modelTarget = currentTarget;
     mounted.hostId = nextHostId;
     const rebound =
@@ -2991,6 +3033,7 @@ export function installRendererBindingProbe(
     for (const mounted of mountedByComposer.values()) {
       const hostId = activeModelHostId(mounted.composer);
       if (!hostId || mounted.hostId === hostId) continue;
+      resetModelFallback(mounted);
       changed = true;
       if (!threadIdFromComposerModelTarget(mounted.modelTarget)) {
         controller.clearPendingSubmission(mounted.composer);
@@ -3463,6 +3506,7 @@ export function installRendererBindingProbe(
       const hideCodexControls = controller.isSwitching(composer) || state.agent !== "codex";
       reconcileComposerNativeControls(mounted.control, hideCodexControls, hideCodexControls);
       showCodexUsageGateStatus(mounted, mounted.codexUsageGate.refresh());
+      presentPendingModelFallback(mounted);
     }
     for (const editor of document.querySelectorAll(EDITOR_SELECTOR)) {
       const composer = composerForEditor(editor);
@@ -3773,27 +3817,30 @@ export function installRendererBindingProbe(
       typeof message !== "object" ||
       !("type" in message && message.type === "mcp-notification") ||
       !("method" in message && message.method === THREAD_MODEL_FALLBACK_METHOD) ||
-      !("hostId" in message) ||
+      !("hostId" in message && typeof message.hostId === "string") ||
       !("params" in message)
     )
       return;
     const parsed = threadModelFallbackNotificationSchema.safeParse(message.params);
     if (!parsed.success) return;
     const { threadId, fallback } = parsed.data;
-    for (const mounted of mountedByComposer.values()) {
-      if (
-        mounted.hostId !== message.hostId ||
-        threadIdFromComposerModelTarget(mounted.modelTarget) !== threadId
-      )
-        continue;
-      const picker = mounted.control.modelPicker;
-      if (!picker.trigger.isConnected || picker.trigger.getClientRects().length === 0) continue;
-      picker.fallbackNotice ??= mountRendererModelSelectionNotice(picker.trigger);
-      picker.fallbackNotice.show(
-        rendererHarnessMessages(settingsLifecycle.locale).modelFallbackTitle,
-        `${fallback.fromModel} → ${fallback.toModel}`,
-      );
-    }
+    const { hostId } = message;
+    // The first response can arrive before Desktop replaces the draft target.
+    const composers = [...mountedByComposer.values()].filter(
+      ({ composer }) =>
+        activeModelHostId(composer) === hostId &&
+        (threadIdFromComposerModelTarget(findComposerModelTarget(composer)) === threadId ||
+          controller.isSubmissionPending(composer)),
+    );
+    if (!composers.length) return;
+    const now = Date.now();
+    for (const [key, pending] of pendingModelFallbacks)
+      if (now >= pending.expiresAtMs) pendingModelFallbacks.delete(key);
+    pendingModelFallbacks.set(modelFallbackRoute(hostId, threadId), {
+      fallback,
+      expiresAtMs: now + MODEL_FALLBACK_NOTICE_MAX_AGE_MS,
+    });
+    for (const mounted of composers) presentPendingModelFallback(mounted);
   };
   // Desktop forwards custom Host notifications to the window before its Manager filters them.
   window.addEventListener("message", onHostModelFallback);
@@ -4084,6 +4131,7 @@ export function installRendererBindingProbe(
       widgets.dispose();
       unbindDesktopExtensions();
       pendingDefaultPreferences.clear();
+      pendingModelFallbacks.clear();
       window.removeEventListener(HARNESS_PREFERENCES_UPDATED_EVENT, onPreferencesChanged);
       questions.dispose();
       usageNotificationDispose();

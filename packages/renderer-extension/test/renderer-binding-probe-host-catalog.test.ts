@@ -1,4 +1,5 @@
 import {
+  THREAD_MODEL_FALLBACK_METHOD,
   harnessIdSchema,
   harnessPluginDescriptorSchema,
   harnessModelRefKey,
@@ -57,6 +58,8 @@ const testState = vi.hoisted(() => ({
   sidebarOptions: null as
     null | Parameters<typeof RendererSidebarAgentIcons.installRendererSidebarAgentIcons>[0],
   sidebarRefresh: vi.fn(),
+  showModelFallback: vi.fn(),
+  hideModelFallback: vi.fn(),
   documentListeners: new Map<string, EventListener>(),
   modelTarget: ["conversation", "thread-a"] as readonly unknown[] | null,
   prewarmClears: 0,
@@ -86,7 +89,11 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
         setPlugins: vi.fn(),
         root: { isConnected: true, remove: vi.fn() },
         picker: { root: { isConnected: true } },
-        modelPicker: { root: { isConnected: true }, trigger: {} },
+        modelPicker: {
+          root: { isConnected: true },
+          trigger: { isConnected: true, getClientRects: () => [{}] },
+          fallbackNotice: { show: testState.showModelFallback, hide: testState.hideModelFallback },
+        },
         permissionModePicker: { root: { isConnected: true } },
         nativeModelControl: null,
         nativePermissionModeControl: null,
@@ -339,6 +346,82 @@ afterEach(() => {
 });
 
 describe("Renderer binding native draft routing", () => {
+  it("presents a pending model fallback once when the Composer binds to its Thread", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    const inspection = readyInspection();
+    const client = {
+      listHarnessPlugins,
+      inspectHarness: async () => inspection,
+      inspectThread: async () => ({
+        owner: "external",
+        harnessId: "claude-code",
+        transportModelId: "codexhost/claude-code-native@claude-model-v1.b3B1cw@default@auto",
+        effectiveModel: inspection.catalog.defaultModel,
+        history: inspection.capabilities.history,
+        locked: true,
+      }),
+      inspectThreadCommands: async () => ({ commands: [] }),
+      inspectThreadUsage: async () => ({ threadId: "thread-a", usage: null }),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "claude-code",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    await vi.waitFor(() => expect(testState.renderedModelViews.at(-1)?.status).toBe("ready"));
+    const submit = new Event("submit", { cancelable: true });
+    Object.defineProperty(submit, "target", { value: testState.composer });
+    testState.documentListeners.get("submit")?.(submit);
+    expect(submit.defaultPrevented).toBe(false);
+
+    const notifyFallback = (hostId: string, fromModel: string) =>
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            type: "mcp-notification",
+            hostId,
+            method: THREAD_MODEL_FALLBACK_METHOD,
+            params: {
+              threadId: "thread-a",
+              fallback: {
+                id: "00000000-0000-4000-8000-000000000012",
+                fromModel,
+                toModel: "claude-opus-5",
+                observedAtMs: Date.now(),
+              },
+            },
+          },
+        }),
+      );
+    notifyFallback("local", "claude-fable-5-2");
+    notifyFallback("remote", "unrelated-model");
+    expect(testState.showModelFallback).not.toHaveBeenCalled();
+
+    const reconcile = () => {
+      testState.notifyMutations?.([
+        { type: "attributes", target: document.body } as unknown as MutationRecord,
+      ]);
+      for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
+    };
+    testState.modelTarget = ["conversation", "thread-a"];
+    reconcile();
+    await vi.waitFor(() =>
+      expect(testState.showModelFallback).toHaveBeenCalledWith(
+        "Model fallback",
+        "claude-fable-5-2 → claude-opus-5",
+      ),
+    );
+    reconcile();
+    expect(testState.showModelFallback).toHaveBeenCalledOnce();
+  });
+
   it("allows editing without a private Model binding but waits for routing before Send", async () => {
     installFakeBrowser();
     testState.modelTarget = null;

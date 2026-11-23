@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
+  MODEL_FALLBACK_NOTICE_MAX_AGE_MS,
   THREAD_ARCHIVE_CONFIRM_METHOD,
   THREAD_STEER_STRICT_TARGET_FIELD,
   THREAD_STEER_STRICT_TARGET_PARAM,
@@ -727,7 +728,10 @@ export class ChSessions {
         view.log.setProjection("modelSelection", {
           lastUsed: selection,
           next: selection,
-          ...(modelFallback ? { modelFallback } : {}),
+          ...(modelFallback &&
+          Date.now() - modelFallback.observedAtMs < MODEL_FALLBACK_NOTICE_MAX_AGE_MS
+            ? { modelFallback }
+            : {}),
         });
       })
       .catch(() => {

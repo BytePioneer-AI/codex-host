@@ -3,7 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
-import { harnessModelSelectionStateSchema } from "@codexhost/shared-contracts";
+import {
+  MODEL_FALLBACK_NOTICE_MAX_AGE_MS,
+  harnessModelSelectionStateSchema,
+} from "@codexhost/shared-contracts";
 import { ChSessions } from "../src/ch-sessions.ts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
@@ -256,6 +259,46 @@ it(
     assert.deepEqual(f.selections().at(-1)?.value, expectedSelection("confirmed-model"));
   },
 );
+
+it("checks model fallback age after asynchronous Harness discovery", async (t) => {
+  const f = await fixture(t);
+  t.mock.timers.enable({ apis: ["Date"], now: 100_000 });
+  const fallback = {
+    id: "00000000-0000-4000-8000-000000000012",
+    fromModel: "claude-fable-5-2",
+    toModel: "claude-opus-5",
+    observedAtMs: Date.now(),
+  };
+  const snapshot = f.host.snapshot.bind(f.host);
+  f.host.snapshot = async (...args) => {
+    const value = await snapshot(...args);
+    return { ...value, configuration: { ...value.configuration, modelFallback: { ...fallback } } };
+  };
+  const gate = Promise.withResolvers<undefined>();
+  t.after(() => gate.resolve(undefined));
+  const started = Promise.withResolvers<undefined>();
+  const inspect = f.sessions.catalog.inspect.bind(f.sessions.catalog);
+  f.sessions.catalog.inspect = async (...args) => {
+    started.resolve(undefined);
+    await gate.promise;
+    return inspect(...args);
+  };
+
+  assert.ok((await f.read()).ok);
+  await started.promise;
+  t.mock.timers.setTime(fallback.observedAtMs + MODEL_FALLBACK_NOTICE_MAX_AGE_MS);
+  gate.resolve(undefined);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(f.selections().length, 0, "an expired notice must not change the projection");
+
+  fallback.observedAtMs = Date.now();
+  assert.ok((await f.read()).ok);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(f.selections().at(-1)?.value, {
+    ...expectedSelection("native"),
+    modelFallback: fallback,
+  });
+});
 
 it("preserves the old Model when native selection is rejected", async (t) => {
   const f = await fixture(t);

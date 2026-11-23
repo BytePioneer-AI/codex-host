@@ -15,7 +15,6 @@ import {
   decodeExternalTransportSelection,
   encodeExternalTransportSelection,
   mapExternalThreadHarnessError,
-  type CodexTurnProjector,
   type ExternalConfigurationSelection,
   type ExternalHarnessId,
   type ExternalThreadRpcError,
@@ -45,7 +44,11 @@ import { SessionStateObserver } from "./session-state-observer.js";
 import { DesktopRequestQueue } from "./desktop-request-queue.js";
 import { ExternalThreadIdleRelease } from "./external-thread-idle-release.js";
 import { projectExternalTurn } from "./external-subagent-threads.js";
-import { withFailedTurns, type LiveFailedTurn } from "./external-turn-projection.js";
+import {
+  withFailedTurns,
+  type LiveFailedTurn,
+  type ProjectedTurn,
+} from "./external-turn-projection.js";
 import { ownTurns } from "./external-thread-side-chat.js";
 import { reconcileExternalTurnItemIds } from "./external-turn-item-ids.js";
 import {
@@ -91,7 +94,7 @@ export interface ExternalThread {
   /** Host metering for the current Session only; replaced with it. */
   usageMeter: UsageMeter;
   usageTurnId: HostTurnId | null;
-  projectedTurns: Map<HostTurnId, { projector: CodexTurnProjector }>;
+  projectedTurns: Map<HostTurnId, ProjectedTurn>;
   responseGates: Map<HostTurnId, TurnProjectionGate>;
   pendingSteerProjections: Set<Promise<void>>;
   ephemeralTurnIds: Set<HostTurnId>;

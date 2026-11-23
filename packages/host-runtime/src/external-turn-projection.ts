@@ -19,6 +19,7 @@ import type { ExternalTurnSteering } from "./external-turn-steering.js";
 
 export interface ProjectedTurn {
   projector: CodexTurnProjector;
+  modelFallbackIds?: Set<string>;
 }
 
 export type ExternalThreadStatus = { type: "active"; activeFlags: [] } | { type: "idle" };

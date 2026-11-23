@@ -11,9 +11,10 @@ codexhost
 
 ### 压缩包
 
-每个 Release 都会发布 `codexhost-<version>-linux-x64.tar.gz` 和 `codexhost-<version>-linux-arm64.tar.gz`。压缩包自带 Node.js 运行时，不需要另装 Node.js 或 npm。解压到当前用户拥有的目录，并把启动器链接到 `PATH`：
+每个 Release 都会发布 `codexhost-<version>-linux-x64.tar.gz` 和 `codexhost-<version>-linux-arm64.tar.gz`。压缩包自带 Node.js 运行时，不需要另装 Node.js 或 npm。解压到当前用户拥有的目录，将启动器链接到 `~/.local/bin`，并确保 `~/.local/bin` 在 `PATH` 中（例如在 shell 配置中加入 `export PATH="$HOME/.local/bin:$PATH"`）：
 
 ```bash
+mkdir -p ~/.local/share
 tar -xzf codexhost-<version>-linux-x64.tar.gz -C ~/.local/share
 mv ~/.local/share/codexhost-<version>-linux-x64 ~/.local/share/codexhost
 mkdir -p ~/.local/bin
@@ -21,7 +22,7 @@ ln -sf ~/.local/share/codexhost/bin/codexhost ~/.local/bin/codexhost
 codexhost
 ```
 
-`codexhost update` 和应用内更新会从 GitHub Releases 下载对应的压缩包，校验 SHA-256，解压到安装目录旁边，再整体替换安装目录；更新失败时恢复原目录。因此运行 codexhost 的用户必须对安装目录及其上级目录有写权限，不要用 root 把压缩包装到系统目录。同一时间只使用一种安装方式：在 npm 和压缩包之间切换前，先运行 `codexhost stop` 并删除另一种安装。`codexhost autostart on` 登记的是执行该命令的那份安装的启动器。
+`codexhost update` 和应用内更新会从 GitHub Releases 下载对应的压缩包，校验 SHA-256，解压并校验到安装目录旁边，再整体替换安装目录；替换阶段或替换后校验失败时会恢复原目录（替换前失败不会改动现有安装，替换完成后若重启失败则不会回滚已替换的文件）。因此运行 codexhost 的用户必须对安装目录及其上级目录有写权限，不要用 root 把压缩包装到系统目录。同一时间只使用一种安装方式：在 npm 和压缩包之间切换前，先运行 `codexhost stop` 并删除另一种安装。`codexhost autostart on` 登记的是执行该命令的那份安装的启动器。
 
 ## 支持范围
 

@@ -13,6 +13,8 @@ use codexhost_platform::configure_background_command;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+#[cfg(target_os = "linux")]
+use crate::request::validate_linux_archive_paths;
 use crate::request::validate_version;
 use crate::request::{
     Installation, LinuxArchiveInstallation, MacOsInstallation, NpmInstallation, UpdateRequest,
@@ -260,11 +262,47 @@ fn extracted_root(staging: &Path) -> Result<PathBuf, Box<dyn Error>> {
     Ok(entries.remove(0).path())
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn activate_linux_installation(
+    install_root: &Path,
+    staged: &Path,
+    staging: &Path,
+    backup: &Path,
+    version: &str,
+    remove_backup: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), Box<dyn Error>> {
+    // Running processes keep their open executables after the directory moves aside.
+    fs::rename(install_root, backup)?;
+    if let Err(error) = fs::rename(staged, install_root) {
+        let _ = fs::rename(backup, install_root);
+        let _ = fs::remove_dir_all(staging);
+        return Err(format!("could not activate updated Linux installation: {error}").into());
+    }
+    let _ = fs::remove_dir_all(staging);
+    if let Err(error) = verify_distribution(
+        &install_root.join("app").join(DISTRIBUTION_FILE),
+        version,
+        "installer",
+    ) {
+        let _ = fs::remove_dir_all(install_root);
+        let _ = fs::rename(backup, install_root);
+        return Err(error);
+    }
+    if let Err(error) = remove_backup(backup) {
+        eprintln!(
+            "codexhost updater: warning: updated Linux installation is active, but could not remove backup '{}': {error}",
+            backup.display()
+        );
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn install_linux(
     request: &UpdateRequest,
     linux: &LinuxArchiveInstallation,
 ) -> Result<(), Box<dyn Error>> {
+    validate_linux_archive_paths(request, linux)?;
     verify_artifact(&linux.archive_path, &linux.artifact_sha256)?;
     let parent = linux
         .install_root
@@ -303,25 +341,14 @@ fn install_linux(
         }
     };
 
-    // Running processes keep their open executables after the directory moves aside.
-    fs::rename(&linux.install_root, &backup)?;
-    if let Err(error) = fs::rename(&staged, &linux.install_root) {
-        let _ = fs::rename(&backup, &linux.install_root);
-        let _ = fs::remove_dir_all(&staging);
-        return Err(format!("could not activate updated Linux installation: {error}").into());
-    }
-    let _ = fs::remove_dir_all(&staging);
-    if let Err(error) = verify_distribution(
-        &linux.install_root.join("app").join(DISTRIBUTION_FILE),
+    activate_linux_installation(
+        &linux.install_root,
+        &staged,
+        &staging,
+        &backup,
         &request.version,
-        "installer",
-    ) {
-        let _ = fs::remove_dir_all(&linux.install_root);
-        let _ = fs::rename(&backup, &linux.install_root);
-        return Err(error);
-    }
-    fs::remove_dir_all(backup)?;
-    Ok(())
+        fs::remove_dir_all,
+    )
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -343,12 +370,89 @@ pub(crate) fn install(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::DistributionMetadata;
+    use std::fs;
+    use std::io;
+    use std::path::Path;
+
+    use super::{DistributionMetadata, activate_linux_installation};
+
+    fn write_release_tree(root: &Path, version: &str, marker: &str) {
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::write(
+            root.join("app/codexhost-distribution.json"),
+            format!(
+                r#"{{"schemaVersion":1,"version":"{version}","distribution":"installer","target":"linux-x64"}}"#
+            ),
+        )
+        .unwrap();
+        fs::write(root.join("marker"), marker).unwrap();
+    }
 
     #[test]
     fn distribution_metadata_rejects_unknown_fields() {
         let metadata = br#"{"schemaVersion":1,"version":"1.2.3","distribution":"npm","target":"macos-arm64","extra":true}"#;
         assert!(serde_json::from_slice::<DistributionMetadata>(metadata).is_err());
+    }
+
+    #[test]
+    fn linux_activation_succeeds_when_backup_cleanup_fails_after_verification() {
+        let directory = std::env::temp_dir().join(format!(
+            "codexhost-linux-backup-cleanup-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let install_root = directory.join("codexhost");
+        let staging = directory.join(".codexhost-update-1");
+        let staged = staging.join("codexhost-1.1.0-linux-x64");
+        let backup = directory.join(".codexhost-backup-1");
+        write_release_tree(&install_root, "1.0.0", "old");
+        write_release_tree(&staged, "1.1.0", "new");
+
+        activate_linux_installation(&install_root, &staged, &staging, &backup, "1.1.0", |_| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "backup directory locked",
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(install_root.join("marker")).unwrap(),
+            "new"
+        );
+        assert!(!staging.exists());
+        assert_eq!(fs::read_to_string(backup.join("marker")).unwrap(), "old");
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn linux_activation_restores_backup_when_post_swap_verification_fails() {
+        let directory = std::env::temp_dir().join(format!(
+            "codexhost-linux-post-swap-rollback-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let install_root = directory.join("codexhost");
+        let staging = directory.join(".codexhost-update-1");
+        let staged = staging.join("codexhost-1.1.0-linux-x64");
+        let backup = directory.join(".codexhost-backup-1");
+        write_release_tree(&install_root, "1.0.0", "old");
+        write_release_tree(&staged, "1.1.0", "new");
+
+        let mut cleanup_called = false;
+        let result =
+            activate_linux_installation(&install_root, &staged, &staging, &backup, "1.2.0", |_| {
+                cleanup_called = true;
+                Ok(())
+            });
+        assert!(result.is_err());
+        assert!(!cleanup_called);
+        assert_eq!(
+            fs::read_to_string(install_root.join("marker")).unwrap(),
+            "old"
+        );
+        assert!(!backup.exists());
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[cfg(target_os = "linux")]
@@ -469,6 +573,44 @@ mod tests {
             };
 
             assert!(install_linux(&request("1.2.0"), &linux).is_err());
+
+            assert_eq!(
+                fs::read_to_string(install_root.join("marker")).unwrap(),
+                "old"
+            );
+            assert_eq!(siblings(&directory), ["codexhost"]);
+            fs::remove_dir_all(directory).unwrap();
+        }
+
+        #[test]
+        fn refuses_to_replace_when_data_archive_or_status_is_inside_install_root() {
+            let directory = fixture("containment");
+            let install_root = directory.join("installed/codexhost");
+            release_tree(&install_root, "1.0.0", "old");
+            let archive_path = archive(&directory, "1.1.0");
+            let sha256 = sha256_file(&archive_path).unwrap();
+
+            let mut data_inside = request("1.1.0");
+            data_inside.data_directory = Some(install_root.join("data"));
+            let linux = LinuxArchiveInstallation {
+                artifact_sha256: sha256.clone(),
+                archive_path: archive_path.clone(),
+                install_root: install_root.clone(),
+            };
+            assert!(install_linux(&data_inside, &linux).is_err());
+
+            let mut status_inside = request("1.1.0");
+            status_inside.status_path = install_root.join("updates/status.json");
+            assert!(install_linux(&status_inside, &linux).is_err());
+
+            let archive_inside = install_root.join("update.tar.gz");
+            fs::copy(&archive_path, &archive_inside).unwrap();
+            let linux_archive_inside = LinuxArchiveInstallation {
+                artifact_sha256: sha256,
+                archive_path: archive_inside,
+                install_root: install_root.clone(),
+            };
+            assert!(install_linux(&request("1.1.0"), &linux_archive_inside).is_err());
 
             assert_eq!(
                 fs::read_to_string(install_root.join("marker")).unwrap(),

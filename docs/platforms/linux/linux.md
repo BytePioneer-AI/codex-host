@@ -11,9 +11,10 @@ codexhost
 
 ### Archive
 
-Each Release publishes `codexhost-<version>-linux-x64.tar.gz` and `codexhost-<version>-linux-arm64.tar.gz`. The archive bundles its own Node.js runtime, so neither Node.js nor npm is required. Extract it into a directory owned by the current user and link the launcher onto `PATH`:
+Each Release publishes `codexhost-<version>-linux-x64.tar.gz` and `codexhost-<version>-linux-arm64.tar.gz`. The archive bundles its own Node.js runtime, so neither Node.js nor npm is required. Extract it into a directory owned by the current user, link the launcher into `~/.local/bin`, and make sure `~/.local/bin` is on `PATH` (for example, `export PATH="$HOME/.local/bin:$PATH"`):
 
 ```bash
+mkdir -p ~/.local/share
 tar -xzf codexhost-<version>-linux-x64.tar.gz -C ~/.local/share
 mv ~/.local/share/codexhost-<version>-linux-x64 ~/.local/share/codexhost
 mkdir -p ~/.local/bin
@@ -21,7 +22,7 @@ ln -sf ~/.local/share/codexhost/bin/codexhost ~/.local/bin/codexhost
 codexhost
 ```
 
-`codexhost update` and the in-app updater download the matching archive from GitHub Releases, verify its SHA-256, extract it beside the installation, and replace the installation directory as a whole; a failed update restores the previous directory. Both the installation directory and its parent must therefore be writable by the user running codexhost, so do not install the archive as root into system directories. Use one installation method at a time: before switching between npm and the archive, run `codexhost stop` and remove the other installation. `codexhost autostart on` registers the launcher of the installation that runs it.
+`codexhost update` and the in-app updater download the matching archive from GitHub Releases, verify its SHA-256, extract and verify it beside the installation, and then swap it into place as a whole; if replacement or post-swap verification fails, the previous directory is restored (failures before the swap leave the existing installation untouched, while post-swap restart failures do not roll back the replaced files). Both the installation directory and its parent must therefore be writable by the user running codexhost, so do not install the archive as root into system directories. Use one installation method at a time: before switching between npm and the archive, run `codexhost stop` and remove the other installation. `codexhost autostart on` registers the launcher of the installation that runs it.
 
 ## Supported environment
 

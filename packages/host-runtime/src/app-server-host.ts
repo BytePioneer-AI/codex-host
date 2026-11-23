@@ -151,6 +151,7 @@ import {
   THREAD_QUEUE_START_IF_EMPTY_PARAM,
   THREAD_STEERING_CONTEXT_PARAM,
   THREAD_STEER_DELIVERY_PARAM,
+  THREAD_NAME_IF_UNNAMED_PARAM,
   THREAD_STEER_STRICT_TARGET_PARAM,
   REASONING_TRANSCRIPT_COMMAND,
   permissionModeFixedAtCreate,
@@ -5375,19 +5376,28 @@ export class AppServerHost {
       );
       return;
     }
+    const ifUnnamed = requestObject(request)[THREAD_NAME_IF_UNNAMED_PARAM] === true;
+    if (ifUnnamed && location.record.title) {
+      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+      return;
+    }
     let record: StoredThreadRecordV1;
     try {
-      record = await this.#repository.setTitle(location.record.hostThreadId, name);
+      record = await this.#repository.setTitle(location.record.hostThreadId, name, { ifUnnamed });
     } catch {
       await this.#writer.json(
         rpcError(request, -32081, "External Thread title could not be persisted"),
       );
       return;
     }
+    if (ifUnnamed && record.title !== name) {
+      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+      return;
+    }
     if (location.thread) {
       location.thread.record = record;
       location.thread.thread.name = name;
-      location.thread.thread.updatedAt = unixSeconds();
+      if (!ifUnnamed) location.thread.thread.updatedAt = unixSeconds();
     }
     await this.#writer.json(rpcEnvelope(request, { result: {} }));
     await this.#writer.json({

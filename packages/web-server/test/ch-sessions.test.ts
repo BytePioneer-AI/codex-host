@@ -98,6 +98,69 @@ it("shares canonical CH identity and cwd without a Web index/history or physical
   assert.deepEqual(readdirSync(root), ["workspaces.json"]);
 });
 
+it("uses the first prompt when Web's external Thread title generator returns null or fails", async (t) => {
+  for (const generation of ["null", "failure", "success", "renamed"] as const) {
+    await t.test(generation, async (t) => {
+      const root = mkdtempSync(join(tmpdir(), "ch-first-title-"));
+      const host = new FakeChHost();
+      const title = Promise.withResolvers<string | null>();
+      const request = host.request.bind(host);
+      host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+        if (method === "codexhost/thread/title/generate") return (await title.promise) as T;
+        if (method === "thread/start") {
+          const result = await request<{ thread: { id: string; name: string } }>(method, params);
+          const row = host.threads.get(result.thread.id);
+          assert.ok(row);
+          row.name = result.thread.name = "";
+          return result as T;
+        }
+        return request<T>(method, params);
+      };
+      const sessions = new ChSessions(
+        host,
+        new Workspaces(new DataDir(root), root),
+        new EventHub(root),
+      );
+      t.after(async () => {
+        title.resolve(null);
+        await sessions.close();
+        rmSync(root, { recursive: true, force: true });
+      });
+      const rpc = new RpcRegistry();
+      sessions.register(rpc, new StreamRegistry());
+      const draft = await rpc.dispatch("session/create", { args: { request: { cwd: root } } });
+      assert.ok(draft.ok);
+      const { sessionId } = draft.value as { sessionId: string };
+      const firstSixty = "Fix the title " + "🧰".repeat(46);
+      const accepted = await rpc.dispatch("session/prompt", {
+        args: {
+          request: {
+            sessionId,
+            requestId: "first",
+            content: [{ type: "text", text: "  Fix   the\n title " + "🧰".repeat(46) + " more" }],
+            mode: "queue",
+          },
+        },
+      });
+      assert.deepEqual(accepted, { ok: true, value: { accepted: true } });
+      const thread = [...host.threads.values()][0];
+      assert.ok(thread);
+      if (generation === "renamed")
+        await host.request("thread/name/set", { threadId: thread.id, name: "My title" });
+      if (generation === "failure") title.reject(new Error("Native title unavailable"));
+      else title.resolve(generation === "success" ? "Generated title" : null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const expected =
+        generation === "renamed"
+          ? "My title"
+          : generation === "success"
+            ? "Generated title"
+            : firstSixty + "…";
+      assert.equal(thread.name, expected);
+    });
+  }
+});
+
 it("propagates native section membership and summaries to browsers that did not paginate", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-native-sections-"));
   const host = nativeCodex(new FakeChHost());

@@ -323,7 +323,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("updates a Pi Thread name locally", async () => {
+  it("keeps explicit Pi Thread names ahead of automatic names", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();
     fixture.official.stdin.on("data", officialWrite);
@@ -342,6 +342,15 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await expect(
       fixture.collector.waitFor((message) => method(message, "thread/name/updated")),
     ).resolves.toMatchObject({ params: { threadId, threadName: "Pi Thread" } });
+    writeRequest(fixture.desktopInput, {
+      id: 4,
+      method: "thread/name/set",
+      params: { threadId, name: "Automatic title", codexhostIfUnnamed: true },
+    });
+    await expect(fixture.collector.waitFor((message) => requestId(message, 4))).resolves.toEqual({
+      id: 4,
+      result: {},
+    });
     writeRequest(fixture.desktopInput, {
       id: 3,
       method: "thread/read",

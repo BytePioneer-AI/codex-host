@@ -1368,7 +1368,11 @@ describe("Antigravity ACP Session", () => {
   it("rejects a Skip permissions restart while background tools retain the old transport", async () => {
     const { adapter, transports } = fixture();
     const { session, outputs } = await sessionOf(
-      await adapter.open({ kind: "create", cwd: process.cwd() }),
+      await adapter.open({
+        kind: "create",
+        cwd: process.cwd(),
+        permissionModeId: mode("default"),
+      }),
     );
     const transport = await start(session, transports);
     transport.handler?.onEvent({

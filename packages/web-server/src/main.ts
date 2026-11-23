@@ -10,6 +10,12 @@
  * rebuilt plugin bundles to open pages (used by `npm start web -- --watch`).
  */
 
+import releaseMetadata from "../../../package.json" with { type: "json" };
+import { randomUUID } from "node:crypto";
+import { requestRemoteSession } from "@codexhost/desktop-control";
+import { PeerHostManager, createCompositeRemoteCall } from "./peer-host-manager.ts";
+import { PeerHostStore } from "./peer-host-store.ts";
+import { peerEndpoint } from "./peer-manifest.ts";
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir } from "node:os";
@@ -399,7 +405,27 @@ workspaces.register(rpc, streams);
 sessions.register(rpc, streams);
 sessions.registerCommands(rpc);
 sessions.registerImport(rpc);
-const remoteSessions = new RemoteSessions(events, undefined, workspaces);
+let peerEpoch: string = randomUUID();
+const stopEpoch = chHost.realtime?.subscribe((event) => {
+  if (event.type === "hello") peerEpoch = event.cursor.epoch;
+});
+const peerManager = new PeerHostManager(
+  new PeerHostStore(new DataDir(process.env.CODEXHOST_DATA_DIR ?? dataRoot)),
+  async () => [
+    ...(await readNetworkAccess()).networkUrls.map((u) => u.url),
+    ...["localhost", "127.0.0.1", "[::1]"].map((host) => `http://${host}:${listeningPort}`),
+  ],
+  events,
+);
+peerManager.register(rpc);
+const remoteSessions = new RemoteSessions(
+  events,
+  createCompositeRemoteCall(peerManager, requestRemoteSession),
+  workspaces,
+);
+peerManager.onChange = () => {
+  remoteSessions.hostsChanged();
+};
 remoteSessions.install(rpc, streams);
 preferences.register(rpc);
 displaySettings.register(rpc);
@@ -562,6 +588,31 @@ const server = createWebServer((request, response) => {
         response.end(request.method === "HEAD" ? undefined : image.bytes);
       } catch {
         response.writeHead(404).end(request.method === "HEAD" ? undefined : "image unavailable");
+      }
+      return;
+    }
+    if (pathname.startsWith("/api/peer/v1/")) {
+      if (!requestAuth || !trust.sameOrigin(request)) {
+        response.writeHead(403).end();
+        return;
+      }
+      try {
+        const body = request.method === "GET" ? "{}" : await readBody(request, response);
+        if (body === undefined) return;
+        const result = await peerEndpoint(
+          request.method ?? "",
+          new URL(url, "http://localhost"),
+          JSON.parse(body),
+          workspaces,
+          rpc,
+          peerEpoch,
+          releaseMetadata.version,
+        );
+        response
+          .writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+          .end(JSON.stringify(result));
+      } catch {
+        response.writeHead(400).end("Invalid peer request");
       }
       return;
     }
@@ -854,6 +905,8 @@ let shuttingDown: Promise<void> | undefined;
 function shutdown(exitCode = 0): Promise<void> {
   return (shuttingDown ??= (async () => {
     try {
+      stopEpoch?.();
+      peerManager.close();
       relay.close();
       shellReload?.close();
       accessTokens?.close();

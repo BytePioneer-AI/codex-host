@@ -562,24 +562,28 @@ export function createRendererModelClient(
 
   return Object.freeze({
     async usesIndependentNativeInference(input?: NativeInferenceTarget): Promise<boolean> {
-      const thread =
-        input && "threadId" in input
-          ? await readNativeCodexThread(
-              manager.sendRequest,
-              threadInspectionParamsSchema.parse(input).threadId,
-            )
-          : undefined;
-      const draftCwd =
-        input && !("threadId" in input) && typeof input.cwd === "string" && input.cwd.length > 0
-          ? input.cwd
-          : undefined;
-      const cwd = input && "threadId" in input ? thread?.cwd : draftCwd;
+      if (!input) return false;
+      if ("threadId" in input) {
+        const thread = await readNativeCodexThread(
+          manager.sendRequest,
+          threadInspectionParamsSchema.parse(input).threadId,
+        );
+        if (!thread.cwd) return false;
+        return usesIndependentNativeInference(
+          await manager.sendRequest("config/read", {
+            includeLayers: false,
+            cwd: thread.cwd,
+          }),
+          thread.modelProvider,
+        );
+      }
+      const cwd = typeof input.cwd === "string" && input.cwd.trim().length > 0 ? input.cwd : null;
+      if (!cwd) return false;
       return usesIndependentNativeInference(
         await manager.sendRequest("config/read", {
           includeLayers: false,
-          ...(cwd ? { cwd } : {}),
+          cwd,
         }),
-        thread?.modelProvider,
       );
     },
     async getHarnessPreferences(scope = "external") {

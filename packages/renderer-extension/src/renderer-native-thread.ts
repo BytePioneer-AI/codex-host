@@ -63,7 +63,7 @@ export async function readNativeCodexThread(
   }
   return {
     modelProvider: thread.modelProvider,
-    cwd: typeof thread.cwd === "string" && thread.cwd ? thread.cwd : null,
+    cwd: typeof thread.cwd === "string" && thread.cwd.trim().length > 0 ? thread.cwd : null,
   };
 }
 

@@ -15,12 +15,47 @@ describe("native custom inference has a separate Billing Source", () => {
     },
   };
 
-  it("reads the active native config on the same Host instead of guessing from a GPT model ID", async () => {
+  it("reads the confirmed workspace config on the same Host instead of guessing from a GPT model ID", async () => {
     const sendRequest = vi.fn().mockResolvedValue({ config });
     const client = createRendererModelClient([{ sendRequest }]);
-    expect(await client?.usesIndependentNativeInference?.()).toBe(true);
-    expect(sendRequest).toHaveBeenCalledExactlyOnceWith("config/read", { includeLayers: false });
+    expect(await client?.usesIndependentNativeInference?.({ cwd: "/work/custom" })).toBe(true);
+    expect(sendRequest).toHaveBeenCalledExactlyOnceWith("config/read", {
+      includeLayers: false,
+      cwd: "/work/custom",
+    });
     expect(config.model_providers.custom.requires_openai_auth).toBe(true);
+  });
+
+  it("fails closed without reading global config when draft workspace is missing or blank", async () => {
+    const sendRequest = vi.fn().mockResolvedValue({ config });
+    const client = createRendererModelClient([{ sendRequest }]);
+    expect(await client?.usesIndependentNativeInference?.()).toBe(false);
+    expect(await client?.usesIndependentNativeInference?.({ cwd: "" })).toBe(false);
+    expect(await client?.usesIndependentNativeInference?.({ cwd: "   " })).toBe(false);
+    expect(sendRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps official project override quota-gated even when global config uses a custom provider", async () => {
+    const sendRequest = vi.fn(async (method: string, params: unknown) => {
+      if (method !== "config/read") throw new Error(`Unexpected method: ${method}`);
+      const cwd =
+        typeof params === "object" && params !== null && "cwd" in params
+          ? (params as { cwd?: unknown }).cwd
+          : undefined;
+      if (cwd === "/work/official") {
+        return { config: { ...config, model_provider: "openai" } };
+      }
+      return { config };
+    });
+    const client = createRendererModelClient([{ sendRequest }]);
+    expect(await client?.usesIndependentNativeInference?.()).toBe(false);
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(await client?.usesIndependentNativeInference?.({ cwd: "/work/official" })).toBe(false);
+    expect(await client?.usesIndependentNativeInference?.({ cwd: "/work/custom" })).toBe(true);
+    expect(sendRequest.mock.calls).toEqual([
+      ["config/read", { includeLayers: false, cwd: "/work/official" }],
+      ["config/read", { includeLayers: false, cwd: "/work/custom" }],
+    ]);
   });
 
   it.each([
@@ -66,17 +101,24 @@ describe("native custom inference has a separate Billing Source", () => {
   it("propagates config RPC failures rather than inventing an independent route", async () => {
     const sendRequest = vi.fn().mockRejectedValue(new Error("Host disconnected"));
     const client = createRendererModelClient([{ sendRequest }]);
-    await expect(client?.usesIndependentNativeInference?.()).rejects.toThrow("Host disconnected");
+    await expect(client?.usesIndependentNativeInference?.({ cwd: "/work/custom" })).rejects.toThrow(
+      "Host disconnected",
+    );
   });
 
   it.each(["openai", "custom"])(
-    "uses the existing Thread's %s provider, not the default for new Threads",
+    "uses the existing Thread's %s provider and workspace, not global defaults",
     async (modelProvider) => {
       const threadId = hostThreadIdSchema.parse("synthetic-native-route-thread");
       const sendRequest = vi
         .fn()
         .mockResolvedValueOnce({
-          thread: { id: threadId, modelProvider, cliVersion: "0.151.0" },
+          thread: {
+            id: threadId,
+            modelProvider,
+            cliVersion: "0.151.0",
+            cwd: "/work/thread-project",
+          },
         })
         .mockResolvedValueOnce({ config });
       const client = createRendererModelClient([{ sendRequest }]);
@@ -85,18 +127,21 @@ describe("native custom inference has a separate Billing Source", () => {
       );
       expect(sendRequest.mock.calls).toEqual([
         ["thread/read", { threadId, includeTurns: false }],
-        ["config/read", { includeLayers: false }],
+        ["config/read", { includeLayers: false, cwd: "/work/thread-project" }],
       ]);
     },
   );
 
-  it("reads a new draft's workspace config so a project-level provider is honored", async () => {
-    const sendRequest = vi.fn().mockResolvedValue({ config });
+  it("fails closed when an existing Thread does not report a verifiable workspace cwd", async () => {
+    const threadId = hostThreadIdSchema.parse("synthetic-native-route-thread");
+    const sendRequest = vi.fn().mockResolvedValueOnce({
+      thread: { id: threadId, modelProvider: "custom", cliVersion: "0.151.0" },
+    });
     const client = createRendererModelClient([{ sendRequest }]);
-    expect(await client?.usesIndependentNativeInference?.({ cwd: "/work/draft" })).toBe(true);
-    expect(sendRequest).toHaveBeenCalledExactlyOnceWith("config/read", {
-      includeLayers: false,
-      cwd: "/work/draft",
+    expect(await client?.usesIndependentNativeInference?.({ threadId })).toBe(false);
+    expect(sendRequest).toHaveBeenCalledExactlyOnceWith("thread/read", {
+      threadId,
+      includeTurns: false,
     });
   });
 

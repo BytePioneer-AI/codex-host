@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RendererModelClient } from "../src/renderer-model-client.js";
-import { createRendererNativeInferenceRoute } from "../src/renderer-native-inference-route.js";
+import {
+  createRendererModelClient,
+  type RendererModelClient,
+} from "../src/renderer-model-client.js";
+import {
+  createRendererNativeDraftWorkspaceStore,
+  createRendererNativeInferenceRoute,
+  type RendererNativeDraftScope,
+} from "../src/renderer-native-inference-route.js";
 import { hostThreadIdSchema, type HostThreadId } from "@codexhost/shared-contracts";
 
 function deferred() {
@@ -19,10 +26,10 @@ function fixture() {
   let eligible = true;
   let targetClient: RendererModelClient | null = client;
   let threadId: HostThreadId | null = hostThreadIdSchema.parse("native-thread");
-  let draftCwd: string | null = null;
+  let draft: RendererNativeDraftScope | null = null;
   const values: boolean[] = [];
   const render = vi.fn(() => {
-    values.push(route.update(targetClient, threadId, eligible, draftCwd));
+    values.push(route.update(targetClient, threadId, eligible, draft));
   });
   const route = createRendererNativeInferenceRoute(render);
   return {
@@ -39,8 +46,8 @@ function fixture() {
       targetClient = value;
       render();
     },
-    setDraftCwd(value: string | null) {
-      draftCwd = value;
+    setDraft(value: RendererNativeDraftScope | null) {
+      draft = value;
       render();
     },
     setThread(value: string | null) {
@@ -168,31 +175,189 @@ describe("Native inference route revalidation lifecycle", () => {
     const pending = deferred();
     f.verify.mockReturnValueOnce(pending.promise);
     f.setThread(null);
-    expect(f.verify).toHaveBeenCalledWith(undefined);
+    expect(f.verify).not.toHaveBeenCalled();
+    f.setDraft({ draftId: "client-new-thread:1", cwd: "/work/draft" });
+    expect(f.verify).toHaveBeenCalledExactlyOnceWith({ cwd: "/work/draft" });
     f.route.dispose();
     expect(vi.getTimerCount()).toBe(0);
     pending.resolve(true);
     await vi.advanceTimersByTimeAsync(15000);
-    expect(f.render).toHaveBeenCalledTimes(1);
-    expect(f.route.update(f.client, null, true)).toBe(false);
+    expect(f.render).toHaveBeenCalledTimes(2);
+    expect(
+      f.route.update(f.client, null, true, { draftId: "client-new-thread:1", cwd: "/work/draft" }),
+    ).toBe(false);
   });
-  it("re-verifies a new draft against its workspace and ignores it for existing Threads", async () => {
+
+  it("fails closed until draft identity and workspace are confirmed, revokes on draft change, and ignores draft for existing Threads", async () => {
     const f = fixture();
     f.setThread(null);
     await vi.advanceTimersByTimeAsync(0);
-    expect(f.verify).toHaveBeenLastCalledWith(undefined);
-    f.verify.mockResolvedValueOnce(false);
-    f.setDraftCwd("/work/draft");
     expect(f.values.at(-1)).toBe(false);
-    expect(f.verify).toHaveBeenLastCalledWith({ cwd: "/work/draft" });
+    expect(f.verify).not.toHaveBeenCalled();
+
+    f.setDraft({ draftId: "client-new-thread:1", cwd: "/work/custom" });
+    expect(f.values.at(-1)).toBe(false);
+    expect(f.verify).toHaveBeenLastCalledWith({ cwd: "/work/custom" });
     await vi.advanceTimersByTimeAsync(0);
+    expect(f.values.at(-1)).toBe(true);
+
+    // Switching to another draft identity invalidates the previous proof even before config resolves.
+    const nextCheck = deferred();
+    f.verify.mockReturnValueOnce(nextCheck.promise);
+    f.setDraft({ draftId: "client-new-thread:2", cwd: "/work/custom" });
     expect(f.values.at(-1)).toBe(false);
+    nextCheck.resolve(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.values.at(-1)).toBe(true);
+
+    // Losing the confirmed workspace immediately revokes the bypass without querying global config.
+    const callsBeforeClear = f.verify.mock.calls.length;
+    f.setDraft(null);
+    expect(f.values.at(-1)).toBe(false);
+    expect(f.verify).toHaveBeenCalledTimes(callsBeforeClear);
+
+    // Existing Threads verify by threadId and ignore draft workspace changes.
     f.setThread("native-thread");
     expect(f.verify).toHaveBeenLastCalledWith({ threadId: "native-thread" });
     const calls = f.verify.mock.calls.length;
     await vi.advanceTimersByTimeAsync(0);
-    f.setDraftCwd("/work/other");
+    f.setDraft({ draftId: "client-new-thread:3", cwd: "/work/other" });
     expect(f.verify).toHaveBeenCalledTimes(calls);
     f.route.dispose();
+  });
+});
+
+describe("Confirmed draft workspace binding for native quota isolation", () => {
+  it("binds only to the single mounted draft on that Host and invalidates on draft, Host, or multi-draft ambiguity", () => {
+    const store = createRendererNativeDraftWorkspaceStore();
+    const composerA = {};
+    const composerB = {};
+
+    // Publishing before any draft mounts must not carry over to a later draft.
+    store.publish({ hostId: "local", cwd: "/work/stale-custom" }, []);
+    expect(
+      store.resolve({ composer: composerA, hostId: "local", draftId: "client-new-thread:a" }),
+    ).toBeNull();
+
+    // Unambiguous single mounted draft on that Host binds its workspace.
+    store.publish({ hostId: "local", cwd: "/work/custom" }, [
+      { composer: composerA, hostId: "local", draftId: "client-new-thread:a" },
+    ]);
+    expect(
+      store.resolve({ composer: composerA, hostId: "local", draftId: "client-new-thread:a" }),
+    ).toEqual({ draftId: "client-new-thread:a", cwd: "/work/custom" });
+
+    // Switching draftId or hostId on the same Composer invalidates the stale binding.
+    expect(
+      store.resolve({ composer: composerA, hostId: "local", draftId: "client-new-thread:b" }),
+    ).toBeNull();
+    expect(
+      store.resolve({ composer: composerA, hostId: "local", draftId: "client-new-thread:a" }),
+    ).toBeNull();
+
+    store.publish({ hostId: "local", cwd: "/work/custom" }, [
+      { composer: composerA, hostId: "local", draftId: "client-new-thread:a" },
+    ]);
+    expect(
+      store.resolve({ composer: composerA, hostId: "ssh-host", draftId: "client-new-thread:a" }),
+    ).toBeNull();
+
+    // Multiple drafts on the same Host make a Host-level event ambiguous and fail closed.
+    store.publish({ hostId: "local", cwd: "/work/custom" }, [
+      { composer: composerA, hostId: "local", draftId: "client-new-thread:a" },
+    ]);
+    store.publish({ hostId: "local", cwd: "/work/official" }, [
+      { composer: composerA, hostId: "local", draftId: "client-new-thread:a" },
+      { composer: composerB, hostId: "local", draftId: "client-new-thread:b" },
+    ]);
+    expect(
+      store.resolve({ composer: composerA, hostId: "local", draftId: "client-new-thread:a" }),
+    ).toBeNull();
+    expect(
+      store.resolve({ composer: composerB, hostId: "local", draftId: "client-new-thread:b" }),
+    ).toBeNull();
+
+    // Explicit draftId still binds the matching draft without affecting siblings.
+    store.publish({ hostId: "local", cwd: "/work/custom", draftId: "client-new-thread:a" }, [
+      { composer: composerA, hostId: "local", draftId: "client-new-thread:a" },
+      { composer: composerB, hostId: "local", draftId: "client-new-thread:b" },
+    ]);
+    expect(
+      store.resolve({ composer: composerA, hostId: "local", draftId: "client-new-thread:a" }),
+    ).toEqual({ draftId: "client-new-thread:a", cwd: "/work/custom" });
+    expect(
+      store.resolve({ composer: composerB, hostId: "local", draftId: "client-new-thread:b" }),
+    ).toBeNull();
+  });
+
+  it("keeps official project drafts quota-gated when global config uses a custom provider", async () => {
+    const customConfig = {
+      model_provider: "custom",
+      model_providers: {
+        custom: {
+          base_url: "http://127.0.0.1:15721/v1",
+          experimental_bearer_token: "PROXY_MANAGED",
+          requires_openai_auth: true,
+        },
+      },
+    };
+    const sendRequest = vi.fn(async (method: string, params: unknown) => {
+      if (method !== "config/read") throw new Error(`Unexpected method: ${method}`);
+      const cwd =
+        typeof params === "object" && params !== null && "cwd" in params
+          ? (params as { cwd?: unknown }).cwd
+          : undefined;
+      if (cwd === "/work/official") {
+        return { config: { ...customConfig, model_provider: "openai" } };
+      }
+      return { config: customConfig };
+    });
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Missing client");
+
+    const store = createRendererNativeDraftWorkspaceStore();
+    const composer = {};
+    let draftId = "client-new-thread:official";
+    const results: boolean[] = [];
+    const render = (): boolean => {
+      const value = route.update(
+        client,
+        null,
+        true,
+        store.resolve({ composer, hostId: "local", draftId }),
+      );
+      results.push(value);
+      return value;
+    };
+    const route = createRendererNativeInferenceRoute(render);
+
+    // 1. Before workspace confirmation, never fall back to global custom config.
+    expect(render()).toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sendRequest).not.toHaveBeenCalled();
+
+    // 2. Project-level official override stays quota-gated.
+    store.publish({ hostId: "local", cwd: "/work/official" }, [
+      { composer, hostId: "local", draftId },
+    ]);
+    expect(render()).toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(results.at(-1)).toBe(false);
+
+    // 3. Confirmed custom-provider workspace unlocks quota isolation.
+    store.publish({ hostId: "local", cwd: "/work/custom" }, [
+      { composer, hostId: "local", draftId },
+    ]);
+    expect(render()).toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(results.at(-1)).toBe(true);
+
+    // 4. Switching to a new unconfirmed draft revokes isolation instead of inheriting /work/custom.
+    draftId = "client-new-thread:next-official";
+    expect(render()).toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(results.at(-1)).toBe(false);
+
+    route.dispose();
   });
 });

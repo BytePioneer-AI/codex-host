@@ -79,7 +79,9 @@ import {
   type RendererNativeProviderUsageBanner,
 } from "./renderer-native-provider-usage-banner.js";
 import {
+  createRendererNativeDraftWorkspaceStore,
   createRendererNativeInferenceRoute,
+  type RendererNativeDraftComposer,
   type RendererNativeInferenceRoute,
 } from "./renderer-native-inference-route.js";
 import {
@@ -1101,10 +1103,24 @@ export function installRendererBindingProbe(
 
   /**
    * Workspace of each Host's current draft, published by the draft prewarm
-   * (the only place Desktop names it). A draft asks the Host for that
-   * workspace's live commands, skills and native inference route.
+   * (the only place Desktop names it). External Harness drafts ask the Host
+   * for live commands and skills; native Codex quota isolation separately
+   * requires a workspace confirmed for this Composer's current draft identity.
    */
   const draftWorkspaces = new Map<string, string>();
+  const nativeDraftWorkspaces = createRendererNativeDraftWorkspaceStore();
+  const draftIdFromComposerModelTarget = (target: readonly unknown[] | null): string | null =>
+    target?.[0] === "default" && typeof target[1] === "string" && target[1].length > 0
+      ? target[1]
+      : null;
+  const activeNativeDraftComposers = (): RendererNativeDraftComposer[] =>
+    [...mountedByComposer.values()].map((mounted) => ({
+      composer: mounted.composer,
+      hostId: threadIdFromComposerModelTarget(mounted.modelTarget)
+        ? null
+        : activeModelHostId(mounted.composer),
+      draftId: draftIdFromComposerModelTarget(mounted.modelTarget),
+    }));
   {
     const published: unknown = Reflect.get(window, "__codexhostDraftWorkspacesV1");
     if (typeof published === "object" && published !== null) {
@@ -1156,12 +1172,19 @@ export function installRendererBindingProbe(
       mounted.ownershipStatus !== "error" &&
       !controller.isSwitching(mounted.composer);
     const nativeThreadId = threadIdFromComposerModelTarget(mounted.modelTarget);
-    const draftHostId = nativeThreadId ? null : activeModelHostId(mounted.composer);
+    if (nativeThreadId) nativeDraftWorkspaces.delete(mounted.composer);
+    const nativeDraftScope = nativeThreadId
+      ? null
+      : nativeDraftWorkspaces.resolve({
+          composer: mounted.composer,
+          hostId: activeModelHostId(mounted.composer),
+          draftId: draftIdFromComposerModelTarget(mounted.modelTarget),
+        });
     const nativeSubmissionReady = mounted.nativeInferenceRoute.update(
       composerClient(mounted),
       nativeThreadId,
       nativeEligible,
-      draftHostId ? (draftWorkspaces.get(draftHostId) ?? null) : null,
+      nativeDraftScope,
     );
     showCodexUsageGateStatus(
       mounted,
@@ -3309,6 +3332,7 @@ export function installRendererBindingProbe(
         mounted.codexUsageGate.dispose();
         mounted.codexUsageBanner.dispose();
         mounted.nativeInferenceRoute.dispose();
+        nativeDraftWorkspaces.delete(composer);
         disposeComposerAgentControl(mounted.control);
         ownershipRecovery.delete(mounted);
         modelRecovery.delete(mounted);
@@ -3552,6 +3576,7 @@ export function installRendererBindingProbe(
     reconcileHarnessAvailabilityHost();
     void loadCodexAccounts();
     void refreshHarnessAvailability();
+    nativeDraftWorkspaces.clear();
     for (const mounted of mountedByComposer.values()) {
       const state = controller.get(mounted.composer);
       if (
@@ -3560,6 +3585,8 @@ export function installRendererBindingProbe(
         !isExternalConfigurationStable(mounted.modelView, mounted.permissionModeView)
       ) {
         void loadExternalCatalog(mounted);
+      } else if (state.agent === "codex" && !threadIdFromComposerModelTarget(mounted.modelTarget)) {
+        renderMounted(mounted);
       }
     }
   };
@@ -3626,9 +3653,21 @@ export function installRendererBindingProbe(
   const onDraftWorkspace = (event: Event): void => {
     const detail: unknown = (event as CustomEvent).detail;
     if (typeof detail !== "object" || detail === null) return;
-    const { hostId, cwd } = detail as { hostId?: unknown; cwd?: unknown };
-    if (typeof hostId !== "string" || typeof cwd !== "string" || cwd.length === 0) return;
+    const { hostId, cwd, draftId } = detail as {
+      hostId?: unknown;
+      cwd?: unknown;
+      draftId?: unknown;
+    };
+    if (typeof hostId !== "string" || typeof cwd !== "string" || cwd.trim().length === 0) return;
     draftWorkspaces.set(hostId, cwd);
+    nativeDraftWorkspaces.publish(
+      {
+        hostId,
+        cwd,
+        ...(typeof draftId === "string" && draftId.length > 0 ? { draftId } : {}),
+      },
+      activeNativeDraftComposers(),
+    );
     delegationMention?.refresh();
     for (const mounted of mountedByComposer.values()) {
       if (
@@ -3641,7 +3680,7 @@ export function installRendererBindingProbe(
         !threadIdFromComposerModelTarget(mounted.modelTarget) &&
         activeModelHostId(mounted.composer) === hostId
       ) {
-        // A Codex draft re-checks its inference route against the new workspace.
+        // A Codex draft re-checks its inference route against the confirmed workspace.
         renderMounted(mounted);
       }
     }
@@ -3877,6 +3916,7 @@ export function installRendererBindingProbe(
         if (state.retryTimer !== null) window.clearTimeout(state.retryTimer);
       }
       harnessAvailabilityByHost.clear();
+      nativeDraftWorkspaces.clear();
       activeAvailabilityHostId = "local";
       sidebarAgentIcons.refresh();
       void refreshHarnessAvailabilityForHost("local");
@@ -3953,6 +3993,7 @@ export function installRendererBindingProbe(
         mounted.nativeInferenceRoute.dispose();
         disposeComposerAgentControl(mounted.control);
       }
+      nativeDraftWorkspaces.clear();
       mountedByComposer.clear();
       pendingReplacements.clear();
       connectionListeners.clear();

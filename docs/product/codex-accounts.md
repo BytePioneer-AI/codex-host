@@ -32,7 +32,7 @@ ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两�
 
 原生 Codex 也可以使用与官方订阅额度无关的 custom Provider。Renderer 通过同一 Host 的 `config/read` 核验有效配置，要求非官方 HTTP(S) endpoint，以及显式独立 bearer、环境 Key 或 `requires_openai_auth=false`。`openai`、`cc-switch-official`、Host 的外部投影 Provider、官方 endpoint 和未知配置保留原生额度门。不根据 `gpt-*` 模型名或 ChatGPT 登录状态猜测 Billing Source，也不重置或伪造官方额度。
 
-已有 Thread 先通过同一 Host 的 `thread/read` 核验真实 `modelProvider`，避免把新 Thread 的默认 custom 配置用于历史官方 Thread；历史 Thread 不会因默认 Provider 改变而迁移，仍按其真实 Provider 判定。判定缓存绑定 Host 客户端与 Thread。就绪的原生 Composer 每 5 秒自动复核；同一 Host/Thread 的已确认结果在最多 5 秒的复核期间保持，避免周期性撤销额度隔离而闪烁。返回官方配置、读取失败或复核超时立即撤销；Host/Thread 切换、ownership 加载/错误及切换中不复用旧结果。Composer 移除和扩展卸载清除定时器，过期响应不能恢复旧投影。Renderer 状态只保留布尔判定，不保存凭据。空输入、附件等其他提交限制不变。独立 Provider 自身的额度或认证失败仍由真实后端处理。
+已有 Thread 先通过同一 Host 的 `thread/read` 核验真实 `modelProvider` 与工作目录 `cwd`，并按该目录读取 `config/read`，避免把新 Thread 的默认 custom 配置用于历史官方 Thread；历史 Thread 不会因默认 Provider 改变而迁移，缺少可核验 `cwd` 时保守保留原生额度门。新草稿的额度豁免绑定当前 Composer 的草稿身份与已确认工作区，工作区缺失、切换、过期或同 Host 多草稿无法唯一关联时保守保留原生额度门，不退回全局配置证明独立推理。判定缓存绑定 Host 客户端、Thread 或草稿身份与工作区。就绪的原生 Composer 每 5 秒自动复核；同一目标的已确认结果在最多 5 秒的复核期间保持，避免周期性撤销额度隔离而闪烁。返回官方配置、读取失败或复核超时立即撤销；Host/Thread/草稿切换、ownership 加载/错误及切换中不复用旧结果。Composer 移除和扩展卸载清除定时器，过期响应不能恢复旧投影。Renderer 状态只保留布尔判定，不保存凭据。空输入、附件等其他提交限制不变。独立 Provider 自身的额度或认证失败仍由真实后端处理。
 
 额度隔离成功的 Composer 同时隐藏其原生「Codex 和工作使用额度已用完」横幅。`renderer-native-provider-usage-banner.ts` 只识别该 Composer 内 `aside[role="status"]` 的已提交 React 祖先中明确的 `banner.banner_type`（`rate_limit_reached` 及套餐前缀），不按翻译文案、模型名或 CSS 压缩类名隐藏。局部 MutationObserver 在绘制前处理原生节点替换及样式重写，不等待下一 animation frame。其他警告与未知横幅保持原样；隔离撤销、Composer 移除或扩展卸载时恢复原来的可见性与样式。账号设置与额度入口继续展示真实官方余额。
 

@@ -718,8 +718,8 @@ describe("Antigravity Session usage", () => {
     });
     expect(result.usage).toEqual({
       contextUsedTokens: 9762,
-      contextWindowTokens: 1048576,
-      contextUsagePercent: (9762 / 1048576) * 100,
+      contextWindowTokens: 256_000,
+      contextUsagePercent: (9762 / 256_000) * 100,
       inputTokens: 18775,
       cachedInputTokens: 8097,
       cacheWriteInputTokens: 0,
@@ -747,9 +747,27 @@ describe("Antigravity Session usage", () => {
       outputTokens: 151,
       reasoningOutputTokens: 2,
       totalTokens: 18939,
-      contextWindowTokens: 1048576,
+      contextWindowTokens: 256_000,
     });
     expect(next.usage).not.toHaveProperty("outputTokensPerSecond");
+  });
+
+  it("projects the nominal ACP window onto the effective auto-compaction threshold", () => {
+    // `agy` compacts at its documented 256,000-token checkpoint threshold, far
+    // below the nominal 1M window `usage_update` reports (upstream #878/#1432).
+    tracker.recordContextWindow(96_000, 1_048_576);
+    expect(tracker.currentUsage()).toMatchObject({
+      contextUsedTokens: 96_000,
+      contextWindowTokens: 256_000,
+      contextUsagePercent: (96_000 / 256_000) * 100,
+    });
+    // A window already at or below the threshold is reported unchanged.
+    tracker.recordContextWindow(10_000, 200_000);
+    expect(tracker.currentUsage()).toMatchObject({
+      contextUsedTokens: 10_000,
+      contextWindowTokens: 200_000,
+      contextUsagePercent: (10_000 / 200_000) * 100,
+    });
   });
 
   it("keeps unknown fields absent and known cache zero explicit", () => {

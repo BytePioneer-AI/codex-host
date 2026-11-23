@@ -17,6 +17,20 @@ import {
   type AntigravityRequestMetadata,
 } from "./native-request-timing.js";
 
+/**
+ * Antigravity's native auto-compaction fires far below the nominal window that
+ * ACP `usage_update` reports: the CLI hardcodes a 256,000-token checkpoint
+ * threshold in GetCheckpointConfig (google-antigravity/antigravity-cli #878,
+ * #1432), while some Models are server-configured to 512,000. `usage_update.size`
+ * still carries the nominal window (e.g. 1,048,576), so percentages derived from
+ * it hide when compaction actually triggers. Until the effective threshold is
+ * exposed over ACP (upstream #1586) or verified read-only in the local session
+ * database, project the window onto the documented default threshold. Models
+ * server-configured to 512,000 reach 100% early, which is the safer direction
+ * than a hidden compaction.
+ */
+const ANTIGRAVITY_AUTO_COMPACTION_THRESHOLD_TOKENS = 256_000;
+
 export interface AntigravitySessionUsageTrackerOptions {
   nativeSessionId: string;
   homedir: string;
@@ -234,10 +248,13 @@ export class AntigravitySessionUsageTracker {
 
   recordContextWindow(used: number, size: number): HostUsage | null {
     if (count(used) && count(size) && size > 0) {
+      // Project the nominal ACP window onto the effective auto-compaction
+      // threshold so the percentage reflects when `agy` actually compacts.
+      const effectiveSize = Math.min(size, ANTIGRAVITY_AUTO_COMPACTION_THRESHOLD_TOKENS);
       this.#context = {
         contextUsedTokens: used,
-        contextWindowTokens: size,
-        contextUsagePercent: Math.min(100, (used / size) * 100),
+        contextWindowTokens: effectiveSize,
+        contextUsagePercent: Math.min(100, (used / effectiveSize) * 100),
       };
     }
     return this.currentUsage();

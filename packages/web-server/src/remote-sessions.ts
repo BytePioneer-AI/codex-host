@@ -185,6 +185,12 @@ export class RemoteSessions {
     try {
       return await this.call(parsed.data);
     } catch (error) {
+      if (
+        "hostId" in operation &&
+        operation.hostId.startsWith("remote-peer:") &&
+        error instanceof RpcError
+      )
+        throw error;
       const write = ![
         "hosts",
         "list",
@@ -207,15 +213,30 @@ export class RemoteSessions {
           error.message,
         );
       if (write) throw remoteOutcomeUnknown();
+      if ("hostId" in operation && operation.hostId.startsWith("remote-peer:"))
+        throw new RpcError("remote/read-failed", "Remote peer did not return a valid response.");
       throw new RpcError(
         "remote/offline",
         "Desktop remote connection is unavailable. Reconnect in Codex Desktop and refresh. If Desktop cannot be discovered, configure CODEXHOST_DESKTOP_RUNTIME_DESCRIPTOR with its private descriptor path.",
       );
     }
   }
+  private refreshPending = false;
+  hostsChanged(): void {
+    if (this.closed) return;
+    if (this.listing) {
+      this.refreshPending = true;
+      return;
+    }
+    void this.refresh().catch(() => undefined);
+  }
   refresh(): Promise<void> {
     this.listing ??= this.list().finally(() => {
       this.listing = undefined;
+      if (this.refreshPending) {
+        this.refreshPending = false;
+        this.hostsChanged();
+      }
     });
     return this.listing;
   }
@@ -238,88 +259,104 @@ export class RemoteSessions {
       return;
     }
     this.hosts = new Map(hosts.map((host) => [host.hostId, host]));
+    for (const [id, entry] of this.entries) {
+      if (
+        entry.identity.hostId.startsWith("remote-peer:") &&
+        !this.hosts.has(entry.identity.hostId)
+      ) {
+        this.clearPending(id);
+        this.retireView(entry);
+        this.entries.delete(id);
+        this.events.emit("api-session/removed", id);
+      }
+    }
     const present = new Set(hosts.filter((host) => host.online).map((host) => host.hostId));
     for (const entry of this.entries.values())
       if (!present.has(entry.identity.hostId)) this.offline(entry);
-    for (const host of hosts.filter((host) => host.online)) {
-      const found = new Map<string, Entry>();
-      const unlisted = new Set(
-        [...this.entries.values()].filter(
-          (entry) => entry.identity.hostId === host.hostId && entry.createdEpoch,
-        ),
-      );
-      let loaded: Set<string> | undefined;
-      let loadedEpoch: string | undefined;
-      try {
-        let cursor: string | null = null;
-        const seen = new Set<string>();
-        do {
-          const page = pageSchema.parse(
-            await this.invoke({
-              kind: "list",
-              hostId: host.hostId,
-              cursor,
-              archived: false,
-              ...(cursor === null && unlisted.size ? { includeLoaded: true } : {}),
-            }),
+    await Promise.all(
+      hosts
+        .filter((host) => host.online)
+        .map(async (host) => {
+          const found = new Map<string, Entry>();
+          const unlisted = new Set(
+            [...this.entries.values()].filter(
+              (entry) => entry.identity.hostId === host.hostId && entry.createdEpoch,
+            ),
           );
-          if (page.loaded) {
-            loaded = new Set(page.loaded);
-            loadedEpoch = page.epoch;
-          }
-          for (const row of page.data) {
-            const id = remoteSessionId(host.hostId, row.id);
-            found.set(id, {
-              identity: { hostId: host.hostId, threadId: row.id },
-              row: { ...row, turns: [] } as ChThread,
-              online: true,
-              configurationRevision: 0,
-            });
-          }
-          cursor = page.nextCursor;
-          if (cursor && seen.has(cursor)) throw new Error("Remote cursor did not advance");
-          if (cursor) seen.add(cursor);
-        } while (cursor && seen.size < 100);
-        if (cursor) throw new Error("Remote catalog exceeds bounded traversal");
-        if (this.closed || archiveRevision !== this.archiveRevision) return;
-        for (const [id, entry] of this.entries)
-          if (entry.identity.hostId === host.hostId && !found.has(id) && !entry.archived) {
-            if (
-              entry.createdEpoch &&
-              (!unlisted.has(entry) ||
-                (entry.createdEpoch === loadedEpoch && loaded?.has(entry.identity.threadId)))
-            ) {
-              if (!entry.online && entry.createdEpoch === loadedEpoch) {
-                entry.online = true;
-                this.events.emit("api-session/added", this.summary(id, entry));
+          let loaded: Set<string> | undefined;
+          let loadedEpoch: string | undefined;
+          try {
+            let cursor: string | null = null;
+            const seen = new Set<string>();
+            do {
+              const page = pageSchema.parse(
+                await this.invoke({
+                  kind: "list",
+                  hostId: host.hostId,
+                  cursor,
+                  archived: false,
+                  ...(cursor === null && unlisted.size ? { includeLoaded: true } : {}),
+                }),
+              );
+              if (page.loaded) {
+                loaded = new Set(page.loaded);
+                loadedEpoch = page.epoch;
               }
-              continue;
+              for (const row of page.data) {
+                const id = remoteSessionId(host.hostId, row.id);
+                found.set(id, {
+                  identity: { hostId: host.hostId, threadId: row.id },
+                  row: { ...row, turns: [] } as ChThread,
+                  online: true,
+                  configurationRevision: 0,
+                });
+              }
+              cursor = page.nextCursor;
+              if (cursor && seen.has(cursor)) throw new Error("Remote cursor did not advance");
+              if (cursor) seen.add(cursor);
+            } while (cursor && seen.size < 100);
+            if (cursor) throw new Error("Remote catalog exceeds bounded traversal");
+            if (this.closed || archiveRevision !== this.archiveRevision) return;
+            for (const [id, entry] of this.entries)
+              if (entry.identity.hostId === host.hostId && !found.has(id) && !entry.archived) {
+                if (
+                  entry.createdEpoch &&
+                  (!unlisted.has(entry) ||
+                    (entry.createdEpoch === loadedEpoch && loaded?.has(entry.identity.threadId)))
+                ) {
+                  if (!entry.online && entry.createdEpoch === loadedEpoch) {
+                    entry.online = true;
+                    this.events.emit("api-session/added", this.summary(id, entry));
+                  }
+                  continue;
+                }
+                this.entries.delete(id);
+                this.clearPending(id);
+                entry.view?.log.reconnectFollowers();
+                this.events.emit("api-session/removed", id);
+              }
+            for (const [id, entry] of found) {
+              const previous = this.entries.get(id);
+              const changed =
+                !previous ||
+                !previous.online ||
+                JSON.stringify(previous.row) !== JSON.stringify(entry.row);
+              const current = previous
+                ? Object.assign(previous, { row: entry.row, online: true, archived: false })
+                : entry;
+              this.entries.set(id, current);
+              delete current.createdEpoch;
+              if (changed) this.events.emit("api-session/added", this.summary(id, current));
             }
-            this.entries.delete(id);
-            this.clearPending(id);
-            entry.view?.log.reconnectFollowers();
-            this.events.emit("api-session/removed", id);
+            this.syncArchives();
+          } catch {
+            host.online = false;
+            for (const entry of this.entries.values())
+              if (entry.identity.hostId === host.hostId) this.offline(entry);
           }
-        for (const [id, entry] of found) {
-          const previous = this.entries.get(id);
-          const changed =
-            !previous ||
-            !previous.online ||
-            JSON.stringify(previous.row) !== JSON.stringify(entry.row);
-          const current = previous
-            ? Object.assign(previous, { row: entry.row, online: true, archived: false })
-            : entry;
-          this.entries.set(id, current);
-          delete current.createdEpoch;
-          if (changed) this.events.emit("api-session/added", this.summary(id, current));
-        }
-        this.syncArchives();
-      } catch {
-        host.online = false;
-        for (const entry of this.entries.values())
-          if (entry.identity.hostId === host.hostId) this.offline(entry);
-      }
-    }
+          this.syncGroups();
+        }),
+    );
     this.syncGroups();
   }
   private async projectTarget(workspaceId: string) {
@@ -330,7 +367,12 @@ export class RemoteSessions {
       );
       if (!project?.path) continue;
       if (!host.online)
-        throw new RpcError("remote/offline", "Reconnect this project in Codex Desktop.");
+        throw new RpcError(
+          "remote/offline",
+          host.hostId.startsWith("remote-peer:")
+            ? "Reconnect this remote peer."
+            : "Reconnect this project in Codex Desktop.",
+        );
       if (!host.epoch)
         throw new RpcError(
           "remote/unsupported",
@@ -593,7 +635,9 @@ export class RemoteSessions {
     if (changed && !this.closed) this.events.emit("api-session/added", this.summary(id, entry));
     entry.view?.log.setProjection("nativeConnection", {
       state: "reconnecting",
-      message: "Remote Host offline; reconnect in Desktop.",
+      message: entry.identity.hostId.startsWith("remote-peer:")
+        ? "Remote peer offline; check its connection."
+        : "Remote Host offline; reconnect in Desktop.",
     });
   }
   private clearPending(id: string): void {

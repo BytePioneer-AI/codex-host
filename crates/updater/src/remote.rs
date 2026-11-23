@@ -164,13 +164,25 @@ const VERSION_MISMATCH: &str = "Installed remote version does not match the requ
 const INSTALL_FAILED: &str =
     "npm installation failed; check remote network access and write permissions";
 
-fn distribution_version(root: &Path) -> io::Result<String> {
+fn metadata_version(path: &Path) -> io::Result<String> {
     #[derive(Deserialize)]
-    struct Distribution {
+    struct Metadata {
         version: String,
     }
-    let bytes = fs::read(root.join("app/codexhost-distribution.json"))?;
-    Ok(serde_json::from_slice::<Distribution>(&bytes)?.version)
+    let bytes = fs::read(path)?;
+    Ok(serde_json::from_slice::<Metadata>(&bytes)?.version)
+}
+
+fn distribution_version(root: &Path) -> io::Result<String> {
+    metadata_version(&root.join("app/codexhost-distribution.json"))
+}
+
+fn resolve_platform_root(candidates: &[PathBuf]) -> Option<&Path> {
+    // The launcher resolves the first package.json before it opens the platform payload.
+    candidates
+        .iter()
+        .map(PathBuf::as_path)
+        .find(|root| root.join("package.json").is_file())
 }
 
 fn canonical_or_original(path: &Path) -> PathBuf {
@@ -247,20 +259,33 @@ fn install_release(request: &Request, platform_name: &str) -> Result<String, Box
         run(&mut command, Stdio::null())
     };
     let result = install(&request.version);
-    // npm may relocate an optional dependency. Check the launcher's nearest copy first.
     let mut roots = vec![launcher_root.join("node_modules").join(&platform), hoisted];
     if !roots.contains(&package_root) {
-        roots.push(package_root);
+        roots.push(package_root.clone());
     }
-    for root in roots {
-        let version = match distribution_version(&root) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            version => version,
-        };
+    if let Some(root) = resolve_platform_root(&roots) {
         result.map_err(|error| format!("{INSTALL_FAILED}: {error}"))?;
-        return version.map_err(|_| VERSION_MISMATCH.into());
+        match distribution_version(root) {
+            Ok(version) => {
+                if metadata_version(&root.join("package.json")).map_err(|_| VERSION_MISMATCH)?
+                    != request.version
+                {
+                    return Err(VERSION_MISMATCH.into());
+                }
+                return Ok(version);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return Err(VERSION_MISMATCH.into()),
+        }
     }
-    let _ = install(&request.installed_version);
+    if install(&request.installed_version).is_ok()
+        && let Some(restored) = resolve_platform_root(&roots)
+        && canonical_or_original(restored) != package_root
+        && distribution_version(restored).ok().as_ref() == Some(&request.installed_version)
+    {
+        // Keep the running service's manifest pointed at the restored shim and runtime.
+        let _ = remote(request, "install");
+    }
     Err(format!("{INSTALL_FAILED}: platform package was not installed").into())
 }
 
@@ -360,6 +385,11 @@ root=$(dirname "$0")
 prefix="$root/node_modules"
 hoisted="$prefix/@codexhost/{PLATFORM}"
 nested="$prefix/@codexhost/cli/node_modules/@codexhost/{PLATFORM}"
+write_package() {{
+  mkdir -p "$1/app"
+  printf '{{"version":"%s"}}\n' "$2" > "$1/package.json"
+  cp "$1/package.json" "$1/{METADATA}"
+}}
 echo "$*" >> "$root/calls"
 if [ "$1" = root ]; then echo "$prefix"; exit 0; fi
 {behavior}
@@ -388,7 +418,9 @@ if [ "$1" = root ]; then echo "$prefix"; exit 0; fi
         };
         let package_root = modules.join("@codexhost").join(PLATFORM);
         fs::create_dir_all(package_root.join("app")).unwrap();
-        fs::write(package_root.join(METADATA), br#"{"version":"0.11.0"}"#).unwrap();
+        for file in ["package.json", METADATA] {
+            fs::write(package_root.join(file), br#"{"version":"0.11.0"}"#).unwrap();
+        }
         let launcher = launcher_root.join("bin/codexhost.js");
         fs::create_dir_all(launcher.parent().unwrap()).unwrap();
         fs::write(
@@ -455,8 +487,7 @@ fi"#
       *@0.12.0*) rm -rf "$nested" "$hoisted";;
       *@0.11.0*)
         case "$*" in *cli-darwin-arm64@*) location=$hoisted;; *) location=$nested;; esac
-        mkdir -p "$location/app"
-        echo '{"version":"0.11.0"}' > "$location/app/codexhost-distribution.json";;
+        write_package "$location" 0.11.0;;
     esac;;
 esac"#,
             );
@@ -484,8 +515,73 @@ esac"#,
                     .trim(),
                 r#"{"version":"0.11.0"}"#
             );
-            assert!(!calls.contains("remote stop"));
+            assert!(!calls.lines().any(|call| call.starts_with("remote ")));
         }
+    }
+    #[test]
+    fn incomplete_nested_package_shadows_a_complete_hoisted_release() {
+        let f = fixture(true);
+        f.npm(
+            r#"case "$1" in
+  view) echo 0.12.0;;
+  install)
+    case "$*" in
+      *@0.12.0*)
+        write_package "$nested" 0.12.0
+        rm "$nested/app/codexhost-distribution.json"
+        write_package "$hoisted" 0.12.0;;
+      *@0.11.0*) write_package "$nested" 0.11.0;;
+    esac;;
+esac"#,
+        );
+        assert_eq!(
+            apply_locked(&f.request).unwrap_err().to_string(),
+            format!("{INSTALL_FAILED}: platform package was not installed")
+        );
+        assert_eq!(
+            distribution_version(&f.request.package_root).unwrap(),
+            "0.11.0"
+        );
+        assert!(!f.calls().lines().any(|call| call.starts_with("remote ")));
+    }
+    #[test]
+    fn rejects_a_package_version_that_the_launcher_would_refuse() {
+        let f = fixture(true);
+        f.npm(
+            r#"case "$1" in
+  view) echo 0.12.0;;
+  install) echo '{"version":"0.12.0"}' > "$nested/app/codexhost-distribution.json";;
+esac"#,
+        );
+        assert_eq!(
+            apply_locked(&f.request).unwrap_err().to_string(),
+            VERSION_MISMATCH
+        );
+        assert!(!f.calls().lines().any(|call| call.starts_with("remote ")));
+    }
+    #[test]
+    fn rollback_refreshes_the_manifest_when_the_restored_package_moves() {
+        let f = fixture(true);
+        f.npm(
+            r#"case "$1" in
+  view) echo 0.12.0;;
+  install)
+    case "$*" in
+      *@0.12.0*) rm -rf "$nested";;
+      *@0.11.0*) write_package "$hoisted" 0.11.0;;
+    esac;;
+esac"#,
+        );
+        assert_eq!(
+            apply_locked(&f.request).unwrap_err().to_string(),
+            format!("{INSTALL_FAILED}: platform package was not installed")
+        );
+        let calls = f.calls();
+        let service_actions: Vec<_> = calls
+            .lines()
+            .filter(|call| call.starts_with("remote "))
+            .collect();
+        assert_eq!(service_actions, ["remote install"]);
     }
     #[test]
     fn restarts_after_npm_moves_the_platform_within_the_global_prefix() {
@@ -505,8 +601,7 @@ esac"#,
   install)
     if [ -d "$nested" ]; then rm -rf "$nested"; location=$hoisted
     else rm -rf "$hoisted"; location=$nested; fi
-    mkdir -p "$location/app"
-    echo '{"version":"0.12.0"}' > "$location/app/codexhost-distribution.json";;
+    write_package "$location" 0.12.0;;
 esac"#,
             );
             apply_locked(&f.request).unwrap();

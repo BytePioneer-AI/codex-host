@@ -49,6 +49,8 @@ export interface ChProjectSnapshot {
   projects: Array<{ id: string; name: string; rootPaths: string[] }>;
   assignments: Record<string, string>;
   projectless: string[];
+  /** Projects in each native custom section, keyed by official section ID; shared Host only. */
+  sectionProjects?: Record<string, string[]> | undefined;
 }
 
 const exec = promisify(execFile);

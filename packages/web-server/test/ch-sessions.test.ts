@@ -217,6 +217,77 @@ it("propagates native section membership and summaries to browsers that did not 
   }
 });
 
+it("places Desktop's section projects as their root Workspaces in Desktop order", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-section-projects-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const folder = (name: string) => join(root, name);
+  const host = new FakeChHost();
+  host.add("alpha-thread", folder("alpha"));
+  host.add("beta-thread", folder("beta"));
+  host.add("loose-thread", folder("loose"));
+  // A project may list folders that other projects are named after.
+  host.projectSnapshot.projects.push({
+    id: "multi",
+    name: "Multi",
+    rootPaths: [folder("multi"), folder("shared"), folder("loose"), folder("alpha")],
+  });
+  host.projectSnapshot.sectionProjects = {
+    papers: ["multi", "project-beta-thread", "project-alpha-thread", "remote-only"],
+  };
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
+    method === "codexhost/thread/sections/list"
+      ? ({
+          sections: [
+            { id: "papers", name: "Papers", threads: [] },
+            { id: "other", name: "Other", threads: [] },
+          ],
+        } as T)
+      : request<T>(method, params);
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const sessions = new ChSessions(host, workspaces, new EventHub(root));
+  t.after(() => sessions.close());
+  let follow: StreamHandler | undefined;
+  class WorkspaceStreams extends StreamRegistry {
+    override register(name: string, callback: StreamHandler) {
+      super.register(name, callback);
+      if (name === "workspace/follow") follow = callback;
+    }
+  }
+  const rpc = new RpcRegistry();
+  const streams = new WorkspaceStreams();
+  workspaces.register(rpc, streams);
+  sessions.register(rpc, streams);
+  const listed = await rpc.dispatch("session/list", { args: {} });
+  assert.ok(listed.ok, listed.ok ? undefined : listed.error.message);
+  const frames: unknown[] = [];
+  await follow?.(
+    {},
+    {
+      id: "workspace",
+      closed: false,
+      push: (frame) => frames.push(frame),
+      end: () => {},
+      fail: (code, message) => {
+        throw new Error(`${code} ${message}`);
+      },
+      onClose: () => {},
+    },
+  );
+  const idOf = (name: string) => workspaces.byPath(folder(name))?.workspaceId;
+  assert.deepEqual((frames[0] as { value: { threadSections: unknown } }).value.threadSections, [
+    {
+      id: "papers",
+      name: "Papers",
+      threadIds: [],
+      // A folder named after a project takes that project's place: `alpha` follows its own
+      // project, and `loose` stays with its unsectioned one. `shared` is nobody's first root.
+      workspaceIds: [idOf("multi"), idOf("shared"), idOf("beta"), idOf("alpha")],
+    },
+    { id: "other", name: "Other", threadIds: [] },
+  ]);
+});
+
 it("resolves an existing unbound draft summary without native reads, then follows its bound alias", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-direct-draft-"));
   const host = new FakeChHost();

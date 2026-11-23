@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { IconPinOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { SessionNode } from "../tree.ts";
 import { SessionNodeItem } from "./Rows.tsx";
@@ -26,6 +26,7 @@ export function PinnedSection({
   onSessionRevealed,
   expanded,
   onToggle,
+  children,
 }: Pick<RowProps, "currentId" | "onOpen" | "onRenameRequest" | "renderSlot" | "t"> & {
   rows: readonly SessionNode[];
   customSection?: { key: string; name: string };
@@ -35,6 +36,8 @@ export function PinnedSection({
   expanded: boolean;
   /** Fold or unfold the section. */
   onToggle: () => void;
+  /** Rows after the section's own Threads, shown while it is expanded (its Workspaces). */
+  children?: ReactNode;
 }) {
   if (rows.length === 0 && !customSection) return null;
   const label = customSection?.name ?? t("section.pinned");
@@ -69,6 +72,7 @@ export function PinnedSection({
           )}
         </ThreadTreeRows>
       )}
+      {expanded && children}
     </div>
   );
 }

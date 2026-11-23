@@ -309,30 +309,26 @@ export class ChSessions {
       else if (item.owner === "codex") ownership.set(item.threadId, "codex");
     }
     const pageSectionAdditions = cursor === undefined ? undefined : new Set<string>();
-    if (sections) {
-      this.workspaces.setReferenceThreadSections(
-        sections.map(({ id, name, threads }) => {
-          const threadIds: string[] = [];
-          for (const thread of threads) {
-            if (typeof thread.id !== "string" || thread.archived === true) continue;
-            if (thread.archived === false && !snapshotArchives.has(thread.id))
-              archivedIds.delete(thread.id);
-            if (!found.has(thread.id)) {
-              const row = thread as unknown as ChThread;
-              found.set(thread.id, row);
-              ownership.set(thread.id, "codex");
-              if (cursor === undefined || !this.publishedCatalog?.has(row.id))
-                snapshot.threads.push(row);
-            }
-            if (ownership.get(thread.id) === "codex") {
-              threadIds.push(thread.id);
-              if (!this.publishedCatalog?.has(thread.id)) pageSectionAdditions?.add(thread.id);
-            }
-          }
-          return { id, name, threadIds };
-        }),
-      );
-    }
+    const threadSections = sections?.map(({ id, name, threads }) => {
+      const threadIds: string[] = [];
+      for (const thread of threads) {
+        if (typeof thread.id !== "string" || thread.archived === true) continue;
+        if (thread.archived === false && !snapshotArchives.has(thread.id))
+          archivedIds.delete(thread.id);
+        if (!found.has(thread.id)) {
+          const row = thread as unknown as ChThread;
+          found.set(thread.id, row);
+          ownership.set(thread.id, "codex");
+          if (cursor === undefined || !this.publishedCatalog?.has(row.id))
+            snapshot.threads.push(row);
+        }
+        if (ownership.get(thread.id) === "codex") {
+          threadIds.push(thread.id);
+          if (!this.publishedCatalog?.has(thread.id)) pageSectionAdditions?.add(thread.id);
+        }
+      }
+      return { id, name, threadIds };
+    });
     timing.count("ownershipIds", ownership.size);
     timing.count(
       "archivedRows",
@@ -374,6 +370,13 @@ export class ChSessions {
     timing.count("visibleRows", rows.size);
     await this.syncWorkspace(timing, projects);
     if (this.closed) return;
+    // Project members resolve to Workspaces, which exist once their roots are synced.
+    if (threadSections)
+      this.workspaces.setReferenceThreadSections(
+        threadSections,
+        definitions.projects,
+        definitions.sectionProjects,
+      );
     // Notifications received during catalog or ancestor reads supersede their membership.
     for (const [id, archived] of archiveChanges) {
       if (archived) archivedIds.add(id);

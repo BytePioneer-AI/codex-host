@@ -10,7 +10,10 @@ import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
  * @param t - shortcut dictionary.
  * @returns read-only actions and each physical combination they occupy.
  */
-export function fixedCommands(t: PropsLocale<"shortcuts">["t"]): readonly ShortcutFixedCommand[] {
+export function fixedCommands(
+  t: PropsLocale<"shortcuts">["t"],
+  windowsDesktop = false,
+): readonly ShortcutFixedCommand[] {
   const rows = [
     {
       id: "move",
@@ -23,6 +26,28 @@ export function fixedCommands(t: PropsLocale<"shortcuts">["t"]): readonly Shortc
     },
     { id: "select", keys: ["Enter"], bindings: [{ code: "Enter", modifiers: [] }], group: "menus" },
     { id: "dismiss", keys: ["Esc"], bindings: [{ code: "Escape", modifiers: [] }], group: "menus" },
+    ...(windowsDesktop
+      ? ([
+          {
+            id: "zoom-in",
+            keys: ["Ctrl", "+"],
+            bindings: [{ code: "Equal", modifiers: ["primary"] }],
+            group: "application",
+          },
+          {
+            id: "zoom-out",
+            keys: ["Ctrl", "−"],
+            bindings: [{ code: "Minus", modifiers: ["primary"] }],
+            group: "application",
+          },
+          {
+            id: "zoom-reset",
+            keys: ["Ctrl", "0"],
+            bindings: [{ code: "Digit0", modifiers: ["primary"] }],
+            group: "application",
+          },
+        ] as const)
+      : []),
   ] as const;
   return rows.map((row) => ({
     ...row,

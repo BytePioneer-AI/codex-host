@@ -45,9 +45,6 @@ type Locale = PropsLocale<"shortcuts">;
 const coreActionOrder = new Map<string, number>(
   [
     "shortcuts.open",
-    "fixed.zoom-in",
-    "fixed.zoom-out",
-    "fixed.zoom-reset",
     "session.new",
     "sidebar.left.toggle",
     "session.search",
@@ -56,6 +53,9 @@ const coreActionOrder = new Map<string, number>(
     "session.fork",
     "session.archive",
     "settings.open",
+    "fixed.zoom-in",
+    "fixed.zoom-out",
+    "fixed.zoom-reset",
     "workspace.openLocal",
     "sidebar.right.toggle",
     "workspace.files",

@@ -20,7 +20,7 @@ vi.mock("../src/executable.js", async (original) => ({
   ...(await original<typeof executable>()),
   resolveDeepSeekCommand: mocks.resolve,
 }));
-import { deepSeekNpxVersionFile } from "../src/executable.js";
+import { deepSeekEnvironment, deepSeekNpxVersionFile } from "../src/executable.js";
 import { createDeepSeekInstallation } from "../src/installation.js";
 
 beforeEach(() => {
@@ -42,7 +42,11 @@ describe("DeepSeek installation", () => {
       currentVersion: "0.2.1-rc.3",
       updateAvailable: false,
     });
-    expect(mocks.npm).toHaveBeenCalledWith("/chosen/dsh", ["@deepseek-ai/dsh"], {});
+    expect(mocks.npm).toHaveBeenCalledWith(
+      "/chosen/dsh",
+      ["@deepseek-ai/dsh"],
+      expect.objectContaining({ PATH: expect.stringContaining("/chosen") }),
+    );
     expect(mocks.update).toHaveBeenCalledWith("0.2.1-rc.3");
   });
 
@@ -86,7 +90,7 @@ describe("DeepSeek installation", () => {
     expect(mocks.run).toHaveBeenCalledWith(
       "/chosen/npx",
       ["--offline", "--no-install", "@deepseek-ai/dsh", "--version"],
-      {},
+      expect.objectContaining({ PATH: expect.stringContaining("/chosen") }),
     );
     expect(mocks.npm).not.toHaveBeenCalled();
     expect(mocks.fetch).toHaveBeenCalledWith(
@@ -103,7 +107,7 @@ describe("DeepSeek installation", () => {
 
     beforeEach(async () => {
       directory = await mkdtemp(path.join(tmpdir(), "codexhost-dsh-npx-"));
-      environment = { PATH: directory, CODEXHOST_DATA_DIR: directory };
+      environment = { HOME: directory, PATH: directory, CODEXHOST_DATA_DIR: directory };
       npx = path.join(directory, process.platform === "win32" ? "npx.cmd" : "npx");
       await writeFile(npx, "", { mode: 0o700 });
       ({ resolveDeepSeekCommand: resolve } =
@@ -122,18 +126,19 @@ describe("DeepSeek installation", () => {
         canUpdate: true,
         updateAvailable: false,
       });
+      const expectedEnvironment = deepSeekEnvironment(npx, environment);
       expect(mocks.run).toHaveBeenNthCalledWith(
         2,
         npx,
         ["--yes", "--prefer-online", "@deepseek-ai/dsh@0.2.1-rc.3", "--version"],
-        environment,
+        expectedEnvironment,
         600_000,
       );
       expect(mocks.run).toHaveBeenNthCalledWith(
         3,
         npx,
         ["--offline", "--no-install", "@deepseek-ai/dsh@0.2.1-rc.3", "--version"],
-        environment,
+        expectedEnvironment,
       );
       expect(resolve(undefined, environment)?.arguments).toEqual([
         "--offline",

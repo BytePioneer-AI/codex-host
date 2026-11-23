@@ -17,6 +17,8 @@
   align-items: center;
   gap: 12px;
   padding: 12px;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .icon {
@@ -55,6 +57,8 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .review {

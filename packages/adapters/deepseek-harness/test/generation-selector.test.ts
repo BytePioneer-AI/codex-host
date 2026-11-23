@@ -290,7 +290,10 @@ describe("DeepSeek executable generation probe", () => {
       command: { command, arguments: [], kind: "configured" },
     });
     expect(probeDependencies.spawn).toHaveBeenCalledWith(command, ["--version"], {
-      env: environment,
+      env: expect.objectContaining({
+        TEST_MARKER: "yes",
+        PATH: expect.stringContaining("fixture-path"),
+      }),
       detached: process.platform !== "win32",
       stdio: "pipe",
       windowsHide: true,

@@ -558,6 +558,58 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
     pinned: [],
   });
   expect(readFileSync(file, "utf8")).toBe(text);
+  // Desktop keeps project members of custom sections only in the signed-in owner's atoms.
+  const sections = (entries: unknown) => ({
+    "sidebar-custom-sections-v3": {
+      account: { sections: entries, collapsedSectionIds: [], sectionOrder: [] },
+    },
+  });
+  const sectioned = {
+    ...state,
+    "electron-renderer-content-owner": "owner",
+    "electron-owner-atoms:previous-owner": sections([
+      { id: "old", name: "Old", hostSectionIds: { local: "stale" }, itemKeys: ["codex:project:a"] },
+    ]),
+    "electron-owner-atoms:owner": sections([
+      {
+        id: "papers",
+        name: "Papers",
+        hostSectionIds: { local: "official-papers" },
+        itemKeys: [
+          "codex:project:selected",
+          "codex:thread:local:thread",
+          "chatgpt:project:g-p-cloud",
+          "codex:project:first",
+        ],
+      },
+      {
+        id: "remote",
+        name: "Remote",
+        hostSectionIds: { "remote-control:env": "remote-section" },
+        itemKeys: ["codex:project:hidden"],
+      },
+      {
+        id: "threads",
+        name: "Threads",
+        hostSectionIds: { local: "official-threads" },
+        itemKeys: ["codex:thread:local:thread"],
+      },
+    ]),
+  };
+  writeFileSync(file, JSON.stringify(sectioned));
+  expect((await readNativeWorkspaceSnapshot(environment)).sectionProjects).toEqual({
+    "official-papers": ["selected", "first"],
+  });
+  writeFileSync(
+    file,
+    JSON.stringify({ ...sectioned, "electron-owner-atoms:owner": sections("reshaped") }),
+  );
+  expect(await readNativeWorkspaceSnapshot(environment)).toEqual({
+    projects: [first, selected],
+    assignments: { thread: "selected" },
+    projectless: ["unselected"],
+    pinned: [],
+  });
   const migrated = {
     ...state,
     "app-server-project-id-by-legacy-project-id-by-host": {

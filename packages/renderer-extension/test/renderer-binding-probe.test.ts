@@ -465,10 +465,16 @@ describe("Renderer Composer DOM behavior", () => {
     expect(canScheduleExternalThreadUsageRefresh(usage, 6)).toBe(false);
   });
 
-  it("replaces only the owning native Model menu or retry button and restores stale controls", () => {
+  it("replaces only an unambiguous native Model control and restores stale controls", () => {
     class FakeElement {
       readonly attributes = new Map<string, string>();
+      children: {
+        localName: string;
+        firstChild: { nodeName: string; nodeValue: string };
+        textContent: string;
+      }[] = [];
       className = "";
+      disabled = false;
       hidden = false;
       readonly style: Record<string, string> = {};
 
@@ -515,6 +521,26 @@ describe("Renderer Composer DOM behavior", () => {
     const loading = new FakeElement();
     loading.setAttribute(navigation, "reasoning");
     loading.setAttribute("aria-busy", "true");
+    loading.disabled = true;
+    const carrier = encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("pi") });
+    const loadingWithLabel = (label: string) => {
+      const button = new FakeElement();
+      button.setAttribute(navigation, "reasoning");
+      button.setAttribute("aria-busy", "true");
+      button.disabled = true;
+      button.children = [
+        {
+          localName: "span",
+          firstChild: { nodeName: "#text", nodeValue: label },
+          textContent: `${label} High`,
+        },
+      ];
+      return button;
+    };
+    const carrierLoading = loadingWithLabel(carrier);
+    carrierLoading.setAttribute("aria-hidden", "false");
+    const malformedLoading = loadingWithLabel("codexhost/plugin-v1@7069");
+    const embeddedCarrierLoading = loadingWithLabel(`Model: ${carrier}`);
     const nested = new FakeElement();
     nested.setAttribute(navigation, "reasoning");
     nested.closest = () => ({}) as Element;
@@ -601,6 +627,32 @@ describe("Renderer Composer DOM behavior", () => {
     reconcileComposerNativeControls(control, true, true);
     expect(retry.hidden).toBe(false);
     expect(control.nativeModelControl).toBeNull();
+
+    live = [carrierLoading, loading, malformedLoading, embeddedCarrierLoading];
+    reconcileComposerNativeControls(control, true, true);
+    expect(carrierLoading.hidden).toBe(true);
+    expect(carrierLoading.getAttribute("aria-hidden")).toBe("true");
+    for (const button of [loading, malformedLoading, embeddedCarrierLoading]) {
+      expect(button.hidden).toBe(false);
+      expect(button.getAttribute("aria-hidden")).toBeNull();
+    }
+
+    reconcileComposerNativeControls(control, false, false);
+    expect(carrierLoading.hidden).toBe(false);
+    expect(carrierLoading.getAttribute("aria-hidden")).toBe("false");
+
+    for (const other of [replacement, retry]) {
+      live = [carrierLoading];
+      reconcileComposerNativeControls(control, true, true);
+      expect(carrierLoading.hidden).toBe(true);
+      live = [carrierLoading, other];
+      reconcileComposerNativeControls(control, true, true);
+      expect(carrierLoading.hidden).toBe(false);
+      expect(carrierLoading.getAttribute("aria-hidden")).toBe("false");
+      expect(other.hidden).toBe(false);
+      expect(other.getAttribute("aria-hidden")).toBeNull();
+      expect(control.nativeModelControl).toBeNull();
+    }
     vi.unstubAllGlobals();
   });
 

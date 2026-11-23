@@ -466,14 +466,17 @@ export class SessionManager {
     }
   }
 
-  /** Fetch exactly one older native page in this browser's current scope. */
-  loadMore(): Promise<void> {
+  /**
+   * Fetch one older native page in this browser's current scope. For a Workspace the page
+   * reads on until it reaches one of that Workspace's Sessions or the catalog ends.
+   */
+  loadMore(workspaceId?: string): Promise<void> {
     if (!this.nextCursor) return Promise.resolve();
-    return this.refreshList(this.nextCursor);
+    return this.refreshList(this.nextCursor, workspaceId);
   }
 
   /** Refresh the head or an explicit page, single-flight within this browser and scope. */
-  refreshList(cursor?: string): Promise<void> {
+  refreshList(cursor?: string, workspaceId?: string): Promise<void> {
     if (this.disposed) return Promise.resolve();
     if (this.listInflight !== null) return this.listInflight;
     const includeArchived = this.includeArchived;
@@ -488,7 +491,7 @@ export class SessionManager {
       try {
         const result = await this.remote.session.list({
           includeArchived,
-          ...(cursor ? { cursor } : {}),
+          ...(cursor ? { cursor, ...(workspaceId ? { workspaceId } : {}) } : {}),
         });
         if (this.listMutations !== mutations) return;
         if (result.ok) {

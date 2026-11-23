@@ -125,6 +125,7 @@ pub(super) fn acquire_launcher_ownership(
     Err("another codexhost Launcher did not become attachable before timeout".into())
 }
 
+#[cfg(not(unix))]
 pub(super) fn endpoint_ready(port: u16, timeout: Duration) -> bool {
     TcpStream::connect_timeout(
         &format!("127.0.0.1:{port}")
@@ -562,7 +563,21 @@ pub(super) fn managed_processes(
     )>,
     Box<dyn Error>,
 > {
-    let Some(descriptor) = read_descriptor(&default_descriptor_path()?)? else {
+    managed_processes_at(&default_descriptor_path()?, data)
+}
+
+#[cfg(not(unix))]
+pub(super) fn managed_processes_at(
+    descriptor_path: &Path,
+    data: &Path,
+) -> Result<
+    Option<(
+        codexhost_platform::ProcessSnapshot,
+        codexhost_platform::ProcessSnapshot,
+    )>,
+    Box<dyn Error>,
+> {
+    let Some(descriptor) = read_descriptor(descriptor_path)? else {
         return Ok(None);
     };
     if !endpoint_ready(descriptor.control_port, Duration::from_millis(300)) {
@@ -572,7 +587,9 @@ pub(super) fn managed_processes(
         return Ok(None);
     };
     let launcher = codexhost_platform::process_snapshot(descriptor.launcher_pid)?;
-    if controller.parent_id != launcher.id {
+    if controller.parent_id != launcher.id
+        || controller.started_at_micros < launcher.started_at_micros
+    {
         return Err("Desktop Controller does not belong to the recorded Launcher".into());
     }
     Ok(Some((launcher, controller)))

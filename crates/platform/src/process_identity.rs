@@ -25,6 +25,27 @@ pub fn observe_process_identity(process_id: u32) -> Result<Option<ProcessIdentit
     }
 }
 
+/// Windows process_identity maps a PID that exited after enumeration (or was
+/// never valid) to NotFound, which establishes absence; any other inspection
+/// failure stays an error.
+#[cfg(target_os = "windows")]
+pub fn observe_process_identity(process_id: u32) -> Result<Option<ProcessIdentity>, PlatformError> {
+    match process_identity(process_id) {
+        Ok(identity) => Ok(Some(identity)),
+        Err(PlatformError::NotFound(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub fn observe_process_identity(
+    _process_id: u32,
+) -> Result<Option<ProcessIdentity>, PlatformError> {
+    Err(PlatformError::Unsupported(
+        "process identities require Windows, macOS, or Linux",
+    ))
+}
+
 impl From<&ProcessSnapshot> for ProcessIdentity {
     fn from(process: &ProcessSnapshot) -> Self {
         Self {

@@ -98,6 +98,69 @@ it("shares canonical CH identity and cwd without a Web index/history or physical
   assert.deepEqual(readdirSync(root), ["workspaces.json"]);
 });
 
+it("uses the first prompt when Web's external Thread title generator returns null or fails", async (t) => {
+  for (const generation of ["null", "failure", "success", "renamed"] as const) {
+    await t.test(generation, async (t) => {
+      const root = mkdtempSync(join(tmpdir(), "ch-first-title-"));
+      const host = new FakeChHost();
+      const title = Promise.withResolvers<string | null>();
+      const request = host.request.bind(host);
+      host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+        if (method === "codexhost/thread/title/generate") return (await title.promise) as T;
+        if (method === "thread/start") {
+          const result = await request<{ thread: { id: string; name: string } }>(method, params);
+          const row = host.threads.get(result.thread.id);
+          assert.ok(row);
+          row.name = result.thread.name = "";
+          return result as T;
+        }
+        return request<T>(method, params);
+      };
+      const sessions = new ChSessions(
+        host,
+        new Workspaces(new DataDir(root), root),
+        new EventHub(root),
+      );
+      t.after(async () => {
+        title.resolve(null);
+        await sessions.close();
+        rmSync(root, { recursive: true, force: true });
+      });
+      const rpc = new RpcRegistry();
+      sessions.register(rpc, new StreamRegistry());
+      const draft = await rpc.dispatch("session/create", { args: { request: { cwd: root } } });
+      assert.ok(draft.ok);
+      const { sessionId } = draft.value as { sessionId: string };
+      const firstSixty = "Fix the title " + "🧰".repeat(46);
+      const accepted = await rpc.dispatch("session/prompt", {
+        args: {
+          request: {
+            sessionId,
+            requestId: "first",
+            content: [{ type: "text", text: "  Fix   the\n title " + "🧰".repeat(46) + " more" }],
+            mode: "queue",
+          },
+        },
+      });
+      assert.deepEqual(accepted, { ok: true, value: { accepted: true } });
+      const thread = [...host.threads.values()][0];
+      assert.ok(thread);
+      if (generation === "renamed")
+        await host.request("thread/name/set", { threadId: thread.id, name: "My title" });
+      if (generation === "failure") title.reject(new Error("Native title unavailable"));
+      else title.resolve(generation === "success" ? "Generated title" : null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const expected =
+        generation === "renamed"
+          ? "My title"
+          : generation === "success"
+            ? "Generated title"
+            : firstSixty + "…";
+      assert.equal(thread.name, expected);
+    });
+  }
+});
+
 it("propagates native section membership and summaries to browsers that did not paginate", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-native-sections-"));
   const host = nativeCodex(new FakeChHost());
@@ -215,6 +278,77 @@ it("propagates native section membership and summaries to browsers that did not 
   } finally {
     for (const handler of closeHandlers) handler();
   }
+});
+
+it("places Desktop's section projects as their root Workspaces in Desktop order", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-section-projects-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const folder = (name: string) => join(root, name);
+  const host = new FakeChHost();
+  host.add("alpha-thread", folder("alpha"));
+  host.add("beta-thread", folder("beta"));
+  host.add("loose-thread", folder("loose"));
+  // A project may list folders that other projects are named after.
+  host.projectSnapshot.projects.push({
+    id: "multi",
+    name: "Multi",
+    rootPaths: [folder("multi"), folder("shared"), folder("loose"), folder("alpha")],
+  });
+  host.projectSnapshot.sectionProjects = {
+    papers: ["multi", "project-beta-thread", "project-alpha-thread", "remote-only"],
+  };
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
+    method === "codexhost/thread/sections/list"
+      ? ({
+          sections: [
+            { id: "papers", name: "Papers", threads: [] },
+            { id: "other", name: "Other", threads: [] },
+          ],
+        } as T)
+      : request<T>(method, params);
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const sessions = new ChSessions(host, workspaces, new EventHub(root));
+  t.after(() => sessions.close());
+  let follow: StreamHandler | undefined;
+  class WorkspaceStreams extends StreamRegistry {
+    override register(name: string, callback: StreamHandler) {
+      super.register(name, callback);
+      if (name === "workspace/follow") follow = callback;
+    }
+  }
+  const rpc = new RpcRegistry();
+  const streams = new WorkspaceStreams();
+  workspaces.register(rpc, streams);
+  sessions.register(rpc, streams);
+  const listed = await rpc.dispatch("session/list", { args: {} });
+  assert.ok(listed.ok, listed.ok ? undefined : listed.error.message);
+  const frames: unknown[] = [];
+  await follow?.(
+    {},
+    {
+      id: "workspace",
+      closed: false,
+      push: (frame) => frames.push(frame),
+      end: () => {},
+      fail: (code, message) => {
+        throw new Error(`${code} ${message}`);
+      },
+      onClose: () => {},
+    },
+  );
+  const idOf = (name: string) => workspaces.byPath(folder(name))?.workspaceId;
+  assert.deepEqual((frames[0] as { value: { threadSections: unknown } }).value.threadSections, [
+    {
+      id: "papers",
+      name: "Papers",
+      threadIds: [],
+      // A folder named after a project takes that project's place: `alpha` follows its own
+      // project, and `loose` stays with its unsectioned one. `shared` is nobody's first root.
+      workspaceIds: [idOf("multi"), idOf("shared"), idOf("beta"), idOf("alpha")],
+    },
+    { id: "other", name: "Other", threadIds: [] },
+  ]);
 });
 
 it("resolves an existing unbound draft summary without native reads, then follows its bound alias", async (t) => {

@@ -1189,6 +1189,25 @@ describe("DeepSeek Harness Modern Web Remote connection", () => {
     }
   });
 
+  it("accepts a dsh-purge port-less cookie name only for the same host", () => {
+    const portlessName = `dsh-auth-${createHash("sha256")
+      .update(AUTHORITY.replace(/:[0-9]+$/u, ""))
+      .digest("base64url")}`;
+    const portlessCookie = SET_COOKIE.replace(COOKIE_NAME, portlessName);
+    expect(parseSessionCookie(new Headers({ "set-cookie": portlessCookie }), AUTHORITY)).toBe(
+      portlessCookie.split(";")[0],
+    );
+    const otherHostName = `dsh-auth-${createHash("sha256")
+      .update("127.0.0.2")
+      .digest("base64url")}`;
+    expect(() =>
+      parseSessionCookie(
+        new Headers({ "set-cookie": SET_COOKIE.replace(COOKIE_NAME, otherHostName) }),
+        AUTHORITY,
+      ),
+    ).toThrow("invalid session cookie");
+  });
+
   it("validates Modern endpoint segments without inventing a fixed depth", () => {
     expect(() => assertModernUnaryEndpoint("session/nested/action")).not.toThrow();
     expect(() => assertModernStreamEndpoint("session/nested/follow")).not.toThrow();

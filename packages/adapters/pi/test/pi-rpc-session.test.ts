@@ -14,6 +14,7 @@ import { CodexTurnProjector } from "@codexhost/protocol-core";
 
 import {
   PiRpcSession,
+  PiRpcSteerRejectedError,
   piRpcProcessCommand,
   type PiAutonomousTurn,
   type PiRpcProcessAdapter,
@@ -83,6 +84,9 @@ class FakePiRpcProcess extends EventEmitter {
   holdEntries = false;
   holdStates = false;
   holdAborts = false;
+  holdPrompts = false;
+  holdSteers = false;
+  nativeStartAfterState: "agent_start" | "compaction_start" | null = null;
   #heldAborts: Record<string, unknown>[] = [];
   #heldStates: Record<string, unknown>[] = [];
   #heldEntries: Record<string, unknown>[] = [];
@@ -92,6 +96,7 @@ class FakePiRpcProcess extends EventEmitter {
   #sessionFile: string | null = "/synthetic/session.jsonl";
   #stateRequestCount = 0;
   #isStreaming = false;
+  #isCompacting = false;
   #provider = "synthetic-provider";
   #modelId = "synthetic-model";
   #thinkingLevel = "high";
@@ -110,6 +115,17 @@ class FakePiRpcProcess extends EventEmitter {
   emitAgentStart(): void {
     this.#isStreaming = true;
     this.#output({ type: "agent_start" });
+  }
+
+  startCompaction(): void {
+    this.#isCompacting = true;
+    this.#output({ type: "compaction_start" });
+  }
+
+  finishCancelledCompaction(emitTerminal: boolean): void {
+    this.#isCompacting = false;
+    this.#isStreaming = false;
+    if (emitTerminal) this.#output({ type: "compaction_end", aborted: true });
   }
 
   releaseEntries(): void {
@@ -275,6 +291,8 @@ class FakePiRpcProcess extends EventEmitter {
     const command = value as Record<string, unknown>;
     if (typeof command.id !== "string" || typeof command.type !== "string") return;
     this.commands.push(command.type);
+    if (command.type === "prompt" && this.holdPrompts) return;
+    if (command.type === "steer" && this.holdSteers) return;
     if (command.type === "abort" && this.holdAborts) {
       this.#heldAborts.push(command);
       return;
@@ -349,8 +367,13 @@ class FakePiRpcProcess extends EventEmitter {
         },
         thinkingLevel: this.#thinkingLevel,
         isStreaming: this.#isStreaming,
+        isCompacting: this.#isCompacting,
         contextUsage: { tokens: 45, contextWindow: 200 },
       });
+      const start = this.nativeStartAfterState;
+      this.nativeStartAfterState = null;
+      if (start === "agent_start") this.emitAgentStart();
+      if (start === "compaction_start") this.startCompaction();
       return;
     }
     if (command.type === "get_session_stats") {
@@ -728,12 +751,14 @@ class FakePiRpcProcess extends EventEmitter {
       this.#scenario === "settled-streaming" ||
       ((this.#scenario === "cancel" ||
         this.#scenario === "cancel-slow-settle" ||
+        this.#scenario === "cancel-no-settle" ||
         this.#scenario === "long-running") &&
         this.#promptCount > 1)
     ) {
       const text =
         this.#scenario === "cancel" ||
         this.#scenario === "cancel-slow-settle" ||
+        this.#scenario === "cancel-no-settle" ||
         this.#scenario === "long-running"
           ? "continued"
           : "synthetic final text";
@@ -3425,28 +3450,364 @@ describe("Pi RPC Turn aggregation", () => {
     }
   });
 
-  it("fails and closes a cancellation that does not reach stable settlement", async () => {
+  it.each([
+    { trigger: "terminal event", emitTerminal: true, holdFirstProbe: false, clockAdvance: 0 },
+    {
+      trigger: "recovery deadline",
+      emitTerminal: false,
+      holdFirstProbe: false,
+      clockAdvance: 60_000,
+    },
+    {
+      trigger: "terminal event during a probe",
+      emitTerminal: true,
+      holdFirstProbe: true,
+      clockAdvance: 2_000,
+    },
+  ])(
+    "preserves a quarantined Session once native compaction is idle ($trigger)",
+    async ({ emitTerminal, holdFirstProbe, clockAdvance }) => {
+      vi.useFakeTimers();
+      const native = new FakePiRpcProcess("cancel-no-settle");
+      const onFault = vi.fn();
+      const rpc = new PiRpcSession(
+        { cwd: process.cwd(), cancelTimeoutMs: 10, onFault },
+        {
+          spawn: () => native as unknown as ChildProcessWithoutNullStreams,
+        },
+      );
+
+      try {
+        await rpc.start();
+        const events: PiTurnEvent[] = [];
+        const turn = rpc.runTurn("cancel me", (event) => events.push(event));
+        void turn.catch(() => undefined);
+        native.startCompaction();
+        native.holdStates = holdFirstProbe;
+        native.holdAborts = true;
+        const stopping = rpc.abort();
+        void stopping.catch(() => undefined);
+
+        await vi.advanceTimersByTimeAsync(10);
+        await expect(stopping).resolves.toBeUndefined();
+        await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+        expect(events).toContainEqual({ type: "compaction.completed", outcome: "cancelled" });
+        await expect(rpc.runTurn("while busy", () => undefined)).rejects.toThrow("still running");
+        await expect(rpc.compact(undefined, () => undefined)).rejects.toThrow("active operation");
+
+        native.releaseAborts();
+        expect(onFault).not.toHaveBeenCalled();
+        native.holdStates = false;
+        native.finishCancelledCompaction(emitTerminal);
+        await vi.advanceTimersByTimeAsync(clockAdvance);
+        native.releaseStates();
+        expect(rpc.isBusy).toBe(false);
+        expect(native.exitCode).toBeNull();
+        expect(onFault).not.toHaveBeenCalled();
+        await expect(rpc.runTurn("continue", () => undefined)).resolves.toEqual({
+          text: "continued",
+          cancelled: false,
+        });
+      } finally {
+        await rpc.close();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("closes Pi when a cancelled Prompt is still awaiting its native acknowledgement", async () => {
     vi.useFakeTimers();
+    const native = new FakePiRpcProcess("cancel-no-settle");
     const onFault = vi.fn();
-    const rpc = session("cancel-no-settle", onFault, { cancelTimeoutMs: 10 });
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), cancelTimeoutMs: 10, onFault },
+      { spawn: () => native as unknown as ChildProcessWithoutNullStreams },
+    );
+    try {
+      await rpc.start();
+      // An async input hook can leave both native busy flags false while the Prompt is pending.
+      native.holdPrompts = true;
+      const turn = rpc.runTurn("delayed input hook", () => undefined);
+      void turn.catch(() => undefined);
+      await rpc.abort();
+      await vi.advanceTimersByTimeAsync(10);
+
+      await expect(turn).rejects.toThrow("Pi Turn cancellation did not settle within its bound");
+      expect(native.exitCode).toBe(0);
+      expect(onFault).toHaveBeenCalledTimes(1);
+      await expect(rpc.runTurn("follow-up", () => undefined)).rejects.toThrow("unavailable");
+      expect(native.commands.filter((command) => command === "prompt")).toHaveLength(1);
+    } finally {
+      await rpc.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes Pi when a cancelled Turn still has an unacknowledged Steer", async () => {
+    vi.useFakeTimers();
+    const native = new FakePiRpcProcess("cancel-no-settle");
+    const onFault = vi.fn();
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), cancelTimeoutMs: 10, onFault },
+      { spawn: () => native as unknown as ChildProcessWithoutNullStreams },
+    );
+    try {
+      await rpc.start();
+      const turn = rpc.runTurn("cancel me", () => undefined);
+      void turn.catch(() => undefined);
+      native.holdSteers = true;
+      const steering = rpc.steer("delayed input hook");
+      void steering.catch(() => undefined);
+      await rpc.abort();
+      await vi.advanceTimersByTimeAsync(10);
+
+      await expect(turn).rejects.toThrow("Pi Turn cancellation did not settle within its bound");
+      const steerError = await steering.catch((error: unknown) => error);
+      expect(steerError).toBeInstanceOf(Error);
+      expect(steerError).not.toBeInstanceOf(PiRpcSteerRejectedError);
+      expect((steerError as Error).message).toContain(
+        "Pi Turn cancellation did not settle within its bound",
+      );
+      expect(native.exitCode).toBe(0);
+      expect(onFault).toHaveBeenCalledTimes(1);
+      await expect(rpc.runTurn("follow-up", () => undefined)).rejects.toThrow("unavailable");
+    } finally {
+      await rpc.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes Pi when a Steer times out before its delayed input hook releases", async () => {
+    vi.useFakeTimers();
+    const native = new FakePiRpcProcess("cancel-no-settle");
+    const onFault = vi.fn();
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 20, cancelTimeoutMs: 50, onFault },
+      { spawn: () => native as unknown as ChildProcessWithoutNullStreams },
+    );
+    try {
+      await rpc.start();
+      const turn = rpc.runTurn("cancel me", () => undefined);
+      void turn.catch(() => undefined);
+      native.holdSteers = true;
+      const steering = rpc.steer("delayed hook steer");
+      void steering.catch(() => undefined);
+
+      await vi.advanceTimersByTimeAsync(20);
+
+      const steerError = await steering.catch((error: unknown) => error);
+      expect(steerError).toBeInstanceOf(Error);
+      expect(steerError).not.toBeInstanceOf(PiRpcSteerRejectedError);
+      expect((steerError as Error).message).toContain("Pi RPC 'steer' command timed out");
+      await expect(turn).rejects.toThrow("Pi RPC 'steer' command timed out");
+      expect(native.exitCode).toBe(0);
+      expect(onFault).toHaveBeenCalledTimes(1);
+      await expect(rpc.runTurn("follow-up", () => undefined)).rejects.toThrow("unavailable");
+    } finally {
+      await rpc.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("dispatches session-level subagent snapshots, notices, and status clears during cancellation recovery while isolating abandoned Turn content", async () => {
+    vi.useFakeTimers();
+    const native = new FakePiRpcProcess("cancel-no-settle");
+    const onFault = vi.fn();
+    const gotgenes = vi.fn();
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), cancelTimeoutMs: 10, onFault },
+      { spawn: () => native as unknown as ChildProcessWithoutNullStreams },
+    );
+    try {
+      await rpc.start();
+      rpc.setGotgenesStatusHandler(gotgenes);
+      const abandonedEvents: PiTurnEvent[] = [];
+      const turn = rpc.runTurn("cancel me", (event) => abandonedEvents.push(event));
+      void turn.catch(() => undefined);
+      native.startCompaction();
+      native.emitFrame({
+        type: "extension_ui_request",
+        id: "status-before-cancel",
+        method: "setStatus",
+        statusKey: "job",
+        statusText: "Running",
+      });
+      await rpc.abort();
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+      const abandonedCount = abandonedEvents.length;
+
+      native.emitFrame({
+        type: "extension_ui_request",
+        method: "setWidget",
+        widgetKey: "codexhost-gotgenes-subagents",
+        widgetLines: [
+          "CODEXHOST_GOTGENES_SUBAGENTS_V1:" +
+            JSON.stringify({
+              version: 1,
+              agents: [
+                {
+                  id: "recovery-child",
+                  type: "Explore",
+                  description: "Background task during recovery",
+                  status: "completed",
+                  isBackground: true,
+                },
+              ],
+            }),
+        ],
+      });
+      native.emitFrame({
+        type: "extension_ui_request",
+        id: "recovery-notice",
+        method: "notify",
+        message: "Background job finished",
+        notifyType: "info",
+      });
+      native.emitFrame({
+        type: "extension_ui_request",
+        id: "status-clear-in-recovery",
+        method: "setStatus",
+        statusKey: "job",
+      });
+      native.emitFrame({
+        type: "message_update",
+        message: { role: "assistant", content: [] },
+        assistantMessageEvent: { type: "text_delta", delta: "abandoned text" },
+      });
+      native.emitFrame({
+        type: "tool_execution_start",
+        toolCallId: "abandoned-tool",
+        toolName: "bash",
+        args: { command: "echo ignored" },
+      });
+
+      expect(gotgenes).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            id: "recovery-child",
+            child: expect.objectContaining({ status: "completed" }),
+          }),
+        ],
+        "idle",
+      );
+      const replayedGotgenes = vi.fn();
+      rpc.setGotgenesStatusHandler(replayedGotgenes);
+      expect(replayedGotgenes).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({
+            id: "recovery-child",
+            child: expect.objectContaining({ status: "completed" }),
+          }),
+        ],
+        "idle",
+      );
+      expect(abandonedEvents).toHaveLength(abandonedCount);
+      expect(onFault).not.toHaveBeenCalled();
+
+      native.finishCancelledCompaction(true);
+      await vi.advanceTimersByTimeAsync(0);
+      const nextEvents: PiTurnEvent[] = [];
+      await expect(rpc.runTurn("continue", (event) => nextEvents.push(event))).resolves.toEqual({
+        text: "continued",
+        cancelled: false,
+      });
+      expect(nextEvents).toContainEqual(
+        expect.objectContaining({
+          type: "progress.message",
+          text: "Pi notification (info)\n\nBackground job finished",
+        }),
+      );
+      expect(
+        nextEvents.some((event) => event.type === "text.delta" && event.delta === "abandoned text"),
+      ).toBe(false);
+      expect(nextEvents.some((event) => event.type === "tool.started")).toBe(false);
+      expect(onFault).not.toHaveBeenCalled();
+    } finally {
+      await rpc.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["agent_start", "compaction_start"] as const)(
+    "rejects a stale idle snapshot when %s arrives before the probe continuation",
+    async (start) => {
+      vi.useFakeTimers();
+      const native = new FakePiRpcProcess("cancel-no-settle");
+      const usage = vi.fn();
+      const rpc = new PiRpcSession(
+        { cwd: process.cwd(), cancelTimeoutMs: 10 },
+        { spawn: () => native as unknown as ChildProcessWithoutNullStreams },
+      );
+      try {
+        await rpc.start();
+        rpc.setUsageHandler(usage);
+        const events: PiTurnEvent[] = [];
+        const turn = rpc.runTurn("cancel me", (event) => events.push(event));
+        void turn.catch(() => undefined);
+        native.startCompaction();
+        native.holdStates = true;
+        await rpc.abort();
+        await vi.advanceTimersByTimeAsync(10);
+        await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+
+        native.finishCancelledCompaction(false);
+        native.nativeStartAfterState = start;
+        native.releaseStates();
+        await vi.advanceTimersByTimeAsync(0);
+        await expect(rpc.runTurn("too early", () => undefined)).rejects.toThrow("still running");
+
+        const message = { role: "assistant", content: [{ type: "text", text: "late output" }] };
+        native.stdout.write(JSON.stringify({ type: "message_end", message }) + "\n");
+        expect(usage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message }));
+        expect(events.at(-1)).toMatchObject({ type: "compaction.completed", outcome: "cancelled" });
+        native.finishCancelledCompaction(true);
+        await vi.advanceTimersByTimeAsync(0);
+        await expect(rpc.runTurn("continue", () => undefined)).resolves.toEqual({
+          text: "continued",
+          cancelled: false,
+        });
+      } finally {
+        await rpc.close();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("closes a quarantined Pi process before faulting when it never returns to idle", async () => {
+    vi.useFakeTimers();
+    const native = new FakePiRpcProcess("cancel-no-settle");
+    const exitsObservedAtFault: (number | null)[] = [];
+    const onFault = vi.fn(() => {
+      exitsObservedAtFault.push(native.exitCode);
+    });
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), cancelTimeoutMs: 10, onFault },
+      {
+        spawn: () => native as unknown as ChildProcessWithoutNullStreams,
+      },
+    );
 
     try {
       await rpc.start();
       const turn = rpc.runTurn("cancel me", () => undefined);
-      const rejected = expect(turn).rejects.toThrow(
-        "Pi Turn cancellation did not settle within its bound",
-      );
+      void turn.catch(() => undefined);
       await rpc.abort();
 
       await vi.advanceTimersByTimeAsync(10);
 
-      await rejected;
+      await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+      expect(onFault).not.toHaveBeenCalled();
+      expect(native.exitCode).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(60_000);
       expect(onFault).toHaveBeenCalledWith(
         expect.objectContaining({
           kind: "protocolError",
-          message: "Pi Turn cancellation did not settle within its bound",
+          message: expect.stringContaining("did not return to confirmed idle"),
         }),
       );
+      expect(exitsObservedAtFault).toEqual([0]);
       await expect(rpc.runTurn("unavailable", () => undefined)).rejects.toThrow("unavailable");
     } finally {
       await rpc.close();

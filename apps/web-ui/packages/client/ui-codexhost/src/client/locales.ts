@@ -705,6 +705,13 @@ export const en = {
   "notifications.enable": "Enable",
   "notifications.disable": "Turn off",
   "notifications.test": "Send test",
+  "notifications.testing": "Sending…",
+  "notifications.testSent":
+    "Test notification submitted to this device. Check its notification tray.",
+  "notifications.testNotSent":
+    "No test notification was sent. Check your connection and retry; if it keeps happening, turn notifications off and on again.",
+  "notifications.testFailed":
+    "Could not send a test notification. Check your connection and try again.",
   "desktop.label": "Desktop screenshot",
   "desktop.primary": "Connected computer · Main display",
   "desktop.refresh": "Take another screenshot",
@@ -1353,6 +1360,10 @@ export const zh: Record<ImportLocaleKey, string> = {
   "notifications.enable": "开启",
   "notifications.disable": "关闭",
   "notifications.test": "发送测试",
+  "notifications.testing": "正在发送…",
+  "notifications.testSent": "测试通知已提交到这台设备，请检查通知中心。",
+  "notifications.testNotSent": "测试通知未发送。请检查连接后重试；若仍失败，请关闭再重新开启通知。",
+  "notifications.testFailed": "无法发送测试通知。请检查连接后重试。",
   "desktop.label": "桌面截图",
   "desktop.primary": "当前连接的电脑 · 主屏",
   "desktop.refresh": "重新截图",

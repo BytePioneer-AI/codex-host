@@ -66,6 +66,7 @@ const threadSections = () => z.array(z.object({
   'id': z.string().readonly(),
   'name': z.string().readonly(),
   'threadIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
+  'workspaceIds': z.array(z.intersection(z.string(), z.unknown())).optional().readonly(),
 }).readonly()).readonly()
 const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema$value ??= z.union([z.object({
   'type': z.literal("baseline").readonly(),

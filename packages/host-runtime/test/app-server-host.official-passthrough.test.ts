@@ -48,6 +48,102 @@ async function expectForwardedUnchanged(fixture: Fixture, request: JsonObject): 
 }
 
 describe("official Codex passthrough", () => {
+  it("flattens the Desktop title MCP disable table before forwarding to the native runtime", async () => {
+    const fixture = createFixture();
+    try {
+      await initialize(fixture);
+      const request = {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "thread/start",
+        extraEnvelopeField: true,
+        params: {
+          threadSource: "thread_title",
+          ephemeral: true,
+          cwd: "/synthetic",
+          config: {
+            mcp_servers: { cua_repl: { enabled: false }, "other-mcp": { enabled: false } },
+            "mcp_servers.codex_app": { enabled: false, command: "" },
+            "features.plugins": false,
+          },
+        },
+      } satisfies JsonObject;
+      writeRequest(fixture.desktopInput, request);
+      const forwarded = await readJsonLine(fixture.official.stdin);
+      expect({ ...forwarded, id: 2 }).toEqual({
+        ...request,
+        params: {
+          ...request.params,
+          config: {
+            "mcp_servers.cua_repl.enabled": false,
+            "mcp_servers.other-mcp.enabled": false,
+            "mcp_servers.codex_app": { enabled: false, command: "" },
+            "features.plugins": false,
+          },
+        },
+      });
+      writeRequest(fixture.official.stdout, {
+        id: requiredMessageId(forwarded),
+        result: { thread: { id: "native-title" } },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 2))).toEqual({
+        id: 2,
+        result: { thread: { id: "native-title" } },
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it.each<{ label: string; config: JsonObject; threadSource?: string; ephemeral?: boolean }>([
+    {
+      label: "ordinary thread",
+      threadSource: "user",
+      config: { mcp_servers: { server: { enabled: false } } },
+    },
+    {
+      label: "non-ephemeral title",
+      ephemeral: false,
+      config: { mcp_servers: { server: { enabled: false } } },
+    },
+    {
+      label: "dot in name",
+      config: { mcp_servers: { safe: { enabled: false }, "has.dot": { enabled: false } } },
+    },
+    {
+      label: "extra fields",
+      config: {
+        mcp_servers: { safe: { enabled: false }, server: { enabled: false, command: "fixture" } },
+      },
+    },
+    {
+      label: "enabled server",
+      config: { mcp_servers: { safe: { enabled: false }, server: { enabled: true } } },
+    },
+    {
+      label: "conflicting override",
+      config: {
+        mcp_servers: { server: { enabled: false } },
+        "mcp_servers.server": { command: "fixture" },
+      },
+    },
+    { label: "empty table", config: { mcp_servers: {} } },
+  ])(
+    "leaves the MCP overrides unchanged: $label",
+    async ({ config, threadSource = "thread_title", ephemeral = true }) => {
+      const fixture = createFixture();
+      try {
+        await initialize(fixture);
+        await expectForwardedUnchanged(fixture, {
+          id: 2,
+          method: "thread/start",
+          params: { threadSource, ephemeral, config },
+        });
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
   it.each<JsonObject>([
     { method: "thread/start", params: { ephemeral: true, threadSource: "mcp_extension_host" } },
     { method: "thread/start", params: { model: null } },

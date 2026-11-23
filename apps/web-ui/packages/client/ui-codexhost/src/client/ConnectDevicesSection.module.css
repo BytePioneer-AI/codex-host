@@ -12,7 +12,7 @@
   min-width: 0;
 }
 .tabs {
-  width: min(360px, 100%);
+  width: min(264px, 100%);
 }
 .header {
   display: flex;

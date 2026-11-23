@@ -61,7 +61,11 @@ import {
   RemoteWorkspaceDialogController,
   type RemoteWorkspaceDialogFace,
 } from "./RemoteWorkspaceDialog.tsx";
-import { RemoteSessionBanner, type RemoteSessionBannerFace } from "./RemoteSessionBanner.tsx";
+import {
+  RemoteSessionBanner,
+  RemoteSessionChip,
+  type RemoteSessionBannerFace,
+} from "./RemoteSessionBanner.tsx";
 import {
   OPEN_ADD_REMOTE_WORKSPACE_EVENT,
   OPEN_REMOTE_PEERS_SETTINGS_EVENT,
@@ -458,6 +462,18 @@ export function apply(ctx: ClientContext): void {
         inject: (): RemoteWorkspaceDialogFace => ({ controller: remoteWorkspaceDialog }),
       },
       RemoteWorkspaceDialog,
+    ),
+  );
+  ctx.slots.inject("conversation.input.left", () =>
+    ctx.slots.register(
+      {
+        name: "conversation.input.left",
+        id: "codexhost.remote-session-chip",
+        order: 1,
+        locale: NS,
+        inject: (): RemoteSessionBannerFace => ({ workspaces: ctx.workspaces.list }),
+      },
+      RemoteSessionChip,
     ),
   );
   ctx.slots.inject("conversation.input.notice", () =>

@@ -1,12 +1,15 @@
+import clsx from "clsx";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
 import type { GroupNode } from "../tree.ts";
 import css from "./Rows.module.css";
 
 export function HostBadge({
   host,
+  variant = "workspace",
   t,
 }: {
   host?: GroupNode["remote"];
+  variant?: "workspace" | "session";
   t: WorkspaceBrowserProps["t"];
 }) {
   const label = host?.displayName ?? t("host.local");
@@ -17,17 +20,18 @@ export function HostBadge({
         ? t("host.connecting")
         : t("host.disconnected");
   const description = host ? `${label} · ${status}` : label;
+  const showDot = host !== undefined && host.state !== "connected";
   return (
     <span
-      className={css.hostBadge}
+      className={clsx(css.hostBadge, variant === "session" && css.hostBadgeSession)}
       data-host-id={host?.hostId ?? "local"}
       data-state={host?.state ?? "local"}
       role="img"
       aria-label={description}
       title={description}
     >
-      <span>{label}</span>
-      {host && <span className={css.hostDot} aria-hidden="true" />}
+      {showDot && <span className={css.hostDot} aria-hidden="true" />}
+      <span className={css.hostLabel}>{label}</span>
     </span>
   );
 }

@@ -50,6 +50,26 @@ function hostDisplayLabel(host: HostSummary, t: Translate): string {
   return host.displayName || host.hostId || host.key;
 }
 
+function RemoteHostIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      width={12}
+      height={12}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.45"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <rect x="2" y="2.5" width="12" height="8.5" rx="1.75" />
+      <path d="M5.5 13.5h5M8 11v2.5" />
+    </svg>
+  );
+}
+
 function hostStatusLabel(state: string | undefined, t: Translate): string {
   if (state === "connected") return t("host.connected");
   if (state === "connecting") return t("host.connecting");
@@ -279,13 +299,16 @@ export function HostScopeFilter({ workspaces, state, onChange, t }: HostScopeFil
           setOpen((prev) => !prev);
         }}
       >
-        {selectedHostSummary?.hostId !== undefined && (
-          <span
-            className={css.dot}
-            data-state={selectedHostSummary.state ?? "disconnected"}
-            aria-hidden="true"
-          />
-        )}
+        {selectedHostSummary?.hostId !== undefined &&
+          (selectedHostSummary.state === "connected" ? (
+            <RemoteHostIcon className={css.hostIcon} />
+          ) : (
+            <span
+              className={css.dot}
+              data-state={selectedHostSummary.state ?? "disconnected"}
+              aria-hidden="true"
+            />
+          ))}
         <span className={css.triggerLabel}>{triggerLabel}</span>
         <IconChevronDownOutlineRegular size={12} className={css.triggerChevron} />
       </button>
@@ -369,13 +392,16 @@ export function HostScopeFilter({ workspaces, state, onChange, t }: HostScopeFil
                           onChange(selectHostScope(effective, host.key));
                         }}
                       >
-                        {host.hostId !== undefined && (
-                          <span
-                            className={css.dot}
-                            data-state={host.state ?? "disconnected"}
-                            aria-hidden="true"
-                          />
-                        )}
+                        {host.hostId !== undefined &&
+                          (host.state === "connected" ? (
+                            <RemoteHostIcon className={css.hostIcon} />
+                          ) : (
+                            <span
+                              className={css.dot}
+                              data-state={host.state ?? "disconnected"}
+                              aria-hidden="true"
+                            />
+                          ))}
                         <span className={css.hostName}>{label}</span>
                         <span className={clsx(css.hostCount, isSubset && css.hostCountFiltered)}>
                           {countText}
@@ -435,13 +461,16 @@ export function HostScopeFilter({ workspaces, state, onChange, t }: HostScopeFil
                                 className={css.accordionIcon}
                               />
                             )}
-                            {host.hostId !== undefined && (
-                              <span
-                                className={css.dot}
-                                data-state={host.state ?? "disconnected"}
-                                aria-hidden="true"
-                              />
-                            )}
+                            {host.hostId !== undefined &&
+                              (host.state === "connected" ? (
+                                <RemoteHostIcon className={css.hostIcon} />
+                              ) : (
+                                <span
+                                  className={css.dot}
+                                  data-state={host.state ?? "disconnected"}
+                                  aria-hidden="true"
+                                />
+                              ))}
                             <span className={css.hostName}>{hostDisplayLabel(host, t)}</span>
                             <span
                               className={clsx(

@@ -226,7 +226,9 @@ export function ProjectRowItem({
       <span className={css.projectText}>
         <span className={css.title}>{label}</span>
       </span>
-      {row.workspaceId !== undefined && row.remote && <HostBadge host={row.remote} t={t} />}
+      {row.workspaceId !== undefined && row.remote && (
+        <HostBadge host={row.remote} variant="workspace" t={t} />
+      )}
       <span className={css.rowActions}>
         {actions !== undefined && (
           <Menu
@@ -402,7 +404,7 @@ export function SearchResultItem({
       <span className={css.searchResultHeading}>
         <span className={css.slot} />
         <span className={css.searchResultTitle}>{result.title || t("session.untitled")}</span>
-        {result.remote && <HostBadge host={result.remote} t={t} />}
+        {result.remote && <HostBadge host={result.remote} variant="session" t={t} />}
         {!result.archived && primaryStatus.state !== "idle" && (
           <span className={css.timeStatus} data-session-status={primaryStatus.state}>
             <SessionStatusDots statuses={statuses} />
@@ -652,7 +654,16 @@ export function SessionNodeItem({
               : undefined
           }
         >
-          {showHost && row.remote && <HostBadge host={row.remote} t={t} />}
+          {showHost && row.remote && (
+            <>
+              <HostBadge host={row.remote} variant="session" t={t} />
+              {!row.blank && (
+                <span className={css.hostTimeSep} aria-hidden="true">
+                  ·
+                </span>
+              )}
+            </>
+          )}
           <span className={css.trailing}>
             {/* A blank New Session row is a provisional placeholder: nothing has
           happened in it yet, so a "now" timestamp and the row verbs

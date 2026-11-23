@@ -1,25 +1,29 @@
-/** Modal remote directory browser for adding a workspace on a connected remote peer. */
+/** Finder-sheet modal directory browser for adding a workspace on a connected remote peer. */
 import {
   useCallback,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type FormEvent,
+  type KeyboardEvent,
   type ReactNode,
 } from "react";
+import clsx from "clsx";
 import {
   Button,
   IconChevronDownOutlineRegular,
-  IconChevronRightOutlineRegular,
-  IconChevronUpOutlineRegular,
+  IconCloseOutlineRegular,
+  IconEditOutlineRegular,
   IconFolderCloseRegular,
   IconGlobeOutlineRegular,
   IconLoadingOutlineRegular,
   IconPlusOutlineRegular,
   Menu,
   Modal,
+  Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type { RemotePeerListDirsResult, RemotePeerSummary } from "@codexhost/shared-contracts";
@@ -78,14 +82,93 @@ type Props = PropsRuntime<"shell.overlay"> &
   PropsLocale<"codexhostImport"> &
   RemoteWorkspaceDialogFace;
 
+interface PathSegment {
+  readonly name: string;
+  readonly path: string;
+}
+
 const messageOf = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 
-function basenameOf(path: string): string {
-  const trimmed = path.replace(/[\\/]+$/u, "");
-  if (!trimmed) return path;
-  const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
-  return slash === -1 ? trimmed : trimmed.slice(slash + 1) || trimmed;
+function HomeIcon(): ReactNode {
+  return (
+    <svg width={13} height={13} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M2.5 7.25 8 2.5l5.5 4.75M4 6.25V13a.75.75 0 0 0 .75.75h2.25V10a1 1 0 0 1 1-1h0a1 1 0 0 1 1 1v3.75h2.25A.75.75 0 0 0 12 13V6.25"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function buildBreadcrumbs(
+  currentPath: string,
+  homeDir: string | undefined,
+): { inHome: boolean; rootSegment: PathSegment | null; segments: PathSegment[] } {
+  if (!currentPath) return { inHome: false, rootSegment: null, segments: [] };
+  const isWin = currentPath.includes("\\") && !currentPath.startsWith("/");
+  const sep = isWin ? "\\" : "/";
+  const stripTrailing = (p: string): string => {
+    if (isWin && /^[A-Za-z]:\\?$/u.test(p)) return `${p.slice(0, 2)}\\`;
+    if (!isWin && /^\/+$/u.test(p)) return "/";
+    return p.replace(/[\\/]+$/u, "");
+  };
+
+  const normalized = stripTrailing(currentPath);
+  const normalizedHome = homeDir ? stripTrailing(homeDir) : undefined;
+
+  if (normalizedHome) {
+    const matchesHome = isWin
+      ? normalized.toLowerCase() === normalizedHome.toLowerCase() ||
+        normalized.toLowerCase().startsWith(`${normalizedHome.toLowerCase()}${sep}`)
+      : normalized === normalizedHome || normalized.startsWith(`${normalizedHome}${sep}`);
+
+    if (matchesHome) {
+      const rest = normalized.slice(normalizedHome.length).replace(/^[\\/]+/u, "");
+      if (!rest) return { inHome: true, rootSegment: null, segments: [] };
+      const parts = rest.split(/[\\/]+/u).filter(Boolean);
+      const segments: PathSegment[] = [];
+      let acc = normalizedHome;
+      for (const part of parts) {
+        acc = acc.endsWith(sep) ? `${acc}${part}` : `${acc}${sep}${part}`;
+        segments.push({ name: part, path: acc });
+      }
+      return { inHome: true, rootSegment: null, segments };
+    }
+  }
+
+  if (isWin) {
+    const driveMatch = /^([A-Za-z]:)(?:\\(.*))?$/u.exec(normalized);
+    if (driveMatch) {
+      const drive = driveMatch[1] ?? "";
+      const rest = (driveMatch[2] ?? "").replace(/^\\+/u, "");
+      const rootPath = `${drive}\\`;
+      const parts = rest ? rest.split(/\\+/u).filter(Boolean) : [];
+      const segments: PathSegment[] = [];
+      let acc = rootPath;
+      for (const part of parts) {
+        acc = acc.endsWith("\\") ? `${acc}${part}` : `${acc}\\${part}`;
+        segments.push({ name: part, path: acc });
+      }
+      return { inHome: false, rootSegment: { name: drive, path: rootPath }, segments };
+    }
+  }
+
+  const parts = normalized.split("/").filter(Boolean);
+  const segments: PathSegment[] = [];
+  let acc = "";
+  for (const part of parts) {
+    acc = `${acc}/${part}`;
+    segments.push({ name: part, path: acc });
+  }
+  return {
+    inHome: false,
+    rootSegment: normalized.startsWith("/") ? { name: "/", path: "/" } : null,
+    segments,
+  };
 }
 
 export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
@@ -98,6 +181,8 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
   const [peerMenuOpen, setPeerMenuOpen] = useState(false);
 
   const [listing, setListing] = useState<RemotePeerListDirsResult | null>(null);
+  const [selectedEntry, setSelectedEntry] = useState<{ name: string; path: string } | null>(null);
+  const [editingPath, setEditingPath] = useState(false);
   const [pathDraft, setPathDraft] = useState("");
   const [dirsLoading, setDirsLoading] = useState(false);
   const [dirsError, setDirsError] = useState<string | null>(null);
@@ -107,13 +192,11 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
   const [createFolderBusy, setCreateFolderBusy] = useState(false);
   const [createFolderError, setCreateFolderError] = useState<string | null>(null);
 
-  const [workspaceTitle, setWorkspaceTitle] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const listRequestSeq = useRef(0);
   const pathInputId = useId();
-  const titleInputId = useId();
   const newFolderInputId = useId();
 
   const selectedPeer = connectedPeers.find((peer) => peer.peerId === selectedPeerId) ?? null;
@@ -122,6 +205,7 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
     const seq = ++listRequestSeq.current;
     setDirsLoading(true);
     setDirsError(null);
+    setSelectedEntry(null);
     try {
       const result = await remotePeersApi.listDirs(peerId, path);
       if (seq !== listRequestSeq.current) return;
@@ -142,12 +226,13 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
     setPeersError(null);
     setPeerMenuOpen(false);
     setListing(null);
+    setSelectedEntry(null);
+    setEditingPath(false);
     setPathDraft("");
     setDirsError(null);
     setCreatingFolder(false);
     setNewFolderName("");
     setCreateFolderError(null);
-    setWorkspaceTitle("");
     setSubmitError(null);
 
     void remotePeersApi
@@ -182,18 +267,22 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
     };
   }, [state.open, state.openToken, state.initialHostId, loadDirectory]);
 
-  if (!state.open) return null;
-
   const currentPath = listing?.path ?? "";
   const homeDir = listing?.homeDir ?? selectedPeer?.homeDir;
-  const parentPath = listing?.parentPath ?? null;
+  const breadcrumbs = useMemo(() => buildBreadcrumbs(currentPath, homeDir), [currentPath, homeDir]);
+
+  if (!state.open) return null;
+
   const busy = submitting || createFolderBusy;
+  const targetPath = selectedEntry?.path ?? currentPath;
 
   const handleSelectPeer = (peerId: string): void => {
     setPeerMenuOpen(false);
     if (peerId === selectedPeerId) return;
     setSelectedPeerId(peerId);
     setListing(null);
+    setSelectedEntry(null);
+    setEditingPath(false);
     setPathDraft("");
     setDirsError(null);
     setCreatingFolder(false);
@@ -207,8 +296,21 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
     event.preventDefault();
     if (selectedPeer === null || dirsLoading) return;
     const target = pathDraft.trim();
-    if (!target) return;
+    setEditingPath(false);
+    if (!target || target === currentPath) {
+      setPathDraft(currentPath);
+      return;
+    }
     void loadDirectory(selectedPeer.peerId, target);
+  };
+
+  const handlePathKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      setEditingPath(false);
+      setPathDraft(currentPath);
+    }
   };
 
   const handleCreateFolder = async (event: FormEvent): Promise<void> => {
@@ -233,16 +335,24 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
     }
   };
 
+  const handleNewFolderKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      setCreatingFolder(false);
+      setNewFolderName("");
+      setCreateFolderError(null);
+    }
+  };
+
   const handleAddWorkspace = async (): Promise<void> => {
-    if (selectedPeer === null || !currentPath) return;
+    if (selectedPeer === null || !targetPath) return;
     setSubmitting(true);
     setSubmitError(null);
-    const trimmedTitle = workspaceTitle.trim();
     try {
       await remotePeersApi.createWorkspace({
         peerId: selectedPeer.peerId,
-        path: currentPath,
-        ...(trimmedTitle ? { title: trimmedTitle } : {}),
+        path: targetPath,
       });
       dispatchRemotePeersUpdated();
       controller.close();
@@ -257,55 +367,102 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
     if (!submitting) controller.close();
   };
 
+  const primaryLabel = submitting
+    ? t("remoteWorkspace.adding")
+    : selectedEntry !== null
+      ? t("remoteWorkspace.addSelected", { name: selectedEntry.name })
+      : t("remoteWorkspace.addCurrent");
+
   return (
     <Modal
       open={state.open}
       onClose={close}
       title={t("remoteWorkspace.title")}
-      closeLabel={t("connectDevices.close")}
+      headless
       className={css.dialog}
-      contentClassName={css.content}
-      footer={
-        selectedPeer !== null ? (
-          <div className={css.footer}>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy || dirsLoading || !currentPath}
-              icon={<IconPlusOutlineRegular size={14} />}
-              onClick={() => {
-                setCreatingFolder((prev) => !prev);
-                setCreateFolderError(null);
-                setNewFolderName("");
-              }}
-            >
-              {t("remoteWorkspace.newFolder")}
-            </Button>
-            <div className={css.footerSpacer} />
-            <Button variant="outline" disabled={submitting} onClick={close}>
-              {t("connectDevices.cancel")}
-            </Button>
-            <Button
-              variant="primary"
-              disabled={submitting || dirsLoading || !currentPath}
-              aria-busy={submitting}
-              onClick={() => void handleAddWorkspace()}
-            >
-              {t(submitting ? "remoteWorkspace.adding" : "remoteWorkspace.addCurrent")}
-            </Button>
-          </div>
-        ) : (
-          <Button variant="outline" onClick={close}>
-            {t("connectDevices.close")}
-          </Button>
-        )
-      }
     >
+      <div className={css.header}>
+        <div className={css.headerLead}>
+          <h2 className={css.title}>{t("remoteWorkspace.title")}</h2>
+          {selectedPeer !== null &&
+            (connectedPeers.length > 1 ? (
+              <Menu
+                open={peerMenuOpen}
+                onClose={() => setPeerMenuOpen(false)}
+                portal
+                align="start"
+                items={connectedPeers.map((peer) => ({
+                  id: peer.peerId,
+                  label: peer.name,
+                }))}
+                selectedId={selectedPeer.peerId}
+                onSelect={handleSelectPeer}
+                anchor={
+                  <button
+                    type="button"
+                    className={css.hostPill}
+                    aria-label={t("remoteWorkspace.switchHost")}
+                    aria-haspopup="menu"
+                    aria-expanded={peerMenuOpen}
+                    disabled={busy}
+                    onClick={() => setPeerMenuOpen((prev) => !prev)}
+                  >
+                    <svg
+                      width={12}
+                      height={12}
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.45"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className={css.hostIcon}
+                      aria-hidden="true"
+                    >
+                      <rect x="2" y="2.5" width="12" height="8.5" rx="1.75" />
+                      <path d="M5.5 13.5h5M8 11v2.5" />
+                    </svg>
+                    <span className={css.hostPillName}>{selectedPeer.name}</span>
+                    <IconChevronDownOutlineRegular size={12} className={css.hostPillChevron} />
+                  </button>
+                }
+              />
+            ) : (
+              <span className={css.hostPillStatic} title={selectedPeer.origin}>
+                <svg
+                  width={12}
+                  height={12}
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.45"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className={css.hostIcon}
+                  aria-hidden="true"
+                >
+                  <rect x="2" y="2.5" width="12" height="8.5" rx="1.75" />
+                  <path d="M5.5 13.5h5M8 11v2.5" />
+                </svg>
+                <span className={css.hostPillName}>{selectedPeer.name}</span>
+              </span>
+            ))}
+        </div>
+        <button
+          type="button"
+          className={css.closeButton}
+          aria-label={t("connectDevices.close")}
+          onClick={close}
+        >
+          <IconCloseOutlineRegular size={14} />
+        </button>
+      </div>
+
       <div className={css.body}>
         {peersLoading ? (
           <div className={css.centerState}>
             <span className={css.spinner}>
-              <IconLoadingOutlineRegular size={18} />
+              <IconLoadingOutlineRegular size={16} />
             </span>
             <span>{t("remoteWorkspace.loadingPeers")}</span>
           </div>
@@ -322,11 +479,12 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
           </div>
         ) : connectedPeers.length === 0 ? (
           <div className={css.emptyState}>
-            <IconGlobeOutlineRegular size={26} className={css.emptyIcon} />
+            <IconGlobeOutlineRegular size={24} className={css.emptyIcon} />
             <p className={css.emptyTitle}>{t("remoteWorkspace.noConnectedPeersTitle")}</p>
             <p className={css.emptyDesc}>{t("remoteWorkspace.noConnectedPeersDesc")}</p>
             <Button
               variant="primary"
+              size="sm"
               onClick={() => {
                 controller.close();
                 dispatchOpenRemotePeersSettings();
@@ -337,154 +495,211 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
           </div>
         ) : (
           <>
-            <div className={css.peerRow}>
-              <span className={css.fieldLabel}>{t("remoteWorkspace.peerLabel")}</span>
-              {connectedPeers.length > 1 ? (
-                <Menu
-                  open={peerMenuOpen}
-                  onClose={() => setPeerMenuOpen(false)}
-                  portal
-                  className={css.peerMenu}
-                  anchor={
+            <div className={css.pathBar}>
+              {editingPath ? (
+                <form className={css.pathEditForm} onSubmit={handlePathSubmit}>
+                  <label htmlFor={pathInputId} className={css.srOnly}>
+                    {t("remoteWorkspace.pathLabel")}
+                  </label>
+                  <input
+                    id={pathInputId}
+                    className={css.pathInput}
+                    value={pathDraft}
+                    disabled={busy || dirsLoading}
+                    placeholder={t("remoteWorkspace.pathPlaceholder")}
+                    spellCheck={false}
+                    autoComplete="off"
+                    autoFocus
+                    onChange={(event) => setPathDraft(event.target.value)}
+                    onKeyDown={handlePathKeyDown}
+                  />
+                  <button
+                    type="button"
+                    className={css.pathIconBtn}
+                    aria-label={t("connectDevices.cancel")}
+                    onClick={() => {
+                      setEditingPath(false);
+                      setPathDraft(currentPath);
+                    }}
+                  >
+                    <IconCloseOutlineRegular size={12} />
+                  </button>
+                </form>
+              ) : (
+                <>
+                  <Tooltip label={homeDir ?? t("remoteWorkspace.home")} side="top" delayMs={400}>
                     <button
                       type="button"
-                      className={css.peerTrigger}
-                      aria-haspopup="menu"
-                      aria-expanded={peerMenuOpen}
-                      disabled={busy}
-                      onClick={() => setPeerMenuOpen((prev) => !prev)}
+                      className={clsx(
+                        css.homeBtn,
+                        breadcrumbs.inHome && breadcrumbs.segments.length === 0 && css.crumbCurrent,
+                      )}
+                      aria-label={t("remoteWorkspace.home")}
+                      disabled={busy || dirsLoading || selectedPeer === null}
+                      onClick={() => {
+                        if (selectedPeer !== null) {
+                          void loadDirectory(selectedPeer.peerId, homeDir);
+                        }
+                      }}
                     >
-                      <span className={css.peerDot} aria-hidden="true" />
-                      <span className={css.peerTriggerName}>{selectedPeer?.name}</span>
-                      <span className={css.peerTriggerOrigin}>{selectedPeer?.origin}</span>
-                      <IconChevronDownOutlineRegular size={14} className={css.peerChevron} />
+                      <HomeIcon />
                     </button>
-                  }
-                  items={connectedPeers.map((peer) => ({
-                    id: peer.peerId,
-                    label: `${peer.name} (${peer.origin})`,
-                  }))}
-                  selectedId={selectedPeer?.peerId}
-                  onSelect={handleSelectPeer}
-                />
-              ) : (
-                <div className={css.peerStatic}>
-                  <span className={css.peerDot} aria-hidden="true" />
-                  <span className={css.peerTriggerName}>{selectedPeer?.name}</span>
-                  <span className={css.peerTriggerOrigin}>{selectedPeer?.origin}</span>
-                </div>
+                  </Tooltip>
+
+                  <div
+                    className={css.breadcrumbs}
+                    title={currentPath}
+                    onDoubleClick={() => {
+                      if (!busy && !dirsLoading) {
+                        setPathDraft(currentPath);
+                        setEditingPath(true);
+                      }
+                    }}
+                  >
+                    {!breadcrumbs.inHome && breadcrumbs.rootSegment !== null && (
+                      <button
+                        type="button"
+                        className={clsx(
+                          css.crumbBtn,
+                          breadcrumbs.segments.length === 0 && css.crumbCurrent,
+                        )}
+                        disabled={busy || dirsLoading}
+                        onClick={() => {
+                          if (selectedPeer !== null && breadcrumbs.rootSegment !== null) {
+                            void loadDirectory(selectedPeer.peerId, breadcrumbs.rootSegment.path);
+                          }
+                        }}
+                      >
+                        {breadcrumbs.rootSegment.name}
+                      </button>
+                    )}
+                    {breadcrumbs.segments.map((segment, index) => {
+                      const isLast = index === breadcrumbs.segments.length - 1;
+                      return (
+                        <span key={segment.path} className={css.crumbItem}>
+                          <span className={css.crumbSep} aria-hidden="true">
+                            /
+                          </span>
+                          <button
+                            type="button"
+                            className={clsx(css.crumbBtn, isLast && css.crumbCurrent)}
+                            disabled={busy || dirsLoading}
+                            onClick={() => {
+                              if (selectedPeer !== null && !isLast) {
+                                void loadDirectory(selectedPeer.peerId, segment.path);
+                              }
+                            }}
+                          >
+                            {segment.name}
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+
+                  <div className={css.pathActions}>
+                    <Tooltip label={t("remoteWorkspace.editPath")} side="top" delayMs={400}>
+                      <button
+                        type="button"
+                        className={css.pathIconBtn}
+                        aria-label={t("remoteWorkspace.editPath")}
+                        disabled={busy || dirsLoading}
+                        onClick={() => {
+                          setPathDraft(currentPath);
+                          setEditingPath(true);
+                        }}
+                      >
+                        <IconEditOutlineRegular size={13} />
+                      </button>
+                    </Tooltip>
+                    <Tooltip label={t("remoteWorkspace.newFolder")} side="top" delayMs={400}>
+                      <button
+                        type="button"
+                        className={clsx(css.pathIconBtn, creatingFolder && css.pathIconBtnActive)}
+                        aria-label={t("remoteWorkspace.newFolder")}
+                        aria-pressed={creatingFolder}
+                        disabled={busy || dirsLoading || !currentPath}
+                        onClick={() => {
+                          setCreatingFolder((prev) => !prev);
+                          setCreateFolderError(null);
+                          setNewFolderName("");
+                        }}
+                      >
+                        <IconPlusOutlineRegular size={14} />
+                      </button>
+                    </Tooltip>
+                  </div>
+                </>
               )}
             </div>
 
-            <form className={css.pathBar} onSubmit={handlePathSubmit}>
-              <label htmlFor={pathInputId} className={css.srOnly}>
-                {t("remoteWorkspace.pathLabel")}
-              </label>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busy || dirsLoading || parentPath === null}
-                title={t("remoteWorkspace.up")}
-                icon={<IconChevronUpOutlineRegular size={14} />}
-                onClick={() => {
-                  if (selectedPeer !== null && parentPath !== null) {
-                    void loadDirectory(selectedPeer.peerId, parentPath);
-                  }
-                }}
-              >
-                {t("remoteWorkspace.up")}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busy || dirsLoading || selectedPeer === null}
-                onClick={() => {
-                  if (selectedPeer !== null) {
-                    void loadDirectory(selectedPeer.peerId, homeDir);
-                  }
-                }}
-              >
-                {t("remoteWorkspace.home")}
-              </Button>
-              <input
-                id={pathInputId}
-                className={css.pathInput}
-                value={pathDraft}
-                disabled={busy || dirsLoading}
-                placeholder={t("remoteWorkspace.pathPlaceholder")}
-                spellCheck={false}
-                autoComplete="off"
-                onChange={(event) => setPathDraft(event.target.value)}
-              />
-              <Button
-                type="submit"
-                variant="outline"
-                size="sm"
-                disabled={busy || dirsLoading || !pathDraft.trim()}
-              >
-                {t("remoteWorkspace.go")}
-              </Button>
-            </form>
-
-            {creatingFolder && (
-              <form
-                className={css.newFolderForm}
-                onSubmit={(event) => void handleCreateFolder(event)}
-              >
-                <label htmlFor={newFolderInputId} className={css.srOnly}>
-                  {t("remoteWorkspace.newFolderPlaceholder")}
-                </label>
-                <input
-                  id={newFolderInputId}
-                  className={css.newFolderInput}
-                  value={newFolderName}
-                  disabled={createFolderBusy}
-                  placeholder={t("remoteWorkspace.newFolderPlaceholder")}
-                  maxLength={255}
-                  autoFocus
-                  onChange={(event) => {
-                    setNewFolderName(event.target.value);
-                    setCreateFolderError(null);
-                  }}
-                />
-                <Button
-                  type="submit"
-                  variant="primary"
-                  size="sm"
-                  disabled={createFolderBusy || !newFolderName.trim()}
-                  aria-busy={createFolderBusy}
-                >
-                  {t(createFolderBusy ? "remoteWorkspace.creating" : "remoteWorkspace.create")}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={createFolderBusy}
-                  onClick={() => {
-                    setCreatingFolder(false);
-                    setNewFolderName("");
-                    setCreateFolderError(null);
-                  }}
-                >
-                  {t("connectDevices.cancel")}
-                </Button>
-              </form>
-            )}
-            {createFolderError !== null && (
-              <p className={css.error} role="alert">
-                {createFolderError}
-              </p>
-            )}
-
             <div
               className={css.browserBox}
-              role="region"
+              role="listbox"
               aria-label={t("remoteWorkspace.dirListLabel")}
+              onClick={(event) => {
+                if (event.target === event.currentTarget) setSelectedEntry(null);
+              }}
             >
+              {creatingFolder && (
+                <div className={css.inlineCreateWrap}>
+                  <form
+                    className={css.inlineCreateRow}
+                    onSubmit={(event) => void handleCreateFolder(event)}
+                  >
+                    <IconFolderCloseRegular size={15} className={css.folderIcon} />
+                    <label htmlFor={newFolderInputId} className={css.srOnly}>
+                      {t("remoteWorkspace.newFolderPlaceholder")}
+                    </label>
+                    <input
+                      id={newFolderInputId}
+                      className={css.inlineCreateInput}
+                      value={newFolderName}
+                      disabled={createFolderBusy}
+                      placeholder={t("remoteWorkspace.newFolderPlaceholder")}
+                      maxLength={255}
+                      autoFocus
+                      onChange={(event) => {
+                        setNewFolderName(event.target.value);
+                        setCreateFolderError(null);
+                      }}
+                      onKeyDown={handleNewFolderKeyDown}
+                    />
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      size="sm"
+                      disabled={createFolderBusy || !newFolderName.trim()}
+                      aria-busy={createFolderBusy}
+                    >
+                      {t(createFolderBusy ? "remoteWorkspace.creating" : "remoteWorkspace.create")}
+                    </Button>
+                    <button
+                      type="button"
+                      className={css.pathIconBtn}
+                      aria-label={t("connectDevices.cancel")}
+                      disabled={createFolderBusy}
+                      onClick={() => {
+                        setCreatingFolder(false);
+                        setNewFolderName("");
+                        setCreateFolderError(null);
+                      }}
+                    >
+                      <IconCloseOutlineRegular size={12} />
+                    </button>
+                  </form>
+                  {createFolderError !== null && (
+                    <p className={css.inlineCreateError} role="alert">
+                      {createFolderError}
+                    </p>
+                  )}
+                </div>
+              )}
+
               {dirsLoading ? (
                 <div className={css.centerState}>
                   <span className={css.spinner}>
-                    <IconLoadingOutlineRegular size={16} />
+                    <IconLoadingOutlineRegular size={15} />
                   </span>
                   <span>{t("remoteWorkspace.loadingDirs")}</span>
                 </div>
@@ -509,45 +724,35 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
                 </div>
               ) : (
                 <ul className={css.dirList}>
-                  {(listing?.entries ?? []).map((entry) => (
-                    <li key={entry.path} className={css.dirItem}>
-                      <button
-                        type="button"
-                        className={css.dirRow}
-                        disabled={busy}
-                        onClick={() => {
-                          if (selectedPeer !== null) {
-                            void loadDirectory(selectedPeer.peerId, entry.path);
-                          }
-                        }}
-                      >
-                        <IconFolderCloseRegular size={16} className={css.folderIcon} />
-                        <span className={css.dirName}>{entry.name}</span>
-                        <IconChevronRightOutlineRegular size={14} className={css.dirChevron} />
-                      </button>
-                    </li>
-                  ))}
+                  {(listing?.entries ?? []).map((entry) => {
+                    const selected = selectedEntry?.path === entry.path;
+                    return (
+                      <li key={entry.path} className={css.dirItem}>
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={selected}
+                          className={clsx(css.dirRow, selected && css.dirRowSelected)}
+                          disabled={busy}
+                          onClick={() => {
+                            setSelectedEntry((current) =>
+                              current?.path === entry.path ? null : entry,
+                            );
+                          }}
+                          onDoubleClick={() => {
+                            if (selectedPeer !== null) {
+                              void loadDirectory(selectedPeer.peerId, entry.path);
+                            }
+                          }}
+                        >
+                          <IconFolderCloseRegular size={15} className={css.folderIcon} />
+                          <span className={css.dirName}>{entry.name}</span>
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
-            </div>
-
-            <div className={css.titleField}>
-              <label htmlFor={titleInputId} className={css.fieldLabel}>
-                {t("remoteWorkspace.customTitleLabel")}
-              </label>
-              <input
-                id={titleInputId}
-                className={css.titleInput}
-                value={workspaceTitle}
-                disabled={submitting}
-                maxLength={255}
-                placeholder={
-                  currentPath
-                    ? t("remoteWorkspace.customTitlePlaceholder", { name: basenameOf(currentPath) })
-                    : t("remoteWorkspace.customTitlePlaceholderDefault")
-                }
-                onChange={(event) => setWorkspaceTitle(event.target.value)}
-              />
             </div>
 
             {submitError !== null && (
@@ -556,6 +761,29 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
               </p>
             )}
           </>
+        )}
+      </div>
+
+      <div className={css.footer}>
+        {selectedPeer !== null ? (
+          <>
+            <Button variant="ghost" size="sm" disabled={submitting} onClick={close}>
+              {t("connectDevices.cancel")}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={submitting || dirsLoading || !targetPath}
+              aria-busy={submitting}
+              onClick={() => void handleAddWorkspace()}
+            >
+              {primaryLabel}
+            </Button>
+          </>
+        ) : (
+          <Button variant="outline" size="sm" onClick={close}>
+            {t("connectDevices.close")}
+          </Button>
         )}
       </div>
     </Modal>

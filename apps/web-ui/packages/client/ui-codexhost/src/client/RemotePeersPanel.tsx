@@ -2,16 +2,17 @@
 import { useCallback, useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
 import {
   Button,
-  IconCheckCircleOutlineRegular,
   IconEditOutlineRegular,
+  IconEllipsisOutlineRegular,
   IconGlobeOutlineRegular,
   IconLoadingOutlineRegular,
   IconPlusOutlineRegular,
   IconRefreshOutlineRegular,
   IconTrashOutlineRegular,
-  IconWarningTriangleOutlineRegular,
+  Menu,
   Modal,
   Switch,
+  Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type {
@@ -56,6 +57,344 @@ const TRANSPORT_LABEL: Record<RemotePeerTransportKind, Parameters<Translate>[0]>
   lan: "remotePeers.transport.lan",
   custom: "remotePeers.transport.custom",
 };
+
+function formatOriginDisplay(origin: string): string {
+  try {
+    const url = new URL(origin);
+    const pathname = url.pathname && url.pathname !== "/" ? url.pathname.replace(/\/+$/u, "") : "";
+    return `${url.host}${pathname}`;
+  } catch {
+    return origin.replace(/^https?:\/\//iu, "").replace(/\/+$/u, "");
+  }
+}
+
+function UnlockIcon(): ReactNode {
+  return (
+    <svg width={12} height={12} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect
+        x="3.25"
+        y="7.25"
+        width="9.5"
+        height="6.5"
+        rx="1.75"
+        stroke="currentColor"
+        strokeWidth="1.35"
+      />
+      <path
+        d="M5.5 7.25V5.25a2.5 2.5 0 0 1 4.85-.85"
+        stroke="currentColor"
+        strokeWidth="1.35"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function AddPeerModal({
+  onClose,
+  onAdded,
+  t,
+}: {
+  onClose: () => void;
+  onAdded: () => Promise<void>;
+  t: Translate;
+}): ReactNode {
+  const [mode, setMode] = useState<AddMode>("link");
+  const [connectionUrl, setConnectionUrl] = useState("");
+  const [origin, setOrigin] = useState("");
+  const [token, setToken] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [testResult, setTestResult] = useState<RemotePeerTestResult | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const linkId = useId();
+  const originId = useId();
+  const tokenId = useId();
+  const nameId = useId();
+
+  const formBusy = testing || adding;
+
+  const buildCredentials = ():
+    | { ok: true; testParams: RemotePeerTestParams; addParams: RemotePeerAddParams }
+    | { ok: false; message: string } => {
+    const trimmedName = displayName.trim();
+    if (mode === "link") {
+      const trimmedUrl = connectionUrl.trim();
+      if (!trimmedUrl) {
+        return { ok: false, message: t("remotePeers.error.linkRequired") };
+      }
+      return {
+        ok: true,
+        testParams: { connectionUrl: trimmedUrl },
+        addParams: {
+          connectionUrl: trimmedUrl,
+          ...(trimmedName ? { name: trimmedName } : {}),
+        },
+      };
+    }
+    const trimmedOrigin = origin.trim();
+    const trimmedToken = token.trim();
+    if (!trimmedOrigin) {
+      return { ok: false, message: t("remotePeers.error.originRequired") };
+    }
+    if (!trimmedToken) {
+      return { ok: false, message: t("remotePeers.error.tokenRequired") };
+    }
+    return {
+      ok: true,
+      testParams: { origin: trimmedOrigin, token: trimmedToken },
+      addParams: {
+        origin: trimmedOrigin,
+        token: trimmedToken,
+        ...(trimmedName ? { name: trimmedName } : {}),
+      },
+    };
+  };
+
+  const handleTest = async (): Promise<void> => {
+    const built = buildCredentials();
+    if (!built.ok) {
+      setFormError(built.message);
+      setTestResult(null);
+      return;
+    }
+    setTesting(true);
+    setFormError(null);
+    setTestResult(null);
+    try {
+      const result = await remotePeersApi.test(built.testParams);
+      setTestResult(result);
+    } catch (cause) {
+      setTestResult({ ok: false, error: messageOf(cause) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleAdd = async (event?: FormEvent): Promise<void> => {
+    event?.preventDefault();
+    const built = buildCredentials();
+    if (!built.ok) {
+      setFormError(built.message);
+      return;
+    }
+    setAdding(true);
+    setFormError(null);
+    try {
+      await remotePeersApi.add(built.addParams);
+      dispatchRemotePeersUpdated();
+      await onAdded();
+      onClose();
+    } catch (cause) {
+      setFormError(t("remotePeers.actionFailed", { message: messageOf(cause) }));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const testSummary =
+    testResult !== null && testResult.ok
+      ? [
+          t("remotePeers.testSuccess"),
+          testResult.latencyMs !== undefined
+            ? t("remotePeers.latencyMs", { ms: testResult.latencyMs })
+            : undefined,
+          testResult.projectCount !== undefined
+            ? t("remotePeers.projectCount", { count: testResult.projectCount })
+            : undefined,
+          testResult.transportKind !== undefined
+            ? t(TRANSPORT_LABEL[testResult.transportKind])
+            : undefined,
+          testResult.hostname,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : testResult !== null
+        ? [t("remotePeers.testFailed"), testResult.error].filter(Boolean).join(" · ")
+        : null;
+
+  return (
+    <Modal
+      open
+      onClose={() => {
+        if (!formBusy) onClose();
+      }}
+      title={t("remotePeers.addTitle")}
+      closeLabel={t("connectDevices.close")}
+      className={css.addModal}
+      footer={
+        <>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={formBusy}
+            aria-busy={testing}
+            onClick={() => void handleTest()}
+          >
+            {t(testing ? "remotePeers.testing" : "remotePeers.testConnection")}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={formBusy}
+            aria-busy={adding}
+            onClick={() => void handleAdd()}
+          >
+            {t(adding ? "remotePeers.adding" : "remotePeers.add")}
+          </Button>
+        </>
+      }
+    >
+      <form className={css.modalForm} onSubmit={(event) => void handleAdd(event)}>
+        {mode === "link" ? (
+          <div className={css.field}>
+            <div className={css.fieldHead}>
+              <label htmlFor={linkId} className={css.label}>
+                {t("remotePeers.field.link")}
+              </label>
+              <button
+                type="button"
+                className={css.modeToggle}
+                disabled={formBusy}
+                onClick={() => {
+                  setMode("manual");
+                  setFormError(null);
+                  setTestResult(null);
+                }}
+              >
+                {t("remotePeers.switchToManual")}
+              </button>
+            </div>
+            <input
+              id={linkId}
+              className={css.input}
+              value={connectionUrl}
+              disabled={formBusy}
+              placeholder={t("remotePeers.placeholder.link")}
+              autoComplete="off"
+              spellCheck={false}
+              data-modal-autofocus
+              onChange={(event) => {
+                setConnectionUrl(event.target.value);
+                setFormError(null);
+                setTestResult(null);
+              }}
+            />
+          </div>
+        ) : (
+          <>
+            <div className={css.field}>
+              <div className={css.fieldHead}>
+                <label htmlFor={originId} className={css.label}>
+                  {t("remotePeers.field.origin")}
+                </label>
+                <button
+                  type="button"
+                  className={css.modeToggle}
+                  disabled={formBusy}
+                  onClick={() => {
+                    setMode("link");
+                    setFormError(null);
+                    setTestResult(null);
+                  }}
+                >
+                  {t("remotePeers.switchToLink")}
+                </button>
+              </div>
+              <input
+                id={originId}
+                className={css.input}
+                value={origin}
+                disabled={formBusy}
+                placeholder={t("remotePeers.placeholder.origin")}
+                autoComplete="off"
+                spellCheck={false}
+                data-modal-autofocus
+                onChange={(event) => {
+                  setOrigin(event.target.value);
+                  setFormError(null);
+                  setTestResult(null);
+                }}
+              />
+            </div>
+            <div className={css.field}>
+              <label htmlFor={tokenId} className={css.label}>
+                {t("remotePeers.field.token")}
+              </label>
+              <input
+                id={tokenId}
+                type="password"
+                className={css.input}
+                value={token}
+                disabled={formBusy}
+                placeholder={t("remotePeers.placeholder.token")}
+                autoComplete="new-password"
+                onChange={(event) => {
+                  setToken(event.target.value);
+                  setFormError(null);
+                  setTestResult(null);
+                }}
+              />
+            </div>
+          </>
+        )}
+
+        <div className={css.field}>
+          <label htmlFor={nameId} className={css.label}>
+            {t("remotePeers.field.nameOptional")}
+          </label>
+          <input
+            id={nameId}
+            className={css.input}
+            value={displayName}
+            disabled={formBusy}
+            maxLength={120}
+            placeholder={t("remotePeers.placeholder.name")}
+            onChange={(event) => setDisplayName(event.target.value)}
+          />
+        </div>
+
+        {testResult !== null && testSummary !== null && (
+          <div
+            className={css.testInline}
+            data-ok={testResult.ok}
+            role={testResult.ok ? "status" : "alert"}
+          >
+            {testResult.ok ? (
+              <svg
+                width={13}
+                height={13}
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className={css.testCheckIcon}
+                aria-hidden="true"
+              >
+                <path d="M3.5 8.5 6.5 11.5 12.5 5" />
+              </svg>
+            ) : (
+              <span className={css.testDot} aria-hidden="true" />
+            )}
+            <span className={css.testInlineText} title={testSummary}>
+              {testSummary}
+            </span>
+          </div>
+        )}
+
+        {formError !== null && (
+          <p className={css.error} role="alert">
+            {formError}
+          </p>
+        )}
+      </form>
+    </Modal>
+  );
+}
 
 function EditPeerModal({
   peer,
@@ -123,14 +462,15 @@ function EditPeerModal({
       }}
       title={t("remotePeers.editTitle", { name: peer.name })}
       closeLabel={t("connectDevices.close")}
-      className={css.modal}
+      className={css.addModal}
       footer={
         <>
-          <Button variant="outline" disabled={saving} onClick={onClose}>
+          <Button variant="outline" size="sm" disabled={saving} onClick={onClose}>
             {t("connectDevices.cancel")}
           </Button>
           <Button
             variant="primary"
+            size="sm"
             disabled={saving}
             aria-busy={saving}
             onClick={() => void submit()}
@@ -157,7 +497,7 @@ function EditPeerModal({
         </div>
         <div className={css.switchRow}>
           <div className={css.switchText}>
-            <span className={css.label}>{t("remotePeers.field.enabled")}</span>
+            <span className={css.switchTitle}>{t("remotePeers.field.enabled")}</span>
             <span className={css.hint}>{t("remotePeers.field.enabledHint")}</span>
           </div>
           <Switch
@@ -168,7 +508,7 @@ function EditPeerModal({
           />
         </div>
         <div className={css.credentialsBox}>
-          <div className={css.credentialsHead}>
+          <div className={css.fieldHead}>
             <span className={css.label}>{t("remotePeers.editCredentialsTitle")}</span>
             <button
               type="button"
@@ -271,11 +611,12 @@ function RemovePeerModal({
       className={css.confirm}
       footer={
         <>
-          <Button variant="outline" disabled={busy} onClick={onClose}>
+          <Button variant="outline" size="sm" disabled={busy} onClick={onClose}>
             {t("connectDevices.cancel")}
           </Button>
           <Button
             variant="primary"
+            size="sm"
             className={css.dangerConfirm}
             disabled={busy}
             aria-busy={busy}
@@ -298,16 +639,8 @@ function RemovePeerModal({
 export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
   const [view, setView] = useState<ListView>({ kind: "loading" });
   const [refreshing, setRefreshing] = useState(false);
-
-  const [mode, setMode] = useState<AddMode>("link");
-  const [connectionUrl, setConnectionUrl] = useState("");
-  const [origin, setOrigin] = useState("");
-  const [token, setToken] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  const [testing, setTesting] = useState(false);
-  const [adding, setAdding] = useState(false);
-  const [testResult, setTestResult] = useState<RemotePeerTestResult | null>(null);
-  const [formError, setFormError] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [openMenuPeerId, setOpenMenuPeerId] = useState<string | null>(null);
 
   const [reconnectingIds, setReconnectingIds] = useState<ReadonlySet<string>>(() => new Set());
   const [editingPeer, setEditingPeer] = useState<RemotePeerSummary | null>(null);
@@ -315,11 +648,6 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
   const [removeBusy, setRemoveBusy] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-
-  const linkId = useId();
-  const originId = useId();
-  const tokenId = useId();
-  const nameId = useId();
 
   const loadPeers = useCallback(async (background = false): Promise<void> => {
     if (background) setRefreshing(true);
@@ -355,88 +683,6 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [loadPeers]);
-
-  const buildCredentials = ():
-    | { ok: true; testParams: RemotePeerTestParams; addParams: RemotePeerAddParams }
-    | { ok: false; message: string } => {
-    const trimmedName = displayName.trim();
-    if (mode === "link") {
-      const trimmedUrl = connectionUrl.trim();
-      if (!trimmedUrl) {
-        return { ok: false, message: t("remotePeers.error.linkRequired") };
-      }
-      return {
-        ok: true,
-        testParams: { connectionUrl: trimmedUrl },
-        addParams: {
-          connectionUrl: trimmedUrl,
-          ...(trimmedName ? { name: trimmedName } : {}),
-        },
-      };
-    }
-    const trimmedOrigin = origin.trim();
-    const trimmedToken = token.trim();
-    if (!trimmedOrigin) {
-      return { ok: false, message: t("remotePeers.error.originRequired") };
-    }
-    if (!trimmedToken) {
-      return { ok: false, message: t("remotePeers.error.tokenRequired") };
-    }
-    return {
-      ok: true,
-      testParams: { origin: trimmedOrigin, token: trimmedToken },
-      addParams: {
-        origin: trimmedOrigin,
-        token: trimmedToken,
-        ...(trimmedName ? { name: trimmedName } : {}),
-      },
-    };
-  };
-
-  const handleTest = async (): Promise<void> => {
-    const built = buildCredentials();
-    if (!built.ok) {
-      setFormError(built.message);
-      setTestResult(null);
-      return;
-    }
-    setTesting(true);
-    setFormError(null);
-    setTestResult(null);
-    try {
-      const result = await remotePeersApi.test(built.testParams);
-      setTestResult(result);
-    } catch (cause) {
-      setTestResult({ ok: false, error: messageOf(cause) });
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  const handleAdd = async (event: FormEvent): Promise<void> => {
-    event.preventDefault();
-    const built = buildCredentials();
-    if (!built.ok) {
-      setFormError(built.message);
-      return;
-    }
-    setAdding(true);
-    setFormError(null);
-    try {
-      await remotePeersApi.add(built.addParams);
-      setConnectionUrl("");
-      setOrigin("");
-      setToken("");
-      setDisplayName("");
-      setTestResult(null);
-      dispatchRemotePeersUpdated();
-      await loadPeers(true);
-    } catch (cause) {
-      setFormError(t("remotePeers.actionFailed", { message: messageOf(cause) }));
-    } finally {
-      setAdding(false);
-    }
-  };
 
   const handleReconnect = async (peer: RemotePeerSummary): Promise<void> => {
     setActionError(null);
@@ -486,8 +732,6 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
     }
   };
 
-  const formBusy = testing || adding;
-
   return (
     <div className={css.panel} data-remote-peers-panel>
       <header className={css.header}>
@@ -495,194 +739,34 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
           <h2 className={css.title}>{t("remotePeers.title")}</h2>
           <p className={css.description}>{t("remotePeers.subtitle")}</p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={refreshing}
-          icon={
-            refreshing ? (
-              <span className={css.spinner}>
-                <IconLoadingOutlineRegular size={14} />
-              </span>
-            ) : (
-              <IconRefreshOutlineRegular size={14} />
-            )
-          }
-          onClick={() => void loadPeers(true)}
-        >
-          {t("remotePeers.refresh")}
-        </Button>
-      </header>
-
-      <section className={css.addCard} aria-label={t("remotePeers.addTitle")}>
-        <div className={css.addHead}>
-          <div className={css.addHeadText}>
-            <h3 className={css.cardHeading}>{t("remotePeers.addTitle")}</h3>
-            <p className={css.hint}>{t("remotePeers.addHint")}</p>
-          </div>
-          <button
-            type="button"
-            className={css.modeToggle}
-            disabled={formBusy}
-            onClick={() => {
-              setMode((prev) => (prev === "link" ? "manual" : "link"));
-              setFormError(null);
-              setTestResult(null);
-            }}
-          >
-            {t(mode === "link" ? "remotePeers.switchToManual" : "remotePeers.switchToLink")}
-          </button>
-        </div>
-
-        <form className={css.form} onSubmit={(event) => void handleAdd(event)}>
-          {mode === "link" ? (
-            <div className={css.field}>
-              <label htmlFor={linkId} className={css.label}>
-                {t("remotePeers.field.link")}
-              </label>
-              <input
-                id={linkId}
-                className={css.input}
-                value={connectionUrl}
-                disabled={formBusy}
-                placeholder={t("remotePeers.placeholder.link")}
-                autoComplete="off"
-                spellCheck={false}
-                onChange={(event) => {
-                  setConnectionUrl(event.target.value);
-                  setFormError(null);
-                  setTestResult(null);
-                }}
-              />
-            </div>
-          ) : (
-            <div className={css.manualGrid}>
-              <div className={css.field}>
-                <label htmlFor={originId} className={css.label}>
-                  {t("remotePeers.field.origin")}
-                </label>
-                <input
-                  id={originId}
-                  className={css.input}
-                  value={origin}
-                  disabled={formBusy}
-                  placeholder={t("remotePeers.placeholder.origin")}
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(event) => {
-                    setOrigin(event.target.value);
-                    setFormError(null);
-                    setTestResult(null);
-                  }}
-                />
-              </div>
-              <div className={css.field}>
-                <label htmlFor={tokenId} className={css.label}>
-                  {t("remotePeers.field.token")}
-                </label>
-                <input
-                  id={tokenId}
-                  type="password"
-                  className={css.input}
-                  value={token}
-                  disabled={formBusy}
-                  placeholder={t("remotePeers.placeholder.token")}
-                  autoComplete="new-password"
-                  onChange={(event) => {
-                    setToken(event.target.value);
-                    setFormError(null);
-                    setTestResult(null);
-                  }}
-                />
-              </div>
-            </div>
-          )}
-
-          <div className={css.field}>
-            <label htmlFor={nameId} className={css.label}>
-              {t("remotePeers.field.nameOptional")}
-            </label>
-            <input
-              id={nameId}
-              className={css.input}
-              value={displayName}
-              disabled={formBusy}
-              maxLength={120}
-              placeholder={t("remotePeers.placeholder.name")}
-              onChange={(event) => setDisplayName(event.target.value)}
-            />
-          </div>
-
-          {testResult !== null && (
-            <div
-              className={css.testResult}
-              data-ok={testResult.ok}
-              role={testResult.ok ? "status" : "alert"}
+        <div className={css.headerActions}>
+          <Tooltip label={t("remotePeers.refresh")} side="bottom" delayMs={400}>
+            <button
+              type="button"
+              className={css.iconButton}
+              aria-label={t("remotePeers.refresh")}
+              disabled={refreshing}
+              onClick={() => void loadPeers(true)}
             >
-              {testResult.ok ? (
-                <>
-                  <IconCheckCircleOutlineRegular size={16} className={css.testOkIcon} />
-                  <div className={css.testResultBody}>
-                    <span className={css.testResultTitle}>
-                      {t("remotePeers.testSuccess")}
-                      {testResult.latencyMs !== undefined
-                        ? ` · ${t("remotePeers.latencyMs", { ms: testResult.latencyMs })}`
-                        : ""}
-                    </span>
-                    <span className={css.testResultMeta}>
-                      {[
-                        testResult.hostname,
-                        testResult.platform,
-                        testResult.projectCount !== undefined
-                          ? t("remotePeers.projectCount", { count: testResult.projectCount })
-                          : undefined,
-                        testResult.transportKind !== undefined
-                          ? t(TRANSPORT_LABEL[testResult.transportKind])
-                          : undefined,
-                        testResult.encrypted === false
-                          ? t("remotePeers.plainHttpBadge")
-                          : undefined,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    </span>
-                  </div>
-                </>
+              {refreshing ? (
+                <span className={css.spinner}>
+                  <IconLoadingOutlineRegular size={15} />
+                </span>
               ) : (
-                <>
-                  <IconWarningTriangleOutlineRegular size={16} className={css.testErrorIcon} />
-                  <div className={css.testResultBody}>
-                    <span className={css.testResultTitle}>{t("remotePeers.testFailed")}</span>
-                    {testResult.error !== undefined && testResult.error !== "" && (
-                      <span className={css.testResultMeta}>{testResult.error}</span>
-                    )}
-                  </div>
-                </>
+                <IconRefreshOutlineRegular size={15} />
               )}
-            </div>
-          )}
-
-          {formError !== null && (
-            <p className={css.error} role="alert">
-              {formError}
-            </p>
-          )}
-
-          <div className={css.formActions}>
-            <Button
-              variant="outline"
-              disabled={formBusy}
-              aria-busy={testing}
-              onClick={() => void handleTest()}
-            >
-              {t(testing ? "remotePeers.testing" : "remotePeers.testConnection")}
-            </Button>
-            <Button type="submit" variant="primary" disabled={formBusy} aria-busy={adding}>
-              {t(adding ? "remotePeers.adding" : "remotePeers.add")}
-            </Button>
-          </div>
-        </form>
-      </section>
+            </button>
+          </Tooltip>
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<IconPlusOutlineRegular size={14} />}
+            onClick={() => setAddOpen(true)}
+          >
+            {t("remotePeers.add")}
+          </Button>
+        </div>
+      </header>
 
       {actionError !== null && (
         <p className={css.error} role="alert">
@@ -690,148 +774,215 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
         </p>
       )}
 
-      <section className={css.listSection} aria-label={t("remotePeers.listTitle")}>
-        <div className={css.listHead}>
-          <h3 className={css.cardHeading}>
-            {view.kind === "ready"
-              ? t("remotePeers.listTitleCount", { count: view.peers.length })
-              : t("remotePeers.listTitle")}
-          </h3>
+      {view.kind === "loading" ? (
+        <div className={css.surface}>
+          <p className={css.stateText}>{t("remotePeers.loading")}</p>
         </div>
-
-        {view.kind === "loading" ? (
-          <p className={css.hint}>{t("remotePeers.loading")}</p>
-        ) : view.kind === "failed" ? (
-          <div className={css.errorBox} role="alert">
-            <p className={css.error}>{t("remotePeers.loadFailed", { message: view.message })}</p>
-            <Button variant="outline" size="sm" onClick={() => void loadPeers(false)}>
-              {t("remotePeers.retry")}
-            </Button>
-          </div>
-        ) : view.peers.length === 0 ? (
-          <div className={css.emptyCard}>
-            <IconGlobeOutlineRegular size={24} className={css.emptyIcon} />
+      ) : view.kind === "failed" ? (
+        <div className={css.errorRow} role="alert">
+          <p className={css.error}>{t("remotePeers.loadFailed", { message: view.message })}</p>
+          <Button variant="outline" size="sm" onClick={() => void loadPeers(false)}>
+            {t("remotePeers.retry")}
+          </Button>
+        </div>
+      ) : view.peers.length === 0 ? (
+        <div className={css.surface}>
+          <div className={css.emptyState}>
+            <IconGlobeOutlineRegular size={22} className={css.emptyIcon} />
             <p className={css.emptyTitle}>{t("remotePeers.emptyTitle")}</p>
             <p className={css.emptyDescription}>{t("remotePeers.emptyDescription")}</p>
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<IconPlusOutlineRegular size={14} />}
+              className={css.emptyAction}
+              onClick={() => setAddOpen(true)}
+            >
+              {t("remotePeers.add")}
+            </Button>
           </div>
-        ) : (
-          <div className={css.peerList}>
-            {view.peers.map((peer) => {
-              const reconnecting = reconnectingIds.has(peer.peerId);
-              const connected = peer.enabled && peer.state === "connected";
-              const metaItems = [
-                peer.latencyMs !== undefined
-                  ? t("remotePeers.latencyMs", { ms: peer.latencyMs })
-                  : undefined,
-                t("remotePeers.projectCount", { count: peer.projectCount }),
-                peer.hostname,
-                peer.platform,
-                peer.version ? `v${peer.version}` : undefined,
-              ].filter(Boolean);
+        </div>
+      ) : (
+        <section className={css.surface} aria-label={t("remotePeers.listTitle")}>
+          {view.peers.map((peer) => {
+            const reconnecting = reconnectingIds.has(peer.peerId);
+            const connected = peer.enabled && peer.state === "connected";
+            const menuOpen = openMenuPeerId === peer.peerId;
+            const showLastError =
+              (peer.state === "offline" || peer.state === "auth-error") &&
+              peer.lastError !== undefined &&
+              peer.lastError !== "";
+            const metaLine = [
+              formatOriginDisplay(peer.origin),
+              t("remotePeers.projectCount", { count: peer.projectCount }),
+              peer.latencyMs !== undefined
+                ? t("remotePeers.latencyMs", { ms: peer.latencyMs })
+                : undefined,
+            ]
+              .filter(Boolean)
+              .join(" · ");
 
-              return (
-                <article
-                  key={peer.peerId}
-                  className={css.peerCard}
-                  data-peer-id={peer.peerId}
-                  data-peer-state={peer.state}
-                >
-                  <div className={css.peerTop}>
-                    <div className={css.peerIdentity}>
-                      <div className={css.peerNameRow}>
-                        <span className={css.peerName}>{peer.name}</span>
-                        <span className={css.stateBadge} data-state={peer.state}>
-                          <span className={css.stateDot} aria-hidden="true" />
-                          <span>{t(STATE_LABEL[peer.state])}</span>
-                        </span>
-                        <span className={css.transportBadge}>
-                          {t(TRANSPORT_LABEL[peer.transportKind])}
-                        </span>
-                        {!peer.encrypted && (
-                          <span
-                            className={css.insecureBadge}
-                            title={t("remotePeers.plainHttpTooltip")}
+            return (
+              <div
+                key={peer.peerId}
+                className={css.peerRow}
+                data-peer-id={peer.peerId}
+                data-peer-state={peer.state}
+              >
+                <div className={css.peerMain}>
+                  <div className={css.peerIdentity}>
+                    <div className={css.peerNameRow}>
+                      {connected ? (
+                        <span
+                          className={css.hostIcon}
+                          role="img"
+                          aria-label={t(STATE_LABEL[peer.state])}
+                          title={t(STATE_LABEL[peer.state])}
+                        >
+                          <svg
+                            width={14}
+                            height={14}
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.45"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
                           >
-                            {t("remotePeers.plainHttpBadge")}
+                            <rect x="2" y="2.5" width="12" height="8.5" rx="1.75" />
+                            <path d="M5.5 13.5h5M8 11v2.5" />
+                          </svg>
+                        </span>
+                      ) : (
+                        <span
+                          className={css.statusDot}
+                          data-state={peer.state}
+                          role="img"
+                          aria-label={t(STATE_LABEL[peer.state])}
+                          title={t(STATE_LABEL[peer.state])}
+                        />
+                      )}
+                      <span className={css.peerName}>{peer.name}</span>
+                      <span className={css.transportWord}>
+                        {t(TRANSPORT_LABEL[peer.transportKind])}
+                      </span>
+                      {!connected && (
+                        <span className={css.stateText} data-state={peer.state}>
+                          {t(STATE_LABEL[peer.state])}
+                        </span>
+                      )}
+                    </div>
+                    <div className={css.peerMetaRow}>
+                      <span className={css.peerMeta} title={peer.origin}>
+                        {metaLine}
+                      </span>
+                      {!peer.encrypted && (
+                        <Tooltip label={t("remotePeers.plainHttpTooltip")} side="top" delayMs={250}>
+                          <span
+                            className={css.unlockIcon}
+                            role="img"
+                            aria-label={t("remotePeers.plainHttpTooltip")}
+                          >
+                            <UnlockIcon />
                           </span>
-                        )}
-                      </div>
-                      <span className={css.peerOrigin}>{peer.origin}</span>
-                      {metaItems.length > 0 && (
-                        <span className={css.peerMeta}>{metaItems.join(" · ")}</span>
+                        </Tooltip>
                       )}
                     </div>
                   </div>
 
-                  {peer.lastError !== undefined && peer.lastError !== "" && (
-                    <div className={css.peerError} role="alert">
-                      <IconWarningTriangleOutlineRegular size={14} className={css.peerErrorIcon} />
-                      <span>{peer.lastError}</span>
-                    </div>
-                  )}
-
                   <div className={css.peerActions}>
                     <Button
-                      variant="primary"
+                      variant="ghost"
                       size="sm"
+                      className={css.addDirBtn}
                       disabled={!connected}
-                      icon={<IconPlusOutlineRegular size={14} />}
                       onClick={() => dispatchOpenAddRemoteWorkspace(peer.hostId)}
                     >
                       {t("remotePeers.action.addWorkspace")}
                     </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={reconnecting || !peer.enabled}
-                      aria-busy={reconnecting}
-                      icon={
-                        reconnecting ? (
-                          <span className={css.spinner}>
-                            <IconLoadingOutlineRegular size={14} />
-                          </span>
-                        ) : (
-                          <IconRefreshOutlineRegular size={14} />
-                        )
+                    <Menu
+                      open={menuOpen}
+                      onClose={() => setOpenMenuPeerId(null)}
+                      portal
+                      align="end"
+                      autoFocus
+                      items={[
+                        {
+                          id: "reconnect",
+                          label: t(
+                            reconnecting
+                              ? "remotePeers.action.reconnecting"
+                              : "remotePeers.action.reconnect",
+                          ),
+                          icon: reconnecting ? (
+                            <span className={css.spinner}>
+                              <IconLoadingOutlineRegular size={14} />
+                            </span>
+                          ) : (
+                            <IconRefreshOutlineRegular size={14} />
+                          ),
+                          disabled: reconnecting || !peer.enabled,
+                        },
+                        {
+                          id: "edit",
+                          label: t("remotePeers.action.edit"),
+                          icon: <IconEditOutlineRegular size={14} />,
+                        },
+                        { type: "separator", id: "danger-sep" },
+                        {
+                          id: "remove",
+                          label: t("remotePeers.action.remove"),
+                          icon: <IconTrashOutlineRegular size={14} />,
+                          danger: true,
+                        },
+                      ]}
+                      onSelect={(id) => {
+                        setOpenMenuPeerId(null);
+                        if (id === "reconnect") {
+                          void handleReconnect(peer);
+                        } else if (id === "edit") {
+                          setActionError(null);
+                          setEditingPeer(peer);
+                        } else if (id === "remove") {
+                          setRemoveError(null);
+                          setRemovingPeer(peer);
+                        }
+                      }}
+                      anchor={
+                        <button
+                          type="button"
+                          className={css.iconButton}
+                          aria-label={t("remotePeers.action.moreActions")}
+                          aria-haspopup="menu"
+                          aria-expanded={menuOpen}
+                          onClick={() =>
+                            setOpenMenuPeerId((current) =>
+                              current === peer.peerId ? null : peer.peerId,
+                            )
+                          }
+                        >
+                          <IconEllipsisOutlineRegular size={16} />
+                        </button>
                       }
-                      onClick={() => void handleReconnect(peer)}
-                    >
-                      {t(
-                        reconnecting
-                          ? "remotePeers.action.reconnecting"
-                          : "remotePeers.action.reconnect",
-                      )}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      icon={<IconEditOutlineRegular size={14} />}
-                      onClick={() => {
-                        setActionError(null);
-                        setEditingPeer(peer);
-                      }}
-                    >
-                      {t("remotePeers.action.edit")}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className={css.dangerOutline}
-                      icon={<IconTrashOutlineRegular size={14} />}
-                      onClick={() => {
-                        setRemoveError(null);
-                        setRemovingPeer(peer);
-                      }}
-                    >
-                      {t("remotePeers.action.remove")}
-                    </Button>
+                    />
                   </div>
-                </article>
-              );
-            })}
-          </div>
-        )}
-      </section>
+                </div>
+
+                {showLastError && (
+                  <p className={css.peerErrorNote} role="alert" title={peer.lastError}>
+                    {peer.lastError}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </section>
+      )}
+
+      {addOpen && (
+        <AddPeerModal t={t} onClose={() => setAddOpen(false)} onAdded={() => loadPeers(true)} />
+      )}
 
       {editingPeer !== null && (
         <EditPeerModal

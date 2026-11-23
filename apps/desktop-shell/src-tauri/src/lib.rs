@@ -575,7 +575,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .build()?;
             #[cfg(target_os = "windows")]
-            zoom::install(&_window)?;
+            zoom::install(&_window, &launcher.data_dir)?;
             tray::install(&app_handle, &locale)?;
             let ready = ShellReady::publish(&launcher.data_dir)?;
             app.manage(ready);

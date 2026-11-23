@@ -158,17 +158,16 @@ DeepSeek 的 endpoint 校验、Host 启动、就绪等待和 HTTP/WebSocket 生�
 
 ## 仍存在的限制
 
-1. **DeepSeek 未使用公共发现引擎。** 本地 DSH Host 未运行且 `dsh` 只存在于非当前 Node.js 版本目录时，仍可能找不到。
-2. **Grok 未补充 Node Runtime PATH。** 可以找到 Grok 入口文件，但 GUI 的精简 `PATH` 仍可能让 Node shebang 启动失败。
-3. **任意自定义目录不会自动遍历。** 非常规安装位置应通过对应 `CODEXHOST_*_COMMAND` 显式配置。
-4. **Windows 自定义版本管理器根目录没有全部覆盖。** 例如自定义 `NVM_HOME`、`VOLTA_HOME` 仍可能需要显式命令。
-5. **发现成功不代表运行时兼容。** 找到安装在 Node 24 下的 Harness 后，仍需保证实际用于启动它的 Node Runtime 满足该 Harness 的版本要求。
+1. **Grok 未补充 Node Runtime PATH。** 可以找到 Grok 入口文件，但 GUI 的精简 `PATH` 仍可能让 Node shebang 启动失败。
+2. **任意自定义目录不会自动遍历。** 非常规安装位置应通过对应 `CODEXHOST_*_COMMAND` 显式配置。
+3. **Windows 自定义版本管理器根目录没有全部覆盖。** 例如自定义 `NVM_HOME`、`VOLTA_HOME` 仍可能需要显式命令。
+4. **发现成功不代表运行时兼容。** 找到安装在 Node 24 下的 Harness 后，仍需保证实际用于启动它的 Node Runtime 满足该 Harness 的版本要求。
 
 ## 后续建议
 
 按优先级建议：
 
-1. 将 DeepSeek 的 `dsh`/`npx` 发现和 Windows invocation 接入公共包，同时保留其 loopback Host 生命周期；
+1. 将 DeepSeek 的 Windows invocation 接入公共包，同时保留其 loopback Host 生命周期；
 2. 为 Grok 子进程环境调用 `withNodeRuntimeOnPath()`；
 3. 视需要让 Pi、OMP 复用公共 `commandInvocation()`；
 4. 增加 Windows 自定义版本管理器根目录支持；

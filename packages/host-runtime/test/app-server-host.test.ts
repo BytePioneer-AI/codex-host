@@ -42,11 +42,11 @@ it("persists migrated Model Refs and retries only Harnesses without a catalog", 
   const recoveredModel = unavailable.catalog.models[0]?.ref;
   assert(recoveredModel, "Expected a Model in the OpenCode catalog");
   const native = new FakeHarnessAdapter(harnessIdSchema.parse("antigravity"));
-  const nativeProbeStarted = Promise.withResolvers<void>();
-  const finishNativeProbe = Promise.withResolvers<void>();
+  const nativeProbeStarted = Promise.withResolvers<undefined>();
+  const finishNativeProbe = Promise.withResolvers<undefined>();
   const inspectNative = native.inspect.bind(native);
   vi.spyOn(native, "inspect").mockImplementation(async (input) => {
-    nativeProbeStarted.resolve();
+    nativeProbeStarted.resolve(undefined);
     await finishNativeProbe.promise;
     return inspectNative(input);
   });
@@ -144,7 +144,7 @@ it("persists migrated Model Refs and retries only Harnesses without a catalog", 
     expect(inspect).toHaveBeenCalledTimes(1);
     expect(delayedInspect).toHaveBeenCalledTimes(2);
   } finally {
-    finishNativeProbe.resolve();
+    finishNativeProbe.resolve(undefined);
     await stopFixture(fixture);
   }
 });

@@ -297,7 +297,7 @@ export interface SessionListRequest {
   readonly sessionId?: SessionId;
   readonly cursor?: string;
   /** With a cursor: read on until the page reaches a Session of this Workspace. */
-  readonly workspaceId?: string;
+  readonly workspaceId?: WorkspaceId;
   /** Include archived summaries in this request; defaults to false. */
   readonly includeArchived?: boolean;
 }

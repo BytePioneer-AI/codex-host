@@ -642,6 +642,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tempfile",
  "url",
+ "webview2-com",
 ]
 
 [[package]]

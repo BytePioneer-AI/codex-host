@@ -78,6 +78,26 @@ window.__CODEXHOST_DESKTOP_SHELL__ = true;
   const isWindows = {is_windows};
   const isMacos = {is_macos};
 
+  if (isWindows) {{
+    let zoomTimer;
+    window.__codexhostShowZoom = (percent) => {{
+      if (!document.body) return;
+      let toast = document.getElementById("codexhost-zoom-toast");
+      if (!toast) {{
+        toast = document.createElement("div");
+        toast.id = "codexhost-zoom-toast";
+        toast.setAttribute("role", "status");
+        toast.setAttribute("aria-live", "polite");
+        toast.style.cssText = "position:fixed;top:48px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:6px 12px;border-radius:8px;background:rgba(24,24,27,.88);color:#fff;font:500 13px/20px system-ui;box-shadow:0 4px 16px rgba(0,0,0,.2);pointer-events:none;opacity:0;transition:opacity .18s ease;";
+        document.body.appendChild(toast);
+      }}
+      toast.textContent = percent + "%";
+      toast.style.opacity = "1";
+      clearTimeout(zoomTimer);
+      zoomTimer = setTimeout(() => {{ toast.style.opacity = "0"; }}, 1100);
+    }};
+  }}
+
   const applyRootAttributes = () => {{
     const root = document.documentElement;
     if (!root) return false;

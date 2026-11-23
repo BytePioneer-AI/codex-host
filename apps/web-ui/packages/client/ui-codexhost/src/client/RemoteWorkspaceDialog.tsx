@@ -32,6 +32,8 @@ import {
   dispatchOpenRemotePeersSettings,
   dispatchRemotePeersUpdated,
 } from "./remote-peers-events.ts";
+import { HomeIcon, RemoteHostIcon } from "./RemoteHostIcon.tsx";
+import { buildBreadcrumbs } from "./remote-workspace-paths.ts";
 import css from "./RemoteWorkspaceDialog.module.css";
 
 interface DialogState {
@@ -82,94 +84,8 @@ type Props = PropsRuntime<"shell.overlay"> &
   PropsLocale<"codexhostImport"> &
   RemoteWorkspaceDialogFace;
 
-interface PathSegment {
-  readonly name: string;
-  readonly path: string;
-}
-
 const messageOf = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
-
-function HomeIcon(): ReactNode {
-  return (
-    <svg width={13} height={13} viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path
-        d="M2.5 7.25 8 2.5l5.5 4.75M4 6.25V13a.75.75 0 0 0 .75.75h2.25V10a1 1 0 0 1 1-1h0a1 1 0 0 1 1 1v3.75h2.25A.75.75 0 0 0 12 13V6.25"
-        stroke="currentColor"
-        strokeWidth="1.35"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function buildBreadcrumbs(
-  currentPath: string,
-  homeDir: string | undefined,
-): { inHome: boolean; rootSegment: PathSegment | null; segments: PathSegment[] } {
-  if (!currentPath) return { inHome: false, rootSegment: null, segments: [] };
-  const isWin = currentPath.includes("\\") && !currentPath.startsWith("/");
-  const sep = isWin ? "\\" : "/";
-  const stripTrailing = (p: string): string => {
-    if (isWin && /^[A-Za-z]:\\?$/u.test(p)) return `${p.slice(0, 2)}\\`;
-    if (!isWin && /^\/+$/u.test(p)) return "/";
-    return p.replace(/[\\/]+$/u, "");
-  };
-
-  const normalized = stripTrailing(currentPath);
-  const normalizedHome = homeDir ? stripTrailing(homeDir) : undefined;
-
-  if (normalizedHome) {
-    const matchesHome = isWin
-      ? normalized.toLowerCase() === normalizedHome.toLowerCase() ||
-        normalized.toLowerCase().startsWith(`${normalizedHome.toLowerCase()}${sep}`)
-      : normalized === normalizedHome || normalized.startsWith(`${normalizedHome}${sep}`);
-
-    if (matchesHome) {
-      const rest = normalized.slice(normalizedHome.length).replace(/^[\\/]+/u, "");
-      if (!rest) return { inHome: true, rootSegment: null, segments: [] };
-      const parts = rest.split(/[\\/]+/u).filter(Boolean);
-      const segments: PathSegment[] = [];
-      let acc = normalizedHome;
-      for (const part of parts) {
-        acc = acc.endsWith(sep) ? `${acc}${part}` : `${acc}${sep}${part}`;
-        segments.push({ name: part, path: acc });
-      }
-      return { inHome: true, rootSegment: null, segments };
-    }
-  }
-
-  if (isWin) {
-    const driveMatch = /^([A-Za-z]:)(?:\\(.*))?$/u.exec(normalized);
-    if (driveMatch) {
-      const drive = driveMatch[1] ?? "";
-      const rest = (driveMatch[2] ?? "").replace(/^\\+/u, "");
-      const rootPath = `${drive}\\`;
-      const parts = rest ? rest.split(/\\+/u).filter(Boolean) : [];
-      const segments: PathSegment[] = [];
-      let acc = rootPath;
-      for (const part of parts) {
-        acc = acc.endsWith("\\") ? `${acc}${part}` : `${acc}\\${part}`;
-        segments.push({ name: part, path: acc });
-      }
-      return { inHome: false, rootSegment: { name: drive, path: rootPath }, segments };
-    }
-  }
-
-  const parts = normalized.split("/").filter(Boolean);
-  const segments: PathSegment[] = [];
-  let acc = "";
-  for (const part of parts) {
-    acc = `${acc}/${part}`;
-    segments.push({ name: part, path: acc });
-  }
-  return {
-    inHome: false,
-    rootSegment: normalized.startsWith("/") ? { name: "/", path: "/" } : null,
-    segments,
-  };
-}
 
 export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
@@ -407,21 +323,7 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
                     disabled={busy}
                     onClick={() => setPeerMenuOpen((prev) => !prev)}
                   >
-                    <svg
-                      width={12}
-                      height={12}
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.45"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      className={css.hostIcon}
-                      aria-hidden="true"
-                    >
-                      <rect x="2" y="2.5" width="12" height="8.5" rx="1.75" />
-                      <path d="M5.5 13.5h5M8 11v2.5" />
-                    </svg>
+                    <RemoteHostIcon size={12} className={css.hostIcon} />
                     <span className={css.hostPillName}>{selectedPeer.name}</span>
                     <IconChevronDownOutlineRegular size={12} className={css.hostPillChevron} />
                   </button>
@@ -429,21 +331,7 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
               />
             ) : (
               <span className={css.hostPillStatic} title={selectedPeer.origin}>
-                <svg
-                  width={12}
-                  height={12}
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.45"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className={css.hostIcon}
-                  aria-hidden="true"
-                >
-                  <rect x="2" y="2.5" width="12" height="8.5" rx="1.75" />
-                  <path d="M5.5 13.5h5M8 11v2.5" />
-                </svg>
+                <RemoteHostIcon size={12} className={css.hostIcon} />
                 <span className={css.hostPillName}>{selectedPeer.name}</span>
               </span>
             ))}

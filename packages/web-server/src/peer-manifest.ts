@@ -29,20 +29,23 @@ export async function peerEndpoint(
   const route = url.pathname.slice("/api/peer/v1/".length);
   if (method === "GET" && route === "manifest") return manifest();
   if (route === "dirs" && method === "GET") {
-    const path = resolve(url.searchParams.get("path") ?? homedir());
-    const entries = [];
-    for (const name of (await readdir(path)).sort((a, b) =>
-      a.localeCompare(b, undefined, { sensitivity: "base" }),
-    )) {
-      const child = join(path, name);
-      if (
-        await stat(child).then(
-          (s) => s.isDirectory(),
-          () => false,
-        )
-      )
-        entries.push({ name, path: child, kind: "directory" });
+    const rawPath = url.searchParams.get("path")?.trim();
+    const path = resolve(rawPath || homedir());
+    const dirents = await readdir(path, { withFileTypes: true });
+    const entries: { name: string; path: string; kind: "directory" }[] = [];
+    for (const dirent of dirents) {
+      const child = join(path, dirent.name);
+      const isDir = dirent.isDirectory()
+        ? true
+        : dirent.isSymbolicLink()
+          ? await stat(child).then(
+              (s) => s.isDirectory(),
+              () => false,
+            )
+          : false;
+      if (isDir) entries.push({ name: dirent.name, path: child, kind: "directory" });
     }
+    entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     return {
       path,
       parentPath: dirname(path) === path ? null : dirname(path),

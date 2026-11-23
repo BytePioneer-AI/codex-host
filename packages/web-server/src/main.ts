@@ -10,7 +10,6 @@
  * rebuilt plugin bundles to open pages (used by `npm start web -- --watch`).
  */
 
-import releaseMetadata from "../../../package.json" with { type: "json" };
 import { randomUUID } from "node:crypto";
 import { requestRemoteSession } from "@codexhost/desktop-control";
 import { PeerHostManager, createCompositeRemoteCall } from "./peer-host-manager.ts";
@@ -105,6 +104,21 @@ const DISTRIBUTION_ROOT = resolve(import.meta.dirname, "..");
 const PACKED_WEB = join(DISTRIBUTION_ROOT, "web");
 const PACKED = existsSync(join(PACKED_WEB, "plugins.json"));
 const REPO_ROOT = resolve(import.meta.dirname, "../../..");
+function readServerVersion(): string {
+  for (const candidate of [
+    join(DISTRIBUTION_ROOT, "package.json"),
+    join(REPO_ROOT, "package.json"),
+  ]) {
+    try {
+      const parsed = JSON.parse(readFileSync(candidate, "utf8")) as { version?: unknown };
+      if (typeof parsed.version === "string" && parsed.version.trim()) return parsed.version.trim();
+    } catch {
+      /* Try next metadata candidate. */
+    }
+  }
+  return "0.0.0";
+}
+const SERVER_VERSION = readServerVersion();
 // A packed Web distribution ships the subprocess runner as JavaScript beside
 // the server bundle; the source package's TypeScript entry is not runnable.
 if (PACKED) {
@@ -410,7 +424,7 @@ const stopEpoch = chHost.realtime?.subscribe((event) => {
   if (event.type === "hello") peerEpoch = event.cursor.epoch;
 });
 const peerManager = new PeerHostManager(
-  new PeerHostStore(new DataDir(process.env.CODEXHOST_DATA_DIR ?? dataRoot)),
+  new PeerHostStore(new DataDir(process.env.CODEXHOST_DATA_DIR ?? displayDirectory)),
   async () => [
     ...(await readNetworkAccess()).networkUrls.map((u) => u.url),
     ...["localhost", "127.0.0.1", "[::1]"].map((host) => `http://${host}:${listeningPort}`),
@@ -606,13 +620,16 @@ const server = createWebServer((request, response) => {
           workspaces,
           rpc,
           peerEpoch,
-          releaseMetadata.version,
+          SERVER_VERSION,
         );
         response
           .writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
           .end(JSON.stringify(result));
-      } catch {
-        response.writeHead(400).end("Invalid peer request");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Invalid peer request";
+        response
+          .writeHead(400, { "content-type": "application/json", "cache-control": "no-store" })
+          .end(JSON.stringify({ error: message }));
       }
       return;
     }

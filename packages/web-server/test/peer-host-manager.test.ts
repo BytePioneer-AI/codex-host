@@ -67,7 +67,7 @@ it("pairs authenticated mobile callers with independent peers and recovers event
         res.writeHead(401).end();
         return;
       }
-      const url = new URL(req.url!, "http://localhost");
+      const url = new URL(req.url ?? "/", "http://localhost");
       if (url.pathname.endsWith("/events")) {
         stream = res;
         res.writeHead(200);
@@ -76,11 +76,11 @@ it("pairs authenticated mobile callers with independent peers and recovers event
       }
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
-      const p = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+      const p = JSON.parse(Buffer.concat(chunks).toString() || "{}") as Record<string, unknown>;
       try {
         let reply;
         if (url.pathname.startsWith("/api/peer"))
-          reply = await peerEndpoint(req.method!, url, p, ws, rpc, epoch, "1");
+          reply = await peerEndpoint(req.method ?? "GET", url, p, ws, rpc, epoch, "1");
         else {
           calls.push(p);
           reply = {
@@ -158,7 +158,10 @@ it("pairs authenticated mobile callers with independent peers and recovers event
   });
   const rpc = new RpcRegistry();
   manager.register(rpc);
-  const invoke = async (action: keyof typeof methods, input: object = {}) => {
+  const invoke = async <T = Record<string, unknown>>(
+    action: keyof typeof methods,
+    input: object = {},
+  ): Promise<T> => {
     const r = await rpc.dispatch(
       methods[action],
       { args: input },
@@ -166,10 +169,12 @@ it("pairs authenticated mobile callers with independent peers and recovers event
     );
     assert.ok(!JSON.stringify(r).includes(token));
     if (!r.ok) throw Error(r.error.message);
-    return r.value as any;
+    return r.value as T;
   };
   const add = (origin: string, secret = token) =>
-    invoke("add", { connectionUrl: `${origin}/#token=${secret}` });
+    invoke<{ peer: { peerId: string; hostId: string } }>("add", {
+      connectionUrl: `${origin}/#token=${secret}`,
+    });
   await assert.rejects(add("http://localhost:100"), /itself/);
   await assert.rejects(add(a.origin, "bad"), /token/);
   const [one] = await Promise.all([add(a.origin), add(b.origin)]);
@@ -181,17 +186,26 @@ it("pairs authenticated mobile callers with independent peers and recovers event
   });
   assert.equal(((await call({ kind: "hosts" })) as unknown[]).length, 3);
   assert.equal(
-    (await invoke("list")).peers.find((p: { peerId: string }) => p.peerId === "bad").state,
+    (await invoke<{ peers: { peerId: string; state: string }[] }>("list")).peers.find(
+      (p) => p.peerId === "bad",
+    )?.state,
     "auth-error",
   );
-  const { path } = await invoke("createDir", { peerId, parentPath: root, name: "project" });
+  const { path } = await invoke<{ path: string }>("createDir", {
+    peerId,
+    parentPath: root,
+    name: "project",
+  });
   assert.ok(
-    (await invoke("listDirs", { peerId, path: root })).entries.some(
-      (e: { path: string }) => e.path === path,
-    ),
+    (
+      await invoke<{ entries: { path: string }[] }>("listDirs", { peerId, path: root })
+    ).entries.some((e) => e.path === path),
   );
   await assert.rejects(invoke("createDir", { peerId, parentPath: root, name: ".." }));
-  const { workspaceId, manifest } = await invoke("createWorkspace", { peerId, path });
+  const { workspaceId, manifest } = await invoke<{
+    workspaceId: string;
+    manifest: { projects: unknown[] };
+  }>("createWorkspace", { peerId, path });
   assert.equal(manifest.projects.length, 1);
   await invoke("renameWorkspace", { peerId, workspaceId, title: "Renamed" });
   assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.projects?.[0]?.name, "Renamed");
@@ -206,12 +220,22 @@ it("pairs authenticated mobile callers with independent peers and recovers event
   await call({ kind: "prompt", ...base, text: "hello" });
   await call({ kind: "respond", ...base, requestId: 1, result: { decision: "accept" } });
   assert.ok(
-    a.calls.some((p: any) => p.method === "turn/start" && p.params.input[0].text === "hello"),
+    a.calls.some((item) => {
+      const p = item as { method?: string; params?: { input?: { text?: string }[] } };
+      return p.method === "turn/start" && p.params?.input?.[0]?.text === "hello";
+    }),
   );
-  assert.ok(a.calls.some((p: any) => p.requestId === 1 && p.epoch === a.epoch));
+  assert.ok(
+    a.calls.some((item) => {
+      const p = item as { requestId?: number; epoch?: string };
+      return p.requestId === 1 && p.epoch === a.epoch;
+    }),
+  );
   await sleep(200);
   const changed = new Promise<void>((r) => (manager.onChange = r));
-  a.stream()!.write(JSON.stringify({ cursor: { epoch: a.epoch, sequence: 2 } }) + "\n");
+  const eventStream = a.stream();
+  assert.ok(eventStream);
+  eventStream.write(JSON.stringify({ cursor: { epoch: a.epoch, sequence: 2 } }) + "\n");
   await changed;
   const restarted = await a.restart();
   for (

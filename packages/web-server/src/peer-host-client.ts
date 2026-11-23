@@ -58,10 +58,20 @@ export class PeerHostClient {
           : AbortSignal.any([this.life.signal, AbortSignal.timeout(8000)]),
       });
       if (res.ok) return res;
-      await res.body?.cancel();
+      const failure = await res
+        .json()
+        .then((body: unknown) =>
+          body && typeof body === "object" && "error" in body && typeof body.error === "string"
+            ? body.error
+            : undefined,
+        )
+        .catch(() => undefined);
       if ([401, 403].includes(res.status))
         throw new RpcError("remote/auth-error", "Remote peer rejected the access token");
-      throw new RpcError("remote/request-failed", `Remote peer returned HTTP ${res.status}`);
+      throw new RpcError(
+        "remote/request-failed",
+        failure ?? `Remote peer returned HTTP ${res.status}`,
+      );
     } catch (err) {
       if (err instanceof RpcError) throw err;
       throw new RpcError("remote/offline", "Remote peer is unreachable");
@@ -102,10 +112,11 @@ export class PeerHostClient {
             new URLSearchParams({ epoch: this.cursor.epoch, after: String(this.cursor.sequence) })
           : "";
         const response = await this.fetch("/api/ch/v1/events" + query, "GET", undefined, true);
+        if (!response.body) throw new RpcError("remote/offline", "Remote peer stream unavailable");
         let checked = Date.now();
         let pending = "";
         const decoder = new TextDecoder();
-        for await (const chunk of response.body!) {
+        for await (const chunk of response.body) {
           if (Date.now() - checked >= 30000) {
             const before = JSON.stringify(this.manifest);
             await this.probe();

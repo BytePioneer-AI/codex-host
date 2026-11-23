@@ -14,6 +14,7 @@ import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots
 import { peerIdFromRemoteHostId } from "@codexhost/shared-contracts";
 import { remotePeersApi } from "./api.ts";
 import { dispatchRemotePeersUpdated } from "./remote-peers-events.ts";
+import { RemoteHostIcon } from "./RemoteHostIcon.tsx";
 import css from "./RemoteSessionBanner.module.css";
 
 export interface RemoteSessionBannerFace {
@@ -51,26 +52,6 @@ function useSessionWorkspace(
   );
 }
 
-function RemoteHostIcon(): ReactNode {
-  return (
-    <svg
-      width={12}
-      height={12}
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.45"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={css.hostIcon}
-      aria-hidden="true"
-    >
-      <rect x="2" y="2.5" width="12" height="8.5" rx="1.75" />
-      <path d="M5.5 13.5h5M8 11v2.5" />
-    </svg>
-  );
-}
-
 /** Borderless ambient chip placed in `conversation.input.left` when a remote session is online. */
 export function RemoteSessionChip({ sessionId, workspaces, t }: ChipProps): ReactNode {
   const workspace = useSessionWorkspace(workspaces, sessionId);
@@ -96,7 +77,7 @@ export function RemoteSessionChip({ sessionId, workspaces, t }: ChipProps): Reac
           workspace: folderName,
         })}
       >
-        <RemoteHostIcon />
+        <RemoteHostIcon size={12} className={css.hostIcon} />
         <span className={css.chipHost}>{remote.displayName}</span>
         {folderName !== "" && (
           <>

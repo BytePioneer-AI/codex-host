@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as c from "@codexhost/shared-contracts";
 import { PeerHostClient } from "./peer-host-client.ts";
-import { PeerHostStore, parseConnectionLink, type PeerRecord } from "./peer-host-store.ts";
+import { parseConnectionLink, type PeerHostStore, type PeerRecord } from "./peer-host-store.ts";
 import type { EventHub, RpcRegistry } from "./transport.ts";
 import { requestOf } from "./store.ts";
 import type { RemoteSessionCall } from "./remote-session-delivery.ts";

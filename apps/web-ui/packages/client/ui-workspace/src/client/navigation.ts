@@ -278,12 +278,44 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     return this.sessions.create({ workspaceId: workspace.workspaceId });
   }
 
-  private async reuseBlank(workspaceId: WorkspaceId, sessionId: SessionId): Promise<SessionId> {
+  /**
+   * Resolve the blank Session for a New Session without a project. Reusing the
+   * existing projectless blank keeps its unsent composer draft, which is
+   * persisted per Session and unreachable once a fresh blank replaces it.
+   */
+  private reuseOrCreateProjectlessBlank(): Promise<SessionId> {
+    const workspaces = this.workspaces.list.getSnapshot();
+    const sessions = this.sessions.list.getSnapshot();
+    for (const id of sessions.ids) {
+      const summary = sessions.byId[id];
+      if (
+        summary === undefined ||
+        !summary.blank ||
+        summary.cwd !== undefined ||
+        summary.parentId !== undefined ||
+        summary.origin !== undefined ||
+        workspaces.archivedSessionIds.includes(id) ||
+        workspaces.items.some((workspace) => workspace.sessionIds.includes(id))
+      )
+        continue;
+      return this.reuseBlank(undefined, id);
+    }
+    return this.sessions.create();
+  }
+
+  private async reuseBlank(
+    workspaceId: WorkspaceId | undefined,
+    sessionId: SessionId,
+  ): Promise<SessionId> {
+    const scope = workspaceId === undefined ? {} : { workspaceId };
     try {
-      return await this.sessions.create({ workspaceId, sessionId });
+      return await this.sessions.create({ ...scope, sessionId });
     } catch (error: unknown) {
-      if (sessionCreateErrorOf(error)?.rpcError.code !== "session/writer-held") throw error;
-      return this.sessions.create({ workspaceId });
+      const code = sessionCreateErrorOf(error)?.rpcError.code;
+      // A projectless blank that began submitting reports busy; start a fresh one instead.
+      if (code !== "session/writer-held" && !(workspaceId === undefined && code === "session/busy"))
+        throw error;
+      return this.sessions.create(scope);
     }
   }
 
@@ -382,7 +414,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         throw new WorkspaceRequiredError();
       sessionId =
         workspaceId === null
-          ? await this.sessions.create()
+          ? await this.reuseOrCreateProjectlessBlank()
           : await this.connectWorkspace(workspaceId);
     } catch (error: unknown) {
       // Reported here, not in connectWorkspace: startup restoration calls that
@@ -494,7 +526,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       }
       const sessionId =
         request.workspaceId === null
-          ? await this.sessions.create()
+          ? await this.reuseOrCreateProjectlessBlank()
           : await this.connectWorkspace(request.workspaceId);
       if (navigation.aborted || this.creatingLoad !== load) return;
       this.replaceMain(sessionId, navigation, "preserve", (id) => {
@@ -696,7 +728,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       sessionId = await this.reuseBlank(workspace.workspaceId, summary.id);
     }
     if (sessionId === undefined && workspaces.canStartProjectless && summary === undefined) {
-      sessionId = await this.sessions.create();
+      sessionId = await this.reuseOrCreateProjectlessBlank();
       if (!navigation.aborted) this.replaceMain(sessionId, navigation, "preserve");
       return;
     }

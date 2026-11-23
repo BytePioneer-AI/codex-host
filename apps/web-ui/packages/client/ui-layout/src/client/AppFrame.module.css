@@ -359,6 +359,8 @@
   overflow: hidden;
   background: var(--dsw-specific-sidebar-fill, var(--dsw-alias-bg-base));
   border-radius: 0 28px 28px 0;
+  /* Round corners keep WebKit's backdrop blur aligned with the drawer despite its outer shadow. */
+  corner-shape: round;
   --phone-drawer-highlight: color-mix(in srgb, var(--dsw-alias-bg-base) 80%, transparent);
   box-shadow:
     8px 12px 36px -12px rgb(0 0 0 / 0.24),

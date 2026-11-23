@@ -109,10 +109,8 @@ export function createHostUpdateCoordinator(
     release: CodexhostLatestRelease,
   ): Promise<boolean> {
     if (context.installation.kind === "npm") return true;
-    const target = context.metadata.target;
-    if (target === "linux-x64" || target === "linux-arm64") return false;
     try {
-      selectInstallerReleaseArtifact(release, target);
+      selectInstallerReleaseArtifact(release, context.metadata.target);
       return true;
     } catch {
       return false;
@@ -236,25 +234,18 @@ export function createHostUpdateCoordinator(
                 onPrepared,
               });
             } else {
-              const target = context.metadata.target;
-              if (target === "linux-x64" || target === "linux-arm64") {
-                throw new Error("Linux installer updates are unsupported");
-              }
-              const artifact = selectInstallerReleaseArtifact(release, target).source;
+              const artifact = selectInstallerReleaseArtifact(
+                release,
+                context.metadata.target,
+              ).source;
+              const installation = context.installation;
+              const options = { version: release.version, artifact, onPrepared };
               prepared =
-                context.installation.kind === "windows-installer"
-                  ? await manager.prepareWindowsInstaller({
-                      ...context.installation.options,
-                      version: release.version,
-                      artifact,
-                      onPrepared,
-                    })
-                  : await manager.prepareMacOsDmg({
-                      ...context.installation.options,
-                      version: release.version,
-                      artifact,
-                      onPrepared,
-                    });
+                installation.kind === "windows-installer"
+                  ? await manager.prepareWindowsInstaller({ ...installation.options, ...options })
+                  : installation.kind === "macos-dmg"
+                    ? await manager.prepareMacOsDmg({ ...installation.options, ...options })
+                    : await manager.prepareLinuxArchive({ ...installation.options, ...options });
             }
             // The Launcher starts the Updater on macOS and Windows. On Windows the
             // Host Runtime runs in the Shim's kill-on-close Job, so an Updater it

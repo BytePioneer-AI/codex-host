@@ -139,7 +139,7 @@ export async function extractNodeRuntime({
     await mkdir(path.dirname(destinationNode), { recursive: true });
     await mkdir(path.join(payloadRoot, "licenses"), { recursive: true });
     await copyFile(sourceNode, destinationNode);
-    if (target.hostPlatform === "darwin") await chmod(destinationNode, 0o755);
+    if (target.hostPlatform !== "win32") await chmod(destinationNode, 0o755);
     await copyFile(sourceLicense, path.join(payloadRoot, "licenses", "Node.js-LICENSE.txt"));
     return destinationNode;
   } finally {

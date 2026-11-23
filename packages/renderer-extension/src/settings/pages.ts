@@ -163,6 +163,7 @@ function installationLabel(
     return messages.updateInstallationWindowsInstaller;
   }
   if (installation === "macos-dmg") return messages.updateInstallationMacOsDmg;
+  if (installation === "linux-archive") return messages.updateInstallationLinuxArchive;
   return messages.updateInstallationUnknown;
 }
 

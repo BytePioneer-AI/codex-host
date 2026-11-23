@@ -38,6 +38,7 @@ pub(crate) enum Installation {
     Npm(NpmInstallation),
     WindowsInstaller(WindowsInstallation),
     MacosDmg(MacOsInstallation),
+    LinuxArchive(LinuxArchiveInstallation),
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,12 +67,22 @@ pub(crate) struct MacOsInstallation {
     pub(crate) app_path: PathBuf,
 }
 
+/// A user-owned directory extracted from the release `.tar.gz`; updates replace it whole.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LinuxArchiveInstallation {
+    pub(crate) archive_path: PathBuf,
+    pub(crate) artifact_sha256: String,
+    pub(crate) install_root: PathBuf,
+}
+
 impl Installation {
     pub(crate) fn resources_root(&self) -> PathBuf {
         match self {
             Self::Npm(npm) => npm.npm_package_root.clone(),
             Self::WindowsInstaller(windows) => windows.install_root.clone(),
             Self::MacosDmg(macos) => macos.app_path.join("Contents/Resources"),
+            Self::LinuxArchive(linux) => linux.install_root.clone(),
         }
     }
 
@@ -88,6 +99,7 @@ impl Installation {
             Self::Npm(npm) => npm.node_path.clone(),
             Self::WindowsInstaller(windows) => windows.install_root.join("runtime/node.exe"),
             Self::MacosDmg(macos) => macos.app_path.join("Contents/Resources/runtime/node"),
+            Self::LinuxArchive(linux) => linux.install_root.join("runtime/node"),
         }
     }
 
@@ -96,6 +108,7 @@ impl Installation {
             Self::Npm(_) => "npm",
             Self::WindowsInstaller(_) => "windows-installer",
             Self::MacosDmg(_) => "macos-dmg",
+            Self::LinuxArchive(_) => "linux-archive",
         }
     }
 }
@@ -213,6 +226,19 @@ impl UpdateRequest {
                 }
                 if !valid_sha256(&macos.artifact_sha256) {
                     return Err("macOS DMG SHA-256 must be lowercase hexadecimal".into());
+                }
+            }
+            Installation::LinuxArchive(linux) => {
+                if !cfg!(target_os = "linux") {
+                    return Err("Linux archive updates require Linux".into());
+                }
+                require_absolute_file(&linux.archive_path, "Linux release archive")?;
+                require_absolute_path(&linux.install_root, "Linux install root")?;
+                if linux.install_root.parent().is_none() {
+                    return Err("Linux install root must have a parent directory".into());
+                }
+                if !valid_sha256(&linux.artifact_sha256) {
+                    return Err("Linux archive SHA-256 must be lowercase hexadecimal".into());
                 }
             }
         }

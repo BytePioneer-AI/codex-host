@@ -1,21 +1,37 @@
 # Linux 支持
 
-codexhost 通过 npm 包支持 x64 和 ARM64 Linux。请先安装与当前架构匹配的官方 ChatGPT App，再安装 codexhost：
+codexhost 通过 npm 包或自带运行时的 `.tar.gz` 压缩包支持 x64 和 ARM64 Linux。要使用 Codex Desktop，请先安装与当前架构匹配的官方 ChatGPT App；只用 Web 时不需要。
+
+### npm
 
 ```bash
 npm install -g @codexhost/cli
 codexhost
 ```
 
+### 压缩包
+
+每个 Release 都会发布 `codexhost-<version>-linux-x64.tar.gz` 和 `codexhost-<version>-linux-arm64.tar.gz`。压缩包自带 Node.js 运行时，不需要另装 Node.js 或 npm。解压到当前用户拥有的目录，并把启动器链接到 `PATH`：
+
+```bash
+tar -xzf codexhost-<version>-linux-x64.tar.gz -C ~/.local/share
+mv ~/.local/share/codexhost-<version>-linux-x64 ~/.local/share/codexhost
+mkdir -p ~/.local/bin
+ln -sf ~/.local/share/codexhost/bin/codexhost ~/.local/bin/codexhost
+codexhost
+```
+
+`codexhost update` 和应用内更新会从 GitHub Releases 下载对应的压缩包，校验 SHA-256，解压到安装目录旁边，再整体替换安装目录；更新失败时恢复原目录。因此运行 codexhost 的用户必须对安装目录及其上级目录有写权限，不要用 root 把压缩包装到系统目录。同一时间只使用一种安装方式：在 npm 和压缩包之间切换前，先运行 `codexhost stop` 并删除另一种安装。`codexhost autostart on` 登记的是执行该命令的那份安装的启动器。
+
 ## 支持范围
 
-Linux 版本支持 x86-64 和 ARM64 上的官方 ChatGPT `.deb` 和 `.rpm` 包。codexhost 的 Linux 原生二进制以 glibc 2.28 为发布基线（与 Node.js 22 官方 Linux 二进制的要求一致），可在使用 glibc 2.28 或更新版本的系统上装载，包括作为 Remote SSH 主机的 RHEL 8 系发行版；官方 ChatGPT App 自身的发行版支持范围仍以 OpenAI 文档为准。codexhost 会验证生产包元数据、当前架构的 ELF 身份和以下包内入口：
+Linux 版本支持 x86-64 和 ARM64 上的官方 ChatGPT `.deb` 和 `.rpm` 包。codexhost 的 Linux 原生二进制以 glibc 2.28 为发布基线（与 Node.js 22 和 24 官方 Linux 二进制的要求一致，压缩包内置的 Node.js 也是如此），可在使用 glibc 2.28 或更新版本的系统上装载，包括作为 Remote SSH 主机的 RHEL 8 系发行版；官方 ChatGPT App 自身的发行版支持范围仍以 OpenAI 文档为准。codexhost 会验证生产包元数据、当前架构的 ELF 身份和以下包内入口：
 
 - 启动器：`/usr/bin/chatgpt`
 - 安装目录：`/usr/lib/chatgpt`
 - Desktop 可执行文件：`/usr/lib/chatgpt/ChatGPT`
 
-运行时要求 `/proc` 已挂载，并且 Linux 支持 `pidfd`。目前不支持 Snap、Flatpak、AppImage、本地或迁移后的安装、包装脚本或 `alternatives` 启动器、跨架构执行，以及 codexhost Linux installer 包。codexhost 在 Linux 上通过 npm 安装和更新。
+运行时要求 `/proc` 已挂载，并且 Linux 支持 `pidfd`。目前不支持 Snap、Flatpak、AppImage、本地或迁移后的 ChatGPT 安装、包装脚本或 `alternatives` 启动器以及跨架构执行，也不支持 Alpine 等基于 musl 的发行版。codexhost 不发布 `.deb` 或 `.rpm` 包。
 
 启动 Host 和 Web 服务时，`HOME` 必须设为绝对路径。设置了 `XDG_RUNTIME_DIR` 和自定义数据目录时也一样。服务在 `$HOME/.codexhost/independent-processes` 下登记监管进程，npm 更新在 `$HOME/.codexhost/updates` 中保存状态。
 

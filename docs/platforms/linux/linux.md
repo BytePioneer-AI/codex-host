@@ -1,21 +1,37 @@
 # Linux support
 
-codexhost supports x64 and ARM64 Linux through the npm package. Install the official ChatGPT App matching the current architecture first, then install codexhost:
+codexhost supports x64 and ARM64 Linux through the npm package or a self-contained `.tar.gz` archive. To use Codex Desktop, install the official ChatGPT App matching the current architecture first; Web works without it.
+
+### npm
 
 ```bash
 npm install -g @codexhost/cli
 codexhost
 ```
 
+### Archive
+
+Each Release publishes `codexhost-<version>-linux-x64.tar.gz` and `codexhost-<version>-linux-arm64.tar.gz`. The archive bundles its own Node.js runtime, so neither Node.js nor npm is required. Extract it into a directory owned by the current user and link the launcher onto `PATH`:
+
+```bash
+tar -xzf codexhost-<version>-linux-x64.tar.gz -C ~/.local/share
+mv ~/.local/share/codexhost-<version>-linux-x64 ~/.local/share/codexhost
+mkdir -p ~/.local/bin
+ln -sf ~/.local/share/codexhost/bin/codexhost ~/.local/bin/codexhost
+codexhost
+```
+
+`codexhost update` and the in-app updater download the matching archive from GitHub Releases, verify its SHA-256, extract it beside the installation, and replace the installation directory as a whole; a failed update restores the previous directory. Both the installation directory and its parent must therefore be writable by the user running codexhost, so do not install the archive as root into system directories. Use one installation method at a time: before switching between npm and the archive, run `codexhost stop` and remove the other installation. `codexhost autostart on` registers the launcher of the installation that runs it.
+
 ## Supported environment
 
-The Linux release supports the official ChatGPT `.deb` and `.rpm` packages on x86-64 and ARM64. The codexhost Linux native binaries use glibc 2.28 as their release baseline, matching the official Node.js 22 Linux binaries, and can load on systems with glibc 2.28 or newer, including RHEL 8-family distributions used as Remote SSH hosts; the official ChatGPT App's distribution support remains defined by OpenAI's documentation. codexhost verifies the production package metadata, native ELF architecture, and these packaged entry points:
+The Linux release supports the official ChatGPT `.deb` and `.rpm` packages on x86-64 and ARM64. The codexhost Linux native binaries use glibc 2.28 as their release baseline, matching the official Node.js 22 and 24 Linux binaries (including the one bundled in the archive), and can load on systems with glibc 2.28 or newer, including RHEL 8-family distributions used as Remote SSH hosts; the official ChatGPT App's distribution support remains defined by OpenAI's documentation. codexhost verifies the production package metadata, native ELF architecture, and these packaged entry points:
 
 - launcher: `/usr/bin/chatgpt`
 - installation: `/usr/lib/chatgpt`
 - Desktop executable: `/usr/lib/chatgpt/ChatGPT`
 
-The runtime requires a mounted `/proc` and Linux `pidfd` support. Snap, Flatpak, AppImage, local or relocated installations, wrapper or `alternatives` launchers, cross-architecture execution, and codexhost Linux installer packages are not supported. codexhost is installed and updated through npm on Linux.
+The runtime requires a mounted `/proc` and Linux `pidfd` support. Snap, Flatpak, AppImage, local or relocated ChatGPT installations, wrapper or `alternatives` launchers, and cross-architecture execution are not supported. musl-based distributions such as Alpine are not supported. codexhost does not publish `.deb` or `.rpm` packages.
 
 Host and Web service startup requires `HOME` to be set to an absolute path, including when `XDG_RUNTIME_DIR` and a custom data directory are set. The services register their supervisor under `$HOME/.codexhost/independent-processes`, and npm updates use `$HOME/.codexhost/updates`.
 

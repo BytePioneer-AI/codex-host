@@ -5,7 +5,12 @@ export const UPDATE_SEMVER_PATTERN =
   /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 
 export const updateSemanticVersionSchema = z.string().regex(UPDATE_SEMVER_PATTERN);
-export const updateInstallationSchema = z.enum(["npm", "windows-installer", "macos-dmg"]);
+export const updateInstallationSchema = z.enum([
+  "npm",
+  "windows-installer",
+  "macos-dmg",
+  "linux-archive",
+]);
 export const updatePhaseSchema = z.enum([
   "prepared",
   "downloading",

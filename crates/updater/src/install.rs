@@ -1,34 +1,29 @@
 #[cfg(target_os = "macos")]
 use std::env;
 use std::error::Error;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::fs;
 use std::fs::File;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::io::Read;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 use std::process::Command;
 
 use codexhost_platform::configure_background_command;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 use serde::Deserialize;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 use sha2::{Digest, Sha256};
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::request::validate_version;
 use crate::request::{
-    Installation, MacOsInstallation, NpmInstallation, UpdateRequest, WindowsInstallation,
+    Installation, LinuxArchiveInstallation, MacOsInstallation, NpmInstallation, UpdateRequest,
+    WindowsInstallation,
 };
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use crate::status::unix_seconds;
 
 const NPM_PACKAGE_NAME: &str = "@codexhost/cli";
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 const DISTRIBUTION_FILE: &str = "codexhost-distribution.json";
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DistributionMetadata {
@@ -38,7 +33,6 @@ struct DistributionMetadata {
     target: String,
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
@@ -57,7 +51,6 @@ fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
         .collect())
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn verify_artifact(path: &Path, expected: &str) -> Result<(), Box<dyn Error>> {
     let actual = sha256_file(path)?;
     if actual != expected {
@@ -68,7 +61,6 @@ fn verify_artifact(path: &Path, expected: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn distribution_metadata(path: &Path) -> Result<DistributionMetadata, Box<dyn Error>> {
     let metadata = serde_json::from_slice::<DistributionMetadata>(&fs::read(path)?)?;
     if metadata.schema_version != 1 || metadata.target.is_empty() {
@@ -78,7 +70,6 @@ fn distribution_metadata(path: &Path) -> Result<DistributionMetadata, Box<dyn Er
     Ok(metadata)
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn verify_distribution(
     path: &Path,
     version: &str,
@@ -259,15 +250,98 @@ fn install_macos(
     Err("macOS DMG updates require macOS".into())
 }
 
+/// The single top-level directory the release archive extracts to.
+#[cfg(target_os = "linux")]
+fn extracted_root(staging: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let mut entries = fs::read_dir(staging)?.collect::<Result<Vec<_>, _>>()?;
+    if entries.len() != 1 || !entries[0].file_type()?.is_dir() {
+        return Err("Linux release archive must contain exactly one top-level directory".into());
+    }
+    Ok(entries.remove(0).path())
+}
+
+#[cfg(target_os = "linux")]
+fn install_linux(
+    request: &UpdateRequest,
+    linux: &LinuxArchiveInstallation,
+) -> Result<(), Box<dyn Error>> {
+    verify_artifact(&linux.archive_path, &linux.artifact_sha256)?;
+    let parent = linux
+        .install_root
+        .parent()
+        .ok_or("Linux install root has no parent")?;
+    let unique = format!("{}-{}", std::process::id(), unix_seconds());
+    // Staging beside the installation keeps both renames on one filesystem.
+    let staging = parent.join(format!(".codexhost-update-{unique}"));
+    let backup = parent.join(format!(".codexhost-backup-{unique}"));
+    if staging.exists() || backup.exists() {
+        return Err("Linux update staging path already exists".into());
+    }
+    fs::create_dir(&staging)?;
+    let staged = (|| -> Result<PathBuf, Box<dyn Error>> {
+        run_checked(
+            Command::new("tar")
+                .args(["--extract", "--gzip", "--no-same-owner", "--file"])
+                .arg(&linux.archive_path)
+                .arg("--directory")
+                .arg(&staging),
+            "Linux archive extraction",
+        )?;
+        let root = extracted_root(&staging)?;
+        verify_distribution(
+            &root.join("app").join(DISTRIBUTION_FILE),
+            &request.version,
+            "installer",
+        )?;
+        Ok(root)
+    })();
+    let staged = match staged {
+        Ok(root) => root,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    };
+
+    // Running processes keep their open executables after the directory moves aside.
+    fs::rename(&linux.install_root, &backup)?;
+    if let Err(error) = fs::rename(&staged, &linux.install_root) {
+        let _ = fs::rename(&backup, &linux.install_root);
+        let _ = fs::remove_dir_all(&staging);
+        return Err(format!("could not activate updated Linux installation: {error}").into());
+    }
+    let _ = fs::remove_dir_all(&staging);
+    if let Err(error) = verify_distribution(
+        &linux.install_root.join("app").join(DISTRIBUTION_FILE),
+        &request.version,
+        "installer",
+    ) {
+        let _ = fs::remove_dir_all(&linux.install_root);
+        let _ = fs::rename(&backup, &linux.install_root);
+        return Err(error);
+    }
+    fs::remove_dir_all(backup)?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_linux(
+    _request: &UpdateRequest,
+    _linux: &LinuxArchiveInstallation,
+) -> Result<(), Box<dyn Error>> {
+    Err("Linux archive updates require Linux".into())
+}
+
 pub(crate) fn install(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
     match &request.installation {
         Installation::Npm(npm) => install_npm(request, npm),
         Installation::WindowsInstaller(windows) => install_windows(request, windows),
         Installation::MacosDmg(macos) => install_macos(request, macos),
+        Installation::LinuxArchive(linux) => install_linux(request, linux),
     }
 }
 
-#[cfg(all(test, any(target_os = "windows", target_os = "macos")))]
+#[cfg(test)]
 mod tests {
     use super::DistributionMetadata;
 
@@ -275,5 +349,133 @@ mod tests {
     fn distribution_metadata_rejects_unknown_fields() {
         let metadata = br#"{"schemaVersion":1,"version":"1.2.3","distribution":"npm","target":"macos-arm64","extra":true}"#;
         assert!(serde_json::from_slice::<DistributionMetadata>(metadata).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    mod linux_archive {
+        use std::fs;
+        use std::path::{Path, PathBuf};
+        use std::process::Command;
+
+        use super::super::{install_linux, sha256_file};
+        use crate::request::{
+            Installation, LinuxArchiveInstallation, NpmInstallation, RestartTarget, UpdateRequest,
+        };
+
+        fn release_tree(root: &Path, version: &str, marker: &str) {
+            fs::create_dir_all(root.join("app")).unwrap();
+            fs::write(
+                root.join("app/codexhost-distribution.json"),
+                format!(
+                    r#"{{"schemaVersion":1,"version":"{version}","distribution":"installer","target":"linux-x64"}}"#
+                ),
+            )
+            .unwrap();
+            fs::write(root.join("marker"), marker).unwrap();
+        }
+
+        fn archive(directory: &Path, version: &str) -> PathBuf {
+            let source = directory.join("source");
+            release_tree(
+                &source.join(format!("codexhost-{version}-linux-x64")),
+                version,
+                "new",
+            );
+            let archive = directory.join("update.tar.gz");
+            let status = Command::new("tar")
+                .arg("-czf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(&source)
+                .arg(".")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            archive
+        }
+
+        fn request(version: &str) -> UpdateRequest {
+            let path = PathBuf::from("/unused");
+            UpdateRequest {
+                schema_version: 1,
+                version: version.into(),
+                wait_pid: 2,
+                wait_executable: path.clone(),
+                runtime_descriptor_path: path.clone(),
+                restart_target: RestartTarget::Desktop,
+                data_directory: None,
+                service_managed: false,
+                status_path: path.clone(),
+                installation: Installation::Npm(NpmInstallation {
+                    node_path: path.clone(),
+                    npm_cli_path: path.clone(),
+                    npm_launcher_path: path.clone(),
+                    npm_package_root: path,
+                }),
+            }
+        }
+
+        fn fixture(name: &str) -> PathBuf {
+            let directory = std::env::temp_dir().join(format!(
+                "codexhost-linux-archive-{name}-{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&directory);
+            fs::create_dir_all(&directory).unwrap();
+            directory
+        }
+
+        fn siblings(directory: &Path) -> Vec<String> {
+            let mut names = fs::read_dir(directory.join("installed"))
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        }
+
+        #[test]
+        fn replaces_the_installation_and_leaves_no_staging_behind() {
+            let directory = fixture("replace");
+            let install_root = directory.join("installed/codexhost");
+            release_tree(&install_root, "1.0.0", "old");
+            let archive_path = archive(&directory, "1.1.0");
+            let linux = LinuxArchiveInstallation {
+                artifact_sha256: sha256_file(&archive_path).unwrap(),
+                archive_path,
+                install_root: install_root.clone(),
+            };
+
+            install_linux(&request("1.1.0"), &linux).unwrap();
+
+            assert_eq!(
+                fs::read_to_string(install_root.join("marker")).unwrap(),
+                "new"
+            );
+            assert_eq!(siblings(&directory), ["codexhost"]);
+            fs::remove_dir_all(directory).unwrap();
+        }
+
+        #[test]
+        fn keeps_the_installation_when_the_archive_is_not_the_requested_version() {
+            let directory = fixture("mismatch");
+            let install_root = directory.join("installed/codexhost");
+            release_tree(&install_root, "1.0.0", "old");
+            let archive_path = archive(&directory, "1.1.0");
+            let linux = LinuxArchiveInstallation {
+                artifact_sha256: sha256_file(&archive_path).unwrap(),
+                archive_path,
+                install_root: install_root.clone(),
+            };
+
+            assert!(install_linux(&request("1.2.0"), &linux).is_err());
+
+            assert_eq!(
+                fs::read_to_string(install_root.join("marker")).unwrap(),
+                "old"
+            );
+            assert_eq!(siblings(&directory), ["codexhost"]);
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 }

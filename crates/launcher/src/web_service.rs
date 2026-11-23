@@ -494,6 +494,11 @@ fn stop_orphaned_web_service(
     Ok(true)
 }
 
+// Slow runners (macOS) can take far longer than a local machine to notice
+// the stop file and exit; a generous upper bound only widens the window —
+// shutdown completion is still observed, never assumed.
+pub(super) const STOP_WAIT: Duration = Duration::from_secs(60);
+
 pub(super) fn stop(
     options: &Options,
     expected_runtime: Option<&Path>,
@@ -512,7 +517,7 @@ pub(super) fn stop(
             // instead of reporting a shutdown that could not be confirmed.
             Err(_) => {}
         }
-        if started.elapsed() > Duration::from_secs(10) {
+        if started.elapsed() > STOP_WAIT {
             return Err("Web shutdown timed out".into());
         }
         thread::sleep(Duration::from_millis(25));

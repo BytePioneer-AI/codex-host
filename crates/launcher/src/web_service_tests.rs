@@ -10,7 +10,7 @@ fn stop_waits_for_the_recorded_instance_without_its_original_image() {
     if let Some(root) = env::var_os("CODEXHOST_WEB_STOP_TEST") {
         let root = std::path::PathBuf::from(root);
         fs::write(root.join("started"), "ready").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + super::STOP_WAIT;
         while !root.join("web-service.stop").exists() {
             assert!(Instant::now() < deadline, "stop request not received");
             thread::sleep(Duration::from_millis(10));
@@ -35,7 +35,7 @@ fn stop_waits_for_the_recorded_instance_without_its_original_image() {
         .spawn()
         .unwrap();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + super::STOP_WAIT;
         while !root.join("started").exists() {
             assert!(Instant::now() < deadline, "fixture did not start");
             thread::sleep(Duration::from_millis(10));
@@ -136,7 +136,7 @@ fn stop_recovers_an_orphaned_web_child_of_a_dead_supervisor() {
         }
     };
     let live = codexhost_platform::process_snapshot(spawn_orphan()).unwrap();
-    wait_started(Instant::now() + Duration::from_secs(10));
+    wait_started(Instant::now() + super::STOP_WAIT);
     assert_eq!(
         live.process_group_id, live.id,
         "the fixture must lead its own process group"
@@ -174,7 +174,7 @@ fn stop_recovers_an_orphaned_web_child_of_a_dead_supervisor() {
     // so it is removed before the new fixture starts.
     fs::remove_file(root.join("started")).unwrap();
     let orphan = spawn_orphan();
-    wait_started(Instant::now() + Duration::from_secs(10));
+    wait_started(Instant::now() + super::STOP_WAIT);
     record.web_pid = orphan;
     record.web_started_at_micros = 0;
     fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
@@ -229,7 +229,7 @@ fn orphan_cleanup_scopes_runtime_ownership_and_frees_the_port() {
         let mut child = command.spawn().unwrap();
         let pid = child.id();
         thread::spawn(move || child.wait());
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + super::STOP_WAIT;
         while !root.join("port").exists() {
             assert!(Instant::now() < deadline, "fixture did not publish a port");
             thread::sleep(Duration::from_millis(10));
@@ -312,7 +312,7 @@ fn orphan_cleanup_scopes_runtime_ownership_and_frees_the_port() {
         codexhost_platform::process_identity(orphan).is_err(),
         "the confirmed orphan must be terminated"
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + super::STOP_WAIT;
     let rebound = loop {
         match std::net::TcpListener::bind(("127.0.0.1", port)) {
             Ok(listener) => break listener,
@@ -378,7 +378,7 @@ fn update_recovery_reclaim_spares_foreign_orphans_and_same_group_neighbors() {
     let mut child = command.spawn().unwrap();
     let orphan = child.id();
     thread::spawn(move || child.wait());
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + super::STOP_WAIT;
     while !root.join("started").exists() {
         assert!(Instant::now() < deadline, "fixture did not start");
         thread::sleep(Duration::from_millis(10));

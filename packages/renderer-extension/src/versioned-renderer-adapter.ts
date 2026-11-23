@@ -10,7 +10,6 @@ import {
   type RendererHostRouting,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { createRendererHostClients } from "./renderer-host-clients.js";
-import { installIdleReleasePreferenceSync } from "./renderer-idle-release-preference.js";
 import { installRendererHarnessPreferenceSync } from "./renderer-harness-preferences.js";
 import {
   encodeHarnessPluginRoute,
@@ -737,7 +736,6 @@ export function installCurrentRendererAdapter(): {
   };
 
   const usageSubscription = createThreadUsageSubscriptionRelay();
-  const idleReleaseSync = installIdleReleasePreferenceSync(window);
   const preferencesSync = installRendererHarnessPreferenceSync(window);
   const clients = createRendererHostClients(() => window.__codexhostHostRoutingV1, window);
   const stopGroupSync = startAgentGroupSync(
@@ -764,7 +762,6 @@ export function installCurrentRendererAdapter(): {
       : route?.hostId === "local"
         ? client
         : clients.forHost("local");
-    idleReleaseSync.connect(localClient);
     stopGroupSync.connect();
     preferencesSync.connect("local", localClient);
     if (route?.hostId && route.hostId !== "local") preferencesSync.connect(route.hostId, client);
@@ -1018,7 +1015,6 @@ export function installCurrentRendererAdapter(): {
         () => stopGroupSync(),
         () => clients.dispose(),
         () => usageSubscription.dispose(),
-        () => idleReleaseSync.dispose(),
         () => preferencesSync.dispose(),
       ];
       selectedPolicies.clear();

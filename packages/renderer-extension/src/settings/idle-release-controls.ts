@@ -6,11 +6,14 @@ import {
 } from "@codexhost/shared-contracts";
 import {
   IDLE_RELEASE_CHANGE_EVENT,
+  IDLE_RELEASE_REMOTE_STATUS_EVENT,
+  readIdleReleaseRemoteStatus,
   IDLE_RELEASE_STATUS_EVENT,
   readIdleReleasePreference,
   writeIdleReleasePreference,
   type IdleReleaseSyncStatus,
 } from "../renderer-idle-release-preference.js";
+import { connectionHostName } from "./connections-page.js";
 import { rendererHarnessPreferenceStatus } from "../renderer-harness-preferences.js";
 import type { RendererSettingsMessages } from "./localization.js";
 import type { RendererSettingsPageMountContext } from "./core.js";
@@ -72,7 +75,11 @@ export function mountIdleReleaseControls(
   timeout.item.append(field);
   timeout.item.id = preferenceId("idle-release-timeout");
   enabled.setAttribute("aria-controls", timeout.item.id);
-  card.append(toggle.item, timeout.item);
+  const remoteStatus = document.createElement("ul");
+  remoteStatus.className = "space-y-1 px-4 py-2 text-xs text-settings-muted";
+  remoteStatus.setAttribute("aria-label", messages.idleReleaseSshHosts);
+  remoteStatus.setAttribute("aria-live", "polite");
+  card.append(toggle.item, timeout.item, remoteStatus);
   content.append(group);
   const disposeTable = mountLoadedSessionsTable(
     { ...context, content: card },
@@ -84,6 +91,25 @@ export function mountIdleReleaseControls(
     pending: messages.idleReleasePending,
     unavailable: messages.idleReleaseUnavailable,
     failed: messages.idleReleaseFailed,
+  };
+  const syncRemoteStatus = (): void => {
+    const states = readIdleReleaseRemoteStatus(owner);
+    remoteStatus.hidden = states.length === 0;
+    remoteStatus.replaceChildren(
+      ...states.map(({ hostId, status }) => {
+        const line = document.createElement("li");
+        line.className =
+          "break-words data-[state=failed]:text-settings-danger data-[state=unavailable]:text-settings-warning";
+        line.dataset.state = status;
+        line.textContent = messages.idleReleaseSshStatus
+          .replace("{host}", connectionHostName(hostId, messages))
+          .replace(
+            "{status}",
+            status === "applied" ? messages.idleReleaseApplied : statusMessages[status],
+          );
+        return line;
+      }),
+    );
   };
   const showStatus = (value: IdleReleaseSyncStatus): void => {
     status.dataset.state = value;
@@ -134,12 +160,15 @@ export function mountIdleReleaseControls(
   const onStatus = (event: Event): void =>
     showStatus((event as CustomEvent<IdleReleaseSyncStatus>).detail);
   owner.addEventListener(IDLE_RELEASE_CHANGE_EVENT, sync);
+  owner.addEventListener(IDLE_RELEASE_REMOTE_STATUS_EVENT, syncRemoteStatus);
+  syncRemoteStatus();
   owner.addEventListener(IDLE_RELEASE_STATUS_EVENT, onStatus);
   sync();
   showStatus(rendererHarnessPreferenceStatus());
   return () => {
     disposeTable();
     owner.removeEventListener(IDLE_RELEASE_CHANGE_EVENT, sync);
+    owner.removeEventListener(IDLE_RELEASE_REMOTE_STATUS_EVENT, syncRemoteStatus);
     owner.removeEventListener(IDLE_RELEASE_STATUS_EVENT, onStatus);
   };
 }

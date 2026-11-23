@@ -83,6 +83,9 @@ export interface RendererSettingsMessages {
   readonly idleReleaseMinutes: string;
   readonly idleReleaseInvalid: string;
   readonly idleReleasePending: string;
+  readonly idleReleaseSshHosts: string;
+  readonly idleReleaseSshStatus: string;
+  readonly idleReleaseApplied: string;
   readonly idleReleaseUnavailable: string;
   readonly idleReleaseFailed: string;
   readonly reasoningSoftWrapTitle: string;
@@ -372,6 +375,9 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   idleReleaseMinutes: "min",
   idleReleaseInvalid: "Enter a whole number from 5 to 1440.",
   idleReleasePending: "Syncing…",
+  idleReleaseSshHosts: "Connected SSH Hosts",
+  idleReleaseSshStatus: "SSH {host}: {status}",
+  idleReleaseApplied: "Synced",
   idleReleaseUnavailable: "Not supported by this Host",
   idleReleaseFailed: "Sync failed, try again",
   reasoningSoftWrapTitle: "Wrap thinking text",
@@ -711,6 +717,9 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   idleReleaseMinutes: "分钟",
   idleReleaseInvalid: "请输入 5～1440 之间的整数。",
   idleReleasePending: "同步中…",
+  idleReleaseSshHosts: "已连接的 SSH Host",
+  idleReleaseSshStatus: "SSH {host}：{status}",
+  idleReleaseApplied: "已同步",
   idleReleaseUnavailable: "当前 Host 不支持",
   idleReleaseFailed: "同步失败，请重试",
   reasoningSoftWrapTitle: "换行显示思考文本",

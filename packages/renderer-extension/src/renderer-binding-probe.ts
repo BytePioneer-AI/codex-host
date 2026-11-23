@@ -1,3 +1,4 @@
+import { installIdleReleasePreferenceSync } from "./renderer-idle-release-preference.js";
 import {
   HARNESS_PREFERENCES_UPDATED_EVENT,
   rendererHarnessPreferences,
@@ -841,6 +842,7 @@ export function installRendererBindingProbe(
   let adapterDispose: (() => void) | null = null;
   let applyAdapterAgent: ApplyAdapterAgent | null = null;
   let modelControl: RendererModelClient | null = null;
+  const idleReleaseSync = installIdleReleasePreferenceSync(window);
   const activeModelHostId = (composer?: Element): string | null => {
     if (!modelControl) return null;
     const hostId = modelControl.currentHostId ? modelControl.currentHostId(composer) : "local";
@@ -3040,9 +3042,14 @@ export function installRendererBindingProbe(
   function reconcileHarnessAvailabilityHost(retryDraftUsage = false): void {
     // Settings lists observed Hosts even when multiple Composers make the
     // active route ambiguous. Requests still resolve each Host independently.
+    const sshClients = new Map<string, RendererModelClient>();
     for (const hostId of modelControl?.knownHostIds?.() ?? []) {
       if (isListedConnectionHost(hostId)) hostHarnessAvailabilityState(hostId);
+      if (!/^remote-ssh(?:-|:)/u.test(hostId)) continue;
+      const remote = modelClientForHost(hostId);
+      if (remote) sshClients.set(hostId, remote);
     }
+    idleReleaseSync.connect(sshClients);
     // Hidden/native Composers can belong to a different Host. Never rebind
     // every Thread to the globally selected Host when navigating between them.
     reloadMountedOwnershipForHost();
@@ -4065,6 +4072,7 @@ export function installRendererBindingProbe(
       sidebarThreadState.dispose();
       nativeScheduleControls.dispose();
       settingsLifecycle.dispose();
+      idleReleaseSync.dispose();
       document.removeEventListener("beforeinput", onBeforeInput, true);
       document.removeEventListener("submit", onSubmit, true);
       document.removeEventListener("keydown", onKeyDown, true);

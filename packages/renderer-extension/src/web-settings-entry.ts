@@ -62,7 +62,6 @@ function resourcesPage(
       const disposeControls = mountIdleReleaseControls(context, messages, () => client);
       const preferences = installRendererHarnessPreferenceSync(window);
       preferences.connect("local", client);
-      idleRelease.connect(client);
       return () => {
         disposeControls();
         preferences.dispose();

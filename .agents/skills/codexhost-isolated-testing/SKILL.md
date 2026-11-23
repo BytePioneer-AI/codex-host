@@ -33,4 +33,6 @@ CODEXHOST_DATA_DIR=/tmp/codexhost-try npm start
   `target/debug/codexhost host stop --node <node> --host-runtime <工作树绝对路径>/packages/host-runtime/dist/main.js --data /tmp/codexhost-try`
 - 验证 Bug 修复：先用基线代码（如 `main`）复现原问题，再用改动后的代码验证修复，并试一下相关的既有功能。复现不了就如实说明。
 - 并行实测：Web 每路用不同的数据目录和端口（例：`/tmp/codexhost-try-<编号>`，端口从 4401 递增）；Desktop 同一时间只能跑一个。
+- 隔离 worktree 依赖：不要直接软链主仓库的 `node_modules`（npm workspaces 的相对软链会指回主仓库的 `packages/*`，导致改了 worktree 代码却加载主仓库产物）；macOS 可用 `cp -cR <主仓库>/node_modules <worktree>/node_modules` 做写时复制以保持相对软链指向当前 worktree。
+- 并行建树与清理：多路并行实测或小修 PR 时，由主会话先统一 `git fetch` 并创建各路 worktree，再分派并行任务，避免并发抢占 `.git` 锁；完成后统一删除临时 worktree、测试 ref 并执行 `git worktree prune`。
 - 汇报：试了什么、结果如何、哪些没试到。

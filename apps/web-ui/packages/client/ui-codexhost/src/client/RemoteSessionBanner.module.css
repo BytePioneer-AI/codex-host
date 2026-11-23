@@ -1,3 +1,8 @@
+/* Hide ambient chip in Hero mode where the docked top cap already shows location & project. */
+:global([data-composer-variant="hero"]) .chip {
+  display: none;
+}
+
 /* Variant B: borderless ambient chip inside `conversation.input.left` */
 .chip {
   display: inline-flex;

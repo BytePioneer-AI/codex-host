@@ -1,0 +1,325 @@
+/* Codex-Desktop-style two-part Hero location + project selector & searchable popovers. */
+
+.root {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 240px;
+  height: 26px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 110ms ease,
+    color 110ms ease;
+}
+
+.trigger:hover:not(:disabled),
+.triggerOpen {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.trigger:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.trigger:focus-visible,
+.row:focus-visible,
+.footerAction:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid
+    var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+.triggerPlaceholder {
+  color: var(--dsw-alias-label-secondary);
+  font-weight: 450;
+}
+
+.triggerPlaceholder:hover:not(:disabled),
+.triggerPlaceholder.triggerOpen {
+  color: var(--dsw-alias-label-primary);
+}
+
+.triggerLocation {
+  flex: 0 1 auto;
+  max-width: 180px;
+}
+
+.triggerProject {
+  flex: 0 1 auto;
+  max-width: 260px;
+}
+
+.triggerIcon {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.triggerPlaceholder .triggerIcon {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.triggerLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status dot shown only for non-connected (connecting / offline / auth-error) remote hosts. */
+.statusDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-tertiary);
+  opacity: 0.78;
+}
+
+.statusDot[data-state="connecting"] {
+  background: var(--dsw-alias-state-warning-primary, #c27803);
+  opacity: 0.92;
+}
+
+.statusDot[data-state="auth-error"] {
+  background: var(--dsw-alias-state-error-primary);
+  opacity: 0.92;
+}
+
+/* Shared searchable popover shell (Codex Desktop geometry). */
+.popover {
+  position: fixed;
+  z-index: 1100;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 5px;
+  border: 0;
+  border-radius: 12px;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l2);
+  box-shadow: var(--dsw-elevation-prominent);
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+  color: var(--dsw-alias-label-primary);
+}
+
+.popoverLocation {
+  width: min(244px, calc(100vw - 24px));
+}
+
+.popoverProject {
+  width: min(276px, calc(100vw - 24px));
+}
+
+.searchRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 7px;
+}
+
+.searchIcon {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.searchInput {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.searchInput::placeholder {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.divider {
+  flex: none;
+  height: 0.5px;
+  margin: 4px -5px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 248px;
+  overflow-y: auto;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 90ms ease;
+}
+
+.row:hover,
+.rowActive {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.rowIcon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.rowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.rowTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowHint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.rowStatus {
+  flex: none;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.checkSlot {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-alias-label-primary);
+}
+
+.emptyState {
+  padding: 14px 8px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.footerAction {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 90ms ease;
+}
+
+.footerAction:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.footerAction:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.footerIcon {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.modalAction {
+  min-width: 72px;
+}
+
+.modalError {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-error-primary);
+}
+
+@media (hover: none), (pointer: coarse) {
+  .trigger {
+    min-height: 32px;
+    padding: 0 9px;
+  }
+
+  .row,
+  .footerAction {
+    min-height: 38px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trigger,
+  .row,
+  .footerAction {
+    transition: none;
+  }
+}

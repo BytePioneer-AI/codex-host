@@ -91,6 +91,7 @@ export const InputBar = memo(function InputBar({
   workspacePickerOpen = false,
   onRequestWorkspace,
   placeholder,
+  topBar,
   accessory,
 }: InputBarProps) {
   const input = useInput((s) => s);
@@ -561,7 +562,7 @@ export const InputBar = memo(function InputBar({
             : t("placeholder.default"));
 
   return (
-    <div className={clsx(css.root, variant === "hero" && css.hero)}>
+    <div className={clsx(css.root, variant === "hero" && css.hero)} data-composer-variant={variant}>
       {toast !== null && (
         <Toast
           key={toast.seq}
@@ -583,7 +584,11 @@ export const InputBar = memo(function InputBar({
           click's reopen (close-then-open flickers the chip's open echo). */}
       <div
         ref={cardRef}
-        className={clsx(css.card, workspaceTrigger && css.cardWorkspaceTrigger)}
+        className={clsx(
+          css.card,
+          topBar !== undefined && css.cardHasTopBar,
+          workspaceTrigger && css.cardWorkspaceTrigger,
+        )}
         data-composer-card
         onClick={workspaceTrigger ? onRequestWorkspace : undefined}
         onPointerDown={
@@ -596,6 +601,20 @@ export const InputBar = memo(function InputBar({
       >
         {sessionId !== undefined && (
           <div className={css.overlayAnchor}>{renderSlot("conversation.input.overlay", {})}</div>
+        )}
+        {topBar !== undefined && (
+          <div
+            className={css.topBar}
+            data-composer-top-bar=""
+            onClick={(e) => {
+              e.stopPropagation();
+            }}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+            }}
+          >
+            {topBar}
+          </div>
         )}
         {accessory !== undefined && <div className={css.accessory}>{accessory}</div>}
         {pendingFailed && (

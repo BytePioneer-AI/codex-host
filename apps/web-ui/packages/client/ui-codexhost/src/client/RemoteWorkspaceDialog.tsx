@@ -31,6 +31,7 @@ import { remotePeersApi } from "./api.ts";
 import {
   dispatchOpenRemotePeersSettings,
   dispatchRemotePeersUpdated,
+  dispatchRemoteWorkspaceCreated,
 } from "./remote-peers-events.ts";
 import { HomeIcon, RemoteHostIcon } from "./RemoteHostIcon.tsx";
 import { buildBreadcrumbs } from "./remote-workspace-paths.ts";
@@ -266,11 +267,16 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await remotePeersApi.createWorkspace({
+      const created = await remotePeersApi.createWorkspace({
         peerId: selectedPeer.peerId,
         path: targetPath,
       });
       dispatchRemotePeersUpdated();
+      dispatchRemoteWorkspaceCreated({
+        hostId: selectedPeer.hostId,
+        path: targetPath,
+        ...(created.workspaceId !== undefined ? { workspaceId: created.workspaceId } : {}),
+      });
       controller.close();
     } catch (cause) {
       setSubmitError(t("remoteWorkspace.error.createFailed", { message: messageOf(cause) }));

@@ -57,6 +57,7 @@ import {
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
 import { observeRendererCompactComposer } from "./renderer-trigger-chip-style.js";
+import { isNativeModelCarrierLoadingButton } from "./renderer-native-model-loading.js";
 import { isNativeModelRetryButton } from "./renderer-native-model-retry.js";
 
 export { CONTROL_ATTRIBUTE };
@@ -348,14 +349,16 @@ function nativePermissionModeControlForComposer(composer: Element): HTMLElement 
 
 function nativeModelControlForComposer(composer: Element): HTMLElement | null {
   const candidates = [
-    ...composer.querySelectorAll<HTMLElement>(
+    ...composer.querySelectorAll<HTMLButtonElement>(
       'button[aria-haspopup="menu"], button[data-composer-navigation-target="reasoning"]',
     ),
   ].filter(
     (button) =>
       !isOwnedRendererControl(button) &&
       button.closest(CODEX_COMPOSER_SELECTOR) === composer &&
-      (isNativeModelControlCandidate(button) || isNativeModelRetryButton(button, composer)),
+      (isNativeModelControlCandidate(button) ||
+        isNativeModelRetryButton(button, composer) ||
+        isNativeModelCarrierLoadingButton(button)),
   );
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }

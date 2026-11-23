@@ -37,6 +37,7 @@
       retryingBtn: "正在重试…",
       consoleBtn: "打开诊断控制台",
       consoleOpeningBtn: "正在打开…",
+      reportIssueBtn: "提交 Issue",
       retryErrorPrefix: "重试失败：",
       consoleErrorPrefix: "无法打开诊断控制台：",
       actionErrorFallback: "桌面壳未能响应请求。",
@@ -79,6 +80,7 @@
       retryingBtn: "Retrying…",
       consoleBtn: "Open Diagnostic Console",
       consoleOpeningBtn: "Opening…",
+      reportIssueBtn: "Report Issue",
       retryErrorPrefix: "Retry failed: ",
       consoleErrorPrefix: "Could not open diagnostic console: ",
       actionErrorFallback: "The desktop shell did not respond.",
@@ -107,6 +109,8 @@
   var state = {
     locale: ui.detectInitialLocale(),
     localeLockedByUser: ui.getQueryLocale() !== null,
+    version: "",
+    platform: "",
     status: initialStatus,
     message: queryMessage,
     retrying: false,
@@ -141,6 +145,8 @@
     consoleSpinner: document.getElementById("btn-console-spinner"),
     consoleIcon: document.getElementById("btn-console-icon"),
     consoleText: document.getElementById("btn-console-text"),
+    reportIssueBtn: document.getElementById("btn-report-issue"),
+    reportIssueText: document.getElementById("btn-report-issue-text"),
     actionFeedback: document.getElementById("action-feedback"),
     actionFeedbackIconError: document.getElementById("action-feedback-icon-error"),
     actionFeedbackIconInfo: document.getElementById("action-feedback-icon-info"),
@@ -187,8 +193,20 @@
 
     if (isError) {
       var fallbackError = ui.hasNativeBridge() ? t.errorFallback : t.previewErrorSample;
+      var displayedError = state.message || fallbackError;
       els.errorSummaryLabel.textContent = t.errorLabel;
-      els.errorSummaryMessage.textContent = state.message || fallbackError;
+      els.errorSummaryMessage.textContent = displayedError;
+      if (els.reportIssueBtn) {
+        els.reportIssueBtn.href = ui.buildIssueUrl({
+          error: state.actionFeedbackMessage || displayedError,
+          version: state.version,
+          platform: state.platform,
+          surface: "native-shell",
+        });
+      }
+      if (els.reportIssueText) {
+        els.reportIssueText.textContent = t.reportIssueBtn;
+      }
     }
 
     els.retryBtn.disabled = state.retrying || state.openingConsole;
@@ -257,6 +275,8 @@
         if (!state.localeLockedByUser && result.state.locale) {
           state.locale = result.state.locale;
         }
+        state.version = result.state.version;
+        state.platform = result.state.platform;
         if (!result.bridgeError) {
           var prevStatus = state.status;
           state.status = result.state.status;

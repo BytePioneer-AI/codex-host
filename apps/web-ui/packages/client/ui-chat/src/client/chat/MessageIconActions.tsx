@@ -94,7 +94,7 @@ export function MessageIconActions({
       data-clock={clock}
     >
       {clock === "start" ? clockEl : null}
-      <Tooltip label={copied ? t("copied") : t("copy")} side="bottom">
+      <Tooltip label={copied ? t("copied") : t("copy")} side="bottom" portal>
         <button
           type="button"
           className={css.action}
@@ -109,6 +109,7 @@ export function MessageIconActions({
         <Tooltip
           label={branchUnavailable ? t("message.branchUnavailable") : t("message.branch")}
           side="bottom"
+          portal
         >
           {/* Native disabled buttons do not deliver the hover/focus events Tooltip needs. */}
           <button

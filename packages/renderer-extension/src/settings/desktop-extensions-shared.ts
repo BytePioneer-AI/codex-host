@@ -701,6 +701,10 @@ export function formatExtensionCount(count: number): string {
   return `${Number.isInteger(roundedM) ? roundedM.toFixed(0) : roundedM.toFixed(1)}m`;
 }
 
+export function formatPositiveExtensionCount(count: unknown): string | null {
+  return isValidExtensionCount(count) && count > 0 ? formatExtensionCount(count) : null;
+}
+
 export const isValidExtensionStarCount = isValidExtensionCount;
 export const formatExtensionStarCount = formatExtensionCount;
 

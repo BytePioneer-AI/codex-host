@@ -101,11 +101,11 @@ Pi RPC 在 Windows UNC 工作目录（例如 `\\wsl.localhost\Ubuntu\home\user\p
 | OMP | 是 | 否，仍保留 Adapter 内实现 | 是 | 找不到时保留原有延迟失败语义 |
 | Grok | 是 | 是 | 否 | GUI 精简 `PATH` 下仍应补齐 Node Runtime PATH |
 | Qwen Code | 是 | 不需要通用 shim 路径 | 不需要 | Windows 将 `qwen.cmd` 改写为 npm 包内 JavaScript 入口，由官方 SDK 使用 codexhost Node Runtime 启动 |
-| DeepSeek Harness | 否 | 否 | 否 | Adapter 内发现本地 `dsh`/`npx`，校验 CLI 版本格式后启动托管 Web |
+| DeepSeek Harness | 是 | 否，仍保留 Adapter 内实现 | 是 | 发现本地 `dsh`/`npx`，校验 CLI 版本格式后启动托管 Web |
 
 因此，当前准确结论是：
 
-> Claude Code、Pi、OMP、Grok 和 Qwen Code 已共用可执行文件发现引擎；DeepSeek Harness 尚未迁移。进程 invocation 和 Node Runtime PATH 补全也还没有在所有 Adapter 中完全统一。
+> Claude Code、Pi、OMP、Grok、Qwen Code 和 DeepSeek Harness 共用可执行文件发现引擎。进程 invocation 和 Node Runtime PATH 补全还没有在所有 Adapter 中完全统一。
 
 ## DeepSeek Harness 的特殊性
 
@@ -118,7 +118,7 @@ http://127.0.0.1:3080/
 连接流程是：
 
 1. 校验诊断端点只包含无凭据的 loopback HTTP 根地址，拒绝 bootstrap URL 和查询参数。
-2. 依次检查显式命令、当前 `PATH` 中的 `dsh`、本地 `npx --offline --no-install @deepseek-ai/dsh`；显式配置不可用时不静默改用其他安装。
+2. 依次检查显式命令、当前 `PATH` 和 Node 版本管理器目录中的 `dsh`、本地 `npx --offline --no-install @deepseek-ai/dsh`；显式配置不可用时不静默改用其他安装。启动时将所选命令所在目录及 Host Node 目录追加到 PATH，以便 npm 脚本找到 Node。
 3. 执行 `--version`，要求输出单行规范 SemVer。低于 `0.1.7-rc.1` 时返回 `unsupported`（stage `version`，不可重试），不启动托管 Web；中英文提示列出已验证版本，说明高于最新已验证版本的版本可以尝试连接但适配度可能有限，并给出升级命令。其余版本一律按 V4 profile 尝试，不因版本较新而被拒绝。实际 Web Remote、日志及流式事件仍按 V4 协议严格验证，不兼容时返回真实启动或协议错误。
 4. 对诊断端点做无凭据指纹检查。若已有 DSH Web 返回已识别的认证要求，提示关闭该实例后重新诊断；不会接管其凭据或停止它。端点属于其他服务时不向其发送会话内容。
 5. 启动 `web --no-open --host 127.0.0.1 --port 0`，等待原生 bootstrap，完成认证，再建立 HTTP/WebSocket 通信。托管进程使用自己的临时端口。
@@ -127,7 +127,7 @@ http://127.0.0.1:3080/
 
 DeepSeek 的 endpoint 校验、Host 启动、就绪等待和 HTTP/WebSocket 生命周期属于 Adapter 专用语义，应继续留在 `packages/adapters/deepseek-harness`。
 
-但它的 `dsh`/`npx` 可执行文件发现以及 Windows `.cmd` 调用属于通用机制，后续可以接入 `@codexhost/harness-discovery`。
+它的 `dsh`/`npx` 可执行文件发现使用 `@codexhost/harness-discovery`，Windows `.cmd` 调用仍由 Adapter 处理。
 
 ## 连接页的手动安装指引
 
@@ -158,17 +158,16 @@ DeepSeek 的 endpoint 校验、Host 启动、就绪等待和 HTTP/WebSocket 生�
 
 ## 仍存在的限制
 
-1. **DeepSeek 未使用公共发现引擎。** 本地 DSH Host 未运行且 `dsh` 只存在于非当前 Node.js 版本目录时，仍可能找不到。
-2. **Grok 未补充 Node Runtime PATH。** 可以找到 Grok 入口文件，但 GUI 的精简 `PATH` 仍可能让 Node shebang 启动失败。
-3. **任意自定义目录不会自动遍历。** 非常规安装位置应通过对应 `CODEXHOST_*_COMMAND` 显式配置。
-4. **Windows 自定义版本管理器根目录没有全部覆盖。** 例如自定义 `NVM_HOME`、`VOLTA_HOME` 仍可能需要显式命令。
-5. **发现成功不代表运行时兼容。** 找到安装在 Node 24 下的 Harness 后，仍需保证实际用于启动它的 Node Runtime 满足该 Harness 的版本要求。
+1. **Grok 未补充 Node Runtime PATH。** 可以找到 Grok 入口文件，但 GUI 的精简 `PATH` 仍可能让 Node shebang 启动失败。
+2. **任意自定义目录不会自动遍历。** 非常规安装位置应通过对应 `CODEXHOST_*_COMMAND` 显式配置。
+3. **Windows 自定义版本管理器根目录没有全部覆盖。** 例如自定义 `NVM_HOME`、`VOLTA_HOME` 仍可能需要显式命令。
+4. **发现成功不代表运行时兼容。** 找到安装在 Node 24 下的 Harness 后，仍需保证实际用于启动它的 Node Runtime 满足该 Harness 的版本要求。
 
 ## 后续建议
 
 按优先级建议：
 
-1. 将 DeepSeek 的 `dsh`/`npx` 发现和 Windows invocation 接入公共包，同时保留其 loopback Host 生命周期；
+1. 将 DeepSeek 的 Windows invocation 接入公共包，同时保留其 loopback Host 生命周期；
 2. 为 Grok 子进程环境调用 `withNodeRuntimeOnPath()`；
 3. 视需要让 Pi、OMP 复用公共 `commandInvocation()`；
 4. 增加 Windows 自定义版本管理器根目录支持；

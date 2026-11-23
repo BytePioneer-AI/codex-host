@@ -819,6 +819,7 @@ html[data-platform="darwin"] .topbar {
   line-height: 1.5;
   display: flex;
   align-items: flex-start;
+  flex-wrap: wrap;
   gap: 10px;
   user-select: text;
   -webkit-user-select: text;
@@ -844,8 +845,50 @@ html[data-platform="darwin"] .topbar {
 }
 
 .feedback-text {
+  flex: 1 1 240px;
+  min-width: 0;
   word-break: break-word;
   white-space: pre-wrap;
+}
+
+.feedback-issue-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-error);
+  background: var(--bg-surface);
+  color: var(--text-error);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+
+.feedback-issue-link svg {
+  width: 12px;
+  height: 12px;
+  margin-top: 0;
+}
+
+.feedback-issue-link:hover {
+  background: var(--bg-badge-error);
+  border-color: var(--accent-error);
+}
+
+.feedback-issue-link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .onboarding-footnote {
@@ -1090,6 +1133,7 @@ html[data-platform="darwin"] .topbar {
   border: 1px solid transparent;
   font-size: 13.5px;
   font-weight: 600;
+  text-decoration: none;
   cursor: pointer;
   transition:
     background-color 140ms ease,

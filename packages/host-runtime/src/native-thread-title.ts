@@ -1,6 +1,7 @@
 import type { JsonObject, JsonValue } from "@codexhost/protocol-core";
 import { threadTitleResultSchema, type ThreadTitleInput } from "@codexhost/shared-contracts";
 import type { NativeClientChannelDependencies } from "./native-client-channel.js";
+import { mcpDisableKey } from "./native-title-mcp.js";
 
 const TITLE_INSTRUCTIONS =
   "Generate a concise chat title from the user's first message. Use the user's language. " +
@@ -15,8 +16,38 @@ const TITLE_SCHEMA: JsonObject = {
 const object = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+function mcpOverrides(
+  configuration: JsonObject,
+): JsonObject | "invalid_response" | "unsafe_mcp_name" {
+  const config = configuration.config;
+  if (!object(config)) return "invalid_response";
+  const servers = config.mcp_servers;
+  if (servers === undefined) return {};
+  if (!object(servers)) return "invalid_response";
+  const overrides: JsonObject = {};
+  for (const [name, entry] of Object.entries(servers)) {
+    if (!object(entry) || (entry.enabled !== undefined && typeof entry.enabled !== "boolean"))
+      return "invalid_response";
+    if (entry.enabled === false) continue;
+    const key = mcpDisableKey(name);
+    if (!key) return "unsafe_mcp_name";
+    overrides[key] = false;
+  }
+  return overrides;
+}
+
+type TitleRequestStage = "config/read" | "thread/start" | "turn/start";
+type TitleFailure =
+  | { stage: TitleRequestStage; reason: "rpc_error" | "invalid_transport"; rpcCode: number }
+  | { stage: TitleRequestStage; reason: "request_failed" | "invalid_response" }
+  | { stage: "config/read"; reason: "unsafe_mcp_name" }
+  | { stage: "timeout"; reason: "timed_out" };
+export type NativeTitleDiagnostic = TitleFailure & { jobId: number; threadId?: string };
+
 interface TitleJob {
+  id: number;
   generation: number;
+  threadId?: string;
   cancelled: boolean;
   completed: boolean;
   turnId?: string;
@@ -30,15 +61,18 @@ export class NativeThreadTitles {
   readonly #pending = new Map<string, TitleJob>();
   readonly #jobs = new Set<TitleJob>();
   #generation = 0;
+  #nextJobId = 0;
 
   constructor(
     private readonly native: Pick<NativeClientChannelDependencies, "request" | "respond">,
     private readonly timeoutMs = 30_000,
+    private readonly diagnose?: (event: NativeTitleDiagnostic) => void,
   ) {}
 
   async generate(input: ThreadTitleInput): Promise<string | null> {
     const result = Promise.withResolvers<string | null>();
     const job: TitleJob = {
+      id: ++this.#nextJobId,
       generation: this.#generation,
       cancelled: false,
       completed: false,
@@ -48,6 +82,7 @@ export class NativeThreadTitles {
     this.#jobs.add(job);
     const timeout = Promise.withResolvers<null>();
     const timer = setTimeout(() => {
+      this.#report(job, { stage: "timeout", reason: "timed_out" });
       job.cancelled = true;
       job.finish(null);
       timeout.resolve(null);
@@ -59,11 +94,49 @@ export class NativeThreadTitles {
     }
   }
 
-  async #request(method: string, params: JsonObject): Promise<JsonObject> {
-    const reply = await this.native.request(method, params);
-    if ("error" in reply) throw new Error(reply.error.message);
-    if (!object(reply.result)) throw new Error("Invalid native title response");
-    return reply.result;
+  #report(job: TitleJob, failure: TitleFailure): void {
+    if (!this.#current(job)) return;
+    const { threadId } = job;
+    try {
+      this.diagnose?.({
+        ...failure,
+        jobId: job.id,
+        // Only log IDs with the native UUID shape, not arbitrary response strings.
+        ...(threadId && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/iu.test(threadId)
+          ? { threadId }
+          : {}),
+      });
+    } catch {
+      // Diagnostics must not affect optional title generation.
+    }
+  }
+
+  async #request(
+    job: TitleJob,
+    stage: TitleRequestStage,
+    params: JsonObject,
+  ): Promise<JsonObject | undefined> {
+    try {
+      const reply = await this.native.request(stage, params);
+      if ("error" in reply) {
+        this.#report(job, {
+          stage,
+          reason: /^failed to load configuration: invalid transport(?:\n|$)/u.test(
+            reply.error.message,
+          )
+            ? "invalid_transport"
+            : "rpc_error",
+          rpcCode: reply.error.code,
+        });
+      } else if (object(reply.result)) {
+        return reply.result;
+      } else {
+        this.#report(job, { stage, reason: "invalid_response" });
+      }
+    } catch {
+      this.#report(job, { stage, reason: "request_failed" });
+    }
+    return undefined;
   }
 
   #current(job: TitleJob): boolean {
@@ -71,13 +144,18 @@ export class NativeThreadTitles {
   }
 
   async #generate(input: ThreadTitleInput, job: TitleJob): Promise<string | null> {
-    let threadId: string | undefined;
     try {
-      const configuration = await this.#request("config/read", { includeLayers: false });
-      if (!this.#current(job)) return null;
-      const config = object(configuration.config) ? configuration.config : {};
-      const mcp = object(config.mcp_servers) ? config.mcp_servers : {};
-      const started = await this.#request("thread/start", {
+      const configuration = await this.#request(job, "config/read", {
+        includeLayers: false,
+        cwd: input.cwd,
+      });
+      if (!configuration || !this.#current(job)) return null;
+      const mcp = mcpOverrides(configuration);
+      if (typeof mcp === "string") {
+        this.#report(job, { stage: "config/read", reason: mcp });
+        return null;
+      }
+      const started = await this.#request(job, "thread/start", {
         cwd: input.cwd,
         ephemeral: true,
         threadSource: "thread_title",
@@ -88,9 +166,7 @@ export class NativeThreadTitles {
         developerInstructions: "",
         dynamicTools: [],
         config: {
-          mcp_servers: Object.fromEntries(
-            Object.keys(mcp).map((name) => [name, { enabled: false }]),
-          ),
+          ...mcp,
           "features.apps": false,
           "features.hooks": false,
           "features.plugins": false,
@@ -103,11 +179,15 @@ export class NativeThreadTitles {
           model_reasoning_effort: "low",
         },
       });
-      if (!object(started.thread) || typeof started.thread.id !== "string") return null;
-      threadId = started.thread.id;
+      if (!started) return null;
+      if (!object(started.thread) || typeof started.thread.id !== "string") {
+        this.#report(job, { stage: "thread/start", reason: "invalid_response" });
+        return null;
+      }
+      const threadId = (job.threadId = started.thread.id);
       if (!this.#current(job)) return null;
       this.#pending.set(threadId, job);
-      const response = await this.#request("turn/start", {
+      const response = await this.#request(job, "turn/start", {
         threadId,
         input: [
           {
@@ -119,13 +199,13 @@ export class NativeThreadTitles {
         outputSchema: TITLE_SCHEMA,
         effort: "low",
       });
+      if (!response) return null;
       if (object(response.turn) && typeof response.turn.id === "string")
         job.turnId = response.turn.id;
       if (!this.#current(job)) return null;
       return await job.result;
-    } catch {
-      return null;
     } finally {
+      const { threadId } = job;
       this.#jobs.delete(job);
       if (threadId && job.generation === this.#generation) {
         if (!job.completed && job.turnId)

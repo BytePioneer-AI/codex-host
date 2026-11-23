@@ -23,11 +23,10 @@ import {
   errorMessage,
   extensionDescription,
   extensionDisplayName,
-  formatExtensionCount,
   formatMessage,
+  formatPositiveExtensionCount,
   hasCatalogUpdate,
   isToggleBlocked,
-  isValidExtensionCount,
   itemCapabilities,
   itemStatusState,
   itemTargets,
@@ -1042,12 +1041,8 @@ export function createDesktopExtensionDetailModal(options: {
       (installed?.state === "valid" ? installed.manifest.repository : undefined) ??
         catalogEntry?.repository,
     );
-    const formattedStars = isValidExtensionCount(catalogEntry?.stars)
-      ? formatExtensionCount(catalogEntry.stars)
-      : null;
-    const formattedDownloads = isValidExtensionCount(catalogEntry?.downloads)
-      ? formatExtensionCount(catalogEntry.downloads)
-      : null;
+    const formattedStars = formatPositiveExtensionCount(catalogEntry?.stars);
+    const formattedDownloads = formatPositiveExtensionCount(catalogEntry?.downloads);
     if (repositoryHref) {
       const repoLink = createEl(document, "a", "settings-extensions-detail-modal__repo");
       repoLink.href = repositoryHref;

@@ -65,6 +65,13 @@
   backdrop-filter: blur(12px);
 }
 
+/* Keep the blurred bubble in a stable layer on iOS WebKit. */
+@supports (-webkit-touch-callout: none) {
+  :global(body[data-codexhost-wallpaper]) .userRow {
+    transform: translateZ(0);
+  }
+}
+
 .referenceSummary {
   color: var(--dsw-alias-label-tertiary);
   font-size: var(--dsh-content-font-size-secondary, 13px);

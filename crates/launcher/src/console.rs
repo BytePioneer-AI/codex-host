@@ -17,8 +17,7 @@ use std::time::Duration;
 use codexhost_platform::{DesktopIdentity, DesktopInstallation, node_entrypoint_path};
 use serde_json::{Value, json};
 
-use crate::desktop_attachment::endpoint_ready;
-use crate::runtime_instance::{default_descriptor_path, read_descriptor};
+use crate::runtime_instance::default_descriptor_path;
 
 /// `0` disables starting, opening, and announcing the console during launch.
 pub const CONSOLE_ENV: &str = "CODEXHOST_CONSOLE";
@@ -181,7 +180,7 @@ fn stop_for_launch_in(data: Option<&Path>) {
             || crate::web_service::owner(data)
                 .ok()
                 .flatten()
-                .is_some_and(|owner| owner.web_running())
+                .is_some_and(|owner| owner.web_running().unwrap_or(false))
     }) {
         return;
     }
@@ -364,14 +363,30 @@ fn runtime_json() -> Value {
     let Ok(descriptor_path) = default_descriptor_path() else {
         return json!({ "descriptorPath": null, "running": false, "launcherPid": null });
     };
-    let descriptor = read_descriptor(&descriptor_path).ok().flatten();
-    let running = descriptor.as_ref().is_some_and(|descriptor| {
-        endpoint_ready(descriptor.control_port, Duration::from_millis(300))
-    });
+    let Some(data) = crate::startup_record::data_directory() else {
+        return json!({
+            "descriptorPath": descriptor_path.display().to_string(),
+            "running": false,
+            "launcherPid": null,
+        });
+    };
+    runtime_json_at(&descriptor_path, &data)
+}
+
+fn runtime_json_at(descriptor_path: &Path, data: &Path) -> Value {
+    #[cfg(unix)]
+    let launcher_pid = crate::desktop_lifecycle::launcher_pid_for_inspect(descriptor_path, data)
+        .ok()
+        .flatten();
+    #[cfg(not(unix))]
+    let launcher_pid = crate::desktop_attachment::managed_processes_at(descriptor_path, data)
+        .ok()
+        .flatten()
+        .map(|(launcher, _)| launcher.id);
     json!({
         "descriptorPath": descriptor_path.display().to_string(),
-        "running": running,
-        "launcherPid": descriptor.as_ref().filter(|_| running).map(|descriptor| descriptor.launcher_pid),
+        "running": launcher_pid.is_some(),
+        "launcherPid": launcher_pid,
     })
 }
 
@@ -700,6 +715,36 @@ mod tests {
         assert_eq!(document["schemaVersion"], 1);
         assert!(document["desktop"].is_null());
         assert_eq!(document["desktopError"], "Codex Desktop was not found");
+    }
+
+    #[test]
+    fn runtime_inspect_ignores_an_unrelated_listener_for_a_stale_descriptor() {
+        use std::net::TcpListener;
+
+        let root = env::temp_dir().join(format!(
+            "codexhost-runtime-inspect-{}-{}",
+            std::process::id(),
+            crate::runtime_instance::random_nonce().expect("fixture nonce")
+        ));
+        let data = root.join("data");
+        std::fs::create_dir_all(&data).expect("create data fixture");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind unrelated listener");
+        let descriptor_path = root.join("desktop-runtime-v1.json");
+        let descriptor = crate::runtime_instance::RuntimeDescriptor::new(
+            u32::MAX,
+            listener.local_addr().expect("listener address").port(),
+            crate::runtime_instance::random_nonce().expect("descriptor nonce"),
+        )
+        .expect("stale descriptor");
+        crate::runtime_instance::write_descriptor(&descriptor_path, &descriptor)
+            .expect("write stale descriptor");
+
+        let document = runtime_json_at(&descriptor_path, &data);
+
+        drop(listener);
+        std::fs::remove_dir_all(&root).expect("remove fixture");
+        assert_eq!(document["running"], false);
+        assert!(document["launcherPid"].is_null());
     }
 
     #[test]

@@ -10,6 +10,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { makeZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import {
+  DEFAULT_HOST_EXTENSION_STATS_URL,
   discoverHostExtensions,
   fetchHostExtensionCatalog,
   HostExtensionInstallConflict,
@@ -24,6 +25,8 @@ import {
   readHostExtensionBackend,
   readHostExtensionConfiguration,
   readHostExtensionSettings,
+  reportHostExtensionInstall,
+  resolveHostExtensionStatsUrl,
   rollbackHostExtension,
   uninstallHostExtension,
   updateHostExtensionConfiguration,
@@ -484,4 +487,40 @@ it("races validated catalog mirrors, caches only successful results, and install
       expected: { id: "sample", sha256: "0".repeat(64) },
     }),
   ).rejects.toThrow("SHA-256 mismatch");
+});
+
+it("resolves extension stats URL overrides and reports catalog installs best-effort", async () => {
+  expect(resolveHostExtensionStatsUrl({})).toBe(DEFAULT_HOST_EXTENSION_STATS_URL);
+  expect(resolveHostExtensionStatsUrl({ CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "off" })).toBe(
+    undefined,
+  );
+  expect(resolveHostExtensionStatsUrl({ CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "" })).toBe(
+    undefined,
+  );
+  expect(
+    resolveHostExtensionStatsUrl({
+      CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL: "https://custom.example/catalog.json",
+    }),
+  ).toBe(undefined);
+  expect(
+    resolveHostExtensionStatsUrl({
+      CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "https://stats.example/counter/",
+    }),
+  ).toBe("https://stats.example/counter/");
+
+  const calls: Array<{ url: string; method: string | undefined }> = [];
+  vi.stubGlobal("fetch", async (url: URL, init?: RequestInit) => {
+    calls.push({ url: String(url), method: init?.method });
+    throw new Error("network unavailable");
+  });
+
+  await expect(
+    reportHostExtensionInstall("focus-pomodoro", "https://stats.example/counter/"),
+  ).resolves.toBeUndefined();
+  await reportHostExtensionInstall("../invalid", "https://stats.example/counter/");
+  await reportHostExtensionInstall("focus-pomodoro", undefined);
+
+  expect(calls).toEqual([
+    { url: "https://stats.example/counter/install/focus-pomodoro", method: "POST" },
+  ]);
 });

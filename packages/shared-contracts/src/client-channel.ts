@@ -145,6 +145,9 @@ export const clientWorkspaceSnapshotSchema = z.object({
   projectless: z.array(z.string()),
   /** Canonical external pin membership; pins/list provides the native merged order. */
   pinned: z.array(z.string()),
+  /** Projects Desktop placed in each custom section, keyed by the official section ID, in
+   * Desktop's section order. Omitted when no section holds a project. */
+  sectionProjects: z.record(z.string(), z.array(z.string())).optional(),
 });
 export type ClientWorkspaceSnapshot = z.infer<typeof clientWorkspaceSnapshotSchema>;
 const record = z.record(z.string(), z.unknown());

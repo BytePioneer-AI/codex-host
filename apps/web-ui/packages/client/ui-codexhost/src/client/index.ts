@@ -370,6 +370,9 @@ export function apply(ctx: ClientContext): void {
       ImportIcon,
     ),
   );
+  const { locale, colorScheme } = webExtensionAppearance(ctx);
+  const plugins = createPluginsNavigation(document, () => ctx.layout.selectPanel(PLUGINS_PANEL_ID));
+  ctx.effect(() => plugins.dispose, "ui-codexhost: plugin navigation snapshot");
   ctx.slots.inject("sidebar.primary.action", () =>
     ctx.slots.register(
       {
@@ -379,6 +382,7 @@ export function apply(ctx: ClientContext): void {
         locale: NS,
         inject: (): PluginsActionFace => ({
           openPlugins: () => ctx.layout.selectPanel(PLUGINS_PANEL_ID),
+          navigation: plugins,
         }),
       },
       PluginsAction,
@@ -436,9 +440,6 @@ export function apply(ctx: ClientContext): void {
     ),
   );
 
-  const { locale, colorScheme } = webExtensionAppearance(ctx);
-  const plugins = createPluginsNavigation(document, () => ctx.layout.selectPanel(PLUGINS_PANEL_ID));
-  ctx.effect(() => plugins.dispose, "ui-codexhost: plugin navigation snapshot");
   ctx.slots.inject("main", () =>
     ctx.slots.register(
       {

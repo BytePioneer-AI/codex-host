@@ -1,22 +1,27 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { HostClientChannel } from "@codexhost/desktop-control";
 import {
+  DEFAULT_HOST_EXTENSION_STATS_URL,
   installHostExtension,
   updateHostExtensionConfiguration,
 } from "@codexhost/harness-plugin-files";
 import { MappingStore } from "@codexhost/mapping-store";
 import type { JsonObject } from "@codexhost/protocol-core";
 import {
+  HOST_EXTENSION_CATALOG_MIRROR_URL,
+  HOST_EXTENSION_CATALOG_URL,
   HOST_EXTENSIONS_RPC as RPC,
   HOST_EXTENSION_MANAGEMENT_METHODS,
   hostExtensionsRpcSchemas as schemas,
   type HostExtensionManifestV2,
 } from "@codexhost/shared-contracts";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { makeZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import { AppServerHost } from "../src/app-server-host.js";
 import { startClientChannelServer } from "../src/client-channel-server.js";
 import { HostExtensionManager } from "../src/host-extension-manager.js";
@@ -30,6 +35,8 @@ beforeEach(async () => {
   dataDir = path.join(root, "host");
 });
 afterEach(async () => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
   await rm(root, { force: true, recursive: true });
 });
@@ -399,4 +406,92 @@ it("rejects all unified RPCs on SSH-managed Hosts and restricts asset reads to v
   await expect(asset("page.mjs", "e3472f62-d37b-46e4-9a56-b421680b920c")).rejects.toMatchObject({
     code: -32009,
   });
+});
+
+it("reports download stats asynchronously for catalog install and update only", async () => {
+  const buildArchive = (version: string) =>
+    makeZip([
+      {
+        name: "pkg/manifest.json",
+        data: JSON.stringify({
+          manifestVersion: 2,
+          id: "focus-sample",
+          version,
+          name: { en: "Focus Sample", "zh-CN": "专注示例" },
+          description: { en: "Sample", "zh-CN": "示例" },
+          page: { apiVersion: 1, entry: "page.mjs" },
+        }),
+      },
+      { name: "pkg/page.mjs", data: "export function mount() {}" },
+    ]);
+
+  let currentVersion = "1.0.0";
+  const archives: Record<string, Buffer> = {
+    "1.0.0": buildArchive("1.0.0"),
+    "1.1.0": buildArchive("1.1.0"),
+  };
+  const statsCalls: Array<{ url: string; method: string | undefined }> = [];
+
+  vi.stubEnv("CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL", undefined);
+  vi.stubEnv("CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL", undefined);
+  vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
+    const href = String(input);
+    if (href.startsWith(`${DEFAULT_HOST_EXTENSION_STATS_URL}/install/`)) {
+      statsCalls.push({ url: href, method: init?.method });
+      // Verify a stats failure never fails or blocks the install/update.
+      return new Response(null, { status: 503 });
+    }
+    const zip = archives[currentVersion]!;
+    const downloadUrl = `https://github.com/BytePioneer-AI/focus-sample/releases/download/v${currentVersion}/focus-sample.zip`;
+    if (href === HOST_EXTENSION_CATALOG_URL || href === HOST_EXTENSION_CATALOG_MIRROR_URL) {
+      return Response.json({
+        schemaVersion: 2,
+        generatedAt: `2026-11-23T00:00:0${currentVersion === "1.0.0" ? "0" : "1"}Z`,
+        extensions: [
+          {
+            id: "focus-sample",
+            version: currentVersion,
+            format: "codexhost",
+            targets: ["desktop", "web"],
+            apis: { page: 1 },
+            name: { en: "Focus Sample", "zh-CN": "专注示例" },
+            description: { en: "Sample", "zh-CN": "示例" },
+            author: "BytePioneer-AI",
+            repository: "https://github.com/BytePioneer-AI/focus-sample",
+            downloadUrl,
+            sha256: createHash("sha256").update(zip).digest("hex"),
+          },
+        ],
+      });
+    }
+    if (href === downloadUrl) return new Response(Uint8Array.from(zip));
+    throw new Error(`Unexpected fetch: ${href}`);
+  });
+
+  const manager = new HostExtensionManager(dataDir, () => undefined);
+  cleanup.push(() => manager.close());
+
+  const installed = await manager.install({ source: { type: "catalog", id: "focus-sample" } });
+  await vi.waitFor(() =>
+    expect(statsCalls).toEqual([
+      { url: `${DEFAULT_HOST_EXTENSION_STATS_URL}/install/focus-sample`, method: "POST" },
+    ]),
+  );
+
+  currentVersion = "1.1.0";
+  await manager.update({
+    id: "focus-sample",
+    expectedDigest: installed.digest,
+    expectedActivationId: installed.activationId,
+  });
+  await vi.waitFor(() => expect(statsCalls).toHaveLength(2));
+
+  await manager.install({
+    source: await source(
+      "local-only",
+      { page: { apiVersion: 1, entry: "page.mjs" } },
+      { "page.mjs": "export function mount() {}" },
+    ),
+  });
+  expect(statsCalls).toHaveLength(2);
 });

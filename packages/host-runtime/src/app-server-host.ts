@@ -74,6 +74,7 @@ import { managedDelegationSkillReference } from "./delegation-skill.js";
 import { AccountRateLimits } from "./codex-runtime/account-rate-limits.js";
 import { NativeAccountObserver } from "./native-account-observer.js";
 import { nativeThreadSupportsReferences } from "./native-thread-reference-capability.js";
+import { normalizeDesktopTitleMcp } from "./native-title-mcp.js";
 import { THREAD_REFERENCE_SOURCE_HOST_PARAM } from "@codexhost/shared-contracts";
 import { HarnessAccountInspectionCache } from "./harness-accounts.js";
 import type { spawn } from "node:child_process";
@@ -151,6 +152,7 @@ import {
   THREAD_QUEUE_START_IF_EMPTY_PARAM,
   THREAD_STEERING_CONTEXT_PARAM,
   THREAD_STEER_DELIVERY_PARAM,
+  THREAD_NAME_AUTO_SOURCE_PARAM,
   THREAD_STEER_STRICT_TARGET_PARAM,
   REASONING_TRANSCRIPT_COMMAND,
   permissionModeFixedAtCreate,
@@ -986,6 +988,8 @@ export class AppServerHost {
     this.#asyncQuestions = this.#officialRuntimeScope.asyncQuestions;
     this.#client = new ClientChannelHost({
       events: this.clientEvents,
+      diagnoseNativeTitle: (event) =>
+        this.#diagnose(`Native thread title: ${JSON.stringify(event)}`),
       interactions: {
         approvals: this.#pendingDesktopApprovals,
         questions: () =>
@@ -2335,12 +2339,16 @@ export class AppServerHost {
       const options = isRecord(request.params)
         ? this.#observedSessionUsage.requestOptions(request.method, request.params)
         : null;
-      if (options) {
+      const titleParams = normalizeDesktopTitleMcp(request.method, request.params);
+      if (options || titleParams) {
         const original = parseJsonFrame(frame);
         if (isRecord(original))
           frame = encodeJsonFrame({
             ...original,
-            params: { ...(isRecord(original.params) ? original.params : {}), ...options },
+            params: {
+              ...(titleParams ?? (isRecord(original.params) ? original.params : {})),
+              ...options,
+            },
           });
       }
       if (
@@ -3402,6 +3410,7 @@ export class AppServerHost {
       const result = await readThreadCatalog({
         includeArchived: parsed.data.includeArchived ?? false,
         ...(parsed.data.officialCursor ? { officialCursor: parsed.data.officialCursor } : {}),
+        ...(parsed.data.scope ? { scope: parsed.data.scope } : {}),
         readLocal: () => this.#localThreadCatalog(),
         ...(this.#options.sharedThreads ? { sharedThreads: this.#options.sharedThreads } : {}),
         runtimeFor: (id) => this.#listRuntimeState(id),
@@ -5375,19 +5384,36 @@ export class AppServerHost {
       );
       return;
     }
+    const automatic = requestObject(request)[THREAD_NAME_AUTO_SOURCE_PARAM];
+    if (automatic !== undefined && automatic !== "generated" && automatic !== "fallback") {
+      await this.#writer.json(rpcError(request, -32602, "Invalid automatic Thread title source"));
+      return;
+    }
+    const ifUnnamed = automatic !== undefined;
+    if (ifUnnamed && location.record.title) {
+      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+      return;
+    }
     let record: StoredThreadRecordV1;
     try {
-      record = await this.#repository.setTitle(location.record.hostThreadId, name);
+      record = await this.#repository.setTitle(location.record.hostThreadId, name, {
+        ifUnnamed,
+        ...(automatic === "fallback" ? { source: "prompt-fallback" } : {}),
+      });
     } catch {
       await this.#writer.json(
         rpcError(request, -32081, "External Thread title could not be persisted"),
       );
       return;
     }
+    if (ifUnnamed && record.title !== name) {
+      await this.#writer.json(rpcEnvelope(request, { result: {} }));
+      return;
+    }
     if (location.thread) {
       location.thread.record = record;
       location.thread.thread.name = name;
-      location.thread.thread.updatedAt = unixSeconds();
+      if (!ifUnnamed) location.thread.thread.updatedAt = unixSeconds();
     }
     await this.#writer.json(rpcEnvelope(request, { result: {} }));
     await this.#writer.json({
@@ -6792,13 +6818,16 @@ export class AppServerHost {
       if (
         this.#externalRuntime.get(thread.id) !== thread ||
         thread.record.state !== "ready" ||
-        thread.record.title ||
+        (thread.record.title && !thread.record.titleIsPromptFallback) ||
         typeof event.title !== "string" ||
         !event.title.trim()
       )
         return;
       try {
-        const record = await this.#repository.setTitle(thread.id, event.title, { ifUnnamed: true });
+        const record = await this.#repository.setTitle(thread.id, event.title, {
+          ifUnnamed: true,
+          source: "native",
+        });
         if (record.title !== event.title) return;
         thread.record = record;
         thread.thread.name = record.title;

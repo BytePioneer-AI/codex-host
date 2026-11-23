@@ -25,7 +25,7 @@ pub fn finish_launch(print: bool) {
         return;
     };
     if let Ok(Some(owner)) = web_service::owner(&data)
-        && owner.web_running()
+        && owner.web_running().unwrap_or(false)
         && let Ok(mut announced) = WEB_ANNOUNCED.lock()
         && !*announced
     {
@@ -70,7 +70,11 @@ fn resolve_options(
 }
 
 // Called with the Web lifecycle lock held, before GUI clients can connect.
-fn replace_outdated(options: &Options, changed: bool) -> Result<(), Box<dyn Error>> {
+fn replace_outdated(
+    options: &Options,
+    changed: bool,
+    expected_runtime: Option<&Path>,
+) -> Result<(), Box<dyn Error>> {
     let host = host_service::current_runtime(&options.data);
     let web = web_service::owner(&options.data)?;
     let host_mismatched = host.as_ref().is_some_and(|(runtime, version)| {
@@ -80,7 +84,7 @@ fn replace_outdated(options: &Options, changed: bool) -> Result<(), Box<dyn Erro
         owner.runtime != options.runtime || owner.version != env!("CARGO_PKG_VERSION")
     });
     if changed || host_mismatched || web_mismatched {
-        web_service::stop(options)?;
+        web_service::stop(options, expected_runtime)?;
     }
     if host_mismatched {
         println!("codexhost: switching Host to this version and installation");
@@ -118,8 +122,12 @@ fn ensure_current(
     } else {
         false
     };
-    replace_outdated(options, changed)?;
-    web_service::ensure(options)
+    // Update recovery acts on behalf of the Updater: its orphan handling must
+    // be scoped to this installation's runtime, or it could stop an orphan
+    // from another installation that stop-for-update deliberately left alone.
+    let expected_runtime = update_recovery.then_some(options.runtime.as_path());
+    replace_outdated(options, changed, expected_runtime)?;
+    web_service::ensure(options, expected_runtime)
 }
 
 fn web_browser_url(login_url: &str, connect_devices: bool) -> String {
@@ -133,9 +141,30 @@ fn web_browser_url(login_url: &str, connect_devices: bool) -> String {
 fn open_web(
     options: &Options,
     settings: &[String],
+    update_recovery: bool,
     connect_devices: bool,
 ) -> Result<(), Box<dyn Error>> {
-    ensure_current(options, settings, false)?;
+    // Update recovery threads through so orphan cleanup is scoped to this
+    // installation's runtime; device connection stays closed on this entry.
+    open_web_with(
+        options,
+        settings,
+        update_recovery,
+        connect_devices,
+        &ensure_current,
+    )
+}
+
+type EnsureFn<'a> = dyn Fn(&Options, &[String], bool) -> Result<(), Box<dyn Error>> + 'a;
+
+fn open_web_with(
+    options: &Options,
+    settings: &[String],
+    update_recovery: bool,
+    connect_devices: bool,
+    ensure: &EnsureFn<'_>,
+) -> Result<(), Box<dyn Error>> {
+    ensure(options, settings, update_recovery)?;
     let ready =
         web_service::owner(&options.data)?.ok_or("Web exited before its address could be read")?;
     println!("codexhost web: {}", ready.access.login_url);
@@ -169,9 +198,9 @@ pub fn open_for_launch(options: &LaunchOptions, open_browser: bool) -> Result<()
         options.node.clone(),
     )?;
     if open_browser {
-        open_web(&resolved, &[], false)
+        open_web(&resolved, &[], options.update_recovery, false)
     } else {
-        ensure_current(&resolved, &[], false)
+        ensure_current(&resolved, &[], options.update_recovery)
     }
 }
 
@@ -240,7 +269,14 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
         )?;
         let _guard = host_service::lifecycle_lock(&resolved.data, "web-service-lifecycle.lock")?;
         crate::service_update::ensure_start_allowed(&resolved.data)?;
-        replace_outdated(&resolved, false)?;
+        // Update recovery acts on behalf of the Updater: its orphan handling
+        // must be scoped to this installation's runtime on every branch that
+        // may stop a Web, or it could terminate an orphan that stop-for-update
+        // deliberately left alone.
+        let expected_runtime = options
+            .update_recovery
+            .then_some(resolved.runtime.as_path());
+        replace_outdated(&resolved, false, expected_runtime)?;
         Ok(resolved)
     };
     let resolved = match prepare() {
@@ -250,12 +286,14 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
             return;
         }
     };
+    let update_recovery = options.update_recovery;
     let startup = thread::spawn(move || {
         let start = || -> Result<(), Box<dyn Error>> {
             let _guard =
                 host_service::lifecycle_lock(&resolved.data, "web-service-lifecycle.lock")?;
             crate::service_update::ensure_start_allowed(&resolved.data)?;
-            web_service::ensure(&resolved)
+            let expected_runtime = update_recovery.then_some(resolved.runtime.as_path());
+            web_service::ensure(&resolved, expected_runtime)
         };
         if let Err(error) = start() {
             record_failure(&error);
@@ -311,7 +349,12 @@ fn stop_for_update(options: &Options) -> Result<(), Box<dyn Error>> {
         .map_err(|error| format!("stopping Desktop failed: {error}"))?;
     let _guard = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock")?;
     validate_web_and_host_installation(options)?;
-    web_service::stop(options).map_err(|error| format!("stopping Web failed: {error}"))?;
+    // The orphan cleanup must apply the installation check to the record it
+    // actually cleans: validate_installation only inspects the live owner
+    // record, so a Web from another installation sharing this data directory
+    // would otherwise be terminated here.
+    web_service::stop(options, Some(&options.runtime))
+        .map_err(|error| format!("stopping Web failed: {error}"))?;
     if host_service::current_runtime(&options.data).is_some() {
         host_service::run(&options.host_arguments("stop"))
             .map_err(|error| format!("stopping Host failed: {error}"))?;
@@ -334,7 +377,7 @@ fn stop_all(options: &Options) -> Result<(), Box<dyn Error>> {
     }
     let web_lock = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock");
     let web = match &web_lock {
-        Ok(_) => web_service::stop(options),
+        Ok(_) => web_service::stop(options, None),
         Err(error) => Err(error.to_string().into()),
     };
     match web {
@@ -426,16 +469,19 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
             None => println!("Host: stopped"),
         }
         match web_service::owner(&data)? {
-            Some(owner) => println!(
-                "Web: {}; version {}; {}",
-                if owner.web_running() {
-                    "running"
-                } else {
-                    "stopped"
-                },
-                owner.version,
-                owner.access.address
-            ),
+            Some(owner) => {
+                // A failed presence query is not an exit: report the status as
+                // unknown instead of showing a live Web as stopped.
+                let state = match owner.web_running() {
+                    Ok(true) => "running".to_string(),
+                    Ok(false) => "stopped".to_string(),
+                    Err(error) => format!("status unknown ({error})"),
+                };
+                println!(
+                    "Web: {state}; version {}; {}",
+                    owner.version, owner.access.address
+                );
+            }
             None => println!("Web: stopped"),
         }
         match fs::read_to_string(data.join(web_service::FAILURE)) {
@@ -517,7 +563,7 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
             }
             result
         } else {
-            open_web(&options, &settings, connect_devices)
+            open_web(&options, &settings, update_recovery, connect_devices)
         }
     } else if action == "stop-for-update" {
         stop_for_update(&options)
@@ -548,6 +594,44 @@ mod tests {
             !*WEB_ANNOUNCED.lock().unwrap(),
             "joining must not announce Web"
         );
+    }
+
+    #[test]
+    fn open_web_recovery_forwards_update_recovery_without_device_connection() {
+        let root = env::temp_dir().join(format!("codexhost-open-web-flags-{}", std::process::id()));
+        let options = Options {
+            node: root.clone(),
+            host_node: root.clone(),
+            runtime: root.clone(),
+            host_runtime: root.clone(),
+            data: root.clone(),
+            ready: None,
+        };
+        let captured = Mutex::new(None);
+        let ensure = |_: &Options, settings: &[String], update_recovery: bool| {
+            *captured.lock().unwrap() = Some((settings.to_vec(), update_recovery));
+            Ok(())
+        };
+        // Recovery launch: ensure must see update_recovery=true, and the
+        // device-connection page must stay closed (connect_devices=false).
+        let result = open_web_with(&options, &[], true, false, &ensure);
+        assert_eq!(
+            captured
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|(s, r)| (s.as_slice(), *r)),
+            Some((&[][..], true)),
+            "ensure_current must receive update_recovery=true on the recovery path"
+        );
+        assert!(result.is_err());
+        // Plain interactive launch keeps device connection opt-in.
+        let ensure = |_: &Options, _: &[String], update_recovery: bool| {
+            assert!(!update_recovery, "plain launch is not update recovery");
+            Ok(())
+        };
+        assert!(open_web_with(&options, &[], false, true, &ensure).is_err());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

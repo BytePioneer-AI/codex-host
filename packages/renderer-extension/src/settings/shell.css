@@ -3496,7 +3496,6 @@
   white-space: nowrap;
 }
 
-.settings-extensions-card__star,
 .settings-extensions-card__downloads {
   display: inline-flex;
   align-items: center;
@@ -3511,19 +3510,13 @@
   transition: color 140ms ease;
 }
 
-.settings-extensions-card__star--link {
-  margin: 0 -2px;
-  padding: 0 2px;
-  cursor: pointer;
+.settings-extensions-card[data-update-available="true"] {
+  border-color: color-mix(in srgb, var(--settings-focus) 34%, var(--settings-border));
 }
 
-.settings-extensions-card__star--link:hover {
-  color: var(--settings-text);
-}
-
-.settings-extensions-card__star--link:focus-visible {
-  outline: 2px solid var(--settings-focus);
-  outline-offset: 2px;
+.settings-extensions-card[data-update-available="true"]:hover {
+  border-color: color-mix(in srgb, var(--settings-focus) 54%, var(--settings-border));
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--settings-focus) 12%, transparent);
 }
 
 .settings-extensions-card__update {
@@ -3531,12 +3524,40 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 4px 8px;
+  gap: 6px 10px;
+  margin-top: 2px;
+  padding: 6px 8px 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--settings-focus) 24%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--settings-focus) 9%, transparent);
   color: var(--settings-focus);
   font-size: 12px;
   font-weight: 600;
   line-height: 18px;
   overflow-wrap: anywhere;
+}
+
+.settings-extensions-card__update-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-extensions-card__update-label::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--settings-focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--settings-focus) 20%, transparent);
+}
+
+.settings-extensions-card__update .settings-extensions-card__update-button {
+  min-height: 26px;
+  padding: 3px 11px;
+  font-weight: 600;
 }
 
 .settings-extensions-card__categories-text {

@@ -19,9 +19,7 @@ import type {
 import {
   MAX_CARD_CATEGORIES,
   categoryLabelForLocale,
-  formatExtensionCount,
-  isValidExtensionCount,
-  parseSafeHttpUrl,
+  formatPositiveExtensionCount,
   parseSafeIconUrl,
   type ExtensionCapabilityBadge,
   type ExtensionLocale,
@@ -104,8 +102,6 @@ export interface WebExtensionCardProps {
   readonly iconUrl?: string | undefined;
   readonly author?: string | undefined;
   readonly version?: string | undefined;
-  readonly repository?: string | undefined;
-  readonly stars?: number | undefined;
   readonly downloads?: number | undefined;
   readonly trustTier?: DesktopExtensionTrustTier | undefined;
   readonly categories?: readonly DesktopExtensionCategory[] | undefined;
@@ -142,8 +138,6 @@ export function WebExtensionCard({
   iconUrl,
   author,
   version,
-  repository,
-  stars,
   downloads,
   trustTier,
   categories,
@@ -160,22 +154,13 @@ export function WebExtensionCard({
   t,
 }: WebExtensionCardProps): ReactNode {
   const authorVersion = formatAuthorVersion(author, version);
-  const repositoryHref = parseSafeHttpUrl(repository);
-  const formattedStars = isValidExtensionCount(stars) ? formatExtensionCount(stars) : null;
-  const formattedDownloads = isValidExtensionCount(downloads)
-    ? formatExtensionCount(downloads)
-    : null;
+  const formattedDownloads = formatPositiveExtensionCount(downloads);
   const categoryLabels = (categories ?? [])
     .slice(0, MAX_CARD_CATEGORIES)
     .map((cat) => categoryLabelForLocale(cat, contentLocale));
   const categoriesText = categoryLabels.join(" · ");
   const trimmedDescription = description?.trim() ?? "";
-  const showMeta =
-    authorVersion !== "" ||
-    repositoryHref !== null ||
-    formattedStars !== null ||
-    formattedDownloads !== null ||
-    categoriesText !== "";
+  const showMeta = authorVersion !== "" || formattedDownloads !== null || categoriesText !== "";
 
   const stopBubble = (event: MouseEvent | KeyboardEvent) => {
     event.stopPropagation();
@@ -188,6 +173,7 @@ export function WebExtensionCard({
       data-extension-id={extensionId}
       data-card-kind={cardKind}
       data-busy={busy ? "true" : undefined}
+      data-update-available={update ? "true" : undefined}
       tabIndex={0}
       role="button"
       aria-haspopup="dialog"
@@ -267,8 +253,8 @@ export function WebExtensionCard({
 
       {update && (
         <div className={css.cardUpdate} data-update-available="true">
-          <span>{update.label}</span>
-          <div onClick={stopBubble} onKeyDown={stopBubble}>
+          <span className={css.cardUpdateLabel}>{update.label}</span>
+          <div className={css.cardUpdateAction} onClick={stopBubble} onKeyDown={stopBubble}>
             {update.action}
           </div>
         </div>
@@ -282,37 +268,6 @@ export function WebExtensionCard({
               <span className={css.authorVersion} title={authorVersion}>
                 {authorVersion}
               </span>
-            )}
-            {repositoryHref !== null && (
-              <a
-                href={repositoryHref}
-                target="_blank"
-                rel="noopener noreferrer"
-                className={css.metaMetricLink}
-                title={
-                  formattedStars
-                    ? `${t("extensions.githubRepo")} · ${formattedStars}`
-                    : t("extensions.githubRepo")
-                }
-                aria-label={
-                  formattedStars
-                    ? `${t("extensions.githubRepo")} · ${formattedStars}`
-                    : t("extensions.githubRepo")
-                }
-                onClick={stopBubble}
-                onKeyDown={stopBubble}
-              >
-                <svg
-                  width="11"
-                  height="11"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                  aria-hidden="true"
-                >
-                  <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-                </svg>
-                {formattedStars !== null && <span>{formattedStars}</span>}
-              </a>
             )}
             {formattedDownloads !== null && (
               <span

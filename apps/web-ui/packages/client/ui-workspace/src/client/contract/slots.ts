@@ -421,11 +421,7 @@ export interface ArchiveChildrenRequest {
 export interface ArchiveChildrenInjected {
   hooks: { archiveChildrenRequest: HostObservable<ArchiveChildrenRequest | null> };
   dismiss: () => void;
-  choose: (
-    request: ArchiveChildrenRequest,
-    includeChildren: boolean,
-    remember: boolean,
-  ) => Promise<void>;
+  choose: (request: ArchiveChildrenRequest, includeChildren: boolean) => void;
 }
 
 /**

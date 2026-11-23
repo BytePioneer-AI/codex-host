@@ -30,6 +30,8 @@ enum Status {
 struct PageState {
     codex_desktop_installed: bool,
     locale: String,
+    version: &'static str,
+    platform: &'static str,
     status: Status,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
@@ -267,6 +269,8 @@ async fn get_state(shell: State<'_, Shell>) -> Result<PageState, String> {
     Ok(PageState {
         codex_desktop_installed,
         locale: shell.locale.clone(),
+        version: env!("CARGO_PKG_VERSION"),
+        platform: std::env::consts::OS,
         status,
         message,
         web_running: web_ready.is_some(),

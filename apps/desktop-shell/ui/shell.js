@@ -80,6 +80,57 @@
     return getNativeBridge() !== null;
   }
 
+  var ISSUES_NEW_URL = "https://github.com/BytePioneer-AI/codex-host/issues/new";
+
+  function redactTokens(text) {
+    return String(text || "").replace(/(token=)[^\s&#"'\)]+/gi, "$1[redacted]");
+  }
+
+  function truncateText(text, maxLen) {
+    var value = String(text || "").trim();
+    if (value.length <= maxLen) {
+      return value;
+    }
+    return value.slice(0, maxLen - 1) + "…";
+  }
+
+  function buildIssueUrl(context) {
+    var info = context && typeof context === "object" ? context : {};
+    var cleanError = truncateText(redactTokens(info.error || ""), 500);
+    var firstLine = cleanError.split(/\r?\n/)[0] || "";
+    var title = firstLine ? "[Bug] " + truncateText(firstLine, 80) : "[Bug] CodexHost launch error";
+    var platform =
+      info.platform || (typeof navigator !== "undefined" && navigator.platform) || "unknown";
+    var version = info.version ? "v" + String(info.version).replace(/^v/, "") : "unknown";
+    var diagPath =
+      String(platform).toLowerCase().indexOf("win") !== -1
+        ? "%USERPROFILE%\\.codexhost\\diagnostics\\launcher-startup-v1.json"
+        : "~/.codexhost/diagnostics/launcher-startup-v1.json";
+
+    var lines = [
+      "### 问题描述 / Description",
+      "<!-- 请补充触发步骤或截图 / Please describe what you clicked or attach screenshots -->",
+      "",
+      "### 错误信息 / Error",
+      "```text",
+      cleanError || "(none)",
+      "```",
+      "",
+      "### 环境信息 / Environment",
+      "- CodexHost: " + version,
+      "- Platform: " + platform,
+    ];
+    if (info.surface) {
+      lines.push("- Entry: " + info.surface);
+    }
+    lines.push("- Diagnostics file: `" + diagPath + "`");
+
+    var params = new URLSearchParams();
+    params.set("title", title);
+    params.set("body", lines.join("\n"));
+    return ISSUES_NEW_URL + "?" + params.toString();
+  }
+
   function normalizeState(raw, defaults) {
     var base = defaults || {};
     var source = raw && typeof raw === "object" ? raw : {};
@@ -95,6 +146,20 @@
       typeof source.locale === "string" && source.locale.trim()
         ? normalizeLocale(source.locale)
         : normalizeLocale(base.locale || detectInitialLocale());
+
+    var version =
+      typeof source.version === "string" && source.version.trim()
+        ? source.version.trim()
+        : typeof base.version === "string" && base.version.trim()
+          ? base.version.trim()
+          : "";
+
+    var platform =
+      typeof source.platform === "string" && source.platform.trim()
+        ? source.platform.trim()
+        : typeof base.platform === "string" && base.platform.trim()
+          ? base.platform.trim()
+          : "";
 
     var status =
       typeof source.status === "string" && VALID_STATUSES[source.status]
@@ -134,6 +199,8 @@
     return {
       codexDesktopInstalled: codexDesktopInstalled,
       locale: locale,
+      version: version,
+      platform: platform,
       status: status,
       message: message,
       webRunning: webRunning,
@@ -244,6 +311,7 @@
     normalizeState: normalizeState,
     readShellState: readShellState,
     formatError: formatError,
+    buildIssueUrl: buildIssueUrl,
     setHidden: setHidden,
     updateLocaleToggle: updateLocaleToggle,
     bindLocaleToggle: bindLocaleToggle,

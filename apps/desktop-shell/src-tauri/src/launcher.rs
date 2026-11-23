@@ -1,14 +1,17 @@
 use std::env;
 use std::ffi::OsString;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+
+const MAX_CAPTURED_STDERR_BYTES: usize = 16 * 1024;
+const STDERR_DRAIN_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Options {
@@ -179,17 +182,32 @@ impl Launcher {
         out
     }
 
+    fn is_secondary_console_error(line: &str) -> bool {
+        matches!(
+            line,
+            "codexhost launcher: codexhost console could not be started"
+                | "codexhost launcher: codexhost console returned no address"
+        )
+    }
+
     fn summarize_stderr(stderr: &[u8]) -> Option<String> {
         let text = String::from_utf8_lossy(stderr);
-        let line = text
-            .lines()
-            .map(str::trim)
-            .filter(|line| {
-                !line.is_empty()
-                    && !line.starts_with("(node:")
-                    && !line.starts_with("(Use `node --trace-warnings")
-            })
-            .next_back()?;
+        let candidates = text.lines().map(str::trim).filter(|line| {
+            !line.is_empty()
+                && !line.starts_with("(node:")
+                && !line.starts_with("(Use `node --trace-warnings")
+                && !line.starts_with("codexhost console:")
+                && !line.starts_with("codexhost web:")
+        });
+        let mut last = None;
+        let mut last_primary = None;
+        for line in candidates {
+            last = Some(line);
+            if !Self::is_secondary_console_error(line) {
+                last_primary = Some(line);
+            }
+        }
+        let line = last_primary.or(last)?;
         let cleaned = line
             .strip_prefix("codexhost launcher:")
             .or_else(|| line.strip_prefix("codexhost:"))
@@ -202,10 +220,6 @@ impl Launcher {
             bounded.push('…');
         }
         Some(bounded)
-    }
-
-    fn check_exit(args: &[&str], status: ExitStatus) -> Result<(), String> {
-        Self::check_exit_with_stderr(args, status, &[])
     }
 
     fn check_exit_with_stderr(
@@ -271,13 +285,14 @@ impl Launcher {
         let _guard = self.command_lock.lock().unwrap();
         let args = ["launch"];
         let mut command = self.command(&args)?;
-        command.stdout(Stdio::piped());
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
         codexhost_platform::configure_detached_service_command(&mut command)
             .map_err(|error| format!("Cannot detach `codexhost launch`: {error}"))?;
         let mut child = command
             .spawn()
             .map_err(|error| format!("Cannot run `codexhost launch`: {error}"))?;
         let stdout = child.stdout.take().expect("piped launcher stdout");
+        let mut stderr = child.stderr.take().expect("piped launcher stderr");
         let (ready, signal) = mpsc::channel();
         thread::spawn(move || {
             let mut stdout = BufReader::new(stdout);
@@ -292,19 +307,58 @@ impl Launcher {
                 line.clear();
             }
         });
+        let capture_stderr = Arc::new(AtomicBool::new(true));
+        let stderr_buffer = Arc::new(Mutex::new(Vec::new()));
+        let (stderr_done, stderr_finished) = mpsc::channel();
+        {
+            let capture_stderr = Arc::clone(&capture_stderr);
+            let stderr_buffer = Arc::clone(&stderr_buffer);
+            thread::spawn(move || {
+                let mut chunk = [0_u8; 4096];
+                while let Ok(read) = stderr.read(&mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    if !capture_stderr.load(Ordering::Acquire) {
+                        // Drain detached supervisor stderr so Windows pipes never block.
+                        let _ = io::copy(&mut stderr, &mut io::sink());
+                        break;
+                    }
+                    let mut buffer = stderr_buffer.lock().unwrap();
+                    let overflow = (buffer.len() + read).saturating_sub(MAX_CAPTURED_STDERR_BYTES);
+                    if overflow > 0 {
+                        buffer.drain(..overflow);
+                    }
+                    buffer.extend_from_slice(&chunk[..read]);
+                }
+                let _ = stderr_done.send(());
+            });
+        }
 
         let deadline = Instant::now() + Duration::from_secs(60);
         let result = loop {
             if signal.try_recv().is_ok() {
+                capture_stderr.store(false, Ordering::Release);
                 break Ok(());
             }
             match child.try_wait() {
                 // Attaching to an existing Desktop can exit successfully without a ready line.
-                Ok(Some(status)) => return Self::check_exit(&args, status),
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        let _ = stderr_finished.recv_timeout(STDERR_DRAIN_GRACE);
+                    }
+                    capture_stderr.store(false, Ordering::Release);
+                    let captured = stderr_buffer.lock().unwrap().clone();
+                    return Self::check_exit_with_stderr(&args, status, &captured);
+                }
                 Ok(None) => (),
-                Err(error) => break Err(format!("Cannot wait for `codexhost launch`: {error}")),
+                Err(error) => {
+                    capture_stderr.store(false, Ordering::Release);
+                    break Err(format!("Cannot wait for `codexhost launch`: {error}"));
+                }
             }
             if Instant::now() >= deadline {
+                capture_stderr.store(false, Ordering::Release);
                 break Err("Timed out waiting for Codex Desktop readiness. Startup may still be in progress; see CodexHost diagnostics.".into());
             }
             thread::sleep(Duration::from_millis(25));
@@ -455,12 +509,54 @@ esac
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn launch_codex_desktop_surfaces_stderr_on_failure() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("codexhost");
+        fs::write(
+            &executable,
+            r#"#!/bin/sh
+echo "codexhost launcher: cannot activate Codex Desktop AppX package: Access is denied." >&2
+echo "" >&2
+echo "codexhost console: http://127.0.0.1:49435/?token=secret" >&2
+echo "codexhost web: http://127.0.0.1:49433/?token=secret" >&2
+exit 1
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let launcher = Launcher {
+            executable: Some(executable),
+            data_dir: root.path().to_owned(),
+            command_lock: Mutex::new(()),
+            stopping: AtomicBool::new(false),
+        };
+        assert_eq!(
+            launcher.launch_codex_desktop().unwrap_err(),
+            "cannot activate Codex Desktop AppX package: Access is denied."
+        );
+    }
+
     #[test]
     fn summarizes_launcher_stderr_without_node_warnings_or_tokens() {
         let stderr = b"(node:123) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental\n(Use `node --trace-warnings ...` to show where the warning was created)\ncodexhost launcher: Web port 4400 is in use; see http://127.0.0.1:4400/?token=secret123&x=1\n";
         assert_eq!(
             Launcher::summarize_stderr(stderr).as_deref(),
             Some("Web port 4400 is in use; see http://127.0.0.1:4400/?token=[redacted]&x=1")
+        );
+        let with_post_failure_console = b"codexhost launcher: cannot install the temporary AppX environment\ncodexhost launcher: codexhost console could not be started\ncodexhost console: http://127.0.0.1:49435/?token=secret\ncodexhost web: http://127.0.0.1:49433/?token=secret\n";
+        assert_eq!(
+            Launcher::summarize_stderr(with_post_failure_console).as_deref(),
+            Some("cannot install the temporary AppX environment")
+        );
+        assert_eq!(
+            Launcher::summarize_stderr(b"codexhost launcher: codexhost console could not be started\n")
+                .as_deref(),
+            Some("codexhost console could not be started")
         );
         assert_eq!(
             Launcher::summarize_stderr(

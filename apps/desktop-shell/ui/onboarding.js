@@ -44,6 +44,7 @@
       footnote: "托盘图标随时可切换窗口、查看诊断日志或完全退出。",
       chooseErrorPrefix: "无法打开所选方式：",
       chooseErrorFallback: "请稍后重试，或从系统托盘打开诊断控制台。",
+      reportIssue: "提交 Issue",
       previewNotice: function (surfaceLabel) {
         return "离线预览模式：已模拟选择「" + surfaceLabel + "」（未连接桌面壳）。";
       },
@@ -94,6 +95,7 @@
       footnote: "Switch windows, open diagnostics, or quit anytime from the system tray.",
       chooseErrorPrefix: "Could not open selection: ",
       chooseErrorFallback: "Please try again or open the diagnostic console from the system tray.",
+      reportIssue: "Report Issue",
       previewNotice: function (surfaceLabel) {
         return (
           'Offline preview: simulated selecting "' +
@@ -116,8 +118,11 @@
   var state = {
     locale: ui.detectInitialLocale(),
     localeLockedByUser: ui.getQueryLocale() !== null,
+    version: "",
+    platform: "",
     codexDesktopInstalled: params.get("installed") !== "false",
     submittingSurface: null,
+    lastAttemptedSurface: "",
     webRunning: false,
     webUrl: "",
     webLoginUrl: "",
@@ -125,6 +130,7 @@
     webCopied: false,
     feedbackKind: null,
     feedbackMessage: "",
+    feedbackErrorDetail: "",
     previewTheme: ui.applyThemeFromQuery(),
     previewSimulateError: params.get("error") === "1" || params.get("error") === "true",
   };
@@ -173,6 +179,8 @@
     feedbackIconError: document.getElementById("feedback-icon-error"),
     feedbackIconInfo: document.getElementById("feedback-icon-info"),
     feedbackText: document.getElementById("feedback-text"),
+    feedbackIssueLink: document.getElementById("feedback-issue-link"),
+    feedbackIssueLabel: document.getElementById("feedback-issue-label"),
     footnoteText: document.getElementById("onboarding-footnote-text"),
     previewBar: document.getElementById("preview-bar"),
   };
@@ -280,9 +288,24 @@
       ui.setHidden(els.feedbackIconError, isInfo);
       ui.setHidden(els.feedbackIconInfo, !isInfo);
       els.feedbackText.textContent = state.feedbackMessage;
+      if (els.feedbackIssueLink) {
+        ui.setHidden(els.feedbackIssueLink, isInfo);
+        if (!isInfo) {
+          els.feedbackIssueLink.href = ui.buildIssueUrl({
+            error: state.feedbackErrorDetail || state.feedbackMessage,
+            version: state.version,
+            platform: state.platform,
+            surface: state.lastAttemptedSurface || "onboarding",
+          });
+          if (els.feedbackIssueLabel) {
+            els.feedbackIssueLabel.textContent = t.reportIssue;
+          }
+        }
+      }
     } else {
       ui.setHidden(els.feedbackBanner, true);
       els.feedbackText.textContent = "";
+      ui.setHidden(els.feedbackIssueLink, true);
     }
 
     renderPreviewBar();
@@ -297,8 +320,10 @@
     }
 
     state.submittingSurface = surface;
+    state.lastAttemptedSurface = surface;
     state.feedbackKind = null;
     state.feedbackMessage = "";
+    state.feedbackErrorDetail = "";
     render();
 
     var bridge = ui.getNativeBridge();
@@ -313,6 +338,7 @@
           state.submittingSurface = null;
           state.feedbackKind = "error";
           state.feedbackMessage = t.chooseErrorPrefix + detail;
+          state.feedbackErrorDetail = detail;
           render();
         });
       return;
@@ -325,10 +351,12 @@
       if (state.previewSimulateError) {
         state.feedbackKind = "error";
         state.feedbackMessage = t.chooseErrorPrefix + t.previewErrorSample;
+        state.feedbackErrorDetail = t.previewErrorSample;
       } else {
         var label = surface === "native-shell" ? t.nativeTitle : t.desktopTitle;
         state.feedbackKind = "info";
         state.feedbackMessage = t.previewNotice(label);
+        state.feedbackErrorDetail = "";
       }
       render();
     }, 520);
@@ -490,9 +518,12 @@
         })
         .catch(function (err) {
           var t = getCopy();
+          var detail = ui.formatError(err, t.webErrorFallback);
           state.webBusy = null;
+          state.lastAttemptedSurface = "web-copy";
           state.feedbackKind = "error";
-          state.feedbackMessage = t.webErrorPrefix + ui.formatError(err, t.webErrorFallback);
+          state.feedbackMessage = t.webErrorPrefix + detail;
+          state.feedbackErrorDetail = detail;
           render();
         });
       return;
@@ -511,6 +542,7 @@
     }
     state.feedbackKind = null;
     state.feedbackMessage = "";
+    state.feedbackErrorDetail = "";
 
     var bridge = ui.getNativeBridge();
     if (bridge && typeof bridge.openWebBrowser === "function") {
@@ -526,13 +558,17 @@
           state.webBusy = null;
           state.feedbackKind = "info";
           state.feedbackMessage = t.webOpenedInfo;
+          state.feedbackErrorDetail = "";
           render();
         })
         .catch(function (err) {
           var t = getCopy();
+          var detail = ui.formatError(err, t.webErrorFallback);
           state.webBusy = null;
+          state.lastAttemptedSurface = "web-open";
           state.feedbackKind = "error";
-          state.feedbackMessage = t.webErrorPrefix + ui.formatError(err, t.webErrorFallback);
+          state.feedbackMessage = t.webErrorPrefix + detail;
+          state.feedbackErrorDetail = detail;
           render();
         });
       return;
@@ -578,6 +614,8 @@
     if (!state.localeLockedByUser && result.state.locale) {
       state.locale = result.state.locale;
     }
+    state.version = result.state.version;
+    state.platform = result.state.platform;
     state.codexDesktopInstalled = result.state.codexDesktopInstalled;
     state.webRunning = result.state.webRunning;
     state.webUrl = result.state.webUrl;
@@ -585,6 +623,7 @@
     if (result.state.status === "error" && result.state.message) {
       state.feedbackKind = "error";
       state.feedbackMessage = result.state.message;
+      state.feedbackErrorDetail = result.state.message;
     }
     render();
   });

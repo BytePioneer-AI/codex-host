@@ -37,7 +37,8 @@ export function apply(ctx: Context): void {
     ctx.shortcuts.describeBinding(binding);
   for (const command of fixedCommands(
     t,
-    ctx.shortcuts.runtime === "desktop" && ctx.shortcuts.platform === "windows",
+    ctx.shortcuts.platform === "windows" &&
+      document.documentElement.hasAttribute("data-tauri-shell"),
   )) {
     ctx.effect(() => ctx.shortcuts.registerFixed(command), `shortcuts: ${command.id}`);
   }

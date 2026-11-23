@@ -1444,3 +1444,59 @@ it("does not spin the microtask queue when hostsChanged fires during an archive 
   // Multi-host dirty queue must not escalate into a full refresh of untouched peers.
   assert.equal(listCounts.get(hostC), initialCountC);
 });
+
+it("unarchives an archived remote session without calling read/snapshot beforehand", async (t) => {
+  const hostId = "remote-peer:peer-b";
+  const row = {
+    id: "thread-archived",
+    cwd: "/remote/b",
+    name: "Archived Remote",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 2,
+    status: { type: "idle" },
+    turns: [],
+  };
+  let archived = true;
+  const order: string[] = [];
+  const remote = new RemoteSessions(new EventHub("remote-unarchive"), async (operation) => {
+    if (operation.kind === "hosts") return [{ hostId, online: true, epoch: "epoch-b" }];
+    if (operation.kind === "list") {
+      return { data: archived ? [] : [row], nextCursor: null };
+    }
+    if (operation.kind === "read") {
+      order.push("read");
+      if (archived) {
+        throw new Error(
+          `session ${row.id} is archived. Run codex unarchive to unarchive it first.`,
+        );
+      }
+      return { result: { thread: row }, epoch: "epoch-b", requests: [] };
+    }
+    if (operation.kind === "archive") {
+      order.push(operation.archived ? "archive" : "unarchive");
+      archived = operation.archived;
+      return {};
+    }
+    return {};
+  });
+  t.after(() => remote.close());
+
+  const rpc = new RpcRegistry();
+  rpc.register("workspace/unarchiveSession", () => {
+    throw new Error("must not route locally");
+  });
+  rpc.register("session/unarchive", () => {
+    throw new Error("must not route locally");
+  });
+  remote.install(rpc, new StreamRegistry());
+
+  const sessionId = remoteSessionId(hostId, row.id);
+  const reply = await rpc.dispatch("workspace/unarchiveSession", {
+    args: { request: { sessionId } },
+  });
+  assert.equal(reply.ok, true);
+  assert.equal(archived, false);
+  // Must invoke unarchive BEFORE attempting any snapshot/read.
+  assert.deepEqual(order, ["unarchive", "read"]);
+});

@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { requestRemoteSession } from "@codexhost/desktop-control";
 import { PeerHostManager, createCompositeRemoteCall } from "./peer-host-manager.ts";
 import { PeerHostStore } from "./peer-host-store.ts";
-import { PeerEndpointError, peerEndpoint } from "./peer-manifest.ts";
+import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "./peer-manifest.ts";
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir } from "node:os";
@@ -105,24 +105,10 @@ const DISTRIBUTION_ROOT = resolve(import.meta.dirname, "..");
 const PACKED_WEB = join(DISTRIBUTION_ROOT, "web");
 const PACKED = existsSync(join(PACKED_WEB, "plugins.json"));
 const REPO_ROOT = resolve(import.meta.dirname, "../../..");
-function readServerVersion(): string {
-  if (typeof CODEXHOST_SERVER_VERSION === "string" && CODEXHOST_SERVER_VERSION.trim()) {
-    return CODEXHOST_SERVER_VERSION.trim();
-  }
-  for (const candidate of [
-    join(DISTRIBUTION_ROOT, "package.json"),
-    join(REPO_ROOT, "package.json"),
-  ]) {
-    try {
-      const parsed = JSON.parse(readFileSync(candidate, "utf8")) as { version?: unknown };
-      if (typeof parsed.version === "string" && parsed.version.trim()) return parsed.version.trim();
-    } catch {
-      /* Try next metadata candidate. */
-    }
-  }
-  return "0.0.0";
-}
-const SERVER_VERSION = readServerVersion();
+const SERVER_VERSION = resolveServerVersion(
+  typeof CODEXHOST_SERVER_VERSION === "string" ? CODEXHOST_SERVER_VERSION : undefined,
+  [join(DISTRIBUTION_ROOT, "package.json"), join(REPO_ROOT, "package.json")],
+);
 // A packed Web distribution ships the subprocess runner as JavaScript beside
 // the server bundle; the source package's TypeScript entry is not runnable.
 if (PACKED) {
@@ -632,7 +618,11 @@ const server = createWebServer((request, response) => {
       return;
     }
     if (pathname.startsWith("/api/peer/v1/")) {
-      if (!requestAuth || !trust.sameOrigin(request)) {
+      if (!requestAuth) {
+        response.writeHead(401).end();
+        return;
+      }
+      if (!trust.sameOrigin(request)) {
         response.writeHead(403).end();
         return;
       }
@@ -653,6 +643,7 @@ const server = createWebServer((request, response) => {
           rpc,
           await resolvePeerEpoch(),
           SERVER_VERSION,
+          [resolve(values.workspace as string)],
         );
         response
           .writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })

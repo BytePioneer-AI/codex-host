@@ -177,7 +177,11 @@ export type RemotePeerListDirsResult = z.infer<typeof remotePeerListDirsResultSc
 export const remotePeerCreateDirParamsSchema = z.object({
   peerId: remotePeerIdSchema,
   parentPath: z.string().min(1).max(8192),
-  name: z.string().trim().min(1).max(255),
+  name: z
+    .string()
+    .min(1)
+    .max(255)
+    .refine((value) => value.trim().length > 0, "Directory name cannot be blank"),
 });
 export type RemotePeerCreateDirParams = z.infer<typeof remotePeerCreateDirParamsSchema>;
 

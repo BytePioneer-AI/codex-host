@@ -28,6 +28,8 @@ export class PeerHostClient {
   state: c.RemotePeerState;
   private timer?: NodeJS.Timeout;
   private cursor?: c.ClientChannelCursor;
+  private createdEpoch: string | undefined;
+  private createdThreads = new Set<string>();
   private readonly streamIdleTimeoutMs: number;
   readonly hostId: string;
 
@@ -66,10 +68,19 @@ export class PeerHostClient {
     };
   }
 
+  private noteCreatedThread(threadId: string, epoch: string) {
+    if (this.createdEpoch !== epoch) {
+      this.createdEpoch = epoch;
+      this.createdThreads.clear();
+    }
+    this.createdThreads.add(threadId);
+  }
+
   private async fetch(path: string, method = "GET", body?: unknown, streamSignal?: AbortSignal) {
     if (!this.record.enabled) throw new RpcError("remote/offline", "Remote peer is disabled");
+    const requestTimeoutMs = path.startsWith("/api/ch/v1/") ? 60_000 : 8_000;
     const handshake = new AbortController();
-    const timer = setTimeout(() => handshake.abort(), 8000);
+    const timer = setTimeout(() => handshake.abort(), 8_000);
     try {
       const res = await fetch(this.record.origin + path, {
         method,
@@ -81,25 +92,29 @@ export class PeerHostClient {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: streamSignal
           ? AbortSignal.any([handshake.signal, streamSignal, this.life.signal])
-          : AbortSignal.any([this.life.signal, AbortSignal.timeout(8000)]),
+          : AbortSignal.any([this.life.signal, AbortSignal.timeout(requestTimeoutMs)]),
       });
       if (res.ok) return res;
       const failure = await res
         .json()
-        .then((payload: unknown) =>
-          payload &&
-          typeof payload === "object" &&
-          "error" in payload &&
-          typeof payload.error === "string"
-            ? payload.error
-            : undefined,
-        )
+        .then((payload: unknown) => {
+          if (!payload || typeof payload !== "object" || !("error" in payload)) return undefined;
+          const err = payload.error;
+          if (typeof err === "string") return { message: err };
+          if (err && typeof err === "object" && "message" in err && typeof err.message === "string")
+            return {
+              message: err.message,
+              code: "code" in err && typeof err.code === "number" ? err.code : undefined,
+            };
+          return undefined;
+        })
         .catch(() => undefined);
-      if ([401, 403].includes(res.status))
+      if (res.status === 401 || (res.status === 403 && !failure?.message))
         throw new RpcError("remote/auth-error", "Remote peer rejected the access token");
       throw new RpcError(
         "remote/request-failed",
-        failure ?? `Remote peer returned HTTP ${res.status}`,
+        failure?.message ?? `Remote peer returned HTTP ${res.status}`,
+        failure?.code === undefined ? {} : { hostCode: failure.code },
       );
     } catch (err) {
       if (err instanceof RpcError) throw err;
@@ -290,11 +305,24 @@ export class PeerHostClient {
     const base = { threadId };
     switch (op.kind) {
       case "list": {
-        const loaded = op.includeLoaded ? await loadedThreadIds() : null;
-        return {
-          ...(await rpc("thread/list", { cursor: op.cursor, archived: op.archived, limit: 100 })),
-          ...(loaded ? { loaded, epoch } : {}),
-        };
+        const page = await rpc("thread/list", {
+          cursor: op.cursor,
+          archived: op.archived,
+          limit: 100,
+        });
+        if (this.createdEpoch !== epoch) {
+          this.createdEpoch = epoch;
+          this.createdThreads.clear();
+        }
+        if (Array.isArray(page?.data)) {
+          for (const row of page.data) {
+            if (row && typeof row === "object" && typeof (row as { id?: unknown }).id === "string")
+              this.createdThreads.delete((row as { id: string }).id);
+          }
+        }
+        if (!op.includeLoaded) return page;
+        const loaded = [...new Set([...(await loadedThreadIds()), ...this.createdThreads])];
+        return { ...page, loaded, epoch };
       }
       case "read":
       case "status":
@@ -382,20 +410,28 @@ export class PeerHostClient {
         );
       case "inspectHarness":
         return rpc("codexhost/harness/inspect", { cwd: op.cwd, harnessId: op.harnessId });
-      case "create":
-        return rpc("thread/start", { cwd: op.cwd, historyMode: "paginated" });
+      case "create": {
+        const result = await rpc("thread/start", { cwd: op.cwd, historyMode: "paginated" });
+        if (epoch && typeof result?.thread?.id === "string") {
+          this.noteCreatedThread(result.thread.id, epoch);
+        }
+        return result;
+      }
       case "startSelected": {
         const result = await rpc("thread/start", {
           cwd: op.cwd,
           historyMode: "paginated",
           model: op.model,
-          serviceTier: op.serviceTier,
-          config: { model_reasoning_effort: op.reasoningEffort },
+          ...(op.serviceTier ? { serviceTier: op.serviceTier } : {}),
+          ...(op.reasoningEffort ? { config: { model_reasoning_effort: op.reasoningEffort } } : {}),
         });
         const owner = await rpc("codexhost/thread/inspect", { threadId: result.thread.id });
         if ((owner.owner === "codex" ? "codex" : owner.harnessId) !== op.harnessId) {
           await rpc("thread/archive", { threadId: result.thread.id }).catch(() => undefined);
           throw Error("Selected Harness not confirmed");
+        }
+        if (epoch && typeof result?.thread?.id === "string") {
+          this.noteCreatedThread(result.thread.id, epoch);
         }
         return result;
       }
@@ -414,17 +450,14 @@ export class PeerHostClient {
                 threadId,
                 permissionModeId: op.permissionModeId,
               });
-      case "prompt":
-        {
-          const loaded = await loadedThreadIds();
-          if (!loaded.includes(threadId))
-            await rpc("thread/resume", { threadId, excludeTurns: true });
-        }
+      case "prompt": {
+        const clientUserMessageId = op.requestId?.trim();
         return rpc("turn/start", {
           threadId,
           input: [{ type: "text", text: op.text, text_elements: [] }],
-          clientUserMessageId: op.requestId,
+          ...(clientUserMessageId ? { clientUserMessageId } : {}),
         });
+      }
       case "delivery": {
         const a = op.action;
         const snapshot = c.clientThreadSnapshotSchema.parse(await post("snapshot", base));
@@ -486,8 +519,11 @@ export class PeerHostClient {
         return rpc("turn/interrupt", { threadId, turnId: op.turnId });
       case "rename":
         return rpc("thread/name/set", { threadId, name: op.name });
-      case "archive":
-        return rpc(op.archived ? "thread/archive" : "thread/unarchive", base);
+      case "archive": {
+        const res = await rpc(op.archived ? "thread/archive" : "thread/unarchive", base);
+        if (op.archived) this.createdThreads.delete(threadId);
+        return res;
+      }
       case "respond":
         return post("respond", {
           threadId,

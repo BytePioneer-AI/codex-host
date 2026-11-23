@@ -2,9 +2,11 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  min-width: 0;
   max-width: 88px;
   margin-left: 6px;
   flex-shrink: 0;
+  overflow: hidden;
   font-size: 11px;
   line-height: 16px;
   font-weight: 450;
@@ -15,6 +17,8 @@
   margin-left: 4px;
 }
 .hostLabel {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

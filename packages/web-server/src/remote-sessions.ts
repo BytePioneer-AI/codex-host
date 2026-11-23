@@ -1184,6 +1184,49 @@ export class RemoteSessions {
       });
       return { accepted: true };
     }
+    if (method === "session/unarchive" || method === "workspace/unarchiveSession") {
+      const identity = remoteSessionIdentity(id);
+      if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
+      let entry = this.entries.get(id);
+      let epoch = entry?.epoch ?? this.hosts.get(identity.hostId)?.epoch;
+      if (!epoch) {
+        await this.refresh(identity.hostId);
+        entry = this.entries.get(id);
+        epoch = entry?.epoch ?? this.hosts.get(identity.hostId)?.epoch;
+      }
+      if (!epoch) {
+        await this.read(id);
+        entry = this.entries.get(id);
+        epoch = entry?.epoch;
+      }
+      if (!epoch) throw new RpcError("remote/offline", "Remote connection changed");
+      const operation: RemoteSessionOperation = {
+        kind: "archive",
+        ...identity,
+        epoch,
+        archived: false,
+      };
+      this.archiveWrites++;
+      this.archiveRevision++;
+      try {
+        await this.invoke(operation);
+      } finally {
+        this.archiveWrites--;
+        this.archiveRevision++;
+        if (this.archiveWrites === 0 && !this.closed && !this.listing && this.hasPendingRefresh()) {
+          this.refreshPending = false;
+          void this.startRefresh().catch(() => undefined);
+        }
+      }
+      if (entry) {
+        entry.archived = false;
+        this.syncArchives();
+      }
+      await this.read(id).catch(() => undefined);
+      return method === "workspace/unarchiveSession"
+        ? { archivedSessionIds: this.syncArchives() }
+        : { accepted: true };
+    }
     const readOnly = [
       "session/projections",
       "session/page",

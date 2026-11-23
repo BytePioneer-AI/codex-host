@@ -181,7 +181,7 @@ fn stop_for_launch_in(data: Option<&Path>) {
             || crate::web_service::owner(data)
                 .ok()
                 .flatten()
-                .is_some_and(|owner| owner.web_running())
+                .is_some_and(|owner| owner.web_running().unwrap_or(false))
     }) {
         return;
     }

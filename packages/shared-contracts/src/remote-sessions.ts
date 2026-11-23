@@ -14,7 +14,9 @@ export function remoteSessionRequestBytes(operation: RemoteSessionOperation): nu
 
 export const REMOTE_IDENTITY_MAX_LENGTH = 1024;
 const identity = z.string().min(1).max(REMOTE_IDENTITY_MAX_LENGTH);
-const target = { hostId: identity.regex(/^remote-(?:ssh(?:-|:)|control:)/u) };
+const target = {
+  hostId: identity.regex(/^(?:remote-(?:ssh(?:-|:)|control:)|remote-peer:[a-zA-Z0-9_-]{1,64}$)/u),
+};
 const thread = { ...target, threadId: identity };
 const text = z.string().min(1).max(8000);
 const input = { text, requestId: identity };

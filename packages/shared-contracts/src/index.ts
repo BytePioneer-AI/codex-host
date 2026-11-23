@@ -492,6 +492,7 @@ export {
   type RemoteQueueSnapshot,
   type RemoteSessionOperation,
 } from "./remote-sessions.js";
+export * from "./remote-peers.js";
 
 export {
   officialCodexModelRef,

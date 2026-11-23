@@ -64,9 +64,9 @@ codexhost web      # 启动 Web 并在浏览器中打开
 codexhost stop     # 停止 CodexHost 的全部后台服务
 ```
 
-**方式二：安装包**（macOS / Windows）
+**方式二：安装包**（macOS / Windows / Linux）
 
-从 [Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载对应平台的安装包。Web 端：安装后打开 codexhost，本地访问 http://127.0.0.1:4400 。
+从 [Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载对应平台的安装包；Linux 使用 `.tar.gz` 压缩包，见 [Linux 说明](../platforms/linux/linux.zh-CN.md#压缩包)。Web 端：安装后打开 codexhost，本地访问 http://127.0.0.1:4400 。
 
 **方式三：WinGet**（Windows x64 / ARM64）
 

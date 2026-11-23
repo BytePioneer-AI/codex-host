@@ -16,8 +16,8 @@ const RELEASE_NOTES_URL_PATTERN =
   /^https:\/\/github\.com\/BytePioneer-AI\/codex-host\/releases\/tag\/(v[0-9A-Za-z.+-]+)$/u;
 const DOWNLOAD_URL_PREFIX = "https://github.com/BytePioneer-AI/codex-host/releases/download/";
 
-export type InstallerReleaseTarget = "macos-arm64" | "macos-x64" | "windows-x64" | "windows-arm64";
-export type ReleaseTarget = InstallerReleaseTarget | "linux-x64" | "linux-arm64";
+export type ReleaseTarget =
+  "macos-arm64" | "macos-x64" | "windows-x64" | "windows-arm64" | "linux-x64" | "linux-arm64";
 
 export interface CodexhostLatestRelease {
   version: string;
@@ -203,18 +203,19 @@ export function compareSemanticVersions(leftValue: string, rightValue: string): 
   return 0;
 }
 
-export function expectedInstallerAssetName(
-  version: string,
-  target: InstallerReleaseTarget,
-): string {
+export function expectedInstallerAssetName(version: string, target: ReleaseTarget): string {
   requireSemanticVersion(version);
-  const extension = target.startsWith("macos-") ? "dmg" : "exe";
+  const extension = target.startsWith("macos-")
+    ? "dmg"
+    : target.startsWith("windows-")
+      ? "exe"
+      : "tar.gz";
   return `codexhost-${version}-${target}.${extension}`;
 }
 
 export function selectInstallerReleaseArtifact(
   release: CodexhostLatestRelease,
-  target: InstallerReleaseTarget,
+  target: ReleaseTarget,
 ): SelectedReleaseArtifact {
   const name = expectedInstallerAssetName(release.version, target);
   const matches = release.assets.filter((asset) => asset.name === name);

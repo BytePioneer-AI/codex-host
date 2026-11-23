@@ -276,7 +276,7 @@ export function npmPackageOs(target) {
 }
 
 export function npmPackageCpu(target) {
-  const architecture = target.packageArchitecture ?? target.installerArchitecture;
+  const architecture = target.installerArchitecture;
   if (architecture === "arm64") return ["arm64"];
   if (architecture === "x64") return ["x64"];
   throw new Error(`unsupported npm package architecture: ${architecture}`);

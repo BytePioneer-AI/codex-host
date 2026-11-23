@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -38,6 +38,7 @@ pub(crate) enum Installation {
     Npm(NpmInstallation),
     WindowsInstaller(WindowsInstallation),
     MacosDmg(MacOsInstallation),
+    LinuxArchive(LinuxArchiveInstallation),
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,12 +67,22 @@ pub(crate) struct MacOsInstallation {
     pub(crate) app_path: PathBuf,
 }
 
+/// A user-owned directory extracted from the release `.tar.gz`; updates replace it whole.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LinuxArchiveInstallation {
+    pub(crate) archive_path: PathBuf,
+    pub(crate) artifact_sha256: String,
+    pub(crate) install_root: PathBuf,
+}
+
 impl Installation {
     pub(crate) fn resources_root(&self) -> PathBuf {
         match self {
             Self::Npm(npm) => npm.npm_package_root.clone(),
             Self::WindowsInstaller(windows) => windows.install_root.clone(),
             Self::MacosDmg(macos) => macos.app_path.join("Contents/Resources"),
+            Self::LinuxArchive(linux) => linux.install_root.clone(),
         }
     }
 
@@ -88,6 +99,7 @@ impl Installation {
             Self::Npm(npm) => npm.node_path.clone(),
             Self::WindowsInstaller(windows) => windows.install_root.join("runtime/node.exe"),
             Self::MacosDmg(macos) => macos.app_path.join("Contents/Resources/runtime/node"),
+            Self::LinuxArchive(linux) => linux.install_root.join("runtime/node"),
         }
     }
 
@@ -96,6 +108,7 @@ impl Installation {
             Self::Npm(_) => "npm",
             Self::WindowsInstaller(_) => "windows-installer",
             Self::MacosDmg(_) => "macos-dmg",
+            Self::LinuxArchive(_) => "linux-archive",
         }
     }
 }
@@ -158,6 +171,92 @@ fn valid_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(
+                    normalized.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    normalized.pop();
+                }
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn resolve_path(path: &Path, depth: u8) -> PathBuf {
+    const MAX_SYMLINK_DEPTH: u8 = 16;
+    let mut resolved = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => {
+                resolved.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if let Ok(canonical) = fs::canonicalize(&resolved) {
+                    resolved = canonical;
+                }
+                if matches!(
+                    resolved.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    resolved.pop();
+                }
+            }
+            Component::Normal(segment) => {
+                resolved.push(segment);
+                if let Ok(canonical) = fs::canonicalize(&resolved) {
+                    resolved = canonical;
+                } else if depth < MAX_SYMLINK_DEPTH
+                    && let Ok(target) = fs::read_link(&resolved)
+                {
+                    let next = if target.is_absolute() {
+                        target
+                    } else {
+                        resolved
+                            .parent()
+                            .map_or_else(|| target.clone(), |parent| parent.join(&target))
+                    };
+                    resolved = resolve_path(&next, depth + 1);
+                }
+            }
+        }
+    }
+    resolved
+}
+
+fn path_is_within(candidate: &Path, root: &Path) -> bool {
+    if normalize_lexical(candidate).starts_with(normalize_lexical(root)) {
+        return true;
+    }
+    resolve_path(candidate, 0).starts_with(resolve_path(root, 0))
+}
+
+pub(crate) fn validate_linux_archive_paths(
+    request: &UpdateRequest,
+    linux: &LinuxArchiveInstallation,
+) -> Result<(), String> {
+    if let Some(data) = &request.data_directory
+        && path_is_within(data, &linux.install_root)
+    {
+        return Err("service data directory must not be inside Linux install root".into());
+    }
+    if path_is_within(&linux.archive_path, &linux.install_root) {
+        return Err("Linux release archive must not be inside Linux install root".into());
+    }
+    if path_is_within(&request.status_path, &linux.install_root) {
+        return Err("update status path must not be inside Linux install root".into());
+    }
+    Ok(())
+}
+
 impl UpdateRequest {
     pub(crate) fn parse(path: &Path) -> Result<Self, Box<dyn Error>> {
         require_absolute_file(path, "update request")?;
@@ -215,6 +314,20 @@ impl UpdateRequest {
                     return Err("macOS DMG SHA-256 must be lowercase hexadecimal".into());
                 }
             }
+            Installation::LinuxArchive(linux) => {
+                if !cfg!(target_os = "linux") {
+                    return Err("Linux archive updates require Linux".into());
+                }
+                require_absolute_file(&linux.archive_path, "Linux release archive")?;
+                require_absolute_path(&linux.install_root, "Linux install root")?;
+                if linux.install_root.parent().is_none() {
+                    return Err("Linux install root must have a parent directory".into());
+                }
+                validate_linux_archive_paths(self, linux)?;
+                if !valid_sha256(&linux.artifact_sha256) {
+                    return Err("Linux archive SHA-256 must be lowercase hexadecimal".into());
+                }
+            }
         }
         Ok(())
     }
@@ -222,7 +335,13 @@ impl UpdateRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::{RestartTarget, UpdateRequest, valid_sha256, validate_version};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use super::{
+        Installation, LinuxArchiveInstallation, RestartTarget, UpdateRequest, valid_sha256,
+        validate_linux_archive_paths, validate_version,
+    };
 
     #[test]
     fn accepts_release_semver_and_rejects_ambiguous_versions() {
@@ -291,5 +410,161 @@ mod tests {
                 .validate()
                 .is_err()
         );
+    }
+
+    fn linux_archive_request(
+        install_root: &Path,
+        archive_path: &Path,
+        status_path: &Path,
+        data_directory: Option<PathBuf>,
+    ) -> (UpdateRequest, LinuxArchiveInstallation) {
+        let executable = std::env::current_exe().unwrap();
+        let linux = LinuxArchiveInstallation {
+            archive_path: archive_path.to_path_buf(),
+            artifact_sha256: "ab".repeat(32),
+            install_root: install_root.to_path_buf(),
+        };
+        let request = UpdateRequest {
+            schema_version: 1,
+            version: "1.2.3".into(),
+            wait_pid: if std::process::id() == 1 { 2 } else { 1 },
+            wait_executable: executable,
+            runtime_descriptor_path: install_root
+                .parent()
+                .unwrap()
+                .join("desktop-runtime-v1.json"),
+            restart_target: RestartTarget::Desktop,
+            data_directory,
+            service_managed: false,
+            status_path: status_path.to_path_buf(),
+            installation: Installation::LinuxArchive(LinuxArchiveInstallation {
+                archive_path: linux.archive_path.clone(),
+                artifact_sha256: linux.artifact_sha256.clone(),
+                install_root: linux.install_root.clone(),
+            }),
+        };
+        (request, linux)
+    }
+
+    #[test]
+    fn linux_archive_rejects_paths_inside_install_root_and_allows_siblings() {
+        let root =
+            std::env::temp_dir().join(format!("codexhost-linux-path-check-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let install_root = root.join("codexhost");
+        fs::create_dir_all(&install_root).unwrap();
+        let archive = root.join("update.tar.gz");
+        fs::write(&archive, "fixture").unwrap();
+        let status = root.join("updates/status.json");
+        let sibling_data = root.join("codexhost-data");
+
+        let (valid_request, valid_linux) =
+            linux_archive_request(&install_root, &archive, &status, Some(sibling_data));
+        validate_linux_archive_paths(&valid_request, &valid_linux).unwrap();
+
+        for (data, arch, stat, expected) in [
+            (
+                Some(install_root.clone()),
+                archive.clone(),
+                status.clone(),
+                "service data directory",
+            ),
+            (
+                Some(install_root.join("data")),
+                archive.clone(),
+                status.clone(),
+                "service data directory",
+            ),
+            (
+                Some(install_root.join("sub/../data")),
+                archive.clone(),
+                status.clone(),
+                "service data directory",
+            ),
+            (
+                None,
+                install_root.join("downloads/update.tar.gz"),
+                status.clone(),
+                "Linux release archive",
+            ),
+            (
+                None,
+                archive.clone(),
+                install_root.join("updates/status.json"),
+                "update status path",
+            ),
+        ] {
+            let (request, linux) = linux_archive_request(&install_root, &arch, &stat, data);
+            let error = validate_linux_archive_paths(&request, &linux).unwrap_err();
+            assert!(
+                error.contains(expected),
+                "expected '{expected}' in '{error}'"
+            );
+            #[cfg(target_os = "linux")]
+            if arch.is_file() {
+                assert!(request.validate().is_err());
+            }
+        }
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_archive_rejects_symlinked_paths_resolving_into_install_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "codexhost-linux-symlink-check-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let install_root = root.join("codexhost");
+        let inside_dir = install_root.join("nested");
+        fs::create_dir_all(&inside_dir).unwrap();
+        let archive = root.join("update.tar.gz");
+        fs::write(&archive, "fixture").unwrap();
+        let status = root.join("updates/status.json");
+
+        let linked_dir = root.join("linked-dir");
+        symlink(&inside_dir, &linked_dir).unwrap();
+
+        // Existing symlink pointing into install_root.
+        let (request, linux) =
+            linux_archive_request(&install_root, &archive, &status, Some(linked_dir.clone()));
+        assert!(validate_linux_archive_paths(&request, &linux).is_err());
+
+        // Non-existent child under a symlinked parent pointing into install_root.
+        let (request, linux) = linux_archive_request(
+            &install_root,
+            &archive,
+            &linked_dir.join("future/status.json"),
+            None,
+        );
+        assert!(validate_linux_archive_paths(&request, &linux).is_err());
+
+        // Symlinked archive file inside install_root.
+        let archive_in_install = inside_dir.join("release.tar.gz");
+        fs::write(&archive_in_install, "fixture").unwrap();
+        let linked_archive = root.join("linked-archive.tar.gz");
+        symlink(&archive_in_install, &linked_archive).unwrap();
+        let (request, linux) = linux_archive_request(&install_root, &linked_archive, &status, None);
+        assert!(validate_linux_archive_paths(&request, &linux).is_err());
+
+        // Broken symlink targeting a not-yet-created directory inside install_root.
+        let broken_link = root.join("broken-data-link");
+        symlink(install_root.join("future-data"), &broken_link).unwrap();
+        let (request, linux) =
+            linux_archive_request(&install_root, &archive, &status, Some(broken_link));
+        assert!(validate_linux_archive_paths(&request, &linux).is_err());
+
+        // Symlinked install_root pointing to the real directory containing data_directory.
+        let linked_install = root.join("current-install");
+        symlink(&install_root, &linked_install).unwrap();
+        let (request, linux) =
+            linux_archive_request(&linked_install, &archive, &status, Some(inside_dir.clone()));
+        assert!(validate_linux_archive_paths(&request, &linux).is_err());
+
+        fs::remove_dir_all(&root).unwrap();
     }
 }

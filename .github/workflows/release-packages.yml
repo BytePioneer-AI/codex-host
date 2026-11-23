@@ -209,6 +209,10 @@ jobs:
           --target ${{ matrix.target }}
           --version ${{ needs.prepare.outputs.version }}
 
+      - name: Build Linux archive
+        if: runner.os == 'Linux'
+        run: npm run release:package -- --target ${{ matrix.target }}
+
       - name: Build npm meta package
         if: matrix.target == 'macos-arm64'
         shell: bash
@@ -224,6 +228,7 @@ jobs:
           path: |
             build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-*.dmg
             build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-*.exe
+            build/release/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-*.tar.gz
             build/npm/${{ needs.prepare.outputs.version }}/${{ matrix.target }}/codexhost-cli-*-${{ matrix.target }}.tgz
             build/npm/${{ needs.prepare.outputs.version }}/meta/codexhost-cli-${{ needs.prepare.outputs.version }}.tgz
           if-no-files-found: error
@@ -437,6 +442,8 @@ jobs:
             "codexhost-${VERSION}-macos-x64.dmg"
             "codexhost-${VERSION}-windows-x64.exe"
             "codexhost-${VERSION}-windows-arm64.exe"
+            "codexhost-${VERSION}-linux-x64.tar.gz"
+            "codexhost-${VERSION}-linux-arm64.tar.gz"
             "codexhost-${VERSION}-android.apk"
           )
           files=()

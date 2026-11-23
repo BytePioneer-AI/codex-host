@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   NODE_VERSION,
   RELEASE_TARGETS,
-  installerReleaseTargets,
   parseReleaseArguments,
   releaseTarget,
   releaseTargetForHost,
@@ -23,9 +22,6 @@ const expectedTargets = [
 describe("release targets", () => {
   it("defines the complete release target matrix", () => {
     expect(supportedReleaseTargets()).toEqual(expectedTargets);
-    expect(installerReleaseTargets()).toEqual(
-      expectedTargets.filter((target) => !target.startsWith("linux-")),
-    );
     expect(NODE_VERSION).toBe("24.22.1");
     expect(Object.values(RELEASE_TARGETS).map((target) => target.rustTarget)).toEqual([
       "aarch64-apple-darwin",
@@ -40,18 +36,12 @@ describe("release targets", () => {
       "x64",
       "x64",
       "arm64",
-      undefined,
-      undefined,
+      "x64",
+      "arm64",
     ]);
     for (const target of Object.values(RELEASE_TARGETS)) {
-      if (target.packageArchitecture !== undefined) {
-        expect(["x64", "arm64"]).toContain(target.packageArchitecture);
-        expect(target.nodeArchive).toBeUndefined();
-        expect(target.nodeArchiveSha256).toBeUndefined();
-      } else {
-        expect(target.nodeArchive).toContain(NODE_VERSION);
-        expect(target.nodeArchiveSha256).toMatch(/^[0-9a-f]{64}$/u);
-      }
+      expect(target.nodeArchive).toContain(NODE_VERSION);
+      expect(target.nodeArchiveSha256).toMatch(/^[0-9a-f]{64}$/u);
     }
   });
 
@@ -74,6 +64,10 @@ describe("release targets", () => {
       help: false,
       target: { id: "windows-arm64" },
     });
+    expect(parseReleaseArguments(["--target", "linux-arm64"], "linux")).toMatchObject({
+      help: false,
+      target: { id: "linux-arm64" },
+    });
     expect(parseReleaseArguments(["--help"], "darwin")).toEqual({ help: true });
     expect(releaseUsage()).toContain("release:package");
   });
@@ -85,12 +79,6 @@ describe("release targets", () => {
     ).toThrow("may only be provided once");
     expect(() => parseReleaseArguments(["--output", "build"], "darwin")).toThrow(
       "unknown release option",
-    );
-    expect(() => parseReleaseArguments(["--target", "linux-x64"], "linux")).toThrow(
-      "has no installer",
-    );
-    expect(() => parseReleaseArguments(["--target", "linux-arm64"], "linux")).toThrow(
-      "has no installer",
     );
   });
 });

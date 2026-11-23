@@ -16,7 +16,7 @@ import {
   type ClientSnapshotOptions,
   type ClientThreadSnapshot,
 } from "@codexhost/shared-contracts";
-import { NativeThreadTitles } from "./native-thread-title.js";
+import { NativeThreadTitles, type NativeTitleDiagnostic } from "./native-thread-title.js";
 
 import type { ConsoleHostReply } from "./app-server-host.js";
 import { transcribeVoice, voiceStatus } from "./voice-transcription.js";
@@ -102,6 +102,7 @@ export interface ClientChannelHostDependencies {
   queueSnapshot(threadId: string): ExternalThreadQueueSnapshot;
   /** Native Codex calls use the shared service's already-attached official client. */
   readonly native?: NativeClientChannelDependencies;
+  diagnoseNativeTitle?(event: NativeTitleDiagnostic): void;
   /** Runs one client request through the shared Desktop request handling. */
   submit(
     method: string,
@@ -125,7 +126,9 @@ export class ClientChannelHost {
   constructor(host: ClientChannelHostDependencies) {
     this.#host = host;
     this.#native = host.native ? new NativeClientChannel(host.native) : undefined;
-    this.#titles = host.native ? new NativeThreadTitles(host.native) : undefined;
+    this.#titles = host.native
+      ? new NativeThreadTitles(host.native, undefined, host.diagnoseNativeTitle)
+      : undefined;
     this.clientEvents = host.events;
   }
 

@@ -74,6 +74,7 @@ import { managedDelegationSkillReference } from "./delegation-skill.js";
 import { AccountRateLimits } from "./codex-runtime/account-rate-limits.js";
 import { NativeAccountObserver } from "./native-account-observer.js";
 import { nativeThreadSupportsReferences } from "./native-thread-reference-capability.js";
+import { normalizeDesktopTitleMcp } from "./native-title-mcp.js";
 import { THREAD_REFERENCE_SOURCE_HOST_PARAM } from "@codexhost/shared-contracts";
 import { HarnessAccountInspectionCache } from "./harness-accounts.js";
 import type { spawn } from "node:child_process";
@@ -986,6 +987,8 @@ export class AppServerHost {
     this.#asyncQuestions = this.#officialRuntimeScope.asyncQuestions;
     this.#client = new ClientChannelHost({
       events: this.clientEvents,
+      diagnoseNativeTitle: (event) =>
+        this.#diagnose(`Native thread title: ${JSON.stringify(event)}`),
       interactions: {
         approvals: this.#pendingDesktopApprovals,
         questions: () =>
@@ -2335,12 +2338,16 @@ export class AppServerHost {
       const options = isRecord(request.params)
         ? this.#observedSessionUsage.requestOptions(request.method, request.params)
         : null;
-      if (options) {
+      const titleParams = normalizeDesktopTitleMcp(request.method, request.params);
+      if (options || titleParams) {
         const original = parseJsonFrame(frame);
         if (isRecord(original))
           frame = encodeJsonFrame({
             ...original,
-            params: { ...(isRecord(original.params) ? original.params : {}), ...options },
+            params: {
+              ...(titleParams ?? (isRecord(original.params) ? original.params : {})),
+              ...options,
+            },
           });
       }
       if (

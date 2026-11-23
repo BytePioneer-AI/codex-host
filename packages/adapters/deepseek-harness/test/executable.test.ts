@@ -10,11 +10,17 @@ import {
   resolveWindowsTaskkillPath,
 } from "../src/executable.js";
 
-vi.mock("node:fs", async (importOriginal) => ({
-  ...(await importOriginal<typeof filesystem>()),
-  accessSync: vi.fn(),
-  statSync: vi.fn(),
-}));
+vi.mock("node:fs", async (importOriginal) => {
+  const original = await importOriginal<typeof filesystem>();
+  const accessSync = vi.fn();
+  const statSync = vi.fn();
+  return {
+    ...original,
+    accessSync,
+    statSync,
+    default: { ...original.default, accessSync, statSync },
+  };
+});
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;

@@ -10,7 +10,11 @@ import {
   runInstallationCommand,
   versionFromOutput,
 } from "@codexhost/harness-discovery";
-import { deepSeekNpxVersionFile, resolveDeepSeekCommand } from "./executable.js";
+import {
+  deepSeekEnvironment,
+  deepSeekNpxVersionFile,
+  resolveDeepSeekCommand,
+} from "./executable.js";
 import {
   DEEPSEEK_NEWEST_VERIFIED_VERSION,
   DEEPSEEK_VERIFIED_VERSIONS,
@@ -26,7 +30,7 @@ export function createDeepSeekInstallation(environment: NodeJS.ProcessEnv, comma
         await runInstallationCommand(
           invocation.command,
           [...invocation.arguments, "--version"],
-          environment,
+          deepSeekEnvironment(invocation.command, environment),
         ),
       );
       // Version discovery is independent of whether this installation can be updated.
@@ -37,7 +41,11 @@ export function createDeepSeekInstallation(environment: NodeJS.ProcessEnv, comma
       const isNpx = invocation.kind === "npx";
       const npm = isNpx
         ? null
-        : await npmInstallation(invocation.command, ["@deepseek-ai/dsh"], environment);
+        : await npmInstallation(
+            invocation.command,
+            ["@deepseek-ai/dsh"],
+            deepSeekEnvironment(invocation.command, environment),
+          );
       update = isNpx
         ? async (version) => {
             const specifier = `@deepseek-ai/dsh@${version}`;

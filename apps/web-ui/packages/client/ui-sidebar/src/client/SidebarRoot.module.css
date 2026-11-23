@@ -452,22 +452,26 @@
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
-/* macOS: the themed elevated fill reads as a foreign slab on the vibrancy
-   sidebar; a white wash sits in the glass like native macOS sidebar
-   controls. Dark keeps the same white ink at lower alpha. */
-:global([data-platform="darwin"]) .newSession {
+/* macOS Electron vibrancy: the themed elevated fill reads as a foreign slab on
+   the translucent sidebar; a white wash sits in the glass like native macOS
+   sidebar controls. Tauri uses an opaque sidebar and keeps the quiet base row. */
+:global([data-platform="darwin"]:not([data-tauri-shell])) .newSession {
   background: rgb(255 255 255 / 0.55);
 }
 
-:global([data-platform="darwin"]) .newSession:hover {
+:global([data-platform="darwin"]:not([data-tauri-shell])) .newSession:hover {
   background: rgb(255 255 255 / 0.3);
 }
 
-:global([data-platform="darwin"]) :global([data-ds-dark-theme]) .newSession {
+:global([data-platform="darwin"]:not([data-tauri-shell]))
+  :global([data-ds-dark-theme])
+  .newSession {
   background: rgb(255 255 255 / 0.15);
 }
 
-:global([data-platform="darwin"]) :global([data-ds-dark-theme]) .newSession:hover {
+:global([data-platform="darwin"]:not([data-tauri-shell]))
+  :global([data-ds-dark-theme])
+  .newSession:hover {
   background: rgb(255 255 255 / 0.2);
 }
 

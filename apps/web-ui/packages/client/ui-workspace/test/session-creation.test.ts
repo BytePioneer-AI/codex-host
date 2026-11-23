@@ -373,3 +373,26 @@ it("reuses the projectless blank Session so its unsent draft survives switching 
   assert.deepEqual(h.reused, [blank]);
   assert.equal(h.retainedMain.at(-1), blank);
 });
+
+it("reuses the opened projectless blank rather than one left by an abandoned creation", async () => {
+  const h = createHarness();
+  const abandoned = deferred<SessionId>();
+  const opened = deferred<SessionId>();
+  h.createQueue.push(abandoned, opened);
+  h.service.startSession();
+  h.service.startSession();
+  // The abandoned request completes first, so its blank is listed before the opened one.
+  abandoned.resolve(SessionId("abandoned-projectless"));
+  await new Promise((r) => setTimeout(r, 0));
+  const draft = SessionId("opened-projectless");
+  opened.resolve(draft);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(h.retainedMain.at(-1), draft);
+
+  h.service.openSession(h.sessionA);
+  h.service.startSession();
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.deepEqual(h.reused, [draft]);
+  assert.equal(h.retainedMain.at(-1), draft);
+});

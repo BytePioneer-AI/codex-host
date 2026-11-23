@@ -834,6 +834,7 @@ export function installRendererBindingProbe(
   // composerId belongs to the logical draft and survives DOM replacement.
   const pendingDefaultPreferences = new Map<string, boolean>();
   const catalogRequests = new WeakMap<MountedComposer, MountedCatalogRequest>();
+  const harnessAvailabilityRechecks = new Map<string, number>();
   const draftUsageRequests = new WeakMap<
     MountedComposer,
     { client: RendererModelClient | null; generation: number; pending: boolean }
@@ -2019,6 +2020,77 @@ export function installRendererBindingProbe(
     }
   };
 
+  /**
+   * Retry a failed first catalog whose Harness availability is not ready. Only
+   * this Harness is rechecked, so an observation already in flight for the Host
+   * cannot absorb the retry, and the Composer shows loading until it settles.
+   */
+  const recheckFailedHarnessCatalog = async (
+    mounted: MountedComposer,
+    hostId: string,
+    agent: string,
+  ): Promise<void> => {
+    const client = composerClient(mounted);
+    if (!client) return;
+    const loadingView: MountedComposer["modelView"] = {
+      status: "loading",
+      thinkingSelectionSupported: false,
+    };
+    mounted.modelView = loadingView;
+    renderMounted(mounted);
+    const key = `${hostId}\u0000${agent}`;
+    const recheck = (harnessAvailabilityRechecks.get(key) ?? 0) + 1;
+    harnessAvailabilityRechecks.set(key, recheck);
+    const state = hostHarnessAvailabilityState(hostId);
+    let status: RendererAgentAvailability = "error";
+    let nextError: CodexhostError | undefined;
+    let webUiAvailable = false;
+    try {
+      const inspection = await client.inspectHarness({
+        harnessId: harnessIdSchema.parse(agent),
+        refresh: true,
+        purpose: "availability",
+        credentialAccess: "retry",
+      });
+      status = inspection.status === "ready" ? "ready" : inspection.status;
+      webUiAvailable =
+        hostId === "local" && inspection.status === "ready" && inspection.webUi?.open === true;
+      if (inspection.status !== "ready") {
+        const error = inspection.error;
+        nextError = {
+          code: error.code,
+          message: error.message,
+          retryable: error.retryable,
+          ...(error.diagnostic ? { diagnostic: error.diagnostic } : {}),
+          ...(error.stage ? { stage: error.stage } : {}),
+          ...(error.durationMs !== undefined ? { durationMs: error.durationMs } : {}),
+          ...(error.stderrTail ? { stderrTail: error.stderrTail } : {}),
+        };
+      }
+    } catch (error) {
+      nextError = {
+        code: error instanceof RendererMethodUnavailableError ? "unavailable" : "internalError",
+        message: error instanceof Error ? error.message : String(error),
+        retryable: !(error instanceof RendererMethodUnavailableError),
+        stage: "request",
+      };
+    }
+    const current =
+      !disposed &&
+      harnessAvailabilityRechecks.get(key) === recheck &&
+      modelClientForHost(hostId) === client;
+    if (current) {
+      state.errors[agent] = nextError;
+      state.availability = { ...state.availability, [agent]: status };
+      state.webUi = { ...state.webUi, [agent]: webUiAvailable };
+      publishConnectionStatus();
+    }
+    // Something else (a Harness switch, a newer load) already replaced the loading view.
+    if (mounted.modelView !== loadingView || !isMountedComposer(mounted.composer)) return;
+    // Not ready: the load settles the Composer back on a pressable error.
+    void loadExternalCatalog(mounted, undefined, current && status === "ready");
+  };
+
   const refreshExternalModels = async (mounted: MountedComposer): Promise<void> => {
     const { agent } = controller.get(mounted.composer);
     const hostId = mounted.hostId;
@@ -2046,7 +2118,7 @@ export function installRendererBindingProbe(
       if (availability === "ready" || availability === "checking") {
         void loadExternalCatalog(mounted, undefined, true);
       } else {
-        void refreshHarnessAvailabilityForHost(hostId, true, false, true, "retry");
+        void recheckFailedHarnessCatalog(mounted, hostId, agent);
       }
       return;
     }
@@ -2904,6 +2976,8 @@ export function installRendererBindingProbe(
       await Promise.all(
         agentsToInspect.map(async (agent) => {
           const before = state.availability[agent];
+          const recheckKey = `${hostId}\u0000${agent}`;
+          const recheck = harnessAvailabilityRechecks.get(recheckKey);
           let status: RendererAgentAvailability = "error";
           let nextError: CodexhostError | undefined;
           let webUiAvailable = false;
@@ -2953,6 +3027,8 @@ export function installRendererBindingProbe(
             modelClientForHost(hostId) !== client
           )
             return;
+          // A targeted recheck started after this observation owns the newer answer.
+          if (harnessAvailabilityRechecks.get(recheckKey) !== recheck) return;
           const previousStatus = state.availability[agent];
           // A passive observation can finish after an interactive inspection authorized this Harness.
           if (
@@ -2983,7 +3059,8 @@ export function installRendererBindingProbe(
                 refresh && force,
               )
             ) {
-              void loadExternalCatalog(mounted);
+              // A forced refresh must reach the Adapter for the catalog too, not only availability.
+              void loadExternalCatalog(mounted, undefined, refresh && force);
             }
             renderMounted(mounted);
           }

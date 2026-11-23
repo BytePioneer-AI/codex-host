@@ -2352,6 +2352,251 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(latest()?.selected).toEqual(readyInspection().catalog.defaultModel);
   });
 
+  it("shows loading while a failed first catalog rechecks an unready Harness", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    const recheck = Promise.withResolvers<ReturnType<typeof emptyInspection>>();
+    let catalogRequests = 0;
+    const client = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(
+        async ({ purpose, credentialAccess }: { purpose?: string; credentialAccess?: string }) => {
+          if (purpose === "availability")
+            return credentialAccess === "retry" ? recheck.promise : emptyInspection();
+          catalogRequests += 1;
+          if (catalogRequests === 1)
+            return {
+              status: "error",
+              error: { code: "unavailable", message: "models failed", retryable: true },
+            } as const;
+          return readyInspection();
+        },
+      ),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    const availability = () =>
+      testState
+        .getConnectionDiagnostics?.()
+        ?.snapshot()
+        .hosts[0]?.agents.find(({ plugin }) => plugin?.id === "claude-code")?.availability;
+    const latest = () => testState.renderedModelViews.at(-1);
+    await vi.waitFor(() => expect(availability()).toBe("ready"));
+    testState.selectAgent?.("claude-code");
+    await vi.waitFor(() => expect(latest()?.status).toBe("error"));
+    expect(latest()?.catalog).toBeUndefined();
+    expect(availability()).toBe("error");
+
+    testState.refreshModels?.();
+    await vi.waitFor(() => expect(latest()?.status).toBe("loading"));
+    expect(latest()?.catalog).toBeUndefined();
+    const { canRetryRendererModelCatalog } = await import("../src/renderer-model-picker.js");
+    expect(canRetryRendererModelCatalog(latest() ?? { status: "idle" })).toBe(false);
+
+    recheck.resolve(emptyInspection());
+    await vi.waitFor(() => expect(latest()?.status).toBe("ready"));
+    expect(latest()?.selected).toEqual(readyInspection().catalog.defaultModel);
+  });
+
+  it("returns a failed recheck to a retryable error", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    let catalogRequests = 0;
+    const client = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(
+        async ({ purpose, credentialAccess }: { purpose?: string; credentialAccess?: string }) => {
+          if (purpose === "availability") {
+            if (credentialAccess === "retry")
+              return {
+                status: "unavailable",
+                error: { code: "unavailable", message: "still down", retryable: true },
+              } as const;
+            return emptyInspection();
+          }
+          catalogRequests += 1;
+          if (catalogRequests === 1)
+            return {
+              status: "error",
+              error: { code: "unavailable", message: "models failed", retryable: true },
+            } as const;
+          return readyInspection();
+        },
+      ),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    const availability = () =>
+      testState
+        .getConnectionDiagnostics?.()
+        ?.snapshot()
+        .hosts[0]?.agents.find(({ plugin }) => plugin?.id === "claude-code")?.availability;
+    const latest = () => testState.renderedModelViews.at(-1);
+    await vi.waitFor(() => expect(availability()).toBe("ready"));
+    testState.selectAgent?.("claude-code");
+    await vi.waitFor(() => expect(latest()?.status).toBe("error"));
+    expect(latest()?.catalog).toBeUndefined();
+    expect(availability()).toBe("error");
+
+    const views = testState.renderedModelViews.length;
+    testState.refreshModels?.();
+    await vi.waitFor(() =>
+      expect(
+        testState.renderedModelViews.slice(views).some(({ status }) => status === "loading"),
+      ).toBe(true),
+    );
+    await vi.waitFor(() => expect(latest()?.status).toBe("error"));
+    const { canRetryRendererModelCatalog } = await import("../src/renderer-model-picker.js");
+    expect(canRetryRendererModelCatalog(latest() ?? { status: "idle" })).toBe(true);
+    expect(availability()).toBe("unavailable");
+  });
+
+  it("passes refresh to the catalog reload after a forced check recovers availability", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    let catalogRequests = 0;
+    const client = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(
+        async ({ purpose, refresh }: { purpose?: string; refresh?: boolean }) => {
+          if (purpose === "availability") return emptyInspection();
+          catalogRequests += 1;
+          if (catalogRequests === 1)
+            return {
+              status: "error",
+              error: { code: "unavailable", message: "models failed", retryable: true },
+            } as const;
+          // Like Kimi Code, the Adapter answers non-refresh inspections from a cached failure.
+          return refresh === true
+            ? readyInspection()
+            : ({
+                status: "unavailable",
+                error: { code: "unavailable", message: "cached failure", retryable: false },
+              } as const);
+        },
+      ),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    const availability = () =>
+      testState
+        .getConnectionDiagnostics?.()
+        ?.snapshot()
+        .hosts[0]?.agents.find(({ plugin }) => plugin?.id === "claude-code")?.availability;
+    const latest = () => testState.renderedModelViews.at(-1);
+    await vi.waitFor(() => expect(availability()).toBe("ready"));
+    testState.selectAgent?.("claude-code");
+    await vi.waitFor(() => expect(latest()?.status).toBe("error"));
+    expect(latest()?.catalog).toBeUndefined();
+    expect(availability()).toBe("error");
+
+    await testState.getConnectionDiagnostics?.()?.refresh("local");
+    await vi.waitFor(() => expect(latest()?.status).toBe("ready"));
+    const reload = client.inspectHarness.mock.calls
+      .map(([input]) => input)
+      .filter(({ purpose }) => purpose !== "availability")
+      .at(-1);
+    expect(reload).toMatchObject({ harnessId: "claude-code", refresh: true });
+  });
+
+  it("does not let an in-flight Host check absorb a failed first catalog's retry", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    const slowCheck = Promise.withResolvers<ReturnType<typeof emptyInspection>>();
+    let holdRetryChecks = false;
+    let retryChecks = 0;
+    let catalogRequests = 0;
+    const client = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(
+        async ({ purpose, credentialAccess }: { purpose?: string; credentialAccess?: string }) => {
+          if (purpose === "availability") {
+            if (credentialAccess === "retry") {
+              retryChecks += 1;
+              if (holdRetryChecks && retryChecks === 1) return slowCheck.promise;
+            }
+            return emptyInspection();
+          }
+          catalogRequests += 1;
+          if (catalogRequests === 1)
+            return {
+              status: "error",
+              error: { code: "unavailable", message: "models failed", retryable: true },
+            } as const;
+          return readyInspection();
+        },
+      ),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    const availability = () =>
+      testState
+        .getConnectionDiagnostics?.()
+        ?.snapshot()
+        .hosts[0]?.agents.find(({ plugin }) => plugin?.id === "claude-code")?.availability;
+    const latest = () => testState.renderedModelViews.at(-1);
+    await vi.waitFor(() => expect(availability()).toBe("ready"));
+    testState.selectAgent?.("claude-code");
+    await vi.waitFor(() => expect(latest()?.status).toBe("error"));
+    expect(latest()?.catalog).toBeUndefined();
+    expect(availability()).toBe("error");
+
+    // A forced credential retry for the Host is still waiting on a slow inspection.
+    holdRetryChecks = true;
+    const hostRefresh = testState.getConnectionDiagnostics?.()?.refresh("local", "retry");
+    await vi.waitFor(() => expect(retryChecks).toBe(1));
+
+    testState.refreshModels?.();
+    await vi.waitFor(() => expect(retryChecks).toBe(2));
+    await vi.waitFor(() => expect(latest()?.status).toBe("ready"));
+    expect(latest()?.selected).toEqual(readyInspection().catalog.defaultModel);
+
+    // The older answer arrives last and must not undo the retry.
+    slowCheck.resolve({
+      status: "unavailable",
+      error: { code: "unavailable", message: "stale", retryable: true },
+    } as never);
+    await hostRefresh;
+    expect(availability()).toBe("ready");
+    expect(latest()?.status).toBe("ready");
+  });
+
   it("confirms a pending Permission Mode selection while models refresh", async () => {
     installFakeBrowser();
     const inspection = {

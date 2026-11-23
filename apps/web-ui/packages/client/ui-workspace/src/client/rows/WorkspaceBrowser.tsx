@@ -93,6 +93,7 @@ import { SessionListExpansion } from "./SessionListExpansion.tsx";
 import { SectionHeading } from "./SectionHeading.tsx";
 import { HostScopeFilter } from "./HostScopeFilter.tsx";
 import {
+  ensureWorkspaceVisibleInHostScope,
   filterSessionsByHostScope,
   filterWorkspacesByHostScope,
   hasRemotePeerWorkspaces,
@@ -1937,11 +1938,19 @@ function WorkspaceBrowserContent({
       return;
     }
     const rootId = threadView.rootId(sessionId);
+    const owningWorkspace = workspaces.find((workspace) => workspace.sessionIds.includes(rootId));
+    if (hostScopeFiltered) {
+      const nextFilter = ensureWorkspaceVisibleInHostScope(
+        effectiveHostScopeFilter,
+        owningWorkspace,
+        orderedWorkspaces,
+      );
+      if (nextFilter !== effectiveHostScopeFilter) {
+        updateHostScopeFilter(nextFilter);
+      }
+    }
     // Grouped views also show a section's Workspaces, and their Sessions, inside it.
-    const workspaceId =
-      groupBy === "flat"
-        ? undefined
-        : workspaces.find((workspace) => workspace.sessionIds.includes(rootId))?.workspaceId;
+    const workspaceId = groupBy === "flat" ? undefined : owningWorkspace?.workspaceId;
     const section =
       nativeSections.find(({ threadIds }) => threadIds.includes(rootId)) ??
       (workspaceId === undefined

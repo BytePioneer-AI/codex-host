@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { requestRemoteSession } from "@codexhost/desktop-control";
 import { PeerHostManager, createCompositeRemoteCall } from "./peer-host-manager.ts";
 import { PeerHostStore } from "./peer-host-store.ts";
-import { peerEndpoint } from "./peer-manifest.ts";
+import { PeerEndpointError, peerEndpoint } from "./peer-manifest.ts";
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir } from "node:os";
@@ -97,6 +97,7 @@ import {
 } from "./background-service.ts";
 
 declare const CODEXHOST_RELEASE_WEB: boolean;
+declare const CODEXHOST_SERVER_VERSION: string;
 const RELEASE_WEB = typeof CODEXHOST_RELEASE_WEB !== "undefined" && CODEXHOST_RELEASE_WEB;
 
 /** The release entry is in app/web-modules; the standalone packed entry is in app/. */
@@ -105,6 +106,9 @@ const PACKED_WEB = join(DISTRIBUTION_ROOT, "web");
 const PACKED = existsSync(join(PACKED_WEB, "plugins.json"));
 const REPO_ROOT = resolve(import.meta.dirname, "../../..");
 function readServerVersion(): string {
+  if (typeof CODEXHOST_SERVER_VERSION === "string" && CODEXHOST_SERVER_VERSION.trim()) {
+    return CODEXHOST_SERVER_VERSION.trim();
+  }
   for (const candidate of [
     join(DISTRIBUTION_ROOT, "package.json"),
     join(REPO_ROOT, "package.json"),
@@ -419,17 +423,37 @@ workspaces.register(rpc, streams);
 sessions.register(rpc, streams);
 sessions.registerCommands(rpc);
 sessions.registerImport(rpc);
-let peerEpoch: string = randomUUID();
+let peerEpoch: string | undefined = chHost.realtime ? undefined : randomUUID();
+const peerEpochWaiters = new Set<() => void>();
 const stopEpoch = chHost.realtime?.subscribe((event) => {
-  if (event.type === "hello") peerEpoch = event.cursor.epoch;
+  if (event.type === "hello") {
+    peerEpoch = event.cursor.epoch;
+    for (const notify of peerEpochWaiters) notify();
+    peerEpochWaiters.clear();
+  }
 });
+async function resolvePeerEpoch(): Promise<string | undefined> {
+  if (peerEpoch !== undefined || !chHost.realtime) return peerEpoch;
+  await new Promise<void>((resolveWait) => {
+    const done = () => {
+      clearTimeout(timer);
+      peerEpochWaiters.delete(done);
+      resolveWait();
+    };
+    const timer = setTimeout(done, 3000);
+    timer.unref();
+    peerEpochWaiters.add(done);
+  });
+  return peerEpoch;
+}
 const peerManager = new PeerHostManager(
-  new PeerHostStore(new DataDir(process.env.CODEXHOST_DATA_DIR ?? displayDirectory)),
+  new PeerHostStore(data),
   async () => [
     ...(await readNetworkAccess()).networkUrls.map((u) => u.url),
     ...["localhost", "127.0.0.1", "[::1]"].map((host) => `http://${host}:${listeningPort}`),
   ],
   events,
+  { allowLoopback: process.env.CODEXHOST_ALLOW_LOOPBACK_PEERS === "1" },
 );
 peerManager.register(rpc);
 const remoteSessions = new RemoteSessions(
@@ -437,8 +461,8 @@ const remoteSessions = new RemoteSessions(
   createCompositeRemoteCall(peerManager, requestRemoteSession),
   workspaces,
 );
-peerManager.onChange = () => {
-  remoteSessions.hostsChanged();
+peerManager.onChange = (hostId) => {
+  remoteSessions.hostsChanged(hostId);
 };
 remoteSessions.install(rpc, streams);
 preferences.register(rpc);
@@ -613,23 +637,38 @@ const server = createWebServer((request, response) => {
       try {
         const body = request.method === "GET" ? "{}" : await readBody(request, response);
         if (body === undefined) return;
+        let parsedBody: unknown;
+        try {
+          parsedBody = JSON.parse(body);
+        } catch {
+          throw new PeerEndpointError(400, "Invalid JSON request body");
+        }
         const result = await peerEndpoint(
           request.method ?? "",
           new URL(url, "http://localhost"),
-          JSON.parse(body),
+          parsedBody,
           workspaces,
           rpc,
-          peerEpoch,
+          await resolvePeerEpoch(),
           SERVER_VERSION,
         );
         response
           .writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
           .end(JSON.stringify(result));
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Invalid peer request";
-        response
-          .writeHead(400, { "content-type": "application/json", "cache-control": "no-store" })
-          .end(JSON.stringify({ error: message }));
+        if (error instanceof PeerEndpointError) {
+          response
+            .writeHead(error.status, {
+              "content-type": "application/json",
+              "cache-control": "no-store",
+            })
+            .end(JSON.stringify({ error: error.message }));
+        } else {
+          console.error("[remote-peers] unexpected /api/peer/v1 error:", error);
+          response
+            .writeHead(500, { "content-type": "application/json", "cache-control": "no-store" })
+            .end(JSON.stringify({ error: "Internal peer endpoint error" }));
+        }
       }
       return;
     }

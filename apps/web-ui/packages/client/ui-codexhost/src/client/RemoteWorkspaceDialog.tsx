@@ -158,11 +158,10 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
         if (cancelled) return;
         const available = result.peers.filter((peer) => peer.enabled && peer.state === "connected");
         setConnectedPeers(available);
-        const preferred =
+        const chosen =
           state.initialHostId !== undefined
-            ? available.find((peer) => peer.hostId === state.initialHostId)
-            : undefined;
-        const chosen = preferred ?? available[0] ?? null;
+            ? (available.find((peer) => peer.hostId === state.initialHostId) ?? null)
+            : (available[0] ?? null);
         setSelectedPeerId(chosen?.peerId ?? null);
         if (chosen !== null) {
           void loadDirectory(chosen.peerId);
@@ -371,7 +370,7 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
               {t("remotePeers.retry")}
             </Button>
           </div>
-        ) : connectedPeers.length === 0 ? (
+        ) : connectedPeers.length === 0 || selectedPeer === null ? (
           <div className={css.emptyState}>
             <IconGlobeOutlineRegular size={24} className={css.emptyIcon} />
             <p className={css.emptyTitle}>{t("remoteWorkspace.noConnectedPeersTitle")}</p>
@@ -635,6 +634,12 @@ export function RemoteWorkspaceDialog({ controller, t }: Props): ReactNode {
                           }}
                           onDoubleClick={() => {
                             if (selectedPeer !== null) {
+                              void loadDirectory(selectedPeer.peerId, entry.path);
+                            }
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" && selectedPeer !== null) {
+                              event.preventDefault();
                               void loadDirectory(selectedPeer.peerId, entry.path);
                             }
                           }}

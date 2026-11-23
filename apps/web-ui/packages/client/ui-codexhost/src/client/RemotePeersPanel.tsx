@@ -1,5 +1,5 @@
 /** Remote peer host management: pair, test, reconnect, edit, and remove remote CodexHost peers. */
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Button,
   IconEditOutlineRegular,
@@ -65,18 +65,22 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
   const [removeBusy, setRemoveBusy] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const loadSeqRef = useRef(0);
 
   const loadPeers = useCallback(async (background = false): Promise<void> => {
+    const seq = ++loadSeqRef.current;
     if (background) setRefreshing(true);
     try {
       const result = await remotePeersApi.list();
+      if (seq !== loadSeqRef.current) return;
       setView({ kind: "ready", peers: result.peers });
     } catch (cause) {
+      if (seq !== loadSeqRef.current) return;
       if (!background) {
         setView({ kind: "failed", message: messageOf(cause) });
       }
     } finally {
-      if (background) setRefreshing(false);
+      if (background && seq === loadSeqRef.current) setRefreshing(false);
     }
   }, []);
 
@@ -193,7 +197,7 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
 
       {view.kind === "loading" ? (
         <div className={css.surface}>
-          <p className={css.stateText}>{t("remotePeers.loading")}</p>
+          <p className={css.loadingState}>{t("remotePeers.loading")}</p>
         </div>
       ) : view.kind === "failed" ? (
         <div className={css.errorRow} role="alert">

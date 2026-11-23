@@ -222,26 +222,43 @@ export class RemoteSessions {
     }
   }
   private refreshPending = false;
-  hostsChanged(): void {
+  private fullRefreshPending = false;
+  private pendingHostIds = new Set<string>();
+  hostsChanged(hostId?: string): void {
     if (this.closed) return;
+    if (hostId) this.pendingHostIds.add(hostId);
+    else this.fullRefreshPending = true;
     if (this.listing) {
       this.refreshPending = true;
       return;
     }
-    void this.refresh().catch(() => undefined);
+    void this.refresh(hostId).catch(() => undefined);
   }
-  refresh(): Promise<void> {
+  refresh(hostId?: string): Promise<void> {
+    if (hostId) this.pendingHostIds.add(hostId);
+    else this.fullRefreshPending = true;
     this.listing ??= this.list().finally(() => {
       this.listing = undefined;
-      if (this.refreshPending) {
+      if (this.refreshPending || this.fullRefreshPending || this.pendingHostIds.size > 0) {
         this.refreshPending = false;
-        this.hostsChanged();
+        void this.refresh(
+          this.fullRefreshPending || this.pendingHostIds.size !== 1
+            ? undefined
+            : [...this.pendingHostIds][0],
+        ).catch(() => undefined);
       }
     });
     return this.listing;
   }
   private async list(): Promise<void> {
     if (this.archiveWrites) return;
+    const fullRefresh = this.fullRefreshPending || this.pendingHostIds.size === 0;
+    const dirtyHosts = new Set(this.pendingHostIds);
+    this.fullRefreshPending = false;
+    this.pendingHostIds.clear();
+    const previouslyOnline = new Set(
+      [...this.hosts.values()].filter((host) => host.online).map((host) => host.hostId),
+    );
     const archiveRevision = this.archiveRevision;
     let hosts: RemoteWorkspaceHost[];
     try {
@@ -270,12 +287,22 @@ export class RemoteSessions {
         this.events.emit("api-session/removed", id);
       }
     }
+    for (const [id, draft] of this.drafts) {
+      if (draft.target.hostId.startsWith("remote-peer:") && !this.hosts.has(draft.target.hostId)) {
+        this.drafts.delete(id);
+        if (!draft.canonicalId) this.events.emit("api-session/removed", id);
+      }
+    }
     const present = new Set(hosts.filter((host) => host.online).map((host) => host.hostId));
     for (const entry of this.entries.values())
       if (!present.has(entry.identity.hostId)) this.offline(entry);
     await Promise.all(
       hosts
-        .filter((host) => host.online)
+        .filter(
+          (host) =>
+            host.online &&
+            (fullRefresh || dirtyHosts.has(host.hostId) || !previouslyOnline.has(host.hostId)),
+        )
         .map(async (host) => {
           const found = new Map<string, Entry>();
           const unlisted = new Set(

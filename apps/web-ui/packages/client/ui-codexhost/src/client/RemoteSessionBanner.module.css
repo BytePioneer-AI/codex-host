@@ -32,6 +32,11 @@
   color: var(--dsw-alias-label-primary);
 }
 
+.chip:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -1px;
+}
+
 .chipHost {
   flex: none;
   max-width: 110px;

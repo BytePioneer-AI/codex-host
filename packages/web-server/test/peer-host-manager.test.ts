@@ -2,7 +2,7 @@ import { it } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -10,11 +10,11 @@ import { randomUUID } from "node:crypto";
 import { REMOTE_PEERS_METHODS as methods } from "@codexhost/shared-contracts";
 import { parseConnectionLink, PeerHostStore } from "../src/peer-host-store.ts";
 import { PeerHostManager, createCompositeRemoteCall } from "../src/peer-host-manager.ts";
-import { peerEndpoint } from "../src/peer-manifest.ts";
+import { PeerEndpointError, peerEndpoint } from "../src/peer-manifest.ts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
-it("normalizes credential links and classifies only actual private addresses as LAN", () => {
+it("normalizes credential links, enforces SSRF host policy, and classifies LAN/Tailscale/Relay", () => {
   for (const [host, kind] of [
     ["100.64.0.1", "tailscale"],
     ["100.128.0.1", "custom"],
@@ -25,7 +25,9 @@ it("normalizes credential links and classifies only actual private addresses as 
     ["[::1]", "lan"],
     ["example.local", "lan"],
   ]) {
-    const result = parseConnectionLink(`http://${host}:4400/path?token=value`);
+    const result = parseConnectionLink(`http://${host}:4400/path?token=value`, {
+      allowLoopback: host === "[::1]",
+    });
     assert.deepEqual(result, {
       origin: `http://${host}:4400`,
       token: "value",
@@ -37,8 +39,51 @@ it("normalizes credential links and classifies only actual private addresses as 
     "file:///tmp#token=x",
     "https://user:secret@example.com/#token=x",
     "http://localhost",
+    "http://127.0.0.1:4400/#token=x",
+    "http://localhost:4400/#token=x",
+    "http://[::1]:4400/#token=x",
+    "http://169.254.169.254/#token=x",
+    "http://metadata.google.internal/#token=x",
+    "http://0.0.0.0:4400/#token=x",
   ])
     assert.throws(() => parseConnectionLink(bad));
+});
+
+it("recovers gracefully from corrupt remote-peers-v1.json and preserves trailing-space dir names", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "peer-store-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const data = new DataDir(root);
+  const store = new PeerHostStore(data);
+  writeFileSync(data.path("remote-peers-v1.json"), "{corrupt-json", "utf8");
+  assert.deepEqual(store.load(), []);
+
+  const spacedDir = join(root, "folder with space ");
+  mkdirSync(spacedDir);
+  const ws = new Workspaces(data, root);
+  const rpc = new RpcRegistry();
+  ws.register(rpc, new StreamRegistry());
+  await assert.rejects(
+    peerEndpoint(
+      "GET",
+      new URL("http://localhost/api/peer/v1/manifest"),
+      {},
+      ws,
+      rpc,
+      undefined,
+      "1",
+    ),
+    (err: unknown) => err instanceof PeerEndpointError && err.status === 503,
+  );
+  const listed = (await peerEndpoint(
+    "GET",
+    new URL(`http://localhost/api/peer/v1/dirs?path=${encodeURIComponent(spacedDir)}`),
+    {},
+    ws,
+    rpc,
+    "epoch-1",
+    "1",
+  )) as { path: string };
+  assert.equal(listed.path, spacedDir);
 });
 it("pairs authenticated mobile callers with independent peers and recovers event streams", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "hub-"));
@@ -149,6 +194,7 @@ it("pairs authenticated mobile callers with independent peers and recovers event
     store,
     async () => ["http://localhost:100"],
     new EventHub(root),
+    { allowLoopback: true },
   );
   t.after(() => {
     manager.close();
@@ -161,24 +207,30 @@ it("pairs authenticated mobile callers with independent peers and recovers event
   const invoke = async <T = Record<string, unknown>>(
     action: keyof typeof methods,
     input: object = {},
+    local = true,
   ): Promise<T> => {
     const r = await rpc.dispatch(
       methods[action],
       { args: input },
-      { local: false, credential: "mobile", release() {} },
+      { local, credential: local ? "local" : "mobile", release() {} },
     );
     assert.ok(!JSON.stringify(r).includes(token));
     if (!r.ok) throw Error(r.error.message);
     return r.value as T;
   };
-  const add = (origin: string, secret = token) =>
-    invoke<{ peer: { peerId: string; hostId: string } }>("add", {
-      connectionUrl: `${origin}/#token=${secret}`,
-    });
+  const add = (origin: string, secret = token, local = true) =>
+    invoke<{ peer: { peerId: string; hostId: string } }>(
+      "add",
+      { connectionUrl: `${origin}/#token=${secret}` },
+      local,
+    );
+  await assert.rejects(add(a.origin, token, false), /local session/i);
   await assert.rejects(add("http://localhost:100"), /itself/);
   await assert.rejects(add(a.origin, "bad"), /token/);
   const [one] = await Promise.all([add(a.origin), add(b.origin)]);
-  assert.equal(statSync(join(root, "remote-peers-v1.json")).mode & 0o777, 0o600);
+  if (process.platform !== "win32") {
+    assert.equal(statSync(join(root, "remote-peers-v1.json")).mode & 0o777, 0o600);
+  }
   const peerId = one.peer.peerId,
     hostId = one.peer.hostId;
   const call = createCompositeRemoteCall(manager, async () => {
@@ -186,26 +238,26 @@ it("pairs authenticated mobile callers with independent peers and recovers event
   });
   assert.equal(((await call({ kind: "hosts" })) as unknown[]).length, 3);
   assert.equal(
-    (await invoke<{ peers: { peerId: string; state: string }[] }>("list")).peers.find(
+    (await invoke<{ peers: { peerId: string; state: string }[] }>("list", {}, false)).peers.find(
       (p) => p.peerId === "bad",
     )?.state,
     "auth-error",
   );
-  const { path } = await invoke<{ path: string }>("createDir", {
-    peerId,
-    parentPath: root,
-    name: "project",
-  });
+  const { path } = await invoke<{ path: string }>(
+    "createDir",
+    { peerId, parentPath: root, name: "project" },
+    false,
+  );
   assert.ok(
     (
-      await invoke<{ entries: { path: string }[] }>("listDirs", { peerId, path: root })
+      await invoke<{ entries: { path: string }[] }>("listDirs", { peerId, path: root }, false)
     ).entries.some((e) => e.path === path),
   );
-  await assert.rejects(invoke("createDir", { peerId, parentPath: root, name: ".." }));
+  await assert.rejects(invoke("createDir", { peerId, parentPath: root, name: ".." }, false));
   const { workspaceId, manifest } = await invoke<{
     workspaceId: string;
     manifest: { projects: unknown[] };
-  }>("createWorkspace", { peerId, path });
+  }>("createWorkspace", { peerId, path }, false);
   assert.equal(manifest.projects.length, 1);
   await invoke("renameWorkspace", { peerId, workspaceId, title: "Renamed" });
   assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.projects?.[0]?.name, "Renamed");
@@ -232,11 +284,32 @@ it("pairs authenticated mobile callers with independent peers and recovers event
     }),
   );
   await sleep(200);
-  const changed = new Promise<void>((r) => (manager.onChange = r));
+  let deltaChanges = 0;
+  manager.onChange = () => {
+    deltaChanges += 1;
+  };
   const eventStream = a.stream();
   assert.ok(eventStream);
-  eventStream.write(JSON.stringify({ cursor: { epoch: a.epoch, sequence: 2 } }) + "\n");
-  await changed;
+  eventStream.write(
+    JSON.stringify({
+      type: "changed",
+      cursor: { epoch: a.epoch, sequence: 2 },
+      threadId: "t",
+      method: "item/agentMessage/delta",
+    }) + "\n",
+  );
+  await sleep(160);
+  assert.equal(deltaChanges, 0);
+  const changed = new Promise<string | undefined>((r) => (manager.onChange = r));
+  eventStream.write(
+    JSON.stringify({
+      type: "changed",
+      cursor: { epoch: a.epoch, sequence: 3 },
+      threadId: "t",
+      method: "thread/name/updated",
+    }) + "\n",
+  );
+  assert.equal(await changed, hostId);
   const restarted = await a.restart();
   for (
     let i = 0;

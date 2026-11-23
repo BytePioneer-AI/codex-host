@@ -13,6 +13,7 @@ export function buildBreadcrumbs(
   const isWin = currentPath.includes("\\") && !currentPath.startsWith("/");
   const sep = isWin ? "\\" : "/";
   const stripTrailing = (p: string): string => {
+    if (isWin && /^\\\\[^\\]+\\[^\\]+\\?$/u.test(p)) return p.replace(/\\+$/u, "");
     if (isWin && /^[A-Za-z]:\\?$/u.test(p)) return `${p.slice(0, 2)}\\`;
     if (!isWin && /^\/+$/u.test(p)) return "/";
     return p.replace(/[\\/]+$/u, "");
@@ -42,6 +43,19 @@ export function buildBreadcrumbs(
   }
 
   if (isWin) {
+    const uncMatch = /^(\\\\[^\\]+\\[^\\]+)(?:\\(.*))?$/u.exec(normalized);
+    if (uncMatch) {
+      const rootPath = uncMatch[1] ?? "";
+      const rest = (uncMatch[2] ?? "").replace(/^\\+/u, "");
+      const parts = rest ? rest.split(/\\+/u).filter(Boolean) : [];
+      const segments: PathSegment[] = [];
+      let acc = rootPath;
+      for (const part of parts) {
+        acc = `${acc}\\${part}`;
+        segments.push({ name: part, path: acc });
+      }
+      return { inHome: false, rootSegment: { name: rootPath, path: rootPath }, segments };
+    }
     const driveMatch = /^([A-Za-z]:)(?:\\(.*))?$/u.exec(normalized);
     if (driveMatch) {
       const drive = driveMatch[1] ?? "";

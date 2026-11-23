@@ -311,6 +311,47 @@ export function resetHostScopeFilter(): HostScopeFilterState {
   return { selectedHost: "all", perHost: {} };
 }
 
+/**
+ * Ensure a target workspace (or ungrouped local session when `workspace` is
+ * undefined) is visible under the active host scope filter without discarding
+ * unrelated per-host preferences.
+ */
+export function ensureWorkspaceVisibleInHostScope(
+  state: HostScopeFilterState,
+  workspace: WorkspaceView | undefined,
+  workspaces: readonly WorkspaceView[],
+): HostScopeFilterState {
+  const effective = reconcileHostScopeFilter(state, workspaces);
+  const hostKey = workspace?.remote?.hostId ?? "local";
+  let selectedHost = effective.selectedHost;
+  let perHost = effective.perHost;
+  let changed = false;
+
+  if (selectedHost !== "all" && selectedHost !== hostKey) {
+    selectedHost = "all";
+    changed = true;
+  }
+
+  const hostScope = perHost[hostKey];
+  if (hostScope?.mode === "selected") {
+    if (workspace === undefined) {
+      perHost = { ...perHost, [hostKey]: { ...hostScope, mode: "all" } };
+      changed = true;
+    } else if (!hostScope.workspaceIds.includes(workspace.workspaceId)) {
+      perHost = {
+        ...perHost,
+        [hostKey]: {
+          mode: "selected",
+          workspaceIds: [...hostScope.workspaceIds, workspace.workspaceId],
+        },
+      };
+      changed = true;
+    }
+  }
+
+  return changed ? { selectedHost, perHost } : state;
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

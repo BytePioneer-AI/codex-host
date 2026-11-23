@@ -52,6 +52,7 @@ export function AddPeerModal({
   const originId = useId();
   const tokenId = useId();
   const nameId = useId();
+  const formId = useId();
 
   const formBusy = testing || adding;
 
@@ -177,16 +178,17 @@ export function AddPeerModal({
           <Button
             variant="primary"
             size="sm"
+            type="submit"
+            form={formId}
             disabled={formBusy}
             aria-busy={adding}
-            onClick={() => void handleAdd()}
           >
             {t(adding ? "remotePeers.adding" : "remotePeers.add")}
           </Button>
         </>
       }
     >
-      <form className={css.modalForm} onSubmit={(event) => void handleAdd(event)}>
+      <form id={formId} className={css.modalForm} onSubmit={(event) => void handleAdd(event)}>
         {mode === "link" ? (
           <div className={css.field}>
             <div className={css.fieldHead}>
@@ -345,6 +347,7 @@ export function EditPeerModal({
   const linkId = useId();
   const originId = useId();
   const tokenId = useId();
+  const editFormId = useId();
 
   const submit = async (event?: FormEvent): Promise<void> => {
     event?.preventDefault();
@@ -397,16 +400,17 @@ export function EditPeerModal({
           <Button
             variant="primary"
             size="sm"
+            type="submit"
+            form={editFormId}
             disabled={saving}
             aria-busy={saving}
-            onClick={() => void submit()}
           >
             {t(saving ? "remotePeers.saving" : "remotePeers.save")}
           </Button>
         </>
       }
     >
-      <form className={css.modalForm} onSubmit={(event) => void submit(event)}>
+      <form id={editFormId} className={css.modalForm} onSubmit={(event) => void submit(event)}>
         <div className={css.field}>
           <label htmlFor={nameId} className={css.label}>
             {t("remotePeers.field.name")}

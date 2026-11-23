@@ -1,7 +1,13 @@
 import { readFileSync } from "node:fs";
 import { isIPv4 } from "node:net";
+import { z } from "zod";
 import type { DataDir } from "./store.ts";
-import type { RemotePeerAddParams, RemotePeerTransportKind } from "@codexhost/shared-contracts";
+import {
+  remotePeerIdSchema,
+  type RemotePeerAddParams,
+  type RemotePeerTransportKind,
+} from "@codexhost/shared-contracts";
+
 export interface PeerRecord {
   peerId: string;
   name: string;
@@ -11,15 +17,71 @@ export interface PeerRecord {
   createdAt: string;
   updatedAt: string;
 }
-export function parseConnectionLink(input: string | RemotePeerAddParams) {
-  const p = typeof input === "string" ? { connectionUrl: input } : input;
-  const url = URL.parse(p.connectionUrl ?? p.origin ?? "");
-  if (!url || !["http:", "https:"].includes(url.protocol) || url.username || url.password)
-    throw Error("Invalid peer URL");
-  const token =
-    p.token ?? new URLSearchParams(url.hash.slice(1)).get("token") ?? url.searchParams.get("token");
-  if (!token || token.length > 2048 || /\s/u.test(token)) throw Error("Invalid peer token");
-  const h = url.hostname;
+
+const peerRecordSchema = z.object({
+  peerId: remotePeerIdSchema,
+  name: z.string().min(1).max(120),
+  origin: z.string().min(1).max(2048),
+  token: z.string().min(1).max(2048),
+  enabled: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export interface ParseConnectionLinkOptions {
+  /** Allow loopback origins (`localhost`, `127.0.0.0/8`, `[::1]`). Disabled by default to block SSRF. */
+  allowLoopback?: boolean;
+  /** Skip SSRF host validation (used only for classifying already-persisted peer summaries). */
+  skipHostPolicy?: boolean;
+}
+
+function unbracket(hostname: string): string {
+  return hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1).toLowerCase()
+    : hostname.toLowerCase();
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const bare = unbracket(hostname);
+  if (bare === "localhost" || bare.endsWith(".localhost") || bare === "::1") return true;
+  if (bare.startsWith("::ffff:")) {
+    const mapped = bare.slice("::ffff:".length);
+    return isLoopbackHost(mapped);
+  }
+  return isIPv4(bare) && bare.startsWith("127.");
+}
+
+function isBlockedMetadataOrUnspecifiedHost(hostname: string): boolean {
+  const bare = unbracket(hostname);
+  if (
+    bare === "metadata.google.internal" ||
+    bare === "metadata.goog" ||
+    bare === "instance-data" ||
+    bare === "fd00:ec2::254" ||
+    bare === "::" ||
+    bare === "0:0:0:0:0:0:0:0"
+  ) {
+    return true;
+  }
+  if (bare.startsWith("::ffff:")) {
+    return isBlockedMetadataOrUnspecifiedHost(bare.slice("::ffff:".length));
+  }
+  // IPv6 link-local (fe80::/10)
+  if (/^fe[89ab][0-9a-f]:/iu.test(bare)) return true;
+  if (isIPv4(bare)) {
+    // 0.0.0.0/8 (unspecified) and 169.254.0.0/16 (link-local & cloud metadata)
+    if (bare.startsWith("0.") || bare.startsWith("169.254.")) return true;
+  }
+  return false;
+}
+
+export function classifyPeerTransport(origin: string): {
+  transportKind: RemotePeerTransportKind;
+  encrypted: boolean;
+} {
+  const url = URL.parse(origin);
+  if (!url) return { transportKind: "custom", encrypted: false };
+  const h = url.hostname.toLowerCase();
   let transportKind: RemotePeerTransportKind = "custom";
   if (h.endsWith(".r.chost.dev")) transportKind = "relay";
   else if (
@@ -33,19 +95,63 @@ export function parseConnectionLink(input: string | RemotePeerAddParams) {
     (isIPv4(h) && /^(?:127|10|192\.168|172\.(?:1[6-9]|2\d|3[01]))\./u.test(h))
   )
     transportKind = "lan";
-  return { origin: url.origin, token, transportKind, encrypted: url.protocol === "https:" };
+  return { transportKind, encrypted: url.protocol === "https:" };
 }
+
+export function parseConnectionLink(
+  input: string | RemotePeerAddParams,
+  options: ParseConnectionLinkOptions = {},
+) {
+  const p = typeof input === "string" ? { connectionUrl: input } : input;
+  const url = URL.parse(p.connectionUrl ?? p.origin ?? "");
+  if (!url || !["http:", "https:"].includes(url.protocol) || url.username || url.password)
+    throw Error("Invalid peer URL");
+  if (!options.skipHostPolicy) {
+    if (isBlockedMetadataOrUnspecifiedHost(url.hostname))
+      throw Error("Peer host address is not allowed");
+    if (!options.allowLoopback && isLoopbackHost(url.hostname))
+      throw Error("Loopback peer addresses are not allowed");
+  }
+  const token =
+    p.token ?? new URLSearchParams(url.hash.slice(1)).get("token") ?? url.searchParams.get("token");
+  if (!token || token.length > 2048 || /\s/u.test(token)) throw Error("Invalid peer token");
+  const { transportKind, encrypted } = classifyPeerTransport(url.origin);
+  return { origin: url.origin, token, transportKind, encrypted };
+}
+
 const file = "remote-peers-v1.json";
+
 export class PeerHostStore {
   constructor(private data: DataDir) {}
-  load() {
+
+  load(): PeerRecord[] {
+    let raw: string;
     try {
-      return JSON.parse(readFileSync(this.data.path(file), "utf8")) as PeerRecord[];
+      raw = readFileSync(this.data.path(file), "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw Error("Cannot read remote peer configuration");
+      console.warn("[remote-peers] failed to read remote-peers-v1.json; starting with empty list");
+      return [];
+    }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        console.warn("[remote-peers] invalid remote-peers-v1.json structure; ignoring");
+        return [];
+      }
+      const records: PeerRecord[] = [];
+      for (const entry of parsed) {
+        const checked = peerRecordSchema.safeParse(entry);
+        if (checked.success) records.push(checked.data);
+        else console.warn("[remote-peers] skipping invalid peer record in remote-peers-v1.json");
+      }
+      return records;
+    } catch {
+      console.warn("[remote-peers] corrupt remote-peers-v1.json; starting with empty list");
+      return [];
     }
   }
+
   save(records: PeerRecord[]) {
     this.data.writeJson(file, records, { mode: 0o600 });
   }

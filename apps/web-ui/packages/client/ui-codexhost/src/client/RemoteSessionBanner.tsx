@@ -71,11 +71,9 @@ export function RemoteSessionChip({ sessionId, workspaces, t }: ChipProps): Reac
         className={css.chip}
         data-remote-chip
         data-remote-state={remote.state}
+        tabIndex={0}
         role="status"
-        aria-label={t("remoteSession.chipAria", {
-          name: remote.displayName,
-          workspace: folderName,
-        })}
+        aria-label={fullLocation}
       >
         <RemoteHostIcon size={12} className={css.hostIcon} />
         <span className={css.chipHost}>{remote.displayName}</span>
@@ -95,8 +93,10 @@ export function RemoteSessionChip({ sessionId, workspaces, t }: ChipProps): Reac
 /** Slim reconnect notice rendered in `conversation.input.notice` only while disconnected. */
 export function RemoteSessionBanner({ sessionId, workspaces, t }: BannerProps): ReactNode {
   const workspace = useSessionWorkspace(workspaces, sessionId);
-  const [reconnecting, setReconnecting] = useState(false);
-  const [reconnectError, setReconnectError] = useState<string | null>(null);
+  const [reconnectingPeerId, setReconnectingPeerId] = useState<string | null>(null);
+  const [reconnectError, setReconnectError] = useState<{ peerId: string; message: string } | null>(
+    null,
+  );
 
   const remote = workspace?.remote;
   if (workspace === undefined || remote === undefined || remote.state === "connected") {
@@ -104,18 +104,22 @@ export function RemoteSessionBanner({ sessionId, workspaces, t }: BannerProps): 
   }
 
   const peerId = peerIdFromRemoteHostId(remote.hostId);
+  const reconnecting = peerId !== undefined && reconnectingPeerId === peerId;
+  const currentError =
+    peerId !== undefined && reconnectError?.peerId === peerId ? reconnectError.message : null;
 
   const handleReconnect = async (): Promise<void> => {
     if (peerId === undefined || reconnecting) return;
-    setReconnecting(true);
-    setReconnectError(null);
+    const activePeerId = peerId;
+    setReconnectingPeerId(activePeerId);
+    setReconnectError((current) => (current?.peerId === activePeerId ? null : current));
     try {
-      await remotePeersApi.reconnect(peerId);
+      await remotePeersApi.reconnect(activePeerId);
       dispatchRemotePeersUpdated();
     } catch (cause) {
-      setReconnectError(messageOf(cause));
+      setReconnectError({ peerId: activePeerId, message: messageOf(cause) });
     } finally {
-      setReconnecting(false);
+      setReconnectingPeerId((current) => (current === activePeerId ? null : current));
     }
   };
 
@@ -124,8 +128,8 @@ export function RemoteSessionBanner({ sessionId, workspaces, t }: BannerProps): 
       <div className={css.stripLead}>
         <span className={css.dot} data-state={remote.state} aria-hidden="true" />
         <span className={css.stripText}>
-          {reconnectError !== null
-            ? t("remoteSession.reconnectFailed", { message: reconnectError })
+          {currentError !== null
+            ? t("remoteSession.reconnectFailed", { message: currentError })
             : t("remoteSession.disconnectedStrip", { name: remote.displayName })}
         </span>
       </div>

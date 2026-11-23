@@ -1,7 +1,25 @@
 import * as c from "@codexhost/shared-contracts";
 import { setTimeout as sleep } from "node:timers/promises";
-import { parseConnectionLink, type PeerRecord } from "./peer-host-store.ts";
+import { classifyPeerTransport, type PeerRecord } from "./peer-host-store.ts";
 import { RpcError } from "./transport.ts";
+
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 45_000;
+
+export function isCatalogChangingEvent(event: unknown): boolean {
+  if (!event || typeof event !== "object") return false;
+  const record = event as { type?: unknown; method?: unknown };
+  if (record.type === "hello") return true;
+  if (record.type !== "changed" || typeof record.method !== "string") return false;
+  const method = record.method;
+  return (
+    (method.startsWith("thread/") && method !== "thread/tokenUsage/updated") ||
+    method === "turn/started" ||
+    method === "turn/completed" ||
+    method === "codexhost/thread/pins/changed" ||
+    method === "codexhost/thread/tree/changed"
+  );
+}
+
 export class PeerHostClient {
   private life = new AbortController();
   manifest?: c.RemotePeerManifest;
@@ -10,15 +28,22 @@ export class PeerHostClient {
   state: c.RemotePeerState;
   private timer?: NodeJS.Timeout;
   private cursor?: c.ClientChannelCursor;
+  private readonly streamIdleTimeoutMs: number;
+  readonly hostId: string;
+
   constructor(
     readonly record: PeerRecord,
-    private changed: () => void,
+    private changed: (hostId?: string) => void,
+    options: { streamIdleTimeoutMs?: number } = {},
   ) {
+    this.hostId = c.remotePeerHostId(record.peerId);
     this.state = record.enabled ? "connecting" : "disabled";
+    this.streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
   }
+
   summary(): c.RemotePeerSummary {
     const { peerId, name, origin, enabled, createdAt, updatedAt } = this.record;
-    const { encrypted, transportKind } = parseConnectionLink(this.record);
+    const { encrypted, transportKind } = classifyPeerTransport(origin);
     const { version, platform, hostname, homeDir, projects } = this.manifest ?? {};
     return {
       peerId,
@@ -27,7 +52,7 @@ export class PeerHostClient {
       enabled,
       createdAt,
       updatedAt,
-      hostId: c.remotePeerHostId(peerId),
+      hostId: this.hostId,
       state: this.state,
       encrypted,
       transportKind,
@@ -40,7 +65,8 @@ export class PeerHostClient {
       projectCount: projects?.length ?? 0,
     };
   }
-  private async fetch(path: string, method = "GET", body?: unknown, stream = false) {
+
+  private async fetch(path: string, method = "GET", body?: unknown, streamSignal?: AbortSignal) {
     if (!this.record.enabled) throw new RpcError("remote/offline", "Remote peer is disabled");
     const handshake = new AbortController();
     const timer = setTimeout(() => handshake.abort(), 8000);
@@ -53,16 +79,19 @@ export class PeerHostClient {
           "content-type": "application/json",
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: stream
-          ? AbortSignal.any([handshake.signal, this.life.signal])
+        signal: streamSignal
+          ? AbortSignal.any([handshake.signal, streamSignal, this.life.signal])
           : AbortSignal.any([this.life.signal, AbortSignal.timeout(8000)]),
       });
       if (res.ok) return res;
       const failure = await res
         .json()
-        .then((body: unknown) =>
-          body && typeof body === "object" && "error" in body && typeof body.error === "string"
-            ? body.error
+        .then((payload: unknown) =>
+          payload &&
+          typeof payload === "object" &&
+          "error" in payload &&
+          typeof payload.error === "string"
+            ? payload.error
             : undefined,
         )
         .catch(() => undefined);
@@ -79,6 +108,7 @@ export class PeerHostClient {
       clearTimeout(timer);
     }
   }
+
   async probe() {
     const start = Date.now();
     try {
@@ -99,29 +129,55 @@ export class PeerHostClient {
       throw Error(message);
     }
   }
+
+  private scheduleChanged() {
+    if (this.timer) return;
+    this.timer = setTimeout(() => {
+      delete this.timer;
+      this.changed(this.hostId);
+    }, 100);
+    this.timer.unref();
+  }
+
   async start() {
     if (!this.record.enabled) return;
     let delay = 1000;
     while (!this.life.signal.aborted) {
+      const streamAbort = new AbortController();
+      let idleTimer: NodeJS.Timeout | undefined;
+      const resetIdleTimer = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          streamAbort.abort(new Error("Remote peer stream idle timeout"));
+        }, this.streamIdleTimeoutMs);
+        idleTimer.unref();
+      };
       try {
         if (this.state !== "connected") await this.probe();
         if (this.life.signal.aborted) return;
-        this.changed();
+        this.changed(this.hostId);
         const query = this.cursor
           ? "?" +
             new URLSearchParams({ epoch: this.cursor.epoch, after: String(this.cursor.sequence) })
           : "";
-        const response = await this.fetch("/api/ch/v1/events" + query, "GET", undefined, true);
+        const response = await this.fetch(
+          "/api/ch/v1/events" + query,
+          "GET",
+          undefined,
+          streamAbort.signal,
+        );
         if (!response.body) throw new RpcError("remote/offline", "Remote peer stream unavailable");
         let checked = Date.now();
         let pending = "";
         const decoder = new TextDecoder();
+        resetIdleTimer();
         for await (const chunk of response.body) {
+          resetIdleTimer();
           if (Date.now() - checked >= 30000) {
             const before = JSON.stringify(this.manifest);
             await this.probe();
             checked = Date.now();
-            if (before !== JSON.stringify(this.manifest)) this.changed();
+            if (before !== JSON.stringify(this.manifest)) this.changed(this.hostId);
           }
           pending += decoder.decode(chunk, { stream: true });
           let i;
@@ -129,34 +185,41 @@ export class PeerHostClient {
             const line = pending.slice(0, i);
             pending = pending.slice(i + 1);
             if (!line.trim()) continue;
-            const event = JSON.parse(line);
-            this.cursor = c.clientChannelCursorSchema.parse(event.cursor);
-            if (event.type === "hello" && this.manifest?.epoch !== this.cursor.epoch)
+            const event: unknown = JSON.parse(line);
+            this.cursor = c.clientChannelCursorSchema.parse((event as { cursor?: unknown }).cursor);
+            if (
+              (event as { type?: unknown }).type === "hello" &&
+              this.manifest?.epoch !== this.cursor.epoch
+            ) {
               await this.probe();
+            }
             delay = 1000;
-            if (!this.timer)
-              this.timer = setTimeout(() => {
-                delete this.timer;
-                this.changed();
-              }, 100);
+            if (isCatalogChangingEvent(event)) {
+              this.scheduleChanged();
+            }
           }
           if (pending.length > 4194304) throw Error("Invalid stream");
         }
       } catch (e) {
         if (e instanceof RpcError && e.code === "remote/auth-error") this.state = "auth-error";
         this.lastError = e instanceof Error ? e.message : "Remote peer stream disconnected";
+      } finally {
+        if (idleTimer) clearTimeout(idleTimer);
+        streamAbort.abort();
       }
       if (this.life.signal.aborted) return;
       if (this.state !== "auth-error") this.state = "offline";
-      this.changed();
+      this.changed(this.hostId);
       await sleep(delay, undefined, { signal: this.life.signal }).catch(() => {});
       delay = Math.min(delay * 2, 30000);
     }
   }
+
   close() {
     this.life.abort();
     clearTimeout(this.timer);
   }
+
   async listDirs(path?: string) {
     return c.remotePeerListDirsResultSchema.parse(
       await (
@@ -164,31 +227,37 @@ export class PeerHostClient {
       ).json(),
     );
   }
+
   async createDir(parentPath: string, name: string) {
     return c.remotePeerCreateDirResultSchema.parse(
       await (await this.fetch("/api/peer/v1/dirs", "POST", { parentPath, name })).json(),
     );
   }
+
   createWorkspace({ path, title }: Pick<c.RemotePeerCreateWorkspaceParams, "path" | "title">) {
     return this.workspace("POST", { path, title });
   }
+
   renameWorkspace({
     workspaceId,
     title,
   }: Pick<c.RemotePeerRenameWorkspaceParams, "workspaceId" | "title">) {
     return this.workspace("PATCH", { workspaceId, title });
   }
+
   deleteWorkspace(workspaceId: string) {
     return this.workspace("DELETE", { workspaceId });
   }
+
   private async workspace(method: string, params: object) {
     const result = c.remotePeerWorkspaceMutationResultSchema.parse(
       await (await this.fetch("/api/peer/v1/workspaces", method, params)).json(),
     );
     this.manifest = result.manifest;
-    this.changed();
+    this.changed(this.hostId);
     return result;
   }
+
   async call(op: c.RemoteSessionOperation): Promise<unknown> {
     const epoch = this.manifest?.epoch;
     if (this.state !== "connected")
@@ -324,8 +393,10 @@ export class PeerHostClient {
           config: { model_reasoning_effort: op.reasoningEffort },
         });
         const owner = await rpc("codexhost/thread/inspect", { threadId: result.thread.id });
-        if ((owner.owner === "codex" ? "codex" : owner.harnessId) !== op.harnessId)
+        if ((owner.owner === "codex" ? "codex" : owner.harnessId) !== op.harnessId) {
+          await rpc("thread/archive", { threadId: result.thread.id }).catch(() => undefined);
           throw Error("Selected Harness not confirmed");
+        }
         return result;
       }
       case "configure":

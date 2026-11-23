@@ -204,13 +204,25 @@ export function HeroLocationWorkspacePicker({
   const projectOpen = externalProjectOpen || localProjectOpen;
   const flowBusy = flowOpen || pickingFolder;
 
+  const selectedWorkspaceHostKey = useMemo(
+    () => hostKeyOfWorkspace(workspaces, selectedId),
+    [workspaces, selectedId],
+  );
+
+  const [activeHostKey, setActiveHostKey] = useState<string>(() => selectedWorkspaceHostKey);
+
   const setProjectOpen = useCallback(
-    (next: boolean): void => {
+    (next: boolean, keepPendingHost = false): void => {
       setLocalProjectOpen(next);
       onOpenChange?.(next);
-      if (!next) onClose();
+      if (!next) {
+        if (!keepPendingHost) {
+          setActiveHostKey(selectedWorkspaceHostKey);
+        }
+        onClose();
+      }
     },
-    [onClose, onOpenChange],
+    [onClose, onOpenChange, selectedWorkspaceHostKey],
   );
 
   // Sync external `open` transitions (e.g. clicking the inert composer card).
@@ -252,7 +264,8 @@ export function HeroLocationWorkspacePicker({
         event as CustomEvent<{ hostId?: string; path?: string; workspaceId?: string } | undefined>
       ).detail;
       if (!detail || typeof detail.hostId !== "string" || typeof detail.path !== "string") return;
-      if (awaitingRemoteHostRef.current === null) return;
+      if (awaitingRemoteHostRef.current === null || detail.hostId !== awaitingRemoteHostRef.current)
+        return;
       awaitingRemoteHostRef.current = null;
       setPendingRemoteCreated({
         hostId: detail.hostId,
@@ -270,13 +283,6 @@ export function HeroLocationWorkspacePicker({
     () => buildHeroLocationOptions(workspaces, configuredPeers),
     [workspaces, configuredPeers],
   );
-
-  const selectedWorkspaceHostKey = useMemo(
-    () => hostKeyOfWorkspace(workspaces, selectedId),
-    [workspaces, selectedId],
-  );
-
-  const [activeHostKey, setActiveHostKey] = useState<string>(() => selectedWorkspaceHostKey);
 
   // Follow external selection changes (e.g. clicking "+" next to a workspace in sidebar).
   const prevSelectedIdRef = useRef<WorkspaceId | undefined>(selectedId);
@@ -474,7 +480,8 @@ export function HeroLocationWorkspacePicker({
   };
 
   const handleSelectProject = (id: string): void => {
-    setProjectOpen(false);
+    awaitingRemoteHostRef.current = null;
+    setProjectOpen(false, true);
     if (id === NO_PROJECT_ID) {
       onPick(null);
       return;
@@ -483,8 +490,9 @@ export function HeroLocationWorkspacePicker({
   };
 
   const openLocalDirectoryFlow = useCallback((): void => {
+    awaitingRemoteHostRef.current = null;
     phoneFlowOrigin.current = phoneSidebar?.open === true;
-    setProjectOpen(false);
+    setProjectOpen(false, true);
     setErrorOpen(false);
     setModalError(null);
     setFlowOpen(true);
@@ -495,7 +503,7 @@ export function HeroLocationWorkspacePicker({
       if (flowAvailable && !flowBusy) openLocalDirectoryFlow();
       return;
     }
-    if (activeLocation.hostId?.startsWith("remote-peer:")) {
+    if (activeLocation.hostId?.startsWith("remote-peer:") && activeLocation.state === "connected") {
       setProjectOpen(false);
       awaitingRemoteHostRef.current = activeLocation.hostId;
       window.dispatchEvent(
@@ -509,7 +517,8 @@ export function HeroLocationWorkspacePicker({
   const canCreateProjectOnActiveHost =
     activeLocation.key === "local"
       ? flowAvailable
-      : activeLocation.hostId?.startsWith("remote-peer:") === true;
+      : activeLocation.hostId?.startsWith("remote-peer:") === true &&
+        activeLocation.state === "connected";
 
   const handleOpenRemoteSettings = (): void => {
     setLocationOpen(false);

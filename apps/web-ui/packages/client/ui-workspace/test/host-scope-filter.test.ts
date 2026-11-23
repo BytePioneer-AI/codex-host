@@ -7,6 +7,7 @@ import {
   HOST_SCOPE_FILTER_STORAGE_KEY,
   countSelectedWorkspacesForHost,
   deriveAvailableHosts,
+  ensureWorkspaceVisibleInHostScope,
   filterSessionsByHostScope,
   filterWorkspacesByHostScope,
   hasRemotePeerWorkspaces,
@@ -380,5 +381,24 @@ describe("persistence & state mutation helpers", () => {
 
     state = setHostSelectedWorkspaceIds(state, usHost.key, []);
     assert.equal(countSelectedWorkspacesForHost(usHost, state.perHost[usHost.key]), 0);
+  });
+
+  it("widens host scope and workspace subset when revealing a cross-host search result", () => {
+    const workspaces = sampleWorkspaces();
+    const target = workspaces.find((w) => w.workspaceId === "ws-us-2");
+    assert.ok(target);
+
+    const narrowed: HostScopeFilterState = {
+      selectedHost: "local",
+      perHost: {
+        "remote-peer:us-vps": { mode: "selected", workspaceIds: ["ws-us-1"] },
+      },
+    };
+    const widened = ensureWorkspaceVisibleInHostScope(narrowed, target, workspaces);
+    assert.equal(widened.selectedHost, "all");
+    assert.deepEqual(widened.perHost["remote-peer:us-vps"]?.workspaceIds, ["ws-us-1", "ws-us-2"]);
+
+    // Already visible workspace returns the same reference.
+    assert.strictEqual(ensureWorkspaceVisibleInHostScope(widened, target, workspaces), widened);
   });
 });

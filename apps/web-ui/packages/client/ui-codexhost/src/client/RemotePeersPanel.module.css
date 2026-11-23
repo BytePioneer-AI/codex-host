@@ -248,13 +248,29 @@
   white-space: nowrap;
 }
 
-.stateText {
+.loadingState {
   margin: 0;
   padding: 24px 16px;
   text-align: center;
   font-size: 12.5px;
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
+}
+
+.stateText {
+  flex: none;
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.stateText[data-state="connecting"] {
+  color: var(--dsw-alias-state-warning-primary, #c27803);
+}
+
+.stateText[data-state="auth-error"] {
+  color: var(--dsw-alias-state-error-primary);
 }
 
 .emptyState {

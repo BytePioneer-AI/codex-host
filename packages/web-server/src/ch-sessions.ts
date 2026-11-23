@@ -1481,6 +1481,7 @@ export class ChSessions {
             this.host,
             row,
             prompt,
+            owner.owner === "external",
             () => !this.closed && this.titleRequests.has(threadId),
           )
             .then(async (changed) => {

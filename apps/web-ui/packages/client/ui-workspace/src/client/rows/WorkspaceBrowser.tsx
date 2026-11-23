@@ -1773,11 +1773,11 @@ function WorkspaceBrowserContent({
       groupBy === "flat"
         ? undefined
         : workspaces.find((workspace) => workspace.sessionIds.includes(rootId))?.workspaceId;
-    const section = nativeSections.find(
-      ({ threadIds, workspaceIds }) =>
-        threadIds.includes(rootId) ||
-        (workspaceId !== undefined && workspaceIds?.includes(workspaceId) === true),
-    );
+    const section =
+      nativeSections.find(({ threadIds }) => threadIds.includes(rootId)) ??
+      (workspaceId === undefined
+        ? undefined
+        : nativeSections.find(({ workspaceIds }) => workspaceIds?.includes(workspaceId) === true));
     if (section) actions.setSectionExpanded(`native-section:${section.id}`, true);
     setRevealSessionId(sessionId);
     setQuery("");

@@ -3,7 +3,7 @@
 > 状态：已按确认方案在独立分支实现，见 [PR #303](https://github.com/BytePioneer-AI/codex-host/pull/303)。尚未发布；真实 Desktop 与逐 Harness 实测仍待完成，PR 保持 Draft。
 > 来源：[#294](https://github.com/BytePioneer-AI/codex-host/issues/294) 及后续方案讨论。
 > 依据（2026-09-15）：源码核对；本机 Codex Desktop 26.908.40834 安装包与日志分析；stock `codex-cli 0.154.0-alpha.6.2` app-server 实测；Host 合成探针测试（临时文件，未提交）。未在真实 Desktop 上验证自动释放与恢复。
-> 修订：前几版分别评估了 Renderer 前台上报、接入 Codex 原生退订语义、Adapter 活动探针与进程组检查，均因复杂度或收益问题未采用（见第 6 节）。本版改为用户显式开启、达到可配置空闲时间后关闭会话的简化方案，并保留可恢复性与 Host 操作协调保护。最近一次审查后明确：方案仅考虑本地 Host，远程 Host 不在范围内；进行中的 Host 操作以按 Thread 的占用计数保护，不以空闲时长兜底；设置校验共用 `shared-contracts` schema；设置页内部 ID 保持 `appearance`；超时时间为 5～1440 分钟整数；设置现由本地共享 Host 持久化，GUI 与 Web 通过偏好 RPC 和通知同步。
+> 修订：前几版分别评估了 Renderer 前台上报、接入 Codex 原生退订语义、Adapter 活动探针与进程组检查，均因复杂度或收益问题未采用（见第 6 节）。本版改为默认开启、达到可配置空闲时间（默认 10 分钟）后关闭会话的简化方案，并保留可恢复性与 Host 操作协调保护。最近一次审查后明确：方案仅考虑本地 Host，远程 Host 不在范围内；进行中的 Host 操作以按 Thread 的占用计数保护，不以空闲时长兜底；设置校验共用 `shared-contracts` schema；设置页内部 ID 保持 `appearance`；超时时间为 5～1440 分钟整数；设置现由本地共享 Host 持久化，GUI 与 Web 通过偏好 RPC 和通知同步。
 
 ## 1. 背景与目标
 
@@ -22,7 +22,7 @@
 - **仅考虑本地 Host**：设置只下发给本地 Host；远程 Host 不在范围内。
 - 开启后，外部 Thread 空闲达到配置时长且满足 Host 保护条件时，Host 调用现有 `HarnessSession.close()` 关闭会话，并从内存移除该 Thread，不发送额外的卸载状态通知。
 - 之后需要执行实例的请求（打开、发送消息、读取历史等）经现有 `ExternalThreadRuntime.resolve()` 自动恢复；仅元数据等请求保持现有不恢复行为。
-- 不证明所有原生附属进程或后台任务均已结束，由用户在开启时知情接受可能中断这些资源；仍保护 Host 已知的进行中任务与操作。
+- 不证明所有原生附属进程或后台任务均已结束，可能中断这些资源的影响通过问号浮窗说明，用户可随时在设置中关闭；仍保护 Host 已知的进行中任务与操作。
 - 面向所有 Harness，优先复用现有 Adapter 关闭和恢复接口，不新增统一安全探针。是否需要修正具体 Adapter，由逐个验证结果决定，不能预先承诺零修改。
 
 ## 3. 行为规则
@@ -119,10 +119,10 @@
 
 | 影响 | 说明 | 处理 |
 | --- | --- | --- |
-| 会话启动的服务被停止 | Pi、OMP、ACP 类等关闭时向进程组发信号；Claude Code 关闭时先 `stopTask` 停止所有后台任务 | 开启前提示 |
-| 后台任务结果丢失 | Turn 结束后原生侧仍可能有后台工作，完成后以自主 Turn 回传（如 Claude Code “publishes an autonomous Root Turn after background task completion”）；关闭后不再回传 | 开启前提示 |
-| 恢复等待 | 释放后首次打开或发送消息需要等待 Harness 启动 | 开启前提示 |
-| 阅读中被释放 | 用户停留在某个 Thread 超过配置时长且无活动也会被释放；下一次需要执行实例的操作触发恢复 | 开启前提示 |
+| 会话启动的服务被停止 | Pi、OMP、ACP 类等关闭时向进程组发信号；Claude Code 关闭时先 `stopTask` 停止所有后台任务 | 问号浮窗说明，可随时关闭 |
+| 后台任务结果丢失 | Turn 结束后原生侧仍可能有后台工作，完成后以自主 Turn 回传（如 Claude Code “publishes an autonomous Root Turn after background task completion”）；关闭后不再回传 | 问号浮窗说明，可随时关闭 |
+| 恢复等待 | 释放后首次打开或发送消息需要等待 Harness 启动 | 问号浮窗说明，可随时关闭 |
+| 阅读中被释放 | 用户停留在某个 Thread 超过配置时长且无活动也会被释放；下一次需要执行实例的操作触发恢复 | 问号浮窗说明，可随时关闭 |
 | 部分 Harness 收益有限 | Antigravity 空闲时不占进程；DeepSeek Harness 多个会话共用一个进程 | 逐 Adapter 验证资源释放范围，不能影响其他会话 |
 | 关闭失败 | 保留原实例引用并由 Host 阻止继续使用和自动重建，明确提示恢复办法 | 记录诊断，不预设失败概率 |
 

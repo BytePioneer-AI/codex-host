@@ -557,6 +557,7 @@ describe("Renderer fixed Model request client", () => {
       "uninstallHostExtension",
       "updateHostExtension",
       "updateRemote",
+      "usesIndependentNativeInference",
       "watchThreadTree",
     ]);
 

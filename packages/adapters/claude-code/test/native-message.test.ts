@@ -1120,6 +1120,46 @@ describe("Claude native Turn interpretation", () => {
     ]);
   });
 
+  it("notifies once when the main session falls back to another model", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const event = {
+      type: "system",
+      subtype: "model_refusal_fallback",
+      trigger: "refusal",
+      direction: "retry",
+      scope: "session",
+      original_model: "fable-5.2",
+      fallback_model: "claude-opus-5",
+      request_id: "req-fallback-1",
+    };
+    const events = turn.consume(event).events;
+    expect(events[0]).toMatchObject({
+      type: "text.delta",
+      delta:
+        "Model fallback: **fable-5.2 → claude-opus-5**. The session continues on the fallback model; your configured model choice is unchanged.",
+    });
+    expect(events[1]).toMatchObject({ type: "message.completed" });
+    expect(turn.consume({ ...event, uuid: "repeat" }).events).toEqual([]);
+    expect(
+      turn.consume({ ...event, request_id: "req-fallback-2", uuid: "second" }).events.length,
+    ).toBe(2);
+  });
+
+  it("stays silent when only a subagent or side-question fell back", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    expect(
+      turn.consume({
+        type: "system",
+        subtype: "model_refusal_fallback",
+        direction: "retry",
+        scope: "local",
+        original_model: "fable-5.2",
+        fallback_model: "claude-opus-5",
+        request_id: "req-fallback-local",
+      }).events,
+    ).toEqual([]);
+  });
+
   it("synthesizes a complete Compaction lifecycle when only a boundary is available", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 

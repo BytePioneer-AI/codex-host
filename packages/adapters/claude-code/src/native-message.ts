@@ -521,6 +521,8 @@ export class ClaudeNativeTurnAccumulator {
   #completedThinkingBlocks = new Set<string>();
   #protocolConflict = false;
   #textConflict = false;
+  /** Fallback notices already published, keyed by request id (or model pair). */
+  #fallbackNoticeKeys = new Set<string>();
   #tools = new Map<string, ActiveNativeTool>();
 
   constructor(options: { provider?: string; subagentIdsByName?: Map<string, string> } = {}) {
@@ -558,6 +560,7 @@ export class ClaudeNativeTurnAccumulator {
     if (!nested) {
       this.#consumeCompaction(message, events);
       this.#consumeLocalCommandOutput(message, events);
+      this.#consumeModelFallback(message, events);
     }
 
     if (message.type === "stream_event" && isRecord(message.event)) {
@@ -641,6 +644,31 @@ export class ClaudeNativeTurnAccumulator {
     if (this.#compactionState === "idle") events.push({ type: "compaction.started" });
     this.#compactionState = "settled";
     events.push({ type: "compaction.completed", outcome: "succeeded" });
+  }
+
+  /**
+   * Claude reports a primary-model refusal fallback (the turn retried on a
+   * fallback model) as a `model_refusal_fallback` system push. A `session`
+   * scope (or absent, on older CLIs) means the main thread fell back and the
+   * session model is swapped, so the user sees one non-blocking chat notice;
+   * a `local` scope is a subagent / side-question fallback and stays silent.
+   */
+  #consumeModelFallback(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
+    if (message.type !== "system" || message.subtype !== "model_refusal_fallback") return;
+    if (message.scope === "local") return;
+    const original = typeof message.original_model === "string" ? message.original_model : "";
+    const fallback = typeof message.fallback_model === "string" ? message.fallback_model : "";
+    if (original.length === 0 || fallback.length === 0) return;
+    const key =
+      typeof message.request_id === "string" && message.request_id.length > 0
+        ? message.request_id
+        : `${original}\u0000${fallback}`;
+    if (this.#fallbackNoticeKeys.has(key)) return;
+    this.#fallbackNoticeKeys.add(key);
+    const messageId = this.#nextMessageId();
+    const delta = `Model fallback: **${original} → ${fallback}**. The session continues on the fallback model; your configured model choice is unchanged.`;
+    events.push({ type: "text.delta", messageId, delta });
+    events.push({ type: "message.completed", messageId });
   }
 
   #consumeLocalCommandOutput(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {

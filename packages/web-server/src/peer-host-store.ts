@@ -41,14 +41,24 @@ function unbracket(hostname: string): string {
     : hostname.toLowerCase();
 }
 
+function decodeIpv4MappedIpv6(bare: string): string | undefined {
+  if (!bare.startsWith("::ffff:")) return undefined;
+  const suffix = bare.slice("::ffff:".length);
+  if (isIPv4(suffix)) return suffix;
+  const hex = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/u.exec(suffix);
+  const hiHex = hex?.[1];
+  const loHex = hex?.[2];
+  if (!hiHex || !loHex) return undefined;
+  const hi = Number.parseInt(hiHex, 16);
+  const lo = Number.parseInt(loHex, 16);
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
 function isLoopbackHost(hostname: string): boolean {
   const bare = unbracket(hostname);
   if (bare === "localhost" || bare.endsWith(".localhost") || bare === "::1") return true;
-  if (bare.startsWith("::ffff:")) {
-    const mapped = bare.slice("::ffff:".length);
-    return isLoopbackHost(mapped);
-  }
-  return isIPv4(bare) && bare.startsWith("127.");
+  const ipv4 = decodeIpv4MappedIpv6(bare) ?? (isIPv4(bare) ? bare : undefined);
+  return ipv4 !== undefined && ipv4.startsWith("127.");
 }
 
 function isBlockedMetadataOrUnspecifiedHost(hostname: string): boolean {
@@ -63,14 +73,12 @@ function isBlockedMetadataOrUnspecifiedHost(hostname: string): boolean {
   ) {
     return true;
   }
-  if (bare.startsWith("::ffff:")) {
-    return isBlockedMetadataOrUnspecifiedHost(bare.slice("::ffff:".length));
-  }
   // IPv6 link-local (fe80::/10)
   if (/^fe[89ab][0-9a-f]:/iu.test(bare)) return true;
-  if (isIPv4(bare)) {
+  const ipv4 = decodeIpv4MappedIpv6(bare) ?? (isIPv4(bare) ? bare : undefined);
+  if (ipv4 !== undefined) {
     // 0.0.0.0/8 (unspecified) and 169.254.0.0/16 (link-local & cloud metadata)
-    if (bare.startsWith("0.") || bare.startsWith("169.254.")) return true;
+    if (ipv4.startsWith("0.") || ipv4.startsWith("169.254.")) return true;
   }
   return false;
 }

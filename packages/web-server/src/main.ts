@@ -430,6 +430,8 @@ const stopEpoch = chHost.realtime?.subscribe((event) => {
     peerEpoch = event.cursor.epoch;
     for (const notify of peerEpochWaiters) notify();
     peerEpochWaiters.clear();
+  } else if (event.type === "connection" && !event.online) {
+    peerEpoch = undefined;
   }
 });
 async function resolvePeerEpoch(): Promise<string | undefined> {

@@ -224,31 +224,37 @@ export class RemoteSessions {
   private refreshPending = false;
   private fullRefreshPending = false;
   private pendingHostIds = new Set<string>();
+  private hasPendingRefresh(): boolean {
+    return this.refreshPending || this.fullRefreshPending || this.pendingHostIds.size > 0;
+  }
+  private startRefresh(): Promise<void> {
+    this.listing ??= this.list().finally(() => {
+      this.listing = undefined;
+      if (!this.closed && !this.archiveWrites && this.hasPendingRefresh()) {
+        this.refreshPending = false;
+        void this.startRefresh().catch(() => undefined);
+      }
+    });
+    return this.listing;
+  }
   hostsChanged(hostId?: string): void {
     if (this.closed) return;
     if (hostId) this.pendingHostIds.add(hostId);
     else this.fullRefreshPending = true;
-    if (this.listing) {
+    if (this.listing || this.archiveWrites) {
       this.refreshPending = true;
       return;
     }
-    void this.refresh(hostId).catch(() => undefined);
+    void this.startRefresh().catch(() => undefined);
   }
   refresh(hostId?: string): Promise<void> {
     if (hostId) this.pendingHostIds.add(hostId);
     else this.fullRefreshPending = true;
-    this.listing ??= this.list().finally(() => {
-      this.listing = undefined;
-      if (this.refreshPending || this.fullRefreshPending || this.pendingHostIds.size > 0) {
-        this.refreshPending = false;
-        void this.refresh(
-          this.fullRefreshPending || this.pendingHostIds.size !== 1
-            ? undefined
-            : [...this.pendingHostIds][0],
-        ).catch(() => undefined);
-      }
-    });
-    return this.listing;
+    if (this.archiveWrites) {
+      this.refreshPending = true;
+      return this.listing ?? Promise.resolve();
+    }
+    return this.startRefresh();
   }
   private async list(): Promise<void> {
     if (this.archiveWrites) return;
@@ -1263,6 +1269,10 @@ export class RemoteSessions {
       if (operation.kind === "archive") {
         this.archiveWrites--;
         this.archiveRevision++;
+        if (this.archiveWrites === 0 && !this.closed && !this.listing && this.hasPendingRefresh()) {
+          this.refreshPending = false;
+          void this.startRefresh().catch(() => undefined);
+        }
       }
     }
     if (operation.kind === "archive") {

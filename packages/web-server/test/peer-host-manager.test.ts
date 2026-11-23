@@ -42,11 +42,19 @@ it("normalizes credential links, enforces SSRF host policy, and classifies LAN/T
     "http://127.0.0.1:4400/#token=x",
     "http://localhost:4400/#token=x",
     "http://[::1]:4400/#token=x",
+    "http://[::ffff:127.0.0.1]:4400/#token=x",
     "http://169.254.169.254/#token=x",
+    "http://[::ffff:169.254.169.254]/#token=x",
     "http://metadata.google.internal/#token=x",
     "http://0.0.0.0:4400/#token=x",
+    "http://[::ffff:0.0.0.0]:4400/#token=x",
   ])
     assert.throws(() => parseConnectionLink(bad));
+  for (const blockedEvenWithLoopback of [
+    "http://[::ffff:169.254.169.254]/#token=x",
+    "http://[::ffff:0.0.0.0]:4400/#token=x",
+  ])
+    assert.throws(() => parseConnectionLink(blockedEvenWithLoopback, { allowLoopback: true }));
 });
 
 it("recovers gracefully from corrupt remote-peers-v1.json and preserves trailing-space dir names", async (t) => {
@@ -328,4 +336,78 @@ it("pairs authenticated mobile callers with independent peers and recovers event
   assert.ok(!a.stream()?.destroyed);
   assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.epoch, restarted);
   assert.equal(parseConnectionLink("https://foo.r.chost.dev/#token=x").transportKind, "relay");
+});
+
+it("aborts and reconnects a half-open silent event stream after streamIdleTimeoutMs", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "peer-idle-"));
+  const token = "idle-secret";
+  const epoch = randomUUID();
+  let streamConnections = 0;
+  let firstStreamClosed = false;
+  const openStreams: ServerResponse[] = [];
+  const server = createServer((req, res) => {
+    if (req.headers.authorization !== "Bearer " + token) {
+      res.writeHead(401).end();
+      return;
+    }
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname === "/api/peer/v1/manifest") {
+      res.end(
+        JSON.stringify({
+          version: "1",
+          epoch,
+          platform: process.platform,
+          hostname: "silent-peer",
+          homeDir: root,
+          projects: [],
+        }),
+      );
+      return;
+    }
+    if (url.pathname === "/api/ch/v1/events") {
+      streamConnections += 1;
+      openStreams.push(res);
+      if (streamConnections === 1) {
+        res.on("close", () => {
+          firstStreamClosed = true;
+        });
+      }
+      res.writeHead(200);
+      res.write(JSON.stringify({ type: "hello", cursor: { epoch, sequence: 1 } }) + "\n");
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const store = new PeerHostStore(new DataDir(root));
+  const manager = new PeerHostManager(store, async () => [], new EventHub(root), {
+    allowLoopback: true,
+    streamIdleTimeoutMs: 100,
+  });
+  t.after(() => {
+    manager.close();
+    for (const s of openStreams) s.destroy();
+    server.closeAllConnections();
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const rpc = new RpcRegistry();
+  manager.register(rpc);
+  const added = await rpc.dispatch(
+    methods.add,
+    { args: { connectionUrl: `${origin}/#token=${token}` } },
+    { local: true, credential: "local", release() {} },
+  );
+  assert.equal(added.ok, true);
+
+  for (let i = 0; i < 80 && !(streamConnections >= 2 && firstStreamClosed); i++) {
+    await sleep(50);
+  }
+  assert.equal(firstStreamClosed, true);
+  assert.ok(
+    streamConnections >= 2,
+    `expected reconnect after idle timeout, got ${streamConnections}`,
+  );
 });

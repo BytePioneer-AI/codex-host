@@ -95,7 +95,7 @@ it("sends a push test only to its requesting subscription", async (t) => {
   );
   assert.deepEqual(sent, { ok: true, value: { sent: 1 } });
   assert.deepEqual(
-    send.mock.calls.map((call) => call.arguments[0].endpoint),
+    send.mock.calls.map((call) => call.arguments[0]?.endpoint),
     [target],
   );
 

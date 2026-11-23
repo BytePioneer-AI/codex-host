@@ -109,6 +109,7 @@ export class ChSessions {
   private refreshingTiming: SessionListTiming | undefined;
   private catalogReadAt = -Infinity;
   private timer?: NodeJS.Timeout;
+  private idleViewTimer?: NodeJS.Timeout;
   private closed = false;
   private readonly realtime: ChRealtime | undefined;
   private readonly skills: WebSkills;
@@ -466,6 +467,14 @@ export class ChSessions {
       this.threads.harnessId(row.id),
     ]);
   }
+  private catalogProjections(row: ChThread) {
+    return {
+      title: threadListTitle(row),
+      threadTreeParent: this.tree.parent(row.id),
+      archiveForkParent: this.archiveForkParent(row),
+      codexhostImportSource: row.codexhostImportSource ?? null,
+    };
+  }
   private async publishCatalogChanges(pageSectionAdditions?: ReadonlySet<string>): Promise<void> {
     const before = this.publishedCatalog;
     const next = new Map([...this.rows].map(([id, row]) => [id, this.catalogKey(row)]));
@@ -490,10 +499,21 @@ export class ChSessions {
     // metadata through the existing control stream without rereading any history.
     for (const [id, row] of this.rows) {
       const log = this.threads.view(id)?.log;
-      log?.setProjection("title", threadListTitle(row));
-      log?.setProjection("threadTreeParent", this.tree.parent(id));
-      log?.setProjection("archiveForkParent", this.archiveForkParent(row));
-      log?.setProjection("codexhostImportSource", row.codexhostImportSource ?? null);
+      if (!log) continue;
+      for (const [key, value] of Object.entries(this.catalogProjections(row)))
+        log.setProjection(key, value);
+    }
+    // A Thread whose view was dropped has no journal to publish through, yet browsers
+    // keep its sequenced values. Advance the reserved sequence below its next view.
+    if (this.controls.size > 0) {
+      for (const { sessionId } of changed) {
+        const row = this.rows.get(sessionId);
+        const seq = row ? this.threads.reserveDroppedProjectionSeq(sessionId) : undefined;
+        if (!row || seq === undefined) continue;
+        for (const [key, value] of Object.entries(this.catalogProjections(row)))
+          for (const sink of this.controls)
+            sink.push({ type: "projection", sessionId, key, value, seq });
+      }
     }
     for (const row of changed) this.events.emit("api-session/added", row);
     if (before)
@@ -1629,7 +1649,9 @@ export class ChSessions {
       const view =
         this.threads.view(this.id(req.address.sessionId)) ??
         (await this.view(req.address.sessionId, true));
-      const page = await view.olderPage(req.throughSeq, req.beforeSeq, req.maxMessages);
+      const page = await this.threads.trackPageRead(view.thread.id, view, () =>
+        view.olderPage(req.throughSeq, req.beforeSeq, req.maxMessages),
+      );
       return context.relay
         ? {
             ...page,
@@ -1716,6 +1738,17 @@ export class ChSessions {
       this.controls.add(sink);
       sink.onClose(() => this.controls.delete(sink));
       sink.push({ type: "baseline", value: { projections } });
+      // Dropped views stay out of `baseline` so `ProjectionStore.seed` does not
+      // clear non-catalog global projections; replay current catalog values as
+      // live frames above the retired sequence watermark instead.
+      for (const id of this.threads.droppedViewIds()) {
+        if (sink.closed) break;
+        const row = this.rows.get(id);
+        const seq = row ? this.threads.reserveDroppedProjectionSeq(id) : undefined;
+        if (!row || seq === undefined) continue;
+        for (const [key, value] of Object.entries(this.catalogProjections(row)))
+          sink.push({ type: "projection", sessionId: id, key, value, seq });
+      }
     });
     streams.register("session/follow", async (args, sink) => {
       const request = requestOf<{ address: { sessionId: string }; assistantStream?: boolean }>(
@@ -1788,6 +1821,13 @@ export class ChSessions {
       }
     }, 10000);
     this.timer.unref();
+    this.idleViewTimer = setInterval(() => {
+      this.threads.discardIdleViews(
+        Date.now(),
+        (id) => this.rows.get(id)?.status.type === "active",
+      );
+    }, 60_000);
+    this.idleViewTimer.unref();
   }
 
   registerCommands(rpc: RpcRegistry): void {
@@ -1928,6 +1968,7 @@ export class ChSessions {
     this.realtime?.close();
     this.interactions?.clear();
     clearInterval(this.timer);
+    clearInterval(this.idleViewTimer);
     this.host.close();
     for (const sink of this.controls) sink.end();
   }

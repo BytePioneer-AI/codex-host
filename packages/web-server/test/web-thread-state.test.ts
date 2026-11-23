@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { ChThreadHistory } from "../src/ch-thread-history.ts";
-import { WebThreadStates } from "../src/web-thread-state.ts";
+import { IDLE_VIEW_MS, WebThreadStates } from "../src/web-thread-state.ts";
 import { FakeChHost } from "./support/ch-host.ts";
+import { defined } from "./support/defined.ts";
 
 function tracked(states: WebThreadStates, id: string) {
   const host = new FakeChHost();
@@ -44,6 +45,46 @@ it("discards one view without touching its in-flight read or other Threads", () 
   assert.equal(states.get("a")?.controls, undefined);
   assert.equal(states.get("a")?.viewOrigin, a.log.lastSeq + 2);
   assert.equal(states.view("b"), b);
+});
+
+it("drops only the views that stayed unfollowed, unread and idle for ten minutes", () => {
+  const states = new WebThreadStates();
+  const views = Object.fromEntries(
+    ["idle", "followed", "reading", "running"].map((id) => [id, tracked(states, id)]),
+  );
+  for (const id of ["idle", "followed", "running"]) delete states.get(id)?.reading;
+  const start = 1_800_000_000_000;
+  let unfollow = () => {};
+  views.followed?.log.follow(
+    {
+      id: "browser",
+      closed: false,
+      push: () => {},
+      onClose: (cleanup) => (unfollow = cleanup),
+      end: () => {},
+      fail: () => {},
+    },
+    {},
+  );
+  const check = (elapsed: number) =>
+    states.discardIdleViews(start + elapsed, (id) => id === "running");
+  const live = () => states.views().map(([id]) => id);
+  check(0);
+  check(IDLE_VIEW_MS - 1);
+  assert.deepEqual(live(), ["idle", "followed", "reading", "running"]);
+  check(IDLE_VIEW_MS);
+  assert.deepEqual(live(), ["followed", "reading", "running"]);
+  assert.deepEqual(Object.keys(states.get("idle") ?? {}).sort(), ["harnessId", "viewOrigin"]);
+  assert.equal(states.get("idle")?.viewOrigin, (views.idle?.log.lastSeq ?? 0) + 2);
+  // Leaving starts the ten minutes; time spent followed does not count.
+  unfollow();
+  check(IDLE_VIEW_MS + 1);
+  // A browser that opens and leaves between two checks is seen by its read.
+  defined(states.get("followed")).historyReadAt = start + IDLE_VIEW_MS + 5;
+  check(2 * IDLE_VIEW_MS + 4);
+  assert.deepEqual(live(), ["followed", "reading", "running"]);
+  check(2 * IDLE_VIEW_MS + 5);
+  assert.deepEqual(live(), ["reading", "running"]);
 });
 
 it("replaces confirmed owners as a whole and forgets Threads nothing else tracks", () => {

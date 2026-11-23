@@ -1,6 +1,13 @@
-/** Connection setup and device access management. */
-import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Button, Modal, relativeTime } from "@deepseek-ai/dsh-client-ui-primitives";
+/** Connection setup, device access management, and remote peer hosts. */
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import { Button, Modal, relativeTime, SegmentedTabs } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { WebAccessState } from "@codexhost/shared-contracts";
 import { accessTokenApi, ApiError, copyText, readWebAccessAuth } from "./api.ts";
@@ -10,7 +17,30 @@ import { resubmitNotifications } from "./notifications.ts";
 import { relayPreparing } from "./RelayControl.tsx";
 import { ConnectionCard } from "./ConnectionCard.tsx";
 import { MobileGuideCard } from "./MobileGuideCard.tsx";
+import { RemotePeersPanel } from "./RemotePeersPanel.tsx";
 import css from "./ConnectDevicesSection.module.css";
+
+export type ConnectDevicesTab = "share" | "peers";
+
+let activeConnectDevicesTab: ConnectDevicesTab = "share";
+const connectDevicesTabListeners = new Set<() => void>();
+
+export function setConnectDevicesTab(tab: ConnectDevicesTab): void {
+  if (activeConnectDevicesTab === tab) return;
+  activeConnectDevicesTab = tab;
+  for (const listener of connectDevicesTabListeners) listener();
+}
+
+export function subscribeConnectDevicesTab(listener: () => void): () => void {
+  connectDevicesTabListeners.add(listener);
+  return () => {
+    connectDevicesTabListeners.delete(listener);
+  };
+}
+
+export function getConnectDevicesTab(): ConnectDevicesTab {
+  return activeConnectDevicesTab;
+}
 
 type Translate = PropsLocale<"codexhostImport">["t"];
 type ConfirmKind = "regenerate" | "stop" | "signOut";
@@ -82,7 +112,7 @@ function Confirm({
 }
 
 /** One explicit action enables the chosen route; selecting it only previews its address. */
-export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): ReactNode {
+function ShareThisComputerPanel({ t }: PropsLocale<"codexhostImport">): ReactNode {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [remote, setRemote] = useState(false);
   const [confirming, setConfirming] = useState<ConfirmKind | null>(null);
@@ -216,7 +246,7 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
   const used = lastUsedAt === null ? undefined : relativeTime(lastUsedAt, Date.now());
   const shownError = error ?? restart.error;
   return (
-    <div className={css.page} data-connect-devices>
+    <div className={css.shareContent}>
       <header className={css.header}>
         <div className={css.headerText}>
           <h2 className={css.title}>{t("connectDevices.title")}</h2>
@@ -416,6 +446,61 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
             />
           );
         })()}
+    </div>
+  );
+}
+
+export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): ReactNode {
+  const activeTab = useSyncExternalStore(subscribeConnectDevicesTab, getConnectDevicesTab);
+  const tabIdPrefix = useId();
+  const shareTabId = `${tabIdPrefix}-share-tab`;
+  const peersTabId = `${tabIdPrefix}-peers-tab`;
+  const sharePanelId = `${tabIdPrefix}-share-panel`;
+  const peersPanelId = `${tabIdPrefix}-peers-panel`;
+
+  return (
+    <div className={css.page} data-connect-devices>
+      <div className={css.tabBar}>
+        <SegmentedTabs
+          label={t("connectDevices.tabsLabel")}
+          value={activeTab}
+          onChange={setConnectDevicesTab}
+          className={css.tabs}
+          items={[
+            {
+              value: "share",
+              label: t("connectDevices.tabShare"),
+              id: shareTabId,
+              panelId: sharePanelId,
+            },
+            {
+              value: "peers",
+              label: t("connectDevices.tabPeers"),
+              id: peersTabId,
+              panelId: peersPanelId,
+            },
+          ]}
+        />
+      </div>
+      {activeTab === "share" ? (
+        <div
+          id={sharePanelId}
+          role="tabpanel"
+          aria-labelledby={shareTabId}
+          className={css.tabPanel}
+        >
+          <ShareThisComputerPanel t={t} />
+        </div>
+      ) : (
+        <div
+          id={peersPanelId}
+          role="tabpanel"
+          aria-labelledby={peersTabId}
+          className={css.tabPanel}
+        >
+          <RemotePeersPanel t={t} />
+        </div>
+      )}
     </div>
   );
 }

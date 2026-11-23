@@ -65,6 +65,21 @@ it("preserves default and explicitly selected native service tiers on the first 
   });
 });
 
+it("qualifies identical peer projects and falls back to the peer ID for unnamed hosts", () => {
+  const groups = remoteWorkspaceGroups(
+    ["one", "two"].map((id) => ({
+      hostId: "remote-peer:" + id,
+      online: true,
+      projects: [{ id: "same", name: "same", path: "/same", threadIds: [] }],
+    })),
+    [],
+  );
+  assert.deepEqual(
+    groups.map((g) => g.remote?.displayName),
+    ["one", "two"],
+  );
+  assert.notEqual(groups[0]?.workspaceId, groups[1]?.workspaceId);
+});
 it("separates identical remote project names and paths and keeps unmatched sessions visible", () => {
   const hosts = ["mac", "gateway"].map((name) => ({
     hostId: `remote-ssh-discovered:${name}`,

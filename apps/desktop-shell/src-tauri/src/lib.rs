@@ -2,6 +2,8 @@ mod launcher;
 mod navigation;
 mod readiness;
 mod tray;
+#[cfg(target_os = "windows")]
+mod zoom;
 
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -486,7 +488,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let builder = builder
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true);
-            builder
+            let _window = builder
                 .on_navigation(move |url| match navigation_for(&navigation_app, url) {
                     Navigation::Embedded | Navigation::Web => true,
                     Navigation::Browser => {
@@ -511,6 +513,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     NewWindowResponse::Deny
                 })
                 .build()?;
+            #[cfg(target_os = "windows")]
+            zoom::install(&_window)?;
             tray::install(&app_handle, &locale)?;
             let ready = ShellReady::publish(&launcher.data_dir)?;
             app.manage(ready);

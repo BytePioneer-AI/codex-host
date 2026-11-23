@@ -5,7 +5,9 @@ import {
   HOST_EXTENSION_CATALOG_MIRROR_URL,
   HOST_EXTENSION_CATALOG_URL,
   HOST_EXTENSION_ZIP_MAX_BYTES,
+  desktopExtensionHttpUrlSchema,
   hostExtensionCatalogSchema,
+  hostExtensionIdSchema,
   hostExtensionInstallSourceSchema,
   hostExtensionResourcePathSchema,
   type HostExtensionInstallSource,
@@ -320,6 +322,45 @@ export async function prepareHostExtension({
     source,
     files: await readExtensionZip(zip, subpath, DESKTOP_EXTENSION_ASSET_MAX_BYTES),
   });
+}
+
+export const DEFAULT_HOST_EXTENSION_STATS_URL = "https://ext-stats.chost.dev";
+
+export function resolveHostExtensionStatsUrl(
+  environment: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const configured = environment.CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL;
+  if (configured !== undefined) {
+    const trimmed = configured.trim();
+    if (!trimmed || /^(?:off|none|false|0)$/iu.test(trimmed)) return undefined;
+    return trimmed;
+  }
+  if (environment.CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL?.trim()) return undefined;
+  return DEFAULT_HOST_EXTENSION_STATS_URL;
+}
+
+export async function reportHostExtensionInstall(
+  id: string,
+  statsUrl: string | undefined,
+): Promise<void> {
+  try {
+    if (!hostExtensionIdSchema.safeParse(id).success) return;
+    const { data } = desktopExtensionHttpUrlSchema.safeParse(statsUrl);
+    if (data === undefined) return;
+    const url = new URL(data);
+    url.pathname = `${url.pathname.replace(/\/+$/u, "")}/install/${encodeURIComponent(id)}`;
+    url.search = "";
+    url.hash = "";
+    const response = await fetch(url, {
+      method: "POST",
+      credentials: "omit",
+      redirect: "error",
+      signal: AbortSignal.timeout(2_000),
+    });
+    await response.body?.cancel();
+  } catch {
+    // Best effort only: the install or update has already succeeded.
+  }
 }
 
 /** Convenience wrapper. For backend updates, prepare first and stop the old runtime before commit. */

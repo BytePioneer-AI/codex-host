@@ -600,4 +600,104 @@ describe("Unified Host extensions marketplace and 3-source import modal", () => 
 
     mounted.dispose();
   });
+
+  it("hides stars and zero downloads on cards and hides zero stars or downloads in detail modal", async () => {
+    const zeroEntry: HostExtensionCatalogEntry = {
+      ...CATALOG_THEME,
+      id: "zero-metrics",
+      name: { en: "Zero Metrics", "zh-CN": "零指标插件" },
+      stars: 0,
+      downloads: 0,
+    };
+    const positiveEntry: HostExtensionCatalogEntry = {
+      ...CATALOG_TREE,
+      id: "popular-ext",
+      name: { en: "Popular Ext", "zh-CN": "热门插件" },
+      stars: 12,
+      downloads: 88,
+    };
+
+    const mounted = mountPage("zh-CN", () => ({
+      listHostExtensions: vi.fn(async () => sampleInstalledList({ extensions: [] })),
+      listHostExtensionCatalog: vi.fn(async () =>
+        sampleCatalog({ extensions: [zeroEntry, positiveEntry] }),
+      ),
+    }));
+
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (2)"));
+    must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
+      ),
+    ).dispatch("click");
+
+    const zeroCard = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "article" && el.dataset.extensionId === "zero-metrics",
+      ),
+    );
+    const popularCard = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "article" && el.dataset.extensionId === "popular-ext",
+      ),
+    );
+
+    // Cards never render stars; downloads render only when > 0.
+    expect(
+      descendants(zeroCard).some((el) => el.className.includes("settings-extensions-card__star")),
+    ).toBe(false);
+    expect(descendants(zeroCard).some((el) => el.dataset.metric === "downloads")).toBe(false);
+    expect(
+      descendants(popularCard).some((el) =>
+        el.className.includes("settings-extensions-card__star"),
+      ),
+    ).toBe(false);
+    const popularDownloads = must(
+      descendants(popularCard).find((el) => el.dataset.metric === "downloads"),
+    );
+    expect(textOf(popularDownloads)).toContain("88");
+
+    // Detail modal hides ★ 0 and downloads: 0, while keeping the GitHub repo link.
+    zeroCard.dispatch("click");
+    const zeroDialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    );
+    const zeroRepoLink = must(
+      descendants(zeroDialog).find((el) =>
+        el.className.includes("settings-extensions-detail-modal__repo"),
+      ),
+    );
+    expect(textOf(zeroRepoLink)).toContain("GitHub");
+    expect(
+      descendants(zeroDialog).some((el) =>
+        el.className.includes("settings-extensions-detail-modal__repo-stars"),
+      ),
+    ).toBe(false);
+    expect(descendants(zeroDialog).some((el) => el.dataset.metric === "downloads")).toBe(false);
+    zeroDialog.dispatch("cancel");
+
+    // Detail modal shows ★ N and downloads when both are > 0.
+    popularCard.dispatch("click");
+    const popularDialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    );
+    const repoStars = must(
+      descendants(popularDialog).find((el) =>
+        el.className.includes("settings-extensions-detail-modal__repo-stars"),
+      ),
+    );
+    expect(textOf(repoStars)).toContain("12");
+    const modalDownloads = must(
+      descendants(popularDialog).find((el) => el.dataset.metric === "downloads"),
+    );
+    expect(textOf(modalDownloads)).toContain("88");
+
+    mounted.dispose();
+  });
 });

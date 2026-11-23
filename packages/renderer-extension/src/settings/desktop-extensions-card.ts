@@ -7,11 +7,9 @@ import {
   contentLocaleMessages,
   createEl,
   createExtensionIconElement,
-  formatExtensionCount,
   formatMessage,
-  isValidExtensionCount,
+  formatPositiveExtensionCount,
   isWithinElement,
-  parseSafeRepositoryUrl,
   statusTone,
   type DesktopExtensionAttentionDetail,
   type DesktopExtensionContentLocale,
@@ -33,8 +31,6 @@ export interface DesktopExtensionCardOptions {
   readonly iconUrl?: string | undefined;
   readonly author?: string | undefined;
   readonly version?: string | undefined;
-  readonly repository?: string | undefined;
-  readonly stars?: number | undefined;
   readonly downloads?: number | undefined;
   readonly trustTier?: DesktopExtensionTrustTier | undefined;
   readonly statusState?: DesktopExtensionStatus["state"] | undefined;
@@ -87,8 +83,6 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     iconUrl,
     author,
     version,
-    repository,
-    stars,
     downloads,
     trustTier,
     statusState,
@@ -215,28 +209,30 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
   }
 
   if (update) {
+    card.dataset.updateAvailable = "true";
     const row = createEl(document, "div", "settings-extensions-card__update");
     row.dataset.updateAvailable = "true";
     update.action.addEventListener("click", stopTrigger);
     update.action.addEventListener("keydown", stopTrigger);
-    row.append(createEl(document, "span", "", update.label), update.action);
+    const label = createEl(
+      document,
+      "span",
+      "settings-extensions-card__update-label",
+      update.label,
+    );
+    row.append(label, update.action);
     card.append(row);
   }
 
   // Borderless muted metadata line.
   const authorVersion = formatAuthorVersion(author, version);
-  const repositoryHref = parseSafeRepositoryUrl(repository);
-  const formattedStars = isValidExtensionCount(stars) ? formatExtensionCount(stars) : null;
-  const formattedDownloads = isValidExtensionCount(downloads)
-    ? formatExtensionCount(downloads)
-    : null;
+  const formattedDownloads = formatPositiveExtensionCount(downloads);
   const categoryLabels = (categories ?? [])
     .slice(0, MAX_CARD_CATEGORIES)
     .map((category) => contentCopy.categories[category] ?? category);
   const categoriesText = categoryLabels.join(" · ");
 
-  let starControl: HTMLElement | null = null;
-  if (authorVersion || repositoryHref || formattedStars || formattedDownloads || categoriesText) {
+  if (authorVersion || formattedDownloads || categoriesText) {
     const metaRow = createEl(document, "div", "settings-extensions-card__meta");
     const metaLeft = createEl(document, "div", "settings-extensions-card__meta-left");
     if (authorVersion) {
@@ -248,38 +244,6 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
       );
       authorVersionWrap.title = authorVersion;
       metaLeft.append(authorVersionWrap);
-    }
-
-    if (repositoryHref) {
-      const starLink = createEl(
-        document,
-        "a",
-        "settings-extensions-card__star settings-extensions-card__star--link",
-      );
-      starLink.href = repositoryHref;
-      starLink.target = "_blank";
-      starLink.rel = "noopener noreferrer";
-      starLink.dataset.action = "open-repository";
-      const label = formattedStars
-        ? `${copy.githubRepository} · ${formattedStars}`
-        : copy.githubRepository;
-      starLink.title = label;
-      starLink.setAttribute("aria-label", label);
-      starLink.append(createRendererSettingsIcon("star", 11));
-      if (formattedStars) {
-        starLink.append(createEl(document, "span", "", formattedStars));
-      }
-      starLink.addEventListener("click", stopTrigger);
-      starLink.addEventListener("keydown", stopTrigger);
-      starControl = starLink;
-      metaLeft.append(starLink);
-    } else if (formattedStars) {
-      const starBadge = createEl(document, "span", "settings-extensions-card__star");
-      starBadge.append(
-        createRendererSettingsIcon("star", 11),
-        createEl(document, "span", "", formattedStars),
-      );
-      metaLeft.append(starBadge);
     }
 
     if (formattedDownloads) {
@@ -313,12 +277,10 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
 
   card.addEventListener("click", (event) => {
     if (isWithinElement(event.target, actionWrap)) return;
-    if (starControl && isWithinElement(event.target, starControl)) return;
     onOpenDetails();
   });
   card.addEventListener("keydown", (event) => {
     if (isWithinElement(event.target, actionWrap)) return;
-    if (starControl && isWithinElement(event.target, starControl)) return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       onOpenDetails();

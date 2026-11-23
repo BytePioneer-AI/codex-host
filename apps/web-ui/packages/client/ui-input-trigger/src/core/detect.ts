@@ -9,6 +9,40 @@ import type { DetectTrigger } from "./contract.ts";
 
 const WORD_CHAR = /[\p{L}\p{N}_]/u;
 const WHITESPACE = /\s/u;
+const FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})(.*)$/u;
+
+/**
+ * Whether the caret, at the end of `beforeCaret`, is inside Markdown code: an
+ * unclosed fenced block, the opening line of a fence, or an unclosed inline
+ * code span on the current line. The Desktop Composer keeps the same rule in
+ * `renderer-reference-trigger.ts`.
+ */
+function insideMarkdownCode(beforeCaret: string): boolean {
+  const lines = beforeCaret.split(/\r\n|\n|\r/u);
+  const current = lines.pop() ?? "";
+  let fence: { marker: string; length: number } | null = null;
+  for (const line of lines) {
+    const match = FENCE_PATTERN.exec(line);
+    if (!match) continue;
+    const run = match[1] ?? "";
+    if (fence === null) fence = { marker: run.charAt(0), length: run.length };
+    else if (
+      run.charAt(0) === fence.marker &&
+      run.length >= fence.length &&
+      (match[2] ?? "").trim() === ""
+    ) {
+      fence = null;
+    }
+  }
+  if (fence !== null || FENCE_PATTERN.test(current)) return true;
+  // An inline code span closes on a backtick run of the same length.
+  let open = 0;
+  for (const [run] of current.matchAll(/`+/gu)) {
+    if (open === 0) open = run.length;
+    else if (run.length === open) open = 0;
+  }
+  return open > 0;
+}
 
 /**
  * Word-boundary rule: a trigger char opens only at start-of-draft, after
@@ -31,7 +65,9 @@ function boundaryOk(draft: string, index: number, char: TriggerChar): boolean {
 
 /**
  * Detect a trigger token at the caret. `@` and `#` use the same reference grammar,
- * including an open quoted token that may span whitespace. Slash detection
+ * including an open quoted token that may span whitespace; `#` (or fullwidth
+ * `＃`) also opens after CJK text and punctuation, and stays text inside
+ * Markdown code. Slash detection
  * scans left to the first whitespace; slashes failing the word boundary are
  * treated as ordinary token chars and the scan continues (URL slashes).
  * Guard tiers: plain = all triggers live; claimed = '/' suppressed,
@@ -54,6 +90,8 @@ export const detectTrigger: DetectTrigger = (draft, caret, guard) => {
     const start = caret - token.prefix.length;
     // A quoted path may contain spaces followed by the other trigger character.
     if (reference !== null && reference.span.start <= start) continue;
+    // A `#` token inside Markdown code is code text; a slash within it is no command either.
+    if (trigger === "#" && insideMarkdownCode(draft.slice(0, start))) return reference;
     reference = {
       trigger,
       query: token.query,

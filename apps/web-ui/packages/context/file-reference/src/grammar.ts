@@ -17,11 +17,23 @@ export interface ActiveAtToken {
 }
 
 /**
+ * Characters after which the `#` alias opens: whitespace, CJK ideographs, kana,
+ * the prolonged sound mark and CJK or fullwidth punctuation, because Chinese
+ * and Japanese text has no spaces between words. Latin words, digits, URLs and
+ * entities keep `#` as text; Hangul uses spaces, like Latin text. The Desktop
+ * Composer applies the same boundary in `renderer-reference-trigger.ts`.
+ */
+const HASH_BOUNDARY = String.raw`[\s\p{sc=Han}\p{sc=Hira}\p{sc=Kana}\u30FC\u3000-\u303F\uFF01\uFF02\uFF04-\uFF0F\uFF1A-\uFF20\uFF3B-\uFF40\uFF5B-\uFF65]`;
+const HASH_QUOTED = new RegExp(String.raw`(?:^|${HASH_BOUNDARY})([#\uFF03]"([^"]*))$`, "u");
+const HASH_PLAIN = new RegExp(String.raw`(?:^|${HASH_BOUNDARY})([#\uFF03]([^\s]*))$`, "u");
+
+/**
  * Extract an `@path` or `@"path with spaces` token at the cursor. An `@`
  * inside another token, such as an email address, is not a completion trigger.
  * @param line - current editor line.
  * @param cursorCol - cursor column within that line.
- * @param trigger - the reference-menu prefix; hash is an equivalent UI alias.
+ * @param trigger - the reference-menu prefix; hash (or fullwidth `＃`) is an
+ * equivalent UI alias that also opens after CJK text and punctuation.
  * @returns the active token, or `undefined` outside a reference token.
  */
 export function activeAtToken(
@@ -30,15 +42,11 @@ export function activeAtToken(
   trigger: "@" | "#" = "@",
 ): ActiveAtToken | undefined {
   const beforeCursor = line.slice(0, cursorCol);
-  const quoted = (trigger === "@" ? /(?:^|\s)(@"([^"]*))$/u : /(?:^|\s)(#"([^"]*))$/u).exec(
-    beforeCursor,
-  );
+  const quoted = (trigger === "@" ? /(?:^|\s)(@"([^"]*))$/u : HASH_QUOTED).exec(beforeCursor);
   if (quoted?.[1] !== undefined && quoted[2] !== undefined) {
     return { prefix: quoted[1], query: quoted[2], quoted: true };
   }
-  const plain = (trigger === "@" ? /(?:^|\s)(@([^\s]*))$/u : /(?:^|\s)(#([^\s]*))$/u).exec(
-    beforeCursor,
-  );
+  const plain = (trigger === "@" ? /(?:^|\s)(@([^\s]*))$/u : HASH_PLAIN).exec(beforeCursor);
   if (plain?.[1] === undefined || plain[2] === undefined) return undefined;
   return { prefix: plain[1], query: plain[2], quoted: false };
 }

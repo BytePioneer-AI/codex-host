@@ -24,6 +24,14 @@ it("matches reference hash queries and preserves the exact caret span", () => {
     ["line\n#skill", "skill", 5],
     ["#/compact", "/compact", 0],
     ["#" + "a".repeat(32), "a".repeat(32), 0],
+    ["请#native", "native", 1],
+    ["帮我，#native", "native", 3],
+    ["「#native", "native", 1],
+    ["カタカナで#native", "native", 5],
+    ["＃native", "native", 0],
+    ["请＃native", "native", 1],
+    ["```py\nx\n```\n#native", "native", 12],
+    ["use `a` #native", "native", 8],
   ] as const) {
     assert.deepEqual(detectTrigger(text, text.length, { tier: "plain" }), {
       trigger: "#",
@@ -36,7 +44,7 @@ it("matches reference hash queries and preserves the exact caret span", () => {
   assert.equal(detectTrigger("#native trailing", 7, { tier: "plain" })?.span.end, 7);
 });
 
-it("leaves Markdown headings, escaped text, words and URL fragments alone", () => {
+it("leaves Markdown headings and code, escaped text, words and URL fragments alone", () => {
   for (const text of [
     "# ",
     "# heading",
@@ -46,6 +54,15 @@ it("leaves Markdown headings, escaped text, words and URL fragments alone", () =
     "https://host/#native",
     "https://host/#/compact",
     "path/#native",
+    "C#",
+    "issue#12",
+    "&#39;",
+    "한국어#native",
+    "Ａ#native",
+    "·#native",
+    "```py\n#native",
+    "```\n#/compact",
+    "use `#native",
   ])
     assert.equal(detectTrigger(text, text.length, { tier: "plain" }), null, text);
   assert.equal(detectTrigger("#native", 7, { tier: "frozen" }), null);

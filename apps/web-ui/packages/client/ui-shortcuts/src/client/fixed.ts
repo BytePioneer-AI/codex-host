@@ -30,19 +30,19 @@ export function fixedCommands(
       ? ([
           {
             id: "zoom-in",
-            keys: ["Ctrl", "+"],
+            keys: ["Ctrl", "+", "+"],
             bindings: [{ code: "Equal", modifiers: ["primary"] }],
             group: "application",
           },
           {
             id: "zoom-out",
-            keys: ["Ctrl", "−"],
+            keys: ["Ctrl", "+", "−"],
             bindings: [{ code: "Minus", modifiers: ["primary"] }],
             group: "application",
           },
           {
             id: "zoom-reset",
-            keys: ["Ctrl", "0"],
+            keys: ["Ctrl", "+", "0"],
             bindings: [{ code: "Digit0", modifiers: ["primary"] }],
             group: "application",
           },

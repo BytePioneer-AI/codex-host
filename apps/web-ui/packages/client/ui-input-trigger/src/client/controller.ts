@@ -444,8 +444,10 @@ export class InputTriggerController {
           ? signal.reason
           : new Error("slash adjudication aborted");
       }
-      if (src.matchEnter === undefined || !line.startsWith(src.trigger)) continue;
-      const outcome = await src.matchEnter(projection, line, signal, envelope);
+      const normalizedLine =
+        src.trigger === "#" && line.startsWith("\uFF03") ? `#${line.slice(1)}` : line;
+      if (src.matchEnter === undefined || !normalizedLine.startsWith(src.trigger)) continue;
+      const outcome = await src.matchEnter(projection, normalizedLine, signal, envelope);
       if (outcome !== undefined) return outcome;
     }
     return undefined;

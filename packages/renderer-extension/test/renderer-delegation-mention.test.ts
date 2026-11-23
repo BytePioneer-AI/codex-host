@@ -21,7 +21,15 @@ describe("delegation mention trigger", () => {
       ["＃", "", 0],
       ["请＃cla", "cla", 1],
       ["```py\nx\n```\n#cla", "cla", 12],
+      ["```foo```\n#cla", "cla", 10],
+      ["```foo``` #cla", "cla", 10],
       ["use `a` #cla", "cla", 8],
+      ["use \\` literal #cla", "cla", 15],
+      ["use \\\\\\` literal #cla", "cla", 17],
+      ["`a\\` #cla", "cla", 5],
+      ["`alpha\nbeta` #cla", "cla", 13],
+      ["`alpha\n\n#cla", "cla", 8],
+      ["`alpha\n```py\n```\n#cla", "cla", 17],
     ] as const) {
       expect(findDelegationTrigger(text), text).toEqual({ query, start });
     }
@@ -40,10 +48,19 @@ describe("delegation mention trigger", () => {
       "Ａ#cla",
       "１#cla",
       "·#cla",
+      "##",
+      "＃＃",
+      "#＃",
+      "＃#",
+      "fix ＃123",
       "```py\n#cla",
       "~~~\n#",
+      "~~~foo~~~\n#cla",
       "```#",
       "use `#cla",
+      "use \\\\`code #cla",
+      "`alpha\n#cla",
+      "`alpha\n  #cla",
     ]) {
       expect(findDelegationTrigger(text), text).toBeNull();
     }

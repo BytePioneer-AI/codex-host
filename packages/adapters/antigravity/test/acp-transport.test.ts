@@ -88,6 +88,10 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
       update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'A'.repeat(512 * 1024)}},'native',() => process.stderr.write('prompt-flushed\\n'));
       return result(req.id,{stopReason:'end_turn'});
     }
+    if (scenario === 'post-prompt-callback') {
+      result(req.id,{stopReason:'end_turn'});
+      return setTimeout(() => send({id:'permission-after-prompt',method:'session/request_permission',params:{sessionId:'native',toolCall:{toolCallId:'after-prompt',name:'run_command'},options:[{optionId:'allow',name:'Allow',kind:'allow_once'}]}}),10);
+    }
     if (scenario === 'callbacks' || scenario === 'prompt-ends' || scenario === 'answer-callbacks') {
       send({id:'permission',method:'session/request_permission',params:{sessionId:'native',toolCall:{toolCallId:'shell',name:'run_command',kind:'execute',args:{command:'pwd'}},options:[{optionId:'session',name:'Session',kind:'allow_session'},{optionId:'deny',name:'Deny',kind:'reject_once'}]}});
       send({id:'question',method:'elicitation/create',params:{sessionId:'native',toolCallId:'ask',mode:'form',message:'The agent has a question.',requestedSchema:{type:'object',properties:{q1:{type:'array',title:'Colors',items:{type:'string',oneOf:[{const:'1',title:'Red'}]}},q1_other:{type:'string',title:'Other'}}}}});
@@ -503,6 +507,36 @@ describe("native ACP stdio transport", () => {
       await pending;
     }
     expect((await pending).stopReason).toBe("end_turn");
+  });
+  it("routes a permission that arrives after prompt returns to the session handler", async () => {
+    const value = transport("post-prompt-callback");
+    await open(value);
+    const permission = vi.fn<AntigravityActivePromptHandler["onPermission"]>(async () => ({
+      outcome: { outcome: "cancelled" },
+    }));
+    const sessionPermission = vi.fn<AntigravityActivePromptHandler["onPermission"]>(async () => ({
+      outcome: { outcome: "selected", optionId: "allow" },
+    }));
+    value.setSessionInteractionHandler({
+      onPermission: sessionPermission,
+      onElicitation: handler().onElicitation,
+    });
+    await expect(
+      value.prompt([], { ...handler(), onPermission: permission }),
+    ).resolves.toMatchObject({
+      stopReason: "end_turn",
+    });
+    await vi.waitFor(() => expect(sessionPermission).toHaveBeenCalledOnce());
+    expect(permission).not.toHaveBeenCalled();
+    expect(sessionPermission.mock.calls[0]?.[0]).toMatchObject({
+      sessionId: "native",
+      toolCall: { toolCallId: "after-prompt" },
+    });
+    await vi.waitFor(async () =>
+      expect(await replies(value)).toMatchObject({
+        "permission-after-prompt": { outcome: { outcome: "selected", optionId: "allow" } },
+      }),
+    );
   });
   it.each(["cancel", "prompt-end", "close"])(
     "cleans pending callbacks on %s even when Host handlers never resolve",

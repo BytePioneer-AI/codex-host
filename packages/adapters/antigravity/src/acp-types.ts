@@ -159,6 +159,11 @@ export interface AntigravityActivePromptHandler {
   onElicitation(request: CreateElicitationRequest): Promise<CreateElicitationResponse>;
 }
 
+export interface AntigravitySessionInteractionHandler {
+  onPermission(request: RequestPermissionRequest): Promise<RequestPermissionResponse>;
+  onElicitation(request: CreateElicitationRequest): Promise<CreateElicitationResponse>;
+}
+
 export type AntigravitySessionEventHandler = (event: AntigravityAcpEvent) => void;
 
 export interface AntigravityOpenAcpSessionInput {
@@ -184,6 +189,7 @@ export interface AntigravityAcpTransportLike {
   readonly isClosed: boolean;
   readonly skipPermissions: boolean;
   setSessionEventHandler(handler: AntigravitySessionEventHandler | null): void;
+  setSessionInteractionHandler(handler: AntigravitySessionInteractionHandler | null): void;
   initialize(): Promise<InitializeResponse>;
   openSession(input: AntigravityOpenAcpSessionInput): Promise<{
     opened: AntigravityAcpSessionOpenResult;

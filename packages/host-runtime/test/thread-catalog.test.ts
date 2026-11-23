@@ -295,6 +295,49 @@ describe("source-separated Thread catalog", () => {
     expect(threadCatalogReadResultSchema.parse(result).ownership).toHaveLength(201);
   });
 
+  it("reads on for a scoped folder until a page holds its Thread, the branch ends, or the bound", async () => {
+    // Row 120 lies in an excluded nested folder; row 250 is the folder's only Thread.
+    const cwdOf = (n: number) =>
+      n === 250 ? "/work/app/src" : n === 120 ? "/work/app/nested" : "/work/other";
+    const nativeRows = Array.from({ length: 2_000 }, (_, n) => ({
+      ...row(`native-${n}`, 5_000 - n),
+      cwd: cwdOf(n),
+    }));
+    const request = vi.fn(async (params: JsonObject) => {
+      const offset = Number(params.cursor);
+      const end = offset + Number(params.limit);
+      return page(nativeRows.slice(offset, end), end < nativeRows.length ? String(end) : null);
+    });
+    const scoped = (live: string) =>
+      readThreadCatalog({
+        ...input([external("external", 1)]),
+        officialCursor: { live },
+        scope: { cwd: "/work/app", excludeCwds: ["/work/app/nested"] },
+        requestOfficialPage: request,
+      });
+    const reads = () =>
+      request.mock.calls.splice(0).map(([params]) => [params.cursor, params.limit]);
+
+    const match = await scoped("20");
+    expect(reads()).toEqual([
+      ["20", 100],
+      ["120", 100],
+      ["220", 100],
+    ]);
+    expect(match.officialCursor).toEqual({ live: "320" });
+    // Every row read is returned, so the next page continues where this one stopped.
+    expect(match.threads).toHaveLength(301);
+
+    const bounded = await scoped("320");
+    expect(reads()).toHaveLength(10);
+    expect(bounded.officialCursor).toEqual({ live: "1320" });
+
+    const ended = await scoped("1320");
+    expect(reads()).toHaveLength(7);
+    expect(ended.officialCursor).toEqual({ live: null });
+    expect(ended.threads).toHaveLength(681);
+  });
+
   it("rejects a non-advancing native cursor without requesting another page", async () => {
     const request = vi.fn(async () => page([], "A"));
     await expect(

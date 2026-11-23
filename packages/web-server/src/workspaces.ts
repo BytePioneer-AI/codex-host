@@ -2,7 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 
 import { type DataDir, requestOf } from "./store.ts";
@@ -310,6 +310,26 @@ export class Workspaces {
 
   byPath(path: string): WorkspaceView | undefined {
     return this.state.items.find((item) => item.path === path);
+  }
+
+  /**
+   * The folder whose Threads a local Workspace lists, without the folders of nested local
+   * Workspaces, which list their own Threads. Remote or unknown Workspaces have none.
+   */
+  catalogScope(workspaceId: string): { cwd: string; excludeCwds: string[] } | undefined {
+    const local = this.list().filter((item) => !item.remote);
+    const workspace = local.find((item) => item.workspaceId === workspaceId);
+    if (!workspace) return undefined;
+    const excludeCwds = local.flatMap((item) => {
+      const nested = relative(workspace.path, item.path);
+      return nested !== "" &&
+        !isAbsolute(nested) &&
+        nested !== ".." &&
+        !nested.startsWith(`..${sep}`)
+        ? [item.path]
+        : [];
+    });
+    return { cwd: workspace.path, excludeCwds: excludeCwds.slice(0, 1_024) };
   }
 
   ownerOf(sessionId: string): WorkspaceView | undefined {

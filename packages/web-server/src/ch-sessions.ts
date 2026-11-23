@@ -23,6 +23,7 @@ import {
   threadArchiveConfirmResultSchema,
   threadUsageInspectionSchema,
   type HarnessDisplayEntries,
+  type ThreadCatalogReadParams,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient, ChProjectSnapshot } from "./ch-host-client.ts";
 import { ChHarnessCatalog, type ModelSelection } from "./ch-harness-catalog.ts";
@@ -66,6 +67,8 @@ import type { WireEvent } from "./session-log.ts";
 import { SessionListTiming } from "./session-list-timing.ts";
 import { readSessionPage, nextCatalogCursor, type CatalogPage } from "./ch-session-page.ts";
 import { tryGenerateThreadTitle } from "./ch-thread-titles.ts";
+
+type CatalogScope = NonNullable<ThreadCatalogReadParams["scope"]>;
 
 function globalProjectionValues(values: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -219,10 +222,12 @@ export class ChSessions {
   private id(id: string): string {
     return this.drafts.get(id)?.canonicalId ?? id;
   }
+  /** A `scope` reads an explicit page on until it reaches a Thread of that folder. */
   private async refresh(
     timing?: SessionListTiming,
     includeArchived = false,
     cursor?: string,
+    scope?: CatalogScope,
   ): Promise<CatalogPage | undefined> {
     if (this.closed) return;
     if (
@@ -234,7 +239,7 @@ export class ChSessions {
       const stage = this.refreshingCatalog ? "catalog_wait" : "workspace_wait";
       const pending = this.refreshing.catch(() => undefined);
       await (timing ? timing.measure(stage, () => pending) : pending);
-      return this.refresh(timing, includeArchived, cursor);
+      return this.refresh(timing, includeArchived, cursor, scope);
     }
     const mode = this.refreshing ? "joined" : "started";
     if (!this.refreshing) {
@@ -248,6 +253,7 @@ export class ChSessions {
         includeArchived,
         archiveChanges,
         cursor,
+        scope,
       ).finally(() => {
         this.refreshing = undefined;
         this.refreshingCatalog = false;
@@ -275,10 +281,11 @@ export class ChSessions {
     includeArchived: boolean,
     archiveChanges: ReadonlyMap<string, boolean>,
     cursor?: string,
+    scope?: CatalogScope,
   ): Promise<CatalogPage | undefined> {
     const known = new Set(this.rows.keys());
     const [{ page: snapshot }, definitions, , sections] = await Promise.all([
-      readSessionPage(this.host, timing, includeArchived, cursor, () => this.refreshPins()),
+      readSessionPage(this.host, timing, includeArchived, cursor, () => this.refreshPins(), scope),
       timing.measure("project_definitions", () => this.host.projects([])),
       timing.measure("thread_tree", () => this.tree.refresh()),
       timing.measure("thread_sections", async () => {
@@ -1187,7 +1194,18 @@ export class ChSessions {
         includeArchived = false,
         cursor,
         sessionId,
-      } = requestOf<{ includeArchived?: boolean; cursor?: string; sessionId?: string }>(args);
+        workspaceId,
+      } = requestOf<{
+        includeArchived?: boolean;
+        cursor?: string;
+        sessionId?: string;
+        workspaceId?: string;
+      }>(args);
+      if (
+        workspaceId !== undefined &&
+        (typeof workspaceId !== "string" || !workspaceId || cursor === undefined)
+      )
+        throw new RpcError("session/list-invalid", "workspaceId only continues a cursor page.");
       if (sessionId !== undefined) {
         if (typeof sessionId !== "string" || !sessionId || cursor !== undefined)
           throw new RpcError("session/list-invalid", "Invalid direct-link identity.");
@@ -1222,7 +1240,10 @@ export class ChSessions {
       if (cursor !== undefined && typeof cursor !== "string")
         throw new RpcError("session/list-invalid", "cursor must be a string.");
       // Explicit pages are request-local and are never joined to another browser's refresh.
-      const page = await this.refresh(timing, includeArchived, cursor);
+      // A Workspace's page reads on until it reaches one of that Workspace's Threads.
+      const scope =
+        workspaceId === undefined ? undefined : this.workspaces.catalogScope(workspaceId);
+      const page = await this.refresh(timing, includeArchived, cursor, scope);
       const pageIds = this.tree.withAncestors(page?.threads.map((row) => row.id) ?? []);
       const archivedSessionIds = this.workspaces.archivedSessionIds();
       const archived = new Set(archivedSessionIds);

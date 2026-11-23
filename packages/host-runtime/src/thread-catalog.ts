@@ -1,3 +1,4 @@
+import path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { StoredSectionPlacementV1, StoredThreadSummaryV1 } from "@codexhost/mapping-store";
 import {
@@ -11,6 +12,7 @@ import {
   hostThreadIdSchema,
   harnessIdSchema,
   type HostThreadId,
+  type ThreadCatalogReadParams,
   type ThreadCatalogReadResult,
   type ThreadOwnership,
 } from "@codexhost/shared-contracts";
@@ -26,6 +28,28 @@ import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import { OfficialAdmissionError } from "./codex-runtime/official-work-gate.js";
 
 const OFFICIAL_PAGE_SIZE = 20;
+/** A scoped read: larger native pages, and a bound on how far one request reads ahead. */
+const SCOPED_PAGE_SIZE = 100;
+const SCOPED_MAX_PAGES = 10;
+
+/** Whether `cwd` is `folder` or lies below it. */
+function withinFolder(folder: string, cwd: string): boolean {
+  const relative = path.relative(path.resolve(folder), path.resolve(cwd));
+  return (
+    relative === "" ||
+    (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
+  );
+}
+
+/** A native row the scoped folder would list: inside it and outside every excluded folder. */
+function inScope(scope: NonNullable<ThreadCatalogReadParams["scope"]>, row: JsonObject): boolean {
+  const cwd = row.cwd;
+  return (
+    typeof cwd === "string" &&
+    withinFolder(scope.cwd, cwd) &&
+    !scope.excludeCwds.some((folder) => withinFolder(folder, cwd))
+  );
+}
 
 interface CatalogEntry {
   entry: ThreadListEntry;
@@ -36,6 +60,8 @@ interface CatalogEntry {
 export interface ThreadCatalogInput {
   includeArchived?: boolean;
   officialCursor?: ThreadCatalogReadResult["officialCursor"];
+  /** Read native pages ahead until one holds a Thread of this folder. */
+  scope?: ThreadCatalogReadParams["scope"];
   readLocal(): Promise<{
     records: readonly StoredThreadSummaryV1[];
     placements: readonly StoredSectionPlacementV1[];
@@ -120,12 +146,24 @@ export async function readThreadCatalog(
       const branch = query.archived ? "archived" : "live";
       const cursor = input.officialCursor?.[branch];
       if (cursor === null || !(await prepareOfficial())) return [];
-      count();
-      const page = await input.requestOfficialPage({ ...query.params, cursor: cursor ?? null });
-      if (page.nextCursor !== null && page.nextCursor === cursor)
-        throw new Error("Official Thread catalog pagination did not advance");
-      officialCursor[branch] = page.nextCursor;
-      return page.data.map((thread) => ({
+      const scope = input.scope;
+      const data: JsonObject[] = [];
+      let next: string | null = cursor ?? null;
+      for (let pages = 0; pages < (scope ? SCOPED_MAX_PAGES : 1); pages += 1) {
+        count();
+        const page = await input.requestOfficialPage({
+          ...query.params,
+          ...(scope ? { limit: SCOPED_PAGE_SIZE } : {}),
+          cursor: next,
+        });
+        if (page.nextCursor !== null && page.nextCursor === next)
+          throw new Error("Official Thread catalog pagination did not advance");
+        data.push(...page.data);
+        next = page.nextCursor;
+        if (next === null || !scope || page.data.some((thread) => inScope(scope, thread))) break;
+      }
+      officialCursor[branch] = next;
+      return data.map((thread) => ({
         entry: officialThreadListEntry(thread, "updated_at"),
         ownership: { threadId: rowId(thread), owner: "codex" as const },
         archived: query.archived,

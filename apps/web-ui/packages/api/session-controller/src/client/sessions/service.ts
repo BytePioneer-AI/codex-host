@@ -406,8 +406,8 @@ export class ClientSessions implements ISessions {
     return this.manager.loadSummary(sessionId);
   }
 
-  loadMore(): Promise<void> {
-    return this.manager.loadMore();
+  loadMore(workspaceId?: string): Promise<void> {
+    return this.manager.loadMore(workspaceId);
   }
 
   setIncludeArchived(includeArchived: boolean): Promise<void> {

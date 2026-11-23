@@ -229,7 +229,17 @@ describe("Hermes gateway native interactions", () => {
     f.request.mockResolvedValue({ value: "1" });
     await expect(f.bridge.setPermissionMode("default")).rejects.toThrow("effective approval");
   });
-  it("passes a named custom provider to the model switch separately", async () => {
+  it("rejects a named endpoint receipt with the requested model under a different provider", async () => {
+    const f = fixture();
+    f.request.mockResolvedValueOnce({ model: "example/model:tag", provider: "relay-a" });
+    await expect(
+      f.bridge.setModel("relay-b:example/model:tag", {
+        model: "example/model:tag",
+        provider: "relay-b",
+      }),
+    ).rejects.toThrow("did not confirm the requested Model");
+  });
+  it("sends a qualified model ID unchanged when there is no explicit route", async () => {
     const f = fixture();
     await expect(f.bridge.setModel("custom:omniroute:omni/turbo")).resolves.toBeUndefined();
     expect(f.request).toHaveBeenCalledWith("session.mutate", {

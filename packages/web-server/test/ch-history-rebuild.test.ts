@@ -292,3 +292,272 @@ it("drops a view nobody followed for ten minutes and reopens it above the browse
     assert.equal(again.snapshot.resumedAfter, kept.snapshot.cursor);
   }
 });
+
+it("replays dropped-view catalog updates after control reconnect with increasing seqs and without clearing other projections", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1_800_000_000_000 });
+  const directory = mkdtempSync(join(tmpdir(), "ch-idle-view-reconnect-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const host = new FakeChChannel();
+  const parent = host.add("parent", directory, "Parent title");
+  const idle = host.add("idle", directory, "Initial title");
+  let parents: Record<string, string> = {};
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
+    method === "codexhost/thread/tree/read"
+      ? ({ parents: { ...parents } } as T)
+      : request<T>(method, params);
+  const sessions = new ChSessions(
+    host,
+    new Workspaces(new DataDir(directory), directory),
+    new EventHub(directory),
+  );
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  const endpoints = new Map<string, StreamHandler>();
+  const streams = new StreamRegistry();
+  streams.register = (name, handler) => endpoints.set(name, handler);
+  sessions.register(rpc, streams);
+  interface Frame {
+    type: string;
+    sessionId?: string;
+    key?: string;
+    value?: unknown;
+    seq?: number;
+    epoch?: string;
+    cursor?: number;
+    projections?: { asOfSeq: number; values: Record<string, unknown> };
+  }
+  const open = async (endpoint: string, req: object = {}) => {
+    const frames: Frame[] = [];
+    const cleanups: Array<() => void> = [];
+    let closed = false;
+    const sink: StreamSink = {
+      id: "browser",
+      get closed() {
+        return closed;
+      },
+      push: (frame) => frames.push(structuredClone(frame) as Frame),
+      onClose: (cleanup) => cleanups.push(cleanup),
+      end: () => {
+        closed = true;
+        for (const cleanup of cleanups.splice(0)) cleanup();
+      },
+      fail: (code, message) => {
+        throw new Error(`${code}: ${message}`);
+      },
+    };
+    t.after(() => sink.end());
+    await endpoints.get(endpoint)?.({ request: req }, sink);
+    return { frames, close: () => sink.end() };
+  };
+  const follow = async (id: string) => {
+    const stream = await open("session/follow", { address: { sessionId: id } });
+    const snapshot = stream.frames[0];
+    assert.equal(snapshot?.type, "snapshot");
+    return { ...stream, snapshot: snapshot as Required<Frame> };
+  };
+  const list = async () => assert.ok((await rpc.dispatch("session/list", { args: {} })).ok);
+  const minutes = async (count: number) => {
+    for (let minute = 0; minute < count; minute++) {
+      t.mock.timers.tick(60_000);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  };
+
+  const control1 = await open("session/control");
+  await list();
+  const first = await follow(idle.id);
+  first.close();
+  await minutes(11);
+  const reads = host.snapshots;
+
+  idle.name = "Renamed while online";
+  await list();
+  const onlineRename = control1.frames
+    .filter(
+      (frame) =>
+        frame.type === "projection" && frame.sessionId === idle.id && frame.key === "title",
+    )
+    .at(-1);
+  assert.equal(onlineRename?.value, idle.name);
+  assert.ok((onlineRename?.seq ?? 0) > first.snapshot.cursor);
+
+  // Disconnect control, then mutate both title and tree parent while the view remains dropped.
+  control1.close();
+  idle.name = "Renamed while offline";
+  parents = { [idle.id]: parent.id };
+  await list();
+
+  const control2 = await open("session/control");
+  assert.equal(control2.frames[0]?.type, "baseline");
+  const baseline = control2.frames[0]?.value as { projections: Record<string, unknown> };
+  assert.equal(
+    baseline.projections[idle.id],
+    undefined,
+    "dropped views must not emit a partial baseline block that clears non-catalog global projections",
+  );
+  const replayed = control2.frames
+    .slice(1)
+    .filter((frame) => frame.type === "projection" && frame.sessionId === idle.id);
+  const replayedTitle = replayed.find((frame) => frame.key === "title");
+  const replayedParent = replayed.find((frame) => frame.key === "threadTreeParent");
+  assert.equal(replayedTitle?.value, "Renamed while offline");
+  assert.equal(replayedParent?.value, parent.id);
+  assert.ok(
+    (replayedTitle?.seq ?? 0) > (onlineRename?.seq ?? 0),
+    "reconnected catalog replay must advance above the prior dropped-view sequence",
+  );
+  assert.equal(replayedParent?.seq, replayedTitle?.seq);
+  assert.equal(host.snapshots, reads, "control reconnect must not hydrate a dropped view");
+
+  idle.name = "Renamed after reconnect";
+  await list();
+  const afterReconnect = control2.frames
+    .filter(
+      (frame) =>
+        frame.type === "projection" && frame.sessionId === idle.id && frame.key === "title",
+    )
+    .at(-1);
+  assert.equal(afterReconnect?.value, "Renamed after reconnect");
+  assert.ok(
+    (afterReconnect?.seq ?? 0) > (replayedTitle?.seq ?? 0),
+    "later dropped-view catalog updates must continue advancing the reserved sequence",
+  );
+
+  const reopened = await follow(idle.id);
+  assert.ok(reopened.snapshot.projections.asOfSeq > (afterReconnect?.seq ?? 0));
+  assert.equal(reopened.snapshot.projections.values.title, "Renamed after reconnect");
+  assert.equal(reopened.snapshot.projections.values.threadTreeParent, parent.id);
+});
+
+it("keeps a view alive during an in-flight session/page read and refreshes its idle timer", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"], now: 1_800_000_000_000 });
+  const directory = mkdtempSync(join(tmpdir(), "ch-idle-view-page-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const host = new FakeChChannel();
+  const row = host.add("paged", directory, "Paged thread");
+  const template = row.turns[0];
+  assert.ok(template);
+  row.turns = Array.from({ length: 7 }, (_, index) => ({
+    ...structuredClone(template),
+    id: `turn-${index}`,
+  }));
+  let holdOlderPage = false;
+  let olderPageStartedResolve: (() => void) | undefined;
+  const olderPageStarted = new Promise<void>((resolve) => {
+    olderPageStartedResolve = resolve;
+  });
+  let releaseOlderPage: (() => void) | undefined;
+  const olderPageGate = new Promise<void>((resolve) => {
+    releaseOlderPage = resolve;
+  });
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "thread/turns/list" && holdOlderPage) {
+      olderPageStartedResolve?.();
+      await olderPageGate;
+    }
+    return request<T>(method, params);
+  };
+  const sessions = new ChSessions(
+    host,
+    new Workspaces(new DataDir(directory), directory),
+    new EventHub(directory),
+  );
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  const endpoints = new Map<string, StreamHandler>();
+  const streams = new StreamRegistry();
+  streams.register = (name, handler) => endpoints.set(name, handler);
+  sessions.register(rpc, streams);
+  interface Frame {
+    type: string;
+    epoch?: string;
+    resumedAfter?: number;
+    cursor?: number;
+    records?: Array<{ event: { seq: number } }>;
+  }
+  const follow = async (id: string, resume?: { epoch: string; cursor: number }) => {
+    const frames: Frame[] = [];
+    const cleanups: Array<() => void> = [];
+    let closed = false;
+    const sink: StreamSink = {
+      id: "browser",
+      get closed() {
+        return closed;
+      },
+      push: (frame) => frames.push(structuredClone(frame) as Frame),
+      onClose: (cleanup) => cleanups.push(cleanup),
+      end: () => {
+        closed = true;
+        for (const cleanup of cleanups.splice(0)) cleanup();
+      },
+      fail: (code, message) => {
+        throw new Error(`${code}: ${message}`);
+      },
+    };
+    t.after(() => sink.end());
+    await endpoints.get("session/follow")?.(
+      { request: { address: { sessionId: id }, resume } },
+      sink,
+    );
+    const snapshot = frames[0];
+    assert.equal(snapshot?.type, "snapshot");
+    return { close: () => sink.end(), snapshot: snapshot as Required<Frame> };
+  };
+  const minutes = async (count: number) => {
+    for (let minute = 0; minute < count; minute++) {
+      t.mock.timers.tick(60_000);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  };
+
+  assert.ok((await rpc.dispatch("session/list", { args: {} })).ok);
+  const first = await follow(row.id);
+  first.close();
+  const firstSeq = first.snapshot.records[0]?.event.seq;
+  assert.ok(firstSeq !== undefined);
+
+  // Reach minute 10 (9 minutes after the first unfollowed check); one more tick would evict it.
+  await minutes(10);
+  holdOlderPage = true;
+  const paging = rpc.dispatch("session/page", {
+    args: {
+      request: {
+        address: { sessionId: row.id },
+        throughSeq: first.snapshot.cursor,
+        beforeSeq: firstSeq,
+      },
+    },
+  });
+  await olderPageStarted;
+
+  // Advance past the idle threshold while session/page is still awaiting thread/turns/list.
+  await minutes(3);
+  releaseOlderPage?.();
+  const pageResult = await paging;
+  assert.ok(pageResult.ok, pageResult.ok ? undefined : pageResult.error.message);
+  assert.ok(((pageResult.value as { records: unknown[] }).records ?? []).length > 0);
+
+  // Advance 10 minutes after paging completed (minute 1 starts the new window -> 9m elapsed),
+  // then perform a fast in-memory session/page before the 11th tick to refresh historyReadAt.
+  await minutes(10);
+  holdOlderPage = false;
+  const fastPage = await rpc.dispatch("session/page", {
+    args: {
+      request: {
+        address: { sessionId: row.id },
+        throughSeq: first.snapshot.cursor,
+      },
+    },
+  });
+  assert.ok(fastPage.ok, fastPage.ok ? undefined : fastPage.error.message);
+  await minutes(1);
+
+  const resumed = await follow(row.id, {
+    epoch: first.snapshot.epoch,
+    cursor: first.snapshot.cursor,
+  });
+  assert.equal(resumed.snapshot.epoch, first.snapshot.epoch);
+  assert.equal(resumed.snapshot.resumedAfter, first.snapshot.cursor);
+});

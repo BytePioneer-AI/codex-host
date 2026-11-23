@@ -41,6 +41,8 @@ export class WebThreadStates {
   private readonly states = new Map<string, WebThreadState>();
   /** When a periodic check first found each view without a follower. */
   private readonly unfollowedSince = new WeakMap<ChThreadHistory, number>();
+  /** Active `session/page` reads holding each view against idle eviction. */
+  private readonly paging = new WeakMap<ChThreadHistory, number>();
 
   get(id: string): WebThreadState | undefined {
     return this.states.get(id);
@@ -71,6 +73,46 @@ export class WebThreadStates {
   /** Live views, in the order their Threads were first tracked. */
   views(): Array<[string, ChThreadHistory]> {
     return [...this.states].flatMap(([id, state]) => (state.view ? [[id, state.view]] : []));
+  }
+
+  /** Thread ids whose view was dropped and still have a reserved sequence floor. */
+  droppedViewIds(): string[] {
+    return [...this.states].flatMap(([id, state]) =>
+      !state.view && state.viewOrigin !== undefined ? [id] : [],
+    );
+  }
+
+  /** Reserve the next sequence below a dropped view's future origin so repeated
+   * catalog updates and control reconnects strictly advance past prior watermarks. */
+  reserveDroppedProjectionSeq(id: string): number | undefined {
+    const state = this.states.get(id);
+    if (!state || state.view || state.viewOrigin === undefined) return undefined;
+    const seq = state.viewOrigin - 1;
+    state.viewOrigin = seq + 2;
+    return seq;
+  }
+
+  /** Protect an in-flight `session/page` read from idle eviction and refresh
+   * `historyReadAt` once it settles on the same live view. */
+  async trackPageRead<T>(
+    id: string,
+    view: ChThreadHistory,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    this.paging.set(view, (this.paging.get(view) ?? 0) + 1);
+    this.unfollowedSince.delete(view);
+    try {
+      return await operation();
+    } finally {
+      const remaining = (this.paging.get(view) ?? 1) - 1;
+      if (remaining > 0) this.paging.set(view, remaining);
+      else this.paging.delete(view);
+      const state = this.states.get(id);
+      if (state?.view === view) {
+        state.historyReadAt = Date.now();
+        this.unfollowedSince.delete(view);
+      }
+    }
   }
 
   /** The catalog read replaces every confirmed owner at once. */
@@ -108,7 +150,12 @@ export class WebThreadStates {
     for (const [id, state] of this.states) {
       const { view } = state;
       if (!view) continue;
-      if (view.log.hasFollowers || state.reading || running(id)) {
+      if (
+        view.log.hasFollowers ||
+        state.reading ||
+        (this.paging.get(view) ?? 0) > 0 ||
+        running(id)
+      ) {
         this.unfollowedSince.delete(view);
         continue;
       }

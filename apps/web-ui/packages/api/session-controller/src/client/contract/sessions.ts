@@ -118,7 +118,7 @@ export interface ISessions {
    * Load one older native catalog page in this browser's archive scope.
    * @param workspaceId - read on until the page reaches a Session of this Workspace.
    */
-  loadMore(workspaceId?: string): Promise<void>;
+  loadMore(workspaceId?: WorkspaceId): Promise<void>;
   /** Read one direct-link identity without walking the catalog. */
   loadSummary(sessionId: SessionId): Promise<void>;
   /**

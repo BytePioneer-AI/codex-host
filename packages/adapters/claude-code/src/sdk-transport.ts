@@ -447,6 +447,7 @@ function isRootOutput(event: ClaudeTurnEvent): boolean {
     case "usage.result":
       return true;
     case "usage.request":
+    case "model.fallback":
     case "segment.started":
     case "subagents.live":
     case "subagent.updated":

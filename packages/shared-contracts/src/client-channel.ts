@@ -7,6 +7,7 @@ import {
   hostExtensionRevisionSchema,
 } from "./host-extension-management.js";
 import { THREAD_ARCHIVE_CONFIRM_METHOD } from "./thread-archive-confirm.js";
+import { modelFallbackNoticeSchema } from "./thread-model-fallback.js";
 
 /** Authenticated local owner channel. Notifications invalidate state; they are
  * NOT appendable transcript deltas. Clients reconcile absolute snapshots. */
@@ -344,6 +345,7 @@ export const clientThreadSnapshotSchema = z.object({
     effectiveModel: harnessModelRefSchema.optional(),
     effectiveThinkingOptionId: harnessThinkingOptionIdSchema.optional(),
     effectivePermissionModeId: harnessPermissionModeIdSchema.optional(),
+    modelFallback: modelFallbackNoticeSchema.optional(),
   }),
   queue: z
     .object({

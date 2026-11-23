@@ -2100,6 +2100,13 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
     switch (event.type) {
+      case "model.fallback":
+        this.#event({
+          type: "turn.modelFallback",
+          turnId: active.command.turnId,
+          fallback: event.fallback,
+        });
+        return;
       case "segment.started":
         if (event.mcpServers) this.#mcpServers = event.mcpServers;
         this.#observeRootOutput(active);

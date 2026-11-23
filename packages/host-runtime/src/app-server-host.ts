@@ -369,7 +369,11 @@ import { ModelPriceCatalog } from "./model-prices.js";
 import { UsageMeasurementsStore } from "./usage-measurements-store.js";
 import { ObservedSessionUsage } from "./observed-session-usage.js";
 import type { UsageStatistics, UsageStatisticsSource } from "./usage-statistics.js";
-import { USAGE_STATISTICS_METHOD } from "@codexhost/shared-contracts";
+import {
+  MODEL_FALLBACK_NOTICE_MAX_AGE_MS,
+  THREAD_MODEL_FALLBACK_METHOD,
+  USAGE_STATISTICS_METHOD,
+} from "@codexhost/shared-contracts";
 import {
   CodexTurnProjector,
   decodeCreateRoute,
@@ -4121,6 +4125,11 @@ export class AppServerHost {
               : {}),
             ...(sessionCatalog ? { catalog: sessionCatalog } : {}),
             history: resolution.thread.session.capabilities.history,
+            ...(resolution.thread.modelFallback &&
+            Date.now() - resolution.thread.modelFallback.observedAtMs <
+              MODEL_FALLBACK_NOTICE_MAX_AGE_MS
+              ? { modelFallback: resolution.thread.modelFallback }
+              : {}),
             ...(threadUsage ? { usage: threadUsage } : {}),
             locked: true,
           },
@@ -6684,6 +6693,18 @@ export class AppServerHost {
       return;
     }
     let event = output.event;
+    if (event.type === "turn.modelFallback") {
+      if (thread.modelFallback?.id === event.fallback.id) return;
+      await waitForTurnResponse(thread, event.turnId);
+      if (this.#externalRuntime.get(thread.id) !== thread) return;
+      const fallback = { ...event.fallback, observedAtMs: Date.now() };
+      thread.modelFallback = fallback;
+      await this.#writer.json({
+        method: THREAD_MODEL_FALLBACK_METHOD,
+        params: { threadId: thread.id, fallback },
+      });
+      return;
+    }
     if (event.type === "turn.autonomous.completed") {
       let turn: JsonObject | undefined;
       try {

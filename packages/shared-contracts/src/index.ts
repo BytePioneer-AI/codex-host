@@ -2,6 +2,7 @@ import { z } from "zod";
 export * from "./client-channel.js";
 export * from "./thread-catalog.js";
 export * from "./thread-tree-watch.js";
+export * from "./thread-model-fallback.js";
 export * from "./desktop-extensions.js";
 export * from "./web-native-extensions.js";
 export * from "./host-extensions.js";

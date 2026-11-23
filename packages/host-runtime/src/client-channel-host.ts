@@ -3,6 +3,7 @@ import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/
 import { jsonRpcRequestSchema, type JsonObject, type JsonValue } from "@codexhost/protocol-core";
 import {
   CLIENT_CHANNEL_METHODS,
+  MODEL_FALLBACK_NOTICE_MAX_AGE_MS,
   THREAD_ARCHIVE_CONFIRM_METHOD,
   threadArchiveConfirmParamsSchema,
   clientThreadSnapshotSchema,
@@ -504,6 +505,10 @@ export class ClientChannelHost {
           }),
           configuration: {
             effectiveModel: state.effectiveModel,
+            ...(thread.modelFallback &&
+            Date.now() - thread.modelFallback.observedAtMs < MODEL_FALLBACK_NOTICE_MAX_AGE_MS
+              ? { modelFallback: thread.modelFallback }
+              : {}),
             effectiveThinkingOptionId: state.effectiveThinkingOptionId,
             effectivePermissionModeId: state.effectivePermissionModeId,
           },

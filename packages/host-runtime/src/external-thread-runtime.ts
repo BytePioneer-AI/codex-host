@@ -31,6 +31,7 @@ import {
   type HarnessThinkingOptionId,
   type HostInteractionId,
   type HostTurnId,
+  type ModelFallbackNotice,
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
@@ -84,6 +85,7 @@ export interface ExternalThread {
   // history cannot be refreshed.
   projectedTerminalTurnId: HostTurnId | null;
   latestUsage: HostUsage | null;
+  modelFallback?: ModelFallbackNotice;
   /** turn/plan/updated params projected live since history was last loaded; newer than history. */
   livePlan: JsonObject | null;
   /** Host metering for the current Session only; replaced with it. */

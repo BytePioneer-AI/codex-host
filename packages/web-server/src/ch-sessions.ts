@@ -723,7 +723,12 @@ export class ChSessions {
             ? { reasoningEffort: owner.effectiveThinkingOptionId }
             : {}),
         };
-        view.log.setProjection("modelSelection", { lastUsed: selection, next: selection });
+        const modelFallback = "modelFallback" in owner ? owner.modelFallback : undefined;
+        view.log.setProjection("modelSelection", {
+          lastUsed: selection,
+          next: selection,
+          ...(modelFallback ? { modelFallback } : {}),
+        });
       })
       .catch(() => {
         // Controls remain absent on failure; history stays usable and later reads retry.

@@ -1,6 +1,6 @@
 import { subagentConfiguration } from "@codexhost/harness-adapter";
 import { claudeUsageRecord, isClaudeModelRequest } from "./claude-usage.js";
-import { jsonValueSchema } from "@codexhost/shared-contracts";
+import { jsonValueSchema, modelFallbackSchema } from "@codexhost/shared-contracts";
 
 import { parseClaudeNativeFileChange } from "./file-change.js";
 import { isClaudeNarrationSignature } from "./thinking-signature.js";
@@ -66,6 +66,26 @@ function parentToolUseId(message: Record<string, unknown>): string | null {
   return typeof message.parent_tool_use_id === "string" && message.parent_tool_use_id.length > 0
     ? message.parent_tool_use_id
     : null;
+}
+
+function parseModelFallback(message: Record<string, unknown>): ClaudeNativeEvent | null {
+  if (message.type !== "system") return null;
+  if (message.subtype === "model_refusal_fallback") {
+    if (
+      message.trigger !== "refusal" ||
+      message.direction !== "retry" ||
+      (message.scope !== "session" && message.scope !== undefined)
+    )
+      return null;
+  } else if (message.subtype !== "model_fallback") {
+    return null;
+  }
+  const parsed = modelFallbackSchema.safeParse({
+    id: message.uuid,
+    fromModel: message.original_model,
+    toModel: message.fallback_model,
+  });
+  return parsed.success ? { type: "model.fallback", fallback: parsed.data } : null;
 }
 
 function assistantNativeMessageId(message: Record<string, unknown>): string | null {
@@ -558,6 +578,8 @@ export class ClaudeNativeTurnAccumulator {
     if (!nested) {
       this.#consumeCompaction(message, events);
       this.#consumeLocalCommandOutput(message, events);
+      const fallback = parseModelFallback(message);
+      if (fallback) events.push(fallback);
     }
 
     if (message.type === "stream_event" && isRecord(message.event)) {

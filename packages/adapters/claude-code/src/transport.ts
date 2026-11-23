@@ -5,6 +5,7 @@ import type {
   HarnessAccountSnapshot,
   HarnessThinkingOptionId,
   JsonValue,
+  ModelFallback,
 } from "@codexhost/shared-contracts";
 
 import type { ClaudeSlashCommandSnapshot } from "./slash-commands.js";
@@ -212,6 +213,7 @@ export type ClaudeTurnEvent =
       requestId: string;
       reason: "responded" | "cancelled" | "superseded";
     }
+  | { type: "model.fallback"; fallback: ModelFallback }
   /** One finished native model request, for Host usage metering. */
   | { type: "usage.request"; record: ClaudeUsageRecord }
   | {

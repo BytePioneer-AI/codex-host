@@ -19,6 +19,7 @@ import type {
   HostTurnId,
   JsonObject,
   JsonValue,
+  ModelFallback,
   NativeCheckpointRef,
   NativeSessionRef,
   NativeTurnRef,
@@ -645,6 +646,7 @@ export type HostEvent =
   | SubagentStateChangedEvent
   | SubagentTranscriptChangedEvent
   | TurnStartedEvent
+  | { type: "turn.modelFallback"; turnId: HostTurnId; fallback: ModelFallback }
   | AutonomousTurnStartedEvent
   | AutonomousTurnCompletedEvent
   | ItemStartedEvent

@@ -18,6 +18,7 @@ import {
   hostThreadIdSchema,
   hostTurnIdSchema,
   jsonObjectSchema,
+  THREAD_MODEL_FALLBACK_METHOD,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -38,6 +39,55 @@ import {
 } from "./app-server-host-fixture.js";
 
 describe("AppServerHost HarnessAdapter projection", () => {
+  it("publishes one model fallback notice without changing the selected model or Turn", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId, 2);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Harness Session was not opened");
+      const selected = (await fixture.host.clientSnapshot(threadId)).configuration.effectiveModel;
+      const notifications: string[] = [];
+      const unsubscribe = fixture.host.clientEvents.subscribe((event) => {
+        if (event.type === "changed" && event.threadId === threadId)
+          notifications.push(event.method);
+      });
+      const fallback = {
+        id: "00000000-0000-4000-8000-000000000012",
+        fromModel: "primary",
+        toModel: "secondary",
+      };
+
+      session.publishModelFallback(fallback);
+      session.publishModelFallback(fallback);
+      await expect(
+        fixture.collector.waitFor((message) => method(message, THREAD_MODEL_FALLBACK_METHOD)),
+      ).resolves.toMatchObject({ params: { threadId, fallback } });
+      expect((await fixture.host.clientSnapshot(threadId)).configuration).toMatchObject({
+        effectiveModel: selected,
+        modelFallback: fallback,
+      });
+      await expect(
+        fixture.host.handleClientRequest("codexhost/thread/inspect", { threadId }),
+      ).resolves.toMatchObject({ result: { modelFallback: fallback } });
+
+      session.appendText("Completed with the fallback model.");
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      expect(
+        fixture.collector.messages.filter((message) =>
+          method(message, THREAD_MODEL_FALLBACK_METHOD),
+        ),
+      ).toHaveLength(1);
+      unsubscribe();
+      expect(notifications.filter((value) => value === THREAD_MODEL_FALLBACK_METHOD)).toHaveLength(
+        1,
+      );
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("tail-Forks the latest completed Checkpoint while the source Turn is active", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();

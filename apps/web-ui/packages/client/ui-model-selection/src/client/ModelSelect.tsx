@@ -141,6 +141,16 @@ export function ModelSelect({
   const lastActionRef = useRef<"load" | "select">("load");
   const [toast, setToast] = useState<{ seq: number; text: string } | null>(null);
   const toastSeq = useRef(0);
+  const [dismissedFallbackId, setDismissedFallbackId] = useState<string | null>(null);
+  const fallback = state.modelFallback;
+  const notice =
+    fallback && fallback.id !== dismissedFallbackId
+      ? {
+          seq: fallback.id,
+          text: t("notice.modelFallback", { from: fallback.fromModel, to: fallback.toModel }),
+        }
+      : null;
+  const presentedToast = toast ?? notice;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -1004,14 +1014,16 @@ export function ModelSelect({
           </div>,
           document.body,
         )}
-      {toast !== null && (
+      {presentedToast !== null && (
         <Toast
-          key={toast.seq}
-          text={toast.text}
+          key={presentedToast.seq}
+          text={presentedToast.text}
+          {...(toast ? {} : { holdMs: 8_000 })}
           icon={<IconWarningOutlineRegular />}
           anchor={rootRef.current?.closest<HTMLElement>("[data-composer-card]") ?? null}
           onDone={() => {
-            setToast(null);
+            if (toast) setToast(null);
+            else if (notice) setDismissedFallbackId(notice.seq);
           }}
         />
       )}

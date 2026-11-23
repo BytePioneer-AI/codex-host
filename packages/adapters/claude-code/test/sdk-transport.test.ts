@@ -196,6 +196,62 @@ describe("ClaudeSdkTransport context Usage", () => {
   });
 });
 
+describe("ClaudeSdkTransport model fallback", () => {
+  it("forwards a native Root model fallback without ending the Turn or echoing private details", async () => {
+    const value = fixture();
+    await value.transport.start();
+    try {
+      const events: ClaudeTurnEvent[] = [];
+      const pending = value.transport.runTurn(
+        "test",
+        "00000000-0000-4000-8000-000000000011",
+        (event) => events.push(event),
+      );
+      const fallback = {
+        type: "system",
+        subtype: "model_refusal_fallback",
+        trigger: "refusal",
+        direction: "retry",
+        original_model: "claude-fable-5-2",
+        fallback_model: "claude-opus-5",
+        uuid: "00000000-0000-4000-8000-000000000012",
+        session_id: "00000000-0000-4000-8000-000000000001",
+        content: "Native explanation",
+      } as const satisfies SDKMessage;
+      value.fakeQuery.push({ ...fallback, scope: "local" });
+      value.fakeQuery.push({ ...fallback, direction: "revert", scope: "session" });
+      value.fakeQuery.push({ ...fallback, scope: "session" });
+      await vi.waitFor(() =>
+        expect(events.filter((event) => event.type === "model.fallback")).toEqual([
+          {
+            type: "model.fallback",
+            fallback: {
+              id: fallback.uuid,
+              fromModel: "claude-fable-5-2",
+              toModel: "claude-opus-5",
+            },
+          },
+        ]),
+      );
+      pushAssistantText(
+        value.fakeQuery,
+        "The retry completed.",
+        "00000000-0000-4000-8000-000000000013",
+      );
+      completeTurn(value.fakeQuery);
+      await expect(pending).resolves.toEqual({ status: "succeeded" });
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "text.delta",
+          delta: "The retry completed.",
+        }),
+      );
+    } finally {
+      await value.transport.close();
+    }
+  });
+});
+
 describe("ClaudeSdkTransport plan-limit forwarding", () => {
   it("forwards a tracked rate-limit event regardless of active Turn state", async () => {
     const value = fixture();

@@ -1,5 +1,6 @@
 /** Durable model-selection intent and request-use projection. */
 
+import { modelFallbackNoticeSchema } from "@codexhost/shared-contracts";
 import type { Context } from "@deepseek-ai/cordis";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import type { ProjectionDefinition } from "@deepseek-ai/dsh-session-projection";
@@ -24,6 +25,7 @@ const modelSelectionProjectionStateSchema = z.object({
 const modelSelectionProjectionSchema = z.object({
   lastUsed: modelSelectionSchema.nullable(),
   next: modelSelectionSchema.nullable(),
+  modelFallback: modelFallbackNoticeSchema.optional(),
 }) as z.ZodType<ModelSelectionProjection>;
 
 /**

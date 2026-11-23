@@ -22,6 +22,7 @@ import { isModelRoute } from "./fast-model.ts";
 export interface ModelDirectoryState {
   /** Saved selection, retained even when its provider or model leaves the catalog. */
   current: ModelSelection | null;
+  modelFallback?: ModelSelectionProjection["modelFallback"];
   /** Saved effort caption retained when the selected model is unavailable. */
   retainedEffort?: string;
   /** Whether the current selection is present in the available catalog; null while unresolved. */
@@ -215,6 +216,7 @@ export class ModelDirectory {
     if (catalog.status !== "ready" || catalog.value === null || projected === undefined) {
       this.store.set({
         current: catalog.value === null ? null : this.store.getSnapshot().current,
+        ...(projected?.modelFallback ? { modelFallback: projected.modelFallback } : {}),
         ...(retainedEffort === undefined ? {} : { retainedEffort }),
         routable: null,
         groups,
@@ -243,6 +245,7 @@ export class ModelDirectory {
       );
     this.store.set({
       current: selection ?? null,
+      ...(projected.modelFallback ? { modelFallback: projected.modelFallback } : {}),
       ...(retainedEffort === undefined ? {} : { retainedEffort }),
       routable,
       groups,

@@ -1,4 +1,5 @@
 /** Browser-safe request, result, and lifecycle vocabulary for the Session Remote service. */
+import type { ModelFallbackNotice } from "@codexhost/shared-contracts";
 import type { NativeFileApplication } from "@deepseek-ai/dsh-native-command/types";
 
 import type {
@@ -127,6 +128,8 @@ export interface ModelSelectionProjection {
   readonly lastUsed: ModelSelection | null;
   /** Selection the next request should use, falling back to {@link lastUsed}. */
   readonly next: ModelSelection | null;
+  /** Recent automatic model switch reported by an external Harness. */
+  readonly modelFallback?: ModelFallbackNotice;
 }
 
 /** One adapter-owned reasoning effort for an exact model route. */

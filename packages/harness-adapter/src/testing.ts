@@ -19,6 +19,7 @@ import type {
   HostItemId,
   HostTurnId,
   JsonValue,
+  ModelFallback,
   NativeCheckpointRef,
   NativeSessionRef,
   NativeTurnRef,
@@ -285,6 +286,11 @@ export class FakeHarnessSession implements HarnessSession {
     this.#event({ type: "turn.autonomous.started", turnId, input });
     this.#event({ type: "turn.started", turnId });
     this.succeedTurn();
+  }
+
+  publishModelFallback(fallback: ModelFallback): void {
+    const { command } = this.#requireActive();
+    this.#event({ type: "turn.modelFallback", turnId: command.turnId, fallback });
   }
 
   publishUsage(usage: HostUsage | null, observedForTurnId?: HostTurnId): void {

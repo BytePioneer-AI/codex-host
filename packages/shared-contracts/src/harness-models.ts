@@ -8,6 +8,7 @@ import {
 import { HARNESS_TRANSPORT_MODEL_ID_MAX_LENGTH } from "./harness-route-limit.js";
 import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "./ids.js";
 import { threadUsageSnapshotSchema } from "./thread-usage.js";
+import { modelFallbackNoticeSchema } from "./thread-model-fallback.js";
 
 export const HARNESS_MODEL_REF_MAX_LENGTH = 512;
 export const HARNESS_MODEL_LABEL_MAX_LENGTH = 256;
@@ -401,6 +402,7 @@ const externalThreadInspectionSchema = z
     catalog: harnessModelCatalogSchema.optional(),
     history: harnessHistoryCapabilitiesSchema,
     usage: threadUsageSnapshotSchema.optional(),
+    modelFallback: modelFallbackNoticeSchema.optional(),
     locked: z.literal(true),
   })
   .strict();

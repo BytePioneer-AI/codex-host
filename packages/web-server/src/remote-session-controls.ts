@@ -199,7 +199,11 @@ export function applyRemoteControls(entry: RemoteControlsEntry, view: ChThreadVi
             ? { reasoningEffort: configuration.effectiveThinkingOptionId }
             : {}),
         };
-  view.log.setProjection("modelSelection", { lastUsed: selection, next: selection });
+  view.log.setProjection("modelSelection", {
+    lastUsed: selection,
+    next: selection,
+    ...(external?.modelFallback ? { modelFallback: external.modelFallback } : {}),
+  });
 }
 
 export function externalConfiguration(entry: RemoteControlsEntry): ExternalThreadInspection {

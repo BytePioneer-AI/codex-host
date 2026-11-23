@@ -4,6 +4,7 @@ import {
 } from "./renderer-harness-preferences.js";
 import { createRemoteConnectionsControl } from "./remote-connections-control.js";
 import { installRendererQuestions } from "./renderer-questions.js";
+import { mountRendererModelSelectionNotice } from "./renderer-model-selection-notice.js";
 import { isOrbitComposer, orbitComposerKind } from "./renderer-composer-kind.js";
 import { handleRemoteConnectionsRequest } from "./remote-connections-request.js";
 import {
@@ -13,6 +14,8 @@ import {
   decodeHarnessPluginRoute,
   harnessIdSchema,
   permissionModeFixedAtCreate,
+  THREAD_MODEL_FALLBACK_METHOD,
+  threadModelFallbackNotificationSchema,
   type HarnessCommandDescriptor,
   type HarnessPluginDescriptor,
   type HarnessModelCatalog,
@@ -1663,6 +1666,7 @@ export function installRendererBindingProbe(
     const previousTarget = mounted.modelTarget;
     const nextHostId = activeModelHostId(mounted.composer);
     const nextControllerTarget = controllerTarget(currentTarget, nextHostId);
+    mounted.control.modelPicker.fallbackNotice?.hide();
     mounted.modelTarget = currentTarget;
     mounted.hostId = nextHostId;
     const rebound =
@@ -3761,6 +3765,38 @@ export function installRendererBindingProbe(
   const onPreferencesChanged = (): void => {
     for (const mounted of mountedByComposer.values()) renderMounted(mounted);
   };
+  const onHostModelFallback = (event: MessageEvent): void => {
+    if (event.source != null && event.source !== window) return;
+    const message: unknown = event.data;
+    if (
+      !message ||
+      typeof message !== "object" ||
+      !("type" in message && message.type === "mcp-notification") ||
+      !("method" in message && message.method === THREAD_MODEL_FALLBACK_METHOD) ||
+      !("hostId" in message) ||
+      !("params" in message)
+    )
+      return;
+    const parsed = threadModelFallbackNotificationSchema.safeParse(message.params);
+    if (!parsed.success) return;
+    const { threadId, fallback } = parsed.data;
+    for (const mounted of mountedByComposer.values()) {
+      if (
+        mounted.hostId !== message.hostId ||
+        threadIdFromComposerModelTarget(mounted.modelTarget) !== threadId
+      )
+        continue;
+      const picker = mounted.control.modelPicker;
+      if (!picker.trigger.isConnected || picker.trigger.getClientRects().length === 0) continue;
+      picker.fallbackNotice ??= mountRendererModelSelectionNotice(picker.trigger);
+      picker.fallbackNotice.show(
+        rendererHarnessMessages(settingsLifecycle.locale).modelFallbackTitle,
+        `${fallback.fromModel} → ${fallback.toModel}`,
+      );
+    }
+  };
+  // Desktop forwards custom Host notifications to the window before its Manager filters them.
+  window.addEventListener("message", onHostModelFallback);
   window.addEventListener(HARNESS_PREFERENCES_UPDATED_EVENT, onPreferencesChanged);
   window.addEventListener("codexhost:draft-prewarm-policy-changed", onHostRouteChange);
   window.addEventListener("codexhost:draft-workspace", onDraftWorkspace);
@@ -4073,6 +4109,7 @@ export function installRendererBindingProbe(
       window.removeEventListener("codexhost:draft-workspace", onDraftWorkspace);
       window.removeEventListener("codexhost:renderer-adapter-status", onAdapterStatus);
       window.removeEventListener("focus", onWindowFocus);
+      window.removeEventListener("message", onHostModelFallback);
       for (const state of harnessAvailabilityByHost.values()) {
         state.requestGeneration += 1;
         state.codexAccounts?.dispose();

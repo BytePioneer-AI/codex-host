@@ -111,6 +111,7 @@ export interface RendererModelPickerControl {
   thinkingLabel: HTMLElement;
   errorMark: HTMLElement;
   selectionNotice: RendererModelSelectionNotice;
+  fallbackNotice?: RendererModelSelectionNotice;
   /** Newest `selectionErrorId` this control has presented (or skipped while its menu was open). */
   lastSelectionErrorId: number;
   menu: HTMLElement;
@@ -786,6 +787,7 @@ export function mountRendererModelPicker(
     dispose() {
       close();
       selectionNotice.dispose();
+      control.fallbackNotice?.dispose();
       fast.dispose();
       trigger.removeEventListener("click", onTriggerClick);
       menu.removeEventListener("toggle", onToggle);
@@ -959,6 +961,7 @@ export function renderRendererModelPicker(
     control.close();
     control.fast.close();
     control.selectionNotice.hide();
+    control.fallbackNotice?.hide();
     return;
   }
   const messages = rendererHarnessMessages(locale);

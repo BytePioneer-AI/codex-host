@@ -146,7 +146,8 @@ export type TurnScopedEvent = Exclude<
       | "subagent.state.changed"
       | "subagent.transcript.changed"
       | "session.faulted"
-      | "turn.autonomous.completed";
+      | "turn.autonomous.completed"
+      | "turn.modelFallback";
   }
 >;
 

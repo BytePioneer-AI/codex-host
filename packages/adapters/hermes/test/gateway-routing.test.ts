@@ -4,11 +4,83 @@ import * as nativeSessions from "../src/gateway-session-list.js";
 import { HermesGatewayTransport } from "../src/gateway-transport.js";
 import { nativeSessionRefSchema } from "@codexhost/shared-contracts";
 import * as gatewayOpen from "../src/gateway-open.js";
+import * as inventory from "../src/hermes-inventory.js";
 import { HermesGatewayHistory } from "../src/gateway-history.js";
 import type { HermesSession } from "../src/hermes-session.js";
 
 afterEach(() => vi.restoreAllMocks());
 describe("Hermes Gateway-only chat routing", () => {
+  it("routes the same model on two named providers without sending the catalog ID as the model", async () => {
+    const cwd = process.cwd();
+    const model = "example/model:tag";
+    const first = { id: `relay-a:${model}` };
+    const second = { id: `relay-b:${model}` };
+    vi.spyOn(inventory, "readHermesModelInventory").mockResolvedValue({
+      currentModelId: first.id,
+      models: ["relay-a", "relay-b"].map((provider) => ({
+        modelId: `${provider}:${model}`,
+        label: model,
+        provider,
+        gatewaySelection: { provider, model },
+      })),
+    });
+    vi.spyOn(HermesGatewayTransport, "probe").mockResolvedValue("/supported/python");
+    vi.spyOn(HermesGatewayTransport.prototype, "prepareSession").mockResolvedValue();
+    vi.spyOn(HermesGatewayTransport.prototype, "start").mockResolvedValue();
+    vi.spyOn(HermesGatewayTransport.prototype, "close").mockResolvedValue();
+    const request = vi
+      .spyOn(HermesGatewayTransport.prototype, "request")
+      .mockImplementation(async function (this: HermesGatewayTransport, method, params) {
+        if (method === "session.create")
+          return {
+            session_id: "runtime",
+            stored_session_id: "saved",
+            revision: 0,
+            execution_generation: 0,
+            info: { cwd, model: params.model, provider: params.provider ?? "relay-a" },
+          };
+        if (method === "session.mutate") {
+          const selection = params.payload as { model: string; provider?: string };
+          return { model: selection.model, provider: selection.provider ?? "relay-a", revision: 1 };
+        }
+        if (method === "config.get")
+          this.onEvent({ type: "session.info", session_id: "runtime", payload: { cwd, model } });
+        return { value: "low" };
+      });
+    const adapter = new HermesAdapter({ command: process.execPath });
+    try {
+      expect(await adapter.inspect()).toMatchObject({
+        status: "ready",
+        catalog: { defaultModel: first, models: [{ ref: first }, { ref: second }] },
+      });
+      const opened = await adapter.open({ kind: "create", cwd, model: first });
+      expect(request).toHaveBeenCalledWith("session.create", { cwd, model, provider: "relay-a" });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.initialState.effectiveModel).toEqual(first);
+      expect(request).toHaveBeenCalledWith(
+        "session.mutate",
+        expect.objectContaining({
+          operation: "model",
+          expected_revision: 0,
+          payload: { model, provider: "relay-a" },
+        }),
+      );
+      expect(await opened.value.execute({ type: "model.select", model: second })).toMatchObject({
+        ok: true,
+      });
+      expect(request).toHaveBeenCalledWith(
+        "session.mutate",
+        expect.objectContaining({
+          operation: "model",
+          expected_revision: 1,
+          payload: { model, provider: "relay-b" },
+        }),
+      );
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it.each([undefined, 7, 999])("resumes saved gateway contract metadata %s", async (contract) => {
     const cwd = process.cwd();
     const transport = new HermesGatewayTransport("unused", cwd, {});

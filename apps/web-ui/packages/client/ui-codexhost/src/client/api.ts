@@ -337,7 +337,7 @@ export const pushApi = {
     }),
   unsubscribe: (endpoint: string) =>
     call<{ subscribed: boolean }>("codexhost/pushUnsubscribe", { endpoint }),
-  test: () => call<{ sent: number }>("codexhost/pushTest", {}),
+  test: (endpoint: string) => call<{ sent: number }>("codexhost/pushTest", { endpoint }),
 };
 
 export const importApi = {

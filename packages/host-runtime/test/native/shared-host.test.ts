@@ -273,12 +273,24 @@ for (const first of ["Web", "Desktop", "CLI"])
         pinned: [],
       });
       for (const client of clients) client.close();
-      // Explicit stop waits for the fixture supervisor's normal child cleanup.
       assert.equal(
         (await discoverHostClientChannel(path.join(data, "client-hosts")))?.epoch,
         endpoint.epoch,
       );
-      await exec(launcher, ["host", "stop", ...args], { env, timeout: 15_000 });
+      if (first === "CLI" && process.platform !== "win32") {
+        const readyFile = path.join(data, "shared-host-ready.json");
+        const ready = JSON.parse(await readFile(readyFile, "utf8"));
+        await exec(launcher, ["host", "stop-outdated", ...args], { env, timeout: 15_000 });
+        assert.equal(
+          (await discoverHostClientChannel(path.join(data, "client-hosts")))?.epoch,
+          endpoint.epoch,
+        );
+        // An in-place npm upgrade leaves the live owner at the same runtime path.
+        await writeFile(readyFile, JSON.stringify({ ...ready, version: "0.0.0" }));
+        await exec(launcher, ["host", "stop-outdated", ...args], { env, timeout: 15_000 });
+      } else {
+        await exec(launcher, ["host", "stop", ...args], { env, timeout: 15_000 });
+      }
       if (cliStarted)
         await assert.rejects(readFile(path.join(data, "cli-credentials.json")), { code: "ENOENT" });
       if (childInstance) {

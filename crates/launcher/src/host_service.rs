@@ -429,7 +429,7 @@ pub fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     // The detached supervisor must not inherit or reacquire the caller's lock:
     // ensure/restart retain it until that supervisor has published readiness.
     let _guard = match action {
-        "ensure" | "stop" | "restart" => {
+        "ensure" | "stop" | "stop-outdated" | "restart" => {
             Some(lifecycle_lock(&options.data, "shared-host-lifecycle.lock")?)
         }
         _ => None,
@@ -438,6 +438,15 @@ pub fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         "ensure" => ensure(&arguments[1..], options),
         "serve" => serve(options),
         "stop" => stop(&options),
+        "stop-outdated" => {
+            if current_runtime(&options.data).is_some_and(|(runtime, version)| {
+                runtime != options.runtime || version.as_deref() != Some(env!("CARGO_PKG_VERSION"))
+            }) {
+                crate::service_update::ensure_start_allowed(&options.data)?;
+                stop(&options)?;
+            }
+            Ok(())
+        }
         "restart" => {
             crate::service_update::ensure_start_allowed(&options.data)?;
             stop(&options)?;

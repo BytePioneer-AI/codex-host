@@ -1,11 +1,13 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { Duplex } from "node:stream";
+import { promisify } from "node:util";
 
 import WebSocket from "ws";
 
+import { sharedHostLauncherPath } from "./local-shared-host.js";
 import {
   inspectRemoteHostInstallation,
   type RemoteHostInstallationStatus,
@@ -73,6 +75,10 @@ interface RemoteHostLifecycleDependencies {
     environment: NodeJS.ProcessEnv,
   ): Promise<void>;
   launch(manifest: RemoteHostManifestV1, environment: NodeJS.ProcessEnv): void | Promise<void>;
+  stopOutdatedSharedHost(
+    manifest: RemoteHostManifestV1,
+    environment: NodeJS.ProcessEnv,
+  ): Promise<void>;
   waitForRuntime(
     manifest: RemoteHostManifestV1,
     socketPath: string,
@@ -339,12 +345,34 @@ async function defaultLaunch(
   });
 }
 
+async function defaultStopOutdatedSharedHost(
+  manifest: RemoteHostManifestV1,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  if (!manifest.sharedDataDirectory) return;
+  await promisify(execFile)(
+    sharedHostLauncherPath(manifest.hostRuntimePath, environment),
+    [
+      "host",
+      "stop-outdated",
+      "--node",
+      manifest.nodePath,
+      "--host-runtime",
+      manifest.hostRuntimePath,
+      "--data",
+      manifest.sharedDataDirectory,
+    ],
+    { env: environment, timeout: 60_000, maxBuffer: 64 * 1024 },
+  );
+}
+
 function dependencies(): RemoteHostLifecycleDependencies {
   return {
     inspectInstallation: inspectRemoteHostInstallation,
     probeProtocol,
     runTerminator: defaultRunTerminator,
     launch: defaultLaunch,
+    stopOutdatedSharedHost: defaultStopOutdatedSharedHost,
     waitForRuntime: defaultWaitForRuntime,
     socketExists: defaultSocketExists,
     ...lifecycleDependencyOverrides,
@@ -397,6 +425,8 @@ export async function startRemoteHost(
     throw new Error("Desktop execution session requires macOS");
   }
   const socketPath = socketPathFor(environment);
+  // The listener must attach to the new owner in its configured SSH or desktop session.
+  await lifecycle.stopOutdatedSharedHost(manifest, environment);
   const current = await lifecycle.probeProtocol(manifest, socketPath, environment);
   if (current.state === "running") {
     return { state: "running", changed: false, socketPath };

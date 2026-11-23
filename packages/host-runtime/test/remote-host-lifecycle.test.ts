@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import type * as ChildProcessModule from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 
 vi.mock("node:child_process", () => ({
+  execFile: vi.fn((_file, _args, _options, callback) => callback(null, "", "")),
   spawn: vi.fn(() => {
     const child = Object.assign(new EventEmitter(), { stderr: new PassThrough() });
     queueMicrotask(() => child.emit("close", 0, null));
@@ -56,6 +57,7 @@ let restore: (() => void) | undefined;
 afterEach(() => {
   restore?.();
   restore = undefined;
+  vi.mocked(execFile).mockClear();
   vi.mocked(spawn).mockClear();
 });
 
@@ -250,6 +252,21 @@ describe("remote Host lifecycle", () => {
     ).resolves.toEqual({ state: "running", changed: false, socketPath });
     expect(launch).not.toHaveBeenCalled();
     expect(terminate).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a shared Host shutdown failure instead of reporting the listener as ready", async () => {
+    const launch = vi.fn();
+    restore = setRemoteHostLifecycleDependenciesForTest({
+      inspectInstallation: vi.fn().mockResolvedValue(readyInstallation),
+      probeProtocol: vi.fn().mockResolvedValue(runtime("running", "codexhost")),
+      stopOutdatedSharedHost: vi.fn().mockRejectedValue(new Error("Shared Host shutdown failed")),
+      launch,
+    });
+
+    await expect(
+      startRemoteHost({ platform: "linux", environment: { HOME: home } }),
+    ).rejects.toThrow("Shared Host shutdown failed");
+    expect(launch).not.toHaveBeenCalled();
   });
 
   it.each([undefined, "/custom/claude"])(
@@ -463,7 +480,7 @@ describe("remote Host lifecycle", () => {
   );
 });
 
-it("passes the persisted shared directory to a fresh SSH listener without replacing its own store", async () => {
+it("retires a stale owner in the configured shared directory before launching the SSH listener", async () => {
   restore = setRemoteHostLifecycleDependenciesForTest({
     inspectInstallation: vi
       .fn()
@@ -475,6 +492,22 @@ it("passes the persisted shared directory to a fresh SSH listener without replac
     platform: "linux",
     environment: { HOME: home, CODEXHOST_SHARED_DATA_DIR: "/stale/inherited" },
   });
+  expect(execFile).toHaveBeenCalledWith(
+    "/opt/codexhost/bin/codexhost",
+    [
+      "host",
+      "stop-outdated",
+      "--node",
+      manifest.nodePath,
+      "--host-runtime",
+      manifest.hostRuntimePath,
+      "--data",
+      "/custom/shared-host",
+    ],
+    expect.any(Object),
+    expect.any(Function),
+  );
+  expect(spawn).toHaveBeenCalledAfter(vi.mocked(execFile));
   expect(vi.mocked(spawn).mock.calls[0]?.[2]?.env).toMatchObject({
     CODEXHOST_SHARED_DATA_DIR: "/custom/shared-host",
     CODEXHOST_DATA_DIR: manifest.dataDirectory,

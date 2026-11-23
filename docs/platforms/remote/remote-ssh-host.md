@@ -106,6 +106,8 @@ Each computer shows its own available actions. Operations run only when you clic
 
 Updates, restarts and repairs run immediately and may interrupt active conversations. There is no task-completion wait.
 
+Starting the updated SSH listener also replaces an outdated shared Host in the configured data directory. Desktop and Web sessions on the remote computer can briefly disconnect while the shared Host restarts.
+
 The page does not install or update in the background. These actions update codexhost software, not project files or conversation history.
 
 If the remote version is newer, update the local computer first. Reconnect if the connection does not recover after an update.

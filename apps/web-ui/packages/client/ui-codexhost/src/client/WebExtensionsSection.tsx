@@ -103,6 +103,7 @@ export interface WebExtensionsFace {
   selectContentLocale: (next: ContentLocalePreference) => void;
   selectedPage: HostExtensionInstallation | null;
   selectPage: (page: HostExtensionInstallation) => void;
+  onUpdatesChange?: (hasUpdates: boolean) => void;
 }
 
 const INITIAL_MARKET: MarketState = {
@@ -141,6 +142,7 @@ export function WebExtensionsSection({
   selectContentLocale,
   selectedPage,
   selectPage,
+  onUpdatesChange,
 }: PropsLocale<"codexhostImport"> & WebExtensionsFace): ReactNode {
   const [listView, setListView] = useState<ListView>({ kind: "loading" });
   const [market, setMarket] = useState<MarketState>(INITIAL_MARKET);
@@ -363,6 +365,14 @@ export function WebExtensionsSection({
     () => extensions.some((item) => hasHostCatalogUpdate(item, catalogById.get(item.id))),
     [extensions, catalogById],
   );
+
+  useEffect(() => {
+    if (listView.kind === "ready" && market.loaded) {
+      onUpdatesChange?.(hasInstalledUpdates);
+    } else if (listView.kind === "disabled") {
+      onUpdatesChange?.(false);
+    }
+  }, [listView.kind, market.loaded, hasInstalledUpdates, onUpdatesChange]);
 
   const availableCategories = useMemo(() => {
     const present = new Set<DesktopExtensionCategory>();
@@ -1082,8 +1092,6 @@ export function WebExtensionsSection({
                         iconUrl={resolveHostIconUrl(item, catalogEntry)}
                         author={validItem?.manifest.author ?? catalogEntry?.author}
                         version={validItem?.manifest.version}
-                        repository={validItem?.manifest.repository ?? catalogEntry?.repository}
-                        stars={catalogEntry?.stars}
                         downloads={catalogEntry?.downloads}
                         trustTier={catalogEntry?.trustTier}
                         categories={validItem?.manifest.categories ?? catalogEntry?.categories}
@@ -1098,7 +1106,7 @@ export function WebExtensionsSection({
                                 }),
                                 action: (
                                   <Button
-                                    variant="outline"
+                                    variant="primary"
                                     size="sm"
                                     disabled={busy}
                                     aria-busy={isUpdating}
@@ -1292,8 +1300,6 @@ export function WebExtensionsSection({
                     iconUrl={entry.icon}
                     author={entry.author}
                     version={entry.version}
-                    repository={entry.repository}
-                    stars={entry.stars}
                     downloads={entry.downloads}
                     trustTier={entry.trustTier}
                     categories={entry.categories}

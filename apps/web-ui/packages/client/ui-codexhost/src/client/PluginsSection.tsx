@@ -45,7 +45,7 @@ export function PluginsSection({
   colorScheme,
   t,
 }: PropsLocale<"codexhostImport"> & PluginsSectionFace) {
-  const { pages, selectedPage } = useSyncExternalStore(
+  const { pages, selectedPage, hasUpdates } = useSyncExternalStore(
     navigation.store.subscribe,
     navigation.store.getSnapshot,
   );
@@ -131,7 +131,7 @@ export function PluginsSection({
               >
                 <span className={css.tabIcon} aria-hidden="true">
                   {page === null ? (
-                    <PluginsIcon size={16} />
+                    <PluginsIcon size={16} updateAvailable={hasUpdates} />
                   ) : (
                     <ExtensionIcon src={extensionPageIconUrl(page)} size="sidebar" />
                   )}
@@ -158,6 +158,7 @@ export function PluginsSection({
           selectContentLocale={selectContentLocale}
           selectedPage={selectedPage}
           selectPage={navigation.selectPage}
+          onUpdatesChange={navigation.setHasUpdates}
         />
       </div>
     </div>

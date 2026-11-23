@@ -106,14 +106,8 @@ impl PackageEnvironment {
         })
     }
 
-    fn disable(&mut self) -> Result<(), PlatformError> {
-        if self.armed {
-            unsafe { self.settings.DisableDebugging(&self.package_full_name) }.map_err(
-                |error| windows_error("cannot remove the temporary AppX environment", error),
-            )?;
-            self.armed = false;
-        }
-        Ok(())
+    fn disarm(&mut self) {
+        self.armed = false;
     }
 }
 
@@ -125,6 +119,15 @@ impl Drop for PackageEnvironment {
     }
 }
 
+fn disable_package_environment(package_full_name: &str) -> Result<(), PlatformError> {
+    let _apartment = ComApartment::initialize()?;
+    let settings: IPackageDebugSettings =
+        unsafe { CoCreateInstance(&PackageDebugSettings, None, CLSCTX_INPROC_SERVER) }
+            .map_err(|error| windows_error("cannot initialize AppX package environment", error))?;
+    unsafe { settings.DisableDebugging(&HSTRING::from(package_full_name)) }
+        .map_err(|error| windows_error("cannot remove the temporary AppX environment", error))
+}
+
 enum WindowsDesktopBacking {
     Child(Child),
     Activated(Owned<HANDLE>),
@@ -134,6 +137,7 @@ pub struct WindowsDesktopProcess {
     process_id: u32,
     process: WindowsDesktopBacking,
     status: Option<ExitStatus>,
+    packaged_environment: Option<String>,
 }
 
 impl WindowsDesktopProcess {
@@ -142,7 +146,15 @@ impl WindowsDesktopProcess {
             process_id: child.id(),
             process: WindowsDesktopBacking::Child(child),
             status: None,
+            packaged_environment: None,
         }
+    }
+
+    pub fn finish_packaged_activation(&mut self) -> Result<(), PlatformError> {
+        let Some(package_full_name) = self.packaged_environment.take() else {
+            return Ok(());
+        };
+        disable_package_environment(&package_full_name)
     }
 
     #[must_use]
@@ -195,6 +207,7 @@ impl WindowsDesktopProcess {
     }
 
     pub fn kill(&mut self) -> io::Result<()> {
+        let _ = self.finish_packaged_activation();
         if let WindowsDesktopBacking::Child(child) = &mut self.process {
             return child.kill();
         }
@@ -203,6 +216,12 @@ impl WindowsDesktopProcess {
         };
         unsafe { TerminateProcess(**process, 1) }
             .map_err(|error| io::Error::other(format!("cannot terminate Desktop: {error}")))
+    }
+}
+
+impl Drop for WindowsDesktopProcess {
+    fn drop(&mut self) {
+        let _ = self.finish_packaged_activation();
     }
 }
 
@@ -383,9 +402,14 @@ pub fn activate_packaged_desktop(
     }
     .map_err(|error| windows_error("cannot activate Codex Desktop AppX package", error))?;
     let desktop = ActivatedProcessGuard::new(supervise_desktop(activation_process_id)?);
-    wait_for_desktop_root(activation_process_id, Duration::from_secs(5))?;
-    package_environment.disable()?;
-    Ok(desktop.disarm())
+    wait_for_desktop_root(activation_process_id, Duration::from_secs(15))?;
+    let mut desktop = desktop.disarm();
+    // Keep the temporary AppX debugging environment active until the Launcher
+    // observes the Host chain (or drops this process) so early Electron/Store
+    // relaunches during cold boot do not lose CODEX_CLI_PATH.
+    package_environment.disarm();
+    desktop.packaged_environment = Some(package_full_name.to_owned());
+    Ok(desktop)
 }
 
 pub fn supervise_desktop(process_id: u32) -> Result<WindowsDesktopProcess, PlatformError> {
@@ -401,6 +425,7 @@ pub fn supervise_desktop(process_id: u32) -> Result<WindowsDesktopProcess, Platf
         process_id,
         process: WindowsDesktopBacking::Activated(unsafe { Owned::new(process) }),
         status: None,
+        packaged_environment: None,
     })
 }
 

@@ -36,9 +36,12 @@ export {
   type PreparedHostExtension,
 } from "./host-extension-files.js";
 export {
+  DEFAULT_HOST_EXTENSION_STATS_URL,
   fetchHostExtensionCatalog,
   installHostExtension,
   prepareHostExtension,
+  reportHostExtensionInstall,
+  resolveHostExtensionStatsUrl,
   type HostExtensionPrepareOptions,
 } from "./host-extension-sources.js";
 export {

@@ -1659,6 +1659,21 @@ describe("OpenCode HarnessAdapter", () => {
       ok: true,
       value: { turns: [{ input: [{ text: "one" }] }] },
     });
+    vi.spyOn(rollbackTransport, "getMessages").mockRejectedValueOnce(
+      new Error("native transcript unavailable"),
+    );
+    await expect(rollbackFixture.session.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "nativeFailure", message: "native transcript unavailable" },
+    });
+    rollbackTransport.messages.set("session-fork", [
+      userMessage("user-1", "updated native prompt"),
+      assistantMessage("assistant-1", "user-1"),
+    ]);
+    await expect(rollbackFixture.session.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{ input: [{ text: "updated native prompt" }] }] },
+    });
     expect(rollbackTransport.sessions.get("session-1")?.revert).toBeUndefined();
     expect(rollbackTransport.messages.get("session-1")).toEqual(sourceMessages);
     await rollbackFixture.session.close();

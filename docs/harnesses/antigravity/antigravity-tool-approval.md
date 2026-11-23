@@ -6,11 +6,11 @@ Antigravity integrates through `agy acp` (`agy >= 1.5.8`, validated with `1.5.9`
 
 The Adapter exposes five permission modes matching `agy acp`:
 
-- **`default` (Ask permissions)**: Native new-session default (`currentModeId: "default"`). Read/search operations run directly; mutating edits, command execution, and gated tools trigger native `session/request_permission` requests.
+- **`default` (Ask permissions)**: Native `agy acp` baseline (`currentModeId: "default"`). Read/search operations run directly; mutating edits, command execution, and gated tools trigger native `session/request_permission` requests.
 - **`accept-edits` (Accept edits)**: Auto-approves workspace file edits while still requesting permission for shell commands and external side effects.
 - **`auto` (Auto)**: Uses Antigravity's native automatic safety classifier via `session/set_mode`.
 - **`plan` (Plan)**: Restricts execution to planning and read-only exploration until switched out of Plan mode.
-- **`dangerously-skip-permissions` (Skip permissions)**: Starts `agy acp --dangerously-skip-permissions` so native permission prompts are bypassed. Required when `executionPolicy` is `"unattended-full-access"`.
+- **`dangerously-skip-permissions` (Skip permissions)**: Default permission mode for fresh Sessions when no saved preference or explicit mode is supplied; starts `agy acp --dangerously-skip-permissions` so native permission prompts are bypassed. Remains switchable when idle unless required by `executionPolicy: "unattended-full-access"`. Existing Sessions resumed without Skip in their locator keep their native mode.
 
 Switching among `default`, `accept-edits`, `auto`, and `plan` calls `session/set_mode` live on the active ACP connection and updates `nativeRef.locator.permissionModeId`. Because `dangerously-skip-permissions` is a CLI startup flag rather than an ACP mode ID, switching into or out of `dangerously-skip-permissions` requires an idle Session: the Adapter closes the current `agy acp` child process and reopens the same `nativeSessionId` via `session/resume` with or without `--dangerously-skip-permissions`. Explicit unknown or retired mode IDs are rejected rather than silently remapped.
 

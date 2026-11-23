@@ -104,6 +104,7 @@ import {
 } from "./native-replay.js";
 import { observeNativeTurnCount, readNativeTurnCount } from "./native-turn-boundaries.js";
 import {
+  ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID,
   ANTIGRAVITY_PERMISSION_MODE_CATALOG,
   decodeAntigravityPermissionModeId,
 } from "./permission-modes.js";
@@ -1712,20 +1713,24 @@ export class AntigravityAdapter implements HarnessAdapter {
         return err("invalidRequest", "Unknown Antigravity Permission Mode");
       }
     }
+    const savedSkip =
+      locator &&
+      typeof locator === "object" &&
+      !Array.isArray(locator) &&
+      locator.permissionModeId === SKIP;
     const session = new AntigravitySession({
       cwd: input.cwd,
       environment: { ...this.#environment, ...input.environment },
       model: input.model,
       thinkingOptionId: input.thinkingOptionId,
-      permissionModeId:
-        unattended ||
-        (!input.permissionModeId &&
-          locator &&
-          typeof locator === "object" &&
-          !Array.isArray(locator) &&
-          locator.permissionModeId === SKIP)
-          ? harnessPermissionModeIdSchema.parse(SKIP)
-          : input.permissionModeId,
+      permissionModeId: unattended
+        ? harnessPermissionModeIdSchema.parse(SKIP)
+        : (input.permissionModeId ??
+          (input.kind === "create"
+            ? ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID
+            : savedSkip
+              ? harnessPermissionModeIdSchema.parse(SKIP)
+              : undefined)),
       ...(input.kind === "resume" ? { nativeRef: input.nativeRef } : {}),
       unattended,
       adapter: this.options,

@@ -879,7 +879,7 @@ export function createDesktopExtensionsSettingsPage(
           const button = createEl(
             document,
             "button",
-            "settings-command-button settings-command-button--secondary settings-extensions-card__button",
+            "settings-command-button settings-extensions-card__button settings-extensions-card__update-button",
             updating ? copy.updating : copy.update,
           );
           button.type = "button";
@@ -910,10 +910,6 @@ export function createDesktopExtensionsSettingsPage(
           author:
             (item.state === "valid" ? item.manifest.author : undefined) ?? catalogEntry?.author,
           version: item.state === "valid" ? item.manifest.version : undefined,
-          repository:
-            (item.state === "valid" ? item.manifest.repository : undefined) ??
-            catalogEntry?.repository,
-          stars: catalogEntry?.stars,
           downloads: catalogEntry?.downloads,
           trustTier: catalogEntry?.trustTier,
           statusState,

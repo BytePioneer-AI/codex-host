@@ -45,7 +45,11 @@ const value = key => args[args.indexOf(key) + 1];
 const remote = args.includes('--codexhost-remote');
 const data = remote ? process.env.HOME : value('--data');
 const log = text => fs.appendFileSync(path.join(data, 'events'), text + '\n');
-if (!remote && !args.includes('--stop')) fs.writeFileSync(path.join(data, 'update-environment.json'), JSON.stringify(Object.fromEntries(['CODEXHOST_LAUNCHER_PID', 'CODEXHOST_LAUNCHER_EXECUTABLE', 'CODEXHOST_RUNTIME_DESCRIPTOR_PATH', 'CODEXHOST_UPDATE_SERVICE', 'CODEXHOST_NPM_NODE_PATH'].map(key => [key, process.env[key]]))));
+if (!remote && !args.includes('--stop')) {
+  const updateEnvironment = Object.fromEntries(['CODEXHOST_LAUNCHER_PID', 'CODEXHOST_LAUNCHER_EXECUTABLE', 'CODEXHOST_RUNTIME_DESCRIPTOR_PATH', 'CODEXHOST_UPDATE_SERVICE', 'CODEXHOST_NPM_NODE_PATH', 'CODEXHOST_INSTALL_ROOT'].map(key => [key, process.env[key]]));
+  if (args.includes('--stock-codex')) updateEnvironment.stockCodex = value('--stock-codex');
+  fs.writeFileSync(path.join(data, 'update-environment.json'), JSON.stringify(updateEnvironment));
+}
 if (remote) {
   log('remote-stop');
   if (fs.existsSync(path.join(data, 'remote-fail'))) process.exit(1);
@@ -1034,6 +1038,45 @@ fn linux_service_start_explains_missing_home() {
             "{service}: {stderr}"
         );
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn shared_host_supervisor_keeps_portable_desktop_discoverable() {
+    if windows_service::run_in_service_job() {
+        return;
+    }
+
+    let fixture = Fixture::new();
+    let desktop = fixture.root.join("Portable Codex");
+    let app = desktop.join("app");
+    let resources = app.join("resources");
+    let codex = resources.join("codex.exe");
+    fs::create_dir_all(&resources).unwrap();
+    for file in [
+        app.join("ChatGPT.exe"),
+        resources.join("app.asar"),
+        codex.clone(),
+    ] {
+        fs::write(file, []).unwrap();
+    }
+
+    let started = fixture
+        .command("host", "ensure")
+        .env("CODEXHOST_INSTALL_ROOT", &desktop)
+        .output()
+        .unwrap();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let environment = fixture.record("update-environment.json");
+    assert_eq!(
+        environment["stockCodex"],
+        serde_json::to_value(codex.canonicalize().unwrap()).unwrap()
+    );
+    assert!(environment["CODEXHOST_INSTALL_ROOT"].is_null());
 }
 
 #[cfg(unix)]

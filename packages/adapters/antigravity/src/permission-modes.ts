@@ -11,8 +11,9 @@ export type AntigravityAcpSessionMode = (typeof ANTIGRAVITY_ACP_SESSION_MODES)[n
 
 export type AntigravityPermissionMode = AntigravityAcpSessionMode | "dangerously-skip-permissions";
 
-export const ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID =
-  harnessPermissionModeIdSchema.parse("default");
+export const ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID = harnessPermissionModeIdSchema.parse(
+  "dangerously-skip-permissions",
+);
 
 export const ANTIGRAVITY_PERMISSION_MODE_CATALOG: HarnessPermissionModeCatalog =
   harnessPermissionModeCatalogSchema.parse({

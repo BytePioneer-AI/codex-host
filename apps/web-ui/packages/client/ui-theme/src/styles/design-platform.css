@@ -422,11 +422,11 @@ body[data-ds-dark-theme] {
 }
 
 /* Overlays without MenuSurface's opaque backing cannot blur page content over
- * native vibrancy reliably, so their fill stays nearly opaque on macOS. */
-html[data-platform="darwin"] body {
+ * native vibrancy reliably, so their fill stays nearly opaque on Electron macOS. */
+html[data-platform="darwin"]:not([data-tauri-shell]) body {
   --dsw-specific-menu: rgba(248, 249, 250, 0.94);
 }
 
-html[data-platform="darwin"] body[data-ds-dark-theme] {
+html[data-platform="darwin"]:not([data-tauri-shell]) body[data-ds-dark-theme] {
   --dsw-specific-menu: rgba(48, 49, 54, 0.94);
 }

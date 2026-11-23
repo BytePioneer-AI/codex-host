@@ -60,12 +60,16 @@ use codexhost_platform::{
     prompt_running_desktop, show_error_dialog, terminate_process_by_id,
 };
 use compatibility::{MAX_CONTROLLER_READINESS_LINE_BYTES, parse_controller_readiness_line};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use desktop_attachment::wait_for_host_chain;
+#[cfg(target_os = "windows")]
+use desktop_attachment::{
+    HostChainWaitOutcome, endpoint_ready, publish_runtime_descriptor, stop_stale_launcher,
+    wait_for_host_chain_outcome,
+};
 use desktop_attachment::{
     LauncherOwnership, RuntimeControl, acquire_launcher_ownership, allocate_runtime_control,
-    wait_for_host_chain,
 };
-#[cfg(target_os = "windows")]
-use desktop_attachment::{endpoint_ready, publish_runtime_descriptor, stop_stale_launcher};
 #[cfg(unix)]
 use desktop_lifecycle::Lifecycle;
 use installation_layout::InstalledResources;
@@ -140,6 +144,20 @@ impl Display for UnmanagedDesktopConflict {
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 impl Error for UnmanagedDesktopConflict {}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+struct TransientAppxStartupError(String);
+
+#[cfg(target_os = "windows")]
+impl Display for TransientAppxStartupError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Error for TransientAppxStartupError {}
 
 const USAGE: &str = "usage:
   codexhost
@@ -908,7 +926,7 @@ fn supervise_desktop(
     let host_ready = wait_for_host_chain(
         desktop.root_snapshot(),
         options,
-        Duration::from_secs(30),
+        Duration::from_secs(60),
         stopping,
     );
     if stopping()? {
@@ -996,7 +1014,7 @@ fn supervise_desktop(
     startup_trace("Codex Desktop launched");
     let desktop_pid = desktop.id();
     if let Err(error) =
-        wait_for_launched_desktop_ownership(installation, &mut desktop, Duration::from_secs(5))
+        wait_for_launched_desktop_ownership(installation, &mut desktop, Duration::from_secs(15))
     {
         if windows_direct {
             // Only direct spawn proves ownership of the handle on inspection failure.
@@ -1021,17 +1039,52 @@ fn supervise_desktop(
             return Err(error);
         }
     };
+    let retryable_appx = !windows_direct
+        && matches!(
+            installation.identity,
+            DesktopIdentity::WindowsPackage {
+                appx_activation: Some(_),
+                ..
+            }
+        );
     startup_trace("waiting for Host chain");
-    match wait_for_host_chain(&desktop_snapshot, options, Duration::from_secs(30), || {
-        Ok(false)
-    }) {
-        Ok(true) => {}
+    match wait_for_host_chain_outcome(
+        &desktop_snapshot,
+        options,
+        Some(&installation.executable_codex_cli),
+        Duration::from_secs(90),
+        || Ok(false),
+    ) {
+        Ok(HostChainWaitOutcome::Ready) => {
+            if let Err(error) = desktop.finish_packaged_activation() {
+                eprintln!(
+                    "codexhost launcher: could not remove temporary AppX environment after readiness: {error}"
+                );
+            }
+        }
         result => {
             let _ = stop_desktop_controller(&mut controller);
             let _ = desktop.kill();
             let _ = desktop.wait();
             return match result {
                 Err(error) => Err(error),
+                Ok(HostChainWaitOutcome::DesktopExited) => {
+                    let message =
+                        "Codex Desktop exited before starting the codexhost Host chain".to_owned();
+                    if retryable_appx {
+                        Err(Box::new(TransientAppxStartupError(message)))
+                    } else {
+                        Err(message.into())
+                    }
+                }
+                Ok(HostChainWaitOutcome::DirectStockCliWithoutShim) => {
+                    let message = "Codex Desktop started the official Codex CLI without the codexhost Shim (AppX environment was not applied)".to_owned();
+                    if retryable_appx {
+                        Err(Box::new(TransientAppxStartupError(message)))
+                    } else {
+                        Err(message.into())
+                    }
+                }
                 Ok(_) => Err(
                     "Codex Desktop did not start the codexhost Host chain before timeout".into(),
                 ),
@@ -1397,6 +1450,7 @@ fn launch_gui(
         }
     };
 
+    let mut appx_retries_remaining = 1_u8;
     loop {
         let descriptor_path = default_descriptor_path()?;
         let descriptor = if windows_direct {
@@ -1475,6 +1529,18 @@ fn launch_gui(
                     && (error.downcast_ref::<UnmanagedDesktopConflict>().is_some()
                         || error.to_string() == UNMANAGED_DESKTOP_MESSAGE) =>
             {
+                continue;
+            }
+            Err(error)
+                if !windows_direct
+                    && appx_retries_remaining > 0
+                    && error.downcast_ref::<TransientAppxStartupError>().is_some() =>
+            {
+                appx_retries_remaining -= 1;
+                startup_trace(&format!(
+                    "retrying Codex Desktop AppX launch after transient startup failure: {error}"
+                ));
+                thread::sleep(Duration::from_secs(1));
                 continue;
             }
             Ok(()) => {

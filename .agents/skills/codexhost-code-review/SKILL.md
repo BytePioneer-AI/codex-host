@@ -35,6 +35,7 @@ description: 审查 codexhost 的 Pull Request 或本地 diff 的正确性与边
 - **强制执行路径**：沿每条拒绝或校验路径追到真正执行的操作，检查有无绕过的替代入口。
 - **持久化与兼容**：触及 `mapping-store`、插件清单、配置格式时，旧数据如何读取。
 - **测试强度**：断言是否会在目标回归出现时失败，是否验证外部状态、事件或释放，而不是复述实现；是否走了真实入口（真实 Loader、插件加载、worker、子进程），而不是手工拼装。
+- **UI 演示图**：涉及可见 UI 改动（Web / Desktop / Android / Renderer / Console）的 PR，确认 PR 描述中已附带脱敏演示图（截图或录屏）；无视觉变化的纯逻辑改动应注明 `No visual changes: <原因>`。
 - **平台**：文件系统、路径、进程、环境变量相关改动，是否考虑 macOS / Windows / Linux（CI 的二级平台只跑平台敏感测试）。
 
 ## 报告

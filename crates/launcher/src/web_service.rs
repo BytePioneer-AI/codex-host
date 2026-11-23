@@ -36,6 +36,11 @@ pub(super) struct ReadyOwner {
     started_at_micros: u64,
     executable: PathBuf,
     web_pid: u32,
+    // Lets a recovered startup verify that a surviving Node child is really
+    // this record's Web and not a recycled PID. Records published before this
+    // field existed carry 0 and their orphans cannot be verified.
+    #[serde(default)]
+    web_started_at_micros: u64,
     pub version: String,
     pub runtime: PathBuf,
     #[serde(flatten)]
@@ -43,9 +48,22 @@ pub(super) struct ReadyOwner {
 }
 
 impl ReadyOwner {
-    pub fn web_running(&self) -> bool {
-        codexhost_platform::process_identity(self.web_pid)
-            .is_ok_and(|process| process.parent_id == self.pid)
+    /// `Ok(true)` only when a live process with the recorded start time still
+    /// has this record's supervisor as its parent. `Ok(false)` means the
+    /// process is confirmed absent or replaced. An error means presence could
+    /// not be inspected and must not be treated as an exit.
+    pub fn web_running(&self) -> Result<bool, Box<dyn Error>> {
+        match codexhost_platform::observe_process_identity(self.web_pid) {
+            Ok(Some(identity)) => Ok(identity.parent_id == self.pid
+                && (self.web_started_at_micros == 0
+                    || identity.started_at_micros == self.web_started_at_micros)),
+            Ok(None) => Ok(false),
+            Err(error) => Err(format!(
+                "Web child presence is unconfirmed for PID {}: {error}",
+                self.web_pid
+            )
+            .into()),
+        }
     }
 }
 
@@ -68,8 +86,26 @@ pub(super) fn owner(data: &Path) -> Result<Option<ReadyOwner>, Box<dyn Error>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let record: ReadyOwner = serde_json::from_slice(&bytes)?;
-    Ok(codexhost_platform::process_instance(record.pid, record.started_at_micros).map(|_| record))
+    // A corrupt record cannot be acted on. Treat it as absent so both ensure
+    // and stop reach the cleanup that discards it under the ready lock,
+    // instead of failing on every retry.
+    let Ok(record) = serde_json::from_slice::<ReadyOwner>(&bytes) else {
+        return Ok(None);
+    };
+    // A supervisor that cannot be inspected is not known to have exited:
+    // report the failure instead of treating it as absent, so ensure and stop
+    // never race a live Web on the strength of a failed query.
+    match codexhost_platform::observe_process_identity(record.pid) {
+        Ok(Some(identity)) if identity.started_at_micros == record.started_at_micros => {
+            Ok(Some(record))
+        }
+        Ok(_) => Ok(None),
+        Err(error) => Err(format!(
+            "Web supervisor presence is unconfirmed for PID {}: {error}",
+            record.pid
+        )
+        .into()),
+    }
 }
 
 pub(super) struct Options {
@@ -95,12 +131,17 @@ impl Options {
     }
 }
 
-pub(super) fn ensure(options: &Options) -> Result<(), Box<dyn Error>> {
+pub(super) fn ensure(
+    options: &Options,
+    expected_runtime: Option<&Path>,
+) -> Result<(), Box<dyn Error>> {
     crate::service_update::ensure_start_allowed(&options.data)?;
     crate::host_service::run(&options.host_arguments("ensure"))?;
     let started = Instant::now();
     while let Some(record) = owner(&options.data)? {
-        if record.web_running() {
+        // A failed child query is not an exit: keep waiting within the
+        // timeout instead of racing the live Web with a second supervisor.
+        if record.web_running()? {
             return Ok(());
         }
         if started.elapsed() > Duration::from_secs(40) {
@@ -108,6 +149,7 @@ pub(super) fn ensure(options: &Options) -> Result<(), Box<dyn Error>> {
         }
         thread::sleep(Duration::from_millis(25));
     }
+    stop_orphaned_web_service(&options.data, expected_runtime)?;
     let launches = options.data.join("service-launches");
     fs::create_dir_all(&launches)?;
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
@@ -231,6 +273,9 @@ fn serve(options: &Options) -> Result<(), Box<dyn Error>> {
                             started_at_micros: supervisor.started_at_micros,
                             executable: supervisor.executable.clone(),
                             web_pid: child.id(),
+                            web_started_at_micros: codexhost_platform::process_identity(child.id())
+                                .map(|process| process.started_at_micros)
+                                .unwrap_or(0),
                             version: env!("CARGO_PKG_VERSION").into(),
                             runtime: options.runtime.clone(),
                             access,
@@ -326,18 +371,161 @@ fn remove_ready_record_if_owned(
     Ok(())
 }
 
-pub(super) fn stop(options: &Options) -> Result<bool, Box<dyn Error>> {
-    let Some(record) = owner(&options.data)? else {
+// A supervisor can exit (crash, forced restart of CodeHost) while its Node
+// Web child keeps running and holds the fixed port. The ready record then
+// names a dead supervisor, so `owner` reports no service and the next
+// startup would launch a new Web that cannot bind the port. When the record
+// identifies a still-live Web child of this installation, stop it first;
+// otherwise the stale record is dropped and the port conflict is reported
+// against whatever actually listens. The ready lock spans read, judgment,
+// and deletion: a supervisor that publishes a new record while this cleanup
+// waits must not lose it, and the record is kept until the orphan's exit is
+// confirmed so stop and ensure retries can still act on it. Callers that
+// act on behalf of an update pass `expected_runtime`; records belonging to
+// another installation sharing this data directory are left to their own
+// installation.
+fn stop_orphaned_web_service(
+    data: &Path,
+    expected_runtime: Option<&Path>,
+) -> Result<bool, Box<dyn Error>> {
+    let _guard = lifecycle_lock(data, READY_LOCK)?;
+    let file = data.join(READY);
+    let bytes = match fs::read(&file) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let record: ReadyOwner = match serde_json::from_slice(&bytes) {
+        Ok(record) => record,
+        Err(_) => {
+            // A corrupt record cannot be acted on; drop it so the next
+            // startup can publish a fresh one.
+            remove_file(&file)?;
+            return Ok(false);
+        }
+    };
+    // A supervisor that could not be inspected is not known to have exited;
+    // report the failure so the record stays available for retries.
+    match codexhost_platform::observe_process_identity(record.pid) {
+        Ok(Some(identity)) if identity.started_at_micros == record.started_at_micros => {
+            return Ok(false);
+        }
+        // Absent or replaced: the record names a supervisor that is gone.
+        Ok(_) => {}
+        Err(error) => return Err(format!(
+            "Web supervisor presence is unconfirmed for PID {}; the stale record is kept: {error}",
+            record.pid
+        )
+        .into()),
+    }
+    // Callers that act on behalf of an update must only release a Web whose
+    // recorded runtime is verifiably this installation's. When either side
+    // cannot be canonicalized (for example both runtime directories were
+    // deleted), ownership cannot be proven and the record is kept with an
+    // explicit error instead of silently matching another installation.
+    if let Some(expected) = expected_runtime {
+        let recorded = record.runtime.canonicalize().map_err(|error| {
+            format!(
+                "cannot canonicalize the recorded Web runtime {}: {error}",
+                record.runtime.display()
+            )
+        })?;
+        let expected = expected.canonicalize().map_err(|error| {
+            format!(
+                "cannot canonicalize the expected Web runtime {}: {error}",
+                expected.display()
+            )
+        })?;
+        if recorded != expected {
+            // Another installation sharing this data directory owns this
+            // orphan; leave the record for that installation.
+            return Ok(false);
+        }
+    }
+    if record.web_started_at_micros == 0 {
+        remove_file(&file)?;
         return Ok(false);
+    }
+    let identity = match codexhost_platform::observe_process_identity(record.web_pid) {
+        Ok(Some(identity)) => identity,
+        Ok(None) => {
+            // The child is confirmed gone; the record is no longer retryable.
+            remove_file(&file)?;
+            return Ok(false);
+        }
+        Err(error) => return Err(format!(
+            "Web child presence is unconfirmed for PID {}; the record is kept for retry: {error}",
+            record.web_pid
+        )
+        .into()),
+    };
+    if identity.started_at_micros != record.web_started_at_micros {
+        remove_file(&file)?;
+        return Ok(false);
+    }
+    // Terminate only the verified Node instance. Unix signal delivery here is
+    // scoped to this single identity (SIGTERM, then SIGKILL); it does not
+    // claim an atomic cross-platform reclaim of the whole process tree.
+    codexhost_platform::terminate_process_identity(&identity, false)?;
+    let started = Instant::now();
+    let mut forced = false;
+    loop {
+        match codexhost_platform::observe_process_identity(record.web_pid) {
+            Ok(None) => break,
+            Ok(Some(current)) if current.started_at_micros != record.web_started_at_micros => {
+                break;
+            }
+            // A failed query is not an exit; keep waiting within the bound.
+            Ok(Some(_)) => {}
+            Err(_) => {}
+        }
+        if !forced && started.elapsed() > Duration::from_secs(5) {
+            codexhost_platform::terminate_process_identity(&identity, true)?;
+            forced = true;
+        }
+        if started.elapsed() > Duration::from_secs(10) {
+            // Keep the record: a retry of stop or ensure must still be able
+            // to terminate the Web that holds the port.
+            return Err("The orphaned Web process did not exit".into());
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    remove_file(&file)?;
+    Ok(true)
+}
+
+// Slow runners (macOS) can take far longer than a local machine to notice
+// the stop file and exit; a generous upper bound only widens the window —
+// shutdown completion is still observed, never assumed.
+pub(super) const STOP_WAIT: Duration = Duration::from_secs(60);
+
+pub(super) fn stop(
+    options: &Options,
+    expected_runtime: Option<&Path>,
+) -> Result<bool, Box<dyn Error>> {
+    let Some(record) = owner(&options.data)? else {
+        return stop_orphaned_web_service(&options.data, expected_runtime);
     };
     publish_status(&options.data.join(STOP), "stop\n")?;
     let started = Instant::now();
-    while codexhost_platform::process_instance(record.pid, record.started_at_micros).is_some() {
-        if started.elapsed() > Duration::from_secs(10) {
+    loop {
+        match codexhost_platform::observe_process_identity(record.pid) {
+            Ok(Some(identity)) if identity.started_at_micros == record.started_at_micros => {}
+            // Absent or replaced: the supervisor is confirmed gone.
+            Ok(_) => break,
+            // A failed query is not an exit; keep retrying within the bound
+            // instead of reporting a shutdown that could not be confirmed.
+            Err(_) => {}
+        }
+        if started.elapsed() > STOP_WAIT {
             return Err("Web shutdown timed out".into());
         }
         thread::sleep(Duration::from_millis(25));
     }
+    // The supervisor may have died abnormally instead of exiting cleanly
+    // after the stop request; re-check under the ready lock for a Web child
+    // it left behind holding the port.
+    stop_orphaned_web_service(&options.data, expected_runtime)?;
     Ok(true)
 }
 
@@ -381,9 +569,9 @@ pub fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         _ => None,
     };
     match action {
-        "ensure" => ensure(&options),
+        "ensure" => ensure(&options, None),
         "serve" => serve(&options),
-        "stop" => stop(&options).map(|_| ()),
+        "stop" => stop(&options, None).map(|_| ()),
         _ => Err("usage: codexhost web-service <ensure|stop> --node <file> --host-node <file> --web-runtime <file> --host-runtime <file> --data <directory>".into()),
     }
 }

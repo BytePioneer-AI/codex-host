@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { HostTurnSnapshot } from "@codexhost/harness-adapter";
 import {
   HostClientChannel,
   discoverHostClientChannel,
@@ -11,6 +12,8 @@ import {
 } from "@codexhost/desktop-control";
 import {
   THREAD_STEER_STRICT_TARGET_PARAM,
+  clientThreadSnapshotSchema,
+  hostTurnIdSchema,
   jsonObjectSchema,
   type ClientChannelEvent,
 } from "@codexhost/shared-contracts";
@@ -19,6 +22,8 @@ import { routeDelegationRequest } from "../src/delegation-control-server.js";
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
 import { ClientCommandReceipts } from "../src/client-command-receipts.js";
 import { startClientChannelServer } from "../src/client-channel-server.js";
+import { compactClientSnapshot } from "../src/client-snapshot-compaction.js";
+import type { ExternalHistoryPage } from "../src/external-thread-history.js";
 import {
   createOwnedConnectionBackend,
   OfficialRuntimeScope,
@@ -500,26 +505,70 @@ describe("public authenticated owner channel", () => {
     );
     current(fixture).succeedTurn();
   });
-  it("serves unchanged completed Turns as placeholders and full tool output on demand over HTTP", async () => {
+  it("serves byte-identical completed Turns, placeholders, and full tool output over HTTP", async () => {
     const { fixture, a } = await setup();
     const id = await startPiThread(fixture);
-    const turnId = await startPiTurn(fixture, id);
-    const command = current(fixture).startCommandExecution("cat big");
-    const output = "line of output\n".repeat(8_000);
-    current(fixture).appendCommandOutput(command, output);
-    current(fixture).completeItem(command, { status: "succeeded" });
-    current(fixture).succeedTurn();
-    await fixture.collector.waitFor((value) => value.method === "turn/completed");
+    const clientId = "snapshot-receipt";
+    const { turn } = await a.request<{ turn: { id: string } }>("turn/start", {
+      threadId: id,
+      clientUserMessageId: clientId,
+      input: [{ type: "text", text: "show tool output" }],
+    });
+    const turnId = hostTurnIdSchema.parse(turn.id);
+    const session = current(fixture);
+    const command = session.startCommandExecution("cat big");
+    const output = 'line of "output"\n'.repeat(66_000);
+    session.appendCommandOutput(command, output);
+    session.completeItem(command, { status: "succeeded" });
+    const detached = session.startCommandExecution("stream later");
+    session.detachItem(detached);
+    session.succeedTurn();
+    await fixture.collector.waitFor(
+      (value) =>
+        value.method === "turn/completed" &&
+        (value.params as { turn?: { id?: string } })?.turn?.id === turnId,
+    );
 
+    // Seed the Fake Harness's native history without 200 live submissions and disk writes.
+    const readSnapshot = session.readSnapshot.bind(session);
+    session.readSnapshot = async () => {
+      const result = await readSnapshot();
+      if (!result.ok) return result;
+      const latest = result.value.turns.at(-1);
+      assert(latest);
+      const older = Array.from({ length: 200 }, (_, i): HostTurnSnapshot => ({
+        nativeTurnRef: { ...latest.nativeTurnRef, nativeTurnKey: `older-${i}` },
+        input: [{ type: "text", text: `earlier prompt ${i}` }],
+        items: [],
+        outcome: { status: "succeeded" },
+      }));
+      return { ok: true, value: { ...result.value, turns: [...older, ...result.value.turns] } };
+    };
+    const pageParams = { threadId: id, limit: 5, itemsView: "full", sortDirection: "desc" };
+    const page = await a.request<ExternalHistoryPage>("thread/turns/list", pageParams);
     const plain = await a.snapshot(id);
+    expect(plain.turnsPage.data).toHaveLength(5);
+    expect(plain.turnsPage.nextCursor).not.toBeNull();
     expect(plain.turnsPage.data[0]?.fingerprint).toBeUndefined();
+    // The Desktop page exposes the same history before applying client receipts.
+    const legacy = clientThreadSnapshotSchema.parse(
+      JSON.parse(JSON.stringify({ ...plain, turnsPage: page })),
+    );
+    const legacyUser = legacy.turnsPage.data[0]?.items.find((item) => item.type === "userMessage");
+    assert(legacyUser);
+    expect(legacyUser.clientId).toBeNull();
+    legacyUser.clientId = clientId;
+    assert.equal(JSON.stringify(plain), JSON.stringify(legacy));
     expect(
       plain.turnsPage.data
         .find((turn) => turn.id === turnId)
         ?.items.find((item) => item.type === "commandExecution")?.aggregatedOutput,
     ).toBe(output);
 
-    const first = await a.snapshot(id, { knownTurns: [], truncateToolOutput: true });
+    const options = { knownTurns: [], truncateToolOutput: true };
+    const first = await a.snapshot(id, options);
+    const legacyServed = clientThreadSnapshotSchema.parse(compactClientSnapshot(legacy, options));
+    assert.equal(JSON.stringify(first), JSON.stringify(legacyServed));
     const served = first.turnsPage.data.find((turn) => turn.id === turnId);
     expect(served?.fingerprint).toEqual(expect.any(String));
     const shortened = served?.items.find((item) => item.type === "commandExecution");
@@ -544,11 +593,40 @@ describe("public authenticated owner channel", () => {
       untruncated.turnsPage.data.find((turn) => turn.id === turnId)?.unchanged,
     ).toBeUndefined();
 
+    // An anchored page does not refresh the cache, so it would expose a write-back.
+    const after = await a.request<ExternalHistoryPage>("thread/turns/list", {
+      ...pageParams,
+      cursor: page.backwardsCursor,
+    });
+    expect(after.data).toEqual(page.data);
     const full = await a.request<{
       data: Array<{ item: { id: string; aggregatedOutput?: string } }>;
     }>("thread/items/list", { threadId: id, turnId });
     expect(full.data.find((entry) => entry.item.id === shortened?.id)?.item.aggregatedOutput).toBe(
       output,
+    );
+
+    session.emitEvent({
+      type: "item.updated",
+      turnId,
+      itemId: detached,
+      update: { type: "output.append", text: "late output" },
+    });
+    await fixture.collector.waitFor(
+      (value) =>
+        value.method === "item/commandExecution/outputDelta" &&
+        (value.params as { itemId?: string })?.itemId === detached,
+    );
+    const changed = await a.snapshot(id, {
+      knownTurns: [{ id: turnId, fingerprint: served?.fingerprint ?? "" }],
+      truncateToolOutput: true,
+    });
+    const changedTurn = changed.turnsPage.data[0];
+    expect(changedTurn).toMatchObject({ id: turnId, status: "completed" });
+    expect(changedTurn?.fingerprint).not.toBe(served?.fingerprint);
+    expect(changedTurn?.unchanged).toBeUndefined();
+    expect(changedTurn?.items).toContainEqual(
+      expect.objectContaining({ id: detached, aggregatedOutput: "late output" }),
     );
   });
   it("publishes GUI model changes and native cancellation to every client", async () => {

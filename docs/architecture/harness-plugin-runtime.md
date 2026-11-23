@@ -287,7 +287,7 @@ Composer 配置按动态插件 ID 存储，不再为每个 Harness 增加字段�
 - Model Ref 的 `id` 接受任何非空、无控制字符、最长 512 个 UTF-16 单元的字符串。原生用一个值标识 Model 的 Harness，`id` 直接等于原生 Model ID，不裁剪、不编码。Pi、OMP、OpenCode、DeepSeek、ZCode 由 Provider 和 Model 两部分确定身份，`id` 是 `<provider>/<model>`；两部分都可能含 `/`，所以 Adapter 用 `harness-adapter` 的 `compositeModelRefIds` 按原生模型列表整串查找，不切分字符串。两个身份拼出同一字符串时，只有这几个条目改用 Adapter 的编码 ID。
 - 同一 Model 的速度档位放在可选的 `serviceTier` 字段，`fastModel` 与普通条目共用 `id`。目录匹配、收藏、偏好和委派去重比较完整的 Ref（`sameHarnessModelRef`、`catalogModelForRef`），不只比较 `id`。
 - 旧版本保存的编码 Ref 不在当前目录时，Host 调用该 Adapter 的 `normalizeStoredModelRef(ref, catalog)`（Codex 用内置转换）。
-  - 偏好文件（收藏、新会话默认值、委派默认值）按 Harness 只迁移一次：拿到目录后把转换结果写回 `harness-preferences-v1.json`，并在文件的 `model-ref-migration-v1` 条目记下该 Harness；之后读取偏好不再读取目录。目录暂时读不到的 Harness 保留原值、不记录，下次读取时重试。
+  - 对支持旧 Model Ref 转换的 Harness，偏好文件（收藏、新会话默认值、委派默认值）只迁移一次。拿到目录后把转换结果写回 `harness-preferences-v1.json`，并在 `model-ref-migration-v1` 条目记下该 Harness，后续读取直接使用已保存的偏好。目录暂时读不到时保留原值，下次读取时重试。
   - Thread 记录中的 Ref 在读取时转换，不改写文件。
   - 转换后仍不能唯一对应目录中 Model 的值保留在文件里，使用方按 Harness 默认 Model 处理。前缀加 base64url 的旧编码共用 `harness-adapter` 的 `normalizeLegacyBase64ModelRef`。
 

@@ -25,12 +25,11 @@ import {
   categoryLabelForLocale,
   deriveHostCapabilityBadges,
   derivePlatformBadge,
-  formatExtensionCount,
+  formatPositiveExtensionCount,
   hasHostCatalogUpdate,
   hostDescription,
   hostDisplayName,
   isHostToggleBlocked,
-  isValidExtensionCount,
   itemCapabilities,
   itemTargets,
   parseSafeHttpUrl,
@@ -133,12 +132,8 @@ export function WebExtensionDetailModal({
   const repositoryUrl = parseSafeHttpUrl(
     validItem?.manifest.repository ?? catalogEntry?.repository,
   );
-  const formattedStars = isValidExtensionCount(catalogEntry?.stars)
-    ? formatExtensionCount(catalogEntry.stars)
-    : null;
-  const formattedDownloads = isValidExtensionCount(catalogEntry?.downloads)
-    ? formatExtensionCount(catalogEntry.downloads)
-    : null;
+  const formattedStars = formatPositiveExtensionCount(catalogEntry?.stars);
+  const formattedDownloads = formatPositiveExtensionCount(catalogEntry?.downloads);
 
   const screenshots = resolveScreenshotUrls(item, catalogEntry);
   const clampedScreenshotIndex =

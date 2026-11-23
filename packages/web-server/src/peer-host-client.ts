@@ -190,14 +190,30 @@ export class PeerHostClient {
     const post = async (route: string, input: object) =>
       (await (await this.fetch("/api/ch/v1/" + route, "POST", input)).json()).result;
     const rpc = (method: string, params: object) => post("rpc", { method, params });
+    const loadedThreadIds = async (): Promise<string[]> => {
+      const raw = await rpc(c.LOADED_SESSIONS_METHOD, {}).catch(() => []);
+      if (Array.isArray(raw))
+        return raw
+          .map((item) =>
+            item && typeof item === "object"
+              ? (item as { threadId?: unknown }).threadId
+              : undefined,
+          )
+          .filter((id): id is string => typeof id === "string" && id.length > 0);
+      if (raw && typeof raw === "object" && Array.isArray((raw as { data?: unknown }).data))
+        return (raw as { data: unknown[] }).data.filter(
+          (id): id is string => typeof id === "string" && id.length > 0,
+        );
+      return [];
+    };
     const threadId = "threadId" in op ? op.threadId : "";
     const base = { threadId };
     switch (op.kind) {
       case "list": {
-        const loaded = op.includeLoaded ? await rpc("thread/loaded/list", {}) : null;
+        const loaded = op.includeLoaded ? await loadedThreadIds() : null;
         return {
           ...(await rpc("thread/list", { cursor: op.cursor, archived: op.archived, limit: 100 })),
-          ...(loaded ? { loaded: loaded.data, epoch } : {}),
+          ...(loaded ? { loaded, epoch } : {}),
         };
       }
       case "read":
@@ -318,8 +334,8 @@ export class PeerHostClient {
               });
       case "prompt":
         {
-          const loaded = await rpc("thread/loaded/list", {});
-          if (!loaded?.data?.includes(threadId))
+          const loaded = await loadedThreadIds();
+          if (!loaded.includes(threadId))
             await rpc("thread/resume", { threadId, excludeTurns: true });
         }
         return rpc("turn/start", {

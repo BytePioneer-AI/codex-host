@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { homedir } from "node:os";
+import path from "node:path";
 import { Readable, type Writable } from "node:stream";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { once } from "node:events";
@@ -23,6 +25,7 @@ import {
 import { jsonBody } from "./delegation-control-server.js";
 import { OfficialProcessLifecycle } from "./official-process-lifecycle.js";
 import {
+  DESKTOP_APP_TOOLS_PIPE_ENV,
   DESKTOP_BROWSER_ACCESS_ENV,
   DESKTOP_BROWSER_MCP_ARGUMENTS_ENV,
 } from "./desktop-context-environment.js";
@@ -214,7 +217,92 @@ export interface DesktopMcpBridge {
   close(): Promise<void>;
 }
 
-/** Hosts only Desktop-selected first-party browser MCP processes inside its tree. */
+function isTrustedBrowserServer(
+  definition: ReturnType<typeof desktopStdioConfig.parse>,
+  nodeReplExecutable: string | undefined,
+): boolean {
+  if (!nodeReplExecutable) return false;
+  try {
+    const wrapper =
+      definition.command === "/bin/sh" &&
+      definition.args.length === 4 &&
+      definition.args[0] === "-c" &&
+      definition.args[1] ===
+        'export BROWSER_USE_ACCESS_EXECUTOR_ID="${BROWSER_USE_ACCESS_EXECUTOR_ID-}"; exec "$@"' &&
+      definition.args[2] === "cua-repl";
+    const target = wrapper ? definition.args[3] : definition.command;
+    if (target === undefined || realpathSync(target) !== nodeReplExecutable) return false;
+  } catch {
+    return false;
+  }
+  let services: unknown;
+  try {
+    services = JSON.parse(String(definition.env.NODE_REPL_TRUSTED_SERVICES ?? "{}"));
+  } catch {
+    return false;
+  }
+  return typeof services === "object" && services !== null && "browser" in services;
+}
+
+interface TrustedAppToolsInvocation {
+  command: string;
+  args: string[];
+  cwd: string;
+}
+
+function resolveTrustedAppToolsServer(
+  definition: ReturnType<typeof desktopStdioConfig.parse>,
+  environment: NodeJS.ProcessEnv,
+): TrustedAppToolsInvocation | undefined {
+  if (!environment[DESKTOP_APP_TOOLS_PIPE_ENV]) return undefined;
+  if (!definition.env_vars.includes(DESKTOP_APP_TOOLS_PIPE_ENV)) return undefined;
+  if (definition.args.length < 1 || !definition.args[0]) return undefined;
+  const codexHome = environment.CODEX_HOME ?? path.join(environment.HOME ?? homedir(), ".codex");
+  try {
+    const cacheRoot = realpathSync(
+      path.join(codexHome, "plugins", "cache", "openai-bundled", "codex-app-tools"),
+    );
+    if (definition.cwd === undefined && !path.isAbsolute(definition.command)) {
+      return undefined;
+    }
+    const commandTarget =
+      definition.cwd === undefined
+        ? definition.command
+        : path.resolve(definition.cwd, definition.command);
+    const commandPath = realpathSync(commandTarget);
+    const relative = path.relative(cacheRoot, commandPath);
+    const [version, scriptsDir, scriptName] = relative.split(path.sep);
+    if (
+      path.isAbsolute(relative) ||
+      relative.split(path.sep).length !== 3 ||
+      !version ||
+      !/^[a-zA-Z0-9._-]+$/u.test(version) ||
+      version === "." ||
+      version === ".." ||
+      scriptsDir !== "scripts" ||
+      scriptName !== "launch_codex_app_tools_mcp"
+    ) {
+      return undefined;
+    }
+    const pluginVersionDir = path.join(cacheRoot, version);
+    if (definition.cwd !== undefined && realpathSync(definition.cwd) !== pluginVersionDir) {
+      return undefined;
+    }
+    const entrypoint = realpathSync(path.resolve(pluginVersionDir, definition.args[0]));
+    if (entrypoint !== realpathSync(path.join(pluginVersionDir, "server.mjs"))) {
+      return undefined;
+    }
+    return {
+      command: commandPath,
+      args: [entrypoint, ...definition.args.slice(1)],
+      cwd: pluginVersionDir,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Hosts only Desktop-selected first-party browser and app-tools MCP processes inside its tree. */
 export async function createDesktopMcpBridge(options: {
   nodeReplPath: string;
   runtimePath: string;
@@ -222,10 +310,13 @@ export async function createDesktopMcpBridge(options: {
   native?: { executable: string; arguments: readonly string[] };
   detachedSessionTimeoutMs?: number;
 }): Promise<DesktopMcpBridge | undefined> {
-  let executable: string;
+  let nodeReplExecutable: string | undefined;
   try {
-    executable = realpathSync(options.nodeReplPath);
+    nodeReplExecutable = realpathSync(options.nodeReplPath);
   } catch {
+    nodeReplExecutable = undefined;
+  }
+  if (!nodeReplExecutable && !options.environment[DESKTOP_APP_TOOLS_PIPE_ENV]) {
     return undefined;
   }
   const profiles = new Map<string, Profile>();
@@ -238,40 +329,34 @@ export async function createDesktopMcpBridge(options: {
     const parsed = desktopStdioConfig.safeParse(config);
     if (!parsed.success) return;
     const definition = parsed.data;
-    try {
-      const wrapper =
-        definition.command === "/bin/sh" &&
-        definition.args.length === 4 &&
-        definition.args[0] === "-c" &&
-        definition.args[1] ===
-          'export BROWSER_USE_ACCESS_EXECUTOR_ID="${BROWSER_USE_ACCESS_EXECUTOR_ID-}"; exec "$@"' &&
-        definition.args[2] === "cua-repl";
-      const target = wrapper ? definition.args[3] : definition.command;
-      if (target === undefined || realpathSync(target) !== executable) return;
-    } catch {
-      return;
-    }
-    const { args, env: overrides, env_vars: inherited } = definition;
-    let services: unknown;
-    try {
-      services = JSON.parse(String(overrides.NODE_REPL_TRUSTED_SERVICES ?? "{}"));
-    } catch {
-      return;
-    }
-    if (typeof services !== "object" || services === null || !("browser" in services)) return;
+    const isBrowser = isTrustedBrowserServer(definition, nodeReplExecutable);
+    const appTools = isBrowser
+      ? undefined
+      : resolveTrustedAppToolsServer(definition, options.environment);
+    if (!isBrowser && !appTools) return;
+    const { env: overrides, env_vars: inherited } = definition;
+    const command = appTools ? appTools.command : definition.command;
+    const args = appTools ? appTools.args : definition.args;
     const env = { ...getDefaultEnvironment() };
     for (const key of Object.keys(env)) {
       const value = options.environment[key];
       if (value !== undefined) env[key] = value;
     }
-    for (const name of [...DESKTOP_BROWSER_ACCESS_ENV, ...inherited]) {
+    const bridgeContextEnv = isBrowser ? DESKTOP_BROWSER_ACCESS_ENV : [DESKTOP_APP_TOOLS_PIPE_ENV];
+    for (const name of [...bridgeContextEnv, ...inherited]) {
       const value = options.environment[name];
       if (value !== undefined) env[name] = value;
     }
     const childEnv = { ...env, ...overrides };
-    const cwd = definition.cwd ?? threadCwd;
+    if (appTools) {
+      childEnv.CODEX_MCP_NODE_PATH =
+        options.environment.CODEX_MCP_NODE_PATH?.trim() || process.execPath;
+      const pipePath = options.environment[DESKTOP_APP_TOOLS_PIPE_ENV];
+      if (pipePath !== undefined) childEnv[DESKTOP_APP_TOOLS_PIPE_ENV] = pipePath;
+    }
+    const cwd = appTools ? appTools.cwd : (definition.cwd ?? threadCwd);
     const signature = createHash("sha256")
-      .update(JSON.stringify([config.command, args, childEnv, cwd]))
+      .update(JSON.stringify([command, args, childEnv, cwd]))
       .digest("hex");
     let profile = configurations.get(signature);
     if (!profile) {
@@ -279,7 +364,7 @@ export async function createDesktopMcpBridge(options: {
         id: randomUUID(),
         token: randomBytes(32).toString("base64url"),
         runtimePath: options.runtimePath,
-        command: definition.command,
+        command,
         args,
         env: childEnv,
         ...(cwd === undefined ? {} : { cwd }),

@@ -414,7 +414,12 @@ streams.register("$events", events.handler);
 workspaces.register(
   rpc,
   streams,
-  nativeProjectCommands(chHost, workspaces, () => sessions.refreshProjects()),
+  nativeProjectCommands(
+    chHost,
+    workspaces,
+    () => sessions.refreshProjects(),
+    (sessionId, projectId) => sessions.assignNativeProject(sessionId, projectId),
+  ),
 );
 sessions.register(rpc, streams);
 sessions.registerCommands(rpc);

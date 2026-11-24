@@ -29,10 +29,22 @@ export interface ProjectCommands {
     workspaceId: string,
     beforeWorkspaceId?: string,
   ): Promise<{ workspaceIds: string[] } | undefined>;
+  insertSessionBefore(
+    workspaceId: string,
+    sessionId: string,
+    beforeSessionId?: string,
+  ): Promise<{ workspace: WorkspaceView } | undefined>;
 }
 
 export function nativeProjectWorkspaceId(projectId: string): string {
   return `codex-project:${projectId}`;
+}
+
+function insertSessionId(ids: readonly string[], sessionId: string, beforeId?: string): string[] {
+  const rest = ids.filter((id) => id !== sessionId);
+  const index = beforeId === undefined ? rest.length : rest.indexOf(beforeId);
+  rest.splice(index < 0 ? rest.length : index, 0, sessionId);
+  return rest;
 }
 
 interface WorkspaceState {
@@ -326,16 +338,23 @@ export class Workspaces {
     const now = new Date().toISOString();
     this.nativeRoots = new Map(projects.map((project) => [project.id, project.rootPaths]));
     this.legacyAssignments = legacyAssignments;
-    this.nativeWorkspaces = projects.map((project) => ({
-      workspaceId: nativeProjectWorkspaceId(project.id),
-      projectId: project.id,
-      path: project.rootPaths[0] ?? "",
-      title: project.name,
-      sessionIds: members.get(project.id) ?? [],
-      createdAt: previous.get(project.id)?.createdAt ?? now,
-      updatedAt: previous.get(project.id)?.updatedAt ?? now,
-      origin: "codexhost",
-    }));
+    this.nativeWorkspaces = projects.map((project) => {
+      const current = members.get(project.id) ?? [];
+      const memberIds = new Set(current);
+      // Keep the order sessions already had in Web; only newly listed members are appended.
+      const kept = (previous.get(project.id)?.sessionIds ?? []).filter((id) => memberIds.has(id));
+      const keptIds = new Set(kept);
+      return {
+        workspaceId: nativeProjectWorkspaceId(project.id),
+        projectId: project.id,
+        path: project.rootPaths[0] ?? "",
+        title: project.name,
+        sessionIds: [...kept, ...current.filter((id) => !keptIds.has(id))],
+        createdAt: previous.get(project.id)?.createdAt ?? now,
+        updatedAt: previous.get(project.id)?.updatedAt ?? now,
+        origin: "codexhost",
+      };
+    });
     this.publishWorkspaceChanges(before);
   }
 
@@ -345,6 +364,26 @@ export class Workspaces {
     if (!item || item.sessionIds.includes(sessionId)) return;
     item.sessionIds = [...item.sessionIds, sessionId];
     this.broadcast({ type: "upsert", workspace: item });
+  }
+
+  /** Show a session only in its native project, at the requested place; Codex owns membership. */
+  placeNativeSession(
+    workspaceId: string,
+    sessionId: string,
+    beforeSessionId?: string,
+  ): WorkspaceView {
+    const workspace = this.require(workspaceId);
+    const now = new Date().toISOString();
+    for (const other of this.nativeWorkspaces ?? []) {
+      if (other === workspace || !other.sessionIds.includes(sessionId)) continue;
+      other.sessionIds = other.sessionIds.filter((id) => id !== sessionId);
+      other.updatedAt = now;
+      this.broadcast({ type: "upsert", workspace: other });
+    }
+    workspace.sessionIds = insertSessionId(workspace.sessionIds, sessionId, beforeSessionId);
+    workspace.updatedAt = now;
+    this.broadcast({ type: "upsert", workspace });
+    return workspace;
   }
 
   private publishWorkspaceChanges(before: readonly WorkspaceView[]): void {
@@ -826,6 +865,12 @@ export class Workspaces {
         sessionId: string;
         beforeSessionId?: string;
       }>(args);
+      const native = await commands?.insertSessionBefore(
+        request.workspaceId,
+        request.sessionId,
+        request.beforeSessionId,
+      );
+      if (native) return native;
       const workspace = this.require(request.workspaceId);
       for (const other of this.state.items) {
         if (other !== workspace && other.sessionIds.includes(request.sessionId)) {
@@ -833,11 +878,11 @@ export class Workspaces {
           this.touch(other);
         }
       }
-      const rest = workspace.sessionIds.filter((id) => id !== request.sessionId);
-      const index =
-        request.beforeSessionId === undefined ? rest.length : rest.indexOf(request.beforeSessionId);
-      rest.splice(index < 0 ? rest.length : index, 0, request.sessionId);
-      workspace.sessionIds = rest;
+      workspace.sessionIds = insertSessionId(
+        workspace.sessionIds,
+        request.sessionId,
+        request.beforeSessionId,
+      );
       this.touch(workspace);
       return { workspace };
     });

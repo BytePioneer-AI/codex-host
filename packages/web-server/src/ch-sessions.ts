@@ -246,6 +246,31 @@ export class ChSessions {
     await this.refreshing?.catch(() => undefined);
     await this.refresh();
   }
+  /** Assign a conversation to a native project, confirmed by Codex before Web shows the move. */
+  async assignNativeProject(sessionId: string, projectId: string): Promise<void> {
+    const draft = this.drafts.get(sessionId);
+    if (draft && !draft.canonicalId) {
+      if (draft.creating)
+        throw new RpcError(
+          "session/busy",
+          "This conversation is starting; move it once it starts.",
+        );
+      draft.projectId = projectId;
+      return;
+    }
+    const threadId = this.id(sessionId);
+    const updated = await this.host.request<{ thread: ChThread }>("thread/metadata/update", {
+      threadId,
+      projectId,
+    });
+    if (updated.thread.projectId !== projectId)
+      throw new RpcError(
+        "workspace/assignment-unconfirmed",
+        "Codex did not confirm the conversation's project.",
+      );
+    const row = this.rows.get(threadId);
+    if (row) row.projectId = projectId;
+  }
   /** A `scope` reads an explicit page on until it reaches a Thread of that folder. */
   private async refresh(
     timing?: SessionListTiming,
@@ -433,8 +458,12 @@ export class ChSessions {
     timing.measureSync("workspace_sync", () => {
       const groups = new Map<string, string | undefined>();
       if (projects.nativeProjects) {
+        const known = new Set(projects.projects.map((project) => project.id));
         for (const row of this.rows.values()) {
-          const explicit = row.projectId ?? projects.assignments[row.id];
+          // A stale or foreign project ID must not hide the Thread; fall back like Desktop does.
+          const explicit = [row.projectId, projects.assignments[row.id]].find(
+            (id): id is string => typeof id === "string" && known.has(id),
+          );
           // Desktop lists a Thread without a project under the project whose root holds its cwd.
           const byCwd =
             explicit === undefined && row.cwd && row.workspaceKind !== "projectless"

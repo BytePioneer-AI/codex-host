@@ -11,6 +11,7 @@ export function nativeProjectCommands(
   host: Pick<ChHostClient, "request">,
   workspaces: Workspaces,
   refresh: () => Promise<void>,
+  assignSession: (sessionId: string, projectId: string) => Promise<void>,
 ): ProjectCommands {
   let pending = Promise.resolve();
   const mutate = <T>(operation: () => Promise<T>): Promise<T | undefined> => {
@@ -94,6 +95,16 @@ export function nativeProjectCommands(
           await refreshCommitted();
         }
         return { workspaceIds: workspaces.list().map((workspace) => workspace.workspaceId) };
+      }),
+    insertSessionBefore: (workspaceId, sessionId, beforeSessionId) =>
+      mutate(async () => {
+        const target = workspaces.get(workspaceId);
+        // Persist a cross-project move in Codex first; a failure leaves the projection untouched.
+        if (!target?.sessionIds.includes(sessionId))
+          await assignSession(sessionId, projectId(workspaceId));
+        return {
+          workspace: workspaces.placeNativeSession(workspaceId, sessionId, beforeSessionId),
+        };
       }),
   };
 }

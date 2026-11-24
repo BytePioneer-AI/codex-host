@@ -7,13 +7,14 @@ sys.stdout = sys.stderr
 import hashlib, json, sqlite3
 from pathlib import Path
 from urllib.parse import quote
-from tui_gateway.server import _history_to_messages
-from agent.context_compressor import user_originated_turn_view
 from hermes_state import SessionDB
 from hermes_state_ids import new_session_id
 p = json.load(sys.stdin)
 sid = p['sessionId']
 public_sid = sid
+if p['operation'] != 'title':
+    from tui_gateway.server import _history_to_messages
+    from agent.context_compressor import user_originated_turn_view
 
 class HistoryFailure(Exception):
     def __init__(self, code, message):
@@ -113,6 +114,13 @@ try:
                     and config(row.get('model_config')).get('_branched_from') == sid
                     and digest(db.get_messages(child)) == p['expectedDigest']):
                 result['deleted'] = db.delete_session(child, expected_delete_ids=[child])
+        finally: db.close()
+    elif p['operation'] == 'title':
+        db = SessionDB(read_only=True)
+        try:
+            row = db.get_session(db.resolve_resume_session_id(public_sid)) or {}
+            # A derived title can still be replaced by Hermes' title model.
+            result = {'title': row.get('title') if row.get('title_source') in ('llm', 'user') else None}
         finally: db.close()
     else:
         db = SessionDB(read_only=True)

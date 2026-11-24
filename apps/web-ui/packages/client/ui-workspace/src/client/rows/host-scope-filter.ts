@@ -37,6 +37,8 @@ export interface HostSummary {
   displayName?: string;
   /** Remote connection state ("connected" | "connecting" | "disconnected" | ...). */
   state?: string;
+  /** Optional configured host tag color. */
+  color?: string;
   /** Number of workspaces belonging to this host. */
   workspaceCount: number;
   /** Workspaces belonging to this host in their incoming order. */
@@ -88,12 +90,16 @@ export function deriveAvailableHosts(workspaces: readonly WorkspaceView[]): Host
     if (existing !== undefined) {
       existing.workspaces.push(workspace);
       existing.workspaceCount += 1;
+      if (existing.color === undefined && remote.color !== undefined) {
+        existing.color = remote.color;
+      }
     } else {
       remoteByHostId.set(remote.hostId, {
         key: remote.hostId,
         hostId: remote.hostId,
         displayName: remote.displayName,
         state: remote.state,
+        ...(remote.color !== undefined ? { color: remote.color } : {}),
         workspaceCount: 1,
         workspaces: [workspace],
       });

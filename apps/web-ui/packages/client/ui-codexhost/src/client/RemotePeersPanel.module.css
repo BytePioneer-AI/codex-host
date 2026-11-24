@@ -131,28 +131,180 @@
   min-width: 0;
 }
 
-.hostIcon {
+.colorDot,
+.colorSwatch {
+  --ch-peer-swatch: #3b82f6;
+}
+
+.colorDot[data-color="blue"],
+.colorSwatch[data-color="blue"] {
+  --ch-peer-swatch: #3b82f6;
+}
+
+.colorDot[data-color="purple"],
+.colorSwatch[data-color="purple"] {
+  --ch-peer-swatch: #8b5cf6;
+}
+
+.colorDot[data-color="cyan"],
+.colorSwatch[data-color="cyan"] {
+  --ch-peer-swatch: #06b6d4;
+}
+
+.colorDot[data-color="green"],
+.colorSwatch[data-color="green"] {
+  --ch-peer-swatch: #10b981;
+}
+
+.colorDot[data-color="amber"],
+.colorSwatch[data-color="amber"] {
+  --ch-peer-swatch: #f59e0b;
+}
+
+.colorDot[data-color="rose"],
+.colorSwatch[data-color="rose"] {
+  --ch-peer-swatch: #f43f5e;
+}
+
+.colorDot[data-color="slate"],
+.colorSwatch[data-color="slate"] {
+  --ch-peer-swatch: #64748b;
+}
+
+:global(body[data-ds-dark-theme]) .colorDot[data-color="blue"],
+:global(body[data-ds-dark-theme]) .colorSwatch[data-color="blue"] {
+  --ch-peer-swatch: #60a5fa;
+}
+
+:global(body[data-ds-dark-theme]) .colorDot[data-color="purple"],
+:global(body[data-ds-dark-theme]) .colorSwatch[data-color="purple"] {
+  --ch-peer-swatch: #a78bfa;
+}
+
+:global(body[data-ds-dark-theme]) .colorDot[data-color="cyan"],
+:global(body[data-ds-dark-theme]) .colorSwatch[data-color="cyan"] {
+  --ch-peer-swatch: #22d3ee;
+}
+
+:global(body[data-ds-dark-theme]) .colorDot[data-color="green"],
+:global(body[data-ds-dark-theme]) .colorSwatch[data-color="green"] {
+  --ch-peer-swatch: #34d399;
+}
+
+:global(body[data-ds-dark-theme]) .colorDot[data-color="amber"],
+:global(body[data-ds-dark-theme]) .colorSwatch[data-color="amber"] {
+  --ch-peer-swatch: #fbbf24;
+}
+
+:global(body[data-ds-dark-theme]) .colorDot[data-color="rose"],
+:global(body[data-ds-dark-theme]) .colorSwatch[data-color="rose"] {
+  --ch-peer-swatch: #fb7185;
+}
+
+:global(body[data-ds-dark-theme]) .colorDot[data-color="slate"],
+:global(body[data-ds-dark-theme]) .colorSwatch[data-color="slate"] {
+  --ch-peer-swatch: #94a3b8;
+}
+
+.colorDot {
   flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ch-peer-swatch);
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--dsw-alias-label-primary) 16%, transparent);
+}
+
+.colorDot[data-state="disabled"] {
+  opacity: 0.45;
+}
+
+.colorPicker {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  color: var(--dsw-alias-label-secondary);
+  gap: 9px;
+  padding: 3px 2px;
 }
 
-.statusDot {
+.colorPickerSm {
+  gap: 7px;
+  padding: 2px 0;
+}
+
+.colorSwatch {
   flex: none;
-  width: 6px;
-  height: 6px;
+  width: 19px;
+  height: 19px;
+  padding: 0;
+  border: 0;
   border-radius: 50%;
-  background: var(--dsw-alias-label-tertiary);
+  background: var(--ch-peer-swatch);
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--dsw-alias-label-primary) 18%, transparent);
+  cursor: pointer;
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease;
 }
 
-.statusDot[data-state="connecting"] {
-  background: var(--dsw-alias-state-warning-primary, #c27803);
+.colorSwatchSm {
+  width: 16px;
+  height: 16px;
 }
 
-.statusDot[data-state="auth-error"] {
-  background: var(--dsw-alias-state-error-primary);
+.colorSwatch:hover:not(:disabled) {
+  transform: scale(1.12);
+}
+
+.colorSwatch[data-selected="true"] {
+  box-shadow:
+    0 0 0 2px var(--dsw-alias-bg-layer-1),
+    0 0 0 3.5px var(--ch-peer-swatch);
+}
+
+.colorSwatchSm[data-selected="true"] {
+  box-shadow:
+    0 0 0 1.5px var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1)),
+    0 0 0 3px var(--ch-peer-swatch);
+}
+
+.colorSwatch:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
+}
+
+.colorSwatch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.menuColorSection {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 5px 8px 6px;
+}
+
+.menuColorLabel {
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.menuColorDivider {
+  height: 0.5px;
+  margin: 3px 2px;
+  background: var(--dsw-alias-border-l2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .colorSwatch {
+    transition: none;
+  }
+
+  .colorSwatch:hover:not(:disabled) {
+    transform: none;
+  }
 }
 
 .stateText {
@@ -194,7 +346,7 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding-left: 13px;
+  padding-left: 15px;
 }
 
 .peerMeta {
@@ -233,7 +385,7 @@
 
 .peerErrorNote {
   margin: 0;
-  padding-left: 13px;
+  padding-left: 15px;
   font-size: 11.5px;
   line-height: 16px;
   color: color-mix(

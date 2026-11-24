@@ -30,7 +30,7 @@ function makeWorkspace(input: {
   title?: string;
   path?: string;
   sessionIds?: string[];
-  remote?: { hostId: string; displayName: string; state: string };
+  remote?: { hostId: string; displayName: string; state: string; color?: string };
 }): WorkspaceView {
   return {
     workspaceId: input.id as WorkspaceId,
@@ -49,14 +49,24 @@ const sampleWorkspaces = (): WorkspaceView[] => [
     id: "ws-us-1",
     title: "us-api",
     sessionIds: ["s-us-1"],
-    remote: { hostId: "remote-peer:us-vps", displayName: "美VPS", state: "connected" },
+    remote: {
+      hostId: "remote-peer:us-vps",
+      displayName: "美VPS",
+      state: "connected",
+      color: "purple",
+    },
   }),
   makeWorkspace({ id: "ws-local-2", title: "local-b", sessionIds: ["s-local-3"] }),
   makeWorkspace({
     id: "ws-us-2",
     title: "us-web",
     sessionIds: ["s-us-2"],
-    remote: { hostId: "remote-peer:us-vps", displayName: "美VPS", state: "connected" },
+    remote: {
+      hostId: "remote-peer:us-vps",
+      displayName: "美VPS",
+      state: "connected",
+      color: "purple",
+    },
   }),
   makeWorkspace({
     id: "ws-jp-1",
@@ -82,6 +92,7 @@ describe("deriveAvailableHosts", () => {
         hostId: host.hostId,
         displayName: host.displayName,
         state: host.state,
+        color: host.color,
         workspaceCount: host.workspaceCount,
         workspaceIds: host.workspaces.map((w) => w.workspaceId),
       })),
@@ -91,6 +102,7 @@ describe("deriveAvailableHosts", () => {
           hostId: undefined,
           displayName: undefined,
           state: undefined,
+          color: undefined,
           workspaceCount: 2,
           workspaceIds: ["ws-local-1", "ws-local-2"],
         },
@@ -99,6 +111,7 @@ describe("deriveAvailableHosts", () => {
           hostId: "remote-peer:us-vps",
           displayName: "美VPS",
           state: "connected",
+          color: "purple",
           workspaceCount: 2,
           workspaceIds: ["ws-us-1", "ws-us-2"],
         },
@@ -107,6 +120,7 @@ describe("deriveAvailableHosts", () => {
           hostId: "remote-peer:jp-box",
           displayName: "日VPS",
           state: "disconnected",
+          color: undefined,
           workspaceCount: 1,
           workspaceIds: ["ws-jp-1"],
         },

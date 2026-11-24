@@ -10,18 +10,26 @@ import {
   IconRefreshOutlineRegular,
   IconTrashOutlineRegular,
   Menu,
+  MenuItemButton,
   Switch,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
-import type { RemotePeerState, RemotePeerSummary } from "@codexhost/shared-contracts";
+import {
+  REMOTE_PEER_COLORS,
+  resolveRemotePeerColor,
+  type RemotePeerColor,
+  type RemotePeerState,
+  type RemotePeerSummary,
+} from "@codexhost/shared-contracts";
 import { remotePeersApi } from "./api.ts";
+import { PeerColorPicker, PEER_COLOR_LABEL } from "./PeerColorPicker.tsx";
 import {
   dispatchOpenAddRemoteWorkspace,
   dispatchRemotePeersUpdated,
   REMOTE_PEERS_UPDATED_EVENT,
   type RemotePeersUpdatedDetail,
 } from "./remote-peers-events.ts";
-import { RemoteHostIcon, UnlockIcon } from "./RemoteHostIcon.tsx";
+import { UnlockIcon } from "./RemoteHostIcon.tsx";
 import {
   AddPeerModal,
   EditPeerModal,
@@ -208,6 +216,44 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
     };
   }, [connectingKey, loadPeers]);
 
+  const handleColorChange = async (
+    peer: RemotePeerSummary,
+    color: RemotePeerColor,
+  ): Promise<void> => {
+    if (peer.color === color) return;
+    setActionError(null);
+    const optimistic: RemotePeerSummary = { ...peer, color };
+    const replaceOptimistic = (peers: RemotePeerSummary[]): RemotePeerSummary[] =>
+      peers.map((item) => (item.peerId === peer.peerId ? optimistic : item));
+    updateCachedPeers(replaceOptimistic);
+    setView((current) =>
+      current.kind === "ready"
+        ? { kind: "ready", peers: replaceOptimistic(current.peers) }
+        : current,
+    );
+    try {
+      const { peer: updated } = await remotePeersApi.update({
+        peerId: peer.peerId,
+        color,
+      });
+      const replacePeer = (peers: RemotePeerSummary[]): RemotePeerSummary[] =>
+        peers.map((item) => (item.peerId === updated.peerId ? updated : item));
+      updateCachedPeers(replacePeer);
+      setView((current) =>
+        current.kind === "ready" ? { kind: "ready", peers: replacePeer(current.peers) } : current,
+      );
+      dispatchRemotePeersUpdated({ source: selfEventSource });
+    } catch (cause) {
+      const revertPeer = (peers: RemotePeerSummary[]): RemotePeerSummary[] =>
+        peers.map((item) => (item.peerId === peer.peerId ? peer : item));
+      updateCachedPeers(revertPeer);
+      setView((current) =>
+        current.kind === "ready" ? { kind: "ready", peers: revertPeer(current.peers) } : current,
+      );
+      setActionError(t("remotePeers.actionFailed", { message: messageOf(cause) }));
+    }
+  };
+
   const handleToggleEnabled = async (peer: RemotePeerSummary, enabled: boolean): Promise<void> => {
     setActionError(null);
     setTogglingIds((prev) => new Set(prev).add(peer.peerId));
@@ -374,6 +420,9 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
               .filter(Boolean)
               .join(" · ");
 
+            const peerColor = resolveRemotePeerColor(peer.hostId, peer.color);
+            const dotDescription = `${t(PEER_COLOR_LABEL[peerColor])} · ${t(STATE_LABEL[peer.state])}`;
+
             return (
               <div
                 key={peer.peerId}
@@ -384,24 +433,14 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
                 <div className={css.peerMain}>
                   <div className={css.peerIdentity}>
                     <div className={css.peerNameRow}>
-                      {connected ? (
-                        <span
-                          className={css.hostIcon}
-                          role="img"
-                          aria-label={t(STATE_LABEL[peer.state])}
-                          title={t(STATE_LABEL[peer.state])}
-                        >
-                          <RemoteHostIcon size={14} />
-                        </span>
-                      ) : (
-                        <span
-                          className={css.statusDot}
-                          data-state={peer.state}
-                          role="img"
-                          aria-label={t(STATE_LABEL[peer.state])}
-                          title={t(STATE_LABEL[peer.state])}
-                        />
-                      )}
+                      <span
+                        className={css.colorDot}
+                        data-color={peerColor}
+                        data-state={peer.state}
+                        role="img"
+                        aria-label={dotDescription}
+                        title={dotDescription}
+                      />
                       <span className={css.peerName}>{peer.name}</span>
                       <span className={css.transportWord}>
                         {t(TRANSPORT_LABEL[peer.transportKind])}
@@ -437,56 +476,6 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
                       portal
                       align="end"
                       autoFocus
-                      items={[
-                        {
-                          id: "add-workspace",
-                          label: t("remotePeers.action.addWorkspace"),
-                          icon: <IconPlusOutlineRegular size={14} />,
-                          disabled: !connected || toggling,
-                        },
-                        {
-                          id: "reconnect",
-                          label: t(
-                            reconnecting
-                              ? "remotePeers.action.reconnecting"
-                              : "remotePeers.action.reconnect",
-                          ),
-                          icon: reconnecting ? (
-                            <span className={css.spinner}>
-                              <IconLoadingOutlineRegular size={14} />
-                            </span>
-                          ) : (
-                            <IconRefreshOutlineRegular size={14} />
-                          ),
-                          disabled: reconnecting || toggling || !peer.enabled,
-                        },
-                        {
-                          id: "edit",
-                          label: t("remotePeers.action.edit"),
-                          icon: <IconEditOutlineRegular size={14} />,
-                        },
-                        { type: "separator", id: "danger-sep" },
-                        {
-                          id: "remove",
-                          label: t("remotePeers.action.remove"),
-                          icon: <IconTrashOutlineRegular size={14} />,
-                          danger: true,
-                        },
-                      ]}
-                      onSelect={(id) => {
-                        setOpenMenuPeerId(null);
-                        if (id === "add-workspace") {
-                          dispatchOpenAddRemoteWorkspace(peer.hostId);
-                        } else if (id === "reconnect") {
-                          void handleReconnect(peer);
-                        } else if (id === "edit") {
-                          setActionError(null);
-                          setEditingPeer(peer);
-                        } else if (id === "remove") {
-                          setRemoveError(null);
-                          setRemovingPeer(peer);
-                        }
-                      }}
                       anchor={
                         <button
                           type="button"
@@ -503,7 +492,76 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
                           <IconEllipsisOutlineRegular size={16} />
                         </button>
                       }
-                    />
+                    >
+                      <div className={css.menuColorSection}>
+                        <span className={css.menuColorLabel}>{t("remotePeers.field.color")}</span>
+                        <PeerColorPicker
+                          value={peerColor}
+                          size="sm"
+                          disabled={toggling}
+                          t={t}
+                          onChange={(nextColor) => {
+                            setOpenMenuPeerId(null);
+                            void handleColorChange(peer, nextColor);
+                          }}
+                        />
+                      </div>
+                      <div className={css.menuColorDivider} role="separator" />
+                      <MenuItemButton
+                        icon={<IconPlusOutlineRegular size={14} />}
+                        disabled={!connected || toggling}
+                        onSelect={() => {
+                          setOpenMenuPeerId(null);
+                          dispatchOpenAddRemoteWorkspace(peer.hostId);
+                        }}
+                      >
+                        {t("remotePeers.action.addWorkspace")}
+                      </MenuItemButton>
+                      <MenuItemButton
+                        icon={
+                          reconnecting ? (
+                            <span className={css.spinner}>
+                              <IconLoadingOutlineRegular size={14} />
+                            </span>
+                          ) : (
+                            <IconRefreshOutlineRegular size={14} />
+                          )
+                        }
+                        disabled={reconnecting || toggling || !peer.enabled}
+                        onSelect={() => {
+                          setOpenMenuPeerId(null);
+                          void handleReconnect(peer);
+                        }}
+                      >
+                        {t(
+                          reconnecting
+                            ? "remotePeers.action.reconnecting"
+                            : "remotePeers.action.reconnect",
+                        )}
+                      </MenuItemButton>
+                      <MenuItemButton
+                        icon={<IconEditOutlineRegular size={14} />}
+                        onSelect={() => {
+                          setOpenMenuPeerId(null);
+                          setActionError(null);
+                          setEditingPeer(peer);
+                        }}
+                      >
+                        {t("remotePeers.action.edit")}
+                      </MenuItemButton>
+                      <MenuItemButton
+                        separatorBefore
+                        danger
+                        icon={<IconTrashOutlineRegular size={14} />}
+                        onSelect={() => {
+                          setOpenMenuPeerId(null);
+                          setRemoveError(null);
+                          setRemovingPeer(peer);
+                        }}
+                      >
+                        {t("remotePeers.action.remove")}
+                      </MenuItemButton>
+                    </Menu>
                     <Switch
                       checked={peer.enabled}
                       disabled={toggling}
@@ -528,6 +586,13 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
 
       {addOpen && (
         <AddPeerModal
+          suggestedColor={
+            view.kind === "ready"
+              ? (REMOTE_PEER_COLORS.find(
+                  (c) => !view.peers.some((p) => resolveRemotePeerColor(p.hostId, p.color) === c),
+                ) ?? REMOTE_PEER_COLORS[0])
+              : REMOTE_PEER_COLORS[0]
+          }
           t={t}
           onClose={() => setAddOpen(false)}
           onAdded={() => loadPeers("background", true)}

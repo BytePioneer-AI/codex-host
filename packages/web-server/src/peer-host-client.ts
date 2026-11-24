@@ -198,12 +198,13 @@ export class PeerHostClient {
   }
 
   summary(): c.RemotePeerSummary {
-    const { peerId, name, origin, enabled, createdAt, updatedAt } = this.record;
+    const { peerId, name, color, origin, enabled, createdAt, updatedAt } = this.record;
     const { encrypted, transportKind } = classifyPeerTransport(origin);
     const { version, platform, hostname, homeDir, projects } = this.manifest ?? {};
     return {
       peerId,
       name,
+      ...(color !== undefined ? { color } : {}),
       origin,
       enabled,
       createdAt,

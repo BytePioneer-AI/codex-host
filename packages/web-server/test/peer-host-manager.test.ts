@@ -1287,10 +1287,18 @@ it("skips origin check on same-origin update, keeps connection on rename, filter
     return res.value as T;
   };
 
-  const added = await invoke<{ peer: { peerId: string; hostId: string } }>("add", {
+  const added = await invoke<{ peer: { peerId: string; hostId: string; color?: string } }>("add", {
     connectionUrl: `${origin}/#token=${token}`,
+    color: "purple",
   });
   const { peerId, hostId } = added.peer;
+  assert.equal(added.peer.color, "purple");
+  assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.color, "purple");
+  // Legacy records without a persisted color load cleanly with color omitted.
+  assert.equal(
+    manager.hosts().find((h) => h.hostId === "remote-peer:offline-enabled")?.color,
+    undefined,
+  );
   for (let i = 0; i < 40 && streamConnections < 1; i++) await sleep(20);
   assert.equal(originsCalls, 1);
 
@@ -1311,7 +1319,7 @@ it("skips origin check on same-origin update, keeps connection on rename, filter
     truncateToolOutput: true,
   });
 
-  // Name-only update neither calls origins() nor reconnects the client/source.
+  // Name-only and color-only updates neither call origins() nor reconnect the client/source.
   const clientBeforeRename = manager.client(hostId);
   const sourceBeforeRename = manager.source(hostId);
   const streamsBeforeRename = streamConnections;
@@ -1322,6 +1330,30 @@ it("skips origin check on same-origin update, keeps connection on rename, filter
   assert.equal(manager.source(hostId), sourceBeforeRename);
   assert.equal(streamConnections, streamsBeforeRename);
   assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.displayName, "Renamed Fast");
+  assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.color, "purple");
+
+  const recolored = await invoke<{ peer: { color?: string } }>("update", {
+    peerId,
+    color: "amber",
+  });
+  assert.equal(originsCalls, 0);
+  assert.equal(manager.client(hostId), clientBeforeRename);
+  assert.equal(manager.source(hostId), sourceBeforeRename);
+  assert.equal(streamConnections, streamsBeforeRename);
+  assert.equal(recolored.peer.color, "amber");
+  assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.color, "amber");
+  assert.equal(store.load().find((r) => r.peerId === peerId)?.color, "amber");
+
+  const cleared = await invoke<{ peer: { color?: string } }>("update", {
+    peerId,
+    color: null,
+  });
+  assert.equal(originsCalls, 0);
+  assert.equal(manager.client(hostId), clientBeforeRename);
+  assert.equal(streamConnections, streamsBeforeRename);
+  assert.equal(cleared.peer.color, undefined);
+  assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.color, undefined);
+  assert.equal(store.load().find((r) => r.peerId === peerId)?.color, undefined);
 
   // Disabling does not call origins(), excludes the peer from hosts(), keeps it in list,
   // and still keeps enabled-but-offline peers in hosts().

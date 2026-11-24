@@ -120,6 +120,7 @@ export class PeerHostManager {
         hostId: c.remotePeerHostId(p.record.peerId),
         online: p.state === "connected",
         displayName: p.record.name,
+        ...(p.record.color !== undefined ? { color: p.record.color } : {}),
         state: p.state,
         projects: p.manifest?.projects,
         epoch: p.manifest?.epoch,
@@ -157,9 +158,11 @@ export class PeerHostManager {
           const now = new Date().toISOString();
           const explicitName =
             "name" in p && typeof p.name === "string" && p.name.trim() ? p.name.trim() : undefined;
-          const record = {
+          const explicitColor = "color" in p ? p.color : undefined;
+          const record: PeerRecord = {
             peerId: randomUUID(),
             name: explicitName ?? new URL(conn.origin).hostname,
+            ...(explicitColor !== undefined ? { color: explicitColor } : {}),
             origin: conn.origin,
             token: conn.token,
             enabled: true,
@@ -222,7 +225,8 @@ export class PeerHostManager {
               await this.check(conn.origin);
               if (this.get(peerId) !== client) throw Error("Peer changed");
             }
-            const record = {
+            const nextColor = p.color === undefined ? old.color : (p.color ?? undefined);
+            const record: PeerRecord = {
               ...old,
               origin: conn.origin,
               token: conn.token,
@@ -230,6 +234,11 @@ export class PeerHostManager {
               name: p.name ?? old.name,
               updatedAt: new Date().toISOString(),
             };
+            if (nextColor !== undefined) {
+              record.color = nextColor;
+            } else {
+              delete record.color;
+            }
             this.store.save(this.records().map((r) => (r.peerId === peerId ? record : r)));
             if (
               record.enabled === old.enabled &&

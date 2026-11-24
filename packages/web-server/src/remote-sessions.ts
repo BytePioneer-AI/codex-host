@@ -10,6 +10,7 @@ import { z } from "zod";
 import {
   harnessConfigurationStateSchema,
   REMOTE_PEER_HOST_ID_PREFIX,
+  remotePeerColorSchema,
   remotePeerPromptParamsSchema,
   remoteQueueSnapshotSchema,
   remoteSessionOperationSchema,
@@ -84,6 +85,7 @@ const hostsSchema = z.array(
     online: z.boolean(),
     epoch: z.string().min(1).optional(),
     displayName: z.string().optional(),
+    color: remotePeerColorSchema.optional(),
     state: z.string().optional(),
     projects: z
       .array(
@@ -358,7 +360,10 @@ export class RemoteSessions {
     return this.peerEndpoint(hostId);
   }
   private draftSummary(draft: RemoteProjectDraft) {
-    return draft.summary(this.peerAttachmentsSupported(draft.target.hostId));
+    return draft.summary(
+      this.peerAttachmentsSupported(draft.target.hostId),
+      this.hosts.get(draft.target.hostId)?.color,
+    );
   }
   async uploadFile(
     id: string,
@@ -654,7 +659,26 @@ export class RemoteSessions {
       this.syncGroups();
       return;
     }
+    const previousHosts = this.hosts;
     this.hosts = new Map(hosts.map((host) => [host.hostId, host]));
+    const metadataChangedHostIds = new Set<string>();
+    for (const host of hosts) {
+      const prev = previousHosts.get(host.hostId);
+      if (
+        prev !== undefined &&
+        (prev.displayName !== host.displayName || prev.color !== host.color)
+      ) {
+        metadataChangedHostIds.add(host.hostId);
+      }
+    }
+    if (metadataChangedHostIds.size > 0) {
+      for (const [id, entry] of this.entries) {
+        if (!metadataChangedHostIds.has(entry.identity.hostId)) continue;
+        const nextSummary = this.summary(id, entry);
+        entry.view?.log.setProjection("remoteHost", nextSummary.projections.values.remoteHost);
+        this.events.emit("api-session/added", nextSummary);
+      }
+    }
     for (const [id, entry] of this.entries) {
       if (
         entry.identity.hostId.startsWith("remote-peer:") &&
@@ -1298,6 +1322,7 @@ export class RemoteSessions {
     const harnessIdentity =
       remoteHarnessIdentity(entry) ??
       (entry.row.modelProvider !== "codexhost" ? { id: "codex", name: "Codex" } : undefined);
+    const host = this.hosts.get(entry.identity.hostId);
     return {
       sessionId: id,
       cwd: "",
@@ -1313,10 +1338,9 @@ export class RemoteSessions {
           title: threadListTitle({ ...entry.row, id: entry.identity.threadId }),
           remoteHost: {
             ...entry.identity,
-            displayName: remoteHostDisplayName(
-              this.hosts.get(entry.identity.hostId) ?? { hostId: entry.identity.hostId },
-            ),
+            displayName: remoteHostDisplayName(host ?? { hostId: entry.identity.hostId }),
             state: entry.online ? "connected" : "disconnected",
+            ...(host?.color !== undefined ? { color: host.color } : {}),
             filePreview: attachmentsSupported,
             workspaceFiles: workspaceFilesSupported,
             officePreview: officePreviewSupported,
@@ -2062,7 +2086,11 @@ export class RemoteSessions {
       const draft = this.drafts.get(id);
       if (draft && !draft.canonicalId) {
         draft.lastUsed = Date.now();
-        draft.follow(sink, this.peerAttachmentsSupported(draft.target.hostId));
+        draft.follow(
+          sink,
+          this.peerAttachmentsSupported(draft.target.hostId),
+          this.hosts.get(draft.target.hostId)?.color,
+        );
         return true;
       }
       const threadId = draft?.canonicalId ?? id;

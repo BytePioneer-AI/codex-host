@@ -275,9 +275,11 @@ describe("external Thread local deletion", () => {
       expect(unbound).toHaveBeenCalledOnce();
       const id = hostThreadIdSchema.parse(threadId);
       await startPiTurn(fixture, threadId, 3);
-      adapter.sessions[1]!.succeedTurn();
+      const session = adapter.sessions[1];
+      if (!session) throw new Error("Expected the Billing Source Session");
+      session.succeedTurn();
       await fixture.collector.waitFor((message) => method(message, "turn/completed"));
-      const execute = vi.spyOn(adapter.sessions[1]!, "execute");
+      const execute = vi.spyOn(session, "execute");
       expect(await deleteThread(fixture, threadId)).toMatchObject({
         error: { code: -32075, message: expect.stringContaining("native cleanup is unconfirmed") },
       });
@@ -361,7 +363,8 @@ describe("external Thread local deletion", () => {
           expect(retained).toEqual([]);
         } else {
           expect(retained).toHaveLength(1);
-          const threadId = retained[0]!.hostThreadId;
+          const threadId = retained[0]?.hostThreadId;
+          if (!threadId) throw new Error("Expected the retained Thread");
           expect(retained[0]).toMatchObject({ state: "creating", billingSourceRef });
           expect(await deleteThread(fixture, threadId)).toEqual({
             id: 10,

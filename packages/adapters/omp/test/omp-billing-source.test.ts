@@ -173,14 +173,15 @@ it("runs distinct OMP Billing Sources without fallback and requires native clean
     const replacement = (await adapter.inspectAccounts())[0]?.billingSourceRef;
     expect(replacement).toBeDefined();
     expect(replacement).not.toEqual(a);
+    if (!replacement) throw new Error("Expected a replacement Billing Source");
     expect(await adapter.openBillingSource({ ...create, billingSourceRef: a })).toMatchObject({
       ok: false,
     });
-    expect(await run(replacement!, "OK")).toMatchObject({
+    expect(await run(replacement, "OK")).toMatchObject({
       terminal: { event: { billingSourceRef: replacement, outcome: { status: "succeeded" } } },
       cleanup: { ok: true, value: "not-persisted" },
     });
-    expect(await run(replacement!, "swap slot")).toMatchObject({
+    expect(await run(replacement, "swap slot")).toMatchObject({
       terminal: { event: { outcome: { status: "failed" } } },
       cleanup: { ok: true, value: "not-persisted" },
     });

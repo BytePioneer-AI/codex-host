@@ -407,8 +407,8 @@ export class ExternalThreadRuntime {
         }
       }
       if (releaseError) throw releaseError;
-      await this.#repository.removeThread(hostThreadId);
       this.remove(hostThreadId);
+      await this.#repository.removeThread(hostThreadId);
       return nativeSession;
     });
   }

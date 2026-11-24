@@ -28,9 +28,7 @@ import type {
   AntigravityAcpSessionOpenResult,
   AntigravityAcpTransportLike,
   AntigravityAcpTransportOptions,
-  AntigravityActivePromptHandler,
   AntigravityOpenAcpSessionInput,
-  AntigravityPromptInputPart,
   AntigravityPromptResult,
   AntigravitySessionEventHandler,
 } from "../src/acp-types.js";
@@ -54,7 +52,7 @@ function config({ bakedIn = false }: { bakedIn?: boolean } = {}): AntigravityAcp
       id: "model",
       name: "Model",
       category: "model",
-      currentValue: models[0]!,
+      currentValue: models[0] ?? gemini,
       options: models.map((value) => ({ value, name: value })),
     },
     ...(bakedIn
@@ -84,12 +82,7 @@ class FakeTransport implements AntigravityAcpTransportLike {
   onOpen?: () => Promise<void>;
   overrideSessionId?: string;
   handler: AntigravitySessionEventHandler | null = null;
-  prompt = vi.fn(
-    async (
-      _parts: readonly AntigravityPromptInputPart[],
-      _handler: AntigravityActivePromptHandler,
-    ): Promise<AntigravityPromptResult> => endTurn,
-  );
+  prompt = vi.fn(async (): Promise<AntigravityPromptResult> => endTurn);
   initialize = vi.fn(async (): Promise<InitializeResponse> => ({ protocolVersion: 1 }));
   openSession = vi.fn(async (input: AntigravityOpenAcpSessionInput) => {
     await this.onOpen?.();
@@ -102,7 +95,7 @@ class FakeTransport implements AntigravityAcpTransportLike {
       },
     };
   });
-  setMode = vi.fn(async (_id: string) => {});
+  setMode = vi.fn(async () => {});
   setConfigOption = vi.fn(async (id: string, value: string) => {
     this.config = this.config.map((option) =>
       option.id === id ? { ...option, currentValue: value } : option,
@@ -349,13 +342,15 @@ describe("Antigravity retained quota prewarm", () => {
     [
       "no exact model",
       (transport: FakeTransport) => {
-        transport.config[0]!.options = [{ value: "gemini-3.8-flash-high", name: "High" }];
+        assert(transport.config[0]);
+        transport.config[0].options = [{ value: "gemini-3.8-flash-high", name: "High" }];
       },
     ],
     [
       "no low option",
       (transport: FakeTransport) => {
-        transport.config[1]!.options = [{ value: "high", name: "High" }];
+        assert(transport.config[1]);
+        transport.config[1].options = [{ value: "high", name: "High" }];
       },
     ],
     [
@@ -726,8 +721,9 @@ describe("Antigravity retained quota prewarm", () => {
     const denied = Promise.withResolvers<RequestPermissionResponse>();
     const a = f.start((transport) => {
       transport.prompt.mockImplementation(async (_parts, handler) => {
+        assert(transport.sessionId);
         const response = await handler.onPermission({
-          sessionId: transport.sessionId!,
+          sessionId: transport.sessionId,
           toolCall: { toolCallId: "test-tool" },
           options: [],
         });
@@ -748,11 +744,11 @@ describe("Antigravity retained quota prewarm", () => {
 
   it("atomically blocks a second adapter during create and retains an unresolved create across restarts", async () => {
     const f = await fixture();
-    const creating = Promise.withResolvers<void>();
-    const lostResponse = Promise.withResolvers<void>();
+    const creating = Promise.withResolvers<undefined>();
+    const lostResponse = Promise.withResolvers<undefined>();
     const a = f.start((transport) => {
       transport.onOpen = () => {
-        creating.resolve();
+        creating.resolve(undefined);
         return lostResponse.promise;
       };
     });
@@ -778,12 +774,12 @@ describe("Antigravity retained quota prewarm", () => {
 
   it("claims a running prompt exclusively, bounds native execution, and never replays a timeout", async () => {
     const f = await fixture();
-    const dispatched = Promise.withResolvers<void>();
+    const dispatched = Promise.withResolvers<undefined>();
     const hanging = Promise.withResolvers<AntigravityPromptResult>();
     const first = f.start(
       (transport) => {
         transport.prompt.mockImplementation(() => {
-          dispatched.resolve();
+          dispatched.resolve(undefined);
           return hanging.promise;
         });
       },

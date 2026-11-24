@@ -115,8 +115,8 @@ async function launch(input: BridgeOptions): Promise<Bridge | null> {
     let booted = false;
     let advertised = false;
     let dead = false;
-    const startup = Promise.withResolvers<void>();
-    const exited = Promise.withResolvers<void>();
+    const startup = Promise.withResolvers<undefined>();
+    const exited = Promise.withResolvers<undefined>();
     const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
     lines.on("line", (line) => {
       let msg: Receipt;
@@ -128,7 +128,7 @@ async function launch(input: BridgeOptions): Promise<Bridge | null> {
       if (!msg || typeof msg !== "object") return;
       if (msg.type === "ready") booted = true;
       if (msg.codexhostBillingSource === hello && msg.code === "registered") advertised = true;
-      if (booted && advertised) startup.resolve();
+      if (booted && advertised) startup.resolve(undefined);
       if (!pending) return;
       if (msg.codexhostBillingSource === pending.id) pending.receipt = msg;
       if (msg.id !== pending.id) return;
@@ -144,13 +144,13 @@ async function launch(input: BridgeOptions): Promise<Bridge | null> {
     child.stdin.on("error", () => pending?.settle(null));
     child.on("error", () => {
       dead = true;
-      startup.resolve();
+      startup.resolve(undefined);
       pending?.settle(null);
     });
     child.once("close", () => {
       dead = true;
-      exited.resolve();
-      startup.resolve();
+      exited.resolve(undefined);
+      startup.resolve(undefined);
       pending?.settle(null);
     });
     function request(data: Receipt, timeoutMs: number): Promise<Receipt | null> {
@@ -185,7 +185,7 @@ async function launch(input: BridgeOptions): Promise<Bridge | null> {
           /* process exit can race */
         }
       }, 2_000);
-      const deadline = Promise.withResolvers<void>();
+      const deadline = Promise.withResolvers<undefined>();
       const timeout = setTimeout(
         () => deadline.reject(new Error("OMP bridge shutdown could not be confirmed")),
         5_000,
@@ -198,7 +198,7 @@ async function launch(input: BridgeOptions): Promise<Bridge | null> {
         await rm(directory, { recursive: true, force: true });
       }
     }
-    const timeout = setTimeout(startup.resolve, setupTimeoutMs);
+    const timeout = setTimeout(() => startup.resolve(undefined), setupTimeoutMs);
     await startup.promise;
     clearTimeout(timeout);
     if (!booted || !advertised || dead) {

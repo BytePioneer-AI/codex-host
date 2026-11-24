@@ -231,7 +231,8 @@ export class OmpAccountCredits {
             if (reportedIdentity) identityValues.add(reportedIdentity);
             let billingSourceRef: BillingSourceRef | undefined;
             if (identityValues.size === 1) {
-              const identityKey = [...identityValues][0]!;
+              const [identityKey] = identityValues;
+              if (!identityKey) continue;
               identities.set(key, identityKey);
               const provider = report?.provider;
               if (typeof provider === "string") {

@@ -5485,9 +5485,10 @@ export class AppServerHost {
       ...(requestedThinkingOptionId ? { thinkingOptionId: requestedThinkingOptionId } : {}),
       ...(requestedPermissionModeId ? { permissionModeId: requestedPermissionModeId } : {}),
     };
-    const sessionResult = billingSourceRef
-      ? await adapter.openBillingSource!({ ...openInput, billingSourceRef })
-      : await adapter.open(openInput);
+    const sessionResult =
+      billingSourceRef && adapter.openBillingSource
+        ? await adapter.openBillingSource({ ...openInput, billingSourceRef })
+        : await adapter.open(openInput);
     if (!sessionResult.ok) {
       this.#routeObservationTracker.rejectCreate(request.id);
       const nativeCleanup =

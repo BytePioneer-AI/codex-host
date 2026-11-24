@@ -177,6 +177,15 @@ export function pruneUnavailableHostScopeFilter(
       continue;
     }
 
+    if (
+      hostKey !== "local" &&
+      (host.state === "connecting" ||
+        (host.state !== "connected" && preserveHostKeys?.has(hostKey) === true))
+    ) {
+      nextPerHost[hostKey] = scope;
+      continue;
+    }
+
     const validIds = new Set<string>(host.workspaces.map((workspace) => workspace.workspaceId));
     const filteredIds = scope.workspaceIds.filter((id) => validIds.has(id));
     if (filteredIds.length !== scope.workspaceIds.length) {

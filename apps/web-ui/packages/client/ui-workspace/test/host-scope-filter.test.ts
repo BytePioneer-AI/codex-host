@@ -396,6 +396,28 @@ describe("pruneUnavailableHostScopeFilter", () => {
       },
     });
   });
+
+  it("preserves perHost workspaceIds while a remote host is still connecting", () => {
+    const workspaces = [
+      ...sampleWorkspaces(),
+      makeWorkspace({
+        id: "remote-workspace:placeholder",
+        title: "New Box",
+        path: "",
+        remote: { hostId: "remote-peer:new-box", displayName: "New Box", state: "connecting" },
+      }),
+    ];
+    const saved: HostScopeFilterState = {
+      selectedHost: "all",
+      perHost: {
+        "remote-peer:new-box": {
+          mode: "selected",
+          workspaceIds: ["remote-workspace:new-a", "remote-workspace:new-b"],
+        },
+      },
+    };
+    assert.strictEqual(pruneUnavailableHostScopeFilter(saved, workspaces), saved);
+  });
 });
 
 describe("persistence & state mutation helpers", () => {

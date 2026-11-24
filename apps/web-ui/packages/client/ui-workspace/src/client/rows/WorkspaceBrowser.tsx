@@ -1890,25 +1890,33 @@ function WorkspaceBrowserContent({
   }, []);
   useEffect(() => {
     if (workspacePhase !== "ready" || workspaceStreamState !== "idle") return;
-    const pendingPresetHostKeys = pendingPresetHostKeysRef.current;
-    if (pendingPresetHostKeys !== null && pendingPresetHostKeys.size > 0) {
-      for (const workspace of orderedWorkspaces) {
-        const remoteHostId = workspace.remote?.hostId;
-        if (remoteHostId !== undefined) {
-          pendingPresetHostKeys.delete(remoteHostId);
+    // Wait briefly for multi-workspace follow bursts (`upsert` per remote project)
+    // to settle before pruning stale workspaceIds; `reconcileHostScopeFilter`
+    // already handles immediate render-time fallback when a host disappears.
+    const timer = window.setTimeout(() => {
+      const pendingPresetHostKeys = pendingPresetHostKeysRef.current;
+      if (pendingPresetHostKeys !== null && pendingPresetHostKeys.size > 0) {
+        for (const workspace of orderedWorkspaces) {
+          const remoteHostId = workspace.remote?.hostId;
+          if (remoteHostId !== undefined && workspace.remote?.state === "connected") {
+            pendingPresetHostKeys.delete(remoteHostId);
+          }
         }
       }
-    }
-    const pruned = pruneUnavailableHostScopeFilter(
-      hostScopeFilter,
-      orderedWorkspaces,
-      pendingPresetHostKeys === null || pendingPresetHostKeys.size === 0
-        ? undefined
-        : { preserveHostKeys: pendingPresetHostKeys },
-    );
-    if (pruned !== hostScopeFilter) {
-      updateHostScopeFilter(pruned);
-    }
+      const pruned = pruneUnavailableHostScopeFilter(
+        hostScopeFilter,
+        orderedWorkspaces,
+        pendingPresetHostKeys === null || pendingPresetHostKeys.size === 0
+          ? undefined
+          : { preserveHostKeys: pendingPresetHostKeys },
+      );
+      if (pruned !== hostScopeFilter) {
+        updateHostScopeFilter(pruned);
+      }
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
+    };
   }, [
     hostScopeFilter,
     orderedWorkspaces,

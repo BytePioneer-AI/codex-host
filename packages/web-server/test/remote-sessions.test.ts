@@ -2474,3 +2474,112 @@ it("does not re-traverse synced online peers on ordinary session/list or 30s tim
   await sleep(700);
   assert.equal(peerCatalogReads, 2);
 });
+
+it("publishes peer manifest projects and connected state before slow catalog pagination finishes", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "codexhost-peer-early-groups-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const peerHostId = "remote-peer:slow-catalog";
+  const epoch = "epoch-early";
+  const catalogGate = Promise.withResolvers<void>();
+  let connected = false;
+  let catalogStarted = false;
+
+  const transport: PeerChTransport = {
+    async post(route, body) {
+      if (route === "rpc") {
+        const { method } = body as { method: string };
+        if (method === "codexhost/thread/catalog/read") {
+          catalogStarted = true;
+          await catalogGate.promise;
+          return {
+            threads: [],
+            archivedThreadIds: [],
+            ownership: [],
+            nextCursor: null,
+          } as never;
+        }
+        if (method === "codexhost/thread/tree/read") return { entries: [] } as never;
+      }
+      throw new Error(`Unexpected peer request: ${route}`);
+    },
+    subscribe(listener) {
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+      return () => {};
+    },
+    manifest: () => undefined,
+  };
+
+  const source = new PeerThreadSource({
+    hostId: peerHostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => {},
+    onThreadChanged: () => {},
+    onConnection: () => {},
+  });
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const remote = new RemoteSessions(
+    new EventHub("peer-early-groups"),
+    async (op) => {
+      if (op.kind === "hosts") {
+        return connected
+          ? [
+              {
+                hostId: peerHostId,
+                online: true,
+                epoch,
+                displayName: "home",
+                state: "connected",
+                projects: [
+                  { id: "p-1", name: "alpha", path: "/remote/alpha", threadIds: [] },
+                  { id: "p-2", name: "beta", path: "/remote/beta", threadIds: [] },
+                ],
+              },
+            ]
+          : [
+              {
+                hostId: peerHostId,
+                online: false,
+                displayName: "home",
+                state: "connecting",
+              },
+            ];
+      }
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    { source: (id) => (id === peerHostId ? source : undefined) },
+  );
+  t.after(() => {
+    catalogGate.resolve();
+    remote.close();
+    source.close();
+  });
+
+  // Initial connecting state shows the fallback placeholder group.
+  await remote.refresh();
+  const initialRemote = workspaces.list().filter((w) => w.remote?.hostId === peerHostId);
+  assert.equal(initialRemote.length, 1);
+  assert.equal(initialRemote[0]?.remote?.state, "connecting");
+  assert.equal(initialRemote[0]?.title, "home");
+
+  // Once manifest arrives, start refresh while catalog pagination is still blocked.
+  connected = true;
+  const refreshPromise = remote.refresh();
+  await sleep(30);
+  assert.equal(catalogStarted, true);
+
+  // Real projects and connected state must already be published before catalog pagination ends.
+  const earlyRemote = workspaces.list().filter((w) => w.remote?.hostId === peerHostId);
+  assert.deepEqual(
+    earlyRemote.map((w) => ({ title: w.title, state: w.remote?.state })),
+    [
+      { title: "alpha", state: "connected" },
+      { title: "beta", state: "connected" },
+    ],
+  );
+
+  catalogGate.resolve();
+  await refreshPromise;
+});

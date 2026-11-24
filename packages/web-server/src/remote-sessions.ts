@@ -663,6 +663,9 @@ export class RemoteSessions {
     const present = new Set(hosts.filter((host) => host.online).map((host) => host.hostId));
     for (const entry of this.entries.values())
       if (!present.has(entry.identity.hostId)) this.offline(entry);
+    // Publish updated host states and manifest project folders immediately instead of
+    // leaving the UI on a stale `connecting` placeholder while multi-page catalog reads run.
+    this.syncGroups();
     await Promise.all(
       hosts
         .filter((host) => {

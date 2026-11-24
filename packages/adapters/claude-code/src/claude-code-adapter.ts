@@ -3320,7 +3320,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #sessions = new Set<ClaudeHarnessSession>();
   #closePromise: Promise<void> | null = null;
   #latestPlanLimit: ClaudePlanLimitEvent | null = null;
-  #creditsRefreshedAt = Number.NEGATIVE_INFINITY;
+  #fiveHourRefreshedAt = Number.NEGATIVE_INFINITY;
+  #sevenDayRefreshedAt = Number.NEGATIVE_INFINITY;
   #accountInspection: Promise<HarnessAccountSnapshot | null> | null = null;
   #accountCreditsSupported = false;
 
@@ -3486,7 +3487,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         await inspector.close().catch(() => undefined);
         this.#inspectors.delete(inspector);
       }
-      if (!this.#closePromise) this.#creditsRefreshedAt = Date.now();
+      if (!this.#closePromise) {
+        const refreshedAt = Date.now();
+        this.#fiveHourRefreshedAt = refreshedAt;
+        this.#sevenDayRefreshedAt = refreshedAt;
+      }
     }
   }
 
@@ -3842,7 +3847,9 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     }
     this.#latestPlanLimit = next.fiveHour || next.sevenDay ? next : null;
     if (this.#latestPlanLimit) {
-      this.#creditsRefreshedAt = Date.now();
+      const refreshedAt = Date.now();
+      if (planLimit.fiveHour) this.#fiveHourRefreshedAt = refreshedAt;
+      if (planLimit.sevenDay) this.#sevenDayRefreshedAt = refreshedAt;
       this.#accountCreditsSupported = true;
       for (const session of this.#sessions) {
         session.publishAccountCreditsSupport(true);
@@ -3858,9 +3865,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
 
   refreshCredits(): Promise<AccountCreditsSnapshot | null> {
     if (this.#closePromise) return Promise.resolve(null);
+    const now = Date.now();
     if (
       !this.#accountInspection &&
-      Date.now() - this.#creditsRefreshedAt < ACCOUNT_CREDITS_REFRESH_COOLDOWN_MS
+      now - this.#fiveHourRefreshedAt < ACCOUNT_CREDITS_REFRESH_COOLDOWN_MS &&
+      now - this.#sevenDayRefreshedAt < ACCOUNT_CREDITS_REFRESH_COOLDOWN_MS
     ) {
       return Promise.resolve(this.credits());
     }

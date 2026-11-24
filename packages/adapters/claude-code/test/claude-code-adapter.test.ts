@@ -7582,14 +7582,22 @@ describe("Claude Code HarnessAdapter", () => {
     expect(adapter.credits()).toEqual({ usedPercent: 10, periodType: "five_hour" });
   });
 
-  it("reuses recent credits during refreshCredits cooldown, extends cooldown on native pushes, and keeps inspectAccount fresh", async () => {
+  it("reuses recent credits during refreshCredits cooldown, tracks native push freshness per window, and keeps inspectAccount fresh", async () => {
     let now = 100_000;
     const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
     const { adapter, dependencies, transports } = fixture({}, { accountCreditsSupported: true });
     const responses = [
       { credits: { usedPercent: 10, periodType: "five_hour" as const } },
       { credits: { usedPercent: 20, periodType: "five_hour" as const } },
-      { credits: { usedPercent: 30, periodType: "five_hour" as const } },
+      {
+        credits: {
+          usedPercent: 30,
+          periodType: "five_hour" as const,
+          productUsage: [
+            { product: "7-day window", periodType: "seven_day" as const, usagePercent: 25 },
+          ],
+        },
+      },
     ];
     let index = 0;
     const createInspector = dependencies.createInspector;
@@ -7630,19 +7638,28 @@ describe("Claude Code HarnessAdapter", () => {
       if (!transport) throw new Error("Fake Claude transport was not created");
 
       now = 180_000;
-      transport.planLimit({ fiveHour: { utilizationPercent: 44 } });
+      transport.planLimit({
+        fiveHour: { utilizationPercent: 44 },
+        sevenDay: { utilizationPercent: 18 },
+      });
       await nextEvent(iterator);
 
       now = 220_000;
       await expect(adapter.refreshCredits()).resolves.toEqual({
         usedPercent: 44,
         periodType: "five_hour",
+        productUsage: [{ product: "7-day window", periodType: "seven_day", usagePercent: 18 }],
       });
+
+      now = 230_000;
+      transport.planLimit({ fiveHour: { utilizationPercent: 46 } });
+      await nextEvent(iterator);
 
       now = 240_000;
       await expect(adapter.refreshCredits()).resolves.toEqual({
         usedPercent: 30,
         periodType: "five_hour",
+        productUsage: [{ product: "7-day window", periodType: "seven_day", usagePercent: 25 }],
       });
 
       transport.finish({ status: "succeeded" });

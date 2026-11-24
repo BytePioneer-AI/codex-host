@@ -10,6 +10,7 @@ import {
   IconRefreshOutlineRegular,
   IconTrashOutlineRegular,
   Menu,
+  Switch,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { RemotePeerState, RemotePeerSummary } from "@codexhost/shared-contracts";
@@ -91,6 +92,8 @@ const STATE_LABEL: Record<RemotePeerState, Parameters<Translate>[0]> = {
   disabled: "remotePeers.state.disabled",
 };
 
+const CONNECTING_POLL_DELAYS_MS = [800, 1_200, 1_500, 2_000, 2_500, 3_000] as const;
+
 function formatOriginDisplay(origin: string): string {
   try {
     const url = new URL(origin);
@@ -110,6 +113,7 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
   const [openMenuPeerId, setOpenMenuPeerId] = useState<string | null>(null);
 
   const [reconnectingIds, setReconnectingIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [togglingIds, setTogglingIds] = useState<ReadonlySet<string>>(() => new Set());
   const [editingPeer, setEditingPeer] = useState<RemotePeerSummary | null>(null);
   const [removingPeer, setRemovingPeer] = useState<RemotePeerSummary | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
@@ -166,6 +170,62 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [loadPeers]);
+
+  const connectingKey =
+    view.kind === "ready"
+      ? view.peers
+          .filter((peer) => peer.enabled && peer.state === "connecting")
+          .map((peer) => peer.peerId)
+          .sort()
+          .join(",")
+      : "";
+
+  useEffect(() => {
+    if (connectingKey === "") return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = (attempt: number): void => {
+      const delay = CONNECTING_POLL_DELAYS_MS[attempt];
+      if (delay === undefined) return;
+      timer = setTimeout(() => {
+        if (cancelled) return;
+        void loadPeers("silent", true).then(() => {
+          if (!cancelled) poll(attempt + 1);
+        });
+      }, delay);
+    };
+    poll(0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [connectingKey, loadPeers]);
+
+  const handleToggleEnabled = async (peer: RemotePeerSummary, enabled: boolean): Promise<void> => {
+    setActionError(null);
+    setTogglingIds((prev) => new Set(prev).add(peer.peerId));
+    try {
+      const { peer: updated } = await remotePeersApi.update({
+        peerId: peer.peerId,
+        enabled,
+      });
+      const replacePeer = (peers: RemotePeerSummary[]): RemotePeerSummary[] =>
+        peers.map((item) => (item.peerId === updated.peerId ? updated : item));
+      updateCachedPeers(replacePeer);
+      setView((current) =>
+        current.kind === "ready" ? { kind: "ready", peers: replacePeer(current.peers) } : current,
+      );
+      dispatchRemotePeersUpdated();
+    } catch (cause) {
+      setActionError(t("remotePeers.actionFailed", { message: messageOf(cause) }));
+    } finally {
+      setTogglingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(peer.peerId);
+        return next;
+      });
+    }
+  };
 
   const handleReconnect = async (peer: RemotePeerSummary): Promise<void> => {
     setActionError(null);
@@ -286,8 +346,13 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
         <section className={css.surface} aria-label={t("remotePeers.listTitle")}>
           {view.peers.map((peer) => {
             const reconnecting = reconnectingIds.has(peer.peerId);
+            const toggling = togglingIds.has(peer.peerId);
             const connected = peer.enabled && peer.state === "connected";
             const menuOpen = openMenuPeerId === peer.peerId;
+            const toggleLabel = t(
+              peer.enabled ? "remotePeers.action.disable" : "remotePeers.action.enable",
+              { name: peer.name },
+            );
             const showLastError =
               (peer.state === "offline" || peer.state === "auth-error") &&
               peer.lastError !== undefined &&
@@ -389,7 +454,7 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
                           ) : (
                             <IconRefreshOutlineRegular size={14} />
                           ),
-                          disabled: reconnecting || !peer.enabled,
+                          disabled: reconnecting || toggling || !peer.enabled,
                         },
                         {
                           id: "edit",
@@ -432,6 +497,14 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
                           <IconEllipsisOutlineRegular size={16} />
                         </button>
                       }
+                    />
+                    <Switch
+                      checked={peer.enabled}
+                      disabled={toggling}
+                      label={toggleLabel}
+                      title={toggleLabel}
+                      className={css.peerSwitch}
+                      onChange={(next) => void handleToggleEnabled(peer, next)}
                     />
                   </div>
                 </div>

@@ -178,7 +178,15 @@ export class PeerHostManager {
             record.name = client.manifest.hostname;
           }
           if (action === "test")
-            return c.remotePeerTestResultSchema.parse({ ...client.summary(), ok: true });
+            return c.remotePeerTestResultSchema.parse({
+              ...client.summary(),
+              projects: client.manifest?.projects.map(({ id, name, path }) => ({
+                id,
+                name,
+                path,
+              })),
+              ok: true,
+            });
           this.store.save([...this.records(), record]);
           const installed = this.install(record, client);
           this.changed(installed.hostId);

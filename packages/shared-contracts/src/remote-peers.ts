@@ -120,6 +120,13 @@ export const remotePeerTestParamsSchema = z
   );
 export type RemotePeerTestParams = z.infer<typeof remotePeerTestParamsSchema>;
 
+export const remotePeerTestProjectSchema = z.object({
+  id: z.string().min(1).max(1024),
+  name: z.string().min(1).max(512),
+  path: z.string().min(1).max(8192),
+});
+export type RemotePeerTestProject = z.infer<typeof remotePeerTestProjectSchema>;
+
 export const remotePeerTestResultSchema = z.object({
   ok: z.boolean(),
   latencyMs: z.number().int().nonnegative().optional(),
@@ -131,6 +138,7 @@ export const remotePeerTestResultSchema = z.object({
   hostname: z.string().max(255).optional(),
   homeDir: z.string().max(4096).optional(),
   projectCount: z.number().int().nonnegative().optional(),
+  projects: z.array(remotePeerTestProjectSchema).optional(),
   error: z.string().max(1000).optional(),
 });
 export type RemotePeerTestResult = z.infer<typeof remotePeerTestResultSchema>;
@@ -166,6 +174,20 @@ export const REMOTE_PEER_FILE_PROXY_PATH = "/api/remote-peer/file";
 
 export function remotePeerHarnessIconPath(peerId: string, harnessId: string): string {
   return `/harness-icons/peer/${encodeURIComponent(peerId)}/${encodeURIComponent(harnessId)}`;
+}
+
+function encodeUtf8Base64Url(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i] ?? 0);
+  }
+  return btoa(binary).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "");
+}
+
+/** Deterministic workspace ID matching `packages/web-server/src/remote-workspaces.ts`. */
+export function remotePeerWorkspaceId(hostId: string, projectId: string | null): string {
+  return `remote-workspace:${encodeUtf8Base64Url(JSON.stringify([hostId, projectId]))}`;
 }
 
 export function remotePeerHarnessPresentationPath(peerId: string): string {

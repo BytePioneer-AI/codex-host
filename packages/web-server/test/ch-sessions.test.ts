@@ -1246,6 +1246,66 @@ it("moves sessions between native projects only after Codex confirms, keeping We
   assert.deepEqual(workspaces.get(beta.workspaceId)?.sessionIds, betaIds);
 });
 
+it("retries an unconfirmed project assignment on the started Thread without starting another", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-native-project-assign-retry-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const alphaRoot = join(root, "alpha");
+  const host = new FakeChHost();
+  host.projectSnapshot.nativeProjects = true;
+  host.projectSnapshot.projects = [{ id: "alpha", name: "Alpha", rootPaths: [alphaRoot] }];
+  host.add("existing", alphaRoot, "Existing", false).projectId = "alpha";
+  host.projectSnapshot.projectless = [];
+  const data = new DataDir(join(root, "web"));
+  const workspaces = new Workspaces(data, alphaRoot, true);
+  const sessions = new ChSessions(host, workspaces, new EventHub(data.root));
+  t.after(() => sessions.close());
+  let rejectUpdate = true;
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "thread/metadata/update") {
+      host.requests.push({ method, params: structuredClone(params) });
+      if (rejectUpdate) throw new Error("Project assignment failed");
+      const row = host.threads.get(String(params.threadId));
+      assert.ok(row);
+      row.projectId = String(params.projectId);
+      return { thread: structuredClone(row) } as T;
+    }
+    return request<T>(method, params);
+  };
+  const rpc = new RpcRegistry();
+  sessions.register(rpc, new StreamRegistry());
+  const dispatch = (method: string, params = {}) =>
+    rpc.dispatch(method, { args: { request: params } });
+  await dispatch("session/list");
+  const draft = await dispatch("session/create", { cwd: alphaRoot });
+  assert.ok(draft.ok);
+  const { sessionId } = draft.value as { sessionId: string };
+  const prompt = (requestId: string) =>
+    dispatch("session/prompt", {
+      sessionId,
+      requestId,
+      content: [{ type: "text", text: "hello" }],
+      mode: "queue",
+    });
+  const count = (method: string) => host.requests.filter((entry) => entry.method === method).length;
+
+  const failed = await prompt("send-1");
+  assert.equal(failed.ok, false);
+  assert.equal(count("thread/start"), 1);
+  assert.equal(count("turn/start"), 0, "No message is sent before the project is confirmed");
+
+  rejectUpdate = false;
+  const sent = await prompt("send-2");
+  assert.ok(sent.ok, sent.ok ? undefined : sent.error.message);
+  assert.equal(count("thread/start"), 1, "The retry reuses the started Thread");
+  assert.equal(count("thread/metadata/update"), 2);
+  assert.equal(count("turn/start"), 1);
+  const created = [...host.threads.values()].find((row) => row.id.startsWith("canonical-"));
+  assert.ok(created);
+  assert.equal(created.projectId, "alpha");
+  assert.equal(workspaces.ownerOf(created.id)?.projectId, "alpha");
+});
+
 it("projectRootTitles: falls back to the full path when the basename is empty or conflicts", () => {
   const titles = projectRootTitles([
     { name: "app", rootPaths: ["/srv/app", "/"] },

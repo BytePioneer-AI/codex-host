@@ -86,6 +86,8 @@ interface Draft {
   createdAt: number;
   canonicalId?: string;
   creating?: Promise<string>;
+  /** Host-confirmed Thread awaiting project assignment; retries reuse it instead of starting another. */
+  started?: { thread: ChThread; harnessId: string };
   titleRequested?: boolean;
 }
 
@@ -946,6 +948,7 @@ export class ChSessions {
       existing &&
       !existing.canonicalId &&
       !existing.creating &&
+      !existing.started &&
       existing.cwd === cwd &&
       existing.projectId === projectId
     )
@@ -1000,7 +1003,14 @@ export class ChSessions {
   ): Promise<void> {
     await this.create({ request }, configuration);
     const draft = this.drafts.get(request.sessionId);
-    if (!draft || draft.creating || draft.canonicalId || draft.cwd !== request.cwd || this.closed)
+    if (
+      !draft ||
+      draft.creating ||
+      draft.started ||
+      draft.canonicalId ||
+      draft.cwd !== request.cwd ||
+      this.closed
+    )
       throw new RpcError("session/busy", "Draft is already in use.");
     draft.selection = { ...configuration.selection };
     delete draft.permissionModeId;
@@ -1009,7 +1019,20 @@ export class ChSessions {
 
   private async commit(draft: Draft, prompt: string): Promise<string> {
     if (draft.canonicalId) return draft.canonicalId;
-    draft.creating ??= (async () => {
+    if (!draft.creating) {
+      const creating = this.startThread(draft, prompt);
+      draft.creating = creating;
+      // Only a failed project assignment reopens the draft: the retry reuses the started Thread.
+      creating.catch(() => {
+        if (draft.started && draft.creating === creating) delete draft.creating;
+      });
+    }
+    // No automatic retry after creation failure: the Host may already have allocated an identity.
+    return draft.creating;
+  }
+
+  private async startThread(draft: Draft, prompt: string): Promise<string> {
+    if (!draft.started) {
       const plugin = (await this.catalog.list()).some(
         (item) => item.id === draft.selection.provider,
       );
@@ -1054,42 +1077,42 @@ export class ChSessions {
             actualHarnessId: owner.harnessId,
           },
         );
-      if (draft.projectId && result.thread.projectId !== draft.projectId) {
-        const updated = await this.host.request<{ thread: ChThread }>("thread/metadata/update", {
-          threadId: result.thread.id,
-          projectId: draft.projectId,
-        });
-        if (updated.thread.projectId !== draft.projectId)
-          throw new RpcError(
-            "workspace/assignment-unconfirmed",
-            "Codex did not confirm the conversation's project.",
-          );
-        result.thread.projectId = updated.thread.projectId;
-      }
-      draft.canonicalId = result.thread.id;
-      this.files?.bind(draft.id, result.thread.id);
-      this.rows.set(result.thread.id, result.thread);
-      this.threads.setHarness(result.thread.id, owner.harnessId);
-      this.workspaces.detachSession(draft.id);
-      if (this.workspaces.usesNativeProjects) {
-        this.workspaces.updateNativeProjectMember(result.thread.id, draft.projectId);
-      } else if (draft.cwd) {
-        this.workspaces.selectReferenceWorkspace(draft.cwd);
-        this.workspaces.attachReferencedSession(result.thread.id, result.thread.cwd);
-        this.workspaces.addDraftReference(result.thread.id, draft.cwd);
-      } else {
-        this.workspaces.addDraftReference(result.thread.id, undefined);
-      }
-      this.events.emit("api-session/added", await this.summary(result.thread));
-      this.publishedCatalog?.set(result.thread.id, this.catalogKey(result.thread));
-      this.events.emit("codexhost/session-bound", draft.id, result.thread.id);
-      // Navigation reads the retained draft during binding; remove its row only afterward.
-      // Keep the alias for in-flight requests, without deleting the native Thread.
-      this.events.emit("api-session/removed", draft.id);
-      return result.thread.id;
-    })();
-    // No automatic retry after creation failure: the Host may already have allocated an identity.
-    return draft.creating;
+      draft.started = { thread: result.thread, harnessId: owner.harnessId };
+    }
+    const { thread, harnessId } = draft.started;
+    if (draft.projectId && thread.projectId !== draft.projectId) {
+      const updated = await this.host.request<{ thread: ChThread }>("thread/metadata/update", {
+        threadId: thread.id,
+        projectId: draft.projectId,
+      });
+      if (updated.thread.projectId !== draft.projectId)
+        throw new RpcError(
+          "workspace/assignment-unconfirmed",
+          "Codex did not confirm the conversation's project.",
+        );
+      thread.projectId = updated.thread.projectId;
+    }
+    draft.canonicalId = thread.id;
+    this.files?.bind(draft.id, thread.id);
+    this.rows.set(thread.id, thread);
+    this.threads.setHarness(thread.id, harnessId);
+    this.workspaces.detachSession(draft.id);
+    if (this.workspaces.usesNativeProjects) {
+      this.workspaces.updateNativeProjectMember(thread.id, draft.projectId);
+    } else if (draft.cwd) {
+      this.workspaces.selectReferenceWorkspace(draft.cwd);
+      this.workspaces.attachReferencedSession(thread.id, thread.cwd);
+      this.workspaces.addDraftReference(thread.id, draft.cwd);
+    } else {
+      this.workspaces.addDraftReference(thread.id, undefined);
+    }
+    this.events.emit("api-session/added", await this.summary(thread));
+    this.publishedCatalog?.set(thread.id, this.catalogKey(thread));
+    this.events.emit("codexhost/session-bound", draft.id, thread.id);
+    // Navigation reads the retained draft during binding; remove its row only afterward.
+    // Keep the alias for in-flight requests, without deleting the native Thread.
+    this.events.emit("api-session/removed", draft.id);
+    return thread.id;
   }
 
   /**
@@ -1189,7 +1212,7 @@ export class ChSessions {
   discardUnsubmittedDraft(id: string): void {
     const draft = this.drafts.get(id);
     if (!draft) return;
-    if (draft.canonicalId || draft.creating)
+    if (draft.canonicalId || draft.creating || draft.started)
       throw new RpcError("session/busy", "A submitted Thread cannot change Session source.");
     this.drafts.delete(id);
   }
@@ -1471,14 +1494,15 @@ export class ChSessions {
       const model = harnessModelRefFromKey(request.model);
       const draft = this.drafts.get(request.sessionId);
       if (draft && !draft.canonicalId) {
-        if (draft.creating) throw new RpcError("session/busy", "Draft creation is in progress.");
+        if (draft.creating || draft.started)
+          throw new RpcError("session/busy", "Draft creation is in progress.");
         const before = draft.selection;
         if (before.provider !== request.provider) {
           const config = await this.preferences
             ?.configuration(request.provider)
             .catch(() => undefined);
           const inspection = await this.catalog.inspect(request.provider, draft.cwd);
-          if (draft.creating || draft.selection !== before)
+          if (draft.creating || draft.started || draft.selection !== before)
             throw new RpcError("session/busy", "Draft selection changed.");
           const permissionModeId = draftPermissionMode(
             request.provider,
@@ -2131,7 +2155,7 @@ export class ChSessions {
           "Mode not advertised by this Harness.",
         );
       if (draft && !draft.canonicalId) {
-        if (draft.creating || draft.selection.provider !== harnessId)
+        if (draft.creating || draft.started || draft.selection.provider !== harnessId)
           throw new RpcError("session/busy", "Draft selection changed.");
         draft.permissionModeId = modeId;
         await this.preferences

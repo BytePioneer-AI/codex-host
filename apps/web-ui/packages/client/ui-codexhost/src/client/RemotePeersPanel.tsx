@@ -424,15 +424,6 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
                   </div>
 
                   <div className={css.peerActions}>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className={css.addDirBtn}
-                      disabled={!connected}
-                      onClick={() => dispatchOpenAddRemoteWorkspace(peer.hostId)}
-                    >
-                      {t("remotePeers.action.addWorkspace")}
-                    </Button>
                     <Menu
                       open={menuOpen}
                       onClose={() => setOpenMenuPeerId(null)}
@@ -440,6 +431,12 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
                       align="end"
                       autoFocus
                       items={[
+                        {
+                          id: "add-workspace",
+                          label: t("remotePeers.action.addWorkspace"),
+                          icon: <IconPlusOutlineRegular size={14} />,
+                          disabled: !connected || toggling,
+                        },
                         {
                           id: "reconnect",
                           label: t(
@@ -471,7 +468,9 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
                       ]}
                       onSelect={(id) => {
                         setOpenMenuPeerId(null);
-                        if (id === "reconnect") {
+                        if (id === "add-workspace") {
+                          dispatchOpenAddRemoteWorkspace(peer.hostId);
+                        } else if (id === "reconnect") {
                           void handleReconnect(peer);
                         } else if (id === "edit") {
                           setActionError(null);

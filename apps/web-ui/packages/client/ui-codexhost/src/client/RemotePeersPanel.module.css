@@ -231,16 +231,6 @@
   margin-left: 6px;
 }
 
-.addDirBtn {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12.5px;
-  font-weight: 500;
-}
-
-.addDirBtn:hover:not(:disabled) {
-  color: var(--dsw-alias-label-primary);
-}
-
 .peerErrorNote {
   margin: 0;
   padding-left: 13px;
@@ -534,27 +524,7 @@
     gap: 8px;
   }
 
-  .addDirBtn {
-    padding-inline: 8px;
-    font-size: 12px;
-  }
-
   .peerSwitch {
     margin-left: 4px;
-  }
-}
-
-@media (max-width: 440px) {
-  .peerMain {
-    flex-wrap: wrap;
-    row-gap: 6px;
-  }
-
-  .peerIdentity {
-    flex: 1 1 180px;
-  }
-
-  .peerActions {
-    margin-left: auto;
   }
 }

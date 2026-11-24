@@ -45,6 +45,7 @@ import {
   installDraftKeymap,
   installDraftWheel,
   keepDraftFocus,
+  refreshDraftCaret,
   revealDraftSelection,
 } from "../input/editor/view-binding.ts";
 import { resolveSubmitMode } from "../input/submission-policy.ts";
@@ -330,6 +331,74 @@ export const InputBar = memo(function InputBar({
     return installDraftWheel(scrollRef);
   }, []);
 
+  const seenAttachmentsRef = useRef<{
+    sessionId: typeof sessionId;
+    ids: Set<string>;
+    count: number;
+  }>({
+    sessionId,
+    ids: new Set(attachments.map((attachment) => attachment.id)),
+    count: attachments.length,
+  });
+  const [intakeFocusSeq, setIntakeFocusSeq] = useState(0);
+  const lastIntakeFocusSeqRef = useRef(0);
+
+  // Restore focus after user-initiated attachment/file intake (drop, file
+  // picker, paste, desktop screenshot) without stealing focus on failed-send
+  // attachment restores, and refresh the caret after layout settles when the
+  // attachment rail mounts or collapses above the editor.
+  useEffect(() => {
+    const prev = seenAttachmentsRef.current;
+    const sessionChanged = prev.sessionId !== sessionId;
+    const intakeTriggered = intakeFocusSeq !== lastIntakeFocusSeqRef.current;
+    lastIntakeFocusSeqRef.current = intakeFocusSeq;
+
+    if (sessionChanged) {
+      seenAttachmentsRef.current = {
+        sessionId,
+        ids: new Set(attachments.map((attachment) => attachment.id)),
+        count: attachments.length,
+      };
+      return;
+    }
+
+    let added = false;
+    for (const attachment of attachments) {
+      if (!prev.ids.has(attachment.id)) {
+        prev.ids.add(attachment.id);
+        added = true;
+      }
+    }
+    const countChanged = prev.count !== attachments.length;
+    prev.count = attachments.length;
+
+    const shouldRestoreFocus = (added || intakeTriggered) && shouldAutoFocusTextInput();
+    if (!shouldRestoreFocus && !countChanged && !added && !intakeTriggered) return;
+    if (editor === null || !editable || locked) return;
+
+    if (shouldRestoreFocus) {
+      focusDraftEditor(editor, revealSelection);
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const root = editor.getRootElement();
+      if (root === null) return;
+      const active = root.ownerDocument.activeElement;
+      if (
+        shouldRestoreFocus &&
+        (active === null ||
+          active === root.ownerDocument.body ||
+          active === root.ownerDocument.documentElement)
+      ) {
+        focusDraftEditor(editor, revealSelection);
+      }
+      refreshDraftCaret(editor);
+      revealSelection();
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [sessionId, attachments, intakeFocusSeq, editor, editable, locked]);
+
   // Intake pre-check: an addition that would break a projected image limit is
   // refused as a whole batch, announced immediately, and never enters the
   // rail. Only images have projected size/count limits. Ordinary files upload
@@ -371,7 +440,11 @@ export const InputBar = memo(function InputBar({
         }
         return addFiles(files, directories);
       })();
-      if (rejected !== null) showToast(rejected);
+      if (rejected !== null) {
+        showToast(rejected);
+        return;
+      }
+      setIntakeFocusSeq((seq) => seq + 1);
     },
     [subagent, addFiles, attachmentsEnabled, imagesOnly, attachments, imageLimits, showToast, t],
   );

@@ -9,6 +9,7 @@ import { requestRemoteSession, RemoteSessionError } from "@codexhost/desktop-con
 import { z } from "zod";
 import {
   harnessConfigurationStateSchema,
+  hostThreadIdSchema,
   REMOTE_PEER_HOST_ID_PREFIX,
   remotePeerColorSchema,
   remotePeerPromptParamsSchema,
@@ -21,8 +22,10 @@ import {
   REMOTE_IDENTITY_MAX_LENGTH,
   WEB_FOLLOW_PROJECTION_KEYS,
   webToolOutputReferenceSchema,
+  type HarnessCommandCatalog,
   type RemotePeerPromptParams,
   type RemoteSessionOperation,
+  type SkillsListResult,
 } from "@codexhost/shared-contracts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
@@ -161,6 +164,7 @@ export interface RemotePeerProvider {
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
   onUsageChanged?: (hostId: string, threadId: string) => void;
   onCatalogInspectionChanged?: (hostId: string) => void;
+  onSkillsChanged?: (hostId: string) => void;
   onConnection?: (hostId: string, online: boolean) => void;
   onReset?: (hostId: string, epoch: string, full: boolean) => void;
 }
@@ -220,6 +224,7 @@ export class RemoteSessions {
     onThreadChanged: (hostId: string, threadId: string) => Promise<void>;
     onUsageChanged: (hostId: string, threadId: string) => void;
     onCatalogInspectionChanged: (hostId: string) => void;
+    onSkillsChanged: (hostId: string) => void;
     onConnection: (hostId: string, online: boolean) => void;
     onReset: (hostId: string, epoch: string, full: boolean) => void;
   };
@@ -243,6 +248,7 @@ export class RemoteSessions {
       onThreadChanged: (hostId, threadId) => this.handlePeerThreadChanged(hostId, threadId),
       onUsageChanged: (hostId, threadId) => this.handlePeerUsageChanged(hostId, threadId),
       onCatalogInspectionChanged: (hostId) => this.handlePeerCatalogInspectionChanged(hostId),
+      onSkillsChanged: () => this.handlePeerSkillsChanged(),
       onConnection: (hostId, online) => this.handlePeerConnection(hostId, online),
       onReset: (hostId, epoch) => this.handlePeerReset(hostId, epoch),
     };
@@ -250,6 +256,7 @@ export class RemoteSessions {
       peers.onThreadChanged ??= this.peerHandlers.onThreadChanged;
       peers.onUsageChanged ??= this.peerHandlers.onUsageChanged;
       peers.onCatalogInspectionChanged ??= this.peerHandlers.onCatalogInspectionChanged;
+      peers.onSkillsChanged ??= this.peerHandlers.onSkillsChanged;
       peers.onConnection ??= this.peerHandlers.onConnection;
       peers.onReset ??= this.peerHandlers.onReset;
     }
@@ -296,6 +303,10 @@ export class RemoteSessions {
       if (entry.controls) delete entry.controls.inspection;
     }
   }
+  private handlePeerSkillsChanged(): void {
+    if (this.closed) return;
+    this.events.emit("codexhost/skills/changed");
+  }
   private handlePeerConnection(hostId: string, online: boolean): void {
     if (this.closed || online) return;
     this.syncedPeerSources.delete(hostId);
@@ -305,6 +316,7 @@ export class RemoteSessions {
     for (const entry of this.entries.values()) {
       if (entry.identity.hostId === hostId) this.offline(entry);
     }
+    this.publishDraftSummaries(hostId);
     this.syncGroups();
   }
   private handlePeerReset(hostId: string, epoch: string): void {
@@ -359,11 +371,45 @@ export class RemoteSessions {
   peerClient(hostId: string): PeerAttachmentEndpoint | undefined {
     return this.peerEndpoint(hostId);
   }
+  private draftOnline(hostId: string): boolean {
+    const host = this.hosts.get(hostId);
+    if (host !== undefined) return host.online;
+    const peer = this.peerEndpoint(hostId);
+    if (peer !== undefined) return peer.state === "connected";
+    return true;
+  }
   private draftSummary(draft: RemoteProjectDraft) {
+    const online = this.draftOnline(draft.target.hostId);
     return draft.summary(
-      this.peerAttachmentsSupported(draft.target.hostId),
+      online && this.peerAttachmentsSupported(draft.target.hostId),
       this.hosts.get(draft.target.hostId)?.color,
+      online,
     );
+  }
+  private publishDraftSummaries(hostId?: string): void {
+    if (this.closed) return;
+    for (const draft of this.drafts.values()) {
+      if (draft.canonicalId) continue;
+      if (hostId !== undefined && draft.target.hostId !== hostId) continue;
+      const summary = this.draftSummary(draft);
+      this.events.emit("api-session/added", summary);
+      for (const sink of this.controls) {
+        sink.push({
+          type: "projection",
+          sessionId: draft.id,
+          key: "remoteHost",
+          value: summary.projections.values.remoteHost,
+          seq: 0,
+        });
+        sink.push({
+          type: "projection",
+          sessionId: draft.id,
+          key: "attachmentInput",
+          value: summary.projections.values.attachmentInput,
+          seq: 0,
+        });
+      }
+    }
   }
   async uploadFile(
     id: string,
@@ -656,12 +702,14 @@ export class RemoteSessions {
       for (const entry of this.entries.values()) this.offline(entry);
       for (const host of this.hosts.values()) host.online = false;
       this.syncedPeerSources.clear();
+      this.publishDraftSummaries();
       this.syncGroups();
       return;
     }
     const previousHosts = this.hosts;
     this.hosts = new Map(hosts.map((host) => [host.hostId, host]));
     const metadataChangedHostIds = new Set<string>();
+    const draftChangedHostIds = new Set<string>();
     for (const host of hosts) {
       const prev = previousHosts.get(host.hostId);
       if (
@@ -669,6 +717,9 @@ export class RemoteSessions {
         (prev.displayName !== host.displayName || prev.color !== host.color)
       ) {
         metadataChangedHostIds.add(host.hostId);
+        draftChangedHostIds.add(host.hostId);
+      } else if (prev !== undefined && prev.online !== host.online) {
+        draftChangedHostIds.add(host.hostId);
       }
     }
     if (metadataChangedHostIds.size > 0) {
@@ -678,6 +729,9 @@ export class RemoteSessions {
         entry.view?.log.setProjection("remoteHost", nextSummary.projections.values.remoteHost);
         this.events.emit("api-session/added", nextSummary);
       }
+    }
+    for (const hostId of draftChangedHostIds) {
+      this.publishDraftSummaries(hostId);
     }
     for (const [id, entry] of this.entries) {
       if (
@@ -931,6 +985,10 @@ export class RemoteSessions {
           current.view.log.setProjection("title", nextSummary.projections.values.title);
           current.view.log.setProjection("remoteHost", nextSummary.projections.values.remoteHost);
           current.view.log.setProjection(
+            "nativeDiscovery",
+            nextSummary.projections.values.nativeDiscovery,
+          );
+          current.view.log.setProjection(
             "attachmentInput",
             nextSummary.projections.values.attachmentInput,
           );
@@ -964,6 +1022,7 @@ export class RemoteSessions {
       for (const entry of this.entries.values()) {
         if (entry.identity.hostId === host.hostId) this.offline(entry);
       }
+      this.publishDraftSummaries(host.hostId);
     } finally {
       if (this.inFlightPeerSources.get(host.hostId) === source) {
         this.inFlightPeerSources.delete(host.hostId);
@@ -1319,6 +1378,10 @@ export class RemoteSessions {
       entry.online && this.peerWorkspaceFilesSupported(entry.identity.hostId);
     const officePreviewSupported =
       entry.online && this.peerOfficePreviewSupported(entry.identity.hostId);
+    const nativeDiscovery =
+      entry.identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX) &&
+      !entry.row.parentThreadId &&
+      entry.row.canAcceptDirectInput !== false;
     const harnessIdentity =
       remoteHarnessIdentity(entry) ??
       (entry.row.modelProvider !== "codexhost" ? { id: "codex", name: "Codex" } : undefined);
@@ -1351,7 +1414,7 @@ export class RemoteSessions {
             : {}),
           threadReference: this.reference(entry),
           nativeConnection: { state: entry.online ? "connected" : "reconnecting" },
-          nativeDiscovery: false,
+          nativeDiscovery,
           remoteHistoryError: entry.historyError ?? null,
           attachmentInput: { enabled: attachmentsSupported },
           ...(attachmentsSupported ? { imageLimits: WEB_IMAGE_LIMITS } : {}),
@@ -2023,6 +2086,12 @@ export class RemoteSessions {
           "Remote sessions cannot open files on the Hub host.",
         );
       }
+      if (method === "codexhost/executeThreadCommand") {
+        throw new RpcError(
+          "remote/unsupported",
+          "Direct command execution is unavailable for remote Threads.",
+        );
+      }
       if (method === "session/prompt") {
         const pending = this.pendingFirstTurns.get(id);
         if (pending) return this.firstTurn(pending, request as Record<string, unknown>);
@@ -2038,6 +2107,10 @@ export class RemoteSessions {
             return draft.catalog(this.draftCatalogLoader(draft));
           case "session/projections":
             return this.draftSummary(draft).projections;
+          case "codexhost/skills/list":
+            return this.listDraftSkills(draft);
+          case "codexhost/threadCommands":
+            return this.inspectDraftCommands(draft);
           case "session/selectModel": {
             await draft.select(input, this.draftCatalogLoader(draft));
             const summary = this.draftSummary(draft);
@@ -2086,10 +2159,12 @@ export class RemoteSessions {
       const draft = this.drafts.get(id);
       if (draft && !draft.canonicalId) {
         draft.lastUsed = Date.now();
+        const online = this.draftOnline(draft.target.hostId);
         draft.follow(
           sink,
-          this.peerAttachmentsSupported(draft.target.hostId),
+          online && this.peerAttachmentsSupported(draft.target.hostId),
           this.hosts.get(draft.target.hostId)?.color,
+          online,
         );
         return true;
       }
@@ -2115,11 +2190,94 @@ export class RemoteSessions {
       return true;
     });
   }
+  private requireOnlinePeerSource(hostId: string): PeerThreadSource {
+    if (this.closed) throw new RpcError("remote/offline", "Remote session gateway is closed");
+    const host = this.hosts.get(hostId);
+    if (host && !host.online) {
+      throw new RpcError("remote/offline", "Remote peer is offline.");
+    }
+    const peer = this.peerEndpoint(hostId);
+    if (peer && peer.state !== "connected") {
+      throw new RpcError("remote/offline", "Remote peer is offline.");
+    }
+    const peerSource = this.peers?.source(hostId);
+    if (!peerSource) {
+      throw new RpcError("remote/offline", "Remote peer is offline.");
+    }
+    return peerSource;
+  }
+  private async listDraftSkills(draft: RemoteProjectDraft): Promise<SkillsListResult> {
+    if (!draft.target.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+      throw new RpcError("skills/unavailable", "Skills are unavailable for this remote host.");
+    }
+    if (draft.selection?.provider === "codex") {
+      throw new RpcError("skills/unavailable", "Codex uses its native Skills.");
+    }
+    const peerSource = this.requireOnlinePeerSource(draft.target.hostId);
+    return peerSource.listSkills({ cwd: draft.target.cwd });
+  }
+  private async listThreadSkills(id: string): Promise<SkillsListResult> {
+    const identity = remoteSessionIdentity(id);
+    if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
+    if (!identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+      throw new RpcError("skills/unavailable", "Skills are unavailable for this remote host.");
+    }
+    let entry = this.entries.get(id);
+    if (!entry) {
+      await this.refresh(identity.hostId);
+      entry = this.entries.get(id);
+    }
+    if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
+    if (!entry.online) throw new RpcError("remote/offline", "Remote peer is offline.");
+    const peerSource = this.requireOnlinePeerSource(identity.hostId);
+    if (entry.row.parentThreadId || entry.row.canAcceptDirectInput === false) {
+      throw new RpcError("skills/unavailable", "Skills require an editable remote Thread.");
+    }
+    if (viewHarnessId(entry) === "codex") {
+      throw new RpcError("skills/unavailable", "Codex uses its native Skills.");
+    }
+    return peerSource.listSkills({ threadId: hostThreadIdSchema.parse(identity.threadId) });
+  }
+  private async inspectDraftCommands(draft: RemoteProjectDraft): Promise<HarnessCommandCatalog> {
+    if (!draft.target.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+      throw new RpcError("command/unavailable", "Commands are unavailable for this remote host.");
+    }
+    if (draft.selection?.provider !== "codex") {
+      return { commands: [] };
+    }
+    const peerSource = this.requireOnlinePeerSource(draft.target.hostId);
+    return peerSource.inspectHarnessCommands("codex", draft.target.cwd);
+  }
+  private async inspectThreadCommands(id: string): Promise<HarnessCommandCatalog> {
+    const identity = remoteSessionIdentity(id);
+    if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
+    if (!identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+      throw new RpcError("command/unavailable", "Commands are unavailable for this remote host.");
+    }
+    let entry = this.entries.get(id);
+    if (!entry) {
+      await this.refresh(identity.hostId);
+      entry = this.entries.get(id);
+    }
+    if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
+    if (!entry.online) throw new RpcError("remote/offline", "Remote peer is offline.");
+    const peerSource = this.requireOnlinePeerSource(identity.hostId);
+    if (entry.row.parentThreadId || entry.row.canAcceptDirectInput === false) {
+      throw new RpcError("command/unavailable", "Commands require an editable remote Thread.");
+    }
+    return peerSource.inspectThreadCommands(identity.threadId);
+  }
   private async handle(
     method: string,
     id: string,
     request: Record<string, unknown>,
   ): Promise<unknown> {
+    if (method === "codexhost/skills/list") {
+      return this.listThreadSkills(id);
+    }
+    if (method === "codexhost/threadCommands") {
+      return this.inspectThreadCommands(id);
+    }
     if (method === "session/attachment") {
       const identity = remoteSessionIdentity(id);
       if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
@@ -2429,6 +2587,8 @@ export class RemoteSessions {
         delete this.peers.onUsageChanged;
       if (this.peers.onCatalogInspectionChanged === this.peerHandlers.onCatalogInspectionChanged)
         delete this.peers.onCatalogInspectionChanged;
+      if (this.peers.onSkillsChanged === this.peerHandlers.onSkillsChanged)
+        delete this.peers.onSkillsChanged;
       if (this.peers.onConnection === this.peerHandlers.onConnection)
         delete this.peers.onConnection;
       if (this.peers.onReset === this.peerHandlers.onReset) delete this.peers.onReset;

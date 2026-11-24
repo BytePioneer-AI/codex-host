@@ -1,8 +1,13 @@
 import { z } from "zod";
 import {
+  harnessCommandCatalogSchema,
   REMOTE_PEER_ID_PATTERN,
   remotePeerHostId,
+  skillsListResultSchema,
   threadOwnershipSchema,
+  type HarnessCommandCatalog,
+  type SkillsListParams,
+  type SkillsListResult,
 } from "@codexhost/shared-contracts";
 import { ChHarnessCatalog } from "./ch-harness-catalog.ts";
 import { ChRealtime } from "./ch-realtime.ts";
@@ -50,6 +55,7 @@ export interface PeerThreadSourceOptions {
   onThreadChanged(threadId: string): unknown;
   onUsageChanged?: (threadId: string) => void;
   onCatalogInspectionChanged?: () => void;
+  onSkillsChanged?: () => void;
   onConnection(online: boolean): void;
   onReset?: (epoch: string, full: boolean) => void;
   onProjection?: ProjectionListener;
@@ -86,6 +92,9 @@ export class PeerThreadSource {
   private epoch: string | undefined;
   private listedForEpoch: string | undefined;
   private inFlightListEpoch: string | undefined;
+  private skillsListUnavailable = false;
+  private threadCommandsUnavailable = false;
+  private harnessCommandsUnavailable = false;
 
   constructor(private readonly options: PeerThreadSourceOptions) {
     this.hostId = options.hostId;
@@ -95,6 +104,14 @@ export class PeerThreadSource {
     this.stopCatalogInvalidation = options.host.realtime.subscribe((event) => {
       if (event.type === "harness-inspection-changed" || event.type === "hello") {
         options.onCatalogInspectionChanged?.();
+      }
+      if (event.type === "hello") {
+        this.skillsListUnavailable = false;
+        this.threadCommandsUnavailable = false;
+        this.harnessCommandsUnavailable = false;
+        options.onSkillsChanged?.();
+      } else if (event.type === "skills-changed") {
+        options.onSkillsChanged?.();
       }
     });
     this.tree = new ChThreadTree(options.host);
@@ -343,6 +360,58 @@ export class PeerThreadSource {
 
   follow(threadId: string): () => void {
     return this.realtime.follow(threadId);
+  }
+
+  async listSkills(params: SkillsListParams): Promise<SkillsListResult> {
+    if (this.skillsListUnavailable) {
+      return { revision: 0, complete: true, skills: [] };
+    }
+    try {
+      return skillsListResultSchema.parse(await this.host.request("codexhost/skills/list", params));
+    } catch (error) {
+      if (isMethodUnavailableError(error)) {
+        this.skillsListUnavailable = true;
+        return { revision: 0, complete: true, skills: [] };
+      }
+      throw error;
+    }
+  }
+
+  async inspectThreadCommands(threadId: string): Promise<HarnessCommandCatalog> {
+    if (this.threadCommandsUnavailable) {
+      return { commands: [] };
+    }
+    try {
+      return harnessCommandCatalogSchema.parse(
+        await this.host.request("codexhost/thread/commands/inspect", { threadId }),
+      );
+    } catch (error) {
+      if (isMethodUnavailableError(error)) {
+        this.threadCommandsUnavailable = true;
+        return { commands: [] };
+      }
+      throw error;
+    }
+  }
+
+  async inspectHarnessCommands(harnessId: string, cwd?: string): Promise<HarnessCommandCatalog> {
+    if (this.harnessCommandsUnavailable) {
+      return { commands: [] };
+    }
+    try {
+      return harnessCommandCatalogSchema.parse(
+        await this.host.request("codexhost/harness/commands/inspect", {
+          harnessId,
+          ...(cwd ? { cwd } : {}),
+        }),
+      );
+    } catch (error) {
+      if (isMethodUnavailableError(error)) {
+        this.harnessCommandsUnavailable = true;
+        return { commands: [] };
+      }
+      throw error;
+    }
   }
 
   discard(threadId: string): void {

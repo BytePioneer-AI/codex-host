@@ -29,6 +29,7 @@ export class PeerHostManager {
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
   onUsageChanged?: (hostId: string, threadId: string) => void;
   onCatalogInspectionChanged?: (hostId: string) => void;
+  onSkillsChanged?: (hostId: string) => void;
   onConnection?: (hostId: string, online: boolean) => void;
   onReset?: (hostId: string, epoch: string, full: boolean) => void;
 
@@ -78,6 +79,7 @@ export class PeerHostManager {
         onThreadChanged: (threadId) => this.onThreadChanged?.(next.hostId, threadId),
         onUsageChanged: (threadId) => this.onUsageChanged?.(next.hostId, threadId),
         onCatalogInspectionChanged: () => this.onCatalogInspectionChanged?.(next.hostId),
+        onSkillsChanged: () => this.onSkillsChanged?.(next.hostId),
         onConnection: (online) => this.onConnection?.(next.hostId, online),
         onReset: (epoch, full) => this.onReset?.(next.hostId, epoch, full),
         ...(this.projector ? { projector: this.projector } : {}),

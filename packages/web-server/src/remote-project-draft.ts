@@ -162,7 +162,7 @@ export class RemoteProjectDraft {
       ...(reasoningEffort ? { reasoningEffort } : {}),
     };
   }
-  summary(attachmentsSupported = false, color?: string) {
+  summary(attachmentsSupported = false, color?: string, online = true) {
     return {
       sessionId: this.id,
       cwd: "",
@@ -188,7 +188,7 @@ export class RemoteProjectDraft {
           remoteHost: {
             hostId: this.target.hostId,
             displayName: this.displayName,
-            state: "connected",
+            state: online ? "connected" : "disconnected",
             ...(color !== undefined ? { color } : {}),
             filePreview: attachmentsSupported,
             workspaceFiles: false,
@@ -202,7 +202,7 @@ export class RemoteProjectDraft {
       },
     };
   }
-  follow(sink: StreamSink, attachmentsSupported = false, color?: string) {
+  follow(sink: StreamSink, attachmentsSupported = false, color?: string, online = true) {
     sink.push({
       type: "snapshot",
       header: {
@@ -216,7 +216,7 @@ export class RemoteProjectDraft {
       cursor: -1,
       records: [],
       hasMore: false,
-      projections: this.summary(attachmentsSupported, color).projections,
+      projections: this.summary(attachmentsSupported, color, online).projections,
       assistantStream: { revision: 0 },
     });
   }

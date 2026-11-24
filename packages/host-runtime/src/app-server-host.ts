@@ -2382,6 +2382,7 @@ export class AppServerHost {
     this.#treeWatch.observe(input.value, true);
     if (this.#options.externalOnly) {
       this.#observeOfficialUsage(input.value, Date.now());
+      await this.#observeDeletedProject(input.value);
       this.#client.observeNativeMessage(input.value);
       // Native children created through Delegation still have a native owner
       // and lifecycle. Their rendering stays on the GUI's native connection.
@@ -2443,7 +2444,11 @@ export class AppServerHost {
       this.#finishOfficialTurn(parsed);
     }
     this.#nativeAccountObserver?.observe(parsed);
-    const deletedProjectId = observeDeletedProject(parsed);
+    await this.#observeDeletedProject(parsed);
+  }
+
+  async #observeDeletedProject(value: JsonValue): Promise<void> {
+    const deletedProjectId = observeDeletedProject(value);
     if (deletedProjectId) {
       await this.#clearDeletedProjectAssignments(deletedProjectId).catch((error: unknown) =>
         this.#diagnose(error),

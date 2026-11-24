@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readdirSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
@@ -15,6 +15,7 @@ import { ChSessions } from "../src/ch-sessions.ts";
 import { DesktopChHostClient } from "../src/ch-host-client.ts";
 import { projectGroupRoot } from "../src/ch-project-groups.ts";
 import { nativeProjectCommands } from "../src/ch-project-commands.ts";
+import { peerEndpoint } from "../src/peer-manifest.ts";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
 import { nativeCodex } from "./support/native-codex.ts";
 
@@ -1128,8 +1129,20 @@ it("shares native project changes and keeps removed projects' sessions in the We
   owned.name = "Desktop rename";
   await sessions.refreshProjects();
   assert.equal(workspaces.get(original.workspaceId)?.title, "Desktop rename");
-  await call("workspace/create", { path: root });
-  assert.ok(host.projectSnapshot.projects.some((project) => project.id === "created"));
+  const compatibleState = readFileSync(data.path("workspaces.json"), "utf8");
+  const peer = (await peerEndpoint(
+    "POST",
+    new URL("http://localhost/api/peer/v1/workspaces"),
+    { path: root, title: "Remote project" },
+    workspaces,
+    rpc,
+    "test-epoch",
+    "0.26.0",
+    [root],
+  )) as { workspaceId: string };
+  assert.equal(workspaces.get(peer.workspaceId)?.projectId, "created");
+  assert.equal(workspaces.get(peer.workspaceId)?.title, "Remote project");
+  assert.equal(readFileSync(data.path("workspaces.json"), "utf8"), compatibleState);
   await call("workspace/rename", { workspaceId: original.workspaceId, title: "Web rename" });
   assert.equal(
     host.projectSnapshot.projects.find((project) => project.id === "owned")?.name,

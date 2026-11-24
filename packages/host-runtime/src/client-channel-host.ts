@@ -46,7 +46,7 @@ const OFFICIAL_METHODS: Readonly<Record<string, "native" | "host">> = {
   "thread/turns/list": "native",
   "thread/items/list": "native",
   "thread/name/set": "native",
-  "thread/metadata/update": "host",
+  "thread/metadata/update": "native",
   "thread/archive": "native",
   "thread/unarchive": "native",
   "turn/start": "native",

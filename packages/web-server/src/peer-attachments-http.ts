@@ -2,7 +2,7 @@
 import { constants } from "node:fs";
 import { lstat, open, realpath, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import * as c from "@codexhost/shared-contracts";
 import type { ChSessions } from "./ch-sessions.ts";
 import { RpcError, type RpcRegistry } from "./transport.ts";
@@ -136,6 +136,31 @@ async function verifyWebStorageComponents(
   return true;
 }
 
+async function hasNoSymlinkComponentsFromRoot(
+  canonicalPath: string,
+  fsOps: VerifiedFileFsOps,
+): Promise<boolean> {
+  const parsed = parse(canonicalPath);
+  if (!parsed.root) return false;
+  const rel = relative(parsed.root, canonicalPath);
+  const segments = rel.split(/[\\/]/u).filter((segment) => segment.length > 0);
+  let cursor = parsed.root;
+  for (const segment of segments) {
+    if (segment === "." || segment === "..") return false;
+    cursor = join(cursor, segment);
+    const entryStat = await fsOps.lstat(cursor);
+    if (entryStat.isSymbolicLink()) return false;
+  }
+  return true;
+}
+
+function sameFileIdentity(
+  left: Pick<Awaited<ReturnType<typeof stat>>, "dev" | "ino">,
+  right: Pick<Awaited<ReturnType<typeof stat>>, "dev" | "ino">,
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
 export async function readVerifiedAttachmentFile(
   candidate: string,
   workspaceRoot: string,
@@ -150,11 +175,22 @@ export async function readVerifiedAttachmentFile(
   }
 
   let realRoot: string | undefined;
+  let pinnedRootStat: Awaited<ReturnType<typeof lstat>> | undefined;
   let inWorkspace = false;
   if (workspaceRoot) {
     try {
       realRoot = await fsOps.realpath(workspaceRoot);
-      inWorkspace = isPathWithinRoot(realTarget, realRoot, fsOps.platform);
+      const rootStat = await fsOps.lstat(realRoot);
+      if (
+        !rootStat.isSymbolicLink() &&
+        rootStat.isDirectory() &&
+        isPathWithinRoot(realTarget, realRoot, fsOps.platform)
+      ) {
+        pinnedRootStat = rootStat;
+        inWorkspace = true;
+      } else {
+        realRoot = undefined;
+      }
     } catch {
       realRoot = undefined;
       inWorkspace = false;
@@ -165,8 +201,13 @@ export async function readVerifiedAttachmentFile(
 
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    if (inWorkspace && realRoot !== undefined) {
-      if (!(await hasNoSymlinkComponentsUnderRoot(realTarget, realRoot, fsOps))) return "missing";
+    if (inWorkspace && realRoot !== undefined && pinnedRootStat !== undefined) {
+      if (
+        !(await hasNoSymlinkComponentsFromRoot(realRoot, fsOps)) ||
+        !(await hasNoSymlinkComponentsUnderRoot(realTarget, realRoot, fsOps))
+      ) {
+        return "missing";
+      }
     } else if (!(await verifyWebStorageComponents(realTarget, deps, fsOps))) {
       return "missing";
     }
@@ -177,38 +218,47 @@ export async function readVerifiedAttachmentFile(
     handle = await fsOps.open(realTarget, OPEN_READONLY_FLAGS);
     const openedStat = await handle.stat();
     if (!openedStat.isFile()) return "missing";
-    if (openedStat.dev !== preStat.dev || openedStat.ino !== preStat.ino) return "missing";
+    if (!sameFileIdentity(openedStat, preStat)) return "missing";
 
-    // Re-verify real path ownership while holding the open file descriptor to defeat parent-directory replacement TOCTOU.
+    // Re-verify real path ownership against the pinned root while holding the open file descriptor.
     if (fsOps.platform === "linux") {
       const fdReal = await fsOps.realpath(`/proc/self/fd/${handle.fd}`);
-      const fdAllowed =
-        inWorkspace && realRoot !== undefined
-          ? isPathWithinRoot(fdReal, realRoot, fsOps.platform) &&
-            (await hasNoSymlinkComponentsUnderRoot(fdReal, realRoot, fsOps))
-          : await verifyWebStorageComponents(fdReal, deps, fsOps);
+      let fdAllowed = false;
+      if (inWorkspace && realRoot !== undefined && pinnedRootStat !== undefined) {
+        const currentRootStat = await fsOps.lstat(realRoot);
+        fdAllowed =
+          !currentRootStat.isSymbolicLink() &&
+          currentRootStat.isDirectory() &&
+          sameFileIdentity(currentRootStat, pinnedRootStat) &&
+          isPathWithinRoot(fdReal, realRoot, fsOps.platform) &&
+          (await hasNoSymlinkComponentsFromRoot(fdReal, fsOps));
+      } else {
+        fdAllowed = await verifyWebStorageComponents(fdReal, deps, fsOps);
+      }
       if (!fdAllowed) return "missing";
       const fdPathStat = await fsOps.stat(fdReal);
-      if (fdPathStat.dev !== openedStat.dev || fdPathStat.ino !== openedStat.ino) return "missing";
+      if (!sameFileIdentity(fdPathStat, openedStat)) return "missing";
     } else {
-      if (inWorkspace && realRoot !== undefined) {
-        if (!(await hasNoSymlinkComponentsUnderRoot(realTarget, realRoot, fsOps))) return "missing";
-      } else if (!(await verifyWebStorageComponents(realTarget, deps, fsOps))) {
-        return "missing";
-      }
       const postReal = await fsOps.realpath(candidate);
       let postAllowed = false;
-      if (inWorkspace && workspaceRoot) {
+      if (inWorkspace && workspaceRoot && realRoot !== undefined && pinnedRootStat !== undefined) {
         const postRoot = await fsOps.realpath(workspaceRoot);
+        const currentRootStat = await fsOps.lstat(realRoot);
         postAllowed =
-          isPathWithinRoot(postReal, postRoot, fsOps.platform) &&
-          (await hasNoSymlinkComponentsUnderRoot(postReal, postRoot, fsOps));
+          postRoot === realRoot &&
+          postReal === realTarget &&
+          !currentRootStat.isSymbolicLink() &&
+          currentRootStat.isDirectory() &&
+          sameFileIdentity(currentRootStat, pinnedRootStat) &&
+          isPathWithinRoot(postReal, realRoot, fsOps.platform) &&
+          (await hasNoSymlinkComponentsFromRoot(postReal, fsOps));
       } else if (!inWorkspace) {
-        postAllowed = await verifyWebStorageComponents(postReal, deps, fsOps);
+        postAllowed =
+          postReal === realTarget && (await verifyWebStorageComponents(postReal, deps, fsOps));
       }
       if (!postAllowed) return "missing";
       const postStat = await fsOps.stat(postReal);
-      if (postStat.dev !== openedStat.dev || postStat.ino !== openedStat.ino) return "missing";
+      if (!sameFileIdentity(postStat, openedStat)) return "missing";
     }
 
     if (openedStat.size > WEB_IMAGE_LIMITS.maxImageBytes) return "too-large";

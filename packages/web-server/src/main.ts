@@ -841,6 +841,7 @@ const server = createWebServer((request, response) => {
         response.writeHead(404, { "cache-control": "no-store" }).end();
         return;
       }
+      response.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
       await send(request, response, asset, HARNESS_ICON_CACHE);
       return;
     }

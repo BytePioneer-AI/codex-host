@@ -98,6 +98,9 @@ export class RemoteProjectDraft {
       ? (load as () => Promise<RemoteDraftCatalog>)()
       : loadCatalog(this.target, load as Call);
   }
+  invalidateCatalog(): void {
+    delete this.catalogRequest;
+  }
   catalog(load: RemoteDraftCatalogLoader) {
     this.catalogRequest ??= this.invokeCatalogLoader(load).catch((error: unknown) => {
       delete this.catalogRequest;

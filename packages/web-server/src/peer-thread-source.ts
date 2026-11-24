@@ -47,6 +47,8 @@ export interface PeerThreadSourceOptions {
   host: PeerChHostClient;
   onCatalogChanged(): unknown;
   onThreadChanged(threadId: string): unknown;
+  onUsageChanged?: (threadId: string) => void;
+  onCatalogInspectionChanged?: () => void;
   onConnection(online: boolean): void;
   onReset?: (epoch: string, full: boolean) => void;
   onProjection?: ProjectionListener;
@@ -79,6 +81,7 @@ export class PeerThreadSource {
   private readonly histories = new Map<string, ChThreadHistory>();
   private readonly knownRows = new Map<string, ChThread>();
   private readonly knownHarnesses = new Map<string, string>();
+  private readonly stopCatalogInvalidation: () => void;
   private epoch: string | undefined;
 
   constructor(private readonly options: PeerThreadSourceOptions) {
@@ -86,12 +89,19 @@ export class PeerThreadSource {
     this.host = options.host;
     // Isolated EventHub with no subscribers: never broadcasts local global harness-inspection-changed.
     this.catalog = new ChHarnessCatalog(options.host, new EventHub(""));
+    this.stopCatalogInvalidation = options.host.realtime.subscribe((event) => {
+      if (event.type === "harness-inspection-changed" || event.type === "hello") {
+        options.onCatalogInspectionChanged?.();
+      }
+    });
     this.tree = new ChThreadTree(options.host);
     this.realtime = new ChRealtime(options.host.realtime, {
       thread: async (threadId) => {
         await options.onThreadChanged(threadId);
       },
-      usage: () => {},
+      usage: (threadId) => {
+        options.onUsageChanged?.(threadId);
+      },
       catalog: async () => {
         await options.onCatalogChanged();
       },
@@ -302,6 +312,7 @@ export class PeerThreadSource {
   }
 
   close(): void {
+    this.stopCatalogInvalidation();
     this.realtime.close();
     this.catalog.close();
     for (const view of this.histories.values()) {

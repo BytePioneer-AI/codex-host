@@ -27,6 +27,8 @@ export class PeerHostManager {
   private readonly projector: ((threadId: string) => PeerThreadProjector) | undefined;
   onChange?: (hostId?: string) => void;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
+  onUsageChanged?: (hostId: string, threadId: string) => void;
+  onCatalogInspectionChanged?: (hostId: string) => void;
   onConnection?: (hostId: string, online: boolean) => void;
   onReset?: (hostId: string, epoch: string, full: boolean) => void;
 
@@ -67,6 +69,8 @@ export class PeerHostManager {
         host,
         onCatalogChanged: () => this.onChange?.(client.hostId),
         onThreadChanged: (threadId) => this.onThreadChanged?.(client.hostId, threadId),
+        onUsageChanged: (threadId) => this.onUsageChanged?.(client.hostId, threadId),
+        onCatalogInspectionChanged: () => this.onCatalogInspectionChanged?.(client.hostId),
         onConnection: (online) => this.onConnection?.(client.hostId, online),
         onReset: (epoch, full) => this.onReset?.(client.hostId, epoch, full),
         ...(this.projector ? { projector: this.projector } : {}),

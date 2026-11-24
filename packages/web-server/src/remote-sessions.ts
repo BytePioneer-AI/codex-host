@@ -154,6 +154,8 @@ export interface RemotePeerProvider {
   source(hostId: string): PeerThreadSource | undefined;
   client?(hostId: string): PeerAttachmentEndpoint | undefined;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
+  onUsageChanged?: (hostId: string, threadId: string) => void;
+  onCatalogInspectionChanged?: (hostId: string) => void;
   onConnection?: (hostId: string, online: boolean) => void;
   onReset?: (hostId: string, epoch: string, full: boolean) => void;
 }
@@ -187,6 +189,7 @@ interface Entry {
     lastTurnId: string | undefined;
     retryAt: number;
     pending: boolean;
+    dirty?: boolean;
   };
 }
 
@@ -209,6 +212,8 @@ export class RemoteSessions {
   private readonly timer: NodeJS.Timeout;
   private readonly peerHandlers: {
     onThreadChanged: (hostId: string, threadId: string) => Promise<void>;
+    onUsageChanged: (hostId: string, threadId: string) => void;
+    onCatalogInspectionChanged: (hostId: string) => void;
     onConnection: (hostId: string, online: boolean) => void;
     onReset: (hostId: string, epoch: string, full: boolean) => void;
   };
@@ -230,11 +235,15 @@ export class RemoteSessions {
   ) {
     this.peerHandlers = {
       onThreadChanged: (hostId, threadId) => this.handlePeerThreadChanged(hostId, threadId),
+      onUsageChanged: (hostId, threadId) => this.handlePeerUsageChanged(hostId, threadId),
+      onCatalogInspectionChanged: (hostId) => this.handlePeerCatalogInspectionChanged(hostId),
       onConnection: (hostId, online) => this.handlePeerConnection(hostId, online),
       onReset: (hostId, epoch) => this.handlePeerReset(hostId, epoch),
     };
     if (peers) {
       peers.onThreadChanged ??= this.peerHandlers.onThreadChanged;
+      peers.onUsageChanged ??= this.peerHandlers.onUsageChanged;
+      peers.onCatalogInspectionChanged ??= this.peerHandlers.onCatalogInspectionChanged;
       peers.onConnection ??= this.peerHandlers.onConnection;
       peers.onReset ??= this.peerHandlers.onReset;
     }
@@ -257,6 +266,28 @@ export class RemoteSessions {
         return;
       }
       throw error;
+    }
+  }
+  private handlePeerUsageChanged(hostId: string, threadId: string): void {
+    if (this.closed) return;
+    const id = remoteSessionId(hostId, threadId);
+    const entry = this.entries.get(id);
+    if (!entry || !entry.online || !entry.view || !entry.epoch) return;
+    if (entry.usageRequest?.view === entry.view && entry.usageRequest.pending) {
+      entry.usageRequest.dirty = true;
+      return;
+    }
+    this.loadUsage(id, entry, entry.view, entry.epoch, true);
+  }
+  private handlePeerCatalogInspectionChanged(hostId: string): void {
+    if (this.closed) return;
+    for (const draft of this.drafts.values()) {
+      if (draft.target.hostId === hostId) draft.invalidateCatalog();
+    }
+    for (const entry of this.entries.values()) {
+      if (entry.identity.hostId !== hostId) continue;
+      delete entry.peerInspected;
+      if (entry.controls) delete entry.controls.inspection;
     }
   }
   private handlePeerConnection(hostId: string, online: boolean): void {
@@ -1575,19 +1606,34 @@ export class RemoteSessions {
       })
       .catch(() => undefined);
   }
-  private loadUsage(id: string, entry: Entry, view: ChThreadView, epoch: string): void {
+  private loadUsage(
+    id: string,
+    entry: Entry,
+    view: ChThreadView,
+    epoch: string,
+    force = false,
+  ): void {
     const updatedAt = view.thread.updatedAt;
     const lastTurnId = view.thread.turns.at(-1)?.id;
     const previous = entry.usageRequest;
     if (
       previous?.view === view &&
       (previous.pending ||
-        (previous.updatedAt === updatedAt &&
+        (!force &&
+          previous.updatedAt === updatedAt &&
           previous.lastTurnId === lastTurnId &&
           Date.now() < previous.retryAt))
-    )
+    ) {
+      if (force && previous.pending) previous.dirty = true;
       return;
-    const request = { view, updatedAt, lastTurnId, retryAt: 0, pending: true };
+    }
+    const request: NonNullable<Entry["usageRequest"]> = {
+      view,
+      updatedAt,
+      lastTurnId,
+      retryAt: 0,
+      pending: true,
+    };
     entry.usageRequest = request;
     const matchesHistory = () =>
       view.thread.updatedAt === updatedAt && view.thread.turns.at(-1)?.id === lastTurnId;
@@ -1615,8 +1661,11 @@ export class RemoteSessions {
       .finally(() => {
         request.pending = false;
         request.retryAt = Date.now() + 30_000;
-        // The latest applied history may have arrived while this request was in flight.
-        if (isCurrent() && !matchesHistory()) this.loadUsage(id, entry, view, epoch);
+        const rerunForUpdate = request.dirty === true;
+        delete request.dirty;
+        // Re-fetch when history or a usage update event arrived while this request was in flight.
+        if (isCurrent() && (rerunForUpdate || !matchesHistory()))
+          this.loadUsage(id, entry, view, epoch, rerunForUpdate);
       });
   }
   private retireView(entry: Entry, peerSource?: PeerThreadSource): void {
@@ -2015,7 +2064,13 @@ export class RemoteSessions {
       "session/toolOutput",
       "session/modelCatalog",
     ].includes(method);
-    const cached = readOnly ? this.entries.get(id)?.view : undefined;
+    const existingEntry = this.entries.get(id);
+    const needsPeerCatalogRefresh =
+      method === "session/modelCatalog" &&
+      existingEntry !== undefined &&
+      this.peers?.source(existingEntry.identity.hostId) !== undefined &&
+      !existingEntry.peerInspected;
+    const cached = readOnly && !needsPeerCatalogRefresh ? existingEntry?.view : undefined;
     const view = cached ?? (await this.read(id));
     if (method === "session/projections") return view.log.projectionBaseline();
     if (method === "session/page") {
@@ -2135,6 +2190,10 @@ export class RemoteSessions {
     if (this.peers) {
       if (this.peers.onThreadChanged === this.peerHandlers.onThreadChanged)
         delete this.peers.onThreadChanged;
+      if (this.peers.onUsageChanged === this.peerHandlers.onUsageChanged)
+        delete this.peers.onUsageChanged;
+      if (this.peers.onCatalogInspectionChanged === this.peerHandlers.onCatalogInspectionChanged)
+        delete this.peers.onCatalogInspectionChanged;
       if (this.peers.onConnection === this.peerHandlers.onConnection)
         delete this.peers.onConnection;
       if (this.peers.onReset === this.peerHandlers.onReset) delete this.peers.onReset;

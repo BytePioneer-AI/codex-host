@@ -6,9 +6,11 @@
 
 - **命名空间隔离**：Peer 聚合主机使用 `remote-peer:<peerId>` 作为 `hostId`，与 Codex Desktop 现有的 `remote-ssh*` / `remote-control:*` 远程主机完全隔离。两类远程主机通过 `createCompositeRemoteCall` 并存，Codex Desktop 未启动时不影响 Peer 聚合。
 - **单跳聚合、防环路**：被连接节点通过 `GET /api/peer/v1/manifest` 仅导出其本机非远端工作区（`!w.remote`），因此两台主机之间可以双向互连而不产生递归环路。
-- **事件流与按主机增量刷新**：Hub 侧每个 Peer 维护独立状态机（`connected` / `connecting` / `offline` / `auth-error` / `disabled`），订阅远端 `/api/ch/v1/events` NDJSON 流：
-  - 仅在 `hello` 或影响会话目录/状态的变更事件（如 `thread/*`、`turn/started`、`turn/completed`）到达时按 `hostId` 触发目标主机目录刷新，忽略流式文本/工具增量帧。
+- **分层复用读路径与事件驱动同步**：每个启用的 Peer 由 `PeerChHostClient`（实现 `ChHostClient` 接口，底层走版本化 `/api/ch/v1/*`）与 `PeerThreadSource` 组合直连同款的 `ChRealtime`、`ChThreadHistory`（`hostThreadId` 隔离原生与展示 ID、`knownTurns` 指纹增量、首屏 5 个 Turn 与按需翻页）、`ChHarnessCatalog`（按节点与 epoch 隔离缓存，收到 `harness-inspection-changed` 或 `hello` 才失效）、`readSessionPage`（`codexhost/thread/catalog/read`，旧远端 `-32601` 时回退 `thread/list`）与 `ChThreadTree`（同节点委派树与归档级联，`tree/read` 失败时静默降级）。
+  - 事件流直接驱动会话内容、用量与目录刷新，取消周期性全量轮询；流式文本与工具增量帧不触发目录刷新。
   - 为事件流读取设置 45 秒空闲读超时（服务端每 15 秒发送心跳换行），半开断连时自动中止并走指数退避重连。
+- **节点作用域 Harness 图标**：本机新增 `GET /harness-icons/peer/<peerId>/<harnessId>` 与 `GET /harness-icons/peer/<peerId>/presentation.json`（从对应 Peer 缓存目录提供并设置 `Content-Security-Policy: sandbox; default-src 'none'`），Codex 始终使用本机图标，远端离线或缺失时退回通用图标。
+- **同节点委派树**：侧栏按 `threadReference.hostId` 对同一 Peer 内的父子委派建树（含祖先补齐与归档级联），跨主机关系保持顶层平铺；Codex Desktop 远程会话保持原有兼容路径。
 
 ## 接口与持久化
 
@@ -16,10 +18,18 @@
 
 所有端点受 `web-server` 既有认证（Bearer Token / Session Cookie）与同源校验保护；异常统一映射为安全的客户端错误信息，不透传宿主绝对路径或内部错误栈：
 
-- `GET /api/peer/v1/manifest`：返回服务端版本、宿主实时通道真实 `epoch`（未就绪前返回 `503`）、平台、主机名、主目录和本机工作区清单。
+- `GET /api/peer/v1/manifest`：返回服务端版本、宿主实时通道真实 `epoch`（未就绪前返回 `503`）、平台、主机名、主目录、本机工作区清单，以及在启用附件存储时的 `capabilities: { attachments: 1 }`。
 - `GET /api/peer/v1/dirs?path=...`：列出远端目录子文件夹（保留目录名中的空格；空参数回退到远端主目录）。
 - `POST /api/peer/v1/dirs`：在指定父目录下创建新子目录。
 - `POST | PATCH | DELETE /api/peer/v1/workspaces`：在远端节点新增、重命名或移除工作区注册，并返回最新 `manifest`。
+- `POST /api/peer/v1/uploads`：接收 `application/octet-stream` 原始字节流（`threadId` 归属已有远端会话，`scope` 为 UUID v4 供草稿上传暂存），委托远端 `ChSessions.uploadFile` / `WebFiles.upload` 返回上传凭据。
+- `POST /api/peer/v1/prompt`：接收带文件凭据的提交请求；携带 `scope` 时先幂等绑定凭据到目标 `threadId`，再转发远端 `session/prompt`。
+- `GET | HEAD /api/peer/v1/file?threadId=...&path=...`：校验路径位于该会话工作目录（固定根目录与无符号链接组件校验）或远端 Web 附件存储内，并校验图片字节与 50 MiB 上限后返回图片内容；拒绝越界或非图片请求且不回显宿主路径。
+
+### Hub 侧附件代理与安全边界
+
+- **能力门控**：仅当 Peer 已连接且 `manifest.capabilities.attachments === 1` 时开启 Peer 会话与草稿的 `attachmentInput`、`imageLimits` 与 `remoteHost.filePreview`；未升级 Peer 与 Codex Desktop 远程会话保持附件关闭。
+- **远端路径隔离**：浏览器图片预览走 `GET | HEAD /api/remote-peer/file?sessionId=...&path=...`（强制 `sandbox; default-src 'none'` 与 `nosniff`），上传流经 `/api/session/uploadFileBinary` 直接流式转发到远端，远端路径永不进入本机 `/api/file` 或本机文件系统读取。
 
 ### Hub 管理 RPC（`codexhost/remote-peers/*`）与安全边界
 

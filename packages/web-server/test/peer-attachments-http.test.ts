@@ -525,4 +525,35 @@ it("blocks parent-directory symlink replacement TOCTOU between realpath and open
   );
   assert.equal(swappedAfterRealpath, true);
   assert.equal(resultAfterRealpath, "missing");
+
+  // Swapping the workspace root itself to a symlink pointing outside right after realpath must also be rejected.
+  const workspaceToSwap = join(root, "workspace-root-swap");
+  mkdirSync(workspaceToSwap, { recursive: true });
+  const rootInsidePng = join(workspaceToSwap, "diagram.png");
+  writeFileSync(rootInsidePng, PNG_BYTES);
+  let swappedWorkspaceRoot = false;
+  let rootSwapRealpathCalls = 0;
+  const resultRootSwap = await readVerifiedAttachmentFile(
+    rootInsidePng,
+    workspaceToSwap,
+    { files, images },
+    {
+      lstat,
+      stat,
+      open,
+      platform: process.platform,
+      realpath: async (targetPath) => {
+        const resolved = await realpath(targetPath);
+        rootSwapRealpathCalls++;
+        if (rootSwapRealpathCalls === 2 && !swappedWorkspaceRoot) {
+          swappedWorkspaceRoot = true;
+          renameSync(workspaceToSwap, join(root, "workspace-root-swap-original"));
+          symlinkSync(outside, workspaceToSwap);
+        }
+        return resolved;
+      },
+    },
+  );
+  assert.equal(swappedWorkspaceRoot, true);
+  assert.equal(resultRootSwap, "missing");
 });

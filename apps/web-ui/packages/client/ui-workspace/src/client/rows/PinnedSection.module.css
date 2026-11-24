@@ -5,3 +5,17 @@
 .section > * + [data-thread-branch] {
   margin-top: 2px;
 }
+
+.empty {
+  padding: 4px 8px 6px 26px;
+  border-radius: var(--dsw-radius-sm);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.emptyDropTarget {
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 12%, transparent);
+  box-shadow: inset 0 0 0 1px var(--dsw-alias-state-business-primary);
+  color: var(--dsw-alias-label-primary);
+}

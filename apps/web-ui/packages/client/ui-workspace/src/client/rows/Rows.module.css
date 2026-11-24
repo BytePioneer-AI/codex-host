@@ -137,6 +137,10 @@
   .remoteHostStatusDot[data-state="connecting"] {
     animation: none;
   }
+
+  .sessionRow.sectionMoving .sessionMain {
+    transition: none;
+  }
 }
 
 .remoteFolderGlobe {
@@ -745,6 +749,21 @@
 .searchResultRow.archived .searchResultWorkspace,
 .searchResultRow.archived .searchResultSnippet {
   color: var(--dsw-alias-label-caption);
+}
+
+/* Honest in-flight section-move feedback: keeps the row at its authoritative
+   position while signaling pending submission without optimistic reordering. */
+.sessionRow.sectionMoving {
+  cursor: progress;
+}
+
+.sessionRow.sectionMoving .sessionMain {
+  opacity: 0.62;
+  transition: opacity 120ms var(--ds-ease-in-out);
+}
+
+.sectionMovingSpinner {
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .dot {

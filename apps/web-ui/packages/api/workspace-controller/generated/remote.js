@@ -245,7 +245,8 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_insertSessionBefore_re
 let _deepseek_ai_dsh_api_workspace_controller_workspace_moveSessionToSection_parameter_0$schema$value
 const _deepseek_ai_dsh_api_workspace_controller_workspace_moveSessionToSection_parameter_0$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_moveSessionToSection_parameter_0$schema$value ??= z.object({
   'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
-  'sectionId': z.union([z.literal(null), z.string()]).readonly(),
+  'sectionId': z.union([z.string(), z.literal(null)]).readonly(),
+  'beforeSessionId': z.union([z.intersection(z.string(), z.unknown()), z.literal(null)]).readonly().optional(),
 }))
 let _deepseek_ai_dsh_api_workspace_controller_workspace_moveSessionToSection_result$schema$value
 const _deepseek_ai_dsh_api_workspace_controller_workspace_moveSessionToSection_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_moveSessionToSection_result$schema$value ??= z.object({

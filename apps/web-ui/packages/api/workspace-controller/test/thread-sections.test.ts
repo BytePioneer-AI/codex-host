@@ -10,7 +10,12 @@ import { apply as applyTypert } from "../../../typert/registry/src/client/index.
 import { createWorkspaceStateStream } from "../src/client/index.ts";
 import { ClientWorkspaceModel, type WorkspaceRemote } from "../src/client/model.ts";
 import { WorkspaceController } from "../src/client/service.ts";
-import type { WorkspaceFollowFrame, WorkspaceThreadSectionMutationValue } from "../src/types.ts";
+import type {
+  WorkspaceFollowFrame,
+  WorkspaceMoveSessionToSectionRequest,
+  WorkspaceMoveSessionToSectionValue,
+  WorkspaceThreadSectionMutationValue,
+} from "../src/types.ts";
 
 // The browser export is a loader bundle. Load the same Gateway source in Node.
 vi.mock("@deepseek-ai/dsh-api-gateway/client", () => import("../../gateway/src/client/index.ts"));
@@ -218,4 +223,88 @@ describe("workspace-controller thread section contracts", () => {
       expect(remoteCall.mock.calls).toEqual([[request], [request], [request]]);
     },
   );
+
+  it("supports optional beforeSessionId on moveSessionToSection while omitting anchor for legacy calls", async () => {
+    const moveParam = strictSchema(descriptor("moveSessionToSection").parameters[0]!.codec);
+    const parsedLegacy = moveParam.parse({ sessionId: "t-1", sectionId: "sec-1" }) as Record<
+      string,
+      unknown
+    >;
+    expect(parsedLegacy).toEqual({ sessionId: "t-1", sectionId: "sec-1" });
+    expect(Object.hasOwn(parsedLegacy, "beforeSessionId")).toBe(false);
+    expect(
+      moveParam.parse({ sessionId: "t-1", sectionId: "sec-1", beforeSessionId: null }),
+    ).toEqual({ sessionId: "t-1", sectionId: "sec-1", beforeSessionId: null });
+    expect(
+      moveParam.parse({ sessionId: "t-1", sectionId: "sec-1", beforeSessionId: "t-2" }),
+    ).toEqual({ sessionId: "t-1", sectionId: "sec-1", beforeSessionId: "t-2" });
+    expect(moveParam.parse({ sessionId: "t-1", sectionId: null })).toEqual({
+      sessionId: "t-1",
+      sectionId: null,
+    });
+    expect(() =>
+      moveParam.parse({ sessionId: "t-1", sectionId: "sec-1", beforeSessionId: 42 }),
+    ).toThrow();
+
+    const sentMoves: WorkspaceMoveSessionToSectionRequest[] = [];
+    const remote = {
+      moveSessionToSection: async (
+        request: WorkspaceMoveSessionToSectionRequest,
+      ): Promise<RemoteResult<WorkspaceMoveSessionToSectionValue>> => {
+        sentMoves.push(request);
+        if (request.beforeSessionId === ("t-bad" as SessionId)) {
+          return {
+            ok: false,
+            error: new RemoteError("workspace/section-invalid", "Invalid anchor", {}),
+          };
+        }
+        return { ok: true, value: { sectionId: request.sectionId } };
+      },
+    } as unknown as WorkspaceRemote;
+
+    const model = new ClientWorkspaceModel(remote);
+    const ctx = new Context();
+    const controller = new WorkspaceController(ctx, model);
+
+    model.replaceThreadSections([
+      { id: "sec-1", name: "Work", threadIds: ["t-1" as SessionId, "t-2" as SessionId] },
+    ]);
+
+    // Legacy call omits beforeSessionId
+    await controller.moveSessionToSection("t-1" as SessionId, "sec-1");
+    expect(sentMoves[0]).toEqual({ sessionId: "t-1", sectionId: "sec-1" });
+    expect(Object.hasOwn(sentMoves[0]!, "beforeSessionId")).toBe(false);
+
+    // Explicit null appends to end
+    await controller.moveSessionToSection("t-1" as SessionId, "sec-1", null);
+    expect(sentMoves[1]).toEqual({
+      sessionId: "t-1",
+      sectionId: "sec-1",
+      beforeSessionId: null,
+    });
+
+    // Explicit string anchor inserts before target
+    await controller.moveSessionToSection("t-2" as SessionId, "sec-1", "t-1" as SessionId);
+    expect(sentMoves[2]).toEqual({
+      sessionId: "t-2",
+      sectionId: "sec-1",
+      beforeSessionId: "t-1",
+    });
+
+    // Move to unsectioned omits anchor
+    await controller.moveSessionToSection("t-2" as SessionId, null);
+    expect(sentMoves[3]).toEqual({ sessionId: "t-2", sectionId: null });
+    expect(Object.hasOwn(sentMoves[3]!, "beforeSessionId")).toBe(false);
+
+    // No optimistic reordering: snapshot stays authoritative until stream updates
+    expect(model.getSnapshot().threadSections?.[0]?.threadIds).toEqual(["t-1", "t-2"]);
+
+    // Failure propagates and leaves authoritative snapshot intact
+    await expect(
+      controller.moveSessionToSection("t-1" as SessionId, "sec-1", "t-bad" as SessionId),
+    ).rejects.toThrow(
+      /workspace move to section failed: workspace\/section-invalid: Invalid anchor/,
+    );
+    expect(model.getSnapshot().threadSections?.[0]?.threadIds).toEqual(["t-1", "t-2"]);
+  });
 });

@@ -65,6 +65,7 @@ import type {
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { ShortcutCatalogEntry } from "@deepseek-ai/dsh-client-shortcuts/client";
 import type { WorkspaceShortcutState } from "../shortcuts.ts";
+import type { SectionMoveOutcome, SectionMovePayload } from "../rows/section-dnd.ts";
 import type { createWorkspaceViewStore } from "../stores.ts";
 import type { ThreadSectionManageRequest } from "../session-actions/ManageThreadSection.tsx";
 
@@ -279,6 +280,10 @@ export type WorkspaceBrowserInjected = {
     hostInfo: HostObservable<RemoteHostFacts>;
     workspaceShortcuts: HostObservable<WorkspaceShortcutState>;
     shortcuts: HostObservable<readonly ShortcutCatalogEntry[]>;
+    /** Local, non-draft, non-subagent, harness-backed session IDs eligible for custom sections. */
+    nativeThreads: HostObservable<ReadonlySet<SessionId>>;
+    /** Session IDs that currently have an in-flight custom section move request. */
+    movingSectionSessions: HostObservable<ReadonlySet<SessionId>>;
   };
   /** Open the browser search and focus its input. */
   requestSearch: () => void;
@@ -343,6 +348,10 @@ export type WorkspaceBrowserInjected = {
   /** Adopt a picked host directory as a real Workspace before targeting a Session. */
   createWorkspace: (input: { path: string }) => Promise<WorkspaceView>;
   requestManageThreadSection?: (request: ThreadSectionManageRequest) => void;
+  /** Move a session into, within, or out of a custom section under a per-session in-flight lock. */
+  moveSessionToSection?: (payload: SectionMovePayload) => Promise<SectionMoveOutcome>;
+  /** Publish the sidebar's active Host/Workspace-filtered session IDs for row menu actions. */
+  setScopedSessionIds?: (ids: ReadonlySet<SessionId> | null) => void;
 };
 
 /** The browser's declared viewing store handle, shared with the row actions that write view state. */
@@ -379,7 +388,8 @@ export type RowToast =
    */
   | { kind: "createFailed"; message: string }
   | { kind: "forkFailed"; message: string }
-  | { kind: "recentVisitsStorageFailed" };
+  | { kind: "recentVisitsStorageFailed" }
+  | { kind: "sectionMoveFailed"; message: string };
 
 /** The notice on display; `seq` keys remounts so a repeated notice restarts its hold. */
 export type RowToastState = RowToast & { seq: number };

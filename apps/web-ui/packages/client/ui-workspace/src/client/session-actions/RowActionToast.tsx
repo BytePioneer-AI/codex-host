@@ -124,6 +124,8 @@ function plainNoticeText(
       return t("toast.sessionLinkCopyFailed");
     case "sectionSyncPending":
       return t("toast.sectionSyncPending");
+    case "sectionMoveFailed":
+      return t("toast.sectionMoveFailed", { message: toast.message });
     case "recentVisitsStorageFailed":
       return t("recent.cache.error");
     /* v8 ignore next 2 -- closed-union backstop; only reached if a notice kind is forged */

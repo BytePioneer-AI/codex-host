@@ -179,6 +179,12 @@ export interface WorkspacePinnedWorkspacesValue {
 export interface WorkspaceMoveSessionToSectionRequest {
   readonly sessionId: SessionId;
   readonly sectionId: string | null;
+  /**
+   * Optional positioning anchor within `sectionId`.
+   * Omit for legacy behavior, pass `null` to append to the end, or pass a target
+   * member `SessionId` to insert before it (rejected when `sectionId === null`).
+   */
+  readonly beforeSessionId?: SessionId | null;
 }
 
 export interface WorkspaceMoveWorkspaceToSectionRequest {

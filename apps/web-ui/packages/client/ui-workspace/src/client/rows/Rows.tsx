@@ -54,6 +54,13 @@ import {
   threadActivitySegments,
   threadTreeSummary,
 } from "./thread-tree-presentation.ts";
+import { isSectionRowMoving } from "./section-dnd.ts";
+
+const EMPTY_MOVING_SECTION_SESSIONS: ReadonlySet<SessionId> = new Set();
+
+function useNoMovingSectionSessions<T>(selector: (snapshot: ReadonlySet<SessionId>) => T): T {
+  return selector(EMPTY_MOVING_SECTION_SESSIONS);
+}
 
 /** The standard locale seat, prop-passed from the browser root. */
 type RowTranslate = WorkspaceBrowserProps["t"];
@@ -127,6 +134,8 @@ function WorkspaceHoverContent({
  * row where the pointer released so the owner can resolve an insert anchor.
  */
 export interface RowDragProps {
+  /** Whether this row may initiate a drag (defaults to true when drag wiring is supplied). */
+  canDrag?: boolean;
   /** Start dragging this row. */
   start: () => void;
   /** A compatible row drag is in flight. */
@@ -135,7 +144,7 @@ export interface RowDragProps {
   marker: "before" | "after" | null;
   /** Report the hovered half while a compatible drag passes over this row. */
   hover: (half: "before" | "after") => void;
-  drop: (half: "before" | "after") => void;
+  drop: (half: "before" | "after", dropEffect?: string | null) => void;
   end: (copied?: boolean) => void;
 }
 
@@ -622,6 +631,7 @@ export function SessionNodeItem({
   renderSlot,
   onReveal,
   drag: suppliedDrag,
+  useMovingSectionSessions = useNoMovingSectionSessions,
   showHost = true,
   t,
 }: {
@@ -638,6 +648,8 @@ export function SessionNodeItem({
   onReveal?: (() => void) | undefined;
   /** Present on reorderable-list rows so every row can remain a drop target. */
   drag?: RowDragProps | undefined;
+  /** Row-scoped selector hook for in-flight section moves so lock changes do not re-render the whole tree. */
+  useMovingSectionSessions?: WorkspaceBrowserProps["useMovingSectionSessions"] | undefined;
   t: RowTranslate;
 } & PropsRenderSlots<
   | "sidebar.workspaces.session.menu.item"
@@ -659,6 +671,13 @@ export function SessionNodeItem({
       : undefined;
   const expanded = expansion[node.id] === true;
   const drag = depth === 0 ? suppliedDrag : undefined;
+  const movingInFlight = useMovingSectionSessions((ids) => ids.has(node.id));
+  const sectionMoving = isSectionRowMoving({
+    depth,
+    blank: row.blank,
+    archived: row.archived,
+    moving: movingInFlight,
+  });
   const title = displayTitle(node, t);
   const selected = node.id === currentId;
   const statuses = sessionStatuses(node, t);
@@ -672,7 +691,8 @@ export function SessionNodeItem({
   // Archived rows hold their in-place grayed slot, so manual reorder cannot
   // move them. Pinned rows drag within the pinned block: the browser gates
   // their drop targets to fellow pinned rows.
-  const reorderable = drag !== undefined && !row.blank && !row.archived;
+  const reorderable =
+    drag !== undefined && drag.canDrag !== false && !sectionMoving && !row.blank && !row.archived;
   const reference = !row.blank ? row.reference : undefined;
   const draggable = reorderable || reference !== undefined;
   const dragged = useRef(false);
@@ -695,18 +715,21 @@ export function SessionNodeItem({
       data-thread-depth={depth}
       data-thread-sortable={String(reorderable)}
       data-thread-pinned={String(node.pinned)}
+      data-section-moving={sectionMoving ? "true" : undefined}
       style={{ "--dsh-thread-indent": `${Math.min(depth, 3) * 24}px` } as CSSProperties}
       className={clsx(
         css.sessionRow,
         selected && css.selected,
         menuOpen && css.menuOpen,
         row.archived && css.archived,
+        sectionMoving && css.sectionMoving,
         drag?.marker === "before" && css.dropBefore,
         drag?.marker === "after" && css.dropAfter,
       )}
       role="treeitem"
       aria-selected={selected}
       aria-current={selected ? "page" : undefined}
+      aria-busy={sectionMoving || undefined}
       aria-level={depth + 1}
       aria-expanded={node.tree?.descendantCount ? expanded : undefined}
       tabIndex={-1}
@@ -765,6 +788,7 @@ export function SessionNodeItem({
           : (e) => {
               if (!drag.active) return;
               e.preventDefault();
+              e.stopPropagation();
               e.dataTransfer.dropEffect = "move";
               drag.hover(rowHalf(e));
             }
@@ -774,8 +798,10 @@ export function SessionNodeItem({
           ? undefined
           : (e) => {
               if (!drag.active) return;
+              if (e.dataTransfer.dropEffect === "copy") return;
               e.preventDefault();
-              drag.drop(rowHalf(e));
+              e.stopPropagation();
+              drag.drop(rowHalf(e), e.dataTransfer.dropEffect);
             }
       }
     >
@@ -833,8 +859,9 @@ export function SessionNodeItem({
           exist — both trailing cells stay off until the first prompt. */}
             {!row.blank && (
               <span
-                className={clsx(css.time, showStatus && css.timeStatus)}
+                className={clsx(css.time, (showStatus || sectionMoving) && css.timeStatus)}
                 data-session-status={showStatus ? primaryStatus.state : undefined}
+                data-section-moving-indicator={sectionMoving ? "true" : undefined}
               >
                 {showStatus ? (
                   <>
@@ -842,6 +869,14 @@ export function SessionNodeItem({
                     {primaryStatus.trailingLabel !== undefined && (
                       <span aria-hidden="true">{primaryStatus.trailingLabel}</span>
                     )}
+                    {sectionMoving && (
+                      <span className={css.visuallyHidden}>{t("section.moving")}</span>
+                    )}
+                  </>
+                ) : sectionMoving ? (
+                  <>
+                    <StateDot state="ongoing" size={14} className={css.sectionMovingSpinner} />
+                    <span className={css.visuallyHidden}>{t("section.moving")}</span>
                   </>
                 ) : (
                   timeLabel(row.updatedAt, now, t)

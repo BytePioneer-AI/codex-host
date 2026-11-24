@@ -112,7 +112,11 @@ export interface IWorkspaces {
   setWorkspacePinned?(workspaceId: WorkspaceId, pinned: boolean): Promise<void>;
   /** Place a local project in a sidebar section, or return it to Workspaces. */
   moveWorkspaceToSection?(workspaceId: WorkspaceId, sectionId: string | null): Promise<void>;
-  moveSessionToSection?(sessionId: SessionId, sectionId: string | null): Promise<void>;
+  moveSessionToSection?(
+    sessionId: SessionId,
+    sectionId: string | null,
+    beforeSessionId?: SessionId | null,
+  ): Promise<void>;
   /** Create a custom Thread section with a non-empty name. */
   createThreadSection?(name: string): Promise<WorkspaceCreateThreadSectionValue>;
   /** Rename a custom Thread section while omitting appearance to preserve existing styling. */
@@ -195,8 +199,16 @@ export class WorkspaceController extends Service implements IWorkspaces {
     if (!result.ok) throw commandError("session pin", result.error);
   }
 
-  async moveSessionToSection(sessionId: SessionId, sectionId: string | null): Promise<void> {
-    const result = await this.model.moveSessionToSection({ sessionId, sectionId });
+  async moveSessionToSection(
+    sessionId: SessionId,
+    sectionId: string | null,
+    beforeSessionId?: SessionId | null,
+  ): Promise<void> {
+    const result = await this.model.moveSessionToSection({
+      sessionId,
+      sectionId,
+      ...(beforeSessionId === undefined ? {} : { beforeSessionId }),
+    });
     if (!result.ok) throw commandError("move to section", result.error);
     if (result.value.sectionId !== sectionId)
       throw new Error("The requested section change was not confirmed.");

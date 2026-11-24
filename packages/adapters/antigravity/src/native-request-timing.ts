@@ -5,6 +5,7 @@ import { decodeVarint, readProtoFields, type ProtoField } from "./native-protobu
 
 export interface AntigravityRequestMetadata {
   reasoningOutputTokens: number;
+  contextWindowTokens?: number;
   timing?: {
     requestStartedAtMs: number;
     timeToFirstOutputMs: number;
@@ -88,10 +89,20 @@ function closeTo(left: bigint, right: bigint): boolean {
   return difference >= -NANOSECONDS_PER_MS && difference <= NANOSECONDS_PER_MS;
 }
 
+function contextWindowTokens(chat: ProtoField[]): number | undefined {
+  const start = message(chat, 9);
+  const context = start && message(start, 10);
+  const maxTokens = context && unsigned(context, 4);
+  return maxTokens !== null && maxTokens > 0n && maxTokens <= BigInt(Number.MAX_SAFE_INTEGER)
+    ? Number(maxTokens)
+    : undefined;
+}
+
 /**
- * agy 1.5.9: CortexStepMetadata 1/6/7 are created/viewable/finished timestamps;
+ * agy 1.5.9+: CortexStepMetadata 1/6/7 are created/viewable/finished timestamps;
  * CortexStepGeneratorMetadata 2 names its steps and 1 contains ChatModelMetadata.
- * ChatModelMetadata 11/12 are TTFT/streaming durations; 4 is ModelUsageStats.
+ * ChatModelMetadata 4 is ModelUsageStats, 9 is ChatStartMetadata (10 is ContextWindowMetadata,
+ * 4 is max_context_tokens), and 11/12 are TTFT/streaming durations.
  * ModelUsageStats 9 is thinking_output_tokens (proto3 uint64).
  * viewable_at is the first visible output, not when hidden thinking began; callers time only
  * the non-thinking Tokens over viewable_at through finished_generating_at.
@@ -114,7 +125,11 @@ function requestMetadata(
     return null;
   const thought = unsigned(stepUsage, 9);
   if (thought === null || thought !== unsigned(chatUsage, 9)) return null;
-  const facts: AntigravityRequestMetadata = { reasoningOutputTokens: Number(thought) };
+  const maxContextTokens = contextWindowTokens(chat);
+  const facts: AntigravityRequestMetadata = {
+    reasoningOutputTokens: Number(thought),
+    ...(maxContextTokens !== undefined ? { contextWindowTokens: maxContextTokens } : {}),
+  };
   // Multiple attempts cannot share one trustworthy generation interval.
   if (unsigned(chat, 14) !== 0n || chat.filter((value) => value.number === 17).length > 1)
     return facts;

@@ -21,6 +21,7 @@ export interface AntigravitySessionUsageTrackerOptions {
   nativeSessionId: string;
   homedir: string;
   expectedInitialTurns?: number;
+  activeModel?: string;
 }
 
 export function normalizeAntigravityUsageModel(rawModel: unknown): {
@@ -176,7 +177,10 @@ export class AntigravitySessionUsageTracker {
   #turnActive = false;
   #turnBase: HostUsage = requestUsage([]);
   #pending: PendingUsage | undefined;
-  #context: HostUsage = {};
+  #acpContext: { used: number; size: number } | undefined;
+  #activeModel: string | undefined;
+  #latestObservedModel: { step: number; model: string } | undefined;
+  readonly #nativeContextWindows = new Map<string, { step: number; tokens: number }>();
   #tokens: HostUsage = {};
   #outputTokensPerSecond?: number;
   #complete = true;
@@ -187,6 +191,7 @@ export class AntigravitySessionUsageTracker {
     this.#nativeSessionId = options.nativeSessionId;
     this.#home = options.homedir;
     this.#expectedInitialTurns = options.expectedInitialTurns ?? 0;
+    this.#activeModel = normalizeAntigravityUsageModel(options.activeModel).model;
     this.#file = path.join(
       options.homedir,
       ".gemini",
@@ -199,6 +204,30 @@ export class AntigravitySessionUsageTracker {
     );
   }
 
+  setActiveModel(rawModel: string | undefined): HostUsage | null {
+    this.#activeModel = normalizeAntigravityUsageModel(rawModel).model;
+    return this.currentUsage();
+  }
+
+  #recordObservedModel(step: number, model: string | undefined): void {
+    if (!model) return;
+    if (!this.#latestObservedModel || step >= this.#latestObservedModel.step) {
+      this.#latestObservedModel = { step, model };
+    }
+  }
+
+  #recordNativeContextWindow(
+    step: number,
+    model: string | undefined,
+    tokens: number | undefined,
+  ): void {
+    if (!model || !count(tokens) || tokens <= 0) return;
+    const previous = this.#nativeContextWindows.get(model);
+    if (!previous || step >= previous.step) {
+      this.#nativeContextWindows.set(model, { step, tokens });
+    }
+  }
+
   currentUsage(): HostUsage | null {
     const recorded = [...this.#requests]
       .sort(([left], [right]) => left - right)
@@ -208,7 +237,16 @@ export class AntigravitySessionUsageTracker {
       : recorded.length
         ? requestUsage(recorded)
         : this.#tokens;
-    const usage: HostUsage = { ...tokens, ...this.#context };
+    const usage: HostUsage = { ...tokens };
+    if (this.#acpContext) {
+      const model = this.#activeModel ?? this.#latestObservedModel?.model;
+      const effectiveWindow =
+        (model ? this.#nativeContextWindows.get(model)?.tokens : undefined) ??
+        this.#acpContext.size;
+      usage.contextUsedTokens = this.#acpContext.used;
+      usage.contextWindowTokens = effectiveWindow;
+      usage.contextUsagePercent = Math.min(100, (this.#acpContext.used / effectiveWindow) * 100);
+    }
     const latest = recorded.at(-1);
     if (latest?.cachedInputTokens !== undefined && latest.inputTokens > 0) {
       usage.cacheHitRatePercent = (latest.cachedInputTokens / latest.inputTokens) * 100;
@@ -234,11 +272,7 @@ export class AntigravitySessionUsageTracker {
 
   recordContextWindow(used: number, size: number): HostUsage | null {
     if (count(used) && count(size) && size > 0) {
-      this.#context = {
-        contextUsedTokens: used,
-        contextWindowTokens: size,
-        contextUsagePercent: Math.min(100, (used / size) * 100),
-      };
+      this.#acpContext = { used, size };
     }
     return this.currentUsage();
   }
@@ -404,6 +438,7 @@ export class AntigravitySessionUsageTracker {
     const steps = new Set([...(this.#pending?.steps ?? []), ...this.#turnCollectionSteps]);
     for (const [step, request] of transcript.steps) {
       if (!request) continue;
+      const native = transcript.metadata?.get(step);
       const previous = this.#consumed.get(step);
       if (previous) {
         if (
@@ -421,7 +456,9 @@ export class AntigravitySessionUsageTracker {
         ) {
           this.#invalidated = true;
           this.#awaitingTiming.delete(step);
+          continue;
         }
+        this.#recordNativeContextWindow(step, request.model, native?.contextWindowTokens);
         const recorded = this.#requests.get(step);
         const turn = this.#awaitingTiming.get(step);
         if (!historical && recorded && turn)
@@ -431,6 +468,8 @@ export class AntigravitySessionUsageTracker {
           );
         continue;
       }
+      this.#recordObservedModel(step, request.model);
+      this.#recordNativeContextWindow(step, request.model, native?.contextWindowTokens);
       const write = cacheUsage?.cacheWriteInputTokens;
       const singleMatches =
         steps.size === 1 &&
@@ -440,7 +479,6 @@ export class AntigravitySessionUsageTracker {
         request.outputTokens === cacheUsage.outputTokens &&
         (cacheUsage.cachedInputTokens === undefined ||
           request.cachedInputTokens === cacheUsage.cachedInputTokens);
-      const native = transcript.metadata?.get(step);
       // A prompt aggregate is a request fact only when exactly one matching request is known.
       const thought =
         !historical && singleMatches && transcript.complete

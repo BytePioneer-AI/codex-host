@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import * as c from "@codexhost/shared-contracts";
 import type { ChSessions } from "./ch-sessions.ts";
+import { compressResponse } from "./compression.ts";
 import { RpcError, type RpcRegistry } from "./transport.ts";
 import type { WebFiles } from "./web-files.ts";
 import { inspectImage, WEB_IMAGE_LIMITS, type WebImages } from "./web-images.ts";
@@ -21,14 +22,27 @@ export interface PeerAttachmentsDeps {
 const MAX_PROMPT_BODY_BYTES = 16 * 1024 * 1024;
 const PEER_UPLOAD_SCOPE_PREFIX = "peer-upload:";
 
-function sendJson(response: ServerResponse, status: number, body: unknown): void {
+async function sendJson(
+  request: IncomingMessage,
+  response: ServerResponse,
+  status: number,
+  body: unknown,
+): Promise<void> {
+  const contentType = "application/json; charset=utf-8";
+  const compressed = await compressResponse(
+    Buffer.from(JSON.stringify(body)),
+    contentType,
+    request.headers["accept-encoding"],
+  );
+  if (response.destroyed || response.writableEnded || response.headersSent) return;
   response
     .writeHead(status, {
-      "content-type": "application/json; charset=utf-8",
+      "content-type": contentType,
       "cache-control": "no-store",
       "x-content-type-options": "nosniff",
+      ...compressed.headers,
     })
-    .end(JSON.stringify(body));
+    .end(compressed.body);
 }
 
 function sendPlain(
@@ -292,7 +306,7 @@ async function readPromptBody(
 ): Promise<string | undefined> {
   const contentLength = Number(request.headers["content-length"]);
   if (Number.isFinite(contentLength) && contentLength > MAX_PROMPT_BODY_BYTES) {
-    sendJson(response, 413, { error: "Request body too large" });
+    await sendJson(request, response, 413, { error: "Request body too large" });
     request.resume();
     return undefined;
   }
@@ -302,7 +316,7 @@ async function readPromptBody(
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
     total += buf.byteLength;
     if (total > MAX_PROMPT_BODY_BYTES) {
-      sendJson(response, 413, { error: "Request body too large" });
+      await sendJson(request, response, 413, { error: "Request body too large" });
       request.resume();
       return undefined;
     }
@@ -318,27 +332,29 @@ async function handleUploads(
 ): Promise<void> {
   try {
     if (request.method !== "POST") {
-      sendJson(response, 405, { error: "Method not allowed" });
+      await sendJson(request, response, 405, { error: "Method not allowed" });
       return;
     }
     const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
     if (contentType !== "application/octet-stream") {
-      sendJson(response, 415, { error: "content type must be application/octet-stream" });
+      await sendJson(request, response, 415, {
+        error: "content type must be application/octet-stream",
+      });
       return;
     }
     const url = new URL(request.url ?? "", "http://localhost");
     const threadId = url.searchParams.get("threadId");
     const scope = url.searchParams.get("scope");
     if ((threadId !== null && scope !== null) || (threadId === null && scope === null)) {
-      sendJson(response, 400, { error: "Specify exactly one of threadId or scope" });
+      await sendJson(request, response, 400, { error: "Specify exactly one of threadId or scope" });
       return;
     }
     if (threadId !== null && (threadId.length === 0 || threadId.length > 1024)) {
-      sendJson(response, 400, { error: "Invalid threadId" });
+      await sendJson(request, response, 400, { error: "Invalid threadId" });
       return;
     }
     if (scope !== null && !c.REMOTE_PEER_UPLOAD_SCOPE_PATTERN.test(scope)) {
-      sendJson(response, 400, { error: "Invalid upload scope" });
+      await sendJson(request, response, 400, { error: "Invalid upload scope" });
       return;
     }
     const name = url.searchParams.get("name") ?? undefined;
@@ -357,9 +373,14 @@ async function handleUploads(
             name,
             imageMediaType,
           );
-    sendJson(response, 200, c.remotePeerUploadResultSchema.parse({ ok: true, value }));
+    await sendJson(
+      request,
+      response,
+      200,
+      c.remotePeerUploadResultSchema.parse({ ok: true, value }),
+    );
   } catch (error) {
-    sendJson(response, 200, errorEnvelope(error, "File upload failed"));
+    await sendJson(request, response, 200, errorEnvelope(error, "File upload failed"));
   } finally {
     request.resume();
   }
@@ -371,7 +392,7 @@ async function handlePrompt(
   deps: PeerAttachmentsDeps,
 ): Promise<void> {
   if (request.method !== "POST") {
-    sendJson(response, 405, { error: "Method not allowed" });
+    await sendJson(request, response, 405, { error: "Method not allowed" });
     request.resume();
     return;
   }
@@ -381,12 +402,12 @@ async function handlePrompt(
   try {
     parsedJson = JSON.parse(rawBody);
   } catch {
-    sendJson(response, 400, { error: "Invalid JSON request body" });
+    await sendJson(request, response, 400, { error: "Invalid JSON request body" });
     return;
   }
   const parsed = c.remotePeerPromptParamsSchema.safeParse(parsedJson);
   if (!parsed.success) {
-    sendJson(response, 400, { error: "Invalid peer prompt parameters" });
+    await sendJson(request, response, 400, { error: "Invalid peer prompt parameters" });
     return;
   }
   const { threadId, scope, requestId, mode, expectedTurnId, content } = parsed.data;
@@ -407,17 +428,17 @@ async function handlePrompt(
   if (reply.ok) {
     const envelope = c.remotePeerPromptResultSchema.safeParse(reply);
     if (envelope.success) {
-      sendJson(response, 200, envelope.data);
+      await sendJson(request, response, 200, envelope.data);
       return;
     }
-    sendJson(response, 200, {
+    await sendJson(request, response, 200, {
       ok: false,
       error: { code: "gateway/internal", message: "Unexpected prompt response" },
     });
     return;
   }
   const details = isPlainObject(reply.error.details) ? reply.error.details : undefined;
-  sendJson(response, 200, {
+  await sendJson(request, response, 200, {
     ok: false,
     error: {
       code: reply.error.code,

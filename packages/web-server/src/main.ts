@@ -642,13 +642,27 @@ const server = createWebServer((request, response) => {
         response.writeHead(403).end();
         return;
       }
+      const sendPeerJson = async (status: number, value: unknown): Promise<void> => {
+        const contentType = "application/json; charset=utf-8";
+        const compressed = await compressResponse(
+          Buffer.from(JSON.stringify(value)),
+          contentType,
+          request.headers["accept-encoding"],
+        );
+        if (response.destroyed || response.writableEnded || response.headersSent) return;
+        response
+          .writeHead(status, {
+            "content-type": contentType,
+            "cache-control": "no-store",
+            ...compressed.headers,
+          })
+          .end(compressed.body);
+      };
       const peerRoute = pathname.slice("/api/peer/v1/".length);
       const peerAttachmentsAvailable = Boolean(files && images);
       if (peerRoute === "uploads" || peerRoute === "prompt" || peerRoute === "file") {
         if (!peerAttachmentsAvailable) {
-          response
-            .writeHead(404, { "content-type": "application/json", "cache-control": "no-store" })
-            .end(JSON.stringify({ error: "Peer attachments unavailable" }));
+          await sendPeerJson(404, { error: "Peer attachments unavailable" });
           return;
         }
         await servePeerAttachments(request, response, peerRoute, {
@@ -679,22 +693,13 @@ const server = createWebServer((request, response) => {
           [resolve(values.workspace as string)],
           { attachments: peerAttachmentsAvailable },
         );
-        response
-          .writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
-          .end(JSON.stringify(result));
+        await sendPeerJson(200, result);
       } catch (error) {
         if (error instanceof PeerEndpointError) {
-          response
-            .writeHead(error.status, {
-              "content-type": "application/json",
-              "cache-control": "no-store",
-            })
-            .end(JSON.stringify({ error: error.message }));
+          await sendPeerJson(error.status, { error: error.message });
         } else {
           console.error("[remote-peers] unexpected /api/peer/v1 error:", error);
-          response
-            .writeHead(500, { "content-type": "application/json", "cache-control": "no-store" })
-            .end(JSON.stringify({ error: "Internal peer endpoint error" }));
+          await sendPeerJson(500, { error: "Internal peer endpoint error" });
         }
       }
       return;

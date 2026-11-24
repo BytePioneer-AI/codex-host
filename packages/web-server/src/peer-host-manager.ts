@@ -114,14 +114,16 @@ export class PeerHostManager {
   }
 
   hosts() {
-    return [...this.clients.values()].map((p) => ({
-      hostId: c.remotePeerHostId(p.record.peerId),
-      online: p.state === "connected",
-      displayName: p.record.name,
-      state: p.state,
-      projects: p.manifest?.projects,
-      epoch: p.manifest?.epoch,
-    }));
+    return [...this.clients.values()]
+      .filter((p) => p.record.enabled)
+      .map((p) => ({
+        hostId: c.remotePeerHostId(p.record.peerId),
+        online: p.state === "connected",
+        displayName: p.record.name,
+        state: p.state,
+        projects: p.manifest?.projects,
+        epoch: p.manifest?.epoch,
+      }));
   }
 
   call(op: c.RemoteSessionOperation) {
@@ -208,8 +210,10 @@ export class PeerHostManager {
                     linkOptions,
                   )
                 : old;
-            await this.check(conn.origin);
-            if (this.get(peerId) !== client) throw Error("Peer changed");
+            if (conn.origin !== old.origin) {
+              await this.check(conn.origin);
+              if (this.get(peerId) !== client) throw Error("Peer changed");
+            }
             const record = {
               ...old,
               origin: conn.origin,
@@ -219,6 +223,15 @@ export class PeerHostManager {
               updatedAt: new Date().toISOString(),
             };
             this.store.save(this.records().map((r) => (r.peerId === peerId ? record : r)));
+            if (
+              record.enabled === old.enabled &&
+              record.origin === old.origin &&
+              record.token === old.token
+            ) {
+              client.record = record;
+              this.changed(client.hostId);
+              return { peer: client.summary() };
+            }
             const next = this.install(record);
             this.changed(next.hostId);
             return { peer: next.summary() };

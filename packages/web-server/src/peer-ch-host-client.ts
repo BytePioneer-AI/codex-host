@@ -101,6 +101,10 @@ export class PeerChHostClient implements ChHostClient {
     return [...new Set(parsed.data.threadIds)];
   }
 
+  manifestEpoch(): string | undefined {
+    return this.transport.manifest()?.epoch;
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;

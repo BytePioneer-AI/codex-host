@@ -18,6 +18,7 @@ import { SessionListTiming } from "./session-list-timing.ts";
 import { EventHub, RpcError } from "./transport.ts";
 
 const MAX_CATALOG_PAGES = 100;
+const REMOTE_THREAD_DEBOUNCE_MS = 450;
 const legacyListPageSchema = z.object({
   data: z.array(remoteThreadRowSchema),
   nextCursor: z.string().nullable(),
@@ -83,6 +84,7 @@ export class PeerThreadSource {
   private readonly knownHarnesses = new Map<string, string>();
   private readonly stopCatalogInvalidation: () => void;
   private epoch: string | undefined;
+  private listedForEpoch: string | undefined;
 
   constructor(private readonly options: PeerThreadSourceOptions) {
     this.hostId = options.hostId;
@@ -95,38 +97,53 @@ export class PeerThreadSource {
       }
     });
     this.tree = new ChThreadTree(options.host);
-    this.realtime = new ChRealtime(options.host.realtime, {
-      thread: async (threadId) => {
-        await options.onThreadChanged(threadId);
-      },
-      usage: (threadId) => {
-        options.onUsageChanged?.(threadId);
-      },
-      catalog: async () => {
-        await options.onCatalogChanged();
-      },
-      connection: (online) => {
-        options.onConnection(online);
-      },
-      reset: (epoch, full) => {
-        if (full && this.epoch === epoch) {
-          for (const view of this.histories.values()) view.forgetKnownTurns();
-        }
-        if (this.epoch && this.epoch !== epoch) {
-          for (const view of this.histories.values()) {
-            view.retire();
-            view.log.reconnectFollowers();
+    this.realtime = new ChRealtime(
+      options.host.realtime,
+      {
+        thread: async (threadId) => {
+          await options.onThreadChanged(threadId);
+        },
+        usage: (threadId) => {
+          options.onUsageChanged?.(threadId);
+        },
+        catalog: async (reason) => {
+          if (
+            reason === "hello" &&
+            this.epoch !== undefined &&
+            this.listedForEpoch === this.epoch
+          ) {
+            return;
           }
-          this.histories.clear();
-        }
-        this.epoch = epoch;
-        options.onReset?.(epoch, full);
+          await options.onCatalogChanged();
+        },
+        connection: (online) => {
+          if (!online) this.listedForEpoch = undefined;
+          options.onConnection(online);
+        },
+        reset: (epoch, full) => {
+          if (full && this.epoch === epoch) {
+            this.listedForEpoch = undefined;
+            for (const view of this.histories.values()) view.forgetKnownTurns();
+          }
+          if (this.epoch && this.epoch !== epoch) {
+            this.listedForEpoch = undefined;
+            for (const view of this.histories.values()) {
+              view.retire();
+              view.log.reconnectFollowers();
+            }
+            this.histories.clear();
+          }
+          this.epoch = epoch;
+          options.onReset?.(epoch, full);
+        },
+        error: () => {},
       },
-      error: () => {},
-    });
+      { threadDebounceMs: REMOTE_THREAD_DEBOUNCE_MS },
+    );
   }
 
   async listThreads(): Promise<PeerThreadListResult> {
+    const startEpoch = this.epoch ?? this.host.manifestEpoch();
     const rows = new Map<string, ChThread>();
     const harnessIds = new Map<string, string>();
     const archivedIds = new Set<string>();
@@ -151,7 +168,10 @@ export class PeerThreadSource {
         const pageById = new Map<string, ChThread>();
         for (const rawRow of page.threads) {
           const row: ChThread = { ...rawRow, turns: [] };
-          rows.set(row.id, row);
+          const existingHarness = harnessIds.get(row.id);
+          if (cursor === undefined || !existingHarness || existingHarness === "codex") {
+            rows.set(row.id, row);
+          }
           pageById.set(row.id, row);
         }
         for (const id of page.archivedThreadIds) archivedIds.add(id);
@@ -159,7 +179,7 @@ export class PeerThreadSource {
           const row = pageById.get(item.threadId) ?? rows.get(item.threadId);
           if (item.owner === "external" && item.harnessId && row?.modelProvider === "codexhost") {
             harnessIds.set(item.threadId, item.harnessId);
-          } else if (item.owner === "codex") {
+          } else if (item.owner === "codex" && !harnessIds.has(item.threadId)) {
             harnessIds.set(item.threadId, "codex");
           }
         }
@@ -204,10 +224,10 @@ export class PeerThreadSource {
             result.thread.modelProvider === "codexhost"
           ) {
             harnessIds.set(id, owner.harnessId);
-          } else if (owner.owner === "codex") {
+          } else if (owner.owner === "codex" && !harnessIds.has(id)) {
             harnessIds.set(id, "codex");
           }
-        } else if (result.thread.modelProvider !== "codexhost") {
+        } else if (result.thread.modelProvider !== "codexhost" && !harnessIds.has(id)) {
           harnessIds.set(id, "codex");
         }
         if ((result.thread as { archived?: unknown }).archived === true) {
@@ -225,6 +245,10 @@ export class PeerThreadSource {
     for (const [id, row] of rows) this.knownRows.set(id, row);
     this.knownHarnesses.clear();
     for (const [id, harnessId] of harnessIds) this.knownHarnesses.set(id, harnessId);
+    const finishedEpoch = this.epoch ?? this.host.manifestEpoch();
+    if (startEpoch !== undefined && startEpoch === finishedEpoch) {
+      this.listedForEpoch = finishedEpoch;
+    }
 
     return {
       rows: [...rows.values()],

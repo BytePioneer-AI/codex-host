@@ -111,6 +111,9 @@ export async function peerFetch(
   }
 }
 
+const MAX_TRACKED_SNAPSHOT_THREADS = 64;
+const MAX_TRACKED_KNOWN_TURNS = 16;
+
 export class PeerHostClient {
   private life = new AbortController();
   manifest?: c.RemotePeerManifest;
@@ -121,10 +124,13 @@ export class PeerHostClient {
   private streamOnline = false;
   private readonly listeners = new Set<(update: HostClientUpdate) => void>();
   private readonly streamIdleTimeoutMs: number;
+  private readonly fullKnownTurns = new Map<string, Map<string, string>>();
+  private readonly truncatedKnownTurns = new Map<string, Map<string, string>>();
+  private knownTurnsEpoch: string | undefined;
   readonly hostId: string;
 
   constructor(
-    readonly record: PeerRecord,
+    public record: PeerRecord,
     private changed: (hostId?: string) => void,
     options: { streamIdleTimeoutMs?: number; initialManifest?: c.RemotePeerManifest } = {},
   ) {
@@ -134,6 +140,61 @@ export class PeerHostClient {
     if (options.initialManifest !== undefined) {
       this.manifest = options.initialManifest;
     }
+  }
+
+  private rememberSnapshotTurns(body: object, result: unknown): void {
+    const req = body as { threadId?: unknown; truncateToolOutput?: unknown };
+    if (typeof req.threadId !== "string" || !req.threadId) return;
+    if (!result || typeof result !== "object") return;
+    const snap = result as {
+      cursor?: { epoch?: unknown };
+      turnsPage?: { data?: Array<{ id?: unknown; fingerprint?: unknown }> };
+    };
+    const epoch = typeof snap.cursor?.epoch === "string" ? snap.cursor.epoch : undefined;
+    if (epoch !== undefined && this.knownTurnsEpoch !== epoch) {
+      this.fullKnownTurns.clear();
+      this.truncatedKnownTurns.clear();
+      this.knownTurnsEpoch = epoch;
+    }
+    const turns = snap.turnsPage?.data;
+    if (!Array.isArray(turns) || turns.length === 0) return;
+    const store = req.truncateToolOutput === true ? this.truncatedKnownTurns : this.fullKnownTurns;
+    let map = store.get(req.threadId);
+    if (!map) {
+      if (store.size >= MAX_TRACKED_SNAPSHOT_THREADS) {
+        const oldest = store.keys().next().value;
+        if (oldest !== undefined) store.delete(oldest);
+      }
+      map = new Map<string, string>();
+      store.set(req.threadId, map);
+    }
+    for (const turn of turns) {
+      if (typeof turn.id === "string" && typeof turn.fingerprint === "string" && turn.fingerprint) {
+        map.delete(turn.id);
+        map.set(turn.id, turn.fingerprint);
+      }
+    }
+    while (map.size > MAX_TRACKED_KNOWN_TURNS) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+  }
+
+  private knownTurnsForStatus(threadId: string): Array<{ id: string; fingerprint: string }> {
+    const merged = new Map<string, string>();
+    const full = this.fullKnownTurns.get(threadId);
+    if (full) {
+      for (const [id, fingerprint] of full) merged.set(id, fingerprint);
+    }
+    const truncated = this.truncatedKnownTurns.get(threadId);
+    if (truncated) {
+      for (const [id, fingerprint] of truncated) merged.set(id, fingerprint);
+    }
+    return [...merged.entries()].slice(-MAX_TRACKED_KNOWN_TURNS).map(([id, fingerprint]) => ({
+      id,
+      fingerprint,
+    }));
   }
 
   summary(): c.RemotePeerSummary {
@@ -198,7 +259,11 @@ export class PeerHostClient {
     if (!payload || typeof payload !== "object" || !("result" in payload)) {
       throw new RpcError("remote/read-failed", "Remote peer response missing result");
     }
-    return (payload as { result: T }).result;
+    const result = (payload as { result: T }).result;
+    if (route === "snapshot") {
+      this.rememberSnapshotTurns(body, result);
+    }
+    return result;
   }
 
   chTransport(): PeerChTransport {
@@ -255,9 +320,12 @@ export class PeerHostClient {
         idleTimer.unref();
       };
       try {
-        if (this.state !== "connected") await this.probe();
+        if (this.state !== "connected") {
+          await this.probe();
+          if (this.life.signal.aborted) return;
+          this.changed(this.hostId);
+        }
         if (this.life.signal.aborted) return;
-        this.changed(this.hostId);
         const query = this.cursor
           ? "?" +
             new URLSearchParams({ epoch: this.cursor.epoch, after: String(this.cursor.sequence) })
@@ -335,6 +403,9 @@ export class PeerHostClient {
     this.life.abort();
     this.setStreamOffline();
     this.listeners.clear();
+    this.fullKnownTurns.clear();
+    this.truncatedKnownTurns.clear();
+    this.knownTurnsEpoch = undefined;
   }
 
   async listDirs(path?: string) {
@@ -391,7 +462,13 @@ export class PeerHostClient {
     const base = { threadId };
     switch (op.kind) {
       case "status": {
-        const s = c.clientThreadSnapshotSchema.parse(await post("snapshot", base));
+        const s = c.clientThreadSnapshotSchema.parse(
+          await post("snapshot", {
+            ...base,
+            knownTurns: this.knownTurnsForStatus(threadId),
+            truncateToolOutput: true,
+          }),
+        );
         if (s.thread.id !== threadId || s.cursor.epoch !== epoch)
           throw new RpcError("remote/connection-changed", "Remote peer snapshot changed");
         return {
@@ -450,7 +527,13 @@ export class PeerHostClient {
       }
       case "delivery": {
         const a = op.action;
-        const snapshot = c.clientThreadSnapshotSchema.parse(await post("snapshot", base));
+        const snapshot = c.clientThreadSnapshotSchema.parse(
+          await post("snapshot", {
+            ...base,
+            knownTurns: this.knownTurnsForStatus(threadId),
+            truncateToolOutput: true,
+          }),
+        );
         const thread = snapshot.thread;
         const external = thread.modelProvider === "codexhost" && thread.cliVersion === "codexhost";
         if (thread.canAcceptDirectInput === false)

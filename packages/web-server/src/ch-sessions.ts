@@ -351,8 +351,9 @@ export class ChSessions {
       const harnessId = this.threads.harnessId(id);
       if (found.has(id) || !harnessId) continue;
       // Omission from an official page is not deletion or archive evidence.
-      // External metadata is complete for this scope, so its missing rows may leave.
+      // External metadata is complete on the head page, so missing rows may leave only when cursor is undefined.
       if (
+        cursor === undefined &&
         harnessId !== "codex" &&
         known.has(id) &&
         !archiveChanges.has(id) &&

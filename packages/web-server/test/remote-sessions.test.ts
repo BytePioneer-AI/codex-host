@@ -2195,3 +2195,282 @@ it("derives remote list titles via threadListTitle without leaking cwd and gener
     "合同要点整理",
   );
 });
+
+it("removes disabled peer entries/workspaces without writing back in-flight listThreads() results", async (t) => {
+  const hostId = "remote-peer:disable-race";
+  const epoch = "epoch-disable-1";
+  const row: ChThread = {
+    id: "t-race",
+    name: "Race Thread",
+    cwd: "/remote/race",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 10,
+    status: { type: "idle" },
+    turns: [],
+  };
+  let enabled = true;
+  let holdCatalog = false;
+  let catalogStarted = Promise.withResolvers<undefined>();
+  let catalogGate = Promise.withResolvers<undefined>();
+
+  const transport: PeerChTransport = {
+    manifest: () => ({
+      version: "1",
+      epoch,
+      platform: process.platform,
+      hostname: "race-peer",
+      homeDir: "/remote",
+      projects: [{ id: "proj-race", name: "Race Repo", path: "/remote/race", threadIds: [] }],
+    }),
+    subscribe: (listener) => {
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true });
+      return () => {};
+    },
+    async post<T>(_route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const { method } = body as { method: string };
+      if (method === "codexhost/thread/catalog/read") {
+        if (holdCatalog) {
+          catalogStarted.resolve(undefined);
+          await catalogGate.promise;
+        }
+        return {
+          threads: [row],
+          ownership: [{ threadId: row.id, owner: "codex" }],
+          officialCursor: { live: null },
+          archivedThreadIds: [],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
+      return {} as T;
+    },
+  };
+
+  const root = mkdtempSync(join(tmpdir(), "remote-disable-race-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const events = new EventHub("remote-disable-race");
+  const removed: string[] = [];
+  const origEmit = events.emit.bind(events);
+  events.emit = (event, ...args) => {
+    if (event === "api-session/removed" && typeof args[0] === "string") removed.push(args[0]);
+    origEmit(event, ...args);
+  };
+  const source = new PeerThreadSource({
+    hostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(hostId),
+    onThreadChanged: () => undefined,
+    onConnection: () => undefined,
+  });
+  const remote: RemoteSessions = new RemoteSessions(
+    events,
+    async (op) => {
+      if (op.kind === "hosts") {
+        return enabled
+          ? [
+              {
+                hostId,
+                online: true,
+                epoch,
+                displayName: "Race Peer",
+                projects: [
+                  { id: "proj-race", name: "Race Repo", path: "/remote/race", threadIds: [] },
+                ],
+              },
+            ]
+          : [];
+      }
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    { source: (id) => (enabled && id === hostId ? source : undefined) },
+  );
+  t.after(() => {
+    catalogGate.resolve(undefined);
+    remote.close();
+    source.close();
+  });
+
+  const rpc = new RpcRegistry();
+  rpc.register("session/list", () => ({ items: [] }));
+  remote.install(rpc, new StreamRegistry());
+
+  await remote.refresh();
+  const sessionId = remoteSessionId(hostId, row.id);
+  const before = await rpc.dispatch("session/list", {});
+  assert.ok(before.ok);
+  assert.ok(
+    (before.value as { items: Array<{ sessionId: string }> }).items.some(
+      (item) => item.sessionId === sessionId,
+    ),
+  );
+  assert.ok(workspaces.list().some((w) => w.remote?.hostId === hostId));
+
+  // Start an in-flight listThreads() and disable the peer before it resolves.
+  holdCatalog = true;
+  catalogStarted = Promise.withResolvers<undefined>();
+  catalogGate = Promise.withResolvers<undefined>();
+  const inFlight = remote.refresh();
+  await catalogStarted.promise;
+
+  enabled = false;
+  remote.hostsChanged(hostId);
+  catalogGate.resolve(undefined);
+  await inFlight;
+  for (let i = 0; i < 40 && !removed.includes(sessionId); i++) await sleep(15);
+
+  assert.ok(removed.includes(sessionId));
+  assert.equal(
+    workspaces.list().some((w) => w.remote?.hostId === hostId),
+    false,
+  );
+  const after = await rpc.dispatch("session/list", {});
+  assert.ok(after.ok);
+  assert.equal(
+    (after.value as { items: Array<{ sessionId: string }> }).items.some(
+      (item) => item.sessionId === sessionId,
+    ),
+    false,
+  );
+});
+
+it("does not re-traverse synced online peers on ordinary session/list or 30s timer and coalesces burst hostsChanged", async (t) => {
+  const peerHostId = "remote-peer:quiet-peer";
+  const desktopHostId = "remote-control:desktop-1";
+  const epoch = "epoch-quiet-1";
+  let peerCatalogReads = 0;
+  let desktopListReads = 0;
+  const peerRow: ChThread = {
+    id: "t-peer",
+    name: "Peer Thread",
+    cwd: "/remote/peer",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 10,
+    status: { type: "idle" },
+    turns: [],
+  };
+  const transport: PeerChTransport = {
+    manifest: () => ({
+      version: "1",
+      epoch,
+      platform: process.platform,
+      hostname: "quiet-peer",
+      homeDir: "/remote",
+      projects: [{ id: "proj-q", name: "Quiet", path: "/remote/peer", threadIds: [] }],
+    }),
+    subscribe: (listener) => {
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true });
+      return () => {};
+    },
+    async post<T>(_route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const { method } = body as { method: string };
+      if (method === "codexhost/thread/catalog/read") {
+        peerCatalogReads += 1;
+        return {
+          threads: [peerRow],
+          ownership: [{ threadId: peerRow.id, owner: "codex" }],
+          officialCursor: { live: null },
+          archivedThreadIds: [],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
+      return {} as T;
+    },
+  };
+
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const root = mkdtempSync(join(tmpdir(), "remote-quiet-peer-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = new PeerThreadSource({
+    hostId: peerHostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(peerHostId),
+    onThreadChanged: () => undefined,
+    onConnection: () => undefined,
+  });
+  const remote: RemoteSessions = new RemoteSessions(
+    new EventHub("remote-quiet-peer"),
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          {
+            hostId: peerHostId,
+            online: true,
+            epoch,
+            displayName: "Quiet Peer",
+            projects: [{ id: "proj-q", name: "Quiet", path: "/remote/peer", threadIds: [] }],
+          },
+          { hostId: desktopHostId, online: true, displayName: "Desktop" },
+        ];
+      }
+      if (op.kind === "list" && op.hostId === desktopHostId) {
+        desktopListReads += 1;
+        return { data: [], nextCursor: null };
+      }
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    new Workspaces(new DataDir(root), root),
+    { source: (id) => (id === peerHostId ? source : undefined) },
+  );
+  t.after(() => {
+    remote.close();
+    source.close();
+  });
+
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  rpc.register("session/list", () => ({ items: [] }));
+  let streamRouter: Parameters<StreamRegistry["routeSessions"]>[0] | undefined;
+  streams.routeSessions = (value) => {
+    streamRouter = value;
+  };
+  remote.install(rpc, streams);
+
+  // Register a control subscriber so the 30s interval timer is active.
+  await defined(streamRouter)(
+    "session/control",
+    {},
+    {
+      id: "ctrl",
+      closed: false,
+      push() {},
+      end() {},
+      fail() {},
+      onClose() {},
+    },
+    async (wrapped) => {
+      wrapped.push({ type: "baseline" });
+    },
+  );
+
+  // Initial refresh syncs both the peer and desktop hosts once.
+  await remote.refresh();
+  assert.equal(peerCatalogReads, 1);
+  assert.equal(desktopListReads, 1);
+
+  // Ordinary session/list must not re-traverse the already-synced online peer,
+  // while still refreshing the non-event-driven desktop host.
+  await rpc.dispatch("session/list", {});
+  await sleep(30);
+  assert.equal(peerCatalogReads, 1);
+  assert.equal(desktopListReads, 2);
+
+  // 30s periodic timer also skips the already-synced online peer while keeping desktop polling.
+  t.mock.timers.tick(30_000);
+  await sleep(30);
+  assert.equal(peerCatalogReads, 1);
+  assert.equal(desktopListReads, 3);
+
+  // Burst hostsChanged calls for the same peer coalesce into a single deferred traversal.
+  remote.hostsChanged(peerHostId);
+  remote.hostsChanged(peerHostId);
+  remote.hostsChanged(peerHostId);
+  await sleep(100);
+  assert.equal(peerCatalogReads, 1);
+  await sleep(700);
+  assert.equal(peerCatalogReads, 2);
+});

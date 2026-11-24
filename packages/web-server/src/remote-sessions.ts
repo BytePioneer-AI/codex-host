@@ -77,6 +77,7 @@ import {
 } from "./remote-workspaces.ts";
 
 const PREFIX = "web-remote:";
+const PEER_CATALOG_REFRESH_MIN_INTERVAL_MS = 600;
 const hostsSchema = z.array(
   z.object({
     hostId: z.string().min(1),
@@ -251,7 +252,7 @@ export class RemoteSessions {
       peers.onReset ??= this.peerHandlers.onReset;
     }
     this.timer = setInterval(() => {
-      if (this.controls.size) void this.refresh().catch(() => undefined);
+      if (this.controls.size) void this.refreshBackground().catch(() => undefined);
     }, 30_000);
     this.timer.unref();
   }
@@ -295,6 +296,8 @@ export class RemoteSessions {
   }
   private handlePeerConnection(hostId: string, online: boolean): void {
     if (this.closed || online) return;
+    this.syncedPeerSources.delete(hostId);
+    this.clearPeerChangeTimer(hostId);
     const host = this.hosts.get(hostId);
     if (host) host.online = false;
     for (const entry of this.entries.values()) {
@@ -304,6 +307,10 @@ export class RemoteSessions {
   }
   private handlePeerReset(hostId: string, epoch: string): void {
     if (this.closed) return;
+    const synced = this.syncedPeerSources.get(hostId);
+    if (synced && synced.epoch !== epoch) {
+      this.syncedPeerSources.delete(hostId);
+    }
     for (const [id, entry] of this.entries) {
       if (entry.identity.hostId !== hostId) continue;
       if (entry.epoch && entry.epoch !== epoch) {
@@ -478,9 +485,35 @@ export class RemoteSessions {
   }
   private refreshPending = false;
   private fullRefreshPending = false;
+  private backgroundRefreshPending = false;
   private pendingHostIds = new Set<string>();
+  private syncedPeerSources = new Map<
+    string,
+    { source: PeerThreadSource; epoch: string | undefined; listedAt: number }
+  >();
+  private inFlightPeerSources = new Map<string, PeerThreadSource>();
+  private peerChangeTimers = new Map<string, NodeJS.Timeout>();
+  private clearPeerChangeTimer(hostId: string): void {
+    const timer = this.peerChangeTimers.get(hostId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.peerChangeTimers.delete(hostId);
+  }
+  private isPeerSynced(host: RemoteWorkspaceHost, source: PeerThreadSource): boolean {
+    const synced = this.syncedPeerSources.get(host.hostId);
+    return (
+      synced !== undefined &&
+      synced.source === source &&
+      (host.epoch === undefined || synced.epoch === host.epoch)
+    );
+  }
   private hasPendingRefresh(): boolean {
-    return this.refreshPending || this.fullRefreshPending || this.pendingHostIds.size > 0;
+    return (
+      this.refreshPending ||
+      this.fullRefreshPending ||
+      this.backgroundRefreshPending ||
+      this.pendingHostIds.size > 0
+    );
   }
   private startRefresh(): Promise<void> {
     this.listing ??= this.list().finally(() => {
@@ -492,19 +525,72 @@ export class RemoteSessions {
     });
     return this.listing;
   }
-  hostsChanged(hostId?: string): void {
-    if (this.closed) return;
-    if (hostId) this.pendingHostIds.add(hostId);
-    else this.fullRefreshPending = true;
+  private queueHostRefresh(hostId: string): void {
+    this.clearPeerChangeTimer(hostId);
+    this.pendingHostIds.add(hostId);
     if (this.listing || this.archiveWrites) {
       this.refreshPending = true;
       return;
     }
     void this.startRefresh().catch(() => undefined);
   }
+  hostsChanged(hostId?: string): void {
+    if (this.closed) return;
+    if (!hostId) {
+      for (const id of [...this.peerChangeTimers.keys()]) this.clearPeerChangeTimer(id);
+      this.fullRefreshPending = true;
+      if (this.listing || this.archiveWrites) {
+        this.refreshPending = true;
+        return;
+      }
+      void this.startRefresh().catch(() => undefined);
+      return;
+    }
+    const peerSource = this.peers?.source(hostId);
+    if (!peerSource) {
+      this.syncedPeerSources.delete(hostId);
+      this.queueHostRefresh(hostId);
+      return;
+    }
+    const synced = this.syncedPeerSources.get(hostId);
+    const sameSynced = synced !== undefined && synced.source === peerSource;
+    const inFlight = this.inFlightPeerSources.get(hostId) === peerSource;
+    const elapsed = sameSynced
+      ? Date.now() - synced.listedAt
+      : PEER_CATALOG_REFRESH_MIN_INTERVAL_MS;
+    if (inFlight || (sameSynced && elapsed < PEER_CATALOG_REFRESH_MIN_INTERVAL_MS)) {
+      if (this.peerChangeTimers.has(hostId)) return;
+      const delay = inFlight
+        ? PEER_CATALOG_REFRESH_MIN_INTERVAL_MS
+        : Math.max(50, PEER_CATALOG_REFRESH_MIN_INTERVAL_MS - elapsed);
+      const timer = setTimeout(() => {
+        this.peerChangeTimers.delete(hostId);
+        if (this.closed) return;
+        this.queueHostRefresh(hostId);
+      }, delay);
+      timer.unref();
+      this.peerChangeTimers.set(hostId, timer);
+      return;
+    }
+    this.queueHostRefresh(hostId);
+  }
+  private refreshBackground(): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    this.backgroundRefreshPending = true;
+    if (this.archiveWrites) {
+      this.refreshPending = true;
+      return this.listing ?? Promise.resolve();
+    }
+    return this.startRefresh();
+  }
   refresh(hostId?: string): Promise<void> {
-    if (hostId) this.pendingHostIds.add(hostId);
-    else this.fullRefreshPending = true;
+    if (hostId) {
+      this.clearPeerChangeTimer(hostId);
+      this.pendingHostIds.add(hostId);
+    } else {
+      for (const id of [...this.peerChangeTimers.keys()]) this.clearPeerChangeTimer(id);
+      this.fullRefreshPending = true;
+    }
     if (this.archiveWrites) {
       this.refreshPending = true;
       return this.listing ?? Promise.resolve();
@@ -513,9 +599,12 @@ export class RemoteSessions {
   }
   private async list(): Promise<void> {
     if (this.archiveWrites) return;
-    const fullRefresh = this.fullRefreshPending || this.pendingHostIds.size === 0;
+    const explicitFullRefresh =
+      this.fullRefreshPending || (!this.backgroundRefreshPending && this.pendingHostIds.size === 0);
+    const backgroundRefresh = this.backgroundRefreshPending;
     const dirtyHosts = new Set(this.pendingHostIds);
     this.fullRefreshPending = false;
+    this.backgroundRefreshPending = false;
     this.pendingHostIds.clear();
     const previouslyOnline = new Set(
       [...this.hosts.values()].filter((host) => host.online).map((host) => host.hostId),
@@ -533,6 +622,7 @@ export class RemoteSessions {
       this.discoveryUnavailable = true;
       for (const entry of this.entries.values()) this.offline(entry);
       for (const host of this.hosts.values()) host.online = false;
+      this.syncedPeerSources.clear();
       this.syncGroups();
       return;
     }
@@ -557,16 +647,36 @@ export class RemoteSessions {
     for (const hostId of [...this.peerArchivedIds.keys()]) {
       if (!this.hosts.has(hostId)) this.peerArchivedIds.delete(hostId);
     }
+    for (const hostId of [...this.syncedPeerSources.keys()]) {
+      const host = this.hosts.get(hostId);
+      const peerSource = this.peers?.source(hostId);
+      if (!host || !host.online || !peerSource || !this.isPeerSynced(host, peerSource)) {
+        this.syncedPeerSources.delete(hostId);
+      }
+    }
+    for (const hostId of [...this.peerChangeTimers.keys()]) {
+      const host = this.hosts.get(hostId);
+      if (!host || !host.online || !this.peers?.source(hostId)) {
+        this.clearPeerChangeTimer(hostId);
+      }
+    }
     const present = new Set(hosts.filter((host) => host.online).map((host) => host.hostId));
     for (const entry of this.entries.values())
       if (!present.has(entry.identity.hostId)) this.offline(entry);
     await Promise.all(
       hosts
-        .filter(
-          (host) =>
-            host.online &&
-            (fullRefresh || dirtyHosts.has(host.hostId) || !previouslyOnline.has(host.hostId)),
-        )
+        .filter((host) => {
+          if (!host.online) return false;
+          if (
+            explicitFullRefresh ||
+            dirtyHosts.has(host.hostId) ||
+            !previouslyOnline.has(host.hostId)
+          )
+            return true;
+          if (!backgroundRefresh) return false;
+          const peerSource = this.peers?.source(host.hostId);
+          return !(peerSource && this.isPeerSynced(host, peerSource));
+        })
         .map(async (host) => {
           const peerSource = this.peers?.source(host.hostId);
           if (peerSource) {
@@ -666,6 +776,7 @@ export class RemoteSessions {
         (entry) => entry.identity.hostId === host.hostId && entry.createdEpoch,
       ),
     );
+    this.inFlightPeerSources.set(host.hostId, source);
     try {
       const listed = await source.listThreads();
       const uniqueHarnesses = [...new Set(listed.harnessIds.values())];
@@ -677,7 +788,13 @@ export class RemoteSessions {
           ),
         ),
       );
-      if (this.closed || archiveRevision !== this.archiveRevision) return;
+      if (
+        this.closed ||
+        archiveRevision !== this.archiveRevision ||
+        this.peers?.source(host.hostId) !== source
+      ) {
+        return;
+      }
       this.peerArchivedIds.set(host.hostId, new Set(listed.archivedIds));
       const found = new Map<string, Entry>();
       for (const row of listed.rows) {
@@ -780,10 +897,21 @@ export class RemoteSessions {
         }
       }
       this.syncArchives();
+      this.syncedPeerSources.set(host.hostId, {
+        source,
+        epoch: host.epoch,
+        listedAt: Date.now(),
+      });
     } catch {
+      if (this.closed || this.peers?.source(host.hostId) !== source) return;
+      this.syncedPeerSources.delete(host.hostId);
       host.online = false;
       for (const entry of this.entries.values()) {
         if (entry.identity.hostId === host.hostId) this.offline(entry);
+      }
+    } finally {
+      if (this.inFlightPeerSources.get(host.hostId) === source) {
+        this.inFlightPeerSources.delete(host.hostId);
       }
     }
   }
@@ -1808,7 +1936,7 @@ export class RemoteSessions {
             archivedSessionIds: this.syncArchives(),
           };
         }
-        void this.refresh().catch(() => undefined);
+        void this.refreshBackground().catch(() => undefined);
         const local = await next();
         return {
           ...(local as object),
@@ -2218,6 +2346,10 @@ export class RemoteSessions {
   close(): void {
     this.closed = true;
     clearInterval(this.timer);
+    for (const timer of this.peerChangeTimers.values()) clearTimeout(timer);
+    this.peerChangeTimers.clear();
+    this.syncedPeerSources.clear();
+    this.inFlightPeerSources.clear();
     this.followLifetime.abort();
     if (this.peers) {
       if (this.peers.onThreadChanged === this.peerHandlers.onThreadChanged)

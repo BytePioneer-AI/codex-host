@@ -60,8 +60,11 @@ it("paginates catalog/read, supplements tree ancestors, and enforces cursor prog
         };
       }
       return {
-        threads: [makeRow("codex-1", "openai")],
-        ownership: [{ threadId: "codex-1", owner: "codex" }],
+        threads: [makeRow("codex-1", "openai"), makeRow("child", "openai")],
+        ownership: [
+          { threadId: "codex-1", owner: "codex" },
+          { threadId: "child", owner: "codex" },
+        ],
         officialCursor: { live: null },
         archivedThreadIds: [],
       };

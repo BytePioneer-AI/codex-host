@@ -6,6 +6,13 @@
 import type { WorkspaceView } from "@deepseek-ai/dsh-api-workspace-controller/client";
 
 export const HOST_SCOPE_FILTER_STORAGE_KEY = "codexhost.sidebar.hostScopeFilter.v1";
+export const APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT =
+  "codexhost:apply-host-scope-workspace-selection";
+
+export interface ApplyHostScopeWorkspaceSelectionDetail {
+  hostId: string;
+  workspaceIds: string[];
+}
 
 export type HostScopeTarget = "all" | "local" | string;
 
@@ -127,15 +134,18 @@ export function reconcileHostScopeFilter(
 /**
  * Prune persisted filter state against a loaded workspace snapshot: reset a
  * disappeared remote `selectedHost` back to `"all"`, drop disappeared remote
- * `perHost` entries, and remove stale `workspaceIds` from remaining hosts.
- * Returns the original reference when nothing changed.
+ * `perHost` entries (except hosts still awaiting initial sync in
+ * `options.preserveHostKeys`), and remove stale `workspaceIds` from remaining
+ * hosts. Returns the original reference when nothing changed.
  */
 export function pruneUnavailableHostScopeFilter(
   state: HostScopeFilterState,
   workspaces: readonly WorkspaceView[],
+  options?: { readonly preserveHostKeys?: ReadonlySet<string> },
 ): HostScopeFilterState {
   const hosts = deriveAvailableHosts(workspaces);
   const hostByKey = new Map(hosts.map((host) => [host.key, host]));
+  const preserveHostKeys = options?.preserveHostKeys;
 
   const selectedHost =
     state.selectedHost !== "all" &&
@@ -151,7 +161,11 @@ export function pruneUnavailableHostScopeFilter(
     const host = hostByKey.get(hostKey);
     if (host === undefined) {
       if (hostKey !== "local") {
-        changed = true;
+        if (preserveHostKeys?.has(hostKey) === true) {
+          nextPerHost[hostKey] = scope;
+        } else {
+          changed = true;
+        }
         continue;
       }
       if (scope.workspaceIds.length > 0) {

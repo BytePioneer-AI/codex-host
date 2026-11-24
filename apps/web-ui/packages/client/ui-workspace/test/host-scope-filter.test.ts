@@ -366,6 +366,36 @@ describe("pruneUnavailableHostScopeFilter", () => {
       },
     });
   });
+
+  it("preserves perHost workspace presets for newly added hosts not yet synced into workspaces", () => {
+    const workspaces = sampleWorkspaces();
+    const saved: HostScopeFilterState = {
+      selectedHost: "all",
+      perHost: {
+        "remote-peer:new-box": {
+          mode: "selected",
+          workspaceIds: ["remote-workspace:new-a", "remote-workspace:new-b"],
+        },
+        "remote-peer:gone-box": {
+          mode: "selected",
+          workspaceIds: ["remote-workspace:gone-1"],
+        },
+      },
+    };
+
+    const pruned = pruneUnavailableHostScopeFilter(saved, workspaces, {
+      preserveHostKeys: new Set(["remote-peer:new-box"]),
+    });
+    assert.deepEqual(pruned, {
+      selectedHost: "all",
+      perHost: {
+        "remote-peer:new-box": {
+          mode: "selected",
+          workspaceIds: ["remote-workspace:new-a", "remote-workspace:new-b"],
+        },
+      },
+    });
+  });
 });
 
 describe("persistence & state mutation helpers", () => {

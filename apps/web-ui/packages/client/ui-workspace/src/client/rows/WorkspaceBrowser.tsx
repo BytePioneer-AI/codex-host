@@ -94,6 +94,7 @@ import { SessionListExpansion } from "./SessionListExpansion.tsx";
 import { SectionHeading } from "./SectionHeading.tsx";
 import { HostScopeFilter } from "./HostScopeFilter.tsx";
 import {
+  APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT,
   ensureWorkspaceVisibleInHostScope,
   filterSessionsByHostScope,
   filterWorkspacesByHostScope,
@@ -105,6 +106,8 @@ import {
   reconcileHostScopeFilter,
   resetHostScopeFilter,
   saveHostScopeFilter,
+  setHostSelectedWorkspaceIds,
+  type ApplyHostScopeWorkspaceSelectionDetail,
   type HostScopeFilterState,
 } from "./host-scope-filter.ts";
 import {
@@ -1845,13 +1848,64 @@ function WorkspaceBrowserContent({
   const [hostScopeFilter, setHostScopeFilter] = useState<HostScopeFilterState>(() =>
     loadHostScopeFilter(),
   );
+  // Protect newly-added remote host presets until their workspaces arrive in `orderedWorkspaces`.
+  const pendingPresetHostKeysRef = useRef<Set<string> | null>(null);
+  if (pendingPresetHostKeysRef.current === null) {
+    const initialPending = new Set<string>();
+    for (const hostKey of Object.keys(hostScopeFilter.perHost)) {
+      if (hostKey !== "local" && hostKey !== hostScopeFilter.selectedHost) {
+        initialPending.add(hostKey);
+      }
+    }
+    pendingPresetHostKeysRef.current = initialPending;
+  }
   const updateHostScopeFilter = useCallback((next: HostScopeFilterState): void => {
     setHostScopeFilter(next);
     saveHostScopeFilter(next);
   }, []);
   useEffect(() => {
+    const onApplySelection = (event: Event): void => {
+      const detail = (event as CustomEvent<ApplyHostScopeWorkspaceSelectionDetail | undefined>)
+        .detail;
+      if (
+        !detail ||
+        typeof detail.hostId !== "string" ||
+        detail.hostId === "" ||
+        !Array.isArray(detail.workspaceIds)
+      ) {
+        return;
+      }
+      const workspaceIds = detail.workspaceIds.filter((id): id is string => typeof id === "string");
+      pendingPresetHostKeysRef.current?.add(detail.hostId);
+      setHostScopeFilter((prev) => {
+        const next = setHostSelectedWorkspaceIds(prev, detail.hostId, workspaceIds);
+        saveHostScopeFilter(next);
+        return next;
+      });
+    };
+    window.addEventListener(APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT, onApplySelection);
+    return () => {
+      window.removeEventListener(APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT, onApplySelection);
+    };
+  }, []);
+  useEffect(() => {
     if (workspacePhase !== "ready" || workspaceStreamState !== "idle") return;
-    const pruned = pruneUnavailableHostScopeFilter(hostScopeFilter, orderedWorkspaces);
+    const pendingPresetHostKeys = pendingPresetHostKeysRef.current;
+    if (pendingPresetHostKeys !== null && pendingPresetHostKeys.size > 0) {
+      for (const workspace of orderedWorkspaces) {
+        const remoteHostId = workspace.remote?.hostId;
+        if (remoteHostId !== undefined) {
+          pendingPresetHostKeys.delete(remoteHostId);
+        }
+      }
+    }
+    const pruned = pruneUnavailableHostScopeFilter(
+      hostScopeFilter,
+      orderedWorkspaces,
+      pendingPresetHostKeys === null || pendingPresetHostKeys.size === 0
+        ? undefined
+        : { preserveHostKeys: pendingPresetHostKeys },
+    );
     if (pruned !== hostScopeFilter) {
       updateHostScopeFilter(pruned);
     }

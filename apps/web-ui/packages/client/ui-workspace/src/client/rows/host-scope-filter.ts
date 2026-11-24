@@ -125,6 +125,59 @@ export function reconcileHostScopeFilter(
 }
 
 /**
+ * Prune persisted filter state against a loaded workspace snapshot: reset a
+ * disappeared remote `selectedHost` back to `"all"`, drop disappeared remote
+ * `perHost` entries, and remove stale `workspaceIds` from remaining hosts.
+ * Returns the original reference when nothing changed.
+ */
+export function pruneUnavailableHostScopeFilter(
+  state: HostScopeFilterState,
+  workspaces: readonly WorkspaceView[],
+): HostScopeFilterState {
+  const hosts = deriveAvailableHosts(workspaces);
+  const hostByKey = new Map(hosts.map((host) => [host.key, host]));
+
+  const selectedHost =
+    state.selectedHost !== "all" &&
+    state.selectedHost !== "local" &&
+    !hostByKey.has(state.selectedHost)
+      ? "all"
+      : state.selectedHost;
+
+  let changed = selectedHost !== state.selectedHost;
+  const nextPerHost: Record<string, PerHostWorkspaceScope> = {};
+
+  for (const [hostKey, scope] of Object.entries(state.perHost)) {
+    const host = hostByKey.get(hostKey);
+    if (host === undefined) {
+      if (hostKey !== "local") {
+        changed = true;
+        continue;
+      }
+      if (scope.workspaceIds.length > 0) {
+        changed = true;
+        nextPerHost[hostKey] = { mode: scope.mode, workspaceIds: [] };
+      } else {
+        nextPerHost[hostKey] = scope;
+      }
+      continue;
+    }
+
+    const validIds = new Set<string>(host.workspaces.map((workspace) => workspace.workspaceId));
+    const filteredIds = scope.workspaceIds.filter((id) => validIds.has(id));
+    if (filteredIds.length !== scope.workspaceIds.length) {
+      changed = true;
+      nextPerHost[hostKey] = { mode: scope.mode, workspaceIds: filteredIds };
+    } else {
+      nextPerHost[hostKey] = scope;
+    }
+  }
+
+  if (!changed) return state;
+  return { selectedHost, perHost: nextPerHost };
+}
+
+/**
  * Whether any host or visible per-host workspace subset filter is currently active.
  */
 export function isHostScopeFiltered(

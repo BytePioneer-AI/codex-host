@@ -19,6 +19,7 @@ import {
   dispatchOpenAddRemoteWorkspace,
   dispatchRemotePeersUpdated,
   REMOTE_PEERS_UPDATED_EVENT,
+  type RemotePeersUpdatedDetail,
 } from "./remote-peers-events.ts";
 import { RemoteHostIcon, UnlockIcon } from "./RemoteHostIcon.tsx";
 import {
@@ -119,6 +120,7 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
   const [removeBusy, setRemoveBusy] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [selfEventSource] = useState(() => Symbol("remote-peers-panel"));
   const loadSeqRef = useRef(0);
 
   const loadPeers = useCallback(
@@ -136,7 +138,7 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
           setView({ kind: "failed", message: messageOf(cause) });
         }
       } finally {
-        if (showSpinner && seq === loadSeqRef.current) setRefreshing(false);
+        if (seq === loadSeqRef.current) setRefreshing(false);
       }
     },
     [],
@@ -158,18 +160,23 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
     const refresh = () => {
       void loadPeers("background", true);
     };
+    const onPeersUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<RemotePeersUpdatedDetail | undefined>).detail;
+      if (detail?.source === selfEventSource) return;
+      refresh();
+    };
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") refresh();
     };
-    window.addEventListener(REMOTE_PEERS_UPDATED_EVENT, refresh);
+    window.addEventListener(REMOTE_PEERS_UPDATED_EVENT, onPeersUpdated);
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
-      window.removeEventListener(REMOTE_PEERS_UPDATED_EVENT, refresh);
+      window.removeEventListener(REMOTE_PEERS_UPDATED_EVENT, onPeersUpdated);
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [loadPeers]);
+  }, [loadPeers, selfEventSource]);
 
   const connectingKey =
     view.kind === "ready"
@@ -215,7 +222,7 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
       setView((current) =>
         current.kind === "ready" ? { kind: "ready", peers: replacePeer(current.peers) } : current,
       );
-      dispatchRemotePeersUpdated();
+      dispatchRemotePeersUpdated({ source: selfEventSource });
     } catch (cause) {
       setActionError(t("remotePeers.actionFailed", { message: messageOf(cause) }));
     } finally {
@@ -238,7 +245,7 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
       setView((current) =>
         current.kind === "ready" ? { kind: "ready", peers: replacePeer(current.peers) } : current,
       );
-      dispatchRemotePeersUpdated();
+      dispatchRemotePeersUpdated({ source: selfEventSource });
     } catch (cause) {
       setActionError(t("remotePeers.actionFailed", { message: messageOf(cause) }));
     } finally {
@@ -264,7 +271,7 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
         current.kind === "ready" ? { kind: "ready", peers: filterRemoved(current.peers) } : current,
       );
       setRemovingPeer(null);
-      dispatchRemotePeersUpdated();
+      dispatchRemotePeersUpdated({ source: selfEventSource });
     } catch (cause) {
       setRemoveError(t("remotePeers.actionFailed", { message: messageOf(cause) }));
     } finally {
@@ -530,6 +537,7 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
       {editingPeer !== null && (
         <EditPeerModal
           peer={editingPeer}
+          eventSource={selfEventSource}
           t={t}
           onClose={() => setEditingPeer(null)}
           onSaved={(updated) => {

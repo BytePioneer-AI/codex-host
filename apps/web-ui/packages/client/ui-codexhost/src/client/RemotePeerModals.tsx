@@ -328,11 +328,13 @@ export function EditPeerModal({
   peer,
   onClose,
   onSaved,
+  eventSource,
   t,
 }: {
   peer: RemotePeerSummary;
   onClose: () => void;
   onSaved: (updated: RemotePeerSummary) => void;
+  eventSource?: unknown;
   t: RemotePeersTranslate;
 }): ReactNode {
   const [name, setName] = useState(peer.name);
@@ -374,7 +376,7 @@ export function EditPeerModal({
     setError(null);
     try {
       const { peer: updated } = await remotePeersApi.update(payload);
-      dispatchRemotePeersUpdated();
+      dispatchRemotePeersUpdated(eventSource === undefined ? undefined : { source: eventSource });
       onSaved(updated);
     } catch (cause) {
       setError(t("remotePeers.actionFailed", { message: errorMessageOf(cause) }));

@@ -15,6 +15,10 @@ export interface RemoteWorkspaceCreatedDetail {
   workspaceId?: string;
 }
 
+export interface RemotePeersUpdatedDetail {
+  source?: unknown;
+}
+
 export function dispatchOpenRemotePeersSettings(): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent(OPEN_REMOTE_PEERS_SETTINGS_EVENT));
@@ -28,9 +32,14 @@ export function dispatchOpenAddRemoteWorkspace(hostId?: string): void {
   );
 }
 
-export function dispatchRemotePeersUpdated(): void {
+export function dispatchRemotePeersUpdated(detail?: RemotePeersUpdatedDetail): void {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent(REMOTE_PEERS_UPDATED_EVENT));
+  window.dispatchEvent(
+    new CustomEvent<RemotePeersUpdatedDetail>(
+      REMOTE_PEERS_UPDATED_EVENT,
+      detail === undefined ? undefined : { detail },
+    ),
+  );
 }
 
 export function dispatchRemoteWorkspaceCreated(detail: RemoteWorkspaceCreatedDetail): void {

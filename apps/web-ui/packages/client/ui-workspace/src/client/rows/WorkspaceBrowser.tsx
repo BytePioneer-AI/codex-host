@@ -19,6 +19,7 @@ import {
   type ComponentProps,
   type CSSProperties,
   type ReactNode,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -100,6 +101,7 @@ import {
   hasRemoteWorkspaces,
   isHostScopeFiltered,
   loadHostScopeFilter,
+  pruneUnavailableHostScopeFilter,
   reconcileHostScopeFilter,
   resetHostScopeFilter,
   saveHostScopeFilter,
@@ -1843,10 +1845,23 @@ function WorkspaceBrowserContent({
   const [hostScopeFilter, setHostScopeFilter] = useState<HostScopeFilterState>(() =>
     loadHostScopeFilter(),
   );
-  const updateHostScopeFilter = (next: HostScopeFilterState): void => {
+  const updateHostScopeFilter = useCallback((next: HostScopeFilterState): void => {
     setHostScopeFilter(next);
     saveHostScopeFilter(next);
-  };
+  }, []);
+  useEffect(() => {
+    if (workspacePhase !== "ready" || workspaceStreamState !== "idle") return;
+    const pruned = pruneUnavailableHostScopeFilter(hostScopeFilter, orderedWorkspaces);
+    if (pruned !== hostScopeFilter) {
+      updateHostScopeFilter(pruned);
+    }
+  }, [
+    hostScopeFilter,
+    orderedWorkspaces,
+    updateHostScopeFilter,
+    workspacePhase,
+    workspaceStreamState,
+  ]);
   const resetHostScope = (): void => {
     updateHostScopeFilter(resetHostScopeFilter());
   };

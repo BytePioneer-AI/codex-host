@@ -15,6 +15,7 @@ import {
   isHostScopeFiltered,
   loadHostScopeFilter,
   parseHostScopeFilter,
+  pruneUnavailableHostScopeFilter,
   reconcileHostScopeFilter,
   resetHostScopeFilter,
   saveHostScopeFilter,
@@ -314,6 +315,56 @@ describe("reconcileHostScopeFilter", () => {
     const workspaces = sampleWorkspaces();
     const state: HostScopeFilterState = { selectedHost: "remote-peer:us-vps", perHost: {} };
     assert.strictEqual(reconcileHostScopeFilter(state, workspaces), state);
+  });
+});
+
+describe("pruneUnavailableHostScopeFilter", () => {
+  it("resets disappeared remote selectedHost to all and drops its stale perHost entry", () => {
+    const workspacesWithoutJp = sampleWorkspaces().filter(
+      (w) => w.remote?.hostId !== "remote-peer:jp-box",
+    );
+    const saved: HostScopeFilterState = {
+      selectedHost: "remote-peer:jp-box",
+      perHost: {
+        "remote-peer:jp-box": { mode: "selected", workspaceIds: ["ws-jp-1"] },
+        "remote-peer:us-vps": { mode: "selected", workspaceIds: ["ws-us-1", "ws-us-deleted"] },
+      },
+    };
+
+    const pruned = pruneUnavailableHostScopeFilter(saved, workspacesWithoutJp);
+    assert.deepEqual(pruned, {
+      selectedHost: "all",
+      perHost: {
+        "remote-peer:us-vps": { mode: "selected", workspaceIds: ["ws-us-1"] },
+      },
+    });
+  });
+
+  it("keeps the same reference when selectedHost and workspaceIds are still valid", () => {
+    const workspaces = sampleWorkspaces();
+    const saved: HostScopeFilterState = {
+      selectedHost: "remote-peer:us-vps",
+      perHost: {
+        "remote-peer:us-vps": { mode: "selected", workspaceIds: ["ws-us-1"] },
+      },
+    };
+    assert.strictEqual(pruneUnavailableHostScopeFilter(saved, workspaces), saved);
+  });
+
+  it("preserves local selectedHost even when the loaded workspace list is empty", () => {
+    const saved: HostScopeFilterState = {
+      selectedHost: "local",
+      perHost: {
+        local: { mode: "selected", workspaceIds: ["ws-local-stale"] },
+        "remote-peer:jp-box": { mode: "selected", workspaceIds: ["ws-jp-1"] },
+      },
+    };
+    assert.deepEqual(pruneUnavailableHostScopeFilter(saved, []), {
+      selectedHost: "local",
+      perHost: {
+        local: { mode: "selected", workspaceIds: [] },
+      },
+    });
   });
 });
 

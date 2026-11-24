@@ -18,7 +18,7 @@ export function syncSidebarTabStop(tree: HTMLElement | null): void {
     rows[0];
   for (const row of rows) {
     const next = row === entry ? 0 : -1;
-    if (row.tabIndex !== next) row.tabIndex = next;
+    if (!row.hasAttribute("tabindex") || row.tabIndex !== next) row.tabIndex = next;
   }
 }
 

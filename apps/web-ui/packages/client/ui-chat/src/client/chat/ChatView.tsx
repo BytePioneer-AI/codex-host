@@ -41,6 +41,10 @@ import { TurnNavigator } from "./TurnNavigator.tsx";
 import { RunningStatus } from "./RunningStatus.tsx";
 import { mergeTurnRailItems } from "./turn-rail-items.ts";
 import { useChatScroll } from "./use-chat-scroll.ts";
+import {
+  REMOTE_PEER_FILE_PROXY_PATH,
+  REMOTE_PEER_HOST_ID_PREFIX,
+} from "@codexhost/shared-contracts";
 import { fileMediaUrl, resolveWorkspacePath } from "@deepseek-ai/dsh-util-workspace-path";
 import { useSentMessageEditing } from "./SentMessageEditor.tsx";
 import { SelectionActions } from "./SelectionActions.tsx";
@@ -55,6 +59,21 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
     remoteHistoryError: { code: string; message: string } | null;
     nativeConnection: { state: "connected" | "reconnecting"; message?: string } | null;
   }
+}
+
+/** Resolve a remote-peer image path to the Hub file proxy without touching local workspace roots. */
+function remotePeerFileMediaUrl(
+  base: string,
+  sessionId: string,
+  rawPath: string,
+): string | undefined {
+  if (!/^https?:/u.test(base) || rawPath === "" || /[\u0000-\u001f\u007f]/u.test(rawPath)) {
+    return undefined;
+  }
+  return new URL(
+    `${REMOTE_PEER_FILE_PROXY_PATH}?sessionId=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(rawPath)}`,
+    base,
+  ).href;
 }
 
 /** Host/OS refusal text for the file-open dialog; empty throws keep a locale fallback. */
@@ -237,11 +256,23 @@ export function ChatView({
   const inbox = useProjection("inbox") as unknown as InboxState | undefined;
   // Workspace root off the session list row: path summaries display relative to it.
   const cwd = useSessions((s) => s.byId[sessionId]?.cwd);
-  const remote = useSessions((s) => Boolean(s.byId[sessionId]?.projectionValues?.remoteHost));
+  const isRemote = useSessions((s) => Boolean(s.byId[sessionId]?.projectionValues?.remoteHost));
+  const remotePeerFilePreview = useSessions((s) => {
+    const remoteHost = s.byId[sessionId]?.projectionValues?.remoteHost;
+    return (
+      remoteHost?.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX) === true &&
+      remoteHost.filePreview === true
+    );
+  });
   const fileImages = useMemo(
     () => ({
-      resolve: (path: string) =>
-        remote ? undefined : fileMediaUrl(document.baseURI, resolveWorkspacePath(cwd, path)),
+      resolve: (path: string) => {
+        if (remotePeerFilePreview) {
+          return remotePeerFileMediaUrl(document.baseURI, sessionId, path);
+        }
+        if (isRemote) return undefined;
+        return fileMediaUrl(document.baseURI, resolveWorkspacePath(cwd, path));
+      },
       labels: {
         open: t("image.open"),
         loading: t("image.loading"),
@@ -250,7 +281,7 @@ export function ChatView({
         close: t("image.close"),
       },
     }),
-    [cwd, remote, t],
+    [cwd, isRemote, remotePeerFilePreview, sessionId, t],
   );
   // The transcript column holds every rendered answer: a selection is offered
   // the attach action only when it stays inside one of them.

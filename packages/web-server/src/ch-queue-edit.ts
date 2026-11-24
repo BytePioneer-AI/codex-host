@@ -256,9 +256,9 @@ export async function takeQueuedItemForEdit(input: {
         "session/queue-edit-unsupported",
         "Queued attachments cannot be edited in this session.",
       );
-    staged = fileInputs
-      .stageStored(threadId, parsed.attachments)
-      .map(({ kind, receiptId, file }) => ({ kind, receiptId, file }));
+    staged = (await fileInputs.stageStored(threadId, parsed.attachments)).map(
+      ({ kind, receiptId, file }) => ({ kind, receiptId, file }),
+    );
   }
 
   const receiptIds = staged.map((entry) => entry.receiptId);

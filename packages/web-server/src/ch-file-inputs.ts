@@ -154,16 +154,16 @@ export class ChFileInputs {
    * Re-stage already-stored Web attachments for an authorized Thread without additional Host RPCs.
    * Rolls back all issued receipts if any attachment fails validation or exceeds image limits.
    */
-  stageStored(
+  async stageStored(
     sessionId: string,
     attachments: readonly EditableQueuedAttachment[],
-  ): StagedWebAttachment[] {
+  ): Promise<StagedWebAttachment[]> {
     const staged: StagedWebAttachment[] = [];
     let imageCount = 0;
     let imageBytes = 0;
     try {
       for (const attachment of attachments) {
-        const entry = this.files.stage(
+        const entry = await this.files.stage(
           sessionId,
           attachment.path,
           attachment.kind === "image" ? attachment.name : undefined,

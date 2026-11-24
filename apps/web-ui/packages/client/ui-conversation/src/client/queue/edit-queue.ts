@@ -52,7 +52,11 @@ export function restoreQueuedMessageToComposer(input: {
 }): Promise<void> {
   const { sessionId, shell, conversation, message, imageBlobs } = input;
   const applyRestore = (): boolean => {
-    if (shell.isDisposed) return true;
+    if (shell.isDisposed) {
+      throw new Error(
+        "Queued message was removed, but the session composer was closed before restoring.",
+      );
+    }
     const { phase } = shell.snapshot;
     if (phase !== "plain" && phase !== "claimed") return false;
 
@@ -69,7 +73,12 @@ export function restoreQueuedMessageToComposer(input: {
       const drafts = conversation.restoreStagedDrafts(sessionId, staged);
       if (!shell.addAttachments(drafts.map((draft) => draft.id))) {
         conversation.releaseDraftAttachments(drafts);
-        return shell.isDisposed;
+        if (shell.isDisposed) {
+          throw new Error(
+            "Queued message was removed, but the session composer was closed before restoring.",
+          );
+        }
+        return false;
       }
     }
 
@@ -86,7 +95,11 @@ export function restoreQueuedMessageToComposer(input: {
     return true;
   };
 
-  if (applyRestore()) return Promise.resolve();
+  try {
+    if (applyRestore()) return Promise.resolve();
+  } catch (error) {
+    return Promise.reject(error);
+  }
   return new Promise<void>((resolve, reject) => {
     let settled = false;
     let applying = false;

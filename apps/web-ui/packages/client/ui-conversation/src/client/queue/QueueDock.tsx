@@ -542,41 +542,53 @@ export const queueDockEntry = {
                 );
               },
               editQueue: async (itemId, target) => {
-                // Retain the originating shell across navigation and the delete RPC.
-                const shell = inputHub.shell(sessionId);
-                if (target.kind === "legacyText") {
-                  await conversation.updateQueue(itemId, { kind: "remove" });
-                  if (shell.isDisposed) return;
-                  // Preserve text, references and attachments typed while deletion was pending.
-                  const draft = shell.draftSnapshot;
-                  shell.setDraft({
-                    ...draft,
-                    text: draft.text === "" ? target.text : `${draft.text}\n${target.text}`,
-                  });
-                  shell.actions.persistDraft();
-                  shell.focus("end");
-                  return;
-                }
-                const editor = ctx.get("queueMessageEditing");
-                const controller = ctx.get("conversation") as ConversationController | undefined;
-                if (editor === undefined || typeof controller?.restoreStagedDrafts !== "function")
-                  throw new Error("queue dock: structured queue editing unavailable");
-                const imageBlobs =
-                  target.images.length > 0
-                    ? await prefetchQueueImageBlobs(target.images, loadImage)
-                    : new Map<string, PrefetchedQueueImage>();
-                if (shell.isDisposed) return;
-                const message = await editor.takeForEdit(sessionId, itemId, target.revision);
-                await restoreQueuedMessageToComposer({
-                  sessionId,
-                  shell,
-                  conversation: controller,
-                  message,
-                  imageBlobs,
+                // Keep the originating session binding and shell alive across navigation and the delete RPC.
+                const reference = ctx.sessions.retain(sessionId, {
+                  source: "controllerOperation",
                 });
+                try {
+                  const shell = inputHub.shell(sessionId);
+                  if (target.kind === "legacyText") {
+                    await conversation.updateQueue(itemId, { kind: "remove" });
+                    if (shell.isDisposed)
+                      throw new Error(
+                        "Queued message was removed, but the session composer was closed before restoring.",
+                      );
+                    // Preserve text, references and attachments typed while deletion was pending.
+                    const draft = shell.draftSnapshot;
+                    shell.setDraft({
+                      ...draft,
+                      text: draft.text === "" ? target.text : `${draft.text}\n${target.text}`,
+                    });
+                    shell.actions.persistDraft();
+                    shell.focus("end");
+                    return;
+                  }
+                  const editor = ctx.get("queueMessageEditing");
+                  const controller = ctx.get("conversation") as ConversationController | undefined;
+                  if (editor === undefined || typeof controller?.restoreStagedDrafts !== "function")
+                    throw new Error("queue dock: structured queue editing unavailable");
+                  const imageBlobs =
+                    target.images.length > 0
+                      ? await prefetchQueueImageBlobs(target.images, loadImage)
+                      : new Map<string, PrefetchedQueueImage>();
+                  if (shell.isDisposed)
+                    throw new Error("queue dock: session composer closed before editing");
+                  const message = await editor.takeForEdit(sessionId, itemId, target.revision);
+                  await restoreQueuedMessageToComposer({
+                    sessionId,
+                    shell,
+                    conversation: controller,
+                    message,
+                    imageBlobs,
+                  });
+                } finally {
+                  reference.release();
+                }
               },
               notify: (level, text) => {
-                conversation.input.for(actx).notify(level, text);
+                if (ctx.sessions.scope(sessionId) === actx)
+                  conversation.input.for(actx).notify(level, text);
               },
               loadImage,
             };

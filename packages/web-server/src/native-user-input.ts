@@ -112,7 +112,13 @@ function envelope(text: string): { attachments: Attachment[]; request: string } 
       continue;
     }
     const last = attachments.at(-1);
-    if (section === FILES && line === "Image attachment: true" && last?.type === "nativeFile") {
+    if (
+      section === FILES &&
+      line === "Image attachment: true" &&
+      last?.type === "nativeFile" &&
+      last.startLine === undefined &&
+      last.endLine === undefined
+    ) {
       attachments[attachments.length - 1] = {
         type: "nativeImage",
         source: { path: last.path },
@@ -200,42 +206,92 @@ export interface EditableQueuedInput {
  * Returns undefined when the entry carries non-empty text_elements, multiple text parts, URL
  * images, line-ranged file mentions, or unknown native blocks so callers fail closed.
  */
-export function editableQueuedInput(content: readonly unknown[]): EditableQueuedInput | undefined {
+export function editableQueuedInput(content: unknown): EditableQueuedInput | undefined {
   if (!Array.isArray(content) || content.length === 0) return;
-  let textCount = 0;
+  let textPart: string | undefined;
+  const structuredPaths = new Set<string>();
+  const entries: Array<
+    | { readonly kind: "text"; readonly text: string }
+    | { readonly kind: "localImage"; readonly path: string }
+  > = [];
+
   for (const part of content) {
     if (!part || typeof part !== "object") return;
     const record = part as Record<string, unknown>;
     if (record.type === "text") {
-      textCount += 1;
-      if (textCount > 1 || typeof record.text !== "string") return;
+      if (textPart !== undefined || typeof record.text !== "string") return;
       if (
         Object.hasOwn(record, "text_elements") &&
         (!Array.isArray(record.text_elements) || record.text_elements.length > 0)
       )
         return;
+      textPart = record.text;
+      entries.push({ kind: "text", text: record.text });
+      continue;
+    }
+    if (record.type === "localImage") {
+      if (typeof record.path !== "string" || !record.path) return;
+      structuredPaths.add(record.path);
+      entries.push({ kind: "localImage", path: record.path });
+      continue;
+    }
+    return;
+  }
+
+  const parsedEnvelope = textPart === undefined ? undefined : envelope(textPart);
+  const envelopeNamesByPath = new Map<string, string>();
+  if (parsedEnvelope) {
+    for (const attachment of parsedEnvelope.attachments) {
+      if (attachment.type === "nativeFile") {
+        // Reject line-ranged files before any deduplication against structured localImage parts.
+        if (
+          !attachment.path ||
+          attachment.startLine !== undefined ||
+          attachment.endLine !== undefined
+        )
+          return;
+      } else {
+        if (!("path" in attachment.source) || !attachment.source.path) return;
+        if (attachment.name && !envelopeNamesByPath.has(attachment.source.path)) {
+          envelopeNamesByPath.set(attachment.source.path, attachment.name);
+        }
+      }
     }
   }
+
   const attachments: EditableQueuedAttachment[] = [];
-  const texts: string[] = [];
-  for (const part of nativeUserInput(content)) {
-    if (part.type === "other") return;
-    if (part.type === "text") {
-      texts.push(part.text);
+  let text = "";
+  for (const entry of entries) {
+    if (entry.kind === "text") {
+      if (!parsedEnvelope) {
+        text = entry.text;
+        continue;
+      }
+      text = parsedEnvelope.request;
+      for (const attachment of parsedEnvelope.attachments) {
+        if (attachment.type === "nativeImage") {
+          if (!("path" in attachment.source)) return;
+          // Only merge when a structured localImage has the exact same path; never drop distinct paths.
+          if (structuredPaths.has(attachment.source.path)) continue;
+          attachments.push({
+            kind: "image",
+            path: attachment.source.path,
+            ...(attachment.name === undefined ? {} : { name: attachment.name }),
+          });
+          continue;
+        }
+        if (structuredPaths.has(attachment.path)) continue;
+        attachments.push({ kind: "file", path: attachment.path, name: attachment.name });
+      }
       continue;
     }
-    if (part.type === "nativeImage") {
-      if (!("path" in part.source) || !part.source.path) return;
-      attachments.push({
-        kind: "image",
-        path: part.source.path,
-        ...(part.name === undefined ? {} : { name: part.name }),
-      });
-      continue;
-    }
-    if (!part.path || part.startLine !== undefined || part.endLine !== undefined) return;
-    attachments.push({ kind: "file", path: part.path, name: part.name });
+    const matchedName = envelopeNamesByPath.get(entry.path);
+    attachments.push({
+      kind: "image",
+      path: entry.path,
+      ...(matchedName === undefined ? {} : { name: matchedName }),
+    });
   }
-  if (texts.length > 1) return;
-  return { text: texts[0] ?? "", attachments };
+
+  return { text, attachments };
 }

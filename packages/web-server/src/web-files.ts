@@ -199,9 +199,10 @@ export class WebFiles {
   }
   /**
    * Re-issue a session-scoped upload receipt for an already-stored Web image or file path.
-   * Canonicalizes the stored path so later `resolve()` verification matches `upload()` receipts.
+   * Canonicalizes the stored path and verifies content integrity before issuing a receipt so
+   * corrupted/tampered files fail closed before destructive queue removal.
    */
-  stage(sessionId: string, path: string, name?: string): StagedWebAttachment {
+  async stage(sessionId: string, path: string, name?: string): Promise<StagedWebAttachment> {
     this.prune();
     const imageId = this.images.idForPath(path);
     if (imageId) {
@@ -227,6 +228,7 @@ export class WebFiles {
     if (!file) invalid("FILE_UNAVAILABLE", "The referenced file is unavailable or not Web-owned.");
     const hash = basename(dirname(resolve(path)));
     const canonical = join(this.directory, hash, file.name);
+    await this.verify(canonical, hash, file.bytes);
     const receiptId = randomUUID();
     this.receipts.set(receiptId, {
       sessionId,

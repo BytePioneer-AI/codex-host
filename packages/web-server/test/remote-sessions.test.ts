@@ -1932,3 +1932,266 @@ it("uses PeerThreadSource for event-driven follow, incremental paging, harness i
   assert.equal(archivedIds.has(parentRow.id), false);
   assert.equal(archivedIds.has(childRow.id), false);
 });
+
+it("derives remote list titles via threadListTitle without leaking cwd and generates titles on peer firstTurn", async (t) => {
+  const hostId = "remote-peer:title-peer";
+  const epoch = "epoch-title-1";
+  const rows: ChThread[] = [
+    {
+      id: "uuid-posix",
+      name: null,
+      preview: "",
+      cwd: "/remote/合同处理",
+      modelProvider: "openai",
+      createdAt: 1,
+      updatedAt: 10,
+      status: { type: "active", activeFlags: [] },
+      turns: [],
+    },
+    {
+      id: "uuid-whitespace",
+      name: "   ",
+      preview: "  \n\t  ",
+      cwd: "/remote/project-a",
+      modelProvider: "openai",
+      createdAt: 1,
+      updatedAt: 9,
+      status: { type: "idle" },
+      turns: [],
+    },
+    {
+      id: "uuid-win",
+      name: null,
+      preview: "",
+      cwd: "C:\\Users\\dev\\合同处理",
+      modelProvider: "openai",
+      createdAt: 1,
+      updatedAt: 8,
+      status: { type: "idle" },
+      turns: [],
+    },
+    {
+      id: "uuid-long",
+      name: null,
+      preview: `  hello\n\t ${"a".repeat(90)}`,
+      cwd: "/remote/x",
+      modelProvider: "openai",
+      createdAt: 1,
+      updatedAt: 7,
+      status: { type: "idle" },
+      turns: [],
+    },
+  ];
+  const createdThread: ChThread = {
+    id: "uuid-created",
+    name: null,
+    preview: "",
+    cwd: "/remote/合同处理",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 20,
+    status: { type: "active", activeFlags: [] },
+    turns: [],
+  };
+  let createdInCatalog = false;
+  let releaseTitle: (() => void) | undefined;
+  const titleGate = new Promise<void>((resolve) => {
+    releaseTitle = resolve;
+  });
+  let generateCalls = 0;
+
+  const manifest = {
+    version: "1",
+    epoch,
+    platform: process.platform,
+    hostname: "title-peer",
+    homeDir: "/remote",
+    projects: [{ id: "proj-1", name: "合同处理", path: "/remote/合同处理", threadIds: [] }],
+  };
+  const transport: PeerChTransport = {
+    manifest: () => manifest,
+    subscribe: (listener) => {
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true });
+      return () => {};
+    },
+    async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      if (route === "snapshot") {
+        const req = body as { threadId: string };
+        const found =
+          (createdInCatalog && req.threadId === createdThread.id
+            ? createdThread
+            : rows.find((r) => r.id === req.threadId)) ?? createdThread;
+        return {
+          cursor: { epoch, sequence: 1 },
+          thread: found,
+          turnsPage: { data: [], nextCursor: null },
+          configuration: {},
+          interactions: [],
+        } as T;
+      }
+      const { method, params } = body as { method: string; params: Record<string, unknown> };
+      const activeRows = createdInCatalog ? [...rows, createdThread] : rows;
+      if (method === "codexhost/thread/catalog/read") {
+        return {
+          threads: activeRows,
+          ownership: activeRows.map((r) => ({ threadId: r.id, owner: "codex" })),
+          officialCursor: { live: null },
+          archivedThreadIds: [],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
+      if (method === "codexhost/harness/plugins/list") return { plugins: [] } as T;
+      if (method === "codexhost/harness/inspect") {
+        return {
+          status: "ready",
+          catalog: {
+            models: [{ ref: { id: "gpt-5.4" }, label: "GPT-5.4", supportedThinkingOptionIds: [] }],
+            defaultModel: { id: "gpt-5.4" },
+            thinkingOptions: [],
+          },
+          capabilities: {
+            configuration: {
+              selectModel: true,
+              selectThinkingOption: false,
+              selectPermissionMode: false,
+              permissionModeScope: "live",
+            },
+            history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+          },
+        } as T;
+      }
+      if (method === "codexhost/thread/title/generate") {
+        generateCalls += 1;
+        await titleGate;
+        return "合同要点整理" as T;
+      }
+      if (method === "thread/read") {
+        return { thread: createdThread } as T;
+      }
+      if (method === "thread/name/set") {
+        createdThread.name = String(params.name ?? "");
+        return {} as T;
+      }
+      return {} as T;
+    },
+  };
+
+  const root = mkdtempSync(join(tmpdir(), "remote-title-"));
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const events = new EventHub("remote-title");
+  const peerSource = new PeerThreadSource({
+    hostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(hostId),
+    onThreadChanged: () => undefined,
+    onConnection: () => undefined,
+  });
+  const remote: RemoteSessions = new RemoteSessions(
+    events,
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          {
+            hostId,
+            online: true,
+            epoch,
+            displayName: "title-peer",
+            projects: manifest.projects,
+          },
+        ];
+      }
+      if (op.kind === "create" || op.kind === "startSelected") {
+        createdInCatalog = true;
+        return { thread: createdThread };
+      }
+      if (op.kind === "prompt") {
+        return { turn: { id: "turn-1" } };
+      }
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    { source: (id) => (id === hostId ? peerSource : undefined) },
+  );
+  t.after(() => {
+    releaseTitle?.();
+    remote.close();
+    peerSource.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  for (const method of ["session/list", "session/create", "session/prompt"]) {
+    rpc.register(method, () => (method === "session/list" ? { items: [] } : {}));
+  }
+  workspaces.register(rpc, streams);
+  remote.install(rpc, streams);
+  await remote.refresh();
+
+  type ListEntry = {
+    sessionId: string;
+    cwd: string;
+    projections: { values: { title: string } };
+  };
+  const listSessions = async (): Promise<ListEntry[]> => {
+    const res = await rpc.dispatch("session/list", {});
+    assert.ok(res.ok);
+    return (res.value as { items: ListEntry[] }).items;
+  };
+
+  const listed = await listSessions();
+  const byId = new Map(listed.map((s) => [s.sessionId, s]));
+  const posixSession = defined(byId.get(remoteSessionId(hostId, "uuid-posix")));
+  assert.equal(posixSession.projections.values.title, "合同处理");
+  assert.equal(posixSession.cwd, "");
+
+  assert.equal(
+    defined(byId.get(remoteSessionId(hostId, "uuid-whitespace"))).projections.values.title,
+    "project-a",
+  );
+  assert.equal(
+    defined(byId.get(remoteSessionId(hostId, "uuid-win"))).projections.values.title,
+    "合同处理",
+  );
+  assert.equal(
+    defined(byId.get(remoteSessionId(hostId, "uuid-long"))).projections.values.title,
+    `${`hello ${"a".repeat(90)}`.slice(0, 80)}…`,
+  );
+
+  // Creating a new peer session and sending its first turn shows project basename before title generation,
+  // then updates to the generated title via tryGenerateThreadTitle + hostsChanged.
+  const ws = defined(workspaces.list().find((w) => w.remote?.hostId === hostId));
+  const created = await rpc.dispatch("session/create", {
+    args: { request: { workspaceId: ws.workspaceId } },
+  });
+  assert.ok(created.ok);
+  const draftId = (created.value as { sessionId: string }).sessionId;
+  const sent = await rpc.dispatch("session/prompt", {
+    args: {
+      request: {
+        sessionId: draftId,
+        content: [{ type: "text", text: "帮我整理这份合同要点" }],
+      },
+    },
+  });
+  assert.ok(sent.ok, JSON.stringify(sent));
+
+  const createdSessionId = remoteSessionId(hostId, createdThread.id);
+  const beforeTitle = defined((await listSessions()).find((s) => s.sessionId === createdSessionId));
+  assert.equal(beforeTitle.projections.values.title, "合同处理");
+  assert.equal(beforeTitle.cwd, "");
+
+  releaseTitle?.();
+  for (let i = 0; i < 60; i++) {
+    const afterTitle = (await listSessions()).find((s) => s.sessionId === createdSessionId);
+    if (afterTitle?.projections.values.title === "合同要点整理") break;
+    await sleep(25);
+  }
+  assert.equal(generateCalls, 1);
+  assert.equal(
+    defined((await listSessions()).find((s) => s.sessionId === createdSessionId)).projections.values
+      .title,
+    "合同要点整理",
+  );
+});

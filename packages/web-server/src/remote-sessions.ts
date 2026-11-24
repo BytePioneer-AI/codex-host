@@ -24,6 +24,8 @@ import {
   type RemoteSessionOperation,
 } from "@codexhost/shared-contracts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
+import { threadListTitle } from "./ch-thread-title.ts";
+import { tryGenerateThreadTitle } from "./ch-thread-titles.ts";
 import { ChThreadView, type ChThread } from "./ch-thread-view.ts";
 import { isMethodUnavailableError, type PeerThreadSource } from "./peer-thread-source.ts";
 import { RemotePeerAttachments, type PeerAttachmentEndpoint } from "./remote-peer-attachments.ts";
@@ -198,6 +200,7 @@ interface Entry {
 export class RemoteSessions {
   private drafts = new Map<string, RemoteProjectDraft>();
   private pendingFirstTurns = new Map<string, RemoteProjectDraft>();
+  private readonly titleRequests = new Set<string>();
   private entries = new Map<string, Entry>();
   private hosts = new Map<string, RemoteWorkspaceHost>();
   private peerArchivedIds = new Map<string, Set<string>>();
@@ -1015,6 +1018,34 @@ export class RemoteSessions {
       } finally {
         this.pendingFirstTurns.delete(id);
       }
+      const peerSource = isPeer ? this.peers?.source(host.hostId) : undefined;
+      if (peerSource) {
+        const titlePrompt =
+          usePeerAttachments && peerPromptContent !== undefined
+            ? peerPromptContent
+                .filter(
+                  (part): part is Extract<typeof part, { type: "text" }> => part.type === "text",
+                )
+                .map((part) => part.text)
+                .join("\n")
+            : (legacyPrompt?.text ?? "");
+        const external =
+          (operation.kind === "startSelected" && operation.harnessId !== "codex") ||
+          thread.modelProvider === "codexhost";
+        this.titleRequests.add(id);
+        void tryGenerateThreadTitle(
+          peerSource.host,
+          entry.row,
+          titlePrompt,
+          external,
+          () => !this.closed && this.titleRequests.has(id),
+        )
+          .then((changed) => {
+            if (changed && !this.closed) this.hostsChanged(host.hostId);
+          })
+          .catch(() => undefined)
+          .finally(() => this.titleRequests.delete(id));
+      }
       void this.read(id).catch(() => undefined);
       return { accepted: true };
     })().catch((error: unknown) => {
@@ -1116,7 +1147,7 @@ export class RemoteSessions {
         asOfSeq: 0,
         values: {
           ...defaultProjections(),
-          title: entry.row.name || entry.row.preview || entry.identity.threadId,
+          title: threadListTitle({ ...entry.row, id: entry.identity.threadId }),
           remoteHost: {
             ...entry.identity,
             displayName: remoteHostDisplayName(
@@ -2124,6 +2155,7 @@ export class RemoteSessions {
         break;
       }
       case "session/rename":
+        this.titleRequests.delete(id);
         operation = { kind: "rename", ...base, name: String(request.title ?? "") };
         break;
       case "session/archive":
@@ -2203,5 +2235,6 @@ export class RemoteSessions {
     this.peerArchivedIds.clear();
     this.controls.clear();
     this.drafts.clear();
+    this.titleRequests.clear();
   }
 }

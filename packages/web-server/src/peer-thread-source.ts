@@ -212,11 +212,13 @@ export class PeerThreadSource {
         pages++;
         const { page } = await readSessionPage(this.host, timing, false, cursor, async () => []);
         const pageById = new Map<string, ChThread>();
+        const pageRows: ChThread[] = [];
         for (const rawRow of page.threads) {
           const row: ChThread = { ...rawRow, turns: [] };
           const existingHarness = harnessIds.get(row.id);
           if (cursor === undefined || !existingHarness || existingHarness === "codex") {
             rows.set(row.id, row);
+            pageRows.push(row);
           }
           pageById.set(row.id, row);
         }
@@ -230,10 +232,15 @@ export class PeerThreadSource {
           }
         }
         const next = nextCatalogCursor(page, false);
-        if (onPage) {
+        if (onPage && pageRows.length > 0) {
+          const pageHarnessIds = new Map<string, string>();
+          for (const row of pageRows) {
+            const hid = harnessIds.get(row.id);
+            if (hid) pageHarnessIds.set(row.id, hid);
+          }
           onPage({
-            rows: [...rows.values()],
-            harnessIds: new Map(harnessIds),
+            rows: pageRows,
+            harnessIds: pageHarnessIds,
             archivedIds: new Set(archivedIds),
             parents: {},
             ownershipAvailable,
@@ -469,7 +476,7 @@ const PEER_HARNESS_ICON_PREFIX = "/harness-icons/peer/";
 export async function resolvePeerHarnessIcon(
   peers: PeerHarnessIconProvider,
   pathname: string,
-): Promise<{ contentType: string; body: Buffer } | undefined> {
+): Promise<{ contentType: string; body: Buffer; stale?: boolean } | undefined> {
   if (!pathname.startsWith(PEER_HARNESS_ICON_PREFIX)) return undefined;
   const rest = pathname.slice(PEER_HARNESS_ICON_PREFIX.length);
   const parts = rest.split("/");
@@ -495,12 +502,15 @@ export async function resolvePeerHarnessIcon(
       return {
         contentType: "application/json",
         body: Buffer.from(JSON.stringify(harnessIconStyles(cached))),
+        stale: true,
       };
     }
-    return source.catalog.cachedIcon(target);
+    const cachedAsset = source.catalog.cachedIcon(target);
+    return cachedAsset ? { ...cachedAsset, stale: true } : undefined;
   }
   if (state !== "connected") return undefined;
   const cached = source.catalog.cachedList();
+  const resolvedCurrent = source.catalog.hasResolvedCurrentList();
   if (cached) {
     if (!source.catalog.hasFreshList()) {
       void source.catalog.list().catch(() => undefined);
@@ -509,10 +519,16 @@ export async function resolvePeerHarnessIcon(
       return {
         contentType: "application/json",
         body: Buffer.from(JSON.stringify(harnessIconStyles(cached))),
+        ...(resolvedCurrent ? {} : { stale: true }),
       };
     }
     const cachedAsset = source.catalog.cachedIcon(target);
-    if (cachedAsset || source.catalog.hasFreshList()) return cachedAsset;
+    if (cachedAsset) {
+      return resolvedCurrent ? cachedAsset : { ...cachedAsset, stale: true };
+    }
+    // Only treat a missing icon as authoritative when the current generation's list has resolved;
+    // otherwise wait for the in-flight refresh so newly installed plugins do not 404 prematurely.
+    if (resolvedCurrent) return undefined;
   }
   try {
     if (target === "presentation.json") {
@@ -530,8 +546,10 @@ export async function resolvePeerHarnessIcon(
       return {
         contentType: "application/json",
         body: Buffer.from(JSON.stringify(harnessIconStyles(fallback))),
+        stale: true,
       };
     }
-    return source.catalog.cachedIcon(target);
+    const cachedAsset = source.catalog.cachedIcon(target);
+    return cachedAsset ? { ...cachedAsset, stale: true } : undefined;
   }
 }

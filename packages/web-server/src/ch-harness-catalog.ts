@@ -26,6 +26,7 @@ export class ChHarnessCatalog {
   private pluginsEpoch: string | undefined;
   private lastHelloEpoch: string | undefined;
   private pluginsGeneration = 0;
+  private pluginsResolvedGeneration = -1;
   private inspections = new Map<string, Promise<HarnessInspection>>();
   private readonly pendingRefreshes = new Map<
     string,
@@ -83,6 +84,9 @@ export class ChHarnessCatalog {
   hasFreshList(): boolean {
     return this.plugins !== undefined;
   }
+  hasResolvedCurrentList(): boolean {
+    return this.pluginsResolvedGeneration === this.pluginsGeneration;
+  }
   async list(): Promise<HarnessPluginDescriptor[]> {
     if (this.plugins) return this.plugins;
     const generation = this.pluginsGeneration;
@@ -99,6 +103,7 @@ export class ChHarnessCatalog {
           );
         if (generation === this.pluginsGeneration) {
           this.lastPlugins = filtered;
+          this.pluginsResolvedGeneration = generation;
         }
         return filtered;
       })

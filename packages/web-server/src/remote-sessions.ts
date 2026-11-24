@@ -890,9 +890,14 @@ export class RemoteSessions {
     // and sidebar logos are ready as soon as page 1 renders, without blocking list commit.
     void source.catalog
       .list()
-      .then((plugins) => {
+      .then(() => {
         if (this.closed || this.peers?.source(host.hostId) !== source) return;
-        const names = new Map<string, string>(plugins.map((plugin) => [plugin.id, plugin.name]));
+        // Read the generation-guarded cached list so a late pre-invalidation response never overwrites newer names.
+        const currentPlugins = source.catalog.cachedList();
+        if (!currentPlugins) return;
+        const names = new Map<string, string>(
+          currentPlugins.map((plugin) => [plugin.id, plugin.name]),
+        );
         for (const [id, entry] of this.entries) {
           if (entry.identity.hostId !== host.hostId || !entry.peerHarnessIdentity) continue;
           const resolvedName = names.get(entry.peerHarnessIdentity.id);

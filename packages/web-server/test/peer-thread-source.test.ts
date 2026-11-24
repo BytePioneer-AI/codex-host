@@ -312,8 +312,11 @@ it("caches catalog per peer, invalidates on hello, and resolves peer icons witho
   );
 });
 
-it("preserves prewarmed catalog across initial same-epoch hello, serves cached icons stale-while-revalidate, and emits onPage for single-page peers before tree finishes", async (t) => {
+it("preserves prewarmed catalog across initial same-epoch hello, waits for newly added plugin icons during refresh, marks stale presentation, and emits per-page onPage before tree finishes", async (t) => {
   const epoch = randomUUID();
+  const newIconSvg = Buffer.from(
+    '<svg xmlns="http://www.w3.org/2000/svg"><circle/></svg>',
+  ).toString("base64");
   let pluginListCalls = 0;
   let releaseSecondPluginList: (() => void) | undefined;
   let releaseTree: (() => void) | undefined;
@@ -343,14 +346,30 @@ it("preserves prewarmed catalog across initial same-epoch hello, serves cached i
                 version: "2.0.0",
                 iconStyle: { background: "#ffffff", borderRadius: 12 },
               },
+              {
+                id: "new-plugin-b",
+                name: "New Plugin B",
+                version: "1.0.0",
+                icon: `data:image/svg+xml;base64,${newIconSvg}`,
+              },
             ],
           });
       });
     }
     if (body.method === "codexhost/thread/catalog/read") {
+      const live = (body.params as { officialCursor?: { live?: string | null } } | undefined)
+        ?.officialCursor?.live;
+      if (live === undefined) {
+        return {
+          threads: [makeRow("page-1-ext", "codexhost")],
+          ownership: [{ threadId: "page-1-ext", owner: "external", harnessId: "antigravity" }],
+          officialCursor: { live: "cursor-2" },
+          archivedThreadIds: [],
+        };
+      }
       return {
-        threads: [makeRow("single-1", "codexhost")],
-        ownership: [{ threadId: "single-1", owner: "external", harnessId: "antigravity" }],
+        threads: [makeRow("page-2-codex", "openai")],
+        ownership: [{ threadId: "page-2-codex", owner: "codex" }],
         officialCursor: { live: null },
         archivedThreadIds: [],
       };
@@ -389,7 +408,8 @@ it("preserves prewarmed catalog across initial same-epoch hello, serves cached i
   await source.catalog.list();
   assert.equal(pluginListCalls, 1, "initial same-epoch hello must not wipe prewarmed catalog");
 
-  // A new epoch invalidates, yet presentation.json still serves cached data immediately without waiting.
+  // A new epoch invalidates: presentation.json serves cached data marked stale=true immediately
+  // while kicking off background refresh, whereas an uncached newly added plugin waits for refresh.
   fake.emit({
     type: "hello",
     version: 1,
@@ -401,22 +421,44 @@ it("preserves prewarmed catalog across initial same-epoch hello, serves cached i
     "/harness-icons/peer/peer-b/presentation.json",
   );
   assert.ok(stalePres);
+  assert.equal(stalePres.stale, true);
   assert.deepEqual(JSON.parse(stalePres.body.toString("utf8")), {
     antigravity: { background: "#000000", borderRadius: 6 },
   });
   assert.equal(pluginListCalls, 2, "stale-while-revalidate must kick off background refresh");
+
+  let newIconSettled = false;
+  const newIconPromise = resolvePeerHarnessIcon(
+    peers,
+    "/harness-icons/peer/peer-b/new-plugin-b",
+  ).then((asset) => {
+    newIconSettled = true;
+    return asset;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(newIconSettled, false, "uncached new plugin icon must wait for in-flight refresh");
+
   releaseSecondPluginList?.();
-  await source.catalog.list();
+  const newIcon = await newIconPromise;
+  assert.ok(newIcon);
+  assert.equal(newIcon.contentType, "image/svg+xml");
+  assert.equal(
+    newIcon.body.toString("utf8"),
+    '<svg xmlns="http://www.w3.org/2000/svg"><circle/></svg>',
+  );
+
   const freshPres = await resolvePeerHarnessIcon(
     peers,
     "/harness-icons/peer/peer-b/presentation.json",
   );
   assert.ok(freshPres);
+  assert.equal(freshPres.stale, undefined);
   assert.deepEqual(JSON.parse(freshPres.body.toString("utf8")), {
     antigravity: { background: "#ffffff", borderRadius: 12 },
+    "new-plugin-b": null,
   });
 
-  // Single-page listThreads must emit onPage even while tree/read is still pending.
+  // Multi-page listThreads must emit each page's own rows incrementally before tree/read finishes.
   const pageSnapshots: string[][] = [];
   const listPromise = source.listThreads({
     onPage: (partial) => {
@@ -424,11 +466,11 @@ it("preserves prewarmed catalog across initial same-epoch hello, serves cached i
     },
   });
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.deepEqual(pageSnapshots, [["single-1"]]);
+  assert.deepEqual(pageSnapshots, [["page-1-ext"], ["page-2-codex"]]);
   releaseTree?.();
   const listed = await listPromise;
   assert.deepEqual(
     listed.rows.map((row) => row.id),
-    ["single-1"],
+    ["page-1-ext", "page-2-codex"],
   );
 });

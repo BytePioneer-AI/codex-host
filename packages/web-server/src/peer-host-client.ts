@@ -20,6 +20,105 @@ export function isCatalogChangingEvent(event: unknown): boolean {
   );
 }
 
+export type PeerFetchPath = `/api/${"ch" | "peer"}/v1/${string}`;
+
+export interface PeerFetchInit {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: BodyInit | object;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  duplex?: "half";
+  /** Bound only the initial response handshake by timeoutMs (used for streaming endpoints). */
+  stream?: boolean;
+}
+
+function isRawBodyInit(body: BodyInit | object): body is BodyInit {
+  return (
+    typeof body === "string" ||
+    body instanceof Uint8Array ||
+    body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(body) ||
+    body instanceof Blob ||
+    body instanceof FormData ||
+    body instanceof URLSearchParams ||
+    body instanceof ReadableStream
+  );
+}
+
+export async function peerFetch(
+  record: PeerRecord,
+  path: PeerFetchPath,
+  init: PeerFetchInit = {},
+): Promise<Response> {
+  if (!record.enabled) throw new RpcError("remote/offline", "Remote peer is disabled");
+  const requestTimeoutMs = init.timeoutMs ?? (path.startsWith("/api/ch/v1/") ? 60_000 : 8_000);
+  const handshake = new AbortController();
+  const timer = init.stream ? setTimeout(() => handshake.abort(), init.timeoutMs ?? 8_000) : null;
+  const headers: Record<string, string> = { ...(init.headers ?? {}) };
+  let requestBody: BodyInit | undefined;
+  if (init.body !== undefined) {
+    if (isRawBodyInit(init.body)) {
+      requestBody = init.body;
+    } else {
+      requestBody = JSON.stringify(init.body);
+      if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
+        headers["content-type"] = "application/json";
+      }
+    }
+  } else if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
+    headers["content-type"] = "application/json";
+  }
+  headers.authorization = "Bearer " + record.token;
+  const signals: AbortSignal[] = [];
+  if (init.stream) {
+    signals.push(handshake.signal);
+    if (init.signal) signals.push(init.signal);
+  } else {
+    signals.push(AbortSignal.timeout(requestTimeoutMs));
+    if (init.signal) signals.push(init.signal);
+  }
+  const signal = signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+  try {
+    const requestInit: RequestInit & { duplex?: "half" } = {
+      method: init.method ?? "GET",
+      redirect: "error",
+      headers,
+      ...(requestBody === undefined ? {} : { body: requestBody }),
+      ...(init.duplex === undefined ? {} : { duplex: init.duplex }),
+      ...(signal === undefined ? {} : { signal }),
+    };
+    const res = await fetch(record.origin + path, requestInit);
+    if (res.ok) return res;
+    const failure = await res
+      .json()
+      .then((payload: unknown) => {
+        if (!payload || typeof payload !== "object" || !("error" in payload)) return undefined;
+        const err = payload.error;
+        if (typeof err === "string") return { message: err };
+        if (err && typeof err === "object" && "message" in err && typeof err.message === "string")
+          return {
+            message: err.message,
+            code: "code" in err && typeof err.code === "number" ? err.code : undefined,
+          };
+        return undefined;
+      })
+      .catch(() => undefined);
+    if (res.status === 401 || (res.status === 403 && !failure?.message))
+      throw new RpcError("remote/auth-error", "Remote peer rejected the access token");
+    throw new RpcError(
+      "remote/request-failed",
+      failure?.message ?? `Remote peer returned HTTP ${res.status}`,
+      failure?.code === undefined ? {} : { hostCode: failure.code },
+    );
+  } catch (err) {
+    if (err instanceof RpcError) throw err;
+    throw new RpcError("remote/offline", "Remote peer is unreachable");
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
 export class PeerHostClient {
   private life = new AbortController();
   manifest?: c.RemotePeerManifest;
@@ -76,52 +175,14 @@ export class PeerHostClient {
     this.createdThreads.add(threadId);
   }
 
-  private async fetch(path: string, method = "GET", body?: unknown, streamSignal?: AbortSignal) {
-    if (!this.record.enabled) throw new RpcError("remote/offline", "Remote peer is disabled");
-    const requestTimeoutMs = path.startsWith("/api/ch/v1/") ? 60_000 : 8_000;
-    const handshake = new AbortController();
-    const timer = setTimeout(() => handshake.abort(), 8_000);
-    try {
-      const res = await fetch(this.record.origin + path, {
-        method,
-        redirect: "error",
-        headers: {
-          authorization: "Bearer " + this.record.token,
-          "content-type": "application/json",
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: streamSignal
-          ? AbortSignal.any([handshake.signal, streamSignal, this.life.signal])
-          : AbortSignal.any([this.life.signal, AbortSignal.timeout(requestTimeoutMs)]),
-      });
-      if (res.ok) return res;
-      const failure = await res
-        .json()
-        .then((payload: unknown) => {
-          if (!payload || typeof payload !== "object" || !("error" in payload)) return undefined;
-          const err = payload.error;
-          if (typeof err === "string") return { message: err };
-          if (err && typeof err === "object" && "message" in err && typeof err.message === "string")
-            return {
-              message: err.message,
-              code: "code" in err && typeof err.code === "number" ? err.code : undefined,
-            };
-          return undefined;
-        })
-        .catch(() => undefined);
-      if (res.status === 401 || (res.status === 403 && !failure?.message))
-        throw new RpcError("remote/auth-error", "Remote peer rejected the access token");
-      throw new RpcError(
-        "remote/request-failed",
-        failure?.message ?? `Remote peer returned HTTP ${res.status}`,
-        failure?.code === undefined ? {} : { hostCode: failure.code },
-      );
-    } catch (err) {
-      if (err instanceof RpcError) throw err;
-      throw new RpcError("remote/offline", "Remote peer is unreachable");
-    } finally {
-      clearTimeout(timer);
-    }
+  private fetch(path: PeerFetchPath, method = "GET", body?: unknown, streamSignal?: AbortSignal) {
+    return peerFetch(this.record, path, {
+      method,
+      ...(body === undefined ? {} : { body: body as BodyInit | object }),
+      ...(streamSignal
+        ? { stream: true, signal: AbortSignal.any([streamSignal, this.life.signal]) }
+        : { signal: this.life.signal }),
+    });
   }
 
   async probe() {
@@ -176,7 +237,7 @@ export class PeerHostClient {
             new URLSearchParams({ epoch: this.cursor.epoch, after: String(this.cursor.sequence) })
           : "";
         const response = await this.fetch(
-          "/api/ch/v1/events" + query,
+          `/api/ch/v1/events${query}`,
           "GET",
           undefined,
           streamAbort.signal,
@@ -238,7 +299,9 @@ export class PeerHostClient {
   async listDirs(path?: string) {
     return c.remotePeerListDirsResultSchema.parse(
       await (
-        await this.fetch("/api/peer/v1/dirs" + (path ? "?" + new URLSearchParams({ path }) : ""))
+        await this.fetch(
+          path ? `/api/peer/v1/dirs?${new URLSearchParams({ path })}` : "/api/peer/v1/dirs",
+        )
       ).json(),
     );
   }
@@ -283,7 +346,7 @@ export class PeerHostClient {
     )
       throw new RpcError("remote/connection-changed", "Remote peer restarted");
     const post = async (route: string, input: object) =>
-      (await (await this.fetch("/api/ch/v1/" + route, "POST", input)).json()).result;
+      (await (await this.fetch(`/api/ch/v1/${route}`, "POST", input)).json()).result;
     const rpc = (method: string, params: object) => post("rpc", { method, params });
     const loadedThreadIds = async (): Promise<string[]> => {
       const raw = await rpc(c.LOADED_SESSIONS_METHOD, {}).catch(() => []);

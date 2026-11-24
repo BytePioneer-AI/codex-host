@@ -143,6 +143,12 @@ export const remotePeerManifestProjectSchema = z.object({
 });
 export type RemotePeerManifestProject = z.infer<typeof remotePeerManifestProjectSchema>;
 
+export const remotePeerCapabilitiesSchema = z.object({
+  /** /api/peer/v1/uploads, /api/peer/v1/prompt, and /api/peer/v1/file are all available. */
+  attachments: z.literal(1).optional(),
+});
+export type RemotePeerCapabilities = z.infer<typeof remotePeerCapabilitiesSchema>;
+
 export const remotePeerManifestSchema = z.object({
   version: z.string().max(128),
   platform: z.string().max(64),
@@ -150,8 +156,73 @@ export const remotePeerManifestSchema = z.object({
   homeDir: z.string().max(4096).optional(),
   epoch: z.string().min(1).max(256),
   projects: z.array(remotePeerManifestProjectSchema),
+  capabilities: remotePeerCapabilitiesSchema.optional(),
 });
 export type RemotePeerManifest = z.infer<typeof remotePeerManifestSchema>;
+
+export const REMOTE_PEER_UPLOAD_SCOPE_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+export const REMOTE_PEER_FILE_PROXY_PATH = "/api/remote-peer/file";
+
+export function remotePeerHarnessIconPath(peerId: string, harnessId: string): string {
+  return `/harness-icons/peer/${encodeURIComponent(peerId)}/${encodeURIComponent(harnessId)}`;
+}
+
+export function remotePeerHarnessPresentationPath(peerId: string): string {
+  return `/harness-icons/peer/${encodeURIComponent(peerId)}/presentation.json`;
+}
+
+export const remotePeerPromptParamsSchema = z.strictObject({
+  threadId: z.string().min(1).max(1024),
+  scope: z.string().regex(REMOTE_PEER_UPLOAD_SCOPE_PATTERN).optional(),
+  requestId: z.string().min(1).max(256).optional(),
+  mode: z.enum(["queue", "steer"]).optional(),
+  expectedTurnId: z.string().min(1).max(1024).nullable().optional(),
+  content: z
+    .array(
+      z.discriminatedUnion("type", [
+        z.strictObject({ type: z.literal("text"), text: z.string() }),
+        z.strictObject({ type: z.literal("file"), receiptId: z.string().min(1).max(128) }),
+      ]),
+    )
+    .min(1)
+    .max(64),
+});
+export type RemotePeerPromptParams = z.infer<typeof remotePeerPromptParamsSchema>;
+
+const remotePeerErrorEnvelopeSchema = z.object({
+  ok: z.literal(false),
+  error: z.object({
+    code: z.string(),
+    message: z.string(),
+    details: z.record(z.string(), z.unknown()).optional(),
+  }),
+});
+
+export const remotePeerUploadResultSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    value: z.object({
+      receiptId: z.string().min(1),
+      file: z.object({
+        attachmentId: z.string(),
+        name: z.string(),
+        bytes: z.number().int().nonnegative(),
+      }),
+    }),
+  }),
+  remotePeerErrorEnvelopeSchema,
+]);
+export type RemotePeerUploadResult = z.infer<typeof remotePeerUploadResultSchema>;
+
+export const remotePeerPromptResultSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    value: z.object({ accepted: z.literal(true) }),
+  }),
+  remotePeerErrorEnvelopeSchema,
+]);
+export type RemotePeerPromptResult = z.infer<typeof remotePeerPromptResultSchema>;
 
 export const remotePeerDirectoryEntrySchema = z.object({
   name: z.string().min(1).max(512),

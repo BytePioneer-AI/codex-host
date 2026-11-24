@@ -196,11 +196,15 @@ export function apply(ctx: ClientContext): void {
           inject: (sessionId): ModelSelectInjected => {
             const directory = models.directoryFor(sessionId);
             const available = sessions.subagentAddress(sessionId) === undefined;
-            const iconHostId =
-              sessions.list.getSnapshot().byId[sessionId]?.projectionValues?.remoteHost?.hostId;
+            const iconHost = {
+              isRemoteSession: sessionId.startsWith("web-remote:"),
+              subscribe: (listener: () => void) => sessions.list.subscribe(listener),
+              getHostId: () =>
+                sessions.list.getSnapshot().byId[sessionId]?.projectionValues?.remoteHost?.hostId,
+            };
             return {
               available,
-              ...(iconHostId === undefined ? {} : { iconHostId }),
+              iconHost,
               directory: directory.store,
               load: () => {
                 if (available)

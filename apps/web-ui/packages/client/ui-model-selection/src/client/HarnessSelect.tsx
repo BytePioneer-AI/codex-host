@@ -14,8 +14,24 @@ import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ModelSelectInjected } from "./slots.ts";
 import css from "./HarnessSelect.module.css";
 
-/** Show the plugin's own brand asset, with a generic glyph when it has no icon. */
-function HarnessIcon({ id, hostId, size = 20 }: { id: string; hostId?: string; size?: number }) {
+const noopSubscribe = () => () => {};
+const noopHostId = () => undefined;
+
+/** Show the plugin's own brand asset, with a generic glyph when it has no icon or remote host is unresolved. */
+function HarnessIcon({
+  id,
+  hostId,
+  deferRemote = false,
+  size = 20,
+}: {
+  id: string;
+  hostId?: string | undefined;
+  deferRemote?: boolean;
+  size?: number;
+}) {
+  if (deferRemote && id !== "codex") {
+    return <IconDataOutlineRegular size={size} />;
+  }
   const icon = harnessIconSources(id, hostId);
   return (
     <RemotePluginIcon
@@ -35,7 +51,7 @@ export function HarnessSelect({
   directory,
   load,
   select,
-  iconHostId,
+  iconHost,
   locked,
   t,
 }: ModelSelectInjected & { locked: boolean } & PropsLocale<"model">) {
@@ -43,6 +59,11 @@ export function HarnessSelect({
     (fn) => directory.subscribe(fn),
     () => directory.getSnapshot(),
   );
+  const iconHostId = useSyncExternalStore(
+    iconHost?.subscribe ?? noopSubscribe,
+    iconHost?.getHostId ?? noopHostId,
+  );
+  const deferRemoteIcon = iconHost?.isRemoteSession === true && iconHostId === undefined;
   const [open, setOpen] = useState(false);
   const [toast, setToast] = useState<{ text: string; seq: number } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -113,7 +134,14 @@ export function HarnessSelect({
           ...state.harnesses.map((group) => ({
             id: group.id,
             label: <span data-current={group.id === currentId ? "" : undefined}>{group.name}</span>,
-            icon: <HarnessIcon key={group.id} id={group.id} hostId={iconHostId} />,
+            icon: (
+              <HarnessIcon
+                key={group.id}
+                id={group.id}
+                hostId={iconHostId}
+                deferRemote={deferRemoteIcon}
+              />
+            ),
             disabled:
               locked ||
               busy ||
@@ -127,7 +155,14 @@ export function HarnessSelect({
                 {failure.name} · {t("harness.unavailable")}
               </span>
             ),
-            icon: <HarnessIcon key={failure.id} id={failure.id} hostId={iconHostId} />,
+            icon: (
+              <HarnessIcon
+                key={failure.id}
+                id={failure.id}
+                hostId={iconHostId}
+                deferRemote={deferRemoteIcon}
+              />
+            ),
             disabled: true,
           })),
         ].toSorted((a, b) => {
@@ -166,7 +201,13 @@ export function HarnessSelect({
             ) : currentId === undefined ? (
               <IconDataOutlineRegular size={16} />
             ) : (
-              <HarnessIcon key={currentId} id={currentId} hostId={iconHostId} size={16} />
+              <HarnessIcon
+                key={currentId}
+                id={currentId}
+                hostId={iconHostId}
+                deferRemote={deferRemoteIcon}
+                size={16}
+              />
             )}
           </button>
         }

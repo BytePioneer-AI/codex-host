@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HermesAdapter } from "../src/hermes-adapter.js";
 import * as nativeSessions from "../src/gateway-session-list.js";
 import { HermesGatewayTransport } from "../src/gateway-transport.js";
-import { nativeSessionRefSchema } from "@codexhost/shared-contracts";
+import { harnessModelRefSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
 import * as gatewayOpen from "../src/gateway-open.js";
 import * as inventory from "../src/hermes-inventory.js";
 import { HermesGatewayHistory } from "../src/gateway-history.js";
@@ -13,8 +13,8 @@ describe("Hermes Gateway-only chat routing", () => {
   it("routes the same model on two named providers without sending the catalog ID as the model", async () => {
     const cwd = process.cwd();
     const model = "example/model:tag";
-    const first = { id: `relay-a:${model}` };
-    const second = { id: `relay-b:${model}` };
+    const first = harnessModelRefSchema.parse({ id: `relay-a:${model}` });
+    const second = harnessModelRefSchema.parse({ id: `relay-b:${model}` });
     vi.spyOn(inventory, "readHermesModelInventory").mockResolvedValue({
       currentModelId: first.id,
       models: ["relay-a", "relay-b"].map((provider) => ({

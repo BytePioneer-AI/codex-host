@@ -452,23 +452,65 @@
 }
 
 .imageButton {
-  display: inline-block;
-  max-width: 100%;
+  display: block;
+  width: fit-content;
+  max-width: min(100%, 220px);
+  margin: 12px 0;
   padding: 0;
   border: 0;
   border-radius: var(--dsw-radius-sm);
   background: transparent;
-  vertical-align: middle;
   cursor: zoom-in;
 }
+.imageButtonStandalone {
+  max-width: 100%;
+}
+.markdown > p:first-child > .imageButton:first-child {
+  margin-top: 0;
+}
+.markdown > p:last-child > .imageButton:last-child {
+  margin-bottom: 0;
+}
+.markdown li:not(:last-child) > .imageButton:last-child,
+.markdown li:not(:last-child) > p:last-child > .imageButton:last-child {
+  margin-bottom: 12px;
+}
 .imageButton .image {
-  max-width: min(100%, 640px);
-  max-height: 360px;
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 220px;
+  box-sizing: border-box;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  object-fit: contain;
+  transition: border-color var(--ds-transition-duration-fast) var(--ds-ease-in-out);
+}
+.imageButtonStandalone .image {
+  max-width: 100%;
+  max-height: 160px;
+}
+.imageButton:hover .image {
+  border-color: var(--dsw-alias-border-l3);
 }
 .imageButton:focus-visible {
   outline: var(--dsw-focus-ring-width) solid
     var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
-  outline-offset: 3px;
+  outline-offset: 2px;
+}
+.imageGrid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 12px 0;
+}
+.imageGrid .imageButton {
+  margin: 0;
+}
+.markdown li:not(:last-child) > .imageGrid:last-child {
+  margin-bottom: 12px;
 }
 .previewName {
   display: block;

@@ -997,6 +997,36 @@ export class ChSessions {
   }
 
   /**
+   * Resolve a Host-confirmed local Thread's working directory, loading its metadata
+   * from the Host if this Web process has not listed it yet (e.g. headless Peer startup
+   * or older catalog pages). Never creates a Thread and never resolves drafts.
+   */
+  async ensureLocalWorkspaceRoot(sessionId: string): Promise<string | undefined> {
+    const existing = this.localWorkspaceRoot(sessionId);
+    if (existing !== undefined) return existing;
+    if (
+      this.closed ||
+      !sessionId ||
+      sessionId.startsWith("web-remote:") ||
+      sessionId.startsWith("remote-control:") ||
+      sessionId.startsWith("draft-")
+    ) {
+      return undefined;
+    }
+    const id = this.id(sessionId);
+    if (this.drafts.has(id)) return undefined;
+    try {
+      const { thread, harnessId } = await this.readThread(id);
+      if (this.closed) return undefined;
+      this.rows.set(thread.id, thread);
+      this.threads.setHarness(thread.id, harnessId);
+      return thread.cwd;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Terminal cwd for a known local Session, including an unsubmitted draft.
    * Missing cwd uses the Web service user's home without assigning a workspace
    * or creating a Thread. Unknown identities do not acquire an execution scope.
@@ -1670,7 +1700,22 @@ export class ChSessions {
           "session/open-unavailable",
           "Remote connections cannot open Host files.",
         );
-      const request = requestOf<{ path: string; action?: string; application?: string }>(args);
+      const request = requestOf<{
+        sessionId?: string;
+        path: string;
+        action?: string;
+        application?: string;
+      }>(args);
+      if (
+        typeof request.sessionId === "string" &&
+        (request.sessionId.startsWith("web-remote:") ||
+          request.sessionId.startsWith("remote-control:"))
+      ) {
+        throw new RpcError(
+          "session/open-unavailable",
+          "Remote sessions cannot open files on the Hub host.",
+        );
+      }
       if (
         (request.action !== undefined && request.action !== "reveal") ||
         request.application !== undefined

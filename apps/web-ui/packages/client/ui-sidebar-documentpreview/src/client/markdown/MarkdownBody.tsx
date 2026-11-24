@@ -8,6 +8,7 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { DocumentPreviewProps } from "../document/contract.ts";
+import { hostFileOf } from "../rpc.ts";
 import { splitFrontmatter } from "./frontmatter.ts";
 import type { FrontmatterFieldsProps } from "./frontmatter-fields.tsx";
 import { markdownImageUrl } from "./path-images.ts";
@@ -44,11 +45,18 @@ export function MarkdownBody({
   t,
 }: MarkdownBodyProps): ReactNode {
   const absolutePath = useResource<"file">(resourceAddress).value?.absolutePath;
+  const sessionId = useMemo(() => {
+    try {
+      return hostFileOf(resourceAddress).sessionId;
+    } catch {
+      return undefined;
+    }
+  }, [resourceAddress]);
   const pathImages = useMemo<MarkdownPathImages>(
     () => ({
-      resolve: (value) => markdownImageUrl(document.baseURI, absolutePath, value),
+      resolve: (value) => markdownImageUrl(document.baseURI, absolutePath, value, sessionId),
     }),
-    [absolutePath],
+    [absolutePath, sessionId],
   );
   const copyLabel = t("code.copy");
   const copiedLabel = t("code.copied");

@@ -154,6 +154,10 @@ export type RemotePeerManifestProject = z.infer<typeof remotePeerManifestProject
 export const remotePeerCapabilitiesSchema = z.object({
   /** /api/peer/v1/uploads, /api/peer/v1/prompt, and /api/peer/v1/file are all available. */
   attachments: z.literal(1).optional(),
+  /** /api/peer/v1/workspace-files/rpc and /api/peer/v1/workspace-files/download are available. */
+  workspaceFiles: z.literal(1).optional(),
+  /** Peer supports officeToPdf/render over /api/peer/v1/workspace-files/rpc. */
+  officePreview: z.literal(1).optional(),
 });
 export type RemotePeerCapabilities = z.infer<typeof remotePeerCapabilitiesSchema>;
 

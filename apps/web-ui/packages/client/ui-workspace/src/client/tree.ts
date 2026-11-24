@@ -31,6 +31,8 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
       displayName: string;
       state: string;
       filePreview?: boolean;
+      workspaceFiles?: boolean;
+      officePreview?: boolean;
     } | null;
   }
 }

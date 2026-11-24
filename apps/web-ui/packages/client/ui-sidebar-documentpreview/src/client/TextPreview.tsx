@@ -67,7 +67,11 @@ function fileSpecLine(fileName: string, bytes: number | undefined): string | nul
 
 /** Private registration inputs; the framework binds the registry source to useDocumentPreviews. */
 export interface TextPreviewInjected extends TextInjected {
-  readonly openExternal: (path: string, signal: AbortSignal) => Promise<void>;
+  readonly openExternal: (
+    sessionId: import("@deepseek-ai/dsh-session/types").SessionId,
+    path: string,
+    signal: AbortSignal,
+  ) => Promise<void>;
   readonly hooks: {
     readonly documentPreviews: ObservableSnapshot<readonly DocumentPreviewDefinition[]>;
   };
@@ -152,6 +156,7 @@ export function TextPreview({
   const absolutePath = meta.value?.absolutePath ?? current?.complete?.absolutePath;
   const displayPath = absolutePath ?? file.path;
   const [openError, setOpenError] = useState<string>();
+  const isRemoteSession = file.sessionId.startsWith("web-remote:");
   const pathLabel = (
     <>
       <PathLabel
@@ -159,10 +164,11 @@ export function TextPreview({
         className={css.path}
         data-textpreview-path
         onClick={(event) => {
-          if (!(event.ctrlKey || event.metaKey) || absolutePath === undefined) return;
+          if (isRemoteSession || !(event.ctrlKey || event.metaKey) || absolutePath === undefined)
+            return;
           event.preventDefault();
           setOpenError(undefined);
-          void openExternal(absolutePath, signal).catch((error: unknown) => {
+          void openExternal(file.sessionId, absolutePath, signal).catch((error: unknown) => {
             if (!signal.aborted)
               setOpenError(error instanceof Error ? error.message : String(error));
           });

@@ -18,18 +18,25 @@
 
 所有端点受 `web-server` 既有认证（Bearer Token / Session Cookie）与同源校验保护；异常统一映射为安全的客户端错误信息，不透传宿主绝对路径或内部错误栈：
 
-- `GET /api/peer/v1/manifest`：返回服务端版本、宿主实时通道真实 `epoch`（未就绪前返回 `503`）、平台、主机名、主目录、本机工作区清单，以及在启用附件存储时的 `capabilities: { attachments: 1 }`。
+- `GET /api/peer/v1/manifest`：返回服务端版本、宿主实时通道真实 `epoch`（未就绪前返回 `503`）、平台、主机名、主目录、本机工作区清单，以及按实际可用性声明的 `capabilities`（如 `attachments: 1`、`workspaceFiles: 1`、`officePreview: 1`）。
 - `GET /api/peer/v1/dirs?path=...`：列出远端目录子文件夹（保留目录名中的空格；空参数回退到远端主目录）。
 - `POST /api/peer/v1/dirs`：在指定父目录下创建新子目录。
 - `POST | PATCH | DELETE /api/peer/v1/workspaces`：在远端节点新增、重命名或移除工作区注册，并返回最新 `manifest`。
 - `POST /api/peer/v1/uploads`：接收 `application/octet-stream` 原始字节流（`threadId` 归属已有远端会话，`scope` 为 UUID v4 供草稿上传暂存），委托远端 `ChSessions.uploadFile` / `WebFiles.upload` 返回上传凭据。
 - `POST /api/peer/v1/prompt`：接收带文件凭据的提交请求；携带 `scope` 时先幂等绑定凭据到目标 `threadId`，再转发远端 `session/prompt`。
 - `GET | HEAD /api/peer/v1/file?threadId=...&path=...`：校验路径位于该会话工作目录（固定根目录与无符号链接组件校验）或远端 Web 附件存储内，并校验图片字节与 50 MiB 上限后返回图片内容；拒绝越界或非图片请求且不回显宿主路径。
+- `POST /api/peer/v1/workspace-files/rpc`：只读白名单端点，仅放行 `workspaceFiles/read`、`workspaceFiles/readBytes`、`workspaceFiles/stat`、`workspaceFiles/list` 与 `officeToPdf/render`；校验目标路径严格位于该远端 Thread 所属 `workspaceRoot` 内（含相对路径、Windows `/D:/...`、HTML `options.baseFile` 拼接，拒绝控制字符/NUL、UNC、`..` 越界与符号链接逃逸）后委托远端 `DshWebServices` 执行，透传 JSON 与 `multipart/form-data` 二进制响应、原始 `rpcId` 与结构化 Typert 错误。
+- `GET | HEAD /api/peer/v1/workspace-files/download?threadId=...&path=...`：经同一工作区路径安全校验与文件描述符重验后流式传输原文件（不受 `readBytes` 32 MiB 限制），客户端断开时立即关闭文件句柄。
 
-### Hub 侧附件代理与安全边界
+### Hub 侧附件、工作区文件代理与安全边界
 
-- **能力门控**：仅当 Peer 已连接且 `manifest.capabilities.attachments === 1` 时开启 Peer 会话与草稿的 `attachmentInput`、`imageLimits` 与 `remoteHost.filePreview`；未升级 Peer 与 Codex Desktop 远程会话保持附件关闭。
-- **远端路径隔离**：浏览器图片预览走 `GET | HEAD /api/remote-peer/file?sessionId=...&path=...`（强制 `sandbox; default-src 'none'` 与 `nosniff`），上传流经 `/api/session/uploadFileBinary` 直接流式转发到远端，远端路径永不进入本机 `/api/file` 或本机文件系统读取。
+- **能力门控**：
+  - 仅当 Peer 已连接且 `manifest.capabilities.attachments === 1` 时开启 Peer 会话与草稿的 `attachmentInput`、`imageLimits` 与 `remoteHost.filePreview`。
+  - 仅当 Peer 已连接且 `manifest.capabilities.workspaceFiles === 1`（Office 转换另需 `officePreview === 1`）时放行远端工作区文件预览与下载，并在 `remoteHost` 上分别投影 `workspaceFiles` 与 `officePreview`；旧版 Peer、未提交草稿、离线/禁用 Peer 以及 Codex Desktop 远程会话均返回明确提示，绝不回落到 Hub 本机路径，也不会为读文件创建远端 Thread。
+- **远端路径与渲染隔离**：
+  - 浏览器图片预览走 `GET | HEAD /api/remote-peer/file?sessionId=...&path=...`（强制 `sandbox; default-src 'none'` 与 `nosniff`），上传流经 `/api/session/uploadFileBinary` 直接流式转发到远端，远端路径永不进入本机 `/api/file` 或本机文件系统读取。
+  - Hub 拦截远程会话的 `workspaceFiles/*`、`officeToPdf/render`（使用独立 65s 长超时与 `AbortSignal` 取消透传）及 `/api/workspace-file/download`、`/api/workspace-file/download-ticket`（ticket 仅绑定 `{ sessionId, path }`、不含 Peer Token，并在实际下载时重验 Peer 状态）；WebSocket `workspaceFiles/changes` 对远程会话返回 `workspace-file/watch-unsupported`，由前端自动降级为静态 `stat` / 手动刷新。
+  - 前端 Office 预览缓存按所属 Host 隔离，跳过 Hub 本机 `officeToPdf/generation` 校验；远程会话隐藏「在主机默认应用中打开」「打开所在文件夹」等本机打开入口，且服务端 `session/openWorkspacePath` 显式拒绝远程会话。
 
 ### Hub 管理 RPC（`codexhost/remote-peers/*`）与安全边界
 

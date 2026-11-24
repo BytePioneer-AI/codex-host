@@ -133,6 +133,22 @@ export async function openWorkspaceFile(
   return { opened: true };
 }
 
+export interface RemoteWorkspaceDownloadDelegate {
+  issueDownloadTicket(
+    response: ServerResponse,
+    sessionId: string,
+    path: string,
+    tickets: WorkspaceDownloadTickets,
+    owner?: string,
+  ): Promise<boolean>;
+  downloadFile(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+    grant?: WorkspaceDownloadGrant,
+  ): Promise<boolean>;
+}
+
 /** Issue a short-lived ticket scoped to one verified workspace file. */
 export async function issueWorkspaceDownloadTicket(
   response: ServerResponse,
@@ -140,6 +156,7 @@ export async function issueWorkspaceDownloadTicket(
   workspace: (sessionId: string) => string | undefined,
   tickets: WorkspaceDownloadTickets,
   owner?: string,
+  remote?: RemoteWorkspaceDownloadDelegate,
 ): Promise<void> {
   response.setHeader("Cache-Control", "private, no-store");
   let sessionId = "";
@@ -150,6 +167,9 @@ export async function issueWorkspaceDownloadTicket(
     if (typeof parsed.path === "string") path = parsed.path;
   } catch {
     response.writeHead(400, { "content-type": "text/plain" }).end("invalid json");
+    return;
+  }
+  if (remote && (await remote.issueDownloadTicket(response, sessionId, path, tickets, owner))) {
     return;
   }
   const root = workspace(sessionId);
@@ -185,8 +205,12 @@ export async function downloadWorkspaceFile(
   url: URL,
   workspace: (sessionId: string) => string | undefined,
   grant?: WorkspaceDownloadGrant,
+  remote?: RemoteWorkspaceDownloadDelegate,
 ): Promise<void> {
   response.setHeader("Cache-Control", "private, no-store");
+  if (remote && (await remote.downloadFile(request, response, url, grant))) {
+    return;
+  }
   const sessionId = grant ? grant.sessionId : (url.searchParams.get("sessionId") ?? "");
   const path = grant ? grant.path : url.searchParams.get("path");
   const root = workspace(sessionId);

@@ -80,8 +80,17 @@ export function failureLine(t: TranslateNS<"sidebarFiles">, failure: RemoteFailu
       return t("error.notDirectory");
     // Carrier and unclassified host failures reach the reader as themselves:
     // this tree knows nothing useful to add to a transport-level message.
-    default:
+    default: {
+      const code: string = failure.code;
+      if (code === "remote/workspace-files-unsupported") {
+        const reason = (failure.details as { readonly reason?: unknown } | undefined)?.reason;
+        return t(
+          reason === "upgrade-required" ? "error.remoteUpgradeRequired" : "error.remoteUnsupported",
+        );
+      }
+      if (code === "remote/offline") return t("error.remoteOffline");
       return t("error.unavailable", { message: failure.message });
+    }
   }
 }
 

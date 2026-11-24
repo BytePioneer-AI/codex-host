@@ -495,6 +495,7 @@ export function ChatView({
               key={sessionId}
               openExternalLink={openExternalLink}
               openLinkInSidebar={browserAvailable ? openLinkInSidebar : undefined}
+              hideLocalFileActions={isRemote}
               resolveLink={resolveLink}
               openFile={requestOpenFile}
               fileImages={fileImages}

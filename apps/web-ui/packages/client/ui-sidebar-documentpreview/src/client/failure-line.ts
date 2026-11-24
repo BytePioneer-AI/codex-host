@@ -15,6 +15,11 @@ function humanBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
+function failureReason(failure: RemoteFailure): string | undefined {
+  const details = failure.details as { readonly reason?: unknown } | undefined;
+  return typeof details?.reason === "string" ? details.reason : undefined;
+}
+
 /**
  * Say what went wrong, in terms of the file rather than of the transport.
  * @param t - namespace-bound translate.
@@ -34,10 +39,23 @@ export function failureLine(
       return t("error.notText");
     case "workspace-file/not-regular-file":
       return t("error.notRegularFile");
+    case "workspace-file/outside-workspace":
+      return t("error.outsideWorkspace");
     // Carrier and unclassified host failures reach the reader as themselves:
     // this panel knows nothing useful to add to a transport-level message.
-    default:
+    default: {
+      const code: string = failure.code;
+      if (code === "remote/workspace-files-unsupported") {
+        const reason = failureReason(failure);
+        if (reason === "upgrade-required") return t("error.remoteUpgradeRequired");
+        if (reason === "unsubmitted-draft") return t("error.remoteDraftUnsubmitted");
+        return t("error.remoteUnsupported");
+      }
+      if (code === "remote/office-preview-unsupported") return t("error.remoteOfficeUnsupported");
+      if (code === "remote/offline") return t("error.remoteOffline");
+      if (code === "remote/timeout") return t("error.remoteTimeout");
       return t("error.unavailable", { message: failure.message });
+    }
   }
 }
 
@@ -58,8 +76,17 @@ export function emptyFailureRecourse(failure: RemoteFailure): EmptyFailureRecour
       return "open";
     case "workspace-file/not-found":
     case "workspace-file/not-regular-file":
+    case "workspace-file/outside-workspace":
       return "none";
-    default:
+    default: {
+      const code: string = failure.code;
+      if (
+        code === "remote/workspace-files-unsupported" ||
+        code === "remote/office-preview-unsupported"
+      ) {
+        return "none";
+      }
       return "retry";
+    }
   }
 }

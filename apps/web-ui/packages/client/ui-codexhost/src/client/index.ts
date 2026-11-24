@@ -152,8 +152,12 @@ export function apply(ctx: ClientContext): void {
           downloadDismissLabel: t("file.download.dismiss"),
           openFolderLabel: t("file.openFolder"),
           openFolderFailedLabel: t("file.openFolder.failed"),
-          revealFolder: (path: string) =>
-            ctx.remote.session.openWorkspacePath({ path, action: "reveal" }),
+          ...(sessionId.startsWith("web-remote:")
+            ? {}
+            : {
+                revealFolder: (path: string) =>
+                  ctx.remote.session.openWorkspacePath({ sessionId, path, action: "reveal" }),
+              }),
         }),
       },
       DocumentDownload,

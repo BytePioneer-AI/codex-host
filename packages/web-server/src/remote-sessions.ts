@@ -329,6 +329,34 @@ export class RemoteSessions {
   private peerAttachmentsSupported(hostId: string): boolean {
     return this.attachments.supported(this.peerEndpoint(hostId));
   }
+  private peerWorkspaceFilesSupported(hostId: string): boolean {
+    const peer = this.peerEndpoint(hostId);
+    return peer?.state === "connected" && peer.manifest?.capabilities?.workspaceFiles === 1;
+  }
+  private peerOfficePreviewSupported(hostId: string): boolean {
+    const peer = this.peerEndpoint(hostId);
+    return (
+      peer?.state === "connected" &&
+      peer.manifest?.capabilities?.workspaceFiles === 1 &&
+      peer.manifest?.capabilities?.officePreview === 1
+    );
+  }
+  resolveDraftCanonicalId(sessionId: string): {
+    readonly isDraft: boolean;
+    readonly canonicalId?: string;
+    readonly hostId?: string;
+  } {
+    const draft = this.drafts.get(sessionId);
+    if (!draft) return { isDraft: false };
+    return {
+      isDraft: true,
+      ...(draft.canonicalId !== undefined ? { canonicalId: draft.canonicalId } : {}),
+      hostId: draft.target.hostId,
+    };
+  }
+  peerClient(hostId: string): PeerAttachmentEndpoint | undefined {
+    return this.peerEndpoint(hostId);
+  }
   private draftSummary(draft: RemoteProjectDraft) {
     return draft.summary(this.peerAttachmentsSupported(draft.target.hostId));
   }
@@ -1263,6 +1291,10 @@ export class RemoteSessions {
   private summary(id: string, entry: Entry) {
     const attachmentsSupported =
       entry.online && this.peerAttachmentsSupported(entry.identity.hostId);
+    const workspaceFilesSupported =
+      entry.online && this.peerWorkspaceFilesSupported(entry.identity.hostId);
+    const officePreviewSupported =
+      entry.online && this.peerOfficePreviewSupported(entry.identity.hostId);
     const harnessIdentity =
       remoteHarnessIdentity(entry) ??
       (entry.row.modelProvider !== "codexhost" ? { id: "codex", name: "Codex" } : undefined);
@@ -1286,6 +1318,8 @@ export class RemoteSessions {
             ),
             state: entry.online ? "connected" : "disconnected",
             filePreview: attachmentsSupported,
+            workspaceFiles: workspaceFilesSupported,
+            officePreview: officePreviewSupported,
           },
           ...(harnessIdentity ? { harnessIdentity } : {}),
           ...(entry.peerOwnershipAvailable && entry.peerTreeParent !== undefined
@@ -1959,6 +1993,12 @@ export class RemoteSessions {
       }>(args);
       const id = request.sessionId ?? request.address?.sessionId ?? request.agentId ?? args.agentId;
       if (typeof id !== "string" || !id.startsWith(PREFIX)) return next();
+      if (method === "session/openWorkspacePath") {
+        throw new RpcError(
+          "session/open-unavailable",
+          "Remote sessions cannot open files on the Hub host.",
+        );
+      }
       if (method === "session/prompt") {
         const pending = this.pendingFirstTurns.get(id);
         if (pending) return this.firstTurn(pending, request as Record<string, unknown>);

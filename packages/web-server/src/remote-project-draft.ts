@@ -190,6 +190,8 @@ export class RemoteProjectDraft {
             displayName: this.displayName,
             state: "connected",
             filePreview: attachmentsSupported,
+            workspaceFiles: false,
+            officePreview: false,
           },
           nativeDiscovery: false,
           attachmentInput: { enabled: attachmentsSupported },

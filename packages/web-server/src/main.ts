@@ -16,7 +16,9 @@ import { PeerHostManager, createCompositeRemoteCall } from "./peer-host-manager.
 import { PeerHostStore } from "./peer-host-store.ts";
 import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "./peer-manifest.ts";
 import { servePeerAttachments } from "./peer-attachments-http.ts";
+import { servePeerWorkspaceFiles } from "./peer-workspace-files-http.ts";
 import { RemotePeerAttachments } from "./remote-peer-attachments.ts";
+import { RemotePeerWorkspaceFiles } from "./remote-peer-workspace-files.ts";
 import { resolvePeerHarnessIcon } from "./peer-thread-source.ts";
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -313,7 +315,6 @@ const dsh = await DshWebServices.open({
   );
   return undefined;
 });
-if (dsh) streams.setFallback((endpoint, args, sink) => dsh.stream(endpoint, args, sink));
 const settings = new Settings(data, events);
 const push = new PushNotifier(data);
 const downloadTickets = new WorkspaceDownloadTickets();
@@ -462,6 +463,11 @@ peerManager.onChange = (hostId) => {
   remoteSessions.hostsChanged(hostId);
 };
 remoteSessions.install(rpc, streams);
+const remoteWorkspaceFiles = new RemotePeerWorkspaceFiles(remoteSessions);
+streams.setFallback((endpoint, args, sink) => {
+  if (remoteWorkspaceFiles.handleStream(endpoint, args, sink)) return true;
+  return dsh ? dsh.stream(endpoint, args, sink) : false;
+});
 preferences.register(rpc);
 displaySettings.register(rpc);
 settings.register(rpc);
@@ -581,6 +587,7 @@ const server = createWebServer((request, response) => {
           requestUrl,
           (id) => sessions.fileWorkspaceRoot(id),
           grant,
+          remoteWorkspaceFiles,
         );
         return;
       }
@@ -602,8 +609,13 @@ const server = createWebServer((request, response) => {
       pathname === "/api/workspace-file/download" &&
       (request.method === "GET" || request.method === "HEAD")
     ) {
-      await downloadWorkspaceFile(request, response, new URL(url, "http://localhost"), (id) =>
-        sessions.fileWorkspaceRoot(id),
+      await downloadWorkspaceFile(
+        request,
+        response,
+        new URL(url, "http://localhost"),
+        (id) => sessions.fileWorkspaceRoot(id),
+        undefined,
+        remoteWorkspaceFiles,
       );
       return;
     }
@@ -660,6 +672,7 @@ const server = createWebServer((request, response) => {
       };
       const peerRoute = pathname.slice("/api/peer/v1/".length);
       const peerAttachmentsAvailable = Boolean(files && images);
+      const peerWorkspaceFilesAvailable = Boolean(dsh);
       if (peerRoute === "uploads" || peerRoute === "prompt" || peerRoute === "file") {
         if (!peerAttachmentsAvailable) {
           await sendPeerJson(404, { error: "Peer attachments unavailable" });
@@ -671,6 +684,18 @@ const server = createWebServer((request, response) => {
           images,
           rpc,
         });
+        return;
+      }
+      if (peerRoute === "workspace-files/rpc" || peerRoute === "workspace-files/download") {
+        await servePeerWorkspaceFiles(
+          request,
+          response,
+          peerRoute === "workspace-files/rpc" ? "rpc" : "download",
+          {
+            resolveWorkspaceRoot: (threadId) => sessions.ensureLocalWorkspaceRoot(threadId),
+            ...(dsh ? { dsh } : {}),
+          },
+        );
         return;
       }
       try {
@@ -691,7 +716,11 @@ const server = createWebServer((request, response) => {
           await resolvePeerEpoch(),
           SERVER_VERSION,
           [resolve(values.workspace as string)],
-          { attachments: peerAttachmentsAvailable },
+          {
+            attachments: peerAttachmentsAvailable,
+            workspaceFiles: peerWorkspaceFilesAvailable,
+            officePreview: peerWorkspaceFilesAvailable,
+          },
         );
         await sendPeerJson(200, result);
       } catch (error) {
@@ -751,11 +780,13 @@ const server = createWebServer((request, response) => {
           (id) => sessions.fileWorkspaceRoot(id),
           downloadTickets,
           requestAuth?.credential,
+          remoteWorkspaceFiles,
         );
         return;
       }
       const body = await readBody(request, response);
       if (body === undefined) return;
+      if (await remoteWorkspaceFiles.handleApiRequest(request, body, response)) return;
       if (dsh && (await dsh.handleApiRequest(request, body, response))) return;
       let listTiming: SessionListTiming | undefined;
       let listOk = false;

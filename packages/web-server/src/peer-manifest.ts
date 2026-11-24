@@ -83,6 +83,8 @@ function mapFsError(error: unknown, fallback: string): PeerEndpointError {
 
 export interface PeerEndpointOptions {
   attachments?: boolean;
+  workspaceFiles?: boolean;
+  officePreview?: boolean;
 }
 
 export async function peerEndpoint(
@@ -129,6 +131,11 @@ export async function peerEndpoint(
   };
   const manifest = () => {
     if (!epoch) throw new PeerEndpointError(503, "Host realtime channel is not ready");
+    const capabilities: c.RemotePeerCapabilities = {
+      ...(options?.attachments ? { attachments: 1 } : {}),
+      ...(options?.workspaceFiles ? { workspaceFiles: 1 } : {}),
+      ...(options?.officePreview ? { officePreview: 1 } : {}),
+    };
     return c.remotePeerManifestSchema.parse({
       version,
       epoch,
@@ -139,7 +146,7 @@ export async function peerEndpoint(
         .list()
         .filter((w) => !w.remote)
         .map((w) => ({ id: w.workspaceId, name: w.title, path: w.path, threadIds: w.sessionIds })),
-      ...(options?.attachments ? { capabilities: { attachments: 1 } } : {}),
+      ...(Object.keys(capabilities).length > 0 ? { capabilities } : {}),
     });
   };
   const route = url.pathname.slice("/api/peer/v1/".length);

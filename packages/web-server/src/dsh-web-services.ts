@@ -99,6 +99,29 @@ export class DshWebServices {
   }
 
   /**
+   * Dispatch one unary DSH Remote method using its canonical `/api/<method>` URL.
+   * @param method - canonical `<namespace>/<method>` endpoint.
+   * @param body - complete Typert `client-request` JSON envelope.
+   * @param signal - cancellation signal propagated into the DSH handler.
+   * @returns the raw Fetch Response (JSON or `multipart/form-data`), or undefined if unhandled.
+   */
+  async fetchMethod(
+    method: string,
+    body: string,
+    signal: AbortSignal,
+  ): Promise<Response | undefined> {
+    if (!this.backend.handles(method)) return undefined;
+    return this.backend.fetch(
+      new Request(new URL(`/api/${method}`, "http://localhost"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+        signal,
+      }),
+    );
+  }
+
+  /**
    * Forward one DSH Remote stream into the Web mux.
    * @param endpoint - canonical `<namespace>/<method>` endpoint.
    * @param args - named wire arguments.

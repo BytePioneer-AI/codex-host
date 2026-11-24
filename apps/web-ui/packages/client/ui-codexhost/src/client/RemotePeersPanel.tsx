@@ -35,6 +35,54 @@ type ListView =
   | { kind: "ready"; peers: RemotePeerSummary[] }
   | { kind: "failed"; message: string };
 
+type LoadMode = "initial" | "background" | "silent";
+
+// Distinguish "never fetched" (`undefined`) from "fetched and empty" (`[]`).
+let cachedPeers: RemotePeerSummary[] | undefined;
+let inFlightPeers: Promise<RemotePeerSummary[]> | undefined;
+let cacheGeneration = 0;
+
+function fetchRemotePeers(force = false): Promise<RemotePeerSummary[]> {
+  if (!force && inFlightPeers !== undefined) return inFlightPeers;
+  if (force) {
+    cacheGeneration += 1;
+  }
+  const generation = cacheGeneration;
+  const request = remotePeersApi
+    .list()
+    .then((result) => {
+      if (generation === cacheGeneration) {
+        cachedPeers = result.peers;
+      }
+      return result.peers;
+    })
+    .finally(() => {
+      if (inFlightPeers === request) {
+        inFlightPeers = undefined;
+      }
+    });
+  inFlightPeers = request;
+  return request;
+}
+
+function updateCachedPeers(updater: (peers: RemotePeerSummary[]) => RemotePeerSummary[]): void {
+  cacheGeneration += 1;
+  inFlightPeers = undefined;
+  if (cachedPeers !== undefined) {
+    cachedPeers = updater(cachedPeers);
+  }
+}
+
+export function prefetchRemotePeers(): void {
+  void fetchRemotePeers().catch(() => undefined);
+}
+
+export function clearRemotePeersCache(): void {
+  cacheGeneration += 1;
+  cachedPeers = undefined;
+  inFlightPeers = undefined;
+}
+
 const STATE_LABEL: Record<RemotePeerState, Parameters<Translate>[0]> = {
   connected: "remotePeers.state.connected",
   connecting: "remotePeers.state.connecting",
@@ -54,7 +102,9 @@ function formatOriginDisplay(origin: string): string {
 }
 
 export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
-  const [view, setView] = useState<ListView>({ kind: "loading" });
+  const [view, setView] = useState<ListView>(() =>
+    cachedPeers !== undefined ? { kind: "ready", peers: cachedPeers } : { kind: "loading" },
+  );
   const [refreshing, setRefreshing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [openMenuPeerId, setOpenMenuPeerId] = useState<string | null>(null);
@@ -67,30 +117,42 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
   const [actionError, setActionError] = useState<string | null>(null);
   const loadSeqRef = useRef(0);
 
-  const loadPeers = useCallback(async (background = false): Promise<void> => {
-    const seq = ++loadSeqRef.current;
-    if (background) setRefreshing(true);
-    try {
-      const result = await remotePeersApi.list();
-      if (seq !== loadSeqRef.current) return;
-      setView({ kind: "ready", peers: result.peers });
-    } catch (cause) {
-      if (seq !== loadSeqRef.current) return;
-      if (!background) {
-        setView({ kind: "failed", message: messageOf(cause) });
+  const loadPeers = useCallback(
+    async (mode: LoadMode = "initial", force = false): Promise<void> => {
+      const seq = ++loadSeqRef.current;
+      const showSpinner = mode === "background";
+      if (showSpinner) setRefreshing(true);
+      try {
+        const peers = await fetchRemotePeers(force);
+        if (seq !== loadSeqRef.current) return;
+        setView({ kind: "ready", peers });
+      } catch (cause) {
+        if (seq !== loadSeqRef.current) return;
+        if (mode === "initial") {
+          setView({ kind: "failed", message: messageOf(cause) });
+        }
+      } finally {
+        if (showSpinner && seq === loadSeqRef.current) setRefreshing(false);
       }
-    } finally {
-      if (background && seq === loadSeqRef.current) setRefreshing(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   useEffect(() => {
-    void loadPeers(false);
+    if (cachedPeers !== undefined) {
+      setView({ kind: "ready", peers: cachedPeers });
+      void loadPeers("silent");
+    } else {
+      void loadPeers("initial");
+    }
+    return () => {
+      loadSeqRef.current += 1;
+    };
   }, [loadPeers]);
 
   useEffect(() => {
     const refresh = () => {
-      void loadPeers(true);
+      void loadPeers("background", true);
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") refresh();
@@ -110,13 +172,11 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
     setReconnectingIds((prev) => new Set(prev).add(peer.peerId));
     try {
       const { peer: updated } = await remotePeersApi.reconnect(peer.peerId);
+      const replacePeer = (peers: RemotePeerSummary[]): RemotePeerSummary[] =>
+        peers.map((item) => (item.peerId === updated.peerId ? updated : item));
+      updateCachedPeers(replacePeer);
       setView((current) =>
-        current.kind === "ready"
-          ? {
-              kind: "ready",
-              peers: current.peers.map((item) => (item.peerId === updated.peerId ? updated : item)),
-            }
-          : current,
+        current.kind === "ready" ? { kind: "ready", peers: replacePeer(current.peers) } : current,
       );
       dispatchRemotePeersUpdated();
     } catch (cause) {
@@ -132,17 +192,16 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
 
   const handleConfirmRemove = async (): Promise<void> => {
     if (removingPeer === null) return;
+    const removedPeerId = removingPeer.peerId;
     setRemoveBusy(true);
     setRemoveError(null);
     try {
-      await remotePeersApi.remove(removingPeer.peerId);
+      await remotePeersApi.remove(removedPeerId);
+      const filterRemoved = (peers: RemotePeerSummary[]): RemotePeerSummary[] =>
+        peers.filter((item) => item.peerId !== removedPeerId);
+      updateCachedPeers(filterRemoved);
       setView((current) =>
-        current.kind === "ready"
-          ? {
-              kind: "ready",
-              peers: current.peers.filter((item) => item.peerId !== removingPeer.peerId),
-            }
-          : current,
+        current.kind === "ready" ? { kind: "ready", peers: filterRemoved(current.peers) } : current,
       );
       setRemovingPeer(null);
       dispatchRemotePeersUpdated();
@@ -167,7 +226,7 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
               className={css.iconButton}
               aria-label={t("remotePeers.refresh")}
               disabled={refreshing}
-              onClick={() => void loadPeers(true)}
+              onClick={() => void loadPeers("background", true)}
             >
               {refreshing ? (
                 <span className={css.spinner}>
@@ -202,7 +261,7 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
       ) : view.kind === "failed" ? (
         <div className={css.errorRow} role="alert">
           <p className={css.error}>{t("remotePeers.loadFailed", { message: view.message })}</p>
-          <Button variant="outline" size="sm" onClick={() => void loadPeers(false)}>
+          <Button variant="outline" size="sm" onClick={() => void loadPeers("initial")}>
             {t("remotePeers.retry")}
           </Button>
         </div>
@@ -389,7 +448,11 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
       )}
 
       {addOpen && (
-        <AddPeerModal t={t} onClose={() => setAddOpen(false)} onAdded={() => loadPeers(true)} />
+        <AddPeerModal
+          t={t}
+          onClose={() => setAddOpen(false)}
+          onAdded={() => loadPeers("background", true)}
+        />
       )}
 
       {editingPeer !== null && (
@@ -398,14 +461,12 @@ export function RemotePeersPanel({ t }: { t: Translate }): ReactNode {
           t={t}
           onClose={() => setEditingPeer(null)}
           onSaved={(updated) => {
+            const replacePeer = (peers: RemotePeerSummary[]): RemotePeerSummary[] =>
+              peers.map((item) => (item.peerId === updated.peerId ? updated : item));
+            updateCachedPeers(replacePeer);
             setView((current) =>
               current.kind === "ready"
-                ? {
-                    kind: "ready",
-                    peers: current.peers.map((item) =>
-                      item.peerId === updated.peerId ? updated : item,
-                    ),
-                  }
+                ? { kind: "ready", peers: replacePeer(current.peers) }
                 : current,
             );
             setEditingPeer(null);

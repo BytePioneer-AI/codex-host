@@ -24,7 +24,7 @@ export type PeerWorkspacePathValidation =
   | {
       readonly ok: true;
       readonly realRoot: string;
-      readonly pinnedRootStat: Stats;
+      readonly pinnedRootStat: Stats | BigIntStats;
       readonly realPath: string;
     }
   | PeerWorkspaceError;
@@ -278,10 +278,10 @@ export async function validatePeerWorkspacePath(input: {
 
   const resolvedRoot = pathOps.resolve(input.workspaceRoot);
   let realRoot: string;
-  let pinnedRootStat: Stats;
+  let pinnedRootStat: Stats | BigIntStats;
   try {
     realRoot = await fsOps.realpath(resolvedRoot);
-    pinnedRootStat = await fsOps.lstat(realRoot);
+    pinnedRootStat = await fsOps.lstat(realRoot, { bigint: true });
     if (
       pinnedRootStat.isSymbolicLink() ||
       !pinnedRootStat.isDirectory() ||
@@ -495,7 +495,7 @@ export async function openConfinedWorkspaceFile(input: {
   let handle: FileHandle | undefined;
   let keepOpen = false;
   try {
-    const preStat = await fsOps.lstat(validated.realPath);
+    const preStat = await fsOps.lstat(validated.realPath, { bigint: true });
     if (preStat.isSymbolicLink() || !preStat.isFile()) {
       const kind = statKind(preStat);
       return {
@@ -515,20 +515,20 @@ export async function openConfinedWorkspaceFile(input: {
     // Re-verify real path ownership against the pinned root while holding the open file descriptor.
     if (fsOps.platform === "linux") {
       const fdReal = await fsOps.realpath(`/proc/self/fd/${handle.fd}`);
-      const currentRootStat = await fsOps.lstat(validated.realRoot);
+      const currentRootStat = await fsOps.lstat(validated.realRoot, { bigint: true });
       const fdAllowed =
         !currentRootStat.isSymbolicLink() &&
         currentRootStat.isDirectory() &&
         sameFileIdentity(currentRootStat, validated.pinnedRootStat) &&
         isPathWithinRoot(fdReal, validated.realRoot, fsOps.platform, pathOps, false) &&
         (await hasNoSymlinkComponentsFromRoot(fdReal, pathOps, fsOps));
-      if (!fdAllowed || !sameFileIdentity(await fsOps.stat(fdReal), openedStat)) {
+      if (!fdAllowed || !sameFileIdentity(await fsOps.stat(fdReal, { bigint: true }), openedStat)) {
         return outsideError(displayPath);
       }
     } else {
       const postRoot = await fsOps.realpath(input.workspaceRoot);
       const postReal = await fsOps.realpath(validated.realPath);
-      const currentRootStat = await fsOps.lstat(validated.realRoot);
+      const currentRootStat = await fsOps.lstat(validated.realRoot, { bigint: true });
       const postAllowed =
         postRoot === validated.realRoot &&
         postReal === validated.realPath &&
@@ -537,7 +537,10 @@ export async function openConfinedWorkspaceFile(input: {
         sameFileIdentity(currentRootStat, validated.pinnedRootStat) &&
         isPathWithinRoot(postReal, validated.realRoot, fsOps.platform, pathOps, false) &&
         (await hasNoSymlinkComponentsFromRoot(postReal, pathOps, fsOps));
-      if (!postAllowed || !sameFileIdentity(await fsOps.stat(postReal), openedStat)) {
+      if (
+        !postAllowed ||
+        !sameFileIdentity(await fsOps.stat(postReal, { bigint: true }), openedStat)
+      ) {
         return outsideError(displayPath);
       }
     }
@@ -925,13 +928,13 @@ export async function listConfinedWorkspaceDirectory(input: {
   if (input.signal?.aborted) return cancelledError();
 
   try {
-    const preStat = await fsOps.lstat(validated.realPath);
+    const preStat = await fsOps.lstat(validated.realPath, { bigint: true });
     if (preStat.isSymbolicLink() || !preStat.isDirectory()) {
       return outsideError(displayPath);
     }
     const postRoot = await fsOps.realpath(input.workspaceRoot);
     const postReal = await fsOps.realpath(validated.realPath);
-    const currentRootStat = await fsOps.lstat(validated.realRoot);
+    const currentRootStat = await fsOps.lstat(validated.realRoot, { bigint: true });
     if (
       postRoot !== validated.realRoot ||
       postReal !== validated.realPath ||
@@ -949,7 +952,7 @@ export async function listConfinedWorkspaceDirectory(input: {
 
     // Post-readdir identity check to guard against directory swap during enumeration.
     const afterReal = await fsOps.realpath(validated.realPath);
-    const afterStat = await fsOps.lstat(validated.realPath);
+    const afterStat = await fsOps.lstat(validated.realPath, { bigint: true });
     if (afterReal !== validated.realPath || !sameFileIdentity(afterStat, preStat)) {
       return outsideError(displayPath);
     }

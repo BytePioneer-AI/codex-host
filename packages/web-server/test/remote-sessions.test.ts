@@ -2481,7 +2481,7 @@ it("publishes peer manifest projects and connected state before slow catalog pag
 
   const peerHostId = "remote-peer:slow-catalog";
   const epoch = "epoch-early";
-  const catalogGate = Promise.withResolvers<void>();
+  const catalogGate = Promise.withResolvers<undefined>();
   let connected = false;
   let catalogStarted = false;
 
@@ -2552,7 +2552,7 @@ it("publishes peer manifest projects and connected state before slow catalog pag
     { source: (id) => (id === peerHostId ? source : undefined) },
   );
   t.after(() => {
-    catalogGate.resolve();
+    catalogGate.resolve(undefined);
     remote.close();
     source.close();
   });
@@ -2580,6 +2580,6 @@ it("publishes peer manifest projects and connected state before slow catalog pag
     ],
   );
 
-  catalogGate.resolve();
+  catalogGate.resolve(undefined);
   await refreshPromise;
 });

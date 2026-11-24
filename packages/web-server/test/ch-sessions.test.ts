@@ -712,6 +712,7 @@ it("does not create project groups from auto-assigned cwd alone", async (t) => {
     "auto-thread",
     join(root, "generated-unselected-directory"),
   );
+  assert.ok(original);
   delete original.origin;
   const sessions = new ChSessions(host, workspaces, new EventHub(root));
   t.after(() => sessions.close());
@@ -983,30 +984,62 @@ it("workspace mirror: migrates the default title a shared folder got from any pr
   assert.equal(workspaces.byPath(kept)?.title, "Reading list");
 });
 
-it("workspace mirror: recreates deleted native roots on the next snapshot", async (t) => {
-  const root = mkdtempSync(join(tmpdir(), "ch-workspace-recreate-"));
+it("workspace mirror: keeps a deleted Desktop workspace out of Web until explicitly added", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-delete-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const workspaces = new Workspaces(new DataDir(root), root);
-  const extraRoot = join(root, "extra");
-  const projects = [{ name: "Native", rootPaths: [join(root, "first"), extraRoot] }];
-  workspaces.syncReferencedSessions([], new Map(), new Set(), projects);
-  const extra = workspaces.byPath(extraRoot);
-  assert.ok(extra);
+  const data = new DataDir(join(root, "web"));
+  const cwd = join(root, "project");
+  mkdirSync(cwd);
+  const host = new FakeChHost();
+  const thread = structuredClone(host.add("native-thread", cwd));
+  const projects = await host.projects();
+  const workspaces = new Workspaces(data, cwd, true);
+  const sessions = new ChSessions(host, workspaces, new EventHub(data.root));
+  t.after(() => sessions.close());
   const rpc = new RpcRegistry();
-  workspaces.register(rpc, new StreamRegistry());
-  assert.ok(
-    (
-      await rpc.dispatch("workspace/delete", {
-        args: { request: { workspaceId: extra.workspaceId } },
-      })
-    ).ok,
+  const streams = new StreamRegistry();
+  workspaces.register(rpc, streams);
+  sessions.register(rpc, streams);
+
+  assert.ok((await rpc.dispatch("session/list", { args: {} })).ok);
+  const original = workspaces.ownerOf(thread.id);
+  assert.ok(original);
+  assert.deepEqual(
+    await rpc.dispatch("workspace/delete", {
+      args: { request: { workspaceId: original.workspaceId } },
+    }),
+    { ok: true, value: { deleted: true } },
   );
-  assert.equal(workspaces.byPath(extra.path), undefined);
-  workspaces.syncReferencedSessions([], new Map(), new Set(), projects);
-  const recreated = workspaces.byPath(extra.path);
-  assert.ok(recreated);
-  assert.equal(recreated.title, "extra");
-  assert.notEqual(recreated.workspaceId, extra.workspaceId);
+  const refreshed = await rpc.dispatch("session/list", { args: {} });
+  assert.ok(refreshed.ok);
+  const { items } = refreshed.value as { items: Array<{ sessionId: string; cwd: string }> };
+  assert.equal(items.find((item) => item.sessionId === thread.id)?.cwd, cwd);
+  assert.deepEqual(workspaces.list(), []);
+  assert.equal(workspaces.ownerOf(thread.id), undefined);
+  assert.deepEqual(await host.projects(), projects);
+  assert.deepEqual(host.threads.get(thread.id), thread);
+  assert.ok(existsSync(cwd));
+
+  const reopened = new Workspaces(data, cwd, true);
+  const reopenedRpc = new RpcRegistry();
+  reopened.register(reopenedRpc, new StreamRegistry());
+  assert.deepEqual(await reopenedRpc.dispatch("workspace/initializeDefault", { args: {} }), {
+    ok: true,
+    value: null,
+  });
+  const references = [{ sessionId: thread.id, cwd }];
+  const groups = new Map([[thread.id, cwd]]);
+  reopened.syncReferencedSessions(references, groups, new Set(), projects.projects);
+  reopened.selectReferenceWorkspace(cwd);
+  reopened.attachReferencedSession("draft-already-open", cwd);
+  assert.deepEqual(reopened.list(), []);
+
+  assert.ok(
+    (await reopenedRpc.dispatch("workspace/create", { args: { request: { path: cwd } } })).ok,
+  );
+  const restored = new Workspaces(data, cwd, true);
+  restored.syncReferencedSessions(references, groups, new Set(), projects.projects);
+  assert.equal(restored.ownerOf(thread.id)?.path, cwd);
 });
 
 it("projectRootTitles: falls back to the full path when the basename is empty or conflicts", () => {

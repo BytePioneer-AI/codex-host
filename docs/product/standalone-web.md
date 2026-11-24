@@ -391,6 +391,8 @@ Turn 运行中排队发送进入官方队列，Web 可编辑、删除和立即�
 
 工作区引用按完整快照批量同步：持久状态发生变化时仅保存一次最终结果，并只广播最终可见差异；未变化时不写盘、不重复广播。
 
+在 Web 删除本机工作区时，Web 按目录记下移除操作，同步 Desktop 项目时跳过该目录。刷新页面或重启 Web 后仍生效。原文件夹、Desktop 项目和会话记录保留，会话可在 Web 的「未分组」中查看。使用「添加工作区」重新选择该目录后，Web 恢复显示工作区及会话分组。
+
 `session/list` 始终保留 `Server-Timing` 响应头，可在开发者工具 Network → `session/list` → Timing 中查看阶段耗时。Web 与 Host 的详细性能 JSON 日志默认关闭，按需设置 `CODEXHOST_TRACE_SESSION_LIST=1` 开启；正常错误日志不受影响。开启、关闭方式及各阶段含义统一见[会话目录慢查询诊断](../operations/host-runtime-log.md#web-会话目录慢查询)。
 
 ### 聊天投影通道

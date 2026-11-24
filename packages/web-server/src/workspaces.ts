@@ -25,12 +25,23 @@ interface WorkspaceState {
   items: WorkspaceView[];
   archivedSessionIds: string[];
   pinnedSessionIds: string[];
+  /** Local folders explicitly removed from the Web workspace list. */
+  deletedPaths?: string[];
   /** Set once workspaces are reordered in Web; native project roots then stop following the
    * GUI project order. */
   manualOrder?: boolean;
 }
 
 const FILE = "workspaces.json";
+
+function workspacePath(path: string): string {
+  const expanded = path.startsWith("~") ? join(homedir(), path.slice(1)) : path;
+  if (!isAbsolute(expanded))
+    throw new RpcError("workspace/invalid-path", `Workspace path must be absolute: ${path}`, {
+      path,
+    });
+  return resolve(expanded);
+}
 
 interface NativeProject {
   name: string;
@@ -418,12 +429,7 @@ export class Workspaces {
   }
 
   create(path: string, referenceOnly = false): { workspace: WorkspaceView; created: boolean } {
-    const expanded = path.startsWith("~") ? join(homedir(), path.slice(1)) : path;
-    if (!isAbsolute(expanded))
-      throw new RpcError("workspace/invalid-path", `Workspace path must be absolute: ${path}`, {
-        path,
-      });
-    const absolute = resolve(expanded);
+    const absolute = workspacePath(path);
     if (!referenceOnly && (!existsSync(absolute) || !statSync(absolute).isDirectory())) {
       throw new RpcError("workspace/invalid-path", `Not a directory: ${absolute}`, { path });
     }
@@ -445,8 +451,15 @@ export class Workspaces {
       updatedAt: now,
       origin: referenceOnly ? "codexhost" : "web",
     };
-    this.state.items.push(workspace);
-    this.save();
+    const state = {
+      ...this.state,
+      items: [...this.state.items, workspace],
+      deletedPaths: (this.state.deletedPaths ?? []).filter(
+        (deletedPath) => deletedPath !== absolute,
+      ),
+    };
+    this.data.writeJson(FILE, state);
+    this.state = state;
     this.broadcast({ type: "upsert", workspace });
     this.broadcast({
       type: "order",
@@ -476,8 +489,13 @@ export class Workspaces {
   }
 
   /** Mirror an authoritative CH cwd as a Web navigation entry, never mkdir or change the Thread. */
-  attachReferencedSession(sessionId: string, cwd: string, title?: string): WorkspaceView {
-    const workspace = this.byPath(resolve(cwd)) ?? this.create(cwd, true).workspace;
+  attachReferencedSession(
+    sessionId: string,
+    cwd: string,
+    title?: string,
+  ): WorkspaceView | undefined {
+    const workspace = this.referenceWorkspace(cwd);
+    if (!workspace) return undefined;
     if (title && workspace.origin !== "web" && workspace.title !== title) {
       workspace.title = title;
       this.touch(workspace);
@@ -506,9 +524,11 @@ export class Workspaces {
     const byPath = new Map(items.map((workspace) => [workspace.path, workspace]));
     const members = new Map<string, Set<string>>();
     const now = new Date().toISOString();
+    const deletedPaths = new Set(this.state.deletedPaths);
     const roots = projectRoots(projects);
     const rootPaths = new Set(roots.map((root) => root.path));
     for (const { path, title, listings } of roots) {
+      if (deletedPaths.has(path)) continue;
       let workspace = byPath.get(path);
       if (!workspace) {
         workspace = {
@@ -528,12 +548,8 @@ export class Workspaces {
     for (const { sessionId, cwd, title } of sessions) {
       let workspace = byPath.get(resolve(cwd));
       if (!workspace) {
-        const expanded = cwd.startsWith("~") ? join(homedir(), cwd.slice(1)) : cwd;
-        if (!isAbsolute(expanded))
-          throw new RpcError("workspace/invalid-path", `Workspace path must be absolute: ${cwd}`, {
-            path: cwd,
-          });
-        const path = resolve(expanded);
+        const path = workspacePath(cwd);
+        if (deletedPaths.has(path)) continue;
         workspace = byPath.get(path);
         if (!workspace) {
           workspace = {
@@ -610,11 +626,17 @@ export class Workspaces {
 
   /** An actual Web submission makes its selected folder an explicit Web workspace. */
   selectReferenceWorkspace(cwd: string): void {
-    const workspace = this.byPath(resolve(cwd)) ?? this.create(cwd, true).workspace;
-    if (workspace.origin !== "web") {
+    const workspace = this.referenceWorkspace(cwd);
+    if (workspace && workspace.origin !== "web") {
       workspace.origin = "web";
       this.touch(workspace);
     }
+  }
+
+  private referenceWorkspace(cwd: string): WorkspaceView | undefined {
+    const path = workspacePath(cwd);
+    if (this.state.deletedPaths?.includes(path)) return undefined;
+    return this.byPath(path) ?? this.create(path, true).workspace;
   }
 
   detachSession(sessionId: string): void {
@@ -630,7 +652,8 @@ export class Workspaces {
   register(rpc: RpcRegistry, streams: StreamRegistry): void {
     rpc.register("workspace/create", (args) => this.create(requestOf<{ path: string }>(args).path));
     rpc.register("workspace/initializeDefault", async () => {
-      if (this.state.items.length > 0) return undefined;
+      if (this.state.items.length > 0 || this.state.deletedPaths?.includes(this.defaultDirectory))
+        return undefined;
       if (!this.referenceOnlyDefault) mkdirSync(this.defaultDirectory, { recursive: true });
       return {
         workspace:
@@ -647,11 +670,14 @@ export class Workspaces {
     });
     rpc.register("workspace/delete", async (args) => {
       const request = requestOf<{ workspaceId: string }>(args);
-      this.require(request.workspaceId);
-      this.state.items = this.state.items.filter(
-        (item) => item.workspaceId !== request.workspaceId,
-      );
-      this.save();
+      const workspace = this.require(request.workspaceId);
+      const state = {
+        ...this.state,
+        items: this.state.items.filter((item) => item.workspaceId !== request.workspaceId),
+        deletedPaths: [...(this.state.deletedPaths ?? []), workspace.path],
+      };
+      this.data.writeJson(FILE, state);
+      this.state = state;
       this.broadcast({ type: "remove", workspaceId: request.workspaceId });
       return { deleted: true };
     });

@@ -514,7 +514,7 @@ describe("public authenticated owner channel", () => {
   });
   it("keeps a section change replayable when a snapshot returns an older placement", async () => {
     const { fixture, a } = await setup();
-    const threadId = await startPiThread(fixture);
+    const threadId = hostThreadIdSchema.parse(await startPiThread(fixture));
     const section = { id: PINNED_THREAD_SECTION_ID, name: "Pinned", appearance: null };
     await fixture.mappingStore.replaceSectionPlacements([
       {

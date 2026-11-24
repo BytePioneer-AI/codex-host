@@ -486,7 +486,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
           : this.pinnedSessionIds.filter((id) => !optimistic.has(id)),
       pinnedWorkspaceIds: this.pinnedWorkspaceIds,
       threadSections: this.threadSections,
-      threadSectionsV1: this.threadSectionsV1,
+      ...(this.threadSectionsV1 ? { threadSectionsV1: true } : {}),
       state: this.state,
       phase: this.phase,
       error: this.error,

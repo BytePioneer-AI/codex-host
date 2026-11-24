@@ -131,13 +131,7 @@ function serveOfficialSections(
             id,
             members.filter((member) => member !== threadId),
           );
-        const destination = sections.get(String(params.sectionId));
-        if (destination) {
-          const before = params.beforeThreadId;
-          const index =
-            typeof before === "string" ? destination.indexOf(before) : destination.length;
-          destination.splice(index, 0, threadId);
-        }
+        sections.get(String(params.sectionId))?.push(threadId);
         result = {};
       }
       if (result === undefined) continue;
@@ -743,7 +737,9 @@ describe("External Thread sections through AppServerHost", () => {
       if (type === "sections-changed") changes.push(type);
     });
     try {
-      await expect(sectionRpc(ownerFixture, "list", {})).resolves.toHaveProperty("result");
+      await vi.waitFor(() => ownerFixture.mappingStore.listSectionPlacements());
+      const boot = await sectionRpc(ownerFixture, "list", {});
+      expect(boot, ownerFixture.diagnosticOutput.read()?.toString()).toHaveProperty("result");
       const shared = await startPiThread(ownerFixture);
       const move = (threadId: string, sectionId: string) =>
         sectionRpc(local, "move", { threadId, sectionId });

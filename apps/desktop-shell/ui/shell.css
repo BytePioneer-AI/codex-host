@@ -486,13 +486,17 @@ button {
 
 html[data-windows-titlebar] .topbar {
   padding-top: 10px;
-  padding-right: 156px;
-  min-height: 44px;
+  padding-right: calc(var(--dsh-windows-caption-width, 138px) + 18px);
+  min-height: max(44px, var(--dsh-windows-titlebar-height, 36px));
+}
+
+html[data-platform="darwin"][data-tauri-shell]:not([data-fullscreen]) {
+  --dsh-mac-lights-end: calc(68px / var(--dsh-shell-zoom, 1));
 }
 
 html[data-platform="darwin"] .loading-shell .topbar {
   padding-top: 12px;
-  padding-left: 84px;
+  padding-left: calc(var(--dsh-mac-lights-end, 68px) + 16px);
   min-height: 46px;
 }
 
@@ -1839,7 +1843,7 @@ html[data-platform="darwin"] .action-pane .topbar {
   }
 
   html[data-platform="darwin"] .action-pane .topbar {
-    padding-left: 84px;
+    padding-left: calc(var(--dsh-mac-lights-end, 68px) + 16px);
   }
 
   .stage--onboarding {

@@ -4,13 +4,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-client-locale/client";
 import { ShortcutRegistry } from "./registry.ts";
 import { detectEnvironment, installKeyboard } from "./dom.ts";
-import {
-  bindingIssue,
-  initialShortcutConfig,
-  normalizeBinding,
-  overlappingBindings,
-  presentBinding,
-} from "../protocol.ts";
+import { initialShortcutConfig } from "../protocol.ts";
 import type { DesktopKeyboardApi, DesktopShortcutsApi, ShortcutSaveResult } from "../protocol.ts";
 import { desktopShortcutStorage, webShortcutStorage } from "./storage.ts";
 import type { Shortcuts } from "./types.ts";
@@ -188,29 +182,7 @@ export default class ShortcutsService extends Service implements Shortcuts {
   describeBinding(
     binding: Parameters<Shortcuts["describeBinding"]>[0],
   ): ReturnType<Shortcuts["describeBinding"]> {
-    const normalized = binding === null ? null : normalizeBinding(binding, this.platform);
-    return {
-      binding: normalized,
-      keys: presentBinding(normalized, this.platform).keys,
-      issue: normalized === null ? null : bindingIssue(normalized, this.runtime, this.platform),
-      conflicts:
-        normalized === null
-          ? []
-          : [
-              ...this.catalog
-                .getSnapshot()
-                .filter(
-                  (row) => row.binding !== null && overlappingBindings(row.binding, normalized),
-                )
-                .map((row) => row.id),
-              ...this.fixedCatalog
-                .getSnapshot()
-                .filter((row) =>
-                  row.bindings.some((binding) => overlappingBindings(binding, normalized)),
-                )
-                .map((row) => row.id),
-            ],
-    };
+    return this.registry.describeBinding(binding);
   }
 
   private syncDefinitions(): void {

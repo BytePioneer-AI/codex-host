@@ -85,6 +85,7 @@ it.each([
         initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
         openSession: async () => ({ opened: { sessionId } }),
         setSessionEventHandler: () => {},
+        setSessionInteractionHandler: () => {},
         setMode: async () => {},
         setConfigOption: async () => [],
         prompt: async ([part], handler) => {
@@ -316,6 +317,7 @@ it("returns and saves each confirmed configuration for queued cold agy selection
       setSessionEventHandler: (next) => {
         handler = next;
       },
+      setSessionInteractionHandler: () => {},
       setConfigOption,
       setMode: async () => {},
       prompt: async () => {

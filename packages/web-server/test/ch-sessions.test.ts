@@ -712,6 +712,7 @@ it("does not create project groups from auto-assigned cwd alone", async (t) => {
     "auto-thread",
     join(root, "generated-unselected-directory"),
   );
+  assert.ok(original);
   delete original.origin;
   const sessions = new ChSessions(host, workspaces, new EventHub(root));
   t.after(() => sessions.close());
@@ -983,13 +984,20 @@ it("workspace mirror: migrates the default title a shared folder got from any pr
   assert.equal(workspaces.byPath(kept)?.title, "Reading list");
 });
 
-it("workspace mirror: recreates deleted native roots on the next snapshot", async (t) => {
-  const root = mkdtempSync(join(tmpdir(), "ch-workspace-recreate-"));
+it("keeps a removed native root out of Web until explicitly re-added", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-remove-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const workspaces = new Workspaces(new DataDir(root), root);
+  const data = new DataDir(root);
+  const firstRoot = join(root, "first");
   const extraRoot = join(root, "extra");
-  const projects = [{ name: "Native", rootPaths: [join(root, "first"), extraRoot] }];
-  workspaces.syncReferencedSessions([], new Map(), new Set(), projects);
+  mkdirSync(extraRoot);
+  const projects = [{ name: "Native", rootPaths: [firstRoot, extraRoot] }];
+  const references = [{ sessionId: "thread", cwd: extraRoot }];
+  const groups = new Map([["thread", extraRoot]]);
+  const sync = (workspaces: Workspaces) =>
+    workspaces.syncReferencedSessions(references, groups, new Set(), projects);
+  const workspaces = new Workspaces(data, root);
+  sync(workspaces);
   const extra = workspaces.byPath(extraRoot);
   assert.ok(extra);
   const rpc = new RpcRegistry();
@@ -1001,12 +1009,77 @@ it("workspace mirror: recreates deleted native roots on the next snapshot", asyn
       })
     ).ok,
   );
-  assert.equal(workspaces.byPath(extra.path), undefined);
-  workspaces.syncReferencedSessions([], new Map(), new Set(), projects);
-  const recreated = workspaces.byPath(extra.path);
-  assert.ok(recreated);
-  assert.equal(recreated.title, "extra");
-  assert.notEqual(recreated.workspaceId, extra.workspaceId);
+  workspaces.attachReferencedSession("another-thread", extraRoot);
+  workspaces.selectReferenceWorkspace(extraRoot);
+  sync(workspaces);
+  assert.deepEqual(
+    workspaces.list().map(({ path }) => path),
+    [firstRoot],
+  );
+  assert.equal(workspaces.ownerOf("thread"), undefined);
+  assert.equal(existsSync(extraRoot), true);
+
+  const reopened = new Workspaces(data, root);
+  sync(reopened);
+  assert.equal(reopened.byPath(extraRoot), undefined);
+  reopened.register(rpc, new StreamRegistry());
+  const added = await rpc.dispatch("workspace/create", {
+    args: { request: { path: extraRoot + "/." } },
+  });
+  assert.ok(added.ok);
+  sync(reopened);
+  assert.equal(reopened.ownerOf("thread")?.path, extraRoot);
+  assert.equal(new Workspaces(data, root).byPath(extraRoot)?.origin, "web");
+});
+
+it("reconciles existing Web removal records and preserves explicit Web workspaces", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-removal-migration-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const data = new DataDir(root);
+  const workspaces = new Workspaces(data, root);
+  const automatic = join(root, "automatic");
+  const explicit = join(root, "explicit");
+  mkdirSync(explicit);
+  workspaces.create(automatic, true);
+  workspaces.create(explicit);
+  const state = data.readJson("workspaces.json", {});
+  data.writeJson("workspaces.json", { ...state, deletedWorkspacePaths: [automatic, explicit] });
+
+  const reopened = new Workspaces(data, root);
+  reopened.syncReferencedSessions([], new Map(), new Set(), [
+    { name: "Native", rootPaths: [automatic, explicit] },
+  ]);
+  assert.deepEqual(
+    reopened.list().map(({ path }) => path),
+    [explicit],
+  );
+});
+
+it("does not recreate a removed default workspace during Web initialization", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-default-removal-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const data = new DataDir(root);
+  const workspaces = new Workspaces(data, root, true);
+  const rpc = new RpcRegistry();
+  workspaces.register(rpc, new StreamRegistry());
+  assert.ok((await rpc.dispatch("workspace/initializeDefault", {})).ok);
+  const workspace = workspaces.byPath(root);
+  assert.ok(workspace);
+  assert.ok(
+    (
+      await rpc.dispatch("workspace/delete", {
+        args: { request: { workspaceId: workspace.workspaceId } },
+      })
+    ).ok,
+  );
+
+  const reopened = new Workspaces(data, root, true);
+  reopened.register(rpc, new StreamRegistry());
+  assert.deepEqual(await rpc.dispatch("workspace/initializeDefault", {}), {
+    ok: true,
+    value: null,
+  });
+  assert.deepEqual(reopened.list(), []);
 });
 
 it("projectRootTitles: falls back to the full path when the basename is empty or conflicts", () => {

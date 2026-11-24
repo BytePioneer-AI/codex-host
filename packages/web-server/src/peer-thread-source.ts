@@ -85,6 +85,7 @@ export class PeerThreadSource {
   private readonly stopCatalogInvalidation: () => void;
   private epoch: string | undefined;
   private listedForEpoch: string | undefined;
+  private inFlightListEpoch: string | undefined;
 
   constructor(private readonly options: PeerThreadSourceOptions) {
     this.hostId = options.hostId;
@@ -110,23 +111,28 @@ export class PeerThreadSource {
           if (
             reason === "hello" &&
             this.epoch !== undefined &&
-            this.listedForEpoch === this.epoch
+            (this.listedForEpoch === this.epoch || this.inFlightListEpoch === this.epoch)
           ) {
             return;
           }
           await options.onCatalogChanged();
         },
         connection: (online) => {
-          if (!online) this.listedForEpoch = undefined;
+          if (!online) {
+            this.listedForEpoch = undefined;
+            this.inFlightListEpoch = undefined;
+          }
           options.onConnection(online);
         },
         reset: (epoch, full) => {
           if (full && this.epoch === epoch) {
             this.listedForEpoch = undefined;
+            this.inFlightListEpoch = undefined;
             for (const view of this.histories.values()) view.forgetKnownTurns();
           }
           if (this.epoch && this.epoch !== epoch) {
             this.listedForEpoch = undefined;
+            this.inFlightListEpoch = undefined;
             for (const view of this.histories.values()) {
               view.retire();
               view.log.reconnectFollowers();
@@ -144,6 +150,17 @@ export class PeerThreadSource {
 
   async listThreads(): Promise<PeerThreadListResult> {
     const startEpoch = this.epoch ?? this.host.manifestEpoch();
+    this.inFlightListEpoch = startEpoch;
+    try {
+      return await this.runListThreads(startEpoch);
+    } finally {
+      if (this.inFlightListEpoch === startEpoch) {
+        this.inFlightListEpoch = undefined;
+      }
+    }
+  }
+
+  private async runListThreads(startEpoch: string | undefined): Promise<PeerThreadListResult> {
     const rows = new Map<string, ChThread>();
     const harnessIds = new Map<string, string>();
     const archivedIds = new Set<string>();

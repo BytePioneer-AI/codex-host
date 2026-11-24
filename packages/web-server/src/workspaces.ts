@@ -497,6 +497,7 @@ export class Workspaces {
         legacyThreadIds: Object.keys(this.legacyAssignments)
           .filter((id) => this.legacyAssignments[id] === workspace.projectId)
           .slice(0, 1024),
+        rootPaths: (this.nativeRoots.get(workspace.projectId) ?? []).slice(0, 1024),
       };
     const excludeCwds = local.flatMap((item) => {
       const nested = relative(workspace.path, item.path);

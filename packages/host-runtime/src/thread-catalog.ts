@@ -43,11 +43,14 @@ function withinFolder(folder: string, cwd: string): boolean {
 
 /** A native row the scoped folder would list: inside it and outside every excluded folder. */
 function inScope(scope: NonNullable<ThreadCatalogReadParams["scope"]>, row: JsonObject): boolean {
-  if ("projectId" in scope)
-    return typeof row.projectId === "string"
-      ? row.projectId === scope.projectId
-      : typeof row.id === "string" && scope.legacyThreadIds.includes(row.id);
   const cwd = row.cwd;
+  if ("projectId" in scope) {
+    if (typeof row.projectId === "string") return row.projectId === scope.projectId;
+    if (typeof row.id === "string" && scope.legacyThreadIds.includes(row.id)) return true;
+    return (
+      typeof cwd === "string" && (scope.rootPaths ?? []).some((root) => withinFolder(root, cwd))
+    );
+  }
   return (
     typeof cwd === "string" &&
     withinFolder(scope.cwd, cwd) &&

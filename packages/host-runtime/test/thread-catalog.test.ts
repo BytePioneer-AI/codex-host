@@ -304,7 +304,7 @@ describe("source-separated Thread catalog", () => {
     expect(threadCatalogReadResultSchema.parse(result).ownership).toHaveLength(201);
   });
 
-  it.each(["folder", "project", "migrated"] as const)(
+  it.each(["folder", "project", "migrated", "rooted"] as const)(
     "reads on for a scoped %s until a page holds its Thread, the branch ends, or the bound",
     async (scopeKind) => {
       // Row 120 lies in an excluded nested folder; row 250 is the folder's only Thread.
@@ -331,6 +331,8 @@ describe("source-separated Thread catalog", () => {
               : {
                   projectId: "selected-project",
                   legacyThreadIds: scopeKind === "migrated" ? ["native-120", "native-250"] : [],
+                  // Row 120 names another project, so only row 250 matches by root.
+                  ...(scopeKind === "rooted" ? { rootPaths: ["/work/app"] } : {}),
                 },
           requestOfficialPage: request,
         });

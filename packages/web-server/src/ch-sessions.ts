@@ -30,7 +30,7 @@ import { ChHarnessCatalog, type ModelSelection } from "./ch-harness-catalog.ts";
 import type { ChThread } from "./ch-thread-view.ts";
 import type { Inspection } from "./harnesses.ts";
 import { nativePermissionView } from "./session-presentation.ts";
-import { projectGroupRoot } from "./ch-project-groups.ts";
+import { nativeProjectByCwd, projectGroupRoot } from "./ch-project-groups.ts";
 import { projectRootTitles } from "./workspaces.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
@@ -433,8 +433,15 @@ export class ChSessions {
     timing.measureSync("workspace_sync", () => {
       const groups = new Map<string, string | undefined>();
       if (projects.nativeProjects) {
-        for (const row of this.rows.values())
-          groups.set(row.id, row.projectId ?? projects.assignments[row.id]);
+        for (const row of this.rows.values()) {
+          const explicit = row.projectId ?? projects.assignments[row.id];
+          // Desktop lists a Thread without a project under the project whose root holds its cwd.
+          const byCwd =
+            explicit === undefined && row.cwd && row.workspaceKind !== "projectless"
+              ? nativeProjectByCwd(projects, row.id, row.cwd)
+              : undefined;
+          groups.set(row.id, explicit ?? byCwd);
+        }
         for (const draft of this.drafts.values())
           if (!draft.canonicalId) groups.set(draft.id, draft.projectId);
         this.workspaces.syncNativeProjects(projects.projects, groups, projects.assignments);

@@ -1058,6 +1058,9 @@ it("shares native project changes and keeps removed projects' sessions in the We
   host.add("migrated", cwd, "Migrated", false);
   host.projectSnapshot.assignments.migrated = "owned";
   host.add("unassigned", cwd, "Unassigned", false);
+  // Desktop lists a Thread without a project or assignment under the project holding its cwd.
+  host.add("rooted", join(cwd, "src"), "Rooted", false);
+  host.projectSnapshot.projectless.splice(host.projectSnapshot.projectless.indexOf("rooted"), 1);
   const data = new DataDir(join(root, "web"));
   const workspaces = new Workspaces(data, cwd, true);
   workspaces.create(cwd); // An older Web row for the same folder has a different identity.
@@ -1107,7 +1110,8 @@ it("shares native project changes and keeps removed projects' sessions in the We
   const original = workspaces.ownerOf("selected");
   assert.ok(original);
   assert.equal(workspaces.ownerOf("migrated")?.workspaceId, original.workspaceId);
-  assert.equal(workspaces.ownerOf("unassigned"), undefined);
+  assert.equal(workspaces.ownerOf("rooted")?.workspaceId, original.workspaceId);
+  assert.equal(workspaces.ownerOf("unassigned"), undefined, "Threads moved out of projects stay out");
   assert.equal(
     workspaces.catalogScope(original.workspaceId) &&
       "projectId" in workspaces.catalogScope(original.workspaceId)!,

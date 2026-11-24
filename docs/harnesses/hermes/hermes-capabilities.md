@@ -50,6 +50,10 @@ Gateway 原生 `session.branch(count)` 只复制显示文本并丢弃工具关�
 
 压缩归档或 continuation 的历史仍可恢复查看，但原生 import 会重新激活消息，不能无损复制当前模型上下文。因此此类 Session 不产生 checkpoint，派生明确返回 unsupported；过期 checkpoint 返回 checkpointNotFound，不做近似复制。
 
+## 原生会话标题
+
+创建后的 `session.info` 与恢复快照触发当前 Hermes profile 的只读标题查询。已保存的模型标题或 Hermes 手动标题可以命名尚未命名的 Thread、替换首条消息生成的回退名，但不覆盖已有手动名称。可升级的派生标题、无法确认来源的标题或读取失败均保留原有显示；不为同步额外发起模型调用，也不扫描历史 Thread。
+
 ## 跨 Harness 协作发现
 
 Gateway 保留 `CODEXHOST_CLI_PATH`、`CODEXHOST_RUNTIME_ENDPOINT`、`CODEXHOST_RUNTIME_TOKEN`、`CODEXHOST_THREAD_ID`。仅 writable Session 且四者齐全时，在 OS 临时目录为当前 Thread 创建 0600 私有 Skill 文件（0700 目录），并把它的路径作为 canonical `session.create` 的 `skills` 参数传入：真正执行 Turn 的 agent 构建在常驻 gateway 进程里，由 gateway 在组装会话 agent 时按路径预载，桥进程自身的注册表不再使用。文件内容为本 Thread 的实际身份值（CLI 路径、Runtime endpoint、token、Thread ID）与 delegate/thread 命令发现指引——gateway 进程看不到桥的环境变量，身份必须随文件传递；因此文件按 Thread 隔离，桥关闭时删除，不安装插件、不修改用户配置、不向 active home/skills 写入。resume 不重传 skills（会话 agent 配置在 create 时冻结，同链会话已携带）。其他 Hermes 进程没有此项预载，不会发现它。强杀整个 Host 至多残留 OS 临时文件，不会污染 Hermes 技能列表。

@@ -30,6 +30,7 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
       hostId: string;
       displayName: string;
       state: string;
+      color?: string;
       filePreview?: boolean;
     } | null;
   }

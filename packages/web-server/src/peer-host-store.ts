@@ -3,14 +3,17 @@ import { isIPv4 } from "node:net";
 import { z } from "zod";
 import type { DataDir } from "./store.ts";
 import {
+  remotePeerColorSchema,
   remotePeerIdSchema,
   type RemotePeerAddParams,
+  type RemotePeerColor,
   type RemotePeerTransportKind,
 } from "@codexhost/shared-contracts";
 
 export interface PeerRecord {
   peerId: string;
   name: string;
+  color?: RemotePeerColor | undefined;
   origin: string;
   token: string;
   enabled: boolean;
@@ -21,6 +24,7 @@ export interface PeerRecord {
 const peerRecordSchema = z.object({
   peerId: remotePeerIdSchema,
   name: z.string().min(1).max(120),
+  color: remotePeerColorSchema.optional(),
   origin: z.string().min(1).max(2048),
   token: z.string().min(1).max(2048),
   enabled: z.boolean(),
@@ -107,7 +111,7 @@ export function classifyPeerTransport(origin: string): {
 }
 
 export function parseConnectionLink(
-  input: string | RemotePeerAddParams,
+  input: string | Pick<RemotePeerAddParams, "connectionUrl" | "origin" | "token">,
   options: ParseConnectionLinkOptions = {},
 ) {
   const p = typeof input === "string" ? { connectionUrl: input } : input;

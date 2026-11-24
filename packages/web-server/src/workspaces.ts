@@ -9,7 +9,7 @@ import { type DataDir, requestOf } from "./store.ts";
 import { RpcError, type RpcRegistry, type StreamRegistry, type StreamSink } from "./transport.ts";
 
 export interface WorkspaceView {
-  remote?: { hostId: string; displayName: string; state: string };
+  remote?: { hostId: string; displayName: string; state: string; color?: string };
   workspaceId: string;
   path: string;
   title: string;

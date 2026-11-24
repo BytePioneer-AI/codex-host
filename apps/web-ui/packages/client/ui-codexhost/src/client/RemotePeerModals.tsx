@@ -11,8 +11,11 @@ import {
 import { Button, Modal, Switch } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import {
+  REMOTE_PEER_COLORS,
   remotePeerWorkspaceId,
+  resolveRemotePeerColor,
   type RemotePeerAddParams,
+  type RemotePeerColor,
   type RemotePeerSummary,
   type RemotePeerTestParams,
   type RemotePeerTestResult,
@@ -20,6 +23,7 @@ import {
   type RemotePeerUpdateParams,
 } from "@codexhost/shared-contracts";
 import { remotePeersApi } from "./api.ts";
+import { PeerColorPicker } from "./PeerColorPicker.tsx";
 import {
   dispatchRemotePeersUpdated,
   persistAndDispatchHostScopeWorkspaceSelection,
@@ -80,10 +84,12 @@ export const errorMessageOf = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 
 export function AddPeerModal({
+  suggestedColor,
   onClose,
   onAdded,
   t,
 }: {
+  suggestedColor?: RemotePeerColor;
   onClose: () => void;
   onAdded: () => Promise<void>;
   t: RemotePeersTranslate;
@@ -93,6 +99,7 @@ export function AddPeerModal({
   const [origin, setOrigin] = useState("");
   const [token, setToken] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [color, setColor] = useState<RemotePeerColor>(suggestedColor ?? REMOTE_PEER_COLORS[0]);
   const [testing, setTesting] = useState(false);
   const [adding, setAdding] = useState(false);
   const [testResult, setTestResult] = useState<RemotePeerTestResult | null>(null);
@@ -144,6 +151,7 @@ export function AddPeerModal({
         addParams: {
           connectionUrl: trimmedUrl,
           ...(trimmedName ? { name: trimmedName } : {}),
+          color,
         },
       };
     }
@@ -162,6 +170,7 @@ export function AddPeerModal({
         origin: trimmedOrigin,
         token: trimmedToken,
         ...(trimmedName ? { name: trimmedName } : {}),
+        color,
       },
     };
   };
@@ -429,6 +438,11 @@ export function AddPeerModal({
           />
         </div>
 
+        <div className={css.field}>
+          <span className={css.label}>{t("remotePeers.field.color")}</span>
+          <PeerColorPicker value={color} onChange={setColor} disabled={adding} t={t} />
+        </div>
+
         {testResult !== null && testSummary !== null && (
           <div
             className={css.testInline}
@@ -538,6 +552,10 @@ export function EditPeerModal({
   t: RemotePeersTranslate;
 }): ReactNode {
   const [name, setName] = useState(peer.name);
+  const [color, setColor] = useState<RemotePeerColor>(() =>
+    resolveRemotePeerColor(peer.hostId, peer.color),
+  );
+  const [colorTouched, setColorTouched] = useState(false);
   const [enabled, setEnabled] = useState(peer.enabled);
   const [mode, setMode] = useState<AddMode>("link");
   const [connectionUrl, setConnectionUrl] = useState("");
@@ -562,6 +580,7 @@ export function EditPeerModal({
       peerId: peer.peerId,
       name: trimmedName,
       enabled,
+      ...(colorTouched ? { color } : {}),
     };
     if (mode === "link") {
       const trimmedUrl = connectionUrl.trim();
@@ -625,6 +644,18 @@ export function EditPeerModal({
             maxLength={120}
             onChange={(event) => setName(event.target.value)}
             data-modal-autofocus
+          />
+        </div>
+        <div className={css.field}>
+          <span className={css.label}>{t("remotePeers.field.color")}</span>
+          <PeerColorPicker
+            value={color}
+            onChange={(next) => {
+              setColor(next);
+              setColorTouched(true);
+            }}
+            disabled={saving}
+            t={t}
           />
         </div>
         <div className={css.switchRow}>

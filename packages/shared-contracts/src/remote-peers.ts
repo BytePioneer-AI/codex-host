@@ -35,6 +35,37 @@ export const remotePeerHostIdSchema = z.string().regex(/^remote-peer:[a-zA-Z0-9_
 export const remotePeerTransportKindSchema = z.enum(["relay", "tailscale", "lan", "custom"]);
 export type RemotePeerTransportKind = z.infer<typeof remotePeerTransportKindSchema>;
 
+export const REMOTE_PEER_COLORS = [
+  "blue",
+  "purple",
+  "cyan",
+  "green",
+  "amber",
+  "rose",
+  "slate",
+] as const;
+export const remotePeerColorSchema = z.enum(REMOTE_PEER_COLORS);
+export type RemotePeerColor = z.infer<typeof remotePeerColorSchema>;
+
+const REMOTE_PEER_COLOR_SET: ReadonlySet<string> = new Set(REMOTE_PEER_COLORS);
+
+/** Deterministic fallback color derived from hostId so every surface agrees when unconfigured. */
+export function defaultRemotePeerColor(hostId: string): RemotePeerColor {
+  let hash = 2166136261;
+  for (let i = 0; i < hostId.length; i += 1) {
+    hash ^= hostId.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return REMOTE_PEER_COLORS[(hash >>> 0) % REMOTE_PEER_COLORS.length] ?? REMOTE_PEER_COLORS[0];
+}
+
+export function resolveRemotePeerColor(hostId: string, color?: string | null): RemotePeerColor {
+  if (typeof color === "string" && REMOTE_PEER_COLOR_SET.has(color)) {
+    return color as RemotePeerColor;
+  }
+  return defaultRemotePeerColor(hostId);
+}
+
 export const remotePeerStateSchema = z.enum([
   "connected",
   "connecting",
@@ -49,6 +80,7 @@ export const remotePeerSummarySchema = z.object({
   peerId: remotePeerIdSchema,
   hostId: remotePeerHostIdSchema,
   name: z.string().min(1).max(120),
+  color: remotePeerColorSchema.optional(),
   origin: z.string().min(1).max(2048),
   transportKind: remotePeerTransportKindSchema,
   encrypted: z.boolean(),
@@ -77,6 +109,7 @@ export const remotePeerAddParamsSchema = z
     origin: z.string().min(1).max(2048).optional(),
     token: z.string().min(1).max(2048).optional(),
     name: z.string().trim().min(1).max(120).optional(),
+    color: remotePeerColorSchema.optional(),
   })
   .refine(
     (input) => Boolean(input.connectionUrl) || (Boolean(input.origin) && Boolean(input.token)),
@@ -87,6 +120,7 @@ export type RemotePeerAddParams = z.infer<typeof remotePeerAddParamsSchema>;
 export const remotePeerUpdateParamsSchema = z.object({
   peerId: remotePeerIdSchema,
   name: z.string().trim().min(1).max(120).optional(),
+  color: remotePeerColorSchema.nullable().optional(),
   connectionUrl: z.string().min(1).max(4096).optional(),
   origin: z.string().min(1).max(2048).optional(),
   token: z.string().min(1).max(2048).optional(),

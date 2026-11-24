@@ -196,6 +196,11 @@ export interface ExternalTurnProjectionHost {
     turnId: HostTurnId,
     preserveDetached: boolean,
   ): void;
+  closeTurnQuestions(
+    thread: ExternalThread,
+    turnId: HostTurnId,
+    preserveDetached: boolean,
+  ): Promise<void>;
   setThreadStatus(thread: ExternalThread, status: ExternalThreadStatus): Promise<void>;
   signalActiveWorkChanged(): void;
   hasRunningSubagents(parentThreadId: string): boolean;
@@ -298,8 +303,12 @@ export class ExternalTurnProjection {
       }
     }
     const result = projection.projector.project(event as ProjectableHostEvent);
-    if (event.type === "turn.completed")
-      this.#host.retireSharedQuestions(thread, event.turnId, event.outcome.status === "succeeded");
+    if (event.type === "turn.completed") {
+      // Both Question kinds follow the final outcome, after the identity rewrite above.
+      const preserveDetached = event.outcome.status === "succeeded";
+      this.#host.retireSharedQuestions(thread, event.turnId, preserveDetached);
+      await this.#host.closeTurnQuestions(thread, event.turnId, preserveDetached);
+    }
     // Desktop drops Turn events for unknown Threads. Submitted prewarms may still
     // be waiting for their Native identity when their first Turn starts.
     if (!thread.unsubmittedPrewarm && result.messages.length > 0) {

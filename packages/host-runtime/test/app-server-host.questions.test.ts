@@ -180,6 +180,23 @@ describe("shared multi-select Questions", () => {
     });
   });
 
+  it("retires a detached-owner Question when the Turn identity cannot be persisted", async () => {
+    const question = await setup({ detachedOwner: true });
+    vi.spyOn(question.fixture.mappingStore, "upsertTurnMappings").mockRejectedValueOnce(
+      new Error("Disk write failed"),
+    );
+    await question.completeTurn();
+    // The Harness reported success; the Host must not project the Turn as succeeded.
+    expect(
+      question.fixture.collector.messages.find((message) =>
+        turnEvent(message, "turn/completed", question.turnId),
+      ),
+    ).toMatchObject({ params: { turn: { status: "failed" } } });
+    await vi.waitFor(async () => expect(await question.list()).toEqual([]));
+    expect(await question.respond()).toHaveProperty("error");
+    expect(question.session.interactionResponses).toHaveLength(0);
+  });
+
   it.each(["failed", "cancelled"] as const)(
     "retires an unowned Question after a %s Turn",
     async (status) => {

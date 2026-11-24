@@ -1305,6 +1305,8 @@ export class AppServerHost {
         this.#resolveDesktopQuestion(interactionId, thread),
       retireSharedQuestions: (thread, turnId, preserveDetached) =>
         this.#retireSharedQuestions(thread, turnId, preserveDetached),
+      closeTurnQuestions: (thread, turnId, preserveDetached) =>
+        this.#closeTurnQuestions(thread, turnId, preserveDetached),
       setThreadStatus: (thread, status) => this.#setThreadStatus(thread, status),
       signalActiveWorkChanged: () => this.#signalActiveWorkChanged(),
       hasRunningSubagents: (parentThreadId) => this.#hasRunningSubagents(parentThreadId),
@@ -6985,17 +6987,6 @@ export class AppServerHost {
       return;
     }
 
-    if (event.type === "turn.completed") {
-      await this.#questions.closeWhere((request) => {
-        if (request.threadId !== thread.id || request.turnId !== event.turnId) return false;
-        const interaction = request.client?.interaction;
-        return !(
-          event.outcome.status === "succeeded" &&
-          interaction &&
-          this.#hasOpenDetachedQuestionOwner(thread, interaction)
-        );
-      });
-    }
     if (event.type === "interaction.closed") {
       await this.#questions.closeWhere(
         (request) =>
@@ -7356,6 +7347,22 @@ export class AppServerHost {
         this.#retireDesktopQuestion(pending.interaction.interactionId, thread);
       }
     }
+  }
+
+  async #closeTurnQuestions(
+    thread: ExternalThread,
+    turnId: HostTurnId,
+    preserveDetached: boolean,
+  ): Promise<void> {
+    await this.#questions.closeWhere((request) => {
+      if (request.threadId !== thread.id || request.turnId !== turnId) return false;
+      const interaction = request.client?.interaction;
+      return !(
+        preserveDetached &&
+        interaction &&
+        this.#hasOpenDetachedQuestionOwner(thread, interaction)
+      );
+    });
   }
 
   #hasOpenDetachedQuestionOwner(

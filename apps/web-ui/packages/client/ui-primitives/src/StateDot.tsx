@@ -25,7 +25,7 @@ function syncSpinner(element: SVGSVGElement | null): void {
 }
 
 /**
- * Set every CSS animation in the loader's subtree to start at document time zero.
+ * Set the SVG's spin and the arc's breathing animation to start at document time zero.
  * @param element - the mounted loader.
  */
 function pinSpinner(element: SVGSVGElement): void {
@@ -66,10 +66,8 @@ export function StateDot({
         viewBox="0 0 24 24"
         aria-hidden="true"
       >
-        <g className={css.spinnerMotion}>
-          <circle className={css.spinnerTrack} cx="12" cy="12" r="9.5" />
-          <circle className={css.spinnerArc} cx="12" cy="12" r="9.5" />
-        </g>
+        <circle className={css.spinnerTrack} cx="12" cy="12" r="9.5" />
+        <circle className={css.spinnerArc} cx="12" cy="12" r="9.5" />
       </svg>
     );
   }

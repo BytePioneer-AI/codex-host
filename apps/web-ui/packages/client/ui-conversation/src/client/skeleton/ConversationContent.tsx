@@ -15,6 +15,18 @@ function ConversationSessionView({ renderSlot }: ConversationViewsProps) {
   return renderSlot("conversation.session", {});
 }
 
+function ConversationInputDock({
+  session,
+  useInput,
+  renderSlot,
+}: Pick<ConversationContentProps, "useInput" | "renderSlot"> & {
+  session: InputZone["session"] | undefined;
+}) {
+  const input = useInput((snapshot) => snapshot);
+  if (session === undefined || input === undefined) return null;
+  return renderSlot("conversation.input.dock", { session, input });
+}
+
 function NoConversationWidthControls() {
   return null;
 }
@@ -51,7 +63,6 @@ export function ConversationContent(props: ConversationContentProps) {
   const pendingInteraction = useSessionStatus((snapshot) =>
     sessionId === undefined ? undefined : snapshot.get(sessionId)?.pendingInteraction,
   );
-  const inputState = useInput((s) => s);
   const cwd = useSessions((s) => (sessionId === undefined ? undefined : s.byId[sessionId]?.cwd));
   const workspaces = useWorkspaces((s) => s);
   // A plugin this package cannot import (ui-model-selection) says this session cannot
@@ -120,9 +131,6 @@ export function ConversationContent(props: ConversationContentProps) {
     workspaces.phase,
     targetWorkspace,
   ]);
-
-  const zone: InputZone | undefined =
-    session === undefined || inputState === undefined ? undefined : { session, input: inputState };
 
   // The chip is a selector; label resolution walks the flow top-down:
   //   1. a just-picked or creating workspace → its title;
@@ -251,7 +259,7 @@ export function ConversationContent(props: ConversationContentProps) {
   const composerBar = (
     <div className={clsx(css.composerStack, hero && css.composerHero)}>
       {hero && <HeroShell t={t} renderSlot={renderSlot} />}
-      {zone !== undefined && renderSlot("conversation.input.dock", zone)}
+      <ConversationInputDock session={session} useInput={useInput} renderSlot={renderSlot} />
       {inputBar}
     </div>
   );

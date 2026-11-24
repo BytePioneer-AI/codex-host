@@ -16,7 +16,10 @@ export function syncSidebarTabStop(tree: HTMLElement | null): void {
     rows.find((row) => row === focused) ??
     rows.find((row) => row.getAttribute("aria-selected") === "true") ??
     rows[0];
-  for (const row of rows) row.tabIndex = row === entry ? 0 : -1;
+  for (const row of rows) {
+    const next = row === entry ? 0 : -1;
+    if (!row.hasAttribute("tabindex") || row.tabIndex !== next) row.tabIndex = next;
+  }
 }
 
 /** Focus movement does not select or read a Thread until Enter/Space activates it. */

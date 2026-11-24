@@ -37,9 +37,6 @@
 .spinner {
   flex: none;
   color: var(--dsw-alias-label-tertiary);
-}
-
-.spinnerMotion {
   transform-origin: center;
   animation: dsh-state-dot-spin 1.5s linear infinite;
 }
@@ -85,7 +82,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .spinnerMotion,
+  .spinner,
   .spinnerArc {
     animation: none;
   }

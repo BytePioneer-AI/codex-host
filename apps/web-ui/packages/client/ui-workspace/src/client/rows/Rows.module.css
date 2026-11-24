@@ -837,6 +837,13 @@
 @media (hover: hover) and (pointer: fine) {
   :global(body[data-codexhost-wallpaper]) :is(.projectRow > .rowActions, .sessionRow .rowActions) {
     background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 82%, transparent);
+  }
+
+  :global(body[data-codexhost-wallpaper])
+    :is(
+      .projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) > .rowActions,
+      .sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .rowActions
+    ) {
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
   }

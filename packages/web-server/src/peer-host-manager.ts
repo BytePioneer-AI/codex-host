@@ -49,36 +49,43 @@ export class PeerHostManager {
     this.onChange?.(hostId);
   };
 
-  private createClient(record: PeerRecord) {
+  private createClient(record: PeerRecord, initialManifest?: c.RemotePeerManifest) {
     return new PeerHostClient(record, this.changed, {
       ...(this.streamIdleTimeoutMs === undefined
         ? {}
         : { streamIdleTimeoutMs: this.streamIdleTimeoutMs }),
+      ...(initialManifest === undefined ? {} : { initialManifest }),
     });
   }
 
-  private install(record: PeerRecord, client = this.createClient(record)) {
+  private install(record: PeerRecord, client?: PeerHostClient) {
+    const previous = this.clients.get(record.peerId);
+    const inheritedManifest =
+      !client && record.enabled && previous && previous.record.origin === record.origin
+        ? previous.manifest
+        : undefined;
+    const next = client ?? this.createClient(record, inheritedManifest);
     this.sources.get(record.peerId)?.close();
     this.sources.delete(record.peerId);
-    this.clients.get(record.peerId)?.close();
-    this.clients.set(record.peerId, client);
+    previous?.close();
+    this.clients.set(record.peerId, next);
     if (record.enabled) {
-      const host = new PeerChHostClient(client.chTransport());
+      const host = new PeerChHostClient(next.chTransport());
       const source = new PeerThreadSource({
-        hostId: client.hostId,
+        hostId: next.hostId,
         host,
-        onCatalogChanged: () => this.onChange?.(client.hostId),
-        onThreadChanged: (threadId) => this.onThreadChanged?.(client.hostId, threadId),
-        onUsageChanged: (threadId) => this.onUsageChanged?.(client.hostId, threadId),
-        onCatalogInspectionChanged: () => this.onCatalogInspectionChanged?.(client.hostId),
-        onConnection: (online) => this.onConnection?.(client.hostId, online),
-        onReset: (epoch, full) => this.onReset?.(client.hostId, epoch, full),
+        onCatalogChanged: () => this.onChange?.(next.hostId),
+        onThreadChanged: (threadId) => this.onThreadChanged?.(next.hostId, threadId),
+        onUsageChanged: (threadId) => this.onUsageChanged?.(next.hostId, threadId),
+        onCatalogInspectionChanged: () => this.onCatalogInspectionChanged?.(next.hostId),
+        onConnection: (online) => this.onConnection?.(next.hostId, online),
+        onReset: (epoch, full) => this.onReset?.(next.hostId, epoch, full),
         ...(this.projector ? { projector: this.projector } : {}),
       });
       this.sources.set(record.peerId, source);
     }
-    void client.start();
-    return client;
+    void next.start();
+    return next;
   }
 
   client(hostId: string): PeerHostClient | undefined {

@@ -11,6 +11,7 @@ import { REMOTE_PEERS_METHODS as methods } from "@codexhost/shared-contracts";
 import { parseConnectionLink, PeerHostStore } from "../src/peer-host-store.ts";
 import { PeerHostManager, createCompositeRemoteCall } from "../src/peer-host-manager.ts";
 import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "../src/peer-manifest.ts";
+import { readRemoteThreadStatus } from "../src/remote-session-delivery.ts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
@@ -865,4 +866,297 @@ it("starts new Codex & external threads without bogus thread/resume and retains 
   await assert.rejects(thirdSource.host.request("codexhost/thread/tree/read", {}), {
     code: "remote/offline",
   });
+});
+
+it("preserves peer manifest across same-origin reconnect/update and clears it on origin change or disable", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "peer-manifest-preserve-"));
+  const token = "preserve-secret";
+  const startPeer = async (projectName: string, hostname: string) => {
+    const epoch = randomUUID();
+    let holdManifest = false;
+    const heldManifests: Array<() => void> = [];
+    const openStreams: ServerResponse[] = [];
+    const server = createServer((req, res) => {
+      if (req.headers.authorization !== "Bearer " + token) {
+        res.writeHead(401).end();
+        return;
+      }
+      const url = new URL(req.url ?? "/", "http://localhost");
+      if (url.pathname === "/api/peer/v1/manifest") {
+        const send = () => {
+          if (res.destroyed || res.writableEnded) return;
+          res.end(
+            JSON.stringify({
+              version: "1",
+              epoch,
+              platform: process.platform,
+              hostname,
+              homeDir: root,
+              projects: [{ id: `ws-${hostname}`, name: projectName, path: root, threadIds: [] }],
+            }),
+          );
+        };
+        if (holdManifest) {
+          heldManifests.push(send);
+        } else {
+          send();
+        }
+        return;
+      }
+      if (url.pathname === "/api/ch/v1/events") {
+        openStreams.push(res);
+        res.writeHead(200);
+        res.write(
+          JSON.stringify({
+            type: "hello",
+            version: 1,
+            cursor: { epoch, sequence: 1 },
+            reset: true,
+          }) + "\n",
+        );
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    return {
+      origin: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+      epoch,
+      setHoldManifest(value: boolean) {
+        holdManifest = value;
+      },
+      releaseManifests() {
+        while (heldManifests.length > 0) {
+          heldManifests.shift()?.();
+        }
+      },
+      close() {
+        while (heldManifests.length > 0) {
+          heldManifests.shift()?.();
+        }
+        for (const stream of openStreams) stream.destroy();
+        server.closeAllConnections();
+        server.close();
+      },
+    };
+  };
+
+  const [peerA, peerB] = await Promise.all([
+    startPeer("Alpha", "peer-a"),
+    startPeer("Beta", "peer-b"),
+  ]);
+  const store = new PeerHostStore(new DataDir(root));
+  const manager = new PeerHostManager(store, async () => [], new EventHub(root), {
+    allowLoopback: true,
+  });
+  t.after(() => {
+    manager.close();
+    peerA.close();
+    peerB.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const rpc = new RpcRegistry();
+  manager.register(rpc);
+  const invoke = async <T = Record<string, unknown>>(
+    action: keyof typeof methods,
+    input: object,
+  ): Promise<T> => {
+    const res = await rpc.dispatch(
+      methods[action],
+      { args: input },
+      { local: true, credential: "local", release() {} },
+    );
+    assert.equal(res.ok, true);
+    return res.value as T;
+  };
+
+  const added = await invoke<{ peer: { peerId: string; hostId: string } }>("add", {
+    connectionUrl: `${peerA.origin}/#token=${token}`,
+  });
+  const { peerId, hostId } = added.peer;
+  const hostSnapshot = () => manager.hosts().find((h) => h.hostId === hostId);
+  assert.equal(hostSnapshot()?.projects?.[0]?.name, "Alpha");
+  assert.equal(hostSnapshot()?.epoch, peerA.epoch);
+
+  const observedOnChange: Array<{
+    projects: { name: string }[] | undefined;
+    epoch: string | undefined;
+  }> = [];
+  manager.onChange = (changedHostId) => {
+    if (changedHostId !== hostId) return;
+    const h = hostSnapshot();
+    observedOnChange.push({
+      projects: h?.projects?.map((project) => ({ name: project.name })),
+      epoch: h?.epoch,
+    });
+  };
+
+  // Hold manifest probes so we observe the transient state right after reconnect / update.
+  peerA.setHoldManifest(true);
+  await invoke("reconnect", { peerId });
+  assert.deepEqual(
+    hostSnapshot()?.projects?.map((project) => project.name),
+    ["Alpha"],
+  );
+  assert.equal(hostSnapshot()?.epoch, peerA.epoch);
+  assert.equal(hostSnapshot()?.state, "connecting");
+  assert.ok(observedOnChange.length > 0);
+  assert.ok(observedOnChange.every((entry) => entry.projects?.[0]?.name === "Alpha"));
+
+  observedOnChange.length = 0;
+  await invoke("update", { peerId, name: "Peer A Renamed" });
+  assert.equal(hostSnapshot()?.displayName, "Peer A Renamed");
+  assert.deepEqual(
+    hostSnapshot()?.projects?.map((project) => project.name),
+    ["Alpha"],
+  );
+  assert.equal(hostSnapshot()?.epoch, peerA.epoch);
+  assert.ok(observedOnChange.length > 0);
+  assert.ok(observedOnChange.every((entry) => entry.projects?.[0]?.name === "Alpha"));
+
+  // Switching origin must clear the previous host's manifest before the new host probes.
+  peerB.setHoldManifest(true);
+  await invoke("update", { peerId, connectionUrl: `${peerB.origin}/#token=${token}` });
+  assert.equal(hostSnapshot()?.projects, undefined);
+  assert.equal(hostSnapshot()?.epoch, undefined);
+
+  peerB.setHoldManifest(false);
+  peerB.releaseManifests();
+  for (let i = 0; i < 60 && hostSnapshot()?.projects?.[0]?.name !== "Beta"; i++) {
+    await sleep(25);
+  }
+  assert.equal(hostSnapshot()?.projects?.[0]?.name, "Beta");
+  assert.equal(hostSnapshot()?.epoch, peerB.epoch);
+
+  // Disabling the peer must also clear the cached manifest.
+  await invoke("update", { peerId, enabled: false });
+  assert.equal(hostSnapshot()?.state, "disabled");
+  assert.equal(hostSnapshot()?.projects, undefined);
+  assert.equal(hostSnapshot()?.epoch, undefined);
+});
+
+it("accepts writable and read-only peer thread status through readRemoteThreadStatus", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "peer-status-readonly-"));
+  const token = "status-secret";
+  const epoch = randomUUID();
+  let canAcceptDirectInput: boolean | undefined;
+  const openStreams: ServerResponse[] = [];
+  const server = createServer(async (req, res) => {
+    if (req.headers.authorization !== "Bearer " + token) {
+      res.writeHead(401).end();
+      return;
+    }
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname === "/api/peer/v1/manifest") {
+      res.end(
+        JSON.stringify({
+          version: "1",
+          epoch,
+          platform: process.platform,
+          hostname: "status-peer",
+          homeDir: root,
+          projects: [],
+        }),
+      );
+      return;
+    }
+    if (url.pathname === "/api/ch/v1/events") {
+      openStreams.push(res);
+      res.writeHead(200);
+      res.write(
+        JSON.stringify({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true }) +
+          "\n",
+      );
+      return;
+    }
+    if (url.pathname === "/api/ch/v1/snapshot") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk as Uint8Array));
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as {
+        threadId?: string;
+      };
+      res.end(
+        JSON.stringify({
+          result: {
+            cursor: { epoch, sequence: 1 },
+            thread: {
+              id: body.threadId ?? "t-1",
+              cwd: root,
+              modelProvider: "openai",
+              createdAt: 1,
+              updatedAt: 2,
+              status: { type: "active", activeFlags: [] },
+              turns: [],
+              ...(canAcceptDirectInput === undefined ? {} : { canAcceptDirectInput }),
+            },
+            activeTurnId: "turn-1",
+            turnsPage: { data: [], nextCursor: null },
+            configuration: {},
+            interactions: [],
+          },
+        }),
+      );
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const store = new PeerHostStore(new DataDir(root));
+  const manager = new PeerHostManager(store, async () => [], new EventHub(root), {
+    allowLoopback: true,
+  });
+  t.after(() => {
+    manager.close();
+    for (const stream of openStreams) stream.destroy();
+    server.closeAllConnections();
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const rpc = new RpcRegistry();
+  manager.register(rpc);
+  const added = await rpc.dispatch(
+    methods.add,
+    { args: { connectionUrl: `${origin}/#token=${token}` } },
+    { local: true, credential: "local", release() {} },
+  );
+  assert.equal(added.ok, true);
+  const hostId = (added.value as { peer: { hostId: string } }).peer.hostId;
+  const invoke = createCompositeRemoteCall(manager, async () => {
+    throw Error("No Desktop");
+  });
+
+  // Writable threads with omitted or true canAcceptDirectInput pass status validation.
+  canAcceptDirectInput = undefined;
+  const omittedStatus = await readRemoteThreadStatus(invoke, { hostId, threadId: "t-1" });
+  assert.equal(omittedStatus.status, "active");
+  assert.equal(omittedStatus.turnId, "turn-1");
+  assert.equal(omittedStatus.readOnly, undefined);
+
+  canAcceptDirectInput = true;
+  const writableStatus = await readRemoteThreadStatus(invoke, { hostId, threadId: "t-1" });
+  assert.equal(writableStatus.readOnly, undefined);
+
+  // Read-only threads surface readOnly: true.
+  canAcceptDirectInput = false;
+  const readOnlyStatus = await readRemoteThreadStatus(invoke, { hostId, threadId: "t-1" });
+  assert.equal(readOnlyStatus.readOnly, true);
+
+  // Explicit readOnly: false from legacy/peer status payloads is also accepted.
+  const explicitFalse = await readRemoteThreadStatus(
+    async () => ({
+      threadId: "t-1",
+      status: "idle",
+      turnId: null,
+      epoch,
+      supportsDelivery: true,
+      readOnly: false,
+    }),
+    { hostId, threadId: "t-1" },
+  );
+  assert.equal(explicitFalse.readOnly, false);
 });

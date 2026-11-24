@@ -126,11 +126,14 @@ export class PeerHostClient {
   constructor(
     readonly record: PeerRecord,
     private changed: (hostId?: string) => void,
-    options: { streamIdleTimeoutMs?: number } = {},
+    options: { streamIdleTimeoutMs?: number; initialManifest?: c.RemotePeerManifest } = {},
   ) {
     this.hostId = c.remotePeerHostId(record.peerId);
     this.state = record.enabled ? "connecting" : "disabled";
     this.streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+    if (options.initialManifest !== undefined) {
+      this.manifest = options.initialManifest;
+    }
   }
 
   summary(): c.RemotePeerSummary {
@@ -397,7 +400,7 @@ export class PeerHostClient {
           turnId: s.activeTurnId ?? null,
           epoch,
           supportsDelivery: true,
-          readOnly: s.thread.canAcceptDirectInput === false,
+          ...(s.thread.canAcceptDirectInput === false ? { readOnly: true } : {}),
         };
       }
       case "usage":

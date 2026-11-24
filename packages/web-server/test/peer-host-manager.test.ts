@@ -397,10 +397,19 @@ it("pairs authenticated mobile callers with independent peers and recovers event
       { connectionUrl: `${origin}/#token=${secret}` },
       local,
     );
-  await assert.rejects(add(a.origin, token, false), /local session/i);
+  const unauthenticated = await rpc.dispatch(methods.add, {
+    args: { connectionUrl: `${a.origin}/#token=${token}` },
+  });
+  assert.equal(unauthenticated.ok, false);
+  assert.equal(unauthenticated.error.code, "auth/required");
+  assert.equal(
+    (await invoke<{ ok: boolean }>("test", { connectionUrl: `${a.origin}/#token=${token}` }, false))
+      .ok,
+    true,
+  );
   await assert.rejects(add("http://localhost:100"), /itself/);
   await assert.rejects(add(a.origin, "bad"), /token/);
-  const [one] = await Promise.all([add(a.origin), add(b.origin)]);
+  const [one] = await Promise.all([add(a.origin, token, false), add(b.origin)]);
   if (process.platform !== "win32") {
     assert.equal(statSync(join(root, "remote-peers-v1.json")).mode & 0o777, 0o600);
   }

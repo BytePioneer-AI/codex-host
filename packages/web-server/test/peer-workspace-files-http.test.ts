@@ -19,12 +19,14 @@ import { test } from "node:test";
 import type { Stats } from "node:fs";
 import type { OfficeToPdfResult } from "../src/dsh-web-services.ts";
 import {
+  MAX_PEER_SEARCH_QUERY_LENGTH,
   PEER_WORKSPACE_FILES_HEADER,
   servePeerWorkspaceFiles,
   validatePeerWorkspacePath,
   type PeerWorkspaceFilesDeps,
   type PeerWorkspaceFsOps,
 } from "../src/peer-workspace-files-http.ts";
+import { WorkspaceFileSearchCache } from "../src/workspace-file-search.ts";
 
 async function withServer(
   deps: PeerWorkspaceFilesDeps,
@@ -38,6 +40,10 @@ async function withServer(
     }
     if (pathname === "/api/peer/v1/workspace-files/download") {
       void servePeerWorkspaceFiles(request, response, "download", deps);
+      return;
+    }
+    if (pathname === "/api/peer/v1/workspace-files/search") {
+      void servePeerWorkspaceFiles(request, response, "search", deps);
       return;
     }
     response.writeHead(404).end("not found");
@@ -753,4 +759,98 @@ test("validatePeerWorkspacePath handles Windows /D:/... drive prefix and rejects
   if (!driveRelative.ok) assert.equal(driveRelative.code, "gateway/bad-request");
 
   assert.equal(posix.join("/a", "b"), "/a/b");
+});
+
+test("Peer workspace-files /search lists matching workspace paths, excludes .git/node_modules, and rejects unknown threads and invalid queries", async () => {
+  const outer = await mkdtemp(join(tmpdir(), "codexhost-peer-ws-search-"));
+  const workspace = join(outer, "workspace");
+  const searchCache = new WorkspaceFileSearchCache();
+  try {
+    await mkdir(join(workspace, "src"), { recursive: true });
+    await mkdir(join(workspace, ".git"), { recursive: true });
+    await mkdir(join(workspace, "node_modules", "pkg"), { recursive: true });
+    await writeFile(join(workspace, "README.md"), "# Peer Workspace\n");
+    await writeFile(join(workspace, "src", "app.ts"), "export const x = 1;\n");
+    await writeFile(join(workspace, ".git", "config"), "[core]\n");
+    await writeFile(join(workspace, "node_modules", "pkg", "index.js"), "module.exports = {};\n");
+    await writeFile(join(outer, "outside.txt"), "secret\n");
+
+    await withServer(
+      {
+        resolveWorkspaceRoot: (threadId) => (threadId === "thread-1" ? workspace : undefined),
+        searchCache,
+      },
+      async (baseUrl) => {
+        const search = (params: Record<string, string>) =>
+          fetch(
+            `${baseUrl}/api/peer/v1/workspace-files/search?${new URLSearchParams(params).toString()}`,
+          );
+
+        // 1. Matching workspace file
+        const appRes = await search({ threadId: "thread-1", q: "app" });
+        assert.equal(appRes.status, 200);
+        assert.equal(appRes.headers.get(PEER_WORKSPACE_FILES_HEADER), "1");
+        assert.deepEqual(await appRes.json(), {
+          items: [{ path: "src/app.ts", kind: "file" }],
+        });
+
+        // 2. Empty query lists root entries while excluding .git and node_modules
+        const rootRes = await search({ threadId: "thread-1", q: "" });
+        assert.equal(rootRes.status, 200);
+        const rootJson = (await rootRes.json()) as {
+          items: Array<{ path: string; kind: string }>;
+        };
+        assert.deepEqual(rootJson.items, [
+          { path: "src", kind: "directory" },
+          { path: "README.md", kind: "file" },
+        ]);
+
+        // 3. Excluded directories (.git / node_modules) and traversal are not returned
+        for (const q of ["config", "node_modules", "pkg", "../outside"]) {
+          const res = await search({ threadId: "thread-1", q });
+          assert.equal(res.status, 200);
+          assert.deepEqual(await res.json(), { items: [] });
+        }
+
+        // 4. Unknown threadId returns 404 with peer workspace header
+        const unknownRes = await search({ threadId: "unknown-thread", q: "app" });
+        assert.equal(unknownRes.status, 404);
+        assert.equal(unknownRes.headers.get(PEER_WORKSPACE_FILES_HEADER), "1");
+
+        // 5. Missing/nested threadId returns 400
+        for (const badThreadId of [
+          "",
+          "web-remote:abc",
+          "remote-control:box-1",
+          "remote-peer:p1",
+        ]) {
+          const res = await search({ threadId: badThreadId, q: "app" });
+          assert.equal(res.status, 400);
+          assert.equal(res.headers.get(PEER_WORKSPACE_FILES_HEADER), "1");
+        }
+
+        // 6. Over-long query and NUL byte query return 400
+        const tooLong = await search({
+          threadId: "thread-1",
+          q: "a".repeat(MAX_PEER_SEARCH_QUERY_LENGTH + 1),
+        });
+        assert.equal(tooLong.status, 400);
+        assert.equal(tooLong.headers.get(PEER_WORKSPACE_FILES_HEADER), "1");
+
+        const nulQuery = await search({ threadId: "thread-1", q: "app\0.ts" });
+        assert.equal(nulQuery.status, 400);
+        assert.equal(nulQuery.headers.get(PEER_WORKSPACE_FILES_HEADER), "1");
+
+        // 7. Non-GET rejected with 405
+        const postRes = await fetch(
+          `${baseUrl}/api/peer/v1/workspace-files/search?threadId=thread-1&q=app`,
+          { method: "POST" },
+        );
+        assert.equal(postRes.status, 405);
+      },
+    );
+  } finally {
+    searchCache.close();
+    await rm(outer, { recursive: true, force: true });
+  }
 });

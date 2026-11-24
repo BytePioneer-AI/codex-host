@@ -325,6 +325,12 @@ function sessionTitle(session: SessionSummary): string {
   return session.blank ? "" : (session.title?.trim() ?? "");
 }
 
+/** Parse a Workspace creation timestamp, treating invalid or epoch-zero placeholders as absent. */
+function parseCreatedAt(createdAt: string): number | undefined {
+  const ts = Date.parse(createdAt);
+  return Number.isFinite(ts) && ts > 0 ? ts : undefined;
+}
+
 /** Build one group without projecting session lineage into presentation. */
 function buildGroup(
   key: string,
@@ -366,7 +372,7 @@ function groupByWorkspace(
         workspace.workspaceId,
         workspace.workspaceId,
         workspace.path,
-        Date.parse(workspace.createdAt),
+        parseCreatedAt(workspace.createdAt),
         workspace.title,
         members,
         workspace.remote,

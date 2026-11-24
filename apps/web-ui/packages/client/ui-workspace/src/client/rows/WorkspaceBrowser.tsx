@@ -411,6 +411,8 @@ type SessionTreeProps = Pick<
     hostScopeFilterControl?: ReactNode;
     /** Whether the host/workspace scope filter is actively narrowing visible rows. */
     hostScopeFiltered?: boolean;
+    /** Whether the effective host scope is narrowed to one specific remote host. */
+    singleRemoteHostScoped?: boolean;
     /** Reset the host/workspace scope filter to show all hosts and workspaces. */
     onResetHostScope?: () => void;
   };
@@ -481,6 +483,7 @@ function SessionTree({
   loadMoreSessions,
   hostScopeFilterControl,
   hostScopeFiltered = false,
+  singleRemoteHostScoped = false,
   onResetHostScope,
 }: SessionTreeProps) {
   const threadView = useThreadTreeView();
@@ -953,7 +956,9 @@ function SessionTree({
                   <SessionNodeItem
                     key={node.id}
                     rowKey={rowKeyOf(node.id)}
-                    showHost={!group.remote}
+                    showHost={
+                      !group.remote && !(workspaceId === undefined && singleRemoteHostScoped)
+                    }
                     node={node}
                     currentId={current}
                     now={now}
@@ -1858,6 +1863,13 @@ function WorkspaceBrowserContent({
     () => hasRemote && isHostScopeFiltered(effectiveHostScopeFilter, orderedWorkspaces),
     [hasRemote, effectiveHostScopeFilter, orderedWorkspaces],
   );
+  const singleRemoteHostScoped = useMemo(
+    () =>
+      hasRemote &&
+      effectiveHostScopeFilter.selectedHost !== "all" &&
+      effectiveHostScopeFilter.selectedHost !== "local",
+    [hasRemote, effectiveHostScopeFilter.selectedHost],
+  );
   const scopedWorkspaces = useMemo(
     () =>
       hostScopeFiltered
@@ -2463,6 +2475,7 @@ function WorkspaceBrowserContent({
               onSessionRevealed={acknowledgeSessionReveal}
               hostScopeFilterControl={hostScopeFilterControl}
               hostScopeFiltered={hostScopeFiltered}
+              singleRemoteHostScoped={singleRemoteHostScoped}
               onResetHostScope={resetHostScope}
               home={home}
               t={t}

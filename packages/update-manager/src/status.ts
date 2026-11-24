@@ -2,7 +2,8 @@ export const STATUS_SCHEMA_VERSION = 1;
 export const SEMVER_PATTERN =
   /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 
-export type BackgroundUpdateInstallation = "npm" | "windows-installer" | "macos-dmg";
+export type BackgroundUpdateInstallation =
+  "npm" | "windows-installer" | "macos-dmg" | "linux-archive";
 export type BackgroundUpdatePhase =
   | "prepared"
   | "downloading"
@@ -66,7 +67,9 @@ export function parseUpdateStatus(value: unknown): BackgroundUpdateStatus {
     status.schemaVersion !== STATUS_SCHEMA_VERSION ||
     typeof status.version !== "string" ||
     !SEMVER_PATTERN.test(status.version) ||
-    !["npm", "windows-installer", "macos-dmg"].includes(String(status.installation)) ||
+    !["npm", "windows-installer", "macos-dmg", "linux-archive"].includes(
+      String(status.installation),
+    ) ||
     ![
       "prepared",
       "downloading",

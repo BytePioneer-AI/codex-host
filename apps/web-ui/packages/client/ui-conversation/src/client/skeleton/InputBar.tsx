@@ -91,6 +91,7 @@ export const InputBar = memo(function InputBar({
   workspacePickerOpen = false,
   onRequestWorkspace,
   placeholder,
+  topBar,
   accessory,
 }: InputBarProps) {
   const input = useInput((s) => s);
@@ -561,7 +562,7 @@ export const InputBar = memo(function InputBar({
             : t("placeholder.default"));
 
   return (
-    <div className={clsx(css.root, variant === "hero" && css.hero)}>
+    <div className={clsx(css.root, variant === "hero" && css.hero)} data-composer-variant={variant}>
       {toast !== null && (
         <Toast
           key={toast.seq}
@@ -581,258 +582,276 @@ export const InputBar = memo(function InputBar({
           their pointer events), so the WHOLE capsule is the pick target.
           pointerdown stops here so the Menu's outside-close cannot race the
           click's reopen (close-then-open flickers the chip's open echo). */}
-      <div
-        ref={cardRef}
-        className={clsx(css.card, workspaceTrigger && css.cardWorkspaceTrigger)}
-        data-composer-card
-        onClick={workspaceTrigger ? onRequestWorkspace : undefined}
-        onPointerDown={
-          workspaceTrigger
-            ? (e) => {
-                e.stopPropagation();
-              }
-            : undefined
-        }
-      >
-        {sessionId !== undefined && (
-          <div className={css.overlayAnchor}>{renderSlot("conversation.input.overlay", {})}</div>
-        )}
-        {accessory !== undefined && <div className={css.accessory}>{accessory}</div>}
-        {pendingFailed && (
-          <div className={css.creationError} role="alert" data-new-session-error="">
-            <IconWarningOutlineRegular className={css.creationErrorIcon} size={16} />
-            <div className={css.creationErrorCopy}>
-              <span className={css.creationErrorTitle}>{t("newSession.createFailedTitle")}</span>
-              <span className={css.creationErrorDetail}>
-                {sessionCreation.reason === "no-harness"
-                  ? t("newSession.createFailed.noHarness")
-                  : sessionCreation.reason === "workspace-required"
-                    ? t("newSession.createFailed.workspaceRequired")
-                    : (sessionCreation.message ?? t("newSession.createFailed.generic"))}
-              </span>
-            </div>
-            {onRetrySessionCreation !== undefined && (
-              <button
-                type="button"
-                className={css.creationRetry}
-                onMouseDown={keepFocus}
-                onClick={onRetrySessionCreation}
-              >
-                {t("newSession.retry")}
-              </button>
-            )}
+      <div className={css.cardStack}>
+        {topBar !== undefined && (
+          <div
+            className={css.topRail}
+            data-composer-top-bar=""
+            onClick={(e) => {
+              e.stopPropagation();
+            }}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+            }}
+          >
+            {topBar}
           </div>
         )}
-        {responseAnnotations.length === 0 ? null : (
-          <div className={css.annotations} data-composer-annotations>
-            {responseAnnotations.map((annotation, index) => (
-              <ResponseAnnotationChip
-                key={annotation.id}
-                index={index + 1}
-                annotation={annotation}
-                labels={annotationLabels}
-                onActivate={
-                  annotation.anchor === undefined
-                    ? undefined
-                    : () => revealResponseAnnotation?.(annotation.id)
+        <div
+          ref={cardRef}
+          className={clsx(css.card, workspaceTrigger && css.cardWorkspaceTrigger)}
+          data-composer-card
+          onClick={workspaceTrigger ? onRequestWorkspace : undefined}
+          onPointerDown={
+            workspaceTrigger
+              ? (e) => {
+                  e.stopPropagation();
                 }
-                onRemove={() => {
-                  inputActions?.removeResponseAnnotation(annotation.id);
-                }}
-              />
-            ))}
-          </div>
-        )}
-        {input === undefined || sessionId === undefined ? null : (
-          <div className={css.inlineNotices}>{renderSlot("conversation.input.notice", {})}</div>
-        )}
-        {renderSlot("conversation.input.attachments", {
-          attachments,
-          canAcceptDrop,
-          onAddFiles: intakeFiles,
-          onRemoveAttachment: (id) => {
-            removeAttachment?.(id);
-          },
-          uploads,
-          onRetryFile: (id) => {
-            retryFileUpload?.(id);
-          },
-          dropLimits:
-            imageLimits === undefined
-              ? undefined
-              : {
-                  count: imageLimits.maxImagesPerMessage,
-                  size: imageSizeText(imageLimits.maxImageBytes),
-                },
-        })}
-        {/* One scrollport, one text surface: the contenteditable grows with
+              : undefined
+          }
+        >
+          {sessionId !== undefined && (
+            <div className={css.overlayAnchor}>{renderSlot("conversation.input.overlay", {})}</div>
+          )}
+          {accessory !== undefined && <div className={css.accessory}>{accessory}</div>}
+          {pendingFailed && (
+            <div className={css.creationError} role="alert" data-new-session-error="">
+              <IconWarningOutlineRegular className={css.creationErrorIcon} size={16} />
+              <div className={css.creationErrorCopy}>
+                <span className={css.creationErrorTitle}>{t("newSession.createFailedTitle")}</span>
+                <span className={css.creationErrorDetail}>
+                  {sessionCreation.reason === "no-harness"
+                    ? t("newSession.createFailed.noHarness")
+                    : sessionCreation.reason === "workspace-required"
+                      ? t("newSession.createFailed.workspaceRequired")
+                      : (sessionCreation.message ?? t("newSession.createFailed.generic"))}
+                </span>
+              </div>
+              {onRetrySessionCreation !== undefined && (
+                <button
+                  type="button"
+                  className={css.creationRetry}
+                  onMouseDown={keepFocus}
+                  onClick={onRetrySessionCreation}
+                >
+                  {t("newSession.retry")}
+                </button>
+              )}
+            </div>
+          )}
+          {responseAnnotations.length === 0 ? null : (
+            <div className={css.annotations} data-composer-annotations>
+              {responseAnnotations.map((annotation, index) => (
+                <ResponseAnnotationChip
+                  key={annotation.id}
+                  index={index + 1}
+                  annotation={annotation}
+                  labels={annotationLabels}
+                  onActivate={
+                    annotation.anchor === undefined
+                      ? undefined
+                      : () => revealResponseAnnotation?.(annotation.id)
+                  }
+                  onRemove={() => {
+                    inputActions?.removeResponseAnnotation(annotation.id);
+                  }}
+                />
+              ))}
+            </div>
+          )}
+          {input === undefined || sessionId === undefined ? null : (
+            <div className={css.inlineNotices}>{renderSlot("conversation.input.notice", {})}</div>
+          )}
+          {renderSlot("conversation.input.attachments", {
+            attachments,
+            canAcceptDrop,
+            onAddFiles: intakeFiles,
+            onRemoveAttachment: (id) => {
+              removeAttachment?.(id);
+            },
+            uploads,
+            onRetryFile: (id) => {
+              retryFileUpload?.(id);
+            },
+            dropLimits:
+              imageLimits === undefined
+                ? undefined
+                : {
+                    count: imageLimits.maxImagesPerMessage,
+                    size: imageSizeText(imageLimits.maxImageBytes),
+                  },
+          })}
+          {/* One scrollport, one text surface: the contenteditable grows with
             its content and .scroll — capped at 14 lines in CSS — is the only
             thing that scrolls. Chips are decorator portals inside the same
             surface, so wrapping, caret geometry, and scrolling are the
             browser's own. */}
-        <DraftEditor
-          classNames={css}
-          editor={editor}
-          scrollRef={scrollRef}
-          editable={editable}
-          editorDisabled={editorDisabled}
-          preserveFocus={preservePendingFocus.current}
-          phase={pendingCreation ? "plain" : (input?.phase ?? "inert")}
-          placeholderText={placeholderText}
-          ariaLabel={workspaceTrigger ? t("hero.chooseWorkspace") : placeholderText}
-          workspaceTrigger={workspaceTrigger}
-          workspacePickerOpen={workspacePickerOpen}
-          onWorkspaceKeyDown={onWorkspaceKeyDown}
-          hint={hint}
-          showPlaceholder={draft === "" && attachments.length === 0 && !claimActive}
-        />
-        <div
-          ref={rowRef}
-          className={css.row}
-          data-composer-toolbar
-          data-command-menu-open={commandMenuOpen || undefined}
-          data-toolbar-activity={activity || undefined}
-        >
-          <div className={css.controlScroll} data-toolbar-scroll>
-            <div className={css.tools} hidden={activity} data-composer-tools>
-              <div className={css.addSeat} data-toolbar-fixed="start">
-                <Tooltip
-                  portal={toolbarLayout.phone}
-                  label={commandMenuLabel}
-                  side="top"
-                  delayMs={500}
-                >
-                  <button
-                    type="button"
-                    className={css.add}
-                    aria-label={commandMenuLabel}
-                    aria-haspopup="listbox"
-                    aria-expanded={commandMenuOpen}
-                    disabled={locked || machineBusy || toggleCommandMenu === undefined}
-                    onMouseDown={keepFocus}
-                    onClick={onToggleCommandMenu}
-                  >
-                    <IconPlusOutlineMedium size={14} />
-                  </button>
-                </Tooltip>
-              </div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept={imagesOnly ? imageLimits?.mediaTypes.join(",") : undefined}
-                multiple
-                disabled={!attachmentsEnabled || subagent !== null}
-                hidden
-                onChange={onPickFiles}
-              />
-              <div className={css.modes}>
-                {sessionId === undefined
-                  ? null
-                  : renderSlot("conversation.input.permission", { locked })}
-                {sessionId === undefined ? null : renderSlot("conversation.input.plan", { locked })}
-              </div>
-              {input === undefined || sessionId === undefined
-                ? null
-                : renderSlot("conversation.input.left", {})}
-            </div>
-            <div className={clsx(css.trailing, activity && css.trailingActive)}>
-              <div className={css.standardControls} hidden={activity}>
-                {input === undefined || sessionId === undefined
-                  ? null
-                  : renderSlot("conversation.input.right", {
-                      overflowActions: toolbarLayout.overflowActions,
-                    })}
-                {sessionId === undefined ? (
-                  pendingCreating ? (
-                    <div
-                      className={css.pendingControls}
-                      role="status"
-                      aria-live="polite"
-                      data-new-session-loading=""
-                    >
-                      <span className={css.pendingModel}>
-                        <StateDot state="ongoing" />
-                        <span className={css.pendingModelLabel}>
-                          {t("newSession.loadingModel")}
-                        </span>
-                      </span>
-                      <span
-                        className={css.pendingHarness}
-                        role="img"
-                        aria-label={t("newSession.loadingHarness")}
-                        aria-busy="true"
-                        title={t("newSession.loadingHarness")}
-                      >
-                        <StateDot state="ongoing" />
-                      </span>
-                    </div>
-                  ) : null
-                ) : (
-                  renderSlot("conversation.input.model", { locked: modelSeatLocked })
-                )}
-              </div>
-              {input === undefined || sessionId === undefined ? null : (
-                <div className={activity ? css.activityExpanded : css.activity}>
-                  {renderSlot("conversation.input.activity", {
-                    locked,
-                    onActiveChange: setActivity,
-                  })}
-                </div>
-              )}
-              <div className={css.submitSeat} data-toolbar-fixed="end">
-                {interruptible && (
+          <DraftEditor
+            classNames={css}
+            editor={editor}
+            scrollRef={scrollRef}
+            editable={editable}
+            editorDisabled={editorDisabled}
+            preserveFocus={preservePendingFocus.current}
+            phase={pendingCreation ? "plain" : (input?.phase ?? "inert")}
+            placeholderText={placeholderText}
+            ariaLabel={workspaceTrigger ? t("hero.chooseWorkspace") : placeholderText}
+            workspaceTrigger={workspaceTrigger}
+            workspacePickerOpen={workspacePickerOpen}
+            onWorkspaceKeyDown={onWorkspaceKeyDown}
+            hint={hint}
+            showPlaceholder={draft === "" && attachments.length === 0 && !claimActive}
+          />
+          <div
+            ref={rowRef}
+            className={css.row}
+            data-composer-toolbar
+            data-command-menu-open={commandMenuOpen || undefined}
+            data-toolbar-activity={activity || undefined}
+          >
+            <div className={css.controlScroll} data-toolbar-scroll>
+              <div className={css.tools} hidden={activity} data-composer-tools>
+                <div className={css.addSeat} data-toolbar-fixed="start">
                   <Tooltip
                     portal={toolbarLayout.phone}
-                    label={t("input.stop")}
-                    shortcutKeys={stopKeys}
+                    label={commandMenuLabel}
                     side="top"
                     delayMs={500}
-                    disabled={stop === undefined}
+                  >
+                    <button
+                      type="button"
+                      className={css.add}
+                      aria-label={commandMenuLabel}
+                      aria-haspopup="listbox"
+                      aria-expanded={commandMenuOpen}
+                      disabled={locked || machineBusy || toggleCommandMenu === undefined}
+                      onMouseDown={keepFocus}
+                      onClick={onToggleCommandMenu}
+                    >
+                      <IconPlusOutlineMedium size={14} />
+                    </button>
+                  </Tooltip>
+                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={imagesOnly ? imageLimits?.mediaTypes.join(",") : undefined}
+                  multiple
+                  disabled={!attachmentsEnabled || subagent !== null}
+                  hidden
+                  onChange={onPickFiles}
+                />
+                <div className={css.modes}>
+                  {sessionId === undefined
+                    ? null
+                    : renderSlot("conversation.input.permission", { locked })}
+                  {sessionId === undefined
+                    ? null
+                    : renderSlot("conversation.input.plan", { locked })}
+                </div>
+                {input === undefined || sessionId === undefined
+                  ? null
+                  : renderSlot("conversation.input.left", {})}
+              </div>
+              <div className={clsx(css.trailing, activity && css.trailingActive)}>
+                <div className={css.standardControls} hidden={activity}>
+                  {input === undefined || sessionId === undefined
+                    ? null
+                    : renderSlot("conversation.input.right", {
+                        overflowActions: toolbarLayout.overflowActions,
+                      })}
+                  {sessionId === undefined ? (
+                    pendingCreating ? (
+                      <div
+                        className={css.pendingControls}
+                        role="status"
+                        aria-live="polite"
+                        data-new-session-loading=""
+                      >
+                        <span className={css.pendingModel}>
+                          <StateDot state="ongoing" />
+                          <span className={css.pendingModelLabel}>
+                            {t("newSession.loadingModel")}
+                          </span>
+                        </span>
+                        <span
+                          className={css.pendingHarness}
+                          role="img"
+                          aria-label={t("newSession.loadingHarness")}
+                          aria-busy="true"
+                          title={t("newSession.loadingHarness")}
+                        >
+                          <StateDot state="ongoing" />
+                        </span>
+                      </div>
+                    ) : null
+                  ) : (
+                    renderSlot("conversation.input.model", { locked: modelSeatLocked })
+                  )}
+                </div>
+                {input === undefined || sessionId === undefined ? null : (
+                  <div className={activity ? css.activityExpanded : css.activity}>
+                    {renderSlot("conversation.input.activity", {
+                      locked,
+                      onActiveChange: setActivity,
+                    })}
+                  </div>
+                )}
+                <div className={css.submitSeat} data-toolbar-fixed="end">
+                  {interruptible && (
+                    <Tooltip
+                      portal={toolbarLayout.phone}
+                      label={t("input.stop")}
+                      shortcutKeys={stopKeys}
+                      side="top"
+                      delayMs={500}
+                      disabled={stop === undefined}
+                    >
+                      <button
+                        type="button"
+                        className={css.primary}
+                        aria-label={t("input.stop")}
+                        disabled={stop === undefined}
+                        onMouseDown={keepFocus}
+                        onClick={stop}
+                      >
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                          <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" />
+                        </svg>
+                      </button>
+                    </Tooltip>
+                  )}
+                  <Tooltip
+                    portal={toolbarLayout.phone}
+                    label={primaryStops ? t("input.stop") : primaryLabel}
+                    shortcutKeys={primaryStops ? stopKeys : undefined}
+                    side="top"
+                    delayMs={500}
+                    disabled={primaryDisabled}
                   >
                     <button
                       type="button"
                       className={css.primary}
-                      aria-label={t("input.stop")}
-                      disabled={stop === undefined}
+                      aria-label={primaryLabel}
+                      disabled={primaryDisabled}
                       onMouseDown={keepFocus}
-                      onClick={stop}
+                      onClick={onPrimary}
                     >
-                      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
-                        <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" />
-                      </svg>
+                      {primaryStops ? (
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                          <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" />
+                        </svg>
+                      ) : (
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                          <path
+                            d="M8.3125 0.980183C8.66767 1.0531 8.97902 1.20418 9.2627 1.43233C9.48724 1.61297 9.73029 1.85793 9.97949 2.10714L14.707 6.83468L13.293 8.24874L9 3.95577V15.0417H7V3.95577L2.70703 8.24874L1.29297 6.83468L6.02051 2.10714C6.26971 1.85793 6.51277 1.61297 6.7373 1.43233C6.97662 1.23986 7.28445 1.04402 7.6875 0.980183C7.8973 0.947006 8.1031 0.95516 8.3125 0.980183Z"
+                            fill="currentColor"
+                          />
+                        </svg>
+                      )}
                     </button>
                   </Tooltip>
-                )}
-                <Tooltip
-                  portal={toolbarLayout.phone}
-                  label={primaryStops ? t("input.stop") : primaryLabel}
-                  shortcutKeys={primaryStops ? stopKeys : undefined}
-                  side="top"
-                  delayMs={500}
-                  disabled={primaryDisabled}
-                >
-                  <button
-                    type="button"
-                    className={css.primary}
-                    aria-label={primaryLabel}
-                    disabled={primaryDisabled}
-                    onMouseDown={keepFocus}
-                    onClick={onPrimary}
-                  >
-                    {primaryStops ? (
-                      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
-                        <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" />
-                      </svg>
-                    ) : (
-                      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
-                        <path
-                          d="M8.3125 0.980183C8.66767 1.0531 8.97902 1.20418 9.2627 1.43233C9.48724 1.61297 9.73029 1.85793 9.97949 2.10714L14.707 6.83468L13.293 8.24874L9 3.95577V15.0417H7V3.95577L2.70703 8.24874L1.29297 6.83468L6.02051 2.10714C6.26971 1.85793 6.51277 1.61297 6.7373 1.43233C6.97662 1.23986 7.28445 1.04402 7.6875 0.980183C7.8973 0.947006 8.1031 0.95516 8.3125 0.980183Z"
-                          fill="currentColor"
-                        />
-                      </svg>
-                    )}
-                  </button>
-                </Tooltip>
+                </div>
               </div>
             </div>
           </div>

@@ -147,37 +147,50 @@ export function ConversationContent(props: ConversationContentProps) {
       ? undefined
       : workspaceDisplayTitle(storedChipTitle, t("workspace.defaultName"));
 
-  const heroWorkspaceRow = (
-    <div className={css.heroWorkspaceRow}>
-      <WorkspaceChip
-        buttonRef={pickerAnchor}
-        label={chipTitle ?? (workspaces.canStartProjectless ? t("hero.noWorkspace") : undefined)}
-        projectless={workspaces.canStartProjectless === true && chipTitle === undefined}
-        menuOpen={pickerOpen}
-        onClick={() => {
-          setPickerOpen((open) => !open);
-        }}
-        t={t}
-      />
-      {renderSlot("conversation.hero.workspace", {
-        open: pickerOpen,
-        anchorRef: pickerAnchor,
-        selectedId:
-          targetWorkspaceId === null
-            ? undefined
-            : (targetWorkspaceId ?? sessionWorkspace?.workspaceId),
-        onPick: (workspaceId) => {
-          setPickerOpen(false);
-          setPendingWorkspaceId(workspaceId);
-          void selectWorkspace(workspaceId).catch(() => {
-            setPendingWorkspaceId((current) => (current === workspaceId ? undefined : current));
-          });
+  const heroTopBar = (
+    <div className={css.heroTopBarInner}>
+      {renderSlot(
+        "conversation.hero.workspace",
+        {
+          open: pickerOpen,
+          anchorRef: pickerAnchor,
+          selectedId:
+            targetWorkspaceId === null
+              ? undefined
+              : (targetWorkspaceId ?? sessionWorkspace?.workspaceId),
+          fallbackLabel: chipTitle,
+          onOpenChange: setPickerOpen,
+          onPick: (workspaceId) => {
+            setPickerOpen(false);
+            setPendingWorkspaceId(workspaceId);
+            void selectWorkspace(workspaceId).catch(() => {
+              setPendingWorkspaceId((current) => (current === workspaceId ? undefined : current));
+            });
+          },
+          onClose: () => {
+            setPickerOpen(false);
+          },
         },
-        onClose: () => {
-          setPickerOpen(false);
+        {
+          fallback: (
+            <WorkspaceChip
+              buttonRef={pickerAnchor}
+              label={
+                chipTitle ?? (workspaces.canStartProjectless ? t("hero.noWorkspace") : undefined)
+              }
+              projectless={workspaces.canStartProjectless === true && chipTitle === undefined}
+              menuOpen={pickerOpen}
+              onClick={() => {
+                setPickerOpen((open) => !open);
+              }}
+              t={t}
+            />
+          ),
         },
-      })}
-      {renderSlot("conversation.hero.agentPreset", {})}
+      )}
+      <div className={css.heroAgentPresetSeat}>
+        {renderSlot("conversation.hero.agentPreset", {})}
+      </div>
     </div>
   );
 
@@ -199,6 +212,7 @@ export function ConversationContent(props: ConversationContentProps) {
   const blocked = !inert && composerBlock !== undefined;
   const inputBar = renderSlot("conversation.composer.bar", {
     variant: hero ? "hero" : "composer",
+    ...(hero ? { topBar: heroTopBar } : {}),
     ...(pendingCreation
       ? {
           sessionCreation,
@@ -237,7 +251,6 @@ export function ConversationContent(props: ConversationContentProps) {
   const composerBar = (
     <div className={clsx(css.composerStack, hero && css.composerHero)}>
       {hero && <HeroShell t={t} renderSlot={renderSlot} />}
-      {hero && heroWorkspaceRow}
       {zone !== undefined && renderSlot("conversation.input.dock", zone)}
       {inputBar}
     </div>

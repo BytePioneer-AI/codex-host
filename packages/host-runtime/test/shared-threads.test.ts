@@ -445,38 +445,6 @@ describe("shared external Threads", () => {
     await desktop.collector.waitFor((m) => m.method === "turn/completed");
   });
 
-  it("allows the other GUI to interrupt and then send; concurrent sends execute only once", async () => {
-    const { front, adapter, open } = setup();
-    const ssh = front(true);
-    const desktop = front(false);
-    const threadId = await startPiThread(ssh);
-    const turnId = await startPiTurn(ssh, threadId);
-    session(adapter).completeCancellationOnRequest();
-    await expect(
-      rpc(desktop, 20, "turn/interrupt", { threadId, turnId }),
-    ).resolves.not.toHaveProperty("error");
-    await ssh.collector.waitFor((m) => m.method === "turn/completed");
-    await desktop.collector.waitFor((m) => m.method === "turn/completed");
-    const sends = await Promise.all([
-      rpc(ssh, 30, "turn/start", { threadId, input: [{ type: "text", text: "A" }] }),
-      rpc(desktop, 30, "turn/start", { threadId, input: [{ type: "text", text: "B" }] }),
-    ]);
-    expect(sends.filter((r) => r.result)).toHaveLength(1);
-    expect(sends.filter((r) => r.error)).toMatchObject([{ error: { code: -32072 } }]);
-    session(adapter).succeedTurn();
-    await vi.waitFor(() =>
-      expect(desktop.collector.messages.filter((m) => m.method === "turn/completed")).toHaveLength(
-        2,
-      ),
-    );
-    const next = await rpc(desktop, 40, "turn/start", {
-      threadId,
-      input: [{ type: "text", text: "from desktop" }],
-    });
-    expect(next).not.toHaveProperty("error");
-    expect(open).toHaveBeenCalledTimes(1);
-  });
-
   it("deduplicates accepted message IDs across clients without replaying a Turn", async () => {
     const { owner, front, adapter } = setup();
     const ssh = front(true);

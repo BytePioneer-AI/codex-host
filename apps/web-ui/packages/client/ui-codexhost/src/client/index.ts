@@ -55,7 +55,22 @@ import {
 } from "@deepseek-ai/dsh-client-ui-conversation/thread-reference";
 import type {} from "@deepseek-ai/dsh-client-ui-chat/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
-import { ConnectDevicesSection } from "./ConnectDevicesSection.tsx";
+import { ConnectDevicesSection, setConnectDevicesTab } from "./ConnectDevicesSection.tsx";
+import {
+  RemoteWorkspaceDialog,
+  RemoteWorkspaceDialogController,
+  type RemoteWorkspaceDialogFace,
+} from "./RemoteWorkspaceDialog.tsx";
+import {
+  RemoteSessionBanner,
+  RemoteSessionChip,
+  type RemoteSessionBannerFace,
+} from "./RemoteSessionBanner.tsx";
+import {
+  OPEN_ADD_REMOTE_WORKSPACE_EVENT,
+  OPEN_REMOTE_PEERS_SETTINGS_EVENT,
+  type OpenAddRemoteWorkspaceDetail,
+} from "./remote-peers-events.ts";
 import { PluginsSection, type PluginsSectionFace } from "./PluginsSection.tsx";
 import { PluginsAction, type PluginsActionFace } from "./PluginsIcon.tsx";
 import { PluginsSettingsEntry } from "./PluginsSettingsEntry.tsx";
@@ -416,7 +431,62 @@ export function apply(ctx: ClientContext): void {
         RemoteAccessAction,
       ),
     );
+    scope.effect(() => {
+      const onOpenRemotePeersSettings = (): void => {
+        setConnectDevicesTab("peers");
+        scope.settingsNavigation.openSection("codexhost-connect-devices");
+      };
+      window.addEventListener(OPEN_REMOTE_PEERS_SETTINGS_EVENT, onOpenRemotePeersSettings);
+      return () => {
+        window.removeEventListener(OPEN_REMOTE_PEERS_SETTINGS_EVENT, onOpenRemotePeersSettings);
+      };
+    }, "ui-codexhost: open remote peers settings event");
   });
+  const remoteWorkspaceDialog = new RemoteWorkspaceDialogController();
+  ctx.effect(() => {
+    const onOpenAddRemoteWorkspace = (event: Event): void => {
+      const detail = (event as CustomEvent<OpenAddRemoteWorkspaceDetail | undefined>).detail;
+      remoteWorkspaceDialog.open(detail?.hostId);
+    };
+    window.addEventListener(OPEN_ADD_REMOTE_WORKSPACE_EVENT, onOpenAddRemoteWorkspace);
+    return () => {
+      window.removeEventListener(OPEN_ADD_REMOTE_WORKSPACE_EVENT, onOpenAddRemoteWorkspace);
+    };
+  }, "ui-codexhost: open remote workspace dialog event");
+  ctx.slots.inject("shell.overlay", () =>
+    ctx.slots.register(
+      {
+        name: "shell.overlay",
+        id: "codexhost.remote-workspace-dialog",
+        locale: NS,
+        inject: (): RemoteWorkspaceDialogFace => ({ controller: remoteWorkspaceDialog }),
+      },
+      RemoteWorkspaceDialog,
+    ),
+  );
+  ctx.slots.inject("conversation.input.left", () =>
+    ctx.slots.register(
+      {
+        name: "conversation.input.left",
+        id: "codexhost.remote-session-chip",
+        order: 1,
+        locale: NS,
+        inject: (): RemoteSessionBannerFace => ({ workspaces: ctx.workspaces.list }),
+      },
+      RemoteSessionChip,
+    ),
+  );
+  ctx.slots.inject("conversation.input.notice", () =>
+    ctx.slots.register(
+      {
+        name: "conversation.input.notice",
+        id: "codexhost.remote-session-banner",
+        locale: NS,
+        inject: (): RemoteSessionBannerFace => ({ workspaces: ctx.workspaces.list }),
+      },
+      RemoteSessionBanner,
+    ),
+  );
   ctx.slots.inject("settings.general.item", () =>
     ctx.slots.register(
       {

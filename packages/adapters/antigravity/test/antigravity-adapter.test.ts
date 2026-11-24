@@ -1664,7 +1664,13 @@ describe("inspection and errors", () => {
         command: {
           name: "usage",
           data: {
-            groups: [{ name: "Plan", buckets: [{ window: "5h", remaining_fraction: 0.75 }] }],
+            groups: [
+              { name: "Gemini Models", buckets: [{ window: "5h", remaining_fraction: 0.75 }] },
+              {
+                name: "Claude and GPT Models",
+                buckets: [{ window: "5h", remaining_fraction: 1 }],
+              },
+            ],
           },
         },
       };
@@ -1682,6 +1688,14 @@ describe("inspection and errors", () => {
       const account = await adapter.inspectAccount();
       expect(account?.credits).toMatchObject({ usedPercent: 25 });
       expect(account?.credits).not.toHaveProperty("fetchedAt");
+      const { session } = await sessionOf(
+        await adapter.open({ kind: "create", cwd: home, model: model("claude-opus-4-6") }),
+      );
+      expect(await session.readAccountCredits?.()).toMatchObject({
+        scope: { id: "Claude and GPT Models" },
+        usedPercent: 0,
+        productUsage: [{ scope: { id: "Gemini Models" }, usagePercent: 25 }],
+      });
       expect(transports).toHaveLength(0);
       await writeFile(command, "#!/bin/sh\nexit 1\n");
       expect(await adapter.refreshCredits()).toBeNull();

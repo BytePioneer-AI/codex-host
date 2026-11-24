@@ -61,6 +61,9 @@ export async function packReleaseWeb(options: {
   writeFileSync(join(app, "web-server.mjs"), 'import "./web-modules/server.mjs";\n');
   const banner =
     'import { createRequire as __codexhostCreateRequire } from "node:module"; const require = __codexhostCreateRequire(import.meta.url);';
+  const releaseVersion =
+    (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string })
+      .version ?? "0.0.0";
   await build({
     entryPoints: [join(root, "packages/web-server/src/main.ts")],
     outfile: join(modules, "server.mjs"),
@@ -68,7 +71,10 @@ export async function packReleaseWeb(options: {
     platform: "node",
     format: "esm",
     target: "node22",
-    define: { CODEXHOST_RELEASE_WEB: "true" },
+    define: {
+      CODEXHOST_RELEASE_WEB: "true",
+      CODEXHOST_SERVER_VERSION: JSON.stringify(releaseVersion),
+    },
     minifySyntax: true,
     banner: { js: banner },
     external: [

@@ -99,7 +99,7 @@
   };
 
   var params = ui.getSearchParams();
-  var queryState = params.get("state");
+  var queryState = params.get("state") || params.get("status");
   var initialStatus =
     queryState === "starting" || queryState === "reconnecting" || queryState === "error"
       ? queryState
@@ -471,4 +471,15 @@
 
   render();
   pollState();
+
+  var loadingDitherCv = document.getElementById("loading-dither-orbit");
+  if (
+    loadingDitherCv &&
+    window.CodexHostDitherFX &&
+    typeof window.CodexHostDitherFX.startLoadingOrbitalDither === "function"
+  ) {
+    window.CodexHostDitherFX.startLoadingOrbitalDither(loadingDitherCv, function () {
+      return state.status;
+    });
+  }
 })();

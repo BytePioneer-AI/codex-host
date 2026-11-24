@@ -15,6 +15,7 @@ import {
   releaseBuildCommands,
   validatePayload,
 } from "../../scripts/release/prepare-payload.mjs";
+import { linuxGlibcCargoArguments } from "../../scripts/release/linux-glibc.mjs";
 import { expectedWebPaths } from "../../scripts/release/web-resources.mjs";
 import { releaseTarget } from "../../scripts/release/targets.mjs";
 import { preinstalledHarnessPluginPaths } from "../../scripts/release/harness-plugins.mjs";
@@ -72,6 +73,10 @@ describe("release Payload", () => {
     expect(commands[3].args).toContain("--locked");
     expect(commands[3].args).toContain("aarch64-pc-windows-msvc");
     expect(() => npmReleaseCommand(["--version"], "win32", {})).toThrow("npm_execpath");
+
+    const linux = releaseBuildCommands(releaseTarget("linux-x64"), "linux");
+    expect(linux.map((command) => command.command)).toEqual(["npm", "npm", "cargo"]);
+    expect(linux[2].args.slice(0, 5)).toEqual(linuxGlibcCargoArguments("x86_64-unknown-linux-gnu"));
   });
 
   it.runIf(process.platform === "win32")("starts the current npm CLI without a batch file", () => {
@@ -143,6 +148,17 @@ describe("release Payload", () => {
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "libexec/codexhost-shell.exe",
       );
+      const linuxPaths = expectedPayloadPaths(releaseTarget("linux-arm64"));
+      expect(linuxPaths).toHaveLength(
+        33 +
+          preinstalledHarnessPluginPaths().length +
+          expectedWebPaths(releaseTarget("linux-arm64")).length,
+      );
+      expect(linuxPaths).toContain("runtime/node");
+      expect(linuxPaths).toContain(
+        "app/web-modules/node_modules/node-pty/prebuilds/linux-arm64/pty.node",
+      );
+      expect(linuxPaths.filter((relative) => relative.includes("codexhost-shell"))).toEqual([]);
       expect(paths).toContain("libexec/codexhost-updater");
       expect(paths).toContain("app/codexhost-distribution.json");
       expect(paths).not.toContain("release-manifest.json");

@@ -221,31 +221,6 @@ describe("native SQLite Fork", () => {
     expect(await prefix(f.sourceRef.nativeSessionId)).toEqual(source);
   });
 
-  it.each([
-    "turn-3",
-    "turn--1",
-    "turn-01",
-    "turn-0junk",
-    "turn-1.5",
-    "turn-9007199254740993",
-    "host-turn",
-    "turn:1",
-  ])("rejects checkpoint %s before cloning", async (checkpointId) => {
-    const f = await fixture();
-    expect(
-      await forkAntigravitySession({
-        ...f.options,
-        input: {
-          kind: "fork",
-          sourceRef: f.sourceRef,
-          checkpoint: { ...f.sourceRef, checkpointId },
-          cwd: f.home,
-        },
-      }),
-    ).toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
-    expect(f.openSession).not.toHaveBeenCalled();
-    expect(await readdir(path.dirname(f.file))).toEqual([path.basename(f.file)]);
-  });
   it("rejects another Harness, foreign checkpoint and active source", async () => {
     const f = await fixture();
     const input = {

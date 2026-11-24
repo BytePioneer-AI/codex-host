@@ -1,6 +1,6 @@
 // Web's hashed browser chunks and runtime package assets vary with the build.
 export function expectedWebPaths(target) {
-  const platform = `${target.hostPlatform}-${target.packageArchitecture ?? target.installerArchitecture}`;
+  const platform = `${target.hostPlatform}-${target.installerArchitecture}`;
   return [
     "app/web-server.mjs",
     "app/web/index.html",
@@ -26,9 +26,7 @@ export function isWebResource(relative, target) {
   if (/\.(?:map|pdb)$/u.test(relative)) return false;
   const prebuild = relative.match(/node-pty\/prebuilds\/([^/]+)\//u)?.[1];
   return (
-    prebuild === undefined ||
-    prebuild ===
-      `${target.hostPlatform}-${target.packageArchitecture ?? target.installerArchitecture}`
+    prebuild === undefined || prebuild === `${target.hostPlatform}-${target.installerArchitecture}`
   );
 }
 
@@ -45,7 +43,7 @@ export function webBuildCommand(app, target) {
       "--platform",
       target.hostPlatform,
       "--architecture",
-      target.packageArchitecture ?? target.installerArchitecture,
+      target.installerArchitecture,
     ],
   };
 }

@@ -20,7 +20,7 @@ export function remoteHostDisplayName(
     host.displayName ??
     (host.hostId.startsWith("remote-control:")
       ? "Remote Control"
-      : host.hostId.replace(/^remote-ssh-(?:discovered|codex-managed):/u, ""))
+      : host.hostId.replace(/^remote-(?:peer|ssh-(?:discovered|codex-managed)):/u, ""))
   );
 }
 /** Group only within a native registered remote project; never resolve remote paths locally. */

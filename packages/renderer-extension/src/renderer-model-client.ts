@@ -145,7 +145,11 @@ import {
   RendererMethodUnavailableError,
   type RendererRequestOptions,
 } from "./renderer-request-sender.js";
-import { verifyNativeCodexThread } from "./renderer-native-thread.js";
+import {
+  usesIndependentNativeInference,
+  readNativeCodexThread,
+  verifyNativeCodexThread,
+} from "./renderer-native-thread.js";
 import {
   HARNESS_PREFERENCES_GET_METHOD,
   HARNESS_PREFERENCES_PATCH_METHOD,
@@ -245,6 +249,9 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
   return nested && typeof nested.addNotificationCallback === "function" ? nested : null;
 }
 
+/** Target of a native inference route check: an existing Thread or a new draft's workspace. */
+export type NativeInferenceTarget = ThreadInspectionParams | { cwd: string };
+
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
   watchThreadTree?(receive: (snapshot: ThreadTreeSnapshot) => void): () => void;
   hasDesktopThread?(id: string): Promise<boolean>;
@@ -310,6 +317,12 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   ): Promise<HarnessInspection>;
   openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
+  /**
+   * Checks whether native Codex inference bypasses the Codex quota. An existing
+   * Thread uses its own provider and workspace; a new draft passes the
+   * workspace Desktop picked for it so project `.codex/config.toml` applies.
+   */
+  usesIndependentNativeInference?(input?: NativeInferenceTarget): Promise<boolean>;
   inspectHarnessCommands(input: HarnessCommandsInspectParams): Promise<HarnessCommandCatalog>;
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
@@ -542,6 +555,31 @@ export function createRendererModelClient(
   };
 
   return Object.freeze({
+    async usesIndependentNativeInference(input?: NativeInferenceTarget): Promise<boolean> {
+      if (!input) return false;
+      if ("threadId" in input) {
+        const thread = await readNativeCodexThread(
+          manager.sendRequest,
+          threadInspectionParamsSchema.parse(input).threadId,
+        );
+        if (!thread.cwd) return false;
+        return usesIndependentNativeInference(
+          await manager.sendRequest("config/read", {
+            includeLayers: false,
+            cwd: thread.cwd,
+          }),
+          thread.modelProvider,
+        );
+      }
+      const cwd = typeof input.cwd === "string" && input.cwd.trim().length > 0 ? input.cwd : null;
+      if (!cwd) return false;
+      return usesIndependentNativeInference(
+        await manager.sendRequest("config/read", {
+          includeLayers: false,
+          cwd,
+        }),
+      );
+    },
     async getHarnessPreferences(scope = "external") {
       return harnessPreferenceSnapshotSchema.parse(
         await manager.sendRequest(

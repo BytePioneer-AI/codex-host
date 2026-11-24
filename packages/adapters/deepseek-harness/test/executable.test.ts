@@ -19,7 +19,7 @@ vi.mock("node:fs", async (importOriginal) => {
     ...original,
     accessSync,
     statSync,
-    default: { ...original.default, accessSync, statSync },
+    default: { ...original, accessSync, statSync },
   };
 });
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));

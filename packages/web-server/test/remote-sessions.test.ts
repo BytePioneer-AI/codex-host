@@ -1355,3 +1355,148 @@ it("keeps remote history readable and controls unavailable without optional meta
     false,
   );
 });
+
+it("does not spin the microtask queue when hostsChanged fires during an archive write", async (t) => {
+  const hostA = "remote-peer:peer-a";
+  const hostB = "remote-peer:peer-b";
+  const hostC = "remote-peer:peer-c";
+  const rowA = {
+    id: "thread-a",
+    cwd: "/remote/a",
+    name: "Thread A",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 2,
+    status: { type: "idle" },
+    turns: [],
+  };
+  let archived = false;
+  const listCounts = new Map<string, number>();
+  const archiveStarted = Promise.withResolvers<undefined>();
+  const archiveGate = Promise.withResolvers<unknown>();
+  const postArchiveList = Promise.withResolvers<undefined>();
+  let waitingForPostArchiveList = false;
+
+  const remote = new RemoteSessions(new EventHub("remote-archive-refresh"), async (operation) => {
+    if (operation.kind === "hosts") {
+      return [
+        { hostId: hostA, online: true },
+        { hostId: hostB, online: true },
+        { hostId: hostC, online: true },
+      ];
+    }
+    if (operation.kind === "list") {
+      listCounts.set(operation.hostId, (listCounts.get(operation.hostId) ?? 0) + 1);
+      if (waitingForPostArchiveList && operation.hostId === hostA) {
+        waitingForPostArchiveList = false;
+        postArchiveList.resolve(undefined);
+      }
+      return {
+        data: operation.hostId === hostA && !archived ? [rowA] : [],
+        nextCursor: null,
+      };
+    }
+    if (operation.kind === "read") {
+      return { result: { thread: rowA }, epoch: "epoch-a", requests: [] };
+    }
+    if (operation.kind === "archive") {
+      archiveStarted.resolve(undefined);
+      await archiveGate.promise;
+      archived = operation.archived;
+      return {};
+    }
+    return {};
+  });
+  t.after(() => remote.close());
+
+  const rpc = new RpcRegistry();
+  rpc.register("session/archive", () => {
+    throw new Error("must not route locally");
+  });
+  remote.install(rpc, new StreamRegistry());
+
+  const sessionId = remoteSessionId(hostA, rowA.id);
+  await remote.refresh();
+  await remote.read(sessionId);
+  const initialCountA = listCounts.get(hostA) ?? 0;
+  const initialCountB = listCounts.get(hostB) ?? 0;
+  const initialCountC = listCounts.get(hostC) ?? 0;
+
+  const archivePromise = rpc.dispatch("session/archive", {
+    args: { request: { sessionId } },
+  });
+  await archiveStarted.promise;
+
+  // Trigger refreshes for two distinct peers while archiveWrites > 0.
+  // Before the fix, this entered a tight microtask loop that starved setTimeout.
+  waitingForPostArchiveList = true;
+  remote.hostsChanged(hostA);
+  remote.hostsChanged(hostB);
+  setTimeout(() => archiveGate.resolve({}), 30);
+
+  const archiveResult = await archivePromise;
+  assert.equal(archiveResult.ok, true);
+  await postArchiveList.promise;
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(listCounts.get(hostA), initialCountA + 1);
+  assert.equal(listCounts.get(hostB), initialCountB + 1);
+  // Multi-host dirty queue must not escalate into a full refresh of untouched peers.
+  assert.equal(listCounts.get(hostC), initialCountC);
+});
+
+it("unarchives an archived remote session without calling read/snapshot beforehand", async (t) => {
+  const hostId = "remote-peer:peer-b";
+  const row = {
+    id: "thread-archived",
+    cwd: "/remote/b",
+    name: "Archived Remote",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 2,
+    status: { type: "idle" },
+    turns: [],
+  };
+  let archived = true;
+  const order: string[] = [];
+  const remote = new RemoteSessions(new EventHub("remote-unarchive"), async (operation) => {
+    if (operation.kind === "hosts") return [{ hostId, online: true, epoch: "epoch-b" }];
+    if (operation.kind === "list") {
+      return { data: archived ? [] : [row], nextCursor: null };
+    }
+    if (operation.kind === "read") {
+      order.push("read");
+      if (archived) {
+        throw new Error(
+          `session ${row.id} is archived. Run codex unarchive to unarchive it first.`,
+        );
+      }
+      return { result: { thread: row }, epoch: "epoch-b", requests: [] };
+    }
+    if (operation.kind === "archive") {
+      order.push(operation.archived ? "archive" : "unarchive");
+      archived = operation.archived;
+      return {};
+    }
+    return {};
+  });
+  t.after(() => remote.close());
+
+  const rpc = new RpcRegistry();
+  rpc.register("workspace/unarchiveSession", () => {
+    throw new Error("must not route locally");
+  });
+  rpc.register("session/unarchive", () => {
+    throw new Error("must not route locally");
+  });
+  remote.install(rpc, new StreamRegistry());
+
+  const sessionId = remoteSessionId(hostId, row.id);
+  const reply = await rpc.dispatch("workspace/unarchiveSession", {
+    args: { request: { sessionId } },
+  });
+  assert.equal(reply.ok, true);
+  assert.equal(archived, false);
+  // Must invoke unarchive BEFORE attempting any snapshot/read.
+  assert.deepEqual(order, ["unarchive", "read"]);
+});

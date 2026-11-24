@@ -36,6 +36,8 @@ let pending: Promise<HostExtensionsCatalogResult> | undefined;
 
 const PRIMARY_GRACE_MS = 1_500;
 const PRIMARY_FORCE_REFRESH_GRACE_MS = 3_000;
+const STATS_MAX_BYTES = 256 * 1024;
+const STATS_TIMEOUT_MS = 2_000;
 
 function catalogGeneratedAtMs(result: HostExtensionsCatalogResult): number {
   const parsed = Date.parse(result.generatedAt);
@@ -123,13 +125,70 @@ async function raceCatalog(forceRefresh: boolean): Promise<HostExtensionsCatalog
   }
 }
 
+async function fetchLiveDownloadStats(
+  statsUrl: string | undefined,
+  forceRefresh: boolean,
+): Promise<ReadonlyMap<string, number> | undefined> {
+  try {
+    const parsed = desktopExtensionHttpUrlSchema.safeParse(statsUrl);
+    if (!parsed.success) return undefined;
+    const target = new URL(parsed.data);
+    target.pathname = `${target.pathname.replace(/\/+$/u, "")}/stats.json`;
+    target.search = "";
+    target.hash = "";
+    const bytes = await downloadExtensionBytes(
+      target.href,
+      STATS_MAX_BYTES,
+      {
+        accept: "application/json",
+        ...(forceRefresh ? { "cache-control": "no-cache" } : {}),
+      },
+      {
+        signal: AbortSignal.timeout(STATS_TIMEOUT_MS),
+        allowUrl: (url) => url.href === target.href,
+      },
+    );
+    const payload: unknown = JSON.parse(utf8.decode(bytes));
+    if (!payload || typeof payload !== "object" || !("downloads" in payload)) return undefined;
+    const rawDownloads = payload.downloads;
+    if (!rawDownloads || typeof rawDownloads !== "object" || Array.isArray(rawDownloads))
+      return undefined;
+    const downloads = new Map<string, number>();
+    for (const [id, count] of Object.entries(rawDownloads)) {
+      if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) {
+        downloads.set(id, count);
+      }
+    }
+    return downloads;
+  } catch {
+    return undefined;
+  }
+}
+
+function mergeLiveDownloadStats(
+  catalog: HostExtensionsCatalogResult,
+  liveDownloads: ReadonlyMap<string, number> | undefined,
+): HostExtensionsCatalogResult {
+  if (!liveDownloads || liveDownloads.size === 0) return catalog;
+  return {
+    ...catalog,
+    extensions: catalog.extensions.map((entry) => {
+      const live = liveDownloads.get(entry.id);
+      return live === undefined ? entry : { ...entry, downloads: live };
+    }),
+  };
+}
+
 export async function fetchHostExtensionCatalog({
   forceRefresh = false,
 }: { forceRefresh?: boolean | undefined } = {}): Promise<HostExtensionsCatalogResult> {
   if (!forceRefresh && cache && Date.now() < cache.expires)
     return { ...structuredClone(cache.result), cached: true };
   if (pending) return structuredClone(await pending);
-  const request = raceCatalog(forceRefresh);
+  const request = Promise.all([
+    raceCatalog(forceRefresh),
+    fetchLiveDownloadStats(resolveHostExtensionStatsUrl(), forceRefresh),
+  ]).then(([catalog, liveDownloads]) => mergeLiveDownloadStats(catalog, liveDownloads));
   pending = request;
   try {
     const result = await request;

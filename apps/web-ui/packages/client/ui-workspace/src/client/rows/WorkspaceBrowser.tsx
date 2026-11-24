@@ -36,6 +36,7 @@ import {
   IconCloseFillRegular,
   IconFlatListOutlineRegular,
   IconFolderCloseRegular,
+  IconGlobeOutlineRegular,
   IconNewChatOutlineRegular,
   IconProjectAddOutlineRegular,
   IconQueueOutlineRegular,
@@ -90,6 +91,20 @@ import { PinnedSection } from "./PinnedSection.tsx";
 import { SessionListError } from "./SessionListError.tsx";
 import { SessionListExpansion } from "./SessionListExpansion.tsx";
 import { SectionHeading } from "./SectionHeading.tsx";
+import { HostScopeFilter } from "./HostScopeFilter.tsx";
+import {
+  ensureWorkspaceVisibleInHostScope,
+  filterSessionsByHostScope,
+  filterWorkspacesByHostScope,
+  hasRemotePeerWorkspaces,
+  hasRemoteWorkspaces,
+  isHostScopeFiltered,
+  loadHostScopeFilter,
+  reconcileHostScopeFilter,
+  resetHostScopeFilter,
+  saveHostScopeFilter,
+  type HostScopeFilterState,
+} from "./host-scope-filter.ts";
 import {
   GROUP_INITIAL_ROWS,
   SIDEBAR_PAGE_ROWS,
@@ -392,6 +407,12 @@ type SessionTreeProps = Pick<
     revealSessionId?: SessionId | undefined;
     /** Acknowledge that the chosen Session row has been revealed. */
     onSessionRevealed: (sessionId: SessionId) => void;
+    /** Optional host/workspace scope filter control mounted in the section header. */
+    hostScopeFilterControl?: ReactNode;
+    /** Whether the host/workspace scope filter is actively narrowing visible rows. */
+    hostScopeFiltered?: boolean;
+    /** Reset the host/workspace scope filter to show all hosts and workspaces. */
+    onResetHostScope?: () => void;
   };
 
 /** The list-empty placeholder — a glyph over the text; the archived-only view names its filter and offers the way back. */
@@ -458,6 +479,9 @@ function SessionTree({
   onSessionRevealed,
   shortcuts,
   loadMoreSessions,
+  hostScopeFilterControl,
+  hostScopeFiltered = false,
+  onResetHostScope,
 }: SessionTreeProps) {
   const threadView = useThreadTreeView();
   const phoneSidebar = usePhoneSidebar();
@@ -991,14 +1015,34 @@ function SessionTree({
         (sectionRoots.get(section.id) ?? []).map((group) => renderGroup(group, 0)),
       );
   }
-  if (groups.length === 0 && pinnedRows.length === 0 && nativeSections.length === 0)
+  if (
+    !hostScopeFiltered &&
+    groups.length === 0 &&
+    pinnedRows.length === 0 &&
+    nativeSections.length === 0
+  )
     rowKeys.push("empty");
   // Recents keeps the tail: the Workspace section ends with its own reveal
   // control rather than an unbounded run of folders, and folding that section
   // leaves Recents in place.
+  const showWorkspacesSection = workspaceRoots.length > 0 || hostScopeFiltered;
+  const showFilterEmptyHint = hostScopeFiltered && workspaceRoots.length === 0;
   const groupRows: ReactNode[] = [];
-  if (workspaceRoots.length > 0) rowKeys.push(`section:${WORKSPACES_SECTION_KEY}`);
+  if (showWorkspacesSection) rowKeys.push(`section:${WORKSPACES_SECTION_KEY}`);
   if (workspacesSectionExpanded) {
+    if (showFilterEmptyHint) {
+      rowKeys.push("empty:host-scope");
+      groupRows.push(
+        <div key="empty:host-scope" className={css.filterEmptyHint} data-row-key="empty:host-scope">
+          <span>{t("hostScope.emptyWorkspaces")}</span>
+          {onResetHostScope !== undefined && (
+            <button type="button" className={css.emptyAction} onClick={onResetHostScope}>
+              {t("hostScope.showAll")}
+            </button>
+          )}
+        </div>,
+      );
+    }
     for (const group of shownWorkspaceRoots) groupRows.push(renderGroup(group, 0));
     if (!allWorkspacesShown && collapsedWorkspaces.hiddenCount > 0) {
       rowKeys.push("overflow:workspaces");
@@ -1061,15 +1105,18 @@ function SessionTree({
           setSectionExpanded={setSectionExpanded}
           t={t}
         />
-        {groups.length === 0 && pinnedRows.length === 0 && nativeSections.length === 0 && (
-          <EmptySessions
-            rowState={rowState}
-            onLeaveArchivedOnly={onLeaveArchivedOnly}
-            partial={list.hasMore}
-            t={t}
-          />
-        )}
-        {workspaceRoots.length > 0 && (
+        {!hostScopeFiltered &&
+          groups.length === 0 &&
+          pinnedRows.length === 0 &&
+          nativeSections.length === 0 && (
+            <EmptySessions
+              rowState={rowState}
+              onLeaveArchivedOnly={onLeaveArchivedOnly}
+              partial={list.hasMore}
+              t={t}
+            />
+          )}
+        {showWorkspacesSection && (
           <SectionHeading
             label={t("section.workspaces")}
             expanded={workspacesSectionExpanded}
@@ -1078,6 +1125,7 @@ function SessionTree({
               setSectionExpanded(WORKSPACES_SECTION_KEY, !workspacesSectionExpanded);
             }}
             rowKey={`section:${WORKSPACES_SECTION_KEY}`}
+            trailing={hostScopeFilterControl}
           />
         )}
         {groupRows}
@@ -1171,6 +1219,9 @@ function FlatList({
   onSessionRevealed,
   renderSlot,
   loadMoreSessions,
+  hostScopeFilterControl,
+  hostScopeFiltered = false,
+  onResetHostScope,
   t,
 }: Pick<
   SessionTreeProps,
@@ -1190,6 +1241,9 @@ function FlatList({
   | "nativeSections"
   | "onLeaveArchivedOnly"
   | "loadMoreSessions"
+  | "hostScopeFilterControl"
+  | "hostScopeFiltered"
+  | "onResetHostScope"
   | "t"
 > & {
   list: SessionListState;
@@ -1246,7 +1300,7 @@ function FlatList({
             : []),
           ...nativeSectionRowKeys(nativeLayout, threadView.rows),
           ...(rows.length === 0 && pinnedRows.length === 0 && nativeSections.length === 0
-            ? ["empty"]
+            ? [hostScopeFiltered ? "empty:host-scope" : "empty"]
             : []),
           ...threadView.rows(visible.rows).map((row) => `session:${row.id}`),
           ...(hasOverflow || list.hasMore ? ["overflow:flat"] : []),
@@ -1279,17 +1333,31 @@ function FlatList({
           setSectionExpanded={setSectionExpanded}
           t={t}
         />
-        {(pinnedRows.length > 0 || nativeSections.length > 0) && (
-          <SectionHeading label={t("section.sessions")} />
+        {(pinnedRows.length > 0 ||
+          nativeSections.length > 0 ||
+          hostScopeFilterControl !== undefined) && (
+          <SectionHeading label={t("section.sessions")} trailing={hostScopeFilterControl} />
         )}
-        {rows.length === 0 && pinnedRows.length === 0 && nativeSections.length === 0 && (
-          <EmptySessions
-            rowState={rowState}
-            onLeaveArchivedOnly={onLeaveArchivedOnly}
-            partial={list.hasMore}
-            t={t}
-          />
-        )}
+        {rows.length === 0 &&
+          pinnedRows.length === 0 &&
+          nativeSections.length === 0 &&
+          (hostScopeFiltered ? (
+            <div className={css.filterEmptyHint} data-row-key="empty:host-scope">
+              <span>{t("hostScope.emptySessions")}</span>
+              {onResetHostScope !== undefined && (
+                <button type="button" className={css.emptyAction} onClick={onResetHostScope}>
+                  {t("hostScope.showAll")}
+                </button>
+              )}
+            </div>
+          ) : (
+            <EmptySessions
+              rowState={rowState}
+              onLeaveArchivedOnly={onLeaveArchivedOnly}
+              partial={list.hasMore}
+              t={t}
+            />
+          ))}
         <ThreadTreeRows roots={visible.rows}>
           {(node) => {
             const active = drag !== null && drag.pinned === node.pinned;
@@ -1766,6 +1834,102 @@ function WorkspaceBrowserContent({
   // states; the menu anchors on this button).
   const wsPickerOpen = shortcutState.addRequested;
   const wsPlusRef = useRef<HTMLButtonElement>(null);
+  const [addWorkspaceMenuOpen, setAddWorkspaceMenuOpen] = useState(false);
+  const [hostScopeFilter, setHostScopeFilter] = useState<HostScopeFilterState>(() =>
+    loadHostScopeFilter(),
+  );
+  const updateHostScopeFilter = (next: HostScopeFilterState): void => {
+    setHostScopeFilter(next);
+    saveHostScopeFilter(next);
+  };
+  const resetHostScope = (): void => {
+    updateHostScopeFilter(resetHostScopeFilter());
+  };
+  const hasRemote = useMemo(() => hasRemoteWorkspaces(orderedWorkspaces), [orderedWorkspaces]);
+  const hasRemotePeers = useMemo(
+    () => hasRemotePeerWorkspaces(orderedWorkspaces),
+    [orderedWorkspaces],
+  );
+  const effectiveHostScopeFilter = useMemo(
+    () => reconcileHostScopeFilter(hostScopeFilter, orderedWorkspaces),
+    [hostScopeFilter, orderedWorkspaces],
+  );
+  const hostScopeFiltered = useMemo(
+    () => hasRemote && isHostScopeFiltered(effectiveHostScopeFilter, orderedWorkspaces),
+    [hasRemote, effectiveHostScopeFilter, orderedWorkspaces],
+  );
+  const scopedWorkspaces = useMemo(
+    () =>
+      hostScopeFiltered
+        ? filterWorkspacesByHostScope(orderedWorkspaces, effectiveHostScopeFilter)
+        : orderedWorkspaces,
+    [hostScopeFiltered, orderedWorkspaces, effectiveHostScopeFilter],
+  );
+  const visibleWorkspaceIdSet = useMemo(
+    () => new Set<string>(scopedWorkspaces.map((workspace) => workspace.workspaceId)),
+    [scopedWorkspaces],
+  );
+  const scopedFlatSessionIds = useMemo(() => {
+    if (!hostScopeFiltered) return orderedFlatSessionIds;
+    return filterSessionsByHostScope(
+      orderedFlatSessionIds.map((id) => ({
+        id,
+        remote: list.byId[id]?.projectionValues?.remoteHost ?? undefined,
+      })),
+      visibleWorkspaceIdSet,
+      orderedWorkspaces,
+      effectiveHostScopeFilter,
+    ).map((entry) => entry.id);
+  }, [
+    hostScopeFiltered,
+    orderedFlatSessionIds,
+    list.byId,
+    visibleWorkspaceIdSet,
+    orderedWorkspaces,
+    effectiveHostScopeFilter,
+  ]);
+  const scopedList = useMemo(() => {
+    if (!hostScopeFiltered) return list;
+    const allowedIds = new Set(
+      filterSessionsByHostScope(
+        list.ids.map((id) => ({
+          id,
+          remote: list.byId[id]?.projectionValues?.remoteHost ?? undefined,
+        })),
+        visibleWorkspaceIdSet,
+        orderedWorkspaces,
+        effectiveHostScopeFilter,
+      ).map((entry) => entry.id),
+    );
+    return {
+      ...list,
+      ids: list.ids.filter((id) => allowedIds.has(id)),
+    };
+  }, [hostScopeFiltered, list, visibleWorkspaceIdSet, orderedWorkspaces, effectiveHostScopeFilter]);
+  const hostScopeResetKey = useMemo(
+    () => (hostScopeFiltered ? JSON.stringify(effectiveHostScopeFilter) : "all"),
+    [hostScopeFiltered, effectiveHostScopeFilter],
+  );
+  const hostScopeFilterControl = hasRemote ? (
+    <HostScopeFilter
+      workspaces={orderedWorkspaces}
+      state={effectiveHostScopeFilter}
+      onChange={updateHostScopeFilter}
+      t={t}
+    />
+  ) : undefined;
+  const openAddRemoteWorkspace = (): void => {
+    const selectedRemoteHostId =
+      effectiveHostScopeFilter.selectedHost !== "all" &&
+      effectiveHostScopeFilter.selectedHost !== "local"
+        ? effectiveHostScopeFilter.selectedHost
+        : undefined;
+    window.dispatchEvent(
+      new CustomEvent("codexhost:open-add-remote-workspace", {
+        detail: selectedRemoteHostId !== undefined ? { hostId: selectedRemoteHostId } : {},
+      }),
+    );
+  };
   const composingRef = useRef(false);
 
   const openSearchResult = (sessionId: SessionId): void => {
@@ -1774,11 +1938,19 @@ function WorkspaceBrowserContent({
       return;
     }
     const rootId = threadView.rootId(sessionId);
+    const owningWorkspace = workspaces.find((workspace) => workspace.sessionIds.includes(rootId));
+    if (hostScopeFiltered) {
+      const nextFilter = ensureWorkspaceVisibleInHostScope(
+        effectiveHostScopeFilter,
+        owningWorkspace,
+        orderedWorkspaces,
+      );
+      if (nextFilter !== effectiveHostScopeFilter) {
+        updateHostScopeFilter(nextFilter);
+      }
+    }
     // Grouped views also show a section's Workspaces, and their Sessions, inside it.
-    const workspaceId =
-      groupBy === "flat"
-        ? undefined
-        : workspaces.find((workspace) => workspace.sessionIds.includes(rootId))?.workspaceId;
+    const workspaceId = groupBy === "flat" ? undefined : owningWorkspace?.workspaceId;
     const section =
       nativeSections.find(({ threadIds }) => threadIds.includes(rootId)) ??
       (workspaceId === undefined
@@ -2077,27 +2249,97 @@ function WorkspaceBrowserContent({
           )}
           {/* Adding is the button's one action, so a composition with no
               picking affordance has nothing to offer here: the region hides the
-              button rather than leaving a dead one in the header. */}
-          {directoryFlowAvailable && (
-            <Tooltip
-              label={t("workspace.add")}
-              shortcutKeys={addShortcut?.keys}
-              side="bottom"
-              delayMs={500}
-            >
-              <button
-                ref={wsPlusRef}
-                type="button"
-                className={css.iconButton}
-                aria-label={t("workspace.add")}
-                aria-keyshortcuts={addShortcut?.aria}
-                onClick={() => {
-                  requestAddWorkspace();
+              button rather than leaving a dead one in the header. When remote
+              peers exist in wide mode, offer a compact local-vs-remote menu
+              while keeping the single-click local path untouched otherwise. */}
+          {wide && hasRemotePeers ? (
+            directoryFlowAvailable ? (
+              <Menu
+                phoneSidebarTitle={t("workspace.add")}
+                open={addWorkspaceMenuOpen}
+                onClose={() => {
+                  setAddWorkspaceMenuOpen(false);
                 }}
+                items={[
+                  {
+                    id: "add-local",
+                    label: t("workspace.addLocal"),
+                    icon: <IconFolderCloseRegular />,
+                  },
+                  {
+                    id: "add-remote",
+                    label: t("workspace.addRemote"),
+                    icon: <IconGlobeOutlineRegular />,
+                  },
+                ]}
+                onSelect={(id) => {
+                  setAddWorkspaceMenuOpen(false);
+                  if (id === "add-local") requestAddWorkspace();
+                  else if (id === "add-remote") openAddRemoteWorkspace();
+                }}
+                align="end"
+                dense
+                portal
+                anchor={
+                  <Tooltip
+                    label={t("workspace.add")}
+                    shortcutKeys={addShortcut?.keys}
+                    side="bottom"
+                    delayMs={500}
+                    disabled={addWorkspaceMenuOpen}
+                  >
+                    <button
+                      ref={wsPlusRef}
+                      type="button"
+                      className={css.iconButton}
+                      aria-label={t("workspace.add")}
+                      aria-keyshortcuts={addShortcut?.aria}
+                      aria-haspopup="menu"
+                      aria-expanded={addWorkspaceMenuOpen}
+                      onClick={() => {
+                        setAddWorkspaceMenuOpen((v) => !v);
+                      }}
+                    >
+                      <IconProjectAddOutlineRegular size={16} />
+                    </button>
+                  </Tooltip>
+                }
+              />
+            ) : (
+              <Tooltip label={t("workspace.addRemote")} side="bottom" delayMs={500}>
+                <button
+                  ref={wsPlusRef}
+                  type="button"
+                  className={css.iconButton}
+                  aria-label={t("workspace.addRemote")}
+                  onClick={openAddRemoteWorkspace}
+                >
+                  <IconProjectAddOutlineRegular size={16} />
+                </button>
+              </Tooltip>
+            )
+          ) : (
+            directoryFlowAvailable && (
+              <Tooltip
+                label={t("workspace.add")}
+                shortcutKeys={addShortcut?.keys}
+                side="bottom"
+                delayMs={500}
               >
-                <IconProjectAddOutlineRegular size={wide ? 16 : 18} />
-              </button>
-            </Tooltip>
+                <button
+                  ref={wsPlusRef}
+                  type="button"
+                  className={css.iconButton}
+                  aria-label={t("workspace.add")}
+                  aria-keyshortcuts={addShortcut?.aria}
+                  onClick={() => {
+                    requestAddWorkspace();
+                  }}
+                >
+                  <IconProjectAddOutlineRegular size={wide ? 16 : 18} />
+                </button>
+              </Tooltip>
+            )
           )}
         </div>
         {/* Add flow + its error dialog (same package — direct composition). */}
@@ -2169,13 +2411,13 @@ function WorkspaceBrowserContent({
             <FlatList
               loadMoreSessions={loadMoreSessions}
               usePanelInfo={usePanelInfo}
-              list={list}
-              sessionIds={orderedFlatSessionIds}
+              list={scopedList}
+              sessionIds={scopedFlatSessionIds}
               rowState={rowState}
               nativeSections={nativeSections}
               onLeaveArchivedOnly={leaveArchivedOnly}
               workspaceReady={workspaceReady}
-              animationResetKey={`${groupBy}/${orderBy}/${archivedFilter}`}
+              animationResetKey={`${groupBy}/${orderBy}/${archivedFilter}/${hostScopeResetKey}`}
               useSessionStatus={useSessionStatus}
               open={guardedOpen}
               onSessionRenameRequest={requestSessionRename}
@@ -2185,24 +2427,27 @@ function WorkspaceBrowserContent({
               setSectionExpanded={actions.setSectionExpanded}
               revealSessionId={revealSessionId}
               onSessionRevealed={acknowledgeSessionReveal}
+              hostScopeFilterControl={hostScopeFilterControl}
+              hostScopeFiltered={hostScopeFiltered}
+              onResetHostScope={resetHostScope}
               t={t}
             />
           ) : (
             <SessionTree
               loadMoreSessions={loadMoreSessions}
               usePanelInfo={usePanelInfo}
-              list={list}
+              list={scopedList}
               shortcuts={shortcuts}
               useSessionStatus={useSessionStatus}
               onSessionRenameRequest={requestSessionRename}
               renderSlot={renderSlot}
-              workspaces={orderedWorkspaces}
+              workspaces={scopedWorkspaces}
               linkedRoots={linkedRoots}
               ungroupedSessionIds={orderedUngroupedSessionIds}
               canStartProjectless={canStartProjectless}
               workspaceReady={workspaceReady}
               nestWorkspaces={groupBy === "workspace-tree"}
-              animationResetKey={`${groupBy}/${orderBy}/${archivedFilter}`}
+              animationResetKey={`${groupBy}/${orderBy}/${archivedFilter}/${hostScopeResetKey}`}
               groupExpansion={groupExpansion}
               setGroupExpanded={actions.setGroupExpanded}
               sectionExpansion={sectionExpansion}
@@ -2216,6 +2461,9 @@ function WorkspaceBrowserContent({
               insertWorkspaceBefore={insertWorkspaceBefore}
               revealSessionId={revealSessionId}
               onSessionRevealed={acknowledgeSessionReveal}
+              hostScopeFilterControl={hostScopeFilterControl}
+              hostScopeFiltered={hostScopeFiltered}
+              onResetHostScope={resetHostScope}
               home={home}
               t={t}
               onRenameRequest={(workspaceId, displayTitle) => {

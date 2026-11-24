@@ -55,10 +55,16 @@ fn resolve_options(
     host_node: Option<PathBuf>,
 ) -> Result<Options, Box<dyn Error>> {
     let installed = InstalledResources::from_current_executable()?;
-    let node = node
+    let explicit_node = node;
+    let node = explicit_node
+        .clone()
         .or_else(|| env::var_os(NPM_NODE_PATH_ENV).map(PathBuf::from))
         .unwrap_or(installed.node);
-    let host_node = crate::select_host_node(host_node, desktop_root, node.clone());
+    let host_node = match host_node {
+        Some(host_node) => host_node,
+        None if !cfg!(target_os = "macos") && explicit_node.is_some() => node.clone(),
+        None => crate::select_host_node(None, desktop_root, node.clone()),
+    };
     Ok(Options {
         node,
         host_node,

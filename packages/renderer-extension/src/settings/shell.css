@@ -4307,8 +4307,8 @@ dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
 .settings-extensions-detail-modal__alert[hidden],
 .settings-extensions-detail-modal__description[hidden],
 .settings-extensions-detail-modal__screenshots[hidden],
-.settings-extensions-detail-modal__preview[hidden],
-.settings-extensions-detail-modal__preview-nav[hidden] {
+.settings-extensions-lightbox__nav[hidden],
+.settings-extensions-lightbox__count[hidden] {
   display: none;
 }
 
@@ -4474,68 +4474,9 @@ dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
   line-height: 16px;
 }
 
-.settings-extensions-detail-modal__preview {
-  display: grid;
-  gap: 8px;
-  padding: 10px;
-  background: var(--settings-inset);
-  border: 1px solid var(--settings-border);
-  border-radius: 10px;
-}
-
-.settings-extensions-detail-modal__preview-img {
-  display: block;
-  width: 100%;
-  max-height: 340px;
-  object-fit: contain;
-  background: var(--settings-surface);
-  border-radius: 7px;
-}
-
-.settings-extensions-detail-modal__preview-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.settings-extensions-detail-modal__preview-count {
-  color: var(--settings-subtle);
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
-}
-
-.settings-extensions-detail-modal__preview-controls {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.settings-extensions-detail-modal__preview-close {
-  height: 24px;
-  padding: 0 8px;
-  color: var(--settings-muted);
-  font: inherit;
-  font-size: 11.5px;
-  background: var(--settings-panel);
-  border: 1px solid var(--settings-border);
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.settings-extensions-detail-modal__preview-close:hover {
-  color: var(--settings-text);
-  background: var(--settings-hover);
-}
-
-.settings-extensions-detail-modal__preview-close:focus-visible {
-  outline: 2px solid var(--settings-focus);
-  outline-offset: 1px;
-}
-
 .settings-extensions-detail-modal__gallery {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(144px, 1fr));
   gap: 8px;
 }
 
@@ -4547,15 +4488,16 @@ dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
   background: var(--settings-inset);
   border: 1.5px solid var(--settings-border);
   border-radius: 8px;
-  cursor: pointer;
+  cursor: zoom-in;
   transition:
-    border-color 120ms ease,
-    transform 120ms ease,
-    box-shadow 120ms ease;
+    border-color 140ms ease,
+    transform 140ms ease,
+    box-shadow 140ms ease;
 }
 
 .settings-extensions-detail-modal__thumb:hover {
   border-color: var(--settings-focus);
+  box-shadow: 0 4px 12px light-dark(rgb(15 23 42 / 10%), rgb(0 0 0 / 32%));
 }
 
 .settings-extensions-detail-modal__thumb[aria-pressed="true"] {
@@ -4573,6 +4515,131 @@ dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+dialog.settings-extensions-lightbox {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 28px 72px 68px;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: transparent;
+  border: 0;
+}
+
+dialog.settings-extensions-lightbox[open] {
+  display: grid;
+  place-items: center;
+}
+
+dialog.settings-extensions-lightbox:focus {
+  outline: none;
+}
+
+dialog.settings-extensions-lightbox::backdrop {
+  background: rgb(10 13 20 / 78%);
+  -webkit-backdrop-filter: blur(12px) saturate(130%);
+  backdrop-filter: blur(12px) saturate(130%);
+  animation: settings-extensions-backdrop-in 160ms ease-out;
+}
+
+.settings-extensions-lightbox__img {
+  display: block;
+  max-width: min(calc(100vw - 144px), 1560px);
+  max-height: calc(100vh - 96px);
+  object-fit: contain;
+  background: rgb(18 22 30 / 60%);
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgb(0 0 0 / 48%);
+  animation: settings-extensions-dialog-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.settings-extensions-lightbox__btn {
+  position: fixed;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: rgb(255 255 255 / 92%);
+  background: rgb(24 28 36 / 74%);
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 999px;
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  backdrop-filter: blur(16px) saturate(150%);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 32%);
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    transform 100ms ease;
+}
+
+.settings-extensions-lightbox__btn:hover {
+  color: #fff;
+  background: rgb(42 48 60 / 88%);
+  border-color: rgb(255 255 255 / 28%);
+}
+
+.settings-extensions-lightbox__btn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.settings-extensions-lightbox__close {
+  top: 18px;
+  right: 18px;
+  width: 36px;
+  height: 36px;
+}
+
+.settings-extensions-lightbox__nav {
+  top: 50%;
+  width: 38px;
+  height: 38px;
+  transform: translateY(-50%);
+}
+
+.settings-extensions-lightbox__nav--prev {
+  left: 18px;
+}
+
+.settings-extensions-lightbox__nav--next {
+  right: 18px;
+}
+
+.settings-extensions-lightbox__count {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  padding: 5px 12px;
+  color: rgb(255 255 255 / 90%);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  background: rgb(24 28 36 / 74%);
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 999px;
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  backdrop-filter: blur(16px) saturate(150%);
+  transform: translateX(-50%);
+}
+
+@media (max-width: 640px) {
+  dialog.settings-extensions-lightbox {
+    padding: 56px 14px 64px;
+  }
+
+  .settings-extensions-lightbox__img {
+    max-width: calc(100vw - 28px);
+    max-height: calc(100vh - 120px);
+  }
 }
 
 .settings-extensions .settings-command-button--danger {
@@ -5059,7 +5126,9 @@ dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
   dialog.settings-account-dialog.settings-extensions-create-dialog[open],
   dialog.settings-account-dialog.settings-extensions-detail-dialog::backdrop,
   dialog.settings-account-dialog.settings-extensions-import-dialog::backdrop,
-  dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
+  dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop,
+  dialog.settings-extensions-lightbox::backdrop,
+  .settings-extensions-lightbox__img {
     animation: none;
   }
 }

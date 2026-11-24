@@ -492,6 +492,8 @@ export interface ComposerBarOwnerProps {
   /** Open the Workspace picker from the inert composer surface. */
   onRequestWorkspace?: () => void;
   placeholder?: string;
+  /** Optional seamless cap bar docked flush at the top of the composer card (Hero mode). */
+  topBar?: ReactNode;
   /** Optional content rendered above the composer surface. */
   accessory?: ReactNode;
 }
@@ -658,6 +660,10 @@ export interface EmptyWorkspaceOwnerProps {
   anchorRef?: RefObject<HTMLElement>;
   /** Currently selected Workspace, when available. */
   selectedId?: WorkspaceId | undefined;
+  /** Optional fallback display title while the workspace list is still hydrating. */
+  fallbackLabel?: string | undefined;
+  /** Called when the picker toggles its own project popover visibility. */
+  onOpenChange?: (open: boolean) => void;
   onPick: (workspaceId: WorkspaceId | null) => void;
   onClose: () => void;
 }

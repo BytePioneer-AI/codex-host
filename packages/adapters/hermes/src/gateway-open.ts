@@ -10,6 +10,7 @@ import { type HermesGatewayTransport, gatewayString, gatewayRecord } from "./gat
 import { HermesGatewayHistory, HermesGatewayHistoryError } from "./gateway-history.js";
 import { HermesGatewaySessionTransport } from "./gateway-session-transport.js";
 import { HermesSession } from "./hermes-session.js";
+import type { HermesGatewayModelResolver } from "./hermes-inventory.js";
 
 async function sameDirectory(left: string, right: string): Promise<boolean> {
   return (
@@ -67,6 +68,7 @@ export async function openGatewaySession(
   transport: HermesGatewayTransport,
   onSettle: (session: HermesSession) => void,
   inheritedPermissionMode?: string,
+  resolveGatewayModel?: HermesGatewayModelResolver,
 ): Promise<HermesSession> {
   const source =
     input.kind === "create" ? null : input.kind === "resume" ? input.nativeRef : input.sourceRef;
@@ -113,6 +115,7 @@ export async function openGatewaySession(
   let nativeRef = source;
   let sourceHistory: HermesGatewayHistory | undefined;
   try {
+    const selection = model ? ((await resolveGatewayModel?.(model)) ?? { model }) : undefined;
     // A warm transport from the pool already prepared (delegation skill) and
     // started (bridge + capabilities); skip straight to the session RPCs.
     if (!transport.started) {
@@ -130,9 +133,8 @@ export async function openGatewaySession(
         input.kind === "fork" ? { checkpoint: input.checkpoint } : { rollbackLastTurn: true },
       );
     }
-    // Canonical create/mutate run Hermes's own provider-aware model resolution
-    // (switch_model) server-side, so the qualified id goes over the wire as-is
-    // and no helper interpreter is spawned to pre-split it.
+    // Use explicit native routes for named endpoints; all other choices retain
+    // the Gateway's model-only resolution.
     const response = await transport.request(
       nativeRef ? "session.resume" : "session.create",
       // Canonical wire (hermes-gateway-v1, CanonicalCreateParams/CanonicalResumeParams):
@@ -141,7 +143,7 @@ export async function openGatewaySession(
         ? { session_id: nativeRef.nativeSessionId, omit_messages: true }
         : {
             cwd: input.cwd,
-            ...(model ? { model } : {}),
+            ...selection,
             ...(input.kind === "create" && input.thinkingOptionId
               ? { reasoning: input.thinkingOptionId }
               : {}),
@@ -172,6 +174,7 @@ export async function openGatewaySession(
         subscriptionId: response.subscription_id,
       },
       transport.delegationGuidance,
+      resolveGatewayModel,
     );
     // An approval the gateway already waits on rides the create/resume
     // snapshot's prompts list; it is answered on the first turn context.
@@ -190,7 +193,7 @@ export async function openGatewaySession(
       await bridge.history.resolvePhysicalSessionId();
     }
     // Every selection is confirmed by the live native agent, including persisted runtime settings.
-    if (model) await bridge.setModel(model);
+    if (model) await bridge.setModel(model, selection);
     if (input.kind !== "fork" && input.thinkingOptionId)
       await bridge.setThinking(input.thinkingOptionId);
     const desiredMode =
@@ -198,7 +201,7 @@ export async function openGatewaySession(
         ? "dont_ask"
         : mode;
     if (desiredMode) await bridge.setPermissionMode(desiredMode);
-    const open = await bridge.openResult();
+    const open = await bridge.openResult(selection);
     return new HermesSession({
       nativeRef: nativeSessionRefSchema.parse({
         harnessId: "hermes",

@@ -17,7 +17,22 @@ import { RpcError, type StreamSink } from "./transport.ts";
 type Call = (operation: RemoteSessionOperation) => Promise<unknown>;
 type Target = { hostId: string; epoch: string; cwd: string };
 const plugins = z.array(z.object({ id: harnessIdSchema, name: z.string() }));
-async function loadCatalog(target: Target, call: Call) {
+
+export interface RemoteDraftCatalog {
+  default?: ModelSelection;
+  groups: ReturnType<typeof groupOf>[];
+  routableProviders: string[];
+  failures: Array<{
+    id: string;
+    name: string;
+    message: string;
+    credentialAccessRequired?: true;
+  }>;
+}
+
+export type RemoteDraftCatalogLoader = (() => Promise<RemoteDraftCatalog>) | Call;
+
+export async function loadCatalog(target: Target, call: Call): Promise<RemoteDraftCatalog> {
   const { hostId, epoch } = target;
   const installed = plugins.parse(await call({ kind: "projectHarnesses", hostId, epoch }));
   const providers = [{ id: "codex", name: "Codex" }, ...installed.filter((p) => p.id !== "codex")];
@@ -62,7 +77,8 @@ export class RemoteProjectDraft {
   lastUsed = this.createdAt;
   sending = false;
   selection?: ModelSelection;
-  private catalogRequest?: ReturnType<typeof loadCatalog>;
+  private selectedHarnessName?: string;
+  private catalogRequest?: Promise<RemoteDraftCatalog>;
   submission?: { key: string; result: Promise<unknown> };
   canonicalId?: string;
   constructor(
@@ -71,15 +87,20 @@ export class RemoteProjectDraft {
     readonly target: Target,
     readonly displayName: string,
   ) {}
-  catalog(call: Call) {
-    this.catalogRequest ??= loadCatalog(this.target, call).catch((error: unknown) => {
+  private invokeCatalogLoader(load: RemoteDraftCatalogLoader): Promise<RemoteDraftCatalog> {
+    return load.length === 0
+      ? (load as () => Promise<RemoteDraftCatalog>)()
+      : loadCatalog(this.target, load as Call);
+  }
+  catalog(load: RemoteDraftCatalogLoader) {
+    this.catalogRequest ??= this.invokeCatalogLoader(load).catch((error: unknown) => {
       delete this.catalogRequest;
       throw error;
     });
     return this.catalogRequest;
   }
-  async select(request: Record<string, unknown>, call: Call) {
-    const catalog = await this.catalog(call);
+  async select(request: Record<string, unknown>, load: RemoteDraftCatalogLoader) {
+    const catalog = await this.catalog(load);
     if (this.submission)
       throw new RpcError("session/busy", "The first message is already being sent.");
     const group = catalog.groups.find((g) => g.id === request.provider);
@@ -103,9 +124,14 @@ export class RemoteProjectDraft {
         ? { reasoningEffort: request.reasoningEffort }
         : {}),
     };
+    this.selectedHarnessName = group.name;
   }
-  async startOperation(call: Call): Promise<RemoteSessionOperation> {
-    const selection: ModelSelection = this.selection ?? (await this.catalog(call)).default;
+  async startOperation(load: RemoteDraftCatalogLoader): Promise<RemoteSessionOperation> {
+    const selection: ModelSelection | undefined =
+      this.selection ?? (await this.catalog(load)).default;
+    if (!selection) {
+      throw new RpcError("remote/no-harness", "No ready Harness in the selected remote project.");
+    }
     const { provider, model, reasoningEffort } = selection;
     const ref = harnessModelRefFromKey(model);
     const base = { kind: "startSelected" as const, ...this.target, harnessId: provider };
@@ -142,7 +168,12 @@ export class RemoteProjectDraft {
           ...defaultProjections(),
           modelSelection: { lastUsed: null, next: this.selection ?? null },
           ...(this.selection
-            ? { harnessIdentity: { id: this.selection.provider, name: this.selection.provider } }
+            ? {
+                harnessIdentity: {
+                  id: this.selection.provider,
+                  name: this.selectedHarnessName ?? this.selection.provider,
+                },
+              }
             : {}),
           threadReference: { hostId: this.target.hostId },
           remoteHost: {

@@ -14,6 +14,7 @@ import { EventHub, RpcRegistry, StreamRegistry, type StreamHandler } from "../sr
 import { ChSessions } from "../src/ch-sessions.ts";
 import { DesktopChHostClient } from "../src/ch-host-client.ts";
 import { projectGroupRoot } from "../src/ch-project-groups.ts";
+import { nativeProjectCommands } from "../src/ch-project-commands.ts";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
 import { nativeCodex } from "./support/native-codex.ts";
 
@@ -1040,6 +1041,96 @@ it("workspace mirror: keeps a deleted Desktop workspace out of Web until explici
   const restored = new Workspaces(data, cwd, true);
   restored.syncReferencedSessions(references, groups, new Set(), projects.projects);
   assert.equal(restored.ownerOf(thread.id)?.path, cwd);
+});
+
+it("shares native project changes and keeps removed projects' sessions in the Web catalog", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-native-project-sync-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const cwd = join(root, "folder");
+  mkdirSync(cwd);
+  const host = new FakeChHost();
+  host.projectSnapshot.nativeProjects = true;
+  host.projectSnapshot.projects = [
+    { id: "owned", name: "Desktop", rootPaths: [cwd, join(root, "second")] },
+  ];
+  const selected = host.add("selected", join(root, "worktree"), "Selected", false);
+  selected.projectId = "owned";
+  host.add("migrated", cwd, "Migrated", false);
+  host.projectSnapshot.assignments.migrated = "owned";
+  host.add("unassigned", cwd, "Unassigned", false);
+  const data = new DataDir(join(root, "web"));
+  const workspaces = new Workspaces(data, cwd, true);
+  workspaces.create(cwd); // An older Web row for the same folder has a different identity.
+  const sessions = new ChSessions(host, workspaces, new EventHub(data.root));
+  t.after(() => sessions.close());
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "project/create") {
+      const project = {
+        id: "created",
+        name: String(params.name),
+        rootPaths: (params.roots as Array<{ path: string }>).map((entry) => entry.path),
+      };
+      host.projectSnapshot.projects.push(project);
+      return { project } as T;
+    }
+    if (method === "project/update") {
+      const project = host.projectSnapshot.projects.find((item) => item.id === params.projectId);
+      assert.ok(project);
+      project.name = String(params.name);
+      return { project } as T;
+    }
+    if (method === "project/delete") {
+      host.projectSnapshot.projects = host.projectSnapshot.projects.filter(
+        (item) => item.id !== params.projectId,
+      );
+      selected.projectId = null;
+      return {} as T;
+    }
+    return request<T>(method, params);
+  };
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  workspaces.register(
+    rpc,
+    streams,
+    nativeProjectCommands(host, workspaces, () => sessions.refreshProjects()),
+  );
+  sessions.register(rpc, streams);
+  const call = async (method: string, params = {}) => {
+    const reply = await rpc.dispatch(method, { args: { request: params } });
+    assert.ok(reply.ok, reply.ok ? undefined : reply.error.message);
+    return reply.value;
+  };
+  await call("session/list");
+  assert.equal(workspaces.list().length, 1, "Native multi-root projects use one row");
+  const original = workspaces.ownerOf("selected");
+  assert.ok(original);
+  assert.equal(workspaces.ownerOf("migrated")?.workspaceId, original.workspaceId);
+  assert.equal(workspaces.ownerOf("unassigned"), undefined);
+  assert.equal(
+    workspaces.catalogScope(original.workspaceId) &&
+      "projectId" in workspaces.catalogScope(original.workspaceId)!,
+    true,
+  );
+  host.projectSnapshot.projects[0]!.name = "Desktop rename";
+  await sessions.refreshProjects();
+  assert.equal(workspaces.get(original.workspaceId)?.title, "Desktop rename");
+  await call("workspace/create", { path: root });
+  assert.ok(host.projectSnapshot.projects.some((project) => project.id === "created"));
+  await call("workspace/rename", { workspaceId: original.workspaceId, title: "Web rename" });
+  assert.equal(
+    host.projectSnapshot.projects.find((project) => project.id === "owned")?.name,
+    "Web rename",
+  );
+  const history = structuredClone(selected.turns);
+  await call("workspace/delete", { workspaceId: original.workspaceId });
+  assert.equal(workspaces.ownerOf("selected"), undefined);
+  assert.equal(workspaces.ownerOf("migrated"), undefined);
+  assert.ok(existsSync(cwd));
+  assert.deepEqual(selected.turns, history);
+  const after = (await call("session/list")) as { items: Array<{ sessionId: string }> };
+  assert.ok(after.items.some((item) => item.sessionId === selected.id));
 });
 
 it("projectRootTitles: falls back to the full path when the basename is empty or conflicts", () => {

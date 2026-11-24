@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
+import type { ThreadCatalogReadParams } from "@codexhost/shared-contracts";
 
 import { type DataDir, requestOf } from "./store.ts";
 import { RpcError, type RpcRegistry, type StreamRegistry, type StreamSink } from "./transport.ts";
@@ -17,6 +18,21 @@ export interface WorkspaceView {
   createdAt: string;
   updatedAt: string;
   origin?: "web" | "codexhost";
+  projectId?: string;
+}
+
+export interface ProjectCommands {
+  create(path: string): Promise<{ workspace: WorkspaceView; created: boolean } | undefined>;
+  rename(workspaceId: string, title: string): Promise<{ workspace: WorkspaceView } | undefined>;
+  delete(workspaceId: string): Promise<{ deleted: true } | undefined>;
+  insertBefore(
+    workspaceId: string,
+    beforeWorkspaceId?: string,
+  ): Promise<{ workspaceIds: string[] } | undefined>;
+}
+
+export function nativeProjectWorkspaceId(projectId: string): string {
+  return `codex-project:${projectId}`;
 }
 
 interface WorkspaceState {
@@ -183,6 +199,9 @@ function isLegacyDefaultTitle(
 
 export class Workspaces {
   private state: WorkspaceState;
+  private nativeWorkspaces: WorkspaceView[] | undefined;
+  private nativeRoots = new Map<string, string[]>();
+  private legacyAssignments: Readonly<Record<string, string>> = {};
   private readonly followers = new Set<StreamSink>();
   private referenceGroups: Map<string, string | undefined> | undefined;
   private referenceProjectless: ReadonlySet<string> = new Set();
@@ -248,6 +267,7 @@ export class Workspaces {
   }
 
   list(): readonly WorkspaceView[] {
+    if (this.nativeWorkspaces) return [...this.remoteGroups, ...this.nativeWorkspaces];
     const references = this.referenceGroups;
     const items = this.state.items;
     if (!references) return [...this.remoteGroups, ...items];
@@ -283,6 +303,64 @@ export class Workspaces {
           ),
         })),
     ];
+  }
+
+  get usesNativeProjects(): boolean {
+    return this.nativeWorkspaces !== undefined;
+  }
+
+  syncNativeProjects(
+    projects: readonly { id: string; name: string; rootPaths: string[] }[],
+    groups: ReadonlyMap<string, string | undefined>,
+    legacyAssignments: Readonly<Record<string, string>>,
+  ): void {
+    const before = this.list();
+    const previous = new Map(this.nativeWorkspaces?.map((item) => [item.projectId, item]));
+    const members = new Map<string, string[]>();
+    for (const [sessionId, projectId] of groups) {
+      if (projectId === undefined) continue;
+      const entries = members.get(projectId) ?? [];
+      if (!members.has(projectId)) members.set(projectId, entries);
+      entries.push(sessionId);
+    }
+    const now = new Date().toISOString();
+    this.nativeRoots = new Map(projects.map((project) => [project.id, project.rootPaths]));
+    this.legacyAssignments = legacyAssignments;
+    this.nativeWorkspaces = projects.map((project) => ({
+      workspaceId: nativeProjectWorkspaceId(project.id),
+      projectId: project.id,
+      path: project.rootPaths[0] ?? "",
+      title: project.name,
+      sessionIds: members.get(project.id) ?? [],
+      createdAt: previous.get(project.id)?.createdAt ?? now,
+      updatedAt: previous.get(project.id)?.updatedAt ?? now,
+      origin: "codexhost",
+    }));
+    this.publishWorkspaceChanges(before);
+  }
+
+  updateNativeProjectMember(sessionId: string, projectId: string | undefined): void {
+    if (!this.nativeWorkspaces || !projectId) return;
+    const item = this.nativeWorkspaces.find((workspace) => workspace.projectId === projectId);
+    if (!item || item.sessionIds.includes(sessionId)) return;
+    item.sessionIds = [...item.sessionIds, sessionId];
+    this.broadcast({ type: "upsert", workspace: item });
+  }
+
+  private publishWorkspaceChanges(before: readonly WorkspaceView[]): void {
+    const previous = new Map(
+      before.map((workspace) => [workspace.workspaceId, JSON.stringify(workspace)]),
+    );
+    const after = this.list();
+    const ids = new Set(after.map((workspace) => workspace.workspaceId));
+    for (const workspaceId of previous.keys())
+      if (!ids.has(workspaceId)) this.broadcast({ type: "remove", workspaceId });
+    for (const workspace of after)
+      if (previous.get(workspace.workspaceId) !== JSON.stringify(workspace))
+        this.broadcast({ type: "upsert", workspace });
+    const workspaceIds = [...ids];
+    if (JSON.stringify([...previous.keys()]) !== JSON.stringify(workspaceIds))
+      this.broadcast({ type: "order", workspaceIds });
   }
 
   /** Replace only the shared navigation view; never delete user records or any directories. */
@@ -345,6 +423,13 @@ export class Workspaces {
       sections.map((section) => section.id),
     );
     const next = sections.map((section): ThreadSectionView => {
+      if (this.nativeWorkspaces) {
+        const workspaceIds = (sectionProjects[section.id] ?? []).flatMap((id) => {
+          const workspace = this.nativeWorkspaces?.find((item) => item.projectId === id);
+          return workspace ? [workspace.workspaceId] : [];
+        });
+        return workspaceIds.length > 0 ? { ...section, workspaceIds } : { ...section };
+      }
       const workspaceIds = (paths.get(section.id) ?? []).flatMap((path) => {
         const workspace = this.byPath(path);
         return workspace ? [workspace.workspaceId] : [];
@@ -385,10 +470,16 @@ export class Workspaces {
         "workspace/remote-read-only",
         "This operation requires a local workspace; remote project paths belong to their Host.",
       );
-    return this.state.items.find((item) => item.workspaceId === workspaceId);
+    return (this.nativeWorkspaces ?? this.state.items).find(
+      (item) => item.workspaceId === workspaceId,
+    );
   }
 
   byPath(path: string): WorkspaceView | undefined {
+    if (this.nativeWorkspaces)
+      return this.nativeWorkspaces.find(
+        (item) => item.projectId && this.nativeRoots.get(item.projectId)?.includes(path),
+      );
     return this.state.items.find((item) => item.path === path);
   }
 
@@ -396,10 +487,17 @@ export class Workspaces {
    * The folder whose Threads a local Workspace lists, without the folders of nested local
    * Workspaces, which list their own Threads. Remote or unknown Workspaces have none.
    */
-  catalogScope(workspaceId: string): { cwd: string; excludeCwds: string[] } | undefined {
+  catalogScope(workspaceId: string): ThreadCatalogReadParams["scope"] {
     const local = this.list().filter((item) => !item.remote);
     const workspace = local.find((item) => item.workspaceId === workspaceId);
     if (!workspace) return undefined;
+    if (workspace.projectId)
+      return {
+        projectId: workspace.projectId,
+        legacyThreadIds: Object.keys(this.legacyAssignments)
+          .filter((id) => this.legacyAssignments[id] === workspace.projectId)
+          .slice(0, 1024),
+      };
     const excludeCwds = local.flatMap((item) => {
       const nested = relative(workspace.path, item.path);
       return nested !== "" &&
@@ -640,6 +738,14 @@ export class Workspaces {
   }
 
   detachSession(sessionId: string): void {
+    if (this.nativeWorkspaces) {
+      for (const workspace of this.nativeWorkspaces) {
+        if (!workspace.sessionIds.includes(sessionId)) continue;
+        workspace.sessionIds = workspace.sessionIds.filter((id) => id !== sessionId);
+        this.broadcast({ type: "upsert", workspace });
+      }
+      return;
+    }
     for (const workspace of this.state.items) {
       const index = workspace.sessionIds.indexOf(sessionId);
       if (index >= 0) {
@@ -649,9 +755,13 @@ export class Workspaces {
     }
   }
 
-  register(rpc: RpcRegistry, streams: StreamRegistry): void {
-    rpc.register("workspace/create", (args) => this.create(requestOf<{ path: string }>(args).path));
+  register(rpc: RpcRegistry, streams: StreamRegistry, commands?: ProjectCommands): void {
+    rpc.register("workspace/create", async (args) => {
+      const { path } = requestOf<{ path: string }>(args);
+      return (await commands?.create(path)) ?? this.create(path);
+    });
     rpc.register("workspace/initializeDefault", async () => {
+      if (this.usesNativeProjects) return undefined;
       if (this.state.items.length > 0 || this.state.deletedPaths?.includes(this.defaultDirectory))
         return undefined;
       if (!this.referenceOnlyDefault) mkdirSync(this.defaultDirectory, { recursive: true });
@@ -663,6 +773,8 @@ export class Workspaces {
     });
     rpc.register("workspace/rename", async (args) => {
       const request = requestOf<{ workspaceId: string; title: string }>(args);
+      const native = await commands?.rename(request.workspaceId, request.title);
+      if (native) return native;
       const workspace = this.require(request.workspaceId);
       workspace.title = request.title;
       this.touch(workspace);
@@ -670,6 +782,8 @@ export class Workspaces {
     });
     rpc.register("workspace/delete", async (args) => {
       const request = requestOf<{ workspaceId: string }>(args);
+      const native = await commands?.delete(request.workspaceId);
+      if (native) return native;
       const workspace = this.require(request.workspaceId);
       const state = {
         ...this.state,
@@ -683,6 +797,8 @@ export class Workspaces {
     });
     rpc.register("workspace/insertBefore", async (args) => {
       const request = requestOf<{ workspaceId: string; beforeWorkspaceId?: string }>(args);
+      const native = await commands?.insertBefore(request.workspaceId, request.beforeWorkspaceId);
+      if (native) return native;
       const workspace = this.require(request.workspaceId);
       const items = this.state.items;
       const rest = items.filter((item) => item !== workspace);

@@ -80,6 +80,7 @@ function globalProjectionValues(values: Record<string, unknown>): Record<string,
 interface Draft {
   id: string;
   cwd?: string;
+  projectId?: string;
   selection: ModelSelection;
   permissionModeId?: string;
   createdAt: number;
@@ -241,6 +242,10 @@ export class ChSessions {
     this.queueOperations.set(threadId, tracked);
     return current;
   }
+  async refreshProjects(): Promise<void> {
+    await this.refreshing?.catch(() => undefined);
+    await this.refresh();
+  }
   /** A `scope` reads an explicit page on until it reaches a Thread of that folder. */
   private async refresh(
     timing?: SessionListTiming,
@@ -398,7 +403,7 @@ export class ChSessions {
     await this.syncWorkspace(timing, projects);
     if (this.closed) return;
     // Project members resolve to Workspaces, which exist once their roots are synced.
-    if (threadSections)
+    if (threadSections && (!this.workspaces.usesNativeProjects || projects.nativeProjects))
       this.workspaces.setReferenceThreadSections(
         threadSections,
         definitions.projects,
@@ -427,6 +432,15 @@ export class ChSessions {
     if (this.closed) return;
     timing.measureSync("workspace_sync", () => {
       const groups = new Map<string, string | undefined>();
+      if (projects.nativeProjects) {
+        for (const row of this.rows.values())
+          groups.set(row.id, row.projectId ?? projects.assignments[row.id]);
+        for (const draft of this.drafts.values())
+          if (!draft.canonicalId) groups.set(draft.id, draft.projectId);
+        this.workspaces.syncNativeProjects(projects.projects, groups, projects.assignments);
+        return;
+      }
+      if (this.workspaces.usesNativeProjects) return;
       const references: Array<{ sessionId: string; cwd: string; title?: string }> = [];
       const rootTitles = projectRootTitles(projects.projects);
       const projectless = new Set(projects.projectless.filter((id) => !projects.assignments[id]));
@@ -881,14 +895,24 @@ export class ChSessions {
     configuration?: DraftConfiguration,
   ): Promise<{ sessionId: string; agentPreset: string }> {
     const request = requestOf<{ cwd?: string; workspaceId?: string; sessionId?: string }>(args);
-    const cwd =
-      request.cwd ??
-      (request.workspaceId ? this.workspaces.get(request.workspaceId)?.path : undefined);
+    const workspace = request.workspaceId ? this.workspaces.get(request.workspaceId) : undefined;
+    const cwd = request.cwd ?? workspace?.path;
+    const projectId =
+      workspace?.projectId ??
+      (cwd && this.workspaces.usesNativeProjects
+        ? this.workspaces.byPath(resolve(cwd))?.projectId
+        : undefined);
     if ((request.workspaceId !== undefined || request.cwd !== undefined) && !cwd)
       throw new RpcError("workspace/invalid-path", "Choose a valid computer working directory.");
     const id = request.sessionId ?? `draft-${randomUUID()}`;
     const existing = this.drafts.get(id);
-    if (existing && !existing.canonicalId && !existing.creating && existing.cwd === cwd)
+    if (
+      existing &&
+      !existing.canonicalId &&
+      !existing.creating &&
+      existing.cwd === cwd &&
+      existing.projectId === projectId
+    )
       return { sessionId: id, agentPreset: "standard" };
     if (existing || this.rows.has(id))
       throw new RpcError("session/busy", "This Session already exists; start a new draft.");
@@ -901,7 +925,13 @@ export class ChSessions {
         "host/no-harness",
         "No models are available. Re-detect the Harness in Connections to authorize access.",
       );
-    const draft: Draft = { id, ...(cwd ? { cwd } : {}), selection, createdAt: Date.now() };
+    const draft: Draft = {
+      id,
+      ...(cwd ? { cwd } : {}),
+      ...(projectId ? { projectId } : {}),
+      selection,
+      createdAt: Date.now(),
+    };
     if (configuration) {
       if (configuration.permissionModeId) draft.permissionModeId = configuration.permissionModeId;
     } else {
@@ -918,8 +948,12 @@ export class ChSessions {
     if (this.drafts.has(id)) return this.create(args, configuration);
     this.drafts.set(id, draft);
     if (cwd && selection.provider !== "codex") this.skills.prepare(cwd);
-    if (cwd) this.workspaces.attachReferencedSession(id, cwd);
-    this.workspaces.addDraftReference(id, cwd);
+    if (this.workspaces.usesNativeProjects) {
+      this.workspaces.updateNativeProjectMember(id, projectId);
+    } else {
+      if (cwd) this.workspaces.attachReferencedSession(id, cwd);
+      this.workspaces.addDraftReference(id, cwd);
+    }
     this.events.emit("api-session/added", await this.draftSummary(draft, false));
     return { sessionId: id, agentPreset: "standard" };
   }
@@ -945,6 +979,7 @@ export class ChSessions {
       );
       const result = await this.host.request<{ thread: ChThread }>("thread/start", {
         historyMode: "paginated",
+        ...(draft.projectId ? { projectId: draft.projectId } : {}),
         ...(draft.cwd
           ? { cwd: draft.cwd }
           : { projectlessWorkspace: { prompt: prompt.slice(0, 16_384) } }),
@@ -983,12 +1018,26 @@ export class ChSessions {
             actualHarnessId: owner.harnessId,
           },
         );
+      if (draft.projectId && result.thread.projectId !== draft.projectId) {
+        const updated = await this.host.request<{ thread: ChThread }>("thread/metadata/update", {
+          threadId: result.thread.id,
+          projectId: draft.projectId,
+        });
+        if (updated.thread.projectId !== draft.projectId)
+          throw new RpcError(
+            "workspace/assignment-unconfirmed",
+            "Codex did not confirm the conversation's project.",
+          );
+        result.thread.projectId = updated.thread.projectId;
+      }
       draft.canonicalId = result.thread.id;
       this.files?.bind(draft.id, result.thread.id);
       this.rows.set(result.thread.id, result.thread);
       this.threads.setHarness(result.thread.id, owner.harnessId);
       this.workspaces.detachSession(draft.id);
-      if (draft.cwd) {
+      if (this.workspaces.usesNativeProjects) {
+        this.workspaces.updateNativeProjectMember(result.thread.id, draft.projectId);
+      } else if (draft.cwd) {
         this.workspaces.selectReferenceWorkspace(draft.cwd);
         this.workspaces.attachReferencedSession(result.thread.id, result.thread.cwd);
         this.workspaces.addDraftReference(result.thread.id, draft.cwd);

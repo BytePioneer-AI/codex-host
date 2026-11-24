@@ -1,11 +1,23 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { test } from "node:test";
 import type { Stats } from "node:fs";
-import { DshWebServices } from "../src/dsh-web-services.ts";
+import type { OfficeToPdfResult } from "../src/dsh-web-services.ts";
 import {
   PEER_WORKSPACE_FILES_HEADER,
   servePeerWorkspaceFiles,
@@ -36,21 +48,20 @@ async function withServer(
   try {
     await run(`http://127.0.0.1:${address.port}`);
   } finally {
+    server.closeAllConnections();
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
   }
 }
 
-test("Peer workspace-files RPC serves read, stat, list, baseFile readBytes multipart, and download within workspaceRoot", async () => {
+test("Peer workspace-files RPC serves confined read, stat, list, baseFile readBytes multipart, Office convert, and download", async () => {
   const outer = await mkdtemp(join(tmpdir(), "codexhost-peer-ws-files-"));
   const workspace = join(outer, "workspace");
   const outsideFile = join(outer, "secret.txt");
-  const dsh = await DshWebServices.open({
-    workspaceRoot: workspace,
-    threadWorkspace: (id) => (id === "thread-1" ? workspace : undefined),
-    fileWorkspace: (id) => (id === "thread-1" ? workspace : undefined),
-  });
+  const fakePdf = Buffer.from("%PDF-1.4\nconfined-office\n%%EOF\n");
+  let officeInputBytes: Buffer | undefined;
+
   try {
     await mkdir(join(workspace, "docs", "assets"), { recursive: true });
     await writeFile(join(workspace, "README.md"), "hello\nworld\n");
@@ -66,7 +77,18 @@ test("Peer workspace-files RPC serves read, stat, list, baseFile readBytes multi
     await withServer(
       {
         resolveWorkspaceRoot: (threadId) => (threadId === "thread-1" ? workspace : undefined),
-        dsh,
+        dsh: {
+          async convertOffice(request, signal) {
+            const read = await request.source.read(signal, 10 * 1024 * 1024);
+            officeInputBytes = Buffer.from(read.bytes);
+            return {
+              pdf: fakePdf,
+              missingFonts: ["PingFang SC"],
+              cacheKey: "k1" as OfficeToPdfResult["cacheKey"],
+              generation: "peer-gen-1" as OfficeToPdfResult["generation"],
+            };
+          },
+        },
       },
       async (baseUrl) => {
         const rpcCall = (rpcId: string, method: string, args: Record<string, unknown>) =>
@@ -92,11 +114,13 @@ test("Peer workspace-files RPC serves read, stat, list, baseFile readBytes multi
         const readJson = (await readRes.json()) as {
           type: string;
           rpcId: string;
-          result: { ok: boolean; value?: { text: string } };
+          result: { ok: boolean; value?: { text: string; lines: number; eof: boolean } };
         };
         assert.equal(readJson.rpcId, "rpc-read-1");
         assert.equal(readJson.result.ok, true);
         assert.equal(readJson.result.value?.text, "hello\nworld");
+        assert.equal(readJson.result.value?.lines, 2);
+        assert.equal(readJson.result.value?.eof, true);
 
         // 2. workspaceFiles/stat
         const statRes = await rpcCall("rpc-stat-1", "workspaceFiles/stat", {
@@ -105,11 +129,12 @@ test("Peer workspace-files RPC serves read, stat, list, baseFile readBytes multi
         });
         const statJson = (await statRes.json()) as {
           rpcId: string;
-          result: { ok: boolean; value?: { bytes: number } };
+          result: { ok: boolean; value?: { bytes: number; version: string } };
         };
         assert.equal(statJson.rpcId, "rpc-stat-1");
         assert.equal(statJson.result.ok, true);
         assert.equal(statJson.result.value?.bytes, 12);
+        assert.ok(statJson.result.value?.version);
 
         // 3. workspaceFiles/list
         const listRes = await rpcCall("rpc-list-1", "workspaceFiles/list", {
@@ -150,7 +175,32 @@ test("Peer workspace-files RPC serves read, stat, list, baseFile readBytes multi
         assert.ok(part instanceof Blob);
         assert.deepEqual(Buffer.from(await part.arrayBuffer()), binaryBytes);
 
-        // 5. Rejects non-allowlisted / write methods
+        // 5. officeToPdf/render reads bytes via confined fd reader and returns multipart PDF
+        const officeRes = await rpcCall("rpc-office-1", "officeToPdf/render", {
+          workspaceFileScopeId: "thread-1",
+          path: "报告.docx",
+          priority: "foreground",
+        });
+        assert.equal(officeRes.status, 200);
+        assert.match(officeRes.headers.get("content-type") ?? "", /^multipart\/form-data;/u);
+        const officeForm = await officeRes.formData();
+        const officeMeta = JSON.parse(String(officeForm.get("metadata"))) as {
+          rpcId: string;
+          result: { ok: boolean; value: { generation: string; missingFonts: string[] } };
+          attachments: Array<{ part: string }>;
+        };
+        assert.equal(officeMeta.rpcId, "rpc-office-1");
+        assert.equal(officeMeta.result.ok, true);
+        assert.equal(officeMeta.result.value.generation, "peer-gen-1");
+        assert.deepEqual(officeMeta.result.value.missingFonts, ["PingFang SC"]);
+        assert.deepEqual(officeInputBytes, Buffer.from("PK\x03\x04fake-docx"));
+        const pdfAttachment = officeMeta.attachments[0];
+        assert.ok(pdfAttachment);
+        const pdfPart = officeForm.get(pdfAttachment.part);
+        assert.ok(pdfPart instanceof Blob);
+        assert.deepEqual(Buffer.from(await pdfPart.arrayBuffer()), fakePdf);
+
+        // 6. Rejects non-allowlisted / write methods
         for (const blocked of ["terminal/shells", "workspaceFiles/changes", "session/prompt"]) {
           const blockedRes = await rpcCall("rpc-blocked", blocked, {
             workspaceFileScopeId: "thread-1",
@@ -165,7 +215,7 @@ test("Peer workspace-files RPC serves read, stat, list, baseFile readBytes multi
           assert.equal(blockedJson.result.error?.code, "gateway/bad-request");
         }
 
-        // 6. Rejects unknown threadId
+        // 7. Rejects unknown threadId
         const unknownRes = await rpcCall("rpc-unknown", "workspaceFiles/stat", {
           workspaceFileScopeId: "unknown-thread",
           path: "README.md",
@@ -176,7 +226,7 @@ test("Peer workspace-files RPC serves read, stat, list, baseFile readBytes multi
         assert.equal(unknownJson.result.ok, false);
         assert.equal(unknownJson.result.error?.code, "gateway/lookup-not-found");
 
-        // 7. Rejects paths outside workspaceRoot (even though DSH itself would allow them)
+        // 8. Rejects paths outside workspaceRoot
         for (const args of [
           { workspaceFileScopeId: "thread-1", path: outsideFile },
           { workspaceFileScopeId: "thread-1", path: "../secret.txt" },
@@ -189,7 +239,7 @@ test("Peer workspace-files RPC serves read, stat, list, baseFile readBytes multi
           assert.equal(json.result.error?.code, "workspace-file/outside-workspace");
         }
 
-        // 8. Rejects baseFile traversal & outside baseFile
+        // 9. Rejects baseFile traversal & outside baseFile
         const baseTraversal = await rpcCall("rpc-base-escape", "workspaceFiles/readBytes", {
           workspaceFileScopeId: "thread-1",
           path: "../../secret.txt",
@@ -212,7 +262,7 @@ test("Peer workspace-files RPC serves read, stat, list, baseFile readBytes multi
           "workspace-file/outside-workspace",
         );
 
-        // 9. Rejects control characters / NUL
+        // 10. Rejects control characters / NUL
         const nulRes = await rpcCall("rpc-nul", "workspaceFiles/stat", {
           workspaceFileScopeId: "thread-1",
           path: "README.md\0.txt",
@@ -222,7 +272,7 @@ test("Peer workspace-files RPC serves read, stat, list, baseFile readBytes multi
           "gateway/bad-request",
         );
 
-        // 10. Download GET & HEAD with UTF-8 filename + refusal outside workspace
+        // 11. Download GET & HEAD with UTF-8 filename + refusal outside workspace
         const dlQuery = new URLSearchParams({ threadId: "thread-1", path: "报告.docx" });
         const headRes = await fetch(
           `${baseUrl}/api/peer/v1/workspace-files/download?${dlQuery.toString()}`,
@@ -256,7 +306,263 @@ test("Peer workspace-files RPC serves read, stat, list, baseFile readBytes multi
       },
     );
   } finally {
-    await dsh.close();
+    await rm(outer, { recursive: true, force: true });
+  }
+});
+
+test(
+  "TOCTOU regression: parent directory swapped to outside symlink between validation and open is rejected across read, readBytes, Office, list, and download",
+  { skip: process.platform === "win32" },
+  async () => {
+    const outer = await mkdtemp(join(tmpdir(), "codexhost-peer-toctou-"));
+    const workspace = join(outer, "workspace");
+    const outsideDir = join(outer, "outside");
+    const subDir = join(workspace, "sub");
+    const backupDir = join(outer, "sub-backup");
+    await mkdir(subDir, { recursive: true });
+    await mkdir(outsideDir, { recursive: true });
+    await writeFile(join(subDir, "doc.docx"), "safe-inside-content");
+    await writeFile(join(outsideDir, "doc.docx"), "SECRET-OUTSIDE-CONTENT");
+
+    let officeConvertCalled = 0;
+    let swapped = false;
+    const resetSubDir = async () => {
+      if (!swapped) return;
+      await rm(subDir, { force: true });
+      await rename(backupDir, subDir);
+      swapped = false;
+    };
+
+    const fsOps: PeerWorkspaceFsOps = {
+      lstat,
+      stat,
+      open,
+      realpath,
+      readdir,
+      platform: process.platform,
+      async beforeOpen() {
+        // Deterministically replace workspace/sub with a symlink to outsideDir right after
+        // path validation succeeds and right before the actual open/readdir happens.
+        if (!swapped) {
+          await rename(subDir, backupDir);
+          await symlink(outsideDir, subDir);
+          swapped = true;
+        }
+      },
+    };
+
+    try {
+      await withServer(
+        {
+          resolveWorkspaceRoot: () => workspace,
+          fsOps,
+          dsh: {
+            async convertOffice(request, signal) {
+              officeConvertCalled += 1;
+              await request.source.read(signal, 1024 * 1024);
+              throw new Error("should not reach convertOffice");
+            },
+          },
+        },
+        async (baseUrl) => {
+          for (const method of [
+            "workspaceFiles/read",
+            "workspaceFiles/readBytes",
+            "workspaceFiles/stat",
+            "officeToPdf/render",
+          ] as const) {
+            await resetSubDir();
+            const res = await fetch(`${baseUrl}/api/peer/v1/workspace-files/rpc`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                type: "client-request",
+                rpcId: `toctou-${method}`,
+                method,
+                payload: {
+                  args: {
+                    workspaceFileScopeId: "thread-1",
+                    path: "sub/doc.docx",
+                    ...(method === "workspaceFiles/read" ? { range: {} } : {}),
+                    ...(method === "workspaceFiles/readBytes" ? { options: {} } : {}),
+                    ...(method === "officeToPdf/render" ? { priority: "foreground" } : {}),
+                  },
+                },
+              }),
+            });
+            assert.equal(res.status, 200);
+            const json = (await res.json()) as {
+              result: { ok: boolean; error?: { code: string } };
+            };
+            assert.equal(json.result.ok, false, `${method} must reject TOCTOU parent swap`);
+            assert.equal(
+              json.result.error?.code,
+              "workspace-file/outside-workspace",
+              `${method} returned wrong code`,
+            );
+          }
+          assert.equal(officeConvertCalled, 0, "Office converter must never receive swapped file");
+
+          // workspaceFiles/list also rejects TOCTOU parent swap
+          await resetSubDir();
+          const listRes = await fetch(`${baseUrl}/api/peer/v1/workspace-files/rpc`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              type: "client-request",
+              rpcId: "toctou-list",
+              method: "workspaceFiles/list",
+              payload: { args: { workspaceFileScopeId: "thread-1", path: "sub" } },
+            }),
+          });
+          const listJson = (await listRes.json()) as {
+            result: { ok: boolean; error?: { code: string } };
+          };
+          assert.equal(listJson.result.ok, false);
+          assert.equal(listJson.result.error?.code, "workspace-file/outside-workspace");
+
+          // download also rejects TOCTOU parent swap with 403
+          await resetSubDir();
+          const dlRes = await fetch(
+            `${baseUrl}/api/peer/v1/workspace-files/download?${new URLSearchParams({
+              threadId: "thread-1",
+              path: "sub/doc.docx",
+            })}`,
+          );
+          assert.equal(dlRes.status, 403);
+          assert.ok(!(await dlRes.text()).includes("SECRET-OUTSIDE-CONTENT"));
+        },
+      );
+    } finally {
+      await rm(outer, { recursive: true, force: true });
+    }
+  },
+);
+
+test("Peer early abort cancels resolveWorkspaceRoot before starting Office conversion and aborts active convertOffice", async () => {
+  const outer = await mkdtemp(join(tmpdir(), "codexhost-peer-abort-"));
+  const workspace = join(outer, "workspace");
+  await mkdir(workspace, { recursive: true });
+  await writeFile(join(workspace, "slides.pptx"), "pptx-bytes");
+
+  let resolveStarted!: () => void;
+  const resolveStartedPromise = new Promise<void>((r) => {
+    resolveStarted = r;
+  });
+  let resolveSignalAborted = false;
+  let releaseResolve!: () => void;
+  let officeStarted = 0;
+
+  try {
+    // Case 1: client disconnects while resolveWorkspaceRoot is pending -> Office conversion never starts
+    await withServer(
+      {
+        async resolveWorkspaceRoot(_threadId, signal) {
+          resolveStarted();
+          signal?.addEventListener(
+            "abort",
+            () => {
+              resolveSignalAborted = true;
+              releaseResolve();
+            },
+            { once: true },
+          );
+          await new Promise<void>((r) => {
+            releaseResolve = r;
+          });
+          return workspace;
+        },
+        dsh: {
+          async convertOffice() {
+            officeStarted += 1;
+            throw new Error("must not start after client disconnect");
+          },
+        },
+      },
+      async (baseUrl) => {
+        const clientAbort = new AbortController();
+        const reqPromise = fetch(`${baseUrl}/api/peer/v1/workspace-files/rpc`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          signal: clientAbort.signal,
+          body: JSON.stringify({
+            type: "client-request",
+            rpcId: "abort-before-office",
+            method: "officeToPdf/render",
+            payload: {
+              args: { workspaceFileScopeId: "t1", path: "slides.pptx", priority: "foreground" },
+            },
+          }),
+        }).catch(() => undefined);
+
+        await resolveStartedPromise;
+        clientAbort.abort();
+        await reqPromise;
+        for (let i = 0; i < 30 && !resolveSignalAborted; i += 1) {
+          await new Promise((r) => setTimeout(r, 15));
+        }
+        assert.equal(resolveSignalAborted, true, "resolveWorkspaceRoot signal must abort early");
+        assert.equal(officeStarted, 0, "Office conversion must never start after early abort");
+      },
+    );
+
+    // Case 2: client disconnects during active convertOffice -> convertOffice signal aborts
+    let convertStarted!: () => void;
+    const convertStartedPromise = new Promise<void>((r) => {
+      convertStarted = r;
+    });
+    let convertSignalAborted = false;
+    await withServer(
+      {
+        resolveWorkspaceRoot: () => workspace,
+        dsh: {
+          async convertOffice(_request, signal) {
+            convertStarted();
+            await new Promise<void>((resolve) => {
+              if (signal.aborted) {
+                convertSignalAborted = true;
+                resolve();
+                return;
+              }
+              signal.addEventListener(
+                "abort",
+                () => {
+                  convertSignalAborted = true;
+                  resolve();
+                },
+                { once: true },
+              );
+            });
+            throw new Error("aborted");
+          },
+        },
+      },
+      async (baseUrl) => {
+        const clientAbort = new AbortController();
+        const reqPromise = fetch(`${baseUrl}/api/peer/v1/workspace-files/rpc`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          signal: clientAbort.signal,
+          body: JSON.stringify({
+            type: "client-request",
+            rpcId: "abort-during-office",
+            method: "officeToPdf/render",
+            payload: {
+              args: { workspaceFileScopeId: "t1", path: "slides.pptx", priority: "foreground" },
+            },
+          }),
+        }).catch(() => undefined);
+
+        await convertStartedPromise;
+        clientAbort.abort();
+        await reqPromise;
+        for (let i = 0; i < 30 && !convertSignalAborted; i += 1) {
+          await new Promise((r) => setTimeout(r, 15));
+        }
+        assert.equal(convertSignalAborted, true, "convertOffice signal must abort on disconnect");
+      },
+    );
+  } finally {
     await rm(outer, { recursive: true, force: true });
   }
 });
@@ -282,14 +588,9 @@ test(
         {
           resolveWorkspaceRoot: (id) => (id === "thread-1" ? workspace : undefined),
           dsh: {
-            async fetchMethod(method, body) {
+            async convertOffice() {
               officeCalled += 1;
-              const parsed = JSON.parse(body) as { rpcId: string };
-              return Response.json({
-                type: "server-response",
-                rpcId: parsed.rpcId,
-                result: { ok: true, value: { method } },
-              });
+              throw new Error("should not convert");
             },
           },
         },
@@ -323,9 +624,12 @@ test(
               assert.equal(json.result.error?.code, "workspace-file/outside-workspace");
             }
           }
-          assert.equal(officeCalled, 0, "DSH must never be invoked for escaping symlinks");
+          assert.equal(
+            officeCalled,
+            0,
+            "Office converter must never be invoked for escaping symlinks",
+          );
 
-          // Internal file symlink rejected as not-regular-file across RPC & download
           const internalRpc = await fetch(`${baseUrl}/api/peer/v1/workspace-files/rpc`, {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -342,7 +646,6 @@ test(
             "workspace-file/not-regular-file",
           );
 
-          // Download also rejects all symlink escapes with 403 and internal file symlink with 404
           for (const target of ["file-escape.docx", "dir-escape/leak.docx"]) {
             const dl = await fetch(
               `${baseUrl}/api/peer/v1/workspace-files/download?${new URLSearchParams({ threadId: "thread-1", path: target })}`,
@@ -402,7 +705,6 @@ test("validatePeerWorkspacePath handles Windows /D:/... drive prefix and rejects
     },
   };
 
-  // Leading slash before Windows drive letter is accepted
   const okDrive = await validatePeerWorkspacePath({
     workspaceRoot: "D:\\work",
     path: "/D:/work/docs/report.docx",
@@ -412,7 +714,6 @@ test("validatePeerWorkspacePath handles Windows /D:/... drive prefix and rejects
   assert.equal(okDrive.ok, true);
   if (okDrive.ok) assert.equal(okDrive.realPath, "D:\\work\\docs\\report.docx");
 
-  // baseFile with leading slash + relative image
   const okBase = await validatePeerWorkspacePath({
     workspaceRoot: "D:\\work",
     path: "img.png",
@@ -422,7 +723,6 @@ test("validatePeerWorkspacePath handles Windows /D:/... drive prefix and rejects
   });
   assert.equal(okBase.ok, true);
 
-  // Cross-drive path rejected
   const crossDrive = await validatePeerWorkspacePath({
     workspaceRoot: "D:\\work",
     path: "/C:/Windows/win.ini",
@@ -432,7 +732,6 @@ test("validatePeerWorkspacePath handles Windows /D:/... drive prefix and rejects
   assert.equal(crossDrive.ok, false);
   if (!crossDrive.ok) assert.equal(crossDrive.code, "workspace-file/outside-workspace");
 
-  // UNC paths rejected
   for (const unc of ["\\\\fileserver\\share\\doc.docx", "//fileserver/share/doc.docx"]) {
     const res = await validatePeerWorkspacePath({
       workspaceRoot: "D:\\work",
@@ -444,7 +743,6 @@ test("validatePeerWorkspacePath handles Windows /D:/... drive prefix and rejects
     if (!res.ok) assert.equal(res.code, "workspace-file/outside-workspace");
   }
 
-  // Drive-relative path rejected
   const driveRelative = await validatePeerWorkspacePath({
     workspaceRoot: "D:\\work",
     path: "D:docs\\report.docx",
@@ -454,6 +752,5 @@ test("validatePeerWorkspacePath handles Windows /D:/... drive prefix and rejects
   assert.equal(driveRelative.ok, false);
   if (!driveRelative.ok) assert.equal(driveRelative.code, "gateway/bad-request");
 
-  // Sanity: posix pathOps still exported & functional
   assert.equal(posix.join("/a", "b"), "/a/b");
 });

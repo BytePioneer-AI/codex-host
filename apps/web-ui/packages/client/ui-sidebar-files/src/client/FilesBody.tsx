@@ -234,6 +234,20 @@ export function FilesBody({
   );
   const { signal, actions: tabActions } = tab;
   const cwd = useSessions((sessions) => sessions.byId[sessionId]?.cwd || undefined);
+  const remoteHost = useSessions(
+    (sessions) =>
+      (
+        sessions.byId[sessionId]?.projectionValues as
+          | {
+              readonly remoteHost?: {
+                readonly hostId: string;
+                readonly state: string;
+                readonly workspaceFiles?: boolean;
+              } | null;
+            }
+          | undefined
+      )?.remoteHost,
+  );
   const state = useStore((store) => store.byTab[tab.id]);
   const bodyRef = useRef<HTMLDivElement>(null);
   const scrollTopRef = useRef(0);
@@ -265,9 +279,21 @@ export function FilesBody({
   }, [state, cwd, tab.id, signal, start]);
 
   if (cwd === undefined) {
+    const emptyLine =
+      remoteHost == null
+        ? t("noWorkspace")
+        : remoteHost.state !== "connected"
+          ? t("error.remoteOffline")
+          : remoteHost.workspaceFiles === false
+            ? t(
+                remoteHost.hostId.startsWith("remote-peer:")
+                  ? "error.remoteUpgradeRequired"
+                  : "error.remoteUnsupported",
+              )
+            : t("noWorkspace");
     return (
       <div className={css.status} data-files-state="no-workspace">
-        <p className={css.statusLine}>{t("noWorkspace")}</p>
+        <p className={css.statusLine}>{emptyLine}</p>
       </div>
     );
   }

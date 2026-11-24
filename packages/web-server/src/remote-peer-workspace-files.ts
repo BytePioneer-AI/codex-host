@@ -1,8 +1,7 @@
 /** Hub-side remote peer workspace-file identity resolution, RPC proxy, WS watch degradation, and streaming downloads. */
+import { once } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename } from "node:path";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { REMOTE_PEER_HOST_ID_PREFIX } from "@codexhost/shared-contracts";
 import type { PeerHostClient } from "./peer-host-client.ts";
@@ -29,6 +28,10 @@ export interface RemotePeerWorkspaceFilesOptions {
   readonly rpcTimeoutMs?: number;
   readonly officeRenderTimeoutMs?: number;
   readonly downloadHandshakeTimeoutMs?: number;
+  readonly streamIdleTimeoutMs?: number;
+  readonly maxJsonResponseBytes?: number;
+  readonly maxConcurrentPerPeer?: number;
+  readonly maxConcurrentTotal?: number;
 }
 
 export type ResolvedRemoteWorkspaceTarget =
@@ -51,6 +54,10 @@ export type ResolvedRemoteWorkspaceTarget =
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 const DEFAULT_OFFICE_RENDER_TIMEOUT_MS = 65_000;
 const DEFAULT_DOWNLOAD_HANDSHAKE_TIMEOUT_MS = 30_000;
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_JSON_RESPONSE_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_CONCURRENT_PER_PEER = 8;
+const DEFAULT_MAX_CONCURRENT_TOTAL = 24;
 const REMOTE_SESSION_PREFIX = "web-remote:";
 const REMOTE_CONTROL_PREFIX = "remote-control:";
 
@@ -145,7 +152,7 @@ function isTypertServerResponseEnvelope(value: unknown): value is {
   };
 } {
   if (!isPlainObject(value)) return false;
-  if (value.type !== "server-response") return false;
+  if (value.type !== "server-response" || typeof value.rpcId !== "string") return false;
   if (!isPlainObject(value.result) || typeof value.result.ok !== "boolean") return false;
   if (value.result.ok === false) {
     const err = value.result.error;
@@ -156,10 +163,151 @@ function isTypertServerResponseEnvelope(value: unknown): value is {
   return true;
 }
 
+class ResponseTooLargeError extends Error {
+  constructor() {
+    super("Remote peer response exceeded size limit");
+  }
+}
+
+class StreamIdleTimeoutError extends Error {
+  constructor() {
+    super("Remote peer stream stalled");
+  }
+}
+
+async function readBoundedText(
+  upstream: Response,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<string> {
+  const declared = upstream.headers.get("content-length");
+  if (declared !== null) {
+    const size = Number(declared);
+    if (Number.isFinite(size) && size > maxBytes) {
+      await upstream.body?.cancel().catch(() => undefined);
+      throw new ResponseTooLargeError();
+    }
+  }
+  if (!upstream.body) return "";
+  const reader = upstream.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      signal.throwIfAborted();
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new ResponseTooLargeError();
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total).toString("utf8");
+}
+
+async function pipeWebStreamWithIdleTimeout(
+  body: WebReadableStream<Uint8Array>,
+  destination: ServerResponse,
+  options: {
+    idleTimeoutMs: number;
+    signal: AbortSignal;
+    onIdleTimeout: () => void;
+  },
+): Promise<void> {
+  const reader = body.getReader();
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let idleTimedOut = false;
+
+  const resetIdleTimer = (): void => {
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleTimedOut = true;
+      options.onIdleTimeout();
+      void reader.cancel().catch(() => undefined);
+      if (!destination.destroyed) destination.destroy(new StreamIdleTimeoutError());
+    }, options.idleTimeoutMs);
+    idleTimer.unref();
+  };
+
+  try {
+    resetIdleTimer();
+    for (;;) {
+      if (options.signal.aborted || destination.destroyed || idleTimedOut) break;
+      const { done, value } = await reader.read();
+      if (done) break;
+      resetIdleTimer();
+      if (options.signal.aborted || destination.destroyed || idleTimedOut) break;
+      if (!destination.write(value)) {
+        await Promise.race([
+          once(destination, "drain"),
+          once(destination, "close"),
+          new Promise<void>((resolve) => {
+            if (options.signal.aborted) resolve();
+            else options.signal.addEventListener("abort", () => resolve(), { once: true });
+          }),
+        ]);
+      }
+    }
+    if (
+      !idleTimedOut &&
+      !options.signal.aborted &&
+      !destination.destroyed &&
+      !destination.writableEnded
+    ) {
+      destination.end();
+    }
+  } catch (error) {
+    if (idleTimedOut) throw new StreamIdleTimeoutError();
+    if (!options.signal.aborted && !destination.destroyed) {
+      destination.destroy(error instanceof Error ? error : undefined);
+    }
+    throw error;
+  } finally {
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
+
+function attachBrowserDisconnectAbort(
+  response: ServerResponse,
+  request?: IncomingMessage,
+): { controller: AbortController; detach: () => void } {
+  const controller = new AbortController();
+  const onClose = (): void => {
+    if (!response.writableEnded) controller.abort(new Error("Browser request closed"));
+  };
+  const onRequestClose = (): void => {
+    if (request && !request.complete) onClose();
+  };
+  response.once("close", onClose);
+  request?.once("aborted", onClose);
+  request?.once("close", onRequestClose);
+  return {
+    controller,
+    detach: () => {
+      response.off("close", onClose);
+      request?.off("aborted", onClose);
+      request?.off("close", onRequestClose);
+    },
+  };
+}
+
 export class RemotePeerWorkspaceFiles {
   private readonly rpcTimeoutMs: number;
   private readonly officeRenderTimeoutMs: number;
   private readonly downloadHandshakeTimeoutMs: number;
+  private readonly streamIdleTimeoutMs: number;
+  private readonly maxJsonResponseBytes: number;
+  private readonly maxConcurrentPerPeer: number;
+  private readonly maxConcurrentTotal: number;
+  private activeTotal = 0;
+  private readonly activeByHost = new Map<string, number>();
 
   constructor(
     private readonly resolver: RemoteWorkspaceFileSessionResolver,
@@ -169,6 +317,28 @@ export class RemotePeerWorkspaceFiles {
     this.officeRenderTimeoutMs = options.officeRenderTimeoutMs ?? DEFAULT_OFFICE_RENDER_TIMEOUT_MS;
     this.downloadHandshakeTimeoutMs =
       options.downloadHandshakeTimeoutMs ?? DEFAULT_DOWNLOAD_HANDSHAKE_TIMEOUT_MS;
+    this.streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+    this.maxJsonResponseBytes = options.maxJsonResponseBytes ?? DEFAULT_MAX_JSON_RESPONSE_BYTES;
+    this.maxConcurrentPerPeer = options.maxConcurrentPerPeer ?? DEFAULT_MAX_CONCURRENT_PER_PEER;
+    this.maxConcurrentTotal = options.maxConcurrentTotal ?? DEFAULT_MAX_CONCURRENT_TOTAL;
+  }
+
+  private acquireSlot(hostId: string): (() => void) | undefined {
+    const peerCount = this.activeByHost.get(hostId) ?? 0;
+    if (this.activeTotal >= this.maxConcurrentTotal || peerCount >= this.maxConcurrentPerPeer) {
+      return undefined;
+    }
+    this.activeTotal += 1;
+    this.activeByHost.set(hostId, peerCount + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.activeTotal = Math.max(0, this.activeTotal - 1);
+      const next = (this.activeByHost.get(hostId) ?? 1) - 1;
+      if (next <= 0) this.activeByHost.delete(hostId);
+      else this.activeByHost.set(hostId, next);
+    };
   }
 
   /**
@@ -350,6 +520,17 @@ export class RemotePeerWorkspaceFiles {
       return true;
     }
 
+    const releaseSlot = this.acquireSlot(resolved.hostId);
+    if (!releaseSlot) {
+      writeTypertError(
+        response,
+        rpcId,
+        "remote/busy",
+        "Too many concurrent remote workspace file requests. Try again shortly.",
+      );
+      return true;
+    }
+
     const rewrittenBody = JSON.stringify({
       ...parsed,
       rpcId,
@@ -365,18 +546,18 @@ export class RemotePeerWorkspaceFiles {
 
     const timeoutMs =
       method === "officeToPdf/render" ? this.officeRenderTimeoutMs : this.rpcTimeoutMs;
-    const browserAbort = new AbortController();
+    const { controller: browserAbort, detach } = attachBrowserDisconnectAbort(response, request);
     const timeoutController = new AbortController();
+    const idleController = new AbortController();
     const timer = setTimeout(
       () => timeoutController.abort(new Error("Peer request timed out")),
       timeoutMs,
     );
-    const onClose = (): void => {
-      if (!response.writableEnded) browserAbort.abort(new Error("Browser request closed"));
-    };
-    response.once("close", onClose);
-    request.once("aborted", onClose);
-    const signal = AbortSignal.any([browserAbort.signal, timeoutController.signal]);
+    const signal = AbortSignal.any([
+      browserAbort.signal,
+      timeoutController.signal,
+      idleController.signal,
+    ]);
 
     try {
       const upstream = await fetch(
@@ -425,6 +606,8 @@ export class RemotePeerWorkspaceFiles {
       }
 
       if (upstream.ok && mediaType === "multipart/form-data") {
+        // Response headers arrived: switch from handshake timeout to per-chunk stream idle timeout.
+        clearTimeout(timer);
         const headers: Record<string, string> = {
           "content-type": contentType,
           "cache-control": "no-store",
@@ -436,16 +619,21 @@ export class RemotePeerWorkspaceFiles {
         if (upstream.body === null) {
           response.end();
         } else {
-          await pipeline(
-            Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>),
+          await pipeWebStreamWithIdleTimeout(
+            upstream.body as WebReadableStream<Uint8Array>,
             response,
+            {
+              idleTimeoutMs: this.streamIdleTimeoutMs,
+              signal,
+              onIdleTimeout: () => idleController.abort(new StreamIdleTimeoutError()),
+            },
           );
         }
         return true;
       }
 
       if (mediaType === "application/json") {
-        const text = await upstream.text();
+        const text = await readBoundedText(upstream, this.maxJsonResponseBytes, signal);
         if (browserAbort.signal.aborted || response.destroyed) return true;
         let json: unknown;
         try {
@@ -454,15 +642,24 @@ export class RemotePeerWorkspaceFiles {
           json = undefined;
         }
         if (isTypertServerResponseEnvelope(json)) {
-          const restored = Buffer.from(JSON.stringify({ ...json, rpcId }));
+          if (json.rpcId !== rpcId) {
+            writeTypertError(
+              response,
+              rpcId,
+              "remote/request-failed",
+              "Remote peer returned a mismatched rpcId.",
+            );
+            return true;
+          }
+          const verified = Buffer.from(JSON.stringify(json));
           response
             .writeHead(200, {
               "content-type": "application/json; charset=utf-8",
-              "content-length": String(restored.byteLength),
+              "content-length": String(verified.byteLength),
               "cache-control": "no-store",
               "x-content-type-options": "nosniff",
             })
-            .end(restored);
+            .end(verified);
           return true;
         }
         const message =
@@ -490,7 +687,16 @@ export class RemotePeerWorkspaceFiles {
       return true;
     } catch (error) {
       if (browserAbort.signal.aborted || response.destroyed || response.writableEnded) return true;
-      if (timeoutController.signal.aborted) {
+      if (error instanceof ResponseTooLargeError) {
+        writeTypertError(
+          response,
+          rpcId,
+          "remote/response-too-large",
+          "Remote peer response exceeded the maximum allowed size.",
+        );
+        return true;
+      }
+      if (timeoutController.signal.aborted || error instanceof StreamIdleTimeoutError) {
         writeTypertError(
           response,
           rpcId,
@@ -516,8 +722,8 @@ export class RemotePeerWorkspaceFiles {
       return true;
     } finally {
       clearTimeout(timer);
-      response.off("close", onClose);
-      request.off("aborted", onClose);
+      detach();
+      releaseSlot();
     }
   }
 
@@ -531,6 +737,7 @@ export class RemotePeerWorkspaceFiles {
     path: string,
     tickets: WorkspaceDownloadTickets,
     owner?: string,
+    request?: IncomingMessage,
   ): Promise<boolean> {
     if (!isRemoteWorkspaceScopeId(sessionId)) return false;
 
@@ -545,9 +752,17 @@ export class RemotePeerWorkspaceFiles {
       return true;
     }
 
+    const releaseSlot = this.acquireSlot(resolved.hostId);
+    if (!releaseSlot) {
+      writePlainError(response, 429, "too many concurrent remote file requests");
+      return true;
+    }
+
     const query = new URLSearchParams({ threadId: resolved.threadId, path });
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.downloadHandshakeTimeoutMs);
+    const { controller: browserAbort, detach } = attachBrowserDisconnectAbort(response, request);
+    const timeoutController = new AbortController();
+    const timer = setTimeout(() => timeoutController.abort(), this.downloadHandshakeTimeoutMs);
+    const signal = AbortSignal.any([browserAbort.signal, timeoutController.signal]);
     try {
       const upstream = await fetch(
         `${resolved.peer.record.origin}/api/peer/v1/workspace-files/download?${query.toString()}`,
@@ -555,9 +770,10 @@ export class RemotePeerWorkspaceFiles {
           method: "HEAD",
           redirect: "error",
           headers: { authorization: `Bearer ${resolved.peer.record.token}` },
-          signal: controller.signal,
+          signal,
         },
       );
+      if (browserAbort.signal.aborted || response.destroyed) return true;
       if (upstream.status === 404 && upstream.headers.get(PEER_WORKSPACE_FILES_HEADER) !== "1") {
         writePlainError(response, 501, "remote peer upgrade required");
         return true;
@@ -566,9 +782,7 @@ export class RemotePeerWorkspaceFiles {
         const status =
           upstream.status === 400 || upstream.status === 403 || upstream.status === 404
             ? upstream.status
-            : upstream.status === 401
-              ? 502
-              : 502;
+            : 502;
         writePlainError(response, status, "file unavailable");
         return true;
       }
@@ -594,10 +808,13 @@ export class RemotePeerWorkspaceFiles {
         );
       return true;
     } catch {
+      if (browserAbort.signal.aborted || response.destroyed || response.writableEnded) return true;
       writePlainError(response, 502, "remote peer unavailable");
       return true;
     } finally {
       clearTimeout(timer);
+      detach();
+      releaseSlot();
     }
   }
 
@@ -627,15 +844,17 @@ export class RemotePeerWorkspaceFiles {
       return true;
     }
 
-    const browserAbort = new AbortController();
+    const releaseSlot = this.acquireSlot(resolved.hostId);
+    if (!releaseSlot) {
+      writePlainError(response, 429, "too many concurrent remote file requests", isHead);
+      return true;
+    }
+
+    const { controller: browserAbort, detach } = attachBrowserDisconnectAbort(response, request);
     const handshakeAbort = new AbortController();
+    const idleAbort = new AbortController();
     const timer = setTimeout(() => handshakeAbort.abort(), this.downloadHandshakeTimeoutMs);
-    const onClose = (): void => {
-      if (!response.writableEnded) browserAbort.abort(new Error("Download connection closed"));
-    };
-    response.once("close", onClose);
-    request.once("aborted", onClose);
-    const signal = AbortSignal.any([browserAbort.signal, handshakeAbort.signal]);
+    const signal = AbortSignal.any([browserAbort.signal, handshakeAbort.signal, idleAbort.signal]);
 
     const query = new URLSearchParams({ threadId: resolved.threadId, path });
     try {
@@ -648,7 +867,7 @@ export class RemotePeerWorkspaceFiles {
           signal,
         },
       );
-      // Handshake succeeded; clear handshake timer so large streaming downloads are never cut off.
+      // Handshake succeeded; switch from handshake timeout to per-chunk idle timeout.
       clearTimeout(timer);
 
       if (browserAbort.signal.aborted || response.destroyed) {
@@ -691,7 +910,11 @@ export class RemotePeerWorkspaceFiles {
         response.end();
         return true;
       }
-      await pipeline(Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>), response);
+      await pipeWebStreamWithIdleTimeout(upstream.body as WebReadableStream<Uint8Array>, response, {
+        idleTimeoutMs: this.streamIdleTimeoutMs,
+        signal,
+        onIdleTimeout: () => idleAbort.abort(new StreamIdleTimeoutError()),
+      });
       return true;
     } catch {
       if (browserAbort.signal.aborted || response.destroyed || response.writableEnded) return true;
@@ -703,8 +926,8 @@ export class RemotePeerWorkspaceFiles {
       return true;
     } finally {
       clearTimeout(timer);
-      response.off("close", onClose);
-      request.off("aborted", onClose);
+      detach();
+      releaseSlot();
     }
   }
 }

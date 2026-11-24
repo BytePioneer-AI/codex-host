@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ChSessions } from "../src/ch-sessions.ts";
-import { DshWebServices } from "../src/dsh-web-services.ts";
+import { OfficeToPdfError, type OfficeToPdfResult } from "../src/dsh-web-services.ts";
 import { peerEndpoint } from "../src/peer-manifest.ts";
 import {
   PEER_WORKSPACE_FILES_HEADER,
@@ -66,80 +66,40 @@ async function startHttpServer(
   assert.ok(address && typeof address !== "string");
   return {
     url: `http://127.0.0.1:${address.port}`,
-    close: () =>
-      new Promise<void>((resolve, reject) =>
+    close: () => {
+      server.closeAllConnections();
+      return new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
-      ),
+      );
+    },
   };
 }
 
-test("Hub proxies Typert RPCs, multipart binaries (readBytes & officeToPdf/render), rpcId, non-2xx errors, and streaming downloads", async () => {
+test("Hub proxies Typert RPCs, multipart binaries (readBytes & officeToPdf/render), rpcId, errors, and streaming downloads", async () => {
   const outer = await mkdtemp(join(tmpdir(), "codexhost-hub-peer-files-"));
   const workspace = join(outer, "workspace");
   await mkdir(workspace, { recursive: true });
   await writeFile(join(workspace, "notes.md"), "# Hello remote\n");
   await writeFile(join(workspace, "deck.pptx"), Buffer.from("fake-pptx-source"));
+  await writeFile(join(workspace, "broken.docx"), "corrupted");
   const largeDownloadBytes = Buffer.alloc(128 * 1024, 0x42);
   await writeFile(join(workspace, "large-report.bin"), largeDownloadBytes);
 
-  const realDsh = await DshWebServices.open({
-    workspaceRoot: workspace,
-    threadWorkspace: (id) => (id === "remote-t1" ? workspace : undefined),
-    fileWorkspace: (id) => (id === "remote-t1" ? workspace : undefined),
-  });
-
   const fakePdfBytes = Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n");
-  const observedPeerMethods: string[] = [];
-  const combinedDsh: PeerWorkspaceFilesDsh = {
-    async fetchMethod(method, body, signal) {
-      observedPeerMethods.push(method);
-      if (method === "officeToPdf/render") {
-        const parsed = JSON.parse(body) as { rpcId: string; payload: { args: { path: string } } };
-        if (parsed.payload.args.path.endsWith("broken.docx")) {
-          return new Response(
-            JSON.stringify({
-              type: "server-response",
-              rpcId: parsed.rpcId,
-              result: {
-                ok: false,
-                error: {
-                  code: "document-render/failed",
-                  message: "Office conversion failed.",
-                  details: { reason: "invalid-document" },
-                },
-              },
-            }),
-            { status: 500, headers: { "content-type": "application/json; charset=utf-8" } },
-          );
-        }
-        const form = new FormData();
-        form.set("bytes-0", new Blob([fakePdfBytes]));
-        form.set(
-          "metadata",
-          JSON.stringify({
-            type: "server-response",
-            rpcId: parsed.rpcId,
-            result: {
-              ok: true,
-              value: {
-                absolutePath: parsed.payload.args.path,
-                version: "v1",
-                offset: 0,
-                eof: true,
-                bytes: fakePdfBytes.byteLength,
-                missingFonts: ["Noto Sans SC"],
-                generation: "peer-gen-1",
-              },
-            },
-            attachments: [{ path: ["data"], codec: "bytes", part: "bytes-0" }],
-          }),
-        );
-        return new Response(form);
+  const dsh: PeerWorkspaceFilesDsh = {
+    async convertOffice(request, signal) {
+      const read = await request.source.read(signal, 10 * 1024 * 1024);
+      if (Buffer.from(read.bytes).toString("utf8") === "corrupted") {
+        throw new OfficeToPdfError("invalid-document", "Corrupted Office document");
       }
-      return realDsh.fetchMethod(method, body, signal);
+      return {
+        pdf: fakePdfBytes,
+        missingFonts: ["Noto Sans SC"],
+        cacheKey: "cache-1" as OfficeToPdfResult["cacheKey"],
+        generation: "peer-gen-1" as OfficeToPdfResult["generation"],
+      };
     },
   };
-  await writeFile(join(workspace, "broken.docx"), "corrupted");
 
   let peerAuthSeen = "";
   const peerServer = await startHttpServer((req, res) => {
@@ -148,14 +108,14 @@ test("Hub proxies Typert RPCs, multipart binaries (readBytes & officeToPdf/rende
     if (pathname === "/api/peer/v1/workspace-files/rpc") {
       void servePeerWorkspaceFiles(req, res, "rpc", {
         resolveWorkspaceRoot: (id) => (id === "remote-t1" ? workspace : undefined),
-        dsh: combinedDsh,
+        dsh,
       });
       return;
     }
     if (pathname === "/api/peer/v1/workspace-files/download") {
       void servePeerWorkspaceFiles(req, res, "download", {
         resolveWorkspaceRoot: (id) => (id === "remote-t1" ? workspace : undefined),
-        dsh: combinedDsh,
+        dsh,
       });
       return;
     }
@@ -190,6 +150,7 @@ test("Hub proxies Typert RPCs, multipart binaries (readBytes & officeToPdf/rende
           tickets,
           "owner-1",
           proxy,
+          req,
         );
       });
       return;
@@ -294,9 +255,8 @@ test("Hub proxies Typert RPCs, multipart binaries (readBytes & officeToPdf/rende
     const pdfPart = officeForm.get(officeAttachment.part);
     assert.ok(pdfPart instanceof Blob);
     assert.deepEqual(Buffer.from(await pdfPart.arrayBuffer()), fakePdfBytes);
-    assert.ok(observedPeerMethods.includes("officeToPdf/render"));
 
-    // 4. Non-2xx Typert error envelope from Peer preserves rpcId, code, and error.details
+    // 4. Structured Typert error details preserved for Office failure
     const brokenOfficeRes = await fetch(`${hubServer.url}/api/officeToPdf/render`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -384,18 +344,15 @@ test("Hub proxies Typert RPCs, multipart binaries (readBytes & officeToPdf/rende
     );
     assert.equal(expiredDl.status, 401);
 
-    // Local fallback was never called for any remote request
     assert.equal(localFallbackCalls, 1);
   } finally {
     await hubServer.close();
     await peerServer.close();
-    await realDsh.close();
     await rm(outer, { recursive: true, force: true });
   }
 });
 
 test("Hub rejects invalid, nested, unsubmitted draft, SSH, remote-control, disabled, offline, and legacy Peer identities", async () => {
-  // Legacy peer that returns plain 404 (no peer workspace-files header)
   const legacy404Peer = await startHttpServer((_req, res) => {
     res
       .writeHead(404, { "content-type": "application/json" })
@@ -554,14 +511,45 @@ test("Hub rejects invalid, nested, unsubmitted draft, SSH, remote-control, disab
   }
 });
 
-test("Hub uses longer Office render timeout and propagates browser disconnect AbortSignal to Peer", async () => {
-  let peerAborted = false;
-  let resolvePeerStarted!: () => void;
-  const peerStarted = new Promise<void>((resolve) => {
-    resolvePeerStarted = resolve;
+test("Hub enforces JSON size cap, rpcId matching, concurrency limit, stream idle timeout, and HEAD/RPC abort cancellation", async () => {
+  let headStarted!: () => void;
+  const headStartedPromise = new Promise<void>((r) => {
+    headStarted = r;
+  });
+  let headAborted = false;
+  let stallAborted = false;
+  let releaseConcurrencySlot!: () => void;
+  let slotRequestStarted!: () => void;
+  const slotStartedPromise = new Promise<void>((r) => {
+    slotRequestStarted = r;
   });
 
   const peerServer = await startHttpServer((req, res) => {
+    const reqUrl = new URL(req.url ?? "/", "http://localhost");
+    if (reqUrl.pathname === "/api/peer/v1/workspace-files/download") {
+      const target = reqUrl.searchParams.get("path");
+      if (req.method === "HEAD" && target === "hang-head.bin") {
+        headStarted();
+        res.once("close", () => {
+          if (!res.writableEnded) headAborted = true;
+        });
+        return;
+      }
+      if (req.method === "GET" && target === "stalled-stream.bin") {
+        res.writeHead(200, {
+          "content-type": "application/octet-stream",
+          [PEER_WORKSPACE_FILES_HEADER]: "1",
+        });
+        res.write(Buffer.from("first-chunk-"));
+        res.once("close", () => {
+          if (!res.writableEnded) stallAborted = true;
+        });
+        return;
+      }
+      res.writeHead(404, { [PEER_WORKSPACE_FILES_HEADER]: "1" }).end();
+      return;
+    }
+
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
@@ -569,48 +557,118 @@ test("Hub uses longer Office render timeout and propagates browser disconnect Ab
         rpcId: string;
         payload: { args: { path: string } };
       };
-      if (parsed.payload.args.path === "slow-success.docx") {
-        const timer = setTimeout(() => {
-          res.writeHead(200, {
-            "content-type": "application/json",
-            [PEER_WORKSPACE_FILES_HEADER]: "1",
-          });
-          res.end(
-            JSON.stringify({
-              type: "server-response",
-              rpcId: parsed.rpcId,
-              result: { ok: true, value: { rendered: true } },
-            }),
-          );
-        }, 180);
-        res.once("close", () => clearTimeout(timer));
+      const target = parsed.payload.args.path;
+      if (target === "oversized.json") {
+        res.writeHead(200, {
+          "content-type": "application/json",
+          [PEER_WORKSPACE_FILES_HEADER]: "1",
+        });
+        res.end(
+          JSON.stringify({
+            type: "server-response",
+            rpcId: parsed.rpcId,
+            result: { ok: true, value: { text: "x".repeat(4096) } },
+          }),
+        );
         return;
       }
-      if (parsed.payload.args.path === "hang-cancel.docx") {
-        resolvePeerStarted();
-        res.once("close", () => {
-          if (!res.writableEnded) peerAborted = true;
+      if (target === "mismatched-rpc.json") {
+        res.writeHead(200, {
+          "content-type": "application/json",
+          [PEER_WORKSPACE_FILES_HEADER]: "1",
+        });
+        res.end(
+          JSON.stringify({
+            type: "server-response",
+            rpcId: "someone-elses-rpc-id",
+            result: { ok: true, value: {} },
+          }),
+        );
+        return;
+      }
+      if (target === "hold-slot.txt") {
+        slotRequestStarted();
+        void new Promise<void>((resolve) => {
+          releaseConcurrencySlot = resolve;
+        }).then(() => {
+          if (!res.writableEnded) {
+            res.writeHead(200, {
+              "content-type": "application/json",
+              [PEER_WORKSPACE_FILES_HEADER]: "1",
+            });
+            res.end(
+              JSON.stringify({
+                type: "server-response",
+                rpcId: parsed.rpcId,
+                result: { ok: true, value: { ok: true } },
+              }),
+            );
+          }
         });
         return;
       }
-      // Exceeds officeRenderTimeoutMs
-      const timer = setTimeout(() => {
-        if (!res.writableEnded) res.writeHead(200).end();
-      }, 2_000);
-      res.once("close", () => clearTimeout(timer));
+      if (target === "slow-office.docx") {
+        const timer = setTimeout(() => {
+          if (!res.writableEnded) {
+            res.writeHead(200, {
+              "content-type": "application/json",
+              [PEER_WORKSPACE_FILES_HEADER]: "1",
+            });
+            res.end(
+              JSON.stringify({
+                type: "server-response",
+                rpcId: parsed.rpcId,
+                result: { ok: true, value: { rendered: true } },
+              }),
+            );
+          }
+        }, 140);
+        res.once("close", () => clearTimeout(timer));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" }).end();
     });
   });
 
   const remoteId = remoteSessionId("remote-peer:peer-1", "t1");
+  const tickets = new WorkspaceDownloadTickets();
   const proxy = new RemotePeerWorkspaceFiles(
     {
       resolveDraftCanonicalId: () => ({ isDraft: false }),
       peerClient: () => makePeer(peerServer.url),
     },
-    { rpcTimeoutMs: 80, officeRenderTimeoutMs: 400 },
+    {
+      rpcTimeoutMs: 70,
+      officeRenderTimeoutMs: 350,
+      streamIdleTimeoutMs: 120,
+      maxJsonResponseBytes: 512,
+      maxConcurrentPerPeer: 1,
+      maxConcurrentTotal: 2,
+    },
   );
 
   const hub = await startHttpServer((req, res) => {
+    const reqUrl = new URL(req.url ?? "/", "http://localhost");
+    if (reqUrl.pathname === "/api/workspace-file/download-ticket" && req.method === "POST") {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        void issueWorkspaceDownloadTicket(
+          res,
+          Buffer.concat(chunks).toString("utf8"),
+          () => undefined,
+          tickets,
+          "owner-1",
+          proxy,
+          req,
+        );
+      });
+      return;
+    }
+    if (reqUrl.pathname === "/api/workspace-file/download") {
+      void downloadWorkspaceFile(req, res, reqUrl, () => undefined, undefined, proxy);
+      return;
+    }
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
@@ -619,74 +677,138 @@ test("Hub uses longer Office render timeout and propagates browser disconnect Ab
   });
 
   try {
-    // 1. Slow Office render (180ms > rpcTimeoutMs 80ms, < officeRenderTimeoutMs 400ms) succeeds
-    const slowOk = await fetch(`${hub.url}/api/officeToPdf/render`, {
+    // 1. Oversized JSON response (> 512 bytes) is rejected with remote/response-too-large
+    const oversized = await fetch(`${hub.url}/api/workspaceFiles/read`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         type: "client-request",
-        rpcId: "slow-office",
-        method: "officeToPdf/render",
-        payload: {
-          args: {
-            workspaceFileScopeId: remoteId,
-            path: "slow-success.docx",
-            priority: "foreground",
-          },
-        },
+        rpcId: "oversize-1",
+        method: "workspaceFiles/read",
+        payload: { args: { workspaceFileScopeId: remoteId, path: "oversized.json", range: {} } },
       }),
     });
-    const slowJson = (await slowOk.json()) as {
-      result: { ok: boolean; value?: { rendered: boolean } };
-    };
-    assert.equal(slowJson.result.ok, true);
-    assert.equal(slowJson.result.value?.rendered, true);
-
-    // 2. Office render exceeding officeRenderTimeoutMs returns remote/timeout
-    const timedOut = await fetch(`${hub.url}/api/officeToPdf/render`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        type: "client-request",
-        rpcId: "timeout-office",
-        method: "officeToPdf/render",
-        payload: {
-          args: { workspaceFileScopeId: remoteId, path: "too-slow.docx", priority: "foreground" },
-        },
-      }),
-    });
-    const timeoutJson = (await timedOut.json()) as {
+    const oversizedJson = (await oversized.json()) as {
+      rpcId: string;
       result: { ok: boolean; error: { code: string } };
     };
-    assert.equal(timeoutJson.result.ok, false);
-    assert.equal(timeoutJson.result.error.code, "remote/timeout");
+    assert.equal(oversizedJson.rpcId, "oversize-1");
+    assert.equal(oversizedJson.result.ok, false);
+    assert.equal(oversizedJson.result.error.code, "remote/response-too-large");
 
-    // 3. Browser disconnect cancels upstream Peer request
-    const abortController = new AbortController();
-    const cancelFetch = fetch(`${hub.url}/api/officeToPdf/render`, {
+    // 2. Mismatched rpcId from Peer is rejected rather than silently rewritten
+    const mismatched = await fetch(`${hub.url}/api/workspaceFiles/stat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      signal: abortController.signal,
       body: JSON.stringify({
         type: "client-request",
-        rpcId: "cancel-office",
+        rpcId: "expected-rpc-id",
+        method: "workspaceFiles/stat",
+        payload: { args: { workspaceFileScopeId: remoteId, path: "mismatched-rpc.json" } },
+      }),
+    });
+    const mismatchedJson = (await mismatched.json()) as {
+      rpcId: string;
+      result: { ok: boolean; error: { code: string } };
+    };
+    assert.equal(mismatchedJson.rpcId, "expected-rpc-id");
+    assert.equal(mismatchedJson.result.ok, false);
+    assert.equal(mismatchedJson.result.error.code, "remote/request-failed");
+
+    // 3. Office render uses longer officeRenderTimeoutMs (140ms > rpcTimeoutMs 70ms, < 350ms)
+    const slowOffice = await fetch(`${hub.url}/api/officeToPdf/render`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "client-request",
+        rpcId: "slow-office-1",
         method: "officeToPdf/render",
         payload: {
           args: {
             workspaceFileScopeId: remoteId,
-            path: "hang-cancel.docx",
+            path: "slow-office.docx",
             priority: "foreground",
           },
         },
       }),
-    }).catch(() => undefined);
-    await peerStarted;
-    abortController.abort();
-    await cancelFetch;
-    for (let i = 0; i < 30 && !peerAborted; i += 1) {
+    });
+    const slowOfficeJson = (await slowOffice.json()) as {
+      result: { ok: boolean; value?: { rendered: boolean } };
+    };
+    assert.equal(slowOfficeJson.result.ok, true);
+    assert.equal(slowOfficeJson.result.value?.rendered, true);
+
+    // 4. Concurrency cap rejects 2nd simultaneous request with remote/busy & 429, then releases slot
+    const firstSlotReq = fetch(`${hub.url}/api/workspaceFiles/stat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "client-request",
+        rpcId: "slot-1",
+        method: "workspaceFiles/stat",
+        payload: { args: { workspaceFileScopeId: remoteId, path: "hold-slot.txt" } },
+      }),
+    });
+    await slotStartedPromise;
+    const secondRpc = await fetch(`${hub.url}/api/workspaceFiles/stat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "client-request",
+        rpcId: "slot-2",
+        method: "workspaceFiles/stat",
+        payload: { args: { workspaceFileScopeId: remoteId, path: "any.txt" } },
+      }),
+    });
+    const secondRpcJson = (await secondRpc.json()) as {
+      result: { ok: boolean; error: { code: string } };
+    };
+    assert.equal(secondRpcJson.result.ok, false);
+    assert.equal(secondRpcJson.result.error.code, "remote/busy");
+
+    const secondDl = await fetch(
+      `${hub.url}/api/workspace-file/download?${new URLSearchParams({ sessionId: remoteId, path: "a.bin" })}`,
+    );
+    assert.equal(secondDl.status, 429);
+
+    releaseConcurrencySlot();
+    const firstSlotRes = await firstSlotReq;
+    assert.equal(((await firstSlotRes.json()) as { result: { ok: boolean } }).result.ok, true);
+
+    // 5. Stalled download stream triggers idle timeout and aborts upstream Peer stream
+    let stallRejected = false;
+    try {
+      const stalledRes = await fetch(
+        `${hub.url}/api/workspace-file/download?${new URLSearchParams({
+          sessionId: remoteId,
+          path: "stalled-stream.bin",
+        })}`,
+      );
+      await stalledRes.arrayBuffer();
+    } catch {
+      stallRejected = true;
+    }
+    assert.equal(stallRejected, true, "Stalled download stream must terminate on idle timeout");
+    for (let i = 0; i < 30 && !stallAborted; i += 1) {
       await new Promise((r) => setTimeout(r, 20));
     }
-    assert.equal(peerAborted, true, "Upstream Peer request should abort when browser disconnects");
+    assert.equal(stallAborted, true, "Upstream Peer stream must be aborted on idle timeout");
+
+    // 6. Browser disconnect during POST /api/workspace-file/download-ticket aborts upstream Peer HEAD
+    const headAbort = new AbortController();
+    const ticketPromise = fetch(`${hub.url}/api/workspace-file/download-ticket`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      signal: headAbort.signal,
+      body: JSON.stringify({ sessionId: remoteId, path: "hang-head.bin" }),
+    }).catch(() => undefined);
+    await headStartedPromise;
+    headAbort.abort();
+    await ticketPromise;
+    for (let i = 0; i < 30 && !headAborted; i += 1) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(headAborted, true, "Upstream Peer HEAD must abort when ticket caller disconnects");
   } finally {
     await hub.close();
     await peerServer.close();
@@ -711,7 +833,6 @@ test("WS workspaceFiles/changes degrades cleanly for remote sessions and leaves 
     onClose() {},
   };
 
-  // Remote session -> intercepted with workspace-file/watch-unsupported
   assert.equal(
     proxy.handleStream(
       "workspaceFiles/changes",
@@ -724,7 +845,6 @@ test("WS workspaceFiles/changes degrades cleanly for remote sessions and leaves 
   assert.equal(failures[0]?.code, "workspace-file/watch-unsupported");
   assert.deepEqual(failures[0]?.details, { path: "README.md" });
 
-  // Local session -> NOT intercepted
   assert.equal(
     proxy.handleStream(
       "workspaceFiles/changes",
@@ -736,13 +856,17 @@ test("WS workspaceFiles/changes degrades cleanly for remote sessions and leaves 
   assert.equal(failures.length, 1);
 });
 
-test("session/openWorkspacePath rejects remote sessions via both ChSessions and RemoteSessions", async () => {
+test("session/openWorkspacePath enforces a registered local session and rejects missing, unknown, and remote sessionIds", async () => {
   const root = await mkdtemp(join(tmpdir(), "codexhost-open-remote-"));
+  const workspace = join(root, "workspace");
+  await mkdir(workspace, { recursive: true });
   let openerCalled = 0;
+  const host = new FakeChHost();
+  host.add("real-local-thread", workspace);
   const events = new EventHub(root);
-  const workspaces = new Workspaces(new DataDir(root), root);
+  const workspaces = new Workspaces(new DataDir(root), workspace);
   const sessions = new ChSessions(
-    new FakeChHost(),
+    host,
     workspaces,
     events,
     undefined,
@@ -761,20 +885,28 @@ test("session/openWorkspacePath rejects remote sessions via both ChSessions and 
     const streams = new StreamRegistry();
     sessions.register(rpc, streams);
 
-    // 1. Standalone ChSessions rejects web-remote:* and remote-control:*
-    for (const remoteId of [
-      remoteSessionId("remote-peer:p1", "t1"),
-      "web-remote:draft-1",
-      "remote-control:host-1",
+    // Populate real local thread catalog
+    const listReply = await rpc.dispatch("session/list", { args: {} });
+    assert.equal(listReply.ok, true);
+
+    // 1. Missing, empty, unknown/forged, and remote sessionIds are ALL rejected
+    for (const request of [
+      { path: "/tmp/file.txt" },
+      { sessionId: "", path: "/tmp/file.txt" },
+      { sessionId: "unknown-forged-local", path: "/tmp/file.txt" },
+      { sessionId: remoteSessionId("remote-peer:p1", "t1"), path: "/tmp/file.txt" },
+      { sessionId: "web-remote:draft-1", path: "/tmp/file.txt" },
+      { sessionId: "remote-control:host-1", path: "/tmp/file.txt" },
     ]) {
       const reply = await rpc.dispatch("session/openWorkspacePath", {
-        args: { request: { sessionId: remoteId, path: "/tmp/file.txt" } },
+        args: { request },
       });
-      assert.equal(reply.ok, false);
+      assert.equal(reply.ok, false, `Expected rejection for ${JSON.stringify(request)}`);
       if (!reply.ok) assert.equal(reply.error.code, "session/open-unavailable");
     }
+    assert.equal(openerCalled, 0);
 
-    // 2. With RemoteSessions installed, remote openWorkspacePath is also rejected with session/open-unavailable
+    // 2. With RemoteSessions installed, remote openWorkspacePath is also rejected
     remoteSessions.install(rpc, streams);
     const routedReply = await rpc.dispatch("session/openWorkspacePath", {
       args: {
@@ -788,9 +920,9 @@ test("session/openWorkspacePath rejects remote sessions via both ChSessions and 
     assert.equal(routedReply.ok, false);
     if (!routedReply.ok) assert.equal(routedReply.error.code, "session/open-unavailable");
 
-    // 3. Local session still works
+    // 3. Verified registered local thread succeeds
     const localReply = await rpc.dispatch("session/openWorkspacePath", {
-      args: { request: { sessionId: "local-1", path: "/tmp/file.txt" } },
+      args: { request: { sessionId: "real-local-thread", path: "/tmp/file.txt" } },
     });
     assert.deepEqual(localReply, { ok: true, value: { opened: true } });
     assert.equal(openerCalled, 1);

@@ -74,6 +74,12 @@ export function apply(ctx: ClientContext): void {
             scope.remote,
             (id) => Boolean(scope.sessions.list.getSnapshot().byId[id]?.cwd),
             t,
+            (id) =>
+              id.startsWith("web-remote:") ||
+              (
+                scope.sessions.list.getSnapshot().byId[id]?.projectionValues as
+                  { readonly remoteHost?: unknown } | undefined
+              )?.remoteHost != null,
           ),
         ),
       "ui-sidebar-files: workspace mentions",

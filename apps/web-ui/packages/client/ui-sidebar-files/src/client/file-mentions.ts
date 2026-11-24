@@ -20,6 +20,7 @@ export function fileMentionSource(
   remote: Pick<ClientRemote, "fileReferences">,
   hasWorkspace: (id: SessionId) => boolean,
   t: TranslateNS<"sidebarFiles">,
+  isRemote?: (id: SessionId) => boolean,
 ): InputTriggerSource {
   const notice = (message: string): InputTriggerCandidate => ({
     name: message,
@@ -33,6 +34,7 @@ export function fileMentionSource(
     order: 30,
     showGroupTitle: false,
     async candidates({ sessionId }, { query, quoted, signal }) {
+      if (isRemote?.(sessionId)) return [];
       if (!hasWorkspace(sessionId)) return query ? [] : [notice(t("noWorkspace"))];
       signal.throwIfAborted();
       const result = await remote.fileReferences.list(sessionId, query, signal);

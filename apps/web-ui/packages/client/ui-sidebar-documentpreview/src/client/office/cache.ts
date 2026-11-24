@@ -15,9 +15,9 @@ export type OfficeFileBytes = DocumentFileBytes & {
 
 /** Host-level cache partition for Office preview results. */
 export interface OfficePreviewScope {
-  /** Stable partition key isolating local and per-Peer cached conversions. */
+  /** Stable partition key isolating local and per-Peer in-flight/cached conversions. */
   readonly scopeKey: string;
-  /** Whether to query the Hub's local `officeToPdf/generation` endpoint before reuse. */
+  /** Whether to query Hub `officeToPdf/generation` and retain completed PDFs across reopens. */
   readonly useHostGeneration: boolean;
 }
 
@@ -47,7 +47,12 @@ export function decodeRemoteHostScope(sessionId: string): string | undefined {
   return sessionId;
 }
 
-/** Partition Office preview caching by owning Host so remote Peer renders never mix with Hub generation state. */
+/**
+ * Partition Office preview caching by owning Host.
+ * Remote Peer sessions bypass Hub generation and cross-reopen PDF retention so Peer restarts
+ * or font updates never serve stale cached PDFs while keeping in-flight deduplication and full
+ * isolation from Hub's local cache.
+ */
 export function officeScopeForSession(sessionId: string): OfficePreviewScope {
   const remoteHost = decodeRemoteHostScope(sessionId);
   if (remoteHost === undefined) return { scopeKey: "local", useHostGeneration: true };
@@ -89,7 +94,6 @@ export class OfficePreviewCache {
   private readonly ready = new Map<string, Success>();
   private readonly readyScope = new Map<string, string>();
   private readonly pending = new Map<string, Pending>();
-  private readonly remoteGenerations = new Map<string, OfficeToPdfGeneration>();
   private bytes = 0;
   private readers = 0;
   private generation: OfficeToPdfGeneration | undefined;
@@ -103,13 +107,13 @@ export class OfficePreviewCache {
   /**
    * @param stat - authorized source metadata lookup.
    * @param convert - Host render Remote returning binary PDF bytes borrowed read-only by callers.
-   * @param maxEntries - maximum completed results retained.
-   * @param maxBytes - maximum retained PDF byteLength.
+   * @param maxEntries - maximum completed results retained for local sessions.
+   * @param maxBytes - maximum retained PDF byteLength for local sessions.
    * @param maxPending - maximum unsettled Host conversion requests, including cancellation teardown.
    * @param maxReaders - maximum readers, including metadata lookups.
    * @param generation - current Host renderer generation, checked before cached reuse for local sessions.
    * @param busy - localized capacity failure.
-   * @param resolveScope - host scope classifier isolating local and remote Peer caches.
+   * @param resolveScope - host scope classifier isolating local and remote Peer sessions.
    */
   constructor(
     private readonly stat: Stat,
@@ -214,21 +218,20 @@ export class OfficePreviewCache {
     signal.throwIfAborted();
     if (!metadata.ok) return metadata;
     if (scope.useHostGeneration && localGeneration !== this.generation) throw this.superseded;
-    const generationTag = scope.useHostGeneration
-      ? localGeneration
-      : (this.remoteGenerations.get(scope.scopeKey) ?? "remote");
     const key = JSON.stringify([
       scope.scopeKey,
-      generationTag,
+      scope.useHostGeneration ? localGeneration : "remote",
       file.sessionId,
       metadata.value.absolutePath,
       metadata.value.version,
     ]);
-    const cached = this.ready.get(key);
-    if (cached !== undefined) {
-      this.ready.delete(key);
-      this.ready.set(key, cached);
-      return cached;
+    if (scope.useHostGeneration) {
+      const cached = this.ready.get(key);
+      if (cached !== undefined) {
+        this.ready.delete(key);
+        this.ready.set(key, cached);
+        return cached;
+      }
     }
     // A foreground RPC joins and promotes background work at the shared Host queue.
     const pendingKey = JSON.stringify([key, priority]);
@@ -244,36 +247,17 @@ export class OfficePreviewCache {
         })
         .then((result) => {
           controller.signal.throwIfAborted();
+          // Only local Host conversions (verified against Hub's live generation) are retained
+          // across reopens; remote Peer conversions never populate or mutate shared cache state.
           if (
+            scope.useHostGeneration &&
+            localGeneration === this.generation &&
             result.ok &&
+            result.value.generation === localGeneration &&
             result.value.version === metadata.value.version &&
             result.value.absolutePath === metadata.value.absolutePath
           ) {
-            if (scope.useHostGeneration) {
-              if (
-                localGeneration === this.generation &&
-                result.value.generation === localGeneration
-              ) {
-                this.retain(key, scope.scopeKey, result);
-              }
-            } else {
-              const previousGeneration = this.remoteGenerations.get(scope.scopeKey);
-              if (
-                previousGeneration !== undefined &&
-                previousGeneration !== result.value.generation
-              ) {
-                this.evictScope(scope.scopeKey, false);
-              }
-              this.remoteGenerations.set(scope.scopeKey, result.value.generation);
-              const remoteKey = JSON.stringify([
-                scope.scopeKey,
-                result.value.generation,
-                file.sessionId,
-                metadata.value.absolutePath,
-                metadata.value.version,
-              ]);
-              this.retain(remoteKey, scope.scopeKey, result);
-            }
+            this.retain(key, scope.scopeKey, result);
           }
           return result;
         })
@@ -331,7 +315,6 @@ export class OfficePreviewCache {
     this.pending.clear();
     this.ready.clear();
     this.readyScope.clear();
-    this.remoteGenerations.clear();
     this.bytes = 0;
     await Promise.allSettled([...this.reads, ...this.tasks]);
   }

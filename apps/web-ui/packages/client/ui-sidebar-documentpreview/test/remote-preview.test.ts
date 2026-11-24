@@ -8,9 +8,14 @@ import {
   officeScopeForSession,
   type OfficeFileBytes,
 } from "../src/client/office/cache.ts";
-import { emptyFailureRecourse, failureLine } from "../src/client/failure-line.ts";
+import {
+  emptyFailureRecourse,
+  failureLine,
+  remoteWorkspacePreviewBlockKey,
+} from "../src/client/failure-line.ts";
 import { en, zh, type SidebarDocumentPreviewKey } from "../src/client/locales.ts";
 import { markdownImageUrl } from "../src/client/markdown/path-images.ts";
+import { fileMentionSource } from "../../ui-sidebar-files/src/client/file-mentions.ts";
 
 function makeRemoteSessionId(hostId: string, threadId: string): SessionId {
   const encoded = Buffer.from(JSON.stringify([hostId, threadId])).toString("base64url");
@@ -29,7 +34,7 @@ function makeTranslator(dict: Record<SidebarDocumentPreviewKey, string>) {
   };
 }
 
-describe("OfficePreviewCache host-scope isolation", () => {
+describe("OfficePreviewCache host-scope isolation & stale generation protection", () => {
   it("decodes remote host scopes and separates local from per-peer remote sessions", () => {
     const peerA = makeRemoteSessionId("remote-peer:peer-a", "thread-1");
     const peerB = makeRemoteSessionId("remote-peer:peer-b", "thread-1");
@@ -49,29 +54,30 @@ describe("OfficePreviewCache host-scope isolation", () => {
     });
   });
 
-  it("skips Hub generation for remote peers, isolates identical paths across hosts, and evicts per-host independently", async () => {
+  it("refreshes when Peer generation changes with unchanged file version, prevents late-arrival pollution, and keeps local cache isolated", async () => {
     const localSession = "local-thread" as SessionId;
     const peerASession = makeRemoteSessionId("remote-peer:peer-a", "t1");
-    const peerBSession = makeRemoteSessionId("remote-peer:peer-b", "t1");
     const sharedPath = "/workspace/report.docx";
 
     let hubGeneration = "hub-gen-1" as OfficeToPdfGeneration;
     let peerAGeneration = "peer-a-gen-1" as OfficeToPdfGeneration;
     const generationSpy = vi.fn(async () => ({ ok: true as const, value: hubGeneration }));
 
+    let releaseSlowPeerRender!: () => void;
+    let slowRenderMode = false;
+
     const renderSpy = vi.fn(async (file: { sessionId: SessionId; path: string }) => {
+      const capturedGeneration = file.sessionId === localSession ? hubGeneration : peerAGeneration;
+      if (file.sessionId === peerASession && slowRenderMode) {
+        slowRenderMode = false;
+        await new Promise<void>((resolve) => {
+          releaseSlowPeerRender = resolve;
+        });
+      }
       const label =
         file.sessionId === localSession
-          ? `local:${hubGeneration}`
-          : file.sessionId === peerASession
-            ? `peerA:${peerAGeneration}`
-            : "peerB:gen-1";
-      const generation =
-        file.sessionId === localSession
-          ? hubGeneration
-          : file.sessionId === peerASession
-            ? peerAGeneration
-            : ("peer-b-gen-1" as OfficeToPdfGeneration);
+          ? `local:${capturedGeneration}`
+          : `peerA:${capturedGeneration}`;
       const data = new TextEncoder().encode(label);
       const value: OfficeFileBytes = {
         absolutePath: sharedPath,
@@ -81,7 +87,7 @@ describe("OfficePreviewCache host-scope isolation", () => {
         bytes: data.byteLength,
         data,
         missingFonts: [],
-        generation,
+        generation: capturedGeneration,
       };
       return { ok: true as const, value };
     });
@@ -100,39 +106,41 @@ describe("OfficePreviewCache host-scope isolation", () => {
 
     const signal = new AbortController().signal;
 
-    // 1. Remote Peer A renders without querying Hub generation
-    const firstPeerA = await cache.read({ sessionId: peerASession, path: sharedPath }, signal);
-    expect(firstPeerA.ok).toBe(true);
-    expect(generationSpy).toHaveBeenCalledTimes(0);
+    // 1. Concurrent remote reads deduplicate into one in-flight conversion without querying Hub generation
+    slowRenderMode = true;
+    const p1 = cache.read({ sessionId: peerASession, path: sharedPath }, signal);
+    const p2 = cache.read({ sessionId: peerASession, path: sharedPath }, signal);
+    await new Promise((r) => setTimeout(r, 10));
     expect(renderSpy).toHaveBeenCalledTimes(1);
-    if (firstPeerA.ok) {
-      expect(new TextDecoder().decode(firstPeerA.value.data)).toBe("peerA:peer-a-gen-1");
-    }
-
-    // 2. Second read for Peer A hits cache without calling Hub generation or re-converting
-    const cachedPeerA = await cache.read({ sessionId: peerASession, path: sharedPath }, signal);
-    expect(cachedPeerA.ok).toBe(true);
     expect(generationSpy).toHaveBeenCalledTimes(0);
-    expect(renderSpy).toHaveBeenCalledTimes(1);
 
-    // 3. Peer B with the exact same path and version does NOT collide with Peer A
-    const firstPeerB = await cache.read({ sessionId: peerBSession, path: sharedPath }, signal);
-    expect(firstPeerB.ok).toBe(true);
+    // Peer restarts/replaces fonts while file version stays "v1"
+    peerAGeneration = "peer-a-gen-2" as OfficeToPdfGeneration;
+    releaseSlowPeerRender();
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1.ok && r2.ok).toBe(true);
+    if (r1.ok) expect(new TextDecoder().decode(r1.value.data)).toBe("peerA:peer-a-gen-1");
+
+    // 2. Next open after Peer generation changed MUST NOT return stale gen-1 PDF
+    const freshPeerA = await cache.read({ sessionId: peerASession, path: sharedPath }, signal);
+    expect(freshPeerA.ok).toBe(true);
+    expect(generationSpy).toHaveBeenCalledTimes(0);
     expect(renderSpy).toHaveBeenCalledTimes(2);
-    if (firstPeerB.ok) {
-      expect(new TextDecoder().decode(firstPeerB.value.data)).toBe("peerB:gen-1");
+    if (freshPeerA.ok) {
+      expect(new TextDecoder().decode(freshPeerA.value.data)).toBe("peerA:peer-a-gen-2");
     }
 
-    // 4. Local session queries Hub generation and renders independently
+    // 3. Local session caches properly and is never polluted by remote renders
     const firstLocal = await cache.read({ sessionId: localSession, path: sharedPath }, signal);
-    expect(firstLocal.ok).toBe(true);
-    expect(generationSpy).toHaveBeenCalledTimes(1);
+    const cachedLocal = await cache.read({ sessionId: localSession, path: sharedPath }, signal);
+    expect(firstLocal.ok && cachedLocal.ok).toBe(true);
+    expect(generationSpy).toHaveBeenCalledTimes(2);
     expect(renderSpy).toHaveBeenCalledTimes(3);
-    if (firstLocal.ok) {
-      expect(new TextDecoder().decode(firstLocal.value.data)).toBe("local:hub-gen-1");
+    if (cachedLocal.ok) {
+      expect(new TextDecoder().decode(cachedLocal.value.data)).toBe("local:hub-gen-1");
     }
 
-    // 5. Hub generation changes -> invalidates local cache ONLY, leaving Peer A & Peer B cached
+    // 4. Hub generation bump invalidates local cache cleanly
     hubGeneration = "hub-gen-2" as OfficeToPdfGeneration;
     const secondLocal = await cache.read({ sessionId: localSession, path: sharedPath }, signal);
     expect(secondLocal.ok).toBe(true);
@@ -141,19 +149,12 @@ describe("OfficePreviewCache host-scope isolation", () => {
       expect(new TextDecoder().decode(secondLocal.value.data)).toBe("local:hub-gen-2");
     }
 
-    const stillCachedPeerA = await cache.read(
-      { sessionId: peerASession, path: sharedPath },
-      signal,
-    );
-    expect(stillCachedPeerA.ok).toBe(true);
-    expect(renderSpy).toHaveBeenCalledTimes(4);
-
     await cache.dispose();
   });
 });
 
-describe("Remote workspace file preview failure messages and Markdown image routing", () => {
-  it("formats clear Chinese and English messages for unsupported/offline/outside-workspace remote errors", () => {
+describe("Remote workspace file preview failure messages, capability gating, mentions, and Markdown image routing", () => {
+  it("formats clear Chinese and English messages and blocks incapable remote hosts upfront", () => {
     const tZh = makeTranslator(zh);
     const tEn = makeTranslator(en);
 
@@ -191,6 +192,62 @@ describe("Remote workspace file preview failure messages and Markdown image rout
     expect(failureLine(tZh, outsideErr)).toContain("工作区之外");
     expect(failureLine(tEn, outsideErr)).toContain("outside the workspace");
     expect(emptyFailureRecourse(outsideErr)).toBe("none");
+
+    // Upfront remoteHost.workspaceFiles capability gating
+    const peerSession = makeRemoteSessionId("remote-peer:p1", "t1");
+    expect(
+      remoteWorkspacePreviewBlockKey(peerSession, {
+        hostId: "remote-peer:p1",
+        state: "connected",
+        workspaceFiles: true,
+      }),
+    ).toBeUndefined();
+    expect(
+      remoteWorkspacePreviewBlockKey(peerSession, {
+        hostId: "remote-peer:p1",
+        state: "connected",
+        workspaceFiles: false,
+      }),
+    ).toBe("error.remoteUpgradeRequired");
+    expect(
+      remoteWorkspacePreviewBlockKey("web-remote:draft-1", {
+        hostId: "remote-peer:p1",
+        state: "connected",
+        workspaceFiles: false,
+      }),
+    ).toBe("error.remoteDraftUnsubmitted");
+    expect(
+      remoteWorkspacePreviewBlockKey(peerSession, {
+        hostId: "remote-ssh:box",
+        state: "connected",
+        workspaceFiles: false,
+      }),
+    ).toBe("error.remoteUnsupported");
+    expect(
+      remoteWorkspacePreviewBlockKey(peerSession, {
+        hostId: "remote-peer:p1",
+        state: "disconnected",
+        workspaceFiles: false,
+      }),
+    ).toBe("error.remoteOffline");
+    expect(remoteWorkspacePreviewBlockKey("local-1", null)).toBeUndefined();
+  });
+
+  it("disables @ file mentions on remote sessions without calling fileReferences.list", async () => {
+    const listSpy = vi.fn(async () => ({ ok: true as const, value: [] }));
+    const source = fileMentionSource(
+      { fileReferences: { list: listSpy } },
+      () => true,
+      ((k: string) => k) as never,
+      (id) => id.startsWith("web-remote:"),
+    );
+    const remoteSession = makeRemoteSessionId("remote-peer:p1", "t1");
+    const candidates = await source.candidates(
+      { sessionId: remoteSession } as never,
+      { query: "README", quoted: false, signal: new AbortController().signal } as never,
+    );
+    expect(candidates).toEqual([]);
+    expect(listSpy).not.toHaveBeenCalled();
   });
 
   it("routes Markdown images for remote sessions to /api/remote-peer/file instead of Hub local /api/file", () => {

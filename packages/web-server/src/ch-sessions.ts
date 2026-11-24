@@ -1001,7 +1001,11 @@ export class ChSessions {
    * from the Host if this Web process has not listed it yet (e.g. headless Peer startup
    * or older catalog pages). Never creates a Thread and never resolves drafts.
    */
-  async ensureLocalWorkspaceRoot(sessionId: string): Promise<string | undefined> {
+  async ensureLocalWorkspaceRoot(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    if (signal?.aborted) return undefined;
     const existing = this.localWorkspaceRoot(sessionId);
     if (existing !== undefined) return existing;
     if (
@@ -1017,7 +1021,7 @@ export class ChSessions {
     if (this.drafts.has(id)) return undefined;
     try {
       const { thread, harnessId } = await this.readThread(id);
-      if (this.closed) return undefined;
+      if (this.closed || signal?.aborted) return undefined;
       this.rows.set(thread.id, thread);
       this.threads.setHarness(thread.id, harnessId);
       return thread.cwd;
@@ -1707,13 +1711,20 @@ export class ChSessions {
         application?: string;
       }>(args);
       if (
-        typeof request.sessionId === "string" &&
-        (request.sessionId.startsWith("web-remote:") ||
-          request.sessionId.startsWith("remote-control:"))
+        typeof request.sessionId !== "string" ||
+        request.sessionId.length === 0 ||
+        request.sessionId.startsWith("web-remote:") ||
+        request.sessionId.startsWith("remote-control:")
       ) {
         throw new RpcError(
           "session/open-unavailable",
-          "Remote sessions cannot open files on the Hub host.",
+          "Opening Host files requires a local session.",
+        );
+      }
+      if (this.fileWorkspaceRoot(request.sessionId) === undefined) {
+        throw new RpcError(
+          "session/open-unavailable",
+          "Opening Host files requires a known local session.",
         );
       }
       if (

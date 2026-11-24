@@ -11,10 +11,19 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   createDshWebBackend,
   type DshWebBackend,
+  type OfficeToPdfRequest,
+  type OfficeToPdfResult,
   type WebPluginRuntime,
   type WebPluginRuntimeOptions,
 } from "@codexhost/dsh-web-backend";
-export type { WebPluginRuntime } from "@codexhost/dsh-web-backend";
+export {
+  OfficeToPdfError,
+  type OfficeExtension,
+  type OfficeToPdfPriority,
+  type OfficeToPdfRequest,
+  type OfficeToPdfResult,
+  type WebPluginRuntime,
+} from "@codexhost/dsh-web-backend";
 
 import type { StreamSink } from "./transport.ts";
 
@@ -99,29 +108,6 @@ export class DshWebServices {
   }
 
   /**
-   * Dispatch one unary DSH Remote method using its canonical `/api/<method>` URL.
-   * @param method - canonical `<namespace>/<method>` endpoint.
-   * @param body - complete Typert `client-request` JSON envelope.
-   * @param signal - cancellation signal propagated into the DSH handler.
-   * @returns the raw Fetch Response (JSON or `multipart/form-data`), or undefined if unhandled.
-   */
-  async fetchMethod(
-    method: string,
-    body: string,
-    signal: AbortSignal,
-  ): Promise<Response | undefined> {
-    if (!this.backend.handles(method)) return undefined;
-    return this.backend.fetch(
-      new Request(new URL(`/api/${method}`, "http://localhost"), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body,
-        signal,
-      }),
-    );
-  }
-
-  /**
    * Forward one DSH Remote stream into the Web mux.
    * @param endpoint - canonical `<namespace>/<method>` endpoint.
    * @param args - named wire arguments.
@@ -147,6 +133,10 @@ export class DshWebServices {
       }
     })();
     return true;
+  }
+
+  convertOffice(request: OfficeToPdfRequest, signal: AbortSignal): Promise<OfficeToPdfResult> {
+    return this.backend.convertOffice(request, signal);
   }
 
   loadPlugins(options: WebPluginRuntimeOptions): Promise<WebPluginRuntime> {

@@ -34,7 +34,12 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import { pathPartsOf } from "@deepseek-ai/dsh-util-workspace-path";
 import type { TextInjected } from "./face.ts";
-import { emptyFailureRecourse, failureLine } from "./failure-line.ts";
+import {
+  emptyFailureRecourse,
+  failureLine,
+  remoteWorkspacePreviewBlockKey,
+  type RemoteHostWorkspaceCapabilities,
+} from "./failure-line.ts";
 import { LoadingIndicator } from "./LoadingIndicator.tsx";
 import { hostFileOf } from "./rpc.ts";
 import type { TextStore } from "./store.ts";
@@ -96,6 +101,7 @@ export type TextPreviewProps = PropsRuntime<"sidebar.right.pane.tab"> &
  */
 export function TextPreview({
   useTabInfo,
+  useSessions,
   useResource,
   useStore,
   actions,
@@ -114,8 +120,16 @@ export function TextPreview({
   const { tab } = useTabInfo();
   const { navigation, signal } = tab;
   const meta = useResource<"file">(tab.contentId);
-  const canRead = meta.status !== "none";
   const file = useMemo(() => hostFileOf(tab.contentId), [tab.contentId]);
+  const remoteHost = useSessions(
+    (s) =>
+      (
+        s.byId[file.sessionId]?.projectionValues as
+          { readonly remoteHost?: RemoteHostWorkspaceCapabilities | null } | undefined
+      )?.remoteHost,
+  );
+  const remoteBlockKey = remoteWorkspacePreviewBlockKey(file.sessionId, remoteHost);
+  const canRead = meta.status !== "none" && remoteBlockKey === undefined;
   const state = useStore((s) => s.byTab[tab.id]);
   const definitions = useDocumentPreviews((value) => value);
   const unviewable = useMemo(() => unviewableBinaryPath(file.path), [file.path]);
@@ -407,6 +421,28 @@ export function TextPreview({
             <div className={css.emptyActions}>
               {renderSlot("sidebar.right.tab.document.unpreviewable", fileOwner)}
             </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (remoteBlockKey !== undefined) {
+    const { name: blockedName } = pathPartsOf(displayPath);
+    return (
+      <div
+        className={css.preview}
+        data-textpreview-state="text"
+        data-textpreview-url={tab.contentId}
+      >
+        <div className={css.header}>{pathLabel}</div>
+        <div className={css.body} data-textpreview-body>
+          <div className={css.empty} data-textpreview-failed="remote/workspace-files-unsupported">
+            <FileTypeIcon
+              kind={classifyFileType(blockedName)}
+              size={36}
+              className={css.emptyIcon}
+            />
+            <p className={css.emptyLine}>{t(remoteBlockKey)}</p>
           </div>
         </div>
       </div>

@@ -692,7 +692,8 @@ const server = createWebServer((request, response) => {
           response,
           peerRoute === "workspace-files/rpc" ? "rpc" : "download",
           {
-            resolveWorkspaceRoot: (threadId) => sessions.ensureLocalWorkspaceRoot(threadId),
+            resolveWorkspaceRoot: (threadId, signal) =>
+              sessions.ensureLocalWorkspaceRoot(threadId, signal),
             ...(dsh ? { dsh } : {}),
           },
         );
@@ -781,6 +782,7 @@ const server = createWebServer((request, response) => {
           downloadTickets,
           requestAuth?.credential,
           remoteWorkspaceFiles,
+          request,
         );
         return;
       }

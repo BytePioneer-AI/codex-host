@@ -140,6 +140,7 @@ export interface RemoteWorkspaceDownloadDelegate {
     path: string,
     tickets: WorkspaceDownloadTickets,
     owner?: string,
+    request?: IncomingMessage,
   ): Promise<boolean>;
   downloadFile(
     request: IncomingMessage,
@@ -157,6 +158,7 @@ export async function issueWorkspaceDownloadTicket(
   tickets: WorkspaceDownloadTickets,
   owner?: string,
   remote?: RemoteWorkspaceDownloadDelegate,
+  request?: IncomingMessage,
 ): Promise<void> {
   response.setHeader("Cache-Control", "private, no-store");
   let sessionId = "";
@@ -169,7 +171,10 @@ export async function issueWorkspaceDownloadTicket(
     response.writeHead(400, { "content-type": "text/plain" }).end("invalid json");
     return;
   }
-  if (remote && (await remote.issueDownloadTicket(response, sessionId, path, tickets, owner))) {
+  if (
+    remote &&
+    (await remote.issueDownloadTicket(response, sessionId, path, tickets, owner, request))
+  ) {
     return;
   }
   const root = workspace(sessionId);

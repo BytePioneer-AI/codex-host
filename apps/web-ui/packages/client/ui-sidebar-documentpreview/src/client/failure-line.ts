@@ -7,6 +7,34 @@
  */
 import type { RemoteFailure } from "@deepseek-ai/dsh-api-remotes/client";
 import type { TranslateNS } from "@deepseek-ai/dsh-client-locale/client";
+import type { SidebarDocumentPreviewKey } from "./locales.ts";
+
+/** Subset of the `remoteHost` session projection needed to gate workspace file previews upfront. */
+export interface RemoteHostWorkspaceCapabilities {
+  readonly hostId: string;
+  readonly state: string;
+  readonly workspaceFiles?: boolean;
+  readonly officePreview?: boolean;
+}
+
+/**
+ * Return an upfront localized error key when a remote session's projected capabilities
+ * already indicate that workspace file preview is unavailable (e.g. legacy Peer or offline host).
+ */
+export function remoteWorkspacePreviewBlockKey(
+  sessionId: string,
+  remoteHost: RemoteHostWorkspaceCapabilities | null | undefined,
+): SidebarDocumentPreviewKey | undefined {
+  if (remoteHost == null) return undefined;
+  if (remoteHost.state !== "connected") return "error.remoteOffline";
+  if (remoteHost.workspaceFiles === false) {
+    if (sessionId.startsWith("web-remote:draft-")) return "error.remoteDraftUnsubmitted";
+    return remoteHost.hostId.startsWith("remote-peer:")
+      ? "error.remoteUpgradeRequired"
+      : "error.remoteUnsupported";
+  }
+  return undefined;
+}
 
 /** Render a byte count the way a person reads one. */
 function humanBytes(bytes: number): string {

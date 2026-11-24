@@ -22,6 +22,7 @@ import type { WebHarnessPreferences } from "./harness-preferences.ts";
 
 export class ChHarnessCatalog {
   private plugins: Promise<HarnessPluginDescriptor[]> | undefined;
+  private lastPlugins: HarnessPluginDescriptor[] | undefined;
   private inspections = new Map<string, Promise<HarnessInspection>>();
   private readonly pendingRefreshes = new Map<
     string,
@@ -66,21 +67,26 @@ export class ChHarnessCatalog {
     if (this.plugins) return this.plugins;
     const plugins = this.host
       .request("codexhost/harness/plugins/list", {})
-      .then((value) =>
-        harnessPluginListResultSchema
+      .then((value) => {
+        const filtered = harnessPluginListResultSchema
           .parse(value)
           .plugins.filter(
             (plugin) =>
               plugin.kind !== "usage" &&
               (this.restrictTo === undefined || this.restrictTo.has(plugin.id)),
-          ),
-      )
+          );
+        this.lastPlugins = filtered;
+        return filtered;
+      })
       .catch((error: unknown) => {
         if (this.plugins === plugins) this.plugins = undefined;
         throw error;
       });
     this.plugins = plugins;
     return plugins;
+  }
+  cachedList(): HarnessPluginDescriptor[] | undefined {
+    return this.lastPlugins;
   }
   private invalidate(id: string, preserve?: Promise<HarnessInspection>): void {
     for (const [key, inspection] of this.inspections) {
@@ -243,10 +249,20 @@ export class ChHarnessCatalog {
   }
   async icon(id: string): Promise<{ body: Buffer; contentType: string } | undefined> {
     const value = (await this.list()).find((plugin) => plugin.id === id)?.icon;
-    if (!value) return undefined;
-    const match = /^data:(image\/(?:png|jpeg|webp|svg\+xml));base64,(.+)$/u.exec(value);
-    return match?.[1] && match[2]
-      ? { body: Buffer.from(match[2], "base64"), contentType: match[1] }
-      : undefined;
+    return parsePluginIconDataUrl(value);
   }
+  cachedIcon(id: string): { body: Buffer; contentType: string } | undefined {
+    const value = this.lastPlugins?.find((plugin) => plugin.id === id)?.icon;
+    return parsePluginIconDataUrl(value);
+  }
+}
+
+function parsePluginIconDataUrl(
+  value: string | undefined,
+): { body: Buffer; contentType: string } | undefined {
+  if (!value) return undefined;
+  const match = /^data:(image\/(?:png|jpeg|webp|svg\+xml));base64,(.+)$/u.exec(value);
+  return match?.[1] && match[2]
+    ? { body: Buffer.from(match[2], "base64"), contentType: match[1] }
+    : undefined;
 }

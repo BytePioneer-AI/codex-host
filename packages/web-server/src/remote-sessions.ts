@@ -886,8 +886,63 @@ export class RemoteSessions {
       ),
     );
     this.inFlightPeerSources.set(host.hostId, source);
+    // Warm plugin metadata/icons in parallel with catalog paging so harness names
+    // and sidebar logos are ready as soon as page 1 renders.
+    void source.catalog.list().catch(() => undefined);
     try {
-      const listed = await source.listThreads();
+      const listed = await source.listThreads({
+        onFirstPage: (partial) => {
+          if (
+            this.closed ||
+            archiveRevision !== this.archiveRevision ||
+            this.peers?.source(host.hostId) !== source
+          ) {
+            return;
+          }
+          const cachedPlugins = source.catalog.cachedList();
+          const cachedNames = new Map<string, string>(
+            cachedPlugins?.map((plugin) => [plugin.id, plugin.name]),
+          );
+          let published = false;
+          for (const row of partial.rows) {
+            const id = remoteSessionId(host.hostId, row.id);
+            const harnessId = partial.harnessIds.get(row.id);
+            const peerHarnessIdentity = harnessId
+              ? {
+                  id: harnessId,
+                  name: harnessId === "codex" ? "Codex" : (cachedNames.get(harnessId) ?? harnessId),
+                }
+              : undefined;
+            const previous = this.entries.get(id);
+            const beforeSummary = previous ? JSON.stringify(this.summary(id, previous)) : undefined;
+            const current: Entry = previous
+              ? Object.assign(previous, {
+                  row: { ...row, turns: [] },
+                  online: true,
+                  archived: partial.archivedIds.has(row.id),
+                  peerOwnershipAvailable: partial.ownershipAvailable,
+                  ...(host.epoch ? { epoch: host.epoch } : {}),
+                })
+              : {
+                  identity: { hostId: host.hostId, threadId: row.id },
+                  row: { ...row, turns: [] },
+                  online: true,
+                  archived: partial.archivedIds.has(row.id),
+                  ...(host.epoch ? { epoch: host.epoch } : {}),
+                  configurationRevision: 0,
+                  peerOwnershipAvailable: partial.ownershipAvailable,
+                };
+            if (peerHarnessIdentity) current.peerHarnessIdentity = peerHarnessIdentity;
+            this.entries.set(id, current);
+            const nextSummary = this.summary(id, current);
+            if (beforeSummary !== JSON.stringify(nextSummary)) {
+              this.events.emit("api-session/added", nextSummary);
+              published = true;
+            }
+          }
+          if (published) this.syncGroups();
+        },
+      });
       const uniqueHarnesses = [...new Set(listed.harnessIds.values())];
       const harnessNames = new Map(
         await Promise.all(

@@ -165,11 +165,13 @@ export class PeerThreadSource {
     );
   }
 
-  async listThreads(): Promise<PeerThreadListResult> {
+  async listThreads(options?: {
+    onFirstPage?: (partial: PeerThreadListResult) => void;
+  }): Promise<PeerThreadListResult> {
     const startEpoch = this.epoch ?? this.host.manifestEpoch();
     this.inFlightListEpoch = startEpoch;
     try {
-      return await this.runListThreads(startEpoch);
+      return await this.runListThreads(startEpoch, options?.onFirstPage);
     } finally {
       if (this.inFlightListEpoch === startEpoch) {
         this.inFlightListEpoch = undefined;
@@ -177,7 +179,10 @@ export class PeerThreadSource {
     }
   }
 
-  private async runListThreads(startEpoch: string | undefined): Promise<PeerThreadListResult> {
+  private async runListThreads(
+    startEpoch: string | undefined,
+    onFirstPage?: (partial: PeerThreadListResult) => void,
+  ): Promise<PeerThreadListResult> {
     const rows = new Map<string, ChThread>();
     const harnessIds = new Map<string, string>();
     const archivedIds = new Set<string>();
@@ -219,6 +224,15 @@ export class PeerThreadSource {
         }
         const next = nextCatalogCursor(page, false);
         if (next === null) break;
+        if (pages === 1 && onFirstPage) {
+          onFirstPage({
+            rows: [...rows.values()],
+            harnessIds: new Map(harnessIds),
+            archivedIds: new Set(archivedIds),
+            parents: {},
+            ownershipAvailable,
+          });
+        }
         if (seenCursors.has(next) || next === cursor) {
           throw new RpcError("remote/read-failed", "Remote catalog cursor did not advance");
         }
@@ -463,9 +477,22 @@ export async function resolvePeerHarnessIcon(
   }
   if (!REMOTE_PEER_ID_PATTERN.test(peerId) || !target) return undefined;
   const hostId = remotePeerHostId(peerId);
-  if (peers.client(hostId)?.state !== "connected") return undefined;
   const source = peers.source(hostId);
   if (!source) return undefined;
+  const state = peers.client(hostId)?.state;
+  if (state === "connecting") {
+    // Serve previously cached plugin icons during transient reconnects instead of 404.
+    const cached = source.catalog.cachedList();
+    if (!cached) return undefined;
+    if (target === "presentation.json") {
+      return {
+        contentType: "application/json",
+        body: Buffer.from(JSON.stringify(harnessIconStyles(cached))),
+      };
+    }
+    return source.catalog.cachedIcon(target);
+  }
+  if (state !== "connected") return undefined;
   try {
     if (target === "presentation.json") {
       const plugins = await source.catalog.list();
@@ -476,6 +503,14 @@ export async function resolvePeerHarnessIcon(
     }
     return await source.catalog.icon(target);
   } catch {
-    return undefined;
+    const cached = source.catalog.cachedList();
+    if (!cached) return undefined;
+    if (target === "presentation.json") {
+      return {
+        contentType: "application/json",
+        body: Buffer.from(JSON.stringify(harnessIconStyles(cached))),
+      };
+    }
+    return source.catalog.cachedIcon(target);
   }
 }

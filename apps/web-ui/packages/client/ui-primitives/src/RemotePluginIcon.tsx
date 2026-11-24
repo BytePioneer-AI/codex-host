@@ -5,13 +5,37 @@ type Presentation = NonNullable<HarnessPluginDescriptor["iconStyle"]>;
 type Presentations = Record<string, Presentation | null>;
 const pending = new Map<string, Promise<Presentations>>();
 const resolved = new Map<string, Presentations>();
+const subscribers = new Map<string, Set<() => void>>();
+const CATALOG_RETRY_DELAYS_MS = [1_500, 3_000, 6_000, 12_000] as const;
+const BITMAP_RETRY_DELAYS_MS = [2_000, 4_000, 8_000] as const;
+
+function subscribeCatalog(url: string, listener: () => void): () => void {
+  let set = subscribers.get(url);
+  if (!set) {
+    set = new Set();
+    subscribers.set(url, set);
+  }
+  set.add(listener);
+  return () => {
+    set.delete(listener);
+    if (set.size === 0 && subscribers.get(url) === set) subscribers.delete(url);
+  };
+}
+
+function notifyCatalog(url: string): void {
+  const set = subscribers.get(url);
+  if (!set) return;
+  for (const listener of [...set]) listener();
+}
 
 /** One metadata request per catalog URL, shared by rows and picker entries. */
 function load(url: string): Promise<Presentations> {
+  const cached = resolved.get(url);
+  if (cached) return Promise.resolve(cached);
   const existing = pending.get(url);
   if (existing) return existing;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10_000);
+  const timeout = setTimeout(() => controller.abort(), 20_000);
   const request = fetch(url, { credentials: "same-origin", signal: controller.signal })
     .then(async (response) => {
       if (!response.ok) throw new Error("Icon presentation unavailable");
@@ -20,6 +44,8 @@ function load(url: string): Promise<Presentations> {
         throw new Error("Invalid icon catalog");
       const icons = value as Presentations;
       resolved.set(url, icons);
+      pending.delete(url);
+      notifyCatalog(url);
       return icons;
     })
     .catch((error) => {
@@ -54,16 +80,68 @@ export function RemotePluginIcon({
   });
   useEffect(() => {
     let active = true;
-    void load(presentationUrl).then(
-      (icons) => {
-        if (active) setCatalog({ url: presentationUrl, icons });
-      },
-      () => {
-        if (active) setCatalog(null);
-      },
-    );
+    let attempt = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const clearRetry = () => {
+      if (retryTimer !== undefined) {
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
+    };
+
+    const fetchCatalog = () => {
+      if (!active) return;
+      const already = resolved.get(presentationUrl);
+      if (already) {
+        setCatalog({ url: presentationUrl, icons: already });
+        return;
+      }
+      void load(presentationUrl).then(
+        (icons) => {
+          if (active) setCatalog({ url: presentationUrl, icons });
+        },
+        () => {
+          if (!active) return;
+          setCatalog((current) => (current?.url === presentationUrl ? current : null));
+          const delay = CATALOG_RETRY_DELAYS_MS[attempt];
+          if (delay !== undefined) {
+            attempt += 1;
+            clearRetry();
+            retryTimer = setTimeout(fetchCatalog, delay);
+          }
+        },
+      );
+    };
+
+    const unsubscribe = subscribeCatalog(presentationUrl, () => {
+      if (!active) return;
+      const icons = resolved.get(presentationUrl);
+      if (icons) {
+        clearRetry();
+        setCatalog({ url: presentationUrl, icons });
+      }
+    });
+
+    const onOnline = () => {
+      if (!resolved.has(presentationUrl)) {
+        attempt = 0;
+        clearRetry();
+        fetchCatalog();
+      }
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("online", onOnline);
+    }
+
+    fetchCatalog();
     return () => {
       active = false;
+      clearRetry();
+      unsubscribe();
+      if (typeof window !== "undefined") {
+        window.removeEventListener("online", onOnline);
+      }
     };
   }, [presentationUrl]);
   // Avoid flashing a fixed-black, padded source image while vector metadata loads.
@@ -112,11 +190,23 @@ function BitmapIcon({
   presentation: Presentation | null | undefined;
   fallback: ReactNode;
 }): ReactNode {
+  const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!failed) return;
+    const delay = BITMAP_RETRY_DELAYS_MS[attempt];
+    if (delay === undefined) return;
+    const timer = setTimeout(() => {
+      setAttempt((value) => value + 1);
+      setFailed(false);
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [attempt, failed]);
   if (failed) return fallback;
+  const imgSrc = attempt === 0 ? src : `${src}${src.includes("?") ? "&" : "?"}r=${attempt}`;
   return (
     <img
-      src={src}
+      src={imgSrc}
       width={size}
       height={size}
       className={className}

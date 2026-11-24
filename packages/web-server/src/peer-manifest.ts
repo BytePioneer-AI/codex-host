@@ -81,6 +81,10 @@ function mapFsError(error: unknown, fallback: string): PeerEndpointError {
   return new PeerEndpointError(400, fallback);
 }
 
+export interface PeerEndpointOptions {
+  attachments?: boolean;
+}
+
 export async function peerEndpoint(
   method: string,
   url: URL,
@@ -90,6 +94,7 @@ export async function peerEndpoint(
   epoch: string | undefined,
   version: string,
   allowedRoots?: readonly string[],
+  options?: PeerEndpointOptions,
 ) {
   const collectAllowedRoots = async (): Promise<string[]> => {
     const rawRoots = [
@@ -134,6 +139,7 @@ export async function peerEndpoint(
         .list()
         .filter((w) => !w.remote)
         .map((w) => ({ id: w.workspaceId, name: w.title, path: w.path, threadIds: w.sessionIds })),
+      ...(options?.attachments ? { capabilities: { attachments: 1 } } : {}),
     });
   };
   const route = url.pathname.slice("/api/peer/v1/".length);

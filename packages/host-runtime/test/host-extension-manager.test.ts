@@ -441,7 +441,10 @@ it("reports download stats asynchronously for catalog install and update only", 
       // Verify a stats failure never fails or blocks the install/update.
       return new Response(null, { status: 503 });
     }
-    const zip = archives[currentVersion]!;
+    const zip = archives[currentVersion];
+    if (!zip) {
+      throw new Error(`Missing test archive for ${currentVersion}`);
+    }
     const downloadUrl = `https://github.com/BytePioneer-AI/focus-sample/releases/download/v${currentVersion}/focus-sample.zip`;
     if (href === HOST_EXTENSION_CATALOG_URL || href === HOST_EXTENSION_CATALOG_MIRROR_URL) {
       return Response.json({

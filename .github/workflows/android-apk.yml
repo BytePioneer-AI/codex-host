@@ -39,7 +39,7 @@ jobs:
           path: apps/android-shell/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Build signed release APK
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        id: build-release-apk
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -47,12 +47,17 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          if [ -z "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           KEYSTORE_FILE="${RUNNER_TEMP}/codexhost-release.jks"
           trap 'rm -f "$KEYSTORE_FILE"' EXIT
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
           ANDROID_KEYSTORE_FILE="$KEYSTORE_FILE" ./gradlew assembleRelease
+          echo "signed=true" >> "$GITHUB_OUTPUT"
       - name: Upload signed release APK
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        if: steps.build-release-apk.outputs.signed == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: codexhost-android-release

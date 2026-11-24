@@ -66,6 +66,7 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { ShortcutCatalogEntry } from "@deepseek-ai/dsh-client-shortcuts/client";
 import type { WorkspaceShortcutState } from "../shortcuts.ts";
 import type { createWorkspaceViewStore } from "../stores.ts";
+import type { ThreadSectionManageRequest } from "../session-actions/ManageThreadSection.tsx";
 
 /**
  * Owner share of the directory-flow holes: the complete conversation between
@@ -341,6 +342,7 @@ export type WorkspaceBrowserInjected = {
   unarchiveSession: (sessionId: SessionId) => Promise<void>;
   /** Adopt a picked host directory as a real Workspace before targeting a Session. */
   createWorkspace: (input: { path: string }) => Promise<WorkspaceView>;
+  requestManageThreadSection?: (request: ThreadSectionManageRequest) => void;
 };
 
 /** The browser's declared viewing store handle, shared with the row actions that write view state. */
@@ -369,6 +371,7 @@ export type RowToast =
   | { kind: "defaultWorkspaceFailed" }
   | { kind: "sessionLinkCopied" }
   | { kind: "sessionLinkCopyFailed" }
+  | { kind: "sectionSyncPending" }
   /**
    * An explicit New Session request that failed. `message` is untranslated:
    * a Host refusal as `code: message` — the stable code stays in the copy so

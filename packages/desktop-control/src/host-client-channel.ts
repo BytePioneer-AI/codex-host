@@ -6,6 +6,7 @@ import {
   clientChannelEventSchema,
   clientThreadSnapshotSchema,
   harnessInstallationRequestTimeoutMs,
+  THREAD_SECTION_CAPABILITY,
   type ClientChannelDescriptor,
   type ClientChannelCursor,
   type ClientChannelEvent,
@@ -117,6 +118,7 @@ export class HostClientChannel {
       if (!descriptor) throw new Error("Host unavailable");
       this.descriptor = descriptor;
       const url = new URL(`http://127.0.0.1:${descriptor.port}/v1/events`);
+      url.searchParams.set(THREAD_SECTION_CAPABILITY, "1");
       if (this.cursor) {
         url.searchParams.set("epoch", this.cursor.epoch);
         url.searchParams.set("after", String(this.cursor.sequence));

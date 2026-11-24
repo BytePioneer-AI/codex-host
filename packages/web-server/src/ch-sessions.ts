@@ -4,7 +4,9 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
+  CLIENT_THREAD_SECTION_MUTATIONS,
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  THREAD_SECTION_CAPABILITY,
   THREAD_STEER_STRICT_TARGET_FIELD,
   THREAD_STEER_STRICT_TARGET_PARAM,
   WEB_ACTIVE_TURN_PROJECTION,
@@ -13,6 +15,7 @@ import {
   clientThreadSectionsSchema,
   clientThreadSectionMoveSchema,
   desktopProjectPathKey,
+  clientThreadSectionMutationResultSchema,
   webTurnDiffsRequestSchema,
   webToolOutputReferenceSchema,
   encodeHarnessPluginRoute,
@@ -82,6 +85,7 @@ type CatalogScope = NonNullable<ThreadCatalogReadParams["scope"]>;
 type WorkspaceCatalog = { workspaceId: string; scope: CatalogScope };
 type CatalogRefresh = CatalogPage & {
   workspaceItems?: Awaited<ReturnType<ChSessions["summary"]>>[];
+  sectionFailure?: { error: unknown } | undefined;
 };
 
 function catalogOwnership(page: CatalogPage, rows: ReadonlyMap<string, ChThread>) {
@@ -211,6 +215,7 @@ export class ChSessions {
           catalog: async () => {
             await this.refresh();
           },
+          sections: () => this.refreshAfterCurrent(true),
           archived: (id, archived) => {
             this.archiveOperations.delete(id);
             this.updateArchive(id, archived);
@@ -306,6 +311,7 @@ export class ChSessions {
     includeArchived = false,
     cursor?: string,
     workspace?: WorkspaceCatalog,
+    requireSections = false,
   ): Promise<CatalogRefresh | undefined> {
     if (this.closed) return;
     if (
@@ -317,7 +323,7 @@ export class ChSessions {
       const stage = this.refreshingCatalog ? "catalog_wait" : "workspace_wait";
       const pending = this.refreshing.catch(() => undefined);
       await (timing ? timing.measure(stage, () => pending) : pending);
-      return this.refresh(timing, includeArchived, cursor, workspace);
+      return this.refresh(timing, includeArchived, cursor, workspace, requireSections);
     }
     const mode = this.refreshing ? "joined" : "started";
     if (!this.refreshing) {
@@ -348,10 +354,17 @@ export class ChSessions {
     const pending = this.refreshing;
     const catalogTiming = this.refreshingTiming;
     try {
-      return await (timing ? timing.measure("catalog_wait", () => pending) : pending);
+      const result = await (timing ? timing.measure("catalog_wait", () => pending) : pending);
+      if (requireSections && result?.sectionFailure) throw result.sectionFailure.error;
+      return result;
     } finally {
       if (timing && catalogTiming) timing.catalog = { mode, ...catalogTiming.snapshot() };
     }
+  }
+  /** An invalidation cannot join a catalog read that began before it. */
+  private async refreshAfterCurrent(requireSections = false): Promise<void> {
+    await this.refreshing?.catch(() => undefined);
+    await this.refresh(undefined, false, undefined, undefined, requireSections);
   }
   private refreshPins(): Promise<string[]> {
     return this.pins.refresh().catch((error: unknown) => {
@@ -462,8 +475,10 @@ export class ChSessions {
     includeArchived: boolean,
     archiveChanges: ReadonlyMap<string, boolean>,
     cursor?: string,
-  ): Promise<CatalogPage | undefined> {
+  ): Promise<CatalogRefresh | undefined> {
     const known = new Set(this.rows.keys());
+    let sectionFailure: CatalogRefresh["sectionFailure"];
+    let sectionsUnsupported = false;
     const [{ page: snapshot }, definitions, , sections] = await Promise.all([
       readSessionPage(this.host, timing, includeArchived, cursor, () => this.refreshPins()),
       timing.measure("project_definitions", () => this.host.projects([])),
@@ -471,10 +486,16 @@ export class ChSessions {
       timing.measure("thread_sections", async () => {
         try {
           return clientThreadSectionsSchema.parse(
-            await this.host.request("codexhost/thread/sections/list", {}),
-          ).sections;
-        } catch {
-          // Optional on older Hosts; keep the last confirmed snapshot on a read failure.
+            await this.host.request("codexhost/thread/sections/list", {
+              [THREAD_SECTION_CAPABILITY]: true,
+            }),
+          );
+        } catch (error) {
+          sectionsUnsupported =
+            error instanceof RpcError &&
+            (error.code === "host/method-unavailable" ||
+              ("hostCode" in error.details && error.details.hostCode === -32601));
+          if (!sectionsUnsupported) sectionFailure = { error };
           return undefined;
         }
       }),
@@ -487,25 +508,33 @@ export class ChSessions {
     for (const id of found.keys()) if (!snapshotArchives.has(id)) archivedIds.delete(id);
     const ownership = catalogOwnership(snapshot, found);
     const pageSectionAdditions = cursor === undefined ? undefined : new Set<string>();
-    const threadSections = sections?.map(({ id, name, threads }) => {
+    const threadSectionsV1 = sections?.[THREAD_SECTION_CAPABILITY];
+    const threadSections = sections?.sections.map(({ id, name, appearance, threads }) => {
       const threadIds: string[] = [];
       for (const thread of threads) {
-        if (typeof thread.id !== "string" || thread.archived === true) continue;
-        if (thread.archived === false && !snapshotArchives.has(thread.id))
-          archivedIds.delete(thread.id);
-        if (!found.has(thread.id)) {
+        const threadId = thread.id;
+        if (typeof threadId !== "string" || thread.archived === true) continue;
+        if (found.has(threadId)) {
+          if (!ownership.has(threadId)) continue;
+        } else if (thread.modelProvider === "codexhost") {
+          // Official continuation pages omit External rows; their head-page ownership still applies.
+          const harnessId = cursor === undefined ? undefined : this.threads.harnessId(threadId);
+          if (!harnessId || harnessId === "codex") continue;
+        } else {
           const row = thread as unknown as ChThread;
-          found.set(thread.id, row);
-          ownership.set(thread.id, "codex");
-          if (cursor === undefined || !this.publishedCatalog?.has(row.id))
+          found.set(threadId, row);
+          ownership.set(threadId, "codex");
+          if (cursor === undefined || !this.publishedCatalog?.has(threadId))
             snapshot.threads.push(row);
         }
-        if (ownership.get(thread.id) === "codex") {
-          threadIds.push(thread.id);
-          if (!this.publishedCatalog?.has(thread.id)) pageSectionAdditions?.add(thread.id);
-        }
+        if (thread.archived === false && !snapshotArchives.has(threadId))
+          archivedIds.delete(threadId);
+        threadIds.push(threadId);
+        if (!this.publishedCatalog?.has(threadId)) pageSectionAdditions?.add(threadId);
       }
-      return { id, name, threadIds };
+      return threadSectionsV1 && appearance !== undefined
+        ? { id, name, threadIds, appearance }
+        : { id, name, threadIds };
     });
     timing.count("ownershipIds", ownership.size);
     timing.count(
@@ -559,13 +588,6 @@ export class ChSessions {
     timing.count("visibleRows", rows.size);
     await this.syncWorkspace(timing, projects);
     if (this.closed) return;
-    // Project members resolve to Workspaces, which exist once their roots are synced.
-    if (threadSections && (!this.workspaces.usesNativeProjects || projects.nativeProjects))
-      this.workspaces.setReferenceThreadSections(
-        threadSections,
-        definitions.projects,
-        definitions.sectionProjects,
-      );
     // Notifications received during catalog or ancestor reads supersede their membership.
     for (const [id, archived] of archiveChanges) {
       if (archived) archivedIds.add(id);
@@ -575,9 +597,23 @@ export class ChSessions {
       this.workspaces.setReferenceArchives([...archivedIds].sort()),
     );
     for (const id of found.keys()) this.workspacePageRows.delete(id);
+    // Project members resolve to Workspaces, which exist once their roots are synced.
+    if (threadSections && (!this.workspaces.usesNativeProjects || projects.nativeProjects)) {
+      this.workspaces.setReferenceThreadSections(
+        threadSections.map((section) => ({
+          ...section,
+          threadIds: section.threadIds.filter((id) => !archivedIds.has(id)),
+        })),
+        definitions.projects,
+        definitions.sectionProjects,
+        threadSectionsV1,
+      );
+    } else if (sectionsUnsupported || (threadSections && !threadSectionsV1)) {
+      this.workspaces.setReferenceThreadSections(undefined);
+    }
     await timing.measure("catalog_publish", () => this.publishCatalogChanges(pageSectionAdditions));
     this.catalogReadAt = Date.now();
-    return snapshot;
+    return { ...snapshot, sectionFailure };
   }
   private async syncWorkspace(
     timing = new SessionListTiming(),
@@ -1527,6 +1563,38 @@ export class ChSessions {
         return { pinnedSessionIds: this.workspaces.pinnedSessionIds() };
       });
     }
+    for (const [method, mutation] of [
+      ["workspace/createThreadSection", CLIENT_THREAD_SECTION_MUTATIONS.create],
+      ["workspace/updateThreadSection", CLIENT_THREAD_SECTION_MUTATIONS.update],
+      ["workspace/deleteThreadSection", CLIENT_THREAD_SECTION_MUTATIONS.delete],
+    ] as const) {
+      rpc.register(method, async (args) => {
+        const params = mutation.params.safeParse(requestOf(args));
+        if (!params.success)
+          throw new RpcError("workspace/section-invalid", "Invalid Thread section request.");
+        const value = await this.host
+          .request(mutation.method, params.data)
+          .catch((error: unknown) => {
+            if (error instanceof RpcError) {
+              const { code, details } = error;
+              const hostCode = "hostCode" in details ? details.hostCode : undefined;
+              // A lost or obsolete reply does not establish whether Host applied the write.
+              if (
+                code === "host/disconnected" ||
+                code === "host/resync" ||
+                code === "remote/offline" ||
+                (code === "host/rejected" && (hostCode === -32093 || hostCode === -32094))
+              )
+                return { status: "unknown" };
+            }
+            throw error;
+          });
+        const result = clientThreadSectionMutationResultSchema.safeParse(value);
+        // An invalid response also cannot confirm or reject an already-submitted write.
+        await this.refreshAfterCurrent().catch(() => undefined);
+        return result.success ? result.data : { status: "unknown" };
+      });
+    }
     rpc.register("workspace/moveSessionToSection", async (args) => {
       const input = requestOf<{ sessionId: string; sectionId: string | null }>(args);
       const move = clientThreadSectionMoveSchema.safeParse({
@@ -1535,21 +1603,22 @@ export class ChSessions {
       });
       if (!move.success)
         throw new RpcError("workspace/section-invalid", "Invalid Thread section move.");
-      const { threadId, sectionId } = move.data;
+      const { sectionId } = move.data;
+      const id = this.id(move.data.threadId);
       if (
-        this.threads.harnessId(threadId) !== "codex" ||
-        this.rows.get(threadId)?.parentThreadId ||
-        this.workspaces.isArchived(threadId) ||
-        this.workspaces.pinnedSessionIds().includes(threadId) ||
+        this.drafts.has(id) ||
+        !this.threads.hasHarness(id) ||
+        this.rows.get(id)?.parentThreadId ||
+        this.workspaces.isArchived(id) ||
+        this.workspaces.pinnedSessionIds().includes(id) ||
         (sectionId !== null && !this.workspaces.hasThreadSection(sectionId))
       )
         throw new RpcError(
           "workspace/section-unavailable",
           "This Thread or section is unavailable for a move.",
         );
-      await this.host.request("codexhost/thread/sections/move", move.data);
-      await this.refreshing?.catch(() => undefined);
-      await this.refresh().catch(() => undefined);
+      await this.host.request("codexhost/thread/sections/move", { threadId: id, sectionId });
+      await this.refreshAfterCurrent().catch(() => undefined);
       return { sectionId };
     });
     rpc.register("session/list", async (args, context) => {

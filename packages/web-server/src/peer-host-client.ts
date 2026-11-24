@@ -584,12 +584,13 @@ export class PeerHostClient {
           this.changed(this.hostId);
         }
         if (this.life.signal.aborted) return;
-        const query = this.cursor
-          ? "?" +
-            new URLSearchParams({ epoch: this.cursor.epoch, after: String(this.cursor.sequence) })
-          : "";
+        const query = new URLSearchParams({ [c.THREAD_SECTION_CAPABILITY]: "1" });
+        if (this.cursor) {
+          query.set("epoch", this.cursor.epoch);
+          query.set("after", String(this.cursor.sequence));
+        }
         const response = await this.fetch(
-          `/api/ch/v1/events${query}`,
+          `/api/ch/v1/events?${query}`,
           "GET",
           undefined,
           streamAbort.signal,

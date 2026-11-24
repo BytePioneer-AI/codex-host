@@ -1,10 +1,13 @@
 import type { JsonObject } from "@codexhost/protocol-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { SharedThreadBridge } from "../src/shared-thread-bridge.js";
+import { SharedThreadOwner } from "../src/shared-thread-owner.js";
 
 import {
   closeFixture,
   createFixture,
   requestId,
+  startExternalThread,
   startPiThread,
   stopFixture,
   writeRequest,
@@ -12,14 +15,28 @@ import {
 
 const PINNED = "01984de2-8f74-7c91-a3b2-5c5e937cf318";
 
-/** Answers the official requests the Host sends or forwards, over one pinned section. */
+/** Synthetic native section definitions and member order. */
 function serveOfficialSections(
   fixture: ReturnType<typeof createFixture>,
   pinned: string[],
   custom: Readonly<Record<string, readonly string[]>> = {},
+  options: {
+    reject?: (method: string) => boolean;
+    loseCreateReply?: (section: JsonObject) => void;
+    incompleteList?: () => boolean;
+  } = {},
 ) {
   const moves: JsonObject[] = [];
+  const mutations: Array<{ method: string; params: JsonObject }> = [];
   const sections = new Map(Object.entries(custom).map(([id, members]) => [id, [...members]]));
+  const definitions = new Map<string, JsonObject>(
+    Object.keys(custom).map((id) => [id, { id, name: id, appearance: null }]),
+  );
+  const deleteSection = (id: string) => {
+    definitions.delete(id);
+    sections.delete(id);
+  };
+  let sectionNumber = 0;
   let buffer = "";
   fixture.official.stdin.on("data", (chunk: Buffer) => {
     buffer += chunk.toString("utf8");
@@ -30,28 +47,64 @@ function serveOfficialSections(
       const request = JSON.parse(line) as JsonObject;
       const params = (request.params ?? {}) as JsonObject;
       let result: JsonObject | undefined;
-      if (request.method === "threadSection/list") {
+      const method = String(request.method);
+      const reply = (value: JsonObject) =>
+        fixture.official.stdout.write(`${JSON.stringify({ id: request.id, ...value })}\n`);
+      if (method === "initialize") {
+        result = {};
+      } else if (method === "threadSection/list") {
         result = {
           data: [
             { id: PINNED, name: "Pinned", appearance: null },
-            ...Object.keys(custom).map((id) => ({ id, name: id, appearance: null })),
+            ...(options.incompleteList?.() ? [] : definitions.values()),
           ],
-          nextCursor: null,
+          nextCursor: options.incompleteList?.() ? "loop" : null,
         };
+      } else if (
+        method === "threadSection/create" ||
+        method === "threadSection/update" ||
+        method === "threadSection/delete"
+      ) {
+        mutations.push({ method, params });
+        if (options.reject?.(method)) {
+          reply({ error: { code: -32005, message: "Native section write rejected" } });
+          continue;
+        }
+        const id =
+          method === "threadSection/create" ? `new-${++sectionNumber}` : String(params.sectionId);
+        if (method === "threadSection/delete") {
+          deleteSection(id);
+          result = {};
+        } else {
+          const definition = {
+            id,
+            name: String(params.name),
+            appearance:
+              "appearance" in params
+                ? (params.appearance ?? null)
+                : (definitions.get(id)?.appearance ?? null),
+          };
+          definitions.set(id, definition);
+          if (method === "threadSection/create") {
+            sections.set(id, []);
+            if (options.loseCreateReply) {
+              options.loseCreateReply(definition);
+              continue;
+            }
+          }
+          result = { section: definition };
+        }
       } else if (request.method === "project/read") {
         result = { project: { id: String(params.projectId) } };
       } else if (request.method === "thread/list" && params.sectionId === PINNED) {
         result = { data: pinned.map((id) => ({ id })), nextCursor: null, backwardsCursor: null };
-      } else if (
-        request.method === "thread/list" &&
-        typeof params.sectionId === "string" &&
-        params.sectionId in custom
-      ) {
+      } else if (method === "thread/list") {
         result = {
-          data: (sections.get(params.sectionId) ?? []).map((id) => ({ id })),
+          data: (sections.get(String(params.sectionId)) ?? []).map((id) => ({ id })),
           nextCursor: null,
+          backwardsCursor: null,
         };
-      } else if (request.method === "thread/read") {
+      } else if (method === "thread/read") {
         const threadId = String(params.threadId);
         const section = [...sections].find(([, members]) => members.includes(threadId))?.[0];
         result = {
@@ -60,7 +113,7 @@ function serveOfficialSections(
             section: pinned.includes(threadId)
               ? { id: PINNED, name: "Pinned", appearance: null }
               : section
-                ? { id: section, name: section, appearance: null }
+                ? (definitions.get(section) ?? null)
                 : null,
           },
         };
@@ -78,23 +131,29 @@ function serveOfficialSections(
             id,
             members.filter((member) => member !== threadId),
           );
-        if (typeof params.sectionId === "string") sections.get(params.sectionId)?.push(threadId);
+        const destination = sections.get(String(params.sectionId));
+        if (destination) {
+          const before = params.beforeThreadId;
+          const index =
+            typeof before === "string" ? destination.indexOf(before) : destination.length;
+          destination.splice(index, 0, threadId);
+        }
         result = {};
       }
       if (result === undefined) continue;
-      fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
+      reply({ result });
     }
   });
-  return { moves };
+  return { moves, mutations, deleteSection };
 }
 
 async function call(
   fixture: ReturnType<typeof createFixture>,
   id: number,
   method: string,
-  params: JsonObject,
+  params?: JsonObject,
 ): Promise<JsonObject> {
-  writeRequest(fixture.desktopInput, { id, method, params });
+  writeRequest(fixture.desktopInput, { id, method, ...(params ? { params } : {}) });
   return fixture.collector.waitFor((message) => requestId(message, id));
 }
 
@@ -107,15 +166,479 @@ const pinnedList = {
   useStateDbOnly: true,
 };
 
+function sectionRpc(
+  fixture: { host: { handleClientRequest(method: string, input: unknown): Promise<unknown> } },
+  operation: "list" | "create" | "update" | "delete" | "move",
+  params: JsonObject,
+) {
+  return fixture.host.handleClientRequest(`codexhost/thread/sections/${operation}`, params);
+}
+
 describe("External Thread sections through AppServerHost", () => {
-  it("lists custom Codex sections and their native member order without the pin section", async () => {
+  it("creates distinct empty sections with the same trimmed name and gates appearance", async () => {
+    const fixture = createFixture();
+    const appearance = { icon: "future-icon", color: "future-color" };
+    const native = serveOfficialSections(fixture, []);
+    try {
+      await fixture.ready;
+      await expect(call(fixture, 229, "codexhost/thread/sections/list")).resolves.toEqual({
+        id: 229,
+        result: { sections: [] },
+      });
+      await expect(sectionRpc(fixture, "list", { threadSectionsV1: true })).resolves.toEqual({
+        result: { threadSectionsV1: true, sections: [] },
+      });
+      await expect(sectionRpc(fixture, "create", { name: " \t " })).resolves.toMatchObject({
+        error: { code: -32602 },
+      });
+      await expect(
+        sectionRpc(fixture, "update", { sectionId: PINNED, name: "Other" }),
+      ).resolves.toMatchObject({ error: { code: -32602 } });
+      await expect(sectionRpc(fixture, "delete", { sectionId: PINNED })).resolves.toMatchObject({
+        error: { code: -32602 },
+      });
+      await expect(sectionRpc(fixture, "create", { name: " Research " })).resolves.toEqual({
+        result: {
+          status: "confirmed",
+          sectionId: "new-1",
+          syncPending: false,
+          section: { id: "new-1", name: "Research", appearance: null },
+        },
+      });
+      expect(
+        await call(fixture, 201, "threadSection/create", { name: "Research", appearance }),
+      ).toEqual({ id: 201, result: { section: { id: "new-2", name: "Research", appearance } } });
+      expect(await call(fixture, 230, "codexhost/thread/sections/list")).toEqual({
+        id: 230,
+        result: {
+          sections: [
+            { id: "new-1", name: "Research", threads: [] },
+            { id: "new-2", name: "Research", threads: [] },
+          ],
+        },
+      });
+      await expect(
+        sectionRpc(fixture, "update", { sectionId: "new-2", name: " Renamed " }),
+      ).resolves.toEqual({
+        result: {
+          status: "confirmed",
+          sectionId: "new-2",
+          syncPending: false,
+          section: { id: "new-2", name: "Renamed", appearance },
+        },
+      });
+      await expect(sectionRpc(fixture, "list", { threadSectionsV1: true })).resolves.toEqual({
+        result: {
+          threadSectionsV1: true,
+          sections: [
+            { id: "new-1", name: "Research", appearance: null, threads: [] },
+            { id: "new-2", name: "Renamed", appearance, threads: [] },
+          ],
+        },
+      });
+      await expect(
+        sectionRpc(fixture, "update", { sectionId: "new-2", name: "Renamed", appearance: null }),
+      ).resolves.toMatchObject({
+        result: { status: "confirmed", section: { id: "new-2", appearance: null } },
+      });
+      expect(native.mutations).toEqual([
+        { method: "threadSection/create", params: { name: "Research" } },
+        { method: "threadSection/create", params: { name: "Research", appearance } },
+        { method: "threadSection/update", params: { sectionId: "new-2", name: "Renamed" } },
+        {
+          method: "threadSection/update",
+          params: { sectionId: "new-2", name: "Renamed", appearance: null },
+        },
+      ]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("does not infer or replay a lost create reply even after refreshing duplicate names", async () => {
+    const fixture = createFixture();
+    const submitted = Promise.withResolvers<JsonObject>();
+    const native = serveOfficialSections(
+      fixture,
+      [],
+      { Research: [] },
+      {
+        loseCreateReply: submitted.resolve,
+      },
+    );
+    try {
+      await fixture.ready;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const result = sectionRpc(fixture, "create", { name: "Research" });
+      expect((await submitted.promise).id).toBe("new-1");
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(result).resolves.toEqual({ result: { status: "unknown" } });
+      await expect(sectionRpc(fixture, "list", {})).resolves.toEqual({
+        result: {
+          sections: [
+            { id: "Research", name: "Research", threads: [] },
+            { id: "new-1", name: "Research", threads: [] },
+          ],
+        },
+      });
+      expect(native.mutations).toEqual([
+        { method: "threadSection/create", params: { name: "Research" } },
+      ]);
+    } finally {
+      vi.useRealTimers();
+      await stopFixture(fixture);
+    }
+  });
+
+  it("keeps Threads and project/archives intact when deletion is pending, then recovers on startup", async () => {
+    let fixture = createFixture();
+    let incomplete = false;
+    let reject = true;
+    serveOfficialSections(
+      fixture,
+      [],
+      { Research: ["native"], Review: ["anchor"] },
+      {
+        reject: () => reject,
+        incompleteList: () => incomplete,
+      },
+    );
+    try {
+      const active = await startPiThread(fixture);
+      const archived = await startExternalThread(fixture, "codexhost/pi-native", 2);
+      const moved = await startExternalThread(fixture, "codexhost/pi-native", 3);
+      await call(fixture, 211, "thread/metadata/update", {
+        threadId: active,
+        projectId: "project-a",
+      });
+      for (const [index, threadId] of [active, archived, moved].entries()) {
+        expect(
+          await call(fixture, 212 + index, "thread/section/move", {
+            threadId,
+            sectionId: "Research",
+          }),
+        ).toHaveProperty("result");
+      }
+      await call(fixture, 215, "thread/archive", { threadId: archived });
+      const original = await fixture.mappingStore.listSectionPlacements();
+      await expect(sectionRpc(fixture, "delete", { sectionId: "Research" })).resolves.toEqual({
+        error: { code: -32005, message: "Native section write rejected" },
+      });
+      expect(await fixture.mappingStore.listSectionPlacements()).toEqual(original);
+      expect(
+        await call(fixture, 216, "thread/section/move", {
+          threadId: moved,
+          sectionId: "Review",
+        }),
+      ).toHaveProperty("result");
+      const review = (await fixture.mappingStore.listSectionPlacements()).find(
+        ({ hostThreadId }) => hostThreadId === moved,
+      );
+      expect(review).toMatchObject({ section: { id: "Review" } });
+
+      reject = false;
+      incomplete = true;
+      const complete = await fixture.mappingStore.listSectionPlacements();
+      await expect(sectionRpc(fixture, "delete", { sectionId: "Research" })).resolves.toEqual({
+        result: { status: "confirmed", sectionId: "Research", section: null, syncPending: true },
+      });
+      // The repeated cursor is not a complete list. Even with no fresh list,
+      // the confirmed deletion is authoritative for its own section.
+      expect(await fixture.mappingStore.listSectionPlacements()).toEqual(complete);
+      const unsectioned = {
+        id: active,
+        projectId: "project-a",
+        section: null,
+        sectionEnteredAt: null,
+      };
+      expect(await call(fixture, 217, "thread/read", { threadId: active })).toMatchObject({
+        result: { thread: unsectioned },
+      });
+      expect((await fixture.host.clientSnapshot(active)).thread).toMatchObject(unsectioned);
+      expect(
+        await call(fixture, 218, "thread/list", { ...pinnedList, sectionId: "Research" }),
+      ).toMatchObject({ result: { data: [] } });
+
+      incomplete = false;
+      const save = vi
+        .spyOn(fixture.mappingStore, "replaceSectionPlacements")
+        .mockRejectedValue(new Error("Synthetic placement disk failure"));
+      // Trigger the owner with a complete list, then leave its writes failing until restart.
+      expect(
+        await call(fixture, 219, "threadSection/update", { sectionId: "Review", name: "Review" }),
+      ).toMatchObject({ result: { section: { id: "Review" } } });
+      expect(await fixture.mappingStore.listSectionPlacements()).toEqual(complete);
+      await expect(sectionRpc(fixture, "list", {})).resolves.toMatchObject({
+        result: { sections: [{ id: "Review", threads: [{ id: "anchor" }, { id: moved }] }] },
+      });
+      const mappingStoreDirectory = fixture.mappingStoreDirectory;
+      await closeFixture(fixture);
+      save.mockRestore();
+      fixture = createFixture({ mappingStoreDirectory });
+      serveOfficialSections(fixture, [], { Review: ["anchor"] });
+      await fixture.ready;
+      await vi.waitFor(async () => {
+        expect(await fixture.mappingStore.listSectionPlacements()).toEqual([review]);
+      });
+      expect(await call(fixture, 220, "thread/read", { threadId: active })).toMatchObject({
+        result: { thread: unsectioned },
+      });
+      expect(await call(fixture, 221, "thread/unarchive", { threadId: archived })).toMatchObject({
+        result: { thread: { id: archived, section: null } },
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("retries placement persistence after repeated failures without replaying the delete", async () => {
+    const fixture = createFixture();
+    const native = serveOfficialSections(fixture, [], { Research: [] });
+    try {
+      const threadId = await startPiThread(fixture);
+      await expect(
+        sectionRpc(fixture, "move", { threadId, sectionId: "Research" }),
+      ).resolves.toEqual({ result: {} });
+      vi.spyOn(fixture.mappingStore, "replaceSectionPlacements")
+        .mockRejectedValueOnce(new Error("Storage unavailable"))
+        .mockRejectedValueOnce(new Error("Storage still unavailable"));
+      await expect(sectionRpc(fixture, "delete", { sectionId: "Research" })).resolves.toMatchObject(
+        {
+          result: { status: "confirmed", syncPending: true },
+        },
+      );
+      await vi.waitFor(async () => {
+        expect(await fixture.mappingStore.listSectionPlacements()).toEqual([]);
+      });
+      expect(native.mutations).toEqual([
+        { method: "threadSection/delete", params: { sectionId: "Research" } },
+      ]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("notifies clients when a shared reconciliation retry changes stale placements", async () => {
+    const fixture = createFixture({ externalOnly: true });
+    let incompleteList = false;
+    const native = serveOfficialSections(
+      fixture,
+      [],
+      { Research: [] },
+      { incompleteList: () => incompleteList },
+    );
+    const changes: number[] = [];
+    const stop = fixture.host.clientEvents.subscribe((event) => {
+      if (event.type === "sections-changed") changes.push(event.cursor.sequence);
+    });
+    try {
+      await vi.waitFor(() => fixture.mappingStore.listSectionPlacements());
+      await expect(sectionRpc(fixture, "list", {})).resolves.toHaveProperty("result");
+      const threadId = await startPiThread(fixture);
+      await expect(
+        sectionRpc(fixture, "move", { threadId, sectionId: "Research" }),
+      ).resolves.toEqual({ result: {} });
+
+      changes.length = 0;
+      native.deleteSection("Research");
+      incompleteList = true;
+      await expect(
+        call(fixture, 231, "codexhost/shared-threads/sections/reconcile", {}),
+      ).resolves.toEqual({ id: 231, result: { syncPending: true } });
+      expect(changes).toHaveLength(1);
+      expect((await fixture.host.clientSnapshot(threadId)).thread).toMatchObject({
+        section: { id: "Research" },
+      });
+
+      incompleteList = false;
+      await vi.waitFor(() => expect(changes).toHaveLength(2));
+      expect(await fixture.mappingStore.listSectionPlacements()).toEqual([]);
+      expect((await fixture.host.clientSnapshot(threadId)).thread).toMatchObject({ section: null });
+      expect(native.mutations).toEqual([]);
+    } finally {
+      stop();
+      await stopFixture(fixture);
+    }
+  });
+
+  it("keeps a move made after deletion when the owner reconciles again", async () => {
+    const fixture = createFixture();
+    serveOfficialSections(fixture, [], { Research: [], Review: ["anchor"] });
+    try {
+      const threadId = await startPiThread(fixture);
+      expect(
+        await call(fixture, 222, "thread/section/move", { threadId, sectionId: "Research" }),
+      ).toHaveProperty("result");
+      const save = vi
+        .spyOn(fixture.mappingStore, "replaceSectionPlacements")
+        .mockRejectedValue(new Error("Synthetic placement disk failure"));
+      await expect(sectionRpc(fixture, "delete", { sectionId: "Research" })).resolves.toMatchObject(
+        {
+          result: { status: "confirmed", syncPending: true },
+        },
+      );
+      expect(await fixture.mappingStore.listSectionPlacements()).toMatchObject([
+        { hostThreadId: threadId, section: { id: "Research" } },
+      ]);
+      save.mockRestore();
+      expect(
+        await call(fixture, 223, "thread/section/move", {
+          threadId,
+          sectionId: "Review",
+        }),
+      ).toHaveProperty("result");
+      const [placement] = await fixture.mappingStore.listSectionPlacements();
+      expect(placement).toMatchObject({
+        hostThreadId: threadId,
+        section: { id: "Review" },
+      });
+      expect(
+        await call(fixture, 224, "threadSection/update", { sectionId: "Review", name: "Renamed" }),
+      ).toHaveProperty("result");
+      expect(await fixture.mappingStore.listSectionPlacements()).toMatchObject([
+        { ...placement, section: { id: "Review", name: "Renamed" } },
+      ]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it.each(["unreachable", "RPC error"])(
+    "reports pending on shared reconciliation failure (%s) despite local success",
+    async (failure) => {
+      const fixture = createFixture({
+        sharedThreads: new SharedThreadBridge({
+          connect: async () =>
+            failure === "unreachable"
+              ? null
+              : {
+                  request: async (method) =>
+                    method === "codexhost/shared-threads/sections/reconcile"
+                      ? { error: { code: -32601, message: "Method not found" } }
+                      : { result: { threads: [] } },
+                  respond: async () => undefined,
+                  subscribe: () => () => undefined,
+                  closed: Promise.withResolvers<undefined>().promise,
+                  close: () => undefined,
+                },
+          delegateCreates: false,
+          diagnose: () => undefined,
+        }),
+      });
+      serveOfficialSections(fixture, [], { Research: [] });
+      try {
+        const threadId = await startPiThread(fixture);
+        expect(
+          await call(fixture, 225, "thread/section/move", { threadId, sectionId: "Research" }),
+        ).toHaveProperty("result");
+        await expect(
+          sectionRpc(fixture, "update", { sectionId: "Research", name: "Renamed" }),
+        ).resolves.toMatchObject({ result: { status: "confirmed", syncPending: true } });
+        expect(await fixture.mappingStore.listSectionPlacements()).toMatchObject([
+          { hostThreadId: threadId, section: { id: "Research", name: "Renamed" } },
+        ]);
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it("refreshes shared rows after a different connection changes section membership or definitions", async () => {
+    const fixture = createFixture({ externalOnly: true });
+    const owner = new SharedThreadOwner();
+    fixture.desktopOutput.pipe(owner.output, { end: false });
+    owner.input.pipe(fixture.desktopInput, { end: false });
+    const stock = owner.connect();
+    const viewer = owner.connect();
+    const bridge = new SharedThreadBridge({
+      connect: async () => viewer,
+      delegateCreates: true,
+      diagnose: (error) => {
+        throw error;
+      },
+    });
+    serveOfficialSections(fixture, [], { Research: [], Review: [] });
+    try {
+      await vi.waitFor(() => fixture.mappingStore.listSectionPlacements());
+      const boot = await sectionRpc(fixture, "list", {});
+      expect(boot, fixture.diagnosticOutput.read()?.toString()).toHaveProperty("result");
+      const threadId = await startPiThread(fixture);
+      expect(
+        await stock.request("thread/section/move", { threadId, sectionId: "Research" }),
+      ).toHaveProperty("result");
+      const list = () => bridge.list({ archived: false });
+      expect(await list()).toMatchObject([{ id: threadId, section: { name: "Research" } }]);
+      expect(await stock.request("threadSection/create", { name: "Empty" })).toHaveProperty(
+        "result",
+      );
+      expect(
+        await stock.request("threadSection/update", { sectionId: "new-1", name: "Still empty" }),
+      ).toHaveProperty("result");
+      expect(await stock.request("threadSection/delete", { sectionId: "new-1" })).toHaveProperty(
+        "result",
+      );
+      expect(await list()).toMatchObject([{ id: threadId, section: { name: "Research" } }]);
+
+      const move = (sectionId: string) =>
+        stock.request("codexhost/thread/sections/move", { threadId, sectionId });
+      expect(await move("Research")).toHaveProperty("result");
+      expect(await list()).toMatchObject([{ id: threadId, section: { id: "Research" } }]);
+      expect(await move("Review")).toHaveProperty("result");
+      expect(await list()).toMatchObject([{ id: threadId, section: { id: "Review" } }]);
+      expect(await move("Research")).toHaveProperty("result");
+      expect(await list()).toMatchObject([{ id: threadId, section: { id: "Research" } }]);
+
+      const appearance = { icon: "star", color: "red" };
+      expect(
+        await stock.request("threadSection/update", {
+          sectionId: "Research",
+          name: "New",
+          appearance,
+        }),
+      ).toHaveProperty("result");
+      expect(await list()).toMatchObject([{ id: threadId, section: { name: "New", appearance } }]);
+      expect(await fixture.mappingStore.listSectionPlacements()).toMatchObject([
+        { hostThreadId: threadId, section: { name: "New", appearance } },
+      ]);
+      vi.spyOn(fixture.mappingStore, "listSectionPlacements").mockRejectedValueOnce(
+        new Error("Cannot read placements during delete"),
+      );
+      expect(await stock.request("threadSection/delete", { sectionId: "Research" })).toHaveProperty(
+        "result",
+      );
+      expect(await list()).toMatchObject([{ id: threadId, section: null }]);
+      await vi.waitFor(async () => {
+        expect(await fixture.mappingStore.listSectionPlacements()).toEqual([]);
+      });
+    } finally {
+      bridge.close();
+      owner.close();
+      await stopFixture(fixture);
+    }
+  });
+
+  it("lists mixed custom sections without archived or pinned members", async () => {
     const fixture = createFixture();
     serveOfficialSections(fixture, ["pinned-1"], {
       Research: ["official-2", "official-1"],
       Empty: [],
     });
     try {
-      await fixture.ready;
+      const external = await startPiThread(fixture);
+      const archived = await startExternalThread(fixture, "codexhost/pi-native", 2);
+      await expect(
+        call(fixture, 91, "thread/section/move", {
+          threadId: external,
+          sectionId: "Research",
+        }),
+      ).resolves.toEqual({ id: 91, result: {} });
+      await expect(
+        call(fixture, 92, "thread/section/move", { threadId: archived, sectionId: "Research" }),
+      ).resolves.toEqual({ id: 92, result: {} });
+      await expect(call(fixture, 93, "thread/archive", { threadId: archived })).resolves.toEqual({
+        id: 93,
+        result: {},
+      });
       await expect(
         fixture.host.handleClientRequest("codexhost/thread/sections/list", {}),
       ).resolves.toEqual({
@@ -124,7 +647,11 @@ describe("External Thread sections through AppServerHost", () => {
             {
               id: "Research",
               name: "Research",
-              threads: [{ id: "official-2" }, { id: "official-1" }],
+              threads: [
+                { id: "official-2" },
+                { id: "official-1" },
+                expect.objectContaining({ id: external, modelProvider: "codexhost" }),
+              ],
             },
             { id: "Empty", name: "Empty", threads: [] },
           ],
@@ -135,16 +662,50 @@ describe("External Thread sections through AppServerHost", () => {
     }
   });
 
-  it("moves only unpinned official Threads through the Web custom-section command", async () => {
+  it("moves active unpinned Threads through the Web custom-section command", async () => {
     const fixture = createFixture();
     try {
       const external = await startPiThread(fixture);
-      const official = serveOfficialSections(fixture, ["pinned-thread"], { Research: [] });
+      const secondExternal = await startExternalThread(fixture, "codexhost/pi-native", 2);
+      const official = serveOfficialSections(fixture, ["pinned-thread"], {
+        Research: [],
+        Review: [],
+      });
       const move = (threadId: string, sectionId: string | null) =>
         fixture.host.handleClientRequest("codexhost/thread/sections/move", { threadId, sectionId });
       await expect(move("official-thread", "Research")).resolves.toEqual({ result: {} });
       await expect(move("official-thread", null)).resolves.toEqual({ result: {} });
+      await expect(move(external, "Research")).resolves.toEqual({ result: {} });
+      await expect(move(secondExternal, "Research")).resolves.toEqual({ result: {} });
+      await expect(move(external, "Research")).resolves.toEqual({ result: {} });
+      const desktop = await call(fixture, 94, "thread/list", {
+        ...pinnedList,
+        sectionId: "Research",
+      });
+      expect(desktop.result).toMatchObject({
+        data: expect.arrayContaining([
+          expect.objectContaining({ id: external }),
+          expect.objectContaining({ id: secondExternal }),
+        ]),
+      });
+
+      await expect(move(external, "Missing")).resolves.toMatchObject({ error: { code: -32602 } });
+      await expect(move(external, "Review")).resolves.toEqual({ result: {} });
+      const moved = await fixture.mappingStore.listSectionPlacements();
+      expect(moved.find((row) => row.hostThreadId === external)?.section.id).toBe("Review");
+      await expect(move(external, null)).resolves.toEqual({ result: {} });
+      expect(
+        (await fixture.mappingStore.listSectionPlacements()).map((row) => row.hostThreadId),
+      ).toEqual([secondExternal]);
+
+      await expect(
+        call(fixture, 95, "thread/section/move", { threadId: external, sectionId: PINNED }),
+      ).resolves.toEqual({ id: 95, result: {} });
       await expect(move(external, "Research")).resolves.toMatchObject({ error: { code: -32078 } });
+      await expect(
+        call(fixture, 96, "thread/archive", { threadId: secondExternal }),
+      ).resolves.toEqual({ id: 96, result: {} });
+      await expect(move(secondExternal, null)).resolves.toMatchObject({ error: { code: -32078 } });
       await expect(move("pinned-thread", "Research")).resolves.toMatchObject({
         error: { code: -32078 },
       });
@@ -157,6 +718,61 @@ describe("External Thread sections through AppServerHost", () => {
       ]);
     } finally {
       await stopFixture(fixture);
+    }
+  });
+
+  it("moves local and shared Threads independently of other section members", async () => {
+    const ownerFixture = createFixture({ externalOnly: true });
+    const owner = new SharedThreadOwner();
+    ownerFixture.desktopOutput.pipe(owner.output, { end: false });
+    owner.input.pipe(ownerFixture.desktopInput, { end: false });
+    serveOfficialSections(ownerFixture, [], { Research: [], Review: [] });
+    const local = createFixture({
+      sharedThreads: new SharedThreadBridge({
+        connect: async () => owner.connect(),
+        delegateCreates: false,
+        diagnose: () => undefined,
+      }),
+    });
+    const localNative = serveOfficialSections(local, [], {
+      Research: ["local-thread"],
+      Review: [],
+    });
+    const changes: string[] = [];
+    const stop = local.host.clientEvents.subscribe(({ type }) => {
+      if (type === "sections-changed") changes.push(type);
+    });
+    try {
+      await expect(sectionRpc(ownerFixture, "list", {})).resolves.toHaveProperty("result");
+      const shared = await startPiThread(ownerFixture);
+      const move = (threadId: string, sectionId: string) =>
+        sectionRpc(local, "move", { threadId, sectionId });
+      await expect(move(shared, "Research")).resolves.toEqual({ result: {} });
+      await vi.waitFor(() => expect(changes).toHaveLength(1));
+      await expect(move("local-thread", "Review")).resolves.toEqual({ result: {} });
+      await expect(move(shared, "Review")).resolves.toEqual({ result: {} });
+      await vi.waitFor(() => expect(changes).toHaveLength(3));
+      expect(localNative.moves).toEqual([
+        { threadId: "local-thread", sectionId: "Review", beforeThreadId: null },
+      ]);
+      expect(await local.mappingStore.listSectionPlacements()).toEqual([]);
+      expect(await ownerFixture.mappingStore.listSectionPlacements()).toMatchObject([
+        { hostThreadId: shared, section: { id: "Review" } },
+      ]);
+      await expect(sectionRpc(local, "list", { threadSectionsV1: true })).resolves.toMatchObject({
+        result: {
+          threadSectionsV1: true,
+          sections: [
+            { id: "Research", threads: [] },
+            { id: "Review", threads: [{ id: "local-thread" }, { id: shared }] },
+          ],
+        },
+      });
+    } finally {
+      stop();
+      await stopFixture(local);
+      owner.close();
+      await stopFixture(ownerFixture);
     }
   });
 

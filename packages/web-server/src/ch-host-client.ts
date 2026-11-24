@@ -16,6 +16,7 @@ import {
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  CLIENT_THREAD_SECTION_MUTATIONS,
   THREAD_ARCHIVE_CONFIRM_METHOD,
   THREAD_HANDOFF_METHOD,
   clientThreadPinsSchema,
@@ -70,6 +71,9 @@ const METHODS = new Set([
   "codexhost/thread/pins/list",
   "codexhost/thread/sections/list",
   "codexhost/thread/sections/move",
+  CLIENT_THREAD_SECTION_MUTATIONS.create.method,
+  CLIENT_THREAD_SECTION_MUTATIONS.update.method,
+  CLIENT_THREAD_SECTION_MUTATIONS.delete.method,
   "codexhost/thread/pins/set",
   "codexhost/harness/display-settings/get",
   "codexhost/harness/display-settings/set",

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -12,6 +13,7 @@ import {
   HOST_EXTENSION_ASSETS_PREFIX,
   HOST_EXTENSION_UPLOAD_PATH,
   PEER_DELEGATION_CHANNEL_METHOD,
+  THREAD_SECTION_CAPABILITY,
   clientChannelEventSchema,
 } from "@codexhost/shared-contracts";
 import { FakeChChannel, startFakeChChannel } from "./support/ch-channel.ts";
@@ -279,6 +281,59 @@ it(
     assert.ok(parsedManifest.projects.length >= 12);
   },
 );
+
+it("negotiates section invalidations on the Web event stream without a legacy cursor gap", async (t) => {
+  const host = new FakeChChannel();
+  const server = createServer((request, response) => {
+    void serveChClientGateway(host, request, response);
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const controller = new AbortController();
+  t.after(() => {
+    controller.abort();
+    server.closeAllConnections();
+    server.close();
+  });
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/ch/v1/events`;
+  const options = { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]) };
+  const [legacy, capable] = await Promise.all([
+    fetch(url, options),
+    fetch(`${url}?${THREAD_SECTION_CAPABILITY}=1`, options),
+  ]);
+  const cursor = { epoch: host.epoch, sequence: ++host.sequence };
+  for (const listener of host.listeners) listener({ type: "sections-changed", cursor });
+  host.changed("shared", "thread/name/updated");
+
+  async function readThree(response: Response) {
+    assert.equal(response.status, 200);
+    const reader = defined(response.body).pipeThrough(new TextDecoderStream()).getReader();
+    try {
+      let text = "";
+      while (text.split("\n").length <= 3) {
+        const next = await reader.read();
+        assert.equal(next.done, false);
+        text += next.value;
+      }
+      return text
+        .trim()
+        .split("\n")
+        .map((line) => clientChannelEventSchema.parse(JSON.parse(line)));
+    } finally {
+      await reader.cancel();
+    }
+  }
+  const [legacyFrames, capableFrames] = await Promise.all([readThree(legacy), readThree(capable)]);
+  assert.deepEqual(legacyFrames[1], { type: "hello", version: 1, reset: true, cursor });
+  assert.deepEqual(capableFrames[1], { type: "sections-changed", cursor });
+  assert.deepEqual(legacyFrames[2], {
+    type: "changed",
+    cursor: { epoch: host.epoch, sequence: cursor.sequence + 1 },
+    threadId: "shared",
+    method: "thread/name/updated",
+  });
+  assert.deepEqual(capableFrames[2], legacyFrames[2]);
+});
 
 it("preserves numeric Host errors on every native client operation", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "ch-app-gateway-errors-"));

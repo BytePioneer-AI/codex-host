@@ -77,6 +77,11 @@ import {
   type ThreadSectionMoveInjected,
   type ThreadSectionMoveRequest,
 } from "./session-actions/MoveThreadSection.tsx";
+import {
+  ManageThreadSectionDialog,
+  type ThreadSectionManageInjected,
+  type ThreadSectionManageRequest,
+} from "./session-actions/ManageThreadSection.tsx";
 import { ForkSessionMenuItem } from "./session-actions/ForkSession.tsx";
 import {
   MarkChildThreadsReadMenuItem,
@@ -273,7 +278,7 @@ export function apply(ctx: Context): void {
               !row.blank &&
               row.origin !== "subagent" &&
               !row.projectionValues?.remoteHost &&
-              row.projectionValues?.harnessIdentity?.id === "codex",
+              Boolean(row.projectionValues?.harnessIdentity?.id),
           )
           .map((row) => row.id),
       ),
@@ -291,6 +296,24 @@ export function apply(ctx: Context): void {
         return Promise.reject(new Error("Section moves are unavailable"));
       return workspaces.moveSessionToSection(sessionId, sectionId);
     },
+  });
+  const threadSectionManage = createSnapshotStore<ThreadSectionManageRequest | null>(null);
+  const threadSectionManageDialog = (): ThreadSectionManageInjected => ({
+    hooks: { threadSectionManage },
+    dismiss: () => threadSectionManage.set(null),
+    createSection: async (name) => {
+      if (!workspaces.createThreadSection) throw new Error("Section management is unavailable");
+      return workspaces.createThreadSection(name);
+    },
+    updateSection: async (sectionId, name) => {
+      if (!workspaces.updateThreadSection) throw new Error("Section management is unavailable");
+      return workspaces.updateThreadSection(sectionId, name);
+    },
+    deleteSection: async (sectionId) => {
+      if (!workspaces.deleteThreadSection) throw new Error("Section management is unavailable");
+      return workspaces.deleteThreadSection(sectionId);
+    },
+    notifySyncPending: () => notify({ kind: "sectionSyncPending" }),
   });
   const pinInjected = (): PinSessionInjected => ({
     hooks: { pinned: pinnedSet, archived: archivedSet },
@@ -488,6 +511,12 @@ export function apply(ctx: Context): void {
       await uiWorkspace.unarchiveSession(sessionId);
     },
     createWorkspace: (input) => workspaces.create(input),
+    requestManageThreadSection:
+      workspaces.createThreadSection &&
+      workspaces.updateThreadSection &&
+      workspaces.deleteThreadSection
+        ? (request) => threadSectionManage.set(request)
+        : undefined,
     requestSearch: shortcutControls.search,
     requestAddWorkspace: shortcutControls.add,
     closeAddWorkspace: shortcutControls.closeAdd,
@@ -655,6 +684,15 @@ export function apply(ctx: Context): void {
         inject: threadSectionDialog,
       },
       MoveThreadSectionDialog,
+    );
+    yield ctx.slots.register(
+      {
+        name: "shell.overlay",
+        id: "workspace.manage-thread-section",
+        locale: NS,
+        inject: threadSectionManageDialog,
+      },
+      ManageThreadSectionDialog,
     );
     yield ctx.slots.register(
       {

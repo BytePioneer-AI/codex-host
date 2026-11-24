@@ -22,6 +22,10 @@ import {
 } from "@codexhost/mapping-store";
 import { createRemoteOfficialAppServerConnection } from "./remote-official-connection.js";
 import { object, StreamThreadPeer, type SharedThreadPeer } from "./shared-thread-peer.js";
+import {
+  SHARED_SECTIONS_CHANGED_METHOD,
+  SHARED_SECTIONS_WATCH_METHOD,
+} from "./external-thread-sections.js";
 
 export function sharedThreadSocketPath(environment: NodeJS.ProcessEnv): string {
   return path.join(
@@ -57,6 +61,7 @@ const SHARED_LIST_REUSE_MS = 5_000;
 // The shared Host announces most of these with a `thread/*` notification, but a
 // section move has none, and a GUI rereads its lists as soon as the reply lands.
 const LIST_CHANGING_METHODS = new Set([
+  "codexhost/thread/sections/move",
   "thread/archive",
   "thread/delete",
   "thread/fork",
@@ -134,6 +139,11 @@ export class SharedThreadBridge {
         }
         this.#peer = peer;
         peer.subscribe((message) => {
+          if (message.method === SHARED_SECTIONS_CHANGED_METHOD) {
+            this.#invalidateLists();
+            this.#publish(message);
+            return;
+          }
           if (typeof message.method === "string" && message.method.startsWith("thread/")) {
             this.#invalidateLists();
           }
@@ -167,6 +177,7 @@ export class SharedThreadBridge {
           }
           this.#invalidateLists();
         });
+        void peer.request(SHARED_SECTIONS_WATCH_METHOD, {}).catch(() => undefined);
         this.#startTree(peer);
         // History is read through thread/list. Replaying it as thread/started makes each
         // downstream viewer rebuild its catalog once per historical Thread.
@@ -289,7 +300,9 @@ export class SharedThreadBridge {
   async request(method: string, params: JsonObject): Promise<JsonObject> {
     const peer = await this.#connect();
     if (!peer) throw new Error("Shared Thread Host is disconnected");
-    return peer.request(method, params);
+    const reply = await peer.request(method, params);
+    if (LIST_CHANGING_METHODS.has(method)) this.#invalidateLists();
+    return reply;
   }
 
   async route(request: JsonRpcRequest): Promise<JsonObject | null> {

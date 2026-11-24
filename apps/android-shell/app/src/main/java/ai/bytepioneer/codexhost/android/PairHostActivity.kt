@@ -203,10 +203,12 @@ internal class PairHostActivity : NativeActivity() {
                     is AuthResult.Authenticated -> {
                         val profile = store.profileFor(link.origin)
                         store.save(profile, link.token)
-                        BrowserBoundary.initialize(uiExecutor)
-                        if (!BrowserBoundary.setCookie(profile.id, link.origin, result.setCookie)) {
-                            message(R.string.cookie_error)
-                            return@launch
+                        if (BrowserBoundary.supportsMultiProfile()) {
+                            BrowserBoundary.initialize(uiExecutor)
+                            if (!BrowserBoundary.setCookie(profile.id, link.origin, result.setCookie)) {
+                                message(R.string.cookie_error)
+                                return@launch
+                            }
                         }
                         token.text?.clear()
                         address.text?.clear()

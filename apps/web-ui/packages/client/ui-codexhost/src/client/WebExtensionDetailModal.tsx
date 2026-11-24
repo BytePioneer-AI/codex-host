@@ -1,5 +1,6 @@
 /** Unified detail modal for installed Host extensions and Marketplace catalog entries. */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   Button,
   IconCheckCircleFillRegular,
@@ -82,6 +83,109 @@ const MARKDOWN_CLASSES = {
   quote: css.mdQuote,
   link: css.mdLink,
 } as const;
+
+function ScreenshotLightbox({
+  screenshots,
+  activeIndex,
+  displayName,
+  t,
+  onSelect,
+  onClose,
+}: {
+  readonly screenshots: readonly string[];
+  readonly activeIndex: number;
+  readonly displayName: string;
+  readonly t: Translate;
+  readonly onSelect: (index: number) => void;
+  readonly onClose: () => void;
+}): ReactNode {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const total = screenshots.length;
+  const src = screenshots[activeIndex];
+  const multi = total > 1;
+
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    rootRef.current?.focus();
+    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      } else if (event.key === "ArrowLeft" && total > 1) {
+        event.preventDefault();
+        event.stopPropagation();
+        onSelect((activeIndex - 1 + total) % total);
+      } else if (event.key === "ArrowRight" && total > 1) {
+        event.preventDefault();
+        event.stopPropagation();
+        onSelect((activeIndex + 1) % total);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [activeIndex, onClose, onSelect, total]);
+
+  if (src === undefined) return null;
+
+  return createPortal(
+    <div
+      ref={rootRef}
+      tabIndex={-1}
+      className={css.lightbox}
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("extensions.screenshotsTitle")}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <img
+        src={src}
+        alt={t("extensions.screenshotAlt", { name: displayName, index: String(activeIndex + 1) })}
+        className={css.lightboxImage}
+      />
+      <button
+        type="button"
+        className={`${css.lightboxBtn} ${css.lightboxClose}`}
+        aria-label={t("extensions.closePreview")}
+        title={t("extensions.closePreview")}
+        onClick={onClose}
+      >
+        <IconCloseOutlineRegular size={16} />
+      </button>
+      {multi && (
+        <>
+          <button
+            type="button"
+            className={`${css.lightboxBtn} ${css.lightboxNav} ${css.lightboxPrev}`}
+            aria-label={t("extensions.previousScreenshot")}
+            title={t("extensions.previousScreenshot")}
+            onClick={() => onSelect((activeIndex - 1 + total) % total)}
+          >
+            <IconChevronLeftOutlineRegular size={18} />
+          </button>
+          <button
+            type="button"
+            className={`${css.lightboxBtn} ${css.lightboxNav} ${css.lightboxNext}`}
+            aria-label={t("extensions.nextScreenshot")}
+            title={t("extensions.nextScreenshot")}
+            onClick={() => onSelect((activeIndex + 1) % total)}
+          >
+            <IconChevronRightOutlineRegular size={18} />
+          </button>
+          <span className={css.lightboxCount}>
+            {activeIndex + 1} / {total}
+          </span>
+        </>
+      )}
+    </div>,
+    document.body,
+  );
+}
 
 export function WebExtensionDetailModal({
   open,
@@ -478,70 +582,10 @@ export function WebExtensionDetailModal({
             </section>
           )}
 
-          {/* Screenshots gallery & interactive preview stage */}
+          {/* Screenshots gallery; clicking a thumbnail opens the floating viewport lightbox */}
           {screenshots.length > 0 && (
             <section className={css.screenshotsSection}>
               <h3 className={css.sectionTitle}>{t("extensions.screenshotsTitle")}</h3>
-
-              {clampedScreenshotIndex !== null &&
-                screenshots[clampedScreenshotIndex] !== undefined && (
-                  <div className={css.previewStage}>
-                    <img
-                      src={screenshots[clampedScreenshotIndex]}
-                      alt={t("extensions.screenshotAlt", {
-                        name: displayName,
-                        index: String(clampedScreenshotIndex + 1),
-                      })}
-                      className={css.previewImage}
-                    />
-                    <div className={css.previewBar}>
-                      <span className={css.previewCount}>
-                        {clampedScreenshotIndex + 1} / {screenshots.length}
-                      </span>
-                      <div className={css.previewControls}>
-                        {screenshots.length > 1 && (
-                          <>
-                            <button
-                              type="button"
-                              className={css.previewNav}
-                              aria-label={t("extensions.previousScreenshot")}
-                              title={t("extensions.previousScreenshot")}
-                              onClick={() =>
-                                setActiveScreenshot(
-                                  (clampedScreenshotIndex - 1 + screenshots.length) %
-                                    screenshots.length,
-                                )
-                              }
-                            >
-                              <IconChevronLeftOutlineRegular size={14} />
-                            </button>
-                            <button
-                              type="button"
-                              className={css.previewNav}
-                              aria-label={t("extensions.nextScreenshot")}
-                              title={t("extensions.nextScreenshot")}
-                              onClick={() =>
-                                setActiveScreenshot(
-                                  (clampedScreenshotIndex + 1) % screenshots.length,
-                                )
-                              }
-                            >
-                              <IconChevronRightOutlineRegular size={14} />
-                            </button>
-                          </>
-                        )}
-                        <button
-                          type="button"
-                          className={css.previewClose}
-                          onClick={() => setActiveScreenshot(null)}
-                        >
-                          {t("extensions.closePreview")}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
               <div className={css.galleryGrid}>
                 {screenshots.map((url, idx) => (
                   <button
@@ -553,7 +597,7 @@ export function WebExtensionDetailModal({
                       index: String(idx + 1),
                       total: String(screenshots.length),
                     })}
-                    onClick={() => setActiveScreenshot(clampedScreenshotIndex === idx ? null : idx)}
+                    onClick={() => setActiveScreenshot(idx)}
                   >
                     <img
                       src={url}
@@ -608,6 +652,17 @@ export function WebExtensionDetailModal({
           </section>
         </div>
       </div>
+
+      {clampedScreenshotIndex !== null && (
+        <ScreenshotLightbox
+          screenshots={screenshots}
+          activeIndex={clampedScreenshotIndex}
+          displayName={displayName}
+          t={t}
+          onSelect={setActiveScreenshot}
+          onClose={() => setActiveScreenshot(null)}
+        />
+      )}
     </Modal>
   );
 }

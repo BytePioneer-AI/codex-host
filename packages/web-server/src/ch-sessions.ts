@@ -39,6 +39,7 @@ import { ChHarnessCommands } from "./ch-harness-commands.ts";
 import { WebSkills } from "./skills.ts";
 import { hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { ChThreadEditing } from "./ch-thread-edit.ts";
+import { canEditQueuedInput, takeQueuedItemForEdit } from "./ch-queue-edit.ts";
 import { editedNativeInput } from "./native-user-input.ts";
 import { forkChThread, forkUnavailable } from "./ch-thread-fork.ts";
 import { ChPinnedThreads } from "./ch-pinned-threads.ts";
@@ -106,6 +107,7 @@ export class ChSessions {
   private refreshingArchives = false;
   private refreshingArchiveChanges: Map<string, boolean> | undefined;
   private readonly archiveOperations = new Map<string, symbol>();
+  private readonly queueOperations = new Map<string, Promise<void>>();
   private refreshingTiming: SessionListTiming | undefined;
   private catalogReadAt = -Infinity;
   private timer?: NodeJS.Timeout;
@@ -138,13 +140,8 @@ export class ChSessions {
             if (this.drafts.has(id)) return id;
             await this.owner(id);
             if (!this.rows.has(id)) await this.refresh();
-            if (!this.threads.hasHarness(id))
-              throw new RpcError("session/not-found", "CH Thread not found.");
-            if (this.rows.get(id)?.parentThreadId)
-              throw new RpcError(
-                "subagent/attachment-invalid",
-                "Subagent file uploads are unavailable.",
-              );
+            const error = this.attachmentThreadError(id);
+            if (error) throw error;
             return id;
           })
         : undefined;
@@ -222,6 +219,27 @@ export class ChSessions {
 
   private id(id: string): string {
     return this.drafts.get(id)?.canonicalId ?? id;
+  }
+  private attachmentThreadError(id: string): RpcError | undefined {
+    if (!this.threads.hasHarness(id))
+      return new RpcError("session/not-found", "CH Thread not found.");
+    if ((this.rows.get(id) ?? this.threads.view(id)?.thread)?.parentThreadId)
+      return new RpcError("subagent/attachment-invalid", "Subagent file uploads are unavailable.");
+    return undefined;
+  }
+  private runQueuedOperation<T>(threadId: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.queueOperations.get(threadId) ?? Promise.resolve();
+    const current = previous.then(work, work);
+    const tracked = current
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .finally(() => {
+        if (this.queueOperations.get(threadId) === tracked) this.queueOperations.delete(threadId);
+      });
+    this.queueOperations.set(threadId, tracked);
+    return current;
   }
   /** A `scope` reads an explicit page on until it reaches a Thread of that folder. */
   private async refresh(
@@ -611,6 +629,13 @@ export class ChSessions {
         this.attachments
           ? (path, projectionKey) => this.attachments?.projectImageView(id, path, projectionKey)
           : undefined,
+        {
+          canEditQueueItem: (input, projected, allowsAttachments) =>
+            canEditQueuedInput(input, projected, allowsAttachments, {
+              ...(this.images ? { images: this.images } : {}),
+              ...(this.files ? { files: this.files } : {}),
+            }),
+        },
       );
       view = history;
       view.log.setProjection("threadReference", { hostId: "local" });
@@ -1583,7 +1608,11 @@ export class ChSessions {
       const view = await this.view(sessionId, true);
       if (!this.attachments)
         throw new RpcError("session/attachment-not-found", "Image previews are unavailable.");
-      return this.attachments.read(view, attachmentId);
+      return this.attachments.read(
+        view,
+        attachmentId,
+        view.ownerSnapshot?.queue?.items.map((item) => item.input),
+      );
     });
     rpc.register("session/updateQueue", async (args) => {
       const request = requestOf<{
@@ -1595,40 +1624,93 @@ export class ChSessions {
           | { kind: "steer" };
       }>(args);
       const threadId = this.id(request.sessionId);
-      await this.owner(threadId);
-      if (request.action.kind === "edit") {
-        await this.host.request("thread/queue/update", {
-          threadId,
-          queuedSubmissionId: request.itemId,
-          input: request.action.content.map((part) =>
-            part.type === "text" ? { text_elements: [], ...part } : part,
-          ),
-          presentationInput: request.action.content,
-        });
-      } else if (request.action.kind === "remove") {
-        const result = await this.host.request<{ deleted: boolean }>("thread/queue/delete", {
-          threadId,
-          queuedSubmissionId: request.itemId,
-        });
-        if (!result.deleted)
+      if (this.drafts.has(threadId))
+        throw new RpcError("session/queue-item-not-found", "Queued message is no longer pending.");
+      return this.runQueuedOperation(threadId, async () => {
+        await this.owner(threadId);
+        if (request.action.kind === "edit") {
+          await this.host.request("thread/queue/update", {
+            threadId,
+            queuedSubmissionId: request.itemId,
+            input: request.action.content.map((part) =>
+              part.type === "text" ? { text_elements: [], ...part } : part,
+            ),
+            presentationInput: request.action.content,
+          });
+        } else if (request.action.kind === "remove") {
+          const result = await this.host.request<{ deleted: boolean }>("thread/queue/delete", {
+            threadId,
+            queuedSubmissionId: request.itemId,
+          });
+          if (!result.deleted)
+            throw new RpcError(
+              "session/queue-item-not-found",
+              "Queued message is no longer pending.",
+            );
+        } else {
+          await this.host.request("codexhost/thread/queue/send-now", {
+            threadId,
+            itemId: request.itemId,
+          });
+        }
+        try {
+          await this.view(threadId, true);
+        } catch {
+          // The mutation was acknowledged. A failed projection read must not
+          // prevent a removed message from being restored to the local composer.
+          this.realtime?.invalidate(threadId);
+        }
+        return { accepted: true };
+      });
+    });
+    rpc.register("codexhost/editQueueItem", async (args) => {
+      const request = requestOf<{ sessionId?: unknown; itemId?: unknown; revision?: unknown }>(
+        args,
+      );
+      if (
+        typeof request.sessionId !== "string" ||
+        !request.sessionId ||
+        typeof request.itemId !== "string" ||
+        !request.itemId ||
+        typeof request.revision !== "string" ||
+        !request.revision
+      )
+        throw new RpcError("session/queue-edit-invalid", "Invalid queued message edit request.");
+      const threadId = this.id(request.sessionId);
+      if (this.drafts.has(threadId))
+        throw new RpcError("session/queue-item-not-found", "Queued message is no longer pending.");
+      const itemId = request.itemId;
+      const revision = request.revision;
+      return this.runQueuedOperation(threadId, async () => {
+        if (this.closed) throw new RpcError("host/offline", "The Web connection is closed.");
+        await this.owner(threadId);
+        if (!this.rows.has(threadId) && !this.threads.view(threadId)) await this.refresh();
+        const row = this.rows.get(threadId) ?? this.threads.view(threadId)?.thread;
+        if (!row)
           throw new RpcError(
-            "session/queue-item-not-found",
-            "Queued message is no longer pending.",
+            "session/not-found",
+            "Open this Thread before editing its queued messages.",
           );
-      } else {
-        await this.host.request("codexhost/thread/queue/send-now", {
+        if (row.canAcceptDirectInput === false)
+          throw new RpcError("session/queue-edit-unsupported", "This Thread is read-only.");
+        const allowsAttachments = Boolean(
+          this.fileInputs && !row.parentThreadId && !this.attachmentThreadError(threadId),
+        );
+        return takeQueuedItemForEdit({
+          host: this.host,
           threadId,
-          itemId: request.itemId,
+          itemId,
+          revision,
+          allowsAttachments,
+          ...(this.fileInputs ? { fileInputs: this.fileInputs } : {}),
+          refreshView: async () => {
+            await this.view(threadId, true);
+          },
+          invalidateView: () => {
+            this.realtime?.invalidate(threadId);
+          },
         });
-      }
-      try {
-        await this.view(threadId, true);
-      } catch {
-        // The mutation was acknowledged. A failed projection read must not
-        // prevent a removed message from being restored to the local composer.
-        this.realtime?.invalidate(threadId);
-      }
-      return { accepted: true };
+      });
     });
     rpc.register("session/cancel", async (args) => {
       const { sessionId } = requestOf<{ sessionId: string }>(args);
@@ -2024,6 +2106,7 @@ export class ChSessions {
     this.skills.close();
     this.closed = true;
     this.archiveOperations.clear();
+    this.queueOperations.clear();
     this.titleRequests.clear();
     this.pins.close();
     this.realtime?.close();

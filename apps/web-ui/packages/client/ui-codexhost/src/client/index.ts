@@ -17,7 +17,13 @@ import { registerHarnessDiscovery } from "./harness-discovery.tsx";
 import { registerSkillLibrary } from "./skill-library.tsx";
 import { registerThreadReferenceDiscovery } from "./thread-reference-discovery.ts";
 import { registerThreadReferenceAction } from "./thread-reference-action.ts";
-import { desktopScreenshotApi, sentMessageEditApi, turnDiffsApi, voiceApi } from "./api.ts";
+import {
+  desktopScreenshotApi,
+  queueMessageEditApi,
+  sentMessageEditApi,
+  turnDiffsApi,
+  voiceApi,
+} from "./api.ts";
 import { DesktopScreenshot } from "./desktop-screenshot.ts";
 import {
   DesktopScreenshotButton,
@@ -212,6 +218,7 @@ export function apply(ctx: ClientContext): void {
     ),
   );
   ctx.provide("chatMessageEditing", sentMessageEditApi);
+  ctx.provide("queueMessageEditing", queueMessageEditApi);
   ctx.provide("chatTurnDiffs", turnDiffsApi);
   ctx.inject(["conversation", "uiSession"], registerThreadReferenceAction);
   ctx.inject(["conversation"], (scope) => {

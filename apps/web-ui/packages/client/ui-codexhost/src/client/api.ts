@@ -41,6 +41,7 @@ import {
   type HarnessSessionListParams,
 } from "@codexhost/shared-contracts";
 
+import type { RestoredQueuedMessage } from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type { DesktopScreenshotProgress } from "./desktop-screenshot.ts";
 import {
   DESKTOP_SCREENSHOT_PATH,
@@ -389,6 +390,14 @@ export const sentMessageEditApi = {
       "codexhost/editMessage",
       { request: { sessionId, atSeq, text } },
     ),
+};
+
+/** Takes a pending queued entry off the Shared Host and restores its text and Web-owned attachments. */
+export const queueMessageEditApi = {
+  takeForEdit: (sessionId: string, itemId: string, revision: string) =>
+    call<RestoredQueuedMessage>("codexhost/editQueueItem", {
+      request: { sessionId, itemId, revision },
+    }),
 };
 
 export const skillLibraryApi = {

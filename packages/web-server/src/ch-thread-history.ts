@@ -4,6 +4,7 @@ import type { ClientThreadSnapshot } from "@codexhost/shared-contracts";
 import { ChThreadView, type ChThread, type ChTurn } from "./ch-thread-view.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { ChCommandPresentation } from "./ch-command-presentation.ts";
+import { ChQueueProjectionCache, type QueueEditEvaluator } from "./ch-queue-edit.ts";
 import type { ProjectionListener } from "./session-log.ts";
 import { RpcError } from "./transport.ts";
 
@@ -23,6 +24,9 @@ interface TurnsPage {
 export class ChThreadHistory extends ChThreadView {
   private loaded = false;
   private readonly commands: ChCommandPresentation;
+  private readonly queueProjection = new ChQueueProjectionCache();
+  private readonly hasProjectInput: boolean;
+  private readonly canEditQueueItem: QueueEditEvaluator | undefined;
   ownerSnapshot: ClientThreadSnapshot | undefined;
   private lastHeadReadAt = 0;
   private prefetched = false;
@@ -43,7 +47,7 @@ export class ChThreadHistory extends ChThreadView {
     origin = RENDER_ORIGIN,
     projectInput?: (content: unknown[]) => unknown[],
     projectImage?: (path: string, projectionKey: string) => unknown,
-    options?: { hostThreadId?: string },
+    options?: { hostThreadId?: string; canEditQueueItem?: QueueEditEvaluator },
   ) {
     const pagination = { cursor: null as string | null };
     super(
@@ -57,6 +61,8 @@ export class ChThreadHistory extends ChThreadView {
       projectImage,
     );
     this.pagination = pagination;
+    this.hasProjectInput = projectInput !== undefined;
+    this.canEditQueueItem = options?.canEditQueueItem;
     this.hostThreadId = options?.hostThreadId ?? thread.id;
     this.overrideThreadIdentity = options?.hostThreadId !== undefined;
     this.viewId = thread.id;
@@ -145,17 +151,24 @@ export class ChThreadHistory extends ChThreadView {
       this.ensureCurrent();
       this.ownerSnapshot = snapshot;
       if (snapshot) {
+        const readOnly = thread.canAcceptDirectInput === false;
+        const allowsAttachments =
+          !readOnly && !(thread.parentThreadId ?? this.thread.parentThreadId);
+        const projectedQueue = this.queueProjection.project(snapshot.queue?.items ?? [], {
+          ...(this.hasProjectInput
+            ? { projectInput: (content) => this.projectInput(content) }
+            : {}),
+          ...(this.canEditQueueItem ? { canEdit: this.canEditQueueItem } : {}),
+          allowsAttachments,
+          readOnly,
+        });
         this.log.setProjection("inbox", {
-          "next-turn": (snapshot.queue?.items ?? []).map((item) => ({
-            id: item.id,
-            role: "user",
-            content: item.presentationInput ?? item.input,
-            source: { kind: "user", rpcId: item.clientUserMessageId },
-          })),
+          "next-turn": projectedQueue.nextTurn,
           "next-step": [],
         });
         this.log.setProjection("queueState", {
           pausedReason: snapshot.queue?.pausedReason ?? null,
+          ...(this.canEditQueueItem ? { editable: projectedQueue.editable } : {}),
         });
       }
       if (

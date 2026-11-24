@@ -20,6 +20,7 @@ function makeRow(id: string, modelProvider = "codexhost") {
 
 function makeFakeTransport(
   handler: (route: "rpc" | "snapshot" | "respond", body: Record<string, unknown>) => unknown,
+  manifestEpoch?: string,
 ) {
   const listeners = new Set<(update: HostClientUpdate) => void>();
   const transport: PeerChTransport = {
@@ -32,7 +33,17 @@ function makeFakeTransport(
         listeners.delete(listener);
       };
     },
-    manifest: () => undefined,
+    manifest: () =>
+      manifestEpoch === undefined
+        ? undefined
+        : {
+            version: "0.26.0",
+            epoch: manifestEpoch,
+            platform: "darwin",
+            hostname: "peer-host",
+            homeDir: "/Users/peer",
+            projects: [],
+          },
   };
   return {
     transport,
@@ -298,5 +309,126 @@ it("caches catalog per peer, invalidates on hello, and resolves peer icons witho
   assert.equal(
     await resolvePeerHarnessIcon(peers, "/harness-icons/peer/peer-a/presentation.json"),
     undefined,
+  );
+});
+
+it("preserves prewarmed catalog across initial same-epoch hello, serves cached icons stale-while-revalidate, and emits onPage for single-page peers before tree finishes", async (t) => {
+  const epoch = randomUUID();
+  let pluginListCalls = 0;
+  let releaseSecondPluginList: (() => void) | undefined;
+  let releaseTree: (() => void) | undefined;
+
+  const fake = makeFakeTransport((_r, body) => {
+    if (body.method === "codexhost/harness/plugins/list") {
+      pluginListCalls++;
+      if (pluginListCalls === 1) {
+        return {
+          plugins: [
+            {
+              id: "antigravity",
+              name: "Antigravity",
+              version: "1.0.0",
+              iconStyle: { background: "#000000", borderRadius: 6 },
+            },
+          ],
+        };
+      }
+      return new Promise((resolve) => {
+        releaseSecondPluginList = () =>
+          resolve({
+            plugins: [
+              {
+                id: "antigravity",
+                name: "Antigravity v2",
+                version: "2.0.0",
+                iconStyle: { background: "#ffffff", borderRadius: 12 },
+              },
+            ],
+          });
+      });
+    }
+    if (body.method === "codexhost/thread/catalog/read") {
+      return {
+        threads: [makeRow("single-1", "codexhost")],
+        ownership: [{ threadId: "single-1", owner: "external", harnessId: "antigravity" }],
+        officialCursor: { live: null },
+        archivedThreadIds: [],
+      };
+    }
+    if (body.method === "codexhost/thread/tree/read") {
+      return new Promise((resolve) => {
+        releaseTree = () => resolve({ parents: {} });
+      });
+    }
+    throw new Error(`Unexpected method: ${String(body.method)}`);
+  }, epoch);
+
+  const source = new PeerThreadSource({
+    hostId: "remote-peer:peer-b",
+    host: new PeerChHostClient(fake.transport),
+    onCatalogChanged: () => {},
+    onThreadChanged: () => {},
+    onConnection: () => {},
+  });
+  t.after(() => source.close());
+
+  const peers = {
+    client: () => ({ state: "connected" }),
+    source: () => source,
+  };
+
+  // Prewarm catalog with manifest epoch, then receive initial hello for the same epoch.
+  await source.catalog.list();
+  assert.equal(pluginListCalls, 1);
+  fake.emit({
+    type: "hello",
+    version: 1,
+    cursor: { epoch, sequence: 1 },
+    reset: true,
+  });
+  await source.catalog.list();
+  assert.equal(pluginListCalls, 1, "initial same-epoch hello must not wipe prewarmed catalog");
+
+  // A new epoch invalidates, yet presentation.json still serves cached data immediately without waiting.
+  fake.emit({
+    type: "hello",
+    version: 1,
+    cursor: { epoch: randomUUID(), sequence: 1 },
+    reset: true,
+  });
+  const stalePres = await resolvePeerHarnessIcon(
+    peers,
+    "/harness-icons/peer/peer-b/presentation.json",
+  );
+  assert.ok(stalePres);
+  assert.deepEqual(JSON.parse(stalePres.body.toString("utf8")), {
+    antigravity: { background: "#000000", borderRadius: 6 },
+  });
+  assert.equal(pluginListCalls, 2, "stale-while-revalidate must kick off background refresh");
+  releaseSecondPluginList?.();
+  await source.catalog.list();
+  const freshPres = await resolvePeerHarnessIcon(
+    peers,
+    "/harness-icons/peer/peer-b/presentation.json",
+  );
+  assert.ok(freshPres);
+  assert.deepEqual(JSON.parse(freshPres.body.toString("utf8")), {
+    antigravity: { background: "#ffffff", borderRadius: 12 },
+  });
+
+  // Single-page listThreads must emit onPage even while tree/read is still pending.
+  const pageSnapshots: string[][] = [];
+  const listPromise = source.listThreads({
+    onPage: (partial) => {
+      pageSnapshots.push(partial.rows.map((row) => row.id));
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(pageSnapshots, [["single-1"]]);
+  releaseTree?.();
+  const listed = await listPromise;
+  assert.deepEqual(
+    listed.rows.map((row) => row.id),
+    ["single-1"],
   );
 });

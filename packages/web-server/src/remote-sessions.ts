@@ -887,11 +887,26 @@ export class RemoteSessions {
     );
     this.inFlightPeerSources.set(host.hostId, source);
     // Warm plugin metadata/icons in parallel with catalog paging so harness names
-    // and sidebar logos are ready as soon as page 1 renders.
-    void source.catalog.list().catch(() => undefined);
+    // and sidebar logos are ready as soon as page 1 renders, without blocking list commit.
+    void source.catalog
+      .list()
+      .then((plugins) => {
+        if (this.closed || this.peers?.source(host.hostId) !== source) return;
+        const names = new Map<string, string>(plugins.map((plugin) => [plugin.id, plugin.name]));
+        for (const [id, entry] of this.entries) {
+          if (entry.identity.hostId !== host.hostId || !entry.peerHarnessIdentity) continue;
+          const resolvedName = names.get(entry.peerHarnessIdentity.id);
+          if (!resolvedName || resolvedName === entry.peerHarnessIdentity.name) continue;
+          entry.peerHarnessIdentity = { id: entry.peerHarnessIdentity.id, name: resolvedName };
+          const nextSummary = this.summary(id, entry);
+          entry.view?.log.setProjection("harnessIdentity", entry.peerHarnessIdentity);
+          this.events.emit("api-session/added", nextSummary);
+        }
+      })
+      .catch(() => undefined);
     try {
       const listed = await source.listThreads({
-        onFirstPage: (partial) => {
+        onPage: (partial) => {
           if (
             this.closed ||
             archiveRevision !== this.archiveRevision ||
@@ -943,15 +958,11 @@ export class RemoteSessions {
           if (published) this.syncGroups();
         },
       });
-      const uniqueHarnesses = [...new Set(listed.harnessIds.values())];
-      const harnessNames = new Map(
-        await Promise.all(
-          uniqueHarnesses.map(
-            async (harnessId) =>
-              [harnessId, await source.catalog.name(harnessId).catch(() => harnessId)] as const,
-          ),
-        ),
+      const cachedPlugins = source.catalog.cachedList();
+      const harnessNames = new Map<string, string>(
+        cachedPlugins?.map((plugin) => [plugin.id, plugin.name]),
       );
+      harnessNames.set("codex", "Codex");
       if (
         this.closed ||
         archiveRevision !== this.archiveRevision ||

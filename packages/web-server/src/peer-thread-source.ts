@@ -100,7 +100,14 @@ export class PeerThreadSource {
     this.hostId = options.hostId;
     this.host = options.host;
     // Isolated EventHub with no subscribers: never broadcasts local global harness-inspection-changed.
-    this.catalog = new ChHarnessCatalog(options.host, new EventHub(""));
+    this.catalog = new ChHarnessCatalog(
+      options.host,
+      new EventHub(""),
+      undefined,
+      undefined,
+      undefined,
+      () => options.host.manifestEpoch(),
+    );
     this.stopCatalogInvalidation = options.host.realtime.subscribe((event) => {
       if (event.type === "harness-inspection-changed" || event.type === "hello") {
         options.onCatalogInspectionChanged?.();
@@ -166,12 +173,12 @@ export class PeerThreadSource {
   }
 
   async listThreads(options?: {
-    onFirstPage?: (partial: PeerThreadListResult) => void;
+    onPage?: (partial: PeerThreadListResult) => void;
   }): Promise<PeerThreadListResult> {
     const startEpoch = this.epoch ?? this.host.manifestEpoch();
     this.inFlightListEpoch = startEpoch;
     try {
-      return await this.runListThreads(startEpoch, options?.onFirstPage);
+      return await this.runListThreads(startEpoch, options?.onPage);
     } finally {
       if (this.inFlightListEpoch === startEpoch) {
         this.inFlightListEpoch = undefined;
@@ -181,7 +188,7 @@ export class PeerThreadSource {
 
   private async runListThreads(
     startEpoch: string | undefined,
-    onFirstPage?: (partial: PeerThreadListResult) => void,
+    onPage?: (partial: PeerThreadListResult) => void,
   ): Promise<PeerThreadListResult> {
     const rows = new Map<string, ChThread>();
     const harnessIds = new Map<string, string>();
@@ -223,9 +230,8 @@ export class PeerThreadSource {
           }
         }
         const next = nextCatalogCursor(page, false);
-        if (next === null) break;
-        if (pages === 1 && onFirstPage) {
-          onFirstPage({
+        if (onPage) {
+          onPage({
             rows: [...rows.values()],
             harnessIds: new Map(harnessIds),
             archivedIds: new Set(archivedIds),
@@ -233,6 +239,7 @@ export class PeerThreadSource {
             ownershipAvailable,
           });
         }
+        if (next === null) break;
         if (seenCursors.has(next) || next === cursor) {
           throw new RpcError("remote/read-failed", "Remote catalog cursor did not advance");
         }
@@ -493,6 +500,20 @@ export async function resolvePeerHarnessIcon(
     return source.catalog.cachedIcon(target);
   }
   if (state !== "connected") return undefined;
+  const cached = source.catalog.cachedList();
+  if (cached) {
+    if (!source.catalog.hasFreshList()) {
+      void source.catalog.list().catch(() => undefined);
+    }
+    if (target === "presentation.json") {
+      return {
+        contentType: "application/json",
+        body: Buffer.from(JSON.stringify(harnessIconStyles(cached))),
+      };
+    }
+    const cachedAsset = source.catalog.cachedIcon(target);
+    if (cachedAsset || source.catalog.hasFreshList()) return cachedAsset;
+  }
   try {
     if (target === "presentation.json") {
       const plugins = await source.catalog.list();
@@ -503,12 +524,12 @@ export async function resolvePeerHarnessIcon(
     }
     return await source.catalog.icon(target);
   } catch {
-    const cached = source.catalog.cachedList();
-    if (!cached) return undefined;
+    const fallback = source.catalog.cachedList();
+    if (!fallback) return undefined;
     if (target === "presentation.json") {
       return {
         contentType: "application/json",
-        body: Buffer.from(JSON.stringify(harnessIconStyles(cached))),
+        body: Buffer.from(JSON.stringify(harnessIconStyles(fallback))),
       };
     }
     return source.catalog.cachedIcon(target);

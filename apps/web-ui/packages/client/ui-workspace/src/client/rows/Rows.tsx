@@ -91,7 +91,7 @@ function createdLabel(createdAt: number, t: RowTranslate): string {
   return t("hover.created", { time: `${date} ${pad2(d.getHours())}:${pad2(d.getMinutes())}` });
 }
 
-/** Hover-card body: workspace title, display directory path, absolute creation time. */
+/** Hover-card body: workspace title, optional directory path, optional creation time. */
 function WorkspaceHoverContent({
   label,
   cwd,
@@ -100,14 +100,14 @@ function WorkspaceHoverContent({
 }: {
   label: string;
   cwd: string | undefined;
-  createdAt: number;
+  createdAt: number | undefined;
   t: RowTranslate;
 }) {
   return (
     <div className={css.hoverContent}>
       <div className={css.hoverTitle}>{label}</div>
-      <div className={css.hoverPath}>{cwd}</div>
-      <div className={css.hoverTime}>{createdLabel(createdAt, t)}</div>
+      {cwd !== undefined && cwd !== "" && <div className={css.hoverPath}>{cwd}</div>}
+      {createdAt !== undefined && <div className={css.hoverTime}>{createdLabel(createdAt, t)}</div>}
     </div>
   );
 }
@@ -226,7 +226,9 @@ export function ProjectRowItem({
       <span className={css.projectText}>
         <span className={css.title}>{label}</span>
       </span>
-      {row.workspaceId !== undefined && row.remote && <HostBadge host={row.remote} t={t} />}
+      {row.workspaceId !== undefined && row.remote && (
+        <HostBadge host={row.remote} variant="workspace" t={t} />
+      )}
       <span className={css.rowActions}>
         {actions !== undefined && (
           <Menu
@@ -265,7 +267,7 @@ export function ProjectRowItem({
             }
           />
         )}
-        {!row.remote && (
+        {(!row.remote || (row.remote.state === "connected" && !!group.cwd)) && (
           <Tooltip
             label={t("actions.newSession")}
             shortcutKeys={newShortcut?.keys}
@@ -290,22 +292,25 @@ export function ProjectRowItem({
       </span>
     </div>
   );
-  // The ungrouped bucket has no backing Workspace: no card to show.
-  if (row.createdAt === undefined) return ownRow;
+  const cwd = row.cwd !== undefined && row.cwd !== "" ? row.cwd : undefined;
+  // Skip the hover card when there is no backing Workspace or no supplemental details to show.
+  if (row.workspaceId === undefined || (cwd === undefined && row.createdAt === undefined)) {
+    return ownRow;
+  }
   return (
     <HoverCard
       anchor={ownRow}
       content={
         <WorkspaceHoverContent
           label={row.label}
-          cwd={row.cwd === undefined ? undefined : abbreviateHomePath(row.cwd, home)}
+          cwd={cwd === undefined ? undefined : abbreviateHomePath(cwd, home)}
           createdAt={row.createdAt}
           t={t}
         />
       }
       openDelayMs={800}
       disabled={menuOpen}
-      copyText={row.cwd}
+      copyText={cwd}
       copyLabel={t("copy")}
       copiedLabel={t("hover.copied")}
     />
@@ -402,7 +407,7 @@ export function SearchResultItem({
       <span className={css.searchResultHeading}>
         <span className={css.slot} />
         <span className={css.searchResultTitle}>{result.title || t("session.untitled")}</span>
-        {result.remote && <HostBadge host={result.remote} t={t} />}
+        {result.remote && <HostBadge host={result.remote} variant="session" t={t} />}
         {!result.archived && primaryStatus.state !== "idle" && (
           <span className={css.timeStatus} data-session-status={primaryStatus.state}>
             <SessionStatusDots statuses={statuses} />
@@ -652,7 +657,16 @@ export function SessionNodeItem({
               : undefined
           }
         >
-          {showHost && row.remote && <HostBadge host={row.remote} t={t} />}
+          {showHost && row.remote && (
+            <>
+              <HostBadge host={row.remote} variant="session" t={t} />
+              {!row.blank && (
+                <span className={css.hostTimeSep} aria-hidden="true">
+                  ·
+                </span>
+              )}
+            </>
+          )}
           <span className={css.trailing}>
             {/* A blank New Session row is a provisional placeholder: nothing has
           happened in it yet, so a "now" timestamp and the row verbs

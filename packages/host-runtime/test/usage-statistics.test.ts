@@ -1,5 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,6 +35,7 @@ import { createFixture, stopFixture, writeRequest } from "./app-server-host-fixt
 
 const NOW = new Date(2026, 9, 5, 12).getTime();
 const DAY = 24 * 60 * 60 * 1000;
+const IDLE = 10 * 60 * 1000;
 
 function entry(
   id: string,
@@ -76,6 +86,7 @@ beforeEach(async () => {
   );
 });
 afterEach(async () => {
+  vi.useRealTimers();
   await rm(directory, { recursive: true, force: true });
 });
 
@@ -571,31 +582,100 @@ describe("UsageStatistics", () => {
     ).toBeCloseTo(0.05 + 0.5 + 0.2 + 2, 10);
   });
 
-  it("reads a source again only when its fingerprint changes, and survives a restart", async () => {
+  it("reads a source only once asked and when its fingerprint changes, and survives an idle release and a restart", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let now = NOW;
     const storage = new FakeStorage(
       new Map([
         ["one", { fingerprint: "1", entries: [entry("a")] }],
         ["two", { fingerprint: "1", entries: [entry("b")] }],
       ]),
     );
-    const stats = statistics();
+    const cache = path.join(directory, "usage-statistics", "v8");
+    const stats = new UsageStatistics({
+      directory: path.join(directory, "usage-statistics"),
+      prices: new ModelPriceCatalog({ directory }),
+      now: () => now,
+    });
     stats.attach(() => [{ harness: "claude-code", capability: storage }]);
+    // Attached sources are left alone until statistics are asked for.
+    await vi.advanceTimersByTimeAsync(IDLE);
+    expect(storage.reads).toEqual([]);
     const first = await settledGet(stats);
     expect(storage.reads).toEqual(["one", "two"]);
-    expect(await readdir(path.join(directory, "usage-statistics", "v8"))).toEqual([
-      "claude-code.json",
-    ]);
+    expect(await readdir(cache)).toEqual(["claude-code.json"]);
+
+    // After ten idle minutes the next request answers from the disk cache alone.
+    now += IDLE;
+    await vi.advanceTimersByTimeAsync(IDLE);
+    expect({ ...(await stats.get("all")), reading: first.reading }).toEqual(first);
+    await stats.settled();
+    expect(storage.reads).toEqual(["one", "two"]);
+
+    // Nothing stays in memory: without the disk cache every source is read again.
+    now += IDLE;
+    await vi.advanceTimersByTimeAsync(IDLE);
+    await rm(cache, { recursive: true });
+    expect(await settledGet(stats)).toEqual(first);
+    expect(storage.reads).toEqual(["one", "two", "one", "two"]);
+    stats.close();
 
     // A new runtime starts from the cache and reads only what changed.
     storage.sources.set("two", { fingerprint: "2", entries: [entry("b"), entry("c")] });
     storage.sources.delete("one");
-    const later = statistics(NOW + 60 * 1000);
+    const later = statistics(now + 60 * 1000);
     later.attach(() => [{ harness: "claude-code", capability: storage }]);
     const second = await settledGet(later);
-    expect(storage.reads).toEqual(["one", "two", "two"]);
+    expect(storage.reads).toEqual(["one", "two", "one", "two", "two"]);
     expect(first.totals.requests).toBe(2);
     expect(second.totals.requests).toBe(2);
     expect(second.byHarness.map((row) => row.harness)).toEqual(["claude-code"]);
+  });
+
+  it("keeps what a running refresh reads and what is not yet on disk through an idle period", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let now = NOW;
+    const storage = new FakeStorage(
+      new Map([["one", { fingerprint: "1", entries: [entry("a")] }]]),
+    );
+    const stats = new UsageStatistics({
+      directory: path.join(directory, "usage-statistics"),
+      prices: new ModelPriceCatalog({ directory }),
+      now: () => now,
+    });
+    stats.attach(() => [{ harness: "pi", capability: storage }]);
+    await settledGet(stats);
+
+    // A read that outlasts the idle period still lands in the statistics.
+    storage.sources.set("one", { fingerprint: "2", entries: [entry("a"), entry("b")] });
+    const slow = Promise.withResolvers<HarnessUsageEntry[]>();
+    vi.spyOn(storage, "readSource").mockReturnValueOnce(slow.promise);
+    now += 11_000;
+    await stats.get("all");
+    now += IDLE;
+    await vi.advanceTimersByTimeAsync(IDLE);
+    expect((await stats.get("all")).totals.requests).toBe(1);
+    slow.resolve([entry("a"), entry("b")]);
+    await stats.settled();
+    expect((await stats.get("all")).totals.requests).toBe(2);
+
+    // Read within a minute of the last cache write, so only in memory: idling writes it first.
+    storage.sources.set("one", {
+      fingerprint: "3",
+      entries: [entry("a"), entry("b"), entry("unsaved")],
+    });
+    now += 11_000;
+    const before = await settledGet(stats);
+    expect(before.totals.requests).toBe(3);
+    const file = path.join(directory, "usage-statistics", "v8", "pi.json");
+    expect(await readFile(file, "utf8")).not.toContain('"unsaved"');
+    now += IDLE;
+    await vi.advanceTimersByTimeAsync(IDLE);
+    await vi.waitFor(async () => expect(await readFile(file, "utf8")).toContain('"unsaved"'));
+    expect((await stats.get("all")).totals).toEqual(before.totals);
+    await stats.settled();
+    expect(storage.reads).toEqual(["one", "one"]);
+    stats.close();
   });
 
   it("reparses unchanged native sources instead of retaining a v7 cache", async () => {
@@ -616,6 +696,22 @@ describe("UsageStatistics", () => {
     expect((await settledGet(next)).totals.requests).toBe(2);
     expect(storage.reads).toEqual(["one"]);
   });
+
+  it("removes caches older than the previous format and keeps the previous and newer ones", async () => {
+    const root = path.join(directory, "usage-statistics");
+    for (const name of ["v1", "v6", "v7", "v9"]) {
+      await mkdir(path.join(root, name), { recursive: true });
+      await writeFile(path.join(root, name, "pi.json"), "{}");
+    }
+    const storage = new FakeStorage(
+      new Map([["one", { fingerprint: "1", entries: [entry("a")] }]]),
+    );
+    const usage = statistics();
+    usage.attach(() => [{ harness: "antigravity", capability: storage }]);
+    await settledGet(usage);
+    expect((await readdir(root)).sort()).toEqual(["v7", "v8", "v9"]);
+  });
+
   it("rebuilds a deleted or broken cache from native storage", async () => {
     const storage = new FakeStorage(
       new Map([["one", { fingerprint: "1", entries: [entry("a")] }]]),

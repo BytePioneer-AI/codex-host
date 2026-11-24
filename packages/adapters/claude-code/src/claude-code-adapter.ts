@@ -109,8 +109,9 @@ import { readClaudeTranscript } from "./claude-transcript.js";
 import { readClaudeQueuedCommand } from "./claude-queued-command.js";
 import {
   CLAUDE_DEFAULT_MODEL_REF,
-  decodeClaudeModelRef,
+  claudeModelValue,
   normalizeClaudeModelCatalog,
+  normalizeStoredClaudeModelRef,
 } from "./model-catalog.js";
 import {
   CLAUDE_BYPASS_PERMISSIONS_UNAVAILABLE_MESSAGE,
@@ -342,6 +343,7 @@ const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const CONTEXT_USAGE_RETRY_DELAYS_MS = [0, 1_000, 2_000] as const;
 const CONTEXT_USAGE_TTL_MS = 10_000;
 const CONTEXT_USAGE_FAILURE_COOLDOWN_MS = 5_000;
+const ACCOUNT_CREDITS_REFRESH_COOLDOWN_MS = 60_000;
 const REQUEST_USAGE_RETRY_DELAYS_MS = [0, 100, 250, 500, 1_000] as const;
 // Claude opens the continuation Segment within milliseconds of the Segment that
 // observed a task notification, and the number of Segments it spends on queued
@@ -831,7 +833,7 @@ class ClaudeHarnessSession implements HarnessSession {
 
   #subagentConfiguration(): SubagentConfiguration {
     const state = this.#state;
-    const model = state.effectiveModel ? decodeClaudeModelRef(state.effectiveModel) : undefined;
+    const model = state.effectiveModel ? claudeModelValue(state.effectiveModel) : undefined;
     return {
       ...(model ? { model } : {}),
       ...(state.effectiveThinkingOptionId
@@ -1423,7 +1425,7 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     let model: string | undefined;
     try {
-      model = decodeClaudeModelRef(command.model);
+      model = claudeModelValue(command.model);
     } catch {
       return {
         ok: false,
@@ -1939,7 +1941,7 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     const selectedModel =
       this.#requestedModel ?? (this.#openMode === "create" ? CLAUDE_DEFAULT_MODEL_REF : undefined);
-    const model = selectedModel ? decodeClaudeModelRef(selectedModel) : undefined;
+    const model = selectedModel ? claudeModelValue(selectedModel) : undefined;
     const permissionMode = decodeClaudePermissionModeId(this.#requestedPermissionModeId);
     let transport: ClaudeTurnTransport;
     try {
@@ -3233,6 +3235,7 @@ class ClaudeHarnessSession implements HarnessSession {
 }
 
 export class ClaudeCodeAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredClaudeModelRef;
   readonly commandCatalog = claudeCommandCatalog;
   readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = claudeCodeHarnessId;
@@ -3317,6 +3320,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #sessions = new Set<ClaudeHarnessSession>();
   #closePromise: Promise<void> | null = null;
   #latestPlanLimit: ClaudePlanLimitEvent | null = null;
+  #fiveHourRefreshedAt = Number.NEGATIVE_INFINITY;
+  #sevenDayRefreshedAt = Number.NEGATIVE_INFINITY;
   #accountInspection: Promise<HarnessAccountSnapshot | null> | null = null;
   #accountCreditsSupported = false;
 
@@ -3482,6 +3487,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         await inspector.close().catch(() => undefined);
         this.#inspectors.delete(inspector);
       }
+      if (!this.#closePromise) {
+        const refreshedAt = Date.now();
+        this.#fiveHourRefreshedAt = refreshedAt;
+        this.#sevenDayRefreshedAt = refreshedAt;
+      }
     }
   }
 
@@ -3611,7 +3621,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       input.model
     ) {
       try {
-        decodeClaudeModelRef(input.model);
+        claudeModelValue(input.model);
       } catch {
         return {
           ok: false,
@@ -3730,7 +3740,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
           openMode = "create";
         }
         if (pending.configuration.effectiveModel)
-          decodeClaudeModelRef(pending.configuration.effectiveModel);
+          claudeModelValue(pending.configuration.effectiveModel);
         if (pending.configuration.effectiveThinkingOptionId)
           parseClaudeThinkingOptionId(pending.configuration.effectiveThinkingOptionId);
         if (pending.configuration.effectivePermissionModeId)
@@ -3837,6 +3847,9 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     }
     this.#latestPlanLimit = next.fiveHour || next.sevenDay ? next : null;
     if (this.#latestPlanLimit) {
+      const refreshedAt = Date.now();
+      if (planLimit.fiveHour) this.#fiveHourRefreshedAt = refreshedAt;
+      if (planLimit.sevenDay) this.#sevenDayRefreshedAt = refreshedAt;
       this.#accountCreditsSupported = true;
       for (const session of this.#sessions) {
         session.publishAccountCreditsSupport(true);
@@ -3851,7 +3864,16 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   }
 
   refreshCredits(): Promise<AccountCreditsSnapshot | null> {
-    return this.inspectAccount().then(() => this.credits());
+    if (this.#closePromise) return Promise.resolve(null);
+    const now = Date.now();
+    if (
+      !this.#accountInspection &&
+      now - this.#fiveHourRefreshedAt < ACCOUNT_CREDITS_REFRESH_COOLDOWN_MS &&
+      now - this.#sevenDayRefreshedAt < ACCOUNT_CREDITS_REFRESH_COOLDOWN_MS
+    ) {
+      return Promise.resolve(this.credits());
+    }
+    return this.inspectAccount().then(() => (this.#closePromise ? null : this.credits()));
   }
 
   close(): Promise<void> {

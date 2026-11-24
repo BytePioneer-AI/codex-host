@@ -1,5 +1,6 @@
 import { usageMeasurementsSchema } from "@codexhost/shared-contracts";
 import {
+  HARNESS_TRANSPORT_MODEL_ID_MAX_LENGTH,
   harnessIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
@@ -58,8 +59,9 @@ const storedThreadCoreV1Shape = {
   importSourceRef: nativeSessionRefSchema.optional(),
   cwd: nonBlankTextSchema.max(16_384),
   title: z.string().max(4_096),
+  titleIsPromptFallback: z.literal(true).optional(),
   archived: z.boolean(),
-  transportModelId: nonBlankTextSchema.max(1_024),
+  transportModelId: nonBlankTextSchema.max(HARNESS_TRANSPORT_MODEL_ID_MAX_LENGTH),
   ephemeral: z.boolean(),
   historyMode: z.enum(["legacy", "paginated"]),
   forkSource: z

@@ -1,0 +1,16 @@
+{
+  "identifier": "window-chrome",
+  "description": "Window drag and caption controls for the main desktop shell window on bundled pages and the local loopback Web UI.",
+  "webviews": ["main"],
+  "local": true,
+  "remote": {
+    "urls": ["http://127.0.0.1:*/*", "http://localhost:*/*"]
+  },
+  "permissions": [
+    "allow-window-start-dragging",
+    "allow-window-minimize",
+    "allow-window-toggle-maximize",
+    "allow-window-close",
+    "allow-window-chrome-state"
+  ]
+}

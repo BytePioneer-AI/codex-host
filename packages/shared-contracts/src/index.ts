@@ -4,8 +4,8 @@ export * from "./thread-catalog.js";
 export * from "./thread-tree-watch.js";
 export * from "./desktop-extensions.js";
 export * from "./web-native-extensions.js";
-export * from "./web-extension-management.js";
-export * from "./desktop-extension-management.js";
+export * from "./host-extensions.js";
+export * from "./host-extension-management.js";
 export * from "./thread-archive-confirm.js";
 export * from "./voice.js";
 export * from "./skills.js";
@@ -193,6 +193,7 @@ export type {
   HarnessPermissionModeId,
   ThreadPermissionModeSelectParams,
 } from "./harness-permission-modes.js";
+export { HARNESS_TRANSPORT_MODEL_ID_MAX_LENGTH } from "./harness-route-limit.js";
 export {
   HARNESS_MODEL_LABEL_MAX_LENGTH,
   HARNESS_MODEL_REF_MAX_LENGTH,
@@ -205,6 +206,10 @@ export {
   catalogModelForRef,
   harnessModelRefIdSchema,
   harnessModelRefSchema,
+  harnessModelServiceTierSchema,
+  sameHarnessModelRef,
+  harnessModelRefKey,
+  harnessModelRefFromKey,
   harnessModelSchema,
   harnessModelSelectionStateSchema,
   harnessPermissionModeScopeSchema,
@@ -225,6 +230,8 @@ export {
   threadSteeringInspectParamsSchema,
   threadSteeringInspectResultSchema,
   THREAD_STEER_DELIVERY_PARAM,
+  THREAD_STEER_STRICT_TARGET_PARAM,
+  THREAD_STEER_STRICT_TARGET_FIELD,
   THREAD_STEERING_CONTEXT_PARAM,
   threadSteeringContextSchema,
   threadSteerDeliverySchema,
@@ -237,6 +244,7 @@ export type {
   HarnessModel,
   HarnessModelCatalog,
   HarnessModelRef,
+  HarnessModelServiceTier,
   HarnessModelSelectionState,
   HarnessPermissionModeScope,
   HarnessSessionCapabilities,
@@ -356,6 +364,25 @@ export type {
   UpdateStatus,
   UpdateStatusResult,
 } from "./updates.js";
+export {
+  RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
+  RELEASE_ANNOUNCEMENT_GET_METHOD,
+  RELEASE_ANNOUNCEMENT_MAX_THEMES,
+  releaseAnnouncementAcknowledgeParamsSchema,
+  releaseAnnouncementContentSchema,
+  releaseAnnouncementGetParamsSchema,
+  releaseAnnouncementGetResultSchema,
+  releaseAnnouncementSchema,
+  releaseAnnouncementThemeSchema,
+} from "./release-announcement.js";
+export type {
+  ReleaseAnnouncement,
+  ReleaseAnnouncementAcknowledgeParams,
+  ReleaseAnnouncementContent,
+  ReleaseAnnouncementGetParams,
+  ReleaseAnnouncementGetResult,
+  ReleaseAnnouncementTheme,
+} from "./release-announcement.js";
 export { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 
 export const workspaceContractVersionSchema = z.literal(WORKSPACE_CONTRACT_VERSION);
@@ -429,6 +456,7 @@ export {
 } from "./remote-connections.js";
 
 export {
+  THREAD_NAME_AUTO_SOURCE_PARAM,
   threadTitleInputSchema,
   threadTitleResultSchema,
   type ThreadTitleInput,
@@ -455,17 +483,92 @@ export {
   type WebUiExtensionsState,
 } from "./web-ui-extensions.js";
 export {
+  remoteDeliveryReplySchema,
+  remoteQueueSnapshotSchema,
   remoteSessionOperationSchema,
   remoteSessionRequestBytes,
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
+  REMOTE_IDENTITY_MAX_LENGTH,
+  type RemoteDeliveryReply,
+  type RemoteQueueSnapshot,
   type RemoteSessionOperation,
 } from "./remote-sessions.js";
+export {
+  REMOTE_PEER_HOST_ID_PREFIX,
+  REMOTE_PEER_ID_PATTERN,
+  REMOTE_PEERS_METHODS,
+  REMOTE_PEERS_CHANGED_EVENT,
+  REMOTE_PEER_COLORS,
+  defaultRemotePeerColor,
+  resolveRemotePeerColor,
+  remotePeerHostId,
+  peerIdFromRemoteHostId,
+  remotePeerIdSchema,
+  remotePeerHostIdSchema,
+  remotePeerTransportKindSchema,
+  remotePeerColorSchema,
+  remotePeerStateSchema,
+  remotePeerSummarySchema,
+  remotePeerListResultSchema,
+  remotePeerAddParamsSchema,
+  remotePeerUpdateParamsSchema,
+  remotePeerIdParamsSchema,
+  remotePeerRemoveResultSchema,
+  remotePeerTestParamsSchema,
+  remotePeerTestProjectSchema,
+  remotePeerTestResultSchema,
+  remotePeerCapabilitiesSchema,
+  remotePeerManifestProjectSchema,
+  remotePeerManifestSchema,
+  REMOTE_PEER_UPLOAD_SCOPE_PATTERN,
+  REMOTE_PEER_FILE_PROXY_PATH,
+  remotePeerHarnessIconPath,
+  remotePeerWorkspaceId,
+  remotePeerHarnessPresentationPath,
+  remotePeerPromptParamsSchema,
+  remotePeerUploadResultSchema,
+  remotePeerPromptResultSchema,
+  remotePeerDirectoryEntrySchema,
+  remotePeerListDirsParamsSchema,
+  remotePeerListDirsResultSchema,
+  remotePeerCreateDirParamsSchema,
+  remotePeerCreateDirResultSchema,
+  remotePeerCreateWorkspaceParamsSchema,
+  remotePeerRenameWorkspaceParamsSchema,
+  remotePeerDeleteWorkspaceParamsSchema,
+  remotePeerWorkspaceMutationResultSchema,
+  type RemotePeerCapabilities,
+  type RemotePeerColor,
+  type RemotePeerTransportKind,
+  type RemotePeerState,
+  type RemotePeerSummary,
+  type RemotePeerListResult,
+  type RemotePeerAddParams,
+  type RemotePeerUpdateParams,
+  type RemotePeerIdParams,
+  type RemotePeerRemoveResult,
+  type RemotePeerTestParams,
+  type RemotePeerTestProject,
+  type RemotePeerTestResult,
+  type RemotePeerManifestProject,
+  type RemotePeerManifest,
+  type RemotePeerPromptParams,
+  type RemotePeerUploadResult,
+  type RemotePeerPromptResult,
+  type RemotePeerDirectoryEntry,
+  type RemotePeerListDirsParams,
+  type RemotePeerListDirsResult,
+  type RemotePeerCreateDirParams,
+  type RemotePeerCreateDirResult,
+  type RemotePeerCreateWorkspaceParams,
+  type RemotePeerRenameWorkspaceParams,
+  type RemotePeerDeleteWorkspaceParams,
+  type RemotePeerWorkspaceMutationResult,
+} from "./remote-peers.js";
 
 export {
-  encodeOfficialCodexModelRef,
-  decodeOfficialCodexModelRef,
-  decodeOfficialCodexModelSelection,
-  canonicalizeOfficialCodexModelRef,
-  OFFICIAL_CODEX_MODEL_REF_PREFIX,
+  officialCodexModelRef,
+  officialCodexModelSelection,
+  normalizeOfficialCodexModelRef,
 } from "./official-codex-model-ref.js";
 export { desktopProjectDefinitions } from "./desktop-project-definitions.js";

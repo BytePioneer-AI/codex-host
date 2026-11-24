@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
@@ -7,6 +8,8 @@ import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapt
 import { decodeExternalTransportSelection, type JsonObject } from "@codexhost/protocol-core";
 import {
   encodeHarnessPluginRoute,
+  HARNESS_PREFERENCES_GET_METHOD,
+  HARNESS_PREFERENCES_PATCH_METHOD,
   harnessPluginRouteSchema,
   harnessIdSchema,
   harnessPermissionModeCatalogSchema,
@@ -30,6 +33,121 @@ import {
   completePiTurn,
   stopFixture,
 } from "./app-server-host-fixture.js";
+
+it("persists migrated Model Refs and retries only Harnesses without a catalog", async () => {
+  const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+  const model = adapter.catalog.models[1]?.ref;
+  assert(model, "Expected a second Model in the fake catalog");
+  const unavailable = new FakeHarnessAdapter(harnessIdSchema.parse("opencode"));
+  const recoveredModel = unavailable.catalog.models[0]?.ref;
+  assert(recoveredModel, "Expected a Model in the OpenCode catalog");
+  const native = new FakeHarnessAdapter(harnessIdSchema.parse("antigravity"));
+  const nativeProbeStarted = Promise.withResolvers<undefined>();
+  const finishNativeProbe = Promise.withResolvers<undefined>();
+  const inspectNative = native.inspect.bind(native);
+  vi.spyOn(native, "inspect").mockImplementation(async (input) => {
+    nativeProbeStarted.resolve(undefined);
+    await finishNativeProbe.promise;
+    return inspectNative(input);
+  });
+  const inspect = vi.spyOn(adapter, "inspect");
+  const delayedInspect = vi.spyOn(unavailable, "inspect");
+  delayedInspect.mockRejectedValueOnce(new Error("Catalog unavailable"));
+  const fixture = createFixture({
+    externalAdapters: new Map([
+      ["antigravity", native],
+      [
+        "opencode",
+        Object.assign(unavailable, {
+          normalizeStoredModelRef: (ref: { id: string }) =>
+            ref.id === "offline-ref" ? recoveredModel : undefined,
+        }),
+      ],
+      [
+        "pi",
+        Object.assign(adapter, {
+          normalizeStoredModelRef: (ref: { id: string }) =>
+            ref.id === "legacy-model" ? model : undefined,
+        }),
+      ],
+    ]),
+  });
+  const file = path.join(fixture.mappingStoreDirectory, "harness-preferences-v1.json");
+  const antigravity = { model: { id: "native-model" } };
+  const before =
+    JSON.stringify({
+      version: 1,
+      revision: 7,
+      scopes: {
+        external: {
+          favorites: { pi: ["legacy-model", model.id, "retired"], opencode: ["offline-ref"] },
+          newThread: {
+            lastHarness: "pi",
+            byHarness: {
+              pi: { model: { id: "legacy-model" }, thinkingOptionId: "low" },
+              antigravity,
+            },
+          },
+          delegation: { byHarness: { pi: { model: { id: "legacy-model" } } } },
+        },
+      },
+    }) + "\n";
+  try {
+    await fixture.ready;
+    writeFileSync(file, before);
+    const get = (id: number) => {
+      writeRequest(fixture.desktopInput, {
+        id,
+        method: HARNESS_PREFERENCES_GET_METHOD,
+        params: {},
+      });
+      return fixture.collector.waitFor((message) => requestId(message, id));
+    };
+    const migrated = {
+      favorites: { pi: [model.id, "retired"], opencode: ["offline-ref"] },
+      newThread: {
+        lastHarness: "pi",
+        byHarness: { pi: { model, thinkingOptionId: "low" }, antigravity },
+      },
+      delegation: { byHarness: { pi: { model } } },
+    };
+    const first = await Promise.race([
+      get(81),
+      nativeProbeStarted.promise.then(() => {
+        throw new Error(
+          "Reading preferences started a catalog probe without a Model Ref migration",
+        );
+      }),
+    ]);
+    expect(first).toMatchObject({ result: { revision: 8, values: migrated } });
+    expect(JSON.parse(readFileSync(file, "utf8")).scopes.external).toEqual(migrated);
+    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(delayedInspect).toHaveBeenCalledTimes(1);
+
+    expect(await get(82)).toMatchObject({
+      result: { revision: 9, values: { favorites: { opencode: [recoveredModel.id] } } },
+    });
+    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(delayedInspect).toHaveBeenCalledTimes(2);
+
+    writeRequest(fixture.desktopInput, {
+      id: 83,
+      method: HARNESS_PREFERENCES_PATCH_METHOD,
+      params: {
+        expectedRevision: 9,
+        operations: [{ kind: "favorite", harnessId: "pi", modelId: model.id, enabled: false }],
+      },
+    });
+    expect(await fixture.collector.waitFor((message) => requestId(message, 83))).toMatchObject({
+      result: { revision: 10, values: { favorites: { pi: ["retired"] } } },
+    });
+    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(delayedInspect).toHaveBeenCalledTimes(2);
+  } finally {
+    finishNativeProbe.resolve(undefined);
+    await stopFixture(fixture);
+  }
+});
 
 describe("AppServerHost idle resource release", () => {
   it.each(["auto", "default"] as const)(

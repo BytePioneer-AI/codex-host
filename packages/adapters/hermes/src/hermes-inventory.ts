@@ -6,7 +6,7 @@ import path from "node:path";
 import type { HarnessModelRef } from "@codexhost/shared-contracts";
 import { nativeHermesPythonCommand } from "./hermes-runtime.js";
 
-import { decodeHermesModelRefId, encodeHermesModelRef } from "./hermes-models.js";
+import { hermesModelRef } from "./hermes-models.js";
 
 /**
  * Legacy `hermes` launchers exec the agent repository's virtualenv interpreter:
@@ -126,6 +126,10 @@ for row in payload.get("providers") or []:
                 "label": model_id,
                 "provider": provider,
                 "available": available,
+                # Gateway create/mutate take an explicit provider for named endpoints.
+                # The catalog ID stays qualified; the model sent to Hermes stays literal.
+                **({"gatewaySelection": {"provider": native_slug, "model": model_id}}
+                   if row.get("is_user_defined") is True and native_slug != "custom" else {}),
             })
 current_provider = str(getattr(context, "current_provider", "") or "").strip()
 current_model = str(getattr(context, "current_model", "") or "").strip()
@@ -142,6 +146,15 @@ configured = bool(check_configured()) if callable(check_configured) else None
 print("codexhost_inventory=" + json.dumps({"models": rows, "currentModelId": current_model_id, "configured": configured}))
 `;
 
+export interface HermesGatewayModelSelection {
+  model: string;
+  provider?: string;
+}
+
+export type HermesGatewayModelResolver = (
+  modelId: string,
+) => Promise<HermesGatewayModelSelection | undefined>;
+
 export interface HermesInventoryModel {
   /** Native Hermes choice id, e.g. `zai:glm-5-turbo`. */
   modelId: string;
@@ -151,6 +164,8 @@ export interface HermesInventoryModel {
   provider: string;
   /** False when Hermes reports unavailable credentials/routes or virtual dependencies. */
   available?: boolean;
+  /** Explicit native Gateway route for a named endpoint, not part of the public Model Ref. */
+  gatewaySelection?: Required<HermesGatewayModelSelection>;
 }
 
 export interface HermesInventory {
@@ -332,7 +347,6 @@ export interface HermesCatalogModel {
   description?: string;
 }
 
-/** Encode inventory rows into transport-safe catalog models (base64url refs). */
 export function catalogModelsFromInventory(inventory: HermesInventory): {
   models: HermesCatalogModel[];
   defaultModel: HarnessModelRef | null;
@@ -343,7 +357,7 @@ export function catalogModelsFromInventory(inventory: HermesInventory): {
   for (const model of inventory.models) {
     if (model.available === false) continue;
     const nativeModelId = model.modelId;
-    const ref = encodeHermesModelRef(nativeModelId);
+    const ref = hermesModelRef(nativeModelId);
     if (!ref) continue;
     if (
       inventory.currentModelId &&
@@ -368,11 +382,6 @@ export function catalogModelsFromInventory(inventory: HermesInventory): {
     throw new HermesInventoryError("Hermes configured Model is absent from its available catalog");
   }
   return { models, defaultModel };
-}
-
-/** Best-effort native model id for a transport-safe ref (labels never round-trip). */
-export function nativeModelIdFromRefId(refId: string): string | null {
-  return decodeHermesModelRefId(refId);
 }
 
 export const hermesInventoryPathsForTests = {

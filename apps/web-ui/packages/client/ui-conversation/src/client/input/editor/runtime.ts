@@ -91,6 +91,15 @@ export class DraftEditorRuntime {
         throw error;
       },
     });
+    // Seed an empty paragraph so Lexical focus() can establish a selection and
+    // WebKit always has a line-box anchor for caret painting on empty drafts.
+    this.editor.update(
+      () => {
+        const root = $getRoot();
+        if (root.getChildrenSize() === 0) root.append($createParagraphNode());
+      },
+      { discrete: true, tag: SKIP_DOM_SELECTION_TAG },
+    );
   }
 
   /**
@@ -399,6 +408,7 @@ export class DraftEditorRuntime {
         }
         const root = $getRoot();
         root.clear();
+        root.append($createParagraphNode());
         root.selectEnd();
       },
       { discrete: true, tag: HISTORY_MERGE_TAG },

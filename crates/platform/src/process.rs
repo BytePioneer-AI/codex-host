@@ -53,11 +53,15 @@ pub(crate) fn unix_process_snapshot(process_id: u32) -> Result<ProcessSnapshot, 
 #[cfg(target_os = "linux")]
 pub(super) fn linux_stat_fields(process_id: u32) -> Result<(u32, u32, u64), PlatformError> {
     let path = format!("/proc/{process_id}/stat");
-    let text = std::fs::read_to_string(&path).map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => {
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        // /proc can return ESRCH if the process exits after stat was opened.
+        if error.kind() == std::io::ErrorKind::NotFound
+            || error.raw_os_error() == Some(nix::libc::ESRCH)
+        {
             PlatformError::NotFound(format!("cannot inspect PID {process_id}: {error}"))
+        } else {
+            PlatformError::Io(error)
         }
-        _ => PlatformError::Io(error),
     })?;
     let command_end = text.rfind(')').ok_or_else(|| {
         PlatformError::Invalid(format!("PID {process_id} stat has no command terminator"))

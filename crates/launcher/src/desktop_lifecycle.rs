@@ -436,6 +436,37 @@ pub(super) fn running_for_update(data: &Path) -> Result<bool> {
     }
 }
 
+/// Read-only status validation for `inspect`; unlike update checks, this never waits on lifecycle locks.
+pub(super) fn launcher_pid_for_inspect(descriptor_path: &Path, data: &Path) -> Result<Option<u32>> {
+    let lifecycle = Lifecycle::open(descriptor_path, false)?;
+    if let Some(owner) = lifecycle.read()? {
+        if data.canonicalize().ok().as_ref() != Some(&owner.data)
+            || read_descriptor(descriptor_path)?.as_ref() != Some(&owner.descriptor)
+        {
+            return Ok(None);
+        }
+        let (Some(launcher), Some(controller), Some(_desktop)) = (
+            owner.launcher.live()?,
+            owner.controller.live()?,
+            owner.desktop.live()?,
+        ) else {
+            return Ok(None);
+        };
+        if controller.parent_id != launcher.id || port_closed(owner.descriptor.control_port)? {
+            return Ok(None);
+        }
+        return Ok(Some(launcher.id));
+    }
+
+    let Some(descriptor) = read_descriptor(descriptor_path)? else {
+        return Ok(None);
+    };
+    if port_closed(descriptor.control_port)? {
+        return Ok(None);
+    }
+    Ok(legacy_processes(&descriptor, data)?.map(|(launcher, _)| launcher.id))
+}
+
 pub(super) fn stop_managed(data: &Path) -> Result<bool> {
     let lock_deadline = Instant::now() + Duration::from_secs(45);
     let lifecycle = Lifecycle::open(&crate::runtime_instance::default_descriptor_path()?, true)?;

@@ -42,6 +42,15 @@ export function imagePath(source: NativeImageSource): string | undefined {
   }
 }
 
+/** Normalize the path string carried by a native imageView into one local path form. */
+export function localImagePath(value: string): string | undefined {
+  const fileUrl = value.trim();
+  if (fileUrl.startsWith("file:")) return imagePath({ url: fileUrl });
+  if (!value) return undefined;
+  // Bare native paths may legally end in spaces; trimming can select a different file.
+  return imagePath({ path: value });
+}
+
 function fileHeader(line: string, quoted: boolean): NativeFile | undefined {
   if (!line.startsWith("## ")) return undefined;
   const value = line.slice(3);
@@ -103,7 +112,13 @@ function envelope(text: string): { attachments: Attachment[]; request: string } 
       continue;
     }
     const last = attachments.at(-1);
-    if (section === FILES && line === "Image attachment: true" && last?.type === "nativeFile") {
+    if (
+      section === FILES &&
+      line === "Image attachment: true" &&
+      last?.type === "nativeFile" &&
+      last.startLine === undefined &&
+      last.endLine === undefined
+    ) {
       attachments[attachments.length - 1] = {
         type: "nativeImage",
         source: { path: last.path },
@@ -175,4 +190,108 @@ export function editedNativeInput(
     const prefix = files ? original.slice(0, original.length - files.request.length) : "";
     return { ...part, text: prefix + text, text_elements: [] };
   });
+}
+
+export type EditableQueuedAttachment =
+  | { readonly kind: "image"; readonly path: string; readonly name?: string }
+  | { readonly kind: "file"; readonly path: string; readonly name: string };
+
+export interface EditableQueuedInput {
+  readonly text: string;
+  readonly attachments: readonly EditableQueuedAttachment[];
+}
+
+/**
+ * Parse a canonical queued Host input into composer-restorable text and local attachment paths.
+ * Returns undefined when the entry carries non-empty text_elements, multiple text parts, URL
+ * images, line-ranged file mentions, or unknown native blocks so callers fail closed.
+ */
+export function editableQueuedInput(content: unknown): EditableQueuedInput | undefined {
+  if (!Array.isArray(content) || content.length === 0) return;
+  let textPart: string | undefined;
+  const structuredPaths = new Set<string>();
+  const entries: Array<
+    | { readonly kind: "text"; readonly text: string }
+    | { readonly kind: "localImage"; readonly path: string }
+  > = [];
+
+  for (const part of content) {
+    if (!part || typeof part !== "object") return;
+    const record = part as Record<string, unknown>;
+    if (record.type === "text") {
+      if (textPart !== undefined || typeof record.text !== "string") return;
+      if (
+        Object.hasOwn(record, "text_elements") &&
+        (!Array.isArray(record.text_elements) || record.text_elements.length > 0)
+      )
+        return;
+      textPart = record.text;
+      entries.push({ kind: "text", text: record.text });
+      continue;
+    }
+    if (record.type === "localImage") {
+      if (typeof record.path !== "string" || !record.path) return;
+      structuredPaths.add(record.path);
+      entries.push({ kind: "localImage", path: record.path });
+      continue;
+    }
+    return;
+  }
+
+  const parsedEnvelope = textPart === undefined ? undefined : envelope(textPart);
+  const envelopeNamesByPath = new Map<string, string>();
+  if (parsedEnvelope) {
+    for (const attachment of parsedEnvelope.attachments) {
+      if (attachment.type === "nativeFile") {
+        // Reject line-ranged files before any deduplication against structured localImage parts.
+        if (
+          !attachment.path ||
+          attachment.startLine !== undefined ||
+          attachment.endLine !== undefined
+        )
+          return;
+      } else {
+        if (!("path" in attachment.source) || !attachment.source.path) return;
+        if (attachment.name && !envelopeNamesByPath.has(attachment.source.path)) {
+          envelopeNamesByPath.set(attachment.source.path, attachment.name);
+        }
+      }
+    }
+  }
+
+  const attachments: EditableQueuedAttachment[] = [];
+  let text = "";
+  for (const entry of entries) {
+    if (entry.kind === "text") {
+      if (!parsedEnvelope) {
+        text = entry.text;
+        continue;
+      }
+      text = parsedEnvelope.request;
+      for (const attachment of parsedEnvelope.attachments) {
+        if (attachment.type === "nativeImage") {
+          if (!("path" in attachment.source)) return;
+          // Only merge when a structured localImage has the exact same path; never drop distinct paths.
+          if (structuredPaths.has(attachment.source.path)) continue;
+          attachments.push({
+            kind: "image",
+            path: attachment.source.path,
+            ...(attachment.name === undefined ? {} : { name: attachment.name }),
+          });
+          continue;
+        }
+        if (structuredPaths.has(attachment.path)) continue;
+        attachments.push({ kind: "file", path: attachment.path, name: attachment.name });
+      }
+      continue;
+    }
+    const matchedName = envelopeNamesByPath.get(entry.path);
+    attachments.push({
+      kind: "image",
+      path: entry.path,
+      ...(matchedName === undefined ? {} : { name: matchedName }),
+    });
+  }
+
+  return { text, attachments };
 }

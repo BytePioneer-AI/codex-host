@@ -24,7 +24,7 @@
 
 /* The Windows caption row remains outside every conversation and file panel. */
 :global([data-windows-titlebar]) .frame {
-  --dsh-windows-content-radius: 16px;
+  --dsh-windows-content-radius: 12px;
   box-sizing: border-box;
   padding-top: var(--dsh-windows-titlebar-height);
   background: var(--dsw-specific-sidebar-fill);
@@ -34,6 +34,7 @@
   background: var(--dsw-alias-bg-base);
   border-radius: var(--dsh-windows-content-radius) 0 0 0;
   corner-shape: round;
+  box-shadow: inset 1px 1px 0 color-mix(in srgb, var(--dsw-alias-border-l3) 55%, transparent);
 }
 
 :global([data-windows-titlebar]) .frame::before {
@@ -85,19 +86,26 @@
   background: transparent;
 }
 
-:global(html:not([data-platform="darwin"]) body[data-codexhost-wallpaper]) .sidebarCol {
+:global(html:is(:not([data-platform="darwin"]), [data-tauri-shell]) body[data-codexhost-wallpaper])
+  .sidebarCol {
   background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 22%, transparent);
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 
-:global(html:not([data-platform="darwin"]) body[data-ds-dark-theme][data-codexhost-wallpaper])
+:global(
+    html:is(:not([data-platform="darwin"]), [data-tauri-shell])
+      body[data-ds-dark-theme][data-codexhost-wallpaper]
+  )
   .sidebarCol {
   background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 26%, transparent);
 }
 
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
-  :global(html:not([data-platform="darwin"]) body[data-codexhost-wallpaper]) .sidebarCol {
+  :global(
+      html:is(:not([data-platform="darwin"]), [data-tauri-shell]) body[data-codexhost-wallpaper]
+    )
+    .sidebarCol {
     background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 92%, transparent);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
@@ -197,6 +205,28 @@
    where a separator would draw a seam against nothing. */
 :global([data-platform="darwin"]) [data-sidebar-hidden] .centerCol {
   border-left: none;
+}
+
+/* Tauri macOS shell uses an opaque window rather than Electron vibrancy. */
+:global([data-platform="darwin"][data-tauri-shell])
+  :global(body:not([data-codexhost-wallpaper]))
+  .frame,
+:global([data-platform="darwin"][data-tauri-shell])
+  :global(body:not([data-codexhost-wallpaper]))
+  .sidebarCol,
+:global([data-platform="darwin"][data-tauri-shell])
+  :global(body[data-ds-dark-theme]:not([data-codexhost-wallpaper]))
+  .sidebarCol {
+  background: var(--dsw-specific-sidebar-fill);
+}
+
+:global([data-platform="darwin"][data-tauri-shell]) .centerCol {
+  border-left: none;
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--dsw-alias-border-l3) 55%, transparent);
+}
+
+:global([data-platform="darwin"][data-tauri-shell]) [data-sidebar-hidden] .centerCol {
+  box-shadow: none;
 }
 
 /* Published while the shell.leading seat is mounted (same condition as the

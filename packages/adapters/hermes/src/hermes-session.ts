@@ -71,7 +71,6 @@ import {
 } from "./hermes-transport.js";
 import {
   catalogAlignedModelLabel,
-  decodeHermesModelRefId,
   isHermesModeId,
   projectHermesModelState,
 } from "./hermes-models.js";
@@ -342,6 +341,7 @@ export interface HermesSessionOptions {
   transport: HermesSessionTransport;
   open: HermesOpenResult;
   onSettle: (session: HermesSession) => void;
+  watchNativeTitle?: (publish: (title: string) => void) => void;
 }
 
 export class HermesSession implements HarnessSession {
@@ -457,6 +457,9 @@ export class HermesSession implements HarnessSession {
     );
     this.#transport.onFault = (error) => this.#fault(transportErrorToHarness(error));
     this.#transport.onUsage = (usage) => this.#usage.observe(usage);
+    options.watchNativeTitle?.((title) => {
+      if (!this.#closed && !this.#faulted) this.#emit({ type: "session.title.changed", title });
+    });
     void this.refreshUsage();
   }
 
@@ -730,7 +733,10 @@ export class HermesSession implements HarnessSession {
         nativeTurnKey: active.turnKey,
         formatVersion: 1,
       });
-    const turnSnapshot = active.toSnapshot(nativeTurnRef, outcome, true);
+    const turnSnapshot =
+      active.persistsHistory && !this.#transport.readNativeSnapshot
+        ? active.toSnapshot(nativeTurnRef, outcome, true)
+        : null;
     for (const pending of active.drainPendingItems()) {
       this.#emit({ type: "item.completed", turnId: active.turnId, snapshot: pending });
     }
@@ -746,7 +752,7 @@ export class HermesSession implements HarnessSession {
         : {}),
       outcome,
     });
-    if (active.persistsHistory) this.#completedTurns.push(turnSnapshot);
+    if (turnSnapshot) this.#completedTurns.push(turnSnapshot);
     void this.#usage.refresh(true);
   }
 
@@ -1026,10 +1032,7 @@ export class HermesSession implements HarnessSession {
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    const native = decodeHermesModelRefId(command.model.id);
-    if (!native) {
-      return err("invalidRequest", "Model Ref does not belong to Hermes");
-    }
+    const native = command.model.id;
     try {
       await this.#transport.setModel(native);
     } catch (error) {

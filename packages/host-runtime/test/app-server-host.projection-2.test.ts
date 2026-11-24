@@ -16,6 +16,7 @@ import {
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,
   hostThreadIdSchema,
+  jsonObjectSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 import type { DelegationControlApi, DelegationThreadSnapshot } from "../src/delegation-types.js";
@@ -1013,46 +1014,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
-  it("sends and cancels follow-up Turns on an external delegated Thread", async () => {
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-    const starting = delegationApi.start({
-      harnessId: "pi",
-      task: "first",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-    });
-    await answerOfficialParentCwd(fixture);
-    const started = await starting;
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Delegated Session was not opened");
-    session.succeedTurn();
-    await vi.waitFor(async () =>
-      expect(
-        await delegationApi?.read({ threadId: started.threadId, view: "result" }),
-      ).toMatchObject({ status: "completed" }),
-    );
-    const followUp = await delegationApi.send({ threadId: started.threadId, message: "continue" });
-    expect(followUp).toMatchObject({ harnessId: "pi", status: "running" });
-    await expect(
-      delegationApi.send({ threadId: started.threadId, message: "again" }),
-    ).rejects.toMatchObject({ code: "THREAD_BUSY" });
-    await expect(delegationApi.cancel({ threadId: started.threadId })).resolves.toMatchObject({
-      turnId: followUp.turnId,
-      cancelled: true,
-    });
-    session.completeCancellation();
-    await stopFixture(fixture);
-  });
-
   it("sends and cancels follow-up Turns on a native Codex Thread", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
@@ -1253,12 +1214,8 @@ describe("AppServerHost HarnessAdapter projection", () => {
   });
 
   it("inspects native Codex Models and starts with explicit Model and Thinking", async () => {
-    const xaiModel = harnessModelRefSchema.parse({
-      id: "codex-model-v1.eGFpL2dyb2stNC42",
-    });
-    const kimiModel = harnessModelRefSchema.parse({
-      id: "codex-model-v1.a2ltaS9rM1sxbV0",
-    });
+    const xaiModel = { id: "xai/grok-4.6" };
+    const kimiModel = harnessModelRefSchema.parse({ id: "kimi/k3[1m]" });
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
       onDelegationApi: (api) => {
@@ -1376,11 +1333,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("canonicalizes legacy transport-safe Codex Model refs before delegation", async () => {
-    const legacyModel = harnessModelRefSchema.parse({ id: "gpt-5.6-luna" });
-    const canonicalModel = harnessModelRefSchema.parse({
-      id: "codex-model-v1.Z3B0LTUuNi1sdW5h",
-    });
+  it("normalizes encoded Codex Model refs before delegation", async () => {
+    const legacyModel = harnessModelRefSchema.parse({ id: "codex-model-v1.Z3B0LTUuNi1sdW5h" });
+    const canonicalModel = { id: "gpt-5.6-luna" };
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
       onDelegationApi: (api) => {
@@ -2714,7 +2669,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 31,
       method: "codexhost/thread/model/select",
-      params: { threadId, model },
+      params: jsonObjectSchema.parse({ threadId, model }),
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 31)),

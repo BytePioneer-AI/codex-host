@@ -7,7 +7,11 @@ import { StringDecoder } from "node:string_decoder";
 
 import WebSocket from "ws";
 
-import { deepSeekProcessInvocation, killDeepSeekProcessTree } from "../executable.js";
+import {
+  deepSeekEnvironment,
+  deepSeekProcessInvocation,
+  killDeepSeekProcessTree,
+} from "../executable.js";
 
 import {
   MODERN_REMOTE_MUX_PATH,
@@ -846,7 +850,7 @@ export class ModernRemoteConnection {
     let child: ChildProcess;
     try {
       child = this.#dependencies.spawn(invocation.command, invocation.arguments, {
-        env: this.#environment,
+        env: deepSeekEnvironment(this.#options.command, this.#environment),
         stdio: "pipe",
         windowsHide: true,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,

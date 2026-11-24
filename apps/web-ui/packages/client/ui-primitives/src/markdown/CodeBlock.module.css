@@ -157,3 +157,18 @@
   content: counter(source-line);
   user-select: none;
 }
+
+/* iOS WebKit skips these wrapper paints; the banner and pre already own the
+   same rounded surfaces. */
+@supports (-webkit-touch-callout: none) {
+  .block,
+  :global(body[data-codexhost-wallpaper]) .block,
+  .bannerWrap {
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .bannerWrap > :global([data-code-block-banner]) {
+    border-radius: var(--dsl-code-block-border-radius) var(--dsl-code-block-border-radius) 0 0;
+  }
+}

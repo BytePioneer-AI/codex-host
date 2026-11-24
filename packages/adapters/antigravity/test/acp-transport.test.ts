@@ -22,8 +22,8 @@ import {
   systemStep,
   textField,
   userStep,
-} from "./support/native-history-fixture.js";
-import { bytes } from "./support/native-timing-fixture.js";
+} from "../../../../tests/fixtures/antigravity/native-history-fixture.js";
+import { bytes } from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
 
 const fixture = vi.hoisted(() => ({
   children: [] as ChildProcessWithoutNullStreams[],

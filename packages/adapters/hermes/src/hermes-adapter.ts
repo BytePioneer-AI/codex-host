@@ -16,9 +16,11 @@ import { HermesTransportError } from "./hermes-transport.js";
 import type { HermesSessionListOptions } from "./gateway-session-list.js";
 import {
   catalogModelsFromInventory,
+  HermesInventoryError,
   HermesInventoryTimeoutError,
   HermesConfigurationRequiredError,
   readHermesModelInventory,
+  type HermesGatewayModelSelection,
   type HermesInventory,
 } from "./hermes-inventory.js";
 import { listHermesSessionCandidates, resolveHermesSessionCandidate } from "./hermes-import.js";
@@ -28,6 +30,7 @@ import { HermesGatewayTransport } from "./gateway-transport.js";
 import { GatewayTransportPool, startGatewayTransport } from "./gateway-transport-pool.js";
 import type { HermesPythonRuntime } from "./hermes-runtime.js";
 import { HermesGatewayHistoryError } from "./gateway-history.js";
+import { normalizeStoredHermesModelRef } from "./hermes-models.js";
 import { hermesGatewayThinkingOptions } from "./gateway-session-transport.js";
 import type { HarnessUsageStatisticsCapability } from "@codexhost/harness-adapter";
 import { createHermesUsageStatistics } from "./usage-statistics.js";
@@ -47,6 +50,7 @@ export interface HermesAdapterOptions {
 const IMPORT_TIMEOUT_MS = 20_000;
 
 export class HermesAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredHermesModelRef;
   readonly commandCatalog = HERMES_COMMAND_CATALOG;
   readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = hermesHarnessId;
@@ -138,6 +142,39 @@ export class HermesAdapter implements HarnessAdapter {
         this.#inventoryRead = null;
       });
     return this.#inventoryRead;
+  }
+
+  async #gatewayModelSelection(
+    modelId: string,
+    environment: NodeJS.ProcessEnv,
+  ): Promise<HermesGatewayModelSelection | undefined> {
+    if (!modelId.includes(":")) return undefined;
+    const base = this.#effectiveEnvironment();
+    const sameProfile = [
+      "HOME",
+      "USERPROFILE",
+      "HERMES_HOME",
+      "HERMES_DATA_DIR_SUFFIX",
+      "PATH",
+    ].every((key) => base[key] === environment[key]);
+    const inventory = sameProfile
+      ? (this.#lastInventory ?? (await this.#readInventory()))
+      : await readHermesModelInventory(
+          resolveHermesExecutable({ ...this.#options, environment }),
+          20_000,
+          { environment },
+        );
+    const matches = inventory.models.filter((row) => row.modelId === modelId);
+    const selection = matches[0]?.gatewaySelection;
+    if (
+      matches.some(
+        (row) =>
+          row.gatewaySelection?.model !== selection?.model ||
+          row.gatewaySelection?.provider !== selection?.provider,
+      )
+    )
+      throw new HermesInventoryError("Hermes Model matches multiple Provider routes");
+    return selection;
   }
 
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
@@ -256,6 +293,7 @@ export class HermesAdapter implements HarnessAdapter {
           this.#gatewayPool.release(transport);
         },
         inheritedMode,
+        (modelId) => this.#gatewayModelSelection(modelId, environment),
       );
       if (this.#closed) {
         await session.close();

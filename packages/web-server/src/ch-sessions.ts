@@ -5,16 +5,25 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  THREAD_STEER_STRICT_TARGET_FIELD,
+  THREAD_STEER_STRICT_TARGET_PARAM,
+  WEB_ACTIVE_TURN_PROJECTION,
   WEB_FOLLOW_PROJECTION_KEYS,
+  clientThreadSectionsSchema,
+  clientThreadSectionMoveSchema,
   webTurnDiffsRequestSchema,
   webToolOutputReferenceSchema,
   encodeHarnessPluginRoute,
   harnessPluginRouteSchema,
   harnessModelSelectionStateSchema,
+  harnessModelRefFromKey,
+  harnessModelRefKey,
+  sameHarnessModelRef,
   threadInspectionSchema,
   threadArchiveConfirmResultSchema,
   threadUsageInspectionSchema,
   type HarnessDisplayEntries,
+  type ThreadCatalogReadParams,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient, ChProjectSnapshot } from "./ch-host-client.ts";
 import { ChHarnessCatalog, type ModelSelection } from "./ch-harness-catalog.ts";
@@ -30,6 +39,7 @@ import { ChHarnessCommands } from "./ch-harness-commands.ts";
 import { WebSkills } from "./skills.ts";
 import { hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { ChThreadEditing } from "./ch-thread-edit.ts";
+import { canEditQueuedInput, takeQueuedItemForEdit } from "./ch-queue-edit.ts";
 import { editedNativeInput } from "./native-user-input.ts";
 import { forkChThread, forkUnavailable } from "./ch-thread-fork.ts";
 import { ChPinnedThreads } from "./ch-pinned-threads.ts";
@@ -37,7 +47,7 @@ import { ChThreadTree } from "./ch-thread-tree.ts";
 import { type WebImages, WEB_IMAGE_INPUT, WEB_IMAGE_LIMITS } from "./web-images.ts";
 import { ChAttachments } from "./ch-attachments.ts";
 import { ChFileInputs, type FileUploadTiming } from "./ch-file-inputs.ts";
-import { WebFileReferences } from "./file-references.ts";
+import { WebFileReferences, type RemoteFileReferencesSearch } from "./file-references.ts";
 import { type WebFiles, WEB_FILE_INPUT } from "./web-files.ts";
 import { ChRealtime } from "./ch-realtime.ts";
 import { ChInteractions } from "./ch-interactions.ts";
@@ -58,6 +68,8 @@ import type { WireEvent } from "./session-log.ts";
 import { SessionListTiming } from "./session-list-timing.ts";
 import { readSessionPage, nextCatalogCursor, type CatalogPage } from "./ch-session-page.ts";
 import { tryGenerateThreadTitle } from "./ch-thread-titles.ts";
+
+type CatalogScope = NonNullable<ThreadCatalogReadParams["scope"]>;
 
 function globalProjectionValues(values: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -95,9 +107,11 @@ export class ChSessions {
   private refreshingArchives = false;
   private refreshingArchiveChanges: Map<string, boolean> | undefined;
   private readonly archiveOperations = new Map<string, symbol>();
+  private readonly queueOperations = new Map<string, Promise<void>>();
   private refreshingTiming: SessionListTiming | undefined;
   private catalogReadAt = -Infinity;
   private timer?: NodeJS.Timeout;
+  private idleViewTimer?: NodeJS.Timeout;
   private closed = false;
   private readonly realtime: ChRealtime | undefined;
   private readonly skills: WebSkills;
@@ -126,13 +140,8 @@ export class ChSessions {
             if (this.drafts.has(id)) return id;
             await this.owner(id);
             if (!this.rows.has(id)) await this.refresh();
-            if (!this.threads.hasHarness(id))
-              throw new RpcError("session/not-found", "CH Thread not found.");
-            if (this.rows.get(id)?.parentThreadId)
-              throw new RpcError(
-                "subagent/attachment-invalid",
-                "Subagent file uploads are unavailable.",
-              );
+            const error = this.attachmentThreadError(id);
+            if (error) throw error;
             return id;
           })
         : undefined;
@@ -211,10 +220,33 @@ export class ChSessions {
   private id(id: string): string {
     return this.drafts.get(id)?.canonicalId ?? id;
   }
+  private attachmentThreadError(id: string): RpcError | undefined {
+    if (!this.threads.hasHarness(id))
+      return new RpcError("session/not-found", "CH Thread not found.");
+    if ((this.rows.get(id) ?? this.threads.view(id)?.thread)?.parentThreadId)
+      return new RpcError("subagent/attachment-invalid", "Subagent file uploads are unavailable.");
+    return undefined;
+  }
+  private runQueuedOperation<T>(threadId: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.queueOperations.get(threadId) ?? Promise.resolve();
+    const current = previous.then(work, work);
+    const tracked = current
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .finally(() => {
+        if (this.queueOperations.get(threadId) === tracked) this.queueOperations.delete(threadId);
+      });
+    this.queueOperations.set(threadId, tracked);
+    return current;
+  }
+  /** A `scope` reads an explicit page on until it reaches a Thread of that folder. */
   private async refresh(
     timing?: SessionListTiming,
     includeArchived = false,
     cursor?: string,
+    scope?: CatalogScope,
   ): Promise<CatalogPage | undefined> {
     if (this.closed) return;
     if (
@@ -226,7 +258,7 @@ export class ChSessions {
       const stage = this.refreshingCatalog ? "catalog_wait" : "workspace_wait";
       const pending = this.refreshing.catch(() => undefined);
       await (timing ? timing.measure(stage, () => pending) : pending);
-      return this.refresh(timing, includeArchived, cursor);
+      return this.refresh(timing, includeArchived, cursor, scope);
     }
     const mode = this.refreshing ? "joined" : "started";
     if (!this.refreshing) {
@@ -240,6 +272,7 @@ export class ChSessions {
         includeArchived,
         archiveChanges,
         cursor,
+        scope,
       ).finally(() => {
         this.refreshing = undefined;
         this.refreshingCatalog = false;
@@ -256,22 +289,34 @@ export class ChSessions {
       if (timing && catalogTiming) timing.catalog = { mode, ...catalogTiming.snapshot() };
     }
   }
+  private refreshPins(): Promise<string[]> {
+    return this.pins.refresh().catch((error: unknown) => {
+      console.error("[session/list] native pins unavailable", error);
+      return this.workspaces.pinnedSessionIds();
+    });
+  }
   private async listAll(
     timing: SessionListTiming,
     includeArchived: boolean,
     archiveChanges: ReadonlyMap<string, boolean>,
     cursor?: string,
+    scope?: CatalogScope,
   ): Promise<CatalogPage | undefined> {
     const known = new Set(this.rows.keys());
-    const [{ page: snapshot }, definitions] = await Promise.all([
-      readSessionPage(this.host, timing, includeArchived, cursor, () =>
-        this.pins.refresh().catch((error: unknown) => {
-          console.error("[session/list] native pins unavailable", error);
-          return [...this.workspaces.pinnedSessionIds()];
-        }),
-      ),
+    const [{ page: snapshot }, definitions, , sections] = await Promise.all([
+      readSessionPage(this.host, timing, includeArchived, cursor, () => this.refreshPins(), scope),
       timing.measure("project_definitions", () => this.host.projects([])),
       timing.measure("thread_tree", () => this.tree.refresh()),
+      timing.measure("thread_sections", async () => {
+        try {
+          return clientThreadSectionsSchema.parse(
+            await this.host.request("codexhost/thread/sections/list", {}),
+          ).sections;
+        } catch {
+          // Optional on older Hosts; keep the last confirmed snapshot on a read failure.
+          return undefined;
+        }
+      }),
     ]);
     if (this.closed) return;
     const found = new Map(snapshot.threads.map((row) => [row.id, row]));
@@ -289,6 +334,27 @@ export class ChSessions {
         ownership.set(item.threadId, item.harnessId);
       else if (item.owner === "codex") ownership.set(item.threadId, "codex");
     }
+    const pageSectionAdditions = cursor === undefined ? undefined : new Set<string>();
+    const threadSections = sections?.map(({ id, name, threads }) => {
+      const threadIds: string[] = [];
+      for (const thread of threads) {
+        if (typeof thread.id !== "string" || thread.archived === true) continue;
+        if (thread.archived === false && !snapshotArchives.has(thread.id))
+          archivedIds.delete(thread.id);
+        if (!found.has(thread.id)) {
+          const row = thread as unknown as ChThread;
+          found.set(thread.id, row);
+          ownership.set(thread.id, "codex");
+          if (cursor === undefined || !this.publishedCatalog?.has(row.id))
+            snapshot.threads.push(row);
+        }
+        if (ownership.get(thread.id) === "codex") {
+          threadIds.push(thread.id);
+          if (!this.publishedCatalog?.has(thread.id)) pageSectionAdditions?.add(thread.id);
+        }
+      }
+      return { id, name, threadIds };
+    });
     timing.count("ownershipIds", ownership.size);
     timing.count(
       "archivedRows",
@@ -303,8 +369,9 @@ export class ChSessions {
       const harnessId = this.threads.harnessId(id);
       if (found.has(id) || !harnessId) continue;
       // Omission from an official page is not deletion or archive evidence.
-      // External metadata is complete for this scope, so its missing rows may leave.
+      // External metadata is complete on the head page, so missing rows may leave only when cursor is undefined.
       if (
+        cursor === undefined &&
         harnessId !== "codex" &&
         known.has(id) &&
         !archiveChanges.has(id) &&
@@ -330,6 +397,13 @@ export class ChSessions {
     timing.count("visibleRows", rows.size);
     await this.syncWorkspace(timing, projects);
     if (this.closed) return;
+    // Project members resolve to Workspaces, which exist once their roots are synced.
+    if (threadSections)
+      this.workspaces.setReferenceThreadSections(
+        threadSections,
+        definitions.projects,
+        definitions.sectionProjects,
+      );
     // Notifications received during catalog or ancestor reads supersede their membership.
     for (const [id, archived] of archiveChanges) {
       if (archived) archivedIds.add(id);
@@ -338,7 +412,7 @@ export class ChSessions {
     timing.measureSync("archive_sync", () =>
       this.workspaces.setReferenceArchives([...archivedIds].sort()),
     );
-    await timing.measure("catalog_publish", () => this.publishCatalogChanges(cursor !== undefined));
+    await timing.measure("catalog_publish", () => this.publishCatalogChanges(pageSectionAdditions));
     this.catalogReadAt = Date.now();
     return snapshot;
   }
@@ -386,6 +460,14 @@ export class ChSessions {
       this.workspaces.syncReferencedSessions(references, groups, projectless, projects.projects);
     });
   }
+  private archiveForkParent(row: ChThread): string | null {
+    return this.threads.harnessId(row.id) === "codex" &&
+      !row.parentThreadId &&
+      typeof row.forkedFromId === "string" &&
+      !this.workspaces.pinnedSessionIds().includes(row.id)
+      ? row.forkedFromId
+      : null;
+  }
   /** Only fields used by the list summary; projections have their own
    * streams. Re-emitting every row makes each browser rebuild its entire
    * catalog thousands of times and starves interactive history frames.
@@ -398,16 +480,26 @@ export class ChSessions {
       row.status.type,
       row.parentThreadId ?? null,
       this.tree.parent(row.id),
+      this.archiveForkParent(row),
       row.canAcceptDirectInput !== false,
       row.codexhostImportSource ?? null,
       this.threads.harnessId(row.id),
     ]);
   }
-  private async publishCatalogChanges(explicitPage = false): Promise<void> {
+  private catalogProjections(row: ChThread) {
+    return {
+      title: threadListTitle(row),
+      threadTreeParent: this.tree.parent(row.id),
+      archiveForkParent: this.archiveForkParent(row),
+      codexhostImportSource: row.codexhostImportSource ?? null,
+    };
+  }
+  private async publishCatalogChanges(pageSectionAdditions?: ReadonlySet<string>): Promise<void> {
     const before = this.publishedCatalog;
     const next = new Map([...this.rows].map(([id, row]) => [id, this.catalogKey(row)]));
     // First load is already delivered by session/list. Subsequent refreshes,
     // including ones requested by a second browser, publish actual deltas only.
+    // New continuation rows stay request-local unless a shared section references them.
     const changed =
       before === undefined
         ? []
@@ -415,7 +507,8 @@ export class ChSessions {
             [...this.rows.values()]
               .filter(
                 (row) =>
-                  before.get(row.id) !== next.get(row.id) && (!explicitPage || before.has(row.id)),
+                  before.get(row.id) !== next.get(row.id) &&
+                  (!pageSectionAdditions || before.has(row.id) || pageSectionAdditions.has(row.id)),
               )
               .map((row) => this.summary(row)),
           );
@@ -425,9 +518,21 @@ export class ChSessions {
     // metadata through the existing control stream without rereading any history.
     for (const [id, row] of this.rows) {
       const log = this.threads.view(id)?.log;
-      log?.setProjection("title", threadListTitle(row));
-      log?.setProjection("threadTreeParent", this.tree.parent(id));
-      log?.setProjection("codexhostImportSource", row.codexhostImportSource ?? null);
+      if (!log) continue;
+      for (const [key, value] of Object.entries(this.catalogProjections(row)))
+        log.setProjection(key, value);
+    }
+    // A Thread whose view was dropped has no journal to publish through, yet browsers
+    // keep its sequenced values. Advance the reserved sequence below its next view.
+    if (this.controls.size > 0) {
+      for (const { sessionId } of changed) {
+        const row = this.rows.get(sessionId);
+        const seq = row ? this.threads.reserveDroppedProjectionSeq(sessionId) : undefined;
+        if (!row || seq === undefined) continue;
+        for (const [key, value] of Object.entries(this.catalogProjections(row)))
+          for (const sink of this.controls)
+            sink.push({ type: "projection", sessionId, key, value, seq });
+      }
     }
     for (const row of changed) this.events.emit("api-session/added", row);
     if (before)
@@ -521,6 +626,16 @@ export class ChSessions {
         this.attachments
           ? (content) => this.attachments?.project(id, content) ?? content
           : undefined,
+        this.attachments
+          ? (path, projectionKey) => this.attachments?.projectImageView(id, path, projectionKey)
+          : undefined,
+        {
+          canEditQueueItem: (input, projected, allowsAttachments) =>
+            canEditQueuedInput(input, projected, allowsAttachments, {
+              ...(this.images ? { images: this.images } : {}),
+              ...(this.files ? { files: this.files } : {}),
+            }),
+        },
       );
       view = history;
       view.log.setProjection("threadReference", { hostId: "local" });
@@ -551,6 +666,10 @@ export class ChSessions {
     }
     if (this.threads.view(id) !== view)
       throw new RpcError("host/resync", "Host snapshot was superseded by a new generation");
+    view.log.setProjection(
+      "archiveForkParent",
+      this.archiveForkParent(this.rows.get(id) ?? view.thread),
+    );
     view.log.setProjection(
       "nativeDiscovery",
       !view.thread.parentThreadId && view.thread.canAcceptDirectInput !== false,
@@ -655,7 +774,7 @@ export class ChSessions {
         );
         const selection = {
           provider: harnessId,
-          model: owner.effectiveModel?.id ?? "harness",
+          model: owner.effectiveModel ? harnessModelRefKey(owner.effectiveModel) : "harness",
           ...(owner.effectiveThinkingOptionId
             ? { reasoningEffort: owner.effectiveThinkingOptionId }
             : {}),
@@ -690,6 +809,7 @@ export class ChSessions {
           .map((key) => [key, projections[key]]),
       ),
       threadTreeParent: this.tree.parent(row.id),
+      archiveForkParent: this.archiveForkParent(row),
       nativeDiscovery: !row.parentThreadId && row.canAcceptDirectInput !== false,
       threadReference: { hostId: "local" },
       title: threadListTitle(row),
@@ -772,14 +892,20 @@ export class ChSessions {
       return { sessionId: id, agentPreset: "standard" };
     if (existing || this.rows.has(id))
       throw new RpcError("session/busy", "This Session already exists; start a new draft.");
-    const selection = configuration?.selection ?? (await this.catalog.models()).default;
+    const preferences = configuration ? undefined : this.preferences?.get().catch(() => undefined);
+    const selection =
+      configuration?.selection ??
+      (await this.catalog.models(false, undefined, preferences)).default;
+    if (!selection)
+      throw new RpcError(
+        "host/no-harness",
+        "No models are available. Re-detect the Harness in Connections to authorize access.",
+      );
     const draft: Draft = { id, ...(cwd ? { cwd } : {}), selection, createdAt: Date.now() };
     if (configuration) {
       if (configuration.permissionModeId) draft.permissionModeId = configuration.permissionModeId;
     } else {
-      const config = await this.preferences
-        ?.configuration(selection.provider)
-        .catch(() => undefined);
+      const config = (await preferences)?.values.newThread?.byHarness[selection.provider];
       const inspection = await this.catalog.inspect(selection.provider, cwd);
       const permissionModeId = draftPermissionMode(
         selection.provider,
@@ -827,7 +953,7 @@ export class ChSessions {
               model: encodeHarnessPluginRoute(
                 harnessPluginRouteSchema.parse({
                   harnessId: draft.selection.provider,
-                  model: { id: draft.selection.model },
+                  model: harnessModelRefFromKey(draft.selection.model),
                   ...(draft.selection.reasoningEffort
                     ? { thinkingOptionId: draft.selection.reasoningEffort }
                     : {}),
@@ -836,7 +962,7 @@ export class ChSessions {
               ),
             }
           : {
-              model: { id: draft.selection.model },
+              model: harnessModelRefFromKey(draft.selection.model),
               ...(draft.selection.reasoningEffort
                 ? { config: { model_reasoning_effort: draft.selection.reasoningEffort } }
                 : {}),
@@ -896,6 +1022,40 @@ export class ChSessions {
   }
 
   /**
+   * Resolve a Host-confirmed local Thread's working directory, loading its metadata
+   * from the Host if this Web process has not listed it yet (e.g. headless Peer startup
+   * or older catalog pages). Never creates a Thread and never resolves drafts.
+   */
+  async ensureLocalWorkspaceRoot(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    if (signal?.aborted) return undefined;
+    const existing = this.localWorkspaceRoot(sessionId);
+    if (existing !== undefined) return existing;
+    if (
+      this.closed ||
+      !sessionId ||
+      sessionId.startsWith("web-remote:") ||
+      sessionId.startsWith("remote-control:") ||
+      sessionId.startsWith("draft-")
+    ) {
+      return undefined;
+    }
+    const id = this.id(sessionId);
+    if (this.drafts.has(id)) return undefined;
+    try {
+      const { thread, harnessId } = await this.readThread(id);
+      if (this.closed || signal?.aborted) return undefined;
+      this.rows.set(thread.id, thread);
+      this.threads.setHarness(thread.id, harnessId);
+      return thread.cwd;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Terminal cwd for a known local Session, including an unsubmitted draft.
    * Missing cwd uses the Web service user's home without assigning a workspace
    * or creating a Thread. Unknown identities do not acquire an execution scope.
@@ -912,6 +1072,10 @@ export class ChSessions {
   fileWorkspaceRoot(sessionId: string): string | undefined {
     const id = this.id(sessionId);
     return this.drafts.get(id)?.cwd ?? this.localWorkspaceRoot(id);
+  }
+
+  setRemoteFileSearch(search: RemoteFileReferencesSearch | undefined): void {
+    this.fileReferences.setRemoteSearch(search);
   }
 
   uploadFile(
@@ -1087,12 +1251,48 @@ export class ChSessions {
         return { pinnedSessionIds };
       });
     }
+    rpc.register("workspace/moveSessionToSection", async (args) => {
+      const input = requestOf<{ sessionId: string; sectionId: string | null }>(args);
+      const move = clientThreadSectionMoveSchema.safeParse({
+        threadId: input.sessionId,
+        sectionId: input.sectionId,
+      });
+      if (!move.success)
+        throw new RpcError("workspace/section-invalid", "Invalid Thread section move.");
+      const { threadId, sectionId } = move.data;
+      if (
+        this.threads.harnessId(threadId) !== "codex" ||
+        this.rows.get(threadId)?.parentThreadId ||
+        this.workspaces.isArchived(threadId) ||
+        this.workspaces.pinnedSessionIds().includes(threadId) ||
+        (sectionId !== null && !this.workspaces.hasThreadSection(sectionId))
+      )
+        throw new RpcError(
+          "workspace/section-unavailable",
+          "This Thread or section is unavailable for a move.",
+        );
+      await this.host.request("codexhost/thread/sections/move", move.data);
+      await this.refreshing?.catch(() => undefined);
+      await this.refresh().catch(() => undefined);
+      return { sectionId };
+    });
     rpc.register("session/list", async (args, context) => {
       const {
         includeArchived = false,
         cursor,
         sessionId,
-      } = requestOf<{ includeArchived?: boolean; cursor?: string; sessionId?: string }>(args);
+        workspaceId,
+      } = requestOf<{
+        includeArchived?: boolean;
+        cursor?: string;
+        sessionId?: string;
+        workspaceId?: string;
+      }>(args);
+      if (
+        workspaceId !== undefined &&
+        (typeof workspaceId !== "string" || !workspaceId || cursor === undefined)
+      )
+        throw new RpcError("session/list-invalid", "workspaceId only continues a cursor page.");
       if (sessionId !== undefined) {
         if (typeof sessionId !== "string" || !sessionId || cursor !== undefined)
           throw new RpcError("session/list-invalid", "Invalid direct-link identity.");
@@ -1103,7 +1303,7 @@ export class ChSessions {
             archivedSessionIds: this.workspaces.archivedSessionIds(),
           };
         const id = this.id(sessionId);
-        await this.tree.refresh();
+        await Promise.all([this.tree.refresh(), this.refreshPins()]);
         const { thread, harnessId } = await this.readThread(id);
         this.rows.set(thread.id, thread);
         this.threads.setHarness(thread.id, harnessId);
@@ -1127,7 +1327,10 @@ export class ChSessions {
       if (cursor !== undefined && typeof cursor !== "string")
         throw new RpcError("session/list-invalid", "cursor must be a string.");
       // Explicit pages are request-local and are never joined to another browser's refresh.
-      const page = await this.refresh(timing, includeArchived, cursor);
+      // A Workspace's page reads on until it reaches one of that Workspace's Threads.
+      const scope =
+        workspaceId === undefined ? undefined : this.workspaces.catalogScope(workspaceId);
+      const page = await this.refresh(timing, includeArchived, cursor, scope);
       const pageIds = this.tree.withAncestors(page?.threads.map((row) => row.id) ?? []);
       const archivedSessionIds = this.workspaces.archivedSessionIds();
       const archived = new Set(archivedSessionIds);
@@ -1180,6 +1383,7 @@ export class ChSessions {
     });
     rpc.register("session/selectModel", async (args) => {
       const request = requestOf<ModelSelection & { sessionId: string }>(args);
+      const model = harnessModelRefFromKey(request.model);
       const draft = this.drafts.get(request.sessionId);
       if (draft && !draft.canonicalId) {
         if (draft.creating) throw new RpcError("session/busy", "Draft creation is in progress.");
@@ -1202,7 +1406,7 @@ export class ChSessions {
         draft.selection = request;
         await this.preferences
           ?.remember(request.provider, {
-            model: { id: request.model },
+            model,
             thinkingOptionId: request.reasoningEffort,
             permissionModeId: draft.permissionModeId,
           })
@@ -1238,7 +1442,7 @@ export class ChSessions {
         state.configurationRevision = (state.configurationRevision ?? 0) + 1;
         const selection = {
           provider: owner.harnessId,
-          model: configuration.effectiveModel.id,
+          model: harnessModelRefKey(configuration.effectiveModel),
           ...(configuration.effectiveThinkingOptionId
             ? { reasoningEffort: configuration.effectiveThinkingOptionId }
             : {}),
@@ -1248,14 +1452,14 @@ export class ChSessions {
       };
       // Unchanged native settings may not emit a confirmation notification.
       const configuration = publish(
-        owner.owner === "codex" && owner.effectiveModel?.id === request.model
+        owner.owner === "codex" && sameHarnessModelRef(owner.effectiveModel, model)
           ? {
               effectiveModel: owner.effectiveModel,
               effectiveThinkingOptionId: owner.effectiveThinkingOptionId,
             }
           : await this.host.request("codexhost/thread/model/select", {
               threadId: id,
-              model: { id: request.model },
+              model,
             }),
       );
       if (
@@ -1279,6 +1483,7 @@ export class ChSessions {
         requestId?: string;
         content: Array<{ type: string; text?: string }>;
         mode?: string;
+        expectedTurnId?: string | null;
       }>(args);
       if (!this.images && request.content.some((part) => part.type !== "text"))
         throw new RpcError(
@@ -1286,7 +1491,29 @@ export class ChSessions {
           "Shared CH input currently accepts text only.",
         );
       const draft = this.drafts.get(request.sessionId);
-      if (!draft || draft.canonicalId) await this.owner(request.sessionId);
+      const existingOwner =
+        !draft || draft.canonicalId ? await this.owner(request.sessionId) : undefined;
+      let steerTurnId: string | undefined;
+      if (request.mode === "steer") {
+        const view = existingOwner && (await this.view(request.sessionId, true));
+        const activeTurnId = view ? view.log.projections[WEB_ACTIVE_TURN_PROJECTION] : null;
+        if (
+          !existingOwner ||
+          !view ||
+          typeof activeTurnId !== "string" ||
+          (request.expectedTurnId !== undefined && request.expectedTurnId !== activeTurnId)
+        )
+          throw new RpcError("remote/turn-changed", "The selected Turn has ended or changed.");
+        if (
+          existingOwner.owner === "external" &&
+          view.thread[THREAD_STEER_STRICT_TARGET_FIELD] !== true
+        )
+          throw new RpcError(
+            "remote/steer-unavailable",
+            "This Host does not support steering with a confirmed Turn target.",
+          );
+        steerTurnId = activeTurnId;
+      }
       // Validate/save before creating a native Thread. Only native path context crosses the Host channel.
       const prepared = this.fileInputs
         ? await this.fileInputs.prepare(this.id(request.sessionId), request.content)
@@ -1309,26 +1536,15 @@ export class ChSessions {
               .join("\n"),
           )
         : this.id(request.sessionId);
-      await this.owner(threadId);
-      if (request.mode === "steer") {
-        const view = await this.view(threadId, true);
-        const expectedTurnId =
-          view.ownerSnapshot?.activeTurnId ??
-          view.thread.turns.find((turn) => turn.status === "inProgress")?.id;
-        if (expectedTurnId) {
-          await this.host.request("turn/steer", {
-            threadId,
-            expectedTurnId,
-            input,
-            ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
-          });
-        } else {
-          await this.host.request("turn/start", {
-            threadId,
-            input,
-            ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
-          });
-        }
+      const owner = existingOwner ?? (await this.owner(threadId));
+      if (steerTurnId) {
+        await this.host.request("turn/steer", {
+          threadId,
+          expectedTurnId: steerTurnId,
+          input,
+          ...(owner.owner === "external" ? { [THREAD_STEER_STRICT_TARGET_PARAM]: true } : {}),
+          ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
+        });
       } else {
         await this.host.request("turn/start", {
           threadId,
@@ -1352,6 +1568,7 @@ export class ChSessions {
             this.host,
             row,
             prompt,
+            owner.owner === "external",
             () => !this.closed && this.titleRequests.has(threadId),
           )
             .then(async (changed) => {
@@ -1391,7 +1608,11 @@ export class ChSessions {
       const view = await this.view(sessionId, true);
       if (!this.attachments)
         throw new RpcError("session/attachment-not-found", "Image previews are unavailable.");
-      return this.attachments.read(view, attachmentId);
+      return this.attachments.read(
+        view,
+        attachmentId,
+        view.ownerSnapshot?.queue?.items.map((item) => item.input),
+      );
     });
     rpc.register("session/updateQueue", async (args) => {
       const request = requestOf<{
@@ -1403,40 +1624,93 @@ export class ChSessions {
           | { kind: "steer" };
       }>(args);
       const threadId = this.id(request.sessionId);
-      await this.owner(threadId);
-      if (request.action.kind === "edit") {
-        await this.host.request("thread/queue/update", {
-          threadId,
-          queuedSubmissionId: request.itemId,
-          input: request.action.content.map((part) =>
-            part.type === "text" ? { text_elements: [], ...part } : part,
-          ),
-          presentationInput: request.action.content,
-        });
-      } else if (request.action.kind === "remove") {
-        const result = await this.host.request<{ deleted: boolean }>("thread/queue/delete", {
-          threadId,
-          queuedSubmissionId: request.itemId,
-        });
-        if (!result.deleted)
+      if (this.drafts.has(threadId))
+        throw new RpcError("session/queue-item-not-found", "Queued message is no longer pending.");
+      return this.runQueuedOperation(threadId, async () => {
+        await this.owner(threadId);
+        if (request.action.kind === "edit") {
+          await this.host.request("thread/queue/update", {
+            threadId,
+            queuedSubmissionId: request.itemId,
+            input: request.action.content.map((part) =>
+              part.type === "text" ? { text_elements: [], ...part } : part,
+            ),
+            presentationInput: request.action.content,
+          });
+        } else if (request.action.kind === "remove") {
+          const result = await this.host.request<{ deleted: boolean }>("thread/queue/delete", {
+            threadId,
+            queuedSubmissionId: request.itemId,
+          });
+          if (!result.deleted)
+            throw new RpcError(
+              "session/queue-item-not-found",
+              "Queued message is no longer pending.",
+            );
+        } else {
+          await this.host.request("codexhost/thread/queue/send-now", {
+            threadId,
+            itemId: request.itemId,
+          });
+        }
+        try {
+          await this.view(threadId, true);
+        } catch {
+          // The mutation was acknowledged. A failed projection read must not
+          // prevent a removed message from being restored to the local composer.
+          this.realtime?.invalidate(threadId);
+        }
+        return { accepted: true };
+      });
+    });
+    rpc.register("codexhost/editQueueItem", async (args) => {
+      const request = requestOf<{ sessionId?: unknown; itemId?: unknown; revision?: unknown }>(
+        args,
+      );
+      if (
+        typeof request.sessionId !== "string" ||
+        !request.sessionId ||
+        typeof request.itemId !== "string" ||
+        !request.itemId ||
+        typeof request.revision !== "string" ||
+        !request.revision
+      )
+        throw new RpcError("session/queue-edit-invalid", "Invalid queued message edit request.");
+      const threadId = this.id(request.sessionId);
+      if (this.drafts.has(threadId))
+        throw new RpcError("session/queue-item-not-found", "Queued message is no longer pending.");
+      const itemId = request.itemId;
+      const revision = request.revision;
+      return this.runQueuedOperation(threadId, async () => {
+        if (this.closed) throw new RpcError("host/offline", "The Web connection is closed.");
+        await this.owner(threadId);
+        if (!this.rows.has(threadId) && !this.threads.view(threadId)) await this.refresh();
+        const row = this.rows.get(threadId) ?? this.threads.view(threadId)?.thread;
+        if (!row)
           throw new RpcError(
-            "session/queue-item-not-found",
-            "Queued message is no longer pending.",
+            "session/not-found",
+            "Open this Thread before editing its queued messages.",
           );
-      } else {
-        await this.host.request("codexhost/thread/queue/send-now", {
+        if (row.canAcceptDirectInput === false)
+          throw new RpcError("session/queue-edit-unsupported", "This Thread is read-only.");
+        const allowsAttachments = Boolean(
+          this.fileInputs && !row.parentThreadId && !this.attachmentThreadError(threadId),
+        );
+        return takeQueuedItemForEdit({
+          host: this.host,
           threadId,
-          itemId: request.itemId,
+          itemId,
+          revision,
+          allowsAttachments,
+          ...(this.fileInputs ? { fileInputs: this.fileInputs } : {}),
+          refreshView: async () => {
+            await this.view(threadId, true);
+          },
+          invalidateView: () => {
+            this.realtime?.invalidate(threadId);
+          },
         });
-      }
-      try {
-        await this.view(threadId, true);
-      } catch {
-        // The mutation was acknowledged. A failed projection read must not
-        // prevent a removed message from being restored to the local composer.
-        this.realtime?.invalidate(threadId);
-      }
-      return { accepted: true };
+      });
     });
     rpc.register("session/cancel", async (args) => {
       const { sessionId } = requestOf<{ sessionId: string }>(args);
@@ -1496,7 +1770,9 @@ export class ChSessions {
       const view =
         this.threads.view(this.id(req.address.sessionId)) ??
         (await this.view(req.address.sessionId, true));
-      const page = await view.olderPage(req.throughSeq, req.beforeSeq, req.maxMessages);
+      const page = await this.threads.trackPageRead(view.thread.id, view, () =>
+        view.olderPage(req.throughSeq, req.beforeSeq, req.maxMessages),
+      );
       return context.relay
         ? {
             ...page,
@@ -1514,7 +1790,29 @@ export class ChSessions {
           "session/open-unavailable",
           "Remote connections cannot open Host files.",
         );
-      const request = requestOf<{ path: string; action?: string; application?: string }>(args);
+      const request = requestOf<{
+        sessionId?: string;
+        path: string;
+        action?: string;
+        application?: string;
+      }>(args);
+      if (
+        typeof request.sessionId !== "string" ||
+        request.sessionId.length === 0 ||
+        request.sessionId.startsWith("web-remote:") ||
+        request.sessionId.startsWith("remote-control:")
+      ) {
+        throw new RpcError(
+          "session/open-unavailable",
+          "Opening Host files requires a local session.",
+        );
+      }
+      if (this.fileWorkspaceRoot(request.sessionId) === undefined) {
+        throw new RpcError(
+          "session/open-unavailable",
+          "Opening Host files requires a known local session.",
+        );
+      }
       if (
         (request.action !== undefined && request.action !== "reveal") ||
         request.application !== undefined
@@ -1534,15 +1832,27 @@ export class ChSessions {
       ["session/unarchive", false],
     ] as const)
       rpc.register(method, async (args) => {
-        const { sessionId } = requestOf<{ sessionId: string }>(args);
-        this.archiveOperations.delete(this.id(sessionId));
+        const { sessionId, scope } = requestOf<{ sessionId: string; scope?: "single" }>(args);
+        const id = this.id(sessionId);
+        if (scope !== undefined && scope !== "single")
+          throw new RpcError("session/archive-invalid", "Invalid archive scope.");
+        this.archiveOperations.delete(id);
         try {
-          await this.tree.archive(
-            this.id(sessionId),
-            archived,
-            new Set(this.workspaces.localArchivedSessionIds()),
-            (id) => this.setArchived(id, archived),
-          );
+          if (scope === "single") {
+            await this.setArchived(id, archived);
+            if (this.workspaces.localArchivedSessionIds().includes(id) !== archived)
+              throw new RpcError(
+                "session/archive-unconfirmed",
+                "The requested archive state was not confirmed.",
+              );
+          } else {
+            await this.tree.archive(
+              id,
+              archived,
+              new Set(this.workspaces.localArchivedSessionIds()),
+              (member) => this.setArchived(member, archived),
+            );
+          }
         } finally {
           await this.refresh().catch(() => undefined);
         }
@@ -1571,6 +1881,17 @@ export class ChSessions {
       this.controls.add(sink);
       sink.onClose(() => this.controls.delete(sink));
       sink.push({ type: "baseline", value: { projections } });
+      // Dropped views stay out of `baseline` so `ProjectionStore.seed` does not
+      // clear non-catalog global projections; replay current catalog values as
+      // live frames above the retired sequence watermark instead.
+      for (const id of this.threads.droppedViewIds()) {
+        if (sink.closed) break;
+        const row = this.rows.get(id);
+        const seq = row ? this.threads.reserveDroppedProjectionSeq(id) : undefined;
+        if (!row || seq === undefined) continue;
+        for (const [key, value] of Object.entries(this.catalogProjections(row)))
+          sink.push({ type: "projection", sessionId: id, key, value, seq });
+      }
     });
     streams.register("session/follow", async (args, sink) => {
       const request = requestOf<{ address: { sessionId: string }; assistantStream?: boolean }>(
@@ -1643,6 +1964,13 @@ export class ChSessions {
       }
     }, 10000);
     this.timer.unref();
+    this.idleViewTimer = setInterval(() => {
+      this.threads.discardIdleViews(
+        Date.now(),
+        (id) => this.rows.get(id)?.status.type === "active",
+      );
+    }, 60_000);
+    this.idleViewTimer.unref();
   }
 
   registerCommands(rpc: RpcRegistry): void {
@@ -1723,7 +2051,7 @@ export class ChSessions {
         draft.permissionModeId = modeId;
         await this.preferences
           ?.remember(harnessId, {
-            model: { id: draft.selection.model },
+            model: harnessModelRefFromKey(draft.selection.model),
             thinkingOptionId: draft.selection.reasoningEffort,
             permissionModeId: modeId,
           })
@@ -1778,11 +2106,13 @@ export class ChSessions {
     this.skills.close();
     this.closed = true;
     this.archiveOperations.clear();
+    this.queueOperations.clear();
     this.titleRequests.clear();
     this.pins.close();
     this.realtime?.close();
     this.interactions?.clear();
     clearInterval(this.timer);
+    clearInterval(this.idleViewTimer);
     this.host.close();
     for (const sink of this.controls) sink.end();
   }

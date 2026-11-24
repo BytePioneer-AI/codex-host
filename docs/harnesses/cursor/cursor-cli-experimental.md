@@ -40,6 +40,11 @@ integration. [CLI ACP](https://cursor.com/docs/cli/acp) is the selected interfac
 - Dynamic native parameterized model catalog and Thinking selection. Native
   `thought_level` parameters become complete selectable combinations (for example,
   thinking on/off plus effort); unrelated context/fast parameters stay in Model refs.
+  For models that support Fast, selecting the normal entry explicitly writes
+  `fast=false` so the native Session stays in sync with the Fast toggle.
+  Selecting a Model, Thinking option, or execution mode that is already active still
+  publishes session state, so Desktop can confirm it. A locked Thread uses that
+  Session's catalog, which contains the live parameterized Model ref.
 - Native advertised slash commands and skills through ACP `available_commands_update`.
   Custom commands keep normal Turn identity; `/copy-request-id` can complete without
   creating a native user Turn.

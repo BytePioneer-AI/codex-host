@@ -11,7 +11,7 @@ import {
 } from "../src/history.js";
 import { activeKimiWireRecords } from "../src/wire-history.js";
 import { appendKimiCommandHistory } from "../src/command-history.js";
-import { encodeKimiModelRef } from "../src/models.js";
+import { kimiModelRef as encodeKimiModelRef } from "../src/models.js";
 import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,

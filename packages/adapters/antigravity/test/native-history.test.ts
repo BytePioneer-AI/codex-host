@@ -11,12 +11,13 @@ import {
   answerStep,
   checkpointStep,
   createNativeHistoryDatabase,
+  planModeSwitch,
   runField,
   systemStep,
   textField,
   userStep,
-} from "./support/native-history-fixture.js";
-import { bytes } from "./support/native-timing-fixture.js";
+} from "../../../../tests/fixtures/antigravity/native-history-fixture.js";
+import { bytes } from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
 
 const nativeRef = nativeSessionRefSchema.parse({
   harnessId: "antigravity",
@@ -63,11 +64,8 @@ describe("native session history", () => {
     expect(transportStarts).toBe(0);
   });
 
-  it("keeps known Turn keys, legacy grouping and item order while decoding committed step content", async () => {
-    const knownTurnRefs = ["turn-0", "turn-2"].map((nativeTurnKey) =>
-      nativeTurnRefSchema.parse({ ...nativeRef, nativeTurnKey }),
-    );
-    const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home, knownTurnRefs });
+  it("decodes committed step content with merged inputs and stable item order", async () => {
+    const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
     assert(opened.ok);
     const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
     try {
@@ -109,7 +107,7 @@ describe("native session history", () => {
       const snapshot = await opened.value.readSnapshot();
       assert(snapshot.ok);
       expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
-        "turn-0",
+        "turn-1",
         "turn-2",
       ]);
       expect(snapshot.value.turns.map((turn) => turn.checkpoint?.checkpointId)).toEqual([
@@ -237,110 +235,208 @@ describe("native session history", () => {
     }
   });
 
-  it.each([
-    ["legacy-0", "legacy-1"],
-    ["turn-0", "turn-1"],
-  ])(
-    "splits committed wakes without changing known foreground identities (%s, %s)",
-    async (firstKey, nextKey) => {
+  it("splits committed wakes and ignores saved keys when assigning foreground boundaries", async () => {
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    try {
+      const insert = db.prepare("INSERT INTO steps VALUES (?, ?, ?, ?)");
+      userStep(db, 0, "你好", "user-1");
+      systemStep(db, 1, "user-1");
+      insert.run(2, 132, 3, commandResult("command", "echo foreground", "foreground", "user-1"));
+      answerStep(db, 3, "你好！👋", "user-1");
+      systemStep(db, 4, "wake-1");
+      systemStep(db, 5, "wake-1");
+      insert.run(6, 132, 3, commandResult("late", "echo late", "late", "user-1"));
+      insert.run(7, 132, 3, commandResult("command", "echo wake", undefined, "wake-1"));
+      insert.run(
+        8,
+        15,
+        3,
+        Buffer.concat([
+          runField("wake-1"),
+          bytes(
+            20,
+            Buffer.concat([
+              call("command", "run_command", { CommandLine: "echo wake" }),
+              call("read", "view_file", { path: "notes" }),
+            ]),
+          ),
+        ]),
+      );
+      insert.run(9, 132, 3, commandResult("command", "echo wake", "late duplicate", "wake-1"));
+      insert.run(10, 132, 3, result("read", "done"));
+      answerStep(db, 11, "定时器已触发", "wake-1");
+      systemStep(db, 12, "no-output");
+      insert.run(13, 132, 3, commandResult("discard", "echo discard", "discard", "no-output"));
+      userStep(db, 14, "next", "user-2");
+      userStep(db, 15, " input", "user-2");
+      answerStep(db, 16, "next answer", "user-2");
+      systemStep(db, 17, "unsettled");
+      insert.run(18, 132, 3, commandResult("defer", "echo defer", "defer", "unsettled"));
+      insert.run(
+        19,
+        15,
+        8,
+        Buffer.concat([runField("unsettled"), bytes(20, textField(1, "partial"))]),
+      );
+
+      const knownTurnRefs = ["turn-0", "wake-4", "turn-1"].map((nativeTurnKey) =>
+        nativeTurnRefSchema.parse({ ...nativeRef, nativeTurnKey }),
+      );
+      const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home, knownTurnRefs });
+      assert(opened.ok);
+      const snapshot = await opened.value.readSnapshot();
+      assert(snapshot.ok);
+      expect(
+        snapshot.value.turns.map(({ input, items, nativeTurnRef, checkpoint }) => ({
+          input: input.map(({ text }) => text),
+          items: items.map(({ item }) => (item.type === "agentMessage" ? item.text : item.type)),
+          key: nativeTurnRef.nativeTurnKey,
+          checkpoint: checkpoint?.checkpointId,
+        })),
+      ).toEqual([
+        {
+          input: ["你好"],
+          items: ["commandExecution", "你好！👋"],
+          key: "turn-0",
+          checkpoint: "turn-0",
+        },
+        {
+          input: [],
+          items: ["commandExecution", "toolExecution", "定时器已触发"],
+          key: "wake-4",
+          checkpoint: "wake-4",
+        },
+        { input: ["next input"], items: ["next answer"], key: "turn-2", checkpoint: "turn-2" },
+      ]);
+      const foregroundCommand = snapshot.value.turns[0]?.items[0];
+      const wakeCommand = snapshot.value.turns[1]?.items[0];
+      expect(foregroundCommand).toMatchObject({
+        item: { command: "echo foreground", output: "foreground", exitCode: 0 },
+        outcome: { status: "succeeded" },
+      });
+      expect(wakeCommand).toMatchObject({
+        item: { command: "echo wake", exitCode: 0 },
+        outcome: { status: "succeeded" },
+      });
+      expect(wakeCommand?.item).not.toHaveProperty("output");
+      expect(wakeCommand?.item.itemId).not.toBe(foregroundCommand?.item.itemId);
+      expect(
+        await readDerivationBoundaries(nativeConversationDbPath(nativeRef.nativeSessionId, home)),
+      ).toEqual([
+        { idx: 0, checkpointId: "turn-0" },
+        { idx: 4, checkpointId: "wake-4" },
+        { idx: 14, checkpointId: "turn-1" },
+        { idx: 15, checkpointId: "turn-2" },
+      ]);
+      expect(await opened.value.readSnapshot()).toEqual(snapshot);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps chained Plan executions on their original user and autonomous Turns", async () => {
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    try {
+      userStep(db, 0, "Plan and implement", "plan");
+      planModeSwitch(db, 1, "plan", "execute");
+      systemStep(db, 4, "execute", "work_efficiently_reminder");
+      checkpointStep(db, 5, { run: "execute" });
+      db.prepare("INSERT INTO steps VALUES (6, 132, 3, ?)").run(
+        commandResult("work", "pwd", "/example", "execute"),
+      );
+      planModeSwitch(db, 7, "execute", "plan-again", "enter");
+      answerStep(db, 10, "User reply", "plan-again");
+      systemStep(db, 11, "wake", "task_notification");
+      planModeSwitch(db, 12, "wake", "wake-execute");
+      answerStep(db, 15, "Wake reply", "wake-execute");
+      userStep(db, 16, "Next prompt", "next");
+      answerStep(db, 17, "Next reply", "next");
+
+      const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
+      assert(opened.ok);
+      const snapshot = await opened.value.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns.map((turn) => turn.checkpoint?.checkpointId)).toEqual([
+        "turn-0",
+        "wake-11",
+        "turn-1",
+      ]);
+      expect(snapshot.value.turns[0]?.items.map(({ item }) => item)).toMatchObject([
+        { toolName: "exit_plan_mode" },
+        { type: "contextCompaction", itemId: "checkpoint-5" },
+        { type: "commandExecution", output: "/example" },
+        { toolName: "enter_plan_mode" },
+        { type: "agentMessage", text: "User reply" },
+      ]);
+      expect(snapshot.value.turns[1]).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "wake-11" },
+        input: [],
+        items: [{ item: { toolName: "exit_plan_mode" } }, { item: { text: "Wake reply" } }],
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([8, 6, 12, 7])(
+    "keeps committed Plan continuation work before a non-final planner (status %i)",
+    async (status) => {
       const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
       try {
-        const insert = db.prepare("INSERT INTO steps VALUES (?, ?, ?, ?)");
-        userStep(db, 0, "你好", "user-1");
-        systemStep(db, 1, "user-1");
-        insert.run(2, 132, 3, commandResult("command", "echo foreground", "foreground", "user-1"));
-        answerStep(db, 3, "你好！👋", "user-1");
-        systemStep(db, 4, "wake-1");
-        systemStep(db, 5, "wake-1");
-        insert.run(6, 132, 3, commandResult("late", "echo late", "late", "user-1"));
-        insert.run(7, 132, 3, commandResult("command", "echo wake", undefined, "wake-1"));
-        insert.run(
-          8,
-          15,
-          3,
-          Buffer.concat([
-            runField("wake-1"),
-            bytes(
-              20,
-              Buffer.concat([
-                call("command", "run_command", { CommandLine: "echo wake" }),
-                call("read", "view_file", { path: "notes" }),
-              ]),
-            ),
-          ]),
+        userStep(db, 0, "Plan", "plan");
+        planModeSwitch(db, 1, "plan", "execute");
+        db.prepare("INSERT INTO steps VALUES (4, 132, 3, ?), (5, 15, ?, ?)").run(
+          commandResult("work", "pwd", "/example", "execute"),
+          status,
+          Buffer.concat([runField("execute"), bytes(20, Buffer.alloc(0))]),
         );
-        insert.run(9, 132, 3, commandResult("command", "echo wake", "late duplicate", "wake-1"));
-        insert.run(10, 132, 3, result("read", "done"));
-        answerStep(db, 11, "定时器已触发", "wake-1");
-        systemStep(db, 12, "no-output");
-        insert.run(13, 132, 3, commandResult("discard", "echo discard", "discard", "no-output"));
-        userStep(db, 14, "next", "user-2");
-        userStep(db, 15, " input", "user-2");
-        answerStep(db, 16, "next answer", "user-2");
-        systemStep(db, 17, "unsettled");
-        insert.run(18, 132, 3, commandResult("defer", "echo defer", "defer", "unsettled"));
-        insert.run(
-          19,
-          15,
-          8,
-          Buffer.concat([runField("unsettled"), bytes(20, textField(1, "partial"))]),
-        );
-
-        const knownTurnRefs = [firstKey, "wake-4", nextKey].map((nativeTurnKey) =>
-          nativeTurnRefSchema.parse({ ...nativeRef, nativeTurnKey }),
-        );
-        const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home, knownTurnRefs });
+        systemStep(db, 6, "wake", "agent_message");
+        answerStep(db, 7, "Independent reply", "wake");
+        const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
         assert(opened.ok);
         const snapshot = await opened.value.readSnapshot();
         assert(snapshot.ok);
-        expect(
-          snapshot.value.turns.map(({ input, items, nativeTurnRef, checkpoint }) => ({
-            input: input.map(({ text }) => text),
-            items: items.map(({ item }) => (item.type === "agentMessage" ? item.text : item.type)),
-            key: nativeTurnRef.nativeTurnKey,
-            checkpoint: checkpoint?.checkpointId,
-          })),
-        ).toEqual([
+        expect(snapshot.value.turns).toMatchObject([
           {
-            input: ["你好"],
-            items: ["commandExecution", "你好！👋"],
-            key: firstKey,
-            checkpoint: "turn-0",
+            nativeTurnRef: { nativeTurnKey: "turn-0" },
+            outcome: { status: "unknown" },
+            items: [
+              { item: { toolName: "exit_plan_mode" }, outcome: { status: "succeeded" } },
+              { item: { type: "commandExecution", output: "/example" } },
+            ],
           },
           {
-            input: [],
-            items: ["commandExecution", "toolExecution", "定时器已触发"],
-            key: "wake-4",
-            checkpoint: "wake-4",
+            nativeTurnRef: { nativeTurnKey: "wake-6" },
+            items: [{ item: { text: "Independent reply" } }],
           },
-          { input: ["next input"], items: ["next answer"], key: nextKey, checkpoint: "turn-2" },
         ]);
-        const foregroundCommand = snapshot.value.turns[0]?.items[0];
-        const wakeCommand = snapshot.value.turns[1]?.items[0];
-        expect(foregroundCommand).toMatchObject({
-          item: { command: "echo foreground", output: "foreground", exitCode: 0 },
-          outcome: { status: "succeeded" },
-        });
-        expect(wakeCommand).toMatchObject({
-          item: { command: "echo wake", exitCode: 0 },
-          outcome: { status: "succeeded" },
-        });
-        expect(wakeCommand?.item).not.toHaveProperty("output");
-        expect(wakeCommand?.item.itemId).not.toBe(foregroundCommand?.item.itemId);
-        expect(
-          await readDerivationBoundaries(nativeConversationDbPath(nativeRef.nativeSessionId, home)),
-        ).toEqual([
-          { idx: 0, checkpointId: "turn-0" },
-          { idx: 4, checkpointId: "wake-4" },
-          { idx: 14, checkpointId: "turn-1" },
-          { idx: 15, checkpointId: "turn-2" },
-        ]);
-        expect(await opened.value.readSnapshot()).toEqual(snapshot);
       } finally {
         db.close();
       }
     },
   );
+
+  it("does not derive a checkpoint for an orphaned Plan continuation", async () => {
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    try {
+      systemStep(db, 0, "execute", "plan_mode_handoff");
+      systemStep(db, 1, "execute", "work_efficiently_reminder");
+      answerStep(db, 2, "Unanchored reply", "execute");
+      const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
+      assert(opened.ok);
+      const snapshot = await opened.value.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns).toMatchObject([
+        {
+          nativeTurnRef: { nativeTurnKey: "replay-0" },
+          items: [{ item: { text: "Unanchored reply" } }],
+        },
+      ]);
+      expect(snapshot.value.turns[0]?.checkpoint).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
 
   it("keeps a committed wake unchanged while a second wake is generating", async () => {
     const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);

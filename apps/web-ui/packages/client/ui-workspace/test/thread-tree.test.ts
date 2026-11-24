@@ -13,17 +13,19 @@ import {
   deriveSearchResults,
   orderByRecency,
   reconcileManualOrder,
+  threadTreeParentOf,
   type SessionRowState,
 } from "../src/client/tree.ts";
-import { threadTreeOrderSource } from "../src/client/thread-tree-order.ts";
+import { threadTreeOrderSource, workspaceTreeMembers } from "../src/client/thread-tree-order.ts";
 import {
+  archiveCandidates,
   isLocalThreadTreeMember,
   runningSubagentsInThreadSubtree,
   runningThreadSubtree,
 } from "../src/client/thread-tree-catalog.ts";
 import { sidebarWindow } from "../src/client/rows/sidebar-window.ts";
 import { createWorkspaceViewStore } from "../src/client/stores.ts";
-import { pinOrderSource } from "../src/client/pin-order.ts";
+import { pinOrderAccounts, pinOrderSource } from "../src/client/pin-order.ts";
 
 const id = SessionId;
 function row(key: string, parent: string | null = null, updatedAt = 1): SessionSummary {
@@ -175,6 +177,75 @@ it("pins a whole subtree once, outside ordinary workspace and flat roots", () =>
   );
 });
 
+it("also shows a tree, once, in the Workspace of a child whose root lives elsewhere", () => {
+  const list = catalog(
+    row("root", null, 1),
+    row("child", "root", 5),
+    row("grandchild", "child", 6),
+    row("other", null, 2),
+  );
+  const order = threadTreeOrderSource(list, state);
+  const own = workspaceTreeMembers([id("root")], order);
+  const elsewhere = workspaceTreeMembers([id("child"), id("grandchild"), id("other")], order);
+  assert.deepEqual(own.memberIds, ["root"]);
+  assert.equal(own.linkedRootIds.size, 0);
+  assert.deepEqual(elsewhere.memberIds, ["root", "other"]);
+  assert.deepEqual([...elsewhere.linkedRootIds], ["root"]);
+  // A tree that stays in one Workspace keeps its single root row there.
+  assert.deepEqual(workspaceTreeMembers([id("root"), id("child")], order).memberIds, ["root"]);
+  const groups = deriveGroups(
+    list,
+    [workspace("x", ...own.memberIds), workspace("y", ...elsewhere.memberIds)],
+    state,
+    new Map(),
+    { expandedGroups: ["x", "y"] },
+  );
+  assert.deepEqual(
+    groups[1]?.sessions.map((node) => node.id),
+    ["root", "other"],
+  );
+  for (const group of groups.slice(0, 2))
+    assert.deepEqual(group.sessions[0]?.tree?.descendantIds, ["child", "grandchild"]);
+
+  const sectioned = { ...state, sectionedSessionIds: new Set([id("root")]) };
+  const ordinaryGroups = deriveGroups(
+    list,
+    [workspace("x", ...own.memberIds), workspace("y", ...elsewhere.memberIds)],
+    sectioned,
+    new Map(),
+    { expandedGroups: ["x", "y"], excludePinned: true },
+  );
+  assert.deepEqual(ordinaryGroups.find((group) => group.key === "x")?.sessions, []);
+  assert.deepEqual(
+    ordinaryGroups.find((group) => group.key === "y")?.sessions.map((node) => node.id),
+    ["other"],
+  );
+  assert.deepEqual(deriveFlat(list, [id("root")], sectioned, new Map())[0]?.tree?.descendantIds, [
+    "child",
+    "grandchild",
+  ]);
+});
+
+it("keeps a linked root's manual slot when an unrelated Thread is pinned", () => {
+  const list = catalog(row("p", null, 1), row("c", "p", 5), row("x", null, 3), row("y", null, 2));
+  const workspaces = [workspace("a", "p", "y"), workspace("b", "c", "x")];
+  const view = createWorkspaceViewStore().create();
+  view.actions.setSessionOrder(
+    "b",
+    [id("p"), id("x")],
+    {},
+    pinOrderSource(workspaces, list, state),
+  );
+  const pinned = { ...state, pinnedSessionIds: [id("y")] };
+  view.actions.pinSessionOrder(
+    id("y"),
+    pinOrderAccounts(workspaces, id("y")),
+    pinOrderSource(workspaces, list, pinned),
+  );
+  assert.deepEqual(view.getSnapshot().sessionOrderByAccount.b, ["p", "x"]);
+  assert.deepEqual(view.getSnapshot().sessionOrderByAccount.a?.[0], "y");
+});
+
 it("uses subtree recency for roots but own recency for children, and reconciles only root manual slots", () => {
   const list = catalog(
     row("a", null, 1),
@@ -253,25 +324,69 @@ it("retains arbitrary depth with explicit expansion", () => {
   assert.equal(visible.at(-1)?.tree?.depth, 11);
 });
 
-it("keeps remote sessions flat and outside the local delegation tree", () => {
-  const remote = {
-    ...row("remote", "a"),
+it("builds same-peer trees, keeps cross-host relations flat, and excludes desktop remote rows without tree lineage", () => {
+  const peerRow = (
+    key: string,
+    hostId: string,
+    parent: string | null | undefined,
+    updatedAt = 1,
+  ): SessionSummary => ({
+    ...row(key, null, updatedAt),
     projectionValues: {
-      remoteHost: { hostId: "other", displayName: "Other", state: "connected" },
-      threadTreeParent: "a",
+      remoteHost: { hostId, displayName: hostId, state: "connected" },
+      threadReference: { hostId, threadId: key },
+      ...(parent === undefined ? {} : { threadTreeParent: parent }),
     },
-  };
-  const list = catalog(row("a"), remote);
+  });
+
+  // Same-peer parent/child forms a tree and enters archive candidates.
+  const peerParent = peerRow("peer-a", "remote-peer:p1", null, 1);
+  const peerChild = peerRow("peer-b", "remote-peer:p1", "peer-a", 5);
+  const peerGrandchild = peerRow("peer-c", "remote-peer:p1", "peer-b", 9);
+  const samePeer = catalog(peerParent, peerChild, peerGrandchild);
+  assert.equal(threadTreeParentOf(peerChild, samePeer), "peer-a");
+  assert.equal(isLocalThreadTreeMember(peerParent), true);
+  assert.equal(isLocalThreadTreeMember(peerChild), true);
+  const peerRoots = deriveFlat(samePeer, samePeer.ids, state, new Map());
   assert.deepEqual(
-    deriveFlat(list, list.ids, state, new Map()).map((node) => node.id),
-    ["a", "remote"],
+    peerRoots.map((node) => node.id),
+    ["peer-a"],
   );
-  assert.equal(isLocalThreadTreeMember(remote), false);
-  const crossHost = catalog(remote, row("local", "remote"));
+  assert.deepEqual(peerRoots[0]?.tree?.descendantIds, ["peer-b", "peer-c"]);
+  assert.deepEqual(
+    archiveCandidates(samePeer, id("peer-a"), new Set())
+      .map((item) => item.id)
+      .sort(),
+    ["peer-b", "peer-c"],
+  );
+
+  // Missing parent returns null.
+  const orphanPeerChild = peerRow("peer-orphan", "remote-peer:p1", "missing-parent");
+  assert.equal(threadTreeParentOf(orphanPeerChild, catalog(orphanPeerChild)), null);
+
+  // Cross-host parents (peer -> local, local -> peer, peer2 -> peer1) all resolve to null.
+  const peerPointingLocal = peerRow("peer-to-local", "remote-peer:p1", "a");
+  const localPointingPeer = row("local-to-peer", "peer-a");
+  const otherPeerPointingPeer1 = peerRow("peer2-to-peer1", "remote-peer:p2", "peer-a");
+  const crossHost = catalog(
+    row("a"),
+    peerParent,
+    peerPointingLocal,
+    localPointingPeer,
+    otherPeerPointingPeer1,
+  );
+  assert.equal(threadTreeParentOf(peerPointingLocal, crossHost), null);
+  assert.equal(threadTreeParentOf(localPointingPeer, crossHost), null);
+  assert.equal(threadTreeParentOf(otherPeerPointingPeer1, crossHost), null);
   assert.deepEqual(
     deriveFlat(crossHost, crossHost.ids, state, new Map()).map((node) => node.id),
-    ["remote", "local"],
+    ["a", "peer-a", "peer-to-local", "local-to-peer", "peer2-to-peer1"],
   );
+
+  // Desktop remote rows omit threadTreeParent projection and stay out of the tree.
+  const desktopRemote = peerRow("desktop-remote", "desktop-host-1", undefined);
+  assert.equal(isLocalThreadTreeMember(desktopRemote), false);
+  assert.equal(threadTreeParentOf(desktopRemote, catalog(row("a"), desktopRemote)), null);
 });
 
 it("keeps search flat and supplies the display-parent title without using native lineage", () => {
@@ -350,4 +465,63 @@ it("defaults Thread folds to collapsed and keeps Thread and Workspace folds inde
   view.actions.setThreadsExpanded(["a"], false);
   assert.equal(view.getSnapshot().threadExpansion?.a, false);
   assert.equal(view.getSnapshot().threadExpansion?.b, true);
+});
+
+it("captures all unarchived local descendants when the tree is collapsed or search only shows the parent", () => {
+  const fork = row("fork");
+  const pinnedFork = row("pinned-fork");
+  const remote = row("remote", "root");
+  const list = catalog(
+    row("root"),
+    row("fold", "root"),
+    row("hidden", "fold"),
+    row("archived", "root"),
+    { ...fork, projectionValues: { ...fork.projectionValues, archiveForkParent: "fold" } },
+    row("fork-child", "fork"),
+    {
+      ...pinnedFork,
+      projectionValues: { ...pinnedFork.projectionValues, archiveForkParent: null },
+    },
+    row("pinned-fork-child", "pinned-fork"),
+    row("pinned-delegation"),
+    row("pinned-delegation-child", "pinned-delegation"),
+    { ...row("subagent", "root"), origin: "subagent" },
+    {
+      ...remote,
+      projectionValues: {
+        ...remote.projectionValues,
+        remoteHost: { hostId: "other", displayName: "Other", state: "ready" },
+        threadReference: { hostId: "other" },
+      },
+    },
+  );
+  const rowState = {
+    ...state,
+    pinnedSessionIds: [id("pinned-fork"), id("pinned-delegation")],
+    archivedSessionIds: [id("archived")],
+    sectionedSessionIds: new Set([id("fork")]),
+  };
+  const collapsed = visibleThreadRows(deriveFlat(list, list.ids, rowState, new Map()), {});
+  assert.ok(!collapsed.some((node) => node.id === id("hidden")));
+  const search = deriveSearchResults(
+    list,
+    [],
+    "root",
+    rowState.archivedSessionIds,
+    "default",
+    new Map(),
+    { items: [], hasMore: false },
+    10,
+  );
+  assert.deepEqual(
+    search.items.map((node) => node.id),
+    [id("root")],
+  );
+  const [parent] = search.items;
+  assert.ok(parent);
+  const selection = archiveCandidates(list, parent.id, new Set(rowState.archivedSessionIds));
+  assert.deepEqual(
+    selection.map(({ id, title }) => [id, title]).sort(),
+    ["fold", "fork", "fork-child", "hidden"].map((key) => [id(key), key]),
+  );
 });

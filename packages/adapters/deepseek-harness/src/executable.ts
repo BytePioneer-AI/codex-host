@@ -1,30 +1,17 @@
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { accessSync, constants, statSync } from "node:fs";
+import { readFileSync, readlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
+import {
+  installationVersion,
+  isExecutableFile,
+  resolveHarnessExecutable,
+  VERSION_MANAGER_ROOTS,
+  withNodeRuntimeOnPath,
+} from "@codexhost/harness-discovery";
 
 function environmentValue(environment: NodeJS.ProcessEnv, name: string): string | undefined {
   return Object.entries(environment).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
-}
-
-function executableCandidates(command: string, environment: NodeJS.ProcessEnv): string[] {
-  const targetPath = process.platform === "win32" ? path.win32 : path.posix;
-  if (targetPath.isAbsolute(command) || command.includes("/") || command.includes("\\")) {
-    return [command];
-  }
-  const extensions =
-    process.platform === "win32" && targetPath.extname(command) === ""
-      ? (environmentValue(environment, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
-          .split(";")
-          .map((extension) => extension.trim())
-          .filter(Boolean)
-      : [""];
-  return (environmentValue(environment, "PATH") ?? "")
-    .split(targetPath.delimiter)
-    .map((directory) => directory.trim().replace(/^"|"$/gu, ""))
-    .filter(Boolean)
-    .flatMap((directory) =>
-      extensions.map((extension) => targetPath.join(directory, command + extension)),
-    );
 }
 
 export interface DeepSeekCommandInvocation {
@@ -33,17 +20,61 @@ export interface DeepSeekCommandInvocation {
   kind: "configured" | "dsh" | "npx";
 }
 
-function resolveExecutable(command: string, environment: NodeJS.ProcessEnv): string | null {
-  const accessMode = process.platform === "win32" ? constants.F_OK : constants.X_OK;
-  for (const candidate of executableCandidates(command, environment)) {
-    try {
-      accessSync(candidate, accessMode);
-      if (statSync(candidate).isFile()) return candidate;
-    } catch {
-      // Continue through the configured PATH.
-    }
+function linkedNodeDirectory(command: string, platform: NodeJS.Platform): string | undefined {
+  if (platform === "win32" || !path.posix.isAbsolute(command)) return undefined;
+  try {
+    const target = path.posix.resolve(path.posix.dirname(command), readlinkSync(command));
+    const directory = path.posix.dirname(target);
+    if (isExecutableFile(path.posix.join(directory, "node"), platform)) return directory;
+  } catch {
+    // Regular executables have no link target.
   }
-  return null;
+  return undefined;
+}
+
+export function deepSeekEnvironment(
+  command: string,
+  environment: NodeJS.ProcessEnv,
+  platform = process.platform,
+): NodeJS.ProcessEnv {
+  const pathFlavor = platform === "win32" ? path.win32 : path.posix;
+  const key = Object.keys(environment).find((name) => name.toLowerCase() === "path") ?? "PATH";
+  const directory = pathFlavor.dirname(command);
+  const linkedDirectory = linkedNodeDirectory(command, platform);
+  const directories = (environment[key] ?? "")
+    .split(pathFlavor.delimiter)
+    .filter((entry) => entry && entry !== linkedDirectory);
+  const equal =
+    platform === "win32" ? (value: string) => value.toLowerCase() : (value: string) => value;
+  if (
+    pathFlavor.isAbsolute(command) &&
+    !directories.some((entry) => equal(entry) === equal(directory))
+  ) {
+    directories.unshift(directory);
+  }
+  if (linkedDirectory && linkedDirectory !== directory) directories.unshift(linkedDirectory);
+  return withNodeRuntimeOnPath(
+    { ...environment, [key]: directories.join(pathFlavor.delimiter) },
+    process.execPath,
+    platform,
+  );
+}
+
+export function deepSeekNpxVersionFile(environment: NodeJS.ProcessEnv): string {
+  const dataDirectory =
+    environment.CODEXHOST_DATA_DIR ??
+    path.join(environment.HOME ?? environment.USERPROFILE ?? homedir(), ".codexhost");
+  return path.join(dataDirectory, "deepseek-npx-version");
+}
+
+function deepSeekNpxSpecifier(environment: NodeJS.ProcessEnv): string {
+  try {
+    const version = installationVersion(readFileSync(deepSeekNpxVersionFile(environment), "utf8"));
+    return `@deepseek-ai/dsh@${version}`;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return "@deepseek-ai/dsh";
+  }
 }
 
 export function resolveDeepSeekCommand(
@@ -51,16 +82,38 @@ export function resolveDeepSeekCommand(
   environment: NodeJS.ProcessEnv,
 ): DeepSeekCommandInvocation | null {
   if (configured) {
-    const command = resolveExecutable(configured, environment);
+    const command = resolveHarnessExecutable(
+      { id: "deepseek-harness", command: "dsh" },
+      { command: configured, environment },
+    )?.executable;
     return command ? { command, arguments: [], kind: "configured" } : null;
   }
-  const dsh = resolveExecutable("dsh", environment);
+  const dsh = resolveHarnessExecutable(
+    {
+      id: "deepseek-harness",
+      command: "dsh",
+      installRoots: {
+        posix: [
+          VERSION_MANAGER_ROOTS,
+          "~/.local/bin",
+          "~/.npm-global/bin",
+          "/opt/homebrew/bin",
+          "/usr/local/bin",
+        ],
+        windows: [VERSION_MANAGER_ROOTS],
+      },
+    },
+    { environment },
+  )?.executable;
   if (dsh) return { command: dsh, arguments: [], kind: "dsh" };
-  const npx = resolveExecutable(process.platform === "win32" ? "npx.cmd" : "npx", environment);
+  const npx = resolveHarnessExecutable(
+    { id: "deepseek-harness", command: process.platform === "win32" ? "npx.cmd" : "npx" },
+    { environment },
+  )?.executable;
   return npx
     ? {
         command: npx,
-        arguments: ["--offline", "--no-install", "@deepseek-ai/dsh"],
+        arguments: ["--offline", "--no-install", deepSeekNpxSpecifier(environment)],
         kind: "npx",
       }
     : null;
@@ -118,6 +171,12 @@ export function killDeepSeekProcessTree(
       },
     );
     if (result.error) throw result.error;
+    if (result.signal) {
+      throw new Error(`Windows taskkill terminated with signal ${result.signal}`);
+    }
+    if (result.status !== 0) {
+      throw new Error(`Windows taskkill exited with status ${String(result.status)}`);
+    }
     return;
   }
   try {

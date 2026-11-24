@@ -24,3 +24,12 @@
     corner-shape: var(--dsw-corner-shape);
   }
 }
+
+/* Engines without corner-shape draw circular arcs, which look noticeably rounder
+ * than superellipse(1.5) at large panel radii; tighten --dsw-radius-panel to match
+ * the 45-degree corner depth of 28px superellipse(1.5) (~20.7px). */
+@supports not (corner-shape: superellipse(1.5)) {
+  :root {
+    --dsw-radius-panel: 21px;
+  }
+}

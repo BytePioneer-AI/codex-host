@@ -9,7 +9,7 @@ import {
   parseDelegationTurnRange,
   type DelegationCliArguments,
 } from "./delegation-cli-options.js";
-import { compactDelegationOutput } from "./delegation-cli-output.js";
+import { compactDelegationOutput, jsonDelegationOutput } from "./delegation-cli-output.js";
 import { resolveCliTextInput } from "./delegation-cli-text-input.js";
 import { startWithDelegationWorktree } from "./delegation-worktree.js";
 import { assertDelegationTextCommand, textDelegationOutput } from "./delegation-cli-text.js";
@@ -229,7 +229,12 @@ export async function runDelegationCli(input: {
         const text = textDelegationOutput(name, body, view);
         output.write(text.endsWith("\n") ? text : `${text}\n`);
       } else {
-        writeJson(output, format === "json" ? body : compactDelegationOutput(name, body, view));
+        writeJson(
+          output,
+          format === "json"
+            ? jsonDelegationOutput(name, body)
+            : compactDelegationOutput(name, body, view),
+        );
       }
     };
     if (group === "events") {
@@ -273,8 +278,13 @@ export async function runDelegationCli(input: {
       }
     }
     if (group === "client") {
-      rejectUnknown(parsed, []);
-      writeJson(output, await runClientCommand(command, parsed.positionals, environment));
+      rejectUnknown(parsed, ["--scope"]);
+      writeJson(
+        output,
+        await runClientCommand(command, parsed.positionals, environment, {
+          scope: value(parsed, "--scope"),
+        }),
+      );
       return 0;
     }
     if ((group === "host" && command === "info") || (group === "project" && command === "list")) {
@@ -394,6 +404,7 @@ export async function runDelegationCli(input: {
             ...(caller ? { parentThreadId: normalizeThreadId(caller) } : {}),
             ...(cwdOption(parsed) ? { cwd: cwdOption(parsed) } : {}),
             ...(refresh !== undefined ? { refresh: refresh === "true" } : {}),
+            ...(!caller ? { credentialAccess: refresh === "true" ? "retry" : "allow" } : {}),
           },
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
         }),
@@ -439,6 +450,7 @@ export async function runDelegationCli(input: {
           "--watch-timeout-ms requires --watch true",
         );
       // Validate all local options before creating a worktree or making a Runtime request.
+      const model = value(parsed, "--model");
       const body = {
         harnessId,
         task,
@@ -446,7 +458,7 @@ export async function runDelegationCli(input: {
           ? { taskName: value(parsed, "--task-name") }
           : {}),
         ...(cwdOption(parsed) ? { cwd: cwdOption(parsed) } : {}),
-        ...(value(parsed, "--model") ? { model: { id: value(parsed, "--model") } } : {}),
+        ...(model === undefined ? {} : { model }),
         ...(value(parsed, "--thinking") ? { thinkingOptionId: value(parsed, "--thinking") } : {}),
         ...(parentThread ? { parentThreadId: normalizeThreadId(parentThread) } : {}),
         ...(value(parsed, "--request-id") ? { requestId: value(parsed, "--request-id") } : {}),

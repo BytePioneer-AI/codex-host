@@ -2,7 +2,7 @@ import type {
   ComposerAgentPhase,
   ExternalRendererAgent,
   RendererAgent,
-  RendererAgentAvailability,
+  PickerAgentAvailability,
 } from "./agent-selection-state.js";
 import { catalogModelForRef } from "@codexhost/shared-contracts";
 import type {
@@ -57,6 +57,7 @@ import {
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
 import { observeRendererCompactComposer } from "./renderer-trigger-chip-style.js";
+import { isNativeModelCarrierLoadingButton } from "./renderer-native-model-loading.js";
 import { isNativeModelRetryButton } from "./renderer-native-model-retry.js";
 
 export { CONTROL_ATTRIBUTE };
@@ -348,14 +349,16 @@ function nativePermissionModeControlForComposer(composer: Element): HTMLElement 
 
 function nativeModelControlForComposer(composer: Element): HTMLElement | null {
   const candidates = [
-    ...composer.querySelectorAll<HTMLElement>(
+    ...composer.querySelectorAll<HTMLButtonElement>(
       'button[aria-haspopup="menu"], button[data-composer-navigation-target="reasoning"]',
     ),
   ].filter(
     (button) =>
       !isOwnedRendererControl(button) &&
       button.closest(CODEX_COMPOSER_SELECTOR) === composer &&
-      (isNativeModelControlCandidate(button) || isNativeModelRetryButton(button, composer)),
+      (isNativeModelControlCandidate(button) ||
+        isNativeModelRetryButton(button, composer) ||
+        isNativeModelCarrierLoadingButton(button)),
   );
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
@@ -383,7 +386,7 @@ export function nativeContextUsageControlForComposer(composer: Element): HTMLEle
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
-function contractElementVisible(element: Element): boolean {
+export function contractElementVisible(element: Element): boolean {
   const typed = element as HTMLElement;
   const bounds = typed.getBoundingClientRect?.();
   if (!bounds || bounds.width <= 0 || bounds.height <= 0) return false;
@@ -818,7 +821,7 @@ export function renderComposerAgentControl(
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
-  availability: Partial<Record<ExternalRendererAgent, RendererAgentAvailability>> = {},
+  availability: Partial<Record<ExternalRendererAgent, PickerAgentAvailability>> = {},
   modelView: ExternalModelControlView = { status: "idle" },
   permissionModeView: RendererPermissionModeControlView = { status: "idle" },
   usage: ThreadUsageSnapshot | null = null,

@@ -4,11 +4,23 @@ import type { FileUploadTiming } from "./ch-file-inputs.ts";
 import type { ChSessions } from "./ch-sessions.ts";
 import { RpcError } from "./transport.ts";
 
+export interface RemoteFileUploadTarget {
+  uploadFile(
+    sessionId: string,
+    chunks: AsyncIterable<Uint8Array>,
+    name?: string,
+    imageMediaType?: string,
+  ): Promise<unknown>;
+}
+
+const REMOTE_SESSION_PREFIX = "web-remote:";
+
 export async function serveFileUpload(
   sessions: Pick<ChSessions, "uploadFile"> | undefined,
   request: IncomingMessage,
   response: ServerResponse,
   viaRelay = false,
+  remoteSessions?: RemoteFileUploadTarget,
 ): Promise<void> {
   const started = performance.now();
   const timing: FileUploadTiming = {};
@@ -38,7 +50,14 @@ export async function serveFileUpload(
       send(400, { error: "sessionId is required" });
       return;
     }
-    if (!sessions)
+    const isRemote = id.startsWith(REMOTE_SESSION_PREFIX);
+    if (isRemote && !remoteSessions) {
+      throw new RpcError(
+        "remote/attachments-unsupported",
+        "Remote peer does not support attachments.",
+      );
+    }
+    if (!isRemote && !sessions)
       throw new RpcError("session/attachment-invalid", "Standalone file uploads are unavailable.");
     sessionId = id;
     const chunks = async function* () {
@@ -49,13 +68,11 @@ export async function serveFileUpload(
       }
       bodyEndMs = performance.now() - started;
     };
-    const value = await sessions.uploadFile(
-      id,
-      chunks(),
-      url.searchParams.get("name") ?? undefined,
-      url.searchParams.get("imageMediaType") ?? undefined,
-      timing,
-    );
+    const name = url.searchParams.get("name") ?? undefined;
+    const imageMediaType = url.searchParams.get("imageMediaType") ?? undefined;
+    const value = isRemote
+      ? await remoteSessions?.uploadFile(id, chunks(), name, imageMediaType)
+      : await sessions?.uploadFile(id, chunks(), name, imageMediaType, timing);
     ok = true;
     send(200, { ok: true, value });
   } catch (error) {

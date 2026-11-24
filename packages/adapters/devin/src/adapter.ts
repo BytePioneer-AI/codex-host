@@ -43,6 +43,7 @@ import {
   devinThinking,
   devinThinkingOptionId,
   devinModels,
+  normalizeStoredDevinModelRef,
   devinModes,
   devinNativeModel,
 } from "./models.js";
@@ -87,6 +88,7 @@ function rejected(code: HarnessError["code"], message: string): { ok: false; err
   return { ok: false, error: { code, message, retryable: false } };
 }
 export class DevinAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredDevinModelRef;
   readonly harnessId = harnessIdSchema.parse("devin");
   readonly sessionImport = {
     listCandidates: () => this.#listImportCandidates(),

@@ -104,10 +104,16 @@ import {
 } from "./native-replay.js";
 import { observeNativeTurnCount, readNativeTurnCount } from "./native-turn-boundaries.js";
 import {
+  ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID,
   ANTIGRAVITY_PERMISSION_MODE_CATALOG,
   decodeAntigravityPermissionModeId,
 } from "./permission-modes.js";
-import { fetchAntigravityQuota, type AntigravityQuotaSnapshot } from "./quota.js";
+import {
+  fetchAntigravityQuota,
+  projectAntigravityQuota,
+  type AntigravityQuotaReading,
+  type AntigravityQuotaSnapshot,
+} from "./quota.js";
 import { rollbackAntigravityLastTurn } from "./rollback.js";
 import { AntigravitySessionImport } from "./session-import.js";
 import { ANTIGRAVITY_COMMAND_CATALOG, parseAndFormatAntigravityCommand } from "./slash-commands.js";
@@ -117,6 +123,7 @@ import { antigravityHome, createAntigravityUsageStatistics } from "./usage-stati
 
 const harnessId = harnessIdSchema.parse("antigravity");
 const SKIP = "dangerously-skip-permissions";
+const QUOTA_REFRESH_COOLDOWN_MS = 60_000;
 
 export const antigravitySessionCapabilities: HarnessSessionCapabilities = {
   configuration: {
@@ -274,10 +281,15 @@ interface SessionOptions extends RequestedConfiguration {
   cwd: string;
   environment: NodeJS.ProcessEnv;
   nativeRef?: NativeSessionRef;
-  knownTurnRefs?: readonly NativeTurnRef[] | undefined;
   unattended: boolean;
   adapter: AntigravityAdapterOptions;
+  quota: SessionQuota;
   onClosed(session: AntigravitySession): void;
+}
+/** The Adapter's account-wide quota cache, projected for one Session's Model. */
+interface SessionQuota {
+  read(modelId: string | undefined): AntigravityQuotaSnapshot | null;
+  refresh(): void;
 }
 interface ActiveTurn {
   turnId: HostTurnId;
@@ -285,6 +297,7 @@ interface ActiveTurn {
   ended: boolean;
   promptPhase: "notSubmitted" | "submitted" | "returned";
   readonly accounting: AbortController;
+  submittedAtMs?: number;
   firstOutputAtMs?: number;
   hasToolCalls?: boolean;
   dbPath?: string;
@@ -328,6 +341,9 @@ export class AntigravitySession implements HarnessSession {
   #active: ActiveTurn | undefined;
   #wakes: AntigravityWakeObserver | undefined;
   #postPromptWake = false;
+  // Intervals during which a prompt was in flight on ACP; wakes started inside
+  // any window streamed into that user Turn and must not be republished.
+  readonly #promptWindows: Array<{ submittedAtMs: number; returnedAtMs: number }> = [];
   #pending = new Map<string, PendingInteraction>();
   #usage: AntigravitySessionUsageTracker | undefined;
   #usageWork: Promise<void> | undefined;
@@ -340,6 +356,7 @@ export class AntigravitySession implements HarnessSession {
   #closing: Promise<void> | undefined;
   #configurationQueue: Promise<void> | undefined;
   #historyOperation = false;
+  #creditsModelId: string | undefined;
 
   constructor(options: SessionOptions) {
     this.#options = options;
@@ -349,6 +366,7 @@ export class AntigravitySession implements HarnessSession {
       thinkingOptionId: options.thinkingOptionId,
       permissionModeId: options.permissionModeId,
     };
+    this.#creditsModelId = options.model?.id;
     this.#subagents = new AntigravitySubagents({
       parentId: () => this.nativeRef?.nativeSessionId,
       cwd: options.cwd,
@@ -409,6 +427,17 @@ export class AntigravitySession implements HarnessSession {
   }
   #publishState(): void {
     this.#emit({ type: "session.state.changed", state: { ...this.#state } });
+    const modelId = this.#state.effectiveModel?.id ?? this.#requested.model?.id;
+    if (modelId !== this.#creditsModelId) {
+      this.#creditsModelId = modelId;
+      this.#emit({ type: "session.accountCredits.changed" });
+    }
+  }
+  /** Leads with the quota group that bills this Session's current Model. */
+  readAccountCredits(): Promise<AntigravityQuotaSnapshot | null> {
+    if (this.#closed) return Promise.resolve(null);
+    this.#options.quota.refresh();
+    return Promise.resolve(this.#options.quota.read(this.#creditsModelId));
   }
 
   #delegationPrompt(): { systemPromptAppend?: string } {
@@ -503,6 +532,19 @@ export class AntigravitySession implements HarnessSession {
           cursor,
           outputLimit: this.#options.adapter.toolOutputLimit,
           canPublish: () => this.#active?.promptPhase !== "returned",
+          streamedIntoPrompt: (startedAtMs) => {
+            if (startedAtMs === undefined) return false;
+            const turn = this.#active;
+            if (
+              turn?.promptPhase === "submitted" &&
+              turn.submittedAtMs !== undefined &&
+              startedAtMs >= turn.submittedAtMs
+            )
+              return true;
+            return this.#promptWindows.some(
+              (window) => startedAtMs >= window.submittedAtMs && startedAtMs <= window.returnedAtMs,
+            );
+          },
           publish: (snapshot) => this.#emit({ type: "turn.autonomous.completed", snapshot }),
         });
       }
@@ -861,7 +903,6 @@ export class AntigravitySession implements HarnessSession {
         nativeSessionId,
         cwd: this.#options.cwd,
         events,
-        ...(this.#options.knownTurnRefs ? { knownTurnRefs: this.#options.knownTurnRefs } : {}),
         ...(this.#options.adapter.toolOutputLimit !== undefined
           ? { outputLimit: this.#options.adapter.toolOutputLimit }
           : {}),
@@ -1171,40 +1212,53 @@ export class AntigravitySession implements HarnessSession {
       turn.dbPath = file;
       turn.compactionAfterStep = await readNativeStepWatermark(file);
       if (!this.#isCurrent(turn)) return;
-      const submittedAtMs = Date.now();
+      turn.submittedAtMs = Date.now();
+      const submittedAtMs = turn.submittedAtMs;
       this.#usage?.beginTurn(submittedAtMs, turn.turnId);
       this.#usageTurnId = turn.turnId;
       turn.promptPhase = "submitted";
-      const result = await transport.prompt(parts, {
-        onResponse: () => {
-          turn.promptPhase = "returned";
-        },
-        onEvent: (event) => {
-          if (!this.#isCurrent(turn) || turn.cancelled) return;
-          if (event.type === "agent.text" || event.type === "agent.thought") {
-            turn.firstOutputAtMs ??= Date.now();
-            this.#appendText(
-              turn,
-              event.type === "agent.text" ? "agentMessage" : "reasoning",
-              event.text,
-            );
-          } else if (event.type === "tool.call" || event.type === "tool.update") {
+      let windowRecorded = false;
+      const recordPromptWindow = () => {
+        if (windowRecorded) return;
+        windowRecorded = true;
+        this.#promptWindows.push({ submittedAtMs, returnedAtMs: Date.now() });
+      };
+      // Keep the wire response time: later output is idle, not part of this Turn.
+      const responded = () => {
+        if (turn.promptPhase === "returned") return;
+        turn.promptPhase = "returned";
+        recordPromptWindow();
+      };
+      const result = await transport
+        .prompt(parts, {
+          onResponse: responded,
+          onEvent: (event) => {
+            if (!this.#isCurrent(turn) || turn.cancelled) return;
+            if (event.type === "agent.text" || event.type === "agent.thought") {
+              turn.firstOutputAtMs ??= Date.now();
+              this.#appendText(
+                turn,
+                event.type === "agent.text" ? "agentMessage" : "reasoning",
+                event.text,
+              );
+            } else if (event.type === "tool.call" || event.type === "tool.update") {
+              turn.hasToolCalls = true;
+              turn.firstOutputAtMs ??= Date.now();
+              this.#completeText(turn, { status: "succeeded" });
+              turn.tracker?.handleToolEvent(event);
+            } else this.#sessionEvent(event);
+          },
+          onPermission: (request) => {
             turn.hasToolCalls = true;
-            turn.firstOutputAtMs ??= Date.now();
-            this.#completeText(turn, { status: "succeeded" });
-            turn.tracker?.handleToolEvent(event);
-          } else this.#sessionEvent(event);
-        },
-        onPermission: (request) => {
-          turn.hasToolCalls = true;
-          return this.#permission(turn, request);
-        },
-        onElicitation: (request) => {
-          turn.hasToolCalls = true;
-          return this.#question(turn, request);
-        },
-      });
-      turn.promptPhase = "returned";
+            return this.#permission(turn, request);
+          },
+          onElicitation: (request) => {
+            turn.hasToolCalls = true;
+            return this.#question(turn, request);
+          },
+        })
+        .finally(recordPromptWindow);
+      responded();
       const completedAtMs = Date.now();
       if (!this.#isCurrent(turn)) return;
       outcome =
@@ -1539,8 +1593,9 @@ export class AntigravityAdapter implements HarnessAdapter {
   readonly #inflight = new Map<string, Promise<HarnessInspection>>();
   readonly #abort = new AbortController();
   #closed = false;
-  #quota: AntigravityQuotaSnapshot | null = null;
-  #quotaRefresh: Promise<AntigravityQuotaSnapshot | null> | undefined;
+  #quota: AntigravityQuotaReading | null = null;
+  #quotaFetchedAt = Number.NEGATIVE_INFINITY;
+  #quotaRefresh: Promise<AntigravityQuotaReading | null> | undefined;
   #quotaCwd = process.cwd();
   constructor(readonly options: AntigravityAdapterOptions = {}) {
     this.#environment = options.environment ?? process.env;
@@ -1714,25 +1769,31 @@ export class AntigravityAdapter implements HarnessAdapter {
         return err("invalidRequest", "Unknown Antigravity Permission Mode");
       }
     }
+    const savedSkip =
+      locator &&
+      typeof locator === "object" &&
+      !Array.isArray(locator) &&
+      locator.permissionModeId === SKIP;
     const session = new AntigravitySession({
       cwd: input.cwd,
       environment: { ...this.#environment, ...input.environment },
       model: input.model,
       thinkingOptionId: input.thinkingOptionId,
-      permissionModeId:
-        unattended ||
-        (!input.permissionModeId &&
-          locator &&
-          typeof locator === "object" &&
-          !Array.isArray(locator) &&
-          locator.permissionModeId === SKIP)
-          ? harnessPermissionModeIdSchema.parse(SKIP)
-          : input.permissionModeId,
-      ...(input.kind === "resume"
-        ? { nativeRef: input.nativeRef, knownTurnRefs: input.knownTurnRefs }
-        : {}),
+      permissionModeId: unattended
+        ? harnessPermissionModeIdSchema.parse(SKIP)
+        : (input.permissionModeId ??
+          (input.kind === "create"
+            ? ANTIGRAVITY_DEFAULT_PERMISSION_MODE_ID
+            : savedSkip
+              ? harnessPermissionModeIdSchema.parse(SKIP)
+              : undefined)),
+      ...(input.kind === "resume" ? { nativeRef: input.nativeRef } : {}),
       unattended,
       adapter: this.options,
+      quota: {
+        read: (modelId) => (this.#quota ? projectAntigravityQuota(this.#quota, modelId) : null),
+        refresh: () => void this.#refreshQuota().catch(() => undefined),
+      },
       onClosed: (closed) => this.#sessions.delete(closed),
     });
     this.#sessions.add(session);
@@ -1775,10 +1836,21 @@ export class AntigravityAdapter implements HarnessAdapter {
     },
   };
   credits(): AntigravityQuotaSnapshot | null {
-    return this.#quota;
+    return this.#quota ? projectAntigravityQuota(this.#quota) : null;
   }
-  refreshCredits(): Promise<AntigravityQuotaSnapshot | null> {
+  async refreshCredits(): Promise<AntigravityQuotaSnapshot | null> {
+    const quota = await this.#refreshQuota();
+    return quota ? projectAntigravityQuota(quota) : null;
+  }
+  #refreshQuota(force = false): Promise<AntigravityQuotaReading | null> {
     if (this.#closed) return Promise.resolve(null);
+    if (
+      !force &&
+      !this.#quotaRefresh &&
+      Date.now() - this.#quotaFetchedAt < QUOTA_REFRESH_COOLDOWN_MS
+    ) {
+      return Promise.resolve(this.#quota);
+    }
     return (this.#quotaRefresh ??= (async () => {
       const command = resolveAntigravityExecutable({
         ...(this.options.command ? { command: this.options.command } : {}),
@@ -1799,11 +1871,13 @@ export class AntigravityAdapter implements HarnessAdapter {
       if (!this.#closed) this.#quota = quota;
       return this.#closed ? null : quota;
     })().finally(() => {
+      if (!this.#closed) this.#quotaFetchedAt = Date.now();
       this.#quotaRefresh = undefined;
     }));
   }
   async inspectAccount() {
-    const credits = await this.refreshCredits();
+    const quota = await this.#refreshQuota(true);
+    const credits = quota ? projectAntigravityQuota(quota) : null;
     if (!credits) return null;
     return {
       credits: {
@@ -1822,6 +1896,7 @@ export class AntigravityAdapter implements HarnessAdapter {
     this.#cache.clear();
     this.#inflight.clear();
     this.#quota = null;
+    this.#quotaFetchedAt = Number.NEGATIVE_INFINITY;
     await Promise.all([...this.#sessions].map((session) => session.close()));
     this.#sessions.clear();
   }

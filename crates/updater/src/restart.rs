@@ -247,6 +247,7 @@ fn command(request: &UpdateRequest) -> Command {
                 command.arg(&macos.app_path);
                 command
             }
+            Installation::LinuxArchive(_) => Command::new(request.installation.launcher_path()),
         }
     };
     if let Some(data) = &request.data_directory {

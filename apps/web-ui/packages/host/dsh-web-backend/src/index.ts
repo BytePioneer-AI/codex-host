@@ -20,7 +20,56 @@ import WorkspaceFiles from "@deepseek-ai/dsh-api-workspace-files";
 import { TYPERT as WorkspaceFilesTypert } from "@deepseek-ai/dsh-api-workspace-files/typert";
 import { HostConnectionService } from "@deepseek-ai/dsh-client-connection/src/rpc-host.ts";
 import { LocalFileSystem } from "@deepseek-ai/dsh-fs-local";
-import OfficeToPdf from "@deepseek-ai/dsh-office-to-pdf";
+import OfficeToPdf, {
+  OfficeToPdfError as DshOfficeToPdfError,
+  type OfficeToPdfService,
+} from "@deepseek-ai/dsh-office-to-pdf";
+
+export type OfficeExtension = "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx";
+export type OfficeToPdfPriority = "foreground" | "background";
+export type OfficeToPdfErrorCode =
+  | "downloading"
+  | "input-too-large"
+  | "output-too-large"
+  | "invalid-document"
+  | "unsupported-format"
+  | "invalid-output"
+  | "timeout"
+  | "unavailable"
+  | "failed"
+  | "busy"
+  | "source-changed";
+
+export interface OfficeToPdfErrorInstance extends Error {
+  readonly code: OfficeToPdfErrorCode;
+}
+
+export const OfficeToPdfError: new (
+  code: OfficeToPdfErrorCode,
+  message: string,
+  options?: ErrorOptions,
+) => OfficeToPdfErrorInstance = DshOfficeToPdfError;
+
+export interface OfficeToPdfRequest {
+  readonly extension: OfficeExtension;
+  readonly priority: OfficeToPdfPriority;
+  readonly source: {
+    readonly key: string;
+    readonly version: string;
+    readonly bytes?: number;
+    read(
+      signal: AbortSignal,
+      maxBytes: number,
+    ): Promise<{ readonly bytes: Uint8Array; readonly version: string }>;
+  };
+}
+
+export interface OfficeToPdfResult {
+  readonly pdf: Uint8Array;
+  readonly missingFonts: string[];
+  readonly cacheKey: string;
+  readonly generation: string;
+}
 import { TYPERT as OfficeToPdfTypert } from "@deepseek-ai/dsh-office-to-pdf/typert";
 import TerminalController from "@deepseek-ai/dsh-api-terminal-controller";
 import { TYPERT as TerminalTypert } from "@deepseek-ai/dsh-api-terminal-controller/typert";
@@ -86,6 +135,8 @@ export interface DshWebBackend {
    * @returns the carrier-safe failure.
    */
   failure(error: unknown): DshRemoteFailure;
+  /** Convert pre-authorized Office bytes supplied by a caller-owned confined reader. */
+  convertOffice(request: OfficeToPdfRequest, signal: AbortSignal): Promise<OfficeToPdfResult>;
   /** Mount selected trusted Web plugins below this backend's lifecycle. */
   loadPlugins(options: WebPluginRuntimeOptions): Promise<WebPluginRuntime>;
   /** Dispose the DSH context and every service it mounted. */
@@ -163,8 +214,11 @@ export async function createDshWebBackend(options: DshWebBackendOptions): Promis
     ctx.provide("workingDirectory", workingDirectory);
     // Web authenticates every request before forwarding it, so Connection is
     // mounted for its shared Fetch handler and Peer, not for its own auth.
+    // Passing undefined keeps extension-visible requestRejection() working:
+    // trusted requests are admitted (already authenticated upstream) and the
+    // Host/Origin fence still refuses untrusted origins.
     await ctx.plugin((scope: Context) => {
-      new HostConnectionService(scope, [], {});
+      new HostConnectionService(scope, [], undefined);
     });
     await ctx.plugin(TypertGateway);
     await ctx.plugin(WorkspaceFiles);
@@ -214,9 +268,10 @@ export async function createDshWebBackend(options: DshWebBackendOptions): Promis
   }
   const connection = ctx.get("connection") as HostConnectionService | undefined;
   const gateway = ctx.get("typertGateway") as GatewayService | undefined;
-  if (connection === undefined || gateway === undefined) {
+  const officeToPdf = ctx.get("officeToPdf") as OfficeToPdfService | undefined;
+  if (connection === undefined || gateway === undefined || officeToPdf === undefined) {
     await ctx.fiber.dispose();
-    throw new Error("dsh-web-backend: the gateway mounted without a Connection service");
+    throw new Error("dsh-web-backend: the gateway mounted without required services");
   }
   const handler = connection.createSharedFetchHandler("/api");
   return {
@@ -238,6 +293,8 @@ export async function createDshWebBackend(options: DshWebBackendOptions): Promis
         input?.window,
       ),
     failure: (error: unknown): DshRemoteFailure => gateway.wireStream.failure(error),
+    convertOffice: (request: OfficeToPdfRequest, signal: AbortSignal): Promise<OfficeToPdfResult> =>
+      officeToPdf.convert(request, signal),
     loadPlugins: (options) => mountWebPlugins(ctx, options),
     close: async (): Promise<void> => {
       await ctx.fiber.dispose().catch(() => undefined);

@@ -1,8 +1,8 @@
 import { parse as parseToml } from "smol-toml";
 
+import { normalizeLegacyBase64ModelRef } from "@codexhost/harness-adapter";
 import {
   harnessModelCatalogSchema,
-  harnessModelRefIdSchema,
   harnessModelRefSchema,
   harnessModelSchema,
   harnessPermissionModeCatalogSchema,
@@ -17,21 +17,15 @@ import {
   type HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 
-const KIMI_MODEL_PREFIX = "kimi.";
-
-export function encodeKimiModelRef(alias: string): HarnessModelRef {
-  const encoded = Buffer.from(alias, "utf8").toString("base64url");
-  return harnessModelRefSchema.parse({
-    id: harnessModelRefIdSchema.parse(`${KIMI_MODEL_PREFIX}${encoded}`),
-  });
+export function kimiModelRef(id: string): HarnessModelRef {
+  return harnessModelRefSchema.parse({ id });
 }
 
-export function decodeKimiModelRefId(id: string): string {
-  if (!id.startsWith(KIMI_MODEL_PREFIX)) {
-    throw new Error(`Invalid Kimi model ref ID: ${id}`);
-  }
-  const payload = id.slice(KIMI_MODEL_PREFIX.length);
-  return Buffer.from(payload, "base64url").toString("utf8");
+export function normalizeStoredKimiModelRef(
+  ref: HarnessModelRef,
+  catalog: HarnessModelCatalog,
+): HarnessModelRef | undefined {
+  return normalizeLegacyBase64ModelRef(ref, catalog, "kimi.");
 }
 
 export const KIMI_MODES = ["default", "plan", "auto", "yolo"] as const;
@@ -112,8 +106,7 @@ export function parseKimiConfigToml(content: string): KimiNativeConfig {
     );
   }
 
-  const defaultModel =
-    typeof parsed.default_model === "string" ? parsed.default_model.trim() : undefined;
+  const defaultModel = typeof parsed.default_model === "string" ? parsed.default_model : undefined;
   const models: KimiNativeConfig["models"] = [];
 
   if (typeof parsed.models === "object" && parsed.models !== null) {
@@ -213,22 +206,17 @@ export function buildModelCatalogFromConfig(
     for (const option of options) thinkingOptions.set(option.id, option);
     const label = m.model ? `${m.alias} (${m.model})` : m.alias;
     return harnessModelSchema.parse({
-      ref: encodeKimiModelRef(m.alias),
+      ref: kimiModelRef(m.alias),
       label: label.slice(0, 256),
       ...(m.model ? { resolvedModelLabel: m.model.slice(0, 256) } : {}),
       supportedThinkingOptionIds: options.map(({ id }) => id),
     });
   });
 
-  const defaultModel =
-    config.defaultModel &&
-    models.some((m) => decodeKimiModelRefId(m.ref.id) === config.defaultModel)
-      ? encodeKimiModelRef(config.defaultModel)
-      : models[0]?.ref;
-
-  const selectedModel = models.find((model) => model.ref.id === defaultModel?.id);
+  const selectedModel = models.find((model) => model.ref.id === config.defaultModel) ?? models[0];
+  const defaultModel = selectedModel?.ref;
   const configuredDefault = config.models.find(
-    (model) => encodeKimiModelRef(model.alias).id === defaultModel?.id,
+    (model) => model.alias === defaultModel?.id,
   )?.defaultEffort;
   const requestedDefault =
     config.thinking?.enabled === false ? "off" : (config.thinking?.effort ?? configuredDefault);
@@ -333,12 +321,12 @@ export function buildModelCatalogFromAcp(
 
   if (modelOptions?.options && Array.isArray(modelOptions.options)) {
     for (const opt of modelOptions.options) {
-      if (typeof opt.value === "string" && opt.value.trim().length > 0) {
+      if (typeof opt.value === "string" && opt.value.length > 0) {
         const alias = opt.value;
         const displayName = opt.name || alias;
         models.push(
           harnessModelSchema.parse({
-            ref: encodeKimiModelRef(alias),
+            ref: kimiModelRef(alias),
             label: displayName.slice(0, 256),
             ...(alias === modelOptions.currentValue
               ? { supportedThinkingOptionIds: thinkingIds }
@@ -354,10 +342,7 @@ export function buildModelCatalogFromAcp(
   }
 
   const currentModelAlias = modelOptions?.currentValue;
-  const defaultModel =
-    currentModelAlias && models.some((m) => decodeKimiModelRefId(m.ref.id) === currentModelAlias)
-      ? encodeKimiModelRef(currentModelAlias)
-      : models[0]?.ref;
+  const defaultModel = models.find((m) => m.ref.id === currentModelAlias)?.ref ?? models[0]?.ref;
 
   const currentThinking = thinkingOptions?.currentValue;
   const defaultThinkingOptionId =

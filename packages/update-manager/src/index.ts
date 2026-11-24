@@ -17,15 +17,17 @@ export {
   CODEXHOST_LATEST_RELEASE_URL,
   compareSemanticVersions,
   expectedInstallerAssetName,
+  fetchGitHubReleaseAnnouncement,
   fetchLatestGitHubRelease,
   parseLatestGitHubRelease,
   selectInstallerReleaseArtifact,
   type CodexhostLatestRelease,
   type CodexhostReleaseAsset,
   type GitHubReleaseFetchOptions,
-  type InstallerReleaseTarget,
+  type ReleaseTarget,
   type SelectedReleaseArtifact,
 } from "./github-release.js";
+export { parseReleaseAnnouncementMarkdown } from "./release-announcement.js";
 export {
   fetchLatestGitHubReleaseWithGitHubCli,
   type GitHubCliReleaseFetchOptions,
@@ -52,6 +54,7 @@ export {
   type BackgroundUpdateManager,
   type BackgroundUpdateManagerDependencies,
   type CommonUpdateOptions,
+  type LinuxArchiveUpdateOptions,
   type MacOsDmgUpdateOptions,
   type NpmUpdateOptions,
   type PreparedBackgroundUpdate,

@@ -1,20 +1,21 @@
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { accessSync, constants, statSync, type Stats } from "node:fs";
+import { accessSync, constants, readlinkSync, statSync, type Stats } from "node:fs";
 import type * as filesystem from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  deepSeekEnvironment,
   deepSeekProcessInvocation,
   killDeepSeekProcessTree,
   resolveDeepSeekCommand,
   resolveWindowsTaskkillPath,
 } from "../src/executable.js";
 
-vi.mock("node:fs", async (importOriginal) => ({
-  ...(await importOriginal<typeof filesystem>()),
-  accessSync: vi.fn(),
-  statSync: vi.fn(),
-}));
+vi.mock("node:fs", async (importOriginal) => {
+  const original = await importOriginal<typeof filesystem>();
+  const overrides = { accessSync: vi.fn(), readlinkSync: vi.fn(), statSync: vi.fn() };
+  return { ...original, ...overrides, default: { ...original, ...overrides } };
+});
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
@@ -26,6 +27,9 @@ function platform(value: NodeJS.Platform): void {
 
 beforeEach(() => {
   entries.clear();
+  vi.mocked(readlinkSync).mockImplementation(() => {
+    throw new Error("EINVAL");
+  });
   vi.mocked(accessSync).mockImplementation((file) => {
     if (!entries.has(String(file))) throw new Error("ENOENT");
   });
@@ -98,6 +102,37 @@ describe("DeepSeek executable helpers", () => {
     expect(accessSync).toHaveBeenCalledWith("/bin/dsh", constants.X_OK);
   });
 
+  it("finds a user-bin dsh with a GUI PATH", () => {
+    platform("darwin");
+    const environment = { HOME: "/user", PATH: "/usr/bin:/bin:/usr/sbin:/sbin" };
+    const command = "/user/.local/bin/dsh";
+    entries.set(command, "file");
+
+    expect(resolveDeepSeekCommand(undefined, environment)).toEqual({
+      command,
+      arguments: [],
+      kind: "dsh",
+    });
+    expect(resolveDeepSeekCommand("/missing/dsh", environment)).toBeNull();
+    entries.set("/usr/bin/dsh", "file");
+    expect(resolveDeepSeekCommand(undefined, environment)?.command).toBe("/usr/bin/dsh");
+  });
+
+  it("gives a linked DSH installation's Node priority over the alias directory", () => {
+    const command = "/user/.local/bin/dsh";
+    const runtimeDirectory = "/user/.local/node24/bin";
+    const environment = { PATH: `/user/.local/bin:/usr/bin:${runtimeDirectory}` };
+    entries.set(`${runtimeDirectory}/node`, "file");
+    vi.mocked(readlinkSync).mockReturnValue("../node24/bin/dsh");
+
+    const childEnvironment = deepSeekEnvironment(command, environment, "darwin");
+    expect(childEnvironment.PATH?.split(":")[0]).toBe(runtimeDirectory);
+    expect(
+      childEnvironment.PATH?.split(":").filter((entry) => entry === runtimeDirectory),
+    ).toHaveLength(1);
+    expect(environment.PATH).toBe(`/user/.local/bin:/usr/bin:${runtimeDirectory}`);
+  });
+
   it("uses local offline npx only when dsh is absent", () => {
     platform("linux");
     entries.set("/bin/npx", "file");
@@ -128,6 +163,23 @@ describe("DeepSeek executable helpers", () => {
       command: String.raw`C:\npm\npx.cmd`,
       kind: "npx",
     });
+  });
+
+  it("prepends absolute executable directories on PATH without adding relative entries", () => {
+    const posix = deepSeekEnvironment("/nvm/v22/bin/dsh", { PATH: "/usr/bin:/bin" }, "linux");
+    expect(posix.PATH?.split(":")[0]).toBe("/nvm/v22/bin");
+
+    const relative = deepSeekEnvironment("dsh", { PATH: "/usr/bin" }, "linux");
+    expect(relative.PATH?.split(":")).not.toContain(".");
+
+    const win = deepSeekEnvironment(
+      String.raw`c:\nvm\v22\dsh.cmd`,
+      { Path: String.raw`C:\NVM\V22;C:\Windows\System32` },
+      "win32",
+    );
+    expect(
+      win.Path?.split(";").filter((entry) => entry.toLowerCase() === String.raw`c:\nvm\v22`),
+    ).toHaveLength(1);
   });
 
   it("quotes Windows shims and preserves direct native invocations", () => {
@@ -192,9 +244,11 @@ describe("DeepSeek executable helpers", () => {
     }
   });
 
-  it("uses bounded hidden taskkill for the owned Windows tree and reports launch failure", () => {
+  it("uses bounded hidden taskkill for the owned Windows tree and reports failures", () => {
     vi.stubEnv("SystemRoot", String.raw`C:\Windows`);
-    vi.mocked(spawnSync).mockReturnValue({ status: 0 } as ReturnType<typeof spawnSync>);
+    vi.mocked(spawnSync).mockReturnValue({ status: 0, signal: null } as ReturnType<
+      typeof spawnSync
+    >);
     const child = { pid: 1234 } as ChildProcess;
     killDeepSeekProcessTree(child, "win32", 50);
     expect(spawnSync).toHaveBeenCalledWith(
@@ -202,6 +256,18 @@ describe("DeepSeek executable helpers", () => {
       ["/pid", "1234", "/t", "/f"],
       { stdio: "ignore", windowsHide: true, timeout: 50 },
     );
+    vi.mocked(spawnSync).mockReturnValue({ status: 128, signal: null } as ReturnType<
+      typeof spawnSync
+    >);
+    expect(() => killDeepSeekProcessTree(child, "win32", 50)).toThrow("status 128");
+    vi.mocked(spawnSync).mockReturnValue({ status: 1, signal: null } as ReturnType<
+      typeof spawnSync
+    >);
+    expect(() => killDeepSeekProcessTree(child, "win32", 50)).toThrow("status 1");
+    vi.mocked(spawnSync).mockReturnValue({ status: null, signal: "SIGTERM" } as ReturnType<
+      typeof spawnSync
+    >);
+    expect(() => killDeepSeekProcessTree(child, "win32", 50)).toThrow("signal SIGTERM");
     const error = new Error("taskkill could not start");
     vi.mocked(spawnSync).mockReturnValue({ error } as ReturnType<typeof spawnSync>);
     expect(() => killDeepSeekProcessTree(child, "win32", 50)).toThrow(error);

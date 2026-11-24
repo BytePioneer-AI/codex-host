@@ -21,6 +21,7 @@ import css from "./ChatMarkdown.module.css";
 type ChatMarkdownProps = Omit<MarkdownDelegateProviderProps, "onLinkContextMenu" | "openFile"> & {
   readonly openFile: (path: string, options?: OpenFileOptions) => void;
   readonly openLinkInSidebar?: ChatViewSlotProps["openLinkInSidebar"] | undefined;
+  readonly hideLocalFileActions?: boolean | undefined;
   readonly t: ChatViewSlotProps["t"];
 };
 
@@ -28,6 +29,7 @@ export function ChatMarkdown({
   children,
   openFile,
   openLinkInSidebar,
+  hideLocalFileActions = false,
   t,
   ...delegate
 }: ChatMarkdownProps) {
@@ -87,23 +89,25 @@ export function ChatMarkdown({
             >
               {t("linkMenu.copy")}
             </MenuItemButton>
-            <MenuItemButton
-              icon={<IconRightUpOutlineMedium />}
-              onSelect={() => {
-                closeMenu();
-                if (target.kind === "web") {
-                  window.open(target.href, "_blank", "noopener,noreferrer");
-                } else {
-                  openFile(target.path, {
-                    external: true,
-                    ...(target.line === undefined ? {} : { line: target.line }),
-                  });
-                }
-              }}
-            >
-              {t(target.kind === "web" ? "linkMenu.openBrowser" : "linkMenu.openFile")}
-            </MenuItemButton>
-            {target.kind === "file" && (
+            {(target.kind === "web" || !hideLocalFileActions) && (
+              <MenuItemButton
+                icon={<IconRightUpOutlineMedium />}
+                onSelect={() => {
+                  closeMenu();
+                  if (target.kind === "web") {
+                    window.open(target.href, "_blank", "noopener,noreferrer");
+                  } else {
+                    openFile(target.path, {
+                      external: true,
+                      ...(target.line === undefined ? {} : { line: target.line }),
+                    });
+                  }
+                }}
+              >
+                {t(target.kind === "web" ? "linkMenu.openBrowser" : "linkMenu.openFile")}
+              </MenuItemButton>
+            )}
+            {target.kind === "file" && !hideLocalFileActions && (
               <MenuItemButton
                 icon={<IconFolderOpenOutlineMedium />}
                 onSelect={() => {

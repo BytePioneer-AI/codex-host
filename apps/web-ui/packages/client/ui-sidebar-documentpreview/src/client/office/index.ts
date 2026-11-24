@@ -8,7 +8,12 @@ import type {} from "@deepseek-ai/dsh-api-workspace-files/remote";
 import { failureLine } from "../failure-line.ts";
 import { documentTabInfoFactory } from "../document/contract.ts";
 import { en, zh, type OfficePreviewKey } from "./locales.ts";
-import { OfficePreviewCache, type ReadOfficeBytes, type ReadOfficeDocument } from "./cache.ts";
+import {
+  OfficePreviewCache,
+  officeScopeForSession,
+  type ReadOfficeBytes,
+  type ReadOfficeDocument,
+} from "./cache.ts";
 import { pdfBodyRegistration } from "../pdf/index.ts";
 import { LazyPdfBody } from "../pdf/LazyPdfBody.tsx";
 import { OfficeBody, type OfficeBodyInjected } from "./OfficeBody.tsx";
@@ -170,6 +175,7 @@ export function apply(ctx: Context, config: Config["office"]): void {
           return result;
         },
         () => new Error(t("busy")),
+        (file) => officeScopeForSession(file.sessionId),
       );
     let cache = createCache();
     const retired = new Set<Promise<void>>();

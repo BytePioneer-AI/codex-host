@@ -37,9 +37,9 @@ mod process;
 mod process_chain;
 mod process_identity;
 pub use independent_service::{IndependentServiceRegistration, register_independent_service};
-#[cfg(unix)]
-pub use process_identity::observe_process_identity;
-pub use process_identity::{ProcessIdentity, process_identity, process_instance};
+pub use process_identity::{
+    ProcessIdentity, observe_process_identity, process_identity, process_instance,
+};
 mod process_supervision;
 mod process_termination;
 mod proxy_environment;
@@ -103,7 +103,9 @@ pub use process::{desktop_process_ids, desktop_root_process_ids, process_started
 pub use process::{
     desktop_process_tree, desktop_root_snapshots_for_installation, process_snapshots,
 };
-pub use process_chain::descendant_executable_pair_exists;
+pub use process_chain::{
+    HostChainObservation, descendant_executable_pair_exists, observe_host_chain,
+};
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
 pub use process_termination::{
     terminate_process_group_instance, terminate_process_identity, terminate_process_instance,

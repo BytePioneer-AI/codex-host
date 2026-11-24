@@ -1,10 +1,19 @@
 import { defined } from "./support/defined.ts";
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { RemoteSessions, remoteSessionId, remoteSessionIdentity } from "../src/remote-sessions.ts";
+import {
+  RemoteSessions,
+  remoteSessionId,
+  remoteSessionIdentity,
+  type RemotePeerProvider,
+} from "../src/remote-sessions.ts";
+import { PeerChHostClient, type PeerChTransport } from "../src/peer-ch-host-client.ts";
+import { PeerThreadSource } from "../src/peer-thread-source.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import type { RemoteSessionOperation } from "@codexhost/shared-contracts";
-import { RemoteSessionError } from "@codexhost/desktop-control";
+import { RemoteSessionError, type HostClientUpdate } from "@codexhost/desktop-control";
+import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { ChThread } from "../src/ch-thread-view.ts";
 import type { StreamSink } from "../src/transport.ts";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -236,6 +245,7 @@ it("archives and undoes through workspace RPCs without losing local archives or 
         if (loseRead) throw new Error("read unavailable");
         return { result: { thread: row }, epoch: "epoch", requests: [] };
       }
+      if (op.kind === "queue") return { available: false };
       if (op.kind === "usage") throw new Error("method unavailable");
       writes.push(op);
       if (loseWrite) throw new Error("unknown outcome");
@@ -1061,7 +1071,7 @@ it("routes remote model and permission changes as single-setting configure opera
     line: "/permission bypassPermissions",
   });
   assert.ok(permissionResult.ok);
-  const permissionOperation = fixture.calls.at(-2);
+  const permissionOperation = fixture.calls.findLast((operation) => operation.kind === "configure");
   assert.equal(permissionOperation?.kind, "configure");
   assert.deepEqual(
     permissionOperation &&
@@ -1353,4 +1363,1208 @@ it("keeps remote history readable and controls unavailable without optional meta
     calls.some((operation) => operation.kind === "configure"),
     false,
   );
+});
+
+it("does not spin the microtask queue when hostsChanged fires during an archive write", async (t) => {
+  const hostA = "remote-peer:peer-a";
+  const hostB = "remote-peer:peer-b";
+  const hostC = "remote-peer:peer-c";
+  const rowA = {
+    id: "thread-a",
+    cwd: "/remote/a",
+    name: "Thread A",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 2,
+    status: { type: "idle" },
+    turns: [],
+  };
+  let archived = false;
+  const listCounts = new Map<string, number>();
+  const archiveStarted = Promise.withResolvers<undefined>();
+  const archiveGate = Promise.withResolvers<unknown>();
+  const postArchiveList = Promise.withResolvers<undefined>();
+  let waitingForPostArchiveList = false;
+
+  const remote = new RemoteSessions(new EventHub("remote-archive-refresh"), async (operation) => {
+    if (operation.kind === "hosts") {
+      return [
+        { hostId: hostA, online: true },
+        { hostId: hostB, online: true },
+        { hostId: hostC, online: true },
+      ];
+    }
+    if (operation.kind === "list") {
+      listCounts.set(operation.hostId, (listCounts.get(operation.hostId) ?? 0) + 1);
+      if (waitingForPostArchiveList && operation.hostId === hostA) {
+        waitingForPostArchiveList = false;
+        postArchiveList.resolve(undefined);
+      }
+      return {
+        data: operation.hostId === hostA && !archived ? [rowA] : [],
+        nextCursor: null,
+      };
+    }
+    if (operation.kind === "read") {
+      return { result: { thread: rowA }, epoch: "epoch-a", requests: [] };
+    }
+    if (operation.kind === "archive") {
+      archiveStarted.resolve(undefined);
+      await archiveGate.promise;
+      archived = operation.archived;
+      return {};
+    }
+    return {};
+  });
+  t.after(() => remote.close());
+
+  const rpc = new RpcRegistry();
+  rpc.register("session/archive", () => {
+    throw new Error("must not route locally");
+  });
+  remote.install(rpc, new StreamRegistry());
+
+  const sessionId = remoteSessionId(hostA, rowA.id);
+  await remote.refresh();
+  await remote.read(sessionId);
+  const initialCountA = listCounts.get(hostA) ?? 0;
+  const initialCountB = listCounts.get(hostB) ?? 0;
+  const initialCountC = listCounts.get(hostC) ?? 0;
+
+  const archivePromise = rpc.dispatch("session/archive", {
+    args: { request: { sessionId } },
+  });
+  await archiveStarted.promise;
+
+  // Trigger refreshes for two distinct peers while archiveWrites > 0.
+  // Before the fix, this entered a tight microtask loop that starved setTimeout.
+  waitingForPostArchiveList = true;
+  remote.hostsChanged(hostA);
+  remote.hostsChanged(hostB);
+  setTimeout(() => archiveGate.resolve({}), 30);
+
+  const archiveResult = await archivePromise;
+  assert.equal(archiveResult.ok, true);
+  await postArchiveList.promise;
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(listCounts.get(hostA), initialCountA + 1);
+  assert.equal(listCounts.get(hostB), initialCountB + 1);
+  // Multi-host dirty queue must not escalate into a full refresh of untouched peers.
+  assert.equal(listCounts.get(hostC), initialCountC);
+});
+
+it("unarchives an archived remote session without calling read/snapshot beforehand", async (t) => {
+  const hostId = "remote-peer:peer-b";
+  const row = {
+    id: "thread-archived",
+    cwd: "/remote/b",
+    name: "Archived Remote",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 2,
+    status: { type: "idle" },
+    turns: [],
+  };
+  let archived = true;
+  const order: string[] = [];
+  const remote = new RemoteSessions(new EventHub("remote-unarchive"), async (operation) => {
+    if (operation.kind === "hosts") return [{ hostId, online: true, epoch: "epoch-b" }];
+    if (operation.kind === "list") {
+      return { data: archived ? [] : [row], nextCursor: null };
+    }
+    if (operation.kind === "read") {
+      order.push("read");
+      if (archived) {
+        throw new Error(
+          `session ${row.id} is archived. Run codex unarchive to unarchive it first.`,
+        );
+      }
+      return { result: { thread: row }, epoch: "epoch-b", requests: [] };
+    }
+    if (operation.kind === "archive") {
+      order.push(operation.archived ? "archive" : "unarchive");
+      archived = operation.archived;
+      return {};
+    }
+    return {};
+  });
+  t.after(() => remote.close());
+
+  const rpc = new RpcRegistry();
+  rpc.register("workspace/unarchiveSession", () => {
+    throw new Error("must not route locally");
+  });
+  rpc.register("session/unarchive", () => {
+    throw new Error("must not route locally");
+  });
+  remote.install(rpc, new StreamRegistry());
+
+  const sessionId = remoteSessionId(hostId, row.id);
+  const reply = await rpc.dispatch("workspace/unarchiveSession", {
+    args: { request: { sessionId } },
+  });
+  assert.equal(reply.ok, true);
+  assert.equal(archived, false);
+  // Must invoke unarchive BEFORE attempting any snapshot/read.
+  assert.deepEqual(order, ["unarchive", "read"]);
+});
+
+it("uses PeerThreadSource for event-driven follow, incremental paging, harness identity, draft catalog, tree parents, and archive cascade", async (t) => {
+  const hostId = "remote-peer:peer-layered";
+  const epoch = randomUUID();
+  let seq = 1;
+  const listeners = new Set<(update: HostClientUpdate) => void>();
+  const emit = (update: HostClientUpdate) => {
+    for (const listener of [...listeners]) listener(update);
+  };
+  const makeTurns = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      id: `turn-${i + 1}`,
+      status: "completed",
+      items: [
+        { id: `u-${i + 1}`, type: "userMessage", content: [{ type: "text", text: `Q${i + 1}` }] },
+        { id: `a-${i + 1}`, type: "agentMessage", text: `A${i + 1}` },
+      ],
+    }));
+
+  const parentRow: ChThread = {
+    id: "parent-thread",
+    cwd: "/remote/secret/repo",
+    name: "Parent Thread",
+    modelProvider: "codexhost",
+    historyMode: "paginated",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "idle" },
+    turns: makeTurns(12),
+  };
+  const childRow: ChThread = {
+    id: "child-thread",
+    cwd: "/remote/secret/repo",
+    name: "Child Thread",
+    modelProvider: "openai",
+    historyMode: "paginated",
+    createdAt: 110,
+    updatedAt: 210,
+    status: { type: "idle" },
+    turns: makeTurns(1),
+  };
+  const threads = new Map<string, ChThread>([
+    [parentRow.id, parentRow],
+    [childRow.id, childRow],
+  ]);
+  const archivedIds = new Set<string>();
+  const treeParents: Record<string, string> = { [childRow.id]: parentRow.id };
+  const rpcLog: Array<{ method: string; params: Record<string, unknown> }> = [];
+  let snapshotCalls = 0;
+  let inspectCalls = 0;
+  let activeModelId = "claude-one";
+
+  const inspection = {
+    status: "ready" as const,
+    catalog: {
+      models: [
+        { ref: { id: "claude-one" }, label: "Claude One", supportedThinkingOptionIds: ["medium"] },
+        { ref: { id: "claude-two" }, label: "Claude Two", supportedThinkingOptionIds: ["medium"] },
+      ],
+      defaultModel: { id: "claude-one" },
+      thinkingOptions: [{ id: "medium", label: "Medium" }],
+      defaultThinkingOptionId: "medium",
+    },
+    capabilities: {
+      configuration: {
+        selectModel: true,
+        selectThinkingOption: true,
+        selectPermissionMode: false,
+        permissionModeScope: "live" as const,
+      },
+      history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+    },
+  };
+
+  const transport: PeerChTransport = {
+    async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const input = body as Record<string, unknown>;
+      if (route === "snapshot") {
+        snapshotCalls++;
+        const row = defined(threads.get(String(input.threadId)));
+        return {
+          cursor: { epoch, sequence: seq },
+          thread: { ...row, turns: [] },
+          turnsPage: {
+            data: structuredClone(row.turns.slice(-5).reverse()),
+            nextCursor: row.turns.length > 5 ? (row.turns.at(-5)?.id ?? null) : null,
+          },
+          configuration: { effectiveModel: { id: activeModelId } },
+          queue: { items: [], pausedReason: null },
+          interactions: [],
+        } as T;
+      }
+      if (route === "respond") return { resolved: true } as T;
+      const method = String(input.method);
+      const params = (input.params ?? {}) as Record<string, unknown>;
+      rpcLog.push({ method, params });
+      if (method === "codexhost/thread/catalog/read") {
+        const visible = [...threads.values()].filter(
+          (row) => params.includeArchived === true || !archivedIds.has(row.id),
+        );
+        return {
+          threads: visible.map((row) => ({ ...row, turns: [] })),
+          ownership: visible.map((row) =>
+            row.modelProvider === "codexhost"
+              ? { threadId: row.id, owner: "external", harnessId: "claude-code" }
+              : { threadId: row.id, owner: "codex" },
+          ),
+          officialCursor: { live: null },
+          archivedThreadIds: [...archivedIds],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") return { parents: { ...treeParents } } as T;
+      if (method === "codexhost/harness/plugins/list") {
+        return {
+          plugins: [
+            {
+              id: "claude-code",
+              name: "Claude Code",
+              version: "1.0.0",
+              icon: "data:image/png;base64,AA==",
+            },
+          ],
+        } as T;
+      }
+      if (method === "codexhost/harness/inspect") {
+        if (params.harnessId === "codex") {
+          return {
+            status: "notInstalled",
+            error: { code: "unavailable", message: "No Codex", retryable: false },
+          } as T;
+        }
+        return inspection as T;
+      }
+      if (method === "codexhost/thread/inspect") {
+        inspectCalls++;
+        const tid = String(params.threadId);
+        if (tid === parentRow.id) {
+          return {
+            owner: "external",
+            harnessId: "claude-code",
+            transportModelId: activeModelId,
+            effectiveModel: { id: activeModelId },
+            locked: true,
+            history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+          } as T;
+        }
+        return { owner: "codex", locked: true } as T;
+      }
+      if (method === "thread/turns/list") {
+        const row = defined(threads.get(String(params.threadId)));
+        const ordered = [...row.turns].reverse();
+        const anchor = typeof params.cursor === "string" ? params.cursor : undefined;
+        const start = anchor ? ordered.findIndex((turn) => turn.id === anchor) + 1 : 0;
+        const limit = Number(params.limit ?? 5);
+        const page = ordered.slice(start, start + limit);
+        return {
+          data: structuredClone(page),
+          nextCursor: start + page.length < ordered.length ? (page.at(-1)?.id ?? null) : null,
+        } as T;
+      }
+      throw new Error(`Unexpected peer RPC: ${method}`);
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: seq }, reset: false });
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    manifest: () => ({
+      version: "1.0.0",
+      platform: "darwin",
+      hostname: "peer-layered",
+      epoch,
+      projects: [{ id: "proj-1", name: "Repo", path: "/remote/secret/repo", threadIds: [] }],
+    }),
+  };
+
+  const peerProvider: RemotePeerProvider = {
+    source: () => undefined,
+  };
+  const source = new PeerThreadSource({
+    hostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(hostId),
+    onThreadChanged: (tid) => peerProvider.onThreadChanged?.(hostId, tid),
+    onConnection: (online) => peerProvider.onConnection?.(hostId, online),
+    onReset: (e, full) => peerProvider.onReset?.(hostId, e, full),
+  });
+  peerProvider.source = (h) => (h === hostId ? source : undefined);
+
+  const opLog: RemoteSessionOperation[] = [];
+  const dir = mkdtempSync(join(tmpdir(), "remote-peer-layered-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const workspaces = new Workspaces(new DataDir(dir), dir);
+  const remote: RemoteSessions = new RemoteSessions(
+    new EventHub("peer-layered"),
+    async (op) => {
+      opLog.push(op);
+      if (op.kind === "hosts") {
+        return [
+          {
+            hostId,
+            online: true,
+            epoch,
+            displayName: "Peer Layered",
+            projects: [{ id: "proj-1", name: "Repo", path: "/remote/secret/repo", threadIds: [] }],
+          },
+        ];
+      }
+      if (op.kind === "configure" && op.modelId) {
+        activeModelId = op.modelId;
+        return { effectiveModel: { id: activeModelId } };
+      }
+      if (op.kind === "archive") {
+        if (op.archived) archivedIds.add(op.threadId);
+        else archivedIds.delete(op.threadId);
+        return {};
+      }
+      if (op.kind === "usage") {
+        return { threadId: op.threadId, usage: { totalCostUsd: 0.5 } };
+      }
+      throw new Error(`Unexpected legacy op for Peer: ${op.kind}`);
+    },
+    workspaces,
+    peerProvider,
+  );
+  t.after(() => {
+    remote.close();
+    source.close();
+  });
+
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  for (const method of [
+    "session/list",
+    "session/create",
+    "session/modelCatalog",
+    "session/selectModel",
+    "session/page",
+    "session/projections",
+    "workspace/archiveSession",
+    "workspace/unarchiveSession",
+  ]) {
+    rpc.register(method, () => (method === "session/list" ? { items: [] } : {}));
+  }
+  let streamRouter: Parameters<StreamRegistry["routeSessions"]>[0] | undefined;
+  streams.routeSessions = (value) => {
+    streamRouter = value;
+  };
+  remote.install(rpc, streams);
+
+  // 1. Refresh lists via PeerThreadSource: no legacy "list" op, cwd="", harnessIdentity without icon, tree parent mapped.
+  await remote.refresh();
+  assert.equal(
+    opLog.some((op) => op.kind === "list"),
+    false,
+  );
+  const listed = await rpc.dispatch("session/list", {});
+  assert.ok(listed.ok);
+  const items = (
+    listed.value as {
+      items: Array<{
+        sessionId: string;
+        cwd: string;
+        projections: { values: Record<string, unknown> };
+      }>;
+    }
+  ).items;
+  const parentSessionId = remoteSessionId(hostId, parentRow.id);
+  const childSessionId = remoteSessionId(hostId, childRow.id);
+  const parentItem = defined(items.find((i) => i.sessionId === parentSessionId));
+  const childItem = defined(items.find((i) => i.sessionId === childSessionId));
+  assert.equal(parentItem.cwd, "");
+  assert.equal(childItem.cwd, "");
+  assert.deepEqual(parentItem.projections.values.harnessIdentity, {
+    id: "claude-code",
+    name: "Claude Code",
+  });
+  assert.equal("icon" in (parentItem.projections.values.harnessIdentity as object), false);
+  assert.equal(parentItem.projections.values.threadTreeParent, null);
+  assert.equal(childItem.projections.values.threadTreeParent, parentSessionId);
+
+  // 2. Follow is event-driven (no polling), first screen reads only 5 turns, session/page loads older pages.
+  const followFrames: unknown[] = [];
+  const closeListeners: Array<() => void> = [];
+  let followClosed = false;
+  await defined(streamRouter)(
+    "session/follow",
+    { request: { address: { sessionId: parentSessionId } } },
+    {
+      id: "peer-follow",
+      get closed() {
+        return followClosed;
+      },
+      push: (frame) => followFrames.push(frame),
+      end() {},
+      fail() {},
+      onClose: (fn) => closeListeners.push(fn),
+    },
+    async () => {},
+  );
+  const firstSnap = defined(followFrames[0]) as {
+    type: string;
+    cursor: number;
+    hasMore: boolean;
+    records: Array<{ event: { seq: number } }>;
+  };
+  assert.equal(firstSnap.type, "snapshot");
+  assert.equal(firstSnap.hasMore, true);
+  assert.equal(snapshotCalls, 1);
+  assert.equal(inspectCalls, 1);
+  assert.equal(
+    opLog.some((op) => op.kind === "read" || op.kind === "queue"),
+    false,
+  );
+
+  // Load older page via session/page -> ChThreadHistory.olderPage calls thread/turns/list.
+  const pageResult = await rpc.dispatch("session/page", {
+    args: {
+      request: {
+        sessionId: parentSessionId,
+        throughSeq: firstSnap.cursor,
+        beforeSeq: defined(firstSnap.records[0]).event.seq,
+      },
+    },
+  });
+  assert.ok(pageResult.ok);
+  assert.ok(rpcLog.some((r) => r.method === "thread/turns/list"));
+
+  // Push a new turn via Peer changed event (no polling) and verify it appears in followFrames.
+  parentRow.turns.push({
+    id: "turn-13",
+    status: "completed",
+    items: [
+      { id: "u-13", type: "userMessage", content: [{ type: "text", text: "Live Q13" }] },
+      { id: "a-13", type: "agentMessage", text: "Live A13" },
+    ],
+  });
+  parentRow.updatedAt += 10;
+  emit({
+    type: "changed",
+    cursor: { epoch, sequence: ++seq },
+    threadId: parentRow.id,
+    method: "turn/completed",
+  });
+  for (let i = 0; i < 40 && !JSON.stringify(followFrames).includes("Live A13"); i++) {
+    await sleep(25);
+  }
+  assert.match(JSON.stringify(followFrames), /Live A13/);
+  // codexhost/thread/inspect was NOT re-called on same-view refresh!
+  assert.equal(inspectCalls, 1);
+
+  // Configuring model invalidates inspect cache so the next read re-inspects.
+  const selectResult = await rpc.dispatch("session/selectModel", {
+    args: { request: { sessionId: parentSessionId, provider: "claude-code", model: "claude-two" } },
+  });
+  assert.ok(selectResult.ok, JSON.stringify(selectResult));
+  assert.equal(inspectCalls, 2);
+
+  // Close follow sink and verify no further snapshots occur on subsequent events.
+  followClosed = true;
+  for (const fn of closeListeners) fn();
+  const snapsAfterClose = snapshotCalls;
+  emit({
+    type: "changed",
+    cursor: { epoch, sequence: ++seq },
+    threadId: parentRow.id,
+    method: "turn/completed",
+  });
+  await sleep(160);
+  assert.equal(snapshotCalls, snapsAfterClose);
+
+  // 3. Peer draft modelCatalog uses source.catalog.models() without projectHarnesses/inspectHarness ops.
+  const ws = defined(workspaces.list().find((w) => w.remote?.hostId === hostId));
+  const created = await rpc.dispatch("session/create", {
+    args: { request: { workspaceId: ws.workspaceId } },
+  });
+  assert.ok(created.ok);
+  const draftId = (created.value as { sessionId: string }).sessionId;
+  const draftCatalog = await rpc.dispatch("session/modelCatalog", {
+    args: { request: { sessionId: draftId } },
+  });
+  assert.ok(draftCatalog.ok);
+  assert.deepEqual((draftCatalog.value as { routableProviders: string[] }).routableProviders, [
+    "claude-code",
+  ]);
+  assert.equal(
+    opLog.some((op) => op.kind === "projectHarnesses" || op.kind === "inspectHarness"),
+    false,
+  );
+
+  // 4. Archive & unarchive cascade to child thread via source.tree.archive.
+  const archiveReply = await rpc.dispatch("workspace/archiveSession", {
+    args: { request: { sessionId: parentSessionId } },
+  });
+  assert.ok(archiveReply.ok);
+  assert.equal(archivedIds.has(parentRow.id), true);
+  assert.equal(archivedIds.has(childRow.id), true);
+
+  const unarchiveReply = await rpc.dispatch("workspace/unarchiveSession", {
+    args: { request: { sessionId: parentSessionId } },
+  });
+  assert.ok(unarchiveReply.ok);
+  assert.equal(archivedIds.has(parentRow.id), false);
+  assert.equal(archivedIds.has(childRow.id), false);
+});
+
+it("derives remote list titles via threadListTitle without leaking cwd and generates titles on peer firstTurn", async (t) => {
+  const hostId = "remote-peer:title-peer";
+  const epoch = "epoch-title-1";
+  const rows: ChThread[] = [
+    {
+      id: "uuid-posix",
+      name: null,
+      preview: "",
+      cwd: "/remote/合同处理",
+      modelProvider: "openai",
+      createdAt: 1,
+      updatedAt: 10,
+      status: { type: "active" },
+      turns: [],
+    },
+    {
+      id: "uuid-whitespace",
+      name: "   ",
+      preview: "  \n\t  ",
+      cwd: "/remote/project-a",
+      modelProvider: "openai",
+      createdAt: 1,
+      updatedAt: 9,
+      status: { type: "idle" },
+      turns: [],
+    },
+    {
+      id: "uuid-win",
+      name: null,
+      preview: "",
+      cwd: "C:\\Users\\dev\\合同处理",
+      modelProvider: "openai",
+      createdAt: 1,
+      updatedAt: 8,
+      status: { type: "idle" },
+      turns: [],
+    },
+    {
+      id: "uuid-long",
+      name: null,
+      preview: `  hello\n\t ${"a".repeat(90)}`,
+      cwd: "/remote/x",
+      modelProvider: "openai",
+      createdAt: 1,
+      updatedAt: 7,
+      status: { type: "idle" },
+      turns: [],
+    },
+  ];
+  const createdThread: ChThread = {
+    id: "uuid-created",
+    name: null,
+    preview: "",
+    cwd: "/remote/合同处理",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 20,
+    status: { type: "active" },
+    turns: [],
+  };
+  let createdInCatalog = false;
+  let releaseTitle: (() => void) | undefined;
+  const titleGate = new Promise<void>((resolve) => {
+    releaseTitle = resolve;
+  });
+  let generateCalls = 0;
+
+  const manifest = {
+    version: "1",
+    epoch,
+    platform: process.platform,
+    hostname: "title-peer",
+    homeDir: "/remote",
+    projects: [{ id: "proj-1", name: "合同处理", path: "/remote/合同处理", threadIds: [] }],
+  };
+  const transport: PeerChTransport = {
+    manifest: () => manifest,
+    subscribe: (listener) => {
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true });
+      return () => {};
+    },
+    async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      if (route === "snapshot") {
+        const req = body as { threadId: string };
+        const found =
+          (createdInCatalog && req.threadId === createdThread.id
+            ? createdThread
+            : rows.find((r) => r.id === req.threadId)) ?? createdThread;
+        return {
+          cursor: { epoch, sequence: 1 },
+          thread: found,
+          turnsPage: { data: [], nextCursor: null },
+          configuration: {},
+          interactions: [],
+        } as T;
+      }
+      const { method, params } = body as { method: string; params: Record<string, unknown> };
+      const activeRows = createdInCatalog ? [...rows, createdThread] : rows;
+      if (method === "codexhost/thread/catalog/read") {
+        return {
+          threads: activeRows,
+          ownership: activeRows.map((r) => ({ threadId: r.id, owner: "codex" })),
+          officialCursor: { live: null },
+          archivedThreadIds: [],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
+      if (method === "codexhost/harness/plugins/list") return { plugins: [] } as T;
+      if (method === "codexhost/harness/inspect") {
+        return {
+          status: "ready",
+          catalog: {
+            models: [{ ref: { id: "gpt-5.4" }, label: "GPT-5.4", supportedThinkingOptionIds: [] }],
+            defaultModel: { id: "gpt-5.4" },
+            thinkingOptions: [],
+          },
+          capabilities: {
+            configuration: {
+              selectModel: true,
+              selectThinkingOption: false,
+              selectPermissionMode: false,
+              permissionModeScope: "live",
+            },
+            history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+          },
+        } as T;
+      }
+      if (method === "codexhost/thread/title/generate") {
+        generateCalls += 1;
+        await titleGate;
+        return "合同要点整理" as T;
+      }
+      if (method === "thread/read") {
+        return { thread: createdThread } as T;
+      }
+      if (method === "thread/name/set") {
+        createdThread.name = String(params.name ?? "");
+        return {} as T;
+      }
+      return {} as T;
+    },
+  };
+
+  const root = mkdtempSync(join(tmpdir(), "remote-title-"));
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const events = new EventHub("remote-title");
+  const peerSource = new PeerThreadSource({
+    hostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(hostId),
+    onThreadChanged: () => undefined,
+    onConnection: () => undefined,
+  });
+  const remote: RemoteSessions = new RemoteSessions(
+    events,
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          {
+            hostId,
+            online: true,
+            epoch,
+            displayName: "title-peer",
+            projects: manifest.projects,
+          },
+        ];
+      }
+      if (op.kind === "create" || op.kind === "startSelected") {
+        createdInCatalog = true;
+        return { thread: createdThread };
+      }
+      if (op.kind === "prompt") {
+        return { turn: { id: "turn-1" } };
+      }
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    { source: (id) => (id === hostId ? peerSource : undefined) },
+  );
+  t.after(() => {
+    releaseTitle?.();
+    remote.close();
+    peerSource.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  for (const method of ["session/list", "session/create", "session/prompt"]) {
+    rpc.register(method, () => (method === "session/list" ? { items: [] } : {}));
+  }
+  workspaces.register(rpc, streams);
+  remote.install(rpc, streams);
+  await remote.refresh();
+
+  type ListEntry = {
+    sessionId: string;
+    cwd: string;
+    projections: { values: { title: string } };
+  };
+  const listSessions = async (): Promise<ListEntry[]> => {
+    const res = await rpc.dispatch("session/list", {});
+    assert.ok(res.ok);
+    return (res.value as { items: ListEntry[] }).items;
+  };
+
+  const listed = await listSessions();
+  const byId = new Map(listed.map((s) => [s.sessionId, s]));
+  const posixSession = defined(byId.get(remoteSessionId(hostId, "uuid-posix")));
+  assert.equal(posixSession.projections.values.title, "合同处理");
+  assert.equal(posixSession.cwd, "");
+
+  assert.equal(
+    defined(byId.get(remoteSessionId(hostId, "uuid-whitespace"))).projections.values.title,
+    "project-a",
+  );
+  assert.equal(
+    defined(byId.get(remoteSessionId(hostId, "uuid-win"))).projections.values.title,
+    "合同处理",
+  );
+  assert.equal(
+    defined(byId.get(remoteSessionId(hostId, "uuid-long"))).projections.values.title,
+    `${`hello ${"a".repeat(90)}`.slice(0, 80)}…`,
+  );
+
+  // Creating a new peer session and sending its first turn shows project basename before title generation,
+  // then updates to the generated title via tryGenerateThreadTitle + hostsChanged.
+  const ws = defined(workspaces.list().find((w) => w.remote?.hostId === hostId));
+  const created = await rpc.dispatch("session/create", {
+    args: { request: { workspaceId: ws.workspaceId } },
+  });
+  assert.ok(created.ok);
+  const draftId = (created.value as { sessionId: string }).sessionId;
+  const sent = await rpc.dispatch("session/prompt", {
+    args: {
+      request: {
+        sessionId: draftId,
+        content: [{ type: "text", text: "帮我整理这份合同要点" }],
+      },
+    },
+  });
+  assert.ok(sent.ok, JSON.stringify(sent));
+
+  const createdSessionId = remoteSessionId(hostId, createdThread.id);
+  const beforeTitle = defined((await listSessions()).find((s) => s.sessionId === createdSessionId));
+  assert.equal(beforeTitle.projections.values.title, "合同处理");
+  assert.equal(beforeTitle.cwd, "");
+
+  releaseTitle?.();
+  for (let i = 0; i < 60; i++) {
+    const afterTitle = (await listSessions()).find((s) => s.sessionId === createdSessionId);
+    if (afterTitle?.projections.values.title === "合同要点整理") break;
+    await sleep(25);
+  }
+  assert.equal(generateCalls, 1);
+  assert.equal(
+    defined((await listSessions()).find((s) => s.sessionId === createdSessionId)).projections.values
+      .title,
+    "合同要点整理",
+  );
+});
+
+it("removes disabled peer entries/workspaces without writing back in-flight listThreads() results", async (t) => {
+  const hostId = "remote-peer:disable-race";
+  const epoch = "epoch-disable-1";
+  const row: ChThread = {
+    id: "t-race",
+    name: "Race Thread",
+    cwd: "/remote/race",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 10,
+    status: { type: "idle" },
+    turns: [],
+  };
+  let enabled = true;
+  let holdCatalog = false;
+  let catalogStarted = Promise.withResolvers<undefined>();
+  let catalogGate = Promise.withResolvers<undefined>();
+
+  const transport: PeerChTransport = {
+    manifest: () => ({
+      version: "1",
+      epoch,
+      platform: process.platform,
+      hostname: "race-peer",
+      homeDir: "/remote",
+      projects: [{ id: "proj-race", name: "Race Repo", path: "/remote/race", threadIds: [] }],
+    }),
+    subscribe: (listener) => {
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true });
+      return () => {};
+    },
+    async post<T>(_route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const { method } = body as { method: string };
+      if (method === "codexhost/thread/catalog/read") {
+        if (holdCatalog) {
+          catalogStarted.resolve(undefined);
+          await catalogGate.promise;
+        }
+        return {
+          threads: [row],
+          ownership: [{ threadId: row.id, owner: "codex" }],
+          officialCursor: { live: null },
+          archivedThreadIds: [],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
+      return {} as T;
+    },
+  };
+
+  const root = mkdtempSync(join(tmpdir(), "remote-disable-race-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const events = new EventHub("remote-disable-race");
+  const removed: string[] = [];
+  const origEmit = events.emit.bind(events);
+  events.emit = (event, ...args) => {
+    if (event === "api-session/removed" && typeof args[0] === "string") removed.push(args[0]);
+    origEmit(event, ...args);
+  };
+  const source = new PeerThreadSource({
+    hostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(hostId),
+    onThreadChanged: () => undefined,
+    onConnection: () => undefined,
+  });
+  const remote: RemoteSessions = new RemoteSessions(
+    events,
+    async (op) => {
+      if (op.kind === "hosts") {
+        return enabled
+          ? [
+              {
+                hostId,
+                online: true,
+                epoch,
+                displayName: "Race Peer",
+                projects: [
+                  { id: "proj-race", name: "Race Repo", path: "/remote/race", threadIds: [] },
+                ],
+              },
+            ]
+          : [];
+      }
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    { source: (id) => (enabled && id === hostId ? source : undefined) },
+  );
+  t.after(() => {
+    catalogGate.resolve(undefined);
+    remote.close();
+    source.close();
+  });
+
+  const rpc = new RpcRegistry();
+  rpc.register("session/list", () => ({ items: [] }));
+  remote.install(rpc, new StreamRegistry());
+
+  await remote.refresh();
+  const sessionId = remoteSessionId(hostId, row.id);
+  const before = await rpc.dispatch("session/list", {});
+  assert.ok(before.ok);
+  assert.ok(
+    (before.value as { items: Array<{ sessionId: string }> }).items.some(
+      (item) => item.sessionId === sessionId,
+    ),
+  );
+  assert.ok(workspaces.list().some((w) => w.remote?.hostId === hostId));
+
+  // Start an in-flight listThreads() and disable the peer before it resolves.
+  holdCatalog = true;
+  catalogStarted = Promise.withResolvers<undefined>();
+  catalogGate = Promise.withResolvers<undefined>();
+  const inFlight = remote.refresh();
+  await catalogStarted.promise;
+
+  enabled = false;
+  remote.hostsChanged(hostId);
+  catalogGate.resolve(undefined);
+  await inFlight;
+  for (let i = 0; i < 40 && !removed.includes(sessionId); i++) await sleep(15);
+
+  assert.ok(removed.includes(sessionId));
+  assert.equal(
+    workspaces.list().some((w) => w.remote?.hostId === hostId),
+    false,
+  );
+  const after = await rpc.dispatch("session/list", {});
+  assert.ok(after.ok);
+  assert.equal(
+    (after.value as { items: Array<{ sessionId: string }> }).items.some(
+      (item) => item.sessionId === sessionId,
+    ),
+    false,
+  );
+});
+
+it("does not re-traverse synced online peers on ordinary session/list or 30s timer and coalesces burst hostsChanged", async (t) => {
+  const peerHostId = "remote-peer:quiet-peer";
+  const desktopHostId = "remote-control:desktop-1";
+  const epoch = "epoch-quiet-1";
+  let peerCatalogReads = 0;
+  let desktopListReads = 0;
+  const peerRow: ChThread = {
+    id: "t-peer",
+    name: "Peer Thread",
+    cwd: "/remote/peer",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 10,
+    status: { type: "idle" },
+    turns: [],
+  };
+  const transport: PeerChTransport = {
+    manifest: () => ({
+      version: "1",
+      epoch,
+      platform: process.platform,
+      hostname: "quiet-peer",
+      homeDir: "/remote",
+      projects: [{ id: "proj-q", name: "Quiet", path: "/remote/peer", threadIds: [] }],
+    }),
+    subscribe: (listener) => {
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true });
+      return () => {};
+    },
+    async post<T>(_route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const { method } = body as { method: string };
+      if (method === "codexhost/thread/catalog/read") {
+        peerCatalogReads += 1;
+        return {
+          threads: [peerRow],
+          ownership: [{ threadId: peerRow.id, owner: "codex" }],
+          officialCursor: { live: null },
+          archivedThreadIds: [],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
+      return {} as T;
+    },
+  };
+
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const root = mkdtempSync(join(tmpdir(), "remote-quiet-peer-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const source = new PeerThreadSource({
+    hostId: peerHostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(peerHostId),
+    onThreadChanged: () => undefined,
+    onConnection: () => undefined,
+  });
+  const remote: RemoteSessions = new RemoteSessions(
+    new EventHub("remote-quiet-peer"),
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          {
+            hostId: peerHostId,
+            online: true,
+            epoch,
+            displayName: "Quiet Peer",
+            projects: [{ id: "proj-q", name: "Quiet", path: "/remote/peer", threadIds: [] }],
+          },
+          { hostId: desktopHostId, online: true, displayName: "Desktop" },
+        ];
+      }
+      if (op.kind === "list" && op.hostId === desktopHostId) {
+        desktopListReads += 1;
+        return { data: [], nextCursor: null };
+      }
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    new Workspaces(new DataDir(root), root),
+    { source: (id) => (id === peerHostId ? source : undefined) },
+  );
+  t.after(() => {
+    remote.close();
+    source.close();
+  });
+
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  rpc.register("session/list", () => ({ items: [] }));
+  let streamRouter: Parameters<StreamRegistry["routeSessions"]>[0] | undefined;
+  streams.routeSessions = (value) => {
+    streamRouter = value;
+  };
+  remote.install(rpc, streams);
+
+  // Register a control subscriber so the 30s interval timer is active.
+  await defined(streamRouter)(
+    "session/control",
+    {},
+    {
+      id: "ctrl",
+      closed: false,
+      push() {},
+      end() {},
+      fail() {},
+      onClose() {},
+    },
+    async (wrapped) => {
+      wrapped.push({ type: "baseline" });
+    },
+  );
+
+  // Initial refresh syncs both the peer and desktop hosts once.
+  await remote.refresh();
+  assert.equal(peerCatalogReads, 1);
+  assert.equal(desktopListReads, 1);
+
+  // Ordinary session/list must not re-traverse the already-synced online peer,
+  // while still refreshing the non-event-driven desktop host.
+  await rpc.dispatch("session/list", {});
+  await sleep(30);
+  assert.equal(peerCatalogReads, 1);
+  assert.equal(desktopListReads, 2);
+
+  // 30s periodic timer also skips the already-synced online peer while keeping desktop polling.
+  t.mock.timers.tick(30_000);
+  await sleep(30);
+  assert.equal(peerCatalogReads, 1);
+  assert.equal(desktopListReads, 3);
+
+  // Burst hostsChanged calls for the same peer coalesce into a single deferred traversal.
+  remote.hostsChanged(peerHostId);
+  remote.hostsChanged(peerHostId);
+  remote.hostsChanged(peerHostId);
+  await sleep(100);
+  assert.equal(peerCatalogReads, 1);
+  await sleep(700);
+  assert.equal(peerCatalogReads, 2);
+});
+
+it("publishes peer manifest projects and connected state before slow catalog pagination finishes", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "codexhost-peer-early-groups-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const peerHostId = "remote-peer:slow-catalog";
+  const epoch = "epoch-early";
+  const catalogGate = Promise.withResolvers<undefined>();
+  let connected = false;
+  let catalogStarted = false;
+
+  const transport: PeerChTransport = {
+    async post(route, body) {
+      if (route === "rpc") {
+        const { method } = body as { method: string };
+        if (method === "codexhost/thread/catalog/read") {
+          catalogStarted = true;
+          await catalogGate.promise;
+          return {
+            threads: [],
+            archivedThreadIds: [],
+            ownership: [],
+            nextCursor: null,
+          } as never;
+        }
+        if (method === "codexhost/thread/tree/read") return { entries: [] } as never;
+      }
+      throw new Error(`Unexpected peer request: ${route}`);
+    },
+    subscribe(listener) {
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+      return () => {};
+    },
+    manifest: () => undefined,
+  };
+
+  const source = new PeerThreadSource({
+    hostId: peerHostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => {},
+    onThreadChanged: () => {},
+    onConnection: () => {},
+  });
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const remote = new RemoteSessions(
+    new EventHub("peer-early-groups"),
+    async (op) => {
+      if (op.kind === "hosts") {
+        return connected
+          ? [
+              {
+                hostId: peerHostId,
+                online: true,
+                epoch,
+                displayName: "home",
+                state: "connected",
+                projects: [
+                  { id: "p-1", name: "alpha", path: "/remote/alpha", threadIds: [] },
+                  { id: "p-2", name: "beta", path: "/remote/beta", threadIds: [] },
+                ],
+              },
+            ]
+          : [
+              {
+                hostId: peerHostId,
+                online: false,
+                displayName: "home",
+                state: "connecting",
+              },
+            ];
+      }
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    { source: (id) => (id === peerHostId ? source : undefined) },
+  );
+  t.after(() => {
+    catalogGate.resolve(undefined);
+    remote.close();
+    source.close();
+  });
+
+  // Initial connecting state shows the fallback placeholder group.
+  await remote.refresh();
+  const initialRemote = workspaces.list().filter((w) => w.remote?.hostId === peerHostId);
+  assert.equal(initialRemote.length, 1);
+  assert.equal(initialRemote[0]?.remote?.state, "connecting");
+  assert.equal(initialRemote[0]?.title, "home");
+
+  // Once manifest arrives, start refresh while catalog pagination is still blocked.
+  connected = true;
+  const refreshPromise = remote.refresh();
+  await sleep(30);
+  assert.equal(catalogStarted, true);
+
+  // Real projects and connected state must already be published before catalog pagination ends.
+  const earlyRemote = workspaces.list().filter((w) => w.remote?.hostId === peerHostId);
+  assert.deepEqual(
+    earlyRemote.map((w) => ({ title: w.title, state: w.remote?.state })),
+    [
+      { title: "alpha", state: "connected" },
+      { title: "beta", state: "connected" },
+    ],
+  );
+
+  catalogGate.resolve(undefined);
+  await refreshPromise;
 });

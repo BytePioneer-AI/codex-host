@@ -60,9 +60,9 @@ async function list(f: Fixture, id: number, params: JsonObject = {}) {
 }
 
 /** Model an Adapter that reports its identity on the first submitted Turn. */
-function deferIdentity(f: Fixture) {
+function deferIdentity(f: Fixture, timing: "before-turn" | "after-turn" = "before-turn") {
   const open = f.adapter.open.bind(f.adapter);
-  vi.spyOn(f.adapter, "open").mockImplementation(async (input) => {
+  return vi.spyOn(f.adapter, "open").mockImplementation(async (input) => {
     const result = await open(input);
     if (result.ok) {
       const state = result.value.initialState;
@@ -73,10 +73,14 @@ function deferIdentity(f: Fixture) {
       Object.defineProperty(result.value, "outputs", {
         value: (async function* (): AsyncGenerator<HarnessOutput> {
           for await (const output of outputs) {
-            if (output.kind === "event" && output.event.type === "turn.started") {
+            const startsTurn = output.kind === "event" && output.event.type === "turn.started";
+            if (startsTurn && timing === "before-turn") {
               yield { kind: "event", event: { type: "session.state.changed", state } };
             }
             yield output;
+            if (startsTurn && timing === "after-turn") {
+              yield { kind: "event", event: { type: "session.state.changed", state } };
+            }
           }
         })(),
       });
@@ -120,6 +124,53 @@ describe("external Thread prewarm lifecycle", () => {
       }
     },
   );
+
+  it("announces a submitted prewarm before its first Turn even when Native identity arrives later", async () => {
+    const f = createFixture();
+    answerEmptyOfficialLists(f);
+    const delayed = deferIdentity(f, "after-turn");
+    try {
+      const threadId = hostThreadIdSchema.parse(
+        await startExternalThread(f, "codexhost/pi-native", 1, { codexhostPrewarm: true }),
+      );
+      expect(await list(f, 10)).toEqual([]);
+      expect(startedThreads(f, threadId)).toEqual([]);
+
+      const turnId = await startPiTurn(f, threadId);
+      const started = await f.collector.waitFor((message) => message.method === "turn/started");
+      expect(started).toMatchObject({ params: { threadId, turn: { id: turnId } } });
+      firstSession(f).succeedTurn();
+      expect(
+        await f.collector.waitFor((message) => message.method === "turn/completed"),
+      ).toMatchObject({ params: { threadId, turn: { id: turnId, status: "completed" } } });
+      expect(await f.mappingStore.getThread(threadId)).toMatchObject({ state: "ready" });
+      const announcements = startedThreads(f, threadId);
+      expect(announcements).toHaveLength(1);
+      expect(f.collector.messages.slice(0, f.collector.messages.indexOf(started))).toContain(
+        announcements[0],
+      );
+
+      writeRequest(f.desktopInput, { id: 11, method: "thread/delete", params: { threadId } });
+      expect(await f.collector.waitFor((message) => message.id === 11)).toMatchObject({
+        result: {},
+      });
+      expect(
+        await f.collector.waitFor((message) => message.method === "thread/deleted"),
+      ).toMatchObject({ params: { threadId } });
+      expect(await f.mappingStore.getThread(threadId)).toBeNull();
+
+      // Reuse the deleted ID at the storage boundary to observe whether it can announce again.
+      delayed.mockRestore();
+      const create = f.mappingStore.createProvisional.bind(f.mappingStore);
+      vi.spyOn(f.mappingStore, "createProvisional").mockImplementationOnce((input) =>
+        create({ ...input, hostThreadId: threadId }),
+      );
+      expect(await startExternalThread(f, "codexhost/pi-native", 12)).toBe(threadId);
+      await vi.waitFor(() => expect(startedThreads(f, threadId)).toHaveLength(2));
+    } finally {
+      await stopFixture(f);
+    }
+  });
 
   it("accepts the prewarm marker carried by the Model when Desktop drops the start parameter", async () => {
     const f = createFixture();

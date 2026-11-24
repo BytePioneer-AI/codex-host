@@ -166,6 +166,7 @@ export interface ModelCatalogFailure {
   readonly id: string;
   readonly name: string;
   readonly message: string;
+  readonly credentialAccessRequired?: true;
 }
 
 /** Host-generation model catalog and the default used by unconfigured Sessions. */
@@ -176,7 +177,7 @@ export interface ModelCatalog {
   readonly preferencesAvailable?: boolean;
   /** Presentation only, shared with Desktop; includes unavailable Harness rows. */
   readonly harnessOrder?: readonly string[];
-  readonly default: ModelSelection;
+  readonly default?: ModelSelection;
   /** Provider routes with at least one currently available catalog model. */
   readonly routableProviders: readonly string[];
   readonly groups: readonly ModelProviderGroup[];
@@ -251,6 +252,7 @@ declare module "@deepseek-ai/dsh-typert-protocol" {
     "session/tool-output-stale": Record<string, never>;
     "session/queue-item-not-found": { readonly itemId: MessageId };
     "session/steer-unavailable": { readonly itemId: MessageId };
+    "remote/turn-changed": Record<string, never>;
     "session/title-invalid": { readonly sessionId: SessionId };
     "session/fork-unavailable": { readonly sessionId: SessionId };
     "subagent/not-found": {
@@ -294,6 +296,8 @@ export interface SessionListRequest {
   /** Resolve one direct-link identity without enumerating its historical page. */
   readonly sessionId?: SessionId;
   readonly cursor?: string;
+  /** With a cursor: read on until the page reaches a Session of this Workspace. */
+  readonly workspaceId?: WorkspaceId;
   /** Include archived summaries in this request; defaults to false. */
   readonly includeArchived?: boolean;
 }
@@ -372,6 +376,10 @@ export interface SessionPromptRequest {
   readonly requestId: SessionRequestId;
   readonly sessionId: SessionId;
   readonly mode: "queue" | "steer";
+  /** A normal remote send made while idle can use the legacy idle entry point. */
+  readonly sendWhenIdle?: true;
+  /** Host Turn observed at the send gesture. Null means no target was observed. */
+  readonly expectedTurnId?: string | null;
   /** At least one non-whitespace text part or attachment. */
   readonly content: readonly PromptContentPart[];
   readonly clientTimeZone?: string;
@@ -380,6 +388,8 @@ export interface SessionPromptRequest {
 /** Receipt after one prompt enters the target Agent inbox. */
 export interface SessionPromptValue {
   readonly accepted: true;
+  /** Queue admission is confirmed. The subsequent automatic start was not confirmed. */
+  readonly queueStartUnconfirmed?: true;
 }
 
 /** Durable image read request. */
@@ -418,6 +428,8 @@ export interface SessionCancelValue {
 
 /** Request to open one path prepared by a Session-aware caller on the Host desktop. */
 export interface SessionOpenWorkspacePathRequest {
+  /** Session owning the requested path; remote sessions are rejected by the Hub. */
+  readonly sessionId?: SessionId;
   /** File-manager navigation when requested; omission uses the default application. */
   readonly action?: "reveal";
   /** Registered application identifier; ignored for reveal. Omission preserves the operating system default. */

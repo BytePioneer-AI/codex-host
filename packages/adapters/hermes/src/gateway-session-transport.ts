@@ -32,6 +32,10 @@ import {
   type GatewayRecord,
 } from "./gateway-transport.js";
 import { HermesGatewayHistory } from "./gateway-history.js";
+import type {
+  HermesGatewayModelResolver,
+  HermesGatewayModelSelection,
+} from "./hermes-inventory.js";
 
 export const hermesGatewayThinkingOptions: HarnessThinkingOption[] = [
   "none",
@@ -188,6 +192,9 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
   #adoptedPrompts: GatewayRecord[] = [];
   #closed = false;
   #info: GatewayRecord;
+  #publishTitle: ((title: string) => void) | undefined;
+  #titleReadPending = false;
+  #titleReadRunning = false;
   #revision: number | null = null;
   #generation: number | null = null;
   #subscriptionId: string | null = null;
@@ -200,6 +207,7 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     info: GatewayRecord,
     bookkeeping: { revision?: unknown; generation?: unknown; subscriptionId?: unknown } = {},
     delegationGuidance: string | null = null,
+    private readonly resolveGatewayModel?: HermesGatewayModelResolver,
   ) {
     this.#info = info;
     this.#delegationGuidance = delegationGuidance;
@@ -219,14 +227,44 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     };
     transport.onFault = (error) => this.#fault(error);
   }
-  async openResult(): Promise<HermesOpenResult> {
+  watchTitle(publish: (title: string) => void): void {
+    this.#publishTitle = publish;
+    void this.#refreshTitle();
+  }
+  async #refreshTitle(): Promise<void> {
+    if (!this.#publishTitle || !gatewayString(this.#info.title).trim()) return;
+    this.#titleReadPending = true;
+    if (this.#titleReadRunning) return;
+    this.#titleReadRunning = true;
+    try {
+      while (this.#titleReadPending && !this.#closed && this.#publishTitle) {
+        this.#titleReadPending = false;
+        // The same title text can appear in both the derived and finalized info frames.
+        // Read provenance from the attached profile instead of adopting the first frame.
+        const title = await this.history.readTitle().catch(() => null);
+        // A session.info that arrived during the read may carry a newer title; re-read before publishing.
+        if (this.#titleReadPending) continue;
+        if (!title || this.#closed) continue;
+        const publish = this.#publishTitle;
+        this.#publishTitle = undefined;
+        publish(title);
+      }
+    } finally {
+      this.#titleReadRunning = false;
+    }
+  }
+  async openResult(confirmedSelection?: HermesGatewayModelSelection): Promise<HermesOpenResult> {
     const reasoning = await this.transport.request("config.get", {
       key: "reasoning",
       session_id: this.sessionId,
     });
     const currentThinkingOptionId = gatewayString(reasoning.value);
-    const model = gatewayString(this.#info.model);
-    const provider = gatewayString(this.#info.provider);
+    // A session.info event may omit the provider even after the mutation
+    // receipt confirmed it. Keep the confirmed route in the opening snapshot.
+    const model = confirmedSelection?.provider
+      ? confirmedSelection.model
+      : gatewayString(this.#info.model);
+    const provider = confirmedSelection?.provider ?? gatewayString(this.#info.provider);
     const currentModelId = provider ? `${provider}:${model}` : model;
     return {
       sessionId: this.nativeSessionId,
@@ -274,12 +312,12 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       throw new Error("Hermes did not confirm reasoning selection");
     return optionId;
   }
-  async setModel(modelId: string): Promise<void> {
+  async setModel(modelId: string, selection?: HermesGatewayModelSelection): Promise<void> {
     // Canonical wire: a model pick is the revision-fenced `session.mutate`
     // operation `model` — `config.set key=model` is refused with
-    // `use_session_mutation_model` on this channel. The gateway runs Hermes's
-    // own provider-aware resolution (switch_model) on the qualified id, so no
-    // helper interpreter pre-splits it.
+    // `use_session_mutation_model` on this channel.
+    const payload = selection ?? (await this.resolveGatewayModel?.(modelId)) ?? { model: modelId };
+    if (this.#closed) throw new Error("Hermes gateway Session is unavailable");
     const revision = this.#revision;
     const generation = this.#generation;
     if (revision === null || generation === null)
@@ -290,7 +328,7 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       expected_revision: revision,
       expected_generation: generation,
       operation: "model",
-      payload: { model: modelId },
+      payload,
     });
     if (typeof result.revision === "number") this.#revision = result.revision;
     if (typeof result.execution_generation === "number")
@@ -299,8 +337,10 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
     // the mutation receipt carries the committed pick.
     const actualModel = gatewayString(result.model);
     const actualProvider = gatewayString(result.provider);
-    if (modelId !== actualModel && modelId !== `${actualProvider}:${actualModel}`)
-      throw new Error("Hermes did not confirm the requested Model");
+    const confirmed = payload.provider
+      ? actualModel === payload.model && actualProvider === payload.provider
+      : modelId === actualModel || modelId === `${actualProvider}:${actualModel}`;
+    if (!confirmed) throw new Error("Hermes did not confirm the requested Model");
   }
   async setPermissionMode(modeId: string): Promise<void> {
     if (modeId !== "default" && modeId !== "dont_ask")
@@ -498,6 +538,7 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       if (typeof payload.revision === "number") this.#revision = payload.revision;
       if (typeof payload.execution_generation === "number")
         this.#generation = payload.execution_generation;
+      void this.#refreshTitle();
       return;
     }
     if (event.type === "session.usage") {

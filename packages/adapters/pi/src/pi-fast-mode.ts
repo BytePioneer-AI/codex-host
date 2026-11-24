@@ -3,8 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import type { HarnessModelCatalog } from "@codexhost/shared-contracts";
-import { decodePiModelRef, encodePiModelRef, type PiNativeModel } from "./pi-model-catalog.js";
+import type { PiNativeModel } from "./pi-model-catalog.js";
 
 export const PI_FAST_COMMAND = "codexhost-fast-mode";
 export const PI_FAST_ACK = "codexhost-fast-mode:";
@@ -84,28 +83,9 @@ export async function ensurePiFastExtension(environment: NodeJS.ProcessEnv): Pro
 }
 
 /** Eligible request targets; upstream acceptance of priority is not guaranteed. */
-export function piFastModelKeys(models: readonly PiNativeModel[]): Set<string> {
-  return new Set(
-    models
-      .filter(
-        (model) =>
-          (model.api === "openai-codex-responses" || model.api === "openai-responses") &&
-          /gpt/i.test(model.id),
-      )
-      .map((model) => encodePiModelRef(model).id),
+export function supportsPiFastModel(model: PiNativeModel): boolean {
+  return (
+    (model.api === "openai-codex-responses" || model.api === "openai-responses") &&
+    /gpt/i.test(model.id)
   );
-}
-
-export function withPiFast(
-  catalog: HarnessModelCatalog,
-  supported: ReadonlySet<string>,
-): HarnessModelCatalog {
-  return {
-    ...catalog,
-    models: catalog.models.map((model) =>
-      supported.has(model.ref.id)
-        ? { ...model, fastModel: encodePiModelRef({ ...decodePiModelRef(model.ref), fast: true }) }
-        : model,
-    ),
-  };
 }

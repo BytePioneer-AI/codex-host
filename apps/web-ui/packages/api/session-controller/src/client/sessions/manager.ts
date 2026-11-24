@@ -62,6 +62,8 @@ export interface SessionListSnapshot {
   error: RemoteFailure | null;
   /** Which existing list operation retries the failed request, independent of hasMore. */
   errorPage: "head" | "more" | null;
+  /** The Workspace a failed explicit page read on for; its retry keeps that scope. */
+  errorWorkspaceId: WorkspaceId | null;
   hasMore: boolean;
   /** Accepted successful head refreshes only; not a catalog-membership completeness claim. */
   headRefreshRevision?: number;
@@ -131,6 +133,7 @@ export class SessionManager {
   private listPhase: SessionListPhase = "pending";
   private listError: RemoteFailure | null = null;
   private listRequestIsMore = false;
+  private listRequestWorkspaceId: WorkspaceId | undefined;
   private headRefreshRevision = 0;
   private listInflight: Promise<void> | null = null;
   /** Browser-local query scope, retained across reconnects and automatic refreshes. */
@@ -466,20 +469,24 @@ export class SessionManager {
     }
   }
 
-  /** Fetch exactly one older native page in this browser's current scope. */
-  loadMore(): Promise<void> {
+  /**
+   * Fetch one older native page in this browser's current scope. For a Workspace the page
+   * reads on until it reaches one of that Workspace's Sessions or the catalog ends.
+   */
+  loadMore(workspaceId?: WorkspaceId): Promise<void> {
     if (!this.nextCursor) return Promise.resolve();
-    return this.refreshList(this.nextCursor);
+    return this.refreshList(this.nextCursor, workspaceId);
   }
 
   /** Refresh the head or an explicit page, single-flight within this browser and scope. */
-  refreshList(cursor?: string): Promise<void> {
+  refreshList(cursor?: string, workspaceId?: WorkspaceId): Promise<void> {
     if (this.disposed) return Promise.resolve();
     if (this.listInflight !== null) return this.listInflight;
     const includeArchived = this.includeArchived;
     this.listState = "loading";
     this.listError = null;
     this.listRequestIsMore = cursor !== undefined;
+    this.listRequestWorkspaceId = cursor === undefined ? undefined : workspaceId;
     const established = this.summaries;
     const mutations: SessionListMutation[] = [];
     this.listMutations = mutations;
@@ -488,7 +495,7 @@ export class SessionManager {
       try {
         const result = await this.remote.session.list({
           includeArchived,
-          ...(cursor ? { cursor } : {}),
+          ...(cursor ? { cursor, ...(workspaceId ? { workspaceId } : {}) } : {}),
         });
         if (this.listMutations !== mutations) return;
         if (result.ok) {
@@ -963,6 +970,8 @@ export class SessionManager {
       phase: this.listPhase,
       error: this.listError,
       errorPage: this.listError ? (this.listRequestIsMore ? "more" : "head") : null,
+      errorWorkspaceId:
+        this.listError && this.listRequestIsMore ? (this.listRequestWorkspaceId ?? null) : null,
       projectionsBySession: Object.fromEntries(
         [...this.projectionStores].map(([sessionId, store]) => [
           sessionId,

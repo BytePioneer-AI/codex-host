@@ -15,6 +15,7 @@ import {
   releaseBuildCommands,
   validatePayload,
 } from "../../scripts/release/prepare-payload.mjs";
+import { linuxGlibcCargoArguments } from "../../scripts/release/linux-glibc.mjs";
 import { expectedWebPaths } from "../../scripts/release/web-resources.mjs";
 import { releaseTarget } from "../../scripts/release/targets.mjs";
 import { preinstalledHarnessPluginPaths } from "../../scripts/release/harness-plugins.mjs";
@@ -60,13 +61,22 @@ describe("release Payload", () => {
       "C:\\node\\node.exe",
       "C:\\node\\node.exe",
       "cargo",
+      "cargo",
     ]);
     expect(commands[0].args).toEqual(["C:\\node\\npm-cli.js", "run", "build:typescript"]);
-    expect(commands.at(-1).args).toContain("aarch64-pc-windows-msvc");
-    expect(commands.at(-1).args).toContain("codexhost-launcher");
-    expect(commands.at(-1).args).toContain("codexhost-shim");
-    expect(commands.at(-1).args).toContain("codexhost-updater");
+    expect(commands[2].args).toContain("aarch64-pc-windows-msvc");
+    expect(commands[2].args).toContain("codexhost-launcher");
+    expect(commands[2].args).toContain("codexhost-shim");
+    expect(commands[2].args).toContain("codexhost-updater");
+    expect(commands[3].args).toContain("apps/desktop-shell/src-tauri/Cargo.toml");
+    expect(commands[3].args).toContain("--release");
+    expect(commands[3].args).toContain("--locked");
+    expect(commands[3].args).toContain("aarch64-pc-windows-msvc");
     expect(() => npmReleaseCommand(["--version"], "win32", {})).toThrow("npm_execpath");
+
+    const linux = releaseBuildCommands(releaseTarget("linux-x64"), "linux");
+    expect(linux.map((command) => command.command)).toEqual(["npm", "npm", "cargo"]);
+    expect(linux[2].args.slice(0, 5)).toEqual(linuxGlibcCargoArguments("x86_64-unknown-linux-gnu"));
   });
 
   it.runIf(process.platform === "win32")("starts the current npm CLI without a batch file", () => {
@@ -110,10 +120,10 @@ describe("release Payload", () => {
       const paths = await validatePayload({ payloadRoot: root, target, root: "/repo/source" });
       expect(paths).toEqual(expectedPayloadPaths(target));
       expect(paths).toHaveLength(
-        33 + preinstalledHarnessPluginPaths().length + expectedWebPaths(target).length,
+        37 + preinstalledHarnessPluginPaths().length + expectedWebPaths(target).length,
       );
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toHaveLength(
-        35 +
+        36 +
           preinstalledHarnessPluginPaths().length +
           expectedWebPaths(releaseTarget("windows-x64")).length,
       );
@@ -131,6 +141,24 @@ describe("release Payload", () => {
       expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
         "bin/codexhost-start.exe",
       );
+      expect(paths).toContain("libexec/CodexHost.app/Contents/Info.plist");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/MacOS/CodexHost");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/Resources/AppIcon.icns");
+      expect(paths).not.toContain("libexec/codexhost-shell");
+      expect(expectedPayloadPaths(releaseTarget("windows-x64"))).toContain(
+        "libexec/codexhost-shell.exe",
+      );
+      const linuxPaths = expectedPayloadPaths(releaseTarget("linux-arm64"));
+      expect(linuxPaths).toHaveLength(
+        33 +
+          preinstalledHarnessPluginPaths().length +
+          expectedWebPaths(releaseTarget("linux-arm64")).length,
+      );
+      expect(linuxPaths).toContain("runtime/node");
+      expect(linuxPaths).toContain(
+        "app/web-modules/node_modules/node-pty/prebuilds/linux-arm64/pty.node",
+      );
+      expect(linuxPaths.filter((relative) => relative.includes("codexhost-shell"))).toEqual([]);
       expect(paths).toContain("libexec/codexhost-updater");
       expect(paths).toContain("app/codexhost-distribution.json");
       expect(paths).not.toContain("release-manifest.json");

@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { it } from "node:test";
 import {
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  THREAD_STEER_STRICT_TARGET_FIELD,
   decodeHarnessPluginRoute,
 } from "@codexhost/shared-contracts";
 import { DataDir } from "../src/store.ts";
@@ -95,6 +96,259 @@ it("shares canonical CH identity and cwd without a Web index/history or physical
   assert.ok(again.items.some((row) => row.sessionId === created.id));
   assert.ok(!again.items.some((row) => row.sessionId === draft.sessionId));
   assert.deepEqual(readdirSync(root), ["workspaces.json"]);
+});
+
+it("uses the first prompt when Web's external Thread title generator returns null or fails", async (t) => {
+  for (const generation of ["null", "failure", "success", "renamed"] as const) {
+    await t.test(generation, async (t) => {
+      const root = mkdtempSync(join(tmpdir(), "ch-first-title-"));
+      const host = new FakeChHost();
+      const title = Promise.withResolvers<string | null>();
+      const request = host.request.bind(host);
+      host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+        if (method === "codexhost/thread/title/generate") return (await title.promise) as T;
+        if (method === "thread/start") {
+          const result = await request<{ thread: { id: string; name: string } }>(method, params);
+          const row = host.threads.get(result.thread.id);
+          assert.ok(row);
+          row.name = result.thread.name = "";
+          return result as T;
+        }
+        return request<T>(method, params);
+      };
+      const sessions = new ChSessions(
+        host,
+        new Workspaces(new DataDir(root), root),
+        new EventHub(root),
+      );
+      t.after(async () => {
+        title.resolve(null);
+        await sessions.close();
+        rmSync(root, { recursive: true, force: true });
+      });
+      const rpc = new RpcRegistry();
+      sessions.register(rpc, new StreamRegistry());
+      const draft = await rpc.dispatch("session/create", { args: { request: { cwd: root } } });
+      assert.ok(draft.ok);
+      const { sessionId } = draft.value as { sessionId: string };
+      const firstSixty = "Fix the title " + "🧰".repeat(46);
+      const accepted = await rpc.dispatch("session/prompt", {
+        args: {
+          request: {
+            sessionId,
+            requestId: "first",
+            content: [{ type: "text", text: "  Fix   the\n title " + "🧰".repeat(46) + " more" }],
+            mode: "queue",
+          },
+        },
+      });
+      assert.deepEqual(accepted, { ok: true, value: { accepted: true } });
+      const thread = [...host.threads.values()][0];
+      assert.ok(thread);
+      if (generation === "renamed")
+        await host.request("thread/name/set", { threadId: thread.id, name: "My title" });
+      if (generation === "failure") title.reject(new Error("Native title unavailable"));
+      else title.resolve(generation === "success" ? "Generated title" : null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const expected =
+        generation === "renamed"
+          ? "My title"
+          : generation === "success"
+            ? "Generated title"
+            : firstSixty + "…";
+      assert.equal(thread.name, expected);
+    });
+  }
+});
+
+it("propagates native section membership and summaries to browsers that did not paginate", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-native-sections-"));
+  const host = nativeCodex(new FakeChHost());
+  const ordinary = host.add("native-ordinary", root);
+  const older = host.add("native-outside-catalog", root);
+  const later = host.add("native-found-by-section", root);
+  const pageMember = host.add("native-found-by-page", root);
+  const pageOrdinary = host.add("native-page-ordinary", root);
+  const members = [{ ...older, archived: false }];
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/thread/sections/list")
+      return { sections: [{ id: "research", name: "Research", threads: members }] } as T;
+    if (method === "codexhost/thread/catalog/read") {
+      const continuation = params.officialCursor !== undefined;
+      const rows = continuation ? [pageMember, pageOrdinary] : [ordinary];
+      return {
+        threads: rows.map((row) => ({ ...row, turns: [] })),
+        ownership: rows.map((row) => host.threadOwnership(row.id)),
+        officialCursor: { live: continuation ? null : "next" },
+        archivedThreadIds: [],
+      } as T;
+    }
+    return request<T>(method, params);
+  };
+  const data = new DataDir(root);
+  const workspaces = new Workspaces(data, root);
+  const events = new EventHub(root);
+  const sessions = new ChSessions(host, workspaces, events);
+  workspaces.setReferenceArchives([older.id]);
+  t.after(async () => {
+    await sessions.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const rpc = new RpcRegistry();
+  let follow: StreamHandler | undefined;
+  class WorkspaceStreams extends StreamRegistry {
+    override register(name: string, callback: StreamHandler) {
+      super.register(name, callback);
+      if (name === "workspace/follow") follow = callback;
+    }
+  }
+  const streams = new WorkspaceStreams();
+  workspaces.register(rpc, streams);
+  sessions.register(rpc, streams);
+  assert.ok(follow);
+  const closeHandlers: Array<() => void> = [];
+  const subscribe = async (id: string, handler: StreamHandler) => {
+    const frames: unknown[] = [];
+    await handler(
+      {},
+      {
+        id,
+        closed: false,
+        push: (frame) => frames.push(frame),
+        end: () => {},
+        fail: (code, message) => {
+          throw new Error(`${code} ${message}`);
+        },
+        onClose: (close) => closeHandlers.push(close),
+      },
+    );
+    return frames;
+  };
+  const list = async (args = {}) => {
+    const result = await rpc.dispatch("session/list", { args });
+    assert.ok(result.ok, result.ok ? undefined : result.error.message);
+    const { items, nextCursor } = result.value as {
+      items: Array<{ sessionId: string }>;
+      nextCursor: string | null;
+    };
+    return { ids: items.map((row) => row.sessionId).sort(), cursor: nextCursor };
+  };
+  const sectionFrame = (...threadIds: string[]) => ({
+    type: "threadSections",
+    threadSections: [{ id: "research", name: "Research", threadIds }],
+  });
+  try {
+    await subscribe("A/events", events.handler);
+    await subscribe("A/workspace", follow);
+    const firstA = await list();
+    const eventsB = await subscribe("B/events", events.handler);
+    const workspaceB = await subscribe("B/workspace", follow);
+    const firstB = await list();
+    assert.deepEqual(firstA.ids, [ordinary.id, older.id].sort());
+    assert.deepEqual(firstB, firstA);
+    assert.ok(firstA.cursor);
+    assert.equal(workspaces.isArchived(older.id), false);
+
+    // Desktop moves two old Threads: one is on A's next page, the other is read from the section.
+    members.push({ ...pageMember, archived: false }, { ...later, archived: false });
+    eventsB.length = 0;
+    const continuedA = await list({ cursor: firstA.cursor });
+    assert.deepEqual(continuedA.ids, [pageMember.id, pageOrdinary.id, later.id].sort());
+    assert.deepEqual(
+      workspaceB.filter((frame) => (frame as { type: string }).type === "threadSections"),
+      [sectionFrame(older.id, pageMember.id, later.id)],
+    );
+
+    const addedB = () =>
+      (eventsB as Array<{ type: string; event: string; args: [{ sessionId: string }] }>)
+        .filter((frame) => frame.type === "emit" && frame.event === "api-session/added")
+        .map((frame) => frame.args[0].sessionId)
+        .sort();
+    const duringContinuation = addedB();
+    eventsB.length = 0;
+    // Another first-page read includes the section members in its RPC response, but B does not call it.
+    const refreshedA = await list();
+    assert.deepEqual(refreshedA.ids, [ordinary.id, older.id, pageMember.id, later.id].sort());
+    assert.deepEqual(
+      { duringContinuation, afterRefresh: addedB() },
+      { duringContinuation: [pageMember.id, later.id].sort(), afterRefresh: [] },
+      "B must receive the new section summaries immediately, not ordinary pagination rows",
+    );
+  } finally {
+    for (const handler of closeHandlers) handler();
+  }
+});
+
+it("places Desktop's section projects as their root Workspaces in Desktop order", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-section-projects-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const folder = (name: string) => join(root, name);
+  const host = new FakeChHost();
+  host.add("alpha-thread", folder("alpha"));
+  host.add("beta-thread", folder("beta"));
+  host.add("loose-thread", folder("loose"));
+  // A project may list folders that other projects are named after.
+  host.projectSnapshot.projects.push({
+    id: "multi",
+    name: "Multi",
+    rootPaths: [folder("multi"), folder("shared"), folder("loose"), folder("alpha")],
+  });
+  host.projectSnapshot.sectionProjects = {
+    papers: ["multi", "project-beta-thread", "project-alpha-thread", "remote-only"],
+  };
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
+    method === "codexhost/thread/sections/list"
+      ? ({
+          sections: [
+            { id: "papers", name: "Papers", threads: [] },
+            { id: "other", name: "Other", threads: [] },
+          ],
+        } as T)
+      : request<T>(method, params);
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const sessions = new ChSessions(host, workspaces, new EventHub(root));
+  t.after(() => sessions.close());
+  let follow: StreamHandler | undefined;
+  class WorkspaceStreams extends StreamRegistry {
+    override register(name: string, callback: StreamHandler) {
+      super.register(name, callback);
+      if (name === "workspace/follow") follow = callback;
+    }
+  }
+  const rpc = new RpcRegistry();
+  const streams = new WorkspaceStreams();
+  workspaces.register(rpc, streams);
+  sessions.register(rpc, streams);
+  const listed = await rpc.dispatch("session/list", { args: {} });
+  assert.ok(listed.ok, listed.ok ? undefined : listed.error.message);
+  const frames: unknown[] = [];
+  await follow?.(
+    {},
+    {
+      id: "workspace",
+      closed: false,
+      push: (frame) => frames.push(frame),
+      end: () => {},
+      fail: (code, message) => {
+        throw new Error(`${code} ${message}`);
+      },
+      onClose: () => {},
+    },
+  );
+  const idOf = (name: string) => workspaces.byPath(folder(name))?.workspaceId;
+  assert.deepEqual((frames[0] as { value: { threadSections: unknown } }).value.threadSections, [
+    {
+      id: "papers",
+      name: "Papers",
+      threadIds: [],
+      // A folder named after a project takes that project's place: `alpha` follows its own
+      // project, and `loose` stays with its unsectioned one. `shared` is nobody's first root.
+      workspaceIds: [idOf("multi"), idOf("shared"), idOf("beta"), idOf("alpha")],
+    },
+    { id: "other", name: "Other", threadIds: [] },
+  ]);
 });
 
 it("resolves an existing unbound draft summary without native reads, then follows its bound alias", async (t) => {
@@ -286,7 +540,7 @@ it("searches the displayed title at every fallback level", async (t) => {
   }
 });
 
-it("starts a late steer directly when CH is already idle, preserving its delivery policy", async (t) => {
+it("rejects a late Web steer when CH is already idle", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-late-steer-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const host = new FakeChHost();
@@ -309,16 +563,72 @@ it("starts a late steer directly when CH is already idle, preserving its deliver
       },
     },
   });
-  assert.ok(result.ok, result.ok ? undefined : result.error.message);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "remote/turn-changed");
   assert.equal(
-    host.requests.some((request) => request.method === "turn/steer"),
+    host.requests.some((request) => request.method.startsWith("turn/")),
     false,
   );
-  assert.deepEqual(host.requests.find((request) => request.method === "turn/start")?.params, {
-    threadId: "idle-thread",
-    input: [{ type: "text", text: "keep this message", text_elements: [] }],
-    clientUserMessageId: "late-steer",
+});
+
+it("binds local Web steer to the displayed Turn and a supporting external Host", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-strict-steer-"));
+  const host = new FakeChHost();
+  const thread = host.add("active-thread", root);
+  thread.status = { type: "active" };
+  thread.turns.push({ id: "current-turn", status: "inProgress", items: [] });
+  const sessions = new ChSessions(
+    host,
+    new Workspaces(new DataDir(root), root),
+    new EventHub(root),
+  );
+  t.after(async () => {
+    await sessions.close();
+    rmSync(root, { recursive: true, force: true });
   });
+  const rpc = new RpcRegistry();
+  sessions.register(rpc, new StreamRegistry());
+  const steer = (expectedTurnId: string) =>
+    rpc.dispatch("session/prompt", {
+      args: {
+        request: {
+          sessionId: thread.id,
+          requestId: "message",
+          content: [{ type: "text", text: "keep this message" }],
+          mode: "steer",
+          expectedTurnId,
+        },
+      },
+    });
+
+  const changed = await steer("previous-turn");
+  assert.equal(changed.ok, false);
+  assert.equal(changed.error.code, "remote/turn-changed");
+  const unsupported = await steer("current-turn");
+  assert.equal(unsupported.ok, false);
+  assert.equal(unsupported.error.code, "remote/steer-unavailable");
+  assert.deepEqual(
+    host.requests.filter(({ method }) => method.startsWith("turn/")),
+    [],
+  );
+
+  thread[THREAD_STEER_STRICT_TARGET_FIELD] = true;
+  assert.deepEqual(await steer("current-turn"), { ok: true, value: { accepted: true } });
+  assert.deepEqual(
+    host.requests.filter(({ method }) => method.startsWith("turn/")),
+    [
+      {
+        method: "turn/steer",
+        params: {
+          threadId: thread.id,
+          expectedTurnId: "current-turn",
+          clientUserMessageId: "message",
+          codexhostSteerStrictTarget: true,
+          input: [{ type: "text", text: "keep this message", text_elements: [] }],
+        },
+      },
+    ],
+  );
 });
 
 it("shares one native history read across concurrent browser consumers", async (t) => {
@@ -402,6 +712,7 @@ it("does not create project groups from auto-assigned cwd alone", async (t) => {
     "auto-thread",
     join(root, "generated-unselected-directory"),
   );
+  assert.ok(original);
   delete original.origin;
   const sessions = new ChSessions(host, workspaces, new EventHub(root));
   t.after(() => sessions.close());
@@ -673,30 +984,62 @@ it("workspace mirror: migrates the default title a shared folder got from any pr
   assert.equal(workspaces.byPath(kept)?.title, "Reading list");
 });
 
-it("workspace mirror: recreates deleted native roots on the next snapshot", async (t) => {
-  const root = mkdtempSync(join(tmpdir(), "ch-workspace-recreate-"));
+it("workspace mirror: keeps a deleted Desktop workspace out of Web until explicitly added", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-delete-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const workspaces = new Workspaces(new DataDir(root), root);
-  const extraRoot = join(root, "extra");
-  const projects = [{ name: "Native", rootPaths: [join(root, "first"), extraRoot] }];
-  workspaces.syncReferencedSessions([], new Map(), new Set(), projects);
-  const extra = workspaces.byPath(extraRoot);
-  assert.ok(extra);
+  const data = new DataDir(join(root, "web"));
+  const cwd = join(root, "project");
+  mkdirSync(cwd);
+  const host = new FakeChHost();
+  const thread = structuredClone(host.add("native-thread", cwd));
+  const projects = await host.projects();
+  const workspaces = new Workspaces(data, cwd, true);
+  const sessions = new ChSessions(host, workspaces, new EventHub(data.root));
+  t.after(() => sessions.close());
   const rpc = new RpcRegistry();
-  workspaces.register(rpc, new StreamRegistry());
-  assert.ok(
-    (
-      await rpc.dispatch("workspace/delete", {
-        args: { request: { workspaceId: extra.workspaceId } },
-      })
-    ).ok,
+  const streams = new StreamRegistry();
+  workspaces.register(rpc, streams);
+  sessions.register(rpc, streams);
+
+  assert.ok((await rpc.dispatch("session/list", { args: {} })).ok);
+  const original = workspaces.ownerOf(thread.id);
+  assert.ok(original);
+  assert.deepEqual(
+    await rpc.dispatch("workspace/delete", {
+      args: { request: { workspaceId: original.workspaceId } },
+    }),
+    { ok: true, value: { deleted: true } },
   );
-  assert.equal(workspaces.byPath(extra.path), undefined);
-  workspaces.syncReferencedSessions([], new Map(), new Set(), projects);
-  const recreated = workspaces.byPath(extra.path);
-  assert.ok(recreated);
-  assert.equal(recreated.title, "extra");
-  assert.notEqual(recreated.workspaceId, extra.workspaceId);
+  const refreshed = await rpc.dispatch("session/list", { args: {} });
+  assert.ok(refreshed.ok);
+  const { items } = refreshed.value as { items: Array<{ sessionId: string; cwd: string }> };
+  assert.equal(items.find((item) => item.sessionId === thread.id)?.cwd, cwd);
+  assert.deepEqual(workspaces.list(), []);
+  assert.equal(workspaces.ownerOf(thread.id), undefined);
+  assert.deepEqual(await host.projects(), projects);
+  assert.deepEqual(host.threads.get(thread.id), thread);
+  assert.ok(existsSync(cwd));
+
+  const reopened = new Workspaces(data, cwd, true);
+  const reopenedRpc = new RpcRegistry();
+  reopened.register(reopenedRpc, new StreamRegistry());
+  assert.deepEqual(await reopenedRpc.dispatch("workspace/initializeDefault", { args: {} }), {
+    ok: true,
+    value: null,
+  });
+  const references = [{ sessionId: thread.id, cwd }];
+  const groups = new Map([[thread.id, cwd]]);
+  reopened.syncReferencedSessions(references, groups, new Set(), projects.projects);
+  reopened.selectReferenceWorkspace(cwd);
+  reopened.attachReferencedSession("draft-already-open", cwd);
+  assert.deepEqual(reopened.list(), []);
+
+  assert.ok(
+    (await reopenedRpc.dispatch("workspace/create", { args: { request: { path: cwd } } })).ok,
+  );
+  const restored = new Workspaces(data, cwd, true);
+  restored.syncReferencedSessions(references, groups, new Set(), projects.projects);
+  assert.equal(restored.ownerOf(thread.id)?.path, cwd);
 });
 
 it("projectRootTitles: falls back to the full path when the basename is empty or conflicts", () => {
@@ -871,6 +1214,46 @@ it("uses existing Desktop routing without installing code, and does not retry re
   );
   assert.equal(host.requests.filter((req) => req.method === "turn/start").length, 1);
   await assert.rejects(client.request("shell/execute", {}), /Unsupported CH method/);
+});
+
+it("archive and undo with single scope affect only the confirmed Thread", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-archive-single-"));
+  const host = new FakeChHost();
+  const parent = host.add("parent", root);
+  const child = host.add("child", root);
+  const futureChild = host.add("future-child", root);
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
+    method === "codexhost/thread/tree/read"
+      ? ({ parents: { [child.id]: parent.id, [futureChild.id]: parent.id } } as T)
+      : request<T>(method, params);
+  const sessions = new ChSessions(
+    host,
+    new Workspaces(new DataDir(root), root),
+    new EventHub(root),
+  );
+  t.after(async () => {
+    await sessions.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const rpc = new RpcRegistry();
+  sessions.register(rpc, new StreamRegistry());
+  for (const [method, sessionId, expected] of [
+    ["archiveSession", parent.id, [parent.id]],
+    ["archiveSession", child.id, [child.id, parent.id]],
+    ["unarchiveSession", parent.id, [child.id]],
+  ] as const) {
+    const result = await rpc.dispatch(`workspace/${method}`, {
+      args: { request: { sessionId, scope: "single" } },
+    });
+    assert.deepEqual(result, { ok: true, value: { archivedSessionIds: expected } });
+  }
+  assert.deepEqual([...host.archivedIds], [child.id]);
+  assert.ok(
+    !host.requests.some(
+      ({ method, params }) => method === "thread/archive" && params.threadId === futureChild.id,
+    ),
+  );
 });
 
 it("projects native archive confirmation through the legacy Desktop transport", async (t) => {

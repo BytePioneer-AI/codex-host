@@ -21,6 +21,7 @@ import {
   IconWarningOutlineRegular,
   ResponseAnnotationChip,
   shouldAutoFocusTextInput,
+  StateDot,
   Toast,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
@@ -37,12 +38,14 @@ import type { Translate } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ComposerBarProps } from "../contract/slots.ts";
 import type { DraftResponseAnnotation } from "../contract/input.ts";
 import { DraftEditor } from "../input/editor/DraftEditor.tsx";
+import { registerComposerKeymap } from "../input/editor/keymap.ts";
 import {
   focusDraftEditor,
   installDraftFilePicker,
   installDraftKeymap,
   installDraftWheel,
   keepDraftFocus,
+  refreshDraftCaret,
   revealDraftSelection,
 } from "../input/editor/view-binding.ts";
 import { resolveSubmitMode } from "../input/submission-policy.ts";
@@ -61,6 +64,7 @@ export const InputBar = memo(function InputBar({
   useInput,
   inputActions,
   keyboard,
+  pendingDraft,
   addFiles,
   removeAttachment,
   resolveDraftAttachments,
@@ -70,6 +74,7 @@ export const InputBar = memo(function InputBar({
   stop,
   t,
   renderSlot,
+  usePendingDraftText,
   useBusyEnter,
   useFileUploads,
   useNotices,
@@ -80,13 +85,18 @@ export const InputBar = memo(function InputBar({
   sessionId,
   variant,
   disabled: inert = false,
+  preparingDraft = false,
+  sessionCreation,
+  onRetrySessionCreation,
   blocked,
   workspacePickerOpen = false,
   onRequestWorkspace,
   placeholder,
+  topBar,
   accessory,
 }: InputBarProps) {
   const input = useInput((s) => s);
+  const pendingDraftText = usePendingDraftText((s) => s);
   const responseAnnotations = input?.responseAnnotations ?? EMPTY_ANNOTATIONS;
   const annotationLabels = useMemo<ResponseAnnotationLabels>(
     () => ({
@@ -122,10 +132,20 @@ export const InputBar = memo(function InputBar({
   const hasGoal = useProjection("goal", (goal) => goal != null);
   // Session-maybe: the machine faces are absent together while no session is
   // current; the bar renders the same DOM inert instead of a parallel tree.
+  // During New Session creation the Hero surface binds the lightweight pending
+  // draft editor so the user can type immediately while send/upload stay locked.
+  const pendingCreation =
+    sessionId === undefined &&
+    pendingDraft !== undefined &&
+    sessionCreation !== undefined &&
+    sessionCreation.state !== "idle";
+  const pendingCreating = pendingCreation && sessionCreation.state === "creating";
+  const pendingFailed = pendingCreation && sessionCreation.state === "error";
+  const pendingCreationToken = pendingCreation ? sessionCreation.token : undefined;
   const live = input !== undefined && keyboard !== undefined && inputActions !== undefined;
-  const draft = input?.draft ?? "";
+  const draft = pendingCreation ? pendingDraftText : (input?.draft ?? "");
   const primaryAction = input?.primaryAction;
-  const editor = keyboard?.editor ?? null;
+  const editor = pendingCreation ? pendingDraft.editor : (keyboard?.editor ?? null);
   const attachments = useMemo(
     () =>
       input === undefined || resolveDraftAttachments === undefined
@@ -156,6 +176,7 @@ export const InputBar = memo(function InputBar({
   // is composed — the pre-check below then defers entirely to the host).
   const imageLimits = useProjection("imageLimits");
   const attachmentInput = useProjection("attachmentInput");
+  const queueState = useProjection("queueState");
   const attachmentsEnabled = attachmentInput?.enabled !== false;
   const imagesOnly = attachmentInput?.imagesOnly === true;
   // Prompt failures are ordinary failures (no create/attach transaction exists
@@ -171,6 +192,14 @@ export const InputBar = memo(function InputBar({
     const { error } = promptError;
     if (error.code === "session/writer-held") {
       showToast(t("error.sessionInUse"));
+      return;
+    }
+    if (error.code === "remote/turn-changed") {
+      showToast(t("error.steerTurnChanged"));
+      return;
+    }
+    if (error.code === "remote/steer-unavailable") {
+      showToast(t("error.remoteSteerUnavailable"));
       return;
     }
     showToast(
@@ -203,24 +232,46 @@ export const InputBar = memo(function InputBar({
   // inert no-workspace state, the machine faces absent (no session), or a
   // parent-offline continuable child. An owner block also disables input;
   // adjudicating and submitting render read-only so the draft stays visible.
-  const disabled = removed || inert || !live || blocked !== undefined || parentOffline;
+  const disabled =
+    pendingCreation || removed || inert || !live || blocked !== undefined || parentOffline;
   const locked = disabled;
   // The model seat is the ONE control a block leaves live: every block this
   // contract has is cleared by choosing a model, so locking it too would leave
   // the composer asking for the only thing it prevents. The other reasons to
   // be disabled do lock it — there is no session to choose a model for.
-  const modelSeatLocked = removed || inert || !live;
+  const modelSeatLocked = pendingCreation || removed || inert || !live;
   const machineBusy = input?.phase === "adjudicating" || input?.phase === "submitting";
   // The no-workspace surface remains the resident DOM node but acts as the
   // existing picker trigger. Message controls stay locked until a Session
   // exists; the trigger itself is read-only rather than disabled so pointer
   // and keyboard users can reach the recovery action.
-  const workspaceTrigger = inert && !removed && onRequestWorkspace !== undefined;
-  const editorDisabled = removed || (locked && !workspaceTrigger);
-  const editable = live && !locked && !machineBusy;
+  const workspaceTrigger =
+    !pendingCreation && inert && !removed && onRequestWorkspace !== undefined;
+  const preparingLiveDraft =
+    !pendingCreation && preparingDraft && live && !removed && !parentOffline && !workspaceTrigger;
+  const editable = pendingCreation || (live && !machineBusy && (!locked || preparingLiveDraft));
+  const editorDisabled = removed || (!editable && !workspaceTrigger);
   const steeringAvailable = subagent === null || subagent.address.mode === "continuable";
   const canSteerQueue =
-    !locked && !machineBusy && empty && running && steeringAvailable && input.queue.length > 0;
+    !locked &&
+    !machineBusy &&
+    empty &&
+    running &&
+    steeringAvailable &&
+    queueState?.previewOnly !== true &&
+    input.queue.length > 0;
+
+  const wasPendingCreation = useRef(pendingCreation);
+  const preservePendingFocus = useRef(false);
+  if (wasPendingCreation.current && !pendingCreation && sessionId !== undefined) {
+    const active = document.activeElement;
+    if (active !== null && cardRef.current?.contains(active)) {
+      preservePendingFocus.current = true;
+    }
+  }
+  useLayoutEffect(() => {
+    wasPendingCreation.current = pendingCreation;
+  }, [pendingCreation]);
 
   useEffect(() => {
     if (input === undefined || inputActions === undefined) return;
@@ -243,10 +294,21 @@ export const InputBar = memo(function InputBar({
   // Automatic desktop focus restores and reveals the draft selection without
   // scrolling the conversation.
   useEffect(() => {
-    if (locked || editor === null) return;
-    if (!shouldAutoFocusTextInput()) return;
+    if (pendingCreation) {
+      if (editor !== null && shouldAutoFocusTextInput()) {
+        focusDraftEditor(editor, revealSelection);
+      }
+      return;
+    }
+    if (editor === null || !editable) return;
+    if (preservePendingFocus.current) {
+      preservePendingFocus.current = false;
+      focusDraftEditor(editor, revealSelection);
+      return;
+    }
+    if (locked || !shouldAutoFocusTextInput()) return;
     focusDraftEditor(editor, revealSelection);
-  }, [locked, sessionId, editor]);
+  }, [pendingCreation, pendingCreationToken, locked, editable, sessionId, editor]);
 
   // A persisted draft arrives AFTER the unlock effect: DefaultConversationViews
   // adopts it in its own mount effect, and a parent's mount effect runs after
@@ -268,6 +330,74 @@ export const InputBar = memo(function InputBar({
   useEffect(() => {
     return installDraftWheel(scrollRef);
   }, []);
+
+  const seenAttachmentsRef = useRef<{
+    sessionId: typeof sessionId;
+    ids: Set<string>;
+    count: number;
+  }>({
+    sessionId,
+    ids: new Set(attachments.map((attachment) => attachment.id)),
+    count: attachments.length,
+  });
+  const [intakeFocusSeq, setIntakeFocusSeq] = useState(0);
+  const lastIntakeFocusSeqRef = useRef(0);
+
+  // Restore focus after user-initiated attachment/file intake (drop, file
+  // picker, paste, desktop screenshot) without stealing focus on failed-send
+  // attachment restores, and refresh the caret after layout settles when the
+  // attachment rail mounts or collapses above the editor.
+  useEffect(() => {
+    const prev = seenAttachmentsRef.current;
+    const sessionChanged = prev.sessionId !== sessionId;
+    const intakeTriggered = intakeFocusSeq !== lastIntakeFocusSeqRef.current;
+    lastIntakeFocusSeqRef.current = intakeFocusSeq;
+
+    if (sessionChanged) {
+      seenAttachmentsRef.current = {
+        sessionId,
+        ids: new Set(attachments.map((attachment) => attachment.id)),
+        count: attachments.length,
+      };
+      return;
+    }
+
+    let added = false;
+    for (const attachment of attachments) {
+      if (!prev.ids.has(attachment.id)) {
+        prev.ids.add(attachment.id);
+        added = true;
+      }
+    }
+    const countChanged = prev.count !== attachments.length;
+    prev.count = attachments.length;
+
+    const shouldRestoreFocus = (added || intakeTriggered) && shouldAutoFocusTextInput();
+    if (!shouldRestoreFocus && !countChanged && !added && !intakeTriggered) return;
+    if (editor === null || !editable || locked) return;
+
+    if (shouldRestoreFocus) {
+      focusDraftEditor(editor, revealSelection);
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const root = editor.getRootElement();
+      if (root === null) return;
+      const active = root.ownerDocument.activeElement;
+      if (
+        shouldRestoreFocus &&
+        (active === null ||
+          active === root.ownerDocument.body ||
+          active === root.ownerDocument.documentElement)
+      ) {
+        focusDraftEditor(editor, revealSelection);
+      }
+      refreshDraftCaret(editor);
+      revealSelection();
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [sessionId, attachments, intakeFocusSeq, editor, editable, locked]);
 
   // Intake pre-check: an addition that would break a projected image limit is
   // refused as a whole batch, announced immediately, and never enters the
@@ -310,7 +440,11 @@ export const InputBar = memo(function InputBar({
         }
         return addFiles(files, directories);
       })();
-      if (rejected !== null) showToast(rejected);
+      if (rejected !== null) {
+        showToast(rejected);
+        return;
+      }
+      setIntakeFocusSeq((seq) => seq + 1);
     },
     [subagent, addFiles, attachmentsEnabled, imagesOnly, attachments, imageLimits, showToast, t],
   );
@@ -336,6 +470,7 @@ export const InputBar = memo(function InputBar({
   // registration survives re-renders without re-arming per keystroke.
   const gate = useRef({
     locked,
+    canPasteText: editable,
     machineBusy,
     primaryAction,
     canSteerQueue,
@@ -350,6 +485,7 @@ export const InputBar = memo(function InputBar({
   });
   gate.current = {
     locked,
+    canPasteText: editable,
     machineBusy,
     primaryAction,
     canSteerQueue,
@@ -369,9 +505,25 @@ export const InputBar = memo(function InputBar({
   }, [keyboard]);
 
   useEffect(() => {
-    if (editor === null || keyboard === undefined) return;
+    if (editor === null) return;
+    if (pendingCreation && pendingDraft !== undefined) {
+      return registerComposerKeymap(editor, {
+        arbitrate: () => "pass",
+        space: () => false,
+        dismissPopup: () => {},
+        canSubmit: () => false,
+        submit: () => {},
+        intakeFiles: () => {
+          gate.current.showToast(gate.current.t("newSession.uploadUnavailable"));
+        },
+        pasteText: (text) => {
+          pendingDraft.paste(text);
+        },
+      });
+    }
+    if (keyboard === undefined) return;
     return installDraftKeymap(editor, keyboard, gate);
-  }, [editor, keyboard]);
+  }, [editor, keyboard, pendingCreation, pendingDraft]);
 
   // Button presses steal focus from the editor; suppress at mousedown so
   // typing continues seamlessly. Lexical's focus() carries preventScroll and
@@ -483,7 +635,7 @@ export const InputBar = memo(function InputBar({
             : t("placeholder.default"));
 
   return (
-    <div className={clsx(css.root, variant === "hero" && css.hero)}>
+    <div className={clsx(css.root, variant === "hero" && css.hero)} data-composer-variant={variant}>
       {toast !== null && (
         <Toast
           key={toast.seq}
@@ -503,207 +655,276 @@ export const InputBar = memo(function InputBar({
           their pointer events), so the WHOLE capsule is the pick target.
           pointerdown stops here so the Menu's outside-close cannot race the
           click's reopen (close-then-open flickers the chip's open echo). */}
-      <div
-        ref={cardRef}
-        className={clsx(css.card, workspaceTrigger && css.cardWorkspaceTrigger)}
-        data-composer-card
-        onClick={workspaceTrigger ? onRequestWorkspace : undefined}
-        onPointerDown={
-          workspaceTrigger
-            ? (e) => {
-                e.stopPropagation();
-              }
-            : undefined
-        }
-      >
-        {sessionId !== undefined && (
-          <div className={css.overlayAnchor}>{renderSlot("conversation.input.overlay", {})}</div>
-        )}
-        {accessory !== undefined && <div className={css.accessory}>{accessory}</div>}
-        {responseAnnotations.length === 0 ? null : (
-          <div className={css.annotations} data-composer-annotations>
-            {responseAnnotations.map((annotation, index) => (
-              <ResponseAnnotationChip
-                key={annotation.id}
-                index={index + 1}
-                annotation={annotation}
-                labels={annotationLabels}
-                onActivate={
-                  annotation.anchor === undefined
-                    ? undefined
-                    : () => revealResponseAnnotation?.(annotation.id)
-                }
-                onRemove={() => {
-                  inputActions?.removeResponseAnnotation(annotation.id);
-                }}
-              />
-            ))}
+      <div className={css.cardStack}>
+        {topBar !== undefined && (
+          <div
+            className={css.topRail}
+            data-composer-top-bar=""
+            onClick={(e) => {
+              e.stopPropagation();
+            }}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+            }}
+          >
+            {topBar}
           </div>
         )}
-        {input === undefined || sessionId === undefined ? null : (
-          <div className={css.inlineNotices}>{renderSlot("conversation.input.notice", {})}</div>
-        )}
-        {renderSlot("conversation.input.attachments", {
-          attachments,
-          canAcceptDrop,
-          onAddFiles: intakeFiles,
-          onRemoveAttachment: (id) => {
-            removeAttachment?.(id);
-          },
-          uploads,
-          onRetryFile: (id) => {
-            retryFileUpload?.(id);
-          },
-          dropLimits:
-            imageLimits === undefined
-              ? undefined
-              : {
-                  count: imageLimits.maxImagesPerMessage,
-                  size: imageSizeText(imageLimits.maxImageBytes),
-                },
-        })}
-        {/* One scrollport, one text surface: the contenteditable grows with
+        <div
+          ref={cardRef}
+          className={clsx(css.card, workspaceTrigger && css.cardWorkspaceTrigger)}
+          data-composer-card
+          onClick={workspaceTrigger ? onRequestWorkspace : undefined}
+          onPointerDown={
+            workspaceTrigger
+              ? (e) => {
+                  e.stopPropagation();
+                }
+              : undefined
+          }
+        >
+          {sessionId !== undefined && (
+            <div className={css.overlayAnchor}>{renderSlot("conversation.input.overlay", {})}</div>
+          )}
+          {accessory !== undefined && <div className={css.accessory}>{accessory}</div>}
+          {pendingFailed && (
+            <div className={css.creationError} role="alert" data-new-session-error="">
+              <IconWarningOutlineRegular className={css.creationErrorIcon} size={16} />
+              <div className={css.creationErrorCopy}>
+                <span className={css.creationErrorTitle}>{t("newSession.createFailedTitle")}</span>
+                <span className={css.creationErrorDetail}>
+                  {sessionCreation.reason === "no-harness"
+                    ? t("newSession.createFailed.noHarness")
+                    : sessionCreation.reason === "workspace-required"
+                      ? t("newSession.createFailed.workspaceRequired")
+                      : (sessionCreation.message ?? t("newSession.createFailed.generic"))}
+                </span>
+              </div>
+              {onRetrySessionCreation !== undefined && (
+                <button
+                  type="button"
+                  className={css.creationRetry}
+                  onMouseDown={keepFocus}
+                  onClick={onRetrySessionCreation}
+                >
+                  {t("newSession.retry")}
+                </button>
+              )}
+            </div>
+          )}
+          {responseAnnotations.length === 0 ? null : (
+            <div className={css.annotations} data-composer-annotations>
+              {responseAnnotations.map((annotation, index) => (
+                <ResponseAnnotationChip
+                  key={annotation.id}
+                  index={index + 1}
+                  annotation={annotation}
+                  labels={annotationLabels}
+                  onActivate={
+                    annotation.anchor === undefined
+                      ? undefined
+                      : () => revealResponseAnnotation?.(annotation.id)
+                  }
+                  onRemove={() => {
+                    inputActions?.removeResponseAnnotation(annotation.id);
+                  }}
+                />
+              ))}
+            </div>
+          )}
+          {input === undefined || sessionId === undefined ? null : (
+            <div className={css.inlineNotices}>{renderSlot("conversation.input.notice", {})}</div>
+          )}
+          {renderSlot("conversation.input.attachments", {
+            attachments,
+            canAcceptDrop,
+            onAddFiles: intakeFiles,
+            onRemoveAttachment: (id) => {
+              removeAttachment?.(id);
+            },
+            uploads,
+            onRetryFile: (id) => {
+              retryFileUpload?.(id);
+            },
+            dropLimits:
+              imageLimits === undefined
+                ? undefined
+                : {
+                    count: imageLimits.maxImagesPerMessage,
+                    size: imageSizeText(imageLimits.maxImageBytes),
+                  },
+          })}
+          {/* One scrollport, one text surface: the contenteditable grows with
             its content and .scroll — capped at 14 lines in CSS — is the only
             thing that scrolls. Chips are decorator portals inside the same
             surface, so wrapping, caret geometry, and scrolling are the
             browser's own. */}
-        <DraftEditor
-          classNames={css}
-          editor={editor}
-          scrollRef={scrollRef}
-          editable={editable}
-          editorDisabled={editorDisabled}
-          phase={input?.phase ?? "inert"}
-          placeholderText={placeholderText}
-          ariaLabel={workspaceTrigger ? t("hero.chooseWorkspace") : placeholderText}
-          workspaceTrigger={workspaceTrigger}
-          workspacePickerOpen={workspacePickerOpen}
-          onWorkspaceKeyDown={onWorkspaceKeyDown}
-          hint={hint}
-          showPlaceholder={draft === "" && attachments.length === 0 && !claimActive}
-        />
-        <div
-          ref={rowRef}
-          className={css.row}
-          data-composer-toolbar
-          data-command-menu-open={commandMenuOpen || undefined}
-          data-toolbar-activity={activity || undefined}
-        >
-          <div className={css.controlScroll} data-toolbar-scroll>
-            <div className={css.tools} hidden={activity} data-composer-tools>
-              <div className={css.addSeat} data-toolbar-fixed="start">
-                <Tooltip
-                  portal={toolbarLayout.phone}
-                  label={commandMenuLabel}
-                  side="top"
-                  delayMs={500}
-                >
-                  <button
-                    type="button"
-                    className={css.add}
-                    aria-label={commandMenuLabel}
-                    aria-haspopup="listbox"
-                    aria-expanded={commandMenuOpen}
-                    disabled={locked || machineBusy || toggleCommandMenu === undefined}
-                    onMouseDown={keepFocus}
-                    onClick={onToggleCommandMenu}
-                  >
-                    <IconPlusOutlineMedium size={14} />
-                  </button>
-                </Tooltip>
-              </div>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept={imagesOnly ? imageLimits?.mediaTypes.join(",") : undefined}
-                multiple
-                disabled={!attachmentsEnabled || subagent !== null}
-                hidden
-                onChange={onPickFiles}
-              />
-              <div className={css.modes}>
-                {sessionId === undefined
-                  ? null
-                  : renderSlot("conversation.input.permission", { locked })}
-                {sessionId === undefined ? null : renderSlot("conversation.input.plan", { locked })}
-              </div>
-              {input === undefined || sessionId === undefined
-                ? null
-                : renderSlot("conversation.input.left", {})}
-            </div>
-            <div className={clsx(css.trailing, activity && css.trailingActive)}>
-              <div className={css.standardControls} hidden={activity}>
-                {input === undefined || sessionId === undefined
-                  ? null
-                  : renderSlot("conversation.input.right", {
-                      overflowActions: toolbarLayout.overflowActions,
-                    })}
-                {sessionId === undefined
-                  ? null
-                  : renderSlot("conversation.input.model", { locked: modelSeatLocked })}
-              </div>
-              {input === undefined || sessionId === undefined ? null : (
-                <div className={activity ? css.activityExpanded : css.activity}>
-                  {renderSlot("conversation.input.activity", {
-                    locked,
-                    onActiveChange: setActivity,
-                  })}
-                </div>
-              )}
-              <div className={css.submitSeat} data-toolbar-fixed="end">
-                {interruptible && (
+          <DraftEditor
+            classNames={css}
+            editor={editor}
+            scrollRef={scrollRef}
+            editable={editable}
+            editorDisabled={editorDisabled}
+            preserveFocus={preservePendingFocus.current}
+            phase={pendingCreation ? "plain" : (input?.phase ?? "inert")}
+            placeholderText={placeholderText}
+            ariaLabel={workspaceTrigger ? t("hero.chooseWorkspace") : placeholderText}
+            workspaceTrigger={workspaceTrigger}
+            workspacePickerOpen={workspacePickerOpen}
+            onWorkspaceKeyDown={onWorkspaceKeyDown}
+            hint={hint}
+            showPlaceholder={draft === "" && attachments.length === 0 && !claimActive}
+          />
+          <div
+            ref={rowRef}
+            className={css.row}
+            data-composer-toolbar
+            data-command-menu-open={commandMenuOpen || undefined}
+            data-toolbar-activity={activity || undefined}
+          >
+            <div className={css.controlScroll} data-toolbar-scroll>
+              <div className={css.tools} hidden={activity} data-composer-tools>
+                <div className={css.addSeat} data-toolbar-fixed="start">
                   <Tooltip
                     portal={toolbarLayout.phone}
-                    label={t("input.stop")}
-                    shortcutKeys={stopKeys}
+                    label={commandMenuLabel}
                     side="top"
                     delayMs={500}
-                    disabled={stop === undefined}
+                  >
+                    <button
+                      type="button"
+                      className={css.add}
+                      aria-label={commandMenuLabel}
+                      aria-haspopup="listbox"
+                      aria-expanded={commandMenuOpen}
+                      disabled={locked || machineBusy || toggleCommandMenu === undefined}
+                      onMouseDown={keepFocus}
+                      onClick={onToggleCommandMenu}
+                    >
+                      <IconPlusOutlineMedium size={14} />
+                    </button>
+                  </Tooltip>
+                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={imagesOnly ? imageLimits?.mediaTypes.join(",") : undefined}
+                  multiple
+                  disabled={!attachmentsEnabled || subagent !== null}
+                  hidden
+                  onChange={onPickFiles}
+                />
+                <div className={css.modes}>
+                  {sessionId === undefined
+                    ? null
+                    : renderSlot("conversation.input.permission", { locked })}
+                  {sessionId === undefined
+                    ? null
+                    : renderSlot("conversation.input.plan", { locked })}
+                </div>
+                {input === undefined || sessionId === undefined
+                  ? null
+                  : renderSlot("conversation.input.left", {})}
+              </div>
+              <div className={clsx(css.trailing, activity && css.trailingActive)}>
+                <div className={css.standardControls} hidden={activity}>
+                  {input === undefined || sessionId === undefined
+                    ? null
+                    : renderSlot("conversation.input.right", {
+                        overflowActions: toolbarLayout.overflowActions,
+                      })}
+                  {sessionId === undefined ? (
+                    pendingCreating ? (
+                      <div
+                        className={css.pendingControls}
+                        role="status"
+                        aria-live="polite"
+                        data-new-session-loading=""
+                      >
+                        <span className={css.pendingModel}>
+                          <StateDot state="ongoing" />
+                          <span className={css.pendingModelLabel}>
+                            {t("newSession.loadingModel")}
+                          </span>
+                        </span>
+                        <span
+                          className={css.pendingHarness}
+                          role="img"
+                          aria-label={t("newSession.loadingHarness")}
+                          aria-busy="true"
+                          title={t("newSession.loadingHarness")}
+                        >
+                          <StateDot state="ongoing" />
+                        </span>
+                      </div>
+                    ) : null
+                  ) : (
+                    renderSlot("conversation.input.model", { locked: modelSeatLocked })
+                  )}
+                </div>
+                {input === undefined || sessionId === undefined ? null : (
+                  <div className={activity ? css.activityExpanded : css.activity}>
+                    {renderSlot("conversation.input.activity", {
+                      locked,
+                      onActiveChange: setActivity,
+                    })}
+                  </div>
+                )}
+                <div className={css.submitSeat} data-toolbar-fixed="end">
+                  {interruptible && (
+                    <Tooltip
+                      portal={toolbarLayout.phone}
+                      label={t("input.stop")}
+                      shortcutKeys={stopKeys}
+                      side="top"
+                      delayMs={500}
+                      disabled={stop === undefined}
+                    >
+                      <button
+                        type="button"
+                        className={css.primary}
+                        aria-label={t("input.stop")}
+                        disabled={stop === undefined}
+                        onMouseDown={keepFocus}
+                        onClick={stop}
+                      >
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                          <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" />
+                        </svg>
+                      </button>
+                    </Tooltip>
+                  )}
+                  <Tooltip
+                    portal={toolbarLayout.phone}
+                    label={primaryStops ? t("input.stop") : primaryLabel}
+                    shortcutKeys={primaryStops ? stopKeys : undefined}
+                    side="top"
+                    delayMs={500}
+                    disabled={primaryDisabled}
                   >
                     <button
                       type="button"
                       className={css.primary}
-                      aria-label={t("input.stop")}
-                      disabled={stop === undefined}
+                      aria-label={primaryLabel}
+                      disabled={primaryDisabled}
                       onMouseDown={keepFocus}
-                      onClick={stop}
+                      onClick={onPrimary}
                     >
-                      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
-                        <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" />
-                      </svg>
+                      {primaryStops ? (
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                          <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" />
+                        </svg>
+                      ) : (
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+                          <path
+                            d="M8.3125 0.980183C8.66767 1.0531 8.97902 1.20418 9.2627 1.43233C9.48724 1.61297 9.73029 1.85793 9.97949 2.10714L14.707 6.83468L13.293 8.24874L9 3.95577V15.0417H7V3.95577L2.70703 8.24874L1.29297 6.83468L6.02051 2.10714C6.26971 1.85793 6.51277 1.61297 6.7373 1.43233C6.97662 1.23986 7.28445 1.04402 7.6875 0.980183C7.8973 0.947006 8.1031 0.95516 8.3125 0.980183Z"
+                            fill="currentColor"
+                          />
+                        </svg>
+                      )}
                     </button>
                   </Tooltip>
-                )}
-                <Tooltip
-                  portal={toolbarLayout.phone}
-                  label={primaryStops ? t("input.stop") : primaryLabel}
-                  shortcutKeys={primaryStops ? stopKeys : undefined}
-                  side="top"
-                  delayMs={500}
-                  disabled={primaryDisabled}
-                >
-                  <button
-                    type="button"
-                    className={css.primary}
-                    aria-label={primaryLabel}
-                    disabled={primaryDisabled}
-                    onMouseDown={keepFocus}
-                    onClick={onPrimary}
-                  >
-                    {primaryStops ? (
-                      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
-                        <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" />
-                      </svg>
-                    ) : (
-                      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
-                        <path
-                          d="M8.3125 0.980183C8.66767 1.0531 8.97902 1.20418 9.2627 1.43233C9.48724 1.61297 9.73029 1.85793 9.97949 2.10714L14.707 6.83468L13.293 8.24874L9 3.95577V15.0417H7V3.95577L2.70703 8.24874L1.29297 6.83468L6.02051 2.10714C6.26971 1.85793 6.51277 1.61297 6.7373 1.43233C6.97662 1.23986 7.28445 1.04402 7.6875 0.980183C7.8973 0.947006 8.1031 0.95516 8.3125 0.980183Z"
-                          fill="currentColor"
-                        />
-                      </svg>
-                    )}
-                  </button>
-                </Tooltip>
+                </div>
               </div>
             </div>
           </div>

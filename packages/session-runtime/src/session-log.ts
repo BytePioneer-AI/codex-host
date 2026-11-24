@@ -315,6 +315,10 @@ export class SessionLog {
 
   // ---- followers ---------------------------------------------------------------------------
 
+  get hasFollowers(): boolean {
+    return this.followers.size > 0;
+  }
+
   follow(
     sink: SessionSink,
     request: PageWindow & { assistantStream?: boolean; resume?: { epoch: string; cursor: number } },

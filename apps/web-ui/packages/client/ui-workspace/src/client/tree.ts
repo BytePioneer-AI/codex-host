@@ -25,7 +25,16 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
   interface SessionProjectionMap {
     threadReference: { hostId: string; threadId?: string } | null;
     threadTreeParent: string | null;
-    remoteHost: { hostId: string; displayName: string; state: string } | null;
+    archiveForkParent: string | null;
+    remoteHost: {
+      hostId: string;
+      displayName: string;
+      state: string;
+      color?: string;
+      filePreview?: boolean;
+      workspaceFiles?: boolean;
+      officePreview?: boolean;
+    } | null;
   }
 }
 
@@ -47,7 +56,7 @@ export function owningGroupKey(workspaces: readonly WorkspaceView[], sessionId: 
 
 /** Pending interaction kinds with dedicated Workspace-row presentation. */
 export type SessionPendingInteractionStatus = "approval" | "plan-review" | "question";
-type SessionStatuses = SessionStatusSnapshot;
+export type SessionStatuses = SessionStatusSnapshot;
 
 function mainSessionId(list: SessionListState): SessionId | undefined {
   return Object.values(list.byId).find((session) => (session.retainedBy.mainView ?? 0) > 0)?.id;
@@ -285,6 +294,7 @@ function sessionVisible(
 export interface SessionRowState {
   /** Registry-global pin ids; pinned rows lead their section in the local order. */
   pinnedSessionIds: readonly SessionId[];
+  sectionedSessionIds?: ReadonlySet<SessionId>;
   /** Archive set; members keep their slots and show grayed while visible. */
   archivedSessionIds: readonly SessionId[];
   /** Archived-row visibility choice applied to lists and search alike. */
@@ -316,6 +326,12 @@ function sectionMembers<T extends { id: SessionId }>(
  */
 function sessionTitle(session: SessionSummary): string {
   return session.blank ? "" : (session.title?.trim() ?? "");
+}
+
+/** Parse a Workspace creation timestamp, treating invalid or epoch-zero placeholders as absent. */
+function parseCreatedAt(createdAt: string): number | undefined {
+  const ts = Date.parse(createdAt);
+  return Number.isFinite(ts) && ts > 0 ? ts : undefined;
 }
 
 /** Build one group without projecting session lineage into presentation. */
@@ -359,7 +375,7 @@ function groupByWorkspace(
         workspace.workspaceId,
         workspace.workspaceId,
         workspace.path,
-        Date.parse(workspace.createdAt),
+        parseCreatedAt(workspace.createdAt),
         workspace.title,
         members,
         workspace.remote,
@@ -441,18 +457,24 @@ function sessionNode(
   };
 }
 
-/** Local delegation parent, independent of native Subagent lineage and unavailable on remote rows. */
+/** Same-host delegation parent, independent of native Subagent lineage. */
 export function threadTreeParentOf(
   summary: SessionSummary,
   list?: SessionListState,
 ): string | null {
-  if (summary.projectionValues?.remoteHost) return null;
   const parentId = summary.projectionValues?.threadTreeParent ?? null;
-  const parent = parentId === null ? undefined : list?.byId[SessionId(parentId)];
-  if (parent?.projectionValues?.remoteHost) return null;
-  const host = summary.projectionValues?.threadReference?.hostId;
-  const parentHost = parent?.projectionValues?.threadReference?.hostId;
-  return host !== undefined && parentHost !== undefined && host !== parentHost ? null : parentId;
+  if (parentId === null) return null;
+  const parent = list?.byId[SessionId(parentId)];
+  if (parent === undefined) return null;
+  const host =
+    summary.projectionValues?.threadReference?.hostId ??
+    summary.projectionValues?.remoteHost?.hostId ??
+    "local";
+  const parentHost =
+    parent.projectionValues?.threadReference?.hostId ??
+    parent.projectionValues?.remoteHost?.hostId ??
+    "local";
+  return host === parentHost ? parentId : null;
 }
 
 /** Build once across Workspaces so children follow their root's group. */
@@ -472,6 +494,7 @@ export function deriveThreadForest(
     return summary === undefined ? [] : [sessionNode(summary, list, statuses, pinned, archived)];
   });
   return buildThreadTree(rows, (row) => {
+    if (rowState.sectionedSessionIds?.has(row.id)) return null;
     const summary = list.byId[row.id];
     return summary === undefined ? null : threadTreeParentOf(summary, list);
   });
@@ -512,7 +535,10 @@ export function deriveGroups(
     const expanded = expandedGroups.has(g.key);
     const members = g.sessions.flatMap((session) => {
       const root = roots.get(session.id);
-      return root === undefined || (view.excludePinned && root.pinned) ? [] : [root];
+      return root === undefined ||
+        (view.excludePinned && (root.pinned || rowState.sectionedSessionIds?.has(root.id)))
+        ? []
+        : [root];
     });
     if (g.key === UNGROUPED_KEY)
       members.sort(

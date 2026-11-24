@@ -64,9 +64,9 @@ codexhost web      # start Web and open it in your browser
 codexhost stop     # stop all CodexHost background services
 ```
 
-**Option 2: Installer** (macOS / Windows)
+**Option 2: Installer** (macOS / Windows / Linux)
 
-Grab the installer for your platform from [Releases](https://github.com/BytePioneer-AI/codex-host/releases). For Web: open codexhost after installing, then visit http://127.0.0.1:4400 locally.
+Grab the installer for your platform from [Releases](https://github.com/BytePioneer-AI/codex-host/releases); Linux uses a `.tar.gz` archive, see the [Linux guide](docs/platforms/linux/linux.md#archive). For Web: open codexhost after installing, then visit http://127.0.0.1:4400 locally.
 
 **Option 3: WinGet** (Windows x64 / ARM64)
 
@@ -79,6 +79,8 @@ winget install --id BytePioneer-AI.CodexHost --exact
 > Linux is supported on x64 and ARM64. See the [Linux guide](docs/platforms/linux/linux.md).
 
 **Upgrade and stop:** run `codexhost update` to upgrade, and `codexhost stop` to stop all background services. Before installing over an existing npm installation, run `codexhost stop` first.
+
+**Keep Web access private:** access tokens, login links and QR codes let anyone who has them operate your computer. Do not share them.
 
 <details>
 <summary>Installation troubleshooting</summary>

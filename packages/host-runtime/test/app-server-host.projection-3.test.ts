@@ -8,9 +8,7 @@ import { MappingStore } from "@codexhost/mapping-store";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
   decodeExternalTransportSelection,
-  encodeClaudeTransportModel,
-  encodeGrokTransportModel,
-  encodePiTransportModel,
+  encodeExternalTransportSelection,
   type ExternalHarnessId,
   type JsonObject,
 } from "@codexhost/protocol-core";
@@ -23,6 +21,7 @@ import {
   harnessPermissionModeIdSchema,
   hostItemIdSchema,
   hostThreadIdSchema,
+  jsonObjectSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 
@@ -60,7 +59,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 33,
       method: "codexhost/thread/model/select",
-      params: { threadId, model },
+      params: jsonObjectSchema.parse({ threadId, model }),
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 33)),
@@ -256,7 +255,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const defaultMode = harnessPermissionModeIdSchema.parse("default");
     const threadId = await startExternalThread(
       fixture,
-      encodeClaudeTransportModel(model, defaultMode),
+      encodeExternalTransportSelection("claude-code", { model, permissionModeId: defaultMode }),
       36,
     );
     const auto = harnessPermissionModeIdSchema.parse("auto");
@@ -330,7 +329,10 @@ describe("AppServerHost HarnessAdapter projection", () => {
     if (!model) throw new Error("Fake Grok catalog has no default Model");
     const defaultMode = harnessPermissionModeIdSchema.parse("default");
     const alwaysApprove = harnessPermissionModeIdSchema.parse("always-approve");
-    const transportModelId = encodeGrokTransportModel(model, defaultMode);
+    const transportModelId = encodeExternalTransportSelection("grok", {
+      model,
+      permissionModeId: defaultMode,
+    });
     const threadId = await startExternalThread(fixture, transportModelId, 50);
     const session = grok.sessions[0];
     if (!session) throw new Error("Fake Grok Session was not opened");
@@ -405,7 +407,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 32,
       method: "codexhost/thread/model/select",
-      params: { threadId, model },
+      params: jsonObjectSchema.parse({ threadId, model }),
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 32)),
@@ -434,7 +436,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     if (!model) throw new Error("Fake catalog has no secondary Model");
     const low = fixture.adapter.catalog.thinkingOptions.find(({ id }) => id === "low")?.id;
     if (!low) throw new Error("Fake catalog has no Low Thinking option");
-    const carrier = encodePiTransportModel(model, low);
+    const carrier = encodeExternalTransportSelection("pi", { model, thinkingOptionId: low });
     const threadId = await startPiThread(fixture, carrier);
 
     expect(fixture.adapter.sessions[0]?.initialState).toMatchObject({
@@ -1691,7 +1693,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     writeRequest(fixture.desktopInput, {
       id: 40,
       method: "codexhost/thread/model/select",
-      params: { threadId, model },
+      params: jsonObjectSchema.parse({ threadId, model }),
     });
     await fixture.collector.waitFor((message) => requestId(message, 40));
     writeRequest(fixture.desktopInput, {

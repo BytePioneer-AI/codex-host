@@ -1,4 +1,5 @@
-import type { ChildProcess } from "node:child_process";
+import { spawnSync, type ChildProcess } from "node:child_process";
+import type * as childProcess from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
@@ -7,6 +8,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 
+import { killDeepSeekProcessTree } from "../../src/executable.js";
 import {
   ModernRemoteConnection,
   type ModernRemoteConnectionDependencies,
@@ -19,6 +21,11 @@ import {
   parseSessionCookie,
   redactModernCredential,
 } from "../../src/modern/wire.js";
+
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof childProcess>()),
+  spawnSync: vi.fn(),
+}));
 
 const TOKEN = "A".repeat(43);
 const AUTHORITY = "127.0.0.1:4567";
@@ -1126,6 +1133,34 @@ describe("DeepSeek Harness Modern Web Remote connection", () => {
     expect(setup.killProcessTree).toHaveBeenCalledOnce();
   });
 
+  it("rejects Windows managed cleanup when the wrapper exits and taskkill returns 128", async () => {
+    vi.stubEnv("SystemRoot", String.raw`C:\Windows`);
+    vi.mocked(spawnSync).mockReturnValueOnce({ status: 128, signal: null } as ReturnType<
+      typeof spawnSync
+    >);
+    try {
+      const child = fakeChild({ exitOnTerm: false });
+      Object.assign(child, { pid: 1234 });
+      const { connection } = harness(
+        vi.fn(() => Promise.resolve(authResponse())),
+        {
+          child,
+          command: "dsh.cmd",
+          platform: "win32",
+          killProcessTree: killDeepSeekProcessTree,
+        },
+      );
+      await connection.connect();
+
+      Object.assign(child, { exitCode: 1 });
+      child.emit("exit", 1, null);
+
+      await expect(connection.close()).rejects.toMatchObject({ code: "unavailable" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("validates the exact authority cookie name and attributes", () => {
     expect(parseSessionCookie(authResponse().headers, AUTHORITY)).toBe(COOKIE);
     const wrongLifetime = sessionCookie(AUTHORITY, {
@@ -1152,6 +1187,25 @@ describe("DeepSeek Harness Modern Web Remote connection", () => {
         "invalid session cookie",
       );
     }
+  });
+
+  it("accepts a dsh-purge port-less cookie name only for the same host", () => {
+    const portlessName = `dsh-auth-${createHash("sha256")
+      .update(AUTHORITY.replace(/:[0-9]+$/u, ""))
+      .digest("base64url")}`;
+    const portlessCookie = SET_COOKIE.replace(COOKIE_NAME, portlessName);
+    expect(parseSessionCookie(new Headers({ "set-cookie": portlessCookie }), AUTHORITY)).toBe(
+      portlessCookie.split(";")[0],
+    );
+    const otherHostName = `dsh-auth-${createHash("sha256")
+      .update("127.0.0.2")
+      .digest("base64url")}`;
+    expect(() =>
+      parseSessionCookie(
+        new Headers({ "set-cookie": SET_COOKIE.replace(COOKIE_NAME, otherHostName) }),
+        AUTHORITY,
+      ),
+    ).toThrow("invalid session cookie");
   });
 
   it("validates Modern endpoint segments without inventing a fixed depth", () => {

@@ -49,6 +49,8 @@ export interface ChProjectSnapshot {
   projects: Array<{ id: string; name: string; rootPaths: string[] }>;
   assignments: Record<string, string>;
   projectless: string[];
+  /** Projects in each native custom section, keyed by official section ID; shared Host only. */
+  sectionProjects?: Record<string, string[]> | undefined;
 }
 
 const exec = promisify(execFile);
@@ -56,6 +58,8 @@ const METHODS = new Set([
   THREAD_ARCHIVE_CONFIRM_METHOD,
   "codexhost/thread/tree/read",
   "codexhost/thread/pins/list",
+  "codexhost/thread/sections/list",
+  "codexhost/thread/sections/move",
   "codexhost/thread/pins/set",
   "codexhost/harness/display-settings/get",
   "codexhost/harness/display-settings/set",

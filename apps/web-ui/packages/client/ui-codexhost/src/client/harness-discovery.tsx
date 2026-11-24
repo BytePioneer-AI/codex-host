@@ -11,6 +11,7 @@ import type {
 } from "@deepseek-ai/dsh-client-ui-input-trigger/client";
 import {
   formatDelegationMentionLink,
+  REMOTE_PEER_HOST_ID_PREFIX,
   type HarnessCommandDescriptor,
   type HarnessCommandCatalog,
 } from "@codexhost/shared-contracts";
@@ -38,6 +39,7 @@ export function registerHarnessDiscovery(ctx: Context): void {
       epoch: object | undefined;
       generation: number;
       connection: string | undefined;
+      harnessId: string | undefined;
       promise: Promise<{ catalog: HarnessCommandCatalog; reserved: ReadonlySet<string> }>;
     }
   >();
@@ -52,28 +54,38 @@ export function registerHarnessDiscovery(ctx: Context): void {
   const changed = () => {
     for (const listener of listeners) listener();
   };
+  const hostIdOf = (id: SessionId) =>
+    ctx.sessions.list.getSnapshot().byId[id]?.projectionValues?.threadReference?.hostId ?? "local";
+  const isLocal = (id: SessionId) => hostIdOf(id) === "local";
+  const isRemotePeer = (id: SessionId) => hostIdOf(id).startsWith(REMOTE_PEER_HOST_ID_PREFIX);
+  const harnessIdOf = (id: SessionId) => {
+    const row = ctx.sessions.list.getSnapshot().byId[id];
+    return (
+      (row?.blank ? row.projectionValues?.modelSelection?.next?.provider : undefined) ??
+      row?.projectionValues?.harnessIdentity?.id
+    );
+  };
+  const connectionStateOf = (id: SessionId) => {
+    const row = ctx.sessions.list.getSnapshot().byId[id];
+    return (
+      row?.projectionValues?.nativeConnection?.state ?? row?.projectionValues?.remoteHost?.state
+    );
+  };
+  const isDirectCommand = (command: HarnessCommandDescriptor) =>
+    command.argumentMode === "none" || command.invocation === "/compact";
   const supported = (id: SessionId) => {
     const row = ctx.sessions.list.getSnapshot().byId[id];
     if (!row || ctx.sessions.subagentAddress(id) !== undefined) return false;
+    if (!isLocal(id) && !isRemotePeer(id)) return false;
     // A Codex draft has no Thread yet; the Host lists its workspace Skills from the draft's cwd.
-    if (row.blank)
-      return (
-        row.projectionValues?.harnessIdentity?.id === "codex" &&
-        (row.projectionValues.threadReference?.hostId ?? "local") === "local"
-      );
-    return (
-      row.projectionValues?.nativeDiscovery === true &&
-      row.projectionValues.threadReference?.hostId === "local"
-    );
+    if (row.blank) return harnessIdOf(id) === "codex";
+    return row.projectionValues?.nativeDiscovery === true;
   };
   const supportsDelegation = (id: SessionId) => {
     const row = ctx.sessions.list.getSnapshot().byId[id];
-    return (
-      supported(id) ||
-      (row?.blank === true &&
-        row.projectionValues?.harnessIdentity != null &&
-        ctx.sessions.subagentAddress(id) === undefined)
-    );
+    if (!row || !isLocal(id) || ctx.sessions.subagentAddress(id) !== undefined) return false;
+    if (row.blank) return harnessIdOf(id) != null;
+    return row.projectionValues?.nativeDiscovery === true;
   };
   const reason = (id: SessionId): string | undefined => {
     const row = ctx.sessions.list.getSnapshot().byId[id];
@@ -92,13 +104,19 @@ export function registerHarnessDiscovery(ctx: Context): void {
   };
   const notify = (id: SessionId, text: string) => input(id)?.notify("error", text);
   const read = (id: SessionId, req: CandidateRequest) => {
+    const harnessId = harnessIdOf(id);
     let entry = cache.get(id);
-    if (!entry || entry.epoch !== req.menuEpoch || entry.generation !== generation) {
+    if (
+      !entry ||
+      entry.epoch !== req.menuEpoch ||
+      entry.generation !== generation ||
+      entry.harnessId !== harnessId
+    ) {
       entry = {
         epoch: req.menuEpoch,
         generation,
-        connection:
-          ctx.sessions.list.getSnapshot().byId[id]?.projectionValues?.nativeConnection?.state,
+        connection: connectionStateOf(id),
+        harnessId,
         promise: Promise.all([
           harnessCommandApi.inspect(id),
           ctx.commandUi.reservedNames({ sessionId: id }),
@@ -128,14 +146,22 @@ export function registerHarnessDiscovery(ctx: Context): void {
       }),
     "ui-codexhost: browser connection generation",
   );
-  // Native Host reconnects are projected independently of the browser transport.
+  ctx.effect(
+    () =>
+      ctx.remote.$on("codexhost/skills/changed", () => {
+        generation++;
+        cache.clear();
+        changed();
+      }),
+    "ui-codexhost: skills changed invalidation",
+  );
+  // Native Host reconnects and draft Harness switches are projected independently of the browser transport.
   ctx.effect(
     () =>
       ctx.sessions.list.subscribe(() => {
         let invalidated = false;
-        const rows = ctx.sessions.list.getSnapshot().byId;
         for (const [id, entry] of cache) {
-          if (entry.connection !== rows[id]?.projectionValues?.nativeConnection?.state) {
+          if (entry.connection !== connectionStateOf(id) || entry.harnessId !== harnessIdOf(id)) {
             cache.delete(id);
             invalidated = true;
           }
@@ -206,10 +232,12 @@ export function registerHarnessDiscovery(ctx: Context): void {
             const { catalog, reserved } = await entry.promise;
             if (cache.get(sessionId) !== entry || !supported(sessionId)) return [];
             const query = req.query.toLocaleLowerCase();
-            const codex =
-              ctx.sessions.list.getSnapshot().byId[sessionId]?.projectionValues?.harnessIdentity
-                ?.id === "codex";
-            const rows: InputTriggerCandidate[] = catalog.commands
+            const codex = harnessIdOf(sessionId) === "codex";
+            const remotePeer = isRemotePeer(sessionId);
+            const visibleCommands = remotePeer
+              ? catalog.commands.filter((command) => !isDirectCommand(command))
+              : catalog.commands;
+            const rows: InputTriggerCandidate[] = visibleCommands
               .filter((command) =>
                 `${command.invocation} ${command.label}`.toLocaleLowerCase().includes(query),
               )
@@ -217,7 +245,7 @@ export function registerHarnessDiscovery(ctx: Context): void {
                 const nativeCodexSkill = codex && command.kind === "skill";
                 const disabledReason = reserved.has(command.invocation)
                   ? t("discovery.conflict")
-                  : command.argumentMode === "none" || command.invocation === "/compact"
+                  : isDirectCommand(command)
                     ? reason(sessionId)
                     : undefined;
                 const row: InputTriggerCandidate = {
@@ -247,7 +275,7 @@ export function registerHarnessDiscovery(ctx: Context): void {
                 disabledReason: t("discovery.static"),
                 section: t("discovery.commands"),
               });
-            if (!catalog.commands.length && !query && catalog.source !== "static")
+            if (!visibleCommands.length && !query && catalog.source !== "static")
               rows.push({
                 name: t("discovery.empty"),
                 disabledReason: t("discovery.empty"),
@@ -298,7 +326,11 @@ export function registerHarnessDiscovery(ctx: Context): void {
             notify(id, t("discovery.stale"));
             return "handled";
           }
-          if (command.argumentMode === "none" || command.invocation === "/compact") {
+          if (isDirectCommand(command)) {
+            if (isRemotePeer(id)) {
+              notify(id, t("discovery.stale"));
+              return "handled";
+            }
             execute(pick, commandId);
             return "handled";
           }

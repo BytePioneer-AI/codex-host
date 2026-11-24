@@ -7,6 +7,10 @@
     "dist"
   ],
   "exports": {
+    "./production-controller": {
+      "types": "./dist/production-controller.d.ts",
+      "import": "./dist/production-controller.js"
+    },
     "./renderer-bindings": {
       "types": "./dist/renderer-bindings.d.ts",
       "import": "./dist/renderer-bindings.js"
@@ -22,6 +26,7 @@
   },
   "dependencies": {
     "@codexhost/harness-plugin-files": "0.0.0",
-    "@codexhost/shared-contracts": "0.0.0"
+    "@codexhost/shared-contracts": "0.0.0",
+    "@rollup/browser": "3.30.0"
   }
 }

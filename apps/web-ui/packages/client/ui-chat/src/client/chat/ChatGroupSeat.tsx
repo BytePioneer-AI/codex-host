@@ -31,6 +31,7 @@ import type { ChatStoreState } from "../contract/store.ts";
 import type { ChatViewSlotProps } from "../contract/slots.ts";
 import { storedTurnProcessEntry } from "../stores.ts";
 import { ChatNodeSeat } from "./ChatNodeSeat.tsx";
+import { useNearViewport } from "./near-viewport.ts";
 import { chatRenderKey } from "./render-entry.ts";
 import { processTitle } from "./step-process.ts";
 import { useSearchableHidden } from "./searchable-hidden.ts";
@@ -231,6 +232,7 @@ export const ChatGroupSeat = memo(function ChatGroupSeat({
       props.actions.setTurnProcessOpen(spec.turn, spec.answerStep ?? 0, true);
   }, [props.actions, spec, alwaysOpen]);
   const rootRef = useSearchableHidden(outerHidden, revealOuter);
+  useNearViewport(rootRef, members !== undefined);
   useEffect(() => {
     if (outerHidden && rootRef.current?.hasAttribute("hidden")) setOpen(false);
   }, [outerHidden, rootRef, setOpen]);

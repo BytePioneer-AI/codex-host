@@ -26,6 +26,8 @@ export interface RpcContext {
   readonly auth?: RequestAuth;
   /** Run only after the HTTP response has been flushed (settings changes restart Web). */
   readonly afterResponse?: (callback: () => void) => void;
+  /** Aborted when the caller's HTTP request closes before the RPC completes. */
+  readonly signal?: AbortSignal;
 }
 
 export type RpcHandler = (args: Record<string, unknown>, context: RpcContext) => unknown;
@@ -63,6 +65,7 @@ export class RpcRegistry {
     afterResponse?: RpcContext["afterResponse"],
     relay = false,
     sessionListTiming?: SessionListTiming,
+    signal?: AbortSignal,
   ): Promise<RpcResult> {
     const handler = this.handlers.get(method);
     if (handler === undefined) {
@@ -89,6 +92,7 @@ export class RpcRegistry {
           ...(sessionListTiming === undefined ? {} : { sessionListTiming }),
           ...(auth === undefined ? {} : { auth }),
           ...(afterResponse === undefined ? {} : { afterResponse }),
+          ...(signal === undefined ? {} : { signal }),
         });
       const value = this.around ? await this.around(method, args ?? {}, next) : await next();
       return { ok: true, value: value === undefined ? null : value };
@@ -123,6 +127,7 @@ export class RpcRegistry {
     afterResponse?: RpcContext["afterResponse"],
     relay = false,
     onSessionListTiming?: (timing: SessionListTiming, ok: boolean) => void,
+    signal?: AbortSignal,
   ): Promise<string> {
     let envelope: { type?: string; rpcId?: string; method?: string; payload?: unknown };
     try {
@@ -148,6 +153,7 @@ export class RpcRegistry {
       afterResponse,
       relay,
       timing,
+      signal,
     );
     const serialize = () => {
       const reply = JSON.stringify({ type: "server-response", rpcId: envelope.rpcId, result });

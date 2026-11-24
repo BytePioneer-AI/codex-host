@@ -83,6 +83,13 @@ export function ThreadTreeViewProvider({
           pinnedSessionIds: workspaceState.pinnedSessionIds,
           archivedSessionIds: workspaceState.archivedSessionIds,
           archivedFilter,
+          ...(archivedFilter === "only" || !workspaceState.threadSections?.length
+            ? {}
+            : {
+                sectionedSessionIds: new Set(
+                  workspaceState.threadSections.flatMap((section) => section.threadIds),
+                ),
+              }),
         },
         new Map(),
       ),

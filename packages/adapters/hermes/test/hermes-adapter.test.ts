@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { HarnessOutput } from "@codexhost/harness-adapter";
+import type { HarnessOutput, HostThreadSnapshot } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
   hostTurnIdSchema,
@@ -14,7 +14,7 @@ import type {
   HermesTransportEvent,
 } from "../src/hermes-transport.js";
 import { HermesTransportError } from "../src/hermes-transport.js";
-import { encodeHermesModelRef } from "../src/hermes-models.js";
+import { hermesModelRef } from "../src/hermes-models.js";
 import { HermesSession } from "../src/hermes-session.js";
 
 class FakeTurnTransport {
@@ -233,7 +233,9 @@ describe("HermesSession native recovery", () => {
       ],
     };
     const transport = new FakeTurnTransport();
-    const readNativeSnapshot = vi.fn(async () => history);
+    let stored: HostThreadSnapshot = { turns: [] };
+    const readNativeSnapshot = vi.fn(async () => stored);
+    const runTurn = transport.runTurn.bind(transport);
     const session = new HermesSession({
       nativeRef: nativeSessionRefSchema.parse({
         harnessId: "hermes",
@@ -242,16 +244,37 @@ describe("HermesSession native recovery", () => {
       }),
       transport: Object.assign(transport, {
         readNativeSnapshot,
+        async runTurn(...args: Parameters<FakeTurnTransport["runTurn"]>) {
+          const response = await runTurn(...args);
+          stored = history;
+          return response;
+        },
       }) as unknown as HermesSessionTransport,
       open: openResult(),
       onSettle: () => undefined,
     });
     try {
-      expect(await session.readSnapshot()).toMatchObject({ ok: true, value: history });
+      const completed = collectUntilTurnCompleted(session.outputs);
+      const turnId = hostTurnIdSchema.parse("turn-native-history");
+      expect(
+        await session.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "go" }],
+        }),
+      ).toEqual({ ok: true, value: { turnId } });
+      expect((await completed).at(-1)).toMatchObject({
+        kind: "event",
+        event: { type: "turn.completed", turnId, nativeTurnRef, outcome: { status: "succeeded" } },
+      });
+      expect(await session.readSnapshot()).toEqual({
+        ok: true,
+        value: { ...history, state: session.initialState },
+      });
       readNativeSnapshot.mockRejectedValueOnce(new Error("native DB unavailable"));
       expect(await session.readSnapshot()).toMatchObject({
         ok: false,
-        error: { message: "native DB unavailable" },
+        error: { code: "nativeFailure", message: "native DB unavailable" },
       });
     } finally {
       await session.close();
@@ -621,7 +644,7 @@ describe("HermesSession live configuration errors", () => {
         turnId: hostTurnIdSchema.parse("active-config"),
         input: [{ type: "text", text: "go" }],
       });
-      const model = encodeHermesModelRef("openrouter:test-model");
+      const model = hermesModelRef("openrouter:test-model");
       if (!model) throw new Error("Expected a Model");
       expect(await session.execute({ type: "model.select", model })).toMatchObject({ ok: true });
       expect(select).toHaveBeenCalledWith("openrouter:test-model");
@@ -648,7 +671,7 @@ describe("HermesSession live configuration errors", () => {
       open: openResult(),
       onSettle: () => undefined,
     });
-    const model = encodeHermesModelRef("openrouter:test-model");
+    const model = hermesModelRef("openrouter:test-model");
     if (!model) throw new Error("Expected a valid Hermes Model Ref");
 
     const selected = await session.execute({ type: "model.select", model });

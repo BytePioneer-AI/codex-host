@@ -47,11 +47,42 @@ export interface ComposerImageAttachment {
   height?: number;
 }
 
-/** Browser-owned generic file whose bytes upload to the Host as soon as it is picked. */
-export interface ComposerFileAttachment {
-  kind: "file";
-  id: DraftAttachmentId;
-  file: File;
+/** Browser-owned generic file whose bytes upload to the Host as soon as it is picked, or a Host-stored file restored from a queued message. */
+export type ComposerFileAttachment =
+  | {
+      kind: "file";
+      id: DraftAttachmentId;
+      file: File;
+    }
+  | {
+      kind: "file";
+      id: DraftAttachmentId;
+      stored: FileAttachmentRef;
+    };
+
+/** One Host-staged attachment returned when a queued message is taken back into the composer. */
+export interface RestoredQueuedAttachment {
+  readonly kind: "image" | "file";
+  readonly receiptId: FileUploadReceiptId;
+  readonly file: FileAttachmentRef;
+}
+
+/** Text and re-staged Web attachments returned after removing a queued message for editing. */
+export interface RestoredQueuedMessage {
+  readonly text: string;
+  readonly attachments: readonly RestoredQueuedAttachment[];
+}
+
+declare module "@deepseek-ai/cordis" {
+  interface Context {
+    queueMessageEditing?: {
+      takeForEdit(
+        sessionId: string,
+        itemId: string,
+        revision: string,
+      ): Promise<RestoredQueuedMessage>;
+    };
+  }
 }
 
 /** Upload lifecycle of one picked image or file draft. */
@@ -408,14 +439,44 @@ export interface ConvViewOwnerProps {
 /** Base props of one target-owned Conversation View entry. */
 export type ConvViewProps = PropsRuntime<"conversation.view">;
 
+/** Classified failure categories for New Session creation shown on the Hero surface. */
+export type SessionCreationFailureReason = "no-harness" | "workspace-required" | "unknown";
+
+/** Structural view of pending or failed New Session creation from uiWorkspace. */
+export type SessionCreationView =
+  | { readonly state: "idle" }
+  | {
+      readonly state: "creating";
+      readonly workspaceId: WorkspaceId | null;
+      readonly token: number;
+    }
+  | {
+      readonly state: "error";
+      readonly workspaceId: WorkspaceId | null;
+      readonly reason: SessionCreationFailureReason;
+      readonly message?: string;
+      readonly token: number;
+    };
+
+/** Plain-text editor face bound to InputBar while a New Session is being created. */
+export interface PendingDraftFace {
+  readonly editor: LexicalEditor;
+  paste(text: string): void;
+}
+
 /** Business callbacks injected into the resident Conversation shell. */
 export interface ConversationInjected {
   /** Borrowed current Composer editor for the package-owned native reference drop target. */
   referenceEditor: LexicalEditor | undefined;
   /** Connect a blank Session; null explicitly selects no project on a supporting Host. */
   selectWorkspace: (workspaceId: WorkspaceId | null) => Promise<void>;
-  /** Session-addressed composer block source, or the stable absent source. */
-  hooks: { composerBlock: ObservableSnapshot<ComposerBlock | undefined> };
+  /** Retry a failed New Session creation without clearing the pending draft. */
+  retrySessionCreation: () => void;
+  /** Session-addressed composer block source and New Session creation state. */
+  hooks: {
+    composerBlock: ObservableSnapshot<ComposerBlock | undefined>;
+    sessionCreation: ObservableSnapshot<SessionCreationView>;
+  };
 }
 
 /** Business callbacks injected into the strict Session body. */
@@ -451,11 +512,19 @@ export interface ComposerBarOwnerProps {
   blocked?: { readonly reason: string };
   /** Lock all message actions while preserving the resident composer surface. */
   disabled?: boolean;
+  /** Keep typing enabled while the newly created blank Session finishes opening, keeping send/upload locked. */
+  preparingDraft?: boolean;
+  /** Active New Session creation progress or error shown on the Hero surface before a Session exists. */
+  sessionCreation?: SessionCreationView;
+  /** Retry a failed New Session creation from the inline Hero error banner. */
+  onRetrySessionCreation?: () => void;
   /** Whether the shared Workspace picker is expanded. */
   workspacePickerOpen?: boolean;
   /** Open the Workspace picker from the inert composer surface. */
   onRequestWorkspace?: () => void;
   placeholder?: string;
+  /** Optional seamless cap bar docked flush at the top of the composer card (Hero mode). */
+  topBar?: ReactNode;
   /** Optional content rendered above the composer surface. */
   accessory?: ReactNode;
 }
@@ -463,6 +532,8 @@ export interface ComposerBarOwnerProps {
 /** Package-private operations injected into the resident composer bar. */
 export interface ComposerBarInjected {
   keyboard: ComposerKeyboard | undefined;
+  /** Lightweight plain-text draft editor used while a New Session is still creating. */
+  pendingDraft: PendingDraftFace | undefined;
   /**
    * Register one picked batch; resolves to the rejection copy or null. Where
    * the browser shell reports host paths (the Desktop application), files
@@ -483,6 +554,8 @@ export interface ComposerBarInjected {
   toggleCommandMenu: ((selection: EditSelection) => void) | undefined;
   stop: (() => void) | undefined;
   hooks: {
+    /** Live plain-text content of the pending New Session draft. */
+    pendingDraftText: ObservableSnapshot<string>;
     /** Readable sequence while the fixed Stop command is registered. */
     stopShortcut: ObservableSnapshot<readonly string[]>;
     /**
@@ -618,6 +691,10 @@ export interface EmptyWorkspaceOwnerProps {
   anchorRef?: RefObject<HTMLElement>;
   /** Currently selected Workspace, when available. */
   selectedId?: WorkspaceId | undefined;
+  /** Optional fallback display title while the workspace list is still hydrating. */
+  fallbackLabel?: string | undefined;
+  /** Called when the picker toggles its own project popover visibility. */
+  onOpenChange?: (open: boolean) => void;
   onPick: (workspaceId: WorkspaceId | null) => void;
   onClose: () => void;
 }

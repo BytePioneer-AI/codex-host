@@ -1,19 +1,29 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { HostTurnSnapshot } from "@codexhost/harness-adapter";
 import {
   HostClientChannel,
   discoverHostClientChannel,
   type HostClientUpdate,
 } from "@codexhost/desktop-control";
-import type { ClientChannelEvent } from "@codexhost/shared-contracts";
+import {
+  THREAD_STEER_STRICT_TARGET_PARAM,
+  clientThreadSnapshotSchema,
+  hostTurnIdSchema,
+  jsonObjectSchema,
+  type ClientChannelEvent,
+} from "@codexhost/shared-contracts";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
 import { routeDelegationRequest } from "../src/delegation-control-server.js";
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
 import { ClientCommandReceipts } from "../src/client-command-receipts.js";
 import { startClientChannelServer } from "../src/client-channel-server.js";
+import { compactClientSnapshot } from "../src/client-snapshot-compaction.js";
+import type { ExternalHistoryPage } from "../src/external-thread-history.js";
 import {
   createOwnedConnectionBackend,
   OfficialRuntimeScope,
@@ -109,7 +119,9 @@ describe("public authenticated owner channel", () => {
     await fixture.host.handleConsoleRequest("codexhost/harness/inspect", {
       harnessId: "pi",
       refresh: true,
+      credentialAccess: "retry",
     });
+    expect(inspect).toHaveBeenLastCalledWith({ refresh: true, credentialAccess: "retry" });
     await vi.waitFor(() => expect(changes()).toHaveLength(2));
     expect(changes()).toEqual([
       expect.objectContaining({
@@ -127,19 +139,29 @@ describe("public authenticated owner channel", () => {
       onDelegationApi: (registration) => api.register(registration, { harnessCatalog: true }),
     });
     const inspect = vi.spyOn(fixture.adapter, "inspect");
-    const call = (refresh: boolean) =>
+    const call = (refresh: boolean, credentialAccess?: "retry") =>
       routeDelegationRequest({ api }, "/v1/harness/inspect", {
         harnessId: "pi",
         cwd: process.cwd(),
         refresh,
+        ...(credentialAccess ? { credentialAccess } : {}),
       });
     const changes = () => events.filter((event) => event.type === "harness-inspection-changed");
     await call(false);
     expect(changes()).toHaveLength(0);
-    await call(true);
+    await call(true); // MCP also uses this route for a refresh, not for re-detect.
     expect(inspect).toHaveBeenLastCalledWith({ cwd: process.cwd(), refresh: true });
+    await call(true, "retry");
+    expect(inspect).toHaveBeenLastCalledWith({
+      cwd: process.cwd(),
+      refresh: true,
+      credentialAccess: "retry",
+    });
     await vi.waitFor(() =>
-      expect(changes()).toEqual([expect.objectContaining({ harnessId: "pi" })]),
+      expect(changes()).toEqual([
+        expect.objectContaining({ harnessId: "pi" }),
+        expect.objectContaining({ harnessId: "pi" }),
+      ]),
     );
   });
 
@@ -330,12 +352,14 @@ describe("public authenticated owner channel", () => {
   });
   it("shares durable preferences between Desktop and Web without creating Harness sessions", async () => {
     const { fixture, a, b, events } = await setup();
+    const model = fixture.adapter.catalog.defaultModel;
+    assert(model, "Expected a default Model in the fake catalog");
     const patchMethod = "codexhost/harness/preferences/patch";
     const getMethod = "codexhost/harness/preferences/get";
     writeRequest(fixture.desktopInput, {
       id: 700,
       method: patchMethod,
-      params: {
+      params: jsonObjectSchema.parse({
         scope: "external",
         operations: [
           { kind: "idleRelease", value: { enabled: true, timeoutMinutes: 20 } },
@@ -343,10 +367,10 @@ describe("public authenticated owner channel", () => {
             kind: "newThread",
             lastHarness: "pi",
             harnessId: "pi",
-            configuration: { model: { id: "native" } },
+            configuration: { model },
           },
         ],
-      },
+      }),
     });
     await fixture.collector.waitFor((message) => message.id === 700);
     await vi.waitFor(() =>
@@ -355,15 +379,15 @@ describe("public authenticated owner channel", () => {
     expect(await a.request(getMethod, {})).toMatchObject({
       values: {
         idleRelease: { enabled: true, timeoutMinutes: 20 },
-        newThread: { lastHarness: "pi" },
+        newThread: { lastHarness: "pi", byHarness: { pi: { model } } },
       },
     });
     await b.request(patchMethod, {
-      operations: [{ kind: "favorite", harnessId: "pi", modelId: "native", enabled: true }],
+      operations: [{ kind: "favorite", harnessId: "pi", modelId: model.id, enabled: true }],
     });
     writeRequest(fixture.desktopInput, { id: 701, method: getMethod, params: {} });
     expect(await fixture.collector.waitFor((message) => message.id === 701)).toMatchObject({
-      result: { values: { favorites: { pi: ["native"] } } },
+      result: { values: { favorites: { pi: [model.id] } } },
     });
     expect(
       JSON.parse(
@@ -372,16 +396,29 @@ describe("public authenticated owner channel", () => {
           "utf8",
         ),
       ).scopes.external.favorites.pi,
-    ).toEqual(["native"]);
+    ).toEqual([model.id]);
+    const codexDefault = { newThread: { byHarness: { codex: { model: { id: "gpt" } } } } };
     await expect(
       a.request(patchMethod, {
         operations: [
           { kind: "newThread", harnessId: "codex", configuration: { model: { id: "gpt" } } },
         ],
       }),
-    ).resolves.toMatchObject({
-      values: { newThread: { byHarness: { codex: { model: { id: "gpt" } } } } },
-    });
+    ).resolves.toMatchObject({ values: codexDefault });
+    const codexPreferences = b.request(getMethod, {});
+    let request = await readJsonLine(fixture.official.stdin);
+    if (request.method === "initialize") {
+      fixture.official.stdout.write(
+        `${JSON.stringify({ id: request.id, result: { userAgent: "fixture" } })}\n`,
+      );
+      request = await readJsonLine(fixture.official.stdin);
+      if (request.method === "initialized") request = await readJsonLine(fixture.official.stdin);
+    }
+    expect(request.method).toBe("model/list");
+    fixture.official.stdout.write(
+      `${JSON.stringify({ id: request.id, result: { data: [{ model: "gpt", isDefault: true }] } })}\n`,
+    );
+    await expect(codexPreferences).resolves.toMatchObject({ values: codexDefault });
     expect(fixture.adapter.sessions).toHaveLength(0);
   });
   it("rejects unauthenticated/browser-origin traffic and official Thread execution", async () => {
@@ -469,26 +506,70 @@ describe("public authenticated owner channel", () => {
     );
     current(fixture).succeedTurn();
   });
-  it("serves unchanged completed Turns as placeholders and full tool output on demand over HTTP", async () => {
+  it("serves byte-identical completed Turns, placeholders, and full tool output over HTTP", async () => {
     const { fixture, a } = await setup();
     const id = await startPiThread(fixture);
-    const turnId = await startPiTurn(fixture, id);
-    const command = current(fixture).startCommandExecution("cat big");
-    const output = "line of output\n".repeat(8_000);
-    current(fixture).appendCommandOutput(command, output);
-    current(fixture).completeItem(command, { status: "succeeded" });
-    current(fixture).succeedTurn();
-    await fixture.collector.waitFor((value) => value.method === "turn/completed");
+    const clientId = "snapshot-receipt";
+    const { turn } = await a.request<{ turn: { id: string } }>("turn/start", {
+      threadId: id,
+      clientUserMessageId: clientId,
+      input: [{ type: "text", text: "show tool output" }],
+    });
+    const turnId = hostTurnIdSchema.parse(turn.id);
+    const session = current(fixture);
+    const command = session.startCommandExecution("cat big");
+    const output = 'line of "output"\n'.repeat(66_000);
+    session.appendCommandOutput(command, output);
+    session.completeItem(command, { status: "succeeded" });
+    const detached = session.startCommandExecution("stream later");
+    session.detachItem(detached);
+    session.succeedTurn();
+    await fixture.collector.waitFor(
+      (value) =>
+        value.method === "turn/completed" &&
+        (value.params as { turn?: { id?: string } })?.turn?.id === turnId,
+    );
 
+    // Seed the Fake Harness's native history without 200 live submissions and disk writes.
+    const readSnapshot = session.readSnapshot.bind(session);
+    session.readSnapshot = async () => {
+      const result = await readSnapshot();
+      if (!result.ok) return result;
+      const latest = result.value.turns.at(-1);
+      assert(latest);
+      const older = Array.from({ length: 200 }, (_, i): HostTurnSnapshot => ({
+        nativeTurnRef: { ...latest.nativeTurnRef, nativeTurnKey: `older-${i}` },
+        input: [{ type: "text", text: `earlier prompt ${i}` }],
+        items: [],
+        outcome: { status: "succeeded" },
+      }));
+      return { ok: true, value: { ...result.value, turns: [...older, ...result.value.turns] } };
+    };
+    const pageParams = { threadId: id, limit: 5, itemsView: "full", sortDirection: "desc" };
+    const page = await a.request<ExternalHistoryPage>("thread/turns/list", pageParams);
     const plain = await a.snapshot(id);
+    expect(plain.turnsPage.data).toHaveLength(5);
+    expect(plain.turnsPage.nextCursor).not.toBeNull();
     expect(plain.turnsPage.data[0]?.fingerprint).toBeUndefined();
+    // The Desktop page exposes the same history before applying client receipts.
+    const legacy = clientThreadSnapshotSchema.parse(
+      JSON.parse(JSON.stringify({ ...plain, turnsPage: page })),
+    );
+    const legacyUser = legacy.turnsPage.data[0]?.items.find((item) => item.type === "userMessage");
+    assert(legacyUser);
+    expect(legacyUser.clientId).toBeNull();
+    legacyUser.clientId = clientId;
+    assert.equal(JSON.stringify(plain), JSON.stringify(legacy));
     expect(
       plain.turnsPage.data
         .find((turn) => turn.id === turnId)
         ?.items.find((item) => item.type === "commandExecution")?.aggregatedOutput,
     ).toBe(output);
 
-    const first = await a.snapshot(id, { knownTurns: [], truncateToolOutput: true });
+    const options = { knownTurns: [], truncateToolOutput: true };
+    const first = await a.snapshot(id, options);
+    const legacyServed = clientThreadSnapshotSchema.parse(compactClientSnapshot(legacy, options));
+    assert.equal(JSON.stringify(first), JSON.stringify(legacyServed));
     const served = first.turnsPage.data.find((turn) => turn.id === turnId);
     expect(served?.fingerprint).toEqual(expect.any(String));
     const shortened = served?.items.find((item) => item.type === "commandExecution");
@@ -513,11 +594,40 @@ describe("public authenticated owner channel", () => {
       untruncated.turnsPage.data.find((turn) => turn.id === turnId)?.unchanged,
     ).toBeUndefined();
 
+    // An anchored page does not refresh the cache, so it would expose a write-back.
+    const after = await a.request<ExternalHistoryPage>("thread/turns/list", {
+      ...pageParams,
+      cursor: page.backwardsCursor,
+    });
+    expect(after.data).toEqual(page.data);
     const full = await a.request<{
       data: Array<{ item: { id: string; aggregatedOutput?: string } }>;
     }>("thread/items/list", { threadId: id, turnId });
     expect(full.data.find((entry) => entry.item.id === shortened?.id)?.item.aggregatedOutput).toBe(
       output,
+    );
+
+    session.emitEvent({
+      type: "item.updated",
+      turnId,
+      itemId: detached,
+      update: { type: "output.append", text: "late output" },
+    });
+    await fixture.collector.waitFor(
+      (value) =>
+        value.method === "item/commandExecution/outputDelta" &&
+        (value.params as { itemId?: string })?.itemId === detached,
+    );
+    const changed = await a.snapshot(id, {
+      knownTurns: [{ id: turnId, fingerprint: served?.fingerprint ?? "" }],
+      truncateToolOutput: true,
+    });
+    const changedTurn = changed.turnsPage.data[0];
+    expect(changedTurn).toMatchObject({ id: turnId, status: "completed" });
+    expect(changedTurn?.fingerprint).not.toBe(served?.fingerprint);
+    expect(changedTurn?.unchanged).toBeUndefined();
+    expect(changedTurn?.items).toContainEqual(
+      expect.objectContaining({ id: detached, aggregatedOutput: "late output" }),
     );
   });
   it("publishes GUI model changes and native cancellation to every client", async () => {
@@ -727,7 +837,7 @@ describe("public authenticated owner channel", () => {
     expect((await a.snapshot(id)).queue?.items).toEqual([]);
     current(fixture).succeedTurn();
   });
-  it("keeps a late Web Steer as a queued follow-up after the busy window closes", async () => {
+  it("rejects a late targeted steer while retaining the older client-channel behavior", async () => {
     const { fixture, a } = await setup();
     const id = await startPiThread(fixture);
     const completedTurnId = await startPiTurn(fixture, id);
@@ -736,6 +846,21 @@ describe("public authenticated owner channel", () => {
       (value) =>
         value.method === "turn/completed" && JSON.stringify(value).includes(completedTurnId),
     );
+    await expect(
+      a.request("turn/steer", {
+        threadId: id,
+        expectedTurnId: completedTurnId,
+        [THREAD_STEER_STRICT_TARGET_PARAM]: true,
+        clientUserMessageId: "targeted-web-steer",
+        input: [{ type: "text", text: "keep this draft" }],
+      }),
+    ).rejects.toMatchObject({
+      code: -32074,
+      message: "External steering must reference the active Turn",
+    });
+    const idle = await a.snapshot(id);
+    expect(idle.thread.status.type).toBe("idle");
+    expect(idle.queue?.items).toEqual([]);
     await expect(
       a.request("turn/steer", {
         threadId: id,

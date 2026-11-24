@@ -5,7 +5,6 @@ import {
   hostInteractionIdSchema,
   hostItemIdSchema,
   hostTurnIdSchema,
-  nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import { applyPatch } from "diff";
 import { describe, expect, it, vi } from "vitest";
@@ -524,8 +523,8 @@ describe("tool lifecycle and file changes", () => {
 describe("history replay", () => {
   const events: AntigravityAcpEvent[] = [
     { type: "session.info", title: "History" },
-    { type: "user.text", text: "Hel" },
-    { type: "user.text", text: "lo" },
+    { type: "user.text", text: "Hel", nativeTurnIndex: 0 },
+    { type: "user.text", text: "lo", nativeTurnIndex: 0 },
     { type: "agent.thought", text: "Think" },
     { type: "agent.thought", text: "ing" },
     {
@@ -543,7 +542,7 @@ describe("history replay", () => {
     { type: "agent.text", text: "One" },
     { type: "agent.text", text: " answer" },
     { type: "usage.context", used: 100, size: 1000 },
-    { type: "user.text", text: "Next" },
+    { type: "user.text", text: "Next", nativeTurnIndex: 1 },
     { type: "agent.text", text: "Two" },
   ];
   it("groups consecutive user chunks into logical turns and keeps all IDs deterministic", () => {
@@ -573,270 +572,34 @@ describe("history replay", () => {
     );
     expect(new Set(ids).size).toBe(ids.length);
   });
-  it("uses the last native user boundary for merged logical turns", () => {
-    const events: AntigravityAcpEvent[] = [];
-    for (let index = 0; index < 15; index++) {
-      events.push({ type: "user.text", text: `input-${index}`, nativeTurnIndex: index });
-      if (index !== 11) events.push({ type: "agent.text", text: `reply-${index}` });
-    }
-
-    const result = projectReplayedEventsToTurns({
-      nativeSessionId: "native",
-      cwd: "/repo",
-      events,
-      knownTurnRefs: [
-        ...Array.from({ length: 14 }, (_, index) =>
-          nativeTurnRefSchema.parse({
-            harnessId: "antigravity",
-            nativeSessionId: "native",
-            nativeTurnKey: `turn-${index === 13 ? 14 : index}`,
-            formatVersion: 1,
-          }),
-        ),
-      ],
-    });
-
-    expect(result).toHaveLength(14);
-    expect(result[11]?.input).toEqual([{ type: "text", text: "input-11input-12" }]);
-    expect(result[11]?.checkpoint?.checkpointId).toBe("turn-12");
-    expect(result[13]?.nativeTurnRef.nativeTurnKey).toBe("turn-14");
-    expect(result[13]?.checkpoint?.checkpointId).toBe("turn-14");
-  });
-  it("keeps a known identity for the final native boundary of a merged group", () => {
-    const events: AntigravityAcpEvent[] = [];
-    for (let nativeTurnIndex = 0; nativeTurnIndex < 15; nativeTurnIndex++) {
-      events.push({
-        type: "user.text",
-        text: nativeTurnIndex === 10 ? "/compact" : `input-${nativeTurnIndex}`,
-        nativeTurnIndex,
-      });
-      if (nativeTurnIndex !== 10)
-        events.push({ type: "agent.text", text: `reply-${nativeTurnIndex}` });
-    }
-    const knownTurnRefs = [
-      ...Array.from({ length: 10 }, (_, nativeTurnIndex) => `turn-${nativeTurnIndex}`),
-      ...Array.from({ length: 4 }, (_, index) => `turn-${index + 11}`),
-    ].map((nativeTurnKey) =>
-      nativeTurnRefSchema.parse({
-        harnessId: "antigravity",
-        nativeSessionId: "native",
-        nativeTurnKey,
-        formatVersion: 1,
-      }),
-    );
-    const result = projectReplayedEventsToTurns({
-      nativeSessionId: "native",
-      cwd: "/repo",
-      events,
-      knownTurnRefs,
-    });
-    expect(result).toHaveLength(14);
-    expect(result[10]?.input).toEqual([{ type: "text", text: "/compactinput-11" }]);
-    expect(result[10]?.nativeTurnRef.nativeTurnKey).toBe("turn-11");
-    expect(result[10]?.checkpoint?.checkpointId).toBe("turn-11");
-  });
-  it("keeps cold replay identities stable when reread with its generated refs", () => {
-    const events: AntigravityAcpEvent[] = [];
-    for (let nativeTurnIndex = 0; nativeTurnIndex < 15; nativeTurnIndex++) {
-      events.push({ type: "user.text", text: `input-${nativeTurnIndex}`, nativeTurnIndex });
-      if (nativeTurnIndex !== 10)
-        events.push({ type: "agent.text", text: `reply-${nativeTurnIndex}` });
-    }
-    const params = { nativeSessionId: "native", cwd: "/repo", events };
-    const first = projectReplayedEventsToTurns(params);
-    const second = projectReplayedEventsToTurns({
-      ...params,
-      knownTurnRefs: first.map(({ nativeTurnRef }) => nativeTurnRef),
-    });
-    expect(first.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey)).toEqual([
-      "turn-0",
-      "turn-1",
-      "turn-2",
-      "turn-3",
-      "turn-4",
-      "turn-5",
-      "turn-6",
-      "turn-7",
-      "turn-8",
-      "turn-9",
-      "turn-11",
-      "turn-12",
-      "turn-13",
-      "turn-14",
-    ]);
-    expect(second.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey)).toEqual(
-      first.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey),
-    );
-  });
-  it("preserves known native turn keys independently of checkpoint positions", () => {
-    const known = nativeTurnRefSchema.parse({
-      harnessId: "antigravity",
-      nativeSessionId: "native",
-      nativeTurnKey: "stored-key",
-      formatVersion: 1,
-    });
-    const result = projectReplayedEventsToTurns({
-      nativeSessionId: "native",
-      cwd: "/repo",
-      events,
-      knownTurnRefs: [known],
-    });
-    expect(result[0]?.nativeTurnRef.nativeTurnKey).toBe("stored-key");
-    expect(result[0]?.checkpoint?.checkpointId).toBe("turn-0");
-  });
-  it("preserves known turn keys and skips them when generating a fallback", () => {
-    const result = projectReplayedEventsToTurns({
-      nativeSessionId: "native",
-      cwd: "/repo",
-      events: [...events, { type: "user.text", text: "Third" }],
-      knownTurnRefs: ["turn-0", "turn-2"].map((nativeTurnKey) =>
-        nativeTurnRefSchema.parse({
-          harnessId: "antigravity",
-          nativeSessionId: "native",
-          nativeTurnKey,
-          formatVersion: 1,
-        }),
-      ),
-    });
-    expect(result.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey)).toEqual([
-      "turn-0",
-      "turn-2",
-      "turn-3",
-    ]);
-  });
-  it("maps sparse native identities by native boundary and preserves nonnumeric keys", () => {
-    const knownTurnRefs = ["turn-0", "turn-2", "stored-key"].map((nativeTurnKey) =>
-      nativeTurnRefSchema.parse({
-        harnessId: "antigravity",
-        nativeSessionId: "native",
-        nativeTurnKey,
-        formatVersion: 1,
-      }),
-    );
+  it("keeps orphan replay keys separate and uses the last native boundary of merged inputs", () => {
     const result = projectReplayedEventsToTurns({
       nativeSessionId: "native",
       cwd: "/repo",
       events: [
-        { type: "user.text" as const, text: "input-0", nativeTurnIndex: 0 },
-        { type: "agent.text" as const, text: "reply-0" },
-        { type: "user.text" as const, text: "input-1", nativeTurnIndex: 1 },
-        { type: "agent.text" as const, text: "reply-1" },
-        { type: "user.text" as const, text: "input-2", nativeTurnIndex: 2 },
-      ],
-      knownTurnRefs,
-    });
-    expect(result.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey)).toEqual([
-      "turn-0",
-      "turn-1",
-      "turn-2",
-    ]);
-    expect(result.map(({ checkpoint }) => checkpoint?.checkpointId)).toEqual([
-      "turn-0",
-      "turn-1",
-      "turn-2",
-    ]);
-  });
-  it("keeps a nonnumeric native identity when replay provides its boundary", () => {
-    const [turn] = projectReplayedEventsToTurns({
-      nativeSessionId: "native",
-      cwd: "/repo",
-      events: [{ type: "user.text", text: "input", nativeTurnIndex: 0 }],
-      knownTurnRefs: [
-        nativeTurnRefSchema.parse({
-          harnessId: "antigravity",
-          nativeSessionId: "native",
-          nativeTurnKey: "stored-key",
-          formatVersion: 1,
-        }),
+        { type: "agent.text", text: "orphan reply" },
+        { type: "user.text", text: "first ", nativeTurnIndex: 0 },
+        { type: "user.text", text: "question", nativeTurnIndex: 2 },
+        { type: "agent.text", text: "first reply" },
+        { type: "history.autonomous", stepIndex: 8 },
+        { type: "agent.text", text: "wake reply" },
+        { type: "user.text", text: "follow up", nativeTurnIndex: 3 },
+        { type: "agent.text", text: "second reply" },
       ],
     });
-    expect(turn?.nativeTurnRef.nativeTurnKey).toBe("stored-key");
-  });
-  it("keeps a later nonnumeric identity after an earlier mapping is removed", () => {
-    const events: AntigravityAcpEvent[] = Array.from({ length: 4 }, (_, nativeTurnIndex) => [
-      { type: "user.text" as const, text: `input-${nativeTurnIndex}`, nativeTurnIndex },
-      { type: "agent.text" as const, text: `reply-${nativeTurnIndex}` },
-    ]).flat();
-    const result = projectReplayedEventsToTurns({
-      nativeSessionId: "native",
-      cwd: "/repo",
-      events,
-      knownTurnRefs: ["turn-0", "turn-2", "stored-key"].map((nativeTurnKey) =>
-        nativeTurnRefSchema.parse({
-          harnessId: "antigravity",
-          nativeSessionId: "native",
-          nativeTurnKey,
-          formatVersion: 1,
-        }),
-      ),
-    });
-    expect(result.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey)).toEqual([
-      "turn-0",
-      "turn-1",
-      "turn-2",
-      "stored-key",
+    expect(result[1]?.input).toEqual([{ type: "text", text: "first question" }]);
+    expect(
+      result.map(({ nativeTurnRef, checkpoint }) => [
+        nativeTurnRef.nativeTurnKey,
+        checkpoint?.checkpointId,
+      ]),
+    ).toEqual([
+      ["replay-0", undefined],
+      ["turn-2", "turn-2"],
+      ["wake-8", "wake-8"],
+      ["turn-3", "turn-3"],
     ]);
   });
-  it("does not consume a later nonnumeric identity before its native boundary", () => {
-    const events: AntigravityAcpEvent[] = Array.from({ length: 4 }, (_, nativeTurnIndex) => [
-      { type: "user.text" as const, text: `input-${nativeTurnIndex}`, nativeTurnIndex },
-      { type: "agent.text" as const, text: `reply-${nativeTurnIndex}` },
-    ]).flat();
-    const result = projectReplayedEventsToTurns({
-      nativeSessionId: "native",
-      cwd: "/repo",
-      events,
-      knownTurnRefs: ["turn-2", "stored-key"].map((nativeTurnKey) =>
-        nativeTurnRefSchema.parse({
-          harnessId: "antigravity",
-          nativeSessionId: "native",
-          nativeTurnKey,
-          formatVersion: 1,
-        }),
-      ),
-    });
-    expect(result.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey)).toEqual([
-      "turn-0",
-      "turn-1",
-      "turn-2",
-      "stored-key",
-    ]);
-  });
-  it.each([
-    ["turn-0", "stored-key"],
-    ["legacy-first", "stored-key"],
-    ["turn-0", "turn-1"], // Upgrade with saved display-position keys.
-  ])(
-    "does not consume the next group identity while merging native events (%s, %s)",
-    (...nativeTurnKeys) => {
-      const result = projectReplayedEventsToTurns({
-        nativeSessionId: "native",
-        cwd: "/repo",
-        events: [
-          { type: "user.text", text: "input-0", nativeTurnIndex: 0 },
-          { type: "user.text", text: "input-1", nativeTurnIndex: 1 },
-          { type: "agent.text", text: "reply-01" },
-          { type: "user.text", text: "input-2", nativeTurnIndex: 2 },
-          { type: "agent.text", text: "reply-2" },
-        ],
-        knownTurnRefs: nativeTurnKeys.map((nativeTurnKey) =>
-          nativeTurnRefSchema.parse({
-            harnessId: "antigravity",
-            nativeSessionId: "native",
-            nativeTurnKey,
-            formatVersion: 1,
-          }),
-        ),
-      });
-      expect(result.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey)).toEqual(
-        nativeTurnKeys,
-      );
-      expect(result.map(({ checkpoint }) => checkpoint?.checkpointId)).toEqual([
-        "turn-1",
-        "turn-2",
-      ]);
-    },
-  );
   it("does not invent turns from metadata and marks unterminated tools interrupted", () => {
     expect(
       projectReplayedEventsToTurns({
@@ -862,7 +625,7 @@ describe("history replay", () => {
       nativeSessionId: "native",
       cwd,
       events: [
-        { type: "user.text", text: "question" },
+        { type: "user.text", text: "question", nativeTurnIndex: 0 },
         { type: "agent.text", text: "answer " },
         { type: "agent.text", text: "before restart" },
         { type: "agent.text", text: "after restart" },
@@ -899,12 +662,12 @@ it("merges live commands with built-ins and ignores duplicates/invalid names", (
 describe("idle background output replay consistency", () => {
   const nativeSessionId = "native";
   const idleTail: AntigravityAcpEvent[] = [
-    { type: "user.text", text: "first question" },
+    { type: "user.text", text: "first question", nativeTurnIndex: 0 },
     { type: "agent.text", text: "first answer" },
     // Idle background output arrives after end_turn, before the next prompt.
     { type: "agent.text", text: "awake: " },
     { type: "agent.text", text: "done" },
-    { type: "user.text", text: "second question" },
+    { type: "user.text", text: "second question", nativeTurnIndex: 1 },
     { type: "agent.text", text: "second answer" },
   ];
 
@@ -926,7 +689,7 @@ describe("idle background output replay consistency", () => {
       .map(({ item }) => (item as { text: string }).text);
     expect(texts).toEqual(["first answerawake: done"]);
     expect(turns[1]?.items.map(({ item }) => item.type)).toEqual(["agentMessage"]);
-    // Native Turn keys stay positional and untouched by idle output.
+    // Idle output does not change the native boundaries.
     expect(turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual(["turn-0", "turn-1"]);
   });
 

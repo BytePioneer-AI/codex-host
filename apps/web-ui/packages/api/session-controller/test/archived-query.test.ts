@@ -1,10 +1,14 @@
 import { expect, it, vi } from "vitest";
 import { SessionId } from "@deepseek-ai/dsh-session/types";
+import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
 import type { RemoteResult } from "@deepseek-ai/dsh-typert-protocol";
 import type { SessionListRequest, SessionListValue, SessionSummary } from "../src/types.ts";
 import { SessionManager } from "../src/client/sessions/manager.ts";
 import type { SessionRemotes } from "../src/client/sessions/remotes.ts";
 import { TYPERT_REMOTE } from "../generated/remote.js";
+
+// The browser export is a loader bundle. Load the same Gateway source in Node.
+vi.mock("@deepseek-ai/dsh-api-gateway/client", () => import("../../gateway/src/client/index.ts"));
 
 const ordinary = SessionId("ordinary");
 const archived = SessionId("archived");
@@ -184,9 +188,20 @@ it("keeps the page cursor on errors, replays explicit removals, and resolves dir
     ok: false,
     error: { code: "test/offline", message: "offline" },
   } as RemoteResult<SessionListValue>);
-  await manager.loadMore();
-  expect(manager.getListSnapshot().state).toBe("error");
-  expect(manager.getListSnapshot().hasMore).toBe(true);
+  // A failed project page names its project, so a retry reads on to that project again.
+  const project = "project" as WorkspaceId;
+  await manager.loadMore(project);
+  expect(list).toHaveBeenLastCalledWith({
+    includeArchived: false,
+    cursor: "20",
+    workspaceId: project,
+  });
+  expect(manager.getListSnapshot()).toMatchObject({
+    state: "error",
+    errorPage: "more",
+    errorWorkspaceId: project,
+    hasMore: true,
+  });
   expect(ids(manager)).toEqual([ordinary]);
   const gate = Promise.withResolvers<RemoteResult<SessionListValue>>();
   list.mockReturnValueOnce(gate.promise);
@@ -195,6 +210,7 @@ it("keeps the page cursor on errors, replays explicit removals, and resolves dir
   gate.resolve(paged([row(ordinary), row(deleted)], null));
   await page;
   expect(ids(manager)).toEqual([deleted]);
+  expect(manager.getListSnapshot().errorWorkspaceId).toBeNull();
   list.mockResolvedValueOnce(ok([row(archived)]));
   await manager.loadSummary(archived);
   expect(list).toHaveBeenLastCalledWith({ sessionId: archived });

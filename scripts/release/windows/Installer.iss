@@ -12,6 +12,9 @@ OutputBaseFilename={#OutputBaseFilename}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
+WizardImageFile=wizard-banner.bmp
+WizardSmallImageFile=wizard-small.bmp
+WizardImageStretch=yes
 UninstallDisplayName=codexhost
 SetupIconFile=..\..\..\crates\launcher\assets\codexhost.ico
 UninstallDisplayIcon={app}\bin\codexhost-start.exe
@@ -27,6 +30,7 @@ ArchitecturesInstallIn64BitMode=arm64
 [Files]
 ; Extract the new helper before touching an existing installation, including older versions.
 Source: "{#PayloadRoot}\libexec\codexhost-updater.exe"; DestName: "codexhost-install-helper.exe"; Flags: dontcopy
+; Includes libexec\codexhost-shell.exe when present in the payload.
 Source: "{#PayloadRoot}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]

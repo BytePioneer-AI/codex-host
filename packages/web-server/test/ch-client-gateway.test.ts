@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { createServer } from "node:http";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { it } from "node:test";
+import { gunzipSync } from "node:zlib";
 import {
-  DESKTOP_EXTENSIONS_LIST_METHOD,
-  DESKTOP_EXTENSIONS_RECOVER_METHOD,
+  HOST_EXTENSIONS_RPC,
+  HOST_EXTENSION_ASSETS_PREFIX,
+  HOST_EXTENSION_UPLOAD_PATH,
   clientChannelEventSchema,
 } from "@codexhost/shared-contracts";
 import { FakeChChannel, startFakeChChannel } from "./support/ch-channel.ts";
@@ -31,16 +33,14 @@ it(
     const host = new FakeChChannel();
     host.add("shared", "/computer/shared");
     const list = {
-      configuration: { version: 1, revision: 2, enabled: [] },
-      desktopConnected: false,
+      revision: 2,
+      configuration: { revision: 2, enabled: [] },
       diagnostics: [],
       extensions: [],
     };
     const requestHost = host.request.bind(host);
     t.mock.method(host, "request", (method: string, params: Record<string, unknown>) =>
-      method === DESKTOP_EXTENSIONS_LIST_METHOD
-        ? Promise.resolve(list)
-        : requestHost(method, params),
+      method === HOST_EXTENSIONS_RPC.list ? Promise.resolve(list) : requestHost(method, params),
     );
     const control = await startFakeChChannel(host, directory);
     t.after(() => control.close());
@@ -66,9 +66,27 @@ it(
     const origin = new URL(url).origin;
     const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
     assert.equal((await fetch(`${origin}/api/ch/v1/events`)).status, 401);
-    const listBody = JSON.stringify({ method: DESKTOP_EXTENSIONS_LIST_METHOD, params: {} });
+    const listBody = JSON.stringify({ method: HOST_EXTENSIONS_RPC.list, params: {} });
+    for (const method of [HOST_EXTENSIONS_RPC.list, HOST_EXTENSIONS_RPC.snapshot]) {
+      const denied = await fetch(`${origin}/api/ch/v1/rpc`, {
+        method: "POST",
+        body: JSON.stringify({ method, params: {} }),
+      });
+      assert.equal(denied.status, 401);
+      assert.equal(await denied.text(), "authentication required");
+    }
     assert.equal(
-      (await fetch(`${origin}/api/ch/v1/rpc`, { method: "POST", body: listBody })).status,
+      (
+        await fetch(`${origin}/api/ch/v1/rpc`, {
+          method: "POST",
+          body: "not JSON",
+        })
+      ).status,
+      401,
+    );
+    assert.equal((await fetch(`${origin}${HOST_EXTENSION_ASSETS_PREFIX}sample`)).status, 401);
+    assert.equal(
+      (await fetch(`${origin}${HOST_EXTENSION_UPLOAD_PATH}`, { method: "POST" })).status,
       401,
     );
     const listed = await fetch(`${origin}/api/ch/v1/rpc`, {
@@ -181,6 +199,83 @@ it(
     assert.match(frames, /"type":"changed"/u);
     replayAbort.abort();
     assert.equal(host.requests.filter((request) => request.method === "turn/start").length, 1);
+
+    // /api/ch/v1/* and /api/peer/v1/manifest compress JSON payloads >= 1 KiB when gzip is accepted.
+    const largeThread = host.add("large", "/computer/large");
+    largeThread.turns[0]?.items.push({
+      type: "agentMessage",
+      id: "large-msg",
+      text: "compressible-json-".repeat(120),
+    });
+    const rawGzipRequest = (path: string, method: "GET" | "POST", body?: unknown) =>
+      new Promise<{ status: number; encoding: string | undefined; body: Buffer }>(
+        (resolveRequest, rejectRequest) => {
+          const payload = body === undefined ? undefined : JSON.stringify(body);
+          const req = httpRequest(
+            `${origin}${path}`,
+            {
+              method,
+              headers: {
+                authorization: `Bearer ${token}`,
+                "accept-encoding": "gzip",
+                ...(payload === undefined ? {} : { "content-type": "application/json" }),
+              },
+            },
+            (res) => {
+              const chunks: Buffer[] = [];
+              res.on("data", (chunk: Buffer) => chunks.push(chunk));
+              res.on("end", () =>
+                resolveRequest({
+                  status: res.statusCode ?? 0,
+                  encoding: res.headers["content-encoding"],
+                  body: Buffer.concat(chunks),
+                }),
+              );
+              res.on("error", rejectRequest);
+            },
+          );
+          req.on("error", rejectRequest);
+          if (payload !== undefined) req.write(payload);
+          req.end();
+        },
+      );
+
+    const gzSnap = await rawGzipRequest("/api/ch/v1/snapshot", "POST", { threadId: "large" });
+    assert.equal(gzSnap.status, 200);
+    assert.equal(gzSnap.encoding, "gzip");
+    assert.match(gunzipSync(gzSnap.body).toString("utf8"), /compressible-json-/u);
+
+    const gzRpc = await rawGzipRequest("/api/ch/v1/rpc", "POST", {
+      method: "thread/turns/list",
+      params: { threadId: "large", itemsView: "full" },
+    });
+    assert.equal(gzRpc.status, 200);
+    assert.equal(gzRpc.encoding, "gzip");
+    assert.match(gunzipSync(gzRpc.body).toString("utf8"), /compressible-json-/u);
+
+    // Create enough workspaces so /api/peer/v1/manifest exceeds the 1 KiB compression threshold.
+    for (let i = 0; i < 12; i++) {
+      const wsPath = join(directory, `workspace-manifest-padding-${String(i)}-${"a".repeat(48)}`);
+      mkdirSync(wsPath, { recursive: true });
+      const wsRes = await fetch(`${origin}/api/rpc`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          type: "client-request",
+          rpcId: `ws-${String(i)}`,
+          method: "workspace/create",
+          payload: { args: { path: wsPath } },
+        }),
+      });
+      assert.equal(wsRes.status, 200);
+    }
+    const gzManifest = await rawGzipRequest("/api/peer/v1/manifest", "GET");
+    assert.equal(gzManifest.status, 200);
+    assert.equal(gzManifest.encoding, "gzip");
+    const parsedManifest = JSON.parse(gunzipSync(gzManifest.body).toString("utf8")) as {
+      projects: unknown[];
+    };
+    assert.ok(parsedManifest.projects.length >= 12);
   },
 );
 
@@ -215,7 +310,7 @@ it("preserves numeric Host errors on every native client operation", async (t) =
   const denied = await fetch(`${base}/rpc`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ method: DESKTOP_EXTENSIONS_RECOVER_METHOD, params: {} }),
+    body: JSON.stringify({ method: HOST_EXTENSIONS_RPC.recover, params: {} }),
   });
   assert.equal(denied.status, 403);
   assert.match(await denied.text(), /Authentication must be enabled/u);

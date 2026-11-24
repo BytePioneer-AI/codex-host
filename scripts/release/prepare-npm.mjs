@@ -21,19 +21,19 @@ import {
   preinstalledHarnessPluginPaths,
 } from "./harness-plugins.mjs";
 import { linuxGlibcCargoArguments, stripLinuxDebugInfo } from "./linux-glibc.mjs";
+import { MACOS_SHELL_BUNDLE_PATHS, stageMacosShellBundle } from "./macos-shell-bundle.mjs";
+import {
+  NPM_PACKAGE_NAME,
+  NPM_PLATFORM_PACKAGE_NAMES,
+  npmPlatformPackageName,
+  npmTarballFileName,
+} from "./npm-artifacts.mjs";
 import { hostReleaseTarget, npmReleaseUsage, releaseTargetForHost } from "./targets.mjs";
+
+export { NPM_PACKAGE_NAME, NPM_PLATFORM_PACKAGE_NAMES, npmPlatformPackageName, npmTarballFileName };
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
-export const NPM_PACKAGE_NAME = "@codexhost/cli";
-export const NPM_PLATFORM_PACKAGE_NAMES = Object.freeze({
-  "macos-arm64": "@codexhost/cli-darwin-arm64",
-  "macos-x64": "@codexhost/cli-darwin-x64",
-  "windows-x64": "@codexhost/cli-win32-x64",
-  "windows-arm64": "@codexhost/cli-win32-arm64",
-  "linux-x64": "@codexhost/cli-linux-x64",
-  "linux-arm64": "@codexhost/cli-linux-arm64",
-});
 export const NPM_RUNTIME_PLATFORM_PACKAGES = Object.freeze({
   "darwin-arm64": NPM_PLATFORM_PACKAGE_NAMES["macos-arm64"],
   "darwin-x64": NPM_PLATFORM_PACKAGE_NAMES["macos-x64"],
@@ -73,12 +73,6 @@ export const NPM_NODE_REQUIREMENT = `Node.js ${NPM_MINIMUM_NODE_VERSION} or late
 
 export const NPM_PACKAGE_DESCRIPTION =
   "Run Pi and Claude Code as first-class external harnesses inside Codex Desktop.";
-
-export function npmPlatformPackageName(target) {
-  const packageName = NPM_PLATFORM_PACKAGE_NAMES[target.id];
-  if (!packageName) throw new Error(`unsupported npm package target: ${target.id}`);
-  return packageName;
-}
 
 const runtimeLicenses = [
   {
@@ -205,6 +199,23 @@ export function npmReleaseBuildCommands(
         "codexhost-updater",
       ],
     },
+    ...(target.hostPlatform !== "linux"
+      ? [
+          {
+            label: "Desktop shell release build",
+            command: "cargo",
+            args: [
+              "build",
+              "--manifest-path",
+              "apps/desktop-shell/src-tauri/Cargo.toml",
+              "--release",
+              "--locked",
+              "--target",
+              target.rustTarget,
+            ],
+          },
+        ]
+      : []),
   ];
 }
 
@@ -265,7 +276,7 @@ export function npmPackageOs(target) {
 }
 
 export function npmPackageCpu(target) {
-  const architecture = target.packageArchitecture ?? target.installerArchitecture;
+  const architecture = target.installerArchitecture;
   if (architecture === "arm64") return ["arm64"];
   if (architecture === "x64") return ["x64"];
   throw new Error(`unsupported npm package architecture: ${architecture}`);
@@ -279,6 +290,11 @@ export function expectedNpmPackagePaths(target) {
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
     ...(target.hostPlatform === "win32" ? ["libexec/codexhost-node-repl.exe"] : []),
+    ...(target.hostPlatform === "darwin"
+      ? MACOS_SHELL_BUNDLE_PATHS
+      : target.hostPlatform !== "linux"
+        ? [`libexec/codexhost-shell${target.executableSuffix}`]
+        : []),
     `libexec/codexhost-updater${target.executableSuffix}`,
     "app/codexhost-distribution.json",
     "app/console-server.mjs",
@@ -582,10 +598,16 @@ let brokerArguments = null;
 let delegationArguments = null;
 let consoleArguments = null;
 if (userArguments.length === 0) {
-  launchArguments = ["launch"];
+  launchArguments = [];
 } else if (userArguments[0] === "launch") {
   launchArguments = userArguments;
-} else if (userArguments[0] === "inspect" || userArguments[0] === "status" || userArguments[0] === "autostart") {
+} else if (
+  userArguments[0] === "inspect" ||
+  userArguments[0] === "status" ||
+  userArguments[0] === "autostart" ||
+  userArguments[0] === "app" ||
+  userArguments[0] === "launch-prefs"
+) {
   launchArguments = userArguments;
 } else if (userArguments[0] === "web" || userArguments[0] === "stop") {
   launchArguments = [userArguments[0], "--node", process.execPath, "--host-runtime", hostRuntime,
@@ -622,6 +644,8 @@ if (userArguments.length === 0) {
       "usage:",
       "  codexhost",
       "  codexhost --version",
+      "  codexhost app [--onboarding]",
+      "  codexhost launch-prefs get [--json] | set <native-shell|codex-desktop>",
       "  codexhost inspect",
       "  codexhost web [--host address] [--port port] [--public-url url] [--trusted-proxy addresses]",
       "  codexhost stop",
@@ -826,7 +850,7 @@ if (consoleArguments !== null) {
     }
     process.exit(code ?? 1);
   });
-} else if (launchArguments?.[0] === "launch") {
+} else if (launchArguments.length === 0 || launchArguments[0] === "launch") {
   // The Launcher prints "ready" once the Desktop, Controller, and Host chain
   // are up, then detaches from the terminal to keep supervising. Windows
   // command hosts may clean up a completed command's process tree, so keep the
@@ -1225,6 +1249,32 @@ export async function prepareNpmPackage({
     "npm Updater",
     true,
   );
+  if (target.hostPlatform !== "linux") {
+    const shellOutput = path.join(
+      root,
+      "apps",
+      "desktop-shell",
+      "src-tauri",
+      "target",
+      target.rustTarget,
+      "release",
+    );
+    if (target.hostPlatform === "darwin") {
+      await stageMacosShellBundle({
+        sourceExecutable: path.join(shellOutput, `codexhost-shell${target.executableSuffix}`),
+        iconSource: path.join(root, "apps/desktop-shell/src-tauri/icons/AppIcon.icns"),
+        destinationRoot: packageRoot,
+        version,
+      });
+    } else {
+      await copyReleaseFile(
+        path.join(shellOutput, `codexhost-shell${target.executableSuffix}`),
+        path.join(packageRoot, "libexec", `codexhost-shell${target.executableSuffix}`),
+        "npm Desktop shell",
+        true,
+      );
+    }
+  }
   if (target.hostPlatform === "linux") stripLinuxDebugInfo({ packageRoot });
 
   await runCommand(
@@ -1298,10 +1348,6 @@ export async function prepareNpmPackage({
   await validateNpmPackage({ packageRoot, target, root });
 
   return { version: packageVersion, outputRoot, packageRoot, target };
-}
-
-export function npmTarballFileName({ version, target }) {
-  return `codexhost-cli-${version}-${target.id}.tgz`;
 }
 
 export async function packNpmPackage({ packageRoot, outputRoot, version, target }) {

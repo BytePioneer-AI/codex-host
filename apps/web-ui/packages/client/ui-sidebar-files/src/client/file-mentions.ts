@@ -9,17 +9,58 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { ClientRemote } from "@deepseek-ai/dsh-api-remotes/client";
 import type {} from "./locales.ts";
 
+/** Session summary fields needed to decide whether `@` workspace file completion is available. */
+export interface FileMentionSessionRow {
+  readonly cwd?: string;
+  readonly blank?: boolean;
+  readonly projectionValues?: {
+    readonly remoteHost?: {
+      readonly hostId: string;
+      readonly state: string;
+      readonly workspaceFiles?: boolean;
+    } | null;
+  };
+}
+
+/**
+ * Determine whether `@` workspace file completion is enabled, missing a local workspace, or disabled.
+ * Local sessions require a non-empty `cwd`; remote sessions require a committed, connected
+ * `remote-peer:*` host that advertises `workspaceFiles === true` (their `cwd` is intentionally empty).
+ */
+export function fileMentionAccess(
+  sessionId: SessionId,
+  row: FileMentionSessionRow | undefined,
+): "enabled" | "no-workspace" | "disabled" {
+  const remoteHost = row?.projectionValues?.remoteHost;
+  const isRemote =
+    sessionId.startsWith("web-remote:") ||
+    sessionId.startsWith("remote-control:") ||
+    remoteHost != null;
+  if (isRemote) {
+    const supported =
+      remoteHost != null &&
+      remoteHost.hostId.startsWith("remote-peer:") &&
+      remoteHost.state === "connected" &&
+      remoteHost.workspaceFiles === true &&
+      row?.blank !== true;
+    return supported ? "enabled" : "disabled";
+  }
+  return row?.cwd ? "enabled" : "no-workspace";
+}
+
 /**
  * Complete paths through the Host's bounded workspace search.
  * @param remote - workspace listing transport.
- * @param hasWorkspace - whether the session or draft has selected a workspace.
+ * @param hasWorkspace - whether the session or draft can search a workspace.
  * @param t - file UI translations.
+ * @param isDisabled - whether `@` workspace completion should stay silent for this session.
  * @returns an @ source with path-only insertion and directory descent.
  */
 export function fileMentionSource(
   remote: Pick<ClientRemote, "fileReferences">,
   hasWorkspace: (id: SessionId) => boolean,
   t: TranslateNS<"sidebarFiles">,
+  isDisabled?: (id: SessionId) => boolean,
 ): InputTriggerSource {
   const notice = (message: string): InputTriggerCandidate => ({
     name: message,
@@ -33,6 +74,7 @@ export function fileMentionSource(
     order: 30,
     showGroupTitle: false,
     async candidates({ sessionId }, { query, quoted, signal }) {
+      if (isDisabled?.(sessionId)) return [];
       if (!hasWorkspace(sessionId)) return query ? [] : [notice(t("noWorkspace"))];
       signal.throwIfAborted();
       const result = await remote.fileReferences.list(sessionId, query, signal);

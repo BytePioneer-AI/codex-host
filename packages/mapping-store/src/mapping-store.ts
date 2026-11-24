@@ -26,6 +26,11 @@ import type {
 } from "@codexhost/shared-contracts";
 
 import {
+  hasDisplacedAntigravityTurn,
+  planAntigravityTurnRepair,
+  type SnapshotTurnIdentity,
+} from "./antigravity-turn-repair.js";
+import {
   MAX_PENDING_INJECTED_TEXTS,
   THREAD_METADATA_FIELDS,
   storedDelegationRecordV1Schema,
@@ -849,6 +854,36 @@ export class MappingStore {
     });
   }
 
+  /** Rekey only confirmed Antigravity foreground boundaries, without replacing Host identities. */
+  async repairAntigravityTurnMappings(
+    hostThreadId: HostThreadId,
+    expectedRevision: number,
+    snapshot: readonly SnapshotTurnIdentity[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(
+      hostThreadId,
+      (current) => {
+        if (current.revision !== expectedRevision) {
+          throw new MappingStoreError(
+            "MAPPING_CONFLICT",
+            "Antigravity boundary repair source is stale",
+          );
+        }
+        if (!current.turnMappings.some(hasDisplacedAntigravityTurn)) return null;
+        const repaired = planAntigravityTurnRepair(current, snapshot);
+        if (!repaired) {
+          throw new MappingStoreError(
+            "MAPPING_CONFLICT",
+            "Antigravity Turn boundaries cannot be repaired unambiguously",
+          );
+        }
+        return { ...current, turnMappings: repaired };
+      },
+      true,
+      "antigravityBoundaryRepair",
+    );
+  }
+
   async reconcileTurnMappings(
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
@@ -902,8 +937,27 @@ export class MappingStore {
     );
   }
 
-  async setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1> {
-    return this.#update(hostThreadId, (current) => ({ ...current, title }));
+  async setTitle(
+    hostThreadId: HostThreadId,
+    title: string,
+    options?: { ifUnnamed?: boolean; source?: "prompt-fallback" | "native" },
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(
+      hostThreadId,
+      (current) => {
+        if (
+          options?.ifUnnamed &&
+          current.title &&
+          !(options.source === "native" && current.titleIsPromptFallback)
+        )
+          return null;
+        const next = { ...current, title };
+        if (options?.source === "prompt-fallback") next.titleIsPromptFallback = true;
+        else delete next.titleIsPromptFallback;
+        return next;
+      },
+      options?.ifUnnamed === true,
+    );
   }
 
   /** Marks conversation activity that changes nothing else in the record, such as a Turn starting or ending. */
@@ -1141,6 +1195,7 @@ export class MappingStore {
     change: (current: StoredThreadRecordV1) => StoredThreadRecordV1 | null,
     preserveUpdatedAt:
       boolean | ((current: StoredThreadRecordV1, next: StoredThreadRecordV1) => boolean) = false,
+    mode?: "antigravityBoundaryRepair",
   ): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
     let result: StoredThreadRecordV1 | null = null;
@@ -1162,7 +1217,7 @@ export class MappingStore {
         revision: current.revision + 1,
         updatedAt: preserve ? current.updatedAt : this.#now().toISOString(),
       }) as StoredThreadRecordV1;
-      this.#validateGlobal(next, hostThreadId);
+      this.#validateGlobal(next, hostThreadId, mode === "antigravityBoundaryRepair");
       await this.#replaceFile(this.#recordPath(hostThreadId), next, true);
       const metadata = threadMetadataOf(next);
       if (!sameJson(threadMetadataOf(current), metadata)) {
@@ -1436,7 +1491,11 @@ export class MappingStore {
     }
   }
 
-  #validateGlobal(record: StoredThreadRecordV1, replacing: HostThreadId | null): void {
+  #validateGlobal(
+    record: StoredThreadRecordV1,
+    replacing: HostThreadId | null,
+    allowOwnNativeTurnRekeys = false,
+  ): void {
     const duplicateCreate = this.#createRequests.get(record.createRequestId);
     if (duplicateCreate && duplicateCreate !== replacing) {
       throw new MappingStoreError("DUPLICATE_CREATE_REQUEST", "Create request is already stored");
@@ -1453,7 +1512,11 @@ export class MappingStore {
         throw new MappingStoreError("MAPPING_CONFLICT", "Host Turn is already mapped");
       }
       const duplicateNativeTurn = this.#nativeTurns.get(nativeTurnKey(mapping));
-      if (duplicateNativeTurn && duplicateNativeTurn !== mapping.hostTurnId) {
+      if (
+        duplicateNativeTurn &&
+        duplicateNativeTurn !== mapping.hostTurnId &&
+        !(allowOwnNativeTurnRekeys && this.#hostTurns.get(duplicateNativeTurn) === replacing)
+      ) {
         throw new MappingStoreError("MAPPING_CONFLICT", "Native Turn is already mapped");
       }
     }

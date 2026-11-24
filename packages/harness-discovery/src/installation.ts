@@ -8,6 +8,9 @@ export interface InstallationState {
   latestVersion: string;
   updateAvailable: boolean;
   canUpdate: boolean;
+  latestVerifiedVersion?: string;
+  /** Update preflight stopped before running the installer. */
+  confirmationRequired?: true;
   message?: string;
   messageCode?: string;
   /** Adapter-owned display text; Host validates locales and the English fallback. */
@@ -21,6 +24,7 @@ export function runInstallationCommand(
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
   timeout = 30_000,
+  cwd?: string,
 ): Promise<string> {
   const env = withNodeRuntimeOnPath(environment);
   const invocation = /\.[cm]?js$/i.test(command)
@@ -32,7 +36,7 @@ export function runInstallationCommand(
       invocation.arguments,
       {
         env,
-        cwd: env.HOME ?? env.USERPROFILE ?? homedir(),
+        cwd: cwd ?? env.HOME ?? env.USERPROFILE ?? homedir(),
         encoding: "utf8",
         timeout,
         killSignal: "SIGKILL",
@@ -109,7 +113,7 @@ export function createInstallationManager(options: {
     (checking ??= options.check().finally(() => {
       checking = undefined;
     }));
-  return (action: "check" | "update"): Promise<InstallationState> => {
+  return (action: "check" | "update", confirmedVersion?: string): Promise<InstallationState> => {
     if (updating) return updating;
     if (action === "check") return check();
     updating = (async () => {
@@ -117,6 +121,12 @@ export function createInstallationManager(options: {
       if (!before.updateAvailable) return before;
       if (!before.canUpdate)
         throw new Error(before.message ?? "This installation cannot be updated automatically");
+      // Recheck the exact version before running the updater. A new target needs a new decision.
+      if (
+        (before.latestVerifiedVersion !== undefined || confirmedVersion !== undefined) &&
+        before.latestVersion !== confirmedVersion
+      )
+        return { ...before, confirmationRequired: true as const };
       await options.update(before);
       const after = await check();
       if (after.currentVersion === before.currentVersion)

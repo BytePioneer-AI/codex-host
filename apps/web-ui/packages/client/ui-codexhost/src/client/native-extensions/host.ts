@@ -1,27 +1,34 @@
 /**
- * Browser runtime host for Web native extensions.
+ * Browser runtime host for unified Host extensions with `web` or `widget` entries.
  *
- * Polls `codexhost/webExtensions/snapshot` serially every 2 seconds (and immediately on reconnect
- * or when the page becomes visible), reconciles extensions by `(id, activationId, digest)`,
- * refreshes same-generation settings changes without remounting UI, and isolates every failure.
+ * Subscribes to `/api/ch/v1/events` (`extensions-changed`) for event-driven reconciliation,
+ * syncs immediately on reconnect or when the page becomes visible, keeps a low-frequency 30s
+ * fallback poll, reconciles both surfaces by `(id, activationId, digest)`, refreshes
+ * same-generation settings changes without remounting UI, and isolates every failure.
  */
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
 import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
-import type {
-  WebExtensionDispose,
-  WebExtensionModule,
-  WebExtensionRuntimeEntry,
-  WebExtensionRuntimeSnapshot,
+import {
+  type HostExtensionRuntimeEntry,
+  type HostExtensionsSnapshotResult,
+  type WebExtensionDispose,
+  type WebExtensionModule,
 } from "@codexhost/shared-contracts";
-import { createWebExtensionApi, type ManagedWebExtensionResources } from "./api.ts";
+import { subscribeHostExtensionEvents } from "../host-extensions-events.ts";
+import {
+  createWebExtensionApi,
+  resolveHostExtensionAssetUrl,
+  type ManagedWebExtensionResources,
+} from "./api.ts";
 import { webNativeExtensionRpcClient, type WebNativeExtensionRpcClient } from "./rpc.ts";
+import { createWebWidgetHost } from "./widgets.ts";
 
-const POLL_INTERVAL_MS = 2_000;
+const FALLBACK_POLL_INTERVAL_MS = 30_000;
 
 export interface WebNativeExtensionHostHandle {
   /** Trigger an immediate snapshot fetch and reconciliation. */
   syncNow(): void;
-  /** Stop polling and reclaim every active extension instance. */
+  /** Stop event subscriptions/polling and reclaim every active extension instance. */
   dispose(): void;
 }
 
@@ -30,11 +37,13 @@ export interface StartWebNativeExtensionHostOptions {
   readonly ctx: ClientContext;
   /** Document that hosts `<link>` styles and `data-cx-region` anchors. */
   readonly document: Document;
-  /** Optional RPC transport override (defaults to same-origin `WEB_EXTENSIONS_RPC`). */
+  /** Optional RPC transport override (defaults to `POST api/ch/v1/rpc` -> `codexhost/extensions/*`). */
   readonly rpc?: WebNativeExtensionRpcClient;
   /** Optional dynamic ESM importer override for testing. */
   readonly importModule?: (url: string) => Promise<unknown>;
-  /** Optional poll interval override in milliseconds (defaults to 2000ms). */
+  /** Optional event subscription override for testing. */
+  readonly subscribeEvents?: (onChanged: () => void) => () => void;
+  /** Optional fallback poll interval override in milliseconds (defaults to 30000ms). */
   readonly pollIntervalMs?: number;
 }
 
@@ -42,7 +51,7 @@ interface ActiveInstance {
   readonly id: string;
   readonly activationId: string;
   readonly digest: string;
-  settingsRevision: string;
+  settingsRevision: number;
   disposed: boolean;
   styleLink: HTMLLinkElement | undefined;
   resources: ManagedWebExtensionResources | undefined;
@@ -81,11 +90,12 @@ export function startWebNativeExtensionHost(
     document: doc,
     rpc = webNativeExtensionRpcClient,
     importModule = defaultImportModule,
-    pollIntervalMs = POLL_INTERVAL_MS,
+    pollIntervalMs = FALLBACK_POLL_INTERVAL_MS,
   } = options;
 
   const instances = new Map<string, ActiveInstance>();
-  let lastSnapshotRevision: string | undefined;
+  const widgets = createWebWidgetHost(ctx, doc, rpc, importModule);
+  let lastSnapshotRevision: number | undefined;
   let stopped = false;
   let syncing = false;
   let pendingSync = false;
@@ -111,9 +121,10 @@ export function startWebNativeExtensionHost(
     removeStyleLink(instance);
   };
 
-  const refreshSameGenerationSettings = (instance: ActiveInstance, nextRevision: string): void => {
+  const refreshSameGenerationSettings = (instance: ActiveInstance, nextRevision: number): void => {
     instance.settingsRevision = nextRevision;
     const resources = instance.resources;
+    resources?.updateSettingsRevision(nextRevision);
     if (instance.disposed || resources === undefined || !resources.hasStorageListeners()) {
       return;
     }
@@ -129,7 +140,8 @@ export function startWebNativeExtensionHost(
         ) {
           return;
         }
-        instance.settingsRevision = result.revision;
+        instance.settingsRevision = result.settingsRevision;
+        resources.updateSettingsRevision(result.settingsRevision);
         resources.notifyStorageChange(result.values);
       })
       .catch((error: unknown) => {
@@ -138,7 +150,10 @@ export function startWebNativeExtensionHost(
       });
   };
 
-  const activateEntry = (entry: WebExtensionRuntimeEntry): void => {
+  const activateEntry = (entry: HostExtensionRuntimeEntry): void => {
+    const webSpec = entry.manifest.web;
+    if (!webSpec) return;
+
     const instance: ActiveInstance = {
       id: entry.id,
       activationId: entry.activationId,
@@ -152,9 +167,21 @@ export function startWebNativeExtensionHost(
     };
     instances.set(entry.id, instance);
 
+    const styleUrl = webSpec.style
+      ? resolveHostExtensionAssetUrl(
+          {
+            id: entry.id,
+            activationId: entry.activationId,
+            digest: entry.digest,
+            path: webSpec.style,
+          },
+          doc,
+        )
+      : undefined;
+
     try {
-      if (entry.styleUrl !== undefined) {
-        instance.styleLink = installStyleLink(doc, entry.id, entry.styleUrl);
+      if (styleUrl !== undefined) {
+        instance.styleLink = installStyleLink(doc, entry.id, styleUrl);
       }
     } catch (error) {
       console.error(`[web-native-extensions] failed to mount style (${entry.id})`, error);
@@ -163,9 +190,19 @@ export function startWebNativeExtensionHost(
     }
 
     // Pure CSS extensions do not require a JS module.
-    if (entry.entryUrl === undefined) {
+    if (webSpec.entry === undefined) {
       return;
     }
+
+    const entryUrl = resolveHostExtensionAssetUrl(
+      {
+        id: entry.id,
+        activationId: entry.activationId,
+        digest: entry.digest,
+        path: webSpec.entry,
+      },
+      doc,
+    );
 
     const resources = createWebExtensionApi({
       ctx,
@@ -180,7 +217,6 @@ export function startWebNativeExtensionHost(
     });
     instance.resources = resources;
 
-    const entryUrl = entry.entryUrl;
     void (async () => {
       try {
         const mod = (await importModule(entryUrl)) as
@@ -210,18 +246,21 @@ export function startWebNativeExtensionHost(
       } catch (error) {
         console.error(`[web-native-extensions] activation failed (${entry.id})`, error);
         // Reclaim partial resources; keep the failed generation marker in `instances` so
-        // identical `(id, activationId, digest)` snapshots do not spam retries every 2s.
+        // identical `(id, activationId, digest)` snapshots do not spam retries.
         destroyInstance(instance);
       }
     })();
   };
 
-  const reconcile = (snapshot: WebExtensionRuntimeSnapshot): void => {
+  const reconcile = (snapshot: HostExtensionsSnapshotResult): void => {
     if (stopped) return;
     if (snapshot.revision === lastSnapshotRevision) return;
     lastSnapshotRevision = snapshot.revision;
+    widgets.reconcile(snapshot.extensions);
 
-    const desiredById = new Map(snapshot.extensions.map((entry) => [entry.id, entry]));
+    // Only activate enabled entries that declare a `web` browser injection entry.
+    const webEntries = snapshot.extensions.filter((entry) => entry.manifest.web !== undefined);
+    const desiredById = new Map(webEntries.map((entry) => [entry.id, entry]));
 
     // 1. Destroy removed or superseded generations first.
     for (const [id, current] of [...instances.entries()]) {
@@ -237,7 +276,7 @@ export function startWebNativeExtensionHost(
     }
 
     // 2. Reconcile same-generation settings updates and activate new generations.
-    for (const entry of snapshot.extensions) {
+    for (const entry of webEntries) {
       const current = instances.get(entry.id);
       if (current !== undefined) {
         if (current.settingsRevision !== entry.settingsRevision) {
@@ -304,7 +343,18 @@ export function startWebNativeExtensionHost(
     void runSyncLoop();
   };
 
-  // Immediate sync when returning to the tab; pause background polling while hidden.
+  // Event-driven refresh via `/api/ch/v1/events` (`extensions-changed`).
+  const unsubscribeEvents = options.subscribeEvents
+    ? options.subscribeEvents(triggerSync)
+    : subscribeHostExtensionEvents({
+        document: doc,
+        onExtensionsChanged: (revision) => {
+          if (revision !== lastSnapshotRevision) triggerSync();
+        },
+        onReconnect: triggerSync,
+      });
+
+  // Immediate sync when returning to the tab; pause fallback polling while hidden.
   const onVisibilityChange = (): void => {
     if (stopped) return;
     if (doc.visibilityState === "hidden") {
@@ -352,6 +402,7 @@ export function startWebNativeExtensionHost(
       clearPollTimer();
       snapshotAbort?.abort();
       snapshotAbort = undefined;
+      unsubscribeEvents();
       doc.removeEventListener("visibilitychange", onVisibilityChange);
       for (const unsubscribe of connectionSubscriptions.splice(0)) {
         unsubscribe();
@@ -360,6 +411,7 @@ export function startWebNativeExtensionHost(
         destroyInstance(instance);
       }
       instances.clear();
+      widgets.dispose();
     },
   };
 }

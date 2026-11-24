@@ -10,11 +10,12 @@ import css from "./HarnessSelect.module.css";
 export function ModelControls(
   props: ModelSelectInjected & { locked: boolean } & PropsLocale<"model">,
 ) {
+  const { iconHost, ...modelProps } = props;
   return (
     <div className={css.controls}>
-      <FastToggle {...props} />
-      <ModelSelect {...props} />
-      <HarnessSelect {...props} />
+      <FastToggle {...modelProps} />
+      <ModelSelect {...modelProps} />
+      <HarnessSelect {...modelProps} {...(iconHost === undefined ? {} : { iconHost })} />
     </div>
   );
 }

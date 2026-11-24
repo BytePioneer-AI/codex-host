@@ -20,6 +20,8 @@
   gap: 12px;
   max-width: 100%;
   padding-top: 4px;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .hero .dock:empty {
@@ -45,9 +47,36 @@
   line-height: 18px;
 }
 
+.cardStack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: var(--dsh-composer-card-max-width);
+}
+
+/* Codex Desktop recessed inset utility rail (`controls` variant: borderless recessed fill)
+   tucked behind the composer card's top corners. */
+.topRail {
+  position: relative;
+  z-index: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  margin-inline: 16px;
+  padding: 5px 10px 21px;
+  margin-bottom: -16px;
+  border: 0;
+  border-radius: 16px 16px 0 0;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 5%, var(--dsw-alias-bg-base));
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .card {
   box-sizing: border-box;
   position: relative; /* overlay anchor positioning context */
+  z-index: 1;
   display: flex;
   flex-direction: column;
   /* figma Input 75:8208: 12px between the text area and the button row; the
@@ -294,6 +323,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   pointer-events: none;
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -353,6 +383,8 @@
      on purpose: CSS modules hash container-name per module, so a name declared
      here can never match a query in another module's sheet. */
   container-type: inline-size;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .row[data-model-compact] {
@@ -653,4 +685,124 @@
 
 .annotations > * {
   flex: none;
+}
+
+.creationError {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 10px 0;
+  padding: 8px 10px;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.creationErrorIcon {
+  flex: none;
+}
+
+.creationErrorCopy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.creationErrorTitle {
+  font-weight: 500;
+}
+
+.creationErrorDetail {
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.creationRetry {
+  flex: none;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid currentColor;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--dsw-alias-state-error-primary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.creationRetry:hover {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.creationRetry:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.pendingControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pendingModel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  max-width: min(220px, 45cqw);
+  padding: 0 8px;
+  border-radius: var(--dsw-radius-sm);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.pendingModelLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pendingHarness {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--dsw-alias-label-tertiary);
+  opacity: 0.7;
+  user-select: none;
+}
+
+:global([data-phone]) .creationRetry {
+  min-height: 36px;
+  padding: 6px 12px;
+}
+
+:global([data-phone]) .pendingModel {
+  max-width: none;
+}
+
+:global([data-phone]) .pendingModelLabel {
+  max-width: 120px;
+}
+
+:global([data-phone]) .pendingHarness {
+  width: 36px;
+  height: 36px;
 }

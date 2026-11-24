@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { HostEvent } from "@codexhost/harness-adapter";
 import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { CODEBUDDY_ID, CODEBUDDY_RUNTIME_PROFILE } from "../src/common.js";
-import { configuration, modelRef, nativeModel } from "../src/configuration.js";
+import { configuration, modelRef } from "../src/configuration.js";
 import { historyUsage, nativeHistoryRows, snapshotFromHistory } from "../src/history.js";
 import { CodeBuddyTurnOutput } from "../src/projection.js";
 import { configOptions } from "./fixtures.js";
@@ -652,9 +652,9 @@ describe("CodeBuddy native history and output projection", () => {
       ["b.txt", "update"],
     ]);
   });
-  it("encodes native model IDs opaquely and derives configuration from the native catalog", () => {
-    expect(nativeModel(modelRef("provider/model:variant"))).toBe("provider/model:variant");
-    expect(configuration(configOptions()).catalog.defaultModel).toEqual(modelRef("native/model"));
+  it("preserves native Model IDs verbatim and derives configuration from the native catalog", () => {
+    expect(modelRef("provider/model:variant")).toEqual({ id: "provider/model:variant" });
+    expect(configuration(configOptions()).catalog.defaultModel).toEqual({ id: "native/model" });
     expect(() => configuration([])).toThrow();
   });
   it("follows the current branch, preserves stable IDs, and refuses damaged history", () => {

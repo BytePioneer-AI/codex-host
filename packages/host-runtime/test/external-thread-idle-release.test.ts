@@ -90,7 +90,7 @@ afterEach(() => {
 });
 
 describe("external Thread idle release", () => {
-  it("is disabled by default; validates settings before applying them", async () => {
+  it("is disabled until configured; validates settings before applying them", async () => {
     const f = await fixture();
     await vi.advanceTimersByTimeAsync(31 * MINUTE);
     f.idle.check();

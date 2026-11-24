@@ -114,8 +114,11 @@ export interface ISessions {
    * @returns completion of the current or newly started Session-list refresh.
    */
   refresh(): Promise<void>;
-  /** Load one older native catalog page in this browser's archive scope. */
-  loadMore(): Promise<void>;
+  /**
+   * Load one older native catalog page in this browser's archive scope.
+   * @param workspaceId - read on until the page reaches a Session of this Workspace.
+   */
+  loadMore(workspaceId?: WorkspaceId): Promise<void>;
   /** Read one direct-link identity without walking the catalog. */
   loadSummary(sessionId: SessionId): Promise<void>;
   /**

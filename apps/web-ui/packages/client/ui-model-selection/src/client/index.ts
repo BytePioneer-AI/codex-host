@@ -44,6 +44,19 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
   }
 }
 
+declare module "@deepseek-ai/dsh-session-projection/types" {
+  interface SessionProjectionMap {
+    remoteHost: {
+      hostId: string;
+      displayName: string;
+      state: string;
+      filePreview?: boolean;
+      workspaceFiles?: boolean;
+      officePreview?: boolean;
+    } | null;
+  }
+}
+
 /** One selectable row's id: an opaque row key (resolved by lookup, never parsed). */
 function rowId(providerId: string, modelId: string): string {
   return `${providerId}/${modelId}`;
@@ -185,8 +198,15 @@ export function apply(ctx: ClientContext): void {
           inject: (sessionId): ModelSelectInjected => {
             const directory = models.directoryFor(sessionId);
             const available = sessions.subagentAddress(sessionId) === undefined;
+            const iconHost = {
+              isRemoteSession: sessionId.startsWith("web-remote:"),
+              subscribe: (listener: () => void) => sessions.list.subscribe(listener),
+              getHostId: () =>
+                sessions.list.getSnapshot().byId[sessionId]?.projectionValues?.remoteHost?.hostId,
+            };
             return {
               available,
+              iconHost,
               directory: directory.store,
               load: () => {
                 if (available)

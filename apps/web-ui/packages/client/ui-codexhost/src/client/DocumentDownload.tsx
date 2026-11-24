@@ -325,7 +325,7 @@ export function DocumentDownload({
   readonly label: string;
   readonly openFolderLabel: string;
   readonly openFolderFailedLabel: string;
-  readonly revealFolder: (
+  readonly revealFolder?: (
     path: string,
   ) => Promise<
     { readonly ok: true } | { readonly ok: false; readonly error: { readonly message: string } }
@@ -356,7 +356,7 @@ export function DocumentDownload({
 
   return (
     <>
-      {absolutePath !== undefined && (
+      {absolutePath !== undefined && revealFolder !== undefined && (
         <Tooltip label={openFolderLabel} side="bottom" delayMs={500}>
           <button
             type="button"

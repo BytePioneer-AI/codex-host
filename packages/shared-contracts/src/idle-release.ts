@@ -13,6 +13,6 @@ export const idleReleaseSettingsSchema = z.strictObject({
 });
 export type IdleReleaseSettings = z.infer<typeof idleReleaseSettingsSchema>;
 export const DEFAULT_IDLE_RELEASE_SETTINGS: Readonly<IdleReleaseSettings> = Object.freeze({
-  enabled: false,
+  enabled: true,
   timeoutMinutes: 10,
 });

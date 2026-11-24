@@ -101,6 +101,9 @@ export function ComposerAttachments({
                         type="button"
                         className={`${css.overlay} ${css.failed}`}
                         aria-label={t("file.retry", { name })}
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                        }}
                         onClick={() => {
                           onRetryFile(attachment.id);
                         }}
@@ -112,6 +115,9 @@ export function ComposerAttachments({
                       type="button"
                       className={css.remove}
                       aria-label={t("image.remove", { name })}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                      }}
                       onClick={() => {
                         onRemoveAttachment(attachment.id);
                       }}
@@ -121,10 +127,13 @@ export function ComposerAttachments({
                   </div>
                 );
               }
+              const fileName = "file" in attachment ? attachment.file.name : attachment.stored.name;
+              const fileBytes =
+                "file" in attachment ? attachment.file.size : attachment.stored.bytes;
               return (
                 <FileCard
-                  name={attachment.file.name || t("file.label")}
-                  bytes={attachment.file.size}
+                  name={fileName || t("file.label")}
+                  bytes={fileBytes}
                   state={
                     upload === undefined || upload.status === "uploading"
                       ? "uploading"
@@ -137,7 +146,7 @@ export function ComposerAttachments({
                   upload.total > 0
                     ? { progress: upload.loaded / upload.total }
                     : {})}
-                  labels={fileCardLabels(t, attachment.file.name)}
+                  labels={fileCardLabels(t, fileName)}
                   onRemove={() => {
                     onRemoveAttachment(attachment.id);
                   }}

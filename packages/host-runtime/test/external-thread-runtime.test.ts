@@ -16,12 +16,7 @@ import {
   nativeSessionRefSchema,
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
-import {
-  encodeGrokTransportModel,
-  encodeOmpTransportModel,
-  encodeOpenCodeTransportModel,
-  type ExternalHarnessId,
-} from "@codexhost/protocol-core";
+import { encodeExternalTransportSelection, type ExternalHarnessId } from "@codexhost/protocol-core";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ExternalThreadRepository } from "../src/external-thread-repository.js";
@@ -187,89 +182,117 @@ describe("ExternalThreadRuntime register", () => {
     });
   });
 
-  it("uses live OMP state instead of stale persisted configuration", async () => {
-    const ompHarnessId = harnessIdSchema.parse("omp");
-    const permissionModes = harnessPermissionModeCatalogSchema.parse({
-      modes: [
-        { id: "always-ask", label: "Always ask" },
-        { id: "write", label: "Write" },
-        { id: "yolo", label: "Full access" },
-      ],
-      defaultModeId: "yolo",
-    });
-    const catalog = new FakeHarnessAdapter(ompHarnessId).catalog;
-    const adapter = new FakeHarnessAdapter(
-      ompHarnessId,
-      catalog,
-      true,
-      true,
-      null,
-      permissionModes,
-    );
-    const writeMode = harnessPermissionModeIdSchema.parse("write");
-    const created = await adapter.open({
-      kind: "create",
-      cwd: "/synthetic",
-      permissionModeId: writeMode,
-    });
-    if (!created.ok) throw new Error(created.error.message);
+  it.each(["current", "legacy", "unavailable", "catalog offline"])(
+    "restores an OMP Thread with a saved Model (%s)",
+    async (storedModel) => {
+      const ompHarnessId = harnessIdSchema.parse("omp");
+      const permissionModes = harnessPermissionModeCatalogSchema.parse({
+        modes: [
+          { id: "always-ask", label: "Always ask" },
+          { id: "write", label: "Write" },
+          { id: "yolo", label: "Full access" },
+        ],
+        defaultModeId: "yolo",
+      });
+      const catalog = new FakeHarnessAdapter(ompHarnessId).catalog;
+      const adapter = new FakeHarnessAdapter(
+        ompHarnessId,
+        catalog,
+        true,
+        true,
+        null,
+        permissionModes,
+      );
+      const writeMode = harnessPermissionModeIdSchema.parse("write");
+      const created = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        permissionModeId: writeMode,
+      });
+      if (!created.ok) throw new Error(created.error.message);
 
-    const nativeRef = created.value.initialState.nativeRef;
-    const actualModel = created.value.initialState.effectiveModel;
-    const actualThinking = created.value.initialState.effectiveThinkingOptionId;
-    const staleModel = adapter.catalog.models[1]?.ref;
-    if (!nativeRef || !actualModel || !actualThinking || !staleModel) {
-      throw new Error("Fake OMP Session did not expose the expected configuration state");
-    }
+      const nativeRef = created.value.initialState.nativeRef;
+      const actualModel = created.value.initialState.effectiveModel;
+      const actualThinking = created.value.initialState.effectiveThinkingOptionId;
+      const staleModel = adapter.catalog.models[1]?.ref;
+      if (!nativeRef || !actualModel || !actualThinking || !staleModel) {
+        throw new Error("Fake OMP Session did not expose the expected configuration state");
+      }
 
-    let stored: StoredThreadRecordV1 = {
-      ...record(),
-      harnessId: ompHarnessId,
-      nativeSessionRef: nativeRef,
-      transportModelId: encodeOmpTransportModel(
-        staleModel,
-        harnessThinkingOptionIdSchema.parse("low"),
-      ),
-      historyMode: "legacy",
-    };
-    const setTransportModelId = vi.fn(
-      async (_threadId: string, transportModelId: string): Promise<StoredThreadRecordV1> => {
-        stored = { ...stored, transportModelId };
-        return stored;
-      },
-    );
-    const repository = {
-      find: async () => stored,
-      alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
-      sessionTreeId: async () => hostThreadId,
-      setTransportModelId,
-    } as unknown as ExternalThreadRepository;
-    const runtime = new ExternalThreadRuntime({
-      adapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["omp", adapter]]),
-      repository,
-      consumeOutputs: async () => undefined,
-      diagnose: () => undefined,
-    });
+      Object.assign(adapter, {
+        normalizeStoredModelRef: (ref: { id: string }) =>
+          ref.id === "legacy-model" ? staleModel : undefined,
+      });
+      const open = vi.spyOn(adapter, "open");
+      if (storedModel === "catalog offline") {
+        vi.spyOn(adapter, "inspect").mockRejectedValueOnce(new Error("Catalog unavailable"));
+      }
+      const savedModelIsCurrent = storedModel === "current" || storedModel === "catalog offline";
+      const savedCarrier = savedModelIsCurrent
+        ? encodeExternalTransportSelection("omp", {
+            model: staleModel,
+            thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
+          })
+        : storedModel === "legacy"
+          ? "codexhost/omp-native@legacy-model@low"
+          : "codexhost/omp-native@retired-model@low";
+      let stored: StoredThreadRecordV1 = {
+        ...record(),
+        harnessId: ompHarnessId,
+        nativeSessionRef: nativeRef,
+        transportModelId: savedCarrier,
+        historyMode: "legacy",
+      };
+      const setTransportModelId = vi.fn(
+        async (_threadId: string, transportModelId: string): Promise<StoredThreadRecordV1> => {
+          stored = { ...stored, transportModelId };
+          return stored;
+        },
+      );
+      const repository = {
+        find: async () => stored,
+        alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
+        sessionTreeId: async () => hostThreadId,
+        setTransportModelId,
+      } as unknown as ExternalThreadRepository;
+      const runtime = new ExternalThreadRuntime({
+        adapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["omp", adapter]]),
+        repository,
+        consumeOutputs: async () => undefined,
+        diagnose: () => undefined,
+      });
 
-    const resolved = await runtime.resolve(hostThreadId);
+      const resolved = await runtime.resolve(hostThreadId);
 
-    expect(resolved.kind).toBe("external");
-    if (resolved.kind !== "external") return;
-    expect(resolved.thread.stateObserver.state).toMatchObject({
-      effectiveModel: actualModel,
-      effectiveThinkingOptionId: actualThinking,
-    });
-    const effectiveTransportModelId = encodeHarnessPluginRoute({
-      harnessId: ompHarnessId,
-      model: actualModel,
-      thinkingOptionId: actualThinking,
-      permissionModeId: writeMode,
-    });
-    expect(resolved.thread.record.transportModelId).toBe(effectiveTransportModelId);
-    expect(setTransportModelId).toHaveBeenCalledWith(hostThreadId, effectiveTransportModelId);
+      expect(resolved.kind).toBe("external");
+      if (resolved.kind !== "external") return;
+      expect(resolved.thread.stateObserver.state).toMatchObject({
+        effectiveModel: actualModel,
+        effectiveThinkingOptionId: actualThinking,
+      });
+      const effectiveTransportModelId = encodeHarnessPluginRoute({
+        harnessId: ompHarnessId,
+        model: actualModel,
+        thinkingOptionId: actualThinking,
+        permissionModeId: writeMode,
+      });
+      expect(resolved.thread.transportModelId).toBe(effectiveTransportModelId);
+      const resumed = open.mock.calls[0]?.[0];
+      expect(resumed?.kind).toBe("resume");
+      if (resumed?.kind !== "resume") throw new Error("Expected to resume the Thread");
+      expect(resumed.model).toEqual(storedModel === "unavailable" ? undefined : staleModel);
+      expect(resumed.thinkingOptionId).toBe(storedModel === "unavailable" ? undefined : "low");
+      if (savedModelIsCurrent) {
+        expect(resolved.thread.record.transportModelId).toBe(effectiveTransportModelId);
+        expect(setTransportModelId).toHaveBeenCalledWith(hostThreadId, effectiveTransportModelId);
+      } else {
+        expect(resolved.thread.record.transportModelId).toBe(savedCarrier);
+        expect(setTransportModelId).not.toHaveBeenCalled();
+      }
 
-    await adapter.close();
-  });
+      await adapter.close();
+    },
+  );
 
   it("does not restore persisted Thinking when live OMP state omits it", async () => {
     const ompHarnessId = harnessIdSchema.parse("omp");
@@ -286,7 +309,10 @@ describe("ExternalThreadRuntime register", () => {
     }
     session.setStateForSnapshot({ nativeRef, effectiveModel: actualModel });
 
-    const staleTransportModelId = encodeOmpTransportModel(actualModel, staleThinking);
+    const staleTransportModelId = encodeExternalTransportSelection("omp", {
+      model: actualModel,
+      thinkingOptionId: staleThinking,
+    });
     const stored: StoredThreadRecordV1 = {
       ...record(),
       harnessId: ompHarnessId,
@@ -340,10 +366,10 @@ describe("ExternalThreadRuntime register", () => {
       throw new Error("Fake OMP Session did not expose the expected configuration state");
     }
 
-    const staleTransportModelId = encodeOmpTransportModel(
-      staleModel,
-      harnessThinkingOptionIdSchema.parse("low"),
-    );
+    const staleTransportModelId = encodeExternalTransportSelection("omp", {
+      model: staleModel,
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
+    });
     const setTransportModelId = vi.fn(async () => {
       throw new Error("synthetic mapping persistence failure");
     });
@@ -435,7 +461,10 @@ describe("ExternalThreadRuntime register", () => {
       harnessId: openCodeHarnessId,
       nativeSessionRef: created.value.initialState.nativeRef,
       title: "OpenCode Thread",
-      transportModelId: encodeOpenCodeTransportModel(model, defaultMode),
+      transportModelId: encodeExternalTransportSelection("opencode", {
+        model,
+        permissionModeId: defaultMode,
+      }),
     } as StoredThreadRecordV1;
     const setTransportModelId = vi.fn(
       async (_threadId: string, transportModelId: string): Promise<StoredThreadRecordV1> => ({
@@ -519,7 +548,10 @@ describe("ExternalThreadRuntime register", () => {
         harnessId: grokHarnessId,
         nativeSessionRef: created.value.initialState.nativeRef,
         title: "Grok Thread",
-        transportModelId: encodeGrokTransportModel(model, storedMode),
+        transportModelId: encodeExternalTransportSelection("grok", {
+          model,
+          permissionModeId: storedMode,
+        }),
       } as StoredThreadRecordV1;
       const execute = vi.spyOn(session, "execute");
       const repository = {
@@ -562,7 +594,7 @@ describe("ExternalThreadRuntime register", () => {
       expect(session.capabilities.configuration.permissionModeScope).toBe("live");
       expect(resolved.thread.stateObserver.state.effectivePermissionModeId).toBe(storedMode);
       expect(resolved.thread.record.transportModelId).toBe(
-        encodeGrokTransportModel(model, storedMode),
+        encodeExternalTransportSelection("grok", { model, permissionModeId: storedMode }),
       );
       expect(open).toHaveBeenCalledWith(
         expect.objectContaining({

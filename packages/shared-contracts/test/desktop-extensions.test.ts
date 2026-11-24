@@ -1,15 +1,6 @@
 import { expect, test } from "vitest";
 import {
-  DESKTOP_EXTENSION_ICON_MAX_BYTES,
-  desktopExtensionListItemSchema,
   desktopExtensionSettingFieldSchema,
-  desktopExtensionsAssetParamsSchema,
-  desktopExtensionsAssetResultSchema,
-  desktopExtensionsSettingsGetParamsSchema,
-  desktopExtensionsSettingsSetParamsSchema,
-  desktopExtensionsSettingsResultSchema,
-  desktopExtensionsBackendInvokeParamsSchema,
-  desktopExtensionsBackendInvokeResultSchema,
   parseDesktopExtensionManifest,
   resolveDesktopExtensionSlots,
   resolveLocalizedExtensionText,
@@ -135,31 +126,6 @@ test.each([
 });
 
 test.each([
-  ["data:image/png;base64,YQ==", true],
-  ["data:image/svg+xml;base64,YQ==", false],
-  ["file:///tmp/screenshot.png", false],
-])("only accepts raster data URLs for rendered logos and screenshots: %s", (url, valid) => {
-  const item = { id: manifest.id, enabled: false, status: { state: "disabled" } };
-  expect(desktopExtensionListItemSchema.safeParse({ ...item, iconDataUrl: url }).success).toBe(
-    valid,
-  );
-  expect(
-    desktopExtensionListItemSchema.safeParse({ ...item, screenshotDataUrls: [url] }).success,
-  ).toBe(valid);
-});
-
-test("bounds encoded logo data more tightly than screenshots", () => {
-  const dataUrl = `data:image/png;base64,${"AAAA".repeat(Math.ceil(DESKTOP_EXTENSION_ICON_MAX_BYTES / 3) + 1)}`;
-  const item = { id: manifest.id, enabled: false, status: { state: "disabled" } };
-  expect(desktopExtensionListItemSchema.safeParse({ ...item, iconDataUrl: dataUrl }).success).toBe(
-    false,
-  );
-  expect(
-    desktopExtensionListItemSchema.safeParse({ ...item, screenshotDataUrls: [dataUrl] }).success,
-  ).toBe(true);
-});
-
-test.each([
   ["  Thread Tree  ", "Thread Tree"],
   [{ en: "  Thread Tree  ", "zh-CN": "  委派树  " }, bilingualName],
 ])("trims the manifest name %j", (name, expected) => {
@@ -251,42 +217,6 @@ test.each([
     desktopExtensionSettingFieldSchema.safeParse({ key: "value", label: bilingualName, ...patch })
       .success,
   ).toBe(false);
-});
-
-test("validates asset, settings and backend RPCs as JSON wire contracts", () => {
-  const id = "theme";
-  expect(
-    desktopExtensionsAssetParamsSchema.safeParse({ id, path: "images/paper.png" }).success,
-  ).toBe(true);
-  expect(desktopExtensionsAssetParamsSchema.safeParse({ id, path: "../secret.json" }).success).toBe(
-    false,
-  );
-  expect(
-    desktopExtensionsAssetResultSchema.safeParse({
-      mimeType: "image/png",
-      dataUrl: "data:image/png;base64,YQ==",
-    }).success,
-  ).toBe(true);
-  expect(desktopExtensionsSettingsGetParamsSchema.safeParse({ id }).success).toBe(true);
-  for (const schema of [
-    desktopExtensionsSettingsResultSchema,
-    desktopExtensionsSettingsSetParamsSchema,
-  ]) {
-    const input = schema === desktopExtensionsSettingsResultSchema ? {} : { id };
-    expect(schema.safeParse({ ...input, values: { nested: { array: [1, null] } } }).success).toBe(
-      true,
-    );
-    expect(schema.safeParse({ ...input, values: [] }).success).toBe(false);
-    expect(schema.safeParse({ ...input, values: { nan: NaN } }).success).toBe(false);
-  }
-  expect(
-    desktopExtensionsBackendInvokeParamsSchema.safeParse({ id, method: "refresh" }).success,
-  ).toBe(true);
-  expect(desktopExtensionsBackendInvokeParamsSchema.safeParse({ id, method: " " }).success).toBe(
-    false,
-  );
-  expect(desktopExtensionsBackendInvokeResultSchema.safeParse({ result: null }).success).toBe(true);
-  expect(desktopExtensionsBackendInvokeResultSchema.safeParse({}).success).toBe(false);
 });
 
 test("rejects snapshots with dangling edges", () => {

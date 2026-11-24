@@ -1,4 +1,3 @@
-import type { DesktopExtensionsListResult } from "@codexhost/shared-contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const consoleGetMock = vi.fn();
@@ -64,8 +63,8 @@ function textOf(node: unknown): string {
   return [node.textContent, nested].filter(Boolean).join(" ").trim();
 }
 
-const listing: DesktopExtensionsListResult = {
-  configuration: { version: 1, revision: 1, enabled: ["sidebar-thread-tree"] },
+const listing = {
+  configuration: { revision: 1, enabled: ["sidebar-thread-tree"] },
   desktopConnected: true,
   diagnostics: [],
   extensions: [
@@ -74,13 +73,12 @@ const listing: DesktopExtensionsListResult = {
       enabled: true,
       status: { state: "running" },
       manifest: {
-        manifestVersion: 1,
+        manifestVersion: 2,
         id: "sidebar-thread-tree",
         name: { en: "Sidebar Thread Tree", "zh-CN": "侧栏委派树" },
         version: "0.1.0",
         description: { en: "Groups delegated Threads", "zh-CN": "归组委派的 Thread" },
-        desktopApi: 1,
-        desktop: { script: "desktop.js" },
+        desktop: { apiVersion: 1, script: "desktop.js" },
         slots: ["sidebar.thread-badge", "sidebar.thread-layout"],
         categories: ["interface", "workflow"],
       },
@@ -90,13 +88,12 @@ const listing: DesktopExtensionsListResult = {
       enabled: true,
       status: { state: "conflict", conflictWith: "sidebar-thread-tree" },
       manifest: {
-        manifestVersion: 1,
+        manifestVersion: 2,
         id: "sidebar-delegation-badges",
-        name: "Delegation Badges",
+        name: { en: "Delegation Badges", "zh-CN": "Delegation Badges" },
         version: "0.1.0",
         description: { en: "Shows child badges", "zh-CN": "显示子 Thread 角标" },
-        desktopApi: 1,
-        desktop: { script: "desktop.js" },
+        desktop: { apiVersion: 1, script: "desktop.js" },
         slots: ["sidebar.thread-badge"],
       },
     },
@@ -117,7 +114,7 @@ afterEach(() => {
 });
 
 describe("Console extensions page", () => {
-  it("renders localized names, descriptions, legacy string names, and conflict occupant names", async () => {
+  it("renders localized names, descriptions, and conflict occupant names", async () => {
     consoleGetMock.mockResolvedValue(listing);
 
     for (const [locale, expected] of [

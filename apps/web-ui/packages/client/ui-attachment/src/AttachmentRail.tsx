@@ -151,6 +151,9 @@ export function AttachmentRail<T extends AttachmentRailItem>({
           type="button"
           className={clsx(css.arrow, css.arrowLeft)}
           aria-label={labels.scrollLeft}
+          onMouseDown={(event) => {
+            event.preventDefault();
+          }}
           onClick={() => {
             page(-1);
           }}
@@ -176,6 +179,9 @@ export function AttachmentRail<T extends AttachmentRailItem>({
           type="button"
           className={clsx(css.arrow, css.arrowRight)}
           aria-label={labels.scrollRight}
+          onMouseDown={(event) => {
+            event.preventDefault();
+          }}
           onClick={() => {
             page(1);
           }}

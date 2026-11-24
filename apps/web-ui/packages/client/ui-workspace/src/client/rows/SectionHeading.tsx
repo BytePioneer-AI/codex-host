@@ -33,6 +33,8 @@ export interface SectionHeadingProps {
   onToggle?: () => void;
   /** Row key; required while foldable. */
   rowKey?: string;
+  /** Optional inline trailing control rendered at the row's end without folding the section. */
+  trailing?: ReactNode;
   /** Section action rendered at the row's end. */
   action?: SectionAction;
 }
@@ -48,6 +50,7 @@ export function SectionHeading({
   expanded,
   onToggle,
   rowKey,
+  trailing,
   action,
 }: SectionHeadingProps) {
   const foldable = expanded !== undefined && onToggle !== undefined && rowKey !== undefined;
@@ -61,11 +64,21 @@ export function SectionHeading({
           size={12}
         />
       )}
+      {trailing !== undefined && (
+        <span
+          className={css.trailing}
+          onClick={(event) => {
+            event.stopPropagation();
+          }}
+        >
+          {trailing}
+        </span>
+      )}
       {action !== undefined && (
         <Tooltip label={action.label} portal>
           <button
             type="button"
-            className={css.action}
+            className={clsx(css.action, trailing !== undefined && css.actionAfterTrailing)}
             aria-label={action.label}
             onClick={(event) => {
               event.stopPropagation();

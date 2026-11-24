@@ -274,6 +274,7 @@ export function apply(ctx: Context): void {
                   absolutePath = meta.value.absolutePath;
                 }
                 const result = await ctx.remote.session.openWorkspacePath({
+                  sessionId,
                   path: absolutePath,
                   ...(options.reveal ? { action: "reveal" } : {}),
                 });

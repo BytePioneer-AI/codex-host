@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { basename, resolve, isAbsolute } from "node:path";
 import {
   imagePath,
+  localImagePath,
   nativeUserInput,
   type NativeImage,
   type NativeImageSource,
@@ -14,7 +15,7 @@ import {
   WEB_IMAGE_LIMITS,
   type WebImageRef,
 } from "./web-images.ts";
-import type { ChThreadView } from "./ch-thread-view.ts";
+import { imageViewProjectionKey, type ChThreadView } from "./ch-thread-view.ts";
 import type { WebFiles } from "./web-files.ts";
 import type { WireEvent } from "./session-log.ts";
 import { RpcError } from "./transport.ts";
@@ -37,13 +38,18 @@ export class ChAttachments {
     private readonly files?: WebFiles,
   ) {}
 
-  private id(threadId: string, source: NativeImageSource): string {
+  private id(threadId: string, source: NativeImageSource, observationId?: string): string {
     const path = imagePath(source);
-    const owned = path ? this.images.idForPath(path) : undefined;
+    const owned = !observationId && path ? this.images.idForPath(path) : undefined;
     if (owned) return owned;
     // Native IDs are opaque, stable across Web restarts and scoped to a Thread.
     // They cannot be decoded into a user-supplied path by the download endpoint.
-    const key = path ? { path: isAbsolute(path) ? resolve(path) : path } : source;
+    const key = path
+      ? {
+          path: isAbsolute(path) ? resolve(path) : path,
+          ...(observationId === undefined ? {} : { observationId }),
+        }
+      : source;
     return `ch-image:${hash(JSON.stringify([threadId, key]))}`;
   }
 
@@ -69,6 +75,37 @@ export class ChAttachments {
     return inspectImage(bytes, match[1]);
   }
 
+  private image(
+    threadId: string,
+    source: NativeImageSource,
+    name?: string,
+    observationId?: string,
+  ): ImageRef {
+    const attachmentId = this.id(threadId, source, observationId);
+    const path = imagePath(source);
+    const label = name ?? (path ? basename(path.replaceAll("\\", "/")) : "image");
+    const fallback: ImageRef = {
+      attachmentId,
+      name: label,
+      mediaType: "image/png",
+      bytes: 0,
+      width: 64,
+      height: 64,
+    };
+    try {
+      const image = this.bytes(source);
+      return { ...image.ref, attachmentId, name: label, fingerprint: image.leaf };
+    } catch {
+      // Keep a placeholder so a transiently unavailable native file can be retried.
+      return fallback;
+    }
+  }
+
+  /** Project one native ImageView display item into the assistant image wire shape. */
+  projectImageView(threadId: string, path: string, observationId?: string): ImageRef {
+    return this.image(threadId, { path }, undefined, observationId);
+  }
+
   project(threadId: string, content: readonly unknown[]): unknown[] {
     return nativeUserInput(content).map((part) => {
       if (part.type === "other") return part.value;
@@ -90,39 +127,27 @@ export class ChAttachments {
           },
         };
       }
-      const attachmentId = this.id(threadId, part.source);
-      const path = imagePath(part.source);
-      const name = part.name ?? (path ? basename(path.replaceAll("\\", "/")) : "image");
-      const fallback: ImageRef = {
-        attachmentId,
-        name,
-        mediaType: "image/png",
-        bytes: 0,
-        width: 64,
-        height: 64,
-      };
-      try {
-        const image = this.bytes(part.source);
-        const attachment: ImageRef = {
-          ...image.ref,
-          attachmentId,
-          name,
-          fingerprint: image.leaf,
-        };
-        return { type: "image", attachment };
-      } catch {
-        // Keep the user's request and an image placeholder even if a native temp
-        // file has disappeared. A subsequent explicit retry may recover it.
-        return { type: "image", attachment: fallback };
-      }
+      return { type: "image", attachment: this.image(threadId, part.source, part.name) };
     });
   }
 
-  /** Match both the projected reference and canonical input in the loaded history.
+  /** Match both the projected reference and canonical input in the loaded history or active queue.
    * No browser path, label, metadata or guessed ID can extend that authority.
    */
-  read(view: ChThreadView, attachmentId: string): { attachment: ImageRef; data: string } {
-    return this.readInputs(
+  read(
+    view: ChThreadView,
+    attachmentId: string,
+    queuedInputs?: readonly (readonly unknown[])[],
+  ): { attachment: ImageRef; data: string } {
+    const imageView = this.imageView(view, attachmentId);
+    if (imageView !== undefined) {
+      const expected = this.assistantAttachment(view.log.events, attachmentId);
+      // An imageView is an immutable snapshot of one displayed image. If its first
+      // projection could not read a fingerprint, later bytes must not become readable.
+      if (!expected?.fingerprint) return unavailable();
+      return this.readSource(imageView, expected, attachmentId);
+    }
+    const history = this.tryReadInputs(
       view.thread.id,
       view.thread.turns.map((turn) =>
         turn.items
@@ -132,39 +157,62 @@ export class ChAttachments {
       this.message(view.log.events, attachmentId),
       attachmentId,
     );
+    if (history) return history;
+    if (queuedInputs?.length) {
+      const inbox = view.log.projections.inbox as
+        { "next-turn"?: ReadonlyArray<{ content?: unknown[] }> } | undefined;
+      const queued = this.tryReadInputs(
+        view.thread.id,
+        queuedInputs,
+        this.messageFromContents(
+          (inbox?.["next-turn"] ?? []).map((row) => row.content),
+          attachmentId,
+        ),
+        attachmentId,
+      );
+      if (queued) return queued;
+    }
+    return unavailable();
   }
 
-  readEvents(threadId: string, events: readonly WireEvent[], attachmentId: string) {
-    const inputs = events
-      .filter((event) => event.type === "user/message")
-      .map((event) => (event.data as { content: unknown[] }).content);
-    const projected = inputs.map((content) => ({
-      type: "user/message",
-      data: { content: this.project(threadId, content) },
-    }));
-    const message = this.message(projected, attachmentId);
-    return message ? this.readInputs(threadId, inputs, message, attachmentId) : undefined;
+  private imageView(view: ChThreadView, attachmentId: string): NativeImageSource | undefined {
+    for (const turn of view.thread.turns) {
+      for (const item of turn.items) {
+        if (item.type !== "imageView" || typeof item.path !== "string") continue;
+        const path = localImagePath(item.path);
+        if (path === undefined) continue;
+        const source: NativeImageSource = { path };
+        const observationId = imageViewProjectionKey(turn.id, item.id);
+        if (this.id(view.thread.id, source, observationId) === attachmentId) return source;
+      }
+    }
+    return undefined;
   }
 
-  private readInputs(
-    threadId: string,
-    inputs: readonly unknown[][],
-    message: ImageRef[] | undefined,
+  private assistantAttachment(
+    events: readonly Pick<WireEvent, "type" | "data">[],
+    attachmentId: string,
+  ): ImageRef | undefined {
+    for (const event of events) {
+      if (event.type !== "assistant/message") continue;
+      const data = event.data as {
+        message?: { content?: Array<{ type?: string; attachment?: ImageRef }> };
+      };
+      const expected = data.message?.content?.find(
+        (part) => part.type === "image" && part.attachment?.attachmentId === attachmentId,
+      )?.attachment;
+      if (expected) return expected;
+    }
+    return undefined;
+  }
+
+  private readSource(
+    source: NativeImageSource,
+    expected: ImageRef,
     attachmentId: string,
   ): { attachment: ImageRef; data: string } {
-    const expected = message?.find((ref) => ref.attachmentId === attachmentId);
-    if (!expected) return unavailable();
-    let source: NativeImage | undefined;
-    for (const input of inputs) {
-      source = nativeUserInput(input).find(
-        (part): part is NativeImage =>
-          part.type === "nativeImage" && this.id(threadId, part.source) === attachmentId,
-      );
-      if (source) break;
-    }
-    if (!source) return unavailable();
     try {
-      const image = this.bytes(source.source);
+      const image = this.bytes(source);
       if (expected.fingerprint && expected.fingerprint !== image.leaf) return unavailable();
       return {
         attachment: { ...expected, ...image.ref, attachmentId, fingerprint: image.leaf },
@@ -182,18 +230,72 @@ export class ChAttachments {
     }
   }
 
+  readEvents(threadId: string, events: readonly WireEvent[], attachmentId: string) {
+    const inputs = events
+      .filter((event) => event.type === "user/message")
+      .map((event) => (event.data as { content: unknown[] }).content);
+    const projected = inputs.map((content) => ({
+      type: "user/message",
+      data: { content: this.project(threadId, content) },
+    }));
+    const message = this.message(projected, attachmentId);
+    return message ? this.readInputs(threadId, inputs, message, attachmentId) : undefined;
+  }
+
+  private tryReadInputs(
+    threadId: string,
+    inputs: readonly (readonly unknown[])[],
+    message: ImageRef[] | undefined,
+    attachmentId: string,
+  ): { attachment: ImageRef; data: string } | undefined {
+    const expected = message?.find((ref) => ref.attachmentId === attachmentId);
+    if (!expected) return undefined;
+    let source: NativeImage | undefined;
+    for (const input of inputs) {
+      source = nativeUserInput(input).find(
+        (part): part is NativeImage =>
+          part.type === "nativeImage" && this.id(threadId, part.source) === attachmentId,
+      );
+      if (source) break;
+    }
+    if (!source) return undefined;
+    return this.readSource(source.source, expected, attachmentId);
+  }
+
+  private readInputs(
+    threadId: string,
+    inputs: readonly unknown[][],
+    message: ImageRef[] | undefined,
+    attachmentId: string,
+  ): { attachment: ImageRef; data: string } {
+    return this.tryReadInputs(threadId, inputs, message, attachmentId) ?? unavailable();
+  }
+
+  private messageFromContents(
+    contents: ReadonlyArray<unknown[] | undefined>,
+    id: string,
+  ): ImageRef[] | undefined {
+    for (const content of contents) {
+      if (!Array.isArray(content)) continue;
+      const refs = content.flatMap((part) => {
+        if (!part || typeof part !== "object") return [];
+        const image = part as { type?: string; attachment?: ImageRef };
+        return image.type === "image" && image.attachment ? [image.attachment] : [];
+      });
+      if (refs.some((ref) => ref.attachmentId === id)) return refs;
+    }
+    return undefined;
+  }
+
   private message(
     events: readonly Pick<WireEvent, "type" | "data">[],
     id: string,
   ): ImageRef[] | undefined {
-    for (const event of events) {
-      if (event.type !== "user/message") continue;
-      const data = event.data as { content?: Array<{ type?: string; attachment?: ImageRef }> };
-      const refs = data.content?.flatMap((part) =>
-        part.type === "image" && part.attachment ? [part.attachment] : [],
-      );
-      if (refs?.some((ref) => ref.attachmentId === id)) return refs;
-    }
-    return undefined;
+    return this.messageFromContents(
+      events
+        .filter((event) => event.type === "user/message")
+        .map((event) => (event.data as { content?: unknown[] }).content),
+      id,
+    );
   }
 }

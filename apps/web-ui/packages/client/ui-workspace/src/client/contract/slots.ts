@@ -303,8 +303,11 @@ export type WorkspaceBrowserInjected = {
   ) => Promise<{ items: readonly SessionSearchResultItem[]; hasMore: boolean }>;
   /** Refresh only the list head without reopening the current conversation. */
   refreshSessions: () => void;
-  /** Explicitly load one older official catalog page; never drains a project. */
-  loadMoreSessions: () => void;
+  /**
+   * Explicitly load older official catalog pages; never drains a project. For a local Workspace
+   * the read goes on until it reaches one of that Workspace's Sessions or the catalog ends.
+   */
+  loadMoreSessions: (workspaceId?: WorkspaceId) => void;
   /** Maximum number of merged rows rendered for one search. */
   searchResultLimit: number;
   /** Open the Session rename dialog; row actions and keyboard commands raise this request. */
@@ -346,8 +349,7 @@ export type SessionRowActionProps<Injected extends object = object> =
 
 /** One transient Workspace notice rendered by the overlay toast entry. */
 export type RowToast =
-  | { kind: "archived"; sessionId: SessionId }
-  | { kind: "stoppedAndArchived"; sessionId: SessionId }
+  | { kind: "archived" | "stoppedAndArchived"; sessionId: SessionId; failedChildren?: number }
   | { kind: "archiveFailed"; message: string }
   | { kind: "unarchiveFailed"; message: string }
   | { kind: "pinFailed"; message: string }
@@ -410,6 +412,18 @@ export interface ArchiveSessionInjected {
   unarchiveSession: (sessionId: SessionId) => void;
 }
 
+export interface ArchiveChildrenRequest {
+  sessionId: SessionId;
+  title: string;
+  children: readonly { id: SessionId; title: string }[];
+}
+
+export interface ArchiveChildrenInjected {
+  hooks: { archiveChildrenRequest: HostObservable<ArchiveChildrenRequest | null> };
+  dismiss: () => void;
+  choose: (request: ArchiveChildrenRequest, includeChildren: boolean) => void;
+}
+
 /**
  * A stop-and-archive confirmation the archive action asked for: the Host
  * refused the plain archive because this work still runs.
@@ -423,6 +437,7 @@ export interface SessionArchiveConfirmRequest {
   activity: readonly SessionActivity[];
   /** Running display-tree members, including the selected parent when active. */
   runningThreads?: readonly { id: string; title: string }[];
+  children?: readonly SessionId[];
 }
 
 /**
@@ -441,7 +456,7 @@ export interface SessionArchiveConfirmInjected {
    * the archive set is durable (the stops settle in the background) and
    * raises the stopped-and-archived notice.
    */
-  stopAndArchiveSession: (sessionId: SessionId) => Promise<void>;
+  stopAndArchiveSession: (sessionId: SessionId, children?: readonly SessionId[]) => Promise<void>;
 }
 
 /** Clipboard action uses list metadata only. */

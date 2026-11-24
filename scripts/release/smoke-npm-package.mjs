@@ -9,6 +9,7 @@ import {
   verifyLinuxGlibcBaseline,
   verifyLinuxGlibcLoad,
 } from "./linux-glibc.mjs";
+import { MACOS_SHELL_EXECUTABLE_PATH } from "./macos-shell-bundle.mjs";
 import {
   NPM_PLATFORM_PACKAGE_NAMES,
   npmTarballFileName,
@@ -75,7 +76,7 @@ export async function smokeNpmPackage({ targetName, version, workDirectory }) {
     const packageName = NPM_PLATFORM_PACKAGE_NAMES[target.id];
     const packageRoot = path.join(directory, "node_modules", ...packageName.split("/"));
     const manifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
-    const architecture = target.packageArchitecture ?? target.installerArchitecture;
+    const architecture = target.installerArchitecture;
     if (JSON.stringify(manifest.os) !== JSON.stringify([target.hostPlatform])) {
       throw new Error(`installed package os is invalid: ${JSON.stringify(manifest.os)}`);
     }
@@ -86,7 +87,10 @@ export async function smokeNpmPackage({ targetName, version, workDirectory }) {
       const executables = [
         ...executablePaths,
         ...(target.hostPlatform === "darwin"
-          ? [`app/web-modules/node_modules/node-pty/prebuilds/darwin-${architecture}/spawn-helper`]
+          ? [
+              MACOS_SHELL_EXECUTABLE_PATH,
+              `app/web-modules/node_modules/node-pty/prebuilds/darwin-${architecture}/spawn-helper`,
+            ]
           : []),
       ];
       for (const relative of executables) {

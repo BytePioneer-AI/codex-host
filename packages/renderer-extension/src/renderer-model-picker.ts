@@ -1,4 +1,9 @@
-import { catalogModelForRef } from "@codexhost/shared-contracts";
+import {
+  catalogModelForRef,
+  harnessModelRefFromKey,
+  harnessModelRefKey,
+  sameHarnessModelRef,
+} from "@codexhost/shared-contracts";
 import createElement from "lucide/dist/esm/createElement.mjs";
 import CircleAlert from "lucide/dist/esm/icons/circle-alert.mjs";
 import RefreshCw from "lucide/dist/esm/icons/refresh-cw.mjs";
@@ -217,6 +222,14 @@ export function isRendererModelPickerDisabled(view: RendererModelControlView): b
     view.status === "empty" ||
     view.catalog === undefined
   );
+}
+
+/**
+ * A first load that failed has no catalog to open. The trigger stays pressable
+ * and retries that load instead, so the Composer is not left without a Model.
+ */
+export function canRetryRendererModelCatalog(view: RendererModelControlView): boolean {
+  return view.status === "error" && view.catalog === undefined && view.refreshing !== true;
 }
 
 export function shouldCloseRendererModelPicker(view: RendererModelControlView): boolean {
@@ -636,6 +649,10 @@ export function mountRendererModelPicker(
     positionAdvancedMenus(control);
   };
   const onTriggerClick = (): void => {
+    if (trigger.hasAttribute("data-codexhost-retry-models")) {
+      onRefreshModels?.();
+      return;
+    }
     if (pickerOpen()) close();
     else open();
   };
@@ -861,7 +878,7 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
   for (const model of view.catalog?.models ?? []) {
     const button = document.createElement("button");
     button.type = "button";
-    button.dataset.modelId = model.ref.id;
+    button.dataset.modelId = harnessModelRefKey(model.ref);
     button.setAttribute("role", "menuitemradio");
     button.className = OPTION_CLASSES;
 
@@ -881,7 +898,7 @@ function rebuildOptions(control: RendererModelPickerControl, view: RendererModel
     favorite.dataset.favoriteModelId = model.ref.id;
     favorite.append(createModelFavoriteIcon(document));
     row.append(button, favorite);
-    control.options.set(model.ref.id, {
+    control.options.set(harnessModelRefKey(model.ref), {
       row,
       favorite,
       label: model.label,
@@ -993,7 +1010,10 @@ export function renderRendererModelPicker(
   const accessibleLabel = secondaryLabel
     ? `${presentation.modelLabel}, ${secondaryLabel}`
     : presentation.modelLabel;
-  control.trigger.title = view.error ?? accessibleLabel;
+  const retryCatalog = control.refreshButton !== undefined && canRetryRendererModelCatalog(view);
+  control.trigger.title = retryCatalog
+    ? `${view.error ?? accessibleLabel}\n${messages.refreshModels}`
+    : (view.error ?? accessibleLabel);
   const selectionFailed = rendererModelSelectionFailed(view);
   control.errorMark.hidden = !selectionFailed;
   control.errorMark.style.display = selectionFailed ? "inline-flex" : "none";
@@ -1005,30 +1025,35 @@ export function renderRendererModelPicker(
     "aria-busy",
     String(view.status === "loading" || view.status === "selecting"),
   );
-  control.trigger.disabled = isRendererModelPickerDisabled(view);
-  control.fast.render(view.catalog, view.selected, control.trigger.disabled, locale === "zh-CN");
+  const pickerDisabled = isRendererModelPickerDisabled(view);
+  control.trigger.disabled = pickerDisabled && !retryCatalog;
+  control.trigger.toggleAttribute("data-codexhost-retry-models", retryCatalog);
+  control.fast.render(view.catalog, view.selected, pickerDisabled, locale === "zh-CN");
   control.trigger.style.paddingLeft = control.fast.button.hidden ? "8px" : "2px";
   if (control.fast.button.hidden) control.fast.button.remove();
   else if (control.fast.button.parentElement !== control.root)
     control.root.prepend(control.fast.button);
   if (shouldCloseRendererModelPicker(view) && !keepOpenMenu) control.close();
-  control.modelButton.disabled = control.trigger.disabled;
+  control.modelButton.disabled = pickerDisabled;
   // The search input must not mirror the trigger's disabled state: disabling a
   // focused element blurs it, which would drop the cursor out of the box during
   // transient states (e.g. "selecting"). Filtering is client-side and safe.
 
   for (const [modelId, option] of control.options) {
-    const selected = modelId === catalogModelForRef(view.catalog, view.selected)?.ref.id;
+    const selected = sameHarnessModelRef(
+      harnessModelRefFromKey(modelId),
+      catalogModelForRef(view.catalog, view.selected)?.ref,
+    );
     option.button.setAttribute("aria-checked", String(selected));
     option.button.classList.toggle("bg-token-list-hover-background", selected);
-    option.button.disabled = control.trigger.disabled;
+    option.button.disabled = pickerDisabled;
     option.check.style.visibility = selected ? "visible" : "hidden";
   }
   for (const [thinkingOptionId, option] of control.thinkingOptions) {
     const selected = thinkingOptionId === view.selectedThinkingOptionId;
     option.button.setAttribute("aria-checked", String(selected));
     option.button.classList.toggle("bg-token-list-hover-background", selected);
-    option.button.disabled = control.trigger.disabled || !presentation.thinkingSelectionEnabled;
+    option.button.disabled = pickerDisabled || !presentation.thinkingSelectionEnabled;
     option.check.style.visibility = selected ? "visible" : "hidden";
   }
   // Last, so the notice anchors to the trigger's final layout for this render.

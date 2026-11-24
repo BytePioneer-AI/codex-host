@@ -27,6 +27,7 @@ import type {
 import { workspaceDisplayTitle } from "@deepseek-ai/dsh-api-workspace-controller/default-workspace";
 import type { SnapshotSelectorHook } from "@deepseek-ai/dsh-client-ui-slots";
 import type { DirectoryFlowOwnerProps, WorkspacePickerProps } from "./contract/slots.ts";
+import { HeroLocationWorkspacePicker } from "./HeroLocationWorkspacePicker.tsx";
 import css from "./WorkspacePicker.module.css";
 
 const ADD_WORKSPACE = "::add-workspace";
@@ -280,39 +281,11 @@ export function WorkspacePickFlow({
 }
 
 /**
- * The conversation empty-state registration: adapts the owner share to the
- * core flow (all state and semantics live in the flow / the owner).
+ * The conversation empty-state registration: renders the Codex-Desktop-style
+ * two-part location + project selector inside the docked composer top cap.
  * @param props - empty-state slot props (owner share + injected creation callback).
- * @returns the flow element.
+ * @returns the two-step picker element.
  */
-export function WorkspacePicker({
-  open,
-  anchorRef,
-  useWorkspaces,
-  selectedId,
-  onPick,
-  onClose,
-  createWorkspace,
-  useDirectoryFlow,
-  renderSlot,
-  t,
-}: WorkspacePickerProps) {
-  const canStartProjectless = useWorkspaces((state) => state.canStartProjectless);
-  return (
-    <WorkspacePickFlow
-      t={t}
-      open={open}
-      anchorRef={anchorRef}
-      useWorkspaces={useWorkspaces}
-      createWorkspace={createWorkspace}
-      useDirectoryFlow={useDirectoryFlow}
-      renderDirectoryFlow={(owner) =>
-        renderSlot("conversation.hero.workspace.directoryFlow", owner)
-      }
-      selectedId={selectedId}
-      onPick={onPick}
-      {...(canStartProjectless ? { onPickNone: () => onPick(null) } : {})}
-      onClose={onClose}
-    />
-  );
+export function WorkspacePicker(props: WorkspacePickerProps) {
+  return <HeroLocationWorkspacePicker {...props} />;
 }

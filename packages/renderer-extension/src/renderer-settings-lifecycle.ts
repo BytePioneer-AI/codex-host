@@ -28,11 +28,16 @@ import type {
 } from "./settings/session-import-page.js";
 import { installRendererSettingsShell, type RendererSettingsShell } from "./settings/shell.js";
 import {
+  openReleaseAnnouncementDialog,
+  type ReleaseAnnouncementDialogHandle,
+} from "./settings/release-announcement-dialog.js";
+import {
   installRendererSettingsRailTrigger,
   type RendererSettingsRailTriggerControl,
 } from "./settings/trigger.js";
 
 const UPDATE_CHECK_TIMEOUT_MS = 5_000;
+const ANNOUNCEMENT_CHECK_TIMEOUT_MS = 20_000;
 const UPDATE_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000] as const;
 const PLUGIN_PAGES_SYNC_INTERVAL_MS = 5_000;
 
@@ -75,6 +80,9 @@ export function installRendererSettingsLifecycle(
   let updateRetryAttempt = 0;
   let updateCheckGeneration = 0;
   let updateAvailable = false;
+  let announcementChecked = false;
+  let announcementShown = false;
+  let activeAnnouncementDialog: ReleaseAnnouncementDialogHandle | null = null;
   let settingsOpen = false;
   let pluginPagesSyncTimer: number | null = null;
   let pluginPagesSyncGeneration = 0;
@@ -126,12 +134,12 @@ export function installRendererSettingsLifecycle(
       scheduleNextPluginPagesSync(targetPluginPages, generation);
       return;
     }
-    const client = options.getDesktopExtensionsClient?.() ?? null;
-    if (!client?.listDesktopExtensions) return;
+    const client = options.getDesktopExtensionsClient?.();
+    if (!client?.listHostExtensions) return;
     pluginPagesSyncInFlight = true;
     let stopPolling = false;
     void client
-      .listDesktopExtensions()
+      .listHostExtensions()
       .then((result) => {
         if (disposed || !settingsOpen || generation !== pluginPagesSyncGeneration) return;
         targetPluginPages.syncInstalledExtensions?.(
@@ -345,9 +353,55 @@ export function installRendererSettingsLifecycle(
       });
   };
 
+  const checkReleaseAnnouncement = (): void => {
+    if (disposed || announcementChecked || announcementShown) return;
+    const client = options.getUpdateClient?.() ?? null;
+    if (!client?.getReleaseAnnouncement) return;
+    announcementChecked = true;
+    const getAnnouncement = client.getReleaseAnnouncement.bind(client);
+    const acknowledge = client.acknowledgeReleaseAnnouncement?.bind(client);
+    const readWithTimeout = new Promise<Awaited<ReturnType<typeof getAnnouncement>>>(
+      (resolve, reject) => {
+        const timeout = ownerWindow.setTimeout(
+          () => reject(new Error("Release announcement request timed out")),
+          ANNOUNCEMENT_CHECK_TIMEOUT_MS,
+        );
+        void getAnnouncement({}).then(
+          (result) => {
+            ownerWindow.clearTimeout(timeout);
+            resolve(result);
+          },
+          (error: unknown) => {
+            ownerWindow.clearTimeout(timeout);
+            reject(error);
+          },
+        );
+      },
+    );
+    void Promise.all([readWithTimeout, localeRequest?.catch(() => undefined)])
+      .then(([result]) => {
+        if (disposed || announcementShown || !result?.unread || !result.announcement) return;
+        const { announcement } = result;
+        announcementShown = true;
+        activeAnnouncementDialog = openReleaseAnnouncementDialog({
+          announcement,
+          locale,
+          ownerDocument: ownerWindow.document,
+          onClose() {
+            activeAnnouncementDialog = null;
+            void acknowledge?.({ version: announcement.version }).catch(() => undefined);
+          },
+        });
+      })
+      .catch(() => {
+        // Missing RPC, offline state, or invalid payloads remain silent and unacknowledged.
+      });
+  };
+
   mount();
   void refreshLocale();
   refreshUpdateIndicator();
+  checkReleaseAnnouncement();
 
   return {
     get locale() {
@@ -356,6 +410,7 @@ export function installRendererSettingsLifecycle(
     refresh() {
       const refreshed = trigger?.refresh() ?? false;
       refreshUpdateIndicator();
+      checkReleaseAnnouncement();
       return refreshed;
     },
     dispose() {
@@ -367,6 +422,8 @@ export function installRendererSettingsLifecycle(
       lifecycleController.abort();
       clearPluginPagesSync();
       clearUpdateRetry();
+      activeAnnouncementDialog?.dispose();
+      activeAnnouncementDialog = null;
       trigger?.dispose();
       shell?.dispose();
       pluginPages?.dispose?.();

@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import type { UseProjection } from "@deepseek-ai/dsh-api-session-controller/client";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import {
+  Tooltip,
   useAnchoredPosition,
   useDismissOnOutsidePointer,
 } from "@deepseek-ai/dsh-client-ui-primitives";
@@ -20,8 +21,10 @@ import {
   formatAccountCreditsCompactExpiry,
   formatAccountCreditsResetCountdown,
   groupAccountCreditsWindows,
+  localizeHarnessText,
 } from "@codexhost/shared-contracts";
 
+import type {} from "./SessionHarnessIcon.tsx";
 import type { HostAccountCredits, HostThreadUsage } from "./usage.ts";
 import css from "./HostUsageDock.module.css";
 
@@ -47,6 +50,9 @@ const MEASURE_STYLE: CSSProperties = { visibility: "hidden", left: 0, top: 0 };
 const HOVER_OPEN_DELAY_MS = 160;
 const HOVER_CLOSE_DELAY_MS = 140;
 const TAP_SLOP_PX = 8;
+/** Countdowns stay hidden until this little time remains. */
+const INDICATOR_SHOW_WITHIN_SECONDS = 50 * 60;
+const MAX_INDICATOR_TIMER_MS = 60 * 60 * 1_000;
 
 function decimal(value: number, digits = 1): string {
   return value.toFixed(digits).replace(/\.?0+$/u, "");
@@ -429,11 +435,131 @@ function DetailGroups({ groups }: { groups: readonly DetailGroup[] }): ReactNode
   ));
 }
 
+function ComposerIndicators({
+  indicators,
+  t,
+}: {
+  indicators: HostThreadUsage["composerIndicators"];
+  t: Translate;
+}) {
+  const [tick, setTick] = useState(0);
+  const [clipped, setClipped] = useState(false);
+  const rootRef = useRef<HTMLSpanElement | null>(null);
+  const nowMs = Date.now();
+  const nowSec = nowMs / 1_000;
+  const pending = indicators?.filter(({ expiresAtUnix }) => expiresAtUnix > nowSec) ?? [];
+  const active = pending.filter(
+    ({ expiresAtUnix }) => expiresAtUnix - nowSec <= INDICATOR_SHOW_WITHIN_SECONDS,
+  );
+  const nextRefreshMs =
+    pending.length === 0
+      ? null
+      : Math.min(
+          MAX_INDICATOR_TIMER_MS,
+          Math.min(
+            ...pending.map(({ expiresAtUnix }) => {
+              const remainingMs = expiresAtUnix * 1_000 - nowMs;
+              if (remainingMs > INDICATOR_SHOW_WITHIN_SECONDS * 1_000) {
+                return remainingMs - INDICATOR_SHOW_WITHIN_SECONDS * 1_000;
+              }
+              return remainingMs % 60_000 || 60_000;
+            }),
+          ) + 50,
+        );
+
+  useEffect(() => {
+    if (nextRefreshMs === null) return;
+    const bump = (): void => setTick((value) => value + 1);
+    const timer = window.setTimeout(bump, nextRefreshMs);
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState === "visible") bump();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [indicators, nextRefreshMs, tick]);
+
+  useEffect(() => {
+    const el = rootRef.current;
+    if (el === null) {
+      setClipped(false);
+      return;
+    }
+    const dock = el.closest<HTMLElement>("[data-composer-dock]");
+    const container = dock?.parentElement ?? dock;
+    const check = (): void => {
+      setClipped((current) => {
+        if (!current) return el.scrollWidth > el.clientWidth + 0.5;
+        if (!dock || !container) return false;
+        const containerStyle = window.getComputedStyle(container);
+        const available =
+          container.clientWidth -
+          (parseFloat(containerStyle.paddingLeft) || 0) -
+          (parseFloat(containerStyle.paddingRight) || 0);
+        const gap = parseFloat(window.getComputedStyle(dock).columnGap) || 0;
+        const needed = dock.scrollWidth + (dock.scrollWidth > 0 ? gap : 0) + el.scrollWidth;
+        return needed > available - 2;
+      });
+    };
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(el);
+    if (dock) observer.observe(dock);
+    if (container && container !== dock) observer.observe(container);
+    return () => observer.disconnect();
+  }, [active.length]);
+
+  if (active.length === 0) return null;
+  const locale = t("usage.dateLocale");
+  return (
+    <span
+      ref={rootRef}
+      className={`${css.anchor} ${css.indicatorGroup}`}
+      data-composer-stat="codexhost-indicators"
+      data-clipped={clipped || undefined}
+    >
+      {active.map((indicator) => {
+        const minutes = Math.ceil((indicator.expiresAtUnix - nowSec) / 60);
+        const remaining = t("usage.indicator.remaining", { minutes: String(minutes) });
+        const label = indicator.label ? localizeHarnessText(indicator.label, locale) : "";
+        const tooltip = indicator.tooltip ? localizeHarnessText(indicator.tooltip, locale) : "";
+        const summary = [label, tooltip, remaining].filter(Boolean).join(" · ");
+        return (
+          <Tooltip
+            key={indicator.id}
+            label={summary}
+            side="top"
+            portal
+            openOnClick
+            disabled={clipped}
+          >
+            <button
+              type="button"
+              className={`${css.pill} ${css.indicatorPill}`}
+              data-indicator-id={indicator.id}
+              aria-label={summary}
+            >
+              <svg className={css.indicatorIcon} viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 8v4l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0" />
+              </svg>
+              <span>{`${minutes}m`}</span>
+            </button>
+          </Tooltip>
+        );
+      })}
+    </span>
+  );
+}
+
 /** Independent metrics and remaining-quota controls, backed by the same projection. */
 export function HostUsageDock({ useProjection, t }: HostUsageDockProps) {
   const projection = useProjection("codexhostUsage");
+  const harness = useProjection("harnessIdentity");
   const usage = projection?.usage ?? null;
   const account = projection?.accountCredits;
+  const indicators = harness?.id === "codex" ? undefined : usage?.composerIndicators;
   const [quotaOpen, setQuotaOpen] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
@@ -548,6 +674,7 @@ export function HostUsageDock({ useProjection, t }: HostUsageDockProps) {
           )}
         </UsagePopover>
       )}
+      <ComposerIndicators indicators={indicators} t={t} />
       {summary.length > 0 && (groups.length > 0 || hasContext) && (
         <UsagePopover
           stat="codexhost-usage"

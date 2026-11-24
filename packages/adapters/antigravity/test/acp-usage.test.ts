@@ -1562,5 +1562,70 @@ describe("Antigravity Session usage", () => {
       contextWindowTokens: 256_000,
       contextUsagePercent: 100,
     });
+
+    // 3. A newer historical step for an already-cached model still replaces the older window once committed.
+    const sameModelTracker = new AntigravitySessionUsageTracker({
+      nativeSessionId: "session-same-model",
+      homedir: home,
+    });
+    const sameModelFile = path.join(
+      home,
+      ".gemini/antigravity-cli/brain/session-same-model/.system_generated/logs/transcript.jsonl",
+    );
+    await mkdir(path.dirname(sameModelFile), { recursive: true });
+    await writeFile(
+      sameModelFile,
+      `${planner(1, { model: "gemini-4-neon-xhigh" })}\n${planner(3, { model: "gemini-4-neon-xhigh" })}\n`,
+    );
+    await writeNativeTimingDatabase(
+      home,
+      [{ step: 1, maxContextTokens: 512_000 }],
+      "session-same-model",
+    );
+    sameModelTracker.recordContextWindow(128_000, 1_048_576);
+    expect((await sameModelTracker.replayHistoricalRequests()).usage).toMatchObject({
+      contextWindowTokens: 512_000,
+      contextUsagePercent: 25,
+    });
+    await writeNativeTimingDatabase(
+      home,
+      [
+        { step: 1, maxContextTokens: 512_000 },
+        { step: 3, maxContextTokens: 256_000 },
+      ],
+      "session-same-model",
+    );
+    expect((await sameModelTracker.collectNewTranscriptRequests()).usage).toMatchObject({
+      contextWindowTokens: 256_000,
+      contextUsagePercent: 50,
+    });
+
+    // 4. When the DB becomes readable after replay and only an older step has a window, a newer missing step does not mask it.
+    const delayedDbTracker = new AntigravitySessionUsageTracker({
+      nativeSessionId: "session-delayed-db",
+      homedir: home,
+    });
+    const delayedDbFile = path.join(
+      home,
+      ".gemini/antigravity-cli/brain/session-delayed-db/.system_generated/logs/transcript.jsonl",
+    );
+    await mkdir(path.dirname(delayedDbFile), { recursive: true });
+    await writeFile(
+      delayedDbFile,
+      `${planner(1, { model: "gemini-4-neon-xhigh" })}\n${planner(3, { model: "gemini-4-neon-xhigh" })}\n`,
+    );
+    delayedDbTracker.recordContextWindow(256_000, 1_048_576);
+    expect((await delayedDbTracker.replayHistoricalRequests()).usage?.contextWindowTokens).toBe(
+      1_048_576,
+    );
+    await writeNativeTimingDatabase(
+      home,
+      [{ step: 1, maxContextTokens: 512_000 }, { step: 3 }],
+      "session-delayed-db",
+    );
+    expect((await delayedDbTracker.collectNewTranscriptRequests()).usage).toMatchObject({
+      contextWindowTokens: 512_000,
+      contextUsagePercent: 50,
+    });
   });
 });

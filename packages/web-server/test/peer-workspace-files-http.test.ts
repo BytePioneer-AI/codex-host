@@ -16,7 +16,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { test } from "node:test";
-import type { Stats } from "node:fs";
+import type { BigIntStats, Stats } from "node:fs";
 import type { OfficeToPdfResult } from "../src/dsh-web-services.ts";
 import {
   MAX_PEER_SEARCH_QUERY_LENGTH,
@@ -677,35 +677,36 @@ test("validatePeerWorkspacePath handles Windows /D:/... drive prefix and rejects
     "D:\\work\\docs\\img.png",
     "C:\\Windows\\win.ini",
   ]);
-  const fakeStat = (kind: "dir" | "file"): Stats =>
+  const fakeStat = (kind: "dir" | "file", bigint = false): Stats | BigIntStats =>
     ({
       isSymbolicLink: () => false,
       isDirectory: () => kind === "dir",
       isFile: () => kind === "file",
-      dev: 1,
-      ino: 1,
-    }) as unknown as Stats;
+      dev: bigint ? 1n : 1,
+      ino: bigint ? 1n : 1,
+    }) as unknown as Stats | BigIntStats;
 
   const fsOps: PeerWorkspaceFsOps = {
     platform: "win32",
-    async realpath(p) {
+    realpath: (async (p, options) => {
       const normalized = win32.resolve(String(p));
-      if (dirs.has(normalized) || files.has(normalized)) return normalized;
+      if (dirs.has(normalized) || files.has(normalized)) {
+        const encoding = typeof options === "object" ? options?.encoding : options;
+        return encoding === "buffer" ? Buffer.from(normalized) : normalized;
+      }
       const err = new Error("ENOENT") as NodeJS.ErrnoException;
       err.code = "ENOENT";
       throw err;
-    },
-    async lstat(p) {
+    }) as typeof realpath,
+    lstat: (async (p, options) => {
       const normalized = win32.resolve(String(p));
-      if (dirs.has(normalized)) return fakeStat("dir");
-      if (files.has(normalized)) return fakeStat("file");
+      if (dirs.has(normalized)) return fakeStat("dir", options?.bigint);
+      if (files.has(normalized)) return fakeStat("file", options?.bigint);
       const err = new Error("ENOENT") as NodeJS.ErrnoException;
       err.code = "ENOENT";
       throw err;
-    },
-    async stat(p) {
-      return this.lstat(p);
-    },
+    }) as typeof lstat,
+    stat: ((p, options) => fsOps.lstat(p, options)) as typeof stat,
     async open() {
       throw new Error("unused");
     },

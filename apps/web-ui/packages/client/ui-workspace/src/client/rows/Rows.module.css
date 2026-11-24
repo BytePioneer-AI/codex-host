@@ -2,28 +2,28 @@
   --ch-peer-dot-color: #3b82f6;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4.5px;
   min-width: 0;
-  max-width: 96px;
-  height: 19px;
-  box-sizing: border-box;
-  padding: 0 7px 0 6px;
-  margin-left: 6px;
+  max-width: 88px;
+  height: 18px;
+  padding: 0;
+  margin-left: 4px;
   flex-shrink: 0;
   overflow: hidden;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--dsw-alias-border-l3) 75%, transparent);
-  background: color-mix(in srgb, var(--dsw-alias-label-primary) 3.5%, transparent);
-  font-size: 10.5px;
-  line-height: 1;
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  line-height: 16px;
   font-weight: 500;
-  color: var(--dsw-alias-label-secondary);
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--dsw-alias-label-secondary) 60%, var(--dsw-alias-label-tertiary));
 }
 .hostBadgeSession {
-  height: 18px;
-  max-width: 82px;
-  padding: 0 6px 0 5px;
-  margin-left: 4px;
+  height: 16px;
+  max-width: 74px;
+  gap: 4px;
+  margin-left: 2px;
+  font-size: 10.5px;
 }
 .hostBadge[data-color="blue"] {
   --ch-peer-dot-color: #3b82f6;
@@ -68,19 +68,15 @@
   --ch-peer-dot-color: #94a3b8;
 }
 .hostBadge[data-state="connecting"] {
-  border-color: color-mix(
-    in srgb,
-    var(--dsw-alias-state-warning-primary, #d97706) 30%,
-    transparent
-  );
   color: color-mix(
     in srgb,
-    var(--dsw-alias-state-warning-primary, #d97706) 80%,
+    var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-warn-primary, #d97706)) 78%,
     var(--dsw-alias-label-secondary)
   );
 }
 .hostBadge:is([data-state="disconnected"], [data-state="offline"], [data-state="auth-error"]) {
   color: var(--dsw-alias-label-tertiary);
+  opacity: 0.72;
 }
 .hostLabel {
   min-width: 0;
@@ -94,7 +90,7 @@
   height: 5px;
   border-radius: 50%;
   background: var(--dsw-alias-label-tertiary);
-  opacity: 0.5;
+  opacity: 0.45;
   flex-shrink: 0;
 }
 .hostBadge[data-state="connected"] .hostDot {
@@ -102,7 +98,7 @@
   opacity: 0.95;
 }
 .hostBadge[data-state="connecting"] .hostDot {
-  background: var(--dsw-alias-state-warning-primary, #d97706);
+  background: var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-warn-primary, #d97706));
   opacity: 0.9;
   animation: hostDotPulse 1.6s ease-in-out infinite;
 }
@@ -122,11 +118,11 @@
 }
 .hostTimeSep {
   flex: none;
-  margin: 0 4px;
+  margin: 0 5px;
   font-size: 10px;
   line-height: 16px;
   color: var(--dsw-alias-label-tertiary);
-  opacity: 0.55;
+  opacity: 0.45;
   user-select: none;
 }
 
@@ -841,6 +837,13 @@
 @media (hover: hover) and (pointer: fine) {
   :global(body[data-codexhost-wallpaper]) :is(.projectRow > .rowActions, .sessionRow .rowActions) {
     background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 82%, transparent);
+  }
+
+  :global(body[data-codexhost-wallpaper])
+    :is(
+      .projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) > .rowActions,
+      .sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .rowActions
+    ) {
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
   }

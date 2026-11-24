@@ -1,7 +1,12 @@
 import { defined } from "./support/defined.ts";
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { RemoteSessions, remoteSessionId, remoteSessionIdentity } from "../src/remote-sessions.ts";
+import {
+  RemoteSessions,
+  remoteSessionId,
+  remoteSessionIdentity,
+  type RemotePeerProvider,
+} from "../src/remote-sessions.ts";
 import { PeerChHostClient, type PeerChTransport } from "../src/peer-ch-host-client.ts";
 import { PeerThreadSource } from "../src/peer-thread-source.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
@@ -1683,38 +1688,18 @@ it("uses PeerThreadSource for event-driven follow, incremental paging, harness i
     }),
   };
 
-  let onThreadChanged: ((h: string, tid: string) => unknown) | undefined;
-  let onConnection: ((h: string, online: boolean) => void) | undefined;
-  let onReset: ((h: string, e: string, full: boolean) => void) | undefined;
+  const peerProvider: RemotePeerProvider = {
+    source: () => undefined,
+  };
   const source = new PeerThreadSource({
     hostId,
     host: new PeerChHostClient(transport),
     onCatalogChanged: () => remote.hostsChanged(hostId),
-    onThreadChanged: (tid) => onThreadChanged?.(hostId, tid),
-    onConnection: (online) => onConnection?.(hostId, online),
-    onReset: (e, full) => onReset?.(hostId, e, full),
+    onThreadChanged: (tid) => peerProvider.onThreadChanged?.(hostId, tid),
+    onConnection: (online) => peerProvider.onConnection?.(hostId, online),
+    onReset: (e, full) => peerProvider.onReset?.(hostId, e, full),
   });
-  const peerProvider = {
-    source: (h: string) => (h === hostId ? source : undefined),
-    get onThreadChanged() {
-      return onThreadChanged;
-    },
-    set onThreadChanged(fn) {
-      onThreadChanged = fn;
-    },
-    get onConnection() {
-      return onConnection;
-    },
-    set onConnection(fn) {
-      onConnection = fn;
-    },
-    get onReset() {
-      return onReset;
-    },
-    set onReset(fn) {
-      onReset = fn;
-    },
-  };
+  peerProvider.source = (h) => (h === hostId ? source : undefined);
 
   const opLog: RemoteSessionOperation[] = [];
   const dir = mkdtempSync(join(tmpdir(), "remote-peer-layered-"));
@@ -1945,7 +1930,7 @@ it("derives remote list titles via threadListTitle without leaking cwd and gener
       modelProvider: "openai",
       createdAt: 1,
       updatedAt: 10,
-      status: { type: "active", activeFlags: [] },
+      status: { type: "active" },
       turns: [],
     },
     {
@@ -1990,7 +1975,7 @@ it("derives remote list titles via threadListTitle without leaking cwd and gener
     modelProvider: "openai",
     createdAt: 1,
     updatedAt: 20,
-    status: { type: "active", activeFlags: [] },
+    status: { type: "active" },
     turns: [],
   };
   let createdInCatalog = false;
@@ -2481,7 +2466,7 @@ it("publishes peer manifest projects and connected state before slow catalog pag
 
   const peerHostId = "remote-peer:slow-catalog";
   const epoch = "epoch-early";
-  const catalogGate = Promise.withResolvers<void>();
+  const catalogGate = Promise.withResolvers<undefined>();
   let connected = false;
   let catalogStarted = false;
 
@@ -2552,7 +2537,7 @@ it("publishes peer manifest projects and connected state before slow catalog pag
     { source: (id) => (id === peerHostId ? source : undefined) },
   );
   t.after(() => {
-    catalogGate.resolve();
+    catalogGate.resolve(undefined);
     remote.close();
     source.close();
   });
@@ -2580,6 +2565,6 @@ it("publishes peer manifest projects and connected state before slow catalog pag
     ],
   );
 
-  catalogGate.resolve();
+  catalogGate.resolve(undefined);
   await refreshPromise;
 });

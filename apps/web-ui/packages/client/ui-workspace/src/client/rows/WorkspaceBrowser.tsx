@@ -760,7 +760,8 @@ function SessionTree({
           ? `linked:${group.key}:${id}`
           : `session:${id}`;
     for (const node of sessions) rowKeys.push(rowKeyOf(node.id));
-    const canExpand = group.expanded && (visible.hiddenCount > 0 || list.hasMore);
+    const groupHasMore = group.remote ? false : list.hasMore;
+    const canExpand = group.expanded && (visible.hiddenCount > 0 || groupHasMore);
     if (canExpand) rowKeys.push(`overflow:${group.key}`);
     const workspaceMarker =
       workspaceId !== undefined && workspaceDrag?.over?.id === workspaceId
@@ -991,16 +992,16 @@ function SessionTree({
               <SessionListExpansion
                 rowKey={`overflow:${group.key}`}
                 hiddenCount={visible.hiddenCount}
-                hasMore={list.hasMore}
-                loading={list.loading}
+                hasMore={groupHasMore}
+                loading={group.remote ? false : list.loading}
                 expand={() => {
                   setSessionLimits((limits) => ({
                     ...limits,
                     [group.key]: (limits[group.key] ?? GROUP_INITIAL_ROWS) + SIDEBAR_PAGE_ROWS,
                   }));
                 }}
-                // A local project reads on until one of its own Sessions arrives; Recents and
-                // remote projects keep the plain next page.
+                // A local project reads on until one of its own Sessions arrives; Recents
+                // keep the plain next page.
                 loadMoreSessions={() => {
                   loadMoreSessions(
                     workspaceId === undefined || group.remote ? undefined : workspaceId,

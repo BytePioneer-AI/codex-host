@@ -424,6 +424,268 @@ process.stdout.write(JSON.stringify(process.argv.includes("features.plugins=fals
   },
 );
 
+it.skipIf(process.platform === "win32")(
+  "bridges bundled codex-app-tools MCP, preserves approval policy, and rejects untrusted entries",
+  async () => {
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), "desktop-app-tools-test-")));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const pluginDir = path.join(root, "plugins/cache/openai-bundled/codex-app-tools/26.1120.41243");
+    const scriptsDir = path.join(pluginDir, "scripts");
+    await mkdir(scriptsDir, { recursive: true });
+    const launcher = path.join(scriptsDir, "launch_codex_app_tools_mcp");
+    const serverScript = path.join(pluginDir, "server.mjs");
+    await writeFile(
+      launcher,
+      `#!/bin/sh
+set -eu
+exec "$CODEX_MCP_NODE_PATH" "$@"
+`,
+      { mode: 0o700 },
+    );
+    await writeFile(
+      serverScript,
+      `import { createInterface } from "node:readline";
+for await (const line of createInterface({ input: process.stdin })) {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    process.stdout.write(JSON.stringify({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        protocolVersion: "2025-11-25",
+        capabilities: { tools: {} },
+        serverInfo: { name: "codex-app-tools-fixture", version: "1" },
+      },
+    }) + "\\n");
+  } else if (message.method === "tools/list") {
+    process.stdout.write(JSON.stringify({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: { tools: [{ name: "list_threads", inputSchema: { type: "object", properties: {} } }] },
+    }) + "\\n");
+  } else if (message.method === "tools/call") {
+    const value = {
+      pipePath: process.env.CODEX_APP_TOOLS_PIPE_PATH,
+      mcpNode: process.env.CODEX_MCP_NODE_PATH,
+      deferred: process.env.CODEX_APP_TOOLS_DEFERRED,
+      cwd: process.cwd(),
+      argv: process.argv.slice(1),
+      meta: message.params._meta,
+    };
+    process.stdout.write(JSON.stringify({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value },
+    }) + "\\n");
+  }
+}
+`,
+    );
+    const transportDefinition = {
+      command: launcher,
+      args: ["./server.mjs"],
+      cwd: pluginDir,
+      env: { CODEX_APP_TOOLS_DEFERRED: "1" },
+      env_vars: ["CODEX_APP_TOOLS_PIPE_PATH", "CODEX_MCP_NODE_PATH", "PATH"],
+    };
+    await writeFile(
+      path.join(pluginDir, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          codex_app: {
+            ...transportDefinition,
+            enabled: false,
+            omit_tools_from: [],
+            default_tools_approval_mode: "approve",
+            tools: { create_thread: { approval_mode: "prompt" } },
+            startup_timeout_sec: 10,
+            tool_timeout_sec: 3600,
+          },
+        },
+      }),
+    );
+    const nativeCli = path.join(root, "native-codex");
+    const listedServers = [
+      {
+        name: "codex_app",
+        enabled: true,
+        transport: { ...transportDefinition, type: "stdio" },
+        startup_timeout_sec: 10,
+        tool_timeout_sec: 3600,
+      },
+    ];
+    await writeFile(
+      nativeCli,
+      `#!${process.execPath}
+process.stdout.write(JSON.stringify(process.argv.includes("features.plugins=false") ? [] : ${JSON.stringify(listedServers)}));
+`,
+      { mode: 0o700 },
+    );
+    const bridgeEnvironment: NodeJS.ProcessEnv = {
+      ...process.env,
+      CODEX_HOME: root,
+      CODEX_APP_TOOLS_PIPE_PATH: "/tmp/codex-app-tools/fixture.sock",
+    };
+    delete bridgeEnvironment.CODEX_MCP_NODE_PATH;
+    const bridge = await createDesktopMcpBridge({
+      nodeReplPath: path.join(root, "missing-node-repl"),
+      runtimePath: fileURLToPath(new URL("../dist/release-main.js", import.meta.url)),
+      environment: bridgeEnvironment,
+      native: {
+        executable: nativeCli,
+        arguments: [
+          "-c",
+          "features.code_mode_host=true",
+          "app-server",
+          "--analytics-default-enabled",
+          "-c",
+          "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+        ],
+      },
+    });
+    if (!bridge) throw new Error("App-tools bridge unavailable");
+    cleanup.push(() => bridge.close());
+
+    const overrides = JSON.parse(
+      String(bridge.environment.CODEXHOST_DESKTOP_BROWSER_MCP_ARGUMENTS),
+    ) as string[];
+    const overrideMap = new Map(
+      overrides
+        .filter((value) => value !== "-c")
+        .map((value) => {
+          const index = value.indexOf("=");
+          return [value.slice(0, index), value.slice(index + 1)];
+        }),
+    );
+    expect(overrideMap.get("mcp_servers.codex_app.enabled")).toBe("true");
+    expect(overrideMap.get("mcp_servers.codex_app.default_tools_approval_mode")).toBe('"approve"');
+    expect(overrideMap.get("mcp_servers.codex_app.tools")).toBe(
+      '{"create_thread"={"approval_mode"="prompt"}}',
+    );
+    expect(overrideMap.get("mcp_servers.codex_app.startup_timeout_sec")).toBe("10");
+    expect(overrideMap.get("mcp_servers.codex_app.tool_timeout_sec")).toBe("3600");
+
+    const clientArgs = JSON.parse(
+      String(overrideMap.get("mcp_servers.codex_app.args")),
+    ) as string[];
+    const client = new Client({ name: "app-tools-test", version: "1" });
+    const transport = new StreamableHTTPClientTransport(new URL(String(clientArgs[2])), {
+      requestInit: { headers: { Authorization: String(clientArgs[3]) } },
+    });
+    cleanup.push(() => client.close());
+    await client.connect(transport as Transport);
+    const result = await client.callTool({
+      name: "list_threads",
+      arguments: {},
+      _meta: { threadId: "fixture-thread" },
+    });
+    expect(result.structuredContent).toEqual({
+      pipePath: "/tmp/codex-app-tools/fixture.sock",
+      mcpNode: process.execPath,
+      deferred: "1",
+      cwd: pluginDir,
+      argv: [serverScript],
+      meta: { threadId: "fixture-thread" },
+    });
+
+    const rewriteThreadConfig = async (
+      candidate: JsonObject,
+      threadCwd?: string,
+    ): Promise<JsonObject> => {
+      const chunks: Buffer[] = [];
+      const collect = (chunk: Buffer) => chunks.push(chunk);
+      bridge.input.on("data", collect);
+      await new Promise<void>((resolve, reject) => {
+        bridge.input.write(
+          JSON.stringify({
+            id: 2,
+            method: "thread/start",
+            params: {
+              ...(threadCwd === undefined ? {} : { cwd: threadCwd }),
+              config: { "mcp_servers.codex_app": candidate },
+            },
+          }) + "\n",
+          (error) => (error ? reject(error) : resolve()),
+        );
+      });
+      bridge.input.off("data", collect);
+      const parsed = JSON.parse(Buffer.concat(chunks).toString()) as {
+        params: { config: Record<string, JsonObject> };
+      };
+      const rewritten = parsed.params.config["mcp_servers.codex_app"];
+      if (!rewritten) throw new Error("Missing rewritten codex_app config");
+      return rewritten;
+    };
+
+    // Omitting cwd must still pin execution cwd and entrypoint to the validated plugin directory,
+    // never resolving a relative ./server.mjs against threadCwd.
+    const decoyDir = path.join(root, "decoy-thread-cwd");
+    await mkdir(decoyDir, { recursive: true });
+    await writeFile(
+      path.join(decoyDir, "server.mjs"),
+      'throw new Error("Decoy server.mjs in threadCwd must never execute");\n',
+    );
+    const withoutCwd = {
+      command: transportDefinition.command,
+      args: transportDefinition.args,
+      env: transportDefinition.env,
+      env_vars: transportDefinition.env_vars,
+    };
+    const omittedCwdRewritten = await rewriteThreadConfig(
+      {
+        ...withoutCwd,
+        args: ["./server.mjs", "--interaction-client-id", "client-1"],
+        env: {
+          ...withoutCwd.env,
+          CODEX_MCP_NODE_PATH: path.join(decoyDir, "evil-node"),
+          CODEX_APP_TOOLS_PIPE_PATH: "/tmp/codex-app-tools/untrusted.sock",
+        },
+      },
+      decoyDir,
+    );
+    const omittedCwdArgs = omittedCwdRewritten.args as string[];
+    const omittedCwdClient = new Client({ name: "app-tools-omitted-cwd", version: "1" });
+    const omittedCwdTransport = new StreamableHTTPClientTransport(
+      new URL(String(omittedCwdArgs[2])),
+      { requestInit: { headers: { Authorization: String(omittedCwdArgs[3]) } } },
+    );
+    cleanup.push(() => omittedCwdClient.close());
+    await omittedCwdClient.connect(omittedCwdTransport as Transport);
+    const omittedCwdResult = await omittedCwdClient.callTool({
+      name: "list_threads",
+      arguments: {},
+    });
+    expect(omittedCwdResult.structuredContent).toEqual({
+      pipePath: "/tmp/codex-app-tools/fixture.sock",
+      mcpNode: process.execPath,
+      deferred: "1",
+      cwd: pluginDir,
+      argv: [serverScript, "--interaction-client-id", "client-1"],
+    });
+
+    // Relative command paths inside the validated plugin directory must also be bridged.
+    const relativeCommandRewritten = await rewriteThreadConfig({
+      ...transportDefinition,
+      command: "./scripts/launch_codex_app_tools_mcp",
+    });
+    expect(relativeCommandRewritten.command).toBe(process.execPath);
+    expect((relativeCommandRewritten.args as string[])[1]).toBe("--codexhost-desktop-mcp-client");
+
+    // Reject untrusted paths, missing pipe env_vars, or non-server.mjs entrypoints.
+    const untrustedScript = path.join(root, "evil.mjs");
+    await writeFile(untrustedScript, "process.exit(0);\n");
+    for (const candidate of [
+      { ...transportDefinition, command: nativeCli },
+      { ...transportDefinition, args: [untrustedScript] },
+      { ...transportDefinition, env_vars: ["PATH"] },
+      { ...transportDefinition, cwd: root },
+      { ...withoutCwd, command: "./scripts/launch_codex_app_tools_mcp" },
+    ]) {
+      expect(await rewriteThreadConfig(candidate)).toEqual(candidate);
+    }
+  },
+);
+
 it("retains the native stdio MCP contract through the HTTP client process", async () => {
   const f = await setup();
   const client = new Client({ name: "stdio-contract", version: "1" });

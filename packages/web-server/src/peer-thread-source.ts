@@ -100,7 +100,14 @@ export class PeerThreadSource {
     this.hostId = options.hostId;
     this.host = options.host;
     // Isolated EventHub with no subscribers: never broadcasts local global harness-inspection-changed.
-    this.catalog = new ChHarnessCatalog(options.host, new EventHub(""));
+    this.catalog = new ChHarnessCatalog(
+      options.host,
+      new EventHub(""),
+      undefined,
+      undefined,
+      undefined,
+      () => options.host.manifestEpoch(),
+    );
     this.stopCatalogInvalidation = options.host.realtime.subscribe((event) => {
       if (event.type === "harness-inspection-changed" || event.type === "hello") {
         options.onCatalogInspectionChanged?.();
@@ -166,12 +173,12 @@ export class PeerThreadSource {
   }
 
   async listThreads(options?: {
-    onFirstPage?: (partial: PeerThreadListResult) => void;
+    onPage?: (partial: PeerThreadListResult) => void;
   }): Promise<PeerThreadListResult> {
     const startEpoch = this.epoch ?? this.host.manifestEpoch();
     this.inFlightListEpoch = startEpoch;
     try {
-      return await this.runListThreads(startEpoch, options?.onFirstPage);
+      return await this.runListThreads(startEpoch, options?.onPage);
     } finally {
       if (this.inFlightListEpoch === startEpoch) {
         this.inFlightListEpoch = undefined;
@@ -181,7 +188,7 @@ export class PeerThreadSource {
 
   private async runListThreads(
     startEpoch: string | undefined,
-    onFirstPage?: (partial: PeerThreadListResult) => void,
+    onPage?: (partial: PeerThreadListResult) => void,
   ): Promise<PeerThreadListResult> {
     const rows = new Map<string, ChThread>();
     const harnessIds = new Map<string, string>();
@@ -205,11 +212,13 @@ export class PeerThreadSource {
         pages++;
         const { page } = await readSessionPage(this.host, timing, false, cursor, async () => []);
         const pageById = new Map<string, ChThread>();
+        const pageRows: ChThread[] = [];
         for (const rawRow of page.threads) {
           const row: ChThread = { ...rawRow, turns: [] };
           const existingHarness = harnessIds.get(row.id);
           if (cursor === undefined || !existingHarness || existingHarness === "codex") {
             rows.set(row.id, row);
+            pageRows.push(row);
           }
           pageById.set(row.id, row);
         }
@@ -223,16 +232,21 @@ export class PeerThreadSource {
           }
         }
         const next = nextCatalogCursor(page, false);
-        if (next === null) break;
-        if (pages === 1 && onFirstPage) {
-          onFirstPage({
-            rows: [...rows.values()],
-            harnessIds: new Map(harnessIds),
+        if (onPage && pageRows.length > 0) {
+          const pageHarnessIds = new Map<string, string>();
+          for (const row of pageRows) {
+            const hid = harnessIds.get(row.id);
+            if (hid) pageHarnessIds.set(row.id, hid);
+          }
+          onPage({
+            rows: pageRows,
+            harnessIds: pageHarnessIds,
             archivedIds: new Set(archivedIds),
             parents: {},
             ownershipAvailable,
           });
         }
+        if (next === null) break;
         if (seenCursors.has(next) || next === cursor) {
           throw new RpcError("remote/read-failed", "Remote catalog cursor did not advance");
         }
@@ -462,7 +476,7 @@ const PEER_HARNESS_ICON_PREFIX = "/harness-icons/peer/";
 export async function resolvePeerHarnessIcon(
   peers: PeerHarnessIconProvider,
   pathname: string,
-): Promise<{ contentType: string; body: Buffer } | undefined> {
+): Promise<{ contentType: string; body: Buffer; stale?: boolean } | undefined> {
   if (!pathname.startsWith(PEER_HARNESS_ICON_PREFIX)) return undefined;
   const rest = pathname.slice(PEER_HARNESS_ICON_PREFIX.length);
   const parts = rest.split("/");
@@ -488,29 +502,64 @@ export async function resolvePeerHarnessIcon(
       return {
         contentType: "application/json",
         body: Buffer.from(JSON.stringify(harnessIconStyles(cached))),
+        stale: true,
       };
     }
-    return source.catalog.cachedIcon(target);
+    const cachedAsset = source.catalog.cachedIcon(target);
+    return cachedAsset ? { ...cachedAsset, stale: true } : undefined;
   }
   if (state !== "connected") return undefined;
-  try {
-    if (target === "presentation.json") {
-      const plugins = await source.catalog.list();
-      return {
-        contentType: "application/json",
-        body: Buffer.from(JSON.stringify(harnessIconStyles(plugins))),
-      };
+  const cached = source.catalog.cachedList();
+  const resolvedCurrent = source.catalog.hasResolvedCurrentList();
+  if (cached) {
+    if (!source.catalog.hasFreshList()) {
+      void source.catalog.list().catch(() => undefined);
     }
-    return await source.catalog.icon(target);
-  } catch {
-    const cached = source.catalog.cachedList();
-    if (!cached) return undefined;
     if (target === "presentation.json") {
       return {
         contentType: "application/json",
         body: Buffer.from(JSON.stringify(harnessIconStyles(cached))),
+        ...(resolvedCurrent ? {} : { stale: true }),
       };
     }
-    return source.catalog.cachedIcon(target);
+    const cachedAsset = source.catalog.cachedIcon(target);
+    if (cachedAsset) {
+      return resolvedCurrent ? cachedAsset : { ...cachedAsset, stale: true };
+    }
+    // Only treat a missing icon as authoritative when the current generation's list has resolved;
+    // otherwise wait for the in-flight refresh so newly installed plugins do not 404 prematurely.
+    if (resolvedCurrent) return undefined;
+  }
+  const generationBefore = source.catalog.currentGeneration();
+  try {
+    if (target === "presentation.json") {
+      const plugins = await source.catalog.list();
+      const stale =
+        source.catalog.currentGeneration() !== generationBefore ||
+        !source.catalog.hasResolvedCurrentList();
+      return {
+        contentType: "application/json",
+        body: Buffer.from(JSON.stringify(harnessIconStyles(plugins))),
+        ...(stale ? { stale: true } : {}),
+      };
+    }
+    const asset = await source.catalog.icon(target);
+    if (!asset) return undefined;
+    const stale =
+      source.catalog.currentGeneration() !== generationBefore ||
+      !source.catalog.hasResolvedCurrentList();
+    return stale ? { ...asset, stale: true } : asset;
+  } catch {
+    const fallback = source.catalog.cachedList();
+    if (!fallback) return undefined;
+    if (target === "presentation.json") {
+      return {
+        contentType: "application/json",
+        body: Buffer.from(JSON.stringify(harnessIconStyles(fallback))),
+        stale: true,
+      };
+    }
+    const cachedAsset = source.catalog.cachedIcon(target);
+    return cachedAsset ? { ...cachedAsset, stale: true } : undefined;
   }
 }

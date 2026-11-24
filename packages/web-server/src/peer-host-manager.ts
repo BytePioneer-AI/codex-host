@@ -17,8 +17,6 @@ export interface PeerHostManagerOptions {
   projector?: (threadId: string) => PeerThreadProjector;
 }
 
-const LOCAL_ONLY_ACTIONS = new Set(["add", "update", "remove", "test"]);
-
 export class PeerHostManager {
   private clients = new Map<string, PeerHostClient>();
   private sources = new Map<string, PeerThreadSource>();
@@ -139,12 +137,6 @@ export class PeerHostManager {
     for (const [action, method] of Object.entries(c.REMOTE_PEERS_METHODS))
       rpc.register(method, async (args, ctx) => {
         if (!ctx.auth) throw new RpcError("auth/required", "Authentication required");
-        if (LOCAL_ONLY_ACTIONS.has(action) && !ctx.auth.local) {
-          throw new RpcError(
-            "auth/local-required",
-            "Manage remote peers from a local session on this machine.",
-          );
-        }
         const input = requestOf(args);
         if (action === "list") return { peers: [...this.clients.values()].map((p) => p.summary()) };
         if (action === "add" || action === "test") {

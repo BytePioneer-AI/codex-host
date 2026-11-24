@@ -23,6 +23,10 @@ import type { WebHarnessPreferences } from "./harness-preferences.ts";
 export class ChHarnessCatalog {
   private plugins: Promise<HarnessPluginDescriptor[]> | undefined;
   private lastPlugins: HarnessPluginDescriptor[] | undefined;
+  private pluginsEpoch: string | undefined;
+  private lastHelloEpoch: string | undefined;
+  private pluginsGeneration = 0;
+  private pluginsResolvedGeneration = -1;
   private inspections = new Map<string, Promise<HarnessInspection>>();
   private readonly pendingRefreshes = new Map<
     string,
@@ -40,6 +44,7 @@ export class ChHarnessCatalog {
     readonly preferences?: WebHarnessPreferences,
     /** Optional advanced subset override from `--harness`; absent means every Host plugin. */
     private readonly restrictTo?: ReadonlySet<string>,
+    private readonly currentEpoch?: () => string | undefined,
   ) {
     this.stop = host.realtime?.subscribe((event) => {
       if (event.type === "harness-inspection-changed") {
@@ -52,9 +57,22 @@ export class ChHarnessCatalog {
         if (refresh) refresh.notified = true;
         events.emit("codexhost/harness-inspection-changed");
       } else if (event.type === "hello") {
+        const epoch = event.cursor.epoch;
+        // Preserve in-flight or resolved plugin catalog when the initial hello matches the
+        // epoch already probed from manifest, or on a non-reset same-epoch stream resume.
+        const sameInitialEpoch =
+          this.lastHelloEpoch === undefined &&
+          this.pluginsEpoch !== undefined &&
+          this.pluginsEpoch === epoch;
+        const sameResumeEpoch = !event.reset && this.lastHelloEpoch === epoch;
+        this.lastHelloEpoch = epoch;
+        if (!sameInitialEpoch && !sameResumeEpoch) {
+          this.pluginsGeneration += 1;
+          this.plugins = undefined;
+          this.pluginsEpoch = undefined;
+        }
         this.inspections.clear();
         this.pendingRefreshes.clear();
-        this.plugins = undefined;
         this.refreshing.clear();
         events.emit("codexhost/harness-inspection-changed");
       }
@@ -63,8 +81,19 @@ export class ChHarnessCatalog {
   close(): void {
     this.stop?.();
   }
+  hasFreshList(): boolean {
+    return this.plugins !== undefined;
+  }
+  hasResolvedCurrentList(): boolean {
+    return this.pluginsResolvedGeneration === this.pluginsGeneration;
+  }
+  currentGeneration(): number {
+    return this.pluginsGeneration;
+  }
   async list(): Promise<HarnessPluginDescriptor[]> {
     if (this.plugins) return this.plugins;
+    const generation = this.pluginsGeneration;
+    this.pluginsEpoch = this.currentEpoch?.() ?? this.lastHelloEpoch;
     const plugins = this.host
       .request("codexhost/harness/plugins/list", {})
       .then((value) => {
@@ -75,11 +104,17 @@ export class ChHarnessCatalog {
               plugin.kind !== "usage" &&
               (this.restrictTo === undefined || this.restrictTo.has(plugin.id)),
           );
-        this.lastPlugins = filtered;
+        if (generation === this.pluginsGeneration) {
+          this.lastPlugins = filtered;
+          this.pluginsResolvedGeneration = generation;
+        }
         return filtered;
       })
       .catch((error: unknown) => {
-        if (this.plugins === plugins) this.plugins = undefined;
+        if (this.plugins === plugins) {
+          this.plugins = undefined;
+          this.pluginsEpoch = undefined;
+        }
         throw error;
       });
     this.plugins = plugins;

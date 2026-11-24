@@ -205,6 +205,13 @@ async function completed(outputs: HarnessOutput[], id = "t1") {
     ).toHaveLength(1),
   );
 }
+/** CortexStepMetadata field 1 is the step's native creation time. */
+function stampStep(db: DatabaseSync, idx: number, atMs: number) {
+  db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
+    bytes(1, nanoseconds(BigInt(atMs) * 1_000_000n)),
+    idx,
+  );
+}
 afterEach(async () => {
   await Promise.all(adapters.splice(0).map((adapter) => adapter.close()));
   await Promise.all(
@@ -1844,13 +1851,6 @@ describe("Antigravity foreground native commits", () => {
     return firstRead.promise;
   }
 
-  function stampInput(db: DatabaseSync, idx: number, atMs: number) {
-    db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
-      bytes(1, nanoseconds(BigInt(atMs) * 1_000_000n)),
-      idx,
-    );
-  }
-
   const terminal = (outputs: HarnessOutput[], id = "t1") => {
     const event = events(outputs).find(
       (event) => event.type === "turn.completed" && event.turnId === id,
@@ -2006,7 +2006,7 @@ describe("Antigravity foreground native commits", () => {
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
         // Both prompts have the same input; text equality alone cannot prove ownership.
         userStep(db, 0, "hello", "first");
-        stampInput(db, 0, firstCreatedAt);
+        stampStep(db, 0, firstCreatedAt);
         answerStep(db, 1, "first answer", "first");
         const secondCreatedAt = Date.now();
         const firstRead = nextRead();
@@ -2015,7 +2015,7 @@ describe("Antigravity foreground native commits", () => {
         if (commits) {
           await new Promise<void>((resolve) => setTimeout(resolve, 50));
           userStep(db, 2, "hello", "second");
-          stampInput(db, 2, secondCreatedAt);
+          stampStep(db, 2, secondCreatedAt);
           answerStep(db, 3, "second answer", "second");
         }
         await completed(outputs, "t2");
@@ -2044,7 +2044,7 @@ describe("Antigravity foreground native commits", () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       const firstInputAt = Date.now();
       userStep(db, 0, "first-a", "first");
-      stampInput(db, 0, firstInputAt);
+      stampStep(db, 0, firstInputAt);
       const secondLateInputAt = Date.now();
       transport.result.resolve({ stopReason: "end_turn" });
       await completed(outputs, "t1");
@@ -2058,7 +2058,7 @@ describe("Antigravity foreground native commits", () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       // Turn A's second native input commits late during Turn B while Turn B has not written yet.
       userStep(db, 1, "first-b", "first");
-      stampInput(db, 1, secondLateInputAt);
+      stampStep(db, 1, secondLateInputAt);
       transport.result.resolve({ stopReason: "end_turn" });
       await completed(outputs, "t2");
       expect(terminal(outputs, "t2")).not.toHaveProperty("nativeTurnRef");
@@ -2096,7 +2096,7 @@ describe("Antigravity foreground native commits", () => {
         await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
         userStep(db, 0, "hello", "second");
-        stampInput(db, 0, Date.now());
+        stampStep(db, 0, Date.now());
         // Commit a generic tool without a planner reply.
         const tool = bytes(4, Buffer.concat([textField(1, "next"), textField(2, "Tool")]));
         db.prepare(
@@ -2151,7 +2151,7 @@ describe("Antigravity foreground native commits", () => {
       db.exec("BEGIN IMMEDIATE");
       userStep(db, 0, "hel", "prompt");
       userStep(db, 1, "lo", "prompt");
-      stampInput(db, 1, createdAtMs);
+      stampStep(db, 1, createdAtMs);
       answerStep(db, 2, "hello there", "prompt");
       systemStep(db, 3, "wake");
       answerStep(db, 4, "wake answer", "wake");
@@ -2195,6 +2195,8 @@ describe("Antigravity foreground native commits", () => {
 describe("Antigravity idle wake Turns", () => {
   const wakes = (outputs: HarnessOutput[]) =>
     events(outputs).filter((event) => event.type === "turn.autonomous.completed");
+  /** Lets the wall clock advance between native creation times and Adapter clock readings. */
+  const moment = () => new Promise((resolve) => setTimeout(resolve, 10));
 
   async function setup() {
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-wake-"));
@@ -2338,6 +2340,126 @@ describe("Antigravity idle wake Turns", () => {
       ]);
       expect(wakes(outputs).map((event) => event.snapshot)).toEqual([snapshot.value.turns[1]]);
     } finally {
+      db.close();
+    }
+  });
+
+  it("does not republish a wake that streamed inside the active prompt", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      const handler = required(transport.handler);
+      // agy keeps the prompt open across a scheduled wake, whose output streams into t2.
+      handler.onEvent({ type: "agent.text", text: "first report" });
+      const firstAtMs = Date.now();
+      systemStep(db, 2, "first-wake");
+      answerStep(db, 3, "first report", "first-wake");
+      stampStep(db, 2, firstAtMs);
+      const lateAtMs = Date.now();
+      handler.onResponse?.();
+      // A wake that starts only after the wire response is idle output, not part of t2.
+      const idleAtMs = Date.now() + 1;
+      await moment();
+      userStep(db, 4, "next", "next");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(
+        events(outputs).filter((event) => event.type === "item.completed" && event.turnId === "t2"),
+      ).toMatchObject([{ snapshot: { item: { type: "agentMessage", text: "first report" } } }]);
+      expect(wakes(outputs)).toEqual([]);
+      // The second wake also started before the response; its commit lands after t2 completed.
+      systemStep(db, 5, "late-wake");
+      answerStep(db, 6, "late report", "late-wake");
+      stampStep(db, 5, lateAtMs);
+      systemStep(db, 7, "idle-wake");
+      answerStep(db, 8, "idle report", "idle-wake");
+      stampStep(db, 7, idleAtMs);
+      transport.eventHandler?.({ type: "agent.text", text: "idle report" });
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
+        "wake-7",
+      ]);
+    } finally {
+      await session.close();
+      db.close();
+    }
+  });
+
+  it("publishes only the idle wake when commits land while a later prompt is in flight", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      // The idle wake starts after that response; its notification begins the commit poll.
+      await moment();
+      const idleAtMs = Date.now();
+      transport.eventHandler?.({ type: "agent.text", text: "idle report" });
+      transport.result = deferred();
+      await moment();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      const inPromptAtMs = Date.now();
+      // Both wakes reach SQLite while t2's prompt still awaits its response.
+      systemStep(db, 2, "idle-wake");
+      stampStep(db, 2, idleAtMs);
+      answerStep(db, 3, "idle report", "idle-wake");
+      userStep(db, 4, "next", "next");
+      systemStep(db, 5, "in-prompt");
+      stampStep(db, 5, inPromptAtMs);
+      answerStep(db, 6, "in-prompt report", "in-prompt");
+      required(transport.handler).onEvent({ type: "agent.text", text: "in-prompt report" });
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
+        "wake-2",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("publishes an idle wake that started between prompts even when committed after the later prompt responds", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      // An idle wake starts between t1's response and t2's submission, then commits only after t2 responds.
+      await moment();
+      const idleAtMs = Date.now();
+      await moment();
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      const inPromptAtMs = Date.now();
+      required(transport.handler).onEvent({ type: "agent.text", text: "in-prompt report" });
+      required(transport.handler).onResponse?.();
+      await moment();
+      userStep(db, 2, "next", "next");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(wakes(outputs)).toEqual([]);
+      // Both wakes reach SQLite after t2 has already responded and completed.
+      systemStep(db, 3, "idle-wake");
+      stampStep(db, 3, idleAtMs);
+      answerStep(db, 4, "idle report", "idle-wake");
+      systemStep(db, 5, "in-prompt");
+      stampStep(db, 5, inPromptAtMs);
+      answerStep(db, 6, "in-prompt report", "in-prompt");
+      transport.eventHandler?.({ type: "agent.text", text: "idle report" });
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
+        "wake-3",
+      ]);
+    } finally {
+      await session.close();
       db.close();
     }
   });

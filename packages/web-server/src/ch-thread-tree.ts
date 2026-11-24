@@ -44,14 +44,22 @@ export class ChThreadTree {
     rows: Map<string, ChThread>,
     read: (id: string) => Promise<ChThread>,
   ): Promise<void> {
-    for (const id of this.withAncestors(rows.keys())) {
-      if (rows.has(id)) continue;
-      try {
-        rows.set(id, await read(id));
-      } catch {
-        // A deleted or unconfirmable ancestor leaves its children visible at the top level.
-      }
-    }
+    const missing = [...this.withAncestors(rows.keys())].filter((id) => !rows.has(id));
+    if (missing.length === 0) return;
+    let offset = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(4, missing.length) }, async () => {
+        while (offset < missing.length) {
+          const id = missing[offset++];
+          if (id === undefined || rows.has(id)) continue;
+          try {
+            rows.set(id, await read(id));
+          } catch {
+            // A deleted or unconfirmable ancestor leaves its children visible at the top level.
+          }
+        }
+      }),
+    );
   }
 
   private async readArchivedIds(): Promise<ReadonlySet<string>> {

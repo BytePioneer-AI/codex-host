@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, type RequestListener } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -59,7 +59,7 @@ function makePeer(
 }
 
 async function startHttpServer(
-  handler: Parameters<typeof createServer>[0],
+  handler: RequestListener,
 ): Promise<{ url: string; close: () => Promise<void> }> {
   const server = createServer(handler);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -822,7 +822,7 @@ test("WS workspaceFiles/changes degrades cleanly for remote sessions and leaves 
     peerClient: () => undefined,
   });
 
-  const failures: Array<{ code: string; message: string; details?: object }> = [];
+  const failures: Array<{ code: string; message: string; details: object | undefined }> = [];
   const sink: StreamSink = {
     id: "s1",
     closed: false,

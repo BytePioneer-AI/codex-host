@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { HermesGatewayHistory, projectGatewayHistory } from "../src/gateway-history.js";
+import { readHermesSessions } from "../src/gateway-session-list.js";
 
 const run = promisify(execFile);
 const rows = [
@@ -120,6 +121,55 @@ with SessionDB() as db:
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  it("opens, lists and derives sessions using the installed storage interface", async () => {
+    if (!python) throw new Error("Missing Hermes native test interpreter");
+    const home = await mkdtemp(path.join(os.tmpdir(), "hermes-storage-test-"));
+    const environment = { ...process.env, HERMES_HOME: home };
+    const options = { python, cwd: home, environment };
+    const listOptions = { runtime: python, cwd: home, environment };
+    const history = new HermesGatewayHistory({ ...options, nativeSessionId: "source" });
+    try {
+      expect(await readHermesSessions(listOptions)).toEqual([]);
+      await history.ensureCreated({ cwd: home });
+      await run(
+        python,
+        [
+          "-I",
+          "-c",
+          `from hermes_state import SessionDB
+db = SessionDB()
+for role, text in [('user', 'first'), ('assistant', 'answer'), ('user', 'second'), ('assistant', 'last')]:
+    db.append_message('source', role, content=text)
+db.close()`,
+        ],
+        { cwd: home, env: environment },
+      );
+      expect(await readHermesSessions({ ...listOptions, nativeSessionId: "source" })).toEqual([
+        expect.objectContaining({ id: "source", cwd: home }),
+      ]);
+      const initial = await history.readSnapshot();
+      expect(initial.turns).toHaveLength(2);
+      const checkpoint = initial.turns[0]?.checkpoint;
+      if (!checkpoint) throw new Error("Missing native checkpoint");
+      const fork = await history.derive({ checkpoint });
+      const rollback = await history.derive({ rollbackLastTurn: true });
+      for (const ref of [fork, rollback]) {
+        const child = new HermesGatewayHistory({
+          ...options,
+          nativeSessionId: ref.nativeSessionId,
+        });
+        const snapshot = await child.readSnapshot();
+        expect(snapshot.turns.map((turn) => turn.input)).toEqual([
+          [{ type: "text", text: "first" }],
+        ]);
+        expect(await history.discardDerived(ref)).toBe(true);
+      }
+      expect(await history.readSnapshot()).toEqual(initial);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  }, 60_000);
   it("creates, reads, forks and rolls back complete tool history without changing its source", async () => {
     if (!python) throw new Error("Missing Hermes native test interpreter");
     const home = await mkdtemp(path.join(os.tmpdir(), "hermes-history-test-"));

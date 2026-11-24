@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { composeAnnotatedMessage } from "@codexhost/shared-contracts";
 import { Button } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ChatViewInjected, ChatViewSlotProps, SentMessageEditing } from "../contract/slots.ts";
@@ -12,57 +12,60 @@ export function useSentMessageEditing(
 ): SentMessageEditing {
   const [draft, setDraft] = useState<SentMessageEditing["draft"]>(null);
   const pending = useRef(false);
-  return {
-    targetSeq: send && !unavailable ? targetSeq : null,
-    draft,
-    begin(seq, text, content, responseAnnotations = []) {
-      if (pending.current || unavailable || seq !== targetSeq) return;
-      setDraft({ seq, text, content, responseAnnotations, pending: false, blocked: false });
-    },
-    change(text) {
-      setDraft((d) => (d && !d.pending ? { ...d, text } : d));
-    },
-    cancel() {
-      if (!pending.current) setDraft(null);
-    },
-    send() {
-      if (
-        !send ||
-        !draft ||
-        draft.blocked ||
-        pending.current ||
-        unavailable ||
-        (!draft.text.trim() && draft.responseAnnotations.length === 0)
-      )
-        return;
-      pending.current = true;
-      setDraft({ ...draft, pending: true, error: undefined });
-      void send(draft.seq, composeAnnotatedMessage(draft.responseAnnotations, draft.text))
-        .then(
-          (receipt) => {
-            if (receipt.status === "accepted") setDraft(null);
-            else
+  return useMemo<SentMessageEditing>(
+    () => ({
+      targetSeq: send && !unavailable ? targetSeq : null,
+      draft,
+      begin(seq, text, content, responseAnnotations = []) {
+        if (pending.current || unavailable || seq !== targetSeq) return;
+        setDraft({ seq, text, content, responseAnnotations, pending: false, blocked: false });
+      },
+      change(text) {
+        setDraft((d) => (d && !d.pending ? { ...d, text } : d));
+      },
+      cancel() {
+        if (!pending.current) setDraft(null);
+      },
+      send() {
+        if (
+          !send ||
+          !draft ||
+          draft.blocked ||
+          pending.current ||
+          unavailable ||
+          (!draft.text.trim() && draft.responseAnnotations.length === 0)
+        )
+          return;
+        pending.current = true;
+        setDraft({ ...draft, pending: true, error: undefined });
+        void send(draft.seq, composeAnnotatedMessage(draft.responseAnnotations, draft.text))
+          .then(
+            (receipt) => {
+              if (receipt.status === "accepted") setDraft(null);
+              else
+                setDraft({
+                  ...draft,
+                  pending: false,
+                  blocked: receipt.status !== "rejected",
+                  error: receipt.message,
+                });
+            },
+            (error: unknown) => {
               setDraft({
                 ...draft,
                 pending: false,
-                blocked: receipt.status !== "rejected",
-                error: receipt.message,
+                blocked: true,
+                error: error instanceof Error ? error.message : String(error),
               });
-          },
-          (error: unknown) => {
-            setDraft({
-              ...draft,
-              pending: false,
-              blocked: true,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          },
-        )
-        .finally(() => {
-          pending.current = false;
-        });
-    },
-  };
+            },
+          )
+          .finally(() => {
+            pending.current = false;
+          });
+      },
+    }),
+    [send, targetSeq, unavailable, draft],
+  );
 }
 
 /** Inline editor leaves the ordinary composer and its attachment rail untouched. */

@@ -47,7 +47,7 @@ import { ChThreadTree } from "./ch-thread-tree.ts";
 import { type WebImages, WEB_IMAGE_INPUT, WEB_IMAGE_LIMITS } from "./web-images.ts";
 import { ChAttachments } from "./ch-attachments.ts";
 import { ChFileInputs, type FileUploadTiming } from "./ch-file-inputs.ts";
-import { WebFileReferences } from "./file-references.ts";
+import { WebFileReferences, type RemoteFileReferencesSearch } from "./file-references.ts";
 import { type WebFiles, WEB_FILE_INPUT } from "./web-files.ts";
 import { ChRealtime } from "./ch-realtime.ts";
 import { ChInteractions } from "./ch-interactions.ts";
@@ -369,8 +369,9 @@ export class ChSessions {
       const harnessId = this.threads.harnessId(id);
       if (found.has(id) || !harnessId) continue;
       // Omission from an official page is not deletion or archive evidence.
-      // External metadata is complete for this scope, so its missing rows may leave.
+      // External metadata is complete on the head page, so missing rows may leave only when cursor is undefined.
       if (
+        cursor === undefined &&
         harnessId !== "codex" &&
         known.has(id) &&
         !archiveChanges.has(id) &&
@@ -628,11 +629,13 @@ export class ChSessions {
         this.attachments
           ? (path, projectionKey) => this.attachments?.projectImageView(id, path, projectionKey)
           : undefined,
-        (input, projected, allowsAttachments) =>
-          canEditQueuedInput(input, projected, allowsAttachments, {
-            ...(this.images ? { images: this.images } : {}),
-            ...(this.files ? { files: this.files } : {}),
-          }),
+        {
+          canEditQueueItem: (input, projected, allowsAttachments) =>
+            canEditQueuedInput(input, projected, allowsAttachments, {
+              ...(this.images ? { images: this.images } : {}),
+              ...(this.files ? { files: this.files } : {}),
+            }),
+        },
       );
       view = history;
       view.log.setProjection("threadReference", { hostId: "local" });
@@ -1019,6 +1022,40 @@ export class ChSessions {
   }
 
   /**
+   * Resolve a Host-confirmed local Thread's working directory, loading its metadata
+   * from the Host if this Web process has not listed it yet (e.g. headless Peer startup
+   * or older catalog pages). Never creates a Thread and never resolves drafts.
+   */
+  async ensureLocalWorkspaceRoot(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    if (signal?.aborted) return undefined;
+    const existing = this.localWorkspaceRoot(sessionId);
+    if (existing !== undefined) return existing;
+    if (
+      this.closed ||
+      !sessionId ||
+      sessionId.startsWith("web-remote:") ||
+      sessionId.startsWith("remote-control:") ||
+      sessionId.startsWith("draft-")
+    ) {
+      return undefined;
+    }
+    const id = this.id(sessionId);
+    if (this.drafts.has(id)) return undefined;
+    try {
+      const { thread, harnessId } = await this.readThread(id);
+      if (this.closed || signal?.aborted) return undefined;
+      this.rows.set(thread.id, thread);
+      this.threads.setHarness(thread.id, harnessId);
+      return thread.cwd;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Terminal cwd for a known local Session, including an unsubmitted draft.
    * Missing cwd uses the Web service user's home without assigning a workspace
    * or creating a Thread. Unknown identities do not acquire an execution scope.
@@ -1035,6 +1072,10 @@ export class ChSessions {
   fileWorkspaceRoot(sessionId: string): string | undefined {
     const id = this.id(sessionId);
     return this.drafts.get(id)?.cwd ?? this.localWorkspaceRoot(id);
+  }
+
+  setRemoteFileSearch(search: RemoteFileReferencesSearch | undefined): void {
+    this.fileReferences.setRemoteSearch(search);
   }
 
   uploadFile(
@@ -1749,7 +1790,29 @@ export class ChSessions {
           "session/open-unavailable",
           "Remote connections cannot open Host files.",
         );
-      const request = requestOf<{ path: string; action?: string; application?: string }>(args);
+      const request = requestOf<{
+        sessionId?: string;
+        path: string;
+        action?: string;
+        application?: string;
+      }>(args);
+      if (
+        typeof request.sessionId !== "string" ||
+        request.sessionId.length === 0 ||
+        request.sessionId.startsWith("web-remote:") ||
+        request.sessionId.startsWith("remote-control:")
+      ) {
+        throw new RpcError(
+          "session/open-unavailable",
+          "Opening Host files requires a local session.",
+        );
+      }
+      if (this.fileWorkspaceRoot(request.sessionId) === undefined) {
+        throw new RpcError(
+          "session/open-unavailable",
+          "Opening Host files requires a known local session.",
+        );
+      }
       if (
         (request.action !== undefined && request.action !== "reveal") ||
         request.application !== undefined

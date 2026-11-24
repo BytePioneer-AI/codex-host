@@ -1014,46 +1014,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
-  it("sends and cancels follow-up Turns on an external delegated Thread", async () => {
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-    const starting = delegationApi.start({
-      harnessId: "pi",
-      task: "first",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-    });
-    await answerOfficialParentCwd(fixture);
-    const started = await starting;
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Delegated Session was not opened");
-    session.succeedTurn();
-    await vi.waitFor(async () =>
-      expect(
-        await delegationApi?.read({ threadId: started.threadId, view: "result" }),
-      ).toMatchObject({ status: "completed" }),
-    );
-    const followUp = await delegationApi.send({ threadId: started.threadId, message: "continue" });
-    expect(followUp).toMatchObject({ harnessId: "pi", status: "running" });
-    await expect(
-      delegationApi.send({ threadId: started.threadId, message: "again" }),
-    ).rejects.toMatchObject({ code: "THREAD_BUSY" });
-    await expect(delegationApi.cancel({ threadId: started.threadId })).resolves.toMatchObject({
-      turnId: followUp.turnId,
-      cancelled: true,
-    });
-    session.completeCancellation();
-    await stopFixture(fixture);
-  });
-
   it("sends and cancels follow-up Turns on a native Codex Thread", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({

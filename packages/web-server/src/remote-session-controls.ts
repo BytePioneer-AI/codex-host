@@ -48,6 +48,7 @@ export type RemoteConfigurationSetting =
 export interface RemoteControlsEntry {
   epoch?: string;
   controls?: RemoteControls;
+  peerHarnessIdentity?: { id: string; name: string };
   row: { modelProvider: string };
 }
 
@@ -154,19 +155,22 @@ export function remoteHarnessIdentity(
       entry.controls?.harness?.id === configuration.harnessId ? entry.controls.harness : undefined;
     return {
       id: configuration.harnessId,
-      name: descriptor?.name ?? configuration.harnessId,
+      name: descriptor?.name ?? entry.peerHarnessIdentity?.name ?? configuration.harnessId,
       ...(descriptor?.icon ? { icon: descriptor.icon } : {}),
     };
   }
-  if (configuration?.owner === "codex" || entry.row.modelProvider !== "codexhost")
-    return { id: "codex", name: "Codex" };
+  if (configuration?.owner === "codex") return { id: "codex", name: "Codex" };
+  if (entry.peerHarnessIdentity) return entry.peerHarnessIdentity;
+  if (entry.row.modelProvider !== "codexhost") return { id: "codex", name: "Codex" };
   return undefined;
 }
 
 export function viewHarnessId(entry: RemoteControlsEntry): string {
   const configuration = entry.controls?.configuration;
   if (configuration?.owner === "external") return configuration.harnessId;
-  if (configuration?.owner === "codex" || entry.row.modelProvider !== "codexhost") return "codex";
+  if (configuration?.owner === "codex") return "codex";
+  if (entry.peerHarnessIdentity) return entry.peerHarnessIdentity.id;
+  if (entry.row.modelProvider !== "codexhost") return "codex";
   // A remote row without ownership metadata is still a remote row. Do not
   // give it the local Codex view or local control semantics.
   return "remote";

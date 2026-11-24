@@ -1059,6 +1059,54 @@ describe("Unified Host extensions settings page", () => {
     mounted.dispose();
   });
 
+  it("opens a floating screenshot lightbox with keyboard navigation and Escape closing only the lightbox", async () => {
+    const mounted = mountPage("zh-CN", () => ({
+      listHostExtensions: vi.fn(async () => sampleList()),
+    }));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
+
+    must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
+      ),
+    ).dispatch("click");
+
+    const detailDialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    );
+    const thumbs = descendants(detailDialog).filter(
+      (el) => el.className === "settings-extensions-detail-modal__thumb",
+    );
+    expect(thumbs).toHaveLength(2);
+    must(thumbs[0]).dispatch("click");
+
+    const lightbox = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "dialog" && el.className === "settings-extensions-lightbox",
+      ),
+    );
+    const lightboxImg = must(
+      descendants(lightbox).find((el) => el.className === "settings-extensions-lightbox__img"),
+    );
+    expect(lightbox.open).toBe(true);
+    expect(lightboxImg.src).toBe(SAMPLE_SCREENSHOT_1);
+    expect(textOf(lightbox)).toContain("1 / 2");
+
+    lightbox.dispatch("keydown", { key: "ArrowRight" });
+    expect(lightboxImg.src).toBe(SAMPLE_SCREENSHOT_2);
+    expect(textOf(lightbox)).toContain("2 / 2");
+
+    lightbox.dispatch("keydown", { key: "Escape" });
+    expect(lightbox.open).toBe(false);
+    expect(detailDialog.open).toBe(true);
+
+    detailDialog.close();
+    mounted.dispose();
+  });
+
   it("handles revision-conflict with automatic reload and exposes directory copy + recovery in header more menu", async () => {
     const pendingDisable = deferred<{
       state: "revision-conflict";

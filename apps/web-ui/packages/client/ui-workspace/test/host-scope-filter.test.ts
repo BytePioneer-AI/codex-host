@@ -15,6 +15,7 @@ import {
   isHostScopeFiltered,
   loadHostScopeFilter,
   parseHostScopeFilter,
+  pruneUnavailableHostScopeFilter,
   reconcileHostScopeFilter,
   resetHostScopeFilter,
   saveHostScopeFilter,
@@ -29,7 +30,7 @@ function makeWorkspace(input: {
   title?: string;
   path?: string;
   sessionIds?: string[];
-  remote?: { hostId: string; displayName: string; state: string };
+  remote?: { hostId: string; displayName: string; state: string; color?: string };
 }): WorkspaceView {
   return {
     workspaceId: input.id as WorkspaceId,
@@ -48,14 +49,24 @@ const sampleWorkspaces = (): WorkspaceView[] => [
     id: "ws-us-1",
     title: "us-api",
     sessionIds: ["s-us-1"],
-    remote: { hostId: "remote-peer:us-vps", displayName: "美VPS", state: "connected" },
+    remote: {
+      hostId: "remote-peer:us-vps",
+      displayName: "美VPS",
+      state: "connected",
+      color: "purple",
+    },
   }),
   makeWorkspace({ id: "ws-local-2", title: "local-b", sessionIds: ["s-local-3"] }),
   makeWorkspace({
     id: "ws-us-2",
     title: "us-web",
     sessionIds: ["s-us-2"],
-    remote: { hostId: "remote-peer:us-vps", displayName: "美VPS", state: "connected" },
+    remote: {
+      hostId: "remote-peer:us-vps",
+      displayName: "美VPS",
+      state: "connected",
+      color: "purple",
+    },
   }),
   makeWorkspace({
     id: "ws-jp-1",
@@ -81,6 +92,7 @@ describe("deriveAvailableHosts", () => {
         hostId: host.hostId,
         displayName: host.displayName,
         state: host.state,
+        color: host.color,
         workspaceCount: host.workspaceCount,
         workspaceIds: host.workspaces.map((w) => w.workspaceId),
       })),
@@ -90,6 +102,7 @@ describe("deriveAvailableHosts", () => {
           hostId: undefined,
           displayName: undefined,
           state: undefined,
+          color: undefined,
           workspaceCount: 2,
           workspaceIds: ["ws-local-1", "ws-local-2"],
         },
@@ -98,6 +111,7 @@ describe("deriveAvailableHosts", () => {
           hostId: "remote-peer:us-vps",
           displayName: "美VPS",
           state: "connected",
+          color: "purple",
           workspaceCount: 2,
           workspaceIds: ["ws-us-1", "ws-us-2"],
         },
@@ -106,6 +120,7 @@ describe("deriveAvailableHosts", () => {
           hostId: "remote-peer:jp-box",
           displayName: "日VPS",
           state: "disconnected",
+          color: undefined,
           workspaceCount: 1,
           workspaceIds: ["ws-jp-1"],
         },
@@ -314,6 +329,108 @@ describe("reconcileHostScopeFilter", () => {
     const workspaces = sampleWorkspaces();
     const state: HostScopeFilterState = { selectedHost: "remote-peer:us-vps", perHost: {} };
     assert.strictEqual(reconcileHostScopeFilter(state, workspaces), state);
+  });
+});
+
+describe("pruneUnavailableHostScopeFilter", () => {
+  it("resets disappeared remote selectedHost to all and drops its stale perHost entry", () => {
+    const workspacesWithoutJp = sampleWorkspaces().filter(
+      (w) => w.remote?.hostId !== "remote-peer:jp-box",
+    );
+    const saved: HostScopeFilterState = {
+      selectedHost: "remote-peer:jp-box",
+      perHost: {
+        "remote-peer:jp-box": { mode: "selected", workspaceIds: ["ws-jp-1"] },
+        "remote-peer:us-vps": { mode: "selected", workspaceIds: ["ws-us-1", "ws-us-deleted"] },
+      },
+    };
+
+    const pruned = pruneUnavailableHostScopeFilter(saved, workspacesWithoutJp);
+    assert.deepEqual(pruned, {
+      selectedHost: "all",
+      perHost: {
+        "remote-peer:us-vps": { mode: "selected", workspaceIds: ["ws-us-1"] },
+      },
+    });
+  });
+
+  it("keeps the same reference when selectedHost and workspaceIds are still valid", () => {
+    const workspaces = sampleWorkspaces();
+    const saved: HostScopeFilterState = {
+      selectedHost: "remote-peer:us-vps",
+      perHost: {
+        "remote-peer:us-vps": { mode: "selected", workspaceIds: ["ws-us-1"] },
+      },
+    };
+    assert.strictEqual(pruneUnavailableHostScopeFilter(saved, workspaces), saved);
+  });
+
+  it("preserves local selectedHost even when the loaded workspace list is empty", () => {
+    const saved: HostScopeFilterState = {
+      selectedHost: "local",
+      perHost: {
+        local: { mode: "selected", workspaceIds: ["ws-local-stale"] },
+        "remote-peer:jp-box": { mode: "selected", workspaceIds: ["ws-jp-1"] },
+      },
+    };
+    assert.deepEqual(pruneUnavailableHostScopeFilter(saved, []), {
+      selectedHost: "local",
+      perHost: {
+        local: { mode: "selected", workspaceIds: [] },
+      },
+    });
+  });
+
+  it("preserves perHost workspace presets for newly added hosts not yet synced into workspaces", () => {
+    const workspaces = sampleWorkspaces();
+    const saved: HostScopeFilterState = {
+      selectedHost: "all",
+      perHost: {
+        "remote-peer:new-box": {
+          mode: "selected",
+          workspaceIds: ["remote-workspace:new-a", "remote-workspace:new-b"],
+        },
+        "remote-peer:gone-box": {
+          mode: "selected",
+          workspaceIds: ["remote-workspace:gone-1"],
+        },
+      },
+    };
+
+    const pruned = pruneUnavailableHostScopeFilter(saved, workspaces, {
+      preserveHostKeys: new Set(["remote-peer:new-box"]),
+    });
+    assert.deepEqual(pruned, {
+      selectedHost: "all",
+      perHost: {
+        "remote-peer:new-box": {
+          mode: "selected",
+          workspaceIds: ["remote-workspace:new-a", "remote-workspace:new-b"],
+        },
+      },
+    });
+  });
+
+  it("preserves perHost workspaceIds while a remote host is still connecting", () => {
+    const workspaces = [
+      ...sampleWorkspaces(),
+      makeWorkspace({
+        id: "remote-workspace:placeholder",
+        title: "New Box",
+        path: "",
+        remote: { hostId: "remote-peer:new-box", displayName: "New Box", state: "connecting" },
+      }),
+    ];
+    const saved: HostScopeFilterState = {
+      selectedHost: "all",
+      perHost: {
+        "remote-peer:new-box": {
+          mode: "selected",
+          workspaceIds: ["remote-workspace:new-a", "remote-workspace:new-b"],
+        },
+      },
+    };
+    assert.strictEqual(pruneUnavailableHostScopeFilter(saved, workspaces), saved);
   });
 });
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import { focusWithoutRing } from "./focus.ts";
 import { IconCloseOutlineRegular } from "./icons/index.tsx";
 import css from "./ImageLightbox.module.css";
 
@@ -41,7 +42,7 @@ export function ImageLightbox({
   useEffect(() => {
     restoreRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    closeRef.current?.focus();
+    if (closeRef.current !== null) focusWithoutRing(closeRef.current);
     const onKeyDown = (event: globalThis.KeyboardEvent): void => {
       if (event.key === "Escape") {
         event.stopPropagation();
@@ -55,7 +56,9 @@ export function ImageLightbox({
     window.addEventListener("keydown", onKeyDown, true);
     return () => {
       window.removeEventListener("keydown", onKeyDown, true);
-      restoreRef.current?.focus();
+      if (restoreRef.current?.isConnected) {
+        focusWithoutRing(restoreRef.current, { preventScroll: true });
+      }
     };
   }, [onClose]);
 

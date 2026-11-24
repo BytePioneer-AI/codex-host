@@ -42,7 +42,10 @@ function fixture(t: TestContext, host: FakeChHost = nativeCodex(new FakeChHost()
       .filter((row) => row.modelProvider !== "codexhost" && !host.archivedIds.has(row.id))
       .sort((a, b) => b.updatedAt - a.updatedAt);
     const official = native.slice(offset, offset + 20);
-    const external = [...host.threads.values()].filter((row) => row.modelProvider === "codexhost");
+    const external =
+      continuation === undefined
+        ? [...host.threads.values()].filter((row) => row.modelProvider === "codexhost")
+        : [];
     const threads = [...official, ...external].map((row) => ({
       ...structuredClone(row),
       turns: [],
@@ -144,8 +147,9 @@ it("keeps explicit pages browser-local, never probes omissions, refreshes only t
   assert.equal(f.host.requests.filter((r) => r.method === "thread/read").length, 0);
   assert.ok(!f.emitted.some((e) => e.event === "api-session/removed"));
   const last = await f.list({ cursor: second.nextCursor });
-  assert.equal(last.items.length, 32);
+  assert.equal(last.items.length, 7);
   assert.equal(last.nextCursor, null);
+  assert.ok(!f.emitted.some((e) => e.event === "api-session/removed"));
   assert.deepEqual(
     f.cursors.map((p) => (p.officialCursor as { live: string } | undefined)?.live),
     [undefined, "20", undefined, "40"],

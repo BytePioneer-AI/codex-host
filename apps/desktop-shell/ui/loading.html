@@ -9,6 +9,11 @@
   </head>
   <body class="page-loading">
     <div class="shell-page loading-shell">
+      <canvas
+        id="loading-dither-orbit"
+        class="dither-fx-layer dither-fx-layer--loading"
+        aria-hidden="true"
+      ></canvas>
       <svg
         class="loading-bg-svg"
         viewBox="0 0 1140 800"
@@ -274,6 +279,7 @@
     <div id="preview-bar" class="preview-bar" hidden></div>
 
     <script src="./shell.js"></script>
+    <script src="./dither-fx.js"></script>
     <script src="./loading.js"></script>
   </body>
 </html>

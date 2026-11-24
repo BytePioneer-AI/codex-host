@@ -91,7 +91,7 @@ function createdLabel(createdAt: number, t: RowTranslate): string {
   return t("hover.created", { time: `${date} ${pad2(d.getHours())}:${pad2(d.getMinutes())}` });
 }
 
-/** Hover-card body: workspace title, display directory path, absolute creation time. */
+/** Hover-card body: workspace title, optional directory path, optional creation time. */
 function WorkspaceHoverContent({
   label,
   cwd,
@@ -100,14 +100,14 @@ function WorkspaceHoverContent({
 }: {
   label: string;
   cwd: string | undefined;
-  createdAt: number;
+  createdAt: number | undefined;
   t: RowTranslate;
 }) {
   return (
     <div className={css.hoverContent}>
       <div className={css.hoverTitle}>{label}</div>
-      <div className={css.hoverPath}>{cwd}</div>
-      <div className={css.hoverTime}>{createdLabel(createdAt, t)}</div>
+      {cwd !== undefined && cwd !== "" && <div className={css.hoverPath}>{cwd}</div>}
+      {createdAt !== undefined && <div className={css.hoverTime}>{createdLabel(createdAt, t)}</div>}
     </div>
   );
 }
@@ -292,22 +292,25 @@ export function ProjectRowItem({
       </span>
     </div>
   );
-  // The ungrouped bucket has no backing Workspace: no card to show.
-  if (row.createdAt === undefined) return ownRow;
+  const cwd = row.cwd !== undefined && row.cwd !== "" ? row.cwd : undefined;
+  // Skip the hover card when there is no backing Workspace or no supplemental details to show.
+  if (row.workspaceId === undefined || (cwd === undefined && row.createdAt === undefined)) {
+    return ownRow;
+  }
   return (
     <HoverCard
       anchor={ownRow}
       content={
         <WorkspaceHoverContent
           label={row.label}
-          cwd={row.cwd === undefined ? undefined : abbreviateHomePath(row.cwd, home)}
+          cwd={cwd === undefined ? undefined : abbreviateHomePath(cwd, home)}
           createdAt={row.createdAt}
           t={t}
         />
       }
       openDelayMs={800}
       disabled={menuOpen}
-      copyText={row.cwd}
+      copyText={cwd}
       copyLabel={t("copy")}
       copiedLabel={t("hover.copied")}
     />

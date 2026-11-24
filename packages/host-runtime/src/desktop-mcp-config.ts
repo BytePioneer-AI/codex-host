@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { isDeepStrictEqual, promisify } from "node:util";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { homedir } from "node:os";
 import { z } from "zod";
@@ -153,8 +153,6 @@ async function bundledServerPolicy(
 ): Promise<JsonObject> {
   const selected = desktopStdioConfig.safeParse(definition);
   if (!selected.success) return {};
-  const version = selected.data.env.BROWSER_USE_CODEX_APP_VERSION;
-  if (!version || !/^[a-zA-Z0-9._-]+$/u.test(version)) return {};
   const cache = path.join(
     environment.CODEX_HOME ?? path.join(environment.HOME ?? homedir(), ".codex"),
     "plugins",
@@ -168,11 +166,39 @@ async function bundledServerPolicy(
     value.env_vars,
     value.cwd ?? null,
   ];
-  for (const plugin of await readdir(cache).catch(() => [])) {
+  const manifestPaths = new Set<string>();
+  const version = selected.data.env.BROWSER_USE_CODEX_APP_VERSION;
+  if (version && /^[a-zA-Z0-9._-]+$/u.test(version)) {
+    for (const plugin of await readdir(cache).catch(() => [])) {
+      manifestPaths.add(path.join(cache, plugin, version, ".mcp.json"));
+    }
+  }
+  const selectedCwd = selected.data.cwd;
+  if (selectedCwd) {
+    const [resolvedCache, resolvedCwd] = await Promise.all([
+      realpath(cache).catch(() => path.resolve(cache)),
+      realpath(selectedCwd).catch(() => path.resolve(selectedCwd)),
+    ]);
+    const relative = path.relative(resolvedCache, resolvedCwd);
+    const segments = relative.split(path.sep);
+    const [plugin, pluginVersion] = segments;
+    if (
+      !path.isAbsolute(relative) &&
+      segments.length === 2 &&
+      plugin !== undefined &&
+      pluginVersion !== undefined &&
+      segments.every(
+        (segment) => /^[a-zA-Z0-9._-]+$/u.test(segment) && segment !== "." && segment !== "..",
+      )
+    ) {
+      manifestPaths.add(path.join(resolvedCache, plugin, pluginVersion, ".mcp.json"));
+    }
+  }
+  for (const manifestPath of manifestPaths) {
     try {
       const manifest = z
         .object({ mcpServers: z.record(z.string(), z.record(z.string(), z.json())) })
-        .parse(JSON.parse(await readFile(path.join(cache, plugin, version, ".mcp.json"), "utf8")));
+        .parse(JSON.parse(await readFile(manifestPath, "utf8")));
       const config = manifest.mcpServers[name];
       const candidate = desktopStdioConfig.safeParse(config);
       if (
@@ -260,6 +286,7 @@ export async function desktopNativeMcpOverrides(
         if (!adapted) continue;
         const fields = {
           ...policy,
+          ...(Object.hasOwn(policy, "enabled") ? { enabled: server.enabled } : {}),
           startup_timeout_sec: server.startup_timeout_sec ?? policy.startup_timeout_sec,
           tool_timeout_sec: server.tool_timeout_sec ?? policy.tool_timeout_sec,
           command: adapted.command,

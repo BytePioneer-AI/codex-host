@@ -17,7 +17,11 @@ import { resubmitNotifications } from "./notifications.ts";
 import { relayPreparing } from "./RelayControl.tsx";
 import { ConnectionCard } from "./ConnectionCard.tsx";
 import { MobileGuideCard } from "./MobileGuideCard.tsx";
-import { RemotePeersPanel } from "./RemotePeersPanel.tsx";
+import {
+  clearRemotePeersCache,
+  prefetchRemotePeers,
+  RemotePeersPanel,
+} from "./RemotePeersPanel.tsx";
 import css from "./ConnectDevicesSection.module.css";
 
 export type ConnectDevicesTab = "share" | "peers";
@@ -417,7 +421,10 @@ function ShareThisComputerPanel({ t }: PropsLocale<"codexhostImport">): ReactNod
                     title: t("connectDevices.signOutTitle"),
                     description: t("connectDevices.signOutDescription"),
                     confirmLabel: t("connectDevices.signOutConfirm"),
-                    action: signOut,
+                    action: async () => {
+                      clearRemotePeersCache();
+                      await signOut();
+                    },
                   }
                 : {
                     title: t("connectDevices.regenerateTitle"),
@@ -457,6 +464,10 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
   const peersTabId = `${tabIdPrefix}-peers-tab`;
   const sharePanelId = `${tabIdPrefix}-share-panel`;
   const peersPanelId = `${tabIdPrefix}-peers-panel`;
+
+  useEffect(() => {
+    prefetchRemotePeers();
+  }, []);
 
   return (
     <div className={css.page} data-connect-devices>

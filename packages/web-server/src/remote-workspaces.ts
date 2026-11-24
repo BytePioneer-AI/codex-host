@@ -1,3 +1,4 @@
+import { remotePeerWorkspaceId, type RemotePeerColor } from "@codexhost/shared-contracts";
 import type { WorkspaceView } from "./workspaces.ts";
 
 export interface RemoteWorkspaceHost {
@@ -5,13 +6,12 @@ export interface RemoteWorkspaceHost {
   online: boolean;
   epoch?: string | undefined;
   displayName?: string | undefined;
+  color?: RemotePeerColor | undefined;
   state?: string | undefined;
   projects?: Array<{ id: string; name: string; path: string; threadIds: string[] }> | undefined;
 }
 export function remoteWorkspaceId(hostId: string, projectId: string | null): string {
-  return (
-    "remote-workspace:" + Buffer.from(JSON.stringify([hostId, projectId])).toString("base64url")
-  );
+  return remotePeerWorkspaceId(hostId, projectId);
 }
 export function remoteHostDisplayName(
   host: Pick<RemoteWorkspaceHost, "hostId" | "displayName">,
@@ -44,6 +44,7 @@ export function remoteWorkspaceGroups(
         : host.state === "connected"
           ? "disconnected"
           : (host.state ?? "disconnected"),
+      ...(host.color !== undefined ? { color: host.color } : {}),
     };
     const normalize = (path: string) => {
       const p = path.replaceAll("\\", "/").replace(/\/+$/u, "");

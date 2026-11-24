@@ -80,8 +80,17 @@ export function failureLine(t: TranslateNS<"sidebarFiles">, failure: RemoteFailu
       return t("error.notDirectory");
     // Carrier and unclassified host failures reach the reader as themselves:
     // this tree knows nothing useful to add to a transport-level message.
-    default:
+    default: {
+      const code: string = failure.code;
+      if (code === "remote/workspace-files-unsupported") {
+        const reason = (failure.details as { readonly reason?: unknown } | undefined)?.reason;
+        return t(
+          reason === "upgrade-required" ? "error.remoteUpgradeRequired" : "error.remoteUnsupported",
+        );
+      }
+      if (code === "remote/offline") return t("error.remoteOffline");
       return t("error.unavailable", { message: failure.message });
+    }
   }
 }
 
@@ -225,6 +234,24 @@ export function FilesBody({
   );
   const { signal, actions: tabActions } = tab;
   const cwd = useSessions((sessions) => sessions.byId[sessionId]?.cwd || undefined);
+  const remoteHost = useSessions(
+    (sessions) =>
+      (
+        sessions.byId[sessionId]?.projectionValues as
+          | {
+              readonly remoteHost?: {
+                readonly hostId: string;
+                readonly displayName?: string;
+                readonly state: string;
+                readonly workspaceFiles?: boolean;
+              } | null;
+            }
+          | undefined
+      )?.remoteHost,
+  );
+  const remoteFilesReady =
+    remoteHost != null && remoteHost.state === "connected" && remoteHost.workspaceFiles === true;
+  const root = cwd ?? (remoteFilesReady ? "." : undefined);
   const state = useStore((store) => store.byTab[tab.id]);
   const bodyRef = useRef<HTMLDivElement>(null);
   const scrollTopRef = useRef(0);
@@ -251,18 +278,32 @@ export function FilesBody({
   useEffect(() => {
     // A bucket gone because the record aborted must not be re-seeded by a
     // component that has not unmounted yet.
-    if (state !== undefined || cwd === undefined || signal.aborted) return;
-    start(tab.id, cwd, signal);
-  }, [state, cwd, tab.id, signal, start]);
+    if (state !== undefined || root === undefined || signal.aborted) return;
+    start(tab.id, root, signal);
+  }, [state, root, tab.id, signal, start]);
 
-  if (cwd === undefined) {
+  if (root === undefined) {
+    const emptyLine =
+      remoteHost == null
+        ? t("noWorkspace")
+        : remoteHost.state !== "connected"
+          ? t("error.remoteOffline")
+          : remoteHost.workspaceFiles === false
+            ? t(
+                remoteHost.hostId.startsWith("remote-peer:")
+                  ? "error.remoteUpgradeRequired"
+                  : "error.remoteUnsupported",
+              )
+            : t("noWorkspace");
     return (
       <div className={css.status} data-files-state="no-workspace">
-        <p className={css.statusLine}>{t("noWorkspace")}</p>
+        <p className={css.statusLine}>{emptyLine}</p>
       </div>
     );
   }
   if (state === undefined) return null;
+  const headerPath =
+    state.root === "." && remoteHost?.displayName ? remoteHost.displayName : state.root;
   const tree: TreeContext = {
     state,
     onToggle: (parent, path) => {
@@ -280,7 +321,7 @@ export function FilesBody({
   return (
     <div className={css.root} data-files-state="tree" data-files-root={state.root}>
       <div className={css.header}>
-        <PathLabel path={state.root} className={css.path} data-files-path />
+        <PathLabel path={headerPath} className={css.path} data-files-path />
         <span hidden>
           <button
             type="button"
@@ -313,9 +354,10 @@ export function FilesBody({
             <IconRefreshOutlineRegular />
           </button>
         </Tooltip>
-        {renderSlot("sidebar.right.tab.files.actions", {
-          absolutePath: state.root,
-        })}
+        {remoteHost == null &&
+          renderSlot("sidebar.right.tab.files.actions", {
+            absolutePath: state.root,
+          })}
       </div>
       <div
         ref={bodyRef}

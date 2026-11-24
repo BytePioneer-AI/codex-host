@@ -428,6 +428,8 @@ export interface SessionCancelValue {
 
 /** Request to open one path prepared by a Session-aware caller on the Host desktop. */
 export interface SessionOpenWorkspacePathRequest {
+  /** Session owning the requested path; remote sessions are rejected by the Hub. */
+  readonly sessionId?: SessionId;
   /** File-manager navigation when requested; omission uses the default application. */
   readonly action?: "reveal";
   /** Registered application identifier; ignored for reveal. Omission preserves the operating system default. */

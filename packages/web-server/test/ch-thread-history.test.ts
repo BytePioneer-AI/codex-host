@@ -435,3 +435,42 @@ it("opens an empty history at the wire's empty cursor, then continues from the r
   assert.equal(filled.cursor, defined(filled.records.at(-1)).event.seq);
   assert.equal(defined(filled.records[0]).event.seq, 2 ** 40);
 });
+
+it("uses hostThreadId for Host requests while preserving display id and empty cwd on the view", async () => {
+  const host = new FakeChHost();
+  const nativeRow = host.add("native-thread-1", "/remote/secret/path");
+  nativeRow.turns = turns(10);
+  const displayId = "web-remote:display-id-1";
+  const view = new ChThreadHistory(
+    host,
+    { ...nativeRow, id: displayId, cwd: "" },
+    "fake",
+    () => {},
+    undefined,
+    undefined,
+    undefined,
+    { hostThreadId: nativeRow.id },
+  );
+
+  await view.refresh();
+  assert.equal(view.thread.id, displayId);
+  assert.equal(view.thread.cwd, "");
+  assert.equal(view.log.header.id, displayId);
+  assert.equal(view.log.header.cwd, "");
+  assert.equal(view.thread.turns.length, 5);
+  assert.ok(
+    host.requests.every((r) => r.params.threadId === nativeRow.id),
+    "all Host requests must use native hostThreadId",
+  );
+
+  const page = await view.olderPage(view.log.lastSeq, view.log.firstSeq);
+  assert.equal(page.hasMore, false);
+  assert.equal(view.thread.id, displayId);
+  assert.equal(view.thread.cwd, "");
+  assert.equal(view.thread.turns.length, 10);
+
+  nativeRow.updatedAt += 1;
+  await view.refresh(true);
+  assert.equal(view.thread.id, displayId);
+  assert.equal(view.thread.cwd, "");
+});

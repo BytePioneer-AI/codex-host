@@ -13,6 +13,7 @@ import {
   deriveSearchResults,
   orderByRecency,
   reconcileManualOrder,
+  threadTreeParentOf,
   type SessionRowState,
 } from "../src/client/tree.ts";
 import { threadTreeOrderSource, workspaceTreeMembers } from "../src/client/thread-tree-order.ts";
@@ -323,25 +324,69 @@ it("retains arbitrary depth with explicit expansion", () => {
   assert.equal(visible.at(-1)?.tree?.depth, 11);
 });
 
-it("keeps remote sessions flat and outside the local delegation tree", () => {
-  const remote = {
-    ...row("remote", "a"),
+it("builds same-peer trees, keeps cross-host relations flat, and excludes desktop remote rows without tree lineage", () => {
+  const peerRow = (
+    key: string,
+    hostId: string,
+    parent: string | null | undefined,
+    updatedAt = 1,
+  ): SessionSummary => ({
+    ...row(key, null, updatedAt),
     projectionValues: {
-      remoteHost: { hostId: "other", displayName: "Other", state: "connected" },
-      threadTreeParent: "a",
+      remoteHost: { hostId, displayName: hostId, state: "connected" },
+      threadReference: { hostId, threadId: key },
+      ...(parent === undefined ? {} : { threadTreeParent: parent }),
     },
-  };
-  const list = catalog(row("a"), remote);
+  });
+
+  // Same-peer parent/child forms a tree and enters archive candidates.
+  const peerParent = peerRow("peer-a", "remote-peer:p1", null, 1);
+  const peerChild = peerRow("peer-b", "remote-peer:p1", "peer-a", 5);
+  const peerGrandchild = peerRow("peer-c", "remote-peer:p1", "peer-b", 9);
+  const samePeer = catalog(peerParent, peerChild, peerGrandchild);
+  assert.equal(threadTreeParentOf(peerChild, samePeer), "peer-a");
+  assert.equal(isLocalThreadTreeMember(peerParent), true);
+  assert.equal(isLocalThreadTreeMember(peerChild), true);
+  const peerRoots = deriveFlat(samePeer, samePeer.ids, state, new Map());
   assert.deepEqual(
-    deriveFlat(list, list.ids, state, new Map()).map((node) => node.id),
-    ["a", "remote"],
+    peerRoots.map((node) => node.id),
+    ["peer-a"],
   );
-  assert.equal(isLocalThreadTreeMember(remote), false);
-  const crossHost = catalog(remote, row("local", "remote"));
+  assert.deepEqual(peerRoots[0]?.tree?.descendantIds, ["peer-b", "peer-c"]);
+  assert.deepEqual(
+    archiveCandidates(samePeer, id("peer-a"), new Set())
+      .map((item) => item.id)
+      .sort(),
+    ["peer-b", "peer-c"],
+  );
+
+  // Missing parent returns null.
+  const orphanPeerChild = peerRow("peer-orphan", "remote-peer:p1", "missing-parent");
+  assert.equal(threadTreeParentOf(orphanPeerChild, catalog(orphanPeerChild)), null);
+
+  // Cross-host parents (peer -> local, local -> peer, peer2 -> peer1) all resolve to null.
+  const peerPointingLocal = peerRow("peer-to-local", "remote-peer:p1", "a");
+  const localPointingPeer = row("local-to-peer", "peer-a");
+  const otherPeerPointingPeer1 = peerRow("peer2-to-peer1", "remote-peer:p2", "peer-a");
+  const crossHost = catalog(
+    row("a"),
+    peerParent,
+    peerPointingLocal,
+    localPointingPeer,
+    otherPeerPointingPeer1,
+  );
+  assert.equal(threadTreeParentOf(peerPointingLocal, crossHost), null);
+  assert.equal(threadTreeParentOf(localPointingPeer, crossHost), null);
+  assert.equal(threadTreeParentOf(otherPeerPointingPeer1, crossHost), null);
   assert.deepEqual(
     deriveFlat(crossHost, crossHost.ids, state, new Map()).map((node) => node.id),
-    ["remote", "local"],
+    ["a", "peer-a", "peer-to-local", "local-to-peer", "peer2-to-peer1"],
   );
+
+  // Desktop remote rows omit threadTreeParent projection and stay out of the tree.
+  const desktopRemote = peerRow("desktop-remote", "desktop-host-1", undefined);
+  assert.equal(isLocalThreadTreeMember(desktopRemote), false);
+  assert.equal(threadTreeParentOf(desktopRemote, catalog(row("a"), desktopRemote)), null);
 });
 
 it("keeps search flat and supplies the display-parent title without using native lineage", () => {
@@ -446,6 +491,7 @@ it("captures all unarchived local descendants when the tree is collapsed or sear
       projectionValues: {
         ...remote.projectionValues,
         remoteHost: { hostId: "other", displayName: "Other", state: "ready" },
+        threadReference: { hostId: "other" },
       },
     },
   );

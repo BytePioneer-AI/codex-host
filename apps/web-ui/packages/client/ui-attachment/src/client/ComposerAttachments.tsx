@@ -101,6 +101,9 @@ export function ComposerAttachments({
                         type="button"
                         className={`${css.overlay} ${css.failed}`}
                         aria-label={t("file.retry", { name })}
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                        }}
                         onClick={() => {
                           onRetryFile(attachment.id);
                         }}
@@ -112,6 +115,9 @@ export function ComposerAttachments({
                       type="button"
                       className={css.remove}
                       aria-label={t("image.remove", { name })}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                      }}
                       onClick={() => {
                         onRemoveAttachment(attachment.id);
                       }}

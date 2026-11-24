@@ -23,7 +23,11 @@ import { FilesTitle } from "./FilesTitle.tsx";
 import { en, zh } from "./locales.ts";
 import { createFilesStore } from "./store.ts";
 import type {} from "@deepseek-ai/dsh-client-ui-input-trigger/client";
-import { fileMentionSource } from "./file-mentions.ts";
+import {
+  fileMentionAccess,
+  fileMentionSource,
+  type FileMentionSessionRow,
+} from "./file-mentions.ts";
 
 export type { SidebarFilesKey } from "./locales.ts";
 export type { DirLevel, FilesState, FilesTabState, LevelState } from "./store.ts";
@@ -67,13 +71,19 @@ export const inject = [
 export function apply(ctx: ClientContext): void {
   const t = ctx.locale.bind(NS);
   ctx.inject(["inputTriggers", "sessions", "remote.fileReferences"], (scope) => {
+    const accessFor = (id: Parameters<typeof fileMentionAccess>[0]) =>
+      fileMentionAccess(
+        id,
+        scope.sessions.list.getSnapshot().byId[id] as FileMentionSessionRow | undefined,
+      );
     scope.effect(
       () =>
         scope.inputTriggers.registerSource(
           fileMentionSource(
             scope.remote,
-            (id) => Boolean(scope.sessions.list.getSnapshot().byId[id]?.cwd),
+            (id) => accessFor(id) === "enabled",
             t,
+            (id) => accessFor(id) === "disabled",
           ),
         ),
       "ui-sidebar-files: workspace mentions",

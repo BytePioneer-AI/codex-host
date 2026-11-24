@@ -2,9 +2,7 @@
 
 ## Purpose
 让 Web 侧栏把相关 Thread 组织成可展开、收起的树：委派子 Thread 自动挂在发起它的父 Thread 下，从而在大量委派后仍能浏览会话列表。
-
 ## Requirements
-
 ### Requirement: 树关系只用于整理视图
 显示父 Thread 只决定 Web 侧栏的位置。它 MUST NOT 改变 Thread 的 Harness 归属、执行、路由、输入能力、标题或委派状态，也 MUST NOT 改变 Codex Desktop 的侧栏、置顶或归档行为。
 
@@ -17,7 +15,7 @@
 - **THEN** Codex Desktop 的侧栏 SHALL 仍按原有方式显示 B
 
 ### Requirement: 多层树显示
-Web 侧栏 SHALL 支持任意层级的 Thread 树，同一个 Thread 只出现一次。子 Thread 在列表中尚未加载的祖先 SHALL 被补齐，使其显示在正确位置。显示父 Thread 不可见（已删除、未提交的草稿、已归档且当前视图不显示归档）、属于其他 Host 或关系成环时，该 Thread SHALL 作为顶层显示，不被隐藏或重复显示。
+Web 侧栏 SHALL 支持任意层级的 Thread 树，同一个 Thread 只出现一次。远端 Peer 上的 Thread SHALL 按同一 Peer 内的委派关系建树，规则与本机相同。子 Thread 在列表中尚未加载的祖先 SHALL 被补齐，使其显示在正确位置。显示父 Thread 不可见（已删除、未提交的草稿、已归档且当前视图不显示归档）、属于其他 Host 或关系成环时，该 Thread SHALL 作为顶层显示，不被隐藏或重复显示。
 
 #### Scenario: 多层委派
 - **WHEN** A 委派 B，B 又委派 C
@@ -34,6 +32,14 @@ Web 侧栏 SHALL 支持任意层级的 Thread 树，同一个 Thread 只出现�
 #### Scenario: 深层缩进
 - **WHEN** 树的层级超过三层
 - **THEN** 第三层之后的 Thread SHALL 使用与第三层相同的缩进，在手机宽度下不出现横向滚动，层级关系仍可分辨
+
+#### Scenario: Peer 上的委派
+- **WHEN** 远端 Peer 上的 Thread A 委派了同一 Peer 上的 Thread B
+- **THEN** Web 侧栏 SHALL 把 B 显示在 A 下面，归档 A 时同时归档 B
+
+#### Scenario: 跨主机关系
+- **WHEN** 某个 Thread 记录的父 Thread 位于另一台主机
+- **THEN** 该 Thread SHALL 作为顶层显示
 
 ### Requirement: 子 Thread 跟随顶层 Thread 的分组
 整棵树 SHALL 显示在其顶层 Thread 所在的工作区分组（或最近分组）中。子 Thread 的工作目录与顶层 Thread 不同时，MUST NOT 在自己的工作区分组中重复出现。
@@ -141,3 +147,4 @@ Web 侧栏 SHALL 支持任意层级的 Thread 树，同一个 Thread 只出现�
 #### Scenario: 归档原父 Thread
 - **WHEN** 用户归档 A，而 A 的子 Thread B 已被置顶
 - **THEN** 归档 SHALL 不级联到 B，B 仍显示在置顶区
+

@@ -46,7 +46,7 @@ import { ChThreadTree } from "./ch-thread-tree.ts";
 import { type WebImages, WEB_IMAGE_INPUT, WEB_IMAGE_LIMITS } from "./web-images.ts";
 import { ChAttachments } from "./ch-attachments.ts";
 import { ChFileInputs, type FileUploadTiming } from "./ch-file-inputs.ts";
-import { WebFileReferences } from "./file-references.ts";
+import { WebFileReferences, type RemoteFileReferencesSearch } from "./file-references.ts";
 import { type WebFiles, WEB_FILE_INPUT } from "./web-files.ts";
 import { ChRealtime } from "./ch-realtime.ts";
 import { ChInteractions } from "./ch-interactions.ts";
@@ -1047,6 +1047,10 @@ export class ChSessions {
   fileWorkspaceRoot(sessionId: string): string | undefined {
     const id = this.id(sessionId);
     return this.drafts.get(id)?.cwd ?? this.localWorkspaceRoot(id);
+  }
+
+  setRemoteFileSearch(search: RemoteFileReferencesSearch | undefined): void {
+    this.fileReferences.setRemoteSearch(search);
   }
 
   uploadFile(

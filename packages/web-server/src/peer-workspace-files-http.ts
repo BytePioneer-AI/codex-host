@@ -1,9 +1,10 @@
-/** Peer workspace-file HTTP endpoints (`/api/peer/v1/workspace-files/rpc|download`), called after auth and same-origin gates. */
+/** Peer workspace-file HTTP endpoints (`/api/peer/v1/workspace-files/rpc|download|search`), called after auth and same-origin gates. */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, posix, win32 } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
+import { REMOTE_PEER_HOST_ID_PREFIX } from "@codexhost/shared-contracts";
 import {
   OfficeToPdfError,
   type OfficeExtension,
@@ -18,12 +19,15 @@ import {
   readConfinedWorkspaceText,
   readHandleExactRange,
   statConfinedWorkspaceFile,
+  validatePeerWorkspacePath,
   type PeerWorkspaceFsOps,
 } from "./peer-confined-fs.ts";
+import { WorkspaceFileSearchCache } from "./workspace-file-search.ts";
 
 export { validatePeerWorkspacePath, type PeerWorkspaceFsOps } from "./peer-confined-fs.ts";
 
 export const PEER_WORKSPACE_FILES_HEADER = "x-codexhost-peer-workspace-files";
+export const MAX_PEER_SEARCH_QUERY_LENGTH = 512;
 
 export const PEER_WORKSPACE_FILE_METHODS = new Set<string>([
   "workspaceFiles/read",
@@ -33,7 +37,7 @@ export const PEER_WORKSPACE_FILE_METHODS = new Set<string>([
   "officeToPdf/render",
 ]);
 
-export type PeerWorkspaceFilesRoute = "rpc" | "download";
+export type PeerWorkspaceFilesRoute = "rpc" | "download" | "search";
 
 export interface PeerWorkspaceFilesDsh {
   convertOffice(request: OfficeToPdfRequest, signal: AbortSignal): Promise<OfficeToPdfResult>;
@@ -46,8 +50,10 @@ export interface PeerWorkspaceFilesDeps {
   ): Promise<string | undefined> | string | undefined;
   dsh?: PeerWorkspaceFilesDsh;
   fsOps?: PeerWorkspaceFsOps;
+  searchCache?: WorkspaceFileSearchCache;
 }
 
+const defaultPeerSearchCache = new WorkspaceFileSearchCache();
 const MAX_RPC_BODY_BYTES = 1024 * 1024;
 const MAX_OFFICE_INPUT_BYTES = 50 * 1024 * 1024;
 const OFFICE_EXTENSIONS = new Set<string>(["doc", "docx", "xls", "xlsx", "ppt", "pptx"]);
@@ -623,6 +629,93 @@ async function handleDownload(
   }
 }
 
+function isNestedRemoteThreadId(threadId: string): boolean {
+  return (
+    threadId.startsWith("web-remote:") ||
+    threadId.startsWith("remote-control:") ||
+    threadId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)
+  );
+}
+
+async function handleSearch(
+  request: IncomingMessage,
+  response: ServerResponse,
+  deps: PeerWorkspaceFilesDeps,
+  signal: AbortSignal,
+): Promise<void> {
+  if (request.method !== "GET") {
+    sendPlain(response, 405, "method not allowed");
+    request.resume();
+    return;
+  }
+  const url = new URL(request.url ?? "/", "http://localhost");
+  const threadId = url.searchParams.get("threadId");
+  const query = url.searchParams.get("q") ?? "";
+
+  if (
+    !threadId ||
+    threadId.length > 1024 ||
+    /[\u0000-\u001f\u007f]/u.test(threadId) ||
+    isNestedRemoteThreadId(threadId)
+  ) {
+    sendTypertJson(response, { error: "Invalid threadId", code: "gateway/bad-request" }, 400);
+    return;
+  }
+  if (query.length > MAX_PEER_SEARCH_QUERY_LENGTH || /[\u0000-\u001f\u007f]/u.test(query)) {
+    sendTypertJson(response, { error: "Invalid search query", code: "gateway/bad-request" }, 400);
+    return;
+  }
+
+  let workspaceRoot: string | undefined;
+  try {
+    workspaceRoot = await deps.resolveWorkspaceRoot(threadId, signal);
+  } catch {
+    if (signal.aborted || response.destroyed) return;
+    workspaceRoot = undefined;
+  }
+  if (signal.aborted || response.destroyed) return;
+  if (!workspaceRoot) {
+    sendTypertJson(
+      response,
+      { error: "Remote thread workspace is unavailable", code: "gateway/lookup-not-found" },
+      404,
+    );
+    return;
+  }
+
+  const validated = await validatePeerWorkspacePath({
+    workspaceRoot,
+    path: ".",
+    kind: "directory",
+    ...(deps.fsOps ? { fsOps: deps.fsOps } : {}),
+    signal,
+  });
+  if (signal.aborted || response.destroyed) return;
+  if (!validated.ok) {
+    if (validated.code === "gateway/cancelled") return;
+    sendTypertJson(
+      response,
+      { error: "Remote thread workspace is unavailable", code: "gateway/lookup-not-found" },
+      404,
+    );
+    return;
+  }
+
+  const cache = deps.searchCache ?? defaultPeerSearchCache;
+  try {
+    const items = await cache.list(validated.realRoot, query, signal);
+    if (signal.aborted || response.destroyed) return;
+    sendTypertJson(response, { items }, 200);
+  } catch {
+    if (signal.aborted || response.destroyed || response.writableEnded) return;
+    sendTypertJson(
+      response,
+      { error: "Workspace file search failed", code: "gateway/internal" },
+      500,
+    );
+  }
+}
+
 export async function servePeerWorkspaceFiles(
   request: IncomingMessage,
   response: ServerResponse,
@@ -642,6 +735,8 @@ export async function servePeerWorkspaceFiles(
   try {
     if (route === "rpc") {
       await handleRpc(request, response, deps, lifetime.signal);
+    } else if (route === "search") {
+      await handleSearch(request, response, deps, lifetime.signal);
     } else {
       await handleDownload(request, response, deps, lifetime.signal);
     }

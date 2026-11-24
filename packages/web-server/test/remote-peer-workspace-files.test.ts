@@ -26,6 +26,7 @@ import {
   WorkspaceDownloadTickets,
 } from "../src/workspace-file-actions.ts";
 import { Workspaces } from "../src/workspaces.ts";
+import { WorkspaceFileSearchCache } from "../src/workspace-file-search.ts";
 import { FakeChHost } from "./support/ch-host.ts";
 
 function makePeer(
@@ -950,5 +951,214 @@ test("session/openWorkspacePath enforces a registered local session and rejects 
     remoteSessions.close();
     sessions.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Hub dispatches fileReferences/list end-to-end for remote Peer sessions, bound drafts, legacy 404 degradation, and rejections without falling back to Hub local", async () => {
+  const outer = await mkdtemp(join(tmpdir(), "codexhost-hub-file-mentions-"));
+  const hubWorkspace = join(outer, "hub-local");
+  const peerWorkspace = join(outer, "peer-remote");
+  const peerSearchCache = new WorkspaceFileSearchCache();
+  await mkdir(join(hubWorkspace, "src"), { recursive: true });
+  await mkdir(join(peerWorkspace, "src"), { recursive: true });
+  await mkdir(join(peerWorkspace, ".git"), { recursive: true });
+  await writeFile(join(hubWorkspace, "src", "hub-only.ts"), "hub\n");
+  await writeFile(join(peerWorkspace, "src", "remote-only.ts"), "peer\n");
+  await writeFile(join(peerWorkspace, "README.md"), "# Peer\n");
+  await writeFile(join(peerWorkspace, ".git", "HEAD"), "ref: refs/heads/main\n");
+
+  let peerAuthSeen = "";
+  const peerServer = await startHttpServer((req, res) => {
+    peerAuthSeen = req.headers.authorization ?? "";
+    const pathname = (req.url ?? "/").split("?")[0] ?? "/";
+    if (pathname === "/api/peer/v1/workspace-files/search") {
+      void servePeerWorkspaceFiles(req, res, "search", {
+        resolveWorkspaceRoot: (id) => (id === "remote-t1" ? peerWorkspace : undefined),
+        searchCache: peerSearchCache,
+      });
+      return;
+    }
+    res.writeHead(404).end();
+  });
+
+  let legacy404Calls = 0;
+  const legacyNoSearchPeer = await startHttpServer((_req, res) => {
+    legacy404Calls += 1;
+    res
+      .writeHead(404, { "content-type": "application/json" })
+      .end(JSON.stringify({ error: "Unknown peer endpoint" }));
+  });
+
+  const remoteId = remoteSessionId("remote-peer:peer-1", "remote-t1");
+  const boundDraftId = "web-remote:draft-bound-search";
+  const unsubmittedDraftId = "web-remote:draft-unsubmitted-search";
+  const legacyNoSearchId = remoteSessionId("remote-peer:legacy-no-search", "t1");
+  let legacyEpoch = "epoch-1";
+
+  const peers = new Map<string, PeerWorkspaceFileEndpoint>([
+    ["remote-peer:peer-1", makePeer(peerServer.url)],
+    ["remote-peer:offline", makePeer("http://127.0.0.1:9", { state: "offline" })],
+    [
+      "remote-peer:no-cap",
+      makePeer("http://127.0.0.1:9", {
+        manifest: {
+          version: "0.25.0",
+          platform: "linux",
+          hostname: "old",
+          epoch: "e1",
+          projects: [],
+          capabilities: { attachments: 1 },
+        },
+      }),
+    ],
+  ]);
+
+  const proxy = new RemotePeerWorkspaceFiles({
+    resolveDraftCanonicalId: (sessionId) => {
+      if (sessionId === boundDraftId) {
+        return { isDraft: true, canonicalId: remoteId, hostId: "remote-peer:peer-1" };
+      }
+      if (sessionId === unsubmittedDraftId) {
+        return { isDraft: true, hostId: "remote-peer:peer-1" };
+      }
+      return { isDraft: false };
+    },
+    peerClient: (hostId) => {
+      if (hostId === "remote-peer:legacy-no-search") {
+        return makePeer(legacyNoSearchPeer.url, {
+          manifest: {
+            version: "0.26.0",
+            platform: "linux",
+            hostname: "legacy",
+            epoch: legacyEpoch,
+            projects: [],
+            capabilities: { attachments: 1, workspaceFiles: 1, officePreview: 1 },
+          },
+        });
+      }
+      return peers.get(hostId);
+    },
+  });
+
+  const host = new FakeChHost();
+  host.add("local-thread", hubWorkspace);
+  const events = new EventHub(outer);
+  const workspaces = new Workspaces(new DataDir(outer), hubWorkspace);
+  const sessions = new ChSessions(host, workspaces, events);
+  const remoteSessions = new RemoteSessions(events, async () => [], workspaces);
+
+  try {
+    const rpc = new RpcRegistry();
+    const streams = new StreamRegistry();
+    sessions.register(rpc, streams);
+    remoteSessions.install(rpc, streams);
+    sessions.setRemoteFileSearch((sessionId, query, signal) =>
+      proxy.searchFiles(sessionId, query, signal),
+    );
+
+    // Populate local session catalog so local-thread resolves hubWorkspace
+    const listed = await rpc.dispatch("session/list", { args: {} });
+    assert.equal(listed.ok, true);
+
+    // 1. Local session keeps searching Hub's local workspace unchanged
+    const localReply = await rpc.dispatch("fileReferences/list", {
+      args: { agentId: "local-thread", query: "hub-only" },
+    });
+    assert.deepEqual(localReply, {
+      ok: true,
+      value: [{ path: "src/hub-only.ts", kind: "file" }],
+    });
+
+    // 2. Remote Peer session routes through RemoteSessions.install -> WebFileReferences -> Peer /search
+    const remoteReply = await rpc.dispatch("fileReferences/list", {
+      args: { agentId: remoteId, query: "remote" },
+    });
+    assert.equal(peerAuthSeen, "Bearer secret-peer-token");
+    assert.deepEqual(remoteReply, {
+      ok: true,
+      value: [{ path: "src/remote-only.ts", kind: "file" }],
+    });
+
+    // Remote Peer must never fall back to Hub's local files
+    const noHubLeak = await rpc.dispatch("fileReferences/list", {
+      args: { agentId: remoteId, query: "hub-only" },
+    });
+    assert.deepEqual(noHubLeak, { ok: true, value: [] });
+
+    // 3. Bound remote draft resolves canonicalId and searches the remote Peer workspace
+    const boundDraftReply = await rpc.dispatch("fileReferences/list", {
+      args: { agentId: boundDraftId, query: "README" },
+    });
+    assert.deepEqual(boundDraftReply, {
+      ok: true,
+      value: [{ path: "README.md", kind: "file" }],
+    });
+
+    // 4. Legacy Peer with workspaceFiles=1 but no /search route (HTTP 404 without peer header) degrades cleanly to []
+    const legacyFirst = await rpc.dispatch("fileReferences/list", {
+      args: { agentId: legacyNoSearchId, query: "README" },
+    });
+    assert.deepEqual(legacyFirst, { ok: true, value: [] });
+    assert.equal(legacy404Calls, 1);
+
+    // Cached for the same connection epoch: 2nd search does not hit network again
+    const legacySecond = await rpc.dispatch("fileReferences/list", {
+      args: { agentId: legacyNoSearchId, query: "app" },
+    });
+    assert.deepEqual(legacySecond, { ok: true, value: [] });
+    assert.equal(legacy404Calls, 1);
+
+    // After Peer reconnects with a new epoch, Hub retries /search
+    legacyEpoch = "epoch-2";
+    const legacyAfterReconnect = await rpc.dispatch("fileReferences/list", {
+      args: { agentId: legacyNoSearchId, query: "app" },
+    });
+    assert.deepEqual(legacyAfterReconnect, { ok: true, value: [] });
+    assert.equal(legacy404Calls, 2);
+
+    // 5. Rejections (unsubmitted draft, offline peer, missing capability, SSH, remote-control) never fall back to Hub
+    const rejectionCases: Array<[string, string, string?]> = [
+      [unsubmittedDraftId, "remote/workspace-files-unsupported", "unsubmitted-draft"],
+      [remoteSessionId("remote-peer:offline", "t1"), "remote/offline"],
+      [
+        remoteSessionId("remote-peer:no-cap", "t1"),
+        "remote/workspace-files-unsupported",
+        "upgrade-required",
+      ],
+      [
+        remoteSessionId("remote-ssh:box-1", "t1"),
+        "remote/workspace-files-unsupported",
+        "host-unsupported",
+      ],
+      ["remote-control:box-1", "remote/workspace-files-unsupported", "host-unsupported"],
+      [
+        remoteSessionId("remote-control:box-1", "t1"),
+        "remote/workspace-files-unsupported",
+        "host-unsupported",
+      ],
+    ];
+    for (const [agentId, expectedCode, expectedReason] of rejectionCases) {
+      const reply = await rpc.dispatch("fileReferences/list", {
+        args: { agentId, query: "hub-only" },
+      });
+      assert.equal(reply.ok, false, `Expected rejection for ${agentId}`);
+      if (!reply.ok) {
+        assert.equal(reply.error.code, expectedCode, `Wrong code for ${agentId}`);
+        if (expectedReason !== undefined) {
+          assert.equal(
+            (reply.error.details as { reason?: string }).reason,
+            expectedReason,
+            `Wrong reason for ${agentId}`,
+          );
+        }
+      }
+    }
+  } finally {
+    peerSearchCache.close();
+    remoteSessions.close();
+    sessions.close();
+    await peerServer.close();
+    await legacyNoSearchPeer.close();
+    await rm(outer, { recursive: true, force: true });
   }
 });

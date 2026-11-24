@@ -2017,6 +2017,7 @@ export class RemoteSessions {
       }>(args);
       const id = request.sessionId ?? request.address?.sessionId ?? request.agentId ?? args.agentId;
       if (typeof id !== "string" || !id.startsWith(PREFIX)) return next();
+      if (method === "fileReferences/list") return next();
       if (method === "session/openWorkspacePath") {
         throw new RpcError(
           "session/open-unavailable",

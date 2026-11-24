@@ -15,7 +15,11 @@ import {
 } from "../src/client/failure-line.ts";
 import { en, zh, type SidebarDocumentPreviewKey } from "../src/client/locales.ts";
 import { markdownImageUrl } from "../src/client/markdown/path-images.ts";
-import { fileMentionSource } from "../../ui-sidebar-files/src/client/file-mentions.ts";
+import {
+  fileMentionAccess,
+  fileMentionSource,
+  type FileMentionSessionRow,
+} from "../../ui-sidebar-files/src/client/file-mentions.ts";
 
 function makeRemoteSessionId(hostId: string, threadId: string): SessionId {
   const encoded = Buffer.from(JSON.stringify([hostId, threadId])).toString("base64url");
@@ -233,20 +237,99 @@ describe("Remote workspace file preview failure messages, capability gating, men
     expect(remoteWorkspacePreviewBlockKey("local-1", null)).toBeUndefined();
   });
 
-  it("disables @ file mentions on remote sessions without calling fileReferences.list", async () => {
-    const listSpy = vi.fn(async () => ({ ok: true as const, value: [] }));
+  it("enables @ file mentions for committed online remote peers with workspaceFiles even when cwd is empty, and disables unsupported/draft/offline remotes", async () => {
+    const peerSession = makeRemoteSessionId("remote-peer:p1", "t1");
+    const rows: Record<string, FileMentionSessionRow> = {
+      [peerSession]: {
+        cwd: "",
+        blank: false,
+        projectionValues: {
+          remoteHost: { hostId: "remote-peer:p1", state: "connected", workspaceFiles: true },
+        },
+      },
+      "web-remote:draft-1": {
+        cwd: "",
+        blank: true,
+        projectionValues: {
+          remoteHost: { hostId: "remote-peer:p1", state: "connected", workspaceFiles: false },
+        },
+      },
+      [makeRemoteSessionId("remote-peer:offline", "t1")]: {
+        cwd: "",
+        blank: false,
+        projectionValues: {
+          remoteHost: {
+            hostId: "remote-peer:offline",
+            state: "disconnected",
+            workspaceFiles: false,
+          },
+        },
+      },
+      [makeRemoteSessionId("remote-peer:legacy", "t1")]: {
+        cwd: "",
+        blank: false,
+        projectionValues: {
+          remoteHost: { hostId: "remote-peer:legacy", state: "connected", workspaceFiles: false },
+        },
+      },
+      [makeRemoteSessionId("remote-ssh:box", "t1")]: {
+        cwd: "",
+        blank: false,
+        projectionValues: {
+          remoteHost: { hostId: "remote-ssh:box", state: "connected", workspaceFiles: false },
+        },
+      },
+      "remote-control:box-1": {
+        cwd: "",
+        blank: false,
+        projectionValues: {
+          remoteHost: { hostId: "remote-control:box-1", state: "connected", workspaceFiles: false },
+        },
+      },
+      "local-with-cwd": { cwd: "/repo", blank: false },
+      "local-no-cwd": { cwd: "", blank: false },
+    };
+
+    expect(fileMentionAccess(peerSession as never, rows[peerSession])).toBe("enabled");
+    expect(fileMentionAccess("local-with-cwd" as never, rows["local-with-cwd"])).toBe("enabled");
+    expect(fileMentionAccess("local-no-cwd" as never, rows["local-no-cwd"])).toBe("no-workspace");
+
+    const listSpy = vi.fn(async () => ({
+      ok: true as const,
+      value: [{ path: "src/app.ts", kind: "file" as const }],
+    }));
+    const accessFor = (id: string) => fileMentionAccess(id as never, rows[id]);
     const source = fileMentionSource(
       { fileReferences: { list: listSpy } },
-      () => true,
+      (id) => accessFor(id) === "enabled",
       ((k: string) => k) as never,
-      (id) => id.startsWith("web-remote:"),
+      (id) => accessFor(id) === "disabled",
     );
-    const remoteSession = makeRemoteSessionId("remote-peer:p1", "t1");
-    const candidates = await source.candidates(
-      { sessionId: remoteSession } as never,
-      { query: "README", quoted: false, signal: new AbortController().signal } as never,
+
+    // Enabled remote Peer session queries fileReferences.list even though cwd is ""
+    const enabledCandidates = await source.candidates(
+      { sessionId: peerSession } as never,
+      { query: "app", quoted: false, signal: new AbortController().signal } as never,
     );
-    expect(candidates).toEqual([]);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(enabledCandidates.map((c) => c.value)).toEqual(["@src/app.ts"]);
+
+    // Draft, offline, legacy, SSH, and remote-control remain disabled without calling fileReferences.list
+    listSpy.mockClear();
+    for (const disabledId of [
+      "web-remote:draft-1",
+      makeRemoteSessionId("remote-peer:offline", "t1"),
+      makeRemoteSessionId("remote-peer:legacy", "t1"),
+      makeRemoteSessionId("remote-ssh:box", "t1"),
+      "remote-control:box-1",
+    ]) {
+      expect(accessFor(disabledId)).toBe("disabled");
+      const candidates = await source.candidates(
+        { sessionId: disabledId } as never,
+        { query: "README", quoted: false, signal: new AbortController().signal } as never,
+      );
+      expect(candidates).toEqual([]);
+    }
     expect(listSpy).not.toHaveBeenCalled();
   });
 

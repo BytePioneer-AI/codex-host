@@ -6,12 +6,14 @@ import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { REMOTE_PEER_HOST_ID_PREFIX } from "@codexhost/shared-contracts";
 import type { PeerHostClient } from "./peer-host-client.ts";
 import {
+  MAX_PEER_SEARCH_QUERY_LENGTH,
   PEER_WORKSPACE_FILE_METHODS,
   PEER_WORKSPACE_FILES_HEADER,
 } from "./peer-workspace-files-http.ts";
 import { remoteSessionIdentity } from "./remote-sessions.ts";
-import type { StreamSink } from "./transport.ts";
+import { RpcError, type StreamSink } from "./transport.ts";
 import type { WorkspaceDownloadGrant, WorkspaceDownloadTickets } from "./workspace-file-actions.ts";
+import type { FileReferenceCandidate } from "./workspace-file-search.ts";
 
 export type PeerWorkspaceFileEndpoint = Pick<PeerHostClient, "record" | "state" | "manifest">;
 
@@ -26,10 +28,12 @@ export interface RemoteWorkspaceFileSessionResolver {
 
 export interface RemotePeerWorkspaceFilesOptions {
   readonly rpcTimeoutMs?: number;
+  readonly searchTimeoutMs?: number;
   readonly officeRenderTimeoutMs?: number;
   readonly downloadHandshakeTimeoutMs?: number;
   readonly streamIdleTimeoutMs?: number;
   readonly maxJsonResponseBytes?: number;
+  readonly maxSearchResponseBytes?: number;
   readonly maxConcurrentPerPeer?: number;
   readonly maxConcurrentTotal?: number;
 }
@@ -52,10 +56,12 @@ export type ResolvedRemoteWorkspaceTarget =
     };
 
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+const DEFAULT_SEARCH_TIMEOUT_MS = 10_000;
 const DEFAULT_OFFICE_RENDER_TIMEOUT_MS = 65_000;
 const DEFAULT_DOWNLOAD_HANDSHAKE_TIMEOUT_MS = 30_000;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_JSON_RESPONSE_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_SEARCH_RESPONSE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_CONCURRENT_PER_PEER = 8;
 const DEFAULT_MAX_CONCURRENT_TOTAL = 24;
 const REMOTE_SESSION_PREFIX = "web-remote:";
@@ -298,27 +304,53 @@ function attachBrowserDisconnectAbort(
   };
 }
 
+function peerConnectionKey(peer: PeerWorkspaceFileEndpoint): string {
+  return `${peer.record.origin}|${peer.manifest?.epoch ?? ""}|${peer.manifest?.version ?? ""}`;
+}
+
+function parseFileReferenceCandidates(value: unknown): FileReferenceCandidate[] | undefined {
+  if (!isPlainObject(value) || !Array.isArray(value.items)) return undefined;
+  const items: FileReferenceCandidate[] = [];
+  for (const entry of value.items) {
+    if (
+      !isPlainObject(entry) ||
+      typeof entry.path !== "string" ||
+      (entry.kind !== "file" && entry.kind !== "directory")
+    ) {
+      return undefined;
+    }
+    items.push({ path: entry.path, kind: entry.kind });
+  }
+  return items;
+}
+
 export class RemotePeerWorkspaceFiles {
   private readonly rpcTimeoutMs: number;
+  private readonly searchTimeoutMs: number;
   private readonly officeRenderTimeoutMs: number;
   private readonly downloadHandshakeTimeoutMs: number;
   private readonly streamIdleTimeoutMs: number;
   private readonly maxJsonResponseBytes: number;
+  private readonly maxSearchResponseBytes: number;
   private readonly maxConcurrentPerPeer: number;
   private readonly maxConcurrentTotal: number;
   private activeTotal = 0;
   private readonly activeByHost = new Map<string, number>();
+  private readonly searchUnsupportedByHost = new Map<string, string>();
 
   constructor(
     private readonly resolver: RemoteWorkspaceFileSessionResolver,
     options: RemotePeerWorkspaceFilesOptions = {},
   ) {
     this.rpcTimeoutMs = options.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
+    this.searchTimeoutMs = options.searchTimeoutMs ?? DEFAULT_SEARCH_TIMEOUT_MS;
     this.officeRenderTimeoutMs = options.officeRenderTimeoutMs ?? DEFAULT_OFFICE_RENDER_TIMEOUT_MS;
     this.downloadHandshakeTimeoutMs =
       options.downloadHandshakeTimeoutMs ?? DEFAULT_DOWNLOAD_HANDSHAKE_TIMEOUT_MS;
     this.streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
     this.maxJsonResponseBytes = options.maxJsonResponseBytes ?? DEFAULT_MAX_JSON_RESPONSE_BYTES;
+    this.maxSearchResponseBytes =
+      options.maxSearchResponseBytes ?? DEFAULT_MAX_SEARCH_RESPONSE_BYTES;
     this.maxConcurrentPerPeer = options.maxConcurrentPerPeer ?? DEFAULT_MAX_CONCURRENT_PER_PEER;
     this.maxConcurrentTotal = options.maxConcurrentTotal ?? DEFAULT_MAX_CONCURRENT_TOTAL;
   }
@@ -467,6 +499,135 @@ export class RemotePeerWorkspaceFiles {
       threadId: identity.threadId,
       canonicalId: targetId,
     };
+  }
+
+  /**
+   * Forward `@` file-mention discovery (`fileReferences/list`) to the remote Peer's confined search endpoint.
+   * Gracefully returns an empty list for peers whose current connection does not yet expose `/search`.
+   */
+  async searchFiles(
+    sessionId: string,
+    query: string,
+    signal?: AbortSignal,
+  ): Promise<FileReferenceCandidate[]> {
+    if (query.length > MAX_PEER_SEARCH_QUERY_LENGTH || /[\u0000-\u001f\u007f]/u.test(query)) {
+      throw new RpcError("gateway/bad-request", "Invalid file search query.");
+    }
+    const resolved = this.resolveTarget(sessionId);
+    if (resolved.kind === "local") {
+      throw new RpcError("gateway/lookup-not-found", "This session has no remote workspace.");
+    }
+    if (resolved.kind === "error") {
+      throw new RpcError(resolved.code, resolved.message, resolved.details);
+    }
+
+    const connKey = peerConnectionKey(resolved.peer);
+    if (this.searchUnsupportedByHost.get(resolved.hostId) === connKey) {
+      return [];
+    }
+
+    const releaseSlot = this.acquireSlot(resolved.hostId);
+    if (!releaseSlot) {
+      throw new RpcError(
+        "remote/busy",
+        "Too many concurrent remote workspace file requests. Try again shortly.",
+      );
+    }
+
+    const timeoutController = new AbortController();
+    const timer = setTimeout(
+      () => timeoutController.abort(new Error("Peer search timed out")),
+      this.searchTimeoutMs,
+    );
+    const combinedSignal = signal
+      ? AbortSignal.any([signal, timeoutController.signal])
+      : timeoutController.signal;
+    const params = new URLSearchParams({ threadId: resolved.threadId, q: query });
+
+    try {
+      const upstream = await fetch(
+        `${resolved.peer.record.origin}/api/peer/v1/workspace-files/search?${params.toString()}`,
+        {
+          method: "GET",
+          redirect: "error",
+          headers: { authorization: `Bearer ${resolved.peer.record.token}` },
+          signal: combinedSignal,
+        },
+      );
+
+      if (upstream.status === 401) {
+        await upstream.body?.cancel().catch(() => undefined);
+        throw new RpcError("remote/auth-error", "Remote peer rejected the access token.");
+      }
+
+      if (
+        (upstream.status === 404 && upstream.headers.get(PEER_WORKSPACE_FILES_HEADER) !== "1") ||
+        upstream.status === 501
+      ) {
+        await upstream.body?.cancel().catch(() => undefined);
+        this.searchUnsupportedByHost.set(resolved.hostId, connKey);
+        return [];
+      }
+
+      const maxBytes = Math.min(this.maxJsonResponseBytes, this.maxSearchResponseBytes);
+      const text = await readBoundedText(upstream, maxBytes, combinedSignal);
+      let json: unknown;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        json = undefined;
+      }
+
+      if (!upstream.ok) {
+        const message =
+          isPlainObject(json) && typeof json.error === "string"
+            ? json.error
+            : `Remote peer returned HTTP ${upstream.status}`;
+        const code =
+          isPlainObject(json) && typeof json.code === "string"
+            ? json.code
+            : upstream.status === 400
+              ? "gateway/bad-request"
+              : upstream.status === 403
+                ? "remote/auth-error"
+                : upstream.status === 404
+                  ? "gateway/lookup-not-found"
+                  : "remote/request-failed";
+        throw new RpcError(code, message, { httpStatus: upstream.status });
+      }
+
+      const items = parseFileReferenceCandidates(json);
+      if (!items) {
+        throw new RpcError(
+          "remote/request-failed",
+          "Remote peer returned an invalid file search response.",
+        );
+      }
+      return items;
+    } catch (error) {
+      if (signal?.aborted) {
+        throw new RpcError("gateway/cancelled", "The request was cancelled.");
+      }
+      if (error instanceof RpcError) throw error;
+      if (error instanceof ResponseTooLargeError) {
+        throw new RpcError(
+          "remote/response-too-large",
+          "Remote peer response exceeded the maximum allowed size.",
+        );
+      }
+      if (timeoutController.signal.aborted) {
+        throw new RpcError("remote/timeout", "Remote workspace file search timed out.");
+      }
+      throw new RpcError(
+        "remote/offline",
+        error instanceof Error
+          ? `Remote peer is unreachable: ${error.message}`
+          : "Remote peer is unreachable.",
+      );
+    } finally {
+      clearTimeout(timer);
+      releaseSlot();
+    }
   }
 
   /**

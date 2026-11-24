@@ -19,6 +19,7 @@ import { servePeerAttachments } from "./peer-attachments-http.ts";
 import { servePeerWorkspaceFiles } from "./peer-workspace-files-http.ts";
 import { RemotePeerAttachments } from "./remote-peer-attachments.ts";
 import { RemotePeerWorkspaceFiles } from "./remote-peer-workspace-files.ts";
+import { WorkspaceFileSearchCache } from "./workspace-file-search.ts";
 import { resolvePeerHarnessIcon } from "./peer-thread-source.ts";
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -464,6 +465,10 @@ peerManager.onChange = (hostId) => {
 };
 remoteSessions.install(rpc, streams);
 const remoteWorkspaceFiles = new RemotePeerWorkspaceFiles(remoteSessions);
+const peerWorkspaceSearchCache = new WorkspaceFileSearchCache();
+sessions.setRemoteFileSearch((sessionId, query, signal) =>
+  remoteWorkspaceFiles.searchFiles(sessionId, query, signal),
+);
 streams.setFallback((endpoint, args, sink) => {
   if (remoteWorkspaceFiles.handleStream(endpoint, args, sink)) return true;
   return dsh ? dsh.stream(endpoint, args, sink) : false;
@@ -686,17 +691,23 @@ const server = createWebServer((request, response) => {
         });
         return;
       }
-      if (peerRoute === "workspace-files/rpc" || peerRoute === "workspace-files/download") {
-        await servePeerWorkspaceFiles(
-          request,
-          response,
-          peerRoute === "workspace-files/rpc" ? "rpc" : "download",
-          {
-            resolveWorkspaceRoot: (threadId, signal) =>
-              sessions.ensureLocalWorkspaceRoot(threadId, signal),
-            ...(dsh ? { dsh } : {}),
-          },
-        );
+      if (
+        peerRoute === "workspace-files/rpc" ||
+        peerRoute === "workspace-files/download" ||
+        peerRoute === "workspace-files/search"
+      ) {
+        const route =
+          peerRoute === "workspace-files/rpc"
+            ? "rpc"
+            : peerRoute === "workspace-files/download"
+              ? "download"
+              : "search";
+        await servePeerWorkspaceFiles(request, response, route, {
+          resolveWorkspaceRoot: (threadId, signal) =>
+            sessions.ensureLocalWorkspaceRoot(threadId, signal),
+          ...(dsh ? { dsh } : {}),
+          searchCache: peerWorkspaceSearchCache,
+        });
         return;
       }
       try {
@@ -792,18 +803,30 @@ const server = createWebServer((request, response) => {
       if (dsh && (await dsh.handleApiRequest(request, body, response))) return;
       let listTiming: SessionListTiming | undefined;
       let listOk = false;
-      const reply = await rpc.handleHttp(
-        body,
-        requestAuth,
-        (callback) => {
-          response.once("finish", callback);
-        },
-        trust.relaySockets.has(request.socket),
-        (timing, ok) => {
-          listTiming = timing;
-          listOk = ok;
-        },
-      );
+      const rpcAbort = new AbortController();
+      const abortRpc = () => {
+        if (!response.writableEnded) rpcAbort.abort();
+      };
+      response.once("close", abortRpc);
+      let reply: string;
+      try {
+        reply = await rpc.handleHttp(
+          body,
+          requestAuth,
+          (callback) => {
+            response.once("finish", callback);
+          },
+          trust.relaySockets.has(request.socket),
+          (timing, ok) => {
+            listTiming = timing;
+            listOk = ok;
+          },
+          rpcAbort.signal,
+        );
+      } finally {
+        response.off("close", abortRpc);
+      }
+      if (rpcAbort.signal.aborted || response.destroyed || response.writableEnded) return;
       const contentType = "application/json; charset=utf-8";
       let encodedBytes: number | undefined;
       let responseReady = false;
@@ -1054,6 +1077,7 @@ function shutdown(exitCode = 0): Promise<void> {
       await extensions.cleanup(true);
       pushNotifications?.close();
       await sessions.close();
+      peerWorkspaceSearchCache.close();
       remoteSessions.close();
       await preferences?.close();
       displaySettings.close();

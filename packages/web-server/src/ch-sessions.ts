@@ -540,8 +540,11 @@ export class ChSessions {
         if (!next.has(id)) this.events.emit("api-session/removed", id);
   }
   private async owner(id: string) {
+    const resolved = this.id(id);
+    if (resolved.startsWith("draft-"))
+      throw new RpcError("session/not-found", "Draft Session is no longer available.");
     const inspection = threadInspectionSchema.parse(
-      await this.host.request("codexhost/thread/inspect", { threadId: this.id(id) }),
+      await this.host.request("codexhost/thread/inspect", { threadId: resolved }),
     );
     return {
       ...inspection,
@@ -1303,6 +1306,8 @@ export class ChSessions {
             archivedSessionIds: this.workspaces.archivedSessionIds(),
           };
         const id = this.id(sessionId);
+        if (id.startsWith("draft-"))
+          throw new RpcError("session/not-found", "Draft Session is no longer available.");
         await Promise.all([this.tree.refresh(), this.refreshPins()]);
         const { thread, harnessId } = await this.readThread(id);
         this.rows.set(thread.id, thread);

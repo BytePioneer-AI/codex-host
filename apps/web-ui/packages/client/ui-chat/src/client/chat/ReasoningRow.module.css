@@ -28,6 +28,17 @@
   border-radius: var(--dsw-radius-sm, 8px);
 }
 
+:global(
+    body[data-codexhost-wallpaper]
+      [data-chat-flow-key]:not([data-chat-flow-key] *, [data-chat-near-viewport])
+  )
+  .root[data-expanded]
+  [data-open]
+  [data-disclosure-row] {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 .leading {
   flex-shrink: 0;
 }

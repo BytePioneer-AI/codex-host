@@ -19,6 +19,7 @@ import {
   turnProcessAlwaysOpen,
 } from "../contract/turn-process.ts";
 import { storedTurnProcessEntry } from "../stores.ts";
+import { useNearViewport } from "./near-viewport.ts";
 import { useSearchableHidden } from "./searchable-hidden.ts";
 import { useTurnAnnotations } from "./turn-annotations.ts";
 import css from "./ChatView.module.css";
@@ -163,6 +164,7 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
     if (processMember) setOpen(true);
   }, [processMember, setOpen]);
   const wrapperRef = useSearchableHidden(processHidden, revealProcess);
+  useNearViewport(wrapperRef, node !== undefined);
   const [disclosureReset] = useState(() => createSnapshotStore(0));
   // A reply resolves its annotation citations against the message it answers.
   const responseAnnotations = useTurnAnnotations(nodeStore, turn);

@@ -1,3 +1,5 @@
+import { GATEWAY_STORAGE_SCRIPT } from "./gateway-storage-script.js";
+
 // Use the installed native storage API regardless of the reported release/contract;
 // never rewrite the source transcript or send a model prompt to derive history.
 export const GATEWAY_HISTORY_SCRIPT = String.raw`
@@ -9,8 +11,7 @@ from pathlib import Path
 from urllib.parse import quote
 from tui_gateway.server import _history_to_messages
 from agent.context_compressor import user_originated_turn_view
-from hermes_state import SessionDB
-from hermes_state_ids import new_session_id
+${GATEWAY_STORAGE_SCRIPT}
 p = json.load(sys.stdin)
 sid = p['sessionId']
 public_sid = sid
@@ -42,8 +43,8 @@ def capture(db):
     active = exported['messages']
     lineage = db.get_compression_lineage(sid)
     if not lineage: raise RuntimeError('Hermes session lineage is missing')
-    _, display = db.get_resume_conversations(sid)
-    # get_resume_conversations preserves tool relations but sanitizes display text.
+    display = resume_display(db, sid)
+    # Hermes preserves tool relations in resume history but sanitizes display text.
     # Read the same native rows verbatim and native display identities through a
     # separate mode=ro connection; MIN(id) preserves identity across tail cloning.
     uri = 'file:' + quote(str(Path(db.db_path).resolve()), safe='/') + '?mode=ro'

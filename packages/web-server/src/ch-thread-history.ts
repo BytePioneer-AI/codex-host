@@ -30,6 +30,10 @@ export class ChThreadHistory extends ChThreadView {
   private loadingOlder: Promise<void> | undefined;
   private readonly seenCursors = new Set<string>();
   private readonly pagination: { cursor: string | null };
+  private readonly hostThreadId: string;
+  private readonly overrideThreadIdentity: boolean;
+  private readonly viewId: string;
+  private readonly viewCwd: string;
 
   constructor(
     private readonly host: ChHostClient,
@@ -39,6 +43,7 @@ export class ChThreadHistory extends ChThreadView {
     origin = RENDER_ORIGIN,
     projectInput?: (content: unknown[]) => unknown[],
     projectImage?: (path: string, projectionKey: string) => unknown,
+    options?: { hostThreadId?: string },
   ) {
     const pagination = { cursor: null as string | null };
     super(
@@ -52,12 +57,24 @@ export class ChThreadHistory extends ChThreadView {
       projectImage,
     );
     this.pagination = pagination;
+    this.hostThreadId = options?.hostThreadId ?? thread.id;
+    this.overrideThreadIdentity = options?.hostThreadId !== undefined;
+    this.viewId = thread.id;
+    this.viewCwd = thread.cwd;
     this.commands = new ChCommandPresentation(this.log);
+  }
+
+  private viewThread(thread: ChThread): ChThread {
+    if (!this.overrideThreadIdentity) return thread;
+    if (thread.id !== this.hostThreadId) {
+      throw new RpcError("remote/read-failed", "Remote identity mismatch");
+    }
+    return { ...thread, id: this.viewId, cwd: this.viewCwd };
   }
 
   private async page(cursor: string | null): Promise<TurnsPage> {
     const result = await this.host.request<TurnsPage>("thread/turns/list", {
-      threadId: this.thread.id,
+      threadId: this.hostThreadId,
       cursor,
       limit: PAGE_TURNS,
       sortDirection: "desc",
@@ -92,14 +109,14 @@ export class ChThreadHistory extends ChThreadView {
       .flatMap((turn) =>
         turn.fingerprint ? [{ id: turn.id, fingerprint: turn.fingerprint }] : [],
       );
-    let snapshot = await realtime.snapshot(this.thread.id, { knownTurns });
+    let snapshot = await realtime.snapshot(this.hostThreadId, { knownTurns });
     const unresolved = (value: ClientThreadSnapshot) =>
       value.turnsPage.data.some(
         (turn) => turn.unchanged && held.get(turn.id)?.fingerprint !== turn.fingerprint,
       );
     if (unresolved(snapshot)) {
       // `knownTurns: []` still requests fingerprints but can never match a placeholder.
-      snapshot = await realtime.snapshot(this.thread.id, { knownTurns: [] });
+      snapshot = await realtime.snapshot(this.hostThreadId, { knownTurns: [] });
       if (snapshot.turnsPage.data.some((turn) => turn.unchanged))
         throw new RpcError("host/history-invalid", "CH replaced a Turn it was not asked to.");
     }
@@ -118,12 +135,13 @@ export class ChThreadHistory extends ChThreadView {
   refresh(force = false): Promise<void> {
     this.refreshing ??= (async () => {
       const snapshot = this.host.realtime ? await this.snapshot(this.host.realtime) : undefined;
-      const { thread } = snapshot
+      const { thread: rawThread } = snapshot
         ? { thread: snapshot.thread }
         : await this.host.request<{ thread: ChThread }>("thread/read", {
-            threadId: this.thread.id,
+            threadId: this.hostThreadId,
             includeTurns: false,
           });
+      const thread = this.viewThread(rawThread);
       this.ensureCurrent();
       this.ownerSnapshot = snapshot;
       if (snapshot) {

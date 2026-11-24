@@ -272,7 +272,14 @@ it("pairs authenticated mobile callers with independent peers and recovers event
       if (url.pathname.endsWith("/events")) {
         stream = res;
         res.writeHead(200);
-        res.write(JSON.stringify({ type: "hello", cursor: { epoch, sequence: 1 } }) + "\n");
+        res.write(
+          JSON.stringify({
+            type: "hello",
+            version: 1,
+            cursor: { epoch, sequence: 1 },
+            reset: true,
+          }) + "\n",
+        );
         return;
       }
       const chunks = [];
@@ -301,9 +308,18 @@ it("pairs authenticated mobile callers with independent peers and recovers event
                   configuration: {},
                   interactions: [],
                 }
-              : p.method === "thread/list" || p.method === "thread/turns/list"
-                ? { data: [], nextCursor: null }
-                : { resolved: true },
+              : p.method === "codexhost/thread/catalog/read"
+                ? {
+                    threads: [],
+                    ownership: [],
+                    officialCursor: { live: null },
+                    archivedThreadIds: [],
+                  }
+                : p.method === "codexhost/thread/tree/read"
+                  ? { parents: {} }
+                  : p.method === "thread/list" || p.method === "thread/turns/list"
+                    ? { data: [], nextCursor: null }
+                    : { resolved: true },
           };
         }
         res.end(JSON.stringify(reply));
@@ -419,12 +435,13 @@ it("pairs authenticated mobile callers with independent peers and recovers event
   assert.equal(manager.hosts().find((h) => h.hostId === hostId)?.projects?.[0]?.name, "Renamed");
   await invoke("deleteWorkspace", { peerId, workspaceId });
   assert.ok(statSync(path).isDirectory());
-  assert.deepEqual(await call({ kind: "list", hostId, cursor: null, archived: false }), {
-    data: [],
-    nextCursor: null,
-  });
+  assert.equal(manager.client("remote-control:desktop"), undefined);
+  assert.equal(manager.source("remote-control:desktop"), undefined);
+  const source = manager.source(hostId);
+  assert.ok(source);
+  assert.deepEqual((await source.listThreads()).rows, []);
   const base = { hostId, threadId: "t", epoch: a.epoch };
-  await call({ kind: "read", hostId, threadId: "t" });
+  await source.history("t", "web-remote:t").refresh();
   await call({ kind: "prompt", ...base, text: "hello" });
   await call({ kind: "respond", ...base, requestId: 1, result: { decision: "accept" } });
   assert.ok(
@@ -521,7 +538,10 @@ it("aborts and reconnects a half-open silent event stream after streamIdleTimeou
         });
       }
       res.writeHead(200);
-      res.write(JSON.stringify({ type: "hello", cursor: { epoch, sequence: 1 } }) + "\n");
+      res.write(
+        JSON.stringify({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true }) +
+          "\n",
+      );
       return;
     }
     res.writeHead(404).end();
@@ -587,7 +607,10 @@ it("starts new Codex & external threads without bogus thread/resume and retains 
     }
     if (url.pathname === "/api/ch/v1/events") {
       res.writeHead(200);
-      res.write(JSON.stringify({ type: "hello", cursor: { epoch, sequence: 1 } }) + "\n");
+      res.write(
+        JSON.stringify({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true }) +
+          "\n",
+      );
       return;
     }
     const chunks: Buffer[] = [];
@@ -642,6 +665,35 @@ it("starts new Codex & external threads without bogus thread/resume and retains 
       res.end(
         JSON.stringify({
           result: isExt ? { owner: "external", harnessId: "claude-code" } : { owner: "codex" },
+        }),
+      );
+      return;
+    }
+    if (method === "codexhost/thread/tree/read") {
+      res.end(JSON.stringify({ result: { parents: {} } }));
+      return;
+    }
+    if (method === "codexhost/thread/catalog/read") {
+      res.end(
+        JSON.stringify({
+          result: {
+            threads: materialized
+              ? [
+                  {
+                    id: "codex-thread-1",
+                    cwd: root,
+                    modelProvider: "openai",
+                    createdAt: 1,
+                    updatedAt: 2,
+                    status: { type: "idle" },
+                    turns: [],
+                  },
+                ]
+              : [],
+            ownership: materialized ? [{ threadId: "codex-thread-1", owner: "codex" }] : [],
+            officialCursor: { live: null },
+            archivedThreadIds: [],
+          },
         }),
       );
       return;
@@ -721,16 +773,6 @@ it("starts new Codex & external threads without bogus thread/resume and retains 
   assert.equal("config" in startCall.params, false);
   assert.equal("serviceTier" in startCall.params, false);
 
-  // Pre-materialized thread must appear in loaded so RemoteSessions.list() keeps it alive.
-  const preList = (await call({
-    kind: "list",
-    hostId,
-    cursor: null,
-    archived: false,
-    includeLoaded: true,
-  })) as { loaded?: string[] };
-  assert.ok(preList.loaded?.includes("codex-thread-1"));
-
   await call({
     kind: "prompt",
     hostId,
@@ -744,17 +786,13 @@ it("starts new Codex & external threads without bogus thread/resume and retains 
     false,
   );
 
-  // Once materialized in thread/list, createdThreads entry is pruned.
+  // Once materialized in catalog/read, source.listThreads() returns the thread with codex ownership.
   materialized = true;
-  const postList = (await call({
-    kind: "list",
-    hostId,
-    cursor: null,
-    archived: false,
-    includeLoaded: true,
-  })) as { data: { id: string }[]; loaded?: string[] };
-  assert.equal(postList.data[0]?.id, "codex-thread-1");
-  assert.equal(postList.loaded?.includes("codex-thread-1"), false);
+  const source = manager.source(hostId);
+  assert.ok(source);
+  const postList = await source.listThreads();
+  assert.equal(postList.rows[0]?.id, "codex-thread-1");
+  assert.equal(postList.harnessIds.get("codex-thread-1"), "codex");
 
   // 2. External Harness startSelected + prompt also succeeds cleanly.
   await call({
@@ -784,4 +822,47 @@ it("starts new Codex & external threads without bogus thread/resume and retains 
     }),
     /Adapter rejected turn/,
   );
+
+  // 4. Reconnect, disable, and remove close previous PeerThreadSource instances.
+  const firstSource = manager.source(hostId);
+  assert.ok(firstSource);
+  const peerId = (added.value as { peer: { peerId: string } }).peer.peerId;
+  await rpc.dispatch(
+    methods.reconnect,
+    { args: { peerId } },
+    { local: true, credential: "local", release() {} },
+  );
+  const secondSource = manager.source(hostId);
+  assert.ok(secondSource && secondSource !== firstSource);
+  await assert.rejects(firstSource.host.request("codexhost/thread/tree/read", {}), {
+    code: "remote/offline",
+  });
+
+  await rpc.dispatch(
+    methods.update,
+    { args: { peerId, enabled: false } },
+    { local: true, credential: "local", release() {} },
+  );
+  assert.equal(manager.source(hostId), undefined);
+  await assert.rejects(secondSource.host.request("codexhost/thread/tree/read", {}), {
+    code: "remote/offline",
+  });
+
+  await rpc.dispatch(
+    methods.update,
+    { args: { peerId, enabled: true } },
+    { local: true, credential: "local", release() {} },
+  );
+  const thirdSource = manager.source(hostId);
+  assert.ok(thirdSource);
+  await rpc.dispatch(
+    methods.remove,
+    { args: { peerId } },
+    { local: true, credential: "local", release() {} },
+  );
+  assert.equal(manager.source(hostId), undefined);
+  assert.equal(manager.client(hostId), undefined);
+  await assert.rejects(thirdSource.host.request("codexhost/thread/tree/read", {}), {
+    code: "remote/offline",
+  });
 });

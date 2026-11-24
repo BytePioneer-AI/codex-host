@@ -15,6 +15,7 @@ import { requestRemoteSession } from "@codexhost/desktop-control";
 import { PeerHostManager, createCompositeRemoteCall } from "./peer-host-manager.ts";
 import { PeerHostStore } from "./peer-host-store.ts";
 import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "./peer-manifest.ts";
+import { resolvePeerHarnessIcon } from "./peer-thread-source.ts";
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir } from "node:os";
@@ -448,6 +449,7 @@ const remoteSessions = new RemoteSessions(
   events,
   createCompositeRemoteCall(peerManager, requestRemoteSession),
   workspaces,
+  peerManager,
 );
 peerManager.onChange = (hostId) => {
   remoteSessions.hostsChanged(hostId);
@@ -793,6 +795,15 @@ const server = createWebServer((request, response) => {
         assets.plugin(url) ?? recoveryAssets.plugin(url),
         url.includes("rev=") ? IMMUTABLE_CACHE : undefined,
       );
+      return;
+    }
+    if (pathname.startsWith("/harness-icons/peer/")) {
+      const asset = await resolvePeerHarnessIcon(peerManager, pathname);
+      if (!asset) {
+        response.writeHead(404, { "cache-control": "no-store" }).end();
+        return;
+      }
+      await send(request, response, asset, HARNESS_ICON_CACHE);
       return;
     }
     if (pathname === "/harness-icons/presentation.json") {

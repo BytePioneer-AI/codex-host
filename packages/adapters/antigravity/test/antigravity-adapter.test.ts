@@ -2425,6 +2425,45 @@ describe("Antigravity idle wake Turns", () => {
     }
   });
 
+  it("publishes an idle wake that started between prompts even when committed after the later prompt responds", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      // An idle wake starts between t1's response and t2's submission, then commits only after t2 responds.
+      await moment();
+      const idleAtMs = Date.now();
+      await moment();
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      const inPromptAtMs = Date.now();
+      required(transport.handler).onEvent({ type: "agent.text", text: "in-prompt report" });
+      required(transport.handler).onResponse?.();
+      await moment();
+      userStep(db, 2, "next", "next");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(wakes(outputs)).toEqual([]);
+      // Both wakes reach SQLite after t2 has already responded and completed.
+      systemStep(db, 3, "idle-wake");
+      stampStep(db, 3, idleAtMs);
+      answerStep(db, 4, "idle report", "idle-wake");
+      systemStep(db, 5, "in-prompt");
+      stampStep(db, 5, inPromptAtMs);
+      answerStep(db, 6, "in-prompt report", "in-prompt");
+      transport.eventHandler?.({ type: "agent.text", text: "idle report" });
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
+        "wake-3",
+      ]);
+    } finally {
+      await session.close();
+      db.close();
+    }
+  });
+
   it("keeps polling after a notification whose wake has not reached SQLite", async () => {
     const { session, outputs, transport, db } = await setup();
     try {

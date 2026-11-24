@@ -401,8 +401,6 @@ export async function runHostRuntime(input: {
   const consoleOpener = consoleEntry
     ? createHostConsoleOpener({ entrypoint: consoleEntry, environment: input.environment })
     : undefined;
-  // The local console reads the statistics; read the native storage ahead of its first visit.
-  if (consoleOpener) usageStatistics.warm();
 
   if (!isRemoteUnixListenerInvocation(input.arguments)) {
     const webOpener = createHostWebOpener(input.environment);

@@ -4,11 +4,15 @@ import {
   DelegationControlError,
   type DelegationControlApi,
   type DelegationControlRegistration,
+  type DelegationQuotaContinuationApi,
   type DelegationStartInput,
   type DelegationWatchApi,
   type HarnessInspectInput,
   type HarnessListInput,
+  type HarnessQuotaInput,
   type ThreadAnswerInput,
+  type ThreadContinueCancelInput,
+  type ThreadContinueOnResetInput,
   type ThreadListInput,
   type ThreadReadInput,
   type ThreadWaitInput,
@@ -24,6 +28,8 @@ import type { DelegationWatchStore } from "./delegation-watch-store.js";
 import { clientOrigin, originClientName } from "./external-client-origin.js";
 import { interruptAndSend } from "./delegation-interrupt-send.js";
 import { validateThreadExportInput, type ThreadExportInput } from "./delegation-thread-export.js";
+import { QuotaContinuationService } from "./quota-continuation.js";
+import type { QuotaContinuationStore } from "./quota-continuation-store.js";
 import { mergeRefs, normalizeRefs, type ThreadRefsStore } from "./thread-refs.js";
 
 const REF_CURSOR_PREFIX = "ref:";
@@ -43,15 +49,18 @@ function only<T>(values: readonly T[], message: string): T {
   return value;
 }
 
-export class DelegationControlRegistry implements DelegationControlApi, DelegationWatchApi {
+export class DelegationControlRegistry
+  implements DelegationControlApi, DelegationWatchApi, DelegationQuotaContinuationApi
+{
   readonly #registrations = new Set<DelegationControlRegistration>();
   // Changes whenever the session set changes, so a merged list cursor cannot outlive it. The
   // instance id keeps a cursor from matching a rebuilt Registry at the same count.
   readonly #instanceId = randomUUID();
   #registrationGeneration = 0;
   #harnessCatalog: DelegationControlRegistration | undefined;
-  // Watches sit above the sessions so either end may belong to any registered session.
+  // Watches and quota continuations sit above sessions so either end may belong to any session.
   readonly #watchService: DelegationWatchService;
+  readonly #continuationService: QuotaContinuationService;
 
   readonly #remoteRead:
     ((input: ThreadReadInput) => ReturnType<DelegationControlApi["read"]>) | undefined;
@@ -62,16 +71,24 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       diagnose?: (error: unknown) => void;
       remoteRead?: (input: ThreadReadInput) => ReturnType<DelegationControlApi["read"]>;
       watchStore?: DelegationWatchStore;
+      continuationStore?: QuotaContinuationStore;
       refs?: ThreadRefsStore;
       clientEvents?: ClientEventSink;
     } = {},
   ) {
     this.#remoteRead = options.remoteRead;
     this.#refs = options.refs;
+    this.#continuationService = new QuotaContinuationService(this, {
+      ...(options.diagnose ? { diagnose: options.diagnose } : {}),
+      ...(options.continuationStore ? { store: options.continuationStore } : {}),
+      onUnblocked: (threadId) => this.#watchService.nudge(threadId),
+    });
     this.#watchService = new DelegationWatchService(this, {
       ...(options.diagnose ? { diagnose: options.diagnose } : {}),
       ...(options.watchStore ? { store: options.watchStore } : {}),
       ...(options.clientEvents ? { clientEvents: options.clientEvents } : {}),
+      shouldDeferDelivery: (notifyThreadId) =>
+        this.#continuationService.isThreadDeferredForQuota(notifyThreadId),
     });
   }
 
@@ -86,9 +103,10 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     this.#registrations.add(registration);
     this.#registrationGeneration += 1;
     if (options.harnessCatalog) this.#harnessCatalog = registration;
-    const unsubscribeIdle = registration.onThreadIdle?.((threadId) =>
-      this.#watchService.nudge(threadId),
-    );
+    const unsubscribeIdle = registration.onThreadIdle?.((threadId) => {
+      this.#watchService.nudge(threadId);
+      this.#continuationService.nudge(threadId);
+    });
     return () => {
       unsubscribeIdle?.();
       if (this.#registrations.delete(registration)) this.#registrationGeneration += 1;
@@ -111,6 +129,18 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       [...this.#registrations],
       "Harness discovery requires exactly one active Host Runtime session",
     ).listHarnesses(input);
+  }
+
+  async quota(input?: HarnessQuotaInput) {
+    const target =
+      this.#harnessCatalog ??
+      only(
+        [...this.#registrations],
+        "Harness quota inspection requires exactly one active Host Runtime session",
+      );
+    if (!target.quota)
+      throw new DelegationControlError("UNSUPPORTED", "Harness quota inspection is unavailable");
+    return target.quota(input);
   }
 
   async start(input: DelegationStartInput) {
@@ -137,17 +167,29 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         "steer and interrupt are mutually exclusive",
       );
     const registration = await this.#registrationForThread(input.threadId);
-    if (!input.interrupt) return registration.send(input);
-    const send = { threadId: input.threadId, message: input.message };
-    return this.#watchService.holdNotifications(input.threadId, () =>
-      interruptAndSend(registration, send),
-    );
+    const result = !input.interrupt
+      ? await registration.send(input)
+      : await this.#watchService.holdNotifications(input.threadId, () =>
+          interruptAndSend(registration, { threadId: input.threadId, message: input.message }),
+        );
+    if (!this.#continuationService.isDispatching(input.threadId)) {
+      await this.#continuationService.cancelContinuation(
+        { threadId: input.threadId },
+        "Cancelled because a new message was sent",
+      );
+    }
+    return result;
   }
 
   async cancel(input: Parameters<DelegationControlApi["cancel"]>[0]) {
-    return this.#watchService.cancel(input.threadId, async () =>
+    const result = await this.#watchService.cancel(input.threadId, async () =>
       (await this.#registrationForThread(input.threadId)).cancel(input),
     );
+    await this.#continuationService.cancelContinuation(
+      { threadId: input.threadId },
+      "Cancelled by thread cancel",
+    );
+    return result;
   }
 
   async read(input: ThreadReadInput) {
@@ -212,9 +254,22 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     return this.#watchService.watches();
   }
 
-  /** Stops watching in this process; stored watches resume in the next Runtime. */
+  async continueOnReset(input: ThreadContinueOnResetInput) {
+    return this.#continuationService.continueOnReset(input);
+  }
+
+  async continuations() {
+    return this.#continuationService.continuations();
+  }
+
+  async cancelContinuation(input: ThreadContinueCancelInput) {
+    return this.#continuationService.cancelContinuation(input);
+  }
+
+  /** Stops watching and continuation loops in this process; stored records resume in the next Runtime. */
   close(): void {
     this.#watchService.close();
+    this.#continuationService.close();
   }
 
   async list(input: ThreadListInput) {

@@ -16,7 +16,7 @@ Read a file explicitly linked in the latest final report, inside the Thread work
 Register a named external client for HTTP/MCP or a separate CLI identity. Normal same-user CLI calls authenticate automatically and do not need registration. Prints the client token once; it is not stored in a readable form and cannot be shown again.
 The client sets CODEXHOST_CLIENT_TOKEN (or CODEXHOST_CLIENT_TOKEN_FILE) and then uses the same delegate, thread and harness commands, or the MCP endpoint, against the external client listener (127.0.0.1:4398 unless CODEXHOST_EXTERNAL_CLIENT_PORT says otherwise).
 Names use lowercase letters, digits and hyphens; local-cli is reserved.
---scope read allows host info, project list, harness list and inspect, thread read, file, wait, list and watches, and events only. dispatch (default) also allows delegate start and thread send, answer, export, cancel and watch; a read client gets FORBIDDEN for those.`,
+--scope read allows host info, project list, harness list, inspect and quota, thread read, file, wait, list, watches and continuations, and events only. dispatch (default) also allows delegate start and thread send, answer, export, cancel, watch, continue-on-reset and continue-cancel; a read client gets FORBIDDEN for those.`,
   "client set": `codexhost client set <name> --scope read|dispatch
 Change a client's scope. Takes effect on its next request; the token stays the same.`,
   events: `codexhost events [--after <id>] [--limit <n>] [--follow true|false]
@@ -34,6 +34,9 @@ List Harnesses available in the active Runtime.`,
 Read available Models, native defaults, Thinking options, and configuration capabilities.
 Use the returned Model and Thinking IDs for explicit selections.
 Copy the displayed ID into --model. Advertised tiers use ~fast for Fast or ~ultrafast for Ultrafast. In JSON, a Fast variant is listed under fastModel.id.`,
+  "harness quota": `codexhost harness quota [harness] [--scope <id>] [--refresh true|false] [--format json|compact|text]
+Read read-only 5-hour/weekly plan quota windows, reset times, and ranked available alternative Harnesses across official Codex and installed external Harnesses.
+Pass a Harness ID to inspect only that Harness without probing other Harnesses.`,
   "delegate start": `codexhost delegate start --harness <id> (--task <text> | --task-file <path|->) [--task-name <name>] [--cwd <path>] [--worktree <branch>] [--base <ref>] [--model <id>] [--thinking <option-id>] [--parent-thread <thread>] [--request-id <id>] [--ref <uri>]... [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact|text]
 Create an independent child Thread, submit the task, and return immediately.
 --task and --task-file are mutually exclusive. --task-file reads UTF-8 from a file, or stdin for -; maximum 262144 bytes (256 KiB) before removing one final LF or CRLF. Other whitespace and special characters are preserved; empty/whitespace-only input is rejected. Terminal stdin is rejected: use a quoted heredoc (<<'EOF') or a pipe. --task is unchanged.
@@ -93,6 +96,14 @@ A watch is one-shot with no standalone unsubscribe command; an accepted thread c
   "thread watches": `codexhost thread watches [--format json|compact|text]
 List watches that have not been delivered: watching, pendingDelivery (waiting for the notified Thread), or undeliverable (with the reason). Delivered watches are removed.
 Entries include taskName when known, threadStatus when readable, and watchedForMs since registration (including downtime). Text prints one watch per line.`,
+  "thread continue-on-reset": `codexhost thread continue-on-reset <thread> [--prompt <text> | --prompt-file <path|->] [--scope <id>] [--pool <key>] [--priority <n>] [--max-wait-ms <n>] [--min-headroom-percent <n>] [--max-concurrent-per-pool <n>] [--reset-grace-ms <n>] [--wait-until <iso>] [--format json|compact|text]
+Opt-in automatic continuation for a stopped Thread once its 5-hour/weekly quota windows refresh.
+Evaluates all applicable blocking windows (MAX(resetsAt)), confirms live quota refresh after resetsAt + grace before resuming, and serializes wakeups per quota pool to prevent thundering herds across Threads or Harnesses sharing a Billing Source.
+Automatically cancels if a new message is sent, thread cancel is called, or unanswered Questions exist. Never auto-consumes Codex reset cards or treats prepaid balances as resetting quotas.`,
+  "thread continuations": `codexhost thread continuations [--format json|compact|text]
+List active and recent quota-reset continuations across Harnesses, including pool keys, blocking periods, next verification time, and alternative Harnesses.`,
+  "thread continue-cancel": `codexhost thread continue-cancel <thread> [--format json|compact|text]
+Cancel any active quota-reset continuation scheduled for a Thread.`,
   "thread list": `codexhost thread list [--cwd <path>] [--parent <thread> | --client <name>] [--ref <uri>] [--limit <n>] [--cursor <cursor>] [--sort created-asc|created-desc|updated-asc|updated-desc|recency-asc|recency-desc] [--format json|compact|text]
 Find existing Threads by workspace, or use --parent to list a Thread's delegated children.
 Workspace listing defaults to the caller process cwd. Default limit 25 (maximum 100), sorted created-desc.
@@ -120,6 +131,7 @@ export const DELEGATION_HELP = `usage:
   codexhost thread file <thread> --path <file>
   codexhost harness list
   codexhost harness inspect <harness>
+  codexhost harness quota [harness]
   codexhost delegate start --harness <id> (--task <text> | --task-file <path|->)
   codexhost thread send <thread> (--message <text> | --message-file <path|->) [--interrupt] [--steer true|false] [--watch true]
   codexhost thread cancel <thread>
@@ -129,6 +141,9 @@ export const DELEGATION_HELP = `usage:
   codexhost thread answer <thread> --interaction <id> --answers-file <file>
   codexhost thread watch <thread>
   codexhost thread watches
+  codexhost thread continue-on-reset <thread>
+  codexhost thread continuations
+  codexhost thread continue-cancel <thread>
   codexhost thread list
   codexhost client add|list|set|remove
   codexhost events

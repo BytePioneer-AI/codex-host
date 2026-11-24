@@ -1,7 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { mergeThreadListPages, listSortSeconds } from "./delegation-thread-list-merge.js";
-import { jsonValueSchema } from "@codexhost/shared-contracts";
+import { jsonValueSchema, rankAlternativeHarnesses } from "@codexhost/shared-contracts";
 import type { JsonObject } from "@codexhost/protocol-core";
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import {
@@ -14,6 +14,7 @@ export const SHARED_DELEGATION_METHOD = "codexhost/shared-threads/delegation";
 const operations = [
   "listHarnesses",
   "inspect",
+  "quota",
   "start",
   "send",
   "cancel",
@@ -122,6 +123,30 @@ export function sharedDelegationRegistration(
     listHarnesses: (input) => call("listHarnesses", input),
     inspect: (input) =>
       input.harnessId === "codex" ? local.inspect(input) : call("inspect", input),
+    quota: async (input) => {
+      if (input?.harnessId === "codex") {
+        if (!local.quota)
+          throw new DelegationControlError(
+            "UNSUPPORTED",
+            "Harness quota inspection is unavailable",
+          );
+        return local.quota(input);
+      }
+      if (input?.harnessId) return call("quota", input);
+      const [localResult, sharedResult] = await Promise.all([
+        local.quota ? local.quota({ ...input, harnessId: "codex" }).catch(() => null) : null,
+        call("quota", input).catch(() => null),
+      ]);
+      const harnesses = [
+        ...(localResult?.harnesses ?? []),
+        ...(sharedResult?.harnesses.filter((item) => item.harnessId !== "codex") ?? []),
+      ];
+      return {
+        observedAt: sharedResult?.observedAt ?? localResult?.observedAt ?? new Date().toISOString(),
+        harnesses,
+        availableAlternatives: rankAlternativeHarnesses(harnesses),
+      };
+    },
     start: async (input) =>
       input.harnessId === "codex" ||
       (input.parentThreadId !== undefined && (await local.ownsThread(input.parentThreadId)))

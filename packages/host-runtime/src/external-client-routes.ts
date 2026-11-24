@@ -6,6 +6,7 @@ import {
   DEFAULT_WATCH_TIMEOUT_MS,
   DelegationControlError,
   type DelegationControlApi,
+  type DelegationQuotaContinuationApi,
   type DelegationWatchApi,
 } from "./delegation-types.js";
 import type { ClientEventLog } from "./external-client-events.js";
@@ -43,10 +44,12 @@ const READ_ROUTES = new Set([
   "/v1/project/list",
   "/v1/harness/list",
   "/v1/harness/inspect",
+  "/v1/harness/quota",
   "/v1/thread/read",
   "/v1/thread/file",
   "/v1/thread/wait",
   "/v1/thread/watches",
+  "/v1/thread/continuations",
   "/v1/thread/list",
   "/v1/events/poll",
 ]);
@@ -165,6 +168,7 @@ async function pollEvents(events: ClientEventLog, client: string, body: Record<s
 export function externalClientRouter(handlers: {
   api: DelegationControlApi;
   watchApi?: DelegationWatchApi;
+  continuationApi?: DelegationQuotaContinuationApi;
   events?: ClientEventLog;
   inventory?: HostInventory;
 }): ExternalClientRouter {

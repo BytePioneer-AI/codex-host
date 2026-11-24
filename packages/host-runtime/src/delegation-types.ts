@@ -7,6 +7,11 @@ import type {
   HarnessSessionState,
   HarnessThinkingOptionId,
 } from "@codexhost/harness-adapter";
+import type {
+  HarnessQuotaAlternative,
+  HarnessQuotaListResult,
+  QuotaContinuationState,
+} from "@codexhost/shared-contracts";
 
 export const DELEGATION_RUNTIME_ENDPOINT_ENV = "CODEXHOST_RUNTIME_ENDPOINT";
 export const DELEGATION_RUNTIME_TOKEN_ENV = "CODEXHOST_RUNTIME_TOKEN";
@@ -28,6 +33,10 @@ export const NATIVE_CODEX_THREAD_ID_ENV = "CODEX_THREAD_ID";
 export const DEFAULT_WATCH_TIMEOUT_MS = 29 * 60_000;
 /** Default `thread wait` budget; callers adjust it with --timeout-ms. */
 export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
+/** Default `thread continue-on-reset` wait budget (covers both 5h and 7-day/weekly windows). */
+export const DEFAULT_QUOTA_CONTINUATION_MAX_WAIT_MS = 8 * 24 * 60 * 60_000;
+/** Grace period after advertised `resetsAt` before probing live quota rollover. */
+export const DEFAULT_QUOTA_RESET_GRACE_MS = 15_000;
 /** Default `thread list` page size and ordering. */
 export const DEFAULT_LIST_LIMIT = 25;
 export const DEFAULT_LIST_SORT = "created-desc";
@@ -322,6 +331,91 @@ export interface ThreadWatchListResult {
   watches: ThreadWatchEntry[];
 }
 
+export interface HarnessQuotaInput {
+  harnessId?: RoutedHarnessId;
+  scopeId?: string;
+  refresh?: boolean;
+  /** Calling Thread; an official parent cannot inspect a Harness Desktop must not present. */
+  parentThreadId?: string;
+}
+
+export interface ThreadContinueOnResetInput {
+  threadId: string;
+  /** Continuation message sent after reset verification; defaults to the Host continuation notice. */
+  prompt?: string;
+  /** Optional model/product quota scope ID (e.g. `Claude and GPT Models`, `Opus`). */
+  scopeId?: string;
+  /** Optional shared pool key to serialize Threads across Harnesses sharing one Billing Source. */
+  poolKey?: string;
+  /** Higher values resume first within the same quota pool; ties break FIFO. */
+  priority?: number;
+  /** Maximum wait budget in ms before expiring (default 8 days to cover weekly resets). */
+  maxWaitMs?: number;
+  /** Required remaining headroom percent (0-99) before resuming; protects pool reserves. */
+  minHeadroomPercent?: number;
+  /** Maximum concurrently resumed Threads within one quota pool (default 1). */
+  maxConcurrentPerPool?: number;
+  /** Milliseconds after `resetsAt` before live verification begins (default 15000). */
+  resetGraceMs?: number;
+  /** Explicit ISO timestamp fallback when the Harness does not expose `resetsAt`. */
+  waitUntil?: string;
+}
+
+export interface ThreadContinueOnResetResult {
+  id?: string;
+  threadId: string;
+  harnessId: RoutedHarnessId;
+  poolKey: string;
+  state: "waitingForReset" | "alreadyAvailable" | "exceedsMaxWait";
+  targetResetAt?: string;
+  blockingPeriods?: string[];
+  availableAlternatives?: HarnessQuotaAlternative[];
+  reason?: string;
+}
+
+export interface ThreadContinuationEntry {
+  id: string;
+  threadId: string;
+  harnessId: RoutedHarnessId;
+  poolKey: string;
+  scopeId?: string;
+  state: QuotaContinuationState;
+  priority: number;
+  registeredAt: string;
+  targetResetAt?: string;
+  deadlineAt: string;
+  nextCheckAt?: string;
+  minHeadroomPercent: number;
+  maxConcurrentPerPool: number;
+  blockingPeriods?: string[];
+  availableAlternatives?: HarnessQuotaAlternative[];
+  resumedAt?: string;
+  resumedTurnId?: string;
+  reason?: string;
+  taskName?: string;
+  threadStatus?: DelegationThreadStatus;
+}
+
+export interface ThreadContinuationListResult {
+  continuations: ThreadContinuationEntry[];
+}
+
+export interface ThreadContinueCancelInput {
+  threadId: string;
+}
+
+export interface ThreadContinueCancelResult {
+  threadId: string;
+  cancelled: boolean;
+  cancelledCount: number;
+}
+
+export interface DelegationQuotaContinuationApi {
+  continueOnReset(input: ThreadContinueOnResetInput): Promise<ThreadContinueOnResetResult>;
+  continuations(): Promise<ThreadContinuationListResult>;
+  cancelContinuation(input: ThreadContinueCancelInput): Promise<ThreadContinueCancelResult>;
+}
+
 /**
  * Opt-in, one-shot notifications when a watched Thread stops. Separate from
  * DelegationControlApi so Host sessions keep implementing only the per-Thread
@@ -335,6 +429,8 @@ export interface DelegationWatchApi {
 export interface DelegationControlApi {
   listHarnesses(input?: HarnessListInput): Promise<HarnessListResult>;
   inspect(input: HarnessInspectInput): Promise<HarnessInspectResult>;
+  /** Optional read-only cross-Harness quota inspection for multi-Harness coordination. */
+  quota?(input?: HarnessQuotaInput): Promise<HarnessQuotaListResult>;
   start(input: DelegationStartInput): Promise<DelegationStartResult>;
   send(input: ThreadSendInput): Promise<ThreadSendResult>;
   cancel(input: ThreadCancelInput): Promise<ThreadCancelResult>;

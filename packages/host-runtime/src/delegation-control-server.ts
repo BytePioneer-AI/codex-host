@@ -4,12 +4,16 @@ import type { AddressInfo } from "node:net";
 import {
   DelegationControlError,
   type DelegationControlApi,
+  type DelegationQuotaContinuationApi,
   type DelegationStartInput,
   type DelegationWatchApi,
   type HarnessInspectInput,
   type HarnessListInput,
+  type HarnessQuotaInput,
   type ThreadAnswerInput,
   type ThreadCancelInput,
+  type ThreadContinueCancelInput,
+  type ThreadContinueOnResetInput,
   type ThreadListInput,
   type ThreadSendInput,
   type ThreadReadInput,
@@ -90,6 +94,17 @@ function watchApi(api: DelegationWatchApi | undefined): DelegationWatchApi {
   return api;
 }
 
+function continuationApi(
+  api: DelegationQuotaContinuationApi | undefined,
+): DelegationQuotaContinuationApi {
+  if (!api)
+    throw new DelegationControlError(
+      "UNSUPPORTED",
+      "This Runtime does not support quota-reset continuations",
+    );
+  return api;
+}
+
 /** The Turn already started, so a watch failure is reported beside it, not thrown. */
 function watchStartedTurn(watches: DelegationWatchApi, input: ThreadWatchInput) {
   return watches.watch(input).catch((error: unknown) => ({
@@ -132,7 +147,12 @@ async function sendWithWatch(
 
 /** The delegation routes shared by the Host control server and the external client listener. */
 export async function routeDelegationRequest(
-  handlers: { api: DelegationControlApi; watchApi?: DelegationWatchApi; inventory?: HostInventory },
+  handlers: {
+    api: DelegationControlApi;
+    watchApi?: DelegationWatchApi;
+    continuationApi?: DelegationQuotaContinuationApi;
+    inventory?: HostInventory;
+  },
   route: string | undefined,
   body: Record<string, unknown>,
 ): Promise<unknown> {
@@ -150,6 +170,23 @@ export async function routeDelegationRequest(
       return handlers.api.listHarnesses(body as HarnessListInput);
     case "/v1/harness/inspect":
       return handlers.api.inspect(body as unknown as HarnessInspectInput);
+    case "/v1/harness/quota": {
+      if (!handlers.api.quota)
+        throw new DelegationControlError("UNSUPPORTED", "Harness quota inspection is unavailable");
+      if (body.refresh !== undefined && typeof body.refresh !== "boolean")
+        throw new DelegationControlError("INVALID_ARGUMENT", "refresh must be a boolean");
+      if (
+        body.harnessId !== undefined &&
+        (typeof body.harnessId !== "string" || !body.harnessId.trim())
+      )
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "harnessId must be a non-empty string",
+        );
+      if (body.scopeId !== undefined && (typeof body.scopeId !== "string" || !body.scopeId.trim()))
+        throw new DelegationControlError("INVALID_ARGUMENT", "scopeId must be a non-empty string");
+      return handlers.api.quota(body as unknown as HarnessQuotaInput);
+    }
     case "/v1/delegate/start": {
       const { worktree, base, ...start } = body;
       return startWithDelegationWorktree(
@@ -206,6 +243,16 @@ export async function routeDelegationRequest(
       return watchApi(handlers.watchApi).watch(body as unknown as ThreadWatchInput);
     case "/v1/thread/watches":
       return watchApi(handlers.watchApi).watches();
+    case "/v1/thread/continue-on-reset":
+      return continuationApi(handlers.continuationApi).continueOnReset(
+        body as unknown as ThreadContinueOnResetInput,
+      );
+    case "/v1/thread/continuations":
+      return continuationApi(handlers.continuationApi).continuations();
+    case "/v1/thread/continue-cancel":
+      return continuationApi(handlers.continuationApi).cancelContinuation(
+        body as unknown as ThreadContinueCancelInput,
+      );
     case "/v1/thread/list":
       return handlers.api.list(body as unknown as ThreadListInput);
     default:
@@ -217,6 +264,7 @@ export async function startDelegationControlServer(input: {
   token: string;
   api: DelegationControlApi;
   watchApi?: DelegationWatchApi;
+  continuationApi?: DelegationQuotaContinuationApi;
   inventory?: HostInventory;
 }): Promise<DelegationControlServer> {
   const server = createServer((request, response) => {

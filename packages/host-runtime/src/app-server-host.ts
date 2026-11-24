@@ -77,6 +77,7 @@ import { nativeThreadSupportsReferences } from "./native-thread-reference-capabi
 import { normalizeDesktopTitleMcp } from "./native-title-mcp.js";
 import { THREAD_REFERENCE_SOURCE_HOST_PARAM } from "@codexhost/shared-contracts";
 import { HarnessAccountInspectionCache } from "./harness-accounts.js";
+import { collectHarnessQuotas } from "./harness-quota.js";
 import type { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
@@ -251,6 +252,7 @@ import type {
   ThreadAnswerResult,
   HarnessInspectInput,
   HarnessInspectResult,
+  HarnessQuotaInput,
   ThreadCancelInput,
   ThreadCancelResult,
   ThreadListInput,
@@ -1226,6 +1228,7 @@ export class AppServerHost {
       {
         listHarnesses: () =>
           this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
+        quota: (input) => this.#waitForPlugins().then(() => this.#inspectDelegationQuota(input)),
         inspect: async (input) => {
           await this.#waitForPlugins();
           try {
@@ -2600,6 +2603,32 @@ export class AppServerHost {
     refresh = false,
   ): Promise<HarnessAccountInspectResult> {
     return this.#accountInspections.inspect(adapter, this.#pluginDescriptors, refresh);
+  }
+
+  #inspectDelegationQuota(input?: HarnessQuotaInput) {
+    return collectHarnessQuotas({
+      ...(input ? { input } : {}),
+      readCodex: async (refresh) => {
+        const accountId = await this.#currentCodexAccountId();
+        if (!accountId) return null;
+        await this.#refreshOfficialRateLimits(accountId, refresh);
+        const credits = this.#officialAccountCredits(accountId);
+        const resetCredits = this.#officialRateLimits.getResetCredits(accountId);
+        const snapshot = await this.#codexAccountSnapshot(false).catch(() => null);
+        const current = snapshot?.accounts.find((account) => account.accountId === accountId);
+        return {
+          ...(current?.email ? { email: current.email } : {}),
+          ...(current?.planType && current.planType !== "unknown"
+            ? { plan: current.planType }
+            : {}),
+          credits,
+          ...(resetCredits && resetCredits.availableCount > 0 ? { hasResetCredits: true } : {}),
+        };
+      },
+      adapters: this.#externalAdapters.values(),
+      descriptors: this.#pluginDescriptors,
+      inspectHarnessAccount: (adapter, refresh) => this.#inspectHarnessAccount(adapter, refresh),
+    });
   }
 
   async #currentCodexAccountId(): Promise<string | null> {

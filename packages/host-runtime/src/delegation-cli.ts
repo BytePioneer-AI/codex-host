@@ -411,6 +411,37 @@ export async function runDelegationCli(input: {
       );
       return 0;
     }
+    if (group === "harness" && command === "quota") {
+      rejectUnknown(parsed, ["--scope", "--refresh"]);
+      if (parsed.positionals.length > 1) {
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "harness quota accepts at most one Harness identifier",
+        );
+      }
+      const harnessId = parsed.positionals[0];
+      const refresh = value(parsed, "--refresh");
+      if (refresh !== undefined && refresh !== "true" && refresh !== "false") {
+        throw new DelegationControlError("INVALID_ARGUMENT", "--refresh must be true or false");
+      }
+      const scopeId = value(parsed, "--scope");
+      const caller = callerThreadId(environment);
+      writeResult(
+        "harness quota",
+        await requestRuntime({
+          environment,
+          path: "/v1/harness/quota",
+          body: {
+            ...(harnessId ? { harnessId } : {}),
+            ...(scopeId ? { scopeId } : {}),
+            ...(refresh !== undefined ? { refresh: refresh === "true" } : {}),
+            ...(caller ? { parentThreadId: normalizeThreadId(caller) } : {}),
+          },
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }),
+      );
+      return 0;
+    }
     if (group === "delegate" && command === "start") {
       rejectUnknown(parsed, [
         "--harness",
@@ -759,6 +790,137 @@ export async function runDelegationCli(input: {
           environment,
           path: "/v1/thread/watches",
           body: {},
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }),
+      );
+      return 0;
+    }
+    if (group === "thread" && command === "continue-on-reset") {
+      rejectUnknown(parsed, [
+        "--prompt",
+        "--prompt-file",
+        "--scope",
+        "--pool",
+        "--priority",
+        "--max-wait-ms",
+        "--min-headroom-percent",
+        "--max-concurrent-per-pool",
+        "--reset-grace-ms",
+        "--wait-until",
+      ]);
+      if (parsed.positionals.length !== 1)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "thread continue-on-reset requires one Thread identifier",
+        );
+      const threadId = parsed.positionals[0];
+      if (!threadId)
+        throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is required");
+      const prompt = await resolveCliTextInput(parsed.options, "--prompt", input.stdin);
+      const priorityRaw = value(parsed, "--priority");
+      const priority =
+        priorityRaw !== undefined
+          ? /^-?[0-9]+$/u.test(priorityRaw) && Number.isSafeInteger(Number(priorityRaw))
+            ? Number(priorityRaw)
+            : (() => {
+                throw new DelegationControlError(
+                  "INVALID_ARGUMENT",
+                  "--priority must be an integer",
+                );
+              })()
+          : undefined;
+      const minHeadroomRaw = value(parsed, "--min-headroom-percent");
+      const minHeadroomPercent =
+        minHeadroomRaw !== undefined
+          ? Number.isFinite(Number(minHeadroomRaw)) &&
+            Number(minHeadroomRaw) >= 0 &&
+            Number(minHeadroomRaw) <= 99
+            ? Number(minHeadroomRaw)
+            : (() => {
+                throw new DelegationControlError(
+                  "INVALID_ARGUMENT",
+                  "--min-headroom-percent must be a number between 0 and 99",
+                );
+              })()
+          : undefined;
+      const resetGraceRaw = value(parsed, "--reset-grace-ms");
+      const resetGraceMs =
+        resetGraceRaw !== undefined
+          ? /^[0-9]+$/u.test(resetGraceRaw) && Number.isSafeInteger(Number(resetGraceRaw))
+            ? Number(resetGraceRaw)
+            : (() => {
+                throw new DelegationControlError(
+                  "INVALID_ARGUMENT",
+                  "--reset-grace-ms must be a non-negative integer",
+                );
+              })()
+          : undefined;
+      writeResult(
+        "thread continue-on-reset",
+        await requestRuntime({
+          environment,
+          path: "/v1/thread/continue-on-reset",
+          body: {
+            threadId: normalizeThreadId(threadId),
+            ...(prompt !== undefined ? { prompt } : {}),
+            ...(value(parsed, "--scope") ? { scopeId: value(parsed, "--scope") } : {}),
+            ...(value(parsed, "--pool") ? { poolKey: value(parsed, "--pool") } : {}),
+            ...(priority !== undefined ? { priority } : {}),
+            ...(value(parsed, "--max-wait-ms")
+              ? { maxWaitMs: positiveInteger(value(parsed, "--max-wait-ms"), "--max-wait-ms") }
+              : {}),
+            ...(minHeadroomPercent !== undefined ? { minHeadroomPercent } : {}),
+            ...(value(parsed, "--max-concurrent-per-pool")
+              ? {
+                  maxConcurrentPerPool: positiveInteger(
+                    value(parsed, "--max-concurrent-per-pool"),
+                    "--max-concurrent-per-pool",
+                    16,
+                  ),
+                }
+              : {}),
+            ...(resetGraceMs !== undefined ? { resetGraceMs } : {}),
+            ...(value(parsed, "--wait-until") ? { waitUntil: value(parsed, "--wait-until") } : {}),
+          },
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }),
+      );
+      return 0;
+    }
+    if (group === "thread" && command === "continuations") {
+      rejectUnknown(parsed, []);
+      if (parsed.positionals.length > 0)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "thread continuations accepts no positional arguments",
+        );
+      writeResult(
+        "thread continuations",
+        await requestRuntime({
+          environment,
+          path: "/v1/thread/continuations",
+          body: {},
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }),
+      );
+      return 0;
+    }
+    if (group === "thread" && command === "continue-cancel") {
+      rejectUnknown(parsed, []);
+      if (parsed.positionals.length !== 1)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "thread continue-cancel requires one Thread identifier",
+        );
+      const threadId = parsed.positionals[0];
+      if (!threadId)
+        throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is required");
+      writeResult(
+        "thread continue-cancel",
+        await requestRuntime({
+          environment,
+          path: "/v1/thread/continue-cancel",
+          body: { threadId: normalizeThreadId(threadId) },
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
         }),
       );

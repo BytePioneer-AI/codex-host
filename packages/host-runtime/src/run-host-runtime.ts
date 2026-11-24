@@ -17,6 +17,10 @@ import {
   FileDelegationWatchStore,
   defaultDelegationWatchDirectory,
 } from "./delegation-watch-store.js";
+import {
+  FileQuotaContinuationStore,
+  defaultQuotaContinuationDirectory,
+} from "./quota-continuation-store.js";
 import { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
 import { startDelegationControlServer } from "./delegation-control-server.js";
 import {
@@ -216,6 +220,10 @@ export async function prepareDelegationRuntime(input: {
       defaultDelegationWatchDirectory(input.environment),
       diagnoseWatch,
     ),
+    continuationStore: new FileQuotaContinuationStore(
+      defaultQuotaContinuationDirectory(input.environment),
+      diagnoseWatch,
+    ),
     refs: new FileThreadRefsStore(
       path.join(codexhostDataDirectory(input.environment), "thread-refs"),
     ),
@@ -227,6 +235,7 @@ export async function prepareDelegationRuntime(input: {
     token,
     api: registry,
     watchApi: registry,
+    continuationApi: registry,
     inventory,
   });
   const externalServer = await startExternalClients(
@@ -286,6 +295,7 @@ async function startExternalClients(
   const route = externalClientRouter({
     api: registry,
     watchApi: registry,
+    continuationApi: registry,
     events,
     inventory,
   });

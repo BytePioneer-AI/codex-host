@@ -1,7 +1,12 @@
 import { DelegationControlError } from "./delegation-types.js";
 
 /** Options whose value is user text: the next argument is taken verbatim, even empty or dash-leading. */
-const FREE_TEXT_OPTIONS: ReadonlySet<string> = new Set(["--task", "--task-name", "--message"]);
+const FREE_TEXT_OPTIONS: ReadonlySet<string> = new Set([
+  "--task",
+  "--task-name",
+  "--message",
+  "--prompt",
+]);
 /** Options that may be given more than once; every value is kept in order. */
 const REPEATABLE_OPTIONS: ReadonlySet<string> = new Set(["--ref"]);
 

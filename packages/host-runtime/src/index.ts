@@ -40,8 +40,18 @@ export type {
 export { runDelegationCli, DELEGATION_HELP } from "./delegation-cli.js";
 export { DelegationControlRegistry } from "./delegation-control-registry.js";
 export { startDelegationControlServer } from "./delegation-control-server.js";
+export { QuotaContinuationService } from "./quota-continuation.js";
+export {
+  FileQuotaContinuationStore,
+  defaultQuotaContinuationDirectory,
+  type PersistedQuotaContinuation,
+  type QuotaContinuationStore,
+} from "./quota-continuation-store.js";
+export { collectHarnessQuotas } from "./harness-quota.js";
 export { installDelegationSkills, CODEXHOST_DELEGATION_SKILL } from "./delegation-skill.js";
 export {
+  DEFAULT_QUOTA_CONTINUATION_MAX_WAIT_MS,
+  DEFAULT_QUOTA_RESET_GRACE_MS,
   DELEGATION_CLI_PATH_ENV,
   DELEGATION_CLI_NODE_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
@@ -52,12 +62,20 @@ export {
 export type {
   DelegationControlApi,
   DelegationPendingQuestion,
+  DelegationQuotaContinuationApi,
   DelegationStartInput,
   DelegationStartResult,
   DelegationThreadListResult,
   DelegationThreadSnapshot,
+  HarnessQuotaInput,
   ThreadAnswerInput,
   ThreadAnswerResult,
+  ThreadContinuationEntry,
+  ThreadContinuationListResult,
+  ThreadContinueCancelInput,
+  ThreadContinueCancelResult,
+  ThreadContinueOnResetInput,
+  ThreadContinueOnResetResult,
   ThreadListInput,
   ThreadReadInput,
   ThreadWaitInput,

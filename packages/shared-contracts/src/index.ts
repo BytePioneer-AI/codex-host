@@ -564,3 +564,27 @@ export {
   normalizeOfficialCodexModelRef,
 } from "./official-codex-model-ref.js";
 export { desktopProjectDefinitions } from "./desktop-project-definitions.js";
+export {
+  DEFAULT_QUOTA_CONTINUATION_PROMPT,
+  deriveQuotaPoolKey,
+  evaluateQuotaAvailability,
+  extractQuotaWindows,
+  filterApplicableQuotaWindows,
+  harnessQuotaAlternativeSchema,
+  harnessQuotaListResultSchema,
+  harnessQuotaSummarySchema,
+  quotaAvailabilityEvaluationSchema,
+  quotaAvailabilityStatusSchema,
+  quotaContinuationStateSchema,
+  quotaWindowSnapshotSchema,
+  rankAlternativeHarnesses,
+} from "./quota-coordination.js";
+export type {
+  HarnessQuotaAlternative,
+  HarnessQuotaListResult,
+  HarnessQuotaSummary,
+  QuotaAvailabilityEvaluation,
+  QuotaAvailabilityStatus,
+  QuotaContinuationState,
+  QuotaWindowSnapshot,
+} from "./quota-coordination.js";

@@ -62,6 +62,7 @@ export function assertDelegationTextCommand(command: string): void {
     case "thread export":
     case "harness list":
     case "harness inspect":
+    case "harness quota":
     case "delegate start":
     case "thread send":
     case "thread cancel":
@@ -69,6 +70,9 @@ export function assertDelegationTextCommand(command: string): void {
     case "thread wait":
     case "thread watch":
     case "thread watches":
+    case "thread continue-on-reset":
+    case "thread continuations":
+    case "thread continue-cancel":
     case "thread list":
       return;
     default:
@@ -92,6 +96,10 @@ export function textDelegationOutput(
     const { watches } = compact as { watches: unknown[] };
     // Watch metadata is kept on one physical line; Thread bodies use snapshotText verbatim.
     return watches.map((watch) => fields(watch).map(singleLine).join("   ")).join("\n");
+  }
+  if (command === "thread continuations") {
+    const { continuations } = compact as { continuations: unknown[] };
+    return continuations.map((item) => fields(item).map(singleLine).join("   ")).join("\n");
   }
   return fields(compact).join("\n");
 }

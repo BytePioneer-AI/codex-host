@@ -119,6 +119,7 @@ describe("external client MCP endpoint", () => {
       "project_list",
       "harness_list",
       "harness_inspect",
+      "harness_quota",
       "delegate_start",
       "thread_read",
       "thread_export",
@@ -130,6 +131,9 @@ describe("external client MCP endpoint", () => {
       "thread_cancel",
       "thread_watch",
       "thread_watches",
+      "thread_continue_on_reset",
+      "thread_continuations",
+      "thread_continue_cancel",
       "events_poll",
     ]);
     expect(tools.find((tool) => tool.name === "thread_send")).toMatchObject({

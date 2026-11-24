@@ -8,7 +8,7 @@ export const MAX_CLI_TEXT_INPUT_BYTES = 256 * 1024;
 
 export async function resolveCliTextInput(
   options: ReadonlyMap<string, string>,
-  name: "--task" | "--message",
+  name: "--task" | "--message" | "--prompt",
   stdin: Readable & { isTTY?: boolean } = process.stdin,
 ): Promise<string | undefined> {
   const fileOption = `${name}-file`;

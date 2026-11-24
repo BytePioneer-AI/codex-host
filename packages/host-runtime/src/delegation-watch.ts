@@ -172,6 +172,7 @@ export class DelegationWatchService {
   readonly #diagnose: (error: unknown) => void;
   readonly #store: DelegationWatchStore | undefined;
   readonly #clientEvents: ClientEventSink | undefined;
+  readonly #shouldDeferDelivery: ((notifyThreadId: string) => boolean) | undefined;
   readonly #restoreGraceMs: number;
   readonly #ready: Promise<void>;
   readonly #watches: Watch[] = [];
@@ -189,6 +190,7 @@ export class DelegationWatchService {
       diagnose?: (error: unknown) => void;
       store?: DelegationWatchStore;
       clientEvents?: ClientEventSink;
+      shouldDeferDelivery?: (notifyThreadId: string) => boolean;
       restoreGraceMs?: number;
     } = {},
   ) {
@@ -197,6 +199,7 @@ export class DelegationWatchService {
     this.#diagnose = options.diagnose ?? (() => undefined);
     this.#store = options.store;
     this.#clientEvents = options.clientEvents;
+    this.#shouldDeferDelivery = options.shouldDeferDelivery;
     this.#restoreGraceMs = options.restoreGraceMs ?? DEFAULT_RESTORE_GRACE_MS;
     this.#ready = this.#store ? this.#restore(this.#store) : Promise.resolve();
   }
@@ -562,6 +565,19 @@ export class DelegationWatchService {
     const client = originClientName(notifyThreadId);
     if (client !== undefined) {
       await this.#deliverToClient(client, pending);
+      return;
+    }
+    // Defer notification delivery while the parent Thread is explicitly waiting on a quota reset,
+    // so child completions are neither dropped on a doomed quota-failed Turn nor expired mid-wait.
+    if (this.#shouldDeferDelivery?.(notifyThreadId)) {
+      const now = Date.now();
+      const extended = now + DELIVERY_WINDOW_MS;
+      for (const watch of pending) {
+        if ((watch.deliveryDeadline ?? 0) - now < DELIVERY_WINDOW_MS / 2) {
+          watch.deliveryDeadline = extended;
+          void this.#persist(watch);
+        }
+      }
       return;
     }
     if (!(await this.#subscriberReady(notifyThreadId, pending))) return;

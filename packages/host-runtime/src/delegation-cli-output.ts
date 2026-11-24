@@ -1,4 +1,4 @@
-import type { HarnessModelRef } from "@codexhost/shared-contracts";
+import type { HarnessModelRef, HarnessQuotaListResult } from "@codexhost/shared-contracts";
 
 import type { DelegationCliCommand } from "./delegation-cli-help.js";
 import { formatDelegationModel } from "./delegation-model-argument.js";
@@ -9,6 +9,9 @@ import {
   type HarnessInspectResult,
   type ThreadAnswerResult,
   type ThreadCancelResult,
+  type ThreadContinuationListResult,
+  type ThreadContinueCancelResult,
+  type ThreadContinueOnResetResult,
   type ThreadSendResult,
   type ThreadWatchListResult,
   type ThreadWatchResult,
@@ -148,6 +151,36 @@ export function compactDelegationOutput(
       return body;
     case "harness inspect":
       return inspectOutput(body as HarnessInspectResult);
+    case "harness quota": {
+      const result = body as HarnessQuotaListResult;
+      return {
+        observedAt: result.observedAt,
+        harnesses: result.harnesses.map(
+          ({
+            harnessId,
+            harnessName,
+            poolKey,
+            status,
+            minRemainingPercent,
+            blockingPeriods,
+            earliestUnblockAt,
+            hasResetCredits,
+            balance,
+          }) => ({
+            harnessId,
+            harnessName,
+            poolKey,
+            status,
+            ...(minRemainingPercent !== undefined ? { minRemainingPercent } : {}),
+            ...(blockingPeriods.length ? { blockingPeriods } : {}),
+            ...(earliestUnblockAt ? { earliestUnblockAt } : {}),
+            ...(hasResetCredits ? { hasResetCredits } : {}),
+            ...(balance ? { balance } : {}),
+          }),
+        ),
+        availableAlternatives: result.availableAlternatives,
+      };
+    }
     case "delegate start": {
       const result = body as DelegationStartResult;
       const effective = result.configuration?.effective;
@@ -241,6 +274,70 @@ export function compactDelegationOutput(
             ...(watchedForMs !== undefined ? { watchedForMs } : {}),
           }),
         ),
+      };
+    }
+    case "thread continue-on-reset": {
+      const result = body as ThreadContinueOnResetResult;
+      return {
+        ...(result.id ? { id: result.id } : {}),
+        thread: threadLink(result.threadId),
+        harnessId: result.harnessId,
+        poolKey: result.poolKey,
+        state: result.state,
+        ...(result.targetResetAt ? { targetResetAt: result.targetResetAt } : {}),
+        ...(result.blockingPeriods?.length ? { blockingPeriods: result.blockingPeriods } : {}),
+        ...(result.availableAlternatives?.length
+          ? { availableAlternatives: result.availableAlternatives }
+          : {}),
+        ...(result.reason ? { reason: result.reason } : {}),
+      };
+    }
+    case "thread continuations": {
+      const result = body as ThreadContinuationListResult;
+      return {
+        continuations: result.continuations.map(
+          ({
+            id,
+            threadId,
+            harnessId,
+            poolKey,
+            scopeId,
+            state,
+            priority,
+            targetResetAt,
+            nextCheckAt,
+            blockingPeriods,
+            resumedAt,
+            resumedTurnId,
+            reason,
+            taskName,
+            threadStatus,
+          }) => ({
+            id,
+            thread: threadLink(threadId),
+            harnessId,
+            poolKey,
+            ...(scopeId ? { scopeId } : {}),
+            state,
+            priority,
+            ...(targetResetAt ? { targetResetAt } : {}),
+            ...(nextCheckAt ? { nextCheckAt } : {}),
+            ...(blockingPeriods?.length ? { blockingPeriods } : {}),
+            ...(resumedAt ? { resumedAt } : {}),
+            ...(resumedTurnId ? { resumedTurnId } : {}),
+            ...(reason ? { reason } : {}),
+            ...(taskName ? { taskName } : {}),
+            ...(threadStatus ? { threadStatus } : {}),
+          }),
+        ),
+      };
+    }
+    case "thread continue-cancel": {
+      const result = body as ThreadContinueCancelResult;
+      return {
+        thread: threadLink(result.threadId),
+        cancelled: result.cancelled,
+        cancelledCount: result.cancelledCount,
       };
     }
     case "thread list": {

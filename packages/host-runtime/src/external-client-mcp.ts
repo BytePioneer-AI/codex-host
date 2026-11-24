@@ -106,6 +106,23 @@ const TOOLS: Tool[] = [
     }),
   },
   {
+    name: "harness_quota",
+    description:
+      "Read read-only 5-hour/weekly plan quota windows, reset times, and ranked available alternative Harnesses across official Codex and installed external Harnesses.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        harnessId: string("Optional Harness id to inspect only one Harness"),
+        scopeId: string("Optional model/product quota scope id (e.g. 'Claude and GPT Models')"),
+        refresh: { type: "boolean", description: "Bypass cached quota snapshots" },
+      },
+    },
+    call: (args) => ({
+      route: "/v1/harness/quota",
+      body: pick(args, ["harnessId", "scopeId", "refresh"]),
+    }),
+  },
+  {
     name: "delegate_start",
     description:
       "Start a task in a new Thread and return at once. Without parentThread the work belongs to this client and cwd is required. worktree creates a new branch and isolated Git checkout on this Host from the required absolute cwd; base defaults to its HEAD. Returns worktree {path, branch, base}; failures after creation retain it in error details.worktree. watch=true watches the Thread after starting and returns watch (including notRegistered if registration fails); without parentThread, notifications go to this client's event log (events_poll or SSE).",
@@ -374,6 +391,78 @@ const TOOLS: Tool[] = [
       "List watches that have not been delivered yet, including taskName (last known title), threadStatus (current status, omitted if unreadable) and watchedForMs (elapsed time including Host downtime).",
     inputSchema: { type: "object", properties: {} },
     call: () => ({ route: "/v1/thread/watches", body: {} }),
+  },
+  {
+    name: "thread_continue_on_reset",
+    description:
+      "Opt-in automatic continuation for a stopped Thread after its 5-hour/weekly quota windows refresh. Verifies live quota after MAX(resetsAt) of all applicable blocking windows, serializes wakeups per quota pool, and auto-cancels on manual Thread activity or thread_cancel.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        thread,
+        prompt: string("Optional continuation message sent after quota refreshes"),
+        scopeId: string("Optional model/product quota scope id"),
+        poolKey: string(
+          "Optional shared quota pool key to serialize Harnesses sharing one Billing Source",
+        ),
+        priority: {
+          type: "integer",
+          description: "Higher priority resumes first within the same quota pool; default 0",
+        },
+        maxWaitMs: {
+          ...integer("Maximum wait budget in ms before expiring; default 8 days"),
+          minimum: 1,
+        },
+        minHeadroomPercent: {
+          type: "number",
+          minimum: 0,
+          maximum: 99,
+          description: "Minimum remaining quota percent required before resuming; default 0",
+        },
+        maxConcurrentPerPool: {
+          type: "integer",
+          minimum: 1,
+          maximum: 16,
+          description: "Maximum concurrently resumed Threads in the same quota pool; default 1",
+        },
+        resetGraceMs: integer("Milliseconds after resetsAt before live refresh; default 15000"),
+        waitUntil: string("Optional ISO-8601 fallback timestamp when resetsAt is unreported"),
+      },
+      required: ["thread"],
+    },
+    call: (args) => ({
+      route: "/v1/thread/continue-on-reset",
+      body: {
+        threadId: threadId(args),
+        ...pick(args, [
+          "prompt",
+          "scopeId",
+          "poolKey",
+          "priority",
+          "maxWaitMs",
+          "minHeadroomPercent",
+          "maxConcurrentPerPool",
+          "resetGraceMs",
+          "waitUntil",
+        ]),
+      },
+    }),
+  },
+  {
+    name: "thread_continuations",
+    description:
+      "List scheduled and recent quota-reset continuations across Harnesses, including pool keys, next check times, blocking periods, and ranked alternative Harnesses.",
+    inputSchema: { type: "object", properties: {} },
+    call: () => ({ route: "/v1/thread/continuations", body: {} }),
+  },
+  {
+    name: "thread_continue_cancel",
+    description: "Cancel any active quota-reset auto-continuation scheduled for a Thread.",
+    inputSchema: { type: "object", properties: { thread }, required: ["thread"] },
+    call: (args) => ({
+      route: "/v1/thread/continue-cancel",
+      body: { threadId: threadId(args) },
+    }),
   },
   {
     name: "events_poll",

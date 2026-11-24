@@ -82,7 +82,7 @@ class FakeTransport implements AntigravityAcpTransportLike {
   onOpen?: () => Promise<void>;
   overrideSessionId?: string;
   handler: AntigravitySessionEventHandler | null = null;
-  prompt = vi.fn(async (): Promise<AntigravityPromptResult> => endTurn);
+  prompt = vi.fn<AntigravityAcpTransportLike["prompt"]>(async () => endTurn);
   initialize = vi.fn(async (): Promise<InitializeResponse> => ({ protocolVersion: 1 }));
   openSession = vi.fn(async (input: AntigravityOpenAcpSessionInput) => {
     await this.onOpen?.();

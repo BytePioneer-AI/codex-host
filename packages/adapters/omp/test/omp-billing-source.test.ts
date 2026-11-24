@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { harnessModelRefSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { OmpAdapter } from "../src/omp-adapter.js";
 import { openOmpBillingSource } from "../src/omp-billing-source-session.js";
 
@@ -105,7 +105,7 @@ it("runs distinct OMP Billing Sources without fallback and requires native clean
       await adapter.openBillingSource({
         ...create,
         billingSourceRef: a,
-        model: { id: "other/short" },
+        model: harnessModelRefSchema.parse({ id: "other/short" }),
       }),
     ).toMatchObject({ ok: false });
     expect(

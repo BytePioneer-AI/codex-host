@@ -80,6 +80,16 @@ import {
   type RendererCodexUsageGateStatus,
 } from "./renderer-codex-usage-gate.js";
 import {
+  createRendererNativeProviderUsageBanner,
+  type RendererNativeProviderUsageBanner,
+} from "./renderer-native-provider-usage-banner.js";
+import {
+  createRendererNativeDraftWorkspaceStore,
+  createRendererNativeInferenceRoute,
+  type RendererNativeDraftComposer,
+  type RendererNativeInferenceRoute,
+} from "./renderer-native-inference-route.js";
+import {
   decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
@@ -206,7 +216,12 @@ interface HostHarnessAvailabilityState {
   errors: HarnessAvailabilityErrors;
   webUi: HarnessWebUiAvailability;
   requestGeneration: number;
-  request: { client: RendererModelClient; promise: Promise<void>; force: boolean } | null;
+  request: {
+    client: RendererModelClient;
+    promise: Promise<void>;
+    force: boolean;
+    credentialAccess?: "retry";
+  } | null;
   retryTimer: number | null;
   retryAttempt: number;
 }
@@ -628,6 +643,7 @@ interface MountedComposer {
   composerId: string;
   control: ComposerAgentControl;
   codexUsageGate: RendererCodexUsageGate;
+  codexUsageBanner: RendererNativeProviderUsageBanner;
   modelTarget: readonly unknown[] | null;
   modelView: ExternalModelControlView;
   permissionModeView: ExternalPermissionModeControlView;
@@ -643,6 +659,7 @@ interface MountedComposer {
   usageRequestGeneration: number;
   draftUsageClient: RendererModelClient | null;
   commandRequestGeneration: number;
+  nativeInferenceRoute: RendererNativeInferenceRoute;
 }
 
 interface MountedCatalogRequest {
@@ -829,6 +846,7 @@ export function installRendererBindingProbe(
   // composerId belongs to the logical draft and survives DOM replacement.
   const pendingDefaultPreferences = new Map<string, boolean>();
   const catalogRequests = new WeakMap<MountedComposer, MountedCatalogRequest>();
+  const harnessAvailabilityRechecks = new Map<string, number>();
   const draftUsageRequests = new WeakMap<
     MountedComposer,
     { client: RendererModelClient | null; generation: number; pending: boolean }
@@ -1109,6 +1127,7 @@ export function installRendererBindingProbe(
     mounted: MountedComposer,
     status: RendererCodexUsageGateStatus,
   ): void => {
+    mounted.codexUsageBanner.update(status === "bypassed");
     const title =
       status === "unsupported"
         ? rendererHarnessMessages(settingsLifecycle.locale).codexUsageGateUnavailable
@@ -1153,6 +1172,34 @@ export function installRendererBindingProbe(
       : "installing";
   };
 
+  /**
+   * Workspace of each Host's current draft, published by the draft prewarm
+   * (the only place Desktop names it). External Harness drafts ask the Host
+   * for live commands and skills; native Codex quota isolation separately
+   * requires a workspace confirmed for this Composer's current draft identity.
+   */
+  const draftWorkspaces = new Map<string, string>();
+  const nativeDraftWorkspaces = createRendererNativeDraftWorkspaceStore();
+  const draftIdFromComposerModelTarget = (target: readonly unknown[] | null): string | null =>
+    target?.[0] === "default" && typeof target[1] === "string" && target[1].length > 0
+      ? target[1]
+      : null;
+  const activeNativeDraftComposers = (): RendererNativeDraftComposer[] =>
+    [...mountedByComposer.values()].map((mounted) => ({
+      composer: mounted.composer,
+      hostId: threadIdFromComposerModelTarget(mounted.modelTarget)
+        ? null
+        : activeModelHostId(mounted.composer),
+      draftId: draftIdFromComposerModelTarget(mounted.modelTarget),
+    }));
+  {
+    const published: unknown = Reflect.get(window, "__codexhostDraftWorkspacesV1");
+    if (typeof published === "object" && published !== null) {
+      for (const [hostId, cwd] of Object.entries(published)) {
+        if (typeof cwd === "string" && cwd.length > 0) draftWorkspaces.set(hostId, cwd);
+      }
+    }
+  }
   const renderMounted = (mounted: MountedComposer): void => {
     if (!isMountedComposer(mounted.composer)) return;
     restorePendingDraftPreference(mounted);
@@ -1187,7 +1234,33 @@ export function installRendererBindingProbe(
       mounted.ownershipStatus === "error",
       mounted.accountBalance,
     );
-    showCodexUsageGateStatus(mounted, mounted.codexUsageGate.update(externalSubmissionReady));
+    const nativeTargetResolved =
+      mounted.modelTarget?.[0] === "default" || mounted.modelTarget?.[0] === "conversation";
+    const nativeEligible =
+      nativeTargetResolved &&
+      controller.get(mounted.composer).agent === "codex" &&
+      mounted.ownershipStatus !== "loading" &&
+      mounted.ownershipStatus !== "error" &&
+      !controller.isSwitching(mounted.composer);
+    const nativeThreadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+    if (nativeThreadId) nativeDraftWorkspaces.delete(mounted.composer);
+    const nativeDraftScope = nativeThreadId
+      ? null
+      : nativeDraftWorkspaces.resolve({
+          composer: mounted.composer,
+          hostId: activeModelHostId(mounted.composer),
+          draftId: draftIdFromComposerModelTarget(mounted.modelTarget),
+        });
+    const nativeSubmissionReady = mounted.nativeInferenceRoute.update(
+      composerClient(mounted),
+      nativeThreadId,
+      nativeEligible,
+      nativeDraftScope,
+    );
+    showCodexUsageGateStatus(
+      mounted,
+      mounted.codexUsageGate.update(externalSubmissionReady || nativeSubmissionReady),
+    );
     if (mounted.control.usage) {
       mounted.control.usage.onOpen = () => {
         void refreshThreadUsage(
@@ -1199,20 +1272,6 @@ export function installRendererBindingProbe(
   };
 
   let delegationMention: RendererDelegationMentionControl | null = null;
-  /**
-   * Workspace of each Host's current draft, published by the draft prewarm
-   * (the only place Desktop names it). A draft asks the Host for that
-   * workspace's live commands and skills.
-   */
-  const draftWorkspaces = new Map<string, string>();
-  {
-    const published: unknown = Reflect.get(window, "__codexhostDraftWorkspacesV1");
-    if (typeof published === "object" && published !== null) {
-      for (const [hostId, cwd] of Object.entries(published)) {
-        if (typeof cwd === "string" && cwd.length > 0) draftWorkspaces.set(hostId, cwd);
-      }
-    }
-  }
   const skillContext = (editor: HTMLElement): RendererSkillContext | null => {
     const composer = composerForElement(editor);
     const mounted = composer ? mountedByComposer.get(composer) : undefined;
@@ -1702,6 +1761,7 @@ export function installRendererBindingProbe(
   const loadExternalCatalog = async (
     mounted: MountedComposer,
     credentialAccess?: "allow",
+    refresh = false,
   ): Promise<void> => {
     if (!isMountedComposer(mounted.composer)) return;
     modelRecovery.delete(mounted);
@@ -1772,6 +1832,7 @@ export function installRendererBindingProbe(
       catalogRequests.set(mounted, catalogRequest);
       const inspection = await client.inspectHarness({
         harnessId: harnessIdSchema.parse(agent),
+        ...(refresh ? { refresh: true } : {}),
         ...(credentialAccess ? { credentialAccess } : {}),
       });
       if (
@@ -2012,6 +2073,77 @@ export function installRendererBindingProbe(
     }
   };
 
+  /**
+   * Retry a failed first catalog whose Harness availability is not ready. Only
+   * this Harness is rechecked, so an observation already in flight for the Host
+   * cannot absorb the retry, and the Composer shows loading until it settles.
+   */
+  const recheckFailedHarnessCatalog = async (
+    mounted: MountedComposer,
+    hostId: string,
+    agent: string,
+  ): Promise<void> => {
+    const client = composerClient(mounted);
+    if (!client) return;
+    const loadingView: MountedComposer["modelView"] = {
+      status: "loading",
+      thinkingSelectionSupported: false,
+    };
+    mounted.modelView = loadingView;
+    renderMounted(mounted);
+    const key = `${hostId}\u0000${agent}`;
+    const recheck = (harnessAvailabilityRechecks.get(key) ?? 0) + 1;
+    harnessAvailabilityRechecks.set(key, recheck);
+    const state = hostHarnessAvailabilityState(hostId);
+    let status: RendererAgentAvailability = "error";
+    let nextError: CodexhostError | undefined;
+    let webUiAvailable = false;
+    try {
+      const inspection = await client.inspectHarness({
+        harnessId: harnessIdSchema.parse(agent),
+        refresh: true,
+        purpose: "availability",
+        credentialAccess: "retry",
+      });
+      status = inspection.status === "ready" ? "ready" : inspection.status;
+      webUiAvailable =
+        hostId === "local" && inspection.status === "ready" && inspection.webUi?.open === true;
+      if (inspection.status !== "ready") {
+        const error = inspection.error;
+        nextError = {
+          code: error.code,
+          message: error.message,
+          retryable: error.retryable,
+          ...(error.diagnostic ? { diagnostic: error.diagnostic } : {}),
+          ...(error.stage ? { stage: error.stage } : {}),
+          ...(error.durationMs !== undefined ? { durationMs: error.durationMs } : {}),
+          ...(error.stderrTail ? { stderrTail: error.stderrTail } : {}),
+        };
+      }
+    } catch (error) {
+      nextError = {
+        code: error instanceof RendererMethodUnavailableError ? "unavailable" : "internalError",
+        message: error instanceof Error ? error.message : String(error),
+        retryable: !(error instanceof RendererMethodUnavailableError),
+        stage: "request",
+      };
+    }
+    const current =
+      !disposed &&
+      harnessAvailabilityRechecks.get(key) === recheck &&
+      modelClientForHost(hostId) === client;
+    if (current) {
+      state.errors[agent] = nextError;
+      state.availability = { ...state.availability, [agent]: status };
+      state.webUi = { ...state.webUi, [agent]: webUiAvailable };
+      publishConnectionStatus();
+    }
+    // Something else (a Harness switch, a newer load) already replaced the loading view.
+    if (mounted.modelView !== loadingView || !isMountedComposer(mounted.composer)) return;
+    // Not ready: the load settles the Composer back on a pressable error.
+    void loadExternalCatalog(mounted, undefined, current && status === "ready");
+  };
+
   const refreshExternalModels = async (mounted: MountedComposer): Promise<void> => {
     const { agent } = controller.get(mounted.composer);
     const hostId = mounted.hostId;
@@ -2027,6 +2159,22 @@ export function installRendererBindingProbe(
       composerClient(candidate) === client &&
       controller.get(candidate.composer).agent === agent &&
       !controller.isSwitching(candidate.composer);
+    if (
+      matchesTarget(mounted) &&
+      mounted.modelView.status === "error" &&
+      mounted.modelView.catalog === undefined
+    ) {
+      // The first load failed, so there is no catalog to refresh. Load it again;
+      // a Harness whose availability that failure marked unready is rechecked first.
+      // Refresh so an Adapter that cached the failed inspection inspects again.
+      const availability = hostHarnessAvailabilityState(hostId).availability[agent];
+      if (availability === "ready" || availability === "checking") {
+        void loadExternalCatalog(mounted, undefined, true);
+      } else {
+        void recheckFailedHarnessCatalog(mounted, hostId, agent);
+      }
+      return;
+    }
     const canRefresh = (candidate: MountedComposer): boolean =>
       matchesTarget(candidate) &&
       candidate.modelView.catalog !== undefined &&
@@ -2794,7 +2942,12 @@ export function installRendererBindingProbe(
       scheduleHarnessAvailabilityRetry(hostId);
       return Promise.resolve();
     }
-    if (state.request?.client === client && (!force || state.request.force)) {
+    // A credential retry must reach the Adapter; an observation started without it cannot stand in.
+    if (
+      state.request?.client === client &&
+      (!force || state.request.force) &&
+      (!credentialAccess || state.request.credentialAccess === credentialAccess)
+    ) {
       return state.request.promise;
     }
     if (state.directoryClient !== client) {
@@ -2876,6 +3029,8 @@ export function installRendererBindingProbe(
       await Promise.all(
         agentsToInspect.map(async (agent) => {
           const before = state.availability[agent];
+          const recheckKey = `${hostId}\u0000${agent}`;
+          const recheck = harnessAvailabilityRechecks.get(recheckKey);
           let status: RendererAgentAvailability = "error";
           let nextError: CodexhostError | undefined;
           let webUiAvailable = false;
@@ -2925,6 +3080,8 @@ export function installRendererBindingProbe(
             modelClientForHost(hostId) !== client
           )
             return;
+          // A targeted recheck started after this observation owns the newer answer.
+          if (harnessAvailabilityRechecks.get(recheckKey) !== recheck) return;
           const previousStatus = state.availability[agent];
           // A passive observation can finish after an interactive inspection authorized this Harness.
           if (
@@ -2955,7 +3112,8 @@ export function installRendererBindingProbe(
                 refresh && force,
               )
             ) {
-              void loadExternalCatalog(mounted);
+              // A forced refresh must reach the Adapter for the catalog too, not only availability.
+              void loadExternalCatalog(mounted, undefined, refresh && force);
             }
             renderMounted(mounted);
           }
@@ -2969,7 +3127,7 @@ export function installRendererBindingProbe(
         scheduleHarnessAvailabilityRetry(hostId);
       }
     })();
-    const request = { client, promise, force };
+    const request = { client, promise, force, ...(credentialAccess ? { credentialAccess } : {}) };
     state.request = request;
     void promise.then(
       () => {
@@ -3328,6 +3486,12 @@ export function installRendererBindingProbe(
       composerId: state.composerId,
       control,
       codexUsageGate: createRendererCodexUsageGate(composer),
+      codexUsageBanner: createRendererNativeProviderUsageBanner(composer),
+      nativeInferenceRoute: createRendererNativeInferenceRoute(() => {
+        if (!disposed && mountedByComposer.get(composer) === mounted && composer.isConnected) {
+          renderMounted(mounted);
+        }
+      }),
       modelTarget,
       modelView: inherited?.modelView ?? { status: "idle" },
       permissionModeView: inherited?.permissionModeView ?? { status: "idle" },
@@ -3427,6 +3591,9 @@ export function installRendererBindingProbe(
           usageRefreshTimers.delete(composer);
         }
         mounted.codexUsageGate.dispose();
+        mounted.codexUsageBanner.dispose();
+        mounted.nativeInferenceRoute.dispose();
+        nativeDraftWorkspaces.delete(composer);
         disposeComposerAgentControl(mounted.control);
         ownershipRecovery.delete(mounted);
         modelRecovery.delete(mounted);
@@ -3670,6 +3837,7 @@ export function installRendererBindingProbe(
     reconcileHarnessAvailabilityHost();
     void loadCodexAccounts();
     void refreshHarnessAvailability();
+    nativeDraftWorkspaces.clear();
     for (const mounted of mountedByComposer.values()) {
       const state = controller.get(mounted.composer);
       if (
@@ -3678,6 +3846,8 @@ export function installRendererBindingProbe(
         !isExternalConfigurationStable(mounted.modelView, mounted.permissionModeView)
       ) {
         void loadExternalCatalog(mounted);
+      } else if (state.agent === "codex" && !threadIdFromComposerModelTarget(mounted.modelTarget)) {
+        renderMounted(mounted);
       }
     }
   };
@@ -3744,9 +3914,21 @@ export function installRendererBindingProbe(
   const onDraftWorkspace = (event: Event): void => {
     const detail: unknown = (event as CustomEvent).detail;
     if (typeof detail !== "object" || detail === null) return;
-    const { hostId, cwd } = detail as { hostId?: unknown; cwd?: unknown };
-    if (typeof hostId !== "string" || typeof cwd !== "string" || cwd.length === 0) return;
+    const { hostId, cwd, draftId } = detail as {
+      hostId?: unknown;
+      cwd?: unknown;
+      draftId?: unknown;
+    };
+    if (typeof hostId !== "string" || typeof cwd !== "string" || cwd.trim().length === 0) return;
     draftWorkspaces.set(hostId, cwd);
+    nativeDraftWorkspaces.publish(
+      {
+        hostId,
+        cwd,
+        ...(typeof draftId === "string" && draftId.length > 0 ? { draftId } : {}),
+      },
+      activeNativeDraftComposers(),
+    );
     delegationMention?.refresh();
     for (const mounted of mountedByComposer.values()) {
       if (
@@ -3755,6 +3937,12 @@ export function installRendererBindingProbe(
         controller.get(mounted.composer).agent !== "codex"
       ) {
         void refreshCommands(mounted, { keepCurrent: true });
+      } else if (
+        !threadIdFromComposerModelTarget(mounted.modelTarget) &&
+        activeModelHostId(mounted.composer) === hostId
+      ) {
+        // A Codex draft re-checks its inference route against the confirmed workspace.
+        renderMounted(mounted);
       }
     }
   };
@@ -4011,6 +4199,7 @@ export function installRendererBindingProbe(
         if (state.retryTimer !== null) window.clearTimeout(state.retryTimer);
       }
       harnessAvailabilityByHost.clear();
+      nativeDraftWorkspaces.clear();
       activeAvailabilityHostId = "local";
       sidebarAgentIcons.refresh();
       void refreshHarnessAvailabilityForHost("local");
@@ -4085,8 +4274,11 @@ export function installRendererBindingProbe(
         mounted.usageRequestGeneration += 1;
         usageRefreshAttempts.delete(mounted.composer);
         mounted.codexUsageGate.dispose();
+        mounted.codexUsageBanner.dispose();
+        mounted.nativeInferenceRoute.dispose();
         disposeComposerAgentControl(mounted.control);
       }
+      nativeDraftWorkspaces.clear();
       mountedByComposer.clear();
       pendingReplacements.clear();
       connectionListeners.clear();

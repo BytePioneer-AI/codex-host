@@ -108,5 +108,6 @@ Load a skill only when its task occurs; read its `SKILL.md` before following it.
 ## Commit & Pull Request Guidelines
 
 - Use concise, imperative commit subjects. Conventional Commit prefixes such as `feat:`, `fix:`, `docs:`, and `test:` are preferred.
-- Pull requests should explain purpose, affected requirements, validation performed, and linked issues. Include screenshots only for visible UI changes.
+- Pull requests should explain purpose, affected requirements, validation performed, and linked issues.
+- Any PR with visible UI changes (Web UI, Desktop shell, Android shell, Renderer extension, or Console UI) must include sanitized demo screenshots or short recordings showing key states (or before/after) in the PR description. Agents working on visible UI changes must capture and inspect rendered screenshots before handing off or opening the PR; if a change under UI paths has no visible change, state `No visual changes: <reason>` instead of attaching screenshots.
 - Never commit ignored reference repositories, secrets, logs, downloads, or local environment files.

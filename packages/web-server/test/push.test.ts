@@ -8,6 +8,7 @@ import { it, type TestContext } from "node:test";
 import webpush from "web-push";
 import { PushNotifier } from "../src/push.ts";
 import { DataDir } from "../src/store.ts";
+import { RpcRegistry } from "../src/transport.ts";
 
 function proxyEnvironment(t: TestContext, values: NodeJS.ProcessEnv) {
   const names = [
@@ -34,17 +35,18 @@ function proxyEnvironment(t: TestContext, values: NodeJS.ProcessEnv) {
   t.after(() => apply(previous));
 }
 
-function fixture(t: TestContext) {
+function fixture(t: TestContext, endpoints = ["https://push.example.test/device"]) {
   const root = mkdtempSync(join(tmpdir(), "codexhost-push-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const data = new DataDir(root);
-  data.writeJson("push-subscriptions.json", [
-    {
-      endpoint: "https://push.example.test/device",
+  data.writeJson(
+    "push-subscriptions.json",
+    endpoints.map((endpoint) => ({
+      endpoint,
       keys: { p256dh: "test-key", auth: "test-auth" },
       createdAt: 1,
-    },
-  ]);
+    })),
+  );
   return { data, push: new PushNotifier(data) };
 }
 
@@ -59,6 +61,62 @@ it("sets a request timeout independently of the notification TTL", async (t) => 
     urgency: "high",
     timeout: 10_000,
   });
+});
+
+it("sends a push test only to its requesting subscription", async (t) => {
+  proxyEnvironment(t, {});
+  const target = "https://push.example.test/device";
+  const other = "https://push.example.test/other-device";
+  const { push } = fixture(t, [target, other]);
+  const send = t.mock.method(webpush, "sendNotification", async () => {});
+  const rpc = new RpcRegistry();
+  push.register(rpc);
+  const auth = (credential: string) => ({ credential, local: false, release() {} });
+  for (const [endpoint, credential] of [
+    [target, "device-a"],
+    [other, "device-b"],
+  ] as const) {
+    assert.equal(
+      (
+        await rpc.dispatch(
+          "codexhost/pushSubscribe",
+          { args: { subscription: { endpoint, keys: { p256dh: "p", auth: "a" } } } },
+          auth(credential),
+        )
+      ).ok,
+      true,
+    );
+  }
+
+  const sent = await rpc.dispatch(
+    "codexhost/pushTest",
+    { args: { endpoint: target } },
+    auth("device-a"),
+  );
+  assert.deepEqual(sent, { ok: true, value: { sent: 1 } });
+  assert.deepEqual(
+    send.mock.calls.map((call) => call.arguments[0]?.endpoint),
+    [target],
+  );
+
+  for (const endpoint of [other, "missing"]) {
+    assert.deepEqual(
+      await rpc.dispatch("codexhost/pushTest", { args: { endpoint } }, auth("device-a")),
+      { ok: true, value: { sent: 0 } },
+    );
+  }
+  const invalid = {
+    ok: false,
+    error: {
+      code: "push/invalid-subscription",
+      message: "A PushSubscription endpoint is required",
+      details: {},
+    },
+  };
+  for (const args of [{}, { endpoint: undefined }, { endpoint: "" }]) {
+    assert.deepEqual(await rpc.dispatch("codexhost/pushTest", { args }, auth("device-a")), invalid);
+  }
+  assert.equal(send.mock.calls.length, 1);
 });
 
 for (const [name, environment, expected] of [

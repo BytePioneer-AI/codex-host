@@ -28,6 +28,16 @@ ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两�
 
 门按其 selector 实际读取的字段识别，不依赖压缩名或 hook 序号。兼容直接 `[store, atom]` 订阅及 Desktop 26.928 的 readonly signal adapter / lazy snapshot wrapper：以成对的订阅 effect 和原生快照一致性验证 wrapper，限量重放 readonly 布尔 selector 的依赖以识别间接 reserve 门；拒绝循环依赖、追踪型 render、混合门和快照不匹配。Desktop 26.1002 的 Account 门可读取 reserve `active` 作为豁免，并同时由 submit owner 和编辑器到 owner 之间的子组件订阅；这些订阅按组件分别投影。每次重试从 React 当前已提交树重新发现作用域，包括 alternate 切换后才挂载的子组件；无法确认当前作用域时恢复原生限制。释放时分别恢复 subscriber 与 React instance 原来的 getter，不把 wrapper 替换成另一个函数。无法唯一识别时保留原生限制，并在 Agent 控件悬停提示中说明。升级后的诊断步骤见 [Desktop 更新兼容性诊断手册](../operations/codex-desktop-upgrade-diagnosis-playbook.md#检查-codex-额度门)。
 
+### 原生 Codex 的独立 Provider
+
+原生 Codex 也可以使用与官方订阅额度无关的 custom Provider。Renderer 通过同一 Host 的 `config/read` 核验有效配置，要求非官方 HTTP(S) endpoint，以及显式独立 bearer、环境 Key 或 `requires_openai_auth=false`。`openai`、`cc-switch-official`、Host 的外部投影 Provider、官方 endpoint 和未知配置保留原生额度门。不根据 `gpt-*` 模型名或 ChatGPT 登录状态猜测 Billing Source，也不重置或伪造官方额度。
+
+已有 Thread 先通过同一 Host 的 `thread/read` 核验真实 `modelProvider` 与工作目录 `cwd`，并按该目录读取 `config/read`，避免把新 Thread 的默认 custom 配置用于历史官方 Thread；历史 Thread 不会因默认 Provider 改变而迁移，缺少可核验 `cwd` 时保守保留原生额度门。新草稿的额度豁免绑定当前 Composer 的草稿身份与已确认工作区，工作区缺失、切换、过期或同 Host 多草稿无法唯一关联时保守保留原生额度门，不退回全局配置证明独立推理。判定缓存绑定 Host 客户端、Thread 或草稿身份与工作区。就绪的原生 Composer 每 5 秒自动复核；同一目标的已确认结果在最多 5 秒的复核期间保持，避免周期性撤销额度隔离而闪烁。返回官方配置、读取失败或复核超时立即撤销；Host/Thread/草稿切换、ownership 加载/错误及切换中不复用旧结果。Composer 移除和扩展卸载清除定时器，过期响应不能恢复旧投影。Renderer 状态只保留布尔判定，不保存凭据。空输入、附件等其他提交限制不变。独立 Provider 自身的额度或认证失败仍由真实后端处理。
+
+额度隔离成功的 Composer 同时隐藏其原生「Codex 和工作使用额度已用完」横幅。`renderer-native-provider-usage-banner.ts` 只识别该 Composer 内 `aside[role="status"]` 的已提交 React 祖先中明确的 `banner.banner_type`（`rate_limit_reached` 及套餐前缀），不按翻译文案、模型名或 CSS 压缩类名隐藏。局部 MutationObserver 在绘制前处理原生节点替换及样式重写，不等待下一 animation frame。其他警告与未知横幅保持原样；隔离撤销、Composer 移除或扩展卸载时恢复原来的可见性与样式。账号设置与额度入口继续展示真实官方余额。
+
+使用独立代理凭据时可保留 `requires_openai_auth=true` 和官方账号展示，官方已用额度不会因此变成可用。此判定复用已有组件局部额度门适配，无法识别门控形态时保留原生限制，不能仅凭独立 Provider 判定绕过。
+
 ## 其他 Harness 的只读账号额度
 
 统一列表中展示 Grok Build、agy（Antigravity）、Claude Code、Cursor、Kimi Code、Qoder、DeepSeek Harness（DSH）和 Pi 当前原生认证可读取的真实额度或预付费余额。导入 Pi 的入口位于账号信息下方，不单独占列；原生管理边界保留在账号信息的说明中。这不是多账号管理：不提供添加、删除、切换、设为默认或重置卡操作，也不修改 Codex 当前账号。搜索和已用/剩余切换作用于所有行，刷新按钮重新查询两类额度。各 Harness 独立并行查询，任一有效结果返回后立即显示，不等待其他 Harness；全局刷新期间同样逐项恢复。
@@ -38,7 +48,7 @@ ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两�
 - DeepSeek Harness（DSH）此处仅显示官方 API Key 的预付费余额，不显示 DSH 登录账号的额度。Key 按以下顺序读取，不包括 DSH 调用目录中的项目 `.env`：`$DSH_HOME/.credentials.yaml`（默认 `~/.dsh`）的 `refs.DEEPSEEK_API_KEY`，其次进程环境变量 `DEEPSEEK_API_KEY`，最后 `$DSH_HOME/.env`。只向 `GET https://api.deepseek.com/user/balance` 发送且不跟随重定向，不启动 dsh 进程或模型 Turn。每个有余额的币种各一行，全部为 0 时保留第一项显示 0。如果进程环境或 `$DSH_HOME/.env` 的 `DEEPSEEK_BASE_URL` 不是官方 HTTPS 地址，或 DSH 主目录、默认 Web profile 中存在非空 `cordis.patch.yml` 配置覆盖，则不查询，避免把自定义 Provider 的凭据发给 DeepSeek。同一余额也通过 `balance()` 缓存显示在 DSH 会话的对话框额度胶囊中，缓存最多 30 秒刷新一次。
 - Cursor 使用原生 OAuth 凭据读取 DashboardService 的 Auto 与 API 月度比例和账期结束时间；API Key 与内存凭据模式不读取无关的已保存 OAuth。Kimi Code 读取 coding usages，原生 Token 过期或接口返回 401 时通过原 refresh token 刷新并更新原生凭据文件。Qoder 通过 SDK `getUsageInfo()` 与 `accountInfo()` 读取套餐 Credits、身份以及共享资源包；不会把 Session 累计消耗冒充账号额度。
 - Grok Build 复用原生 xAI OAuth 认证和 billing 查询，展示周期、重置时间及产品用量；设置页查询时并行读取原生 CLI 使用的 `/v1/settings`，以其中的 `subscription_tier_display`（如 X Premium）作为套餐名，最多等待 2 秒，失败、超时或字段无效时只省略套餐，不影响身份和额度；对话框额度轮询不发起该请求。不将其他 issuer 的 Token 发到 xAI。套餐使用比例优先读取 `creditUsagePercent`；省略时按原生规则使用旧版套餐额度 `monthlyLimit` / `used`，没有正数套餐上限但有可识别的周/月周期及有效重置时间时，按原生零用量语义展示已用 0% / 剩余 100%，保留账号行。请求失败、空配置或异常用量字段不补成 0%；不使用 `onDemandCap` / `onDemandUsed` 的按需消费金额替代套餐比例。显式配置 `XAI_API_KEY`、`GROK_API_KEY` 或 `GROK_TOKEN` 时保守地不展示保存的 OAuth 账号。此页展示 Harness 账号额度，不判定某个 Thread 的逐模型凭据或实际 Billing Source。
-- agy 执行原生 `--print=/usage --output-format stream-json`，由 CLI 自己解析认证，展示实际模型组与窗口。当前该输出不提供账号邮箱或套餐，以 Harness 名称为主标题。
+- agy 执行原生 `--print=/usage --output-format stream-json`，由 CLI 自己解析认证，展示实际模型组与窗口。当前该输出不提供账号邮箱或套餐，以 Harness 名称为主标题。agy Thread 的输入框额度以当前模型所属的模型组为主额度（模型 ID 首段如 `claude`、`gpt`、`gemini` 出现在组名中即归属该组），其他组作为附属窗口保留；切换模型后立即更新，无匹配组时回退到账号级排序。
 - Claude Code 使用 Agent SDK 0.3.220 的 `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` 主动查询，并通过 `accountInfo()` 读取身份。仅投影 `rate_limits_available` 为真且有效的套餐窗口，包括原生返回的模型独立窗口；不将 session Token、会话花费或额外用量金额混为额度百分比。当前不展示 `extra_usage` 金额。旧 SDK/CLI 不支持该实验性操作时不展示。
 - 查询不需要已有 Thread，不发起 Model Turn；Claude SDK 检查使用空输入流、无工具且不持久化 Session，并在成功、失败、超时后关闭检查进程。Broker 路径转发同一个只读能力。
 

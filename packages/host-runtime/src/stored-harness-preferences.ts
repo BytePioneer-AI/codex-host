@@ -32,7 +32,7 @@ export function storedPreferenceModelMigration(input: {
           if (id === "codex") return input.inspectCodex();
           await input.loadAdapters();
           const adapter = input.adapters.get(id);
-          return adapter && storedModelCatalog(adapter);
+          return adapter?.normalizeStoredModelRef ? storedModelCatalog(adapter) : undefined;
         })().catch(() => undefined);
         if (!catalog) return;
 

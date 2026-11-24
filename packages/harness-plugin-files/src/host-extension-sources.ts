@@ -5,7 +5,9 @@ import {
   HOST_EXTENSION_CATALOG_MIRROR_URL,
   HOST_EXTENSION_CATALOG_URL,
   HOST_EXTENSION_ZIP_MAX_BYTES,
+  desktopExtensionHttpUrlSchema,
   hostExtensionCatalogSchema,
+  hostExtensionIdSchema,
   hostExtensionInstallSourceSchema,
   hostExtensionResourcePathSchema,
   type HostExtensionInstallSource,
@@ -34,6 +36,8 @@ let pending: Promise<HostExtensionsCatalogResult> | undefined;
 
 const PRIMARY_GRACE_MS = 1_500;
 const PRIMARY_FORCE_REFRESH_GRACE_MS = 3_000;
+const STATS_MAX_BYTES = 256 * 1024;
+const STATS_TIMEOUT_MS = 2_000;
 
 function catalogGeneratedAtMs(result: HostExtensionsCatalogResult): number {
   const parsed = Date.parse(result.generatedAt);
@@ -121,13 +125,70 @@ async function raceCatalog(forceRefresh: boolean): Promise<HostExtensionsCatalog
   }
 }
 
+async function fetchLiveDownloadStats(
+  statsUrl: string | undefined,
+  forceRefresh: boolean,
+): Promise<ReadonlyMap<string, number> | undefined> {
+  try {
+    const parsed = desktopExtensionHttpUrlSchema.safeParse(statsUrl);
+    if (!parsed.success) return undefined;
+    const target = new URL(parsed.data);
+    target.pathname = `${target.pathname.replace(/\/+$/u, "")}/stats.json`;
+    target.search = "";
+    target.hash = "";
+    const bytes = await downloadExtensionBytes(
+      target.href,
+      STATS_MAX_BYTES,
+      {
+        accept: "application/json",
+        ...(forceRefresh ? { "cache-control": "no-cache" } : {}),
+      },
+      {
+        signal: AbortSignal.timeout(STATS_TIMEOUT_MS),
+        allowUrl: (url) => url.href === target.href,
+      },
+    );
+    const payload: unknown = JSON.parse(utf8.decode(bytes));
+    if (!payload || typeof payload !== "object" || !("downloads" in payload)) return undefined;
+    const rawDownloads = payload.downloads;
+    if (!rawDownloads || typeof rawDownloads !== "object" || Array.isArray(rawDownloads))
+      return undefined;
+    const downloads = new Map<string, number>();
+    for (const [id, count] of Object.entries(rawDownloads)) {
+      if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) {
+        downloads.set(id, count);
+      }
+    }
+    return downloads;
+  } catch {
+    return undefined;
+  }
+}
+
+function mergeLiveDownloadStats(
+  catalog: HostExtensionsCatalogResult,
+  liveDownloads: ReadonlyMap<string, number> | undefined,
+): HostExtensionsCatalogResult {
+  if (!liveDownloads || liveDownloads.size === 0) return catalog;
+  return {
+    ...catalog,
+    extensions: catalog.extensions.map((entry) => {
+      const live = liveDownloads.get(entry.id);
+      return live === undefined ? entry : { ...entry, downloads: live };
+    }),
+  };
+}
+
 export async function fetchHostExtensionCatalog({
   forceRefresh = false,
 }: { forceRefresh?: boolean | undefined } = {}): Promise<HostExtensionsCatalogResult> {
   if (!forceRefresh && cache && Date.now() < cache.expires)
     return { ...structuredClone(cache.result), cached: true };
   if (pending) return structuredClone(await pending);
-  const request = raceCatalog(forceRefresh);
+  const request = Promise.all([
+    raceCatalog(forceRefresh),
+    fetchLiveDownloadStats(resolveHostExtensionStatsUrl(), forceRefresh),
+  ]).then(([catalog, liveDownloads]) => mergeLiveDownloadStats(catalog, liveDownloads));
   pending = request;
   try {
     const result = await request;
@@ -320,6 +381,45 @@ export async function prepareHostExtension({
     source,
     files: await readExtensionZip(zip, subpath, DESKTOP_EXTENSION_ASSET_MAX_BYTES),
   });
+}
+
+export const DEFAULT_HOST_EXTENSION_STATS_URL = "https://ext-stats.chost.dev";
+
+export function resolveHostExtensionStatsUrl(
+  environment: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const configured = environment.CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL;
+  if (configured !== undefined) {
+    const trimmed = configured.trim();
+    if (!trimmed || /^(?:off|none|false|0)$/iu.test(trimmed)) return undefined;
+    return trimmed;
+  }
+  if (environment.CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL?.trim()) return undefined;
+  return DEFAULT_HOST_EXTENSION_STATS_URL;
+}
+
+export async function reportHostExtensionInstall(
+  id: string,
+  statsUrl: string | undefined,
+): Promise<void> {
+  try {
+    if (!hostExtensionIdSchema.safeParse(id).success) return;
+    const { data } = desktopExtensionHttpUrlSchema.safeParse(statsUrl);
+    if (data === undefined) return;
+    const url = new URL(data);
+    url.pathname = `${url.pathname.replace(/\/+$/u, "")}/install/${encodeURIComponent(id)}`;
+    url.search = "";
+    url.hash = "";
+    const response = await fetch(url, {
+      method: "POST",
+      credentials: "omit",
+      redirect: "error",
+      signal: AbortSignal.timeout(2_000),
+    });
+    await response.body?.cancel();
+  } catch {
+    // Best effort only: the install or update has already succeeded.
+  }
 }
 
 /** Convenience wrapper. For backend updates, prepare first and stop the old runtime before commit. */

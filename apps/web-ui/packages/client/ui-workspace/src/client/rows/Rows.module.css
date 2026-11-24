@@ -1,29 +1,52 @@
 .hostBadge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  max-width: 96px;
+  gap: 5px;
+  min-width: 0;
+  max-width: 88px;
+  margin-left: 6px;
   flex-shrink: 0;
+  overflow: hidden;
   font-size: 11px;
-  color: var(--dsw-alias-label-secondary);
+  line-height: 16px;
+  font-weight: 450;
+  color: var(--dsw-alias-label-tertiary);
 }
-.hostBadge > span:first-child {
+.hostBadgeSession {
+  max-width: 78px;
+  margin-left: 4px;
+}
+.hostLabel {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .hostDot {
-  width: 7px;
-  height: 7px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: #92949a;
+  background: var(--dsw-alias-label-tertiary);
+  opacity: 0.75;
   flex-shrink: 0;
 }
 .hostBadge[data-state="connected"] .hostDot {
-  background: #16a34a;
+  background: var(--dsw-alias-state-success-primary, #16a34a);
+  opacity: 0.85;
 }
 .hostBadge[data-state="connecting"] .hostDot {
-  background: #d97706;
+  background: var(--dsw-alias-state-warning-primary, #d97706);
+  opacity: 0.9;
+}
+.hostTimeSep {
+  flex: none;
+  margin: 0 4px;
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+  opacity: 0.55;
+  user-select: none;
 }
 
 .projectRow,
@@ -141,6 +164,7 @@
 .searchResultHeading {
   display: flex;
   align-items: center;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -479,7 +503,12 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .time {
+  .sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen)
+    :is(.time, .hostTimeSep, .hostBadge) {
+    visibility: hidden;
+  }
+
+  .projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .hostBadge {
     visibility: hidden;
   }
 
@@ -778,6 +807,10 @@
   }
 
   .sessionRow .time:not(.timeStatus) {
+    display: none;
+  }
+
+  .sessionRow:not(:has(.timeStatus)) .hostTimeSep {
     display: none;
   }
 

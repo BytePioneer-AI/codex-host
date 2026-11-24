@@ -144,6 +144,7 @@
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`product/web-remote-access.md`](product/web-remote-access.md) | 局域网、Tailscale、Relay 与自备隧道连接（2×2 主方式网格）、移动端引导（Android APK / iOS Safari）、自动证书、可信代理与信任边界。 |
+| [`product/multi-remote-peers.md`](product/multi-remote-peers.md) | 多远端 `codexhost web` 主机聚合（Peer Hub）：`/api/peer/v1/*` 契约、`remote-peers-v1.json` 存储、本机管理权限与 SSRF 防护、事件流过滤与统一多主机 UI。 |
 | [`product/self-hosted-relay.md`](product/self-hosted-relay.md) | 自建 Relay：Compose 从源码构建、通配 DNS、443 自动证书与电脑端连接。 |
 | [`product/web-ui-extensions.md`](product/web-ui-extensions.md) | DSH Web 插件安装、原生前后端运行、资源路由、启停、依赖检查、恢复与原包验证边界；使用或维护界面扩展时阅读。 |
 | [`proposals/ui-extension-plugins.md`](proposals/ui-extension-plugins.md) | 界面扩展目标方案与分步状态：Harness 与界面插件分类、统一管理、DSH 纯 Web 首期范围，以及原生插件和 Codex GUI 分端接入背景。 |

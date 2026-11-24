@@ -63,6 +63,11 @@ mod tests {
                 root.join("installed.app/Contents/MacOS").join(&executable),
                 root.join("installed.app/Contents/Resources/runtime/node"),
             ),
+            (
+                json!({"kind":"linux-archive", "install_root":root.join("linux-installed"), "archive_path":root.join("update.tar.gz"), "artifact_sha256":"a".repeat(64)}),
+                root.join("linux-installed/bin").join(&executable),
+                root.join("linux-installed/runtime/node"),
+            ),
         ] {
             let request: UpdateRequest = serde_json::from_value(json!({
                 "schema_version":1, "version":"1.2.3", "wait_pid":12,

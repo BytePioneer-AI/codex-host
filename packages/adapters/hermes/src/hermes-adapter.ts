@@ -16,9 +16,11 @@ import { HermesTransportError } from "./hermes-transport.js";
 import type { HermesSessionListOptions } from "./gateway-session-list.js";
 import {
   catalogModelsFromInventory,
+  HermesInventoryError,
   HermesInventoryTimeoutError,
   HermesConfigurationRequiredError,
   readHermesModelInventory,
+  type HermesGatewayModelSelection,
   type HermesInventory,
 } from "./hermes-inventory.js";
 import { listHermesSessionCandidates, resolveHermesSessionCandidate } from "./hermes-import.js";
@@ -142,6 +144,39 @@ export class HermesAdapter implements HarnessAdapter {
     return this.#inventoryRead;
   }
 
+  async #gatewayModelSelection(
+    modelId: string,
+    environment: NodeJS.ProcessEnv,
+  ): Promise<HermesGatewayModelSelection | undefined> {
+    if (!modelId.includes(":")) return undefined;
+    const base = this.#effectiveEnvironment();
+    const sameProfile = [
+      "HOME",
+      "USERPROFILE",
+      "HERMES_HOME",
+      "HERMES_DATA_DIR_SUFFIX",
+      "PATH",
+    ].every((key) => base[key] === environment[key]);
+    const inventory = sameProfile
+      ? (this.#lastInventory ?? (await this.#readInventory()))
+      : await readHermesModelInventory(
+          resolveHermesExecutable({ ...this.#options, environment }),
+          20_000,
+          { environment },
+        );
+    const matches = inventory.models.filter((row) => row.modelId === modelId);
+    const selection = matches[0]?.gatewaySelection;
+    if (
+      matches.some(
+        (row) =>
+          row.gatewaySelection?.model !== selection?.model ||
+          row.gatewaySelection?.provider !== selection?.provider,
+      )
+    )
+      throw new HermesInventoryError("Hermes Model matches multiple Provider routes");
+    return selection;
+  }
+
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
     if (this.#closed) return failure("invalidState", "Hermes Adapter is closed");
     if (typeof input.cwd !== "string" || input.cwd.trim().length === 0)
@@ -258,6 +293,7 @@ export class HermesAdapter implements HarnessAdapter {
           this.#gatewayPool.release(transport);
         },
         inheritedMode,
+        (modelId) => this.#gatewayModelSelection(modelId, environment),
       );
       if (this.#closed) {
         await session.close();

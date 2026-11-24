@@ -11,24 +11,18 @@
       pageTitle: "CodexHost — 选择打开方式",
       title: "选择打开方式",
       subtitle: "每次启动可自由选择入口，桌面端、官方客户端与浏览器共用同一套本机后台与会话。",
-      nativeBadge: "独立窗口",
+      nativeBadge: "轻量",
       nativeTitle: "CodexHost 桌面端",
-      nativeSummary: "轻量、低内存的独立原生桌面窗口",
-      nativePoint1: "轻量低内存，独立原生窗口体验",
-      nativePoint2: "支持多 Agent 协作与丰富扩展",
-      nativePoint3: "不依赖官方客户端更新，随时可用",
-      nativeCta: "使用 CodexHost 桌面端",
-      nativePending: "正在打开 CodexHost 桌面端…",
-      desktopBadge: "增强版",
-      desktopTitle: "官方 Codex Desktop",
-      desktopSummary: "保留熟悉的官方桌面界面与注入增强",
-      desktopPoint1: "保留熟悉的官方桌面界面与习惯",
-      desktopPoint2: "同样支持所有外部 Agent 会话",
-      desktopPoint3: "保持原生 Codex 路径与交互一致",
-      desktopCta: "使用官方 Codex Desktop",
-      desktopPending: "正在打开官方 Codex Desktop…",
+      nativeSummary: "开箱即用，低内存原生窗口，原生支持多 Agent 与扩展",
+      nativeCta: "启动",
+      nativePending: "正在打开…",
+      desktopBadge: "OpenAI 官方",
+      desktopTitle: "Codex Desktop",
+      desktopSummary: "沿用熟悉的官方桌面界面，自动接入全部外部 Agent",
+      desktopCta: "打开",
+      desktopPending: "正在打开…",
       desktopUnavailable: "未在本机检测到 Codex Desktop",
-      desktopUnavailableCta: "当前不可用",
+      desktopUnavailableCta: "不可用",
       webLabel: "Web 浏览器访问",
       webRunning: "运行中",
       webIdle: "按需启动",
@@ -44,6 +38,7 @@
       footnote: "托盘图标随时可切换窗口、查看诊断日志或完全退出。",
       chooseErrorPrefix: "无法打开所选方式：",
       chooseErrorFallback: "请稍后重试，或从系统托盘打开诊断控制台。",
+      reportIssue: "提交 Issue",
       previewNotice: function (surfaceLabel) {
         return "离线预览模式：已模拟选择「" + surfaceLabel + "」（未连接桌面壳）。";
       },
@@ -55,28 +50,24 @@
       previewThemeAuto: "跟随系统",
       previewThemeLight: "浅色",
       previewThemeDark: "深色",
+      previewReplayFx: "重播显影",
     },
     en: {
       pageTitle: "CodexHost — Choose Launch Mode",
-      title: "Choose how to open CodexHost",
+      title: "Choose how to open",
       subtitle:
-        "Pick a launch mode each time you open CodexHost. Desktop, official client, and Web share the same local Host and sessions.",
-      nativeBadge: "Standalone",
+        "Pick an entry anytime. Desktop, the official client, and Web share the same local Host and sessions.",
+      nativeBadge: "Lightweight",
       nativeTitle: "CodexHost Desktop",
-      nativeSummary: "Lightweight, low-memory native desktop window",
-      nativePoint1: "Lightweight and low-memory native window",
-      nativePoint2: "Multi-Agent collaboration and extensions",
-      nativePoint3: "Independent of official client updates",
-      nativeCta: "Use CodexHost Desktop",
-      nativePending: "Opening CodexHost Desktop…",
-      desktopBadge: "Enhanced",
-      desktopTitle: "Official Codex Desktop",
-      desktopSummary: "Keep the familiar official interface with enhancements",
-      desktopPoint1: "Familiar official desktop interface and habits",
-      desktopPoint2: "Full support for all external Agents",
-      desktopPoint3: "Preserves the native Codex workflow",
-      desktopCta: "Use Official Codex Desktop",
-      desktopPending: "Opening Official Codex Desktop…",
+      nativeSummary: "Ready out of the box, low-memory native window with full multi-Agent support",
+      nativeCta: "Launch",
+      nativePending: "Opening…",
+      desktopBadge: "OpenAI",
+      desktopTitle: "Codex Desktop",
+      desktopSummary:
+        "Keep the familiar official desktop interface with all external Agents connected",
+      desktopCta: "Open",
+      desktopPending: "Opening…",
       desktopUnavailable: "Codex Desktop was not detected on this device",
       desktopUnavailableCta: "Unavailable",
       webLabel: "Web Browser Access",
@@ -86,7 +77,7 @@
       webCopy: "Copy URL",
       webCopying: "Starting…",
       webCopied: "Copied",
-      webOpen: "Open in Browser",
+      webOpen: "Open Web",
       webOpening: "Starting…",
       webOpenedInfo: "Opened local Web in your default browser.",
       webErrorPrefix: "Could not open Web: ",
@@ -94,6 +85,7 @@
       footnote: "Switch windows, open diagnostics, or quit anytime from the system tray.",
       chooseErrorPrefix: "Could not open selection: ",
       chooseErrorFallback: "Please try again or open the diagnostic console from the system tray.",
+      reportIssue: "Report Issue",
       previewNotice: function (surfaceLabel) {
         return (
           'Offline preview: simulated selecting "' +
@@ -109,15 +101,25 @@
       previewThemeAuto: "System",
       previewThemeLight: "Light",
       previewThemeDark: "Dark",
+      previewReplayFx: "Replay FX",
     },
   };
+
+  function setText(el, text) {
+    if (el) {
+      el.textContent = text;
+    }
+  }
 
   var params = ui.getSearchParams();
   var state = {
     locale: ui.detectInitialLocale(),
     localeLockedByUser: ui.getQueryLocale() !== null,
+    version: "",
+    platform: "",
     codexDesktopInstalled: params.get("installed") !== "false",
     submittingSurface: null,
+    lastAttemptedSurface: "",
     webRunning: false,
     webUrl: "",
     webLoginUrl: "",
@@ -125,6 +127,7 @@
     webCopied: false,
     feedbackKind: null,
     feedbackMessage: "",
+    feedbackErrorDetail: "",
     previewTheme: ui.applyThemeFromQuery(),
     previewSimulateError: params.get("error") === "1" || params.get("error") === "true",
   };
@@ -138,9 +141,6 @@
     nativeBadge: document.getElementById("native-badge"),
     nativeTitle: document.getElementById("native-title"),
     nativeSummary: document.getElementById("native-summary"),
-    nativePoint1: document.getElementById("native-point-1"),
-    nativePoint2: document.getElementById("native-point-2"),
-    nativePoint3: document.getElementById("native-point-3"),
     nativeCta: document.getElementById("native-cta"),
     nativeSpinner: document.getElementById("native-spinner"),
     nativeArrow: document.getElementById("native-arrow"),
@@ -148,9 +148,6 @@
     desktopBadge: document.getElementById("desktop-badge"),
     desktopTitle: document.getElementById("desktop-title"),
     desktopSummary: document.getElementById("desktop-summary"),
-    desktopPoint1: document.getElementById("desktop-point-1"),
-    desktopPoint2: document.getElementById("desktop-point-2"),
-    desktopPoint3: document.getElementById("desktop-point-3"),
     desktopUnavailable: document.getElementById("desktop-unavailable"),
     desktopUnavailableText: document.getElementById("desktop-unavailable-text"),
     desktopCta: document.getElementById("desktop-cta"),
@@ -173,6 +170,8 @@
     feedbackIconError: document.getElementById("feedback-icon-error"),
     feedbackIconInfo: document.getElementById("feedback-icon-info"),
     feedbackText: document.getElementById("feedback-text"),
+    feedbackIssueLink: document.getElementById("feedback-issue-link"),
+    feedbackIssueLabel: document.getElementById("feedback-issue-label"),
     footnoteText: document.getElementById("onboarding-footnote-text"),
     previewBar: document.getElementById("preview-bar"),
   };
@@ -186,91 +185,85 @@
     document.title = t.pageTitle;
     ui.updateLocaleToggle(els.langToggle, state.locale);
 
-    els.title.textContent = t.title;
-    els.subtitle.textContent = t.subtitle;
-    els.footnoteText.textContent = t.footnote;
+    setText(els.title, t.title);
+    setText(els.subtitle, t.subtitle);
+    setText(els.footnoteText, t.footnote);
 
-    els.nativeBadge.textContent = t.nativeBadge;
-    els.nativeTitle.textContent = t.nativeTitle;
-    els.nativeSummary.textContent = t.nativeSummary;
-    els.nativePoint1.textContent = t.nativePoint1;
-    els.nativePoint2.textContent = t.nativePoint2;
-    els.nativePoint3.textContent = t.nativePoint3;
+    setText(els.nativeBadge, t.nativeBadge);
+    setText(els.nativeTitle, t.nativeTitle);
+    setText(els.nativeSummary, t.nativeSummary);
 
-    els.desktopBadge.textContent = t.desktopBadge;
-    els.desktopTitle.textContent = t.desktopTitle;
-    els.desktopSummary.textContent = t.desktopSummary;
-    els.desktopPoint1.textContent = t.desktopPoint1;
-    els.desktopPoint2.textContent = t.desktopPoint2;
-    els.desktopPoint3.textContent = t.desktopPoint3;
-    els.desktopUnavailableText.textContent = t.desktopUnavailable;
+    setText(els.desktopBadge, t.desktopBadge);
+    setText(els.desktopTitle, t.desktopTitle);
+    setText(els.desktopSummary, t.desktopSummary);
+    setText(els.desktopUnavailableText, t.desktopUnavailable);
 
     var isBusy = state.submittingSurface !== null;
     var nativePending = state.submittingSurface === "native-shell";
     var desktopPending = state.submittingSurface === "codex-desktop";
     var desktopUnavailable = !state.codexDesktopInstalled;
 
-    els.nativeCard.disabled = isBusy;
-    els.nativeCard.setAttribute("aria-busy", nativePending ? "true" : "false");
-    els.nativeCard.setAttribute("data-pending", nativePending ? "true" : "false");
-    els.nativeCard.setAttribute("data-dimmed", isBusy && !nativePending ? "true" : "false");
-    els.nativeCta.textContent = nativePending ? t.nativePending : t.nativeCta;
+    if (els.nativeCard) {
+      els.nativeCard.disabled = isBusy;
+      els.nativeCard.setAttribute("aria-busy", nativePending ? "true" : "false");
+      els.nativeCard.setAttribute("data-pending", nativePending ? "true" : "false");
+      els.nativeCard.setAttribute("data-dimmed", isBusy && !nativePending ? "true" : "false");
+    }
+    setText(els.nativeCta, nativePending ? t.nativePending : t.nativeCta);
     ui.setHidden(els.nativeSpinner, !nativePending);
     ui.setHidden(els.nativeArrow, nativePending);
 
-    els.desktopCard.disabled = isBusy || desktopUnavailable;
-    els.desktopCard.setAttribute("aria-disabled", desktopUnavailable ? "true" : "false");
-    els.desktopCard.setAttribute("aria-busy", desktopPending ? "true" : "false");
-    els.desktopCard.setAttribute("data-unavailable", desktopUnavailable ? "true" : "false");
-    els.desktopCard.setAttribute("data-pending", desktopPending ? "true" : "false");
-    els.desktopCard.setAttribute(
-      "data-dimmed",
-      isBusy && !desktopPending && !desktopUnavailable ? "true" : "false",
-    );
+    if (els.desktopCard) {
+      els.desktopCard.disabled = isBusy || desktopUnavailable;
+      els.desktopCard.setAttribute("aria-disabled", desktopUnavailable ? "true" : "false");
+      els.desktopCard.setAttribute("aria-busy", desktopPending ? "true" : "false");
+      els.desktopCard.setAttribute("data-unavailable", desktopUnavailable ? "true" : "false");
+      els.desktopCard.setAttribute("data-pending", desktopPending ? "true" : "false");
+      els.desktopCard.setAttribute(
+        "data-dimmed",
+        isBusy && !desktopPending && !desktopUnavailable ? "true" : "false",
+      );
+    }
     ui.setHidden(els.desktopUnavailable, !desktopUnavailable);
-    els.desktopCta.textContent = desktopPending
-      ? t.desktopPending
-      : desktopUnavailable
-        ? t.desktopUnavailableCta
-        : t.desktopCta;
+    setText(
+      els.desktopCta,
+      desktopPending
+        ? t.desktopPending
+        : desktopUnavailable
+          ? t.desktopUnavailableCta
+          : t.desktopCta,
+    );
     ui.setHidden(els.desktopSpinner, !desktopPending);
     ui.setHidden(els.desktopArrow, desktopPending || desktopUnavailable);
 
     if (els.webStatusDot) {
       els.webStatusDot.setAttribute("data-running", state.webRunning ? "true" : "false");
     }
-    if (els.webLabel) {
-      els.webLabel.textContent = t.webLabel;
-    }
+    setText(els.webLabel, t.webLabel);
     if (els.webStatus) {
       els.webStatus.textContent = state.webRunning ? t.webRunning : t.webIdle;
       els.webStatus.setAttribute("data-running", state.webRunning ? "true" : "false");
     }
-    if (els.webUrl) {
-      els.webUrl.textContent = state.webUrl || t.webIdleHint;
-    }
+    setText(els.webUrl, state.webUrl || t.webIdleHint);
+
     var webDisabled = isBusy || state.webBusy !== null;
     var copying = state.webBusy === "copy";
     var opening = state.webBusy === "open";
     if (els.webCopyBtn) {
       els.webCopyBtn.disabled = webDisabled;
-      els.webCopyLabel.textContent = copying
-        ? t.webCopying
-        : state.webCopied
-          ? t.webCopied
-          : t.webCopy;
+      setText(els.webCopyLabel, copying ? t.webCopying : state.webCopied ? t.webCopied : t.webCopy);
       ui.setHidden(els.webCopySpinner, !copying);
       ui.setHidden(els.webCopyIcon, copying || state.webCopied);
       ui.setHidden(els.webCopiedIcon, copying || !state.webCopied);
     }
     if (els.webOpenBtn) {
       els.webOpenBtn.disabled = webDisabled;
-      els.webOpenLabel.textContent = opening ? t.webOpening : t.webOpen;
+      setText(els.webOpenLabel, opening ? t.webOpening : t.webOpen);
       ui.setHidden(els.webOpenSpinner, !opening);
       ui.setHidden(els.webOpenIcon, opening);
     }
 
-    if (state.feedbackMessage) {
+    if (state.feedbackMessage && els.feedbackBanner) {
       var isInfo = state.feedbackKind === "info";
       ui.setHidden(els.feedbackBanner, false);
       els.feedbackBanner.className = isInfo
@@ -279,10 +272,23 @@
       els.feedbackBanner.setAttribute("role", isInfo ? "status" : "alert");
       ui.setHidden(els.feedbackIconError, isInfo);
       ui.setHidden(els.feedbackIconInfo, !isInfo);
-      els.feedbackText.textContent = state.feedbackMessage;
-    } else {
+      setText(els.feedbackText, state.feedbackMessage);
+      if (els.feedbackIssueLink) {
+        ui.setHidden(els.feedbackIssueLink, isInfo);
+        if (!isInfo) {
+          els.feedbackIssueLink.href = ui.buildIssueUrl({
+            error: state.feedbackErrorDetail || state.feedbackMessage,
+            version: state.version,
+            platform: state.platform,
+            surface: state.lastAttemptedSurface || "onboarding",
+          });
+          setText(els.feedbackIssueLabel, t.reportIssue);
+        }
+      }
+    } else if (els.feedbackBanner) {
       ui.setHidden(els.feedbackBanner, true);
-      els.feedbackText.textContent = "";
+      setText(els.feedbackText, "");
+      ui.setHidden(els.feedbackIssueLink, true);
     }
 
     renderPreviewBar();
@@ -297,9 +303,23 @@
     }
 
     state.submittingSurface = surface;
+    state.lastAttemptedSurface = surface;
     state.feedbackKind = null;
     state.feedbackMessage = "";
+    state.feedbackErrorDetail = "";
     render();
+
+    var dither = window.CodexHostDitherFX;
+    var convergeCv = document.getElementById("launch-converge-cv");
+    var cancelConverge = null;
+    if (
+      surface === "native-shell" &&
+      dither &&
+      typeof dither.playInwardConverge === "function" &&
+      convergeCv
+    ) {
+      cancelConverge = dither.playInwardConverge(convergeCv, 340);
+    }
 
     var bridge = ui.getNativeBridge();
     if (bridge && typeof bridge.chooseSurface === "function") {
@@ -308,11 +328,16 @@
           return bridge.chooseSurface(surface);
         })
         .catch(function (err) {
+          if (cancelConverge) {
+            cancelConverge();
+            cancelConverge = null;
+          }
           var t = getCopy();
           var detail = ui.formatError(err, t.chooseErrorFallback);
           state.submittingSurface = null;
           state.feedbackKind = "error";
           state.feedbackMessage = t.chooseErrorPrefix + detail;
+          state.feedbackErrorDetail = detail;
           render();
         });
       return;
@@ -320,15 +345,21 @@
 
     // Graceful offline preview when opened directly in a browser
     window.setTimeout(function () {
+      if (cancelConverge) {
+        cancelConverge();
+        cancelConverge = null;
+      }
       var t = getCopy();
       state.submittingSurface = null;
       if (state.previewSimulateError) {
         state.feedbackKind = "error";
         state.feedbackMessage = t.chooseErrorPrefix + t.previewErrorSample;
+        state.feedbackErrorDetail = t.previewErrorSample;
       } else {
         var label = surface === "native-shell" ? t.nativeTitle : t.desktopTitle;
         state.feedbackKind = "info";
         state.feedbackMessage = t.previewNotice(label);
+        state.feedbackErrorDetail = "";
       }
       render();
     }, 520);
@@ -400,6 +431,23 @@
           }),
         );
       })(themes[i]);
+    }
+
+    var heroRevealEl = document.getElementById("hero-dither-reveal");
+    if (
+      heroRevealEl &&
+      window.CodexHostDitherFX &&
+      typeof window.CodexHostDitherFX.playHeroMaterialize === "function"
+    ) {
+      var fxDivider = document.createElement("span");
+      fxDivider.className = "preview-divider";
+      els.previewBar.appendChild(fxDivider);
+
+      els.previewBar.appendChild(
+        createPreviewChip(t.previewReplayFx, false, function () {
+          window.CodexHostDitherFX.playHeroMaterialize(heroRevealEl, 760);
+        }),
+      );
     }
   }
 
@@ -490,9 +538,12 @@
         })
         .catch(function (err) {
           var t = getCopy();
+          var detail = ui.formatError(err, t.webErrorFallback);
           state.webBusy = null;
+          state.lastAttemptedSurface = "web-copy";
           state.feedbackKind = "error";
-          state.feedbackMessage = t.webErrorPrefix + ui.formatError(err, t.webErrorFallback);
+          state.feedbackMessage = t.webErrorPrefix + detail;
+          state.feedbackErrorDetail = detail;
           render();
         });
       return;
@@ -511,6 +562,7 @@
     }
     state.feedbackKind = null;
     state.feedbackMessage = "";
+    state.feedbackErrorDetail = "";
 
     var bridge = ui.getNativeBridge();
     if (bridge && typeof bridge.openWebBrowser === "function") {
@@ -526,13 +578,17 @@
           state.webBusy = null;
           state.feedbackKind = "info";
           state.feedbackMessage = t.webOpenedInfo;
+          state.feedbackErrorDetail = "";
           render();
         })
         .catch(function (err) {
           var t = getCopy();
+          var detail = ui.formatError(err, t.webErrorFallback);
           state.webBusy = null;
+          state.lastAttemptedSurface = "web-open";
           state.feedbackKind = "error";
-          state.feedbackMessage = t.webErrorPrefix + ui.formatError(err, t.webErrorFallback);
+          state.feedbackMessage = t.webErrorPrefix + detail;
+          state.feedbackErrorDetail = detail;
           render();
         });
       return;
@@ -546,13 +602,17 @@
     render();
   }
 
-  els.nativeCard.addEventListener("click", function () {
-    handleChooseSurface("native-shell");
-  });
+  if (els.nativeCard) {
+    els.nativeCard.addEventListener("click", function () {
+      handleChooseSurface("native-shell");
+    });
+  }
 
-  els.desktopCard.addEventListener("click", function () {
-    handleChooseSurface("codex-desktop");
-  });
+  if (els.desktopCard) {
+    els.desktopCard.addEventListener("click", function () {
+      handleChooseSurface("codex-desktop");
+    });
+  }
 
   if (els.webCopyBtn) {
     els.webCopyBtn.addEventListener("click", handleCopyWebUrl);
@@ -562,6 +622,21 @@
   }
 
   render();
+
+  if (window.CodexHostDitherFX) {
+    var heroRevealCv = document.getElementById("hero-dither-reveal");
+    var heroSeamCv = document.getElementById("hero-dither-seam");
+    var cursorDitherCv = document.getElementById("cursor-dither-field");
+    if (heroRevealCv && typeof window.CodexHostDitherFX.playHeroMaterialize === "function") {
+      window.CodexHostDitherFX.playHeroMaterialize(heroRevealCv, 760);
+    }
+    if (heroSeamCv && typeof window.CodexHostDitherFX.startSeamDither === "function") {
+      window.CodexHostDitherFX.startSeamDither(heroSeamCv);
+    }
+    if (cursorDitherCv && typeof window.CodexHostDitherFX.startCursorMicroDither === "function") {
+      window.CodexHostDitherFX.startCursorMicroDither(cursorDitherCv);
+    }
+  }
 
   ui.readShellState({
     codexDesktopInstalled: state.codexDesktopInstalled,
@@ -578,6 +653,8 @@
     if (!state.localeLockedByUser && result.state.locale) {
       state.locale = result.state.locale;
     }
+    state.version = result.state.version;
+    state.platform = result.state.platform;
     state.codexDesktopInstalled = result.state.codexDesktopInstalled;
     state.webRunning = result.state.webRunning;
     state.webUrl = result.state.webUrl;
@@ -585,6 +662,7 @@
     if (result.state.status === "error" && result.state.message) {
       state.feedbackKind = "error";
       state.feedbackMessage = result.state.message;
+      state.feedbackErrorDetail = result.state.message;
     }
     render();
   });

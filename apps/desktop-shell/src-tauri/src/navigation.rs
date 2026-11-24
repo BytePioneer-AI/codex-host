@@ -61,19 +61,52 @@ pub(crate) fn initialization_script() -> String {
 window.__CODEXHOST_DESKTOP_SHELL__ = true;
 (() => {{
   if (window.top !== window) return;
-  const isWindows = {is_windows};
-  const isMacos = {is_macos};
-  const root = document.documentElement;
-  root.setAttribute("data-codexhost-shell", "");
-  root.setAttribute("data-tauri-shell", "");
-
   const invoke = (name, args) => window.__TAURI_INTERNALS__?.invoke?.(name, args);
 
-  if (isWindows) {{
-    root.setAttribute("data-windows-titlebar", "");
-    root.style.setProperty("--dsh-windows-titlebar-height", "36px");
-  }} else if (isMacos) {{
-    root.setAttribute("data-platform", "darwin");
+  if (location.protocol + "//" + location.host === {APP_ORIGIN:?} &&
+      [{ONBOARDING:?}, {LOADING:?}].includes(location.pathname)) {{
+    window.__codexhostShell = Object.freeze({{
+      chooseSurface: (surface) => invoke("choose_surface", {{ surface }}),
+      retry: () => invoke("retry"),
+      openConsole: () => invoke("open_console"),
+      getState: () => invoke("get_state"),
+      ensureWebAccess: () => invoke("ensure_web_access"),
+      openWebBrowser: () => invoke("open_web_browser"),
+    }});
+  }}
+
+  const isWindows = {is_windows};
+  const isMacos = {is_macos};
+
+  const applyRootAttributes = () => {{
+    const root = document.documentElement;
+    if (!root) return false;
+    root.setAttribute("data-codexhost-shell", "");
+    root.setAttribute("data-tauri-shell", "");
+    if (isWindows) {{
+      root.setAttribute("data-windows-titlebar", "");
+      root.style.setProperty("--dsh-windows-titlebar-height", "36px");
+    }} else if (isMacos) {{
+      root.setAttribute("data-platform", "darwin");
+    }}
+    return true;
+  }};
+
+  // Initialization scripts run at document_start before <html> is parsed in
+  // both WKWebView and WebView2, so watch for documentElement creation.
+  if (!applyRootAttributes()) {{
+    const rootObserver = new MutationObserver(() => {{
+      if (applyRootAttributes()) rootObserver.disconnect();
+    }});
+    rootObserver.observe(document, {{ childList: true }});
+    document.addEventListener(
+      "DOMContentLoaded",
+      () => {{
+        applyRootAttributes();
+        rootObserver.disconnect();
+      }},
+      {{ once: true }},
+    );
   }}
 
   const INTERACTIVE_SELECTOR = [
@@ -139,6 +172,8 @@ window.__CODEXHOST_DESKTOP_SHELL__ = true;
       if (!state || typeof state !== "object") return;
       maximized = Boolean(state.maximized);
       updateMaxIcon();
+      const root = document.documentElement;
+      if (!root) return;
       if (state.fullscreen) root.setAttribute("data-fullscreen", "");
       else root.removeAttribute("data-fullscreen");
     }}).catch(() => {{}});
@@ -161,12 +196,17 @@ window.__CODEXHOST_DESKTOP_SHELL__ = true;
       }})?.catch?.(() => {{}});
     }});
     window.addEventListener("resize", () => syncChromeState());
-    syncChromeState();
+    if (document.readyState === "loading") {{
+      document.addEventListener("DOMContentLoaded", syncChromeState, {{ once: true }});
+    }} else {{
+      syncChromeState();
+    }}
   }}
 
   if (isWindows) {{
     const detectDark = () => {{
-      const theme = root.getAttribute("data-theme");
+      const root = document.documentElement;
+      const theme = root?.getAttribute("data-theme");
       if (theme === "dark") return true;
       if (theme === "light") return false;
       if (document.body?.hasAttribute("data-ds-dark-theme")) return true;
@@ -255,7 +295,8 @@ window.__CODEXHOST_DESKTOP_SHELL__ = true;
       }};
       syncTheme();
       const observer = new MutationObserver(syncTheme);
-      observer.observe(root, {{ attributes: true, attributeFilter: ["data-theme"] }});
+      const root = document.documentElement;
+      if (root) observer.observe(root, {{ attributes: true, attributeFilter: ["data-theme"] }});
       observer.observe(document.body, {{ attributes: true, attributeFilter: ["data-ds-dark-theme"] }});
       window.matchMedia?.("(prefers-color-scheme: dark)")?.addEventListener?.("change", syncTheme);
     }};
@@ -266,17 +307,6 @@ window.__CODEXHOST_DESKTOP_SHELL__ = true;
       mountCaption();
     }}
   }}
-
-  if (location.protocol + "//" + location.host !== {APP_ORIGIN:?} ||
-      ![{ONBOARDING:?}, {LOADING:?}].includes(location.pathname)) return;
-  window.__codexhostShell = Object.freeze({{
-    chooseSurface: (surface) => invoke("choose_surface", {{ surface }}),
-    retry: () => invoke("retry"),
-    openConsole: () => invoke("open_console"),
-    getState: () => invoke("get_state"),
-    ensureWebAccess: () => invoke("ensure_web_access"),
-    openWebBrowser: () => invoke("open_web_browser"),
-  }});
 }})();
 "##,
     )
@@ -325,5 +355,24 @@ mod tests {
             assert_eq!(classify(&url, Some(&web)), expected, "{}", url.path());
         }
         assert_eq!(classify(&web, None), Navigation::Browser);
+    }
+
+    #[test]
+    fn initialization_script_defines_shell_bridge_before_dom_root_access() {
+        let script = initialization_script();
+        let bridge_pos = script
+            .find("window.__codexhostShell = Object.freeze")
+            .expect("bridge registration must exist");
+        let root_pos = script
+            .find("document.documentElement")
+            .expect("root attribute setup must exist");
+        assert!(
+            bridge_pos < root_pos,
+            "__codexhostShell must be registered before touching document.documentElement at document_start"
+        );
+        assert!(
+            script.contains("if (!root) return false;"),
+            "root attribute setup must guard null document.documentElement at document_start"
+        );
     }
 }

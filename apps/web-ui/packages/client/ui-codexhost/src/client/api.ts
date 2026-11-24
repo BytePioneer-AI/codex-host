@@ -4,9 +4,17 @@ import {
   harnessSessionImportResultSchema,
   RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
   RELEASE_ANNOUNCEMENT_GET_METHOD,
+  REMOTE_PEERS_METHODS,
   releaseAnnouncementAcknowledgeParamsSchema,
   releaseAnnouncementGetParamsSchema,
   releaseAnnouncementGetResultSchema,
+  remotePeerCreateDirResultSchema,
+  remotePeerListDirsResultSchema,
+  remotePeerListResultSchema,
+  remotePeerRemoveResultSchema,
+  remotePeerSummarySchema,
+  remotePeerTestResultSchema,
+  remotePeerWorkspaceMutationResultSchema,
   updateCheckResultSchema,
   voiceStatusResultSchema,
   voiceTranscribeResultSchema,
@@ -20,6 +28,13 @@ import {
   skillsListResultSchema,
   type HarnessCommandCatalog,
   type ReleaseAnnouncementGetParams,
+  type RemotePeerAddParams,
+  type RemotePeerCreateWorkspaceParams,
+  type RemotePeerDeleteWorkspaceParams,
+  type RemotePeerRenameWorkspaceParams,
+  type RemotePeerSummary,
+  type RemotePeerTestParams,
+  type RemotePeerUpdateParams,
   type ThreadCommandExecuteResult,
   type HarnessSessionImportCandidate,
   type HarnessSessionImportSourcesResult,
@@ -337,7 +352,7 @@ export const pushApi = {
     }),
   unsubscribe: (endpoint: string) =>
     call<{ subscribed: boolean }>("codexhost/pushUnsubscribe", { endpoint }),
-  test: () => call<{ sent: number }>("codexhost/pushTest", {}),
+  test: (endpoint: string) => call<{ sent: number }>("codexhost/pushTest", { endpoint }),
 };
 
 export const importApi = {
@@ -391,4 +406,52 @@ export const harnessCommandApi = {
     call<ThreadCommandExecuteResult>("codexhost/executeThreadCommand", {
       request: { sessionId, commandId },
     }),
+};
+
+function parseRemotePeerResult(value: unknown): { peer: RemotePeerSummary } {
+  const candidate =
+    value !== null && typeof value === "object" && "peer" in value
+      ? (value as { peer: unknown }).peer
+      : value;
+  return { peer: remotePeerSummarySchema.parse(candidate) };
+}
+
+export const remotePeersApi = {
+  list: async () =>
+    remotePeerListResultSchema.parse(await call<unknown>(REMOTE_PEERS_METHODS.list, {})),
+  add: async (input: RemotePeerAddParams) =>
+    parseRemotePeerResult(await call<unknown>(REMOTE_PEERS_METHODS.add, input)),
+  update: async (input: RemotePeerUpdateParams) =>
+    parseRemotePeerResult(await call<unknown>(REMOTE_PEERS_METHODS.update, input)),
+  remove: async (peerId: string) =>
+    remotePeerRemoveResultSchema.parse(
+      await call<unknown>(REMOTE_PEERS_METHODS.remove, { peerId }),
+    ),
+  reconnect: async (peerId: string) =>
+    parseRemotePeerResult(await call<unknown>(REMOTE_PEERS_METHODS.reconnect, { peerId })),
+  test: async (input: RemotePeerTestParams) =>
+    remotePeerTestResultSchema.parse(await call<unknown>(REMOTE_PEERS_METHODS.test, input)),
+  listDirs: async (peerId: string, path?: string) =>
+    remotePeerListDirsResultSchema.parse(
+      await call<unknown>(
+        REMOTE_PEERS_METHODS.listDirs,
+        path === undefined ? { peerId } : { peerId, path },
+      ),
+    ),
+  createDir: async (peerId: string, parentPath: string, name: string) =>
+    remotePeerCreateDirResultSchema.parse(
+      await call<unknown>(REMOTE_PEERS_METHODS.createDir, { peerId, parentPath, name }),
+    ),
+  createWorkspace: async (input: RemotePeerCreateWorkspaceParams) =>
+    remotePeerWorkspaceMutationResultSchema.parse(
+      await call<unknown>(REMOTE_PEERS_METHODS.createWorkspace, input),
+    ),
+  renameWorkspace: async (input: RemotePeerRenameWorkspaceParams) =>
+    remotePeerWorkspaceMutationResultSchema.parse(
+      await call<unknown>(REMOTE_PEERS_METHODS.renameWorkspace, input),
+    ),
+  deleteWorkspace: async (input: RemotePeerDeleteWorkspaceParams) =>
+    remotePeerWorkspaceMutationResultSchema.parse(
+      await call<unknown>(REMOTE_PEERS_METHODS.deleteWorkspace, input),
+    ),
 };

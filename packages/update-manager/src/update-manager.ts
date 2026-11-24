@@ -61,6 +61,11 @@ export interface MacOsDmgUpdateOptions extends CommonUpdateOptions {
   appPath: string;
 }
 
+export interface LinuxArchiveUpdateOptions extends CommonUpdateOptions {
+  artifact: ArtifactSource;
+  installRoot: string;
+}
+
 export interface PreparedBackgroundUpdate {
   version: string;
   installation: BackgroundUpdateInstallation;
@@ -88,6 +93,7 @@ export interface BackgroundUpdateManager {
     options: WindowsInstallerUpdateOptions,
   ): Promise<PreparedBackgroundUpdate>;
   prepareMacOsDmg(options: MacOsDmgUpdateOptions): Promise<PreparedBackgroundUpdate>;
+  prepareLinuxArchive(options: LinuxArchiveUpdateOptions): Promise<PreparedBackgroundUpdate>;
   /** Resolves only after the Updater validates the owner and is waiting for its exit. */
   start(
     prepared: PreparedBackgroundUpdate,
@@ -125,6 +131,12 @@ interface InternalRequest {
         dmg_path: string;
         artifact_sha256: string;
         app_path: string;
+      }
+    | {
+        kind: "linux-archive";
+        archive_path: string;
+        artifact_sha256: string;
+        install_root: string;
       };
 }
 
@@ -488,6 +500,29 @@ export function createBackgroundUpdateManager(
           dmg_path: artifact.artifactPath,
           artifact_sha256: artifact.source.sha256,
           app_path: appPath,
+        },
+        artifact.artifactPath,
+      );
+    },
+
+    async prepareLinuxArchive(
+      options: LinuxArchiveUpdateOptions,
+    ): Promise<PreparedBackgroundUpdate> {
+      if (platform !== "linux") throw new Error("Linux archive updates require Linux");
+      const common = await prepareCommon(options, "linux-archive");
+      const artifact = await prepareArtifact(
+        common,
+        "linux-archive",
+        options.artifact,
+        "update.tar.gz",
+      );
+      return finalize(
+        common,
+        {
+          kind: "linux-archive",
+          archive_path: artifact.artifactPath,
+          artifact_sha256: artifact.source.sha256,
+          install_root: requireAbsolutePath(options.installRoot, "Linux install root"),
         },
         artifact.artifactPath,
       );

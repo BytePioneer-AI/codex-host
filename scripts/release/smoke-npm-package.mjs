@@ -76,7 +76,7 @@ export async function smokeNpmPackage({ targetName, version, workDirectory }) {
     const packageName = NPM_PLATFORM_PACKAGE_NAMES[target.id];
     const packageRoot = path.join(directory, "node_modules", ...packageName.split("/"));
     const manifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
-    const architecture = target.packageArchitecture ?? target.installerArchitecture;
+    const architecture = target.installerArchitecture;
     if (JSON.stringify(manifest.os) !== JSON.stringify([target.hostPlatform])) {
       throw new Error(`installed package os is invalid: ${JSON.stringify(manifest.os)}`);
     }

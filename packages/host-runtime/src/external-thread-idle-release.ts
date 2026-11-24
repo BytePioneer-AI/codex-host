@@ -25,7 +25,8 @@ export class ExternalThreadIdleRelease {
   readonly #closing = new Map<string, Promise<void>>();
   readonly #pending = new Set<Promise<unknown>>();
   readonly #scheduled = new Set<string>();
-  #settings: IdleReleaseSettings = { ...DEFAULT_IDLE_RELEASE_SETTINGS };
+  /** Nothing is released until the Host applies the saved or default preference. */
+  #settings: IdleReleaseSettings = { ...DEFAULT_IDLE_RELEASE_SETTINGS, enabled: false };
   #timer: NodeJS.Timeout | undefined;
   #stopped = false;
 

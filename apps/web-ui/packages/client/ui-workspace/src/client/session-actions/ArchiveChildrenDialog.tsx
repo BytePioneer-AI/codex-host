@@ -1,4 +1,3 @@
-import { useRef, useState } from "react";
 import { Button, Modal } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { InjectFace, PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ArchiveChildrenInjected, ArchiveChildrenRequest } from "../contract/slots.ts";
@@ -17,24 +16,6 @@ function ArchiveChoice({
   dismiss,
   t,
 }: Omit<Props, "useArchiveChildrenRequest"> & { request: ArchiveChildrenRequest }) {
-  const [remember, setRemember] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const submitting = useRef(false);
-  const submit = async (include: boolean): Promise<void> => {
-    if (submitting.current) return;
-    submitting.current = true;
-    setBusy(true);
-    setFailed(false);
-    try {
-      await choose(request, include, remember);
-    } catch {
-      setFailed(true);
-    } finally {
-      submitting.current = false;
-      setBusy(false);
-    }
-  };
   return (
     <Modal
       phoneSidebar
@@ -42,19 +23,16 @@ function ArchiveChoice({
       title={t("archive.children.title")}
       description={t("archive.children.description", { title: request.title })}
       closeLabel={t("close")}
-      onClose={() => {
-        if (!submitting.current) dismiss();
-      }}
+      onClose={dismiss}
       footer={
         <>
-          <Button variant="outline" disabled={busy} onClick={() => void submit(false)}>
+          <Button variant="outline" onClick={() => choose(request, false)}>
             {t("archive.children.parentOnly")}
           </Button>
           <Button
             variant="outline"
             className={css.deleteAction}
-            disabled={busy}
-            onClick={() => void submit(true)}
+            onClick={() => choose(request, true)}
           >
             {t("archive.children.include", { n: request.children.length })}
           </Button>
@@ -66,20 +44,6 @@ function ArchiveChoice({
           <li key={id}>{title}</li>
         ))}
       </ul>
-      <label>
-        <input
-          type="checkbox"
-          checked={remember}
-          disabled={busy}
-          onChange={({ target }) => setRemember(target.checked)}
-        />
-        {t("archive.children.remember")}
-      </label>
-      {failed && (
-        <div className={css.renameError} role="alert">
-          {t("archive.children.preferenceFailed")}
-        </div>
-      )}
     </Modal>
   );
 }

@@ -20,6 +20,8 @@
   gap: 12px;
   max-width: 100%;
   padding-top: 4px;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .hero .dock:empty {
@@ -45,9 +47,36 @@
   line-height: 18px;
 }
 
+.cardStack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: var(--dsh-composer-card-max-width);
+}
+
+/* Codex Desktop recessed inset utility rail (`controls` variant: borderless recessed fill)
+   tucked behind the composer card's top corners. */
+.topRail {
+  position: relative;
+  z-index: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  margin-inline: 16px;
+  padding: 5px 10px 21px;
+  margin-bottom: -16px;
+  border: 0;
+  border-radius: 16px 16px 0 0;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 5%, var(--dsw-alias-bg-base));
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .card {
   box-sizing: border-box;
   position: relative; /* overlay anchor positioning context */
+  z-index: 1;
   display: flex;
   flex-direction: column;
   /* figma Input 75:8208: 12px between the text area and the button row; the
@@ -294,6 +323,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   pointer-events: none;
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -353,6 +383,8 @@
      on purpose: CSS modules hash container-name per module, so a name declared
      here can never match a query in another module's sheet. */
   container-type: inline-size;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .row[data-model-compact] {

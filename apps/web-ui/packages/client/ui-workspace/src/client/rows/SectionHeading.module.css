@@ -43,6 +43,13 @@
   transform: rotate(-90deg);
 }
 
+.trailing {
+  display: inline-flex;
+  align-items: center;
+  margin-inline-start: auto;
+  min-width: 0;
+}
+
 .action {
   display: grid;
   place-items: center;
@@ -55,6 +62,10 @@
   color: inherit;
   background: transparent;
   cursor: pointer;
+}
+
+.actionAfterTrailing {
+  margin-inline-start: 0;
 }
 
 .action:hover {

@@ -944,9 +944,8 @@ button.crumb:hover {
    block for position:fixed descendants (pickers/modals), shrinking them. */
 .composerHero {
   align-self: center;
-  /* figma 75:8208 drew 12 between all three rows; the workspace row now sits
-     8 above the card (its margin-top restores 12 under the hero chrome). */
-  gap: 8px;
+  /* Breathing room between the centered hero headline and the unified composer card. */
+  gap: 16px;
   /* Foot inside the centered box floats the stack a bit above true center. */
   padding-bottom: 32px;
   /* Card cap + both clearances: the hero input card lands at exactly the same
@@ -958,16 +957,23 @@ button.crumb:hover {
   z-index: 1;
 }
 
-.heroWorkspaceRow {
+.heroTopBarInner {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
+  width: 100%;
   min-width: 0;
-  margin-top: 4px;
-  /* figma drew px 8; left nudged +12 so the chip's folder glyph lines up
-     closer to the card's inner controls below; right keeps the trailing
-     preset seat off the card edge. */
-  padding: 0 16px 0 20px;
+}
+
+.heroAgentPresetSeat {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+.heroAgentPresetSeat:empty {
+  display: none;
 }
 
 /* Hero: the composer sits inside the session scroll body; center there so

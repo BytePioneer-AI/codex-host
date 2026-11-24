@@ -296,6 +296,8 @@ export interface SessionListRequest {
   /** Resolve one direct-link identity without enumerating its historical page. */
   readonly sessionId?: SessionId;
   readonly cursor?: string;
+  /** With a cursor: read on until the page reaches a Session of this Workspace. */
+  readonly workspaceId?: WorkspaceId;
   /** Include archived summaries in this request; defaults to false. */
   readonly includeArchived?: boolean;
 }

@@ -267,6 +267,7 @@ export interface RendererSettingsMessages {
   readonly updateInstallationNpm: string;
   readonly updateInstallationWindowsInstaller: string;
   readonly updateInstallationMacOsDmg: string;
+  readonly updateInstallationLinuxArchive: string;
   readonly updateInstallationUnknown: string;
   readonly updateLatestVersion: string;
   readonly updateUpToDate: string;
@@ -584,6 +585,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateInstallationNpm: "npm",
   updateInstallationWindowsInstaller: "Windows installer",
   updateInstallationMacOsDmg: "macOS DMG",
+  updateInstallationLinuxArchive: "Linux archive (.tar.gz)",
   updateInstallationUnknown: "Unknown",
   updateLatestVersion: "Latest version",
   updateUpToDate: "You are up to date.",
@@ -908,6 +910,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateInstallationNpm: "npm",
   updateInstallationWindowsInstaller: "Windows 安装程序",
   updateInstallationMacOsDmg: "macOS DMG",
+  updateInstallationLinuxArchive: "Linux 压缩包（.tar.gz）",
   updateInstallationUnknown: "未知",
   updateLatestVersion: "最新版本",
   updateUpToDate: "当前已是最新版本。",

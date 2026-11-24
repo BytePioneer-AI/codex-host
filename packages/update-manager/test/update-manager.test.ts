@@ -309,6 +309,41 @@ describe("background update manager", () => {
     });
   });
 
+  it("downloads and verifies the Linux archive before creating a request", async () => {
+    const root = await temporaryDirectory();
+    const bytes = Buffer.from("linux-release-archive");
+    const manager = createBackgroundUpdateManager({
+      platform: "linux",
+      randomId: () => "linux-fixture",
+      download: downloader(bytes),
+    });
+    const installRoot = path.join(root, "codexhost");
+    const prepared = await manager.prepareLinuxArchive({
+      ...(await commonOptions(root)),
+      artifact: {
+        url: "https://downloads.example.test/codexhost.tar.gz",
+        sha256: sha256(bytes),
+      },
+      installRoot,
+    });
+
+    expect(prepared.installation).toBe("linux-archive");
+    const request = JSON.parse(await readFile(prepared.requestPath, "utf8"));
+    expect(request.installation).toEqual({
+      kind: "linux-archive",
+      archive_path: prepared.artifactPath,
+      artifact_sha256: sha256(bytes),
+      install_root: installRoot,
+    });
+    await expect(
+      createBackgroundUpdateManager({ platform: "darwin" }).prepareLinuxArchive({
+        ...(await commonOptions(root)),
+        artifact: { url: "https://downloads.example.test/codexhost.tar.gz", sha256: sha256(bytes) },
+        installRoot,
+      }),
+    ).rejects.toThrow("require Linux");
+  });
+
   it("rejects wrong platforms, insecure URLs, and mismatched artifacts", async () => {
     const root = await temporaryDirectory();
     const common = await commonOptions(root);

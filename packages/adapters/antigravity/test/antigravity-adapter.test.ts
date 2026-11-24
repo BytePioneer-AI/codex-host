@@ -1187,6 +1187,51 @@ describe("Antigravity ACP Session", () => {
       1,
     );
   });
+  it("defaults a fresh Session to Skip permissions without locking the mode", async () => {
+    const { adapter, transports } = fixture();
+    const { session } = await sessionOf(await adapter.open({ kind: "create", cwd: process.cwd() }));
+    if (!(session instanceof AntigravitySession)) throw new Error("Expected AntigravitySession");
+    await session.initialize();
+    expect(transports[0]?.skipPermissions).toBe(true);
+    expect(session.initialState).toMatchObject({
+      effectivePermissionModeId: "dangerously-skip-permissions",
+      nativeRef: { locator: { executionPolicy: "default" } },
+    });
+    const nativeSessionId = session.initialState.nativeRef?.nativeSessionId;
+
+    expect(
+      await session.execute({ type: "permissionMode.select", permissionModeId: mode("default") }),
+    ).toEqual({ ok: true, value: { completed: true } });
+    expect(transports.at(-1)?.skipPermissions).toBe(false);
+    expect(session.initialState).toMatchObject({
+      effectivePermissionModeId: "default",
+      nativeRef: { nativeSessionId, locator: { permissionModeId: "default" } },
+    });
+  });
+  it("creates a Session without skipping approvals for an explicit safe selection", async () => {
+    const { adapter, transports } = fixture();
+    const { session } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd(), permissionModeId: mode("default") }),
+    );
+    if (!(session instanceof AntigravitySession)) throw new Error("Expected AntigravitySession");
+    await session.initialize();
+    expect(transports[0]?.skipPermissions).toBe(false);
+    expect(session.initialState.effectivePermissionModeId).toBe("default");
+  });
+  it.each([undefined, { permissionModeId: "default" }])(
+    "resumes without skipping approvals for a legacy or low-permission locator (%j)",
+    async (locator) => {
+      const { adapter, transports } = fixture();
+      const nativeRef = ref(undefined, locator);
+      const { session } = await sessionOf(
+        await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef }),
+      );
+      if (!(session instanceof AntigravitySession)) throw new Error("Expected AntigravitySession");
+      await session.initialize();
+      expect(transports[0]?.skipPermissions).toBe(false);
+      expect(session.initialState.effectivePermissionModeId).toBe("default");
+    },
+  );
   it("restarts only across Skip permissions, keeps identity, and rejects a busy restart", async () => {
     const { adapter, transports } = fixture();
     const nativeRef = ref();
@@ -1619,7 +1664,13 @@ describe("inspection and errors", () => {
         command: {
           name: "usage",
           data: {
-            groups: [{ name: "Plan", buckets: [{ window: "5h", remaining_fraction: 0.75 }] }],
+            groups: [
+              { name: "Gemini Models", buckets: [{ window: "5h", remaining_fraction: 0.75 }] },
+              {
+                name: "Claude and GPT Models",
+                buckets: [{ window: "5h", remaining_fraction: 1 }],
+              },
+            ],
           },
         },
       };
@@ -1637,6 +1688,14 @@ describe("inspection and errors", () => {
       const account = await adapter.inspectAccount();
       expect(account?.credits).toMatchObject({ usedPercent: 25 });
       expect(account?.credits).not.toHaveProperty("fetchedAt");
+      const { session } = await sessionOf(
+        await adapter.open({ kind: "create", cwd: home, model: model("claude-opus-4-6") }),
+      );
+      expect(await session.readAccountCredits?.()).toMatchObject({
+        scope: { id: "Claude and GPT Models" },
+        usedPercent: 0,
+        productUsage: [{ scope: { id: "Gemini Models" }, usagePercent: 25 }],
+      });
       expect(transports).toHaveLength(0);
       await writeFile(command, "#!/bin/sh\nexit 1\n");
       expect(await adapter.refreshCredits()).toBeNull();

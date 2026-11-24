@@ -30,6 +30,8 @@ export function mergeOrderedBaseline<T>(
       const candidate = baseline[following];
       /* v8 ignore next -- dense-array guard: following is bounded by baseline.length. */
       if (candidate === undefined) continue;
+      // Only an identity already merged can anchor the insertion; skip the rest without a scan.
+      if (!mergedKeys.has(keyOf(candidate))) continue;
       const known = merged.findIndex((item) => keyOf(item) === keyOf(candidate));
       if (known !== -1) {
         insertion = known;

@@ -579,6 +579,24 @@
   opacity: 0.72;
 }
 
+.card[data-update-available="true"] {
+  border-color: color-mix(
+    in srgb,
+    var(--dsw-alias-state-business-primary) 34%,
+    var(--dsw-alias-border-l2)
+  );
+}
+
+.card[data-update-available="true"]:hover {
+  border-color: color-mix(
+    in srgb,
+    var(--dsw-alias-state-business-primary) 54%,
+    var(--dsw-alias-border-l2)
+  );
+  box-shadow: 0 4px 14px
+    color-mix(in srgb, var(--dsw-alias-state-business-primary) 12%, transparent);
+}
+
 .cardTop {
   display: flex;
   align-items: center;
@@ -824,7 +842,12 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 4px 8px;
+  gap: 6px 10px;
+  margin-top: 2px;
+  padding: 6px 8px 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 24%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 9%, transparent);
   color: var(--dsw-alias-state-business-primary);
   font-size: 12px;
   font-weight: 600;
@@ -832,18 +855,34 @@
   overflow-wrap: anywhere;
 }
 
-.metaMetric,
-.metaMetricLink {
+.cardUpdateLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cardUpdateLabel::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-business-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 20%, transparent);
+}
+
+.cardUpdateAction {
+  flex: none;
+}
+
+.metaMetric {
   display: inline-flex;
   align-items: center;
   flex: none;
   gap: 3px;
   color: inherit;
   text-decoration: none;
-}
-
-.metaMetricLink:hover {
-  color: var(--dsw-alias-label-primary);
 }
 
 .cardCategoriesText {

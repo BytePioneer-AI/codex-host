@@ -25,7 +25,7 @@ Web 侧栏把本机 Host 的 Thread 显示成可以展开、收起的树。树�
 
 - 每次刷新列表都读取完整的 `parents`。本机 CH 会话摘要的投影 `threadTreeParent` 为显示父 Thread ID 或 `null`；草稿和远程 Host 会话没有该字段。
 - 已加载行的祖先不在当前页时，Web Server 按 ID 单独读取并一起返回，最多向上 64 层。遇到环或无法确认的祖先时停止，子 Thread 显示在顶层。
-- Web 侧栏归档父 Thread 时，默认询问是否一并归档该父 Thread 下已加载且未归档的全部委派与本机 Codex Fork 后代（含已折叠或移入自定义分区的后代，仍排除已置顶隔离的子树、远程会话及原生 Subagent）。确认框固定并列出本次候选，之后新增的 Thread 不会加入。浏览器通用设置可以选择每次询问、总是归档或从不归档子 Thread。
+- Web 侧栏归档父 Thread 时，询问是否一并归档该父 Thread 下已加载且未归档的全部委派与本机 Codex Fork 后代（含已折叠或移入自定义分区的后代，仍排除已置顶隔离的子树、远程会话及原生 Subagent）。确认框固定并列出本次候选，之后新增的 Thread 不会加入。
 - Web 逐个调用原有归档路径。先等待父 Thread 写入确认，然后归档选定的后代。子 Thread 失败会显示数量并保留父 Thread 的撤销操作。撤销只恢复本次直接归档的父 Thread。
 - 兼容调用可继续使用未指定 `scope` 的归档与恢复 RPC，沿用基于完整委派树的级联。该路径在父 Thread 写入失败时停止，子 Thread 失败时返回 `session/archive-partial` 与 `details.failedSessionIds`。
 - 恢复时，已知归档的后代直接恢复；未出现在 Web 已加载归档集合中的后代，先通过包含归档的 Host 目录确认状态，并跟随 `officialCursor.archived` 直到归档分支结束。整个级联共用一次确认，不读取官方活动分支；确认未归档的后代才会跳过。确认读取失败或游标重复时，相应后代按恢复失败报告，不把未知状态当作已恢复。

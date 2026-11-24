@@ -370,6 +370,10 @@ export function formatExtensionCount(count: number): string {
   return `${Number.isInteger(roundedM) ? roundedM.toFixed(0) : roundedM.toFixed(1)}m`;
 }
 
+export function formatPositiveExtensionCount(count: unknown): string | null {
+  return isValidExtensionCount(count) && count > 0 ? formatExtensionCount(count) : null;
+}
+
 function matchesTokens(fields: readonly string[], normalizedQuery: string): boolean {
   if (!normalizedQuery) return true;
   const tokens = normalizedQuery.split(/\s+/u).filter(Boolean);

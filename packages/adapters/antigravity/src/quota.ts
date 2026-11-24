@@ -43,9 +43,15 @@ export interface AntigravityQuotaSnapshot {
   fetchedAt: string;
 }
 
-interface ParsedBucket extends AntigravityQuotaBucket {
-  window: string;
+export interface ParsedBucket extends AntigravityQuotaBucket {
+  groupName?: string;
   groupOrder: number;
+}
+
+/** Parsed `/usage` buckets, kept so each Session can project its own headline. */
+export interface AntigravityQuotaReading {
+  readonly buckets: readonly ParsedBucket[];
+  readonly fetchedAt: string;
 }
 
 const USAGE_ARGUMENTS = ["--print=/usage", "--output-format", "stream-json"] as const;
@@ -114,6 +120,7 @@ function parseBuckets(groups: readonly unknown[]): ParsedBucket[] {
         periodType: periodTypeFrom(window),
         ...(groupName
           ? {
+              groupName,
               scope: {
                 id: groupName,
                 label: groupName,
@@ -122,13 +129,28 @@ function parseBuckets(groups: readonly unknown[]): ParsedBucket[] {
             }
           : {}),
         usagePercent,
-        window,
         groupOrder: currentGroupOrder,
         ...(resetsAt ? { resetsAt } : {}),
       });
     }
   }
   return buckets;
+}
+
+/**
+ * The CLI groups quota by model family ("Gemini Models", "Claude and GPT
+ * Models") without listing Model IDs, so a Model belongs to the group whose
+ * name contains its leading family token (`claude-opus-4-6` -> `claude`).
+ */
+function modelGroupOrder(buckets: readonly ParsedBucket[], modelId: string): number | undefined {
+  const family = /^[a-z]+/u.exec(modelId.trim().toLowerCase())?.[0];
+  if (!family) return undefined;
+  return buckets.find((bucket) =>
+    bucket.groupName
+      ?.toLowerCase()
+      .split(/[^a-z0-9]+/u)
+      .includes(family),
+  )?.groupOrder;
 }
 
 /**
@@ -140,8 +162,8 @@ function parseBuckets(groups: readonly unknown[]): ParsedBucket[] {
  */
 function leadingBucket(buckets: readonly ParsedBucket[]): ParsedBucket | undefined {
   return [...buckets].sort((left, right) => {
-    const leftIsFiveHour = periodTypeFrom(left.window) === "five_hour";
-    const rightIsFiveHour = periodTypeFrom(right.window) === "five_hour";
+    const leftIsFiveHour = left.periodType === "five_hour";
+    const rightIsFiveHour = right.periodType === "five_hour";
     if (leftIsFiveHour !== rightIsFiveHour) {
       return Number(rightIsFiveHour) - Number(leftIsFiveHour);
     }
@@ -152,16 +174,35 @@ function leadingBucket(buckets: readonly ParsedBucket[]): ParsedBucket | undefin
   })[0];
 }
 
-/** Projects a `/usage` `command_result` payload into a quota snapshot. */
-export function parseAntigravityUsageCommand(
+/** Parses a `/usage` `command_result` payload into its quota buckets. */
+export function readAntigravityUsageCommand(
   command: unknown,
   fetchedAt: string = new Date().toISOString(),
-): AntigravityQuotaSnapshot | null {
+): AntigravityQuotaReading | null {
   if (!isRecord(command) || command.name !== "usage" || !isRecord(command.data)) return null;
   const { groups } = command.data;
   if (!Array.isArray(groups)) return null;
   const buckets = parseBuckets(groups);
-  const leading = leadingBucket(buckets);
+  return buckets.length > 0 ? { buckets, fetchedAt } : null;
+}
+
+/**
+ * Projects buckets into a quota snapshot. With a Model, the headline comes
+ * from that Model's quota group; otherwise, or when no group matches, it comes
+ * from every bucket.
+ */
+export function projectAntigravityQuota(
+  reading: AntigravityQuotaReading,
+  modelId?: string,
+): AntigravityQuotaSnapshot | null {
+  const { buckets, fetchedAt } = reading;
+  const groupOrder = modelId ? modelGroupOrder(buckets, modelId) : undefined;
+  const leading =
+    leadingBucket(
+      groupOrder === undefined
+        ? buckets
+        : buckets.filter((bucket) => bucket.groupOrder === groupOrder),
+    ) ?? leadingBucket(buckets);
   if (!leading) return null;
   const others = buckets
     .filter((bucket) => bucket !== leading)
@@ -173,12 +214,10 @@ export function parseAntigravityUsageCommand(
       return periodRank(left.periodType) - periodRank(right.periodType);
     });
   return {
-    ...(leading.scope || periodTypeFrom(leading.window) === "unknown"
-      ? { label: leading.product }
-      : {}),
+    ...(leading.scope || leading.periodType === "unknown" ? { label: leading.product } : {}),
     ...(leading.scope ? { scope: leading.scope } : {}),
     usedPercent: leading.usagePercent,
-    periodType: periodTypeFrom(leading.window),
+    periodType: leading.periodType ?? "unknown",
     fetchedAt,
     ...(leading.resetsAt ? { resetsAt: leading.resetsAt } : {}),
     ...(others.length > 0
@@ -195,11 +234,21 @@ export function parseAntigravityUsageCommand(
   };
 }
 
-/** Runs `/usage` and returns the quota snapshot, or null when unavailable. */
+/** Projects a `/usage` `command_result` payload into a quota snapshot. */
+export function parseAntigravityUsageCommand(
+  command: unknown,
+  fetchedAt: string = new Date().toISOString(),
+  modelId?: string,
+): AntigravityQuotaSnapshot | null {
+  const reading = readAntigravityUsageCommand(command, fetchedAt);
+  return reading ? projectAntigravityQuota(reading, modelId) : null;
+}
+
+/** Runs `/usage` and returns its quota buckets, or null when unavailable. */
 export async function fetchAntigravityQuota(
   run: AntigravityCommandRunner,
   now: Date = new Date(),
-): Promise<AntigravityQuotaSnapshot | null> {
+): Promise<AntigravityQuotaReading | null> {
   let stdout: string;
   try {
     stdout = await run(USAGE_ARGUMENTS);
@@ -211,8 +260,8 @@ export async function fetchAntigravityQuota(
     try {
       const event: unknown = JSON.parse(line);
       if (!isRecord(event) || event.event !== "command_result") continue;
-      const snapshot = parseAntigravityUsageCommand(event.command, fetchedAt);
-      if (snapshot) return snapshot;
+      const reading = readAntigravityUsageCommand(event.command, fetchedAt);
+      if (reading) return reading;
     } catch {
       // The CLI can interleave diagnostics with structured command results.
     }

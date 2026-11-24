@@ -10,6 +10,7 @@ const root = path.resolve(import.meta.dirname, "..");
 const include = [
   "packages/**/test/**/*.test.ts",
   "tests/integration/**/*.test.ts",
+  "apps/web-ui/packages/api/session-controller/test/archived-query.test.ts",
   "apps/web-ui/packages/api/session-controller/test/prompt-delivery.test.ts",
   "apps/web-ui/packages/client/connection/test/*.test.ts",
   "apps/web-ui/packages/client/ui-conversation/test/*.test.ts",

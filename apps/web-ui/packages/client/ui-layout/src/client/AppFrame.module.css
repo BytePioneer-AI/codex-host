@@ -86,19 +86,26 @@
   background: transparent;
 }
 
-:global(html:not([data-platform="darwin"]) body[data-codexhost-wallpaper]) .sidebarCol {
+:global(html:is(:not([data-platform="darwin"]), [data-tauri-shell]) body[data-codexhost-wallpaper])
+  .sidebarCol {
   background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 22%, transparent);
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 
-:global(html:not([data-platform="darwin"]) body[data-ds-dark-theme][data-codexhost-wallpaper])
+:global(
+    html:is(:not([data-platform="darwin"]), [data-tauri-shell])
+      body[data-ds-dark-theme][data-codexhost-wallpaper]
+  )
   .sidebarCol {
   background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 26%, transparent);
 }
 
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
-  :global(html:not([data-platform="darwin"]) body[data-codexhost-wallpaper]) .sidebarCol {
+  :global(
+      html:is(:not([data-platform="darwin"]), [data-tauri-shell]) body[data-codexhost-wallpaper]
+    )
+    .sidebarCol {
     background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 92%, transparent);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
@@ -201,15 +208,25 @@
 }
 
 /* Tauri macOS shell uses an opaque window rather than Electron vibrancy. */
-:global([data-platform="darwin"][data-tauri-shell]) .frame,
-:global([data-platform="darwin"][data-tauri-shell]) .sidebarCol,
-:global([data-platform="darwin"][data-tauri-shell]) :global([data-ds-dark-theme]) .sidebarCol {
+:global([data-platform="darwin"][data-tauri-shell])
+  :global(body:not([data-codexhost-wallpaper]))
+  .frame,
+:global([data-platform="darwin"][data-tauri-shell])
+  :global(body:not([data-codexhost-wallpaper]))
+  .sidebarCol,
+:global([data-platform="darwin"][data-tauri-shell])
+  :global(body[data-ds-dark-theme]:not([data-codexhost-wallpaper]))
+  .sidebarCol {
   background: var(--dsw-specific-sidebar-fill);
 }
 
 :global([data-platform="darwin"][data-tauri-shell]) .centerCol {
   border-left: none;
   box-shadow: inset 1px 0 0 color-mix(in srgb, var(--dsw-alias-border-l3) 55%, transparent);
+}
+
+:global([data-platform="darwin"][data-tauri-shell]) [data-sidebar-hidden] .centerCol {
+  box-shadow: none;
 }
 
 /* Published while the shell.leading seat is mounted (same condition as the

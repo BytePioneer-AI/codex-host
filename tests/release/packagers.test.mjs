@@ -60,6 +60,7 @@ describe("platform packagers", () => {
 
     expect(workflow).toContain("codexhost-*.dmg");
     expect(workflow).toContain("codexhost-*.exe");
+    expect(workflow).toContain("codexhost-*.tar.gz");
     expect(workflow).not.toContain("codexhost-*.msi");
     expect(workflow).toContain("npm run release:npm --");
     expect(workflow).toContain("Build npm package from installer outputs");
@@ -101,6 +102,8 @@ describe("platform packagers", () => {
     expect(publishRelease).toContain('"codexhost-${VERSION}-windows-arm64.exe"');
     expect(publishRelease).toContain('"codexhost-${VERSION}-macos-x64.dmg"');
     expect(publishRelease).toContain('"codexhost-${VERSION}-macos-arm64.dmg"');
+    expect(publishRelease).toContain('"codexhost-${VERSION}-linux-x64.tar.gz"');
+    expect(publishRelease).toContain('"codexhost-${VERSION}-linux-arm64.tar.gz"');
     expect(publishRelease).not.toContain('"codexhost-cli-${VERSION}');
     expect(workflow).not.toContain("softprops/action-gh-release");
     expect(workflow).not.toContain("codexhost-*.sha256");

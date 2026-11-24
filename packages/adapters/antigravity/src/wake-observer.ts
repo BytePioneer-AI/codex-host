@@ -22,6 +22,8 @@ export class AntigravityWakeObserver {
       cursor: number;
       outputLimit: number | undefined;
       canPublish(): boolean;
+      /** Whether output that started at this native time was streamed into a live prompt's Turn. */
+      streamedIntoPrompt(startedAtMs: number | undefined): boolean;
       publish(snapshot: HostTurnSnapshot): void;
     },
   ) {
@@ -65,12 +67,20 @@ export class AntigravityWakeObserver {
         events,
         ...(outputLimit !== undefined ? { outputLimit } : {}),
       });
+      const startedAt = new Map(
+        events.flatMap((event) =>
+          event.type === "history.autonomous"
+            ? [[event.stepIndex, event.createdAtMs] as const]
+            : [],
+        ),
+      );
       for (const turn of turns) {
         const key = turn.nativeTurnRef.nativeTurnKey;
         if (!key.startsWith("wake-")) continue;
         const idx = Number(key.slice(5));
         if (idx <= this.#cursor) continue;
-        this.options.publish(turn);
+        // A wake that ran inside a live prompt is already part of that user Turn.
+        if (!this.options.streamedIntoPrompt(startedAt.get(idx))) this.options.publish(turn);
         this.#cursor = idx;
       }
     } catch {

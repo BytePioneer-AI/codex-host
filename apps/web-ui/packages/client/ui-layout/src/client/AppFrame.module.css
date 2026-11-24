@@ -472,6 +472,10 @@
   left: calc(var(--dsh-mac-lights-end, -8px) + 20px);
 }
 
+:global([data-windows-titlebar]) .frame[data-phone] .leadingSeat {
+  top: calc(var(--dsh-windows-titlebar-height) + 4px);
+}
+
 /* Phone: only the circular sidebar control sits on the leading edge; New Session moves to the right capsule. */
 .frame[data-phone][data-sidebar-hidden] {
   --dsh-frame-leading-clearance: calc(var(--dsh-mac-lights-end, 0px) + 58px);

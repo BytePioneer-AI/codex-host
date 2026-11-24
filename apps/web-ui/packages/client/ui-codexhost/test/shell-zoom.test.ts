@@ -1,20 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
-import { ShortcutRegistry } from "../../apps/web-ui/packages/client/shortcuts/src/client/registry.ts";
-import type {
-  ShortcutCommandId,
-  ShortcutPlatform,
-} from "../../apps/web-ui/packages/client/shortcuts/src/protocol.ts";
+import { ShortcutRegistry } from "../../shortcuts/src/client/registry.ts";
+import type { ShortcutCommandId, ShortcutPlatform } from "../../shortcuts/src/protocol.ts";
 import type {
   ShortcutContext,
   ShortcutFixedInput,
   ShortcutGesture,
   Shortcuts,
-} from "../../apps/web-ui/packages/client/shortcuts/src/client/types.ts";
+} from "../../shortcuts/src/client/types.ts";
 import {
   DEFAULT_ZOOM_PERCENT,
+  ShellZoomController,
+  formatZoomShortcutHint,
   registerShellZoomShortcuts,
   resolveShellZoomShortcut,
-} from "../../apps/web-ui/packages/client/ui-codexhost/src/client/shell-zoom.ts";
+  type ShellZoomBridge,
+  type ShellZoomState,
+} from "../src/client/shell-zoom.ts";
 
 function gesture(overrides: Partial<ShortcutGesture> = {}): ShortcutGesture {
   return {
@@ -258,6 +259,7 @@ describe("registerShellZoomShortcuts", () => {
       ["Ctrl", "+", "-"],
       ["Ctrl", "+", "0"],
     ]);
+    expect(formatZoomShortcutHint(service)).toBe("Ctrl+= / Ctrl+- / Ctrl+0");
     dispose();
   });
 
@@ -271,7 +273,7 @@ describe("registerShellZoomShortcuts", () => {
     const unregisterOpen = registry.register({
       id: "shortcuts.open" as ShortcutCommandId,
       label: () => "Keyboard shortcuts",
-      group: "application",
+      aliases: [],
       defaults: {
         "web:windows": { code: "Slash", modifiers: ["primary"] },
       },
@@ -282,7 +284,7 @@ describe("registerShellZoomShortcuts", () => {
     const unregisterCustom = registry.register({
       id: "custom.action" as ShortcutCommandId,
       label: () => "Custom action",
-      group: "application",
+      aliases: [],
       defaults: {
         "web:windows": { code: "Digit0", modifiers: ["primary", "shift"] },
       },
@@ -325,5 +327,39 @@ describe("registerShellZoomShortcuts", () => {
     expect(step).toHaveBeenCalledWith(1);
 
     dispose();
+  });
+});
+
+describe("ShellZoomController", () => {
+  it("applies silent dropdown updates and tracks external bridge notifications", async () => {
+    const listeners = new Set<(state: ShellZoomState) => void>();
+    let current: ShellZoomState = { percent: 100, ladder: [50, 100, 150] };
+    const bridge: ShellZoomBridge = {
+      getState: () => current,
+      refresh: vi.fn(async () => current),
+      setPercent: vi.fn(async (percent) => {
+        current = { ...current, percent };
+        return current;
+      }),
+      step: vi.fn(async () => current),
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    };
+
+    const controller = new ShellZoomController(bridge);
+    expect(controller.getSnapshot()).toEqual({ percent: 100, ladder: [50, 100, 150] });
+
+    await controller.setPercent(150);
+    expect(bridge.setPercent).toHaveBeenCalledWith(150, { silent: true });
+    expect(controller.getSnapshot().percent).toBe(150);
+
+    for (const listener of listeners) listener({ percent: 50, ladder: [50, 100, 150] });
+    expect(controller.getSnapshot().percent).toBe(50);
+
+    controller.dispose();
+    for (const listener of listeners) listener({ percent: 100, ladder: [50, 100, 150] });
+    expect(controller.getSnapshot().percent).toBe(50);
   });
 });

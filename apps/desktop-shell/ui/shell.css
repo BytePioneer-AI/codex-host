@@ -484,6 +484,10 @@ button {
   padding: 20px 38px 0 24px;
 }
 
+html[data-windows-titlebar] {
+  --dsh-frame-top-clearance: var(--dsh-windows-titlebar-height, 36px);
+}
+
 html[data-windows-titlebar] .topbar {
   padding-top: 10px;
   padding-right: calc(var(--dsh-windows-caption-width, 138px) + 18px);

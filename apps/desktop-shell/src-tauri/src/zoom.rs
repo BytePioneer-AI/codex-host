@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) const ZOOM_FILE: &str = "desktop-shell-zoom-v1.json";
 pub(crate) const DEFAULT_ZOOM_PERCENT: u16 = 100;
-pub(crate) const DEFAULT_ZOOM_INDEX: usize = 5;
 pub(crate) const ZOOM_LADDER: [u16; 11] = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -66,7 +65,6 @@ impl ZoomController {
         let next_idx = match delta {
             1 => current_idx.saturating_add(1).min(ZOOM_LADDER.len() - 1),
             -1 => current_idx.saturating_sub(1),
-            0 => DEFAULT_ZOOM_INDEX,
             _ => return Err(format!("Invalid zoom step direction: {delta}")),
         };
         Ok(ZOOM_LADDER[next_idx])
@@ -131,11 +129,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_zoom_index_matches_default_percent() {
-        assert_eq!(ZOOM_LADDER[DEFAULT_ZOOM_INDEX], DEFAULT_ZOOM_PERCENT);
-    }
-
-    #[test]
     fn steps_across_ladder_without_exceeding_bounds_and_tracks_revision() {
         let dir = tempfile::tempdir().unwrap();
         let mut ctrl = ZoomController::load(dir.path());
@@ -182,11 +175,7 @@ mod tests {
             assert_eq!(changed, should_change);
             assert_eq!(state.revision, expected_rev);
         }
-        let reset = ctrl.resolve_step(0).unwrap();
-        let (state, changed) = ctrl.commit(reset);
-        assert_eq!(state.percent, 100);
-        assert!(changed);
-        assert_eq!(state.revision, expected_rev + 1);
+        assert!(ctrl.resolve_step(0).is_err());
         assert!(ctrl.resolve_step(2).is_err());
     }
 

@@ -99,6 +99,7 @@ function __codexhostDesktopShellInit(config) {
 
   const mutateZoom = async (command, args, options) => {
     const raw = await invoke(command, args);
+    if (!raw) return currentZoomState;
     const { state, revision } = normalizeZoomState(raw);
     return commitZoomState(state, revision, !(options && options.silent === true));
   };
@@ -392,14 +393,39 @@ function __codexhostDesktopShellInit(config) {
     return Boolean(event.target.closest("[data-window-drag], .topbar"));
   };
 
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const createCaptionSvg = (strokeWidth, shapes) => {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("width", "10");
+    svg.setAttribute("height", "10");
+    svg.setAttribute("viewBox", "0 0 10 10");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", strokeWidth);
+    for (const [tag, attrs] of shapes) {
+      const node = document.createElementNS(SVG_NS, tag);
+      for (const [attr, value] of Object.entries(attrs)) node.setAttribute(attr, value);
+      svg.appendChild(node);
+    }
+    return svg;
+  };
+
   let maximized = false;
   let maxBtn = null;
   const updateMaxIcon = () => {
     if (!maxBtn) return;
     maxBtn.setAttribute("aria-label", maximized ? "Restore" : "Maximize");
-    maxBtn.innerHTML = maximized
-      ? '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1"><path d="M2.5 3.5h5v5h-5z"/><path d="M3.5 3.5V1.5h5v5h-2"/></svg>'
-      : '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1"><rect x="1.5" y="1.5" width="7" height="7" rx="0.5"/></svg>';
+    maxBtn.replaceChildren(
+      createCaptionSvg(
+        "1",
+        maximized
+          ? [
+              ["path", { d: "M2.5 3.5h5v5h-5z" }],
+              ["path", { d: "M3.5 3.5V1.5h5v5h-2" }],
+            ]
+          : [["rect", { x: "1.5", y: "1.5", width: "7", height: "7", rx: "0.5" }]],
+      ),
+    );
   };
 
   const syncChromeState = () => {
@@ -497,8 +523,7 @@ function __codexhostDesktopShellInit(config) {
       const minBtn = document.createElement("button");
       minBtn.type = "button";
       minBtn.setAttribute("aria-label", "Minimize");
-      minBtn.innerHTML =
-        '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1"><line x1="1" y1="5" x2="9" y2="5"/></svg>';
+      minBtn.appendChild(createCaptionSvg("1", [["line", { x1: "1", y1: "5", x2: "9", y2: "5" }]]));
       minBtn.addEventListener("click", () => invoke("window_minimize")?.catch?.(() => {}));
 
       maxBtn = document.createElement("button");
@@ -519,8 +544,12 @@ function __codexhostDesktopShellInit(config) {
       closeBtn.type = "button";
       closeBtn.className = "close";
       closeBtn.setAttribute("aria-label", "Close");
-      closeBtn.innerHTML =
-        '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.1"><line x1="1.5" y1="1.5" x2="8.5" y2="8.5"/><line x1="8.5" y1="1.5" x2="1.5" y2="8.5"/></svg>';
+      closeBtn.appendChild(
+        createCaptionSvg("1.1", [
+          ["line", { x1: "1.5", y1: "1.5", x2: "8.5", y2: "8.5" }],
+          ["line", { x1: "8.5", y1: "1.5", x2: "1.5", y2: "8.5" }],
+        ]),
+      );
       closeBtn.addEventListener("click", () => invoke("window_close")?.catch?.(() => {}));
 
       bar.append(minBtn, maxBtn, closeBtn);

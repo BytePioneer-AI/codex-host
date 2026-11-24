@@ -303,8 +303,11 @@ export type WorkspaceBrowserInjected = {
   ) => Promise<{ items: readonly SessionSearchResultItem[]; hasMore: boolean }>;
   /** Refresh only the list head without reopening the current conversation. */
   refreshSessions: () => void;
-  /** Explicitly load one older official catalog page; never drains a project. */
-  loadMoreSessions: () => void;
+  /**
+   * Explicitly load older official catalog pages; never drains a project. For a local Workspace
+   * the read goes on until it reaches one of that Workspace's Sessions or the catalog ends.
+   */
+  loadMoreSessions: (workspaceId?: WorkspaceId) => void;
   /** Maximum number of merged rows rendered for one search. */
   searchResultLimit: number;
   /** Open the Session rename dialog; row actions and keyboard commands raise this request. */
@@ -418,11 +421,7 @@ export interface ArchiveChildrenRequest {
 export interface ArchiveChildrenInjected {
   hooks: { archiveChildrenRequest: HostObservable<ArchiveChildrenRequest | null> };
   dismiss: () => void;
-  choose: (
-    request: ArchiveChildrenRequest,
-    includeChildren: boolean,
-    remember: boolean,
-  ) => Promise<void>;
+  choose: (request: ArchiveChildrenRequest, includeChildren: boolean) => void;
 }
 
 /**

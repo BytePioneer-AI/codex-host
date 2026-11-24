@@ -11,12 +11,13 @@ import {
   answerStep,
   checkpointStep,
   createNativeHistoryDatabase,
+  planModeSwitch,
   runField,
   systemStep,
   textField,
   userStep,
-} from "./support/native-history-fixture.js";
-import { bytes } from "./support/native-timing-fixture.js";
+} from "../../../../tests/fixtures/antigravity/native-history-fixture.js";
+import { bytes } from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
 
 const nativeRef = nativeSessionRefSchema.parse({
   harnessId: "antigravity",
@@ -328,6 +329,110 @@ describe("native session history", () => {
         { idx: 15, checkpointId: "turn-2" },
       ]);
       expect(await opened.value.readSnapshot()).toEqual(snapshot);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps chained Plan executions on their original user and autonomous Turns", async () => {
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    try {
+      userStep(db, 0, "Plan and implement", "plan");
+      planModeSwitch(db, 1, "plan", "execute");
+      systemStep(db, 4, "execute", "work_efficiently_reminder");
+      checkpointStep(db, 5, { run: "execute" });
+      db.prepare("INSERT INTO steps VALUES (6, 132, 3, ?)").run(
+        commandResult("work", "pwd", "/example", "execute"),
+      );
+      planModeSwitch(db, 7, "execute", "plan-again", "enter");
+      answerStep(db, 10, "User reply", "plan-again");
+      systemStep(db, 11, "wake", "task_notification");
+      planModeSwitch(db, 12, "wake", "wake-execute");
+      answerStep(db, 15, "Wake reply", "wake-execute");
+      userStep(db, 16, "Next prompt", "next");
+      answerStep(db, 17, "Next reply", "next");
+
+      const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
+      assert(opened.ok);
+      const snapshot = await opened.value.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns.map((turn) => turn.checkpoint?.checkpointId)).toEqual([
+        "turn-0",
+        "wake-11",
+        "turn-1",
+      ]);
+      expect(snapshot.value.turns[0]?.items.map(({ item }) => item)).toMatchObject([
+        { toolName: "exit_plan_mode" },
+        { type: "contextCompaction", itemId: "checkpoint-5" },
+        { type: "commandExecution", output: "/example" },
+        { toolName: "enter_plan_mode" },
+        { type: "agentMessage", text: "User reply" },
+      ]);
+      expect(snapshot.value.turns[1]).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "wake-11" },
+        input: [],
+        items: [{ item: { toolName: "exit_plan_mode" } }, { item: { text: "Wake reply" } }],
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([8, 6, 12, 7])(
+    "keeps committed Plan continuation work before a non-final planner (status %i)",
+    async (status) => {
+      const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+      try {
+        userStep(db, 0, "Plan", "plan");
+        planModeSwitch(db, 1, "plan", "execute");
+        db.prepare("INSERT INTO steps VALUES (4, 132, 3, ?), (5, 15, ?, ?)").run(
+          commandResult("work", "pwd", "/example", "execute"),
+          status,
+          Buffer.concat([runField("execute"), bytes(20, Buffer.alloc(0))]),
+        );
+        systemStep(db, 6, "wake", "agent_message");
+        answerStep(db, 7, "Independent reply", "wake");
+        const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
+        assert(opened.ok);
+        const snapshot = await opened.value.readSnapshot();
+        assert(snapshot.ok);
+        expect(snapshot.value.turns).toMatchObject([
+          {
+            nativeTurnRef: { nativeTurnKey: "turn-0" },
+            outcome: { status: "unknown" },
+            items: [
+              { item: { toolName: "exit_plan_mode" }, outcome: { status: "succeeded" } },
+              { item: { type: "commandExecution", output: "/example" } },
+            ],
+          },
+          {
+            nativeTurnRef: { nativeTurnKey: "wake-6" },
+            items: [{ item: { text: "Independent reply" } }],
+          },
+        ]);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("does not derive a checkpoint for an orphaned Plan continuation", async () => {
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    try {
+      systemStep(db, 0, "execute", "plan_mode_handoff");
+      systemStep(db, 1, "execute", "work_efficiently_reminder");
+      answerStep(db, 2, "Unanchored reply", "execute");
+      const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
+      assert(opened.ok);
+      const snapshot = await opened.value.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns).toMatchObject([
+        {
+          nativeTurnRef: { nativeTurnKey: "replay-0" },
+          items: [{ item: { text: "Unanchored reply" } }],
+        },
+      ]);
+      expect(snapshot.value.turns[0]?.checkpoint).toBeUndefined();
     } finally {
       db.close();
     }

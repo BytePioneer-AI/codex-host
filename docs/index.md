@@ -143,12 +143,14 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`product/web-remote-access.md`](product/web-remote-access.md) | 局域网、Tailscale、Relay 和自备隧道的连接方式、自动证书、可信代理、手机连接提示与信任边界。 |
+| [`product/web-remote-access.md`](product/web-remote-access.md) | 局域网、Tailscale、Relay 与自备隧道连接（2×2 主方式网格）、移动端引导（Android APK / iOS Safari）、自动证书、可信代理与信任边界。 |
+| [`product/multi-remote-peers.md`](product/multi-remote-peers.md) | 多远端 `codexhost web` 主机聚合（Peer Hub）：`/api/peer/v1/*` 契约、`remote-peers-v1.json` 存储、本机管理权限与 SSRF 防护、事件流过滤与统一多主机 UI。 |
 | [`product/self-hosted-relay.md`](product/self-hosted-relay.md) | 自建 Relay：Compose 从源码构建、通配 DNS、443 自动证书与电脑端连接。 |
 | [`product/web-ui-extensions.md`](product/web-ui-extensions.md) | DSH Web 插件安装、原生前后端运行、资源路由、启停、依赖检查、恢复与原包验证边界；使用或维护界面扩展时阅读。 |
 | [`proposals/ui-extension-plugins.md`](proposals/ui-extension-plugins.md) | 界面扩展目标方案与分步状态：Harness 与界面插件分类、统一管理、DSH 纯 Web 首期范围，以及原生插件和 Codex GUI 分端接入背景。 |
 | [`proposals/web-native-extensions.md`](proposals/web-native-extensions.md) | Web 原生扩展 Phase 1 契约：v2 清单、双轨管理、浏览器宿主、Node 后端和市场索引；包含三路并行实现的分工与接口。 |
-| [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA 的共享 CH 会话、Desktop 已有 SSH/Remote Control 会话、GUI/Web 共享偏好、Web/Desktop 共用的官方 Codex Thread、原生项目归组、历史分页、选中回复文字加入对话、Windows/macOS 按需桌面截图、侧栏服务器浏览器推流、源码构建、启动隔离、跨工作树停机及验收限制；开发 Web 或与 Desktop 并行运行时阅读。 |
+| [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA、Tauri v2 独立原生桌面壳、默认桌面路由、Desktop 已有 SSH/Remote Control 会话、GUI/Web 共享偏好、源码构建、启动隔离及验收限制；开发 Web 或桌面入口时阅读。 |
+| [`../apps/android-shell/README.md`](../apps/android-shell/README.md) | Android 轻量原生 APK 壳：免 GMS、多电脑管理、扫码配对、同源 WebView 隔离、构建与安全说明。 |
 | [`product/web-ios-keyboard-composer-alignment.md`](product/web-ios-keyboard-composer-alignment.md) | 待解决问题：iOS Safari 软键盘下输入框与屏幕底部不贴合的实测数据、根因（页面被 iOS 多滚、`visualViewport` 不可用）、无效做法与备选方向；处理手机键盘布局前阅读。 |
 | [`../packages/remote-relay/README.md`](../packages/remote-relay/README.md) | 独立 Relay 的启动参数、部署要求、控制证书重载、协议与流量限制、元数据日志和本机验证；自建 Docker 部署见产品文档。 |
 | [`proposals/herdr-core-terminal-backend.md`](proposals/herdr-core-terminal-backend.md) | 暂缓实施的终端后台调研：现有 DSH/xterm 路径、Alma 证据、Herdr Core 原生契约、输入确认缺口、独立进程生命周期及候选迁移与验收边界。 |
@@ -188,7 +190,7 @@
 | --- | --- |
 | [`operations/remote-thread-read.md`](operations/remote-thread-read.md) | 通过现有 Desktop 远程连接跨 Harness 读取会话；包含部署要求、分页、响应大小与超时限制。 |
 | [`operations/host-runtime-log.md`](operations/host-runtime-log.md) | Host Runtime 日志的位置、内容与边界，以及 Web／Host 会话目录性能日志的按需开关和 Server-Timing；排查崩溃或慢查询时阅读。 |
-| [`operations/codexhost-console.md`](operations/codexhost-console.md) | 本地控制台的打开方式、页面、停止服务、Web 连接设备设置、项目公告、Host 连接、端口、诊断、安全与更新边界；排查启动失败或维护控制台时阅读。 |
+| [`operations/codexhost-console.md`](operations/codexhost-console.md) | 本地控制台的静默随启、故障救援弹出、页面功能、停止服务、`app` / `launch-prefs` 命令、诊断、安全与更新边界；排查启动失败或维护控制台时阅读。 |
 | [`NOTICE.md`](NOTICE.md) | Web 控制台打开或刷新时读取的项目公告，含显示开关、标题、类型与正文；默认关闭，发布规则见控制台文档。 |
 | [`operations/repository-maintenance.md`](operations/repository-maintenance.md) | PR 标签、CI 评论和发布前检查自动化；修改仓库自动化时阅读。 |
 
@@ -203,6 +205,7 @@
 | [`proposals/Reasoning 实时预览与持久 Transcript 的后续方案.md`](proposals/Reasoning%20实时预览与持久%20Transcript%20的后续方案.md) | Reasoning 实时预览与持久留痕方案；规划 Reasoning 展示时阅读。 |
 | [`proposals/外部 Harness 回合文件变更汇总问题与后续方案.md`](proposals/外部%20Harness%20回合文件变更汇总问题与后续方案.md) | Turn 文件变更重复汇总问题、语义分层和候选方案；设计净 diff 时阅读。 |
 | [`proposals/独立 Web 控制台方案.md`](proposals/独立%20Web%20控制台方案.md) | 不依赖 Codex 启动的本地控制台：方案、第一阶段实现与后续阶段；扩展控制台时阅读。 |
+| [`proposals/unified-client-entrypoints-roadmap.md`](proposals/unified-client-entrypoints-roadmap.md) | 统一用户入口收口、单安装包双桌面模式（自有薄壳 + 托盘 + 官方 Codex Desktop 共存）、Console 退居幕后及 Android 轻量 APK / iOS PWA 移动端路线图；路线图与分阶段边界参考。 |
 
 ## 历史归档
 

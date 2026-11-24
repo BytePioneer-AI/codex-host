@@ -41,11 +41,16 @@ import {
   answerStep,
   checkpointStep,
   createNativeHistoryDatabase,
+  planModeSwitch,
   systemStep,
   textField,
   userStep,
-} from "./support/native-history-fixture.js";
-import { bytes, nanoseconds, writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
+} from "../../../../tests/fixtures/antigravity/native-history-fixture.js";
+import {
+  bytes,
+  nanoseconds,
+  writeNativeTimingDatabase,
+} from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
 
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof fs>();
@@ -198,6 +203,13 @@ async function completed(outputs: HarnessOutput[], id = "t1") {
     expect(
       events(outputs).filter((event) => event.type === "turn.completed" && event.turnId === id),
     ).toHaveLength(1),
+  );
+}
+/** CortexStepMetadata field 1 is the step's native creation time. */
+function stampStep(db: DatabaseSync, idx: number, atMs: number) {
+  db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
+    bytes(1, nanoseconds(BigInt(atMs) * 1_000_000n)),
+    idx,
   );
 }
 afterEach(async () => {
@@ -1182,6 +1194,51 @@ describe("Antigravity ACP Session", () => {
       1,
     );
   });
+  it("defaults a fresh Session to Skip permissions without locking the mode", async () => {
+    const { adapter, transports } = fixture();
+    const { session } = await sessionOf(await adapter.open({ kind: "create", cwd: process.cwd() }));
+    if (!(session instanceof AntigravitySession)) throw new Error("Expected AntigravitySession");
+    await session.initialize();
+    expect(transports[0]?.skipPermissions).toBe(true);
+    expect(session.initialState).toMatchObject({
+      effectivePermissionModeId: "dangerously-skip-permissions",
+      nativeRef: { locator: { executionPolicy: "default" } },
+    });
+    const nativeSessionId = session.initialState.nativeRef?.nativeSessionId;
+
+    expect(
+      await session.execute({ type: "permissionMode.select", permissionModeId: mode("default") }),
+    ).toEqual({ ok: true, value: { completed: true } });
+    expect(transports.at(-1)?.skipPermissions).toBe(false);
+    expect(session.initialState).toMatchObject({
+      effectivePermissionModeId: "default",
+      nativeRef: { nativeSessionId, locator: { permissionModeId: "default" } },
+    });
+  });
+  it("creates a Session without skipping approvals for an explicit safe selection", async () => {
+    const { adapter, transports } = fixture();
+    const { session } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd(), permissionModeId: mode("default") }),
+    );
+    if (!(session instanceof AntigravitySession)) throw new Error("Expected AntigravitySession");
+    await session.initialize();
+    expect(transports[0]?.skipPermissions).toBe(false);
+    expect(session.initialState.effectivePermissionModeId).toBe("default");
+  });
+  it.each([undefined, { permissionModeId: "default" }])(
+    "resumes without skipping approvals for a legacy or low-permission locator (%j)",
+    async (locator) => {
+      const { adapter, transports } = fixture();
+      const nativeRef = ref(undefined, locator);
+      const { session } = await sessionOf(
+        await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef }),
+      );
+      if (!(session instanceof AntigravitySession)) throw new Error("Expected AntigravitySession");
+      await session.initialize();
+      expect(transports[0]?.skipPermissions).toBe(false);
+      expect(session.initialState.effectivePermissionModeId).toBe("default");
+    },
+  );
   it("restarts only across Skip permissions, keeps identity, and rejects a busy restart", async () => {
     const { adapter, transports } = fixture();
     const nativeRef = ref();
@@ -1614,28 +1671,63 @@ describe("inspection and errors", () => {
         command: {
           name: "usage",
           data: {
-            groups: [{ name: "Plan", buckets: [{ window: "5h", remaining_fraction: 0.75 }] }],
+            groups: [
+              { name: "Gemini Models", buckets: [{ window: "5h", remaining_fraction: 0.75 }] },
+              {
+                name: "Claude and GPT Models",
+                buckets: [{ window: "5h", remaining_fraction: 1 }],
+              },
+            ],
           },
         },
       };
-      await writeFile(
-        command,
-        `#!/bin/sh\necho 'diagnostic'\nprintf '%s\\n' '${JSON.stringify(quota)}'\n`,
-      );
-      await chmod(command, 0o755);
+      const writeQuota = async (script: string) => {
+        await writeFile(command, script);
+        await chmod(command, 0o755);
+      };
+      const quotaScript = `#!/bin/sh\necho 'diagnostic'\nprintf '%s\\n' '${JSON.stringify(quota)}'\n`;
+      await writeQuota(quotaScript);
+      let now = 100_000;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
       const { adapter, transports } = fixture({ command });
-      expect(adapter.credits()).toBeNull();
-      expect(await adapter.refreshCredits()).toMatchObject({
-        usedPercent: 25,
-        periodType: "five_hour",
-      });
-      const account = await adapter.inspectAccount();
-      expect(account?.credits).toMatchObject({ usedPercent: 25 });
-      expect(account?.credits).not.toHaveProperty("fetchedAt");
-      expect(transports).toHaveLength(0);
-      await writeFile(command, "#!/bin/sh\nexit 1\n");
-      expect(await adapter.refreshCredits()).toBeNull();
-      expect(adapter.credits()).toBeNull();
+      try {
+        expect(adapter.credits()).toBeNull();
+        expect(await adapter.refreshCredits()).toMatchObject({
+          usedPercent: 25,
+          periodType: "five_hour",
+        });
+        const account = await adapter.inspectAccount();
+        expect(account?.credits).toMatchObject({ usedPercent: 25 });
+        expect(account?.credits).not.toHaveProperty("fetchedAt");
+        const { session } = await sessionOf(
+          await adapter.open({ kind: "create", cwd: home, model: model("claude-opus-4-6") }),
+        );
+        await writeQuota("#!/bin/sh\nexit 1\n");
+        now = 110_000;
+        expect(await session.readAccountCredits?.()).toMatchObject({
+          scope: { id: "Claude and GPT Models" },
+          usedPercent: 0,
+          productUsage: [{ scope: { id: "Gemini Models" }, usagePercent: 25 }],
+        });
+        expect(await adapter.refreshCredits()).toMatchObject({
+          usedPercent: 25,
+          periodType: "five_hour",
+        });
+        expect(transports).toHaveLength(0);
+        expect(await adapter.inspectAccount()).toBeNull();
+        expect(adapter.credits()).toBeNull();
+        await writeQuota(quotaScript);
+        now = 140_000;
+        expect(await adapter.refreshCredits()).toBeNull();
+        now = 170_000;
+        expect(await adapter.refreshCredits()).toMatchObject({
+          usedPercent: 25,
+          periodType: "five_hour",
+        });
+      } finally {
+        clock.mockRestore();
+        await adapter.close();
+      }
     },
   );
   it("normalizes native faults and redacts diagnostics", () => {
@@ -1778,13 +1870,6 @@ describe("Antigravity foreground native commits", () => {
       return row;
     });
     return firstRead.promise;
-  }
-
-  function stampInput(db: DatabaseSync, idx: number, atMs: number) {
-    db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
-      bytes(1, nanoseconds(BigInt(atMs) * 1_000_000n)),
-      idx,
-    );
   }
 
   const terminal = (outputs: HarnessOutput[], id = "t1") => {
@@ -1942,7 +2027,7 @@ describe("Antigravity foreground native commits", () => {
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
         // Both prompts have the same input; text equality alone cannot prove ownership.
         userStep(db, 0, "hello", "first");
-        stampInput(db, 0, firstCreatedAt);
+        stampStep(db, 0, firstCreatedAt);
         answerStep(db, 1, "first answer", "first");
         const secondCreatedAt = Date.now();
         const firstRead = nextRead();
@@ -1951,7 +2036,7 @@ describe("Antigravity foreground native commits", () => {
         if (commits) {
           await new Promise<void>((resolve) => setTimeout(resolve, 50));
           userStep(db, 2, "hello", "second");
-          stampInput(db, 2, secondCreatedAt);
+          stampStep(db, 2, secondCreatedAt);
           answerStep(db, 3, "second answer", "second");
         }
         await completed(outputs, "t2");
@@ -1980,7 +2065,7 @@ describe("Antigravity foreground native commits", () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       const firstInputAt = Date.now();
       userStep(db, 0, "first-a", "first");
-      stampInput(db, 0, firstInputAt);
+      stampStep(db, 0, firstInputAt);
       const secondLateInputAt = Date.now();
       transport.result.resolve({ stopReason: "end_turn" });
       await completed(outputs, "t1");
@@ -1994,7 +2079,7 @@ describe("Antigravity foreground native commits", () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       // Turn A's second native input commits late during Turn B while Turn B has not written yet.
       userStep(db, 1, "first-b", "first");
-      stampInput(db, 1, secondLateInputAt);
+      stampStep(db, 1, secondLateInputAt);
       transport.result.resolve({ stopReason: "end_turn" });
       await completed(outputs, "t2");
       expect(terminal(outputs, "t2")).not.toHaveProperty("nativeTurnRef");
@@ -2032,7 +2117,7 @@ describe("Antigravity foreground native commits", () => {
         await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
         userStep(db, 0, "hello", "second");
-        stampInput(db, 0, Date.now());
+        stampStep(db, 0, Date.now());
         // Commit a generic tool without a planner reply.
         const tool = bytes(4, Buffer.concat([textField(1, "next"), textField(2, "Tool")]));
         db.prepare(
@@ -2087,7 +2172,7 @@ describe("Antigravity foreground native commits", () => {
       db.exec("BEGIN IMMEDIATE");
       userStep(db, 0, "hel", "prompt");
       userStep(db, 1, "lo", "prompt");
-      stampInput(db, 1, createdAtMs);
+      stampStep(db, 1, createdAtMs);
       answerStep(db, 2, "hello there", "prompt");
       systemStep(db, 3, "wake");
       answerStep(db, 4, "wake answer", "wake");
@@ -2131,6 +2216,8 @@ describe("Antigravity foreground native commits", () => {
 describe("Antigravity idle wake Turns", () => {
   const wakes = (outputs: HarnessOutput[]) =>
     events(outputs).filter((event) => event.type === "turn.autonomous.completed");
+  /** Lets the wall clock advance between native creation times and Adapter clock readings. */
+  const moment = () => new Promise((resolve) => setTimeout(resolve, 10));
 
   async function setup() {
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-wake-"));
@@ -2278,6 +2365,126 @@ describe("Antigravity idle wake Turns", () => {
     }
   });
 
+  it("does not republish a wake that streamed inside the active prompt", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      const handler = required(transport.handler);
+      // agy keeps the prompt open across a scheduled wake, whose output streams into t2.
+      handler.onEvent({ type: "agent.text", text: "first report" });
+      const firstAtMs = Date.now();
+      systemStep(db, 2, "first-wake");
+      answerStep(db, 3, "first report", "first-wake");
+      stampStep(db, 2, firstAtMs);
+      const lateAtMs = Date.now();
+      handler.onResponse?.();
+      // A wake that starts only after the wire response is idle output, not part of t2.
+      const idleAtMs = Date.now() + 1;
+      await moment();
+      userStep(db, 4, "next", "next");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(
+        events(outputs).filter((event) => event.type === "item.completed" && event.turnId === "t2"),
+      ).toMatchObject([{ snapshot: { item: { type: "agentMessage", text: "first report" } } }]);
+      expect(wakes(outputs)).toEqual([]);
+      // The second wake also started before the response; its commit lands after t2 completed.
+      systemStep(db, 5, "late-wake");
+      answerStep(db, 6, "late report", "late-wake");
+      stampStep(db, 5, lateAtMs);
+      systemStep(db, 7, "idle-wake");
+      answerStep(db, 8, "idle report", "idle-wake");
+      stampStep(db, 7, idleAtMs);
+      transport.eventHandler?.({ type: "agent.text", text: "idle report" });
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
+        "wake-7",
+      ]);
+    } finally {
+      await session.close();
+      db.close();
+    }
+  });
+
+  it("publishes only the idle wake when commits land while a later prompt is in flight", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      // The idle wake starts after that response; its notification begins the commit poll.
+      await moment();
+      const idleAtMs = Date.now();
+      transport.eventHandler?.({ type: "agent.text", text: "idle report" });
+      transport.result = deferred();
+      await moment();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      const inPromptAtMs = Date.now();
+      // Both wakes reach SQLite while t2's prompt still awaits its response.
+      systemStep(db, 2, "idle-wake");
+      stampStep(db, 2, idleAtMs);
+      answerStep(db, 3, "idle report", "idle-wake");
+      userStep(db, 4, "next", "next");
+      systemStep(db, 5, "in-prompt");
+      stampStep(db, 5, inPromptAtMs);
+      answerStep(db, 6, "in-prompt report", "in-prompt");
+      required(transport.handler).onEvent({ type: "agent.text", text: "in-prompt report" });
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
+        "wake-2",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("publishes an idle wake that started between prompts even when committed after the later prompt responds", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      // An idle wake starts between t1's response and t2's submission, then commits only after t2 responds.
+      await moment();
+      const idleAtMs = Date.now();
+      await moment();
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      const inPromptAtMs = Date.now();
+      required(transport.handler).onEvent({ type: "agent.text", text: "in-prompt report" });
+      required(transport.handler).onResponse?.();
+      await moment();
+      userStep(db, 2, "next", "next");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(wakes(outputs)).toEqual([]);
+      // Both wakes reach SQLite after t2 has already responded and completed.
+      systemStep(db, 3, "idle-wake");
+      stampStep(db, 3, idleAtMs);
+      answerStep(db, 4, "idle report", "idle-wake");
+      systemStep(db, 5, "in-prompt");
+      stampStep(db, 5, inPromptAtMs);
+      answerStep(db, 6, "in-prompt report", "in-prompt");
+      transport.eventHandler?.({ type: "agent.text", text: "idle report" });
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
+        "wake-3",
+      ]);
+    } finally {
+      await session.close();
+      db.close();
+    }
+  });
+
   it("keeps polling after a notification whose wake has not reached SQLite", async () => {
     const { session, outputs, transport, db } = await setup();
     try {
@@ -2329,20 +2536,52 @@ describe("Antigravity idle wake Turns", () => {
     }
   });
 
-  it("observes updates after the wire response without publishing ahead of the user terminal", async () => {
+  it("publishes only the independent wake after the wire response, not a Plan continuation", async () => {
     const { session, outputs, transport, db } = await setup();
     try {
-      transport.handler?.onResponse?.();
-      systemStep(db, 2, "wake");
-      answerStep(db, 3, "wake answer", "wake");
-      transport.eventHandler?.({ type: "agent.text", text: "wake answer" });
+      const handler = required(transport.handler);
+      planModeSwitch(db, 2, "prompt", "execute");
+      answerStep(db, 5, "Execution reply", "execute");
+      handler.onEvent({ type: "tool.call", toolCallId: "plan-2", name: "exit_plan_mode" });
+      handler.onEvent({ type: "tool.update", toolCallId: "plan-2", status: "completed" });
+      handler.onEvent({ type: "agent.text", text: "Execution reply" });
+      handler.onResponse?.();
+      systemStep(db, 6, "wake", "task_notification");
+      answerStep(db, 7, "Wake reply", "wake");
+      transport.eventHandler?.({ type: "agent.text", text: "Wake reply" });
       expect(wakes(outputs)).toEqual([]);
       transport.result.resolve({ stopReason: "end_turn" });
-      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
-      const all = events(outputs);
-      expect(all.findIndex((event) => event.type === "turn.autonomous.completed")).toBeGreaterThan(
-        all.findIndex((event) => event.type === "turn.completed" && event.turnId === "t1"),
+      await vi.waitFor(() =>
+        expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
+          "wake-6",
+        ]),
       );
+      const all = events(outputs);
+      expect(
+        all.filter(({ type }) => type === "turn.completed" || type === "turn.autonomous.completed"),
+      ).toMatchObject([
+        { type: "turn.completed", turnId: "t1", nativeTurnRef: { nativeTurnKey: "turn-0" } },
+        {
+          type: "turn.autonomous.completed",
+          snapshot: { nativeTurnRef: { nativeTurnKey: "wake-6" } },
+        },
+      ]);
+      expect(all).toContainEqual(
+        expect.objectContaining({
+          type: "item.completed",
+          turnId: "t1",
+          snapshot: expect.objectContaining({
+            item: expect.objectContaining({ text: "Execution reply" }),
+          }),
+        }),
+      );
+      const snapshot = await session.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey)).toEqual([
+        "turn-0",
+        "wake-6",
+      ]);
+      expect(wakes(outputs)[0]?.snapshot).toEqual(snapshot.value.turns[1]);
       await session.close();
     } finally {
       db.close();
@@ -2367,8 +2606,12 @@ describe("Antigravity idle wake Turns", () => {
           ),
         ).toHaveLength(1),
       );
-      // A second checkpoint committed before turn end is also emitted once before turn.completed
-      checkpointStep(db, 6, { status: 7, run: "fg-run", error: "Compaction failed" });
+      // Only the foreground Plan continuation's checkpoint belongs to this ACP prompt.
+      planModeSwitch(db, 6, "fg-run", "execute");
+      checkpointStep(db, 9, { status: 7, run: "execute", error: "Compaction failed" });
+      systemStep(db, 10, "wake", "agent_message");
+      planModeSwitch(db, 11, "wake", "wake-execute");
+      checkpointStep(db, 14, { status: 3, run: "wake-execute" });
       transport.result.resolve({ stopReason: "end_turn" });
       await completed(outputs, "t1");
       const all = events(outputs);
@@ -2393,7 +2636,7 @@ describe("Antigravity idle wake Turns", () => {
           type: "item.completed",
           turnId: "t1",
           snapshot: {
-            item: { type: "contextCompaction", itemId: "checkpoint-6" },
+            item: { type: "contextCompaction", itemId: "checkpoint-9" },
             outcome: {
               status: "failed",
               error: { code: "nativeFailure", message: "Compaction failed", retryable: false },

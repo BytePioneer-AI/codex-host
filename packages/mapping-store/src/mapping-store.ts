@@ -940,11 +940,22 @@ export class MappingStore {
   async setTitle(
     hostThreadId: HostThreadId,
     title: string,
-    options?: { ifUnnamed?: boolean },
+    options?: { ifUnnamed?: boolean; source?: "prompt-fallback" | "native" },
   ): Promise<StoredThreadRecordV1> {
     return this.#update(
       hostThreadId,
-      (current) => (options?.ifUnnamed && current.title ? null : { ...current, title }),
+      (current) => {
+        if (
+          options?.ifUnnamed &&
+          current.title &&
+          !(options.source === "native" && current.titleIsPromptFallback)
+        )
+          return null;
+        const next = { ...current, title };
+        if (options?.source === "prompt-fallback") next.titleIsPromptFallback = true;
+        else delete next.titleIsPromptFallback;
+        return next;
+      },
       options?.ifUnnamed === true,
     );
   }

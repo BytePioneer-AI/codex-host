@@ -38,6 +38,7 @@ import {
   type NativeTextRange,
 } from "./renderer-native-composer-controller.js";
 import type { RendererSettingsLocale } from "./settings/localization.js";
+import { HASH_BOUNDARY, insideMarkdownCode } from "./renderer-reference-trigger.js";
 import { createSkillIcon, skillMention } from "./renderer-skill-reference.js";
 
 const MENU_ATTRIBUTE = "data-codexhost-delegation-mention-menu";
@@ -64,7 +65,11 @@ const ROW_IDLE_CLASS = "menu-row-opacity";
 const VIEWPORT_MARGIN = 8;
 const MENU_GAP = 4;
 const MAX_QUERY_LENGTH = 32;
-const TRIGGER_PATTERN = /(?:^|\s)#([^\s#]*)$/u;
+// `#` or fullwidth `＃` after the start, whitespace or CJK text and punctuation.
+const TRIGGER_PATTERN = new RegExp(
+  String.raw`(?:^|${HASH_BOUNDARY})[#\uFF03]([^\s#\uFF03]*)$`,
+  "u",
+);
 
 export interface RendererDelegationTarget {
   agent: RendererAgent;
@@ -73,22 +78,26 @@ export interface RendererDelegationTarget {
 }
 
 export interface RendererDelegationTrigger {
-  /** Text typed after `#`. */
+  /** Text typed after `#` or `＃`. */
   query: string;
-  /** Offset of `#` within the text before the caret. */
+  /** Offset of `#` or `＃` within the text before the caret. */
   start: number;
 }
 
 /**
- * Detect an active `#query` token ending at the caret. `#` must start a word,
- * and a leading digit (`#123`) is treated as an ordinary reference.
+ * Detect an active `#query` (or fullwidth `＃query`) token ending at the caret.
+ * The trigger must follow the start, whitespace, or CJK text and punctuation
+ * (see {@link HASH_BOUNDARY}). A leading digit (`#123`) is treated as an
+ * ordinary reference, and a trigger inside Markdown code stays text.
  */
 export function findDelegationTrigger(textBeforeCaret: string): RendererDelegationTrigger | null {
   const match = TRIGGER_PATTERN.exec(textBeforeCaret);
   if (!match) return null;
   const query = match[1] ?? "";
   if (query.length > MAX_QUERY_LENGTH || /^\d/u.test(query)) return null;
-  return { query, start: textBeforeCaret.length - query.length - 1 };
+  const start = textBeforeCaret.length - query.length - 1;
+  if (insideMarkdownCode(textBeforeCaret.slice(0, start))) return null;
+  return { query, start };
 }
 
 export function filterDelegationTargets(
@@ -238,6 +247,8 @@ interface ActiveTrigger {
   start: number;
   end: number;
   query: string;
+  /** The typed trigger character, `#` or fullwidth `＃`. */
+  char: string;
 }
 
 export interface RendererDelegationMentionOptions {
@@ -561,6 +572,8 @@ export function installRendererDelegationMention(
     if (!node || node.nodeType !== node.TEXT_NODE) return null;
     const editor = node.parentElement?.closest<HTMLElement>('[contenteditable="true"]');
     if (!editor || !options.isComposerEditor(editor)) return null;
+    // Rich-text inline code and code blocks keep `#` as text.
+    if (node.parentElement?.closest("code, pre")) return null;
     const text = node as Text;
     const found = findDelegationTrigger(text.data.slice(0, selection.anchorOffset));
     if (!found) return null;
@@ -570,6 +583,7 @@ export function installRendererDelegationMention(
       start: found.start,
       end: selection.anchorOffset,
       query: found.query,
+      char: text.data.charAt(found.start),
     };
   };
 
@@ -689,7 +703,7 @@ export function installRendererDelegationMention(
     if (entry.kind === "librarySkill" && trigger && !options.readSkills?.(trigger.editor)) return;
     close();
     if (!trigger || !trigger.node.isConnected) return;
-    const expected = `#${trigger.query}`;
+    const expected = `${trigger.char}${trigger.query}`;
     if (trigger.node.data.slice(trigger.start, trigger.end) !== expected) return;
     const range = { node: trigger.node, start: trigger.start, end: trigger.end, expected };
     inserting = true;

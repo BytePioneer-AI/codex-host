@@ -1,6 +1,13 @@
-/** Connection setup and device access management. */
-import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Button, Modal, relativeTime } from "@deepseek-ai/dsh-client-ui-primitives";
+/** Connection setup, device access management, and remote peer hosts. */
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import { Button, Modal, relativeTime, SegmentedTabs } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { WebAccessState } from "@codexhost/shared-contracts";
 import { accessTokenApi, ApiError, copyText, readWebAccessAuth } from "./api.ts";
@@ -9,7 +16,35 @@ import { AutostartControl, useDirectRestart } from "./BackgroundControls.tsx";
 import { resubmitNotifications } from "./notifications.ts";
 import { relayPreparing } from "./RelayControl.tsx";
 import { ConnectionCard } from "./ConnectionCard.tsx";
+import { MobileGuideCard } from "./MobileGuideCard.tsx";
+import {
+  clearRemotePeersCache,
+  prefetchRemotePeers,
+  RemotePeersPanel,
+} from "./RemotePeersPanel.tsx";
 import css from "./ConnectDevicesSection.module.css";
+
+export type ConnectDevicesTab = "share" | "peers";
+
+let activeConnectDevicesTab: ConnectDevicesTab = "share";
+const connectDevicesTabListeners = new Set<() => void>();
+
+export function setConnectDevicesTab(tab: ConnectDevicesTab): void {
+  if (activeConnectDevicesTab === tab) return;
+  activeConnectDevicesTab = tab;
+  for (const listener of connectDevicesTabListeners) listener();
+}
+
+export function subscribeConnectDevicesTab(listener: () => void): () => void {
+  connectDevicesTabListeners.add(listener);
+  return () => {
+    connectDevicesTabListeners.delete(listener);
+  };
+}
+
+export function getConnectDevicesTab(): ConnectDevicesTab {
+  return activeConnectDevicesTab;
+}
 
 type Translate = PropsLocale<"codexhostImport">["t"];
 type ConfirmKind = "regenerate" | "stop" | "signOut";
@@ -81,7 +116,7 @@ function Confirm({
 }
 
 /** One explicit action enables the chosen route; selecting it only previews its address. */
-export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): ReactNode {
+function ShareThisComputerPanel({ t }: PropsLocale<"codexhostImport">): ReactNode {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [remote, setRemote] = useState(false);
   const [confirming, setConfirming] = useState<ConfirmKind | null>(null);
@@ -215,9 +250,9 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
   const used = lastUsedAt === null ? undefined : relativeTime(lastUsedAt, Date.now());
   const shownError = error ?? restart.error;
   return (
-    <div className={css.page} data-connect-devices>
+    <div className={css.shareContent}>
       <header className={css.header}>
-        <div>
+        <div className={css.headerText}>
           <h2 className={css.title}>{t("connectDevices.title")}</h2>
           <p className={css.description}>{t("connectDevices.subtitle")}</p>
         </div>
@@ -254,7 +289,8 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
           {shownError}
         </p>
       )}
-      <section className={css.manage}>
+      <MobileGuideCard t={t} />
+      <section className={css.manage} aria-label={t("connectDevices.manageTitle")}>
         <div className={css.manageRow}>
           <div className={css.manageText}>
             <span className={css.manageTitle}>{t("connectDevices.tokenTitle")}</span>
@@ -318,28 +354,28 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
             </div>
           </div>
         )}
+        {canStop && (
+          <div className={css.manageRow}>
+            <div className={css.manageText}>
+              <span className={css.manageTitle}>{t("connectDevices.stopTitleShort")}</span>
+              <span className={css.meta}>{t("connectDevices.stopHint")}</span>
+            </div>
+            <div className={css.manageActions}>
+              <Button
+                variant="outline"
+                className={css.dangerOutline}
+                disabled={working}
+                onClick={() => {
+                  setError(null);
+                  setConfirming("stop");
+                }}
+              >
+                {t("connectDevices.stop")}
+              </Button>
+            </div>
+          </div>
+        )}
       </section>
-      {canStop && (
-        <div className={`${css.manageRow} ${css.stopRow}`}>
-          <div className={css.manageText}>
-            <span className={css.manageTitle}>{t("connectDevices.stopTitleShort")}</span>
-            <span className={css.meta}>{t("connectDevices.stopHint")}</span>
-          </div>
-          <div className={css.manageActions}>
-            <Button
-              variant="outline"
-              className={css.dangerOutline}
-              disabled={working}
-              onClick={() => {
-                setError(null);
-                setConfirming("stop");
-              }}
-            >
-              {t("connectDevices.stop")}
-            </Button>
-          </div>
-        </div>
-      )}
       <details className={css.other} data-remote-options>
         <summary>{t("connectDevices.help")}</summary>
         <div className={css.remoteList}>
@@ -385,7 +421,10 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
                     title: t("connectDevices.signOutTitle"),
                     description: t("connectDevices.signOutDescription"),
                     confirmLabel: t("connectDevices.signOutConfirm"),
-                    action: signOut,
+                    action: async () => {
+                      clearRemotePeersCache();
+                      await signOut();
+                    },
                   }
                 : {
                     title: t("connectDevices.regenerateTitle"),
@@ -414,6 +453,65 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
             />
           );
         })()}
+    </div>
+  );
+}
+
+export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): ReactNode {
+  const activeTab = useSyncExternalStore(subscribeConnectDevicesTab, getConnectDevicesTab);
+  const tabIdPrefix = useId();
+  const shareTabId = `${tabIdPrefix}-share-tab`;
+  const peersTabId = `${tabIdPrefix}-peers-tab`;
+  const sharePanelId = `${tabIdPrefix}-share-panel`;
+  const peersPanelId = `${tabIdPrefix}-peers-panel`;
+
+  useEffect(() => {
+    prefetchRemotePeers();
+  }, []);
+
+  return (
+    <div className={css.page} data-connect-devices>
+      <div className={css.tabBar}>
+        <SegmentedTabs
+          label={t("connectDevices.tabsLabel")}
+          value={activeTab}
+          onChange={setConnectDevicesTab}
+          className={css.tabs}
+          items={[
+            {
+              value: "share",
+              label: t("connectDevices.tabShare"),
+              id: shareTabId,
+              panelId: sharePanelId,
+            },
+            {
+              value: "peers",
+              label: t("connectDevices.tabPeers"),
+              id: peersTabId,
+              panelId: peersPanelId,
+            },
+          ]}
+        />
+      </div>
+      {activeTab === "share" ? (
+        <div
+          id={sharePanelId}
+          role="tabpanel"
+          aria-labelledby={shareTabId}
+          className={css.tabPanel}
+        >
+          <ShareThisComputerPanel t={t} />
+        </div>
+      ) : (
+        <div
+          id={peersPanelId}
+          role="tabpanel"
+          aria-labelledby={peersTabId}
+          className={css.tabPanel}
+        >
+          <RemotePeersPanel t={t} />
+        </div>
+      )}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { GATEWAY_STORAGE_SCRIPT } from "./gateway-storage-script.js";
 import { hermesPythonCommand, type HermesPythonRuntime } from "./hermes-runtime.js";
 
 // Gateway session.list omits cwd and last_active. Use its native store's listing
@@ -9,25 +10,20 @@ import sys
 output = sys.stdout
 sys.stdout = sys.stderr
 import json
-from hermes_state import SessionDB, _default_db_path
-from hermes_state_sessions import INTERNAL_LISTING_SOURCES
 from hermes_cli.session_listing import show_subagent_sessions
+${GATEWAY_STORAGE_SCRIPT}
 p = json.load(sys.stdin)
 result = []
+db_path = default_db_path()
 try:
-    _default_db_path().stat()
-    exists = True
+    if db_path is not None:
+        db_path.stat()
 except FileNotFoundError:
-    exists = False
-if exists:
+    db_path = None
+if db_path is not None:
     db = SessionDB(read_only=True)
     try:
-        rows = db.list_sessions_rich(
-            limit=-1, order_by_last_active=True,
-            exclude_sources=list(INTERNAL_LISTING_SOURCES),
-            include_subagents=show_subagent_sessions(db.db_path.parent),
-            id_query=p.get('nativeSessionId'),
-        )
+        rows = list_sessions(db, p.get('nativeSessionId'), show_subagent_sessions(db_path.parent))
         for row in rows:
             # Keep the native lineage root used by Host mappings; a compression
             # continuation is not a new importable chat identity.

@@ -17,8 +17,7 @@ use std::time::Duration;
 use codexhost_platform::{DesktopIdentity, DesktopInstallation, node_entrypoint_path};
 use serde_json::{Value, json};
 
-use crate::desktop_attachment::endpoint_ready;
-use crate::runtime_instance::{default_descriptor_path, read_descriptor};
+use crate::runtime_instance::default_descriptor_path;
 
 /// `0` disables starting, opening, and announcing the console during launch.
 pub const CONSOLE_ENV: &str = "CODEXHOST_CONSOLE";
@@ -38,7 +37,7 @@ pub struct ConsoleCommand {
 /// How a launch shows the console once its outcome is known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Presentation {
-    /// Installer launches (Finder, Start Menu) open the default browser.
+    /// Graphical launches open the default browser only for recovery.
     Browser,
     /// Terminal launches (`launch`, used by npm and `npm start`) print the address.
     Print,
@@ -81,45 +80,39 @@ fn node_command(command: &ConsoleCommand) -> Result<Command, Box<dyn Error>> {
     Ok(process)
 }
 
-/// Starts the recovery console before Desktop resources are validated. Installer
-/// launches open the overview immediately; terminal launches announce it at readiness
-/// or failure. Missing console resources do not replace the original launch error.
+/// Starts the Console in the background without presenting it. Missing Console
+/// resources do not replace the original launch error.
 pub fn start_for_launch(command: ConsoleCommand) {
-    start_for_launch_with(command, open_browser);
-}
-
-fn open_browser(url: &str) -> bool {
-    codexhost_platform::open_external_url(url).is_ok()
-}
-
-fn start_for_launch_with(command: ConsoleCommand, open: impl FnOnce(&str) -> bool) {
     if !console_enabled(env::var_os(CONSOLE_ENV)) || !command.console_server.is_file() {
         return;
     }
     let Some(presentation) = PRESENTATION.lock().ok().and_then(|slot| *slot) else {
         return;
     };
+    // Spawn before returning so even a launch that only activates an existing
+    // window cannot exit before the background ensure process starts.
+    let ensure = node_command(&command)
+        .ok()
+        .and_then(|mut process| {
+            process
+                .arg("ensure")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok()
+        })
+        .map(|mut child| {
+            thread::spawn(move || {
+                let _ = child.wait();
+            })
+        });
     if let Ok(mut slot) = LAUNCH_CONSOLE.lock() {
         *slot = Some(LaunchConsole {
-            command: command.clone(),
+            command,
             presentation,
-            ensure: None,
+            ensure,
             shown: false,
         });
-    }
-    let ensure = thread::spawn(move || {
-        let Ok(mut process) = node_command(&command) else {
-            return;
-        };
-        let _ = process.arg("ensure").stderr(Stdio::null()).output();
-    });
-    if let Ok(mut slot) = LAUNCH_CONSOLE.lock()
-        && let Some(console) = slot.as_mut()
-    {
-        console.ensure = Some(ensure);
-    }
-    if presentation == Presentation::Browser {
-        show_with(None, open);
     }
 }
 
@@ -147,12 +140,16 @@ fn console_url(command: &ConsoleCommand) -> Result<String, Box<dyn Error>> {
     parse_console_url(&output.stdout).ok_or_else(|| "codexhost console returned no address".into())
 }
 
-/// Presents launch addresses without changing the launch result. Installer failures
-/// reopen the overview; ordinary calls and terminal address output are deduplicated.
+/// Presents terminal addresses or opens the overview for graphical launch failures.
 pub fn show_for_launch(reason: Option<&str>) -> bool {
     let shown = show(reason);
     crate::services::finish_launch(presentation() == Some(Presentation::Print));
-    if shown && reason.is_none() && presentation() == Some(Presentation::Browser) {
+    if reason.is_none()
+        && LAUNCH_CONSOLE.lock().is_ok_and(|slot| {
+            slot.as_ref()
+                .is_some_and(|console| console.presentation == Presentation::Browser)
+        })
+    {
         watch_integration();
     }
     shown
@@ -183,7 +180,7 @@ fn stop_for_launch_in(data: Option<&Path>) {
             || crate::web_service::owner(data)
                 .ok()
                 .flatten()
-                .is_some_and(|owner| owner.web_running())
+                .is_some_and(|owner| owner.web_running().unwrap_or(false))
     }) {
         return;
     }
@@ -250,7 +247,9 @@ fn integration_failing(document: &Value, launch_started_ms: u64, now_ms: u64) ->
 }
 
 fn show(reason: Option<&str>) -> bool {
-    show_with(reason, open_browser)
+    show_with(reason, |url| {
+        codexhost_platform::open_external_url(url).is_ok()
+    })
 }
 
 fn show_with(reason: Option<&str>, open: impl FnOnce(&str) -> bool) -> bool {
@@ -261,7 +260,10 @@ fn show_with(reason: Option<&str>, open: impl FnOnce(&str) -> bool) -> bool {
         let Some(console) = slot.as_mut() else {
             return false;
         };
-        if console.shown && (reason.is_none() || console.presentation == Presentation::Print) {
+        if console.presentation == Presentation::Browser && reason.is_none() {
+            return false;
+        }
+        if console.shown && console.presentation == Presentation::Print {
             return true;
         }
         (
@@ -361,14 +363,30 @@ fn runtime_json() -> Value {
     let Ok(descriptor_path) = default_descriptor_path() else {
         return json!({ "descriptorPath": null, "running": false, "launcherPid": null });
     };
-    let descriptor = read_descriptor(&descriptor_path).ok().flatten();
-    let running = descriptor.as_ref().is_some_and(|descriptor| {
-        endpoint_ready(descriptor.control_port, Duration::from_millis(300))
-    });
+    let Some(data) = crate::startup_record::data_directory() else {
+        return json!({
+            "descriptorPath": descriptor_path.display().to_string(),
+            "running": false,
+            "launcherPid": null,
+        });
+    };
+    runtime_json_at(&descriptor_path, &data)
+}
+
+fn runtime_json_at(descriptor_path: &Path, data: &Path) -> Value {
+    #[cfg(unix)]
+    let launcher_pid = crate::desktop_lifecycle::launcher_pid_for_inspect(descriptor_path, data)
+        .ok()
+        .flatten();
+    #[cfg(not(unix))]
+    let launcher_pid = crate::desktop_attachment::managed_processes_at(descriptor_path, data)
+        .ok()
+        .flatten()
+        .map(|(launcher, _)| launcher.id);
     json!({
         "descriptorPath": descriptor_path.display().to_string(),
-        "running": running,
-        "launcherPid": descriptor.as_ref().filter(|_| running).map(|descriptor| descriptor.launcher_pid),
+        "running": launcher_pid.is_some(),
+        "launcherPid": launcher_pid,
     })
 }
 
@@ -434,7 +452,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn successful_terminal_launch_prints_the_console_once() {
+    fn launch_prints_once_in_terminal_and_only_opens_the_browser_for_failures() {
         use std::os::unix::fs::PermissionsExt;
 
         let _gate = LAUNCH_TEST_GATE.lock().expect("launch test gate");
@@ -477,29 +495,21 @@ mod tests {
         assert!(shown_at_ready);
         assert_eq!(std::fs::read_to_string(&calls).unwrap(), "ensure\nopen\n");
 
+        std::fs::remove_file(&calls).unwrap();
         set_presentation(Presentation::Browser);
-        let mut opened = 0;
-        start_for_launch_with(command, |url| {
-            assert_eq!(url, "http://127.0.0.1:4399/");
-            opened += 1;
-            true
-        });
-        assert_eq!(
-            opened, 1,
-            "installer opens the overview before Desktop startup"
-        );
-        assert!(show_with(None, |_| panic!(
-            "ordinary calls must not reopen"
+        start_for_launch(command);
+        assert!(!show_with(None, |_| panic!(
+            "normal launch must not open a browser"
         )));
         for reason in ["startup-failure", "integration-failure"] {
-            assert!(show_with(Some(reason), |_| {
-                opened += 1;
+            assert!(show_with(Some(reason), |url| {
+                assert_eq!(url, "http://127.0.0.1:4399/");
                 true
             }));
         }
         assert_eq!(
-            opened, 3,
-            "failures reopen the overview even if it was already shown"
+            std::fs::read_to_string(&calls).unwrap(),
+            "ensure\nopen\nopen\n"
         );
         assert!(
             !show_with(Some("startup-failure"), |_| false),
@@ -705,6 +715,36 @@ mod tests {
         assert_eq!(document["schemaVersion"], 1);
         assert!(document["desktop"].is_null());
         assert_eq!(document["desktopError"], "Codex Desktop was not found");
+    }
+
+    #[test]
+    fn runtime_inspect_ignores_an_unrelated_listener_for_a_stale_descriptor() {
+        use std::net::TcpListener;
+
+        let root = env::temp_dir().join(format!(
+            "codexhost-runtime-inspect-{}-{}",
+            std::process::id(),
+            crate::runtime_instance::random_nonce().expect("fixture nonce")
+        ));
+        let data = root.join("data");
+        std::fs::create_dir_all(&data).expect("create data fixture");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind unrelated listener");
+        let descriptor_path = root.join("desktop-runtime-v1.json");
+        let descriptor = crate::runtime_instance::RuntimeDescriptor::new(
+            u32::MAX,
+            listener.local_addr().expect("listener address").port(),
+            crate::runtime_instance::random_nonce().expect("descriptor nonce"),
+        )
+        .expect("stale descriptor");
+        crate::runtime_instance::write_descriptor(&descriptor_path, &descriptor)
+            .expect("write stale descriptor");
+
+        let document = runtime_json_at(&descriptor_path, &data);
+
+        drop(listener);
+        std::fs::remove_dir_all(&root).expect("remove fixture");
+        assert_eq!(document["running"], false);
+        assert!(document["launcherPid"].is_null());
     }
 
     #[test]

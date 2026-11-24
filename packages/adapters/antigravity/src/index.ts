@@ -18,10 +18,16 @@ export {
   readAcpEffectiveModelState,
 } from "./model-catalog.js";
 export { ANTIGRAVITY_PERMISSION_MODE_CATALOG } from "./permission-modes.js";
-export { fetchAntigravityQuota, parseAntigravityUsageCommand } from "./quota.js";
+export {
+  fetchAntigravityQuota,
+  parseAntigravityUsageCommand,
+  projectAntigravityQuota,
+  readAntigravityUsageCommand,
+} from "./quota.js";
 export type {
   AntigravityCommandRunner,
   AntigravityQuotaBucket,
+  AntigravityQuotaReading,
   AntigravityQuotaSnapshot,
 } from "./quota.js";
 export {

@@ -24,7 +24,7 @@ export {
   type CodexhostLatestRelease,
   type CodexhostReleaseAsset,
   type GitHubReleaseFetchOptions,
-  type InstallerReleaseTarget,
+  type ReleaseTarget,
   type SelectedReleaseArtifact,
 } from "./github-release.js";
 export { parseReleaseAnnouncementMarkdown } from "./release-announcement.js";
@@ -54,6 +54,7 @@ export {
   type BackgroundUpdateManager,
   type BackgroundUpdateManagerDependencies,
   type CommonUpdateOptions,
+  type LinuxArchiveUpdateOptions,
   type MacOsDmgUpdateOptions,
   type NpmUpdateOptions,
   type PreparedBackgroundUpdate,

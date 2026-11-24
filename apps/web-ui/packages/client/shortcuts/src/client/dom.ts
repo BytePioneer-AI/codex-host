@@ -18,9 +18,10 @@ export function detectEnvironment(
   platform: ShortcutPlatform;
 } {
   const desktop = document.documentElement.dataset.platform;
+  const isTauriShell = document.documentElement.hasAttribute("data-tauri-shell");
   const device = desktop ?? navigator.platform;
   return {
-    runtime: desktop === undefined ? "web" : "desktop",
+    runtime: desktop === undefined || isTauriShell ? "web" : "desktop",
     platform: /darwin|mac|iphone|ipad/iu.test(device)
       ? "macos"
       : /win/iu.test(device)

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runInNewContext } from "node:vm";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   desktopExtensionsStatusPath,
   installHostExtension,
@@ -240,8 +240,26 @@ it("injects enabled surface-only generations, isolates a broken graph, and retir
     JSON.parse(await readFile(desktopExtensionsStatusPath(directory), "utf8")),
   );
   expect(diagnostics.surfaces?.["surfaces:page"]).toMatchObject({ state: "failed" });
-  await installSurfaces(2);
-  await c.refresh();
+  const readStarted = Promise.withResolvers<undefined>();
+  const releaseRead = Promise.withResolvers<undefined>();
+  const evaluate = renderer.evaluate.bind(renderer);
+  vi.spyOn(renderer, "evaluate").mockImplementationOnce(async (expression) => {
+    // Reconciliation has already discovered and linked the active generation at this point.
+    readStarted.resolve(undefined);
+    await releaseRead.promise;
+    return evaluate(expression);
+  });
+  const oldScan = c.refresh();
+  await readStarted.promise;
+  let newScan: Promise<void>;
+  try {
+    await installSurfaces(2);
+    newScan = c.refresh();
+  } finally {
+    releaseRead.resolve(undefined);
+    await oldScan;
+  }
+  await newScan;
   expect(await mount()).toBe(2);
   renderer.reset();
   expect(await mount()).toBe(2);

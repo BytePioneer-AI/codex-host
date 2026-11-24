@@ -2,6 +2,7 @@ import {
   THREAD_CATALOG_READ_METHOD,
   threadCatalogReadParamsSchema,
   threadOwnershipSchema,
+  type ThreadCatalogReadParams,
   type ThreadCatalogReadResult,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient } from "./ch-host-client.ts";
@@ -30,13 +31,15 @@ export function nextCatalogCursor(page: CatalogPage, includeArchived: boolean): 
     : null;
 }
 
-/** Pins and project definitions do not depend on discovering historical Threads. */
+/** Pins and project definitions do not depend on discovering historical Threads.
+ * A `scope` makes the Host read on until the page reaches a Thread of that folder. */
 export async function readSessionPage(
   host: ChHostClient,
   timing: SessionListTiming,
   includeArchived: boolean,
   cursor?: string,
   readPins: () => Promise<string[]> = () => host.pins(),
+  scope?: ThreadCatalogReadParams["scope"],
 ): Promise<{ page: CatalogPage; pinned: string[] }> {
   const officialCursor =
     cursor === undefined ? undefined : decodeCatalogCursor(cursor, includeArchived);
@@ -45,6 +48,7 @@ export async function readSessionPage(
       host.request<CatalogPage>(THREAD_CATALOG_READ_METHOD, {
         includeArchived,
         ...(officialCursor ? { officialCursor } : {}),
+        ...(scope ? { scope } : {}),
       }),
     ),
     timing.measure("pins", readPins),

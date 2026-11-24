@@ -12,8 +12,11 @@ export function remoteSessionRequestBytes(operation: RemoteSessionOperation): nu
   return bytes;
 }
 
-const identity = z.string().min(1).max(1024);
-const target = { hostId: identity.regex(/^remote-(?:ssh(?:-|:)|control:)/u) };
+export const REMOTE_IDENTITY_MAX_LENGTH = 1024;
+const identity = z.string().min(1).max(REMOTE_IDENTITY_MAX_LENGTH);
+const target = {
+  hostId: identity.regex(/^(?:remote-(?:ssh(?:-|:)|control:)|remote-peer:[a-zA-Z0-9_-]{1,64}$)/u),
+};
 const thread = { ...target, threadId: identity };
 const text = z.string().min(1).max(8000);
 const input = { text, requestId: identity };
@@ -51,12 +54,37 @@ export type RemoteQueueSnapshot = z.infer<typeof remoteQueueSnapshotSchema>;
 /** Operations on existing Desktop connections; no connection or credential management. */
 export const remoteSessionOperationSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("hosts") }),
+  z.strictObject({
+    kind: z.literal("create"),
+    ...target,
+    cwd: z.string().min(1).max(8192),
+    epoch: identity,
+  }),
+  z.strictObject({ kind: z.literal("projectHarnesses"), ...target, epoch: identity }),
+  z.strictObject({
+    kind: z.literal("inspectHarness"),
+    ...target,
+    epoch: identity,
+    cwd: z.string().min(1).max(8192),
+    harnessId: identity,
+  }),
+  z.strictObject({
+    kind: z.literal("startSelected"),
+    ...target,
+    epoch: identity,
+    cwd: z.string().min(1).max(8192),
+    harnessId: identity,
+    model: z.string().min(1).max(4096),
+    serviceTier: z.enum(["priority", "ultrafast"]).optional(),
+    reasoningEffort: identity.optional(),
+  }),
   z.strictObject({ kind: z.literal("status"), ...thread }),
   z.strictObject({
     kind: z.literal("list"),
     ...target,
     cursor: z.string().nullable(),
     archived: z.boolean(),
+    includeLoaded: z.literal(true).optional(),
   }),
   z.strictObject({
     kind: z.literal("read"),

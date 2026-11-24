@@ -1,8 +1,21 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::process::same_process_instance;
 use crate::{PlatformError, ProcessSnapshot};
+
+/// Observation of a Desktop root's process subtree during Host chain startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostChainObservation {
+    pub root_alive: bool,
+    pub tree_size: usize,
+    pub pair_exists: bool,
+    pub shim_running: bool,
+    pub node_running: bool,
+    /// True when the official CLI is running under the Desktop tree without the
+    /// expected Shim as its parent (strong signal that managed env was dropped).
+    pub direct_stock_cli_without_shim: bool,
+}
 
 /// Find a matching parent and its direct child below this exact root instance.
 /// The root itself cannot stand in for the requested parent executable.
@@ -16,6 +29,24 @@ pub fn descendant_executable_pair_exists(
         root,
         parent_executable,
         child_executable,
+        &snapshots,
+    ))
+}
+
+/// Inspect the Desktop root's subtree once for Host chain readiness, root
+/// survival, and missing-environment diagnostics.
+pub fn observe_host_chain(
+    root: &ProcessSnapshot,
+    shim_executable: &Path,
+    node_executables: &[PathBuf],
+    stock_cli_executable: Option<&Path>,
+) -> Result<HostChainObservation, PlatformError> {
+    let snapshots = snapshots_under(root.id)?;
+    Ok(observe_tree(
+        root,
+        shim_executable,
+        node_executables,
+        stock_cli_executable,
         &snapshots,
     ))
 }
@@ -78,37 +109,91 @@ fn same_executable(left: &Path, right: &Path) -> bool {
     }
 }
 
-fn matches_pair(
+fn observe_tree(
     root: &ProcessSnapshot,
-    parent_executable: &Path,
-    child_executable: &Path,
+    shim_executable: &Path,
+    node_executables: &[PathBuf],
+    stock_cli_executable: Option<&Path>,
     snapshots: &[ProcessSnapshot],
-) -> bool {
+) -> HostChainObservation {
     let Some(current_root) = snapshots.iter().find(|candidate| {
         same_process_instance(root, candidate)
             && same_executable(&root.executable, &candidate.executable)
     }) else {
-        return false;
+        return HostChainObservation {
+            root_alive: false,
+            tree_size: 0,
+            pair_exists: false,
+            shim_running: false,
+            node_running: false,
+            direct_stock_cli_without_shim: false,
+        };
     };
     let mut pending = vec![current_root];
     let mut visited = HashSet::from([root.id]);
+    let mut tree_size = 1_usize;
+    let mut pair_exists = false;
+    let mut shim_running = false;
+    let mut node_running = false;
+    let mut direct_stock_cli = false;
+
     while let Some(parent) = pending.pop() {
+        let parent_is_shim =
+            parent.id != root.id && same_executable(&parent.executable, shim_executable);
         for child in snapshots.iter().filter(|child| {
             child.parent_id == parent.id && child.started_at_micros >= parent.started_at_micros
         }) {
             if !visited.insert(child.id) {
                 continue;
             }
-            if parent.id != root.id
-                && same_executable(&parent.executable, parent_executable)
-                && same_executable(&child.executable, child_executable)
+            tree_size += 1;
+            let child_is_shim = same_executable(&child.executable, shim_executable);
+            let child_is_node = node_executables
+                .iter()
+                .any(|node| same_executable(&child.executable, node));
+            if child_is_shim {
+                shim_running = true;
+            }
+            if child_is_node {
+                node_running = true;
+            }
+            if parent_is_shim && child_is_node {
+                pair_exists = true;
+            }
+            if !parent_is_shim
+                && stock_cli_executable
+                    .is_some_and(|stock| same_executable(&child.executable, stock))
             {
-                return true;
+                direct_stock_cli = true;
             }
             pending.push(child);
         }
     }
-    false
+
+    HostChainObservation {
+        root_alive: true,
+        tree_size,
+        pair_exists,
+        shim_running,
+        node_running,
+        direct_stock_cli_without_shim: direct_stock_cli && !shim_running,
+    }
+}
+
+fn matches_pair(
+    root: &ProcessSnapshot,
+    parent_executable: &Path,
+    child_executable: &Path,
+    snapshots: &[ProcessSnapshot],
+) -> bool {
+    observe_tree(
+        root,
+        parent_executable,
+        &[child_executable.to_path_buf()],
+        None,
+        snapshots,
+    )
+    .pair_exists
 }
 
 #[cfg(test)]
@@ -194,5 +279,45 @@ mod tests {
             &root,
             &[root.clone(), process(2, 3, "/shim"), process(3, 2, "/node")]
         ));
+    }
+
+    #[test]
+    fn observes_root_exit_and_direct_stock_cli_without_shim() {
+        let root = process(1, 0, "/desktop");
+        let shim = Path::new("/shim");
+        let nodes = [PathBuf::from("/node")];
+        let stock = Path::new("/codex");
+
+        let exited = observe_tree(&root, shim, &nodes, Some(stock), &[]);
+        assert!(!exited.root_alive);
+        assert!(!exited.pair_exists);
+
+        // Desktop directly spawned stock codex without shim -> missing managed env.
+        let unshimmed = observe_tree(
+            &root,
+            shim,
+            &nodes,
+            Some(stock),
+            &[root.clone(), process(2, 1, "/codex")],
+        );
+        assert!(unshimmed.root_alive);
+        assert!(!unshimmed.shim_running);
+        assert!(unshimmed.direct_stock_cli_without_shim);
+
+        // Shim spawning stock codex is normal official-traffic proxying, not missing env.
+        let via_shim = observe_tree(
+            &root,
+            shim,
+            &nodes,
+            Some(stock),
+            &[
+                root.clone(),
+                process(2, 1, "/shim"),
+                process(3, 2, "/codex"),
+            ],
+        );
+        assert!(via_shim.root_alive);
+        assert!(via_shim.shim_running);
+        assert!(!via_shim.direct_stock_cli_without_shim);
     }
 }

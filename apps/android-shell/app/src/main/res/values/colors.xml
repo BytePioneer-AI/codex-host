@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="canvas_bg">#F6F7F9</color>
+    <color name="surface_card">#FFFFFF</color>
+    <color name="surface_subtle">#EEF1F5</color>
+    <color name="surface_elevated">#FFFFFF</color>
+
+    <color name="text_primary">#0F1115</color>
+    <color name="text_secondary">#585F68</color>
+    <color name="text_tertiary">#818791</color>
+
+    <color name="border_hairline">#170F1115</color>
+    <color name="border_strong">#2E0F1115</color>
+
+    <color name="brand_emerald">#19A785</color>
+    <color name="brand_emerald_text">#118266</color>
+    <color name="brand_emerald_tint">#1C19A785</color>
+    <color name="brand_navy">#082E59</color>
+
+    <color name="btn_primary_bg">#111419</color>
+    <color name="btn_primary_fg">#FFFFFF</color>
+
+    <color name="warn_amber">#9A6510</color>
+    <color name="warn_amber_tint">#1FC48418</color>
+
+    <color name="error_red">#B93232</color>
+    <color name="error_red_tint">#1AC93B3B</color>
+    <color name="error_border">#3DC93B3B</color>
+
+    <color name="icon_tile_bg">#FFFFFF</color>
+    <color name="scanner_scrim">#A6090B10</color>
+    <color name="scanner_frame">#27BE99</color>
+
+    <color name="status_connected">#19A785</color>
+    <color name="status_connecting">#C48418</color>
+    <color name="status_error">#C93B3B</color>
+</resources>

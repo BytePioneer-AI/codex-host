@@ -21,6 +21,12 @@ import type { QueueAction } from "@deepseek-ai/dsh-api-session-controller/types"
 import type { MessageId } from "@deepseek-ai/dsh-llm/brand";
 import type { InputHub } from "../input/hub.ts";
 import { NS } from "../locales.ts";
+import type { ConversationController } from "../service.ts";
+import {
+  prefetchQueueImageBlobs,
+  restoreQueuedMessageToComposer,
+  type PrefetchedQueueImage,
+} from "./edit-queue.ts";
 import css from "./QueueDock.module.css";
 
 const EMPTY_QUEUE = [] as const;
@@ -29,6 +35,7 @@ type QueueState = {
   readonly pausedReason?: "interrupted" | "outcome-unknown" | "failed" | null;
   readonly previewOnly?: boolean;
   readonly stale?: boolean;
+  readonly editable?: Readonly<Record<string, string>>;
 };
 
 declare module "@deepseek-ai/dsh-session-projection/types" {
@@ -55,9 +62,18 @@ function textOf(content: InboxState["next-turn"][number]["content"]): string | n
   return content.map((block) => block.text).join("");
 }
 
+export type QueueEditTarget =
+  | {
+      readonly kind: "structured";
+      readonly revision: string;
+      readonly images: readonly ImageAttachmentRef[];
+    }
+  | { readonly kind: "legacyText"; readonly text: string };
+
 /** Queue operations injected by the session-scoped registration. */
 export interface QueueDockInjected {
-  editQueue: (itemId: MessageId, text: string) => Promise<void>;
+  editQueue: (itemId: MessageId, target: QueueEditTarget) => Promise<void>;
+  hasStructuredQueueEdit: () => boolean;
   updateQueue: (itemId: MessageId, action: QueueAction) => Promise<void>;
   notify: (level: "info" | "error", text: string) => void;
   /** Resolve one durable queued image into a session-scoped browser URL. */
@@ -174,6 +190,7 @@ export function QueueDock({
   useProjection,
   updateQueue,
   editQueue,
+  hasStructuredQueueEdit,
   notify,
   loadImage,
   t,
@@ -299,7 +316,21 @@ export function QueueDock({
           {listVisible &&
             queue.map((row) => {
               const attachments = queueAttachments(row.content);
-              const text = textOf(row.content);
+              const structuredMode = queueState?.editable !== undefined;
+              const editTarget: QueueEditTarget | null = structuredMode
+                ? (() => {
+                    const revision = queueState.editable?.[row.id];
+                    if (revision === undefined || !hasStructuredQueueEdit()) return null;
+                    const images = attachments.flatMap((item) =>
+                      item.type === "image" ? [item.attachment] : [],
+                    );
+                    return { kind: "structured", revision, images };
+                  })()
+                : (() => {
+                    const text = textOf(row.content);
+                    return text === null ? null : { kind: "legacyText", text };
+                  })();
+              const canEdit = editTarget !== null;
               return (
                 <li key={row.id} className={css.row}>
                   {/* Single-item strip has no count header, so the row itself carries the queue glyph. */}
@@ -334,28 +365,28 @@ export function QueueDock({
                       {!previewOnly && (
                         <Tooltip
                           portal
-                          label={t("queue.edit")}
+                          label={canEdit ? t("queue.edit") : t("queue.edit.unsupported")}
                           side="bottom"
                           delayMs={500}
-                          disabled={text === null}
                         >
-                          <button
-                            type="button"
-                            className={css.action}
-                            aria-label={t("queue.edit")}
-                            title={text === null ? t("queue.edit.unsupported") : undefined}
-                            disabled={busy !== null || text === null}
-                            onClick={() => {
-                              if (text !== null)
-                                void applyAction(
-                                  row.id,
-                                  () => editQueue(row.id, text),
-                                  t("queue.editFailed"),
-                                );
-                            }}
-                          >
-                            <IconEditOutlineRegular size={14} />
-                          </button>
+                          <span className={css.actionWrap}>
+                            <button
+                              type="button"
+                              className={css.action}
+                              aria-label={t("queue.edit")}
+                              disabled={busy !== null || !canEdit}
+                              onClick={() => {
+                                if (editTarget !== null)
+                                  void applyAction(
+                                    row.id,
+                                    () => editQueue(row.id, editTarget),
+                                    t("queue.editFailed"),
+                                  );
+                              }}
+                            >
+                              <IconEditOutlineRegular size={14} />
+                            </button>
+                          </span>
                         </Tooltip>
                       )}
                       <Tooltip portal label={t("queue.remove")} side="bottom" delayMs={500}>
@@ -499,25 +530,67 @@ export const queueDockEntry = {
             const conversation = actx.get("conversation");
             if (conversation === undefined)
               throw new Error("queue dock: conversation service unavailable");
+            const loadImage = (attachment: ImageAttachmentRef) =>
+              ctx.uiConversation.imageUrl(sessionId, attachment);
             return {
               updateQueue: (itemId, action) => conversation.updateQueue(itemId, action),
-              editQueue: async (itemId, text) => {
-                // Retain the originating shell across navigation and the delete RPC.
-                const shell = inputHub.shell(sessionId);
-                await conversation.updateQueue(itemId, { kind: "remove" });
-                // Preserve text, references and attachments typed while deletion was pending.
-                const draft = shell.draftSnapshot;
-                shell.setDraft({
-                  ...draft,
-                  text: draft.text === "" ? text : `${draft.text}\n${text}`,
+              hasStructuredQueueEdit: () => {
+                const controller = ctx.get("conversation") as ConversationController | undefined;
+                return (
+                  ctx.get("queueMessageEditing") !== undefined &&
+                  typeof controller?.restoreStagedDrafts === "function"
+                );
+              },
+              editQueue: async (itemId, target) => {
+                // Keep the originating session binding and shell alive across navigation and the delete RPC.
+                const reference = ctx.sessions.retain(sessionId, {
+                  source: "controllerOperation",
                 });
-                shell.actions.persistDraft();
-                shell.focus("end");
+                try {
+                  const shell = inputHub.shell(sessionId);
+                  if (target.kind === "legacyText") {
+                    await conversation.updateQueue(itemId, { kind: "remove" });
+                    if (shell.isDisposed)
+                      throw new Error(
+                        "Queued message was removed, but the session composer was closed before restoring.",
+                      );
+                    // Preserve text, references and attachments typed while deletion was pending.
+                    const draft = shell.draftSnapshot;
+                    shell.setDraft({
+                      ...draft,
+                      text: draft.text === "" ? target.text : `${draft.text}\n${target.text}`,
+                    });
+                    shell.actions.persistDraft();
+                    shell.focus("end");
+                    return;
+                  }
+                  const editor = ctx.get("queueMessageEditing");
+                  const controller = ctx.get("conversation") as ConversationController | undefined;
+                  if (editor === undefined || typeof controller?.restoreStagedDrafts !== "function")
+                    throw new Error("queue dock: structured queue editing unavailable");
+                  const imageBlobs =
+                    target.images.length > 0
+                      ? await prefetchQueueImageBlobs(target.images, loadImage)
+                      : new Map<string, PrefetchedQueueImage>();
+                  if (shell.isDisposed)
+                    throw new Error("queue dock: session composer closed before editing");
+                  const message = await editor.takeForEdit(sessionId, itemId, target.revision);
+                  await restoreQueuedMessageToComposer({
+                    sessionId,
+                    shell,
+                    conversation: controller,
+                    message,
+                    imageBlobs,
+                  });
+                } finally {
+                  reference.release();
+                }
               },
               notify: (level, text) => {
-                conversation.input.for(actx).notify(level, text);
+                if (ctx.sessions.scope(sessionId) === actx)
+                  conversation.input.for(actx).notify(level, text);
               },
-              loadImage: (attachment) => ctx.uiConversation.imageUrl(sessionId, attachment),
+              loadImage,
             };
           },
         },

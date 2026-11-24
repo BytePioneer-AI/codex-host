@@ -54,26 +54,30 @@ export const RELEASE_TARGETS = Object.freeze({
     id: "linux-x64",
     hostPlatform: "linux",
     rustTarget: "x86_64-unknown-linux-gnu",
-    packageArchitecture: "x64",
+    installerArchitecture: "x64",
     executableSuffix: "",
+    nodeArchive: `node-v${NODE_VERSION}-linux-x64.tar.gz`,
+    nodeArchiveSha256: "eb6728e77c576a35162c122c45ccadf224d89ff00abc8dae46cc2897c6002d7c",
+    nodeArchiveFormat: "tar.gz",
+    nodeArchiveRoot: `node-v${NODE_VERSION}-linux-x64`,
+    nodeExecutable: "bin/node",
   }),
   "linux-arm64": Object.freeze({
     id: "linux-arm64",
     hostPlatform: "linux",
     rustTarget: "aarch64-unknown-linux-gnu",
-    packageArchitecture: "arm64",
+    installerArchitecture: "arm64",
     executableSuffix: "",
+    nodeArchive: `node-v${NODE_VERSION}-linux-arm64.tar.gz`,
+    nodeArchiveSha256: "33c37be234ba8bee041961047b19160f4d7d0f164e8e246f78bdd10feff148b3",
+    nodeArchiveFormat: "tar.gz",
+    nodeArchiveRoot: `node-v${NODE_VERSION}-linux-arm64`,
+    nodeExecutable: "bin/node",
   }),
 });
 
 export function supportedReleaseTargets() {
   return Object.keys(RELEASE_TARGETS);
-}
-
-export function installerReleaseTargets() {
-  return supportedReleaseTargets().filter(
-    (target) => RELEASE_TARGETS[target].installerArchitecture !== undefined,
-  );
 }
 
 export function releaseTarget(name) {
@@ -112,7 +116,7 @@ export function hostReleaseTarget(platform = process.platform, arch = process.ar
 export function releaseUsage() {
   return [
     "usage: npm run release:package -- --target <target>",
-    `targets: ${installerReleaseTargets().join(", ")}`,
+    `targets: ${supportedReleaseTargets().join(", ")}`,
   ].join("\n");
 }
 
@@ -144,10 +148,5 @@ export function parseReleaseArguments(arguments_, hostPlatform = process.platfor
     throw new Error(`unknown release option: ${argument}`);
   }
   if (targetName === undefined) throw new Error("--target is required");
-  if (!installerReleaseTargets().includes(targetName)) {
-    throw new Error(
-      `release target '${targetName}' has no installer; expected one of: ${installerReleaseTargets().join(", ")}`,
-    );
-  }
   return { help: false, target: releaseTargetForHost(targetName, hostPlatform) };
 }

@@ -385,11 +385,16 @@ describe("npm package release", () => {
       "TypeScript build",
       "Renderer build",
       "Rust release build",
+      "Desktop shell release build",
     ]);
-    expect(commands.at(-1).args).toContain("codexhost-launcher");
-    expect(commands.at(-1).args).toContain("codexhost-shim");
-    expect(commands.at(-1).args).toContain("codexhost-updater");
-    expect(commands.at(-1).args).not.toContain("codexhost-platform");
+    const rust = commands.find((command) => command.label === "Rust release build");
+    expect(rust.args).toContain("codexhost-launcher");
+    expect(rust.args).toContain("codexhost-shim");
+    expect(rust.args).toContain("codexhost-updater");
+    expect(rust.args).not.toContain("codexhost-platform");
+    const shell = commands.find((command) => command.label === "Desktop shell release build");
+    expect(shell.args).toContain("apps/desktop-shell/src-tauri/Cargo.toml");
+    expect(shell.args).toContain("aarch64-apple-darwin");
   });
 
   it("links Linux native binaries at the glibc baseline instead of the build host's glibc", () => {
@@ -397,13 +402,17 @@ describe("npm package release", () => {
       ["linux-x64", "x86_64-unknown-linux-gnu.2.28"],
       ["linux-arm64", "aarch64-unknown-linux-gnu.2.28"],
     ]) {
-      const rust = npmReleaseBuildCommands(releaseTarget(targetName)).at(-1);
+      const commands = npmReleaseBuildCommands(releaseTarget(targetName));
+      expect(commands.map((command) => command.label)).not.toContain("Desktop shell release build");
+      const rust = commands.at(-1);
       expect(rust.command).toBe("cargo");
       expect(rust.args[0]).toBe("zigbuild");
       expect(rust.args).toContain(rustTarget);
       expect(rust.args).toContain("codexhost-updater");
     }
-    const macos = npmReleaseBuildCommands(releaseTarget("macos-arm64")).at(-1);
+    const macos = npmReleaseBuildCommands(releaseTarget("macos-arm64")).find(
+      (command) => command.label === "Rust release build",
+    );
     expect(macos.args.slice(0, 3)).toEqual(["build", "--target", "aarch64-apple-darwin"]);
   });
 
@@ -570,20 +579,23 @@ describe("npm package release", () => {
     expect(source.match(/\n {2}printStarPrompt\(\);/gu)).toHaveLength(1);
   });
 
-  it("injects package resources when the user runs codexhost with no args", () => {
+  it("routes bare codexhost to the default launcher chooser and injects resources for explicit launch", () => {
     const source = createNpmBinLauncherSource({ version: "0.1.0" });
     expect(source).toContain('"darwin-arm64": "@codexhost/cli-darwin-arm64"');
     expect(source).toContain('"linux-x64": "@codexhost/cli-linux-x64"');
     expect(source).toContain('"linux-arm64": "@codexhost/cli-linux-arm64"');
     expect(source).toContain("require.resolve");
     expect(source).toContain("--omit=optional");
-    expect(source).toContain('launchArguments = ["launch"]');
+    expect(source).toContain("launchArguments = []");
+    expect(source).toContain('userArguments[0] === "app"');
+    expect(source).toContain('userArguments[0] === "launch-prefs"');
     expect(source).toContain('extras.push("--node", process.execPath)');
     expect(source).toContain('extras.push("--shim", shim)');
     expect(source).toContain('extras.push("--host-runtime", hostRuntime)');
     expect(source).toContain('extras.push("--desktop-controller", desktopController)');
     expect(source).toContain('extras.push("--renderer", rendererExtension)');
     expect(source).toContain('if (launchArguments?.[0] === "launch")');
+    expect(source).toContain('launchArguments.length === 0 || launchArguments[0] === "launch"');
     expect(source).toContain('userArguments[0] === "remote"');
     expect(source).toContain('userArguments[0] === "broker"');
     expect(source).toContain("brokerArguments = userArguments.slice(1)");
@@ -1077,8 +1089,19 @@ describe("npm package release", () => {
       expect(paths).not.toContain("runtime/node");
       expect(paths).toContain("bin/codexhost");
       expect(paths).toContain("libexec/codexhost-shim");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/Info.plist");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/MacOS/CodexHost");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/PkgInfo");
+      expect(paths).toContain("libexec/CodexHost.app/Contents/Resources/AppIcon.icns");
+      expect(paths).not.toContain("libexec/codexhost-shell");
       expect(expectedNpmPackagePaths(releaseTarget("windows-x64"))).toContain(
         "libexec/codexhost-node-repl.exe",
+      );
+      expect(expectedNpmPackagePaths(releaseTarget("windows-x64"))).toContain(
+        "libexec/codexhost-shell.exe",
+      );
+      expect(expectedNpmPackagePaths(releaseTarget("linux-x64"))).not.toContain(
+        "libexec/codexhost-shell",
       );
       expect(paths).not.toContain("libexec/codexhost-node-repl");
       expect(paths).toContain("libexec/codexhost-updater");

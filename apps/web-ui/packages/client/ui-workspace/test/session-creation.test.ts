@@ -79,6 +79,21 @@ function createHarness() {
   const createQueue: Array<ReturnType<typeof deferred<SessionId>>> = [];
 
   const bindings = new Map<SessionId, SessionBinding>();
+  const sessionStores = new Map<
+    SessionId,
+    ReturnType<
+      typeof createSnapshotStore<{
+        sessionId: SessionId;
+        openState: string;
+        running: boolean;
+        blank: boolean;
+        removed: boolean;
+        subagent: null;
+        promptError: null;
+      }>
+    >
+  >();
+  const removedListeners = new Set<(id: SessionId) => void>();
   const ensureBinding = (id: SessionId): SessionBinding => {
     let existing = bindings.get(id);
     if (existing !== undefined) return existing;
@@ -91,6 +106,7 @@ function createHarness() {
       subagent: null,
       promptError: null,
     });
+    sessionStores.set(id, sessionSnapshot);
     existing = { sessionId: id, session: sessionSnapshot } as unknown as SessionBinding;
     bindings.set(id, existing);
     return existing;
@@ -148,6 +164,17 @@ function createHarness() {
   };
 
   const ctx = new Context();
+  ctx.provide(
+    "remote" as never,
+    {
+      $on: (event: string, listener: (id: SessionId) => void) => {
+        if (event === "api-session/removed") removedListeners.add(listener);
+        return () => {
+          removedListeners.delete(listener);
+        };
+      },
+    } as never,
+  );
   ctx.provide("conversation" as never, conversation as never);
   ctx.provide(
     "layout" as never,
@@ -184,6 +211,8 @@ function createHarness() {
   return {
     ctx,
     service,
+    listStore,
+    workspacesStore,
     sessionA,
     sessionB,
     ws1,
@@ -193,6 +222,14 @@ function createHarness() {
     releasedMain,
     adopted,
     toasts,
+    emitRemoved: (id: SessionId) => {
+      for (const listener of removedListeners) listener(id);
+    },
+    markSessionRemoved: (id: SessionId) => {
+      sessionStores.get(id)?.update((draft) => {
+        draft.removed = true;
+      });
+    },
   };
 }
 
@@ -344,4 +381,79 @@ it("preserves failure detail for unknown creation errors without code prefixes",
   assert.equal(blankState.state, "error");
   assert.equal(blankState.reason, "unknown");
   assert.equal(blankState.message, undefined);
+});
+
+it("clears main view when an open remote session is explicitly removed, without closing unpaged or local sessions", () => {
+  const h = createHarness();
+  const remoteSession1 = SessionId("remote-s1");
+  const remoteSession2 = SessionId("remote-s2");
+  const remoteWs = "remote-peer:vps::/srv/app" as WorkspaceId;
+
+  const prevWorkspaces = h.workspacesStore.getSnapshot();
+  h.workspacesStore.set({
+    ...prevWorkspaces,
+    items: [
+      ...prevWorkspaces.items,
+      {
+        workspaceId: remoteWs,
+        path: "/srv/app",
+        title: "app",
+        sessionIds: [remoteSession1, remoteSession2],
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+        remote: { hostId: "remote-peer:vps", displayName: "VPS", state: "connected" },
+      },
+    ],
+  });
+  h.listStore.update((draft) => {
+    draft.ids = [...draft.ids, remoteSession1, remoteSession2];
+    draft.byId[remoteSession1] = {
+      id: remoteSession1,
+      displayTitle: "Remote 1",
+      running: false,
+      blank: false,
+      updatedAt: 3,
+      retainedBy: {},
+      projectionValues: {
+        remoteHost: { hostId: "remote-peer:vps", displayName: "VPS", state: "connected" },
+      },
+    };
+    draft.byId[remoteSession2] = {
+      id: remoteSession2,
+      displayTitle: "Remote 2",
+      running: false,
+      blank: false,
+      updatedAt: 4,
+      retainedBy: {},
+      projectionValues: {
+        remoteHost: { hostId: "remote-peer:vps", displayName: "VPS", state: "connected" },
+      },
+    };
+  });
+
+  // 1. Open remoteSession1; omitting it from paginated list ids alone must NOT close it.
+  h.service.openSession(remoteSession1);
+  assert.equal(h.retainedMain.at(-1), remoteSession1);
+  h.listStore.update((draft) => {
+    draft.ids = draft.ids.filter((id) => id !== remoteSession1);
+    delete draft.byId[remoteSession1];
+  });
+  assert.equal(h.releasedMain.includes(remoteSession1), false);
+
+  // 2. Explicit api-session/removed closes the open remote session and clears main view.
+  const panelCountBefore = h.panelSelections.length;
+  h.emitRemoved(remoteSession1);
+  assert.equal(h.releasedMain.includes(remoteSession1), true);
+  assert.equal(h.panelSelections.length, panelCountBefore + 1);
+  assert.equal(h.panelSelections.at(-1), null);
+
+  // 3. Resident Session snapshot `removed: true` also clears main view for remote sessions.
+  h.service.openSession(remoteSession2);
+  h.markSessionRemoved(remoteSession2);
+  assert.equal(h.releasedMain.includes(remoteSession2), true);
+
+  // 4. Local sessions are not auto-closed by api-session/removed.
+  h.service.openSession(h.sessionA);
+  h.emitRemoved(h.sessionA);
+  assert.equal(h.releasedMain.includes(h.sessionA), false);
 });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
@@ -42,7 +42,10 @@ function fixture(t: TestContext, host: FakeChHost = nativeCodex(new FakeChHost()
       .filter((row) => row.modelProvider !== "codexhost" && !host.archivedIds.has(row.id))
       .sort((a, b) => b.updatedAt - a.updatedAt);
     const official = native.slice(offset, offset + 20);
-    const external = [...host.threads.values()].filter((row) => row.modelProvider === "codexhost");
+    const external =
+      continuation === undefined
+        ? [...host.threads.values()].filter((row) => row.modelProvider === "codexhost")
+        : [];
     const threads = [...official, ...external].map((row) => ({
       ...structuredClone(row),
       turns: [],
@@ -144,8 +147,9 @@ it("keeps explicit pages browser-local, never probes omissions, refreshes only t
   assert.equal(f.host.requests.filter((r) => r.method === "thread/read").length, 0);
   assert.ok(!f.emitted.some((e) => e.event === "api-session/removed"));
   const last = await f.list({ cursor: second.nextCursor });
-  assert.equal(last.items.length, 32);
+  assert.equal(last.items.length, 7);
   assert.equal(last.nextCursor, null);
+  assert.ok(!f.emitted.some((e) => e.event === "api-session/removed"));
   assert.deepEqual(
     f.cursors.map((p) => (p.officialCursor as { live: string } | undefined)?.live),
     [undefined, "20", undefined, "40"],
@@ -271,4 +275,28 @@ it("rejects cross-scope continuations and reports pin failures without hiding th
   f.host.pinError = "Native pins unavailable";
   assert.ok((await f.list()).items.length > 0);
   assert.ok(errors.some((args) => String(args[0]).includes("native pins unavailable")));
+});
+
+it("continues a Workspace's page within its folder, outside nested Workspaces, only after a cursor", async (t) => {
+  const f = fixture(t);
+  const head = await f.list();
+  const folder = (...parts: string[]) => join(f.root, ...parts);
+  for (const path of [folder("app", "nested"), folder("elsewhere")])
+    mkdirSync(path, { recursive: true });
+  const app = f.workspaces.create(folder("app")).workspace;
+  f.workspaces.create(folder("app", "nested"));
+  f.workspaces.create(folder("elsewhere"));
+  const count = f.cursors.length;
+  const headless = await f.rpc.dispatch("session/list", {
+    args: { request: { workspaceId: app.workspaceId } },
+  });
+  assert.equal(headless.ok, false, "a Workspace scope only continues a page");
+  assert.equal(f.cursors.length, count);
+  await f.list({ cursor: head.nextCursor, workspaceId: app.workspaceId });
+  assert.deepEqual(f.cursors.at(-1)?.scope, {
+    cwd: folder("app"),
+    excludeCwds: [folder("app", "nested")],
+  });
+  await f.list({ cursor: head.nextCursor });
+  assert.equal(f.cursors.at(-1)?.scope, undefined, "Recents keeps the plain next page");
 });

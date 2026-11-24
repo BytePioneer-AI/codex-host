@@ -14,9 +14,15 @@ import {
   AntigravityAdapter,
   type AntigravityAcpTransportLike,
 } from "@codexhost/adapter-antigravity";
-import type { DelegationControlRegistration } from "../src/delegation-types.js";
+import {
+  answerStep,
+  createNativeHistoryDatabase,
+  planModeSwitch,
+  systemStep,
+  userStep,
+} from "../../../tests/fixtures/antigravity/native-history-fixture.js";
 import { createExternalThreadRecordInput } from "../src/external-thread-repository.js";
-import { createFixture, startExternalThread, stopFixture } from "./app-server-host-fixture.js";
+import { createFixture, stopFixture } from "./app-server-host-fixture.js";
 
 function protoField(field: number, value: string | Buffer): Buffer {
   const body = typeof value === "string" ? Buffer.from(value) : value;
@@ -181,6 +187,83 @@ it.each([
   },
 );
 
+it("removes an obsolete Plan wake mapping on resume without rekeying neighboring Turns", async () => {
+  const home = mkdtempSync(path.join(tmpdir(), "codexhost-agy-plan-identity-"));
+  const environment = { HOME: home, USERPROFILE: home };
+  const adapter = new AntigravityAdapter({ environment });
+  const nativeSessionRef = nativeSessionRefSchema.parse({
+    harnessId: adapter.harnessId,
+    nativeSessionId: "plan-history",
+    formatVersion: 1,
+  });
+  const db = await createNativeHistoryDatabase(home, nativeSessionRef.nativeSessionId);
+  try {
+    userStep(db, 0, "Plan and implement", "plan");
+    planModeSwitch(db, 1, "plan", "execute");
+    answerStep(db, 4, "Execution reply", "execute");
+    systemStep(db, 5, "wake", "task_notification");
+    answerStep(db, 6, "Independent reply", "wake");
+  } finally {
+    db.close();
+  }
+  const fixture = createFixture({
+    environment,
+    additionalAdapters: new Map([[adapter.harnessId, adapter]]),
+  });
+  try {
+    await fixture.ready;
+    const { hostThreadId: threadId } = await fixture.mappingStore.createProvisional(
+      createExternalThreadRecordInput({
+        harnessId: adapter.harnessId,
+        cwd: home,
+        transportModelId: encodeHarnessPluginRoute(
+          harnessPluginRouteSchema.parse({ harnessId: adapter.harnessId }),
+        ),
+        ephemeral: false,
+        historyMode: "paginated",
+      }),
+    );
+    const mapping = (key: string) => ({
+      hostTurnId: hostTurnIdSchema.parse(`saved-${key}`),
+      nativeTurnRef: { ...nativeSessionRef, nativeTurnKey: key },
+      nativeCheckpointRef: { ...nativeSessionRef, checkpointId: key },
+    });
+    const user = mapping("turn-0");
+    const wake = mapping("wake-5");
+    await fixture.mappingStore.commitReady({
+      hostThreadId: threadId,
+      nativeSessionRef,
+      turnMappings: [user, mapping("wake-3"), wake],
+    });
+    expect(await fixture.host.handleClientRequest("thread/resume", { threadId })).toHaveProperty(
+      "result",
+    );
+    expect((await fixture.mappingStore.getThread(threadId))?.turnMappings).toEqual([user, wake]);
+    expect(
+      await fixture.host.handleClientRequest("thread/turns/list", {
+        threadId,
+        sortDirection: "asc",
+        itemsView: "full",
+      }),
+    ).toMatchObject({
+      result: {
+        data: [
+          {
+            id: user.hostTurnId,
+            items: expect.arrayContaining([
+              expect.objectContaining({ type: "agentMessage", text: "Execution reply" }),
+            ]),
+          },
+          { id: wake.hostTurnId },
+        ],
+      },
+    });
+  } finally {
+    await stopFixture(fixture);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 it("returns and saves each confirmed configuration for queued cold agy selections", async () => {
   const home = mkdtempSync(path.join(tmpdir(), "codexhost-agy-cold-config-"));
   const nativeSessionId = "11111111-1111-4111-8111-111111111111";
@@ -303,143 +386,5 @@ it("returns and saves each confirmed configuration for queued cold agy selection
     modelGate.resolve(undefined);
     thinkingGate.resolve(undefined);
     await stopFixture(fixture);
-  }
-});
-
-it("reflects a catalog Skill reply in live agy history without moving local command output", async () => {
-  const home = mkdtempSync(path.join(tmpdir(), "codexhost-agy-command-history-"));
-  const sessionId = "11111111-1111-4111-8111-111111111111";
-  const conversations = path.join(home, ".gemini", "antigravity-cli", "conversations");
-  mkdirSync(conversations, { recursive: true });
-  const db = new DatabaseSync(path.join(conversations, `${sessionId}.db`));
-  db.exec(`
-    PRAGMA user_version = 1;
-    CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB);
-  `);
-  const insert = db.prepare("INSERT INTO steps VALUES (?, ?, 3, ?)");
-  const skillPrompt = "/fixture-skill How should I test it?";
-  const answer = "Use an isolated data directory.";
-  const prompts: string[] = [];
-  const environment = { HOME: home, USERPROFILE: home };
-  const adapter = new AntigravityAdapter({
-    environment,
-    createTransport: (): AntigravityAcpTransportLike => ({
-      sessionId,
-      isClosed: false,
-      skipPermissions: false,
-      initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
-      openSession: async () => ({ opened: { sessionId } }),
-      setSessionEventHandler: (handler) =>
-        handler?.({
-          type: "commands.update",
-          commands: [
-            { name: "fixture-skill", description: "Test a project" },
-            { name: "quota", description: "Show a local result" },
-          ],
-        }),
-      setMode: async () => {},
-      setConfigOption: async () => [],
-      prompt: async ([part], handler) => {
-        if (part?.type !== "text") throw new Error("Expected a text prompt");
-        prompts.push(part.text);
-        if (part.text === "warm up" || part.text === skillPrompt) {
-          const idx = part.text === skillPrompt ? 2 : 0;
-          const reply = part.text === skillPrompt ? answer : "Ready.";
-          insert.run(idx, 14, protoField(19, protoField(2, part.text)));
-          insert.run(idx + 1, 15, protoField(20, protoField(1, reply)));
-          handler.onEvent({ type: "agent.text", text: reply });
-        } else {
-          handler.onEvent({ type: "agent.text", text: `Local result for ${part.text}` });
-        }
-        return { stopReason: "end_turn" };
-      },
-      cancel: async () => {},
-      closeSession: async () => {},
-      close: async () => {},
-    }),
-  });
-  let delegation: DelegationControlRegistration | undefined;
-  const fixture = createFixture({
-    environment,
-    additionalAdapters: new Map([["antigravity", adapter]]),
-    onDelegationApi: (api) => {
-      delegation = api;
-      return undefined;
-    },
-  });
-  try {
-    const threadId = await startExternalThread(
-      fixture,
-      encodeHarnessPluginRoute(harnessPluginRouteSchema.parse({ harnessId: "antigravity" })),
-      1,
-      { cwd: home },
-    );
-    const submit = async (text: string) => {
-      const offset = fixture.collector.messages.length;
-      expect(
-        await fixture.host.handleClientRequest("turn/start", {
-          threadId,
-          input: [{ type: "text", text }],
-        }),
-      ).toHaveProperty("result");
-      await vi.waitFor(() => {
-        expect(fixture.collector.messages.slice(offset)).toEqual(
-          expect.arrayContaining([expect.objectContaining({ method: "turn/completed" })]),
-        );
-      });
-      return fixture.host.clientSnapshot(threadId);
-    };
-    await submit("warm up");
-    const snapshot = await submit(
-      "How should I test it? [@/fixture-skill](subagent://codexhost-command.fixture-skill)",
-    );
-    expect(prompts.at(-1)).toBe(skillPrompt);
-    if (!delegation) throw new Error("Expected the delegation read API");
-    const read = await delegation.read({ threadId, view: "messages" });
-    expect(read.turns?.[0]).toMatchObject({
-      messages: [
-        expect.objectContaining({ role: "user", text: skillPrompt }),
-        expect.objectContaining({ role: "agent", phase: "final", text: answer }),
-      ],
-    });
-    expect(snapshot.turnsPage.data[0]).toMatchObject({
-      id: read.turns?.[0]?.turnId,
-      status: "completed",
-      items: [
-        { type: "userMessage", content: [{ type: "text", text: skillPrompt }] },
-        { type: "agentMessage", phase: "final_answer", text: answer },
-      ],
-    });
-    expect(snapshot.command?.turn.items).not.toContainEqual(
-      expect.objectContaining({ type: "agentMessage" }),
-    );
-    const expectCommandCard = async (name: string) => {
-      const command = await submit(`/${name}`);
-      expect(prompts.at(-1)).toBe(`/${name}`);
-      expect(command.turnsPage.data.map(({ id }) => id)).toEqual(
-        snapshot.turnsPage.data.map(({ id }) => id),
-      );
-      expect(command.command).toMatchObject({
-        name,
-        turn: {
-          status: "completed",
-          items: expect.arrayContaining([
-            expect.objectContaining({ type: "agentMessage", text: `Local result for /${name}` }),
-          ]),
-        },
-      });
-    };
-    await expectCommandCard("compact");
-    await expectCommandCard("quota");
-    // An unavailable native count is not proof that a text-producing command became a Turn.
-    db.exec("ALTER TABLE steps RENAME TO unavailable_steps");
-    await expectCommandCard("quota");
-  } finally {
-    try {
-      await stopFixture(fixture);
-    } finally {
-      db.close();
-      rmSync(home, { recursive: true, force: true });
-    }
   }
 });

@@ -118,6 +118,7 @@ export function createList(remote: WorkspaceFilesListRemote): ListWorkspaceDirec
  * @returns the child's absolute path.
  */
 export function childPath(parent: string, name: string): string {
+  if (parent === ".") return name;
   return `${parent.replace(/[/\\]+$/, "")}/${name}`;
 }
 

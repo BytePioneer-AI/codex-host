@@ -9,6 +9,12 @@ import {
   buildPreinstalledHarnessPlugins,
   preinstalledHarnessPluginPaths,
 } from "./harness-plugins.mjs";
+import {
+  linuxGlibcCargoArguments,
+  stripLinuxDebugInfo,
+  verifyLinuxGlibcBaseline,
+} from "./linux-glibc.mjs";
+import { MACOS_SHELL_BUNDLE_PATHS, stageMacosShellBundle } from "./macos-shell-bundle.mjs";
 import { ensureNodeArchive, extractNodeRuntime } from "./node-runtime.mjs";
 import { parseReleaseArguments, releaseUsage } from "./targets.mjs";
 
@@ -138,11 +144,11 @@ export function releaseBuildCommands(
       label: "Rust release build",
       command: "cargo",
       args: [
-        "build",
+        ...(target.hostPlatform === "linux"
+          ? linuxGlibcCargoArguments(target.rustTarget)
+          : ["build", "--target", target.rustTarget]),
         "--release",
         "--locked",
-        "--target",
-        target.rustTarget,
         "--package",
         "codexhost-launcher",
         "--package",
@@ -151,6 +157,24 @@ export function releaseBuildCommands(
         "codexhost-updater",
       ],
     },
+    // Linux releases have no native Desktop shell; Web and Codex Desktop remain the interfaces.
+    ...(target.hostPlatform === "linux"
+      ? []
+      : [
+          {
+            label: "Desktop shell release build",
+            command: "cargo",
+            args: [
+              "build",
+              "--manifest-path",
+              "apps/desktop-shell/src-tauri/Cargo.toml",
+              "--release",
+              "--locked",
+              "--target",
+              target.rustTarget,
+            ],
+          },
+        ]),
   ];
 }
 
@@ -286,6 +310,11 @@ export function expectedPayloadPaths(target) {
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
     ...(target.hostPlatform === "win32" ? ["libexec/codexhost-node-repl.exe"] : []),
+    ...(target.hostPlatform === "darwin"
+      ? MACOS_SHELL_BUNDLE_PATHS
+      : target.hostPlatform === "linux"
+        ? []
+        : [`libexec/codexhost-shell${target.executableSuffix}`]),
     `libexec/codexhost-updater${target.executableSuffix}`,
     `runtime/node${target.executableSuffix}`,
     "app/codexhost-distribution.json",
@@ -426,6 +455,33 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     "release Updater",
     true,
   );
+  const shellOutput = path.join(
+    root,
+    "apps",
+    "desktop-shell",
+    "src-tauri",
+    "target",
+    target.rustTarget,
+    "release",
+  );
+  if (target.hostPlatform === "darwin") {
+    await stageMacosShellBundle({
+      sourceExecutable: path.join(shellOutput, `codexhost-shell${target.executableSuffix}`),
+      iconSource: path.join(root, "apps/desktop-shell/src-tauri/icons/AppIcon.icns"),
+      destinationRoot: payloadRoot,
+      version,
+    });
+  } else if (target.hostPlatform === "linux") {
+    stripLinuxDebugInfo({ packageRoot: payloadRoot });
+    verifyLinuxGlibcBaseline({ packageRoot: payloadRoot });
+  } else {
+    await copyReleaseFile(
+      path.join(shellOutput, `codexhost-shell${target.executableSuffix}`),
+      path.join(payloadRoot, "libexec", `codexhost-shell${target.executableSuffix}`),
+      "release Desktop shell",
+      true,
+    );
+  }
 
   await runCommand(
     {
@@ -499,18 +555,60 @@ async function requireNonEmptyArtifact(artifactPath) {
   if (metadata.size === 0) throw new Error(`release artifact is empty: ${artifactPath}`);
 }
 
+export function releaseArtifactExtension(target) {
+  if (target.hostPlatform === "darwin") return ".dmg";
+  if (target.hostPlatform === "win32") return ".exe";
+  return ".tar.gz";
+}
+
+// The archive holds one versioned top-level directory, so extraction never spills into the
+// destination; the Updater relies on that single root when it stages an update.
+export function linuxArchiveCommand({ payloadRoot, artifactPath, rootName }) {
+  return {
+    label: "Linux archive packaging",
+    command: "tar",
+    args: [
+      "--create",
+      "--gzip",
+      "--file",
+      artifactPath,
+      "--sort=name",
+      "--owner=0",
+      "--group=0",
+      "--numeric-owner",
+      "--directory",
+      path.dirname(payloadRoot),
+      `--transform=s,^${path.basename(payloadRoot)},${rootName},`,
+      path.basename(payloadRoot),
+    ],
+  };
+}
+
 export async function packageReleaseTarget({ target, root = repositoryRoot }) {
   const prepared = await prepareReleasePayload({ target, root });
-  const extension = target.hostPlatform === "darwin" ? ".dmg" : ".exe";
-  const artifactBase = path.join(prepared.outputRoot, `codexhost-${prepared.version}-${target.id}`);
-  const artifactPath = `${artifactBase}${extension}`;
+  const artifactName = `codexhost-${prepared.version}-${target.id}`;
+  const artifactBase = path.join(prepared.outputRoot, artifactName);
+  const artifactPath = `${artifactBase}${releaseArtifactExtension(target)}`;
   const priorExtensions =
-    target.hostPlatform === "darwin" ? [".app.zip", ".dmg"] : [".msi", ".exe"];
+    target.hostPlatform === "darwin"
+      ? [".app.zip", ".dmg"]
+      : target.hostPlatform === "win32"
+        ? [".msi", ".exe"]
+        : [".tar.gz"];
   await Promise.all(
     priorExtensions.map((suffix) => rm(`${artifactBase}${suffix}`, { force: true })),
   );
 
-  if (target.hostPlatform === "darwin") {
+  if (target.hostPlatform === "linux") {
+    await runCommand(
+      linuxArchiveCommand({
+        payloadRoot: prepared.payloadRoot,
+        artifactPath,
+        rootName: artifactName,
+      }),
+      root,
+    );
+  } else if (target.hostPlatform === "darwin") {
     await runCommand(
       {
         label: "macOS DMG packaging",

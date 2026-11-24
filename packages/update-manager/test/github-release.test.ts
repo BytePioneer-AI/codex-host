@@ -49,6 +49,9 @@ describe("GitHub Release update discovery", () => {
     expect(expectedInstallerAssetName("1.2.3", "macos-arm64")).toBe(
       "codexhost-1.2.3-macos-arm64.dmg",
     );
+    expect(expectedInstallerAssetName("1.2.3", "linux-x64")).toBe(
+      "codexhost-1.2.3-linux-x64.tar.gz",
+    );
   });
 
   it("rejects prereleases, mismatched notes, duplicate assets, and unverified selection", () => {

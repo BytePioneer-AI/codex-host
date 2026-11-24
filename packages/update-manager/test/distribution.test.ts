@@ -67,6 +67,43 @@ describe("installed update context", () => {
     });
   });
 
+  it("resolves a Linux archive installation from its extracted directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-distribution-"));
+    roots.push(root);
+    const installRoot = path.join(root, "codexhost");
+    const host = path.join(installRoot, "app", "host-runtime.mjs");
+    await file(host);
+    await file(path.join(installRoot, "libexec", "codexhost-updater"));
+    await file(
+      path.join(installRoot, "app", "codexhost-distribution.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.2.3",
+        distribution: "installer",
+        target: "linux-arm64",
+      }),
+    );
+
+    await expect(
+      resolveInstalledUpdateContext({
+        hostRuntimePath: host,
+        environment: runtimeEnvironment(root),
+        platform: "linux",
+        architecture: "arm64",
+        stateDirectory: path.join(root, "state"),
+      }),
+    ).resolves.toMatchObject({
+      metadata: { version: "1.2.3", target: "linux-arm64" },
+      installation: {
+        kind: "linux-archive",
+        options: {
+          installRoot,
+          updaterExecutable: path.join(installRoot, "libexec", "codexhost-updater"),
+        },
+      },
+    });
+  });
+
   it("resolves npm only from explicit absolute npm runtime paths", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-npm-distribution-"));
     roots.push(root);

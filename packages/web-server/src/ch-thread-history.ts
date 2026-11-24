@@ -4,6 +4,7 @@ import type { ClientThreadSnapshot } from "@codexhost/shared-contracts";
 import { ChThreadView, type ChThread, type ChTurn } from "./ch-thread-view.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { ChCommandPresentation } from "./ch-command-presentation.ts";
+import { ChQueueProjectionCache, type QueueEditEvaluator } from "./ch-queue-edit.ts";
 import type { ProjectionListener } from "./session-log.ts";
 import { RpcError } from "./transport.ts";
 
@@ -23,6 +24,9 @@ interface TurnsPage {
 export class ChThreadHistory extends ChThreadView {
   private loaded = false;
   private readonly commands: ChCommandPresentation;
+  private readonly queueProjection = new ChQueueProjectionCache();
+  private readonly hasProjectInput: boolean;
+  private readonly canEditQueueItem: QueueEditEvaluator | undefined;
   ownerSnapshot: ClientThreadSnapshot | undefined;
   private lastHeadReadAt = 0;
   private prefetched = false;
@@ -30,6 +34,10 @@ export class ChThreadHistory extends ChThreadView {
   private loadingOlder: Promise<void> | undefined;
   private readonly seenCursors = new Set<string>();
   private readonly pagination: { cursor: string | null };
+  private readonly hostThreadId: string;
+  private readonly overrideThreadIdentity: boolean;
+  private readonly viewId: string;
+  private readonly viewCwd: string;
 
   constructor(
     private readonly host: ChHostClient,
@@ -39,6 +47,7 @@ export class ChThreadHistory extends ChThreadView {
     origin = RENDER_ORIGIN,
     projectInput?: (content: unknown[]) => unknown[],
     projectImage?: (path: string, projectionKey: string) => unknown,
+    options?: { hostThreadId?: string; canEditQueueItem?: QueueEditEvaluator },
   ) {
     const pagination = { cursor: null as string | null };
     super(
@@ -52,12 +61,26 @@ export class ChThreadHistory extends ChThreadView {
       projectImage,
     );
     this.pagination = pagination;
+    this.hasProjectInput = projectInput !== undefined;
+    this.canEditQueueItem = options?.canEditQueueItem;
+    this.hostThreadId = options?.hostThreadId ?? thread.id;
+    this.overrideThreadIdentity = options?.hostThreadId !== undefined;
+    this.viewId = thread.id;
+    this.viewCwd = thread.cwd;
     this.commands = new ChCommandPresentation(this.log);
+  }
+
+  private viewThread(thread: ChThread): ChThread {
+    if (!this.overrideThreadIdentity) return thread;
+    if (thread.id !== this.hostThreadId) {
+      throw new RpcError("remote/read-failed", "Remote identity mismatch");
+    }
+    return { ...thread, id: this.viewId, cwd: this.viewCwd };
   }
 
   private async page(cursor: string | null): Promise<TurnsPage> {
     const result = await this.host.request<TurnsPage>("thread/turns/list", {
-      threadId: this.thread.id,
+      threadId: this.hostThreadId,
       cursor,
       limit: PAGE_TURNS,
       sortDirection: "desc",
@@ -92,14 +115,14 @@ export class ChThreadHistory extends ChThreadView {
       .flatMap((turn) =>
         turn.fingerprint ? [{ id: turn.id, fingerprint: turn.fingerprint }] : [],
       );
-    let snapshot = await realtime.snapshot(this.thread.id, { knownTurns });
+    let snapshot = await realtime.snapshot(this.hostThreadId, { knownTurns });
     const unresolved = (value: ClientThreadSnapshot) =>
       value.turnsPage.data.some(
         (turn) => turn.unchanged && held.get(turn.id)?.fingerprint !== turn.fingerprint,
       );
     if (unresolved(snapshot)) {
       // `knownTurns: []` still requests fingerprints but can never match a placeholder.
-      snapshot = await realtime.snapshot(this.thread.id, { knownTurns: [] });
+      snapshot = await realtime.snapshot(this.hostThreadId, { knownTurns: [] });
       if (snapshot.turnsPage.data.some((turn) => turn.unchanged))
         throw new RpcError("host/history-invalid", "CH replaced a Turn it was not asked to.");
     }
@@ -118,26 +141,34 @@ export class ChThreadHistory extends ChThreadView {
   refresh(force = false): Promise<void> {
     this.refreshing ??= (async () => {
       const snapshot = this.host.realtime ? await this.snapshot(this.host.realtime) : undefined;
-      const { thread } = snapshot
+      const { thread: rawThread } = snapshot
         ? { thread: snapshot.thread }
         : await this.host.request<{ thread: ChThread }>("thread/read", {
-            threadId: this.thread.id,
+            threadId: this.hostThreadId,
             includeTurns: false,
           });
+      const thread = this.viewThread(rawThread);
       this.ensureCurrent();
       this.ownerSnapshot = snapshot;
       if (snapshot) {
+        const readOnly = thread.canAcceptDirectInput === false;
+        const allowsAttachments =
+          !readOnly && !(thread.parentThreadId ?? this.thread.parentThreadId);
+        const projectedQueue = this.queueProjection.project(snapshot.queue?.items ?? [], {
+          ...(this.hasProjectInput
+            ? { projectInput: (content) => this.projectInput(content) }
+            : {}),
+          ...(this.canEditQueueItem ? { canEdit: this.canEditQueueItem } : {}),
+          allowsAttachments,
+          readOnly,
+        });
         this.log.setProjection("inbox", {
-          "next-turn": (snapshot.queue?.items ?? []).map((item) => ({
-            id: item.id,
-            role: "user",
-            content: item.presentationInput ?? item.input,
-            source: { kind: "user", rpcId: item.clientUserMessageId },
-          })),
+          "next-turn": projectedQueue.nextTurn,
           "next-step": [],
         });
         this.log.setProjection("queueState", {
           pausedReason: snapshot.queue?.pausedReason ?? null,
+          ...(this.canEditQueueItem ? { editable: projectedQueue.editable } : {}),
         });
       }
       if (

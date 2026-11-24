@@ -10,7 +10,11 @@ import {
   runInstallationCommand,
   versionFromOutput,
 } from "@codexhost/harness-discovery";
-import { deepSeekNpxVersionFile, resolveDeepSeekCommand } from "./executable.js";
+import {
+  deepSeekEnvironment,
+  deepSeekNpxVersionFile,
+  resolveDeepSeekCommand,
+} from "./executable.js";
 import {
   DEEPSEEK_NEWEST_VERIFIED_VERSION,
   DEEPSEEK_VERIFIED_VERSIONS,
@@ -22,11 +26,12 @@ export function createDeepSeekInstallation(environment: NodeJS.ProcessEnv, comma
     async check() {
       const invocation = resolveDeepSeekCommand(command, environment);
       if (!invocation) throw new Error("DeepSeek Harness is not installed");
+      const commandEnvironment = deepSeekEnvironment(invocation.command, environment);
       const currentVersion = versionFromOutput(
         await runInstallationCommand(
           invocation.command,
           [...invocation.arguments, "--version"],
-          environment,
+          commandEnvironment,
         ),
       );
       // Version discovery is independent of whether this installation can be updated.
@@ -37,14 +42,14 @@ export function createDeepSeekInstallation(environment: NodeJS.ProcessEnv, comma
       const isNpx = invocation.kind === "npx";
       const npm = isNpx
         ? null
-        : await npmInstallation(invocation.command, ["@deepseek-ai/dsh"], environment);
+        : await npmInstallation(invocation.command, ["@deepseek-ai/dsh"], commandEnvironment);
       update = isNpx
         ? async (version) => {
             const specifier = `@deepseek-ai/dsh@${version}`;
             const output = await runInstallationCommand(
               invocation.command,
               ["--yes", "--prefer-online", specifier, "--version"],
-              environment,
+              commandEnvironment,
               600_000,
             );
             if (versionFromOutput(output) !== version)
@@ -52,7 +57,7 @@ export function createDeepSeekInstallation(environment: NodeJS.ProcessEnv, comma
             const offline = await runInstallationCommand(
               invocation.command,
               ["--offline", "--no-install", specifier, "--version"],
-              environment,
+              commandEnvironment,
             );
             if (versionFromOutput(offline) !== version)
               throw new Error("DSH offline npx launch still selects a different version");

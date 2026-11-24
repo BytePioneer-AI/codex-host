@@ -343,6 +343,7 @@ const DEFAULT_TOOL_OUTPUT_LIMIT = 64_000;
 const CONTEXT_USAGE_RETRY_DELAYS_MS = [0, 1_000, 2_000] as const;
 const CONTEXT_USAGE_TTL_MS = 10_000;
 const CONTEXT_USAGE_FAILURE_COOLDOWN_MS = 5_000;
+const ACCOUNT_CREDITS_REFRESH_COOLDOWN_MS = 60_000;
 const REQUEST_USAGE_RETRY_DELAYS_MS = [0, 100, 250, 500, 1_000] as const;
 // Claude opens the continuation Segment within milliseconds of the Segment that
 // observed a task notification, and the number of Segments it spends on queued
@@ -3319,6 +3320,8 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #sessions = new Set<ClaudeHarnessSession>();
   #closePromise: Promise<void> | null = null;
   #latestPlanLimit: ClaudePlanLimitEvent | null = null;
+  #fiveHourRefreshedAt = Number.NEGATIVE_INFINITY;
+  #sevenDayRefreshedAt = Number.NEGATIVE_INFINITY;
   #accountInspection: Promise<HarnessAccountSnapshot | null> | null = null;
   #accountCreditsSupported = false;
 
@@ -3483,6 +3486,11 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       if (inspector) {
         await inspector.close().catch(() => undefined);
         this.#inspectors.delete(inspector);
+      }
+      if (!this.#closePromise) {
+        const refreshedAt = Date.now();
+        this.#fiveHourRefreshedAt = refreshedAt;
+        this.#sevenDayRefreshedAt = refreshedAt;
       }
     }
   }
@@ -3839,6 +3847,9 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     }
     this.#latestPlanLimit = next.fiveHour || next.sevenDay ? next : null;
     if (this.#latestPlanLimit) {
+      const refreshedAt = Date.now();
+      if (planLimit.fiveHour) this.#fiveHourRefreshedAt = refreshedAt;
+      if (planLimit.sevenDay) this.#sevenDayRefreshedAt = refreshedAt;
       this.#accountCreditsSupported = true;
       for (const session of this.#sessions) {
         session.publishAccountCreditsSupport(true);
@@ -3853,7 +3864,16 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   }
 
   refreshCredits(): Promise<AccountCreditsSnapshot | null> {
-    return this.inspectAccount().then(() => this.credits());
+    if (this.#closePromise) return Promise.resolve(null);
+    const now = Date.now();
+    if (
+      !this.#accountInspection &&
+      now - this.#fiveHourRefreshedAt < ACCOUNT_CREDITS_REFRESH_COOLDOWN_MS &&
+      now - this.#sevenDayRefreshedAt < ACCOUNT_CREDITS_REFRESH_COOLDOWN_MS
+    ) {
+      return Promise.resolve(this.credits());
+    }
+    return this.inspectAccount().then(() => (this.#closePromise ? null : this.credits()));
   }
 
   close(): Promise<void> {

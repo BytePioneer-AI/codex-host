@@ -6286,10 +6286,10 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("resumes a stored Fable alias using the catalog Model and its Thinking options", async () => {
+  it("resumes a stored Fable alias using the latest catalog Model and its Thinking options", async () => {
     const { adapter, dependencies, transports } = fixture();
     const cwd = "/synthetic";
-    const currentId = "claude-fable-5-1";
+    const currentId = "claude-fable-5-2";
     dependencies.createInspector = () => ({
       close: async () => undefined,
       inspect: async () => ({
@@ -6297,8 +6297,20 @@ describe("Claude Code HarnessAdapter", () => {
         canSelectPermissionMode: true,
         models: [
           {
-            value: currentId,
+            value: "claude-fable-5",
+            displayName: "Fable 5",
+            supportedEffortLevels: ["low", "medium", "high"],
+            supportsThinkingOff: false,
+          },
+          {
+            value: "claude-fable-5-1",
             displayName: "Fable 5.1",
+            supportedEffortLevels: ["low", "medium", "high", "xhigh"],
+            supportsThinkingOff: false,
+          },
+          {
+            value: currentId,
+            displayName: "Fable 5.2",
             supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
             supportsThinkingOff: false,
           },
@@ -7568,6 +7580,122 @@ describe("Claude Code HarnessAdapter", () => {
       periodType: "five_hour",
     });
     expect(adapter.credits()).toEqual({ usedPercent: 10, periodType: "five_hour" });
+  });
+
+  it("reuses recent credits during refreshCredits cooldown, tracks native push freshness per window, and keeps inspectAccount fresh", async () => {
+    let now = 100_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { adapter, dependencies, transports } = fixture({}, { accountCreditsSupported: true });
+    const responses = [
+      { credits: { usedPercent: 10, periodType: "five_hour" as const } },
+      { credits: { usedPercent: 20, periodType: "five_hour" as const } },
+      {
+        credits: {
+          usedPercent: 30,
+          periodType: "five_hour" as const,
+          productUsage: [
+            { product: "7-day window", periodType: "seven_day" as const, usagePercent: 25 },
+          ],
+        },
+      },
+    ];
+    let index = 0;
+    const createInspector = dependencies.createInspector;
+    dependencies.createInspector = (input) => ({
+      ...createInspector(input),
+      inspectAccount: async () => responses[index++] ?? null,
+    });
+    try {
+      await expect(adapter.refreshCredits()).resolves.toEqual({
+        usedPercent: 10,
+        periodType: "five_hour",
+      });
+
+      now = 130_000;
+      await expect(adapter.refreshCredits()).resolves.toEqual({
+        usedPercent: 10,
+        periodType: "five_hour",
+      });
+
+      await expect(adapter.inspectAccount()).resolves.toEqual({
+        credits: { usedPercent: 20, periodType: "five_hour" },
+      });
+      expect(adapter.credits()).toEqual({ usedPercent: 20, periodType: "five_hour" });
+
+      now = 170_000;
+      await expect(adapter.refreshCredits()).resolves.toEqual({
+        usedPercent: 20,
+        periodType: "five_hour",
+      });
+
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("refresh-cooldown-push"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+
+      now = 180_000;
+      transport.planLimit({
+        fiveHour: { utilizationPercent: 44 },
+        sevenDay: { utilizationPercent: 18 },
+      });
+      await nextEvent(iterator);
+
+      now = 220_000;
+      await expect(adapter.refreshCredits()).resolves.toEqual({
+        usedPercent: 44,
+        periodType: "five_hour",
+        productUsage: [{ product: "7-day window", periodType: "seven_day", usagePercent: 18 }],
+      });
+
+      now = 230_000;
+      transport.planLimit({ fiveHour: { utilizationPercent: 46 } });
+      await nextEvent(iterator);
+
+      now = 240_000;
+      await expect(adapter.refreshCredits()).resolves.toEqual({
+        usedPercent: 30,
+        periodType: "five_hour",
+        productUsage: [{ product: "7-day window", periodType: "seven_day", usagePercent: 25 }],
+      });
+
+      transport.finish({ status: "succeeded" });
+      await session.close();
+    } finally {
+      clock.mockRestore();
+      await adapter.close();
+    }
+  });
+
+  it("applies refreshCredits cooldown after an empty account inspection", async () => {
+    let now = 100_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { adapter, dependencies } = fixture({}, { accountCreditsSupported: true });
+    const responses = [null, { credits: { usedPercent: 15, periodType: "five_hour" as const } }];
+    let index = 0;
+    const createInspector = dependencies.createInspector;
+    dependencies.createInspector = (input) => ({
+      ...createInspector(input),
+      inspectAccount: async () => responses[index++] ?? null,
+    });
+    try {
+      await expect(adapter.refreshCredits()).resolves.toBeNull();
+
+      now = 130_000;
+      await expect(adapter.refreshCredits()).resolves.toBeNull();
+
+      now = 160_000;
+      await expect(adapter.refreshCredits()).resolves.toEqual({
+        usedPercent: 15,
+        periodType: "five_hour",
+      });
+    } finally {
+      clock.mockRestore();
+      await adapter.close();
+    }
   });
 
   it("keeps a previously observed weekly window when inspection only returns the five-hour window", async () => {

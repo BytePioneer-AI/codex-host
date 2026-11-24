@@ -13,7 +13,10 @@ import {
   nativeConversationDbPath,
   nativeConversationSummariesDbPath,
 } from "../src/fork.js";
-import { bytes, nanoseconds } from "./support/native-timing-fixture.js";
+import {
+  bytes,
+  nanoseconds,
+} from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof fs>();

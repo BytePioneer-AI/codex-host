@@ -2,14 +2,14 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 
 import { type DataDir, requestOf } from "./store.ts";
 import { RpcError, type RpcRegistry, type StreamRegistry, type StreamSink } from "./transport.ts";
 
 export interface WorkspaceView {
-  remote?: { hostId: string; displayName: string; state: string };
+  remote?: { hostId: string; displayName: string; state: string; color?: string };
   workspaceId: string;
   path: string;
   title: string;
@@ -20,15 +20,28 @@ export interface WorkspaceView {
 }
 
 interface WorkspaceState {
+  /** Web-created assignments keyed by the Host-qualified Web Session ID. */
+  remoteProjectIds?: Record<string, string>;
   items: WorkspaceView[];
   archivedSessionIds: string[];
   pinnedSessionIds: string[];
+  /** Local folders explicitly removed from the Web workspace list. */
+  deletedPaths?: string[];
   /** Set once workspaces are reordered in Web; native project roots then stop following the
    * GUI project order. */
   manualOrder?: boolean;
 }
 
 const FILE = "workspaces.json";
+
+function workspacePath(path: string): string {
+  const expanded = path.startsWith("~") ? join(homedir(), path.slice(1)) : path;
+  if (!isAbsolute(expanded))
+    throw new RpcError("workspace/invalid-path", `Workspace path must be absolute: ${path}`, {
+      path,
+    });
+  return resolve(expanded);
+}
 
 interface NativeProject {
   name: string;
@@ -90,6 +103,57 @@ function projectRoots(projects: readonly NativeProject[]): ProjectRoot[] {
 /** Sidebar title of every native project root folder, keyed by resolved path. */
 export function projectRootTitles(projects: readonly NativeProject[]): Map<string, string> {
   return new Map(projectRoots(projects).map((root) => [root.path, root.title]));
+}
+
+/** One native Thread section and the Workspaces of the Desktop projects placed in it. */
+export interface ThreadSectionView {
+  id: string;
+  name: string;
+  threadIds: string[];
+  /** Omitted when Desktop placed no registered project in the section. */
+  workspaceIds?: string[];
+}
+
+/**
+ * The root folders of the Desktop projects in each section, in the section's project order and
+ * then root order.
+ *
+ * A Workspace is one folder, and a project may list several folders. A folder titled after a
+ * project (its first root) takes that project's place, so it stays out of sections when that
+ * project does; any other folder joins the first section and project listing it.
+ */
+function sectionRootPaths(
+  projects: readonly { id: string; rootPaths: readonly string[] }[],
+  sectionProjects: Readonly<Record<string, readonly string[]>>,
+  sectionIds: readonly string[],
+): Map<string, string[]> {
+  // Same naming owner as `projectRoots`: the earliest project whose first root is the folder.
+  const namedBy = new Map<string, string>();
+  for (const project of projects) {
+    const first = project.rootPaths[0];
+    if (first !== undefined && !namedBy.has(resolve(first)))
+      namedBy.set(resolve(first), project.id);
+  }
+  const byId = new Map(projects.map((project) => [project.id, project]));
+  const listed = new Set<string>();
+  const placed = new Set<string>();
+  const result = new Map<string, string[]>();
+  for (const sectionId of sectionIds) {
+    const paths: string[] = [];
+    for (const projectId of sectionProjects[sectionId] ?? []) {
+      if (listed.has(projectId)) continue;
+      listed.add(projectId);
+      for (const root of byId.get(projectId)?.rootPaths ?? []) {
+        const path = resolve(root);
+        const owner = namedBy.get(path);
+        if (placed.has(path) || (owner !== undefined && owner !== projectId)) continue;
+        placed.add(path);
+        paths.push(path);
+      }
+    }
+    result.set(sectionId, paths);
+  }
+  return result;
 }
 
 /** Title the pre-deduplication logic assigned to a project root. */
@@ -161,6 +225,15 @@ export class Workspaces {
 
   private save(): void {
     this.data.writeJson(FILE, this.state);
+  }
+
+  rememberRemoteProject(sessionId: string, projectId: string): void {
+    (this.state.remoteProjectIds ??= {})[sessionId] = projectId;
+    this.save();
+  }
+
+  remoteProjectId(sessionId: string): string | undefined {
+    return this.state.remoteProjectIds?.[sessionId];
   }
 
   private broadcast(frame: unknown): void {
@@ -250,19 +323,37 @@ export class Workspaces {
     this.broadcast({ type: "pinned", pinnedSessionIds: this.pinnedSessionIds() });
   }
 
-  /** Read-only native Thread sections; only the app-server persists them. */
-  private referenceThreadSections: Array<{ id: string; name: string; threadIds: string[] }> = [];
+  /** Read-only native Thread sections; only the app-server and Desktop persist them. */
+  private referenceThreadSections: ThreadSectionView[] = [];
 
   hasThreadSection(id: string): boolean {
     return this.referenceThreadSections.some((section) => section.id === id);
   }
 
+  /**
+   * Publish native sections. Desktop's project members become the Workspaces of their root
+   * folders, so call this after the project roots are synced into Workspaces.
+   */
   setReferenceThreadSections(
-    sections: Array<{ id: string; name: string; threadIds: string[] }>,
+    sections: ReadonlyArray<{ id: string; name: string; threadIds: string[] }>,
+    projects: readonly { id: string; rootPaths: readonly string[] }[] = [],
+    sectionProjects: Readonly<Record<string, readonly string[]>> = {},
   ): void {
-    if (JSON.stringify(sections) === JSON.stringify(this.referenceThreadSections)) return;
-    this.referenceThreadSections = sections;
-    this.broadcast({ type: "threadSections", threadSections: sections });
+    const paths = sectionRootPaths(
+      projects,
+      sectionProjects,
+      sections.map((section) => section.id),
+    );
+    const next = sections.map((section): ThreadSectionView => {
+      const workspaceIds = (paths.get(section.id) ?? []).flatMap((path) => {
+        const workspace = this.byPath(path);
+        return workspace ? [workspace.workspaceId] : [];
+      });
+      return workspaceIds.length > 0 ? { ...section, workspaceIds } : { ...section };
+    });
+    if (JSON.stringify(next) === JSON.stringify(this.referenceThreadSections)) return;
+    this.referenceThreadSections = next;
+    this.broadcast({ type: "threadSections", threadSections: next });
   }
 
   /** Ephemeral Host archive projection; shared Threads never use legacy Web archive flags. */
@@ -292,13 +383,33 @@ export class Workspaces {
     if (this.remoteGroups.some((group) => group.workspaceId === workspaceId))
       throw new RpcError(
         "workspace/remote-read-only",
-        "Open an existing remote Thread; remote project creation and local tools are unavailable.",
+        "This operation requires a local workspace; remote project paths belong to their Host.",
       );
     return this.state.items.find((item) => item.workspaceId === workspaceId);
   }
 
   byPath(path: string): WorkspaceView | undefined {
     return this.state.items.find((item) => item.path === path);
+  }
+
+  /**
+   * The folder whose Threads a local Workspace lists, without the folders of nested local
+   * Workspaces, which list their own Threads. Remote or unknown Workspaces have none.
+   */
+  catalogScope(workspaceId: string): { cwd: string; excludeCwds: string[] } | undefined {
+    const local = this.list().filter((item) => !item.remote);
+    const workspace = local.find((item) => item.workspaceId === workspaceId);
+    if (!workspace) return undefined;
+    const excludeCwds = local.flatMap((item) => {
+      const nested = relative(workspace.path, item.path);
+      return nested !== "" &&
+        !isAbsolute(nested) &&
+        nested !== ".." &&
+        !nested.startsWith(`..${sep}`)
+        ? [item.path]
+        : [];
+    });
+    return { cwd: workspace.path, excludeCwds: excludeCwds.slice(0, 1_024) };
   }
 
   ownerOf(sessionId: string): WorkspaceView | undefined {
@@ -318,12 +429,7 @@ export class Workspaces {
   }
 
   create(path: string, referenceOnly = false): { workspace: WorkspaceView; created: boolean } {
-    const expanded = path.startsWith("~") ? join(homedir(), path.slice(1)) : path;
-    if (!isAbsolute(expanded))
-      throw new RpcError("workspace/invalid-path", `Workspace path must be absolute: ${path}`, {
-        path,
-      });
-    const absolute = resolve(expanded);
+    const absolute = workspacePath(path);
     if (!referenceOnly && (!existsSync(absolute) || !statSync(absolute).isDirectory())) {
       throw new RpcError("workspace/invalid-path", `Not a directory: ${absolute}`, { path });
     }
@@ -345,8 +451,15 @@ export class Workspaces {
       updatedAt: now,
       origin: referenceOnly ? "codexhost" : "web",
     };
-    this.state.items.push(workspace);
-    this.save();
+    const state = {
+      ...this.state,
+      items: [...this.state.items, workspace],
+      deletedPaths: (this.state.deletedPaths ?? []).filter(
+        (deletedPath) => deletedPath !== absolute,
+      ),
+    };
+    this.data.writeJson(FILE, state);
+    this.state = state;
     this.broadcast({ type: "upsert", workspace });
     this.broadcast({
       type: "order",
@@ -376,8 +489,13 @@ export class Workspaces {
   }
 
   /** Mirror an authoritative CH cwd as a Web navigation entry, never mkdir or change the Thread. */
-  attachReferencedSession(sessionId: string, cwd: string, title?: string): WorkspaceView {
-    const workspace = this.byPath(resolve(cwd)) ?? this.create(cwd, true).workspace;
+  attachReferencedSession(
+    sessionId: string,
+    cwd: string,
+    title?: string,
+  ): WorkspaceView | undefined {
+    const workspace = this.referenceWorkspace(cwd);
+    if (!workspace) return undefined;
     if (title && workspace.origin !== "web" && workspace.title !== title) {
       workspace.title = title;
       this.touch(workspace);
@@ -406,9 +524,11 @@ export class Workspaces {
     const byPath = new Map(items.map((workspace) => [workspace.path, workspace]));
     const members = new Map<string, Set<string>>();
     const now = new Date().toISOString();
+    const deletedPaths = new Set(this.state.deletedPaths);
     const roots = projectRoots(projects);
     const rootPaths = new Set(roots.map((root) => root.path));
     for (const { path, title, listings } of roots) {
+      if (deletedPaths.has(path)) continue;
       let workspace = byPath.get(path);
       if (!workspace) {
         workspace = {
@@ -428,12 +548,8 @@ export class Workspaces {
     for (const { sessionId, cwd, title } of sessions) {
       let workspace = byPath.get(resolve(cwd));
       if (!workspace) {
-        const expanded = cwd.startsWith("~") ? join(homedir(), cwd.slice(1)) : cwd;
-        if (!isAbsolute(expanded))
-          throw new RpcError("workspace/invalid-path", `Workspace path must be absolute: ${cwd}`, {
-            path: cwd,
-          });
-        const path = resolve(expanded);
+        const path = workspacePath(cwd);
+        if (deletedPaths.has(path)) continue;
         workspace = byPath.get(path);
         if (!workspace) {
           workspace = {
@@ -510,11 +626,17 @@ export class Workspaces {
 
   /** An actual Web submission makes its selected folder an explicit Web workspace. */
   selectReferenceWorkspace(cwd: string): void {
-    const workspace = this.byPath(resolve(cwd)) ?? this.create(cwd, true).workspace;
-    if (workspace.origin !== "web") {
+    const workspace = this.referenceWorkspace(cwd);
+    if (workspace && workspace.origin !== "web") {
       workspace.origin = "web";
       this.touch(workspace);
     }
+  }
+
+  private referenceWorkspace(cwd: string): WorkspaceView | undefined {
+    const path = workspacePath(cwd);
+    if (this.state.deletedPaths?.includes(path)) return undefined;
+    return this.byPath(path) ?? this.create(path, true).workspace;
   }
 
   detachSession(sessionId: string): void {
@@ -530,7 +652,8 @@ export class Workspaces {
   register(rpc: RpcRegistry, streams: StreamRegistry): void {
     rpc.register("workspace/create", (args) => this.create(requestOf<{ path: string }>(args).path));
     rpc.register("workspace/initializeDefault", async () => {
-      if (this.state.items.length > 0) return undefined;
+      if (this.state.items.length > 0 || this.state.deletedPaths?.includes(this.defaultDirectory))
+        return undefined;
       if (!this.referenceOnlyDefault) mkdirSync(this.defaultDirectory, { recursive: true });
       return {
         workspace:
@@ -547,11 +670,14 @@ export class Workspaces {
     });
     rpc.register("workspace/delete", async (args) => {
       const request = requestOf<{ workspaceId: string }>(args);
-      this.require(request.workspaceId);
-      this.state.items = this.state.items.filter(
-        (item) => item.workspaceId !== request.workspaceId,
-      );
-      this.save();
+      const workspace = this.require(request.workspaceId);
+      const state = {
+        ...this.state,
+        items: this.state.items.filter((item) => item.workspaceId !== request.workspaceId),
+        deletedPaths: [...(this.state.deletedPaths ?? []), workspace.path],
+      };
+      this.data.writeJson(FILE, state);
+      this.state = state;
       this.broadcast({ type: "remove", workspaceId: request.workspaceId });
       return { deleted: true };
     });

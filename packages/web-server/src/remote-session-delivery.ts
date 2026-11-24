@@ -22,7 +22,7 @@ const statusSchema = z.object({
   turnId: z.string().min(1).nullable(),
   epoch: z.string().min(1),
   supportsDelivery: z.literal(true).optional(),
-  readOnly: z.literal(true).optional(),
+  readOnly: z.boolean().optional(),
 });
 const textParts = z.array(z.object({ type: z.literal("text"), text: z.string() })).min(1);
 const promptInput = z.object({

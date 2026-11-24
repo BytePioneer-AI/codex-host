@@ -14,6 +14,8 @@ import {
   readHostExtensionBackend,
   readHostExtensionConfiguration,
   readHostExtensionSettings,
+  reportHostExtensionInstall,
+  resolveHostExtensionStatsUrl,
   rollbackHostExtension,
   uninstallHostExtension,
   updateHostExtensionConfiguration,
@@ -155,6 +157,8 @@ export class HostExtensionManager {
       } finally {
         this.#publish();
       }
+      if (source.type === "catalog")
+        void reportHostExtensionInstall(installed.id, resolveHostExtensionStatsUrl());
       return installed;
     });
   }
@@ -209,6 +213,8 @@ export class HostExtensionManager {
           throw error;
         }
         this.#publish();
+        if (source.type === "catalog")
+          void reportHostExtensionInstall(installed.id, resolveHostExtensionStatsUrl());
         return installed;
       } finally {
         await staged.dispose();

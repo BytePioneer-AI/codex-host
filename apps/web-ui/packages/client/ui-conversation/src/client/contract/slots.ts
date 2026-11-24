@@ -47,11 +47,42 @@ export interface ComposerImageAttachment {
   height?: number;
 }
 
-/** Browser-owned generic file whose bytes upload to the Host as soon as it is picked. */
-export interface ComposerFileAttachment {
-  kind: "file";
-  id: DraftAttachmentId;
-  file: File;
+/** Browser-owned generic file whose bytes upload to the Host as soon as it is picked, or a Host-stored file restored from a queued message. */
+export type ComposerFileAttachment =
+  | {
+      kind: "file";
+      id: DraftAttachmentId;
+      file: File;
+    }
+  | {
+      kind: "file";
+      id: DraftAttachmentId;
+      stored: FileAttachmentRef;
+    };
+
+/** One Host-staged attachment returned when a queued message is taken back into the composer. */
+export interface RestoredQueuedAttachment {
+  readonly kind: "image" | "file";
+  readonly receiptId: FileUploadReceiptId;
+  readonly file: FileAttachmentRef;
+}
+
+/** Text and re-staged Web attachments returned after removing a queued message for editing. */
+export interface RestoredQueuedMessage {
+  readonly text: string;
+  readonly attachments: readonly RestoredQueuedAttachment[];
+}
+
+declare module "@deepseek-ai/cordis" {
+  interface Context {
+    queueMessageEditing?: {
+      takeForEdit(
+        sessionId: string,
+        itemId: string,
+        revision: string,
+      ): Promise<RestoredQueuedMessage>;
+    };
+  }
 }
 
 /** Upload lifecycle of one picked image or file draft. */
@@ -492,6 +523,8 @@ export interface ComposerBarOwnerProps {
   /** Open the Workspace picker from the inert composer surface. */
   onRequestWorkspace?: () => void;
   placeholder?: string;
+  /** Optional seamless cap bar docked flush at the top of the composer card (Hero mode). */
+  topBar?: ReactNode;
   /** Optional content rendered above the composer surface. */
   accessory?: ReactNode;
 }
@@ -658,6 +691,10 @@ export interface EmptyWorkspaceOwnerProps {
   anchorRef?: RefObject<HTMLElement>;
   /** Currently selected Workspace, when available. */
   selectedId?: WorkspaceId | undefined;
+  /** Optional fallback display title while the workspace list is still hydrating. */
+  fallbackLabel?: string | undefined;
+  /** Called when the picker toggles its own project popover visibility. */
+  onOpenChange?: (open: boolean) => void;
   onPick: (workspaceId: WorkspaceId | null) => void;
   onClose: () => void;
 }

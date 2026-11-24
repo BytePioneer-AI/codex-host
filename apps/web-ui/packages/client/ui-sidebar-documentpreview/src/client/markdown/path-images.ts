@@ -16,6 +16,7 @@ export function markdownImageUrl(
   base: string,
   documentPath: string | undefined,
   destination: string,
+  sessionId?: string,
 ): string | undefined {
   const suffix = destination.search(/[?#]/u);
   let path: string;
@@ -31,6 +32,12 @@ export function markdownImageUrl(
   if (!isAbsoluteWorkspacePath(path)) {
     if (documentPath === undefined) return undefined;
     path = pathPartsOf(documentPath).directory + path;
+  }
+  if (sessionId?.startsWith("web-remote:")) {
+    const url = new URL("/api/remote-peer/file", base);
+    url.searchParams.set("sessionId", sessionId);
+    url.searchParams.set("path", path);
+    return url.toString();
   }
   return fileMediaUrl(base, path);
 }

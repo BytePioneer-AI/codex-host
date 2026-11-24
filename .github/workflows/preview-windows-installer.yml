@@ -1,0 +1,74 @@
+name: Preview Windows Installer
+
+on:
+  push:
+    branches:
+      - "feat/unified-client-entrypoints"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Windows installer target"
+        required: false
+        default: "windows-x64"
+        type: choice
+        options:
+          - "windows-x64"
+          - "windows-arm64"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Windows Preview (${{ github.event_name == 'workflow_dispatch' && inputs.target || 'windows-x64' }})
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: 1.97.1
+      TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'windows-x64' }}
+      RUST_TARGET: ${{ (github.event_name == 'workflow_dispatch' && inputs.target == 'windows-arm64') && 'aarch64-pc-windows-msvc' || 'x86_64-pc-windows-msvc' }}
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Setup npm
+        run: npm install --global npm@11.8.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        with:
+          toolchain: 1.97.1
+          targets: ${{ env.RUST_TARGET }}
+
+      - name: Setup Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript prerequisites
+        run: npm run build:typescript
+
+      - name: Build Windows preview installer
+        run: npm run release:package -- --target ${{ env.TARGET }}
+
+      - name: Upload preview installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codexhost-preview-${{ env.TARGET }}
+          path: build/release/*/${{ env.TARGET }}/codexhost-*-${{ env.TARGET }}.exe
+          if-no-files-found: error
+          retention-days: 7

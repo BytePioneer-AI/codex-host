@@ -6,7 +6,11 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { HostUsageRequest } from "@codexhost/harness-adapter";
 import { readAntigravityRequestMetadata } from "../src/native-request-timing.js";
-import { bytes, integer, writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
+import {
+  bytes,
+  integer,
+  writeNativeTimingDatabase,
+} from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
 
 let home: string;
 const request: HostUsageRequest = {

@@ -475,6 +475,7 @@ let _deepseek_ai_dsh_api_session_controller_session_list_parameter_0$schema$valu
 const _deepseek_ai_dsh_api_session_controller_session_list_parameter_0$schema = () => (_deepseek_ai_dsh_api_session_controller_session_list_parameter_0$schema$value ??= z.object({
   'sessionId': z.intersection(z.string(), z.unknown()).readonly().optional(),
   'cursor': z.string().readonly().optional(),
+  'workspaceId': z.string().readonly().optional(),
   'includeArchived': z.boolean().readonly().optional(),
 }))
 let _deepseek_ai_dsh_api_session_controller_session_list_result$schema$value
@@ -672,6 +673,7 @@ const _deepseek_ai_dsh_api_session_controller_session_modelCatalog_parameter_0$s
 })]))
 let _deepseek_ai_dsh_api_session_controller_session_openWorkspacePath_parameter_0$schema$value
 const _deepseek_ai_dsh_api_session_controller_session_openWorkspacePath_parameter_0$schema = () => (_deepseek_ai_dsh_api_session_controller_session_openWorkspacePath_parameter_0$schema$value ??= z.object({
+  'sessionId': z.intersection(z.string(), z.unknown()).readonly().optional(),
   'action': z.literal("reveal").readonly().optional(),
   'application': z.string().readonly().optional(),
   'path': z.string().readonly(),

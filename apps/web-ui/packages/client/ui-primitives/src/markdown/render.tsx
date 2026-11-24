@@ -195,6 +195,8 @@ export interface MarkdownRenderContext {
   readonly streaming: boolean;
   /** Localized fence copy-button labels. */
   readonly labels: MarkdownLabels;
+  /** Render single newlines inside phrasing text as `<br />` (chat-style soft breaks). */
+  readonly breaks?: boolean;
   /** Inside a blockquote's children: tables there always fill the quote's width. */
   readonly inBlockquote?: boolean;
   /** Inline-code file mentions; absent wherever no opener vocabulary exists. */
@@ -208,6 +210,8 @@ export interface MarkdownRenderContext {
   readonly pathImages: MarkdownPathImages | undefined;
   /** Inside an anchor's children: interactive mentions must not nest there. */
   readonly inLink?: boolean;
+  /** Image sits alone in its paragraph or in an image-only grid (uniform row height). */
+  readonly standaloneImage?: boolean;
   /** Reference targets visible to this pass. */
   readonly targets: ReferenceTargets;
   /** Footnote identifiers in first-reference order; a footnote's number is its 1-based index here. */
@@ -267,7 +271,16 @@ function renderBlockEntries(
   const entries: BlockEntry[] = [];
   for (const [index, block] of blocks.entries()) {
     if (block.type === "paragraph") {
-      entries.push({ paragraph: renderChildren(block.children, context) });
+      const images = paragraphImageNodes(block.children, context);
+      if (images !== undefined && images.length > 1) {
+        entries.push({ element: renderImageGrid(images, index, context) });
+      } else if (images !== undefined && images.length === 1) {
+        entries.push({
+          paragraph: renderChildren(images, { ...context, standaloneImage: true }),
+        });
+      } else {
+        entries.push({ paragraph: renderChildren(block.children, context) });
+      }
     } else {
       const element = renderNode(block, index, context);
       if (element !== null) entries.push({ element });
@@ -276,19 +289,113 @@ function renderBlockEntries(
   return entries;
 }
 
+function isBlockImageNode(
+  node: Md.RootContent | undefined,
+  context: MarkdownRenderContext,
+): boolean {
+  if (node === undefined || context.inLink === true) return false;
+  if (node.type === "image") return true;
+  return (
+    node.type === "imageReference" && context.targets.definitions.has(node.identifier.toUpperCase())
+  );
+}
+
+function paragraphImageNodes(
+  children: readonly Md.RootContent[],
+  context: MarkdownRenderContext,
+): Md.RootContent[] | undefined {
+  const images: Md.RootContent[] = [];
+  for (const child of children) {
+    if (isBlockImageNode(child, context)) {
+      images.push(child);
+    } else if (child.type === "break" || (child.type === "text" && /^\s*$/u.test(child.value))) {
+      continue;
+    } else {
+      return undefined;
+    }
+  }
+  return images.length > 0 ? images : undefined;
+}
+
+function renderImageGrid(
+  images: readonly Md.RootContent[],
+  key: Key,
+  context: MarkdownRenderContext,
+): ReactNode {
+  return (
+    <p key={key} className={css.imageGrid}>
+      {renderChildren(images, { ...context, standaloneImage: true })}
+    </p>
+  );
+}
+
+function renderTextNode(
+  value: string,
+  key: Key,
+  context: MarkdownRenderContext,
+  beforeBlockImage: boolean,
+  afterBlockImage: boolean,
+): ReactNode {
+  if (context.breaks !== true) {
+    return context.inLink ? value : <MarkdownTextLinks key={key} value={value} />;
+  }
+  let normalized = value;
+  if (afterBlockImage) normalized = normalized.replace(/^[ \t]*(?:\r?\n|\r)[ \t]*/u, "");
+  if (beforeBlockImage) normalized = normalized.replace(/[ \t]*(?:\r?\n|\r)[ \t]*$/u, "");
+  if (normalized === "") return null;
+  if (!/[\r\n]/u.test(normalized)) {
+    return context.inLink ? normalized : <MarkdownTextLinks key={key} value={normalized} />;
+  }
+  const lines = normalized.split(/\r?\n|\r/u);
+  return (
+    <Fragment key={key}>
+      {lines.map((line, lineIndex) => (
+        <Fragment key={lineIndex}>
+          {lineIndex > 0 && <br />}
+          {line === "" ? null : context.inLink ? line : <MarkdownTextLinks value={line} />}
+        </Fragment>
+      ))}
+    </Fragment>
+  );
+}
+
 function renderChildren(
   nodes: readonly Md.RootContent[],
   context: MarkdownRenderContext,
 ): ReactNode[] {
-  return nodes.map((node, index) => renderNode(node, index, context));
+  return nodes.map((node, index) => {
+    if (node.type === "text") {
+      return renderTextNode(
+        node.value,
+        index,
+        context,
+        isBlockImageNode(nodes[index + 1], context),
+        isBlockImageNode(nodes[index - 1], context),
+      );
+    }
+    if (
+      node.type === "break" &&
+      context.breaks === true &&
+      (isBlockImageNode(nodes[index + 1], context) || isBlockImageNode(nodes[index - 1], context))
+    ) {
+      return null;
+    }
+    return renderNode(node, index, context);
+  });
 }
 
 function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderContext): ReactNode {
   switch (node.type) {
     case "text":
-      return context.inLink ? node.value : <MarkdownTextLinks key={key} value={node.value} />;
-    case "paragraph":
+      return renderTextNode(node.value, key, context, false, false);
+    case "paragraph": {
+      const images = paragraphImageNodes(node.children, context);
+      if (images !== undefined && images.length > 1) return renderImageGrid(images, key, context);
+      if (images !== undefined && images.length === 1) {
+        return <p key={key}>{renderChildren(images, { ...context, standaloneImage: true })}</p>;
+      }
       return <p key={key}>{renderChildren(node.children, context)}</p>;
+    }
     case "heading":
       return createElement(`h${node.depth}`, { key }, ...renderChildren(node.children, context));
     case "blockquote":
@@ -698,6 +805,7 @@ function renderImage(
       pathImages={context.pathImages}
       streaming={context.streaming}
       inLink={context.inLink === true}
+      standalone={context.standaloneImage === true}
     />
   );
 }
@@ -708,12 +816,14 @@ function MarkdownImage({
   pathImages,
   streaming,
   inLink,
+  standalone,
 }: {
   destination: string;
   alt: string;
   pathImages: MarkdownPathImages | undefined;
   streaming: boolean;
   inLink: boolean;
+  standalone: boolean;
 }): ReactNode {
   const { fileImages } = useMarkdownDelegate();
   const [load] = useState(nextImageLoad);
@@ -731,6 +841,7 @@ function MarkdownImage({
       alt={alt}
       destination={destination}
       preview={inLink ? undefined : fileImages}
+      standalone={standalone}
     />
   );
 }
@@ -740,11 +851,13 @@ function LoadedMarkdownImage({
   alt,
   destination,
   preview,
+  standalone,
 }: {
   src: string;
   alt: string;
   destination: string;
   preview: ReturnType<typeof useMarkdownDelegate>["fileImages"];
+  standalone: boolean;
 }): ReactNode {
   const [failed, setFailed] = useState(false);
   const [open, setOpen] = useState(false);
@@ -776,7 +889,7 @@ function LoadedMarkdownImage({
     <>
       <button
         type="button"
-        className={css.imageButton}
+        className={clsx(css.imageButton, standalone && css.imageButtonStandalone)}
         title={preview.labels.open}
         aria-label={alt ? `${preview.labels.open}: ${alt}` : preview.labels.open}
         onClick={() => {

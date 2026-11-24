@@ -45,7 +45,11 @@ const value = key => args[args.indexOf(key) + 1];
 const remote = args.includes('--codexhost-remote');
 const data = remote ? process.env.HOME : value('--data');
 const log = text => fs.appendFileSync(path.join(data, 'events'), text + '\n');
-if (!remote && !args.includes('--stop')) fs.writeFileSync(path.join(data, 'update-environment.json'), JSON.stringify(Object.fromEntries(['CODEXHOST_LAUNCHER_PID', 'CODEXHOST_LAUNCHER_EXECUTABLE', 'CODEXHOST_RUNTIME_DESCRIPTOR_PATH', 'CODEXHOST_UPDATE_SERVICE', 'CODEXHOST_NPM_NODE_PATH'].map(key => [key, process.env[key]]))));
+if (!remote && !args.includes('--stop')) {
+  const updateEnvironment = Object.fromEntries(['CODEXHOST_LAUNCHER_PID', 'CODEXHOST_LAUNCHER_EXECUTABLE', 'CODEXHOST_RUNTIME_DESCRIPTOR_PATH', 'CODEXHOST_UPDATE_SERVICE', 'CODEXHOST_NPM_NODE_PATH', 'CODEXHOST_INSTALL_ROOT'].map(key => [key, process.env[key]]));
+  if (args.includes('--stock-codex')) updateEnvironment.stockCodex = value('--stock-codex');
+  fs.writeFileSync(path.join(data, 'update-environment.json'), JSON.stringify(updateEnvironment));
+}
 if (remote) {
   log('remote-stop');
   if (fs.existsSync(path.join(data, 'remote-fail'))) process.exit(1);
@@ -188,7 +192,7 @@ server.listen(0, '127.0.0.1', () => console.log(server.address().port));
         self.public_command_at(Path::new(env!("CARGO_BIN_EXE_codexhost")), action)
     }
 
-    fn public_command_at(&self, launcher: &Path, action: &str) -> Command {
+    fn launcher_command(&self, launcher: &Path) -> Command {
         let mut command = Command::new(launcher);
         command
             .env_clear()
@@ -203,10 +207,15 @@ server.listen(0, '127.0.0.1', () => console.log(server.address().port));
             .env("CODEXHOST_CONSOLE_PORT", &self.console_port)
             .env("CODEXHOST_CONSOLE", "0")
             .env("CODEXHOST_WEB_SERVICE", "0")
-            .env("SSH_CONNECTION", "fixture")
-            .arg(action);
+            .env("SSH_CONNECTION", "fixture");
         #[cfg(windows)]
         command.env("SystemRoot", env::var_os("SystemRoot").unwrap());
+        command
+    }
+
+    fn public_command_at(&self, launcher: &Path, action: &str) -> Command {
+        let mut command = self.launcher_command(launcher);
+        command.arg(action);
         if !["status", "host", "web-service", "autostart"].contains(&action) {
             command
                 .arg("--node")
@@ -259,6 +268,46 @@ impl Drop for Fixture {
         let _ = self.console.wait();
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn ssh_default_and_start_menu_launch_web_without_reading_desktop_preferences() {
+    let fixture = Fixture::new();
+    let bin = fixture.root.join("bin");
+    let app = fixture.root.join("app");
+    fs::create_dir(&bin).unwrap();
+    fs::create_dir(&app).unwrap();
+    let launcher = bin.join("codexhost");
+    fs::copy(env!("CARGO_BIN_EXE_codexhost"), &launcher).unwrap();
+    fs::copy(
+        fixture.root.join("host-runtime.mjs"),
+        app.join("host-runtime.mjs"),
+    )
+    .unwrap();
+    fs::copy(fixture.root.join("web.mjs"), app.join("web-server.mjs")).unwrap();
+    let prefs = fixture.root.join("launch-preferences-v1.json");
+    fs::write(&prefs, "fixture invalid preferences").unwrap();
+    for args in [&[][..], &["--start-menu"]] {
+        let output = fixture
+            .launcher_command(&launcher)
+            .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains("codexhost web: http://127.0.0.1:4501/?token=fixture-secret"));
+    }
+    assert_eq!(
+        fs::read_to_string(prefs).unwrap(),
+        "fixture invalid preferences"
+    );
+    assert_eq!(fixture.starts(), 1);
 }
 
 #[cfg(target_os = "macos")]
@@ -989,6 +1038,45 @@ fn linux_service_start_explains_missing_home() {
             "{service}: {stderr}"
         );
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn shared_host_supervisor_keeps_portable_desktop_discoverable() {
+    if windows_service::run_in_service_job() {
+        return;
+    }
+
+    let fixture = Fixture::new();
+    let desktop = fixture.root.join("Portable Codex");
+    let app = desktop.join("app");
+    let resources = app.join("resources");
+    let codex = resources.join("codex.exe");
+    fs::create_dir_all(&resources).unwrap();
+    for file in [
+        app.join("ChatGPT.exe"),
+        resources.join("app.asar"),
+        codex.clone(),
+    ] {
+        fs::write(file, []).unwrap();
+    }
+
+    let started = fixture
+        .command("host", "ensure")
+        .env("CODEXHOST_INSTALL_ROOT", &desktop)
+        .output()
+        .unwrap();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let environment = fixture.record("update-environment.json");
+    assert_eq!(
+        environment["stockCodex"],
+        serde_json::to_value(codex.canonicalize().unwrap()).unwrap()
+    );
+    assert!(environment["CODEXHOST_INSTALL_ROOT"].is_null());
 }
 
 #[cfg(unix)]

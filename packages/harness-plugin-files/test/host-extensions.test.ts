@@ -10,6 +10,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { makeZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import {
+  DEFAULT_HOST_EXTENSION_STATS_URL,
   discoverHostExtensions,
   fetchHostExtensionCatalog,
   HostExtensionInstallConflict,
@@ -24,6 +25,8 @@ import {
   readHostExtensionBackend,
   readHostExtensionConfiguration,
   readHostExtensionSettings,
+  reportHostExtensionInstall,
+  resolveHostExtensionStatsUrl,
   rollbackHostExtension,
   uninstallHostExtension,
   updateHostExtensionConfiguration,
@@ -484,4 +487,106 @@ it("races validated catalog mirrors, caches only successful results, and install
       expected: { id: "sample", sha256: "0".repeat(64) },
     }),
   ).rejects.toThrow("SHA-256 mismatch");
+});
+
+it("overlays live download counts from the stats worker onto catalog entries", async () => {
+  const catalog = {
+    schemaVersion: 2,
+    generatedAt: "2026-11-24T00:00:00.000Z",
+    extensions: [
+      {
+        id: "focus-pomodoro",
+        version: "1.3.0",
+        format: "codexhost",
+        targets: ["desktop", "web"],
+        apis: { page: 1 },
+        name: label,
+        description: label,
+        author: "codexhost",
+        repository: "https://github.com/BytePioneer-AI/focus-pomodoro",
+        downloadUrl:
+          "https://github.com/BytePioneer-AI/focus-pomodoro/releases/download/v1.3.0/focus-pomodoro.zip",
+        sha256: "a".repeat(64),
+      },
+      {
+        id: "sidebar-thread-tree",
+        version: "0.1.5",
+        format: "codexhost",
+        targets: ["desktop"],
+        apis: { desktop: 1 },
+        name: label,
+        description: label,
+        author: "sduhantao-maker",
+        repository: "https://github.com/sduhantao-maker/codexhost-sidebar-thread-tree",
+        downloads: 45,
+        downloadUrl:
+          "https://github.com/sduhantao-maker/codexhost-sidebar-thread-tree/releases/download/v0.1.5/sidebar-thread-tree.zip",
+        sha256: "b".repeat(64),
+      },
+    ],
+  };
+
+  let statsAvailable = true;
+  vi.stubEnv("CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL", "https://stats.example/counter/");
+  vi.stubGlobal("fetch", async (request: string) => {
+    if (request === HOST_EXTENSION_CATALOG_URL || request === HOST_EXTENSION_CATALOG_MIRROR_URL)
+      return Response.json(catalog);
+    if (request === "https://stats.example/counter/stats.json") {
+      if (!statsAvailable) return new Response(null, { status: 503 });
+      return Response.json({
+        generatedAt: "2026-11-24T02:53:49.535Z",
+        downloads: { "focus-pomodoro": 466, "sidebar-thread-tree": 578 },
+      });
+    }
+    throw new Error(`Unexpected URL ${request}`);
+  });
+
+  const live = await fetchHostExtensionCatalog({ forceRefresh: true });
+  expect(live.extensions.map(({ id, downloads }) => ({ id, downloads }))).toEqual([
+    { id: "focus-pomodoro", downloads: 466 },
+    { id: "sidebar-thread-tree", downloads: 578 },
+  ]);
+
+  statsAvailable = false;
+  const fallback = await fetchHostExtensionCatalog({ forceRefresh: true });
+  expect(fallback.extensions.map(({ id, downloads }) => ({ id, downloads }))).toEqual([
+    { id: "focus-pomodoro", downloads: undefined },
+    { id: "sidebar-thread-tree", downloads: 45 },
+  ]);
+});
+
+it("resolves extension stats URL overrides and reports catalog installs best-effort", async () => {
+  expect(resolveHostExtensionStatsUrl({})).toBe(DEFAULT_HOST_EXTENSION_STATS_URL);
+  expect(resolveHostExtensionStatsUrl({ CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "off" })).toBe(
+    undefined,
+  );
+  expect(resolveHostExtensionStatsUrl({ CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "" })).toBe(
+    undefined,
+  );
+  expect(
+    resolveHostExtensionStatsUrl({
+      CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL: "https://custom.example/catalog.json",
+    }),
+  ).toBe(undefined);
+  expect(
+    resolveHostExtensionStatsUrl({
+      CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "https://stats.example/counter/",
+    }),
+  ).toBe("https://stats.example/counter/");
+
+  const calls: Array<{ url: string; method: string | undefined }> = [];
+  vi.stubGlobal("fetch", async (url: URL, init?: RequestInit) => {
+    calls.push({ url: String(url), method: init?.method });
+    throw new Error("network unavailable");
+  });
+
+  await expect(
+    reportHostExtensionInstall("focus-pomodoro", "https://stats.example/counter/"),
+  ).resolves.toBeUndefined();
+  await reportHostExtensionInstall("../invalid", "https://stats.example/counter/");
+  await reportHostExtensionInstall("focus-pomodoro", undefined);
+
+  expect(calls).toEqual([
+    { url: "https://stats.example/counter/install/focus-pomodoro", method: "POST" },
+  ]);
 });

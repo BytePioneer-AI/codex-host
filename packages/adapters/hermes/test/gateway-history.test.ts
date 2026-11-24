@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { HermesGatewayHistory, projectGatewayHistory } from "../src/gateway-history.js";
+import { readHermesSessions } from "../src/gateway-session-list.js";
 
 const run = promisify(execFile);
 const rows = [
@@ -87,6 +88,88 @@ describe("Hermes durable gateway history", () => {
 // by default. Point the environment variable at an installed Hermes interpreter.
 const python = process.env.CODEXHOST_HERMES_NATIVE_TEST_PYTHON;
 describe.skipIf(!python)("Hermes installed SessionDB integration", () => {
+  it("reads finalized native titles but not derived placeholders", async () => {
+    if (!python) throw new Error("Missing Hermes native test interpreter");
+    const home = await mkdtemp(path.join(os.tmpdir(), "hermes-title-test-"));
+    const environment = { ...process.env, HERMES_HOME: home };
+    const history = new HermesGatewayHistory({
+      python,
+      cwd: home,
+      environment,
+      nativeSessionId: "s",
+    });
+    const writeTitle = async (source: "derived" | "llm") => {
+      await run(
+        python,
+        [
+          "-I",
+          "-c",
+          `from hermes_state import SessionDB
+with SessionDB() as db:
+    db.create_session(session_id='s', source='local')
+    assert db.set_auto_title('s', 'Trip budget', source='${source}')`,
+        ],
+        { cwd: home, env: environment },
+      );
+    };
+    try {
+      await writeTitle("derived");
+      await expect(history.readTitle()).resolves.toBeNull();
+      await writeTitle("llm");
+      await expect(history.readTitle()).resolves.toBe("Trip budget");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("opens, lists and derives sessions using the installed storage interface", async () => {
+    if (!python) throw new Error("Missing Hermes native test interpreter");
+    const home = await mkdtemp(path.join(os.tmpdir(), "hermes-storage-test-"));
+    const environment = { ...process.env, HERMES_HOME: home };
+    const options = { python, cwd: home, environment };
+    const listOptions = { runtime: python, cwd: home, environment };
+    const history = new HermesGatewayHistory({ ...options, nativeSessionId: "source" });
+    try {
+      expect(await readHermesSessions(listOptions)).toEqual([]);
+      await history.ensureCreated({ cwd: home });
+      await run(
+        python,
+        [
+          "-I",
+          "-c",
+          `from hermes_state import SessionDB
+db = SessionDB()
+for role, text in [('user', 'first'), ('assistant', 'answer'), ('user', 'second'), ('assistant', 'last')]:
+    db.append_message('source', role, content=text)
+db.close()`,
+        ],
+        { cwd: home, env: environment },
+      );
+      expect(await readHermesSessions({ ...listOptions, nativeSessionId: "source" })).toEqual([
+        expect.objectContaining({ id: "source", cwd: home }),
+      ]);
+      const initial = await history.readSnapshot();
+      expect(initial.turns).toHaveLength(2);
+      const checkpoint = initial.turns[0]?.checkpoint;
+      if (!checkpoint) throw new Error("Missing native checkpoint");
+      const fork = await history.derive({ checkpoint });
+      const rollback = await history.derive({ rollbackLastTurn: true });
+      for (const ref of [fork, rollback]) {
+        const child = new HermesGatewayHistory({
+          ...options,
+          nativeSessionId: ref.nativeSessionId,
+        });
+        const snapshot = await child.readSnapshot();
+        expect(snapshot.turns.map((turn) => turn.input)).toEqual([
+          [{ type: "text", text: "first" }],
+        ]);
+        expect(await history.discardDerived(ref)).toBe(true);
+      }
+      expect(await history.readSnapshot()).toEqual(initial);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  }, 60_000);
   it("creates, reads, forks and rolls back complete tool history without changing its source", async () => {
     if (!python) throw new Error("Missing Hermes native test interpreter");
     const home = await mkdtemp(path.join(os.tmpdir(), "hermes-history-test-"));

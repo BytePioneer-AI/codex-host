@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { filterAmbientNodeWarnings, sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
 
 import {
+  deepSeekEnvironment,
   deepSeekProcessInvocation,
   killDeepSeekProcessTree,
   resolveDeepSeekCommand,
@@ -547,7 +548,7 @@ export async function probeDeepSeekExecutableGeneration(
   let child: ChildProcess;
   try {
     child = dependencies.spawn(invocation.command, invocation.arguments, {
-      env: environment,
+      env: deepSeekEnvironment(command.command, environment),
       detached: process.platform !== "win32",
       stdio: "pipe",
       windowsHide: true,

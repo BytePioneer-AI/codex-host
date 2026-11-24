@@ -52,6 +52,7 @@ export async function readNativeWorkspaceSnapshot(
     Array.isArray(assigned)
   )
     throw new Error("Invalid native project metadata");
+  const sectionProjects = desktopSectionProjects(state);
   return clientWorkspaceSnapshotSchema.parse({
     projects: desktopProjectDefinitions(state, `local:${path.resolve(codexHome)}`),
     assignments: Object.fromEntries(
@@ -63,7 +64,47 @@ export async function readNativeWorkspaceSnapshot(
     ),
     projectless: state["projectless-thread-ids"] ?? [],
     pinned: [],
+    ...(Object.keys(sectionProjects).length > 0 ? { sectionProjects } : {}),
   });
+}
+
+const PROJECT_ITEM_PREFIX = "codex:project:";
+
+/**
+ * Projects in each Desktop custom section, keyed by the section's official ID.
+ *
+ * The official app-server stores section definitions and Thread members only. Desktop keeps
+ * project members in the signed-in owner's renderer atom `sidebar-custom-sections-v3`, one
+ * entry per account, and links each logical section to its official section through
+ * `hostSectionIds.local`. That atom is private and versioned, so a missing or reshaped atom
+ * yields no project sections instead of failing the project snapshot.
+ */
+function desktopSectionProjects(state: Record<string, unknown>): Record<string, string[]> {
+  const record = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  const owner = state["electron-renderer-content-owner"];
+  const atoms = typeof owner === "string" ? state[`electron-owner-atoms:${owner}`] : undefined;
+  const accounts = record(atoms) ? atoms["sidebar-custom-sections-v3"] : undefined;
+  const sections: Record<string, string[]> = {};
+  if (!record(accounts)) return sections;
+  for (const account of Object.values(accounts)) {
+    if (!record(account) || !Array.isArray(account.sections)) continue;
+    for (const section of account.sections) {
+      if (!record(section) || !record(section.hostSectionIds) || !Array.isArray(section.itemKeys))
+        continue;
+      const id = section.hostSectionIds.local;
+      if (typeof id !== "string" || id === "" || Object.hasOwn(sections, id)) continue;
+      const projects = section.itemKeys.flatMap((key) =>
+        typeof key === "string" &&
+        key.startsWith(PROJECT_ITEM_PREFIX) &&
+        key.length > PROJECT_ITEM_PREFIX.length
+          ? [key.slice(PROJECT_ITEM_PREFIX.length)]
+          : [],
+      );
+      if (projects.length > 0) sections[id] = projects;
+    }
+  }
+  return sections;
 }
 
 /** Combine requested native GUI facts with this owner's canonical no-project records. */

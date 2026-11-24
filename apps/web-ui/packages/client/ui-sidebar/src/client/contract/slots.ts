@@ -90,8 +90,13 @@ export interface SidebarPanelIconOwnerProps {
 export interface SidebarPrimaryActionOwnerProps {
   /** Requested icon size; the shell owns wide/rail presentation. */
   size: number;
-  /** Render a navigation action without changing the active main panel. */
-  renderAction: (action: { label: string; icon: ReactNode; onClick: () => void }) => ReactNode;
+  /** Render a navigation action beside the global panel entries. */
+  renderAction: (action: {
+    label: string;
+    icon: ReactNode;
+    onClick: () => void;
+    active?: boolean;
+  }) => ReactNode;
 }
 
 /** Serializable metadata for one active global panel list registration. */

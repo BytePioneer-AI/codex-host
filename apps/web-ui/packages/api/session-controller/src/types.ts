@@ -296,6 +296,8 @@ export interface SessionListRequest {
   /** Resolve one direct-link identity without enumerating its historical page. */
   readonly sessionId?: SessionId;
   readonly cursor?: string;
+  /** With a cursor: read on until the page reaches a Session of this Workspace. */
+  readonly workspaceId?: WorkspaceId;
   /** Include archived summaries in this request; defaults to false. */
   readonly includeArchived?: boolean;
 }
@@ -426,6 +428,8 @@ export interface SessionCancelValue {
 
 /** Request to open one path prepared by a Session-aware caller on the Host desktop. */
 export interface SessionOpenWorkspacePathRequest {
+  /** Session owning the requested path; remote sessions are rejected by the Hub. */
+  readonly sessionId?: SessionId;
   /** File-manager navigation when requested; omission uses the default application. */
   readonly action?: "reveal";
   /** Registered application identifier; ignored for reveal. Omission preserves the operating system default. */

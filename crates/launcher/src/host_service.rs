@@ -200,6 +200,11 @@ fn ensure(arguments: &[String], options: Options) -> Result<(), Box<dyn Error>> 
         .arg("--ready-file")
         .arg(&ready);
     clean(&mut command);
+    // The supervisor starts the Updater, which must rediscover the portable Desktop.
+    let desktop_root_env = codexhost_platform::CUSTOM_INSTALL_ROOT_ENV;
+    if let Some(root) = env::var_os(desktop_root_env).filter(|root| Path::new(root).is_absolute()) {
+        command.env(desktop_root_env, root);
+    }
     configure_detached_service_command(&mut command)?;
     let mut supervisor = command.spawn()?;
     let started = Instant::now();

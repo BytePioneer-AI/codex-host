@@ -182,9 +182,13 @@ export function parseSessionCookie(headers: Headers, authority: string): string 
   const maxAge = Number(attributes.get("max-age"));
   const expires = String(attributes.get("expires"));
   const now = Date.now();
+  // DSH distributions patched by dsh-purge hash the host without its port into
+  // the browser cookie name. The payload still binds the exact authority, so
+  // accepting the port-less spelling keeps the same security properties.
+  const portlessAuthority = authority.replace(/:[0-9]+$/u, "");
   if (
     !COOKIE_NAME.test(name) ||
-    name !== cookieName(authority) ||
+    (name !== cookieName(authority) && name !== cookieName(portlessAuthority)) ||
     attributes.size !== expectedAttributes.length ||
     expectedAttributes.some((attribute) => !attributes.has(attribute)) ||
     attributes.get("path") !== "/" ||

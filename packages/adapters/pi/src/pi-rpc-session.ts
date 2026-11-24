@@ -252,6 +252,7 @@ const READ_ONLY_COMMANDS = new Set([
 // Bound on remembered expired ids, so a Pi that never answers cannot grow the set without limit.
 // Past it the oldest id is forgotten, and its late answer faults the Session as an unknown id.
 const MAX_EXPIRED_IDS = 64;
+const CANCELLATION_RECOVERY_TIMEOUT_MS = 60_000;
 
 interface PendingCommand {
   command: string;
@@ -264,6 +265,12 @@ interface ManualCompaction {
   onEvent(event: PiTurnEvent): void;
   resolve(result: PiCompactResult): void;
   reject(error: Error): void;
+}
+
+interface CancellationRecovery {
+  timer: NodeJS.Timeout;
+  probe: Promise<void> | null;
+  nativeStartGeneration: number;
 }
 
 interface ActiveTurn {
@@ -292,7 +299,7 @@ interface ActiveTurn {
   tools: Map<string, string>;
   interactions: Map<string, { request: PiInteractionRequest; timeout: NodeJS.Timeout | null }>;
   settlement: "pending" | "confirming" | "confirmed";
-  cancellation: "none" | "requesting" | "accepted";
+  cancellation: "none" | "requesting" | "accepted" | "abandoned";
   cancellationTimeout: NodeJS.Timeout | null;
   abortPromise: Promise<void> | null;
 }
@@ -611,11 +618,12 @@ export class PiRpcSession {
   // Pieces of the unterminated frame; joined once at its newline so a large frame (a long
   // Session's get_entries) costs linear rather than quadratic copying on the Host event loop.
   #buffer: Buffer<ArrayBufferLike>[] = [];
-  // Ids whose read-only command timed out; Pi may still answer them late.
+  // Ids whose read-only command timed out or whose Turn was abandoned.
   #expired = new Set<string>();
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
   #closePromise: Promise<void> | null = null;
+  #cancellationRecovery: CancellationRecovery | null = null;
   #compactionActive = false;
   #compactionTurn: ActiveTurn | null = null;
   #failed = false;
@@ -679,10 +687,19 @@ export class PiRpcSession {
   get isBusy(): boolean {
     return (
       this.#activeTurn !== null ||
+      this.#cancellationRecovery !== null ||
       this.#manualCompaction !== null ||
       this.#compactionActive ||
-      this.#deferredRunFrames.length > 0
+      this.#deferredRunFrames.length > 0 ||
+      this.#hasPendingCommand(["steer"])
     );
+  }
+
+  #hasPendingCommand(commands: readonly string[]): boolean {
+    for (const pending of this.#pending.values()) {
+      if (commands.includes(pending.command)) return true;
+    }
+    return false;
   }
 
   setSubagentStatusHandler(handler: (runs: PiSubagentNode[]) => void): void {
@@ -895,7 +912,13 @@ export class PiRpcSession {
     if (!this.#child || !this.#state || this.#closed || this.#failed) {
       throw new Error("Pi RPC Session is unavailable");
     }
-    if (this.#activeTurn || this.#manualCompaction || this.#compactionActive) {
+    if (
+      this.#activeTurn ||
+      this.#cancellationRecovery ||
+      this.#manualCompaction ||
+      this.#compactionActive ||
+      this.#hasPendingCommand(["steer"])
+    ) {
       throw new Error("Pi RPC Session already has an active operation");
     }
 
@@ -1139,11 +1162,14 @@ export class PiRpcSession {
         abortPromise: null,
       };
     });
+    const active = this.#activeTurn;
     try {
       this.#drainProgress(onEvent);
       await this.#send("prompt", { message: text });
     } catch (error) {
-      this.#rejectActiveTurn(error instanceof Error ? error : new Error(message(error)));
+      if (this.#activeTurn === active) {
+        this.#rejectActiveTurn(error instanceof Error ? error : new Error(message(error)));
+      }
     }
     return settled;
   }
@@ -1213,13 +1239,15 @@ export class PiRpcSession {
         this.#finishSettledTurn(active);
       })
       .catch((error: unknown) => {
-        if (this.#activeTurn !== active) throw error;
+        if (this.#activeTurn !== active) {
+          if (active.cancellation === "abandoned") return;
+          throw error;
+        }
         const fault =
           error instanceof PiRpcFaultError
             ? error
             : new PiRpcFaultError("protocolError", `Pi RPC Abort failed: ${message(error)}`);
         this.#terminateFailedCancellation(active, fault);
-        throw fault;
       });
     active.abortPromise = aborting;
     return aborting;
@@ -1229,11 +1257,102 @@ export class PiRpcSession {
     if (this.#activeTurn !== active) return;
     if (active.cancellationTimeout) clearTimeout(active.cancellationTimeout);
     active.cancellationTimeout = null;
-    this.#fail(fault);
-    void this.close().catch(() => undefined);
+    // Pi reports idle while an input hook is still preparing an unacknowledged Prompt or Steer.
+    // An Abort acknowledgement can therefore precede that input enqueuing or starting a native run.
+    if (this.#hasPendingCommand(["prompt", "steer"])) {
+      void this.#faultAfterProcessCleanup(fault, "Pi RPC unacknowledged input cleanup failed");
+      return;
+    }
+    active.cancellation = "abandoned";
+    const recovery: CancellationRecovery = {
+      probe: null,
+      nativeStartGeneration: 0,
+      timer: setTimeout(() => {
+        void this.#expireCancellationRecovery(recovery, fault);
+      }, CANCELLATION_RECOVERY_TIMEOUT_MS).unref(),
+    };
+    this.#cancellationRecovery = recovery;
+    this.#activeTurn = null;
+    this.#deferredRunFrames = [];
+    this.#deferredRunBytes = 0;
+    for (const waiter of this.#runWaiters) waiter.reject(fault);
+    for (const [id, pending] of this.#pending) {
+      if (
+        pending.command !== "abort" &&
+        pending.command !== "prompt" &&
+        pending.command !== "steer"
+      ) {
+        continue;
+      }
+      if (pending.timeout) clearTimeout(pending.timeout);
+      this.#pending.delete(id);
+      this.#rememberExpiredCommand(id);
+      pending.reject(fault);
+    }
+    if (this.#compactionActive) {
+      this.#compactionActive = false;
+      this.#compactionTurn = null;
+      active.onEvent({ type: "compaction.completed", outcome: "cancelled" });
+    }
+    this.#closeInteractions(active, "cancelled");
+    if (active.origin === "autonomous") {
+      this.#emitAutonomousTurn(active, {
+        status: "cancelled",
+        text: active.text,
+        reason: fault.message,
+      });
+    } else {
+      active.resolve({ text: active.text, cancelled: true });
+    }
+    void this.#probeCancellationRecovery(recovery);
+  }
+
+  #probeCancellationRecovery(recovery: CancellationRecovery): Promise<void> {
+    const generation = recovery.nativeStartGeneration;
+    recovery.probe ??= this.#send("get_state", {}, undefined, this.#options.closeTimeoutMs)
+      .then((response) => {
+        const state = sessionStateData(response);
+        if (
+          this.#cancellationRecovery === recovery &&
+          recovery.nativeStartGeneration === generation &&
+          state.isStreaming === false &&
+          state.isCompacting === false
+        ) {
+          this.#clearCancellationRecovery();
+        }
+      })
+      .catch(() => {
+        // A failed probe leaves admission closed until another probe or the recovery deadline.
+      })
+      .finally(() => {
+        recovery.probe = null;
+      });
+    return recovery.probe;
+  }
+
+  async #expireCancellationRecovery(
+    recovery: CancellationRecovery,
+    cancellationFault: PiRpcFaultError,
+  ): Promise<void> {
+    await recovery.probe;
+    if (this.#cancellationRecovery !== recovery) return;
+    await this.#probeCancellationRecovery(recovery);
+    if (this.#cancellationRecovery !== recovery) return;
+    const fault = new PiRpcFaultError(
+      "protocolError",
+      `Pi RPC Session did not return to confirmed idle after an unconfirmed cancellation: ${cancellationFault.message}`,
+    );
+    await this.#faultAfterProcessCleanup(fault, "Pi RPC cancellation recovery cleanup failed");
+  }
+
+  #clearCancellationRecovery(): void {
+    if (!this.#cancellationRecovery) return;
+    clearTimeout(this.#cancellationRecovery.timer);
+    this.#cancellationRecovery = null;
   }
 
   close(): Promise<void> {
+    this.#clearCancellationRecovery();
     this.#pendingProgress = [];
     this.#omittedProgress = 0;
     this.#seenNoticeFrames.clear();
@@ -1314,6 +1433,24 @@ export class PiRpcSession {
       return;
     }
     if (this.#subagents.handle(value)) return;
+    const recovery = this.#cancellationRecovery;
+    if (recovery) {
+      if (this.#handleGotgenesWidget(value)) return;
+      if (this.#handleProgress(value)) return;
+      this.#observeUsage(value);
+      if (value.type === "agent_start" || value.type === "compaction_start") {
+        recovery.nativeStartGeneration += 1;
+      }
+      if (value.type === "agent_settled" || value.type === "compaction_end") {
+        // An in-flight probe may describe the state before this terminal frame.
+        void Promise.resolve(recovery.probe).then(() => {
+          if (this.#cancellationRecovery === recovery) {
+            return this.#probeCancellationRecovery(recovery);
+          }
+        });
+      }
+      return;
+    }
     const settling = this.#activeTurn;
     if (settling && settling.settlement !== "pending" && generation > settling.runGeneration) {
       this.#deferredRunBytes += Buffer.byteLength(JSON.stringify(value));
@@ -1336,18 +1473,7 @@ export class PiRpcSession {
         this.#startAutonomousTurn(undefined, generation);
       return;
     }
-    if (
-      value.type === "extension_ui_request" &&
-      value.method === "setWidget" &&
-      value.widgetKey === GOTGENES_WIDGET
-    ) {
-      const records = parseGotgenesWidget(value);
-      if (records) {
-        this.#gotgenesLatest = records;
-        this.#gotgenesHandler?.(records, this.#activeTurn?.origin ?? "idle");
-      }
-      return;
-    }
+    if (this.#handleGotgenesWidget(value)) return;
     if (this.#handleProgress(value)) return;
     this.#observeUsage(value);
     if (value.type === "compaction_start") {
@@ -1549,6 +1675,22 @@ export class PiRpcSession {
     this.#autonomousLifecycleHandler?.({ type: "started", runId });
     this.#drainProgress(active.onEvent);
     return active;
+  }
+
+  #handleGotgenesWidget(value: Record<string, unknown>): boolean {
+    if (
+      value.type !== "extension_ui_request" ||
+      value.method !== "setWidget" ||
+      value.widgetKey !== GOTGENES_WIDGET
+    ) {
+      return false;
+    }
+    const records = parseGotgenesWidget(value);
+    if (records) {
+      this.#gotgenesLatest = records;
+      this.#gotgenesHandler?.(records, this.#activeTurn?.origin ?? "idle");
+    }
+    return true;
   }
 
   #handleProgress(value: Record<string, unknown>): boolean {
@@ -2155,6 +2297,7 @@ export class PiRpcSession {
     type: string,
     payload: Record<string, unknown>,
     onResponse?: () => void,
+    timeoutMs = this.#options.commandTimeoutMs,
   ): Promise<Record<string, unknown>> {
     const child = this.#child;
     if (!child?.stdin.writable || this.#closed || this.#failed) {
@@ -2172,7 +2315,7 @@ export class PiRpcSession {
         timeout: null,
       };
       this.#pending.set(id, pending);
-      this.#armCommandTimeout(id, pending);
+      this.#armCommandTimeout(id, pending, timeoutMs);
       const frame = Buffer.from(`${JSON.stringify({ id, type, ...payload })}\n`, "utf8");
       child.stdin.write(frame, (error) => {
         if (error) {
@@ -2184,7 +2327,11 @@ export class PiRpcSession {
     });
   }
 
-  #armCommandTimeout(id: string, pending: PendingCommand): void {
+  #armCommandTimeout(
+    id: string,
+    pending: PendingCommand,
+    timeoutMs = this.#options.commandTimeoutMs,
+  ): void {
     if (
       pending.timeout ||
       this.#pending.get(id) !== pending ||
@@ -2196,26 +2343,33 @@ export class PiRpcSession {
       if (this.#pending.get(id) !== pending) return;
       pending.timeout = null;
       const error = new Error(`Pi RPC '${pending.command}' command timed out`);
-      if (pending.command !== "prompt") {
+      if (pending.command !== "prompt" && pending.command !== "steer") {
         this.#pending.delete(id);
-        // The caller sees the timeout. A late answer to a read-only query is dropped; one to a
-        // state-changing command still faults the Session, since Pi may have applied a change
-        // the Host state never confirmed.
-        if (READ_ONLY_COMMANDS.has(pending.command)) {
-          this.#expired.add(id);
-          if (this.#expired.size > MAX_EXPIRED_IDS) {
-            this.#expired.delete(this.#expired.values().next().value as string);
-          }
+        // A timed-out Abort also enters recovery, where native idle is proved separately.
+        if (READ_ONLY_COMMANDS.has(pending.command) || pending.command === "abort") {
+          this.#rememberExpiredCommand(id);
         }
         pending.reject(error);
         return;
       }
       const fault = new PiRpcFaultError("protocolError", error.message);
-      void this.#terminateTimedOutPrompt(fault);
-    }, this.#options.commandTimeoutMs);
+      void this.#faultAfterProcessCleanup(
+        fault,
+        pending.command === "steer"
+          ? "Pi RPC timed-out Steer cleanup failed"
+          : "Pi RPC timed-out Prompt cleanup failed",
+      );
+    }, timeoutMs);
   }
 
-  async #terminateTimedOutPrompt(fault: PiRpcFaultError): Promise<void> {
+  #rememberExpiredCommand(id: string): void {
+    this.#expired.add(id);
+    if (this.#expired.size > MAX_EXPIRED_IDS) {
+      this.#expired.delete(this.#expired.values().next().value as string);
+    }
+  }
+
+  async #faultAfterProcessCleanup(fault: PiRpcFaultError, context: string): Promise<void> {
     if (this.#closed || this.#failed) return;
     this.#failed = true;
     this.#closed = true;
@@ -2227,10 +2381,7 @@ export class PiRpcSession {
     try {
       await this.close();
     } catch (error) {
-      finalFault = new PiRpcFaultError(
-        "processExited",
-        `Pi RPC timed-out Prompt cleanup failed: ${message(error)}`,
-      );
+      finalFault = new PiRpcFaultError("processExited", `${context}: ${message(error)}`);
     }
     this.#rejectAll(finalFault);
     this.#options.onFault?.(finalFault);
@@ -2283,6 +2434,7 @@ export class PiRpcSession {
   #fail(error: PiRpcFaultError): void {
     if (this.#closed || this.#failed) return;
     this.#failed = true;
+    this.#clearCancellationRecovery();
     this.#rejectAll(error);
     this.#options.onFault?.(error);
   }

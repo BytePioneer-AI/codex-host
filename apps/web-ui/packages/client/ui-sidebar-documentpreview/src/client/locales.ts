@@ -31,6 +31,13 @@ export const zh = {
   "error.tooLarge": "单页内容超过 {limit} 上限，无法读取",
   "error.notText": "该格式文件暂时无法预览",
   "error.notRegularFile": "该路径不是普通文件，没有可显示的内容",
+  "error.outsideWorkspace": "该文件位于工作区之外，无法读取",
+  "error.remoteUpgradeRequired": "远程主机版本过旧，不支持工作区文件预览，请升级对端 codexhost",
+  "error.remoteOfficeUnsupported": "远程主机版本过旧或未启用 Office 预览，请升级对端 codexhost",
+  "error.remoteDraftUnsubmitted": "请先发送第一条消息创建远程会话后再预览工作区文件",
+  "error.remoteUnsupported": "当前远程主机暂不支持工作区文件预览",
+  "error.remoteOffline": "远程主机当前离线或已禁用，请重新连接后重试",
+  "error.remoteTimeout": "远程主机读取超时，请重试",
   "error.unavailable": "读取失败：{message}",
   retry: "重试",
 } satisfies Record<string, string>;
@@ -63,6 +70,16 @@ export const en = {
   "error.tooLarge": "This page exceeds the {limit} limit and cannot be read.",
   "error.notText": "Preview is not available for this file type yet.",
   "error.notRegularFile": "Not a regular file, nothing to display.",
+  "error.outsideWorkspace": "This file is outside the workspace and cannot be read.",
+  "error.remoteUpgradeRequired":
+    "The remote host is running an older version that does not support workspace file preview. Upgrade codexhost on the remote host.",
+  "error.remoteOfficeUnsupported":
+    "The remote host does not support Office document preview. Upgrade codexhost on the remote host.",
+  "error.remoteDraftUnsubmitted":
+    "Send the first message to create the remote thread before previewing workspace files.",
+  "error.remoteUnsupported": "Workspace file preview is not supported for this remote host.",
+  "error.remoteOffline": "The remote host is offline or disabled. Reconnect and try again.",
+  "error.remoteTimeout": "The remote host timed out while reading this file. Try again.",
   "error.unavailable": "Read failed: {message}",
   retry: "Retry",
 } satisfies Record<SidebarDocumentPreviewKey, string>;

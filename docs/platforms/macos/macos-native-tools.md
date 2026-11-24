@@ -31,26 +31,31 @@ The Desktop's peer authorization remains enabled and rejects untrusted runtimes.
 The recovery console starts before Desktop discovery and uses the explicit Node
 override, installer Node, or npm Node so it can report an incomplete installation.
 
-Native browser IPC also requires the connecting process to descend from the
-current Desktop process. The macOS Desktop frontend therefore starts the
-Desktop-provided first-party browser `node_repl` MCP servers in its own process
-tree. It reads the effective native and plugin server definitions through the
-official CLI's `mcp list --json`. Native stdio command overrides connect through
-a Host transport client to standard Streamable HTTP MCP on an authenticated
-loopback listener. Each MCP session owns a separate stdio process beneath a
-signed Desktop Node tool host. This keeps the peer and its two checked ancestors
-on the selected signed runtime. Requests, metadata, notifications, elicitation,
-cancellation and responses pass through the MCP SDK transports. The native
-configuration supplies tool approvals, tool selection, output limits and timeouts.
+Native browser and app-tools IPC also requires the connecting process to descend
+from the current Desktop process. The macOS Desktop frontend therefore starts the
+Desktop-provided first-party browser `node_repl` MCP servers and the bundled
+`codex-app-tools` (`codex_app`) MCP server in its own process tree. It reads the
+effective native and plugin server definitions through the official CLI's
+`mcp list --json`. Native stdio command overrides connect through a Host
+transport client to standard Streamable HTTP MCP on an authenticated loopback
+listener. Each MCP session owns a separate stdio process beneath a signed Desktop
+Node tool host. This keeps the peer and its two checked ancestors on the selected
+signed runtime. Requests, metadata, notifications, elicitation, cancellation and
+responses pass through the MCP SDK transports. The native configuration supplies
+tool approvals, tool selection, output limits and timeouts, while preserving the
+effective enabled state when a plugin manifest defaults `enabled` to `false`.
 Authenticated MCP POST bodies are limited to 16 MiB before parsing. The stdio
 entry accepts the same payload budget with room for its line terminator.
 The limit applies to each request across fragmented or combined stdio reads.
 
 The listener accepts profiles received through Desktop's stdin and validates
-the first-party executable against the selected runtime's `node_repl`. Profiles
-use a short-lived capability token per profile and separate MCP session IDs. Transport overrides travel in authenticated Desktop
-context and are applied when launching the backend. Native startup records keep
-the original arguments. Desktop frontend shutdown closes the listener and its tool processes.
+first-party executables against either the selected runtime's `node_repl` (with
+browser services) or the installed `openai-bundled/codex-app-tools/<version>`
+launcher and `server.mjs` entrypoint (when `CODEX_APP_TOOLS_PIPE_PATH` is
+present). Profiles use a short-lived capability token per profile and separate
+MCP session IDs. Transport overrides travel in authenticated Desktop context and
+are applied when launching the backend. Native startup records keep the original
+arguments. Desktop frontend shutdown closes the listener and its tool processes.
 An MCP session also ends on its client's DELETE, or after 30 seconds with no
 open stream or request, since a killed client cannot send DELETE; a live client
 holds its standalone SSE stream open. Browser MCP JavaScript state follows
@@ -65,12 +70,14 @@ already-running shared Host, so it alone does not guarantee native app-tool
 compatibility when Web started the Host first. See [standalone Web](../../product/standalone-web.md)
 for shared-Host startup and explicit restart behavior.
 
-Stock Browser sandbox and auxiliary app-server calls replace the Shim process
-with the validated official CLI. Keeping an ad-hoc-signed Shim as the signed
-helper's parent breaks Desktop's native peer ancestry checks. This applies to
-validated Desktop helpers and the CLI-only discovery path without Host runtime
-configuration. The managed main app-server and remote listeners use supervised
-Host routing. The official CLI still owns sandboxing and approvals.
+Stock Desktop `exec-server`, browser `sandbox`, and auxiliary `app-server` calls
+replace the Shim process with the validated official CLI. Keeping an ad-hoc-signed
+Shim as the signed helper's parent breaks Desktop's native peer ancestry and
+code-signing checks (for example when `exec-server` connects to `codex-app-tools`).
+This applies to Desktop-owned `exec-server` launches, validated Desktop helpers,
+and the CLI-only discovery path without Host runtime configuration. The managed
+main app-server and remote listeners use supervised Host routing. The official
+CLI still owns sandboxing and approvals.
 
 Three independent macOS helper paths need different handling.
 

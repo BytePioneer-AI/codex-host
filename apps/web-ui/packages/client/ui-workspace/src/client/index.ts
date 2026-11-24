@@ -357,11 +357,10 @@ export function apply(ctx: Context): void {
   const archiveInjected = (): ArchiveSessionInjected => ({
     hooks: { archived: archivedSet },
     archiveSession: (sessionId) => {
-      const preference = workspacePreferences.getSnapshot().value?.archiveChildren ?? "ask";
       const list = sessions.list.getSnapshot();
       const children = archiveCandidates(list, sessionId, archivedSet.getSnapshot());
-      if (!children.length || preference !== "ask") {
-        requestArchive(sessionId, preference === "always" ? children.map(({ id }) => id) : []);
+      if (!children.length) {
+        requestArchive(sessionId, []);
         return;
       }
       archiveChildrenRequest.set({
@@ -376,13 +375,7 @@ export function apply(ctx: Context): void {
   const chooseArchiveScope = (): ArchiveChildrenInjected => ({
     hooks: { archiveChildrenRequest },
     dismiss: () => archiveChildrenRequest.set(null),
-    async choose(request, includeChildren, remember) {
-      if (archiveChildrenRequest.getSnapshot() !== request) return;
-      if (
-        remember &&
-        !(await workspacePreferences.set("archiveChildren", includeChildren ? "always" : "never"))
-      )
-        throw new Error("Archive preference could not be saved");
+    choose(request, includeChildren) {
       if (archiveChildrenRequest.getSnapshot() !== request) return;
       archiveChildrenRequest.set(null);
       requestArchive(
@@ -462,8 +455,8 @@ export function apply(ctx: Context): void {
     refreshSessions: () => {
       void sessions.refresh();
     },
-    loadMoreSessions: () => {
-      void sessions.loadMore();
+    loadMoreSessions: (workspaceId) => {
+      void sessions.loadMore(workspaceId);
     },
     searchResultLimit: sessions.searchResultLimit,
     requestSessionRename,

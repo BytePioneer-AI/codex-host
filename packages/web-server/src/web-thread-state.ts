@@ -28,6 +28,9 @@ export interface WebThreadState {
   viewOrigin?: number;
 }
 
+/** How long a view may go unfollowed before `discardIdleViews` drops it. */
+export const IDLE_VIEW_MS = 10 * 60_000;
+
 /**
  * Deleting, invalidating or superseding a Thread's view, and replacing the Host
  * generation, each touch one place. The catalog rows (replaced as a whole by each
@@ -36,6 +39,10 @@ export interface WebThreadState {
  */
 export class WebThreadStates {
   private readonly states = new Map<string, WebThreadState>();
+  /** When a periodic check first found each view without a follower. */
+  private readonly unfollowedSince = new WeakMap<ChThreadHistory, number>();
+  /** Active `session/page` reads holding each view against idle eviction. */
+  private readonly paging = new WeakMap<ChThreadHistory, number>();
 
   get(id: string): WebThreadState | undefined {
     return this.states.get(id);
@@ -68,6 +75,46 @@ export class WebThreadStates {
     return [...this.states].flatMap(([id, state]) => (state.view ? [[id, state.view]] : []));
   }
 
+  /** Thread ids whose view was dropped and still have a reserved sequence floor. */
+  droppedViewIds(): string[] {
+    return [...this.states].flatMap(([id, state]) =>
+      !state.view && state.viewOrigin !== undefined ? [id] : [],
+    );
+  }
+
+  /** Reserve the next sequence below a dropped view's future origin so repeated
+   * catalog updates and control reconnects strictly advance past prior watermarks. */
+  reserveDroppedProjectionSeq(id: string): number | undefined {
+    const state = this.states.get(id);
+    if (!state || state.view || state.viewOrigin === undefined) return undefined;
+    const seq = state.viewOrigin - 1;
+    state.viewOrigin = seq + 2;
+    return seq;
+  }
+
+  /** Protect an in-flight `session/page` read from idle eviction and refresh
+   * `historyReadAt` once it settles on the same live view. */
+  async trackPageRead<T>(
+    id: string,
+    view: ChThreadHistory,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    this.paging.set(view, (this.paging.get(view) ?? 0) + 1);
+    this.unfollowedSince.delete(view);
+    try {
+      return await operation();
+    } finally {
+      const remaining = (this.paging.get(view) ?? 1) - 1;
+      if (remaining > 0) this.paging.set(view, remaining);
+      else this.paging.delete(view);
+      const state = this.states.get(id);
+      if (state?.view === view) {
+        state.historyReadAt = Date.now();
+        this.unfollowedSince.delete(view);
+      }
+    }
+  }
+
   /** The catalog read replaces every confirmed owner at once. */
   replaceHarnesses(next: ReadonlyMap<string, string>): void {
     for (const [id, state] of this.states) {
@@ -84,8 +131,8 @@ export class WebThreadStates {
     this.ensure(id).viewOrigin = view.log.lastSeq + 2;
   }
 
-  /** The view's history was rewritten: drop it and what was derived from it. An
-   * in-flight `reading` settles on its own. */
+  /** The view's history was rewritten, or nobody follows it: drop it and what was
+   * derived from it. An in-flight `reading` settles on its own. */
   discardView(id: string, view: ChThreadHistory): void {
     this.retire(id, view);
     const state = this.ensure(id);
@@ -94,6 +141,30 @@ export class WebThreadStates {
     delete state.controls;
     delete state.usage;
     delete state.usageReadAt;
+  }
+
+  /** Drop the views that no browser followed at any periodic check, and that nothing
+   * read, for `IDLE_VIEW_MS`. Reopening such a Thread reads it as a first open. A
+   * view with a read in flight, or whose Thread `running` names, starts over. */
+  discardIdleViews(now: number, running: (id: string) => boolean): void {
+    for (const [id, state] of this.states) {
+      const { view } = state;
+      if (!view) continue;
+      if (
+        view.log.hasFollowers ||
+        state.reading ||
+        (this.paging.get(view) ?? 0) > 0 ||
+        running(id)
+      ) {
+        this.unfollowedSince.delete(view);
+        continue;
+      }
+      let since = this.unfollowedSince.get(view);
+      if (since === undefined) this.unfollowedSince.set(view, (since = now));
+      // A follower that came and went between two checks still read the view.
+      if (now - Math.max(since, state.historyReadAt ?? 0) >= IDLE_VIEW_MS)
+        this.discardView(id, view);
+    }
   }
 
   /** A new Host generation supersedes every view and in-flight read. Confirmed

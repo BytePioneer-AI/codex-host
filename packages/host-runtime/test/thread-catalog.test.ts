@@ -295,6 +295,49 @@ describe("source-separated Thread catalog", () => {
     expect(threadCatalogReadResultSchema.parse(result).ownership).toHaveLength(201);
   });
 
+  it("reads on for a scoped folder until a page holds its Thread, the branch ends, or the bound", async () => {
+    // Row 120 lies in an excluded nested folder; row 250 is the folder's only Thread.
+    const cwdOf = (n: number) =>
+      n === 250 ? "/work/app/src" : n === 120 ? "/work/app/nested" : "/work/other";
+    const nativeRows = Array.from({ length: 2_000 }, (_, n) => ({
+      ...row(`native-${n}`, 5_000 - n),
+      cwd: cwdOf(n),
+    }));
+    const request = vi.fn(async (params: JsonObject) => {
+      const offset = Number(params.cursor);
+      const end = offset + Number(params.limit);
+      return page(nativeRows.slice(offset, end), end < nativeRows.length ? String(end) : null);
+    });
+    const scoped = (live: string) =>
+      readThreadCatalog({
+        ...input([external("external", 1)]),
+        officialCursor: { live },
+        scope: { cwd: "/work/app", excludeCwds: ["/work/app/nested"] },
+        requestOfficialPage: request,
+      });
+    const reads = () =>
+      request.mock.calls.splice(0).map(([params]) => [params.cursor, params.limit]);
+
+    const match = await scoped("20");
+    expect(reads()).toEqual([
+      ["20", 100],
+      ["120", 100],
+      ["220", 100],
+    ]);
+    expect(match.officialCursor).toEqual({ live: "320" });
+    // Every row read is returned, so the next page continues where this one stopped.
+    expect(match.threads).toHaveLength(300);
+
+    const bounded = await scoped("320");
+    expect(reads()).toHaveLength(10);
+    expect(bounded.officialCursor).toEqual({ live: "1320" });
+
+    const ended = await scoped("1320");
+    expect(reads()).toHaveLength(7);
+    expect(ended.officialCursor).toEqual({ live: null });
+    expect(ended.threads).toHaveLength(680);
+  });
+
   it("rejects a non-advancing native cursor without requesting another page", async () => {
     const request = vi.fn(async () => page([], "A"));
     await expect(
@@ -329,8 +372,9 @@ describe("source-separated Thread catalog", () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
-  it("continues only explicit native branches and keeps all external metadata even after native exhaustion", async () => {
+  it("continues only explicit native branches without repeating external metadata", async () => {
     const records = Array.from({ length: 41 }, (_, i) => external(`external-${i}`, i));
+    const readLocal = vi.fn(async () => ({ records, placements: [] }));
     const request = vi.fn(async (params: JsonObject) => {
       expect(params).toMatchObject({
         archived: true,
@@ -343,22 +387,114 @@ describe("source-separated Thread catalog", () => {
     });
     const result = await readThreadCatalog({
       ...input(records),
+      readLocal,
       includeArchived: true,
       officialCursor: { live: null, archived: "archive20" },
       requestOfficialPage: request,
     });
+    expect(readLocal).not.toHaveBeenCalled();
     expect(request).toHaveBeenCalledTimes(1);
-    expect(result.threads).toHaveLength(42);
+    expect(result.threads.map((thread) => thread.id)).toEqual(["old-archive"]);
+    expect(result.ownership).toEqual([{ threadId: "old-archive", owner: "codex" }]);
     expect(result.archivedThreadIds).toEqual(["old-archive"]);
     expect(result.officialCursor).toEqual({ live: null, archived: null });
     const ended = await readThreadCatalog({
       ...input(records),
+      readLocal,
       includeArchived: true,
       officialCursor: result.officialCursor,
       requestOfficialPage: request,
     });
-    expect(ended.threads).toHaveLength(41);
+    expect(readLocal).not.toHaveBeenCalled();
+    expect(ended.threads).toEqual([]);
+    expect(ended.ownership).toEqual([]);
+    expect(ended.archivedThreadIds).toEqual([]);
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns external metadata only on the first page across multi-page catalog reads", async () => {
+    const localLive = external("external-live", 500);
+    const localArchived = external("external-archived", 10, true);
+    const sharedLive = row("shared-live", 450);
+    const nativePages = [
+      [row("native-0", 400), row("native-1", 300)],
+      [row("native-2", 200), row("native-3", 100)],
+      [row("native-4", 50)],
+    ];
+    const readLocal = vi.fn(async () => ({
+      records: [localLive, localArchived],
+      placements: [],
+    }));
+    const sharedList = vi.fn(async () => [sharedLive]);
+    const sharedOwnership = vi.fn(async () => new Map([["shared-live", "claude-code"]]));
+    const requestOfficialPage = vi.fn(async (params: JsonObject) => {
+      const index = params.cursor === null ? 0 : Number(params.cursor);
+      const next = index + 1 < nativePages.length ? String(index + 1) : null;
+      return page(nativePages[index] ?? [], next);
+    });
+
+    const pages = [];
+    let officialCursor: ThreadCatalogInput["officialCursor"];
+    for (;;) {
+      const current = await readThreadCatalog({
+        readLocal,
+        sharedThreads: { list: sharedList, ownership: sharedOwnership },
+        runtimeFor: () => null,
+        requestOfficialPage,
+        diagnose: vi.fn(),
+        ...(officialCursor ? { officialCursor } : {}),
+      });
+      pages.push(threadCatalogReadResultSchema.parse(current));
+      if (!current.officialCursor || current.officialCursor.live === null) break;
+      officialCursor = current.officialCursor;
+    }
+
+    expect(pages).toHaveLength(3);
+    expect(readLocal).toHaveBeenCalledTimes(1);
+    expect(sharedList).toHaveBeenCalledTimes(1);
+    expect(sharedOwnership).toHaveBeenCalledTimes(1);
+    expect(requestOfficialPage).toHaveBeenCalledTimes(3);
+
+    expect(pages[0]?.threads.map((thread) => thread.id)).toEqual([
+      "external-live",
+      "shared-live",
+      "native-0",
+      "native-1",
+    ]);
+    expect(pages[0]?.ownership).toEqual([
+      { threadId: "external-live", owner: "external", harnessId: "pi" },
+      { threadId: "shared-live", owner: "external", harnessId: "claude-code" },
+      { threadId: "native-0", owner: "codex" },
+      { threadId: "native-1", owner: "codex" },
+    ]);
+    expect(pages[0]?.archivedThreadIds).toEqual(["external-archived"]);
+
+    expect(pages[1]?.threads.map((thread) => thread.id)).toEqual(["native-2", "native-3"]);
+    expect(pages[1]?.ownership).toEqual([
+      { threadId: "native-2", owner: "codex" },
+      { threadId: "native-3", owner: "codex" },
+    ]);
+    expect(pages[1]?.archivedThreadIds).toEqual([]);
+
+    expect(pages[2]?.threads.map((thread) => thread.id)).toEqual(["native-4"]);
+    expect(pages[2]?.ownership).toEqual([{ threadId: "native-4", owner: "codex" }]);
+    expect(pages[2]?.archivedThreadIds).toEqual([]);
+
+    const mergedThreadIds = pages.flatMap((entry) => entry.threads.map((thread) => thread.id));
+    expect(mergedThreadIds).toEqual([
+      "external-live",
+      "shared-live",
+      "native-0",
+      "native-1",
+      "native-2",
+      "native-3",
+      "native-4",
+    ]);
+    expect(new Set(mergedThreadIds).size).toBe(mergedThreadIds.length);
+    expect(pages.flatMap((entry) => entry.ownership.map((owner) => owner.threadId))).toEqual(
+      mergedThreadIds,
+    );
+    expect(pages.flatMap((entry) => entry.archivedThreadIds)).toEqual(["external-archived"]);
   });
 
   it("does not let logging fail the catalog read", async () => {

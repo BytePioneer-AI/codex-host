@@ -87,6 +87,9 @@ export class ChHarnessCatalog {
   hasResolvedCurrentList(): boolean {
     return this.pluginsResolvedGeneration === this.pluginsGeneration;
   }
+  currentGeneration(): number {
+    return this.pluginsGeneration;
+  }
   async list(): Promise<HarnessPluginDescriptor[]> {
     if (this.plugins) return this.plugins;
     const generation = this.pluginsGeneration;

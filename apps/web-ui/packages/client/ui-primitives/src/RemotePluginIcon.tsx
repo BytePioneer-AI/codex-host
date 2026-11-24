@@ -3,7 +3,7 @@ import type { HarnessPluginDescriptor } from "@codexhost/shared-contracts";
 
 type Presentation = NonNullable<HarnessPluginDescriptor["iconStyle"]>;
 type Presentations = Record<string, Presentation | null>;
-type CatalogEntry = { icons: Presentations; stale: boolean };
+type CatalogEntry = { icons: Presentations; stale: boolean; freshRevision: number };
 const pending = new Map<string, Promise<CatalogEntry>>();
 const resolved = new Map<string, CatalogEntry>();
 const subscribers = new Map<string, Set<() => void>>();
@@ -38,7 +38,11 @@ function scheduleCatalogFetch(url: string): void {
     scheduledRetries.set(url, state);
   }
   if (state.timer !== undefined) return;
-  const delay = CATALOG_RETRY_DELAYS_MS[state.attempt];
+  // While holding a stale snapshot with active subscribers, keep revalidating at the capped interval
+  // until a fresh response lands; hard failures without any snapshot stay bounded.
+  const delay = existing?.stale
+    ? CATALOG_RETRY_DELAYS_MS[Math.min(state.attempt, CATALOG_RETRY_DELAYS_MS.length - 1)]
+    : CATALOG_RETRY_DELAYS_MS[state.attempt];
   if (delay === undefined) return;
   state.attempt += 1;
   state.timer = setTimeout(() => {
@@ -91,9 +95,14 @@ function load(url: string): Promise<CatalogEntry> {
       const value: unknown = await response.json();
       if (!value || typeof value !== "object" || Array.isArray(value))
         throw new Error("Invalid icon catalog");
+      const stale = response.headers.get("x-codexhost-icon-stale") === "1";
+      const prev = resolved.get(url);
+      const freshRevision =
+        !stale && prev?.stale ? prev.freshRevision + 1 : (prev?.freshRevision ?? 0);
       const entry: CatalogEntry = {
         icons: value as Presentations,
-        stale: response.headers.get("x-codexhost-icon-stale") === "1",
+        stale,
+        freshRevision,
       };
       resolved.set(url, entry);
       pending.delete(url);
@@ -132,9 +141,15 @@ export function RemotePluginIcon({
   className?: string;
   fallback: ReactNode;
 }): ReactNode {
-  const [catalog, setCatalog] = useState<{ url: string; icons: Presentations } | null>(() => {
+  const [catalog, setCatalog] = useState<{
+    url: string;
+    icons: Presentations;
+    freshRevision: number;
+  } | null>(() => {
     const entry = resolved.get(presentationUrl);
-    return entry ? { url: presentationUrl, icons: entry.icons } : null;
+    return entry
+      ? { url: presentationUrl, icons: entry.icons, freshRevision: entry.freshRevision }
+      : null;
   });
   useEffect(() => {
     let active = true;
@@ -143,7 +158,11 @@ export function RemotePluginIcon({
       if (!active) return;
       const entry = resolved.get(presentationUrl);
       if (entry) {
-        setCatalog({ url: presentationUrl, icons: entry.icons });
+        setCatalog({
+          url: presentationUrl,
+          icons: entry.icons,
+          freshRevision: entry.freshRevision,
+        });
       }
     });
 
@@ -160,14 +179,23 @@ export function RemotePluginIcon({
 
     const existing = resolved.get(presentationUrl);
     if (existing) {
-      setCatalog({ url: presentationUrl, icons: existing.icons });
+      setCatalog({
+        url: presentationUrl,
+        icons: existing.icons,
+        freshRevision: existing.freshRevision,
+      });
       if (existing.stale) {
         scheduleCatalogFetch(presentationUrl);
       }
     } else {
       void load(presentationUrl).then(
         (entry) => {
-          if (active) setCatalog({ url: presentationUrl, icons: entry.icons });
+          if (active)
+            setCatalog({
+              url: presentationUrl,
+              icons: entry.icons,
+              freshRevision: entry.freshRevision,
+            });
         },
         () => {
           if (active) {
@@ -206,10 +234,14 @@ export function RemotePluginIcon({
       </svg>
     );
   }
+  const bitmapSrc =
+    catalog.freshRevision > 0
+      ? `${src}${src.includes("?") ? "&" : "?"}v=${catalog.freshRevision}`
+      : src;
   return (
     <BitmapIcon
-      key={src}
-      src={src}
+      key={bitmapSrc}
+      src={bitmapSrc}
       size={size}
       className={className}
       presentation={presentation}

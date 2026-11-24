@@ -474,3 +474,52 @@ it("preserves prewarmed catalog across initial same-epoch hello, waits for newly
     ["page-1-ext", "page-2-codex"],
   );
 });
+
+it("marks awaited presentation response as stale when a new-epoch hello arrives mid-flight", async (t) => {
+  let releaseFirstList: (() => void) | undefined;
+  const fake = makeFakeTransport((_r, body) => {
+    if (body.method === "codexhost/harness/plugins/list") {
+      return new Promise((resolve) => {
+        releaseFirstList = () =>
+          resolve({
+            plugins: [
+              {
+                id: "antigravity",
+                name: "Antigravity Old",
+                version: "1.0.0",
+                iconStyle: { background: "#111111", borderRadius: 4 },
+              },
+            ],
+          });
+      });
+    }
+    throw new Error(`Unexpected method: ${String(body.method)}`);
+  });
+
+  const source = new PeerThreadSource({
+    hostId: "remote-peer:peer-c",
+    host: new PeerChHostClient(fake.transport),
+    onCatalogChanged: () => {},
+    onThreadChanged: () => {},
+    onConnection: () => {},
+  });
+  t.after(() => source.close());
+
+  const peers = {
+    client: () => ({ state: "connected" }),
+    source: () => source,
+  };
+
+  const pendingPres = resolvePeerHarnessIcon(peers, "/harness-icons/peer/peer-c/presentation.json");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  fake.emit({
+    type: "hello",
+    version: 1,
+    cursor: { epoch: randomUUID(), sequence: 1 },
+    reset: true,
+  });
+  releaseFirstList?.();
+  const asset = await pendingPres;
+  assert.ok(asset);
+  assert.equal(asset.stale, true, "response from superseded generation must be marked stale");
+});

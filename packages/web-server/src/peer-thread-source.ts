@@ -530,15 +530,25 @@ export async function resolvePeerHarnessIcon(
     // otherwise wait for the in-flight refresh so newly installed plugins do not 404 prematurely.
     if (resolvedCurrent) return undefined;
   }
+  const generationBefore = source.catalog.currentGeneration();
   try {
     if (target === "presentation.json") {
       const plugins = await source.catalog.list();
+      const stale =
+        source.catalog.currentGeneration() !== generationBefore ||
+        !source.catalog.hasResolvedCurrentList();
       return {
         contentType: "application/json",
         body: Buffer.from(JSON.stringify(harnessIconStyles(plugins))),
+        ...(stale ? { stale: true } : {}),
       };
     }
-    return await source.catalog.icon(target);
+    const asset = await source.catalog.icon(target);
+    if (!asset) return undefined;
+    const stale =
+      source.catalog.currentGeneration() !== generationBefore ||
+      !source.catalog.hasResolvedCurrentList();
+    return stale ? { ...asset, stale: true } : asset;
   } catch {
     const fallback = source.catalog.cachedList();
     if (!fallback) return undefined;

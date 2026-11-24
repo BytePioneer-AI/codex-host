@@ -185,3 +185,57 @@ export function editedNativeInput(
     return { ...part, text: prefix + text, text_elements: [] };
   });
 }
+
+export type EditableQueuedAttachment =
+  | { readonly kind: "image"; readonly path: string; readonly name?: string }
+  | { readonly kind: "file"; readonly path: string; readonly name: string };
+
+export interface EditableQueuedInput {
+  readonly text: string;
+  readonly attachments: readonly EditableQueuedAttachment[];
+}
+
+/**
+ * Parse a canonical queued Host input into composer-restorable text and local attachment paths.
+ * Returns undefined when the entry carries non-empty text_elements, multiple text parts, URL
+ * images, line-ranged file mentions, or unknown native blocks so callers fail closed.
+ */
+export function editableQueuedInput(content: readonly unknown[]): EditableQueuedInput | undefined {
+  if (!Array.isArray(content) || content.length === 0) return;
+  let textCount = 0;
+  for (const part of content) {
+    if (!part || typeof part !== "object") return;
+    const record = part as Record<string, unknown>;
+    if (record.type === "text") {
+      textCount += 1;
+      if (textCount > 1 || typeof record.text !== "string") return;
+      if (
+        Object.hasOwn(record, "text_elements") &&
+        (!Array.isArray(record.text_elements) || record.text_elements.length > 0)
+      )
+        return;
+    }
+  }
+  const attachments: EditableQueuedAttachment[] = [];
+  const texts: string[] = [];
+  for (const part of nativeUserInput(content)) {
+    if (part.type === "other") return;
+    if (part.type === "text") {
+      texts.push(part.text);
+      continue;
+    }
+    if (part.type === "nativeImage") {
+      if (!("path" in part.source) || !part.source.path) return;
+      attachments.push({
+        kind: "image",
+        path: part.source.path,
+        ...(part.name === undefined ? {} : { name: part.name }),
+      });
+      continue;
+    }
+    if (!part.path || part.startLine !== undefined || part.endLine !== undefined) return;
+    attachments.push({ kind: "file", path: part.path, name: part.name });
+  }
+  if (texts.length > 1) return;
+  return { text: texts[0] ?? "", attachments };
+}

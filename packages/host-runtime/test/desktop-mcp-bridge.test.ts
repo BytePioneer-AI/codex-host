@@ -469,6 +469,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       mcpNode: process.env.CODEX_MCP_NODE_PATH,
       deferred: process.env.CODEX_APP_TOOLS_DEFERRED,
       cwd: process.cwd(),
+      argv: process.argv.slice(1),
       meta: message.params._meta,
     };
     process.stdout.write(JSON.stringify({
@@ -583,8 +584,84 @@ process.stdout.write(JSON.stringify(process.argv.includes("features.plugins=fals
       mcpNode: process.execPath,
       deferred: "1",
       cwd: pluginDir,
+      argv: [serverScript],
       meta: { threadId: "fixture-thread" },
     });
+
+    const rewriteThreadConfig = async (
+      candidate: JsonObject,
+      threadCwd?: string,
+    ): Promise<JsonObject> => {
+      const chunks: Buffer[] = [];
+      const collect = (chunk: Buffer) => chunks.push(chunk);
+      bridge.input.on("data", collect);
+      await new Promise<void>((resolve, reject) => {
+        bridge.input.write(
+          JSON.stringify({
+            id: 2,
+            method: "thread/start",
+            params: {
+              ...(threadCwd === undefined ? {} : { cwd: threadCwd }),
+              config: { "mcp_servers.codex_app": candidate },
+            },
+          }) + "\n",
+          (error) => (error ? reject(error) : resolve()),
+        );
+      });
+      bridge.input.off("data", collect);
+      const parsed = JSON.parse(Buffer.concat(chunks).toString()) as {
+        params: { config: Record<string, JsonObject> };
+      };
+      const rewritten = parsed.params.config["mcp_servers.codex_app"];
+      if (!rewritten) throw new Error("Missing rewritten codex_app config");
+      return rewritten;
+    };
+
+    // Omitting cwd must still pin execution cwd and entrypoint to the validated plugin directory,
+    // never resolving a relative ./server.mjs against threadCwd.
+    const decoyDir = path.join(root, "decoy-thread-cwd");
+    await mkdir(decoyDir, { recursive: true });
+    await writeFile(
+      path.join(decoyDir, "server.mjs"),
+      'throw new Error("Decoy server.mjs in threadCwd must never execute");\n',
+    );
+    const withoutCwd = {
+      command: transportDefinition.command,
+      args: transportDefinition.args,
+      env: transportDefinition.env,
+      env_vars: transportDefinition.env_vars,
+    };
+    const omittedCwdRewritten = await rewriteThreadConfig(
+      { ...withoutCwd, args: ["./server.mjs", "--interaction-client-id", "client-1"] },
+      decoyDir,
+    );
+    const omittedCwdArgs = omittedCwdRewritten.args as string[];
+    const omittedCwdClient = new Client({ name: "app-tools-omitted-cwd", version: "1" });
+    const omittedCwdTransport = new StreamableHTTPClientTransport(
+      new URL(String(omittedCwdArgs[2])),
+      { requestInit: { headers: { Authorization: String(omittedCwdArgs[3]) } } },
+    );
+    cleanup.push(() => omittedCwdClient.close());
+    await omittedCwdClient.connect(omittedCwdTransport as Transport);
+    const omittedCwdResult = await omittedCwdClient.callTool({
+      name: "list_threads",
+      arguments: {},
+    });
+    expect(omittedCwdResult.structuredContent).toEqual({
+      pipePath: "/tmp/codex-app-tools/fixture.sock",
+      mcpNode: process.execPath,
+      deferred: "1",
+      cwd: pluginDir,
+      argv: [serverScript, "--interaction-client-id", "client-1"],
+    });
+
+    // Relative command paths inside the validated plugin directory must also be bridged.
+    const relativeCommandRewritten = await rewriteThreadConfig({
+      ...transportDefinition,
+      command: "./scripts/launch_codex_app_tools_mcp",
+    });
+    expect(relativeCommandRewritten.command).toBe(process.execPath);
+    expect((relativeCommandRewritten.args as string[])[1]).toBe("--codexhost-desktop-mcp-client");
 
     // Reject untrusted paths, missing pipe env_vars, or non-server.mjs entrypoints.
     const untrustedScript = path.join(root, "evil.mjs");
@@ -594,25 +671,9 @@ process.stdout.write(JSON.stringify(process.argv.includes("features.plugins=fals
       { ...transportDefinition, args: [untrustedScript] },
       { ...transportDefinition, env_vars: ["PATH"] },
       { ...transportDefinition, cwd: root },
+      { ...withoutCwd, command: "./scripts/launch_codex_app_tools_mcp" },
     ]) {
-      const chunks: Buffer[] = [];
-      const collect = (chunk: Buffer) => chunks.push(chunk);
-      bridge.input.on("data", collect);
-      await new Promise<void>((resolve, reject) => {
-        bridge.input.write(
-          JSON.stringify({
-            id: 2,
-            method: "thread/start",
-            params: { config: { "mcp_servers.codex_app": candidate } },
-          }) + "\n",
-          (error) => (error ? reject(error) : resolve()),
-        );
-      });
-      bridge.input.off("data", collect);
-      const parsed = JSON.parse(Buffer.concat(chunks).toString()) as {
-        params: { config: Record<string, JsonObject> };
-      };
-      expect(parsed.params.config["mcp_servers.codex_app"]).toEqual(candidate);
+      expect(await rewriteThreadConfig(candidate)).toEqual(candidate);
     }
   },
 );

@@ -244,19 +244,32 @@ function isTrustedBrowserServer(
   return typeof services === "object" && services !== null && "browser" in services;
 }
 
-function isTrustedAppToolsServer(
+interface TrustedAppToolsInvocation {
+  command: string;
+  args: string[];
+  cwd: string;
+}
+
+function resolveTrustedAppToolsServer(
   definition: ReturnType<typeof desktopStdioConfig.parse>,
   environment: NodeJS.ProcessEnv,
-): boolean {
-  if (!environment[DESKTOP_APP_TOOLS_PIPE_ENV]) return false;
-  if (!definition.env_vars.includes(DESKTOP_APP_TOOLS_PIPE_ENV)) return false;
-  if (definition.args.length < 1 || !definition.args[0]) return false;
+): TrustedAppToolsInvocation | undefined {
+  if (!environment[DESKTOP_APP_TOOLS_PIPE_ENV]) return undefined;
+  if (!definition.env_vars.includes(DESKTOP_APP_TOOLS_PIPE_ENV)) return undefined;
+  if (definition.args.length < 1 || !definition.args[0]) return undefined;
   const codexHome = environment.CODEX_HOME ?? path.join(environment.HOME ?? homedir(), ".codex");
   try {
     const cacheRoot = realpathSync(
       path.join(codexHome, "plugins", "cache", "openai-bundled", "codex-app-tools"),
     );
-    const commandPath = realpathSync(definition.command);
+    if (definition.cwd === undefined && !path.isAbsolute(definition.command)) {
+      return undefined;
+    }
+    const commandTarget =
+      definition.cwd === undefined
+        ? definition.command
+        : path.resolve(definition.cwd, definition.command);
+    const commandPath = realpathSync(commandTarget);
     const relative = path.relative(cacheRoot, commandPath);
     const [version, scriptsDir, scriptName] = relative.split(path.sep);
     if (
@@ -269,18 +282,23 @@ function isTrustedAppToolsServer(
       scriptsDir !== "scripts" ||
       scriptName !== "launch_codex_app_tools_mcp"
     ) {
-      return false;
+      return undefined;
     }
     const pluginVersionDir = path.join(cacheRoot, version);
     if (definition.cwd !== undefined && realpathSync(definition.cwd) !== pluginVersionDir) {
-      return false;
+      return undefined;
     }
-    const entrypoint = realpathSync(
-      path.resolve(definition.cwd ?? pluginVersionDir, definition.args[0]),
-    );
-    return entrypoint === realpathSync(path.join(pluginVersionDir, "server.mjs"));
+    const entrypoint = realpathSync(path.resolve(pluginVersionDir, definition.args[0]));
+    if (entrypoint !== realpathSync(path.join(pluginVersionDir, "server.mjs"))) {
+      return undefined;
+    }
+    return {
+      command: commandPath,
+      args: [entrypoint, ...definition.args.slice(1)],
+      cwd: pluginVersionDir,
+    };
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -312,9 +330,13 @@ export async function createDesktopMcpBridge(options: {
     if (!parsed.success) return;
     const definition = parsed.data;
     const isBrowser = isTrustedBrowserServer(definition, nodeReplExecutable);
-    const isAppTools = !isBrowser && isTrustedAppToolsServer(definition, options.environment);
-    if (!isBrowser && !isAppTools) return;
-    const { args, env: overrides, env_vars: inherited } = definition;
+    const appTools = isBrowser
+      ? undefined
+      : resolveTrustedAppToolsServer(definition, options.environment);
+    if (!isBrowser && !appTools) return;
+    const { env: overrides, env_vars: inherited } = definition;
+    const command = appTools ? appTools.command : definition.command;
+    const args = appTools ? appTools.args : definition.args;
     const env = { ...getDefaultEnvironment() };
     for (const key of Object.keys(env)) {
       const value = options.environment[key];
@@ -325,13 +347,13 @@ export async function createDesktopMcpBridge(options: {
       const value = options.environment[name];
       if (value !== undefined) env[name] = value;
     }
-    if (isAppTools) {
+    if (appTools) {
       env.CODEX_MCP_NODE_PATH ??= process.execPath;
     }
     const childEnv = { ...env, ...overrides };
-    const cwd = definition.cwd ?? threadCwd;
+    const cwd = appTools ? appTools.cwd : (definition.cwd ?? threadCwd);
     const signature = createHash("sha256")
-      .update(JSON.stringify([config.command, args, childEnv, cwd]))
+      .update(JSON.stringify([command, args, childEnv, cwd]))
       .digest("hex");
     let profile = configurations.get(signature);
     if (!profile) {
@@ -339,7 +361,7 @@ export async function createDesktopMcpBridge(options: {
         id: randomUUID(),
         token: randomBytes(32).toString("base64url"),
         runtimePath: options.runtimePath,
-        command: definition.command,
+        command,
         args,
         env: childEnv,
         ...(cwd === undefined ? {} : { cwd }),

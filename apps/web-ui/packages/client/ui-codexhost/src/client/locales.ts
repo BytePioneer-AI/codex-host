@@ -134,6 +134,7 @@ export const en = {
   "usage.unit.tps": "tok/s",
   "usage.unit.ms": "ms",
   "usage.unit.seconds": "s",
+  "usage.indicator.remaining": "{minutes}m remaining",
   "connectDevices.title": "Connect this computer",
   "connectDevices.subtitle":
     "Pick a connection method, then scan the QR code or copy the sign-in link on your phone.",
@@ -963,6 +964,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "usage.unit.tps": "tok/s",
   "usage.unit.ms": "毫秒",
   "usage.unit.seconds": "秒",
+  "usage.indicator.remaining": "剩余 {minutes} 分钟",
   "connectDevices.title": "连接这台电脑",
   "connectDevices.subtitle": "选择连接方式，扫码或复制登录链接即可在其他设备继续使用。",
   "connectDevices.httpsSummary": "跨网络访问 · 手机需开启 Tailscale",

@@ -1528,4 +1528,39 @@ describe("Antigravity Session usage", () => {
     await writeNativeTimingDatabase(home, [{ step: 7, maxContextTokens: 512_000 }]);
     expect((await tracker.collectNewTranscriptRequests()).usage?.contextWindowTokens).toBe(512_000);
   });
+
+  it("backfills native max_context_tokens independently of #awaitingTiming after historical replay or settled timing", async () => {
+    // 1. Historical replay runs before gen_metadata exists (historical steps never enter #awaitingTiming).
+    await transcript(planner(1, { model: "gemini-4-neon-xhigh" }));
+    tracker.recordContextWindow(362_000, 1_048_576);
+    expect((await tracker.replayHistoricalRequests()).usage?.contextWindowTokens).toBe(1_048_576);
+    await writeNativeTimingDatabase(home, [{ step: 1, maxContextTokens: 512_000 }]);
+    expect((await tracker.collectNewTranscriptRequests()).usage).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 512_000,
+      contextUsagePercent: (362_000 / 512_000) * 100,
+    });
+
+    // 2. Live step settles timing first (clearing #awaitingTiming) before max_context_tokens appears.
+    tracker.setActiveModel("gemini-3.8-flash");
+    tracker.beginTurn(0);
+    await appendFile(file, `${planner(3, { model: "gemini-3.8-flash-high" })}\n`);
+    await writeNativeTimingDatabase(home, [
+      { step: 1, maxContextTokens: 512_000 },
+      { step: 3, created: 1000, started: 3000, completed: 5000 },
+    ]);
+    const settled = await tracker.collectNewTranscriptRequests();
+    expect(settled.timings).toHaveLength(1);
+    expect(settled.usage?.contextWindowTokens).toBe(1_048_576);
+
+    await writeNativeTimingDatabase(home, [
+      { step: 1, maxContextTokens: 512_000 },
+      { step: 3, created: 1000, started: 3000, completed: 5000, maxContextTokens: 256_000 },
+    ]);
+    expect((await tracker.collectNewTranscriptRequests()).usage).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 256_000,
+      contextUsagePercent: 100,
+    });
+  });
 });

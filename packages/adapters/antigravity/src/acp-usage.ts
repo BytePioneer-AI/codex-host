@@ -636,7 +636,17 @@ export class AntigravitySessionUsageTracker {
       [...result.steps.values()].every((request) => request !== null) &&
       [...this.#consumed.keys()].every((step) => result.steps.has(step));
     const needed = new Set(this.#awaitingTiming.keys());
-    for (const step of result.steps.keys()) if (!this.#consumed.has(step)) needed.add(step);
+    const latestMissingWindowByModel = new Map<string, number>();
+    for (const [step, request] of result.steps) {
+      if (!this.#consumed.has(step)) needed.add(step);
+      else if (request?.model && !this.#nativeContextWindows.has(request.model)) {
+        const previous = latestMissingWindowByModel.get(request.model);
+        if (previous === undefined || step > previous) {
+          latestMissingWindowByModel.set(request.model, step);
+        }
+      }
+    }
+    for (const step of latestMissingWindowByModel.values()) needed.add(step);
     if (needed.size > 0)
       result.metadata = await readAntigravityRequestMetadata(
         this.#nativeSessionId,

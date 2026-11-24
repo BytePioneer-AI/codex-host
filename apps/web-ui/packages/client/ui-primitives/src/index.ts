@@ -6,6 +6,8 @@ export { useCopyFeedback } from "./use-copy-feedback.ts";
 export type { CodeToolbarLabels } from "./CodeToolbar.tsx";
 export { StateDot } from "./StateDot.tsx";
 export { RemotePluginIcon } from "./RemotePluginIcon.tsx";
+export { harnessIconSources } from "./harness-icon-sources.ts";
+export type { HarnessIconSources } from "./harness-icon-sources.ts";
 export type { StateDotState } from "./StateDot.tsx";
 export { IconFileDiffOutlineRegular } from "./icons/file-diff.tsx";
 export { IconBellOutlineRegular } from "./icons/bell.tsx";

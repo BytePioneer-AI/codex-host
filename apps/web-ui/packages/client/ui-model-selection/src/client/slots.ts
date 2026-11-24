@@ -26,4 +26,6 @@ export interface ModelSelectInjected {
    */
   select: (selection: ModelSelection) => Promise<RemoteResult<void> | undefined>;
   setFavorite?: (provider: string, modelId: string, enabled: boolean) => Promise<void>;
+  /** Remote Host identifier used to resolve peer-scoped Harness icon URLs. */
+  iconHostId?: string;
 }

@@ -26,7 +26,12 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
     threadReference: { hostId: string; threadId?: string } | null;
     threadTreeParent: string | null;
     archiveForkParent: string | null;
-    remoteHost: { hostId: string; displayName: string; state: string } | null;
+    remoteHost: {
+      hostId: string;
+      displayName: string;
+      state: string;
+      filePreview?: boolean;
+    } | null;
   }
 }
 
@@ -443,18 +448,24 @@ function sessionNode(
   };
 }
 
-/** Local delegation parent, independent of native Subagent lineage and unavailable on remote rows. */
+/** Same-host delegation parent, independent of native Subagent lineage. */
 export function threadTreeParentOf(
   summary: SessionSummary,
   list?: SessionListState,
 ): string | null {
-  if (summary.projectionValues?.remoteHost) return null;
   const parentId = summary.projectionValues?.threadTreeParent ?? null;
-  const parent = parentId === null ? undefined : list?.byId[SessionId(parentId)];
-  if (parent?.projectionValues?.remoteHost) return null;
-  const host = summary.projectionValues?.threadReference?.hostId;
-  const parentHost = parent?.projectionValues?.threadReference?.hostId;
-  return host !== undefined && parentHost !== undefined && host !== parentHost ? null : parentId;
+  if (parentId === null) return null;
+  const parent = list?.byId[SessionId(parentId)];
+  if (parent === undefined) return null;
+  const host =
+    summary.projectionValues?.threadReference?.hostId ??
+    summary.projectionValues?.remoteHost?.hostId ??
+    "local";
+  const parentHost =
+    parent.projectionValues?.threadReference?.hostId ??
+    parent.projectionValues?.remoteHost?.hostId ??
+    "local";
+  return host === parentHost ? parentId : null;
 }
 
 /** Build once across Workspaces so children follow their root's group. */

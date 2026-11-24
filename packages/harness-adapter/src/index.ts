@@ -29,6 +29,8 @@ export type {
 } from "./usage-statistics.js";
 export type {
   AutonomousTurnStartedEvent,
+  BillingSourceOpenResult,
+  BillingSourceSession,
   CreateSessionInput,
   ForkSessionInput,
   HarnessAdapter,
@@ -104,6 +106,7 @@ export type {
   ItemUpdatedEvent,
   ModelSelectCommand,
   ModelSelectCompleted,
+  NativeCleanupReceipt,
   OpenSessionInput,
   PermissionModeSelectCommand,
   PermissionModeSelectCompleted,

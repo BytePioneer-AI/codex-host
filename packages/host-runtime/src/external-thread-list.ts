@@ -97,6 +97,7 @@ function includesExternalRecord(
   const hasPendingInjection =
     record.state === "creating" && (record.pendingInjectedText?.length ?? 0) > 0;
   if (
+    !record.billingSourceRef &&
     (record.state !== "ready" || !record.nativeSessionRef) &&
     !hasSubmittedTurn &&
     !hasPendingInjection

@@ -1726,7 +1726,18 @@ export class CodexTurnProjector {
         {
           method: "turn/completed",
           emittedAtMs: completedAtMs,
-          params: { threadId: this.#threadId, turn },
+          params: {
+            threadId: this.#threadId,
+            turn,
+            ...(event.billingSourceRef
+              ? {
+                  billingSourceRef: {
+                    harnessId: event.billingSourceRef.harnessId,
+                    id: event.billingSourceRef.id,
+                  },
+                }
+              : {}),
+          },
         },
       ],
     };

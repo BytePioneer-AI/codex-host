@@ -20,6 +20,9 @@ import {
   mergeLiveHarnessCommands,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
+  type BillingSourceOpenResult,
+  type BillingSourceSession,
+  type CreateSessionInput,
   type HarnessAdapter,
   type HarnessCommandAccepted,
   type HarnessCommandCapability,
@@ -82,6 +85,7 @@ import {
   nativeSessionRefSchema,
   type HarnessId,
   type AccountCreditsSnapshot,
+  type BillingSourceRef,
   type HarnessAccountSnapshot,
   type HarnessPermissionModeId,
   type HostInteractionId,
@@ -107,6 +111,11 @@ import {
   ompStreamingAccount,
   type OmpAccountCredits,
 } from "./omp-account-credits.js";
+import {
+  billingSourceFailure,
+  billingSourceOpenFailure,
+  openOmpBillingSource,
+} from "./omp-billing-source-session.js";
 import { readOmpSessionHistory, verifyOmpSessionCwd } from "./omp-session-file.js";
 import { OmpSessionImport } from "./session-import.js";
 import { rollbackOmpLastTurn } from "./omp-last-turn-rollback.js";
@@ -2446,6 +2455,8 @@ export class OmpAdapter implements HarnessAdapter {
     signal: AbortSignal;
   }) => Promise<OmpModelListResult>;
   readonly #sessions = new Set<OmpHarnessSession>();
+  readonly #billingSessions = new Set<BillingSourceSession>();
+  readonly #billingOpens = new Set<Promise<BillingSourceOpenResult>>();
   readonly #toolOutputLimit: number;
   #closePromise: Promise<void> | null = null;
   #thinkingSelectionSupported: boolean | null = null;
@@ -2476,6 +2487,90 @@ export class OmpAdapter implements HarnessAdapter {
 
   async inspectAccounts(): Promise<HarnessAccountSnapshot[]> {
     return this.#closePromise ? [] : this.#accountCredits.inspectAccounts();
+  }
+
+  openBillingSource(
+    input: CreateSessionInput & { billingSourceRef: BillingSourceRef },
+  ): Promise<BillingSourceOpenResult> {
+    if (this.#closePromise)
+      return Promise.resolve(billingSourceOpenFailure("invalidState", "OMP Adapter is closing"));
+    const opening = this.#openBillingSource(input).finally(() =>
+      this.#billingOpens.delete(opening),
+    );
+    this.#billingOpens.add(opening);
+    return opening;
+  }
+
+  async #openBillingSource(
+    input: CreateSessionInput & { billingSourceRef: BillingSourceRef },
+  ): Promise<BillingSourceOpenResult> {
+    if (
+      input.prewarm ||
+      input.permissionModeId ||
+      input.thinkingOptionId ||
+      input.executionPolicy === "unattended-full-access"
+    ) {
+      return billingSourceOpenFailure(
+        "invalidRequest",
+        "OMP Billing Source Threads use fixed disposable Session settings",
+      );
+    }
+    const target = await this.#accountCredits.resolve(input.billingSourceRef);
+    if (!target)
+      return billingSourceOpenFailure(
+        "invalidRequest",
+        "OMP Billing Source is missing or ambiguous",
+      );
+    // Match quota discovery's launch context, not an arbitrary workspace's .env/profile.
+    const cwd = process.cwd();
+    let modelId: string | undefined;
+    if (input.model) {
+      const listed = await this.#listModels({ cwd, signal: AbortSignal.timeout(15_000) });
+      if (listed.kind !== "models")
+        return billingSourceOpenFailure("invalidRequest", "OMP Model catalog unavailable");
+      try {
+        const model = resolveOmpModelRef(input.model, createOmpModelIndex(listed.models));
+        if (model.provider !== target.provider) throw new Error("Different provider");
+        modelId = model.id;
+      } catch {
+        return billingSourceOpenFailure(
+          "invalidRequest",
+          "OMP Model must belong to the requested Billing Source provider",
+        );
+      }
+    }
+    if (this.#closePromise)
+      return billingSourceOpenFailure("invalidState", "OMP Adapter is closing");
+    const result = await openOmpBillingSource({
+      cwd,
+      environment: this.#environment,
+      ...(this.#accountCommand ? { command: this.#accountCommand } : {}),
+      billingSourceRef: input.billingSourceRef,
+      target: { ...target, ...(modelId ? { modelId } : {}) },
+    });
+    if (!result.ok) return result;
+    const session = result.value;
+    if (this.#closePromise) {
+      let nativeCleanup: "deleted" | "not-persisted" | "unknown" = "unknown";
+      try {
+        await session.close();
+        const confirmed = await session.confirmNativeCleanup();
+        if (confirmed.ok) nativeCleanup = confirmed.value;
+      } catch {
+        // The open failure carries the unknown cleanup separately from its protocol error.
+      }
+      return billingSourceOpenFailure("invalidState", "OMP Adapter is closing", nativeCleanup);
+    }
+    this.#billingSessions.add(session);
+    const close = session.close.bind(session);
+    session.close = async () => {
+      try {
+        await close();
+      } finally {
+        this.#billingSessions.delete(session);
+      }
+    };
+    return result;
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
@@ -2946,6 +3041,8 @@ export class OmpAdapter implements HarnessAdapter {
         this.sessionImport.close(),
         ...[...this.#inspections].map((transport) => transport.close()),
         ...[...this.#sessions].map((session) => session.close()),
+        ...[...this.#billingSessions].map((session) => session.close()),
+        ...this.#billingOpens.values(),
       ]).then(() => undefined);
     }
     return this.#closePromise;

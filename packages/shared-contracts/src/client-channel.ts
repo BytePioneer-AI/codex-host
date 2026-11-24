@@ -8,6 +8,7 @@ import {
 } from "./host-extension-management.js";
 import { THREAD_ARCHIVE_CONFIRM_METHOD } from "./thread-archive-confirm.js";
 import { THREAD_HANDOFF_METHOD, threadHandoffMetadataSchema } from "./thread-handoff.js";
+import { RETAINED_PREWARM_RUN_METHOD } from "./retained-prewarm.js";
 
 /** Authenticated local owner channel. Notifications invalidate state; they are
  * NOT appendable transcript deltas. Clients reconcile absolute snapshots. */
@@ -87,6 +88,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/harness/accounts/sources",
   "codexhost/harness/accounts/list",
   "codexhost/harness/accounts/inspect",
+  RETAINED_PREWARM_RUN_METHOD,
   "codexhost/harness/credential-imports",
   "codexhost/account/list",
   "codexhost/account/refresh",

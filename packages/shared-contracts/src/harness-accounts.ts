@@ -4,8 +4,18 @@ import { accountBalanceSnapshotSchema, accountCreditsSnapshotSchema } from "./th
 
 export { accountBalanceSnapshotSchema, type AccountBalanceSnapshot } from "./thread-usage.js";
 
+export const billingSourceRefSchema = z
+  .object({
+    harnessId: harnessIdSchema,
+    id: z.string().regex(/^[A-Za-z0-9._~-]{1,128}$/u),
+  })
+  .strict();
+export type BillingSourceRef = z.infer<typeof billingSourceRefSchema>;
+
 const harnessAccountSnapshotObject = z
   .object({
+    billingSourceRef: billingSourceRefSchema.optional(),
+    retainedPrewarmScopes: z.array(z.string().min(1).max(256)).min(1).max(8).optional(),
     email: z.string().trim().min(1).max(320).optional(),
     label: z.string().trim().min(1).max(256).optional(),
     plan: z.string().trim().min(1).max(128).optional(),

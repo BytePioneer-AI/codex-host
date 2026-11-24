@@ -299,6 +299,16 @@ Composer 配置按动态插件 ID 存储，不再为每个 Harness 增加字段�
 
 账号查询缓存归当前 Host 实例所有，按 Harness 隔离；普通 `accounts/inspect` / `accounts/list` 查询可复用 15 秒内的结果并合并同一 Harness 的在途查询。显式 `refresh: true` 跳过已完成缓存及既有在途查询，启动新的原生账号检查；被替代的查询仍可回应其原调用方，但不能覆盖新查询的缓存或清除其在途记录。
 
+### 指定 Billing Source 的一次性会话
+
+账号快照可返回稳定、非敏感的 `billingSourceRef: { harnessId, id }`，供同一 Harness 区分多个 Billing Source。引用不含 OAuth 凭据，Adapter 负责把它解析为当前原生账号；邮箱、显示顺序或 Harness ID 本身不是可执行身份。失效、歧义、跨配置目录或不支持的引用在创建 Thread 前拒绝，禁止改投其他账号。
+
+外部 `thread/start` 可显式携带该引用。实现 `openBillingSource` 的 Adapter 必须打开限定于该来源的 Session，并在创建回执及实际 Turn 归属中返回同一引用；未指定引用的既有 Thread 行为不变。此类一次性 Thread 需要明确工作目录，不进入草稿预热、空闲卸载或重开路径，原生 Session 关闭和清理结果未确认时保留映射及恢复证据。
+
+外部 `thread/delete` 在删除 Host 映射前调用 Session 的 `confirmNativeCleanup()`，分别报告 `nativeSession: "deleted" | "not-persisted"` 与 `hostMapping: "deleted"`。正常 Host 关闭也执行同一终结事务。原生清理未确认时返回错误并保留映射，不能把关闭传输或删除 Host 映射当作原生会话删除；崩溃或丢失清理能力后，disposable 映射仍出现在列表中，用户可显式删除并得到 `nativeSession: "unknown"`，这不宣称原生清理成功。OMP 当前用隔离凭据绑定和内存 Session 实现该契约，公开引用只保存 Profile、Provider 与原生 `identityKey` 的哈希，账号解析、Session prepare 和 Turn 终态均核对同一身份。
+
+Antigravity 另有 `codexhost/harness/retained-prewarm/run`：按 Profile 引用与配额 scope 复用一个原生会话，Gemini 使用 `gemini-3.8-flash / low`，Claude/GPT 使用 `claude-sonnet-5-5 / low`，不创建 CodexHost Thread。Profile 指纹与 Session ID 用于重启恢复，匿名 Profile 也可预热；换号后优先复用旧对话并更新当前归属，原生拒绝恢复、返回不同 Session 或模型不符时停止且不创建替代会话。`accountVerification` 区分当前登录信号是否可核验，匿名时 `accountChanged` 省略；归属与模型核验均为尽力而为，不等同逐请求扣费回执。调用方要求 Host `>= 0.26.0-rc.1`，并以 owner-channel 方法及 `retainedPrewarmScopes` 做能力协商。常驻历史保留在 Antigravity 中，停用不删除。
+
 ## 插件拥有的展示元数据
 
 权限模式和命令目录可提供 `localizations: { [locale]: { label?, description? } }`。公共 `localizeHarnessPresentation` 按精确 locale、语言、原文逐字段回退；不根据模式 ID、英文文案或 `/compact` 推断语义。插件拥有翻译、原生动态目录的已知文案映射及版本兼容，未知原生文案保留原样。元数据不允许覆盖 ID、危险标记、参数或执行行为，限制 locale 数量、键和文本长度。`atCreate` 的锁定提示属于通用能力说明，不点名某个 Harness。

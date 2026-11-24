@@ -58,6 +58,7 @@ export {
 
 export {
   accountBalanceSnapshotSchema,
+  billingSourceRefSchema,
   harnessAccountSnapshotSchema,
   harnessAccountSourceSchema,
   harnessAccountSourceListParamsSchema,
@@ -69,6 +70,7 @@ export {
 } from "./harness-accounts.js";
 export type {
   AccountBalanceSnapshot,
+  BillingSourceRef,
   HarnessAccountSnapshot,
   HarnessAccountSource,
   HarnessAccountSourceListResult,
@@ -77,6 +79,13 @@ export type {
   HarnessAccountListParams,
   HarnessAccountListResult,
 } from "./harness-accounts.js";
+export {
+  RETAINED_PREWARM_RUN_METHOD,
+  retainedPrewarmParamsSchema,
+  retainedPrewarmResultSchema,
+  type RetainedPrewarmParams,
+  type RetainedPrewarmResult,
+} from "./retained-prewarm.js";
 
 export {
   HARNESS_PLUGIN_ROUTE_PREFIX,

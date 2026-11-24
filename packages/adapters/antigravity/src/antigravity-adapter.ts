@@ -61,6 +61,8 @@ import {
   type HostTurnId,
   type NativeSessionRef,
   type NativeTurnRef,
+  type RetainedPrewarmParams,
+  type RetainedPrewarmResult,
 } from "@codexhost/shared-contracts";
 import { AntigravityAcpTransport } from "./acp-transport.js";
 import {
@@ -92,6 +94,7 @@ import { resolveAntigravityExecutable } from "./command.js";
 import { antigravityDelegationInstructions } from "./delegation.js";
 import { forkAntigravitySession, nativeConversationDbPath, validNativeSessionRef } from "./fork.js";
 import {
+  findAntigravityAcpConfigOption,
   parseAntigravityModels,
   parseAntigravityAcpModelCatalog,
   readAcpEffectiveModelState,
@@ -116,6 +119,11 @@ import {
   type AntigravityQuotaSnapshot,
 } from "./quota.js";
 import { rollbackAntigravityLastTurn } from "./rollback.js";
+import {
+  antigravityProfileRef,
+  inspectAntigravityPrewarmSource,
+  runAntigravityRetainedPrewarm,
+} from "./retained-prewarm.js";
 import { AntigravitySessionImport } from "./session-import.js";
 import * as skillDiscovery from "./skill-discovery.js";
 import { ANTIGRAVITY_COMMAND_CATALOG, parseAndFormatAntigravityCommand } from "./slash-commands.js";
@@ -706,22 +714,14 @@ export class AntigravitySession implements HarnessSession {
     };
     this.#syncUsageModel(true);
   }
-  #findConfigOption(category: "model" | "thinking"): AntigravityAcpConfigOption | undefined {
-    return this.#configOptions.find(
-      (entry) =>
-        entry.category === category ||
-        entry.id === category ||
-        (category === "thinking" && entry.id === "thought_level"),
-    );
-  }
   #hasConfigChoice(category: "model" | "thinking", value: string): boolean {
-    const option = this.#findConfigOption(category);
+    const option = findAntigravityAcpConfigOption(this.#configOptions, category);
     return !!option?.options.some((choice) => choice.value === value);
   }
   #resolveThinkingChoice(preferred?: string): string | undefined {
     if (preferred && this.#hasConfigChoice("thinking", preferred)) return preferred;
     if (!this.#state.effectiveThinkingOptionId) {
-      return this.#findConfigOption("thinking")?.options.at(-1)?.value;
+      return findAntigravityAcpConfigOption(this.#configOptions, "thinking")?.options.at(-1)?.value;
     }
     return undefined;
   }
@@ -729,7 +729,7 @@ export class AntigravitySession implements HarnessSession {
     requestedModelId: string,
     requestedThinking?: HarnessThinkingOptionId,
   ): Promise<{ impliedThinking?: HarnessThinkingOptionId; bakedInThinking: boolean }> {
-    const option = this.#findConfigOption("model");
+    const option = findAntigravityAcpConfigOption(this.#configOptions, "model");
     if (!option) {
       throw new AntigravityTransportError(
         "unsupported",
@@ -769,7 +769,7 @@ export class AntigravitySession implements HarnessSession {
     };
   }
   async #setConfig(category: "model" | "thinking", value: string): Promise<void> {
-    const option = this.#findConfigOption(category);
+    const option = findAntigravityAcpConfigOption(this.#configOptions, category);
     if (!option || !option.options.some((choice) => choice.value === value))
       throw new AntigravityTransportError(
         "unsupported",
@@ -1941,6 +1941,7 @@ export class AntigravityAdapter implements HarnessAdapter {
   readonly usageStatistics: ReturnType<typeof createAntigravityUsageStatistics>;
   readonly #environment: NodeJS.ProcessEnv;
   readonly #sessions = new Set<AntigravitySession>();
+  readonly #retainedPrewarms = new Set<Promise<HarnessResult<RetainedPrewarmResult>>>();
   readonly #cache = new Map<string, HarnessInspection>();
   readonly #inflight = new Map<string, Promise<HarnessInspection>>();
   readonly #abort = new AbortController();
@@ -2194,6 +2195,26 @@ export class AntigravityAdapter implements HarnessAdapter {
     const quota = await this.#refreshQuota();
     return quota ? projectAntigravityQuota(quota) : null;
   }
+  async #fetchQuota(
+    signal: AbortSignal,
+    cwd = this.#quotaCwd,
+  ): Promise<AntigravityQuotaReading | null> {
+    const command = resolveAntigravityExecutable({
+      ...(this.options.command ? { command: this.options.command } : {}),
+      environment: this.#environment,
+    });
+    if (!command) return null;
+    return fetchAntigravityQuota((args) =>
+      runQuotaCli(
+        command,
+        args,
+        cwd,
+        this.#environment,
+        this.options.inspectTimeoutMs ?? 20_000,
+        signal,
+      ),
+    );
+  }
   #refreshQuota(force = false): Promise<AntigravityQuotaReading | null> {
     if (this.#closed) return Promise.resolve(null);
     if (
@@ -2204,22 +2225,7 @@ export class AntigravityAdapter implements HarnessAdapter {
       return Promise.resolve(this.#quota);
     }
     return (this.#quotaRefresh ??= (async () => {
-      const command = resolveAntigravityExecutable({
-        ...(this.options.command ? { command: this.options.command } : {}),
-        environment: this.#environment,
-      });
-      const quota = command
-        ? await fetchAntigravityQuota((args) =>
-            runQuotaCli(
-              command,
-              args,
-              this.#quotaCwd,
-              this.#environment,
-              this.options.inspectTimeoutMs ?? 20_000,
-              this.#abort.signal,
-            ),
-          )
-        : null;
+      const quota = await this.#fetchQuota(this.#abort.signal);
       if (!this.#closed) this.#quota = quota;
       return this.#closed ? null : quota;
     })().finally(() => {
@@ -2227,11 +2233,23 @@ export class AntigravityAdapter implements HarnessAdapter {
       this.#quotaRefresh = undefined;
     }));
   }
-  async inspectAccount() {
+  async inspectAccount(retainedPrewarmDirectory?: string) {
+    const profile = await antigravityProfileRef(this.#environment).catch(() => undefined);
     const quota = await this.#refreshQuota(true);
-    const credits = quota ? projectAntigravityQuota(quota) : null;
+    if (!quota) return null;
+    const credits = projectAntigravityQuota(quota);
     if (!credits) return null;
+    const retained = profile
+      ? await inspectAntigravityPrewarmSource(
+          this.#environment,
+          profile,
+          quota,
+          retainedPrewarmDirectory,
+        ).catch(() => undefined)
+      : undefined;
     return {
+      ...(retained ? { billingSourceRef: retained.ref } : {}),
+      ...(retained?.scopes.length ? { retainedPrewarmScopes: retained.scopes } : {}),
       credits: {
         usedPercent: credits.usedPercent,
         periodType: credits.periodType,
@@ -2242,6 +2260,28 @@ export class AntigravityAdapter implements HarnessAdapter {
       },
     };
   }
+  async runRetainedPrewarm(
+    input: RetainedPrewarmParams,
+    storageDirectory: string,
+  ): Promise<HarnessResult<RetainedPrewarmResult>> {
+    if (this.#closed) return err("invalidState", "Adapter is closed");
+    const { command, commandTimeoutMs, closeTimeoutMs, createTransport } = this.options;
+    const pending = runAntigravityRetainedPrewarm(input, storageDirectory, {
+      ...(command ? { command } : {}),
+      ...(commandTimeoutMs !== undefined ? { commandTimeoutMs } : {}),
+      ...(closeTimeoutMs !== undefined ? { closeTimeoutMs } : {}),
+      ...(createTransport ? { createTransport } : {}),
+      environment: this.#environment,
+      signal: this.#abort.signal,
+      readActiveQuota: (signal, cwd) => this.#fetchQuota(signal, cwd),
+    });
+    this.#retainedPrewarms.add(pending);
+    try {
+      return await pending;
+    } finally {
+      this.#retainedPrewarms.delete(pending);
+    }
+  }
   async close(): Promise<void> {
     this.#closed = true;
     this.#abort.abort();
@@ -2249,7 +2289,10 @@ export class AntigravityAdapter implements HarnessAdapter {
     this.#inflight.clear();
     this.#quota = null;
     this.#quotaFetchedAt = Number.NEGATIVE_INFINITY;
-    await Promise.all([...this.#sessions].map((session) => session.close()));
+    await Promise.all([
+      ...Array.from(this.#sessions, (session) => session.close()),
+      ...this.#retainedPrewarms,
+    ]);
     this.#sessions.clear();
   }
 }

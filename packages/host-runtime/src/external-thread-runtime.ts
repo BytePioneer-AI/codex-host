@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  BillingSourceSession,
   HarnessAdapter,
   HarnessModelRef,
   HarnessResult,
@@ -315,6 +316,7 @@ export class ExternalThreadRuntime {
       queue: input.idleRelease?.queue ?? new DesktopRequestQueue(),
       canRelease: (thread) =>
         !thread.sessionUnavailable &&
+        !thread.record.billingSourceRef &&
         !this.#lifecycle.busy(thread.id) &&
         (input.idleRelease?.canRelease(thread) ?? false),
       onClosed: async (thread) => {
@@ -359,16 +361,55 @@ export class ExternalThreadRuntime {
   }
 
   /** Confirm release before forgetting either the Session owner or its persisted mapping. */
-  async deleteThread(hostThreadId: StoredThreadRecordV1["hostThreadId"]): Promise<void> {
-    await this.#withLifecycle(hostThreadId, async () => {
+  async deleteThread(
+    hostThreadId: StoredThreadRecordV1["hostThreadId"],
+  ): Promise<"deleted" | "not-persisted" | "unknown" | undefined> {
+    return this.#withLifecycle(hostThreadId, async () => {
       const thread = this.#threads.get(hostThreadId);
+      const record = thread?.record ?? (await this.#repository.find(hostThreadId));
+      const billingSourceRef = record?.billingSourceRef;
+      let nativeSession: "deleted" | "not-persisted" | "unknown" | undefined;
+      const cleanupUnconfirmed = (cause: unknown) =>
+        new ExternalSessionReleaseError(
+          cause,
+          "Billing Source native cleanup is unconfirmed; the Host mapping was retained",
+        );
+      // A crashed/restarted Host no longer owns native cleanup authority. The visible disposable
+      // mapping can still be forgotten explicitly, without claiming that native cleanup happened.
+      if (billingSourceRef && !thread) {
+        await this.#repository.removeThread(hostThreadId);
+        return "unknown";
+      }
+      let releaseError: unknown;
       if (thread) {
         thread.sessionUnavailable = true;
         thread.stateObserver.fault(new Error("External Thread is being deleted"));
-        await this.#lifecycle.release(hostThreadId, thread.session, thread.outputTask);
+        try {
+          await this.#lifecycle.release(hostThreadId, thread.session, thread.outputTask);
+        } catch (error) {
+          if (!billingSourceRef) throw error;
+          releaseError = error;
+        }
       }
-      this.remove(hostThreadId);
+      if (billingSourceRef) {
+        const session = thread?.session as BillingSourceSession | undefined;
+        try {
+          const confirmed = await session?.confirmNativeCleanup?.();
+          if (
+            !confirmed?.ok ||
+            (confirmed.value !== "deleted" && confirmed.value !== "not-persisted")
+          ) {
+            throw new Error("Adapter did not confirm native cleanup");
+          }
+          nativeSession = confirmed.value;
+        } catch (error) {
+          throw cleanupUnconfirmed(releaseError ?? error);
+        }
+      }
+      if (releaseError) throw releaseError;
       await this.#repository.removeThread(hostThreadId);
+      this.remove(hostThreadId);
+      return nativeSession;
     });
   }
 
@@ -423,6 +464,7 @@ export class ExternalThreadRuntime {
 
   /** Called without awaiting from the output consumer: release itself drains that consumer. */
   async discardUnavailableIdle(thread: ExternalThread): Promise<void> {
+    if (thread.record.billingSourceRef) return; // Keep the cleanup authority for explicit deletion.
     const session = thread.session;
     try {
       await this.#withLifecycle(thread.id, async () => {
@@ -669,10 +711,8 @@ export class ExternalThreadRuntime {
       };
     }
     if (!record) return { kind: "official" };
-    if (
-      (record.state !== "ready" || !record.nativeSessionRef) &&
-      !isDeferredPendingRecord(record)
-    ) {
+    if (record.billingSourceRef) return { kind: "external", record, thread: null };
+    if ((record.state !== "ready" || !record.nativeSessionRef) && !isDeferredPendingRecord(record)) {
       return {
         kind: "error",
         error: { code: -32079, message: "External Native Session is unavailable" },
@@ -687,6 +727,18 @@ export class ExternalThreadRuntime {
         // Read after admission, never act on a location captured before another recovery.
         const location = await this.#locate(threadId);
         if (location.kind !== "external") return location;
+        if (
+          location.record.billingSourceRef &&
+          (!location.thread || location.thread.sessionUnavailable)
+        ) {
+          return {
+            kind: "error",
+            error: {
+              code: -32079,
+              message: "Disposable Billing Source Session cannot be restored",
+            },
+          };
+        }
         if (location.thread) {
           if (location.thread.sessionUnavailable && this.#idleForRestore(location.thread)) {
             await this.#dropIdleSession(location.thread);

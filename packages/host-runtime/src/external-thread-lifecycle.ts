@@ -3,11 +3,11 @@ import type { HarnessSession } from "@codexhost/harness-adapter";
 const RELEASE_TIMEOUT_MS = 60_000;
 
 export class ExternalSessionReleaseError extends Error {
-  constructor(cause: unknown) {
-    super(
-      "External Session shutdown could not be confirmed. Retry to confirm release; recovery is blocked until the old Session closes and its output drains. If the Harness cannot retry shutdown, stop residual processes and restart Codex Desktop.",
-      { cause },
-    );
+  constructor(
+    cause: unknown,
+    message = "External Session shutdown could not be confirmed. Retry to confirm release; recovery is blocked until the old Session closes and its output drains. If the Harness cannot retry shutdown, stop residual processes and restart Codex Desktop.",
+  ) {
+    super(message, { cause });
     this.name = "ExternalSessionReleaseError";
   }
 }

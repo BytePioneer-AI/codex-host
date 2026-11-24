@@ -11,6 +11,7 @@ import {
   DELEGATION_READ_METHOD,
   delegationReadParamsSchema,
   EXTERNAL_THREAD_PREWARM_PARAM,
+  billingSourceRefSchema,
   THREAD_PREWARM_DISCARD_METHOD,
   threadPrewarmDiscardParamsSchema,
   REMOTE_SSH_SETUP_METHOD,
@@ -77,7 +78,7 @@ import { NativeAccountObserver } from "./native-account-observer.js";
 import { nativeThreadSupportsReferences } from "./native-thread-reference-capability.js";
 import { normalizeDesktopTitleMcp } from "./native-title-mcp.js";
 import { THREAD_REFERENCE_SOURCE_HOST_PARAM } from "@codexhost/shared-contracts";
-import { HarnessAccountInspectionCache } from "./harness-accounts.js";
+import { HarnessAccountInspectionCache, retainedPrewarmDirectory } from "./harness-accounts.js";
 import type { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
@@ -85,10 +86,13 @@ import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 
 import type {
+  BillingSourceSession,
+  CreateSessionInput,
   HarnessAdapter,
   HarnessOutput,
   HarnessSession,
   HarnessSessionCapabilities,
+  NativeCleanupReceipt,
   HostApprovalInteraction,
   HostSubagentState,
   HostApprovalResponse,
@@ -346,6 +350,26 @@ const OFFICIAL_PERMISSION_LABELS = new Map([
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function closeBillingSourceAfterSetup(
+  session: HarnessSession,
+): Promise<NativeCleanupReceipt | "unknown"> {
+  try {
+    await session.close();
+  } catch {
+    // Cleanup proof is independent of transport shutdown; still request the Adapter receipt.
+  }
+  try {
+    const confirm = (session as Partial<BillingSourceSession>).confirmNativeCleanup;
+    if (typeof confirm !== "function") return "unknown";
+    const confirmed = await confirm.call(session);
+    return confirmed.ok && (confirmed.value === "deleted" || confirmed.value === "not-persisted")
+      ? confirmed.value
+      : "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 import {
   classifyCreateRequestRoute,
@@ -1777,7 +1801,15 @@ export class AppServerHost {
       await this.#externalRuntime.idleRelease.drain();
       await this.#pluginLoading;
       const threads = this.#externalRuntime.values();
-      await Promise.allSettled(threads.map(({ session }) => session.close()));
+      const disposable = threads.filter((thread) => thread.record.billingSourceRef);
+      const retained = threads.filter((thread) => !thread.record.billingSourceRef);
+      const cleaned = await Promise.allSettled(
+        disposable.map((thread) => this.#externalRuntime.deleteThread(thread.id)),
+      );
+      for (const result of cleaned) {
+        if (result.status === "rejected") this.#diagnose(result.reason);
+      }
+      await Promise.allSettled(retained.map(({ session }) => session.close()));
       await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
       await Promise.allSettled(
         threads.map((thread) => this.#externalRuntime.persistUsageMeasurements(thread)),
@@ -2770,7 +2802,10 @@ export class AppServerHost {
     adapter: HarnessAdapter,
     refresh = false,
   ): Promise<HarnessAccountInspectResult> {
-    return this.#accountInspections.inspect(adapter, this.#pluginDescriptors, refresh);
+    const directory = adapter.runRetainedPrewarm
+      ? retainedPrewarmDirectory(this.#options.environment ?? process.env, adapter.harnessId)
+      : undefined;
+    return this.#accountInspections.inspect(adapter, this.#pluginDescriptors, refresh, directory);
   }
 
   async #currentCodexAccountId(): Promise<string | null> {
@@ -5324,9 +5359,36 @@ export class AppServerHost {
       return;
     }
     const params = requestObject(request);
+    const binding = Object.hasOwn(params, "billingSourceRef")
+      ? billingSourceRefSchema.safeParse(params.billingSourceRef)
+      : undefined;
+    if (binding && (!binding.success || binding.data.harnessId !== harnessId)) {
+      this.#routeObservationTracker.rejectCreate(request.id);
+      await this.#writer.json(rpcError(request, -32602, "Invalid Billing Source for this Harness"));
+      return;
+    }
+    const billingSourceRef = binding?.data;
+    if (billingSourceRef && !adapter.openBillingSource) {
+      this.#routeObservationTracker.rejectCreate(request.id);
+      await this.#writer.json(
+        rpcError(request, -32070, "Harness does not support Billing Source binding"),
+      );
+      return;
+    }
     const route = decodeCreateRoute(request);
     // Renderer-side prewarms mark the request; main-process prewarms can mark only the Model.
     const prewarm = params[EXTERNAL_THREAD_PREWARM_PARAM] === true || route?.prewarm === true;
+    if (billingSourceRef && (prewarm || params.projectlessWorkspace !== undefined)) {
+      this.#routeObservationTracker.rejectCreate(request.id);
+      await this.#writer.json(
+        rpcError(
+          request,
+          -32602,
+          "Billing Source Threads require an explicit workspace and cannot be drafts",
+        ),
+      );
+      return;
+    }
     const requestedModel = route && route.harnessId !== "codex" ? route.model : undefined;
     const requestedThinkingOptionId =
       route && route.harnessId !== "codex" ? route.thinkingOptionId : undefined;
@@ -5394,11 +5456,12 @@ export class AppServerHost {
 
     const recordInput = createExternalThreadRecordInput({
       harnessId: adapter.harnessId,
+      ...(billingSourceRef ? { billingSourceRef } : {}),
       cwd,
       transportModelId,
       ...(projectId === undefined ? {} : { projectId }),
       ...(projectlessWorkspace ? { projectlessWorkspace } : {}),
-      ephemeral: params.ephemeral === true,
+      ephemeral: billingSourceRef !== undefined || params.ephemeral === true,
       historyMode: params.historyMode === "paginated" ? "paginated" : "legacy",
     });
     let record: StoredThreadRecordV1;
@@ -5410,7 +5473,7 @@ export class AppServerHost {
       return;
     }
 
-    const sessionResult = await adapter.open({
+    const openInput: CreateSessionInput = {
       kind: "create",
       cwd,
       ...(prewarm ? { prewarm: true } : {}),
@@ -5421,16 +5484,58 @@ export class AppServerHost {
       ...(requestedModel ? { model: requestedModel } : {}),
       ...(requestedThinkingOptionId ? { thinkingOptionId: requestedThinkingOptionId } : {}),
       ...(requestedPermissionModeId ? { permissionModeId: requestedPermissionModeId } : {}),
-    });
+    };
+    const sessionResult = billingSourceRef
+      ? await adapter.openBillingSource!({ ...openInput, billingSourceRef })
+      : await adapter.open(openInput);
     if (!sessionResult.ok) {
       this.#routeObservationTracker.rejectCreate(request.id);
-      await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
+      const nativeCleanup =
+        "nativeCleanup" in sessionResult ? sessionResult.nativeCleanup : "not-persisted";
+      if (nativeCleanup !== "unknown") {
+        await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
+      }
       const mapped = mapExternalThreadHarnessError(sessionResult.error, "create");
-      await this.#writer.json(rpcError(request, mapped.code, mapped.message));
+      await this.#writer.json(
+        rpcError(
+          request,
+          nativeCleanup === "unknown" ? -32075 : mapped.code,
+          nativeCleanup === "unknown"
+            ? `${mapped.message}; Thread ${record.hostThreadId} retained with unknown native cleanup`
+            : mapped.message,
+        ),
+      );
       return;
     }
     const session = sessionResult.value;
+    const bound =
+      billingSourceRef && "billingSourceRef" in session
+        ? (session as BillingSourceSession)
+        : undefined;
+    if (
+      billingSourceRef &&
+      (bound?.billingSourceRef.harnessId !== billingSourceRef.harnessId ||
+        bound.billingSourceRef.id !== billingSourceRef.id ||
+        typeof bound.confirmNativeCleanup !== "function")
+    ) {
+      this.#routeObservationTracker.rejectCreate(request.id);
+      const nativeCleanup = await closeBillingSourceAfterSetup(session);
+      if (nativeCleanup !== "unknown") {
+        await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
+      }
+      await this.#writer.json(
+        rpcError(
+          request,
+          -32075,
+          nativeCleanup === "unknown"
+            ? `Adapter did not confirm the Billing Source or native cleanup for Thread ${record.hostThreadId}; the Host mapping was retained`
+            : `Adapter did not confirm the Billing Source for Thread ${record.hostThreadId}; native cleanup was confirmed`,
+        ),
+      );
+      return;
+    }
     await this.#externalRuntime.idleRelease.runOperation(record.hostThreadId, async () => {
+      let externalThread: ExternalThread | undefined;
       try {
         if (session.initialState.nativeRef && !prewarm) {
           record = await this.#repository.commitNative(
@@ -5448,7 +5553,7 @@ export class AppServerHost {
           turns: [],
           sessionId: record.hostThreadId,
         });
-        const externalThread = this.#registerExternalThread({
+        externalThread = this.#registerExternalThread({
           record,
           session,
           unsubmittedPrewarm: prewarm,
@@ -5467,6 +5572,7 @@ export class AppServerHost {
           rpcEnvelope(request, {
             result: {
               thread,
+              ...(billingSourceRef ? { billingSourceRef } : {}),
               model: transportModelId,
               modelProvider: "codexhost",
               cwd,
@@ -5489,12 +5595,22 @@ export class AppServerHost {
         // an identity. Only user submission may publish them to Desktop history.
         if (record.state === "ready") await this.#notifyExternalThreadStarted(thread);
       } catch {
-        this.#externalRuntime.remove(record.hostThreadId);
         this.#routeObservationTracker.forgetThread(record.hostThreadId);
-        await session.close().catch(() => undefined);
-        await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
+        const nativeCleanup = bound ? await closeBillingSourceAfterSetup(session) : "not-persisted";
+        if (nativeCleanup !== "unknown") {
+          this.#externalRuntime.remove(record.hostThreadId);
+          await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
+        } else if (externalThread) {
+          this.#externalRuntime.markSessionUnavailable(externalThread);
+        }
         await this.#writer.json(
-          rpcError(request, -32081, "External Thread could not be persisted"),
+          rpcError(
+            request,
+            -32081,
+            nativeCleanup !== "unknown"
+              ? "External Thread could not be persisted"
+              : `External Thread ${record.hostThreadId} setup failed and native cleanup is unconfirmed`,
+          ),
         );
       }
     });
@@ -5822,8 +5938,9 @@ export class AppServerHost {
       );
       return;
     }
+    let nativeSession: "deleted" | "not-persisted" | "unknown" | undefined;
     try {
-      await this.#externalRuntime.deleteThread(location.record.hostThreadId);
+      nativeSession = await this.#externalRuntime.deleteThread(location.record.hostThreadId);
     } catch (error) {
       if (!(error instanceof ExternalSessionReleaseError) && location.thread)
         await this.#resolveThreadInteractions(location.thread);
@@ -5839,7 +5956,11 @@ export class AppServerHost {
     this.#routeObservationTracker.forgetThread(location.record.hostThreadId);
     this.#externalQueue.clear(location.record.hostThreadId);
     this.#queuedTurnStarts.delete(location.record.hostThreadId);
-    await this.#writer.json(rpcEnvelope(request, { result: {} }));
+    await this.#writer.json(
+      rpcEnvelope(request, {
+        result: nativeSession ? { nativeSession, hostMapping: "deleted" } : {},
+      }),
+    );
     await this.#writer.json({
       method: "thread/deleted",
       params: { threadId: location.record.hostThreadId },

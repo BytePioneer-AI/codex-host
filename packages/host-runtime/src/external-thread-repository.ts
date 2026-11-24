@@ -621,6 +621,7 @@ export function createExternalThreadRecordInput(input: {
   hostThreadId?: HostThreadId;
   createRequestId?: string;
   harnessId: CreateProvisionalThreadInput["harnessId"];
+  billingSourceRef?: CreateProvisionalThreadInput["billingSourceRef"];
   cwd: string;
   title?: string;
   transportModelId: string;
@@ -638,6 +639,7 @@ export function createExternalThreadRecordInput(input: {
     hostThreadId: input.hostThreadId ?? hostThreadIdSchema.parse(randomUUID()),
     createRequestId: input.createRequestId ?? randomUUID(),
     harnessId: input.harnessId,
+    ...(input.billingSourceRef ? { billingSourceRef: input.billingSourceRef } : {}),
     cwd: input.cwd,
     ...(input.title ? { title: input.title } : {}),
     transportModelId: input.transportModelId,

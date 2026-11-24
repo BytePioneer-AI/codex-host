@@ -174,6 +174,18 @@ export function antigravityAvailableThinkingOptions(
   return options.length > 0 ? options : undefined;
 }
 
+export function findAntigravityAcpConfigOption(
+  config: readonly AntigravityAcpConfigOption[],
+  category: "model" | "thinking",
+): AntigravityAcpConfigOption | undefined {
+  return config.find(
+    (entry) =>
+      entry.category === category ||
+      entry.id === category ||
+      (category === "thinking" && entry.id === "thought_level"),
+  );
+}
+
 export interface AntigravityAcpEffectiveModelState {
   effectiveModel?: HarnessModelRef;
   resolvedModelLabel?: string;

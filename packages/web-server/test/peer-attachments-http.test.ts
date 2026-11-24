@@ -511,8 +511,11 @@ it("blocks parent-directory symlink replacement TOCTOU between realpath and open
       stat,
       open,
       platform: process.platform,
-      realpath: async (targetPath) => {
-        const resolved = await realpath(targetPath);
+      realpath: (async (targetPath, options) => {
+        const resolved =
+          options === "buffer" || (typeof options === "object" && options?.encoding === "buffer")
+            ? await realpath(targetPath, { encoding: "buffer" })
+            : await realpath(targetPath, options);
         realpathCalls++;
         if (realpathCalls === 2 && !swappedAfterRealpath) {
           swappedAfterRealpath = true;
@@ -520,7 +523,7 @@ it("blocks parent-directory symlink replacement TOCTOU between realpath and open
           symlinkSync(outside, subDir2);
         }
         return resolved;
-      },
+      }) as typeof realpath,
     },
   );
   assert.equal(swappedAfterRealpath, true);
@@ -542,8 +545,11 @@ it("blocks parent-directory symlink replacement TOCTOU between realpath and open
       stat,
       open,
       platform: process.platform,
-      realpath: async (targetPath) => {
-        const resolved = await realpath(targetPath);
+      realpath: (async (targetPath, options) => {
+        const resolved =
+          options === "buffer" || (typeof options === "object" && options?.encoding === "buffer")
+            ? await realpath(targetPath, { encoding: "buffer" })
+            : await realpath(targetPath, options);
         rootSwapRealpathCalls++;
         if (rootSwapRealpathCalls === 2 && !swappedWorkspaceRoot) {
           swappedWorkspaceRoot = true;
@@ -551,7 +557,7 @@ it("blocks parent-directory symlink replacement TOCTOU between realpath and open
           symlinkSync(outside, workspaceToSwap);
         }
         return resolved;
-      },
+      }) as typeof realpath,
     },
   );
   assert.equal(swappedWorkspaceRoot, true);

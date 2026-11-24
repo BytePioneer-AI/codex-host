@@ -277,26 +277,46 @@ it("rejects cross-scope continuations and reports pin failures without hiding th
   assert.ok(errors.some((args) => String(args[0]).includes("native pins unavailable")));
 });
 
-it("continues a Workspace's page within its folder, outside nested Workspaces, only after a cursor", async (t) => {
+it("returns only threads in the requested Workspace on a scoped continuation", async (t) => {
   const f = fixture(t);
-  const head = await f.list();
   const folder = (...parts: string[]) => join(f.root, ...parts);
-  for (const path of [folder("app", "nested"), folder("elsewhere")])
+  const projectFolders = [
+    ["app", folder("app"), "native-23"],
+    ["nested", folder("app", "nested"), "native-24"],
+    ["elsewhere", folder("elsewhere"), "native-25"],
+  ] as const;
+  for (const [id, path, threadId] of projectFolders) {
     mkdirSync(path, { recursive: true });
-  const app = f.workspaces.create(folder("app")).workspace;
-  f.workspaces.create(folder("app", "nested"));
-  f.workspaces.create(folder("elsewhere"));
+    f.host.projectSnapshot.projects.push({ id, name: id, rootPaths: [path] });
+    f.host.projectSnapshot.assignments[threadId] = id;
+    const thread = f.host.threads.get(threadId);
+    assert.ok(thread);
+    thread.cwd = path;
+  }
+  const head = await f.list();
+  const app = f.workspaces.list().find((workspace) => workspace.path === folder("app"));
+  assert.ok(app);
   const count = f.cursors.length;
   const headless = await f.rpc.dispatch("session/list", {
     args: { request: { workspaceId: app.workspaceId } },
   });
   assert.equal(headless.ok, false, "a Workspace scope only continues a page");
   assert.equal(f.cursors.length, count);
-  await f.list({ cursor: head.nextCursor, workspaceId: app.workspaceId });
+  const appPage = await f.list({ cursor: head.nextCursor, workspaceId: app.workspaceId });
+  assert.deepEqual(
+    appPage.items.map((row) => row.sessionId),
+    ["native-23"],
+  );
   assert.deepEqual(f.cursors.at(-1)?.scope, {
     cwd: folder("app"),
     excludeCwds: [folder("app", "nested")],
   });
-  await f.list({ cursor: head.nextCursor });
+  const appEnd = await f.list({ cursor: appPage.nextCursor, workspaceId: app.workspaceId });
+  assert.deepEqual(appEnd.items, []);
+  assert.equal(appEnd.nextCursor, null);
+  assert.ok(!f.emitted.some((event) => event.event === "api-session/added"));
+  const recents = await f.list({ cursor: head.nextCursor });
+  assert.ok(recents.items.some((row) => row.sessionId === "native-24"));
+  assert.ok(recents.items.some((row) => row.sessionId === "native-25"));
   assert.equal(f.cursors.at(-1)?.scope, undefined, "Recents keeps the plain next page");
 });

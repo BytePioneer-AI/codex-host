@@ -47,6 +47,14 @@ function sessionSeqCursor(value: number): SessionSeqCursor {
  */
 export type SessionListPhase = "pending" | "ready";
 
+export type WorkspaceHistoryState = "search" | "continue" | "loading" | "retry" | "done";
+
+interface WorkspaceHistoryPage {
+  cursor: string | null;
+  state: WorkspaceHistoryState;
+  pending?: Promise<void>;
+}
+
 /** Request-local content hit returned to sidebar search consumers. */
 export interface SessionSearchResultItem {
   sessionId: SessionId;
@@ -62,9 +70,10 @@ export interface SessionListSnapshot {
   error: RemoteFailure | null;
   /** Which existing list operation retries the failed request, independent of hasMore. */
   errorPage: "head" | "more" | null;
-  /** The Workspace a failed explicit page read on for; its retry keeps that scope. */
-  errorWorkspaceId: WorkspaceId | null;
   hasMore: boolean;
+  canSearchWorkspaceHistory: boolean;
+  workspaceHistory: Readonly<Partial<Record<WorkspaceId, WorkspaceHistoryState>>>;
+  workspaceOnlyIds: readonly SessionId[];
   /** Accepted successful head refreshes only; not a catalog-membership completeness claim. */
   headRefreshRevision?: number;
   /** Header-only discoveries are not automatic background-history discovery. */
@@ -128,17 +137,20 @@ export class SessionManager {
   private readonly projectionStores = new Map<SessionId, ProjectionValueStore>();
   private summaries: SessionSummary[] = [];
   private readonly summaryOnlyIds = new Set<SessionId>();
+  private readonly workspaceOnlyIds = new Set<SessionId>();
   private listState: "idle" | "loading" | "error" = "idle";
   /** Arrival phase; the pending → ready edge fires on the first successful pull (see SessionListPhase). */
   private listPhase: SessionListPhase = "pending";
   private listError: RemoteFailure | null = null;
   private listRequestIsMore = false;
-  private listRequestWorkspaceId: WorkspaceId | undefined;
   private headRefreshRevision = 0;
   private listInflight: Promise<void> | null = null;
   /** Browser-local query scope, retained across reconnects and automatic refreshes. */
   private includeArchived = false;
   private nextCursor: string | null | undefined;
+  private workspaceStartCursor: string | null | undefined;
+  private workspaceHistory = new Map<WorkspaceId, WorkspaceHistoryPage>();
+  private activeWorkspacePage: WorkspaceId | undefined;
   /** Active list request's mutation log; its identity also fences completion after reconnect. */
   private listMutations: SessionListMutation[] | null = null;
   private readonly addresses = new Map<SessionId, SubagentAddress>();
@@ -238,8 +250,7 @@ export class SessionManager {
    */
   async dispose(): Promise<void> {
     this.disposed = true;
-    this.listMutations = null;
-    this.listInflight = null;
+    this.resetListQueries();
     this.engagedSessions.clear();
     const reads = [...this.projectionInflight.values()];
     for (const { controller } of reads) controller.abort();
@@ -450,10 +461,17 @@ export class SessionManager {
   setIncludeArchived(includeArchived: boolean): Promise<void> {
     if (this.includeArchived === includeArchived) return this.listInflight ?? Promise.resolve();
     this.includeArchived = includeArchived;
+    this.resetListQueries();
+    return this.refreshList();
+  }
+
+  private resetListQueries(): void {
     this.nextCursor = undefined;
+    this.workspaceStartCursor = undefined;
+    this.workspaceHistory = new Map();
+    this.activeWorkspacePage = undefined;
     this.listMutations = null;
     this.listInflight = null;
-    return this.refreshList();
   }
 
   /** Resolve a direct link without loading any preceding catalog pages. */
@@ -469,24 +487,56 @@ export class SessionManager {
     }
   }
 
-  /**
-   * Fetch one older native page in this browser's current scope. For a Workspace the page
-   * reads on until it reaches one of that Workspace's Sessions or the catalog ends.
-   */
+  /** Search a Workspace independently of the recent Sessions and other Workspaces. */
   loadMore(workspaceId?: WorkspaceId): Promise<void> {
-    if (!this.nextCursor) return Promise.resolve();
-    return this.refreshList(this.nextCursor, workspaceId);
+    if (workspaceId === undefined)
+      return this.nextCursor ? this.refreshList(this.nextCursor) : Promise.resolve();
+    const history = this.workspaceHistory;
+    const existing = history.get(workspaceId);
+    if (existing?.pending) return existing.pending;
+    const cursor = existing ? existing.cursor : this.workspaceStartCursor;
+    if (!cursor || this.disposed) return Promise.resolve();
+    const page: WorkspaceHistoryPage = { cursor, state: "loading" };
+    history.set(workspaceId, page);
+    this.notifier.markDirty();
+    page.pending = (async () => {
+      // Serialize catalog merges so live mutations apply to the correct baseline.
+      while (this.listInflight && history === this.workspaceHistory) await this.listInflight;
+      if (history === this.workspaceHistory) await this.refreshList(cursor, workspaceId);
+    })().finally(() => {
+      delete page.pending;
+      if (history === this.workspaceHistory) this.notifier.markDirty();
+    });
+    return page.pending;
   }
 
   /** Refresh the head or an explicit page, single-flight within this browser and scope. */
   refreshList(cursor?: string, workspaceId?: WorkspaceId): Promise<void> {
     if (this.disposed) return Promise.resolve();
-    if (this.listInflight !== null) return this.listInflight;
+    if (this.listInflight !== null) {
+      if (workspaceId !== undefined || this.activeWorkspacePage === undefined)
+        return this.listInflight;
+      const history = this.workspaceHistory;
+      return this.listInflight.then(() => {
+        if (history === this.workspaceHistory) return this.refreshList(cursor);
+      });
+    }
     const includeArchived = this.includeArchived;
-    this.listState = "loading";
-    this.listError = null;
-    this.listRequestIsMore = cursor !== undefined;
-    this.listRequestWorkspaceId = cursor === undefined ? undefined : workspaceId;
+    this.activeWorkspacePage = workspaceId;
+    const workspacePage =
+      workspaceId === undefined ? undefined : this.workspaceHistory.get(workspaceId);
+    if (!workspacePage) {
+      this.listState = "loading";
+      this.listError = null;
+      this.listRequestIsMore = cursor !== undefined;
+    }
+    const reportError = (error: RemoteFailure): void => {
+      if (workspacePage) workspacePage.state = "retry";
+      else {
+        this.listState = "error";
+        this.listError = error;
+      }
+    };
     const established = this.summaries;
     const mutations: SessionListMutation[] = [];
     this.listMutations = mutations;
@@ -501,9 +551,22 @@ export class SessionManager {
         if (result.ok) {
           const archived = new Set(result.value.archivedSessionIds);
           const received = new Set(result.value.items.map((summary) => summary.sessionId));
-          const partial = result.value.nextCursor !== undefined;
-          if (cursor !== undefined || this.nextCursor === undefined)
-            this.nextCursor = result.value.nextCursor ?? null;
+          const partial = workspacePage !== undefined || result.value.nextCursor !== undefined;
+          const nextCursor = result.value.nextCursor ?? null;
+          if (workspacePage) {
+            const knownIds = new Set(this.summaries.map((summary) => summary.sessionId));
+            const added = result.value.items.filter(
+              (summary) => !summary.blank && !knownIds.has(summary.sessionId),
+            );
+            for (const summary of added) this.workspaceOnlyIds.add(summary.sessionId);
+            workspacePage.cursor = nextCursor;
+            workspacePage.state = nextCursor ? (added.length > 0 ? "search" : "continue") : "done";
+          } else {
+            for (const id of received) this.workspaceOnlyIds.delete(id);
+            if (cursor !== undefined || this.nextCursor === undefined) this.nextCursor = nextCursor;
+            if (cursor === undefined && this.workspaceStartCursor === undefined)
+              this.workspaceStartCursor = nextCursor;
+          }
           // Partial pages cannot remove already-loaded identities, including hidden archives.
           const rows = [
             ...result.value.items,
@@ -532,11 +595,16 @@ export class SessionManager {
           for (const id of this.summaryOnlyIds) {
             if (received.has(id) || !knownIds.has(id)) this.summaryOnlyIds.delete(id);
           }
+          for (const id of this.workspaceOnlyIds) {
+            if (!knownIds.has(id)) this.workspaceOnlyIds.delete(id);
+          }
           // A full list can remove identities without a removal frame.
           const retained = this.retainedIds(summaries);
           for (const sessionId of this.engagedSessions) this.pruneEngagement(sessionId, retained);
-          this.listState = "idle";
-          this.listPhase = "ready";
+          if (!workspacePage) {
+            this.listState = "idle";
+            this.listPhase = "ready";
+          }
           this.updateParentAvailability();
           // Resident Sessions and list rows share one display blank, reconciled with the metadata projection.
           for (const s of this.summaries) {
@@ -554,17 +622,14 @@ export class SessionManager {
           }
           if (cursor === undefined && this.listMutations === mutations)
             this.headRefreshRevision += 1;
-        } else {
-          this.listState = "error";
-          this.listError = result.error;
-        }
+        } else reportError(result.error);
       } catch (error) {
         if (!isRemoteFailure(error)) throw error;
         if (this.listMutations !== mutations) return;
-        this.listState = "error";
-        this.listError = error;
+        reportError(error);
       } finally {
         if (this.listMutations === mutations) {
+          this.activeWorkspacePage = undefined;
           this.listMutations = null;
           this.listInflight = null;
           this.notifier.markDirty();
@@ -792,7 +857,10 @@ export class SessionManager {
    * @param catalogEntry - false for the direct metadata lookup path, not catalog discovery.
    */
   handleSessionAdded(summary: SessionSummary, catalogEntry = true): void {
-    if (catalogEntry) this.summaryOnlyIds.delete(summary.sessionId);
+    if (catalogEntry) {
+      this.summaryOnlyIds.delete(summary.sessionId);
+      this.workspaceOnlyIds.delete(summary.sessionId);
+    }
     this.mergeSummary(summary);
     if (!this.disposed && summary.running) this.engagedSessions.add(summary.sessionId);
     const session = this.sessions.get(summary.sessionId);
@@ -831,6 +899,7 @@ export class SessionManager {
    * @param sessionId - removed Session identity.
    */
   handleSessionRemoved(sessionId: SessionId): void {
+    this.workspaceOnlyIds.delete(sessionId);
     this.summaryOnlyIds.delete(sessionId);
     const durableSubagent =
       this.subagentAddress(sessionId) !== undefined ||
@@ -903,9 +972,7 @@ export class SessionManager {
       if (session.getSnapshot().openState === "error") void session.resync();
     }
     for (const store of this.projectionStores.values()) store.clear(RECONNECT_DISPLAY_KEYS);
-    this.listMutations = null;
-    this.listInflight = null;
-    this.nextCursor = undefined;
+    this.resetListQueries();
     void this.refreshList();
     const parents = new Set(this.projectionLoads.keys());
     for (const id of this.sessions.keys()) {
@@ -964,14 +1031,17 @@ export class SessionManager {
     return {
       items: this.itemsCache,
       hasMore: !!this.nextCursor,
+      canSearchWorkspaceHistory: !!this.workspaceStartCursor,
+      workspaceHistory: Object.fromEntries(
+        [...this.workspaceHistory].map(([id, page]) => [id, page.pending ? "loading" : page.state]),
+      ),
+      workspaceOnlyIds: [...this.workspaceOnlyIds],
       headRefreshRevision: this.headRefreshRevision,
       summaryOnlyIds: [...this.summaryOnlyIds],
       state: this.listState,
       phase: this.listPhase,
       error: this.listError,
       errorPage: this.listError ? (this.listRequestIsMore ? "more" : "head") : null,
-      errorWorkspaceId:
-        this.listError && this.listRequestIsMore ? (this.listRequestWorkspaceId ?? null) : null,
       projectionsBySession: Object.fromEntries(
         [...this.projectionStores].map(([sessionId, store]) => [
           sessionId,

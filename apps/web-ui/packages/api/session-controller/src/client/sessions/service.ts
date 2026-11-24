@@ -31,6 +31,7 @@ import type {
   SessionListPhase,
   SessionSearchResultItem,
   SessionProjectionSnapshot,
+  WorkspaceHistoryState,
 } from "./manager.ts";
 import type { Session } from "./session.ts";
 
@@ -71,11 +72,13 @@ export interface SessionListState {
   /** Arrival lifecycle projected 1:1 from the manager snapshot (see SessionListPhase): empty-with-ready means "truly no sessions". */
   phase: SessionListPhase;
   hasMore?: boolean;
+  canSearchWorkspaceHistory?: boolean;
+  workspaceHistory?: Readonly<Partial<Record<WorkspaceId, WorkspaceHistoryState>>>;
+  /** Older Sessions loaded only through a Workspace, pending a general catalog read. */
+  workspaceOnlyIds?: readonly SessionId[];
   loading?: boolean;
   listError?: string | null;
   listErrorPage?: "head" | "more" | null;
-  /** The Workspace a failed explicit page read on for; retry it with the same scope. */
-  listErrorWorkspaceId?: WorkspaceId | null;
   /** Successful accepted head pulls in this Client lifetime; pages and incremental events do not advance it. */
   headRefreshRevision?: number;
   /** Known only through a direct metadata read, until a real catalog page/event confirms them. */
@@ -698,10 +701,12 @@ export class ClientSessions implements ISessions {
       phase,
       projectionsBySession,
       hasMore,
+      canSearchWorkspaceHistory,
+      workspaceHistory,
+      workspaceOnlyIds,
       state,
       error,
       errorPage,
-      errorWorkspaceId,
       headRefreshRevision,
       summaryOnlyIds,
     } = this.manager.getListSnapshot();
@@ -789,10 +794,12 @@ export class ClientSessions implements ISessions {
       phase,
       projectionsBySession,
       hasMore,
+      canSearchWorkspaceHistory,
+      workspaceHistory,
+      workspaceOnlyIds,
       loading: state === "loading",
       listError: error?.message ?? null,
       listErrorPage: errorPage,
-      listErrorWorkspaceId: errorWorkspaceId,
       headRefreshRevision: headRefreshRevision ?? 0,
       summaryOnlyIds: summaryOnlyIds ?? [],
     });

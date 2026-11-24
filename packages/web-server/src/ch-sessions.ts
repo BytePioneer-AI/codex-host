@@ -332,7 +332,8 @@ export class ChSessions {
         }
         if (ownership.get(thread.id) === "codex") {
           threadIds.push(thread.id);
-          if (!this.publishedCatalog?.has(thread.id)) pageSectionAdditions?.add(thread.id);
+          if (!scope && !this.publishedCatalog?.has(thread.id))
+            pageSectionAdditions?.add(thread.id);
         }
       }
       return { id, name, threadIds };
@@ -1305,19 +1306,35 @@ export class ChSessions {
       // A Workspace's page reads on until it reaches one of that Workspace's Threads.
       const scope =
         workspaceId === undefined ? undefined : this.workspaces.catalogScope(workspaceId);
+      if (workspaceId !== undefined && scope === undefined)
+        return {
+          items: [],
+          archivedSessionIds: this.workspaces.archivedSessionIds(),
+          nextCursor: null,
+        };
       const page = await this.refresh(timing, includeArchived, cursor, scope);
       const pageIds = this.tree.withAncestors(page?.threads.map((row) => row.id) ?? []);
+      // Host scan pages also contain other projects. Keep their summaries out of this response.
+      const members =
+        workspaceId === undefined
+          ? undefined
+          : new Set(this.workspaces.get(workspaceId)?.sessionIds);
       const archivedSessionIds = this.workspaces.archivedSessionIds();
       const archived = new Set(archivedSessionIds);
       const items = await timing.measure("summaries", async () => [
         ...(await Promise.all(
           [...this.rows.values()]
-            .filter((row) => pageIds.has(row.id) && (includeArchived || !archived.has(row.id)))
+            .filter(
+              (row) =>
+                pageIds.has(row.id) &&
+                (!members || members.has(row.id)) &&
+                (includeArchived || !archived.has(row.id)),
+            )
             .map((row) => this.summary(row)),
         )),
         ...(await Promise.all(
           [...this.drafts.values()]
-            .filter((d) => !d.canonicalId)
+            .filter((d) => !d.canonicalId && (!members || members.has(d.id)))
             .map((d) => this.draftSummary(d, false)),
         )),
       ]);

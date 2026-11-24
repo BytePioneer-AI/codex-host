@@ -349,8 +349,8 @@ function buildGroup(
 
 /**
  * Group Sessions by Workspace: one group per caller-ordered entity, with
- * members resolved from caller-ordered sessionIds. Recents follows with all
- * visible Sessions, newest first, independently of Workspace membership.
+ * members resolved from caller-ordered sessionIds. Recents follows the general
+ * catalog, newest first.
  */
 function groupByWorkspace(
   list: SessionListState,
@@ -382,7 +382,11 @@ function groupByWorkspace(
       ),
     );
   }
-  const recent = orderByRecency(list.ids, list.byId)
+  const workspaceOnly = new Set(list.workspaceOnlyIds);
+  const recent = orderByRecency(
+    list.ids.filter((id) => !workspaceOnly.has(id)),
+    list.byId,
+  )
     .map((id) => list.byId[id])
     .filter(
       (s): s is SessionSummary => s !== undefined && sessionVisible(s, archived, archivedFilter),

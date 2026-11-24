@@ -22,7 +22,7 @@ export function sidebarWindow<T extends SidebarRow>(
   limit: number,
   currentId?: string,
   revealId?: string,
-): { rows: readonly T[]; hiddenCount: number } {
+): { rows: readonly T[]; hiddenCount: number; ordinaryCount: number } {
   let ordinary = 0;
   const rows = sessions.filter((session) => {
     if (
@@ -42,7 +42,7 @@ export function sidebarWindow<T extends SidebarRow>(
       session.tree?.descendantIds.some((id) => id === currentId || id === revealId) === true
     );
   });
-  return { rows, hiddenCount: sessions.length - rows.length };
+  return { rows, hiddenCount: sessions.length - rows.length, ordinaryCount: ordinary };
 }
 
 /**

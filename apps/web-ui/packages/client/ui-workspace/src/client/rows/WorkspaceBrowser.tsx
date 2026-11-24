@@ -581,6 +581,15 @@ function SessionTree({
     return result;
   }, [list, workspaces, rowState, statuses, expandedGroups, canStartProjectless]);
   const now = Date.now();
+  const sessionWindow = (group: GroupNode) =>
+    sidebarWindow(
+      group.sessions,
+      group.workspaceId !== undefined && !group.remote
+        ? group.sessions.length
+        : (sessionLimits[group.key] ?? GROUP_INITIAL_ROWS),
+      current,
+      revealSessionId,
+    );
   const commitSessionDrag = (activeDrag: DragState, over: NonNullable<DragState["over"]>): void => {
     if (sessionDropCommitted.current) return;
     sessionDropCommitted.current = true;
@@ -594,13 +603,12 @@ function SessionTree({
         : workspaces.find((workspace) => workspace.workspaceId === activeDrag.accountKey)
             ?.sessionIds;
     if (accountSessionIds === undefined) return;
-    const renderedSessions = sidebarWindow(
-      group.sessions,
-      sessionLimits[group.key] ?? GROUP_INITIAL_ROWS,
-      current,
-      revealSessionId,
-    ).rows;
-    const nextOrder = sessionDragOrder(accountSessionIds, renderedSessions, activeDrag, over);
+    const nextOrder = sessionDragOrder(
+      accountSessionIds,
+      sessionWindow(group).rows,
+      activeDrag,
+      over,
+    );
     if (nextOrder !== undefined) setSessionOrder(activeDrag.accountKey, nextOrder);
   };
   const commitWorkspaceDrag = (
@@ -708,10 +716,9 @@ function SessionTree({
   );
   const workspacesSectionExpanded = sectionExpanded(sectionExpansion, WORKSPACES_SECTION_KEY);
 
-  // Folding a group returns its Session window to the default, so reopening it
-  // shows the same rows a first visit does.
+  // Groups with a presentation window reopen at the default limit.
   const toggleGroup = (group: GroupNode): void => {
-    if (group.expanded) {
+    if (group.expanded && (group.workspaceId === undefined || group.remote)) {
       setSessionLimits((limits) => ({ ...limits, [group.key]: GROUP_INITIAL_ROWS }));
     }
     setGroupExpanded(group.key, !group.expanded);
@@ -728,6 +735,7 @@ function SessionTree({
   }
   const renderGroup = (group: GroupNode, depth: number): ReactNode => {
     const workspaceId = group.workspaceId;
+    const localWorkspace = workspaceId !== undefined && !group.remote;
     const children = childrenByParent.get(group.key) ?? [];
     const sectioned = sectionOf.has(group.key);
     const compatibleDrag =
@@ -735,12 +743,7 @@ function SessionTree({
       !sectioned &&
       canReorderLocalWorkspaces(workspaces, workspaceDrag.workspaceId, workspaceId) &&
       parents.get(workspaceDrag.workspaceId) === parents.get(group.key);
-    const visible = sidebarWindow(
-      group.sessions,
-      sessionLimits[group.key] ?? GROUP_INITIAL_ROWS,
-      current,
-      revealSessionId,
-    );
+    const visible = sessionWindow(group);
     rowKeys.push(`workspace:${group.key}`);
     const childRows = group.expanded ? children.map((child) => renderGroup(child, depth + 1)) : [];
     const sessions = threadView.rows(visible.rows);
@@ -760,8 +763,12 @@ function SessionTree({
           ? `linked:${group.key}:${id}`
           : `session:${id}`;
     for (const node of sessions) rowKeys.push(rowKeyOf(node.id));
-    const groupHasMore = group.remote ? false : list.hasMore;
-    const canExpand = group.expanded && (visible.hiddenCount > 0 || groupHasMore);
+    const history = localWorkspace
+      ? (list.workspaceHistory?.[workspaceId] ??
+        (list.canSearchWorkspaceHistory ? "search" : "done"))
+      : undefined;
+    const hasMore = history === undefined ? !group.remote && list.hasMore : history !== "done";
+    const canExpand = group.expanded && (visible.hiddenCount > 0 || hasMore);
     if (canExpand) rowKeys.push(`overflow:${group.key}`);
     const workspaceMarker =
       workspaceId !== undefined && workspaceDrag?.over?.id === workspaceId
@@ -992,20 +999,30 @@ function SessionTree({
               <SessionListExpansion
                 rowKey={`overflow:${group.key}`}
                 hiddenCount={visible.hiddenCount}
-                hasMore={groupHasMore}
-                loading={group.remote ? false : list.loading}
-                expand={() => {
-                  setSessionLimits((limits) => ({
-                    ...limits,
-                    [group.key]: (limits[group.key] ?? GROUP_INITIAL_ROWS) + SIDEBAR_PAGE_ROWS,
-                  }));
-                }}
-                // A local project reads on until one of its own Sessions arrives; Recents
-                // keep the plain next page.
+                hasMore={hasMore}
+                loading={
+                  history === undefined ? !group.remote && list.loading : history === "loading"
+                }
+                workspaceHistory={history}
+                fillWorkspace={
+                  localWorkspace &&
+                  workspaceReady &&
+                  list.phase === "ready" &&
+                  visible.ordinaryCount < GROUP_INITIAL_ROWS
+                }
+                expand={
+                  localWorkspace
+                    ? undefined
+                    : () => {
+                        setSessionLimits((limits) => ({
+                          ...limits,
+                          [group.key]:
+                            (limits[group.key] ?? GROUP_INITIAL_ROWS) + SIDEBAR_PAGE_ROWS,
+                        }));
+                      }
+                }
                 loadMoreSessions={() => {
-                  loadMoreSessions(
-                    workspaceId === undefined || group.remote ? undefined : workspaceId,
-                  );
+                  loadMoreSessions(localWorkspace ? workspaceId : undefined);
                 }}
                 t={t}
               />

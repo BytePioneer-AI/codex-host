@@ -13,6 +13,8 @@ vi.mock("@deepseek-ai/dsh-api-gateway/client", () => import("../../gateway/src/c
 const ordinary = SessionId("ordinary");
 const archived = SessionId("archived");
 const deleted = SessionId("deleted");
+const alpha = "alpha" as WorkspaceId;
+const beta = "beta" as WorkspaceId;
 const row = (sessionId: SessionId, running = false): SessionSummary => ({
   sessionId,
   agentAvailable: true,
@@ -156,6 +158,103 @@ it("merges native pages, deduplicates reordering and keeps an independent contin
   await manager.dispose();
 });
 
+it("keeps each Workspace's search, loading and end separate from Recents and other Workspaces", async () => {
+  const { manager, list } = fixture();
+  list.mockResolvedValueOnce(paged([row(ordinary)], "head"));
+  await manager.refreshList();
+  const first = Promise.withResolvers<RemoteResult<SessionListValue>>();
+  list.mockReturnValueOnce(first.promise);
+  const search = manager.loadMore(alpha);
+  expect(manager.getListSnapshot()).toMatchObject({
+    hasMore: true,
+    state: "idle",
+    workspaceHistory: { alpha: "loading" },
+  });
+
+  // A different Workspace can be requested while this search is outstanding.
+  list.mockResolvedValueOnce(paged([row(archived)], "beta-next"));
+  const betaSearch = manager.loadMore(beta);
+  first.resolve(paged([], "alpha-next"));
+  await Promise.all([search, betaSearch]);
+  expect(list).toHaveBeenLastCalledWith({
+    includeArchived: false,
+    workspaceId: "beta",
+    cursor: "head",
+  });
+  expect(manager.getListSnapshot().workspaceHistory).toEqual({ alpha: "continue", beta: "search" });
+
+  list.mockResolvedValueOnce(paged([], null));
+  await manager.loadMore(alpha);
+  expect(list).toHaveBeenLastCalledWith({
+    includeArchived: false,
+    workspaceId: "alpha",
+    cursor: "alpha-next",
+  });
+  expect(manager.getListSnapshot()).toMatchObject({
+    hasMore: true,
+    workspaceHistory: { alpha: "done", beta: "search" },
+  });
+  expect(new Set(ids(manager))).toEqual(new Set([ordinary, archived]));
+  expect(manager.getListSnapshot().workspaceOnlyIds).toEqual([archived]);
+  const count = list.mock.calls.length;
+  await manager.loadMore(alpha);
+  expect(list).toHaveBeenCalledTimes(count);
+
+  list.mockResolvedValueOnce(paged([row(deleted)], null));
+  await manager.loadMore(beta);
+  expect(list).toHaveBeenLastCalledWith({
+    includeArchived: false,
+    workspaceId: "beta",
+    cursor: "beta-next",
+  });
+  expect(manager.getListSnapshot().workspaceHistory).toEqual({ alpha: "done", beta: "done" });
+
+  list.mockResolvedValueOnce(paged([row(archived)], null));
+  await manager.loadMore();
+  expect(list).toHaveBeenLastCalledWith({ includeArchived: false, cursor: "head" });
+  expect(manager.getListSnapshot().workspaceOnlyIds).toEqual([deleted]);
+  await manager.dispose();
+});
+
+it("retries a Workspace at the same page and fences its result when archive scope changes", async () => {
+  const { manager, list } = fixture();
+  list.mockResolvedValueOnce(paged([row(ordinary)], "active"));
+  await manager.refreshList();
+  list.mockResolvedValueOnce({
+    ok: false,
+    error: { code: "test/offline", message: "offline" },
+  } as RemoteResult<SessionListValue>);
+  await manager.loadMore(alpha);
+  expect(manager.getListSnapshot()).toMatchObject({
+    state: "idle",
+    error: null,
+    workspaceHistory: { alpha: "retry" },
+  });
+  const pending = Promise.withResolvers<RemoteResult<SessionListValue>>();
+  list.mockReturnValueOnce(pending.promise);
+  const retry = manager.loadMore(alpha);
+  expect(list).toHaveBeenLastCalledWith({
+    includeArchived: false,
+    workspaceId: "alpha",
+    cursor: "active",
+  });
+  list.mockResolvedValueOnce(paged([row(archived)], "inclusive", [archived]));
+  await manager.setIncludeArchived(true);
+  pending.resolve(paged([row(deleted)], null));
+  await retry;
+  expect(manager.getListSnapshot().workspaceHistory).toEqual({});
+  expect(ids(manager)).not.toContain(deleted);
+
+  list.mockResolvedValueOnce(paged([], null));
+  await manager.loadMore(alpha);
+  expect(list).toHaveBeenLastCalledWith({
+    includeArchived: true,
+    workspaceId: "alpha",
+    cursor: "inclusive",
+  });
+  await manager.dispose();
+});
+
 it("does not let another browser or an old archive-scope page overwrite the current continuation", async () => {
   const a = fixture(),
     b = fixture();
@@ -188,18 +287,14 @@ it("keeps the page cursor on errors, replays explicit removals, and resolves dir
     ok: false,
     error: { code: "test/offline", message: "offline" },
   } as RemoteResult<SessionListValue>);
-  // A failed project page names its project, so a retry reads on to that project again.
-  const project = "project" as WorkspaceId;
-  await manager.loadMore(project);
+  await manager.loadMore();
   expect(list).toHaveBeenLastCalledWith({
     includeArchived: false,
     cursor: "20",
-    workspaceId: project,
   });
   expect(manager.getListSnapshot()).toMatchObject({
     state: "error",
     errorPage: "more",
-    errorWorkspaceId: project,
     hasMore: true,
   });
   expect(ids(manager)).toEqual([ordinary]);
@@ -210,7 +305,7 @@ it("keeps the page cursor on errors, replays explicit removals, and resolves dir
   gate.resolve(paged([row(ordinary), row(deleted)], null));
   await page;
   expect(ids(manager)).toEqual([deleted]);
-  expect(manager.getListSnapshot().errorWorkspaceId).toBeNull();
+  expect(manager.getListSnapshot().errorPage).toBeNull();
   list.mockResolvedValueOnce(ok([row(archived)]));
   await manager.loadSummary(archived);
   expect(list).toHaveBeenLastCalledWith({ sessionId: archived });

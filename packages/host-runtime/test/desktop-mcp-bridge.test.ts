@@ -632,7 +632,15 @@ process.stdout.write(JSON.stringify(process.argv.includes("features.plugins=fals
       env_vars: transportDefinition.env_vars,
     };
     const omittedCwdRewritten = await rewriteThreadConfig(
-      { ...withoutCwd, args: ["./server.mjs", "--interaction-client-id", "client-1"] },
+      {
+        ...withoutCwd,
+        args: ["./server.mjs", "--interaction-client-id", "client-1"],
+        env: {
+          ...withoutCwd.env,
+          CODEX_MCP_NODE_PATH: path.join(decoyDir, "evil-node"),
+          CODEX_APP_TOOLS_PIPE_PATH: "/tmp/codex-app-tools/untrusted.sock",
+        },
+      },
       decoyDir,
     );
     const omittedCwdArgs = omittedCwdRewritten.args as string[];

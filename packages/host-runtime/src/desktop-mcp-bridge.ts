@@ -347,10 +347,13 @@ export async function createDesktopMcpBridge(options: {
       const value = options.environment[name];
       if (value !== undefined) env[name] = value;
     }
-    if (appTools) {
-      env.CODEX_MCP_NODE_PATH ??= process.execPath;
-    }
     const childEnv = { ...env, ...overrides };
+    if (appTools) {
+      childEnv.CODEX_MCP_NODE_PATH =
+        options.environment.CODEX_MCP_NODE_PATH?.trim() || process.execPath;
+      const pipePath = options.environment[DESKTOP_APP_TOOLS_PIPE_ENV];
+      if (pipePath !== undefined) childEnv[DESKTOP_APP_TOOLS_PIPE_ENV] = pipePath;
+    }
     const cwd = appTools ? appTools.cwd : (definition.cwd ?? threadCwd);
     const signature = createHash("sha256")
       .update(JSON.stringify([command, args, childEnv, cwd]))

@@ -349,7 +349,13 @@ export class UsageStatistics {
   }
 
   #scheduleRelease(delayMs: number): void {
-    this.#releaseTimer = setTimeout(() => void this.#releaseWhenIdle(), delayMs);
+    if (this.#abort.signal.aborted) return;
+    this.#releaseTimer = setTimeout(() => {
+      void this.#releaseWhenIdle().catch((error: unknown) => {
+        this.#options.diagnose?.(`Usage statistics release: ${message(error)}`);
+        this.#scheduleRelease(IDLE_RELEASE_MS);
+      });
+    }, delayMs);
     this.#releaseTimer.unref();
   }
 
@@ -359,6 +365,7 @@ export class UsageStatistics {
    * for another period.
    */
   async #releaseWhenIdle(): Promise<void> {
+    if (this.#abort.signal.aborted) return;
     const requestedAtMs = this.#requestedAtMs;
     const idleMs = this.#now() - requestedAtMs;
     if (idleMs < IDLE_RELEASE_MS) {
@@ -367,6 +374,7 @@ export class UsageStatistics {
     }
     if (!this.#refreshing) {
       for (const [harness, cache] of this.#caches) await this.#persist(harness, cache);
+      if (this.#abort.signal.aborted) return;
       const unsaved = [...this.#caches.values()].some((cache) => cache.dirty);
       // A request that arrived while the caches were being written keeps them.
       if (!unsaved && this.#requestedAtMs === requestedAtMs) {
@@ -563,14 +571,15 @@ export class UsageStatistics {
         source.fingerprint,
         source.entries.map(compact),
       ]);
+      cache.dirty = false;
       await writeFile(temporary, JSON.stringify({ version: CACHE_VERSION, sources }));
       await rename(temporary, file);
-      cache.dirty = false;
       cache.persistedAtMs = this.#now();
     } catch (error) {
+      cache.dirty = true;
       this.#options.diagnose?.(`Usage statistics cache for ${harness}: ${message(error)}`);
     } finally {
-      await rm(temporary, { force: true });
+      await rm(temporary, { force: true }).catch(() => undefined);
     }
   }
 

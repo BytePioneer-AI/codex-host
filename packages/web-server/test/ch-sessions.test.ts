@@ -805,13 +805,16 @@ it("preserves omitted, null and precise section anchors and surfaces Host owner 
   const request = host.request.bind(host);
   const submitted: unknown[] = [];
   const moveReadCalls: string[] = [];
-  for (const method of ["projects", "pins"] as const) {
-    const original = host[method].bind(host);
-    host[method] = () => {
-      moveReadCalls.push(method);
-      return original();
-    };
-  }
+  const projects = host.projects.bind(host);
+  host.projects = () => {
+    moveReadCalls.push("projects");
+    return projects();
+  };
+  const pins = host.pins.bind(host);
+  host.pins = (change) => {
+    moveReadCalls.push("pins");
+    return pins(change);
+  };
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
     moveReadCalls.push(method);
     if (method === "codexhost/thread/sections/list")

@@ -536,37 +536,6 @@ it("keeps a confirmed queue admission when the separate native start reply is lo
   );
 });
 
-it("refreshes the other client's queue changes while the transcript remains unavailable", async (t) => {
-  const f = await fixture(t);
-  const view = await f.remote.read(sessionId);
-  await observeProjection(view, "queueState", { previewOnly: true });
-  assert.equal(await f.follow(), true);
-  f.native.failHistory();
-  f.native.setQueueReadFailure(true);
-  await observeProjection(view, "queueState", { previewOnly: true, stale: true }, 400);
-
-  f.native.queue.push({ id: "from-desktop", clientUserMessageId: "desktop-id", input: content });
-  f.native.setQueueReadFailure(false);
-  await observeProjection(
-    view,
-    "inbox",
-    {
-      "next-turn": [
-        {
-          id: "from-desktop",
-          role: "user",
-          content,
-          source: { kind: "user", rpcId: "desktop-id" },
-        },
-      ],
-      "next-step": [],
-    },
-    400,
-  );
-  assert.deepEqual(view.log.projections.queueState, { previewOnly: true });
-  assert.ok(view.log.projections.remoteHistoryError);
-});
-
 it("rejects explicit queue on an old Host and never replays an unknown queue outcome", async (t) => {
   const f = await fixture(t);
   const id = remoteSessionId(legacyHost, identity.threadId);

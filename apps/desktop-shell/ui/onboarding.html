@@ -28,9 +28,24 @@
         <!-- Seamless right-edge feather into action pane & soft bottom atmospheric depth -->
         <div class="hero-feather"></div>
         <div class="hero-vignette"></div>
+        <canvas
+          id="hero-dither-reveal"
+          class="dither-fx-layer dither-fx-layer--hero"
+          aria-hidden="true"
+        ></canvas>
+        <canvas
+          id="hero-dither-seam"
+          class="dither-fx-layer dither-fx-layer--seam"
+          aria-hidden="true"
+        ></canvas>
       </aside>
 
       <div class="action-pane">
+        <canvas
+          id="cursor-dither-field"
+          class="dither-fx-layer dither-fx-layer--cursor"
+          aria-hidden="true"
+        ></canvas>
         <header class="topbar" data-window-drag>
           <div class="topbar-brand">
             <span class="topbar-brand-mark" aria-hidden="true">
@@ -95,10 +110,10 @@
                   <div class="card-copy">
                     <div class="card-title-row">
                       <h2 id="native-title" class="card-title">CodexHost 桌面端</h2>
-                      <span id="native-badge" class="badge badge--brand">独立窗口</span>
+                      <span id="native-badge" class="badge badge--brand">轻量</span>
                     </div>
                     <p id="native-summary" class="card-summary">
-                      轻量、低内存的独立原生桌面窗口，随时可用
+                      开箱即用，低内存原生窗口，原生支持多 Agent 与扩展
                     </p>
                   </div>
 
@@ -137,11 +152,11 @@
 
                   <div class="card-copy">
                     <div class="card-title-row">
-                      <h2 id="desktop-title" class="card-title">官方 Codex Desktop</h2>
-                      <span id="desktop-badge" class="badge badge--neutral">增强版</span>
+                      <h2 id="desktop-title" class="card-title">Codex Desktop</h2>
+                      <span id="desktop-badge" class="badge badge--neutral">OpenAI 官方</span>
                     </div>
                     <p id="desktop-summary" class="card-summary">
-                      保留熟悉的官方桌面界面，注入全量多 Agent 增强
+                      沿用熟悉的官方桌面界面，自动接入全部外部 Agent
                     </p>
                   </div>
 
@@ -348,9 +363,17 @@
       </div>
     </div>
 
+    <canvas
+      id="launch-converge-cv"
+      class="dither-fx-layer dither-fx-layer--converge"
+      aria-hidden="true"
+      hidden
+    ></canvas>
+
     <div id="preview-bar" class="preview-bar" hidden></div>
 
     <script src="./shell.js"></script>
+    <script src="./dither-fx.js"></script>
     <script src="./onboarding.js"></script>
   </body>
 </html>

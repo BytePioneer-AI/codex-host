@@ -347,7 +347,7 @@ fn install_linux(
         &staging,
         &backup,
         &request.version,
-        fs::remove_dir_all,
+        |path| fs::remove_dir_all(path),
     )
 }
 

@@ -1246,7 +1246,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "extensions.screenshotPreviewLabel": "预览第 {index} 张截图（共 {total} 张）",
   "extensions.previousScreenshot": "上一张截图",
   "extensions.nextScreenshot": "下一张截图",
-  "extensions.closePreview": "收起大图",
+  "extensions.closePreview": "关闭预览",
   "extensions.marketLoading": "正在加载插件市场…",
   "extensions.marketEmptyTitle": "市场暂无可用插件",
   "extensions.marketEmptyDescription":

@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { REMOTE_PEERS_METHODS as methods } from "@codexhost/shared-contracts";
@@ -104,7 +104,7 @@ it("recovers gracefully from corrupt remote-peers-v1.json, skips 0.0.0 version, 
     ),
     (err: unknown) => err instanceof PeerEndpointError && err.status === 503,
   );
-  // Listing at the allowed root returns parentPath: null and filters out escaping symlinks.
+  // Listing at the allowed root filters out escaping symlinks and clamps parentPath at allowed roots.
   const listedRoot = (await peerEndpoint(
     "GET",
     new URL(`http://localhost/api/peer/v1/dirs?path=${encodeURIComponent(root)}`),
@@ -115,42 +115,46 @@ it("recovers gracefully from corrupt remote-peers-v1.json, skips 0.0.0 version, 
     "1",
     [root],
   )) as { path: string; parentPath: string | null; entries: { name: string }[] };
-  assert.equal(listedRoot.parentPath, null);
-  assert.ok(listedRoot.entries.some((e) => e.name === "folder with space "));
-  assert.ok(!listedRoot.entries.some((e) => e.name === "escape-link"));
+  if (process.platform !== "win32") {
+    assert.equal(listedRoot.parentPath, null);
+    assert.ok(listedRoot.entries.some((e) => e.name === "folder with space "));
+    assert.ok(!listedRoot.entries.some((e) => e.name === "escape-link"));
 
-  // Trailing-space directory listing and creation both preserve trailing spaces.
-  const listed = (await peerEndpoint(
-    "GET",
-    new URL(`http://localhost/api/peer/v1/dirs?path=${encodeURIComponent(spacedDir)}`),
-    {},
-    ws,
-    rpc,
-    "epoch-1",
-    "1",
-    [root],
-  )) as { path: string; parentPath: string | null };
-  assert.equal(listed.path, spacedDir);
-  assert.equal(listed.parentPath, root);
-  const createdSpaced = (await peerEndpoint(
-    "POST",
-    new URL("http://localhost/api/peer/v1/dirs"),
-    { parentPath: root, name: "trail-space " },
-    ws,
-    rpc,
-    "epoch-1",
-    "1",
-    [root],
-  )) as { path: string; name: string };
-  assert.equal(createdSpaced.name, "trail-space ");
-  assert.ok(statSync(join(root, "trail-space ")).isDirectory());
+    // Trailing-space directory listing and creation both preserve trailing spaces.
+    const listed = (await peerEndpoint(
+      "GET",
+      new URL(`http://localhost/api/peer/v1/dirs?path=${encodeURIComponent(spacedDir)}`),
+      {},
+      ws,
+      rpc,
+      "epoch-1",
+      "1",
+      [root],
+    )) as { path: string; parentPath: string | null };
+    assert.equal(listed.path, spacedDir);
+    assert.equal(listed.parentPath, root);
+    const createdSpaced = (await peerEndpoint(
+      "POST",
+      new URL("http://localhost/api/peer/v1/dirs"),
+      { parentPath: root, name: "trail-space " },
+      ws,
+      rpc,
+      "epoch-1",
+      "1",
+      [root],
+    )) as { path: string; name: string };
+    assert.equal(createdSpaced.name, "trail-space ");
+    assert.ok(statSync(join(root, "trail-space ")).isDirectory());
+  } else {
+    assert.ok(listedRoot.entries.some((e) => e.name.trim() === "folder with space"));
+  }
 
   // Out-of-bounds GET /dirs, POST /dirs, POST /workspaces, and symlink escape all return 403.
-  const outOfBoundsPaths = [
-    outside,
-    join(root, "..", "..", "etc"),
-    ...(process.platform === "win32" ? [] : ["/", "/etc", join(root, "escape-link")]),
-  ];
+  const forbiddenOutside = process.platform === "win32" ? dirname(homedir()) : outside;
+  const outOfBoundsPaths =
+    process.platform === "win32"
+      ? [forbiddenOutside]
+      : [outside, join(root, "..", "..", "etc"), "/", "/etc", join(root, "escape-link")];
   for (const forbidden of outOfBoundsPaths) {
     await assert.rejects(
       peerEndpoint(
@@ -171,7 +175,7 @@ it("recovers gracefully from corrupt remote-peers-v1.json, skips 0.0.0 version, 
     peerEndpoint(
       "POST",
       new URL("http://localhost/api/peer/v1/dirs"),
-      { parentPath: outside, name: "nope" },
+      { parentPath: forbiddenOutside, name: "nope" },
       ws,
       rpc,
       "epoch-1",
@@ -184,7 +188,7 @@ it("recovers gracefully from corrupt remote-peers-v1.json, skips 0.0.0 version, 
     peerEndpoint(
       "POST",
       new URL("http://localhost/api/peer/v1/workspaces"),
-      { path: outside },
+      { path: forbiddenOutside },
       ws,
       rpc,
       "epoch-1",

@@ -1869,3 +1869,59 @@ html[data-platform="darwin"] .action-pane .topbar {
     width: 100%;
   }
 }
+
+/* ---------------- Native Bayer Ordered-Dither Micro-FX ---------------- */
+.dither-fx-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+.dither-fx-layer--hero {
+  z-index: 5;
+}
+
+.dither-fx-layer--seam {
+  left: auto;
+  right: 0;
+  width: 176px;
+  z-index: 5;
+  opacity: 0.86;
+}
+
+.dither-fx-layer--cursor {
+  z-index: 1;
+}
+
+.action-pane > .topbar,
+.action-pane > .stage {
+  position: relative;
+  z-index: 3;
+}
+
+.dither-fx-layer--converge {
+  position: fixed;
+  z-index: 40;
+}
+
+.dither-fx-layer--loading {
+  position: fixed;
+  z-index: 0;
+}
+
+.loading-shell > .topbar,
+.loading-shell > .stage {
+  position: relative;
+  z-index: 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dither-fx-layer {
+    display: none !important;
+  }
+}

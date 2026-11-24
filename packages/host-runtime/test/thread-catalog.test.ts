@@ -75,7 +75,10 @@ describe("source-separated Thread catalog", () => {
   it("starts native and local reads together, reads exactly the latest 20 once, and defaults to live only", async () => {
     const localStarted = Promise.withResolvers<undefined>();
     const nativeStarted = Promise.withResolvers<undefined>();
-    const nativeRows = Array.from({ length: 301 }, (_, n) => row(`private-native-${n}`, 400 - n));
+    const nativeRows = Array.from({ length: 301 }, (_, n) => ({
+      ...row(`private-native-${n}`, 400 - n),
+      modelProvider: n === 0 ? "other-provider" : "default-provider",
+    }));
     const options = input([external("private-external", 500)]);
     options.readLocal = vi.fn(async () => {
       localStarted.resolve(undefined);
@@ -86,7 +89,11 @@ describe("source-separated Thread catalog", () => {
       nativeStarted.resolve(undefined);
       await localStarted.promise;
       const offset = params.cursor === null ? 0 : Number(params.cursor);
-      return page(nativeRows.slice(offset, offset + 20), offset < 300 ? String(offset + 20) : null);
+      const rows =
+        Array.isArray(params.modelProviders) && params.modelProviders.length === 0
+          ? nativeRows
+          : nativeRows.filter((row) => row.modelProvider === "default-provider");
+      return page(rows.slice(offset, offset + 20), offset < 300 ? String(offset + 20) : null);
     });
     options.requestOfficialPage = request;
     const result = await readThreadCatalog(options);
@@ -96,6 +103,7 @@ describe("source-separated Thread catalog", () => {
         cursor,
         archived: false,
         limit: 20,
+        modelProviders: [],
         sortKey: "updated_at",
         sortDirection: "desc",
       })),
@@ -103,6 +111,7 @@ describe("source-separated Thread catalog", () => {
     expect(result.threads).toHaveLength(21);
     expect(result.officialCursor).toEqual({ live: "20" });
     expect(result.threads[0]?.id).toBe("private-external");
+    expect(result.threads[1]?.id).toBe("private-native-0");
     expect(result.archivedThreadIds).toEqual([]);
     expect(threadCatalogReadResultSchema.parse(result)).toEqual(result);
     expect(options.diagnose).toHaveBeenCalledWith(expect.stringContaining('"official":{"ms":'));

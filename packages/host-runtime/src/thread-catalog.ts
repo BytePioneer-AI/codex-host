@@ -163,6 +163,8 @@ export async function readThreadCatalog(
         count();
         const page = await input.requestOfficialPage({
           ...query.params,
+          // A project can contain Codex conversations from more than one model provider.
+          modelProviders: [],
           ...(scope ? { limit: SCOPED_PAGE_SIZE } : {}),
           cursor: next,
         });

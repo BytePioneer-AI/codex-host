@@ -1110,9 +1110,9 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use std::time::{Duration, Instant};
 
+    use super::desktop_invocation::DesktopCaller;
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{PROCESS_TREE_REFRESH_INTERVAL, ShutdownSignals, process_tree_refresh_due};
-    use super::desktop_invocation::DesktopCaller;
     use super::{
         app_server_subcommand_index, exec_server_subcommand_index, is_default_remote_unix_listener,
         should_replace_shim_with_stock_codex, should_start_host_runtime,

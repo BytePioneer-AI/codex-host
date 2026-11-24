@@ -12,7 +12,9 @@ import {
   RemotePeerAttachments,
   type PeerAttachmentEndpoint,
 } from "../src/remote-peer-attachments.ts";
+import { peerFetch } from "../src/peer-host-client.ts";
 import { RpcError } from "../src/transport.ts";
+import { WEB_IMAGE_LIMITS } from "../src/web-images.ts";
 import { nativeImageInput, PNG } from "./support/image.ts";
 
 const PNG_BYTES = Buffer.from(PNG, "base64");
@@ -564,4 +566,112 @@ it("serveFile enforces image-only proxying, security headers, 4xx passthrough, a
     `${proxyServer.origin}/?${new URLSearchParams({ mode: "dead", threadId: "t1", path: "/ok.png" })}`,
   );
   assert.equal(offline.status, 502);
+});
+
+it("overwrites uppercase Authorization header in peerFetch, maps JSON 404/401/403 via httpStatus, and rejects chunked oversized streams", async (t) => {
+  const seenAuthHeaders: Array<string | undefined> = [];
+  const remotePeer = await startMockServer(async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    seenAuthHeaders.push(req.headers.authorization);
+    if (url.pathname === "/api/peer/v1/manifest") {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+      return;
+    }
+    const targetPath = url.searchParams.get("path");
+    if (targetPath === "/json-404.png") {
+      res
+        .writeHead(404, { "content-type": "application/json" })
+        .end(JSON.stringify({ error: "not found" }));
+      return;
+    }
+    if (targetPath === "/json-401.png") {
+      res
+        .writeHead(401, { "content-type": "application/json" })
+        .end(JSON.stringify({ error: "token expired" }));
+      return;
+    }
+    if (targetPath === "/json-403.png") {
+      res
+        .writeHead(403, { "content-type": "application/json" })
+        .end(JSON.stringify({ error: "forbidden" }));
+      return;
+    }
+    if (targetPath === "/bare-403.png") {
+      res.writeHead(403, { "content-type": "text/plain" }).end();
+      return;
+    }
+    if (targetPath === "/chunked-huge.png") {
+      // No Content-Length: stream > 50 MiB in chunks so readBoundedBytes must abort mid-stream.
+      res.writeHead(200, { "content-type": "image/png" });
+      const chunk = Buffer.alloc(1024 * 1024);
+      PNG_BYTES.copy(chunk, 0);
+      const totalChunks = Math.ceil(WEB_IMAGE_LIMITS.maxImageBytes / chunk.byteLength) + 2;
+      for (let i = 0; i < totalChunks; i++) {
+        if (res.destroyed || res.writableEnded) break;
+        if (!res.write(chunk)) {
+          await once(res, "drain").catch(() => undefined);
+        }
+      }
+      if (!res.writableEnded) res.end();
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  t.after(() => remotePeer.close());
+
+  const peer = makePeer(remotePeer.origin);
+  // Uppercase caller Authorization must be overwritten, never merged with Bearer token.
+  const manifestRes = await peerFetch(peer.record, "/api/peer/v1/manifest", {
+    headers: { Authorization: "Bearer spoofed-caller-token" },
+  });
+  assert.equal(manifestRes.status, 200);
+  assert.equal(seenAuthHeaders[0], "Bearer secret-token");
+
+  const hub = new RemotePeerAttachments({ requestTimeoutMs: 10_000 });
+
+  // JSON 404 in readAttachment maps to session/attachment-not-found via structured httpStatus
+  const json404View = makeView("t1", hub, nativeImageInput("/json-404.png", "", "json-404.png"));
+  const json404Id = `peer-image:${createHash("sha256")
+    .update(JSON.stringify(["t1", "/json-404.png"]))
+    .digest("hex")}`;
+  await assert.rejects(
+    hub.readAttachment(peer, json404View, "t1", json404Id),
+    (err: unknown) => err instanceof RpcError && err.code === "session/attachment-not-found",
+  );
+
+  // Oversized chunked stream without Content-Length is rejected in readAttachment as IMAGE_TOO_LARGE
+  const hugeView = makeView(
+    "t1",
+    hub,
+    nativeImageInput("/chunked-huge.png", "", "chunked-huge.png"),
+  );
+  const hugeId = `peer-image:${createHash("sha256")
+    .update(JSON.stringify(["t1", "/chunked-huge.png"]))
+    .digest("hex")}`;
+  await assert.rejects(
+    hub.readAttachment(peer, hugeView, "t1", hugeId),
+    (err: unknown) =>
+      err instanceof RpcError &&
+      err.code === "session/attachment-invalid" &&
+      (err.details as { reason?: string }).reason === "IMAGE_TOO_LARGE",
+  );
+
+  // serveFile passes through JSON 404, 401, 403, bare 403 (not 502) and blocks chunked > 50 MiB with 413
+  const proxyServer = await startMockServer(async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    await hub.serveFile(peer, "t1", url.searchParams.get("path") ?? "", req, res);
+  });
+  t.after(() => proxyServer.close());
+
+  for (const [targetPath, expectedStatus] of [
+    ["/json-404.png", 404],
+    ["/json-401.png", 401],
+    ["/json-403.png", 403],
+    ["/bare-403.png", 403],
+    ["/chunked-huge.png", 413],
+  ] as const) {
+    const res = await fetch(`${proxyServer.origin}/?${new URLSearchParams({ path: targetPath })}`);
+    assert.equal(res.status, expectedStatus, `expected ${expectedStatus} for ${targetPath}`);
+    await res.arrayBuffer();
+  }
 });

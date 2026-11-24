@@ -1,14 +1,27 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  truncateSync,
+  writeFileSync,
+} from "node:fs";
+import { lstat, open, realpath, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import * as c from "@codexhost/shared-contracts";
 import { ChFileInputs } from "../src/ch-file-inputs.ts";
-import { servePeerAttachments, type PeerAttachmentsDeps } from "../src/peer-attachments-http.ts";
+import {
+  readVerifiedAttachmentFile,
+  servePeerAttachments,
+  type PeerAttachmentsDeps,
+} from "../src/peer-attachments-http.ts";
 import { peerEndpoint } from "../src/peer-manifest.ts";
 import { DataDir } from "../src/store.ts";
 import { RpcError, RpcRegistry, StreamRegistry } from "../src/transport.ts";
@@ -436,4 +449,80 @@ it("serves verified images within workspace or Web storage and blocks escapes, n
     assert.equal(body.includes(outside), false, "response leaked outside root");
     assert.equal(body.includes(workspace), false, "response leaked workspace root");
   }
+});
+
+it("blocks parent-directory symlink replacement TOCTOU between realpath and open", async (t) => {
+  if (process.platform === "win32") return;
+  const root = mkdtempSync(join(tmpdir(), "peer-file-toctou-"));
+  const workspace = join(root, "workspace");
+  const outside = mkdtempSync(join(tmpdir(), "peer-file-toctou-out-"));
+  t.after(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  });
+  const subDir = join(workspace, "sub");
+  mkdirSync(subDir, { recursive: true });
+  const insidePng = join(subDir, "diagram.png");
+  const outsidePng = join(outside, "diagram.png");
+  writeFileSync(insidePng, PNG_BYTES);
+  writeFileSync(outsidePng, PNG_BYTES);
+
+  const data = new DataDir(join(root, "data"));
+  const images = new WebImages(data);
+  const files = new WebFiles(data, images);
+
+  // Swap `workspace/sub` to a symlink pointing outside right before `open` (after `realpath` & `preStat`).
+  let swapped = false;
+  const result = await readVerifiedAttachmentFile(
+    insidePng,
+    workspace,
+    { files, images },
+    {
+      lstat,
+      stat,
+      realpath,
+      platform: process.platform,
+      open: async (targetPath, flags) => {
+        if (!swapped) {
+          swapped = true;
+          renameSync(subDir, join(workspace, "sub-original"));
+          symlinkSync(outside, subDir);
+        }
+        return open(targetPath, flags);
+      },
+    },
+  );
+  assert.equal(swapped, true);
+  assert.equal(result, "missing");
+
+  // Also test swapping before preStat (right after realpath check)
+  const subDir2 = join(workspace, "sub2");
+  mkdirSync(subDir2, { recursive: true });
+  const insidePng2 = join(subDir2, "diagram.png");
+  writeFileSync(insidePng2, PNG_BYTES);
+  let swappedAfterRealpath = false;
+  let realpathCalls = 0;
+  const resultAfterRealpath = await readVerifiedAttachmentFile(
+    insidePng2,
+    workspace,
+    { files, images },
+    {
+      lstat,
+      stat,
+      open,
+      platform: process.platform,
+      realpath: async (targetPath) => {
+        const resolved = await realpath(targetPath);
+        realpathCalls++;
+        if (realpathCalls === 2 && !swappedAfterRealpath) {
+          swappedAfterRealpath = true;
+          renameSync(subDir2, join(workspace, "sub2-original"));
+          symlinkSync(outside, subDir2);
+        }
+        return resolved;
+      },
+    },
+  );
+  assert.equal(swappedAfterRealpath, true);
+  assert.equal(resultAfterRealpath, "missing");
 });

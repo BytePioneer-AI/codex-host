@@ -42,21 +42,21 @@ export async function peerFetch(
   const requestTimeoutMs = init.timeoutMs ?? (path.startsWith("/api/ch/v1/") ? 60_000 : 8_000);
   const handshake = new AbortController();
   const timer = init.stream ? setTimeout(() => handshake.abort(), init.timeoutMs ?? 8_000) : null;
-  const headers: Record<string, string> = { ...(init.headers ?? {}) };
+  const headers = new Headers(init.headers);
   let requestBody: BodyInit | undefined;
   if (init.body !== undefined) {
     if (isRawBodyInit(init.body)) {
       requestBody = init.body;
     } else {
       requestBody = JSON.stringify(init.body);
-      if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
-        headers["content-type"] = "application/json";
+      if (!headers.has("content-type")) {
+        headers.set("content-type", "application/json");
       }
     }
-  } else if (!Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
-    headers["content-type"] = "application/json";
+  } else if (!headers.has("content-type")) {
+    headers.set("content-type", "application/json");
   }
-  headers.authorization = "Bearer " + record.token;
+  headers.set("authorization", "Bearer " + record.token);
   const signals: AbortSignal[] = [];
   if (init.stream) {
     signals.push(handshake.signal);
@@ -92,11 +92,16 @@ export async function peerFetch(
       })
       .catch(() => undefined);
     if (res.status === 401 || (res.status === 403 && !failure?.message))
-      throw new RpcError("remote/auth-error", "Remote peer rejected the access token");
+      throw new RpcError("remote/auth-error", "Remote peer rejected the access token", {
+        httpStatus: res.status,
+      });
     throw new RpcError(
       "remote/request-failed",
       failure?.message ?? `Remote peer returned HTTP ${res.status}`,
-      failure?.code === undefined ? {} : { hostCode: failure.code },
+      {
+        httpStatus: res.status,
+        ...(failure?.code === undefined ? {} : { hostCode: failure.code }),
+      },
     );
   } catch (err) {
     if (err instanceof RpcError) throw err;

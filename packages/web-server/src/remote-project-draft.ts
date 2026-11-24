@@ -13,6 +13,7 @@ import { groupOf } from "./harnesses.ts";
 import { type ModelSelection } from "./ch-harness-catalog.ts";
 import { defaultProjections } from "./session-log.ts";
 import { RpcError, type StreamSink } from "./transport.ts";
+import { WEB_IMAGE_LIMITS } from "./web-images.ts";
 
 type Call = (operation: RemoteSessionOperation) => Promise<unknown>;
 type Target = { hostId: string; epoch: string; cwd: string };
@@ -81,12 +82,17 @@ export class RemoteProjectDraft {
   private catalogRequest?: Promise<RemoteDraftCatalog>;
   submission?: { key: string; result: Promise<unknown> };
   canonicalId?: string;
+  uploadScope?: string;
   constructor(
     readonly workspaceId: string,
     readonly projectId: string,
     readonly target: Target,
     readonly displayName: string,
   ) {}
+  ensureUploadScope(): string {
+    this.uploadScope ??= randomUUID();
+    return this.uploadScope;
+  }
   private invokeCatalogLoader(load: RemoteDraftCatalogLoader): Promise<RemoteDraftCatalog> {
     return load.length === 0
       ? (load as () => Promise<RemoteDraftCatalog>)()
@@ -153,7 +159,7 @@ export class RemoteProjectDraft {
       ...(reasoningEffort ? { reasoningEffort } : {}),
     };
   }
-  summary() {
+  summary(attachmentsSupported = false) {
     return {
       sessionId: this.id,
       cwd: "",
@@ -180,15 +186,17 @@ export class RemoteProjectDraft {
             hostId: this.target.hostId,
             displayName: this.displayName,
             state: "connected",
+            filePreview: attachmentsSupported,
           },
           nativeDiscovery: false,
-          attachmentInput: { enabled: false },
+          attachmentInput: { enabled: attachmentsSupported },
+          ...(attachmentsSupported ? { imageLimits: WEB_IMAGE_LIMITS } : {}),
           sessionListMetadata: { blank: true, lastPromptAt: null },
         },
       },
     };
   }
-  follow(sink: StreamSink) {
+  follow(sink: StreamSink, attachmentsSupported = false) {
     sink.push({
       type: "snapshot",
       header: {
@@ -202,7 +210,7 @@ export class RemoteProjectDraft {
       cursor: -1,
       records: [],
       hasMore: false,
-      projections: this.summary().projections,
+      projections: this.summary(attachmentsSupported).projections,
       assistantStream: { revision: 0 },
     });
   }

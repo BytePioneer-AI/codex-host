@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   loadCatalog,
   RemoteProjectDraft,
@@ -8,6 +9,8 @@ import { requestRemoteSession, RemoteSessionError } from "@codexhost/desktop-con
 import { z } from "zod";
 import {
   harnessConfigurationStateSchema,
+  REMOTE_PEER_HOST_ID_PREFIX,
+  remotePeerPromptParamsSchema,
   remoteQueueSnapshotSchema,
   remoteSessionOperationSchema,
   remoteSessionRequestBytes,
@@ -17,11 +20,15 @@ import {
   REMOTE_IDENTITY_MAX_LENGTH,
   WEB_FOLLOW_PROJECTION_KEYS,
   webToolOutputReferenceSchema,
+  type RemotePeerPromptParams,
   type RemoteSessionOperation,
 } from "@codexhost/shared-contracts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { ChThreadView, type ChThread } from "./ch-thread-view.ts";
 import { isMethodUnavailableError, type PeerThreadSource } from "./peer-thread-source.ts";
+import { RemotePeerAttachments, type PeerAttachmentEndpoint } from "./remote-peer-attachments.ts";
+import type { WebFileRef } from "./web-files.ts";
+import { WEB_IMAGE_LIMITS } from "./web-images.ts";
 import { defaultProjections } from "./session-log.ts";
 import {
   applyRemoteControls,
@@ -116,8 +123,36 @@ export function remoteSessionIdentity(
   }
   throw new RpcError("remote/identity-invalid", "Invalid remote Thread identity");
 }
+const PROXY_NOT_FOUND_HEADERS = {
+  "Content-Type": "text/plain; charset=utf-8",
+  "Cache-Control": "private, no-store",
+  "X-Content-Type-Options": "nosniff",
+  "Content-Security-Policy": "sandbox; default-src 'none'",
+} as const;
+
+function hasContentPartType(content: unknown, type: string): boolean {
+  return (
+    Array.isArray(content) &&
+    content.some(
+      (part) =>
+        typeof part === "object" && part !== null && (part as { type?: unknown }).type === type,
+    )
+  );
+}
+
+function hasNonTextContentPart(content: unknown): boolean {
+  return (
+    Array.isArray(content) &&
+    content.some(
+      (part) =>
+        typeof part !== "object" || part === null || (part as { type?: unknown }).type !== "text",
+    )
+  );
+}
+
 export interface RemotePeerProvider {
   source(hostId: string): PeerThreadSource | undefined;
+  client?(hostId: string): PeerAttachmentEndpoint | undefined;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
   onConnection?: (hostId: string, online: boolean) => void;
   onReset?: (hostId: string, epoch: string, full: boolean) => void;
@@ -131,6 +166,8 @@ interface Entry {
   epoch?: string;
   /** A new native Thread can be loaded before it appears in the persisted catalog. */
   createdEpoch?: string;
+  /** Retained after draft creation succeeds but first prompt fails so retries keep binding the scope. */
+  pendingUploadScope?: string;
   fullReadAt?: number;
   configurationRevision: number;
   view?: ChThreadView;
@@ -189,6 +226,7 @@ export class RemoteSessions {
     private readonly call: RemoteSessionCall = requestRemoteSession,
     private readonly workspaces?: Workspaces,
     private readonly peers?: RemotePeerProvider,
+    private readonly attachments: RemotePeerAttachments = new RemotePeerAttachments(),
   ) {
     this.peerHandlers = {
       onThreadChanged: (hostId, threadId) => this.handlePeerThreadChanged(hostId, threadId),
@@ -242,6 +280,102 @@ export class RemoteSessions {
         entry.epoch = epoch;
       }
     }
+  }
+  private peerEndpoint(hostId: string): PeerAttachmentEndpoint | undefined {
+    if (!hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) return undefined;
+    return this.peers?.client?.(hostId);
+  }
+  private peerAttachmentsSupported(hostId: string): boolean {
+    return this.attachments.supported(this.peerEndpoint(hostId));
+  }
+  private draftSummary(draft: RemoteProjectDraft) {
+    return draft.summary(this.peerAttachmentsSupported(draft.target.hostId));
+  }
+  async uploadFile(
+    id: string,
+    chunks: AsyncIterable<Uint8Array>,
+    name?: string,
+    imageMediaType?: string,
+  ): Promise<{ receiptId: string; file: WebFileRef }> {
+    if (this.closed) throw new RpcError("remote/offline", "Remote session gateway is closed");
+    const draft = this.drafts.get(id);
+    if (draft) {
+      draft.lastUsed = Date.now();
+      if (!draft.canonicalId) {
+        const peer = this.peerEndpoint(draft.target.hostId);
+        if (!this.attachments.supported(peer)) {
+          throw new RpcError(
+            "remote/attachments-unsupported",
+            "Remote peer does not support attachments.",
+          );
+        }
+        const scope = draft.ensureUploadScope();
+        return this.attachments.upload(peer, { scope }, chunks, name, imageMediaType);
+      }
+      id = draft.canonicalId;
+    }
+    const identity = remoteSessionIdentity(id);
+    if (!identity) throw new RpcError("remote/identity-invalid", "Invalid remote Thread identity");
+    const peer = this.peerEndpoint(identity.hostId);
+    if (!this.attachments.supported(peer)) {
+      throw new RpcError(
+        "remote/attachments-unsupported",
+        "Remote peer does not support attachments.",
+      );
+    }
+    return this.attachments.upload(
+      peer,
+      { threadId: identity.threadId },
+      chunks,
+      name,
+      imageMediaType,
+    );
+  }
+  async servePeerFile(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const isHead = request.method === "HEAD";
+    if (request.method !== "GET" && !isHead) {
+      response
+        .writeHead(405, PROXY_NOT_FOUND_HEADERS)
+        .end(isHead ? undefined : "method not allowed");
+      return;
+    }
+    const url = new URL(request.url ?? "/", "http://localhost");
+    const rawSessionId = url.searchParams.get("sessionId");
+    const path = url.searchParams.get("path");
+    if (!rawSessionId || !rawSessionId.startsWith(PREFIX)) {
+      response
+        .writeHead(404, PROXY_NOT_FOUND_HEADERS)
+        .end(isHead ? undefined : "image unavailable");
+      return;
+    }
+    const draft = this.drafts.get(rawSessionId);
+    const targetId = draft ? draft.canonicalId : rawSessionId;
+    if (!targetId) {
+      response
+        .writeHead(404, PROXY_NOT_FOUND_HEADERS)
+        .end(isHead ? undefined : "image unavailable");
+      return;
+    }
+    let identity: { hostId: string; threadId: string } | undefined;
+    try {
+      identity = remoteSessionIdentity(targetId);
+    } catch {
+      identity = undefined;
+    }
+    if (!identity || !identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+      response
+        .writeHead(404, PROXY_NOT_FOUND_HEADERS)
+        .end(isHead ? undefined : "image unavailable");
+      return;
+    }
+    const peer = this.peerEndpoint(identity.hostId);
+    if (!peer || !this.attachments.supported(peer)) {
+      response
+        .writeHead(404, PROXY_NOT_FOUND_HEADERS)
+        .end(isHead ? undefined : "image unavailable");
+      return;
+    }
+    await this.attachments.serveFile(peer, identity.threadId, path ?? "", request, response);
   }
   private draftCatalogLoader(draft: RemoteProjectDraft): () => Promise<RemoteDraftCatalog> {
     const peerSource = this.peers?.source(draft.target.hostId);
@@ -589,6 +723,17 @@ export class RemoteSessions {
         const nextSummary = this.summary(id, current);
         if (current.view) {
           current.view.log.setProjection("title", nextSummary.projections.values.title);
+          current.view.log.setProjection("remoteHost", nextSummary.projections.values.remoteHost);
+          current.view.log.setProjection(
+            "attachmentInput",
+            nextSummary.projections.values.attachmentInput,
+          );
+          if ("imageLimits" in nextSummary.projections.values) {
+            current.view.log.setProjection(
+              "imageLimits",
+              nextSummary.projections.values.imageLimits,
+            );
+          }
           if (current.peerOwnershipAvailable && current.peerTreeParent !== undefined) {
             current.view.log.setProjection("threadTreeParent", current.peerTreeParent);
           }
@@ -669,34 +814,103 @@ export class RemoteSessions {
     this.drafts.set(draft.id, draft);
     this.hosts.set(host.hostId, host);
     this.syncGroups();
-    this.events.emit("api-session/added", draft.summary());
+    this.events.emit("api-session/added", this.draftSummary(draft));
     return { sessionId: draft.id, agentPreset: "standard" };
   }
   private async firstTurn(draft: RemoteProjectDraft, request: Record<string, unknown>) {
-    const parts = z
-      .array(z.object({ type: z.literal("text"), text: z.string() }))
-      .safeParse(request.content);
-    const text = parts.success ? parts.data.map((p) => p.text).join("\n") : "";
-    const prompt = {
-      kind: "prompt" as const,
-      hostId: draft.target.hostId,
-      epoch: draft.target.epoch,
-      text,
-      ...(typeof request.requestId === "string" ? { requestId: request.requestId } : {}),
-    };
-    // The ID is assigned only after creation. Each UTF-16 unit can take six JSON bytes.
-    const probe = { ...prompt, threadId: "\u0000".repeat(REMOTE_IDENTITY_MAX_LENGTH) };
-    if (
-      !text.trim() ||
-      request.mode === "steer" ||
-      !remoteSessionOperationSchema.safeParse(probe).success ||
-      remoteSessionRequestBytes(probe) > REMOTE_CONTROLLER_REQUEST_MAX_BYTES
-    )
+    const isPeer = draft.target.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX);
+    if (!isPeer && hasContentPartType(request.content, "file")) {
       throw new RpcError(
-        "remote/invalid-request",
-        "Send a nonempty text message within the remote size limit.",
+        "remote/attachments-unsupported",
+        "Remote attachments are not supported for this host.",
       );
-    const key = JSON.stringify([request.requestId, text]);
+    }
+    const usePeerAttachments =
+      isPeer && (hasNonTextContentPart(request.content) || draft.uploadScope !== undefined);
+    let peerPromptContent: RemotePeerPromptParams["content"] | undefined;
+    let peerPromptMode: "queue" | undefined;
+    let peerPromptRequestId: string | undefined;
+    let legacyPrompt:
+      | {
+          kind: "prompt";
+          hostId: string;
+          epoch: string;
+          text: string;
+          requestId?: string;
+        }
+      | undefined;
+    let key: string;
+    if (usePeerAttachments) {
+      const peer = this.peerEndpoint(draft.target.hostId);
+      if (!this.attachments.supported(peer)) {
+        throw new RpcError(
+          "remote/attachments-unsupported",
+          "Remote peer does not support attachments.",
+        );
+      }
+      if (hasContentPartType(request.content, "image")) {
+        throw new RpcError(
+          "session/attachment-invalid",
+          "Encoded image parts are not supported for remote peer sessions.",
+          { reason: "REMOTE_ENCODED_IMAGE_UNSUPPORTED" },
+        );
+      }
+      if (request.mode === "steer" || (request.mode !== undefined && request.mode !== "queue")) {
+        throw new RpcError("remote/invalid-request", "Send a nonempty message or attach a file.");
+      }
+      const parsedContent = remotePeerPromptParamsSchema.shape.content.safeParse(request.content);
+      if (!parsedContent.success) {
+        throw new RpcError("session/attachment-invalid", "Invalid remote peer prompt parameters.");
+      }
+      const hasFile = parsedContent.data.some((part) => part.type === "file");
+      const hasNonEmptyText = parsedContent.data.some(
+        (part) => part.type === "text" && part.text.trim().length > 0,
+      );
+      if (!hasFile && !hasNonEmptyText) {
+        throw new RpcError("remote/invalid-request", "Send a nonempty message or attach a file.");
+      }
+      if (request.requestId !== undefined) {
+        const parsedRequestId = remotePeerPromptParamsSchema.shape.requestId.safeParse(
+          request.requestId,
+        );
+        if (!parsedRequestId.success) {
+          throw new RpcError(
+            "session/attachment-invalid",
+            "Invalid remote peer prompt parameters.",
+          );
+        }
+        peerPromptRequestId = parsedRequestId.data;
+      }
+      peerPromptContent = parsedContent.data;
+      peerPromptMode = request.mode;
+      key = JSON.stringify([peerPromptRequestId, peerPromptContent]);
+    } else {
+      const parts = z
+        .array(z.object({ type: z.literal("text"), text: z.string() }))
+        .safeParse(request.content);
+      const text = parts.success ? parts.data.map((p) => p.text).join("\n") : "";
+      const prompt = {
+        kind: "prompt" as const,
+        hostId: draft.target.hostId,
+        epoch: draft.target.epoch,
+        text,
+        ...(typeof request.requestId === "string" ? { requestId: request.requestId } : {}),
+      };
+      // The ID is assigned only after creation. Each UTF-16 unit can take six JSON bytes.
+      const probe = { ...prompt, threadId: "\u0000".repeat(REMOTE_IDENTITY_MAX_LENGTH) };
+      if (
+        !text.trim() ||
+        request.mode === "steer" ||
+        !remoteSessionOperationSchema.safeParse(probe).success ||
+        remoteSessionRequestBytes(probe) > REMOTE_CONTROLLER_REQUEST_MAX_BYTES
+      )
+        throw new RpcError(
+          "remote/invalid-request",
+          "Send a nonempty text message within the remote size limit.",
+        );
+      legacyPrompt = prompt;
+      key = JSON.stringify([request.requestId, text]);
+    }
     if (draft.submission) {
       if (draft.submission.key === key) return draft.submission.result;
       throw new RpcError("session/busy", "The first message was already submitted.");
@@ -734,6 +948,10 @@ export class RemoteSessions {
         configurationRevision: 0,
       };
       entry.createdEpoch = target.epoch;
+      const draftUploadScope = draft.uploadScope;
+      if (draftUploadScope !== undefined) {
+        entry.pendingUploadScope = draftUploadScope;
+      }
       this.hosts.set(host.hostId, host);
       this.entries.set(id, entry);
       try {
@@ -749,7 +967,20 @@ export class RemoteSessions {
         this.events.emit("api-session/added", this.summary(id, entry));
         this.events.emit("codexhost/session-bound", draft.id, id);
         this.events.emit("api-session/removed", draft.id);
-        await this.invoke({ ...prompt, threadId: thread.id });
+        if (usePeerAttachments && peerPromptContent !== undefined) {
+          await this.attachments.prompt(this.peerEndpoint(host.hostId), {
+            threadId: thread.id,
+            ...(draftUploadScope !== undefined ? { scope: draftUploadScope } : {}),
+            ...(peerPromptRequestId !== undefined ? { requestId: peerPromptRequestId } : {}),
+            ...(peerPromptMode !== undefined ? { mode: peerPromptMode } : {}),
+            content: peerPromptContent,
+          });
+          if (draftUploadScope !== undefined && entry.pendingUploadScope === draftUploadScope) {
+            delete entry.pendingUploadScope;
+          }
+        } else if (legacyPrompt !== undefined) {
+          await this.invoke({ ...legacyPrompt, threadId: thread.id });
+        }
       } finally {
         this.pendingFirstTurns.delete(id);
       }
@@ -837,6 +1068,8 @@ export class RemoteSessions {
     return this.workspaces?.archivedSessionIds() ?? ids;
   }
   private summary(id: string, entry: Entry) {
+    const attachmentsSupported =
+      entry.online && this.peerAttachmentsSupported(entry.identity.hostId);
     const harnessIdentity =
       remoteHarnessIdentity(entry) ??
       (entry.row.modelProvider !== "codexhost" ? { id: "codex", name: "Codex" } : undefined);
@@ -859,6 +1092,7 @@ export class RemoteSessions {
               this.hosts.get(entry.identity.hostId) ?? { hostId: entry.identity.hostId },
             ),
             state: entry.online ? "connected" : "disconnected",
+            filePreview: attachmentsSupported,
           },
           ...(harnessIdentity ? { harnessIdentity } : {}),
           ...(entry.peerOwnershipAvailable && entry.peerTreeParent !== undefined
@@ -868,7 +1102,8 @@ export class RemoteSessions {
           nativeConnection: { state: entry.online ? "connected" : "reconnecting" },
           nativeDiscovery: false,
           remoteHistoryError: entry.historyError ?? null,
-          attachmentInput: { enabled: false },
+          attachmentInput: { enabled: attachmentsSupported },
+          ...(attachmentsSupported ? { imageLimits: WEB_IMAGE_LIMITS } : {}),
           sessionListMetadata: { blank: false, lastPromptAt: entry.row.updatedAt * 1000 },
         },
       },
@@ -882,7 +1117,10 @@ export class RemoteSessions {
     if (changed) entry.view?.log.setProjection("queueState", { previewOnly: true, stale: true });
     const id = remoteSessionId(entry.identity.hostId, entry.identity.threadId);
     this.clearPending(id);
-    if (changed && !this.closed) this.events.emit("api-session/added", this.summary(id, entry));
+    const summary = this.summary(id, entry);
+    if (changed && !this.closed) this.events.emit("api-session/added", summary);
+    entry.view?.log.setProjection("remoteHost", summary.projections.values.remoteHost);
+    entry.view?.log.setProjection("attachmentInput", summary.projections.values.attachmentInput);
     entry.view?.log.setProjection("nativeConnection", {
       state: "reconnecting",
       message: entry.identity.hostId.startsWith("remote-peer:")
@@ -1169,6 +1407,7 @@ export class RemoteSessions {
               "nativeConnection",
               "nativeDiscovery",
               "attachmentInput",
+              "imageLimits",
               "remoteHost",
               "harnessIdentity",
               "remoteHistoryError",
@@ -1478,7 +1717,7 @@ export class RemoteSessions {
             throw new RpcError("session/list-invalid", "Invalid direct-link identity.");
           const draft = this.drafts.get(id);
           if (draft && !draft.canonicalId)
-            return { items: [draft.summary()], archivedSessionIds: this.syncArchives() };
+            return { items: [this.draftSummary(draft)], archivedSessionIds: this.syncArchives() };
           const canonicalId = draft?.canonicalId ?? id;
           remoteSessionIdentity(canonicalId);
           if (!this.entries.has(canonicalId)) await this.refresh();
@@ -1495,7 +1734,9 @@ export class RemoteSessions {
           ...(local as object),
           items: [
             ...(local as { items: unknown[] }).items,
-            ...[...this.drafts.values()].filter((d) => !d.canonicalId).map((d) => d.summary()),
+            ...[...this.drafts.values()]
+              .filter((d) => !d.canonicalId)
+              .map((d) => this.draftSummary(d)),
             ...[...this.entries].map(([id, entry]) => this.summary(id, entry)),
           ],
         };
@@ -1521,10 +1762,10 @@ export class RemoteSessions {
           case "session/modelCatalog":
             return draft.catalog(this.draftCatalogLoader(draft));
           case "session/projections":
-            return draft.summary().projections;
+            return this.draftSummary(draft).projections;
           case "session/selectModel": {
             await draft.select(input, this.draftCatalogLoader(draft));
-            const summary = draft.summary();
+            const summary = this.draftSummary(draft);
             this.events.emit("api-session/added", summary);
             for (const sink of this.controls)
               for (const [key, value] of Object.entries(summary.projections.values))
@@ -1570,7 +1811,7 @@ export class RemoteSessions {
       const draft = this.drafts.get(id);
       if (draft && !draft.canonicalId) {
         draft.lastUsed = Date.now();
-        draft.follow(sink);
+        draft.follow(sink, this.peerAttachmentsSupported(draft.target.hostId));
         return true;
       }
       const threadId = draft?.canonicalId ?? id;
@@ -1600,6 +1841,78 @@ export class RemoteSessions {
     id: string,
     request: Record<string, unknown>,
   ): Promise<unknown> {
+    if (method === "session/attachment") {
+      const identity = remoteSessionIdentity(id);
+      if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
+      if (!identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+        throw new RpcError(
+          "remote/unsupported",
+          "This operation is unavailable for remote Threads",
+        );
+      }
+      const attachmentId = typeof request.attachmentId === "string" ? request.attachmentId : "";
+      if (!attachmentId) {
+        throw new RpcError("session/attachment-not-found", "The referenced image is unavailable.");
+      }
+      const peer = this.peerEndpoint(identity.hostId);
+      if (!this.attachments.supported(peer)) {
+        throw new RpcError(
+          "remote/attachments-unsupported",
+          "Remote peer does not support attachments.",
+        );
+      }
+      const view = this.entries.get(id)?.view ?? (await this.read(id));
+      return this.attachments.readAttachment(peer, view, identity.threadId, attachmentId);
+    }
+    if (method === "session/prompt") {
+      const identity = remoteSessionIdentity(id);
+      if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
+      const isPeer = identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX);
+      if (!isPeer && hasContentPartType(request.content, "file")) {
+        throw new RpcError(
+          "remote/attachments-unsupported",
+          "Remote attachments are not supported for this host.",
+        );
+      }
+      if (isPeer && hasNonTextContentPart(request.content)) {
+        const peer = this.peerEndpoint(identity.hostId);
+        if (!this.attachments.supported(peer)) {
+          throw new RpcError(
+            "remote/attachments-unsupported",
+            "Remote peer does not support attachments.",
+          );
+        }
+        if (hasContentPartType(request.content, "image")) {
+          throw new RpcError(
+            "session/attachment-invalid",
+            "Encoded image parts are not supported for remote peer sessions.",
+            { reason: "REMOTE_ENCODED_IMAGE_UNSUPPORTED" },
+          );
+        }
+        if (!this.entries.has(id)) await this.refresh();
+        const entry = this.entries.get(id);
+        if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
+        const pendingScope = entry.pendingUploadScope;
+        try {
+          const result = await this.attachments.prompt(peer, {
+            threadId: identity.threadId,
+            ...(pendingScope !== undefined ? { scope: pendingScope } : {}),
+            ...(typeof request.requestId === "string" ? { requestId: request.requestId } : {}),
+            ...(request.mode !== undefined ? { mode: request.mode as "queue" | "steer" } : {}),
+            ...(request.expectedTurnId === null || typeof request.expectedTurnId === "string"
+              ? { expectedTurnId: request.expectedTurnId }
+              : {}),
+            content: request.content as RemotePeerPromptParams["content"],
+          });
+          if (pendingScope !== undefined && entry.pendingUploadScope === pendingScope) {
+            delete entry.pendingUploadScope;
+          }
+          return result;
+        } finally {
+          this.refreshAfterDelivery(id, entry);
+        }
+      }
+    }
     if (
       (method === "session/prompt" && request.mode !== undefined) ||
       method === "session/updateQueue"

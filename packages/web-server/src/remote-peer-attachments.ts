@@ -35,7 +35,6 @@ export interface RemotePeerAttachmentsOptions {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_UPLOAD_TIMEOUT_MS = 120_000;
-const HTTP_STATUS_PATTERN = /^Remote peer returned HTTP (\d{3})$/u;
 const SAFE_PROXY_HEADERS = {
   "Cache-Control": "private, no-store",
   "X-Content-Type-Options": "nosniff",
@@ -112,11 +111,8 @@ function toReadableStream(chunks: AsyncIterable<Uint8Array>): ReadableStream<Uin
 }
 
 function extractPeerHttpStatus(error: RpcError): number | undefined {
-  if (error.code !== "remote/request-failed") return undefined;
-  const match = HTTP_STATUS_PATTERN.exec(error.message);
-  if (!match?.[1]) return undefined;
-  const parsed = Number(match[1]);
-  return Number.isInteger(parsed) ? parsed : undefined;
+  const status = (error.details as { httpStatus?: unknown }).httpStatus;
+  return typeof status === "number" && Number.isInteger(status) ? status : undefined;
 }
 
 async function readBoundedBytes(response: Response, maxBytes: number): Promise<Buffer> {

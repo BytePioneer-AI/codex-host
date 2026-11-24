@@ -15,6 +15,8 @@ import { requestRemoteSession } from "@codexhost/desktop-control";
 import { PeerHostManager, createCompositeRemoteCall } from "./peer-host-manager.ts";
 import { PeerHostStore } from "./peer-host-store.ts";
 import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "./peer-manifest.ts";
+import { servePeerAttachments } from "./peer-attachments-http.ts";
+import { RemotePeerAttachments } from "./remote-peer-attachments.ts";
 import { resolvePeerHarnessIcon } from "./peer-thread-source.ts";
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -54,7 +56,7 @@ import {
   reachableNetworkUrls,
 } from "./network-urls.ts";
 import { tailscaleServeState, tailscaleState } from "./tailscale-serve.ts";
-import type { WebNetworkAccessUrl } from "@codexhost/shared-contracts";
+import { REMOTE_PEER_FILE_PROXY_PATH, type WebNetworkAccessUrl } from "@codexhost/shared-contracts";
 import { RequestTrust } from "./request-trust.ts";
 import { RemoteRelay } from "./remote-relay/state.ts";
 import { registerRelayRpc } from "./remote-relay/rpc.ts";
@@ -435,6 +437,7 @@ async function resolvePeerEpoch(): Promise<string | undefined> {
   });
   return peerEpoch;
 }
+const peerAttachments = new RemotePeerAttachments();
 const peerManager = new PeerHostManager(
   new PeerHostStore(data),
   async () => [
@@ -442,7 +445,10 @@ const peerManager = new PeerHostManager(
     ...["localhost", "127.0.0.1", "[::1]"].map((host) => `http://${host}:${listeningPort}`),
   ],
   events,
-  { allowLoopback: process.env.CODEXHOST_ALLOW_LOOPBACK_PEERS === "1" },
+  {
+    allowLoopback: process.env.CODEXHOST_ALLOW_LOOPBACK_PEERS === "1",
+    projector: (threadId) => peerAttachments.projector(threadId),
+  },
 );
 peerManager.register(rpc);
 const remoteSessions = new RemoteSessions(
@@ -450,6 +456,7 @@ const remoteSessions = new RemoteSessions(
   createCompositeRemoteCall(peerManager, requestRemoteSession),
   workspaces,
   peerManager,
+  peerAttachments,
 );
 peerManager.onChange = (hostId) => {
   remoteSessions.hostsChanged(hostId);
@@ -619,6 +626,13 @@ const server = createWebServer((request, response) => {
       }
       return;
     }
+    if (
+      pathname === REMOTE_PEER_FILE_PROXY_PATH &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
+      await remoteSessions.servePeerFile(request, response);
+      return;
+    }
     if (pathname.startsWith("/api/peer/v1/")) {
       if (!requestAuth) {
         response.writeHead(401).end();
@@ -626,6 +640,23 @@ const server = createWebServer((request, response) => {
       }
       if (!trust.sameOrigin(request)) {
         response.writeHead(403).end();
+        return;
+      }
+      const peerRoute = pathname.slice("/api/peer/v1/".length);
+      const peerAttachmentsAvailable = Boolean(files && images);
+      if (peerRoute === "uploads" || peerRoute === "prompt" || peerRoute === "file") {
+        if (!peerAttachmentsAvailable) {
+          response
+            .writeHead(404, { "content-type": "application/json", "cache-control": "no-store" })
+            .end(JSON.stringify({ error: "Peer attachments unavailable" }));
+          return;
+        }
+        await servePeerAttachments(request, response, peerRoute, {
+          sessions,
+          files,
+          images,
+          rpc,
+        });
         return;
       }
       try {
@@ -646,6 +677,7 @@ const server = createWebServer((request, response) => {
           await resolvePeerEpoch(),
           SERVER_VERSION,
           [resolve(values.workspace as string)],
+          { attachments: peerAttachmentsAvailable },
         );
         response
           .writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
@@ -696,7 +728,13 @@ const server = createWebServer((request, response) => {
         return;
       }
       if (pathname === "/api/session/uploadFileBinary") {
-        await serveFileUpload(sessions, request, response, trust.relaySockets.has(request.socket));
+        await serveFileUpload(
+          sessions,
+          request,
+          response,
+          trust.relaySockets.has(request.socket),
+          remoteSessions,
+        );
         return;
       }
       if (pathname === "/api/workspace-file/download-ticket") {

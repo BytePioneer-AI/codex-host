@@ -3,7 +3,7 @@ import * as c from "@codexhost/shared-contracts";
 import { PeerChHostClient } from "./peer-ch-host-client.ts";
 import { PeerHostClient } from "./peer-host-client.ts";
 import { parseConnectionLink, type PeerHostStore, type PeerRecord } from "./peer-host-store.ts";
-import { PeerThreadSource } from "./peer-thread-source.ts";
+import { PeerThreadSource, type PeerThreadProjector } from "./peer-thread-source.ts";
 import { RpcError, type EventHub, type RpcRegistry } from "./transport.ts";
 import { requestOf } from "./store.ts";
 import type { RemoteSessionCall } from "./remote-session-delivery.ts";
@@ -13,6 +13,8 @@ export interface PeerHostManagerOptions {
   allowLoopback?: boolean;
   /** Override NDJSON event stream idle timeout in milliseconds. */
   streamIdleTimeoutMs?: number;
+  /** Optional placeholder attachment/image projector for Peer thread views. */
+  projector?: (threadId: string) => PeerThreadProjector;
 }
 
 const LOCAL_ONLY_ACTIONS = new Set(["add", "update", "remove", "test"]);
@@ -22,6 +24,7 @@ export class PeerHostManager {
   private sources = new Map<string, PeerThreadSource>();
   private readonly allowLoopback: boolean;
   private readonly streamIdleTimeoutMs: number | undefined;
+  private readonly projector: ((threadId: string) => PeerThreadProjector) | undefined;
   onChange?: (hostId?: string) => void;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
   onConnection?: (hostId: string, online: boolean) => void;
@@ -35,6 +38,7 @@ export class PeerHostManager {
   ) {
     this.allowLoopback = options.allowLoopback === true;
     this.streamIdleTimeoutMs = options.streamIdleTimeoutMs;
+    this.projector = options.projector;
     for (const record of store.load()) this.install(record);
   }
 
@@ -65,6 +69,7 @@ export class PeerHostManager {
         onThreadChanged: (threadId) => this.onThreadChanged?.(client.hostId, threadId),
         onConnection: (online) => this.onConnection?.(client.hostId, online),
         onReset: (epoch, full) => this.onReset?.(client.hostId, epoch, full),
+        ...(this.projector ? { projector: this.projector } : {}),
       });
       this.sources.set(record.peerId, source);
     }

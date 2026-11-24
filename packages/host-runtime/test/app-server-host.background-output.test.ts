@@ -686,6 +686,78 @@ describe("Host runtime idle background output on a completed Turn", () => {
     }
   });
 
+  it("keeps an appended Reasoning summary when the replayed text completes", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = hostTurnIdSchema.parse(await completePiTurn(fixture, threadId, 2));
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const nativeId = hostItemIdSchema.parse("complete-native-reasoning");
+      const liveId = hostItemIdSchema.parse("complete-live-reasoning");
+      const readSnapshot = session.readSnapshot.bind(session);
+      session.readSnapshot = async () => {
+        const snapshot = await readSnapshot();
+        if (!snapshot.ok) return snapshot;
+        const turns = snapshot.value.turns.map((turn) => ({
+          ...turn,
+          items: [
+            ...turn.items,
+            {
+              item: { type: "reasoning" as const, itemId: nativeId, text: "Reading" },
+              outcome: { status: "succeeded" as const },
+            },
+          ],
+        }));
+        return { ...snapshot, value: { ...snapshot.value, turns } };
+      };
+
+      const published = async (request: number) =>
+        (await readHistoryItems(fixture, threadId, request)).find(
+          (entry) => entry.id === `${nativeId}-summary`,
+        )?.summary as string[];
+      const history = await published(3);
+      expect(history).toEqual(["**Reading**"]);
+
+      const item = { type: "reasoning" as const, itemId: liveId, text: "Reading" };
+      session.emitEvent({ type: "item.background.started", turnId, item });
+      await fixture.collector.waitFor((message) => itemStarted(message, liveId));
+      // The history read already published this Item, so the replay may only grow it.
+      expect(await published(4)).toEqual(history);
+
+      session.emitEvent({
+        type: "item.updated",
+        turnId,
+        itemId: liveId,
+        update: { type: "text.append", text: "." },
+      });
+      await fixture.collector.waitFor(
+        (message) =>
+          message.method === "item/commandExecution/outputDelta" &&
+          (message.params as { itemId?: string }).itemId === liveId &&
+          (message.params as { delta?: string }).delta === ".",
+      );
+      const appended = await published(5);
+      expect(appended.join("\n\n").startsWith(history.join("\n\n"))).toBe(true);
+      expect(appended.join("\n\n").endsWith(".")).toBe(true);
+
+      // Completing the Item recomputes a shorter preview from the same text; the
+      // read that already showed the append must not lose it, nor append it again.
+      session.emitEvent({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { ...item, text: "Reading." },
+          outcome: { status: "succeeded" },
+        },
+      });
+      await fixture.collector.waitFor((message) => itemCompleted(message, `${liveId}-summary`));
+      expect(await published(6)).toEqual(appended);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it.each(["after restart", "a"])("aligns replayed text ending in %j", async (tail) => {
     const fixture = createFixture();
     try {

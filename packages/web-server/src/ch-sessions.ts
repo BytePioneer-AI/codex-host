@@ -13,6 +13,7 @@ import {
   WEB_FOLLOW_PROJECTION_KEYS,
   WEB_HANDOFF_PROJECTION,
   clientThreadSectionsSchema,
+  type ClientThreadSections,
   clientThreadSectionMoveSchema,
   desktopProjectPathKey,
   clientThreadSectionMutationResultSchema,
@@ -72,7 +73,7 @@ import {
   type StreamRegistry,
   type StreamSink,
 } from "./transport.ts";
-import type { Workspaces } from "./workspaces.ts";
+import type { ThreadSectionView, Workspaces } from "./workspaces.ts";
 import { defaultProjections } from "./session-log.ts";
 import { applyUsageProjections } from "./usage-projection.ts";
 import { toolOutputRecords, toolOutputSink } from "./tool-output.ts";
@@ -215,7 +216,7 @@ export class ChSessions {
           catalog: async () => {
             await this.refresh();
           },
-          sections: () => this.refreshAfterCurrent(true),
+          sections: () => this.refreshSectionMove(),
           archived: (id, archived) => {
             this.archiveOperations.delete(id);
             this.updateArchive(id, archived);
@@ -312,6 +313,7 @@ export class ChSessions {
     cursor?: string,
     workspace?: WorkspaceCatalog,
     requireSections = false,
+    sectionSnapshot?: ClientThreadSections | null,
   ): Promise<CatalogRefresh | undefined> {
     if (this.closed) return;
     if (
@@ -341,7 +343,7 @@ export class ChSessions {
             cursor,
             workspace,
           )
-        : this.listAll(this.refreshingTiming, includeArchived, archiveChanges, cursor);
+        : this.listAll(this.refreshingTiming, includeArchived, archiveChanges, cursor, sectionSnapshot);
       this.refreshing = load.finally(() => {
         this.refreshing = undefined;
         this.refreshingCatalog = false;
@@ -362,10 +364,79 @@ export class ChSessions {
     }
   }
   /** An invalidation cannot join a catalog read that began before it. */
-  private async refreshAfterCurrent(requireSections = false): Promise<void> {
+  private async refreshAfterCurrent(): Promise<void> {
     await this.refreshing?.catch(() => undefined);
-    await this.refresh(undefined, false, undefined, undefined, requireSections);
+    await this.refresh();
   }
+
+  private async readThreadSections() {
+    return clientThreadSectionsSchema.parse(
+      await this.host.request("codexhost/thread/sections/list", {
+        [THREAD_SECTION_CAPABILITY]: true,
+      }),
+    );
+  }
+
+  private async refreshSectionMove(move?: { threadId: string; sectionId: string | null }) {
+    // Publish after any catalog read already in flight, never over its older section snapshot.
+    while (this.refreshing) await this.refreshing.catch(() => undefined);
+    if (this.closed) return;
+    const read = this.readThreadSections();
+    this.refreshing = read.then(
+      () => undefined,
+      () => undefined,
+    );
+    let snapshot: ClientThreadSections | null | undefined;
+    try {
+      snapshot = await read;
+      if (this.closed) return;
+      const archived = new Set(this.workspaces.localArchivedSessionIds());
+      const sections: Array<Omit<ThreadSectionView, "workspaceIds">> = [];
+      const capability = snapshot[THREAD_SECTION_CAPABILITY];
+      let complete = true;
+      let destination: string | null = null;
+      for (const { id, name, appearance, threads } of snapshot.sections) {
+        const threadIds: string[] = [];
+        for (const thread of threads) {
+          if (thread.archived === true) continue;
+          if (
+            typeof thread.id !== "string" ||
+            archived.has(thread.id) ||
+            !this.publishedCatalog?.has(thread.id) ||
+            !this.threads.hasHarness(thread.id)
+          ) {
+            complete = false;
+            break;
+          }
+          threadIds.push(thread.id);
+          if (thread.id === move?.threadId) destination = id;
+        }
+        if (!complete) break;
+        sections.push(
+          capability && appearance !== undefined
+            ? { id, name, appearance, threadIds }
+            : { id, name, threadIds },
+        );
+      }
+      if (
+        complete &&
+        (!move || destination === move.sectionId) &&
+        this.workspaces.applyThreadSectionMove(sections, capability, move?.threadId)
+      )
+        return;
+    } catch (error) {
+      const unsupported =
+        error instanceof RpcError &&
+        (error.code === "host/method-unavailable" ||
+          ("hostCode" in error.details && error.details.hostCode === -32601));
+      if (unsupported) snapshot = null;
+      else if (!move) throw error;
+    } finally {
+      this.refreshing = undefined;
+    }
+    await this.refresh(undefined, false, undefined, undefined, !move, snapshot);
+  }
+
   private refreshPins(): Promise<string[]> {
     return this.pins.refresh().catch((error: unknown) => {
       console.error("[session/list] native pins unavailable", error);
@@ -475,6 +546,7 @@ export class ChSessions {
     includeArchived: boolean,
     archiveChanges: ReadonlyMap<string, boolean>,
     cursor?: string,
+    sectionSnapshot?: ClientThreadSections | null,
   ): Promise<CatalogRefresh | undefined> {
     const known = new Set(this.rows.keys());
     let sectionFailure: CatalogRefresh["sectionFailure"];
@@ -484,12 +556,12 @@ export class ChSessions {
       timing.measure("project_definitions", () => this.host.projects([])),
       timing.measure("thread_tree", () => this.tree.refresh()),
       timing.measure("thread_sections", async () => {
+        if (sectionSnapshot === null) {
+          sectionsUnsupported = true;
+          return undefined;
+        }
         try {
-          return clientThreadSectionsSchema.parse(
-            await this.host.request("codexhost/thread/sections/list", {
-              [THREAD_SECTION_CAPABILITY]: true,
-            }),
-          );
+          return sectionSnapshot ?? (await this.readThreadSections());
         } catch (error) {
           sectionsUnsupported =
             error instanceof RpcError &&
@@ -1596,15 +1668,23 @@ export class ChSessions {
       });
     }
     rpc.register("workspace/moveSessionToSection", async (args) => {
-      const input = requestOf<{ sessionId: string; sectionId: string | null }>(args);
+      const input = requestOf<{
+        sessionId: string;
+        sectionId: string | null;
+        beforeSessionId?: string | null;
+      }>(args);
       const move = clientThreadSectionMoveSchema.safeParse({
         threadId: input.sessionId,
         sectionId: input.sectionId,
+        beforeThreadId: input.beforeSessionId,
       });
       if (!move.success)
         throw new RpcError("workspace/section-invalid", "Invalid Thread section move.");
-      const { sectionId } = move.data;
+      const { sectionId, beforeThreadId } = move.data;
       const id = this.id(move.data.threadId);
+      const before = typeof beforeThreadId === "string" ? this.id(beforeThreadId) : beforeThreadId;
+      if (typeof before === "string" && (sectionId === null || before === id))
+        throw new RpcError("workspace/section-invalid", "Invalid Thread section anchor.");
       if (
         this.drafts.has(id) ||
         !this.threads.hasHarness(id) ||
@@ -1617,8 +1697,12 @@ export class ChSessions {
           "workspace/section-unavailable",
           "This Thread or section is unavailable for a move.",
         );
-      await this.host.request("codexhost/thread/sections/move", { threadId: id, sectionId });
-      await this.refreshAfterCurrent().catch(() => undefined);
+      await this.host.request("codexhost/thread/sections/move", {
+        threadId: id,
+        sectionId,
+        ...(before === undefined ? {} : { beforeThreadId: before }),
+      });
+      await this.refreshSectionMove({ threadId: id, sectionId }).catch(() => undefined);
       return { sectionId };
     });
     rpc.register("session/list", async (args, context) => {

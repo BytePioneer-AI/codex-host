@@ -57,6 +57,8 @@ function setupSectionRpc(t: TestContext, host: FakeChHost) {
     list: () => rpc.dispatch("session/list", { args: {} }),
     mutate: (op: "create" | "update" | "delete", request: object) =>
       rpc.dispatch(`workspace/${op}ThreadSection`, { args: { request } }),
+    move: (request: object) =>
+      rpc.dispatch("workspace/moveSessionToSection", { args: { request } }),
     async subscribe(args: Record<string, unknown>, onSections?: (sections: unknown) => void) {
       assert.ok(follow);
       type Sections = { threadSections: unknown; [THREAD_SECTION_CAPABILITY]?: true };
@@ -640,7 +642,8 @@ it("propagates native section membership and summaries to browsers that did not 
   const later = host.add("native-found-by-section", root);
   const pageMember = host.add("native-found-by-page", root);
   const pageOrdinary = host.add("native-page-ordinary", root);
-  for (const row of [ordinary, older, later, pageMember, pageOrdinary])
+  const discoveredDuringMove = host.add("native-discovered-during-move", root);
+  for (const row of [ordinary, older, later, pageMember, pageOrdinary, discoveredDuringMove])
     row.modelProvider = "openai";
   const external = host.add("external-member", join(root, "external-project"));
   const missingExternal = { ...external, id: "external-outside-catalog" };
@@ -655,8 +658,10 @@ it("propagates native section membership and summaries to browsers that did not 
     if (method === "codexhost/thread/sections/move") {
       const target = params.sectionId;
       assert.deepEqual(params, { threadId: external.id, sectionId: target });
-      if (target === null) members.splice(members.indexOf(external), 1);
-      else if (target === "research") members.push(external);
+      if (target === null) {
+        members.splice(members.indexOf(external), 1);
+        members.push({ ...discoveredDuringMove, archived: false });
+      } else if (target === "research") members.push(external);
       else assert.fail("Unexpected section target");
       return {} as T;
     }
@@ -775,16 +780,111 @@ it("propagates native section membership and summaries to browsers that did not 
       rpc.dispatch("workspace/moveSessionToSection", {
         args: { request: { sessionId: external.id, sectionId } },
       });
+    eventsB.length = 0;
     assert.deepEqual(await move(null), { ok: true, value: { sectionId: null } });
+    assert.deepEqual(addedB(), [discoveredDuringMove.id]);
     assert.deepEqual(await move("research"), { ok: true, value: { sectionId: "research" } });
     assert.deepEqual(workspaceB.filter(isSectionUpdate).slice(-2), [
-      sectionFrame(older.id, pageMember.id, later.id),
-      sectionFrame(older.id, pageMember.id, later.id, external.id),
+      sectionFrame(older.id, pageMember.id, later.id, discoveredDuringMove.id),
+      sectionFrame(older.id, pageMember.id, later.id, discoveredDuringMove.id, external.id),
     ]);
     assert.deepEqual(workspaces.ownerOf(external.id), project);
   } finally {
     for (const handler of closeHandlers) handler();
   }
+});
+
+it("preserves omitted, null and precise section anchors and surfaces Host owner rejection", async (t) => {
+  const host = new FakeChHost();
+  const { root, workspaces, list, move, subscribe } = setupSectionRpc(t, host);
+  const first = host.add("first", root);
+  const last = host.add("last", root);
+  const outsider = host.add("outsider", root);
+  const members = [first, last];
+  host.projectSnapshot.sectionProjects = { research: ["project-first"] };
+  const request = host.request.bind(host);
+  const submitted: unknown[] = [];
+  const moveReadCalls: string[] = [];
+  for (const method of ["projects", "pins"] as const) {
+    const original = host[method].bind(host);
+    host[method] = () => {
+      moveReadCalls.push(method);
+      return original();
+    };
+  }
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    moveReadCalls.push(method);
+    if (method === "codexhost/thread/sections/list")
+      return {
+        ...sectionFollowArgs,
+        sections: [{ id: "research", name: "Research", threads: members }],
+      } as T;
+    if (method !== "codexhost/thread/sections/move") return request<T>(method, params);
+    submitted.push(params);
+    switch (params.beforeThreadId) {
+      case undefined:
+        break;
+      case null:
+        members.splice(0, 2, last, first);
+        break;
+      case last.id:
+        members.splice(0, 2, first, last);
+        break;
+      default:
+        throw new RpcError(
+          "host/rejected",
+          "Complete Thread section order is unavailable across owners",
+          {
+            hostCode: -32078,
+          },
+        );
+    }
+    return {} as T;
+  };
+  assert.ok((await list()).ok);
+  const follower = await subscribe({});
+  const capable = await subscribe(sectionFollowArgs);
+  const workspaceId = workspaces.byPath(root)?.workspaceId;
+  assert.ok(workspaceId);
+  const sectionFrame = (threadIds: string[]) => ({
+    type: "threadSections",
+    threadSections: [{ id: "research", name: "Research", threadIds, workspaceIds: [workspaceId] }],
+  });
+  const toResearch = { sessionId: first.id, sectionId: "research" };
+  assert.deepEqual(await move(toResearch), { ok: true, value: { sectionId: "research" } });
+  assert.deepEqual(follower.updates(), []);
+  moveReadCalls.length = 0;
+  assert.ok((await move({ ...toResearch, beforeSessionId: null })).ok);
+  assert.deepEqual(moveReadCalls, [
+    "codexhost/thread/sections/move",
+    "codexhost/thread/sections/list",
+  ]);
+  assert.ok((await move({ ...toResearch, beforeSessionId: last.id })).ok);
+  const rejected = await move({ ...toResearch, beforeSessionId: outsider.id });
+  assert.ok(!rejected.ok);
+  assert.equal(rejected.error.code, "host/rejected");
+  assert.match(rejected.error.message, /across owners/);
+  for (const invalid of [
+    { ...toResearch, beforeSessionId: first.id },
+    { ...toResearch, beforeSessionId: 1 },
+    { ...toResearch, sectionId: null, beforeSessionId: last.id },
+  ]) {
+    const result = await move(invalid);
+    assert.ok(!result.ok);
+    assert.equal(result.error.code, "workspace/section-invalid");
+  }
+  assert.deepEqual(submitted, [
+    { threadId: first.id, sectionId: "research" },
+    { threadId: first.id, sectionId: "research", beforeThreadId: null },
+    { threadId: first.id, sectionId: "research", beforeThreadId: last.id },
+    { threadId: first.id, sectionId: "research", beforeThreadId: outsider.id },
+  ]);
+  const updates = [sectionFrame([last.id, first.id]), sectionFrame([first.id, last.id])];
+  assert.deepEqual(follower.updates(), updates);
+  assert.deepEqual(
+    capable.updates(),
+    updates.map((frame) => ({ ...frame, ...sectionFollowArgs })),
+  );
 });
 
 it("places Desktop's section projects as their root Workspaces in Desktop order", async (t) => {

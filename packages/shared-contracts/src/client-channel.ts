@@ -176,6 +176,7 @@ export const clientThreadSectionMoveSchema = z
   .object({
     threadId: z.string().min(1).max(1_024),
     sectionId: z.string().min(1).max(1_024).nullable(),
+    beforeThreadId: z.string().min(1).max(1_024).nullable().optional(),
   })
   .strict();
 

@@ -40,7 +40,10 @@ export async function connectSharedThreads(
 ): Promise<SharedThreadPeer | null> {
   if (process.platform === "win32") return null;
   const socketPath = sharedThreadSocketPath(environment);
-  const metadata = await lstat(socketPath).catch(() => null);
+  const metadata = await lstat(socketPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
   if (!metadata) return null;
   if (
     !metadata.isSocket() ||
@@ -49,10 +52,8 @@ export async function connectSharedThreads(
   ) {
     throw new Error("Shared Thread socket must be private and owned by the current user");
   }
-  // A stale socket after a crash is an offline service, not a failure of the
-  // GUI's independent native Codex connection. Never retry a submitted write.
-  const connection = await createRemoteOfficialAppServerConnection(socketPath).catch(() => null);
-  if (!connection) return null;
+  // An unreachable socket cannot prove that its owner has no section members.
+  const connection = await createRemoteOfficialAppServerConnection(socketPath);
   connection.stderr.resume();
   return new StreamThreadPeer(connection.stdout, connection.stdin, () => connection.close());
 }
@@ -89,6 +90,7 @@ export class SharedThreadBridge {
   #treeDiagnosed = false;
 
   #peer: SharedThreadPeer | null = null;
+  #hasConnected = false;
   #connecting: Promise<SharedThreadPeer | null> | null = null;
   #closed = false;
   #timer: NodeJS.Timeout | undefined;
@@ -138,6 +140,7 @@ export class SharedThreadBridge {
           return null;
         }
         this.#peer = peer;
+        this.#hasConnected = true;
         peer.subscribe((message) => {
           if (message.method === SHARED_SECTIONS_CHANGED_METHOD) {
             this.#invalidateLists();
@@ -393,13 +396,26 @@ export class SharedThreadBridge {
     }
   }
 
-  async placements(): Promise<StoredSectionPlacementV1[]> {
+  async placements(requireComplete = false): Promise<StoredSectionPlacementV1[]> {
     try {
       const peer = await this.#connect();
-      if (!peer) return [];
-      const reply = await peer.request("codexhost/shared-threads/placements", {});
-      return storedSectionPlacementV1Schema.array().parse(reply.result);
+      if (!peer) {
+        if (requireComplete && (this.#hasConnected || this.options.delegateCreates))
+          throw new Error("Shared Thread Host is disconnected");
+        return [];
+      }
+      const reply = await peer.request(
+        "codexhost/shared-threads/placements",
+        requireComplete ? { requireComplete } : {},
+      );
+      const result = reply.result;
+      if (requireComplete && !object(result))
+        throw new Error("Shared Thread Host did not confirm complete section placements");
+      return storedSectionPlacementV1Schema
+        .array()
+        .parse(requireComplete && object(result) ? result.placements : result);
     } catch (error) {
+      if (requireComplete) throw error;
       this.options.diagnose(error);
       return [];
     }

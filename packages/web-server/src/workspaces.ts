@@ -829,6 +829,49 @@ export class Workspaces {
     this.state = state;
   }
 
+  /** A move cannot change definitions or project membership. */
+  applyThreadSectionMove(
+    sections: ReadonlyArray<Omit<ThreadSectionView, "workspaceIds">>,
+    threadSectionsV1: true | undefined,
+    movedId?: string,
+  ): boolean {
+    const current = this.officialThreadSections ?? [];
+    if (
+      threadSectionsV1 !== this.officialThreadSectionsV1 ||
+      sections.length !== current.length ||
+      !sections.every((section, i) => {
+        const previous = current[i];
+        return (
+          previous?.id === section.id &&
+          previous.name === section.name &&
+          JSON.stringify(previous.appearance) === JSON.stringify(section.appearance)
+        );
+      })
+    )
+      return false;
+
+    const remaining = new Set<string>();
+    if (movedId !== undefined) {
+      for (const { threadIds } of current)
+        for (const id of threadIds) if (id !== movedId) remaining.add(id);
+    }
+    const seen = new Set<string>();
+    for (const { threadIds } of sections) {
+      for (const id of threadIds) {
+        if (seen.has(id) || (movedId !== undefined && id !== movedId && !remaining.delete(id)))
+          return false;
+        seen.add(id);
+      }
+    }
+    if (remaining.size !== 0) return false;
+    this.officialThreadSections = sections.map((section, i) => {
+      const workspaceIds = current[i]?.workspaceIds;
+      return workspaceIds === undefined ? section : { ...section, workspaceIds };
+    });
+    this.publishProjectSections();
+    return true;
+  }
+
   private publishProjectSections(): void {
     const official = this.officialThreadSections ?? [];
     const overrides = this.nativeWorkspaces ? this.state.projectSectionOverrides : undefined;

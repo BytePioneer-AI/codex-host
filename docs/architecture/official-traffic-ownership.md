@@ -71,6 +71,16 @@ Desktop 的原生预热池按工作目录匹配。每次创建使用独立的消
 - `thread/queue/*`：官方 Thread 原样转发；外部 Thread 的 list/add/update/delete/reorder/start 由 Host 管理真实队列，见[外部 Thread 跟进消息队列](external-thread-queue.md)。不支持的外部队列方法返回 `-32076`。
 - 其他带外部 `threadId` 的 `thread/*` 请求返回 `-32076`。例外是 `thread/attachment/list`、`thread/settings/update`：不带 codexhost 渲染扩展的官方客户端（如 SSH 连接的 ChatGPT iOS app）打开 Thread 或发送前会调用它们，因此按官方结构返回空结果。`thread/settings/update` 只确认、不应用，权限仍由 Harness 自己的权限模式决定。
 
+Web 的 `workspace/moveSessionToSection.beforeSessionId` 对应 `codexhost/thread/sections/move.beforeThreadId`。
+
+| 目标     | 省略锚点   | 显式 `null` | 会话 ID          |
+| -------- | ---------- | ----------- | ---------------- |
+| 同一分区 | 保持原位   | 移到末尾    | 插到目标成员之前 |
+| 其他分区 | 追加到末尾 | 追加到末尾  | 插到目标成员之前 |
+| 无分区   | 解除归属   | 解除归属    | 拒绝             |
+
+锚点必须是目标分区内的其他成员。Host 按完整的官方与外部成员顺序规划移动，无法确认同一 owner 的完整顺序时拒绝写入。移动确认后，Web 优先读取 Host 的分区快照并通过 `workspace/follow` 发布，保留项目归属；遇到未知成员或定义变化时刷新目录。
+
 ## 官方自动导入的镜像 Thread
 
 官方 Codex 开启 `external-agent-import-sync-enabled` 时，会把 `~/.claude/projects` 等位置的 Harness 原生会话导入为一个新的官方 Thread，登记在 `$CODEX_HOME/external_agent_session_imports.json`。这个 Thread 与 codexhost 已列出的外部 Thread 指向同一份原生会话，却是不同的 ID，没有父子关系，会作为多余的顶层会话出现，委派产生的子 Thread 尤其明显。

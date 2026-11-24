@@ -28,6 +28,7 @@ function serveOfficialSections(
   } = {},
 ) {
   const moves: JsonObject[] = [];
+  const sectionReads: JsonObject[] = [];
   const mutations: Array<{ method: string; params: JsonObject }> = [];
   const sections = new Map(Object.entries(custom).map(([id, members]) => [id, [...members]]));
   const definitions = new Map<string, JsonObject>(
@@ -104,6 +105,7 @@ function serveOfficialSections(
       } else if (request.method === "thread/list" && params.sectionId === PINNED) {
         result = { data: pinned.map((id) => ({ id })), nextCursor: null, backwardsCursor: null };
       } else if (method === "thread/list") {
+        if (typeof params.sectionId === "string") sectionReads.push(params);
         result = {
           data: (sections.get(String(params.sectionId)) ?? []).map((id) => ({ id })),
           nextCursor: null,
@@ -136,14 +138,20 @@ function serveOfficialSections(
             id,
             members.filter((member) => member !== threadId),
           );
-        sections.get(String(params.sectionId))?.push(threadId);
+        const destination = sections.get(String(params.sectionId));
+        if (destination) {
+          const before = params.beforeThreadId;
+          const index =
+            typeof before === "string" ? destination.indexOf(before) : destination.length;
+          destination.splice(index, 0, threadId);
+        }
         result = {};
       }
       if (result === undefined) continue;
       reply({ result });
     }
   });
-  return { moves, mutations, deleteSection };
+  return { moves, mutations, sectionReads, deleteSection };
 }
 
 async function call(
@@ -656,7 +664,7 @@ describe("External Thread sections through AppServerHost", () => {
     }
   });
 
-  it("lists mixed custom sections without archived or pinned members", async () => {
+  it("lists mixed custom sections in placement order without archived or pinned members", async () => {
     const fixture = createFixture();
     serveOfficialSections(fixture, ["pinned-1"], {
       Research: ["official-2", "official-1"],
@@ -669,6 +677,7 @@ describe("External Thread sections through AppServerHost", () => {
         call(fixture, 91, "thread/section/move", {
           threadId: external,
           sectionId: "Research",
+          beforeThreadId: "official-1",
         }),
       ).resolves.toEqual({ id: 91, result: {} });
       await expect(
@@ -688,8 +697,8 @@ describe("External Thread sections through AppServerHost", () => {
               name: "Research",
               threads: [
                 { id: "official-2" },
-                { id: "official-1" },
                 expect.objectContaining({ id: external, modelProvider: "codexhost" }),
+                { id: "official-1" },
               ],
             },
             { id: "Empty", name: "Empty", threads: [] },
@@ -760,12 +769,149 @@ describe("External Thread sections through AppServerHost", () => {
     }
   });
 
-  it("moves local and shared Threads independently of other section members", async () => {
+  it("applies precise moves to the full mixed order and skips only true no-ops", async () => {
+    const fixture = createFixture();
+    const native = serveOfficialSections(fixture, [], {
+      Research: ["official-1", "official-2"],
+      Review: ["other"],
+    });
+    const move = (threadId: string, sectionId: string | null, beforeThreadId?: string | null) =>
+      sectionRpc(fixture, "move", {
+        threadId,
+        sectionId,
+        ...(beforeThreadId === undefined ? {} : { beforeThreadId }),
+      });
+    const order = async (sectionId = "Research") => {
+      const listed = (await sectionRpc(fixture, "list", {})) as {
+        result: { sections: { id: string; threads: { id: string }[] }[] };
+      };
+      return listed.result.sections.find(({ id }) => id === sectionId)?.threads.map(({ id }) => id);
+    };
+    try {
+      const external = await startPiThread(fixture);
+      const ok = { result: {} };
+      await expect(move(external, "Research")).resolves.toEqual(ok);
+      expect(await order()).toEqual(["official-1", "official-2", external]);
+      await expect(move("official-1", "Research", "official-2")).resolves.toEqual(ok);
+      expect(native.moves).toEqual([]);
+      await expect(move("official-2", "Research", null)).resolves.toEqual(ok);
+      expect(native.sectionReads).toContainEqual(
+        expect.objectContaining({ sectionId: "Research", sortDirection: "asc" }),
+      );
+      expect(await order()).toEqual(["official-1", external, "official-2"]);
+      // A legacy same-section move does not depend on a complete placement view.
+      const unreadablePlacements = vi
+        .spyOn(fixture.mappingStore, "listSectionPlacements")
+        .mockRejectedValue(new Error("placements unavailable"));
+      try {
+        await expect(move("official-1", "Research")).resolves.toEqual(ok);
+      } finally {
+        unreadablePlacements.mockRestore();
+      }
+      await expect(move("official-1", "Research", external)).resolves.toEqual(ok);
+      expect(native.moves).toEqual([]);
+
+      const before = await fixture.mappingStore.listSectionPlacements();
+      const unavailableDisk = vi
+        .spyOn(fixture.mappingStore, "replaceSectionPlacements")
+        .mockRejectedValue(new Error("unexpected placement write"));
+      try {
+        await expect(move(external, "Research", "official-2")).resolves.toEqual(ok);
+        await expect(move("official-2", "Research", null)).resolves.toEqual(ok);
+        for (const [section, anchor] of [
+          ["Research", external],
+          ["Research", "other"],
+          ["Research", "missing"],
+          [null, "official-1"],
+        ] as const) {
+          await expect(move(external, section, anchor)).resolves.toHaveProperty("error");
+        }
+        await expect(move("official-1", "Research", "other")).resolves.toHaveProperty("error");
+      } finally {
+        unavailableDisk.mockRestore();
+      }
+      expect(await fixture.mappingStore.listSectionPlacements()).toEqual(before);
+      expect(native.moves).toEqual([]);
+      expect(await order()).toEqual(["official-1", external, "official-2"]);
+
+      const failedSave = vi
+        .spyOn(fixture.mappingStore, "replaceSectionPlacements")
+        .mockRejectedValue(new Error("Cannot write exact order"));
+      try {
+        await expect(move("official-2", "Research", external)).resolves.toMatchObject({
+          error: { message: "Thread section could not be moved" },
+        });
+        expect(native.moves).toEqual([]);
+        expect(await order()).toEqual(["official-1", external, "official-2"]);
+      } finally {
+        failedSave.mockRestore();
+      }
+
+      await expect(move("official-2", "Research", external)).resolves.toEqual(ok);
+      expect(await order()).toEqual(["official-1", "official-2", external]);
+      expect(await call(fixture, 97, "thread/archive", { threadId: external })).toHaveProperty(
+        "result",
+      );
+      expect(await order()).toEqual(["official-1", "official-2"]);
+      // The visible last row is not last in the persisted order.
+      await expect(move("official-2", "Research", null)).resolves.toEqual(ok);
+      expect(await fixture.mappingStore.listSectionPlacements()).toMatchObject([
+        { hostThreadId: external, beforeThreadId: "official-2" },
+      ]);
+      expect(await call(fixture, 98, "thread/unarchive", { threadId: external })).toHaveProperty(
+        "result",
+      );
+      await expect(move(external, "Review", "other")).resolves.toEqual(ok);
+      expect(await order()).toEqual(["official-1", "official-2"]);
+      expect(await order("Review")).toEqual([external, "other"]);
+      await expect(move("official-2", "Review", external)).resolves.toEqual(ok);
+      expect(await order()).toEqual(["official-1"]);
+      expect(await order("Review")).toEqual(["official-2", external, "other"]);
+      expect(native.moves).toEqual([
+        { threadId: "official-2", sectionId: "Review", beforeThreadId: "other" },
+      ]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("reports a native move with unsaved external anchors as partial without replaying it", async () => {
+    const fixture = createFixture();
+    const native = serveOfficialSections(fixture, [], { Research: ["N1", "N2"] });
+    try {
+      const threadId = await startPiThread(fixture);
+      await expect(
+        sectionRpc(fixture, "move", { threadId, sectionId: "Research", beforeThreadId: "N2" }),
+      ).resolves.toEqual({ result: {} });
+      vi.spyOn(fixture.mappingStore, "replaceSectionPlacements").mockRejectedValue(
+        new Error("Cannot save the external anchors"),
+      );
+      await expect(
+        sectionRpc(fixture, "move", {
+          threadId: "N2",
+          sectionId: "Research",
+          beforeThreadId: "N1",
+        }),
+      ).resolves.toMatchObject({
+        error: { message: expect.stringContaining("Native Thread moved") },
+      });
+      expect(native.moves).toEqual([
+        { threadId: "N2", sectionId: "Research", beforeThreadId: "N1" },
+      ]);
+      await expect(sectionRpc(fixture, "list", {})).resolves.toMatchObject({
+        result: { sections: [{ threads: [{ id: threadId }, { id: "N2" }, { id: "N1" }] }] },
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("rejects split-owner anchors and source or destination members before either owner writes", async () => {
     const ownerFixture = createFixture({ externalOnly: true });
     const owner = new SharedThreadOwner();
     ownerFixture.desktopOutput.pipe(owner.output, { end: false });
     owner.input.pipe(ownerFixture.desktopInput, { end: false });
-    serveOfficialSections(ownerFixture, [], { Research: [], Review: [] });
+    const ownerNative = serveOfficialSections(ownerFixture, [], { Research: [], Review: [] });
     const local = createFixture({
       sharedThreads: new SharedThreadBridge({
         connect: async () => owner.connect(),
@@ -775,42 +921,43 @@ describe("External Thread sections through AppServerHost", () => {
     });
     const localNative = serveOfficialSections(local, [], {
       Research: ["local-thread"],
-      Review: [],
-    });
-    const changes: string[] = [];
-    const stop = local.host.clientEvents.subscribe(({ type }) => {
-      if (type === "sections-changed") changes.push(type);
+      Review: ["local-review"],
+      Empty: [],
     });
     try {
       await vi.waitFor(() => ownerFixture.mappingStore.listSectionPlacements());
-      const boot = await sectionRpc(ownerFixture, "list", {});
-      expect(boot, ownerFixture.diagnosticOutput.read()?.toString()).toHaveProperty("result");
+      expect(await sectionRpc(ownerFixture, "list", {})).toHaveProperty("result");
       const shared = await startPiThread(ownerFixture);
-      const move = (threadId: string, sectionId: string) =>
-        sectionRpc(local, "move", { threadId, sectionId });
-      await expect(move(shared, "Research")).resolves.toEqual({ result: {} });
-      await vi.waitFor(() => expect(changes).toHaveLength(1));
-      await expect(move("local-thread", "Review")).resolves.toEqual({ result: {} });
-      await expect(move(shared, "Review")).resolves.toEqual({ result: {} });
-      await vi.waitFor(() => expect(changes).toHaveLength(3));
-      expect(localNative.moves).toEqual([
-        { threadId: "local-thread", sectionId: "Review", beforeThreadId: null },
-      ]);
+      expect(
+        await sectionRpc(ownerFixture, "move", { threadId: shared, sectionId: "Research" }),
+      ).toHaveProperty("result");
+      const before = await ownerFixture.mappingStore.listSectionPlacements();
+      const move = (params: JsonObject) => sectionRpc(local, "move", params);
+      await expect(move({ threadId: "local-thread", sectionId: "Research" })).resolves.toEqual({
+        result: {},
+      });
+      await expect(move({ threadId: shared, sectionId: "Research" })).resolves.toEqual({
+        result: {},
+      });
+      for (const params of [
+        { threadId: "local-thread", sectionId: "Research", beforeThreadId: shared },
+        { threadId: "local-thread", sectionId: "Research", beforeThreadId: null },
+        { threadId: "local-thread", sectionId: "Review" },
+        { threadId: "local-review", sectionId: "Research" },
+        { threadId: shared, sectionId: "Review" },
+      ]) {
+        await expect(move(params)).resolves.toMatchObject({
+          error: { code: -32078, message: expect.stringContaining("across owners") },
+        });
+      }
+      expect(localNative.moves).toEqual([]);
+      expect(ownerNative.moves).toEqual([]);
       expect(await local.mappingStore.listSectionPlacements()).toEqual([]);
-      expect(await ownerFixture.mappingStore.listSectionPlacements()).toMatchObject([
-        { hostThreadId: shared, section: { id: "Review" } },
-      ]);
-      await expect(sectionRpc(local, "list", { threadSectionsV1: true })).resolves.toMatchObject({
-        result: {
-          threadSectionsV1: true,
-          sections: [
-            { id: "Research", threads: [] },
-            { id: "Review", threads: [{ id: "local-thread" }, { id: shared }] },
-          ],
-        },
+      expect(await ownerFixture.mappingStore.listSectionPlacements()).toEqual(before);
+      await expect(move({ threadId: "local-review", sectionId: "Empty" })).resolves.toEqual({
+        result: {},
       });
     } finally {
-      stop();
       await stopFixture(local);
       owner.close();
       await stopFixture(ownerFixture);

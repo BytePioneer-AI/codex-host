@@ -299,13 +299,14 @@ fn windows_installation(
     // copy bundled with the installed package. Prefer the CLI that ships with
     // the currently installed package so cached, stale builds are not used,
     // and fall back to the Desktop-managed cache for older layouts.
-    let executable_codex_cli = find_desktop_cli_cache(local_app_data)?
-        .or_else(|| packaged_codex_cli.canonicalize().ok())
-        .ok_or_else(|| {
-        PlatformError::NotFound(
-            "no runnable Codex CLI was found in the Desktop-managed cache; launch the official Desktop once to create it".into(),
-        )
-    })?;
+    let executable_codex_cli = match packaged_codex_cli.canonicalize() {
+        Ok(cli) => cli,
+        Err(_) => find_desktop_cli_cache(local_app_data)?.ok_or_else(|| {
+            PlatformError::NotFound(
+                "no runnable Codex CLI was found in the Desktop-managed cache; launch the official Desktop once to create it".into(),
+            )
+        })?,
+    };
 
     Ok(DesktopInstallation {
         identity: DesktopIdentity::WindowsPackage {

@@ -11,14 +11,14 @@
       pageTitle: "CodexHost — 选择打开方式",
       title: "选择打开方式",
       subtitle: "每次启动可自由选择入口，桌面端、官方客户端与浏览器共用同一套本机后台与会话。",
-      nativeBadge: "独立窗口",
+      nativeBadge: "轻量",
       nativeTitle: "CodexHost 桌面端",
-      nativeSummary: "轻量、低内存的独立原生桌面窗口，随时可用",
+      nativeSummary: "开箱即用，低内存原生窗口，原生支持多 Agent 与扩展",
       nativeCta: "启动",
       nativePending: "正在打开…",
-      desktopBadge: "增强版",
-      desktopTitle: "官方 Codex Desktop",
-      desktopSummary: "保留熟悉的官方桌面界面，注入全量多 Agent 增强",
+      desktopBadge: "OpenAI 官方",
+      desktopTitle: "Codex Desktop",
+      desktopSummary: "沿用熟悉的官方桌面界面，自动接入全部外部 Agent",
       desktopCta: "打开",
       desktopPending: "正在打开…",
       desktopUnavailable: "未在本机检测到 Codex Desktop",
@@ -50,20 +50,22 @@
       previewThemeAuto: "跟随系统",
       previewThemeLight: "浅色",
       previewThemeDark: "深色",
+      previewReplayFx: "重播显影",
     },
     en: {
       pageTitle: "CodexHost — Choose Launch Mode",
       title: "Choose how to open",
       subtitle:
         "Pick an entry anytime. Desktop, the official client, and Web share the same local Host and sessions.",
-      nativeBadge: "Standalone",
+      nativeBadge: "Lightweight",
       nativeTitle: "CodexHost Desktop",
-      nativeSummary: "Lightweight, low-memory native desktop window, ready anytime",
+      nativeSummary: "Ready out of the box, low-memory native window with full multi-Agent support",
       nativeCta: "Launch",
       nativePending: "Opening…",
-      desktopBadge: "Enhanced",
-      desktopTitle: "Official Codex Desktop",
-      desktopSummary: "Familiar official desktop experience with multi-Agent enhancements",
+      desktopBadge: "OpenAI",
+      desktopTitle: "Codex Desktop",
+      desktopSummary:
+        "Keep the familiar official desktop interface with all external Agents connected",
       desktopCta: "Open",
       desktopPending: "Opening…",
       desktopUnavailable: "Codex Desktop was not detected on this device",
@@ -99,6 +101,7 @@
       previewThemeAuto: "System",
       previewThemeLight: "Light",
       previewThemeDark: "Dark",
+      previewReplayFx: "Replay FX",
     },
   };
 
@@ -306,6 +309,18 @@
     state.feedbackErrorDetail = "";
     render();
 
+    var dither = window.CodexHostDitherFX;
+    var convergeCv = document.getElementById("launch-converge-cv");
+    var cancelConverge = null;
+    if (
+      surface === "native-shell" &&
+      dither &&
+      typeof dither.playInwardConverge === "function" &&
+      convergeCv
+    ) {
+      cancelConverge = dither.playInwardConverge(convergeCv, 340);
+    }
+
     var bridge = ui.getNativeBridge();
     if (bridge && typeof bridge.chooseSurface === "function") {
       Promise.resolve()
@@ -313,6 +328,10 @@
           return bridge.chooseSurface(surface);
         })
         .catch(function (err) {
+          if (cancelConverge) {
+            cancelConverge();
+            cancelConverge = null;
+          }
           var t = getCopy();
           var detail = ui.formatError(err, t.chooseErrorFallback);
           state.submittingSurface = null;
@@ -326,6 +345,10 @@
 
     // Graceful offline preview when opened directly in a browser
     window.setTimeout(function () {
+      if (cancelConverge) {
+        cancelConverge();
+        cancelConverge = null;
+      }
       var t = getCopy();
       state.submittingSurface = null;
       if (state.previewSimulateError) {
@@ -408,6 +431,23 @@
           }),
         );
       })(themes[i]);
+    }
+
+    var heroRevealEl = document.getElementById("hero-dither-reveal");
+    if (
+      heroRevealEl &&
+      window.CodexHostDitherFX &&
+      typeof window.CodexHostDitherFX.playHeroMaterialize === "function"
+    ) {
+      var fxDivider = document.createElement("span");
+      fxDivider.className = "preview-divider";
+      els.previewBar.appendChild(fxDivider);
+
+      els.previewBar.appendChild(
+        createPreviewChip(t.previewReplayFx, false, function () {
+          window.CodexHostDitherFX.playHeroMaterialize(heroRevealEl, 760);
+        }),
+      );
     }
   }
 
@@ -582,6 +622,21 @@
   }
 
   render();
+
+  if (window.CodexHostDitherFX) {
+    var heroRevealCv = document.getElementById("hero-dither-reveal");
+    var heroSeamCv = document.getElementById("hero-dither-seam");
+    var cursorDitherCv = document.getElementById("cursor-dither-field");
+    if (heroRevealCv && typeof window.CodexHostDitherFX.playHeroMaterialize === "function") {
+      window.CodexHostDitherFX.playHeroMaterialize(heroRevealCv, 760);
+    }
+    if (heroSeamCv && typeof window.CodexHostDitherFX.startSeamDither === "function") {
+      window.CodexHostDitherFX.startSeamDither(heroSeamCv);
+    }
+    if (cursorDitherCv && typeof window.CodexHostDitherFX.startCursorMicroDither === "function") {
+      window.CodexHostDitherFX.startCursorMicroDither(cursorDitherCv);
+    }
+  }
 
   ui.readShellState({
     codexDesktopInstalled: state.codexDesktopInstalled,

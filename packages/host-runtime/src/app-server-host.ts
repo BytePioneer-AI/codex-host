@@ -545,9 +545,10 @@ function extendPublishedSummary(
   previouslyPublished?: readonly string[],
 ): string[] {
   const next = reasoningSummaryParts(merged, complete);
+  const baseline = previouslyPublished?.length ? previouslyPublished : published;
   let summary: string[];
   if (published.length === 0) summary = next;
-  else if (next.join("\n\n").startsWith(published.join("\n\n"))) summary = next;
+  else if (next.join("\n\n").startsWith(baseline.join("\n\n"))) summary = next;
   else if (!appended) summary = [...published];
   else summary = [...published.slice(0, -1), `${published.at(-1)}\n\n${appended}`];
   // A read may have published parts the cached Turn does not carry (a live
@@ -1367,8 +1368,8 @@ export class AppServerHost {
       steering: this.#externalSteering,
       queue: this.#externalQueue,
       manualCompactionTurns: this.#manualCompactionTurns,
-      foldSettledItem: (turn, projector, wireItemId) =>
-        this.#withBackgroundItems(turn, projector, wireItemId),
+      foldSettledItem: (thread, turn, projector, wireItemId) =>
+        this.#withBackgroundItems(turn, projector, wireItemId, this.#publishedSummariesFor(thread)),
       outputFailed: (thread) => this.#externalRuntime.idleRelease.outputFailed(thread),
       submitPrewarm: (thread) => this.#externalRuntime.submitPrewarm(thread),
       notifyExternalThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),

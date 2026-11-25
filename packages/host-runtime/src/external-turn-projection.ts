@@ -175,6 +175,7 @@ export interface ExternalTurnProjectionHost {
   /** Turns started by an explicit /compact command, announced when compaction begins. */
   readonly manualCompactionTurns: WeakMap<ExternalThread, HostTurnId>;
   foldSettledItem(
+    thread: ExternalThread,
     turn: JsonObject,
     projector: CodexTurnProjector,
     wireItemId: HostItemId,
@@ -380,6 +381,7 @@ export class ExternalTurnProjection {
       if (existing) {
         // A stale cache may still contain native-only Items from an earlier read.
         thread.turns[index] = this.#host.foldSettledItem(
+          thread,
           existing,
           projection.projector,
           result.settledWireItemId ?? event.snapshot.item.itemId,

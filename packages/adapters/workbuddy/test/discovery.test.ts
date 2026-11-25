@@ -45,6 +45,11 @@ describe("WorkBuddy app discovery", () => {
       "/custom/WorkBuddy AI.app/Contents/MacOS/Electron",
       "/custom/WorkBuddy AI.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
     ],
+    [
+      "linux",
+      "/custom/WorkBuddy/workbuddy",
+      "/custom/WorkBuddy/resources/app.asar.unpacked/cli/bin/codebuddy",
+    ],
   ] as const)(
     "pairs an explicit %s Desktop path with only its own CLI",
     (platform, executable, cli) => {
@@ -114,6 +119,51 @@ describe("WorkBuddy app discovery", () => {
     });
     expect(invocation.command).toBe(executable);
     expect(invocation.arguments).toEqual(["--eval", expect.any(String), cli, "--acp"]);
+  });
+
+  it("finds the Linux app in the standard /opt layout", () => {
+    const root = "/opt/WorkBuddy";
+    const executable = `${root}/workbuddy`;
+    const cli = `${root}/resources/app.asar.unpacked/cli/bin/codebuddy`;
+    const invocation = workBuddyInvocation({ HOME: "/home/test", PATH: "/usr/bin" }, false, {
+      platform: "linux",
+      isExecutable: (candidate) => [executable, cli].includes(candidate),
+      isFile: () => false,
+    });
+    expect(invocation.command).toBe(executable);
+    expect(invocation.arguments).toEqual(["--eval", expect.any(String), cli, "--acp"]);
+    expect(invocation.environment).toMatchObject({
+      ELECTRON_RUN_AS_NODE: "1",
+      WORKBUDDY_CONFIG_DIR: "/home/test/.workbuddy",
+      CODEBUDDY_CONFIG_DIR: "/home/test/.workbuddy",
+    });
+  });
+
+  it("finds a Linux app selected by installation directory", () => {
+    const directory = "/custom/WorkBuddy";
+    const executable = `${directory}/workbuddy`;
+    const cli = `${directory}/resources/app.asar.unpacked/cli/bin/codebuddy`;
+    const invocation = workBuddyInvocation(
+      { HOME: "/home/test", CODEXHOST_WORKBUDDY_COMMAND: directory },
+      false,
+      {
+        platform: "linux",
+        isDirectory: (candidate) => candidate === directory,
+        isExecutable: (candidate) => [executable, cli].includes(candidate),
+        isFile: () => false,
+      },
+    );
+    expect(invocation.command).toBe(executable);
+    expect(invocation.arguments).toEqual(["--eval", expect.any(String), cli, "--acp"]);
+  });
+
+  it("does not treat a Linux workbuddy launcher on PATH as the app", () => {
+    expect(() =>
+      workBuddyInvocation({ HOME: "/home/test", PATH: "/usr/bin" }, false, {
+        platform: "linux",
+        isExecutable: (candidate) => candidate === "/usr/bin/workbuddy",
+      }),
+    ).toThrow("unavailable");
   });
 
   it("never combines an app executable with another installation's CLI", () => {

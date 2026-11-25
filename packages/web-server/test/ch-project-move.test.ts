@@ -589,6 +589,65 @@ it(
   },
 );
 
+it("keeps a concurrent direct-link Thread without restoring a removed catalog row", async (t) => {
+  const host = new FakeChHost();
+  const { root, row, call, list, workspaces } = setup(t, host);
+  host.projectSnapshot.nativeProjects = true;
+  assert.ok((await list()).ok);
+  assert.ok(workspaces.ownerOf(row.id));
+  host.threads.delete(row.id);
+
+  const entered = Promise.withResolvers<undefined>();
+  const release = Promise.withResolvers<undefined>();
+  const projects = host.projects.bind(host);
+  t.mock.method(host, "projects", async () => {
+    const snapshot = await projects();
+    entered.resolve(undefined);
+    await release.promise;
+    return snapshot;
+  });
+  const refreshing = list();
+  const cwd = join(root, "target");
+  try {
+    await entered.promise;
+    const linked = host.add("direct-link", cwd, "Direct link", false);
+    assert.ok((await call("session/list", { sessionId: linked.id })).ok);
+  } finally {
+    release.resolve(undefined);
+  }
+  assert.ok((await refreshing).ok);
+  assert.equal(workspaces.ownerOf("direct-link")?.path, cwd);
+  assert.equal(workspaces.ownerOf(row.id), undefined);
+});
+
+it("does not keep an official Thread deleted while its catalog batch was in flight", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const host = new FakeChChannel();
+  t.mock.method(host, "threadOwnership", (threadId: string) => ({ threadId, owner: "codex" }));
+  const { row, list, workspaces } = setup(t, host);
+  host.projectSnapshot.nativeProjects = true;
+  row.modelProvider = "openai";
+  assert.ok((await list()).ok);
+  assert.ok(workspaces.ownerOf(row.id));
+
+  const entered = Promise.withResolvers<undefined>();
+  const release = Promise.withResolvers<undefined>();
+  const projects = host.projects.bind(host);
+  t.mock.method(host, "projects", async () => {
+    const snapshot = await projects();
+    entered.resolve(undefined);
+    await release.promise;
+    return snapshot;
+  });
+  const refreshing = list();
+  await entered.promise;
+  host.threads.delete(row.id);
+  host.changed(row.id, "thread/deleted");
+  release.resolve(undefined);
+  assert.ok((await refreshing).ok);
+  assert.equal(workspaces.ownerOf(row.id), undefined);
+});
+
 it("only sends a shared Host project move to service owner descriptors", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-project-move-owner-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

@@ -46,6 +46,7 @@ export class ChRealtime {
       projectsInvalidated?: () => void;
       sections?: () => Promise<void>;
       archived?: (id: string, archived: boolean) => void;
+      deleted?: (id: string) => void;
       connection: (online: boolean) => void;
       /** `full` is the hello's `reset`: the cursor could not be replayed. */
       reset: (epoch: string, full: boolean) => void;
@@ -110,6 +111,7 @@ export class ChRealtime {
       }
       if (event.method === "thread/archived" || event.method === "thread/unarchived")
         this.callbacks.archived?.(event.threadId, event.method === "thread/archived");
+      if (event.method === "thread/deleted") this.callbacks.deleted?.(event.threadId);
       if (this.watched.has(event.threadId)) {
         this.schedule(
           event.threadId,

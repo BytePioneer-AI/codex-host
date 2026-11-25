@@ -197,8 +197,10 @@ export async function readExternalWorkspaceSnapshot(
   ) => Promise<ReadonlyMap<string, string | null | undefined>>,
   canMove = false,
 ): Promise<ClientWorkspaceSnapshot> {
-  const { snapshot, legacyAssignedThreads, nativeByGui, guiByNative } =
-    await readWorkspaceProjects(environment, nativeProjects);
+  const { snapshot, legacyAssignedThreads, nativeByGui, guiByNative } = await readWorkspaceProjects(
+    environment,
+    nativeProjects,
+  );
   const externalIds = new Set(threads.map((thread) => String(thread.hostThreadId)));
   const owned = new Set([...externalIds, ...nativeThreadIds]);
   const assignments = new Map(

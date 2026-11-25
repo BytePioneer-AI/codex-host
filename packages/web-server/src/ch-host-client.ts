@@ -53,6 +53,7 @@ export interface ChPinChange {
 
 export interface ChProjectSnapshot {
   projects: Array<{ id: string; name: string; rootPaths: string[] }>;
+  nativeProjects?: true | undefined;
   assignments: Record<string, string>;
   projectless: string[];
   /** Projects in each native custom section, keyed by official section ID; shared Host only. */
@@ -334,7 +335,10 @@ export async function createChHostClient(
     request,
     projects: (ids) =>
       endpoint?.owner === "service"
-        ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", { threadIds: ids })
+        ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", {
+            threadIds: ids,
+            nativeProjects: true,
+          })
         : desktop.projects(ids),
     pins: (change) => requestPins((method, params) => channel.request(method, params), change),
     close() {

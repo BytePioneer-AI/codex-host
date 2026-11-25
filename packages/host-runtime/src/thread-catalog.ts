@@ -44,6 +44,13 @@ function withinFolder(folder: string, cwd: string): boolean {
 /** A native row the scoped folder would list: inside it and outside every excluded folder. */
 function inScope(scope: NonNullable<ThreadCatalogReadParams["scope"]>, row: JsonObject): boolean {
   const cwd = row.cwd;
+  if ("projectId" in scope) {
+    if (typeof row.projectId === "string") return row.projectId === scope.projectId;
+    if (typeof row.id === "string" && scope.legacyThreadIds.includes(row.id)) return true;
+    return (
+      typeof cwd === "string" && (scope.rootPaths ?? []).some((root) => withinFolder(root, cwd))
+    );
+  }
   return (
     typeof cwd === "string" &&
     withinFolder(scope.cwd, cwd) &&
@@ -159,6 +166,8 @@ export async function readThreadCatalog(
         count();
         const page = await input.requestOfficialPage({
           ...query.params,
+          // A project can contain Codex conversations from more than one model provider.
+          modelProviders: [],
           ...(scope ? { limit: SCOPED_PAGE_SIZE } : {}),
           cursor: next,
         });

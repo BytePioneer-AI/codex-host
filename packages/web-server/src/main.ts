@@ -91,6 +91,7 @@ import type { SessionListTiming } from "./session-list-timing.ts";
 import { WebAssets, type WebAssetOptions } from "./web-assets.ts";
 import { SHELL_EVENTS_PATH, WebShellReload } from "./web-hmr.ts";
 import { Workspaces } from "./workspaces.ts";
+import { nativeProjectCommands } from "./ch-project-commands.ts";
 import { inspectImage, readImageFile, WebImages } from "./web-images.ts";
 import { WebFiles } from "./web-files.ts";
 import { serveFileUpload } from "./ch-file-upload-http.ts";
@@ -412,7 +413,16 @@ if (!values["safe-mode"]) {
 const shellReload = devWebUi === undefined ? undefined : new WebShellReload(assets);
 
 streams.register("$events", events.handler);
-workspaces.register(rpc, streams);
+workspaces.register(
+  rpc,
+  streams,
+  nativeProjectCommands(
+    chHost,
+    workspaces,
+    () => sessions.refreshProjects(),
+    (sessionId, projectId) => sessions.assignNativeProject(sessionId, projectId),
+  ),
+);
 sessions.register(rpc, streams);
 sessions.registerCommands(rpc);
 sessions.registerImport(rpc);

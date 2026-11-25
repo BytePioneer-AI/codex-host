@@ -83,6 +83,8 @@ export class ChRealtime {
       for (const id of this.watched.keys()) this.schedule(id, DEFAULT_DEBOUNCE_MS);
       if (!this.dirty.has("")) this.catalogReason = "hello";
       this.schedule("", DEFAULT_DEBOUNCE_MS);
+    } else if (event.type === "projects-changed") {
+      this.schedule("", DEFAULT_DEBOUNCE_MS);
     } else if (event.type === "changed") {
       if (
         event.method === "codexhost/thread/usage/updated" ||

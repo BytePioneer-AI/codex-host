@@ -461,9 +461,11 @@ it("preserves native project placements while switching to a legacy section proj
   const request = host.request.bind(host);
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
     if (method !== "codexhost/thread/sections/list") return request<T>(method, params);
-    return (projects.nativeProjects
-      ? { ...sectionFollowArgs, sections: [{ ...section, threads: [], appearance: null }] }
-      : { sections: [{ ...section, threads: [] }] }) as T;
+    return (
+      projects.nativeProjects
+        ? { ...sectionFollowArgs, sections: [{ ...section, threads: [], appearance: null }] }
+        : { sections: [{ ...section, threads: [] }] }
+    ) as T;
   };
   assert.ok((await list()).ok);
   const current = await subscribe(sectionFollowArgs);

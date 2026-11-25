@@ -1,0 +1,21 @@
+/** One composer seat with separate Fast, model/effort and native Harness controls. */
+import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
+import type { ModelSelectInjected } from "./slots.ts";
+import { FastToggle } from "./FastToggle.tsx";
+import { HarnessSelect } from "./HarnessSelect.tsx";
+import { ModelSelect } from "./ModelSelect.tsx";
+import css from "./HarnessSelect.module.css";
+
+/** Share the existing per-session directory instead of introducing a second selected Harness state. */
+export function ModelControls(
+  props: ModelSelectInjected & { locked: boolean } & PropsLocale<"model">,
+) {
+  const { iconHost, ...modelProps } = props;
+  return (
+    <div className={css.controls}>
+      <FastToggle {...modelProps} />
+      <ModelSelect {...modelProps} />
+      <HarnessSelect {...modelProps} {...(iconHost === undefined ? {} : { iconHost })} />
+    </div>
+  );
+}

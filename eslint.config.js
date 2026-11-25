@@ -6,6 +6,7 @@ const typeScriptFiles = ["packages/**/*.ts", "tests/**/*.ts"];
 const javaScriptFiles = [
   "*.config.js",
   "packages/**/scripts/**/*.mjs",
+  "packages/repository-automation/**/*.mjs",
   "scripts/**/*.mjs",
   "tests/**/*.mjs",
   "tools/**/*.mjs",
@@ -16,14 +17,15 @@ export default [
     ignores: [
       ".codexhost/**",
       ".pi/**",
+      ".work/**",
+      // Independently installed Next.js site has its own ESLint configuration.
+      "apps/wiki/**",
       "build/**",
       "coverage/**",
       "node_modules/**",
       "openspec/**",
-      "playwright-report/**",
       "reference/**",
       "target/**",
-      "test-results/**",
       "**/dist/**",
     ],
   },

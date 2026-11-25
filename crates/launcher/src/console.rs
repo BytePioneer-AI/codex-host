@@ -1,0 +1,881 @@
+//! Launcher integration with the codexhost console.
+//!
+//! The console is a Node process (`console-server.mjs`) that serves a local
+//! page independent of Codex Desktop. The Launcher only starts it, hands it the
+//! Launcher path, and describes the installation as JSON; all console
+//! behavior lives in the console package.
+
+use std::env;
+use std::error::Error;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use codexhost_platform::{DesktopIdentity, DesktopInstallation, node_entrypoint_path};
+use serde_json::{Value, json};
+
+use crate::runtime_instance::default_descriptor_path;
+
+/// `0` disables starting, opening, and announcing the console during launch.
+pub const CONSOLE_ENV: &str = "CODEXHOST_CONSOLE";
+const LAUNCHER_EXECUTABLE_ENV: &str = "CODEXHOST_LAUNCHER_EXECUTABLE";
+const INSPECT_SCHEMA_VERSION: u8 = 1;
+const CONSOLE_URL_PREFIX: &str = "codexhost console: ";
+const CONTROLLER_STATUS_FILE: &str = "desktop-controller-v1.json";
+const INTEGRATION_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const PERSISTENT_INTEGRATION_FAILURE_MS: u64 = 60_000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsoleCommand {
+    pub node: PathBuf,
+    pub console_server: PathBuf,
+}
+
+/// How a launch shows the console once its outcome is known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Presentation {
+    /// Graphical launches open the default browser only for recovery.
+    Browser,
+    /// Terminal launches (`launch`, used by npm and `npm start`) print the address.
+    Print,
+}
+
+struct LaunchConsole {
+    command: ConsoleCommand,
+    presentation: Presentation,
+    ensure: Option<JoinHandle<()>>,
+    shown: bool,
+}
+
+static PRESENTATION: Mutex<Option<Presentation>> = Mutex::new(None);
+static LAUNCH_CONSOLE: Mutex<Option<LaunchConsole>> = Mutex::new(None);
+
+fn console_enabled(value: Option<OsString>) -> bool {
+    value.as_deref() != Some(std::ffi::OsStr::new("0"))
+}
+
+/// Chooses the presentation for this launch; called before launching.
+pub fn set_presentation(presentation: Presentation) {
+    if let Ok(mut slot) = PRESENTATION.lock() {
+        *slot = Some(presentation);
+    }
+}
+
+fn node_command(command: &ConsoleCommand) -> Result<Command, Box<dyn Error>> {
+    let launcher = env::current_exe()?.canonicalize()?;
+    let mut process = Command::new(&command.node);
+    process
+        // Suppress only the experimental proxy notice, not other diagnostics.
+        .arg("--disable-warning=UNDICI-EHPA")
+        .arg(node_entrypoint_path(&command.console_server))
+        .env(LAUNCHER_EXECUTABLE_ENV, &launcher)
+        // The console checks and downloads updates itself when no Host is running.
+        .envs(codexhost_platform::proxy_environment())
+        .stdin(Stdio::null());
+    if crate::installation_layout::is_source_checkout_build(&launcher) {
+        for (key, _) in env::vars_os() {
+            let upper = key.to_string_lossy().to_ascii_uppercase();
+            if crate::NPM_UPDATE_RUNTIME_ENV.contains(&upper.as_str()) {
+                process.env_remove(key);
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    codexhost_platform::configure_background_command(&mut process);
+    Ok(process)
+}
+
+/// Starts the Console in the background without presenting it. Missing Console
+/// resources do not replace the original launch error.
+pub fn start_for_launch(command: ConsoleCommand) {
+    if !console_enabled(env::var_os(CONSOLE_ENV)) || !command.console_server.is_file() {
+        return;
+    }
+    let Some(presentation) = PRESENTATION.lock().ok().and_then(|slot| *slot) else {
+        return;
+    };
+    // Spawn before returning so even a launch that only activates an existing
+    // window cannot exit before the background ensure process starts.
+    let ensure = node_command(&command)
+        .ok()
+        .and_then(|mut process| {
+            process
+                .arg("ensure")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok()
+        })
+        .map(|mut child| {
+            thread::spawn(move || {
+                let _ = child.wait();
+            })
+        });
+    if let Ok(mut slot) = LAUNCH_CONSOLE.lock() {
+        *slot = Some(LaunchConsole {
+            command,
+            presentation,
+            ensure,
+            shown: false,
+        });
+    }
+}
+
+fn parse_console_url(stdout: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix(CONSOLE_URL_PREFIX))
+        .map(|url| url.trim().to_owned())
+        .filter(|url| crate::validate_loopback_root_url(url).is_ok())
+}
+
+/// Separated by a blank line from what the npm wrapper printed before it.
+fn print_url(url: &str) {
+    eprintln!("\n{CONSOLE_URL_PREFIX}{url}");
+}
+
+fn console_url(command: &ConsoleCommand) -> Result<String, Box<dyn Error>> {
+    let mut process = node_command(command)?;
+    process.arg("open").arg("--no-browser");
+    let output = process.stderr(Stdio::inherit()).output()?;
+    if !output.status.success() {
+        return Err("codexhost console could not be started".into());
+    }
+    parse_console_url(&output.stdout).ok_or_else(|| "codexhost console returned no address".into())
+}
+
+/// Presents terminal addresses or opens the overview for graphical launch failures.
+pub fn show_for_launch(reason: Option<&str>) -> bool {
+    let shown = show(reason);
+    crate::services::finish_launch(presentation() == Some(Presentation::Print));
+    if reason.is_none()
+        && LAUNCH_CONSOLE.lock().is_ok_and(|slot| {
+            slot.as_ref()
+                .is_some_and(|console| console.presentation == Presentation::Browser)
+        })
+    {
+        watch_integration();
+    }
+    shown
+}
+
+/// Stops the loopback console after a managed Desktop session ends, unless
+/// independent Host or Web services still use it. Failure paths that call
+/// [`show_for_launch`] leave the console up for diagnostics and skip this.
+pub fn stop_for_launch() {
+    stop_for_launch_in(crate::startup_record::data_directory().as_deref());
+}
+
+fn stop_for_launch_in(data: Option<&Path>) {
+    let command = {
+        let Ok(mut slot) = LAUNCH_CONSOLE.lock() else {
+            return;
+        };
+        let Some(console) = slot.take() else {
+            return;
+        };
+        if let Some(ensure) = console.ensure {
+            let _ = ensure.join();
+        }
+        console.command
+    };
+    if data.is_some_and(|data| {
+        crate::host_service::current_runtime(data).is_some()
+            || crate::web_service::owner(data)
+                .ok()
+                .flatten()
+                .is_some_and(|owner| owner.web_running().unwrap_or(false))
+    }) {
+        return;
+    }
+    let Ok(mut process) = node_command(&command) else {
+        return;
+    };
+    let _ = process
+        .arg("stop")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+pub fn presentation() -> Option<Presentation> {
+    PRESENTATION.lock().ok().and_then(|slot| *slot)
+}
+
+/// Opens the console once if the Desktop Controller of this launch reports a
+/// persistent Renderer integration failure, the case in which Codex Desktop
+/// runs without codexhost features and the Launcher still reported success.
+fn watch_integration() {
+    let (Some(status_path), Some(launch_started)) = (
+        crate::startup_record::diagnostics_directory()
+            .map(|directory| directory.join(CONTROLLER_STATUS_FILE)),
+        crate::startup_record::started_at_ms(),
+    ) else {
+        return;
+    };
+    thread::spawn(move || {
+        loop {
+            thread::sleep(INTEGRATION_POLL_INTERVAL);
+            let Ok(bytes) = std::fs::read(&status_path) else {
+                continue;
+            };
+            let Ok(document) = serde_json::from_slice::<Value>(&bytes) else {
+                continue;
+            };
+            if integration_failing(&document, launch_started, now_ms()) {
+                show(Some("integration-failure"));
+                return;
+            }
+        }
+    });
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Same rule as the console: a single early failure recovers on the
+/// Controller's next attempt and is not a problem worth interrupting for.
+fn integration_failing(document: &Value, launch_started_ms: u64, now_ms: u64) -> bool {
+    let started = document["startedAt"].as_u64().unwrap_or(0);
+    let renderer = &document["renderer"];
+    if started < launch_started_ms || renderer["state"] != "unavailable" {
+        return false;
+    }
+    let failures = renderer["failures"].as_u64().unwrap_or(0);
+    let updated = renderer["updatedAt"].as_u64().unwrap_or(now_ms);
+    failures >= 2 || now_ms.saturating_sub(updated) >= PERSISTENT_INTEGRATION_FAILURE_MS
+}
+
+fn show(reason: Option<&str>) -> bool {
+    show_with(reason, |url| {
+        codexhost_platform::open_external_url(url).is_ok()
+    })
+}
+
+fn show_with(reason: Option<&str>, open: impl FnOnce(&str) -> bool) -> bool {
+    let (command, presentation, ensure) = {
+        let Ok(mut slot) = LAUNCH_CONSOLE.lock() else {
+            return false;
+        };
+        let Some(console) = slot.as_mut() else {
+            return false;
+        };
+        if console.presentation == Presentation::Browser && reason.is_none() {
+            return false;
+        }
+        if console.shown && console.presentation == Presentation::Print {
+            return true;
+        }
+        (
+            console.command.clone(),
+            console.presentation,
+            console.ensure.take(),
+        )
+    };
+    if let Some(ensure) = ensure {
+        let _ = ensure.join();
+    }
+    let url = match console_url(&command) {
+        Ok(url) => url,
+        Err(error) => {
+            eprintln!("codexhost launcher: {error}");
+            return false;
+        }
+    };
+    let shown = match presentation {
+        Presentation::Browser => open(&url),
+        Presentation::Print => {
+            print_url(&url);
+            true
+        }
+    };
+    if shown
+        && let Ok(mut slot) = LAUNCH_CONSOLE.lock()
+        && let Some(console) = slot.as_mut()
+    {
+        console.shown = true;
+    }
+    shown
+}
+
+/// Runs a foreground console command (open or update).
+pub fn run(command: &ConsoleCommand, action: &str) -> Result<bool, Box<dyn Error>> {
+    let mut process = node_command(command)?;
+    process.arg(action);
+    Ok(process.status()?.success())
+}
+
+pub fn console_command_for(node: &Path, host_runtime: &Path, installed: &Path) -> ConsoleCommand {
+    // An npm launch passes the packaged Host Runtime explicitly; its console
+    // server sits beside it in the same `app` directory.
+    let beside_host_runtime = (host_runtime.file_name()
+        == Some(std::ffi::OsStr::new("host-runtime.mjs")))
+    .then(|| host_runtime.with_file_name("console-server.mjs"))
+    .filter(|path| path.is_file());
+    ConsoleCommand {
+        node: node.to_path_buf(),
+        console_server: beside_host_runtime.unwrap_or_else(|| installed.to_path_buf()),
+    }
+}
+
+fn desktop_json(installation: &DesktopInstallation, process_ids: &[u32]) -> Value {
+    let (platform, identity) = match &installation.identity {
+        DesktopIdentity::WindowsPackage {
+            package_name,
+            package_family_name,
+            appx_activation,
+        } => (
+            "windows",
+            json!({
+                "packageName": package_name,
+                "packageFamilyName": package_family_name,
+                "appxActivation": appx_activation.as_ref().map(|identity| {
+                    json!({
+                        "packageFullName": identity.package_full_name,
+                        "appUserModelId": identity.app_user_model_id,
+                    })
+                }),
+            }),
+        ),
+        DesktopIdentity::MacOsBundle { bundle_identifier } => {
+            ("macos", json!({ "bundleIdentifier": bundle_identifier }))
+        }
+        DesktopIdentity::LinuxPackage {
+            package_name,
+            brand,
+            flavor,
+        } => (
+            "linux",
+            json!({ "packageName": package_name, "brand": brand, "flavor": flavor }),
+        ),
+    };
+    json!({
+        "platform": platform,
+        "identity": identity,
+        "version": installation.version,
+        "build": installation.build,
+        "installRoot": installation.install_root.display().to_string(),
+        "processIds": process_ids,
+    })
+}
+
+fn runtime_json() -> Value {
+    let Ok(descriptor_path) = default_descriptor_path() else {
+        return json!({ "descriptorPath": null, "running": false, "launcherPid": null });
+    };
+    let Some(data) = crate::startup_record::data_directory() else {
+        return json!({
+            "descriptorPath": descriptor_path.display().to_string(),
+            "running": false,
+            "launcherPid": null,
+        });
+    };
+    runtime_json_at(&descriptor_path, &data)
+}
+
+fn runtime_json_at(descriptor_path: &Path, data: &Path) -> Value {
+    #[cfg(unix)]
+    let launcher_pid = crate::desktop_lifecycle::launcher_pid_for_inspect(descriptor_path, data)
+        .ok()
+        .flatten();
+    #[cfg(not(unix))]
+    let launcher_pid = crate::desktop_attachment::managed_processes_at(descriptor_path, data)
+        .ok()
+        .flatten()
+        .map(|(launcher, _)| launcher.id);
+    json!({
+        "descriptorPath": descriptor_path.display().to_string(),
+        "running": launcher_pid.is_some(),
+        "launcherPid": launcher_pid,
+    })
+}
+
+/// Machine-readable `inspect`. A missing Codex Desktop is reported in the
+/// document rather than as a command failure so the console can show it.
+pub fn inspect_json(
+    discovered: Result<DesktopInstallation, Box<dyn Error>>,
+) -> Result<Value, Box<dyn Error>> {
+    let (desktop, desktop_error) = match discovered {
+        Ok(installation) => {
+            let process_ids =
+                codexhost_platform::desktop_process_ids_for_installation(&installation)
+                    .unwrap_or_default();
+            (desktop_json(&installation, &process_ids), Value::Null)
+        }
+        Err(error) => (Value::Null, Value::String(error.to_string())),
+    };
+    Ok(json!({
+        "schemaVersion": INSPECT_SCHEMA_VERSION,
+        "launcherVersion": env!("CARGO_PKG_VERSION"),
+        "launcherExecutable": env::current_exe()?.canonicalize()?.display().to_string(),
+        "desktop": desktop,
+        "desktopError": desktop_error,
+        "runtime": runtime_json(),
+    }))
+}
+
+pub fn stop(command: &ConsoleCommand) -> Result<bool, Box<dyn Error>> {
+    if !command.console_server.is_file() {
+        return Ok(false);
+    }
+    let status = node_command(command)?.arg("stop").status()?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(3) => Ok(false),
+        _ => Err("Console shutdown failed".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(unix)]
+    use std::sync::Mutex;
+
+    /// Launch console helpers share process-wide statics; serialize the unix
+    /// tests that mutate them so parallel `cargo test` workers do not race.
+    #[cfg(unix)]
+    static LAUNCH_TEST_GATE: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn console_node_suppresses_only_the_experimental_proxy_warning() {
+        let command = node_command(&ConsoleCommand {
+            node: PathBuf::from("node"),
+            console_server: PathBuf::from("console-server.mjs"),
+        })
+        .expect("console command");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--disable-warning=UNDICI-EHPA", "console-server.mjs"]
+        );
+    }
+
+    #[test]
+    fn source_checkout_console_strips_all_npm_update_runtime_variables() {
+        const CHILD: &str = "CODEXHOST_TEST_SOURCE_CONSOLE_NPM_ENV";
+        let executable = env::current_exe().unwrap();
+        if env::var_os(CHILD).is_some() {
+            let command = node_command(&ConsoleCommand {
+                node: PathBuf::from("node"),
+                console_server: PathBuf::from("console-server.mjs"),
+            })
+            .expect("console command");
+            for key in crate::NPM_UPDATE_RUNTIME_ENV {
+                assert!(
+                    command
+                        .get_envs()
+                        .any(|(name, value)| name == key && value.is_none()),
+                    "source checkout console must strip {key}"
+                );
+            }
+            return;
+        }
+
+        let root = env::temp_dir().join(format!("codexhost-source-console-{}", std::process::id()));
+        let child = root
+            .join("target/debug")
+            .join(executable.file_name().unwrap());
+        std::fs::create_dir_all(child.parent().unwrap()).unwrap();
+        std::fs::copy(&executable, &child).unwrap();
+        let status = Command::new(&child)
+            .args([
+                "--exact",
+                "console::tests::source_checkout_console_strips_all_npm_update_runtime_variables",
+            ])
+            .env(CHILD, "1")
+            .env(crate::NPM_NODE_PATH_ENV, root.join("node"))
+            .env(crate::NPM_CLI_PATH_ENV, root.join("npm-cli.js"))
+            .env(crate::NPM_LAUNCHER_PATH_ENV, root.join("codexhost.js"))
+            .env(crate::NPM_PACKAGE_ROOT_ENV, root.join("package"))
+            .status();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(status.unwrap().success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launch_prints_once_in_terminal_and_only_opens_the_browser_for_failures() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _gate = LAUNCH_TEST_GATE.lock().expect("launch test gate");
+        *PRESENTATION.lock().expect("presentation") = None;
+        *LAUNCH_CONSOLE.lock().expect("console state") = None;
+
+        let root = env::temp_dir().join(format!("codexhost-console-early-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create fixture");
+        let console_server = root.join("console-server.mjs");
+        std::fs::write(&console_server, "fixture").expect("console entry");
+        let calls = root.join("calls");
+        let node = root.join("node");
+        std::fs::write(
+            &node,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$3\" >> '{}'\nif [ \"$3\" = ensure ] || [ \"$3\" = open ]; then echo 'codexhost console: http://127.0.0.1:4399/'; fi\n",
+                calls.display()
+            ),
+        )
+        .expect("fake Node");
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755))
+            .expect("make executable");
+
+        set_presentation(Presentation::Print);
+        let command = ConsoleCommand {
+            node,
+            console_server,
+        };
+        start_for_launch(command.clone());
+        let ensure = LAUNCH_CONSOLE
+            .lock()
+            .expect("console state")
+            .as_mut()
+            .and_then(|console| console.ensure.take())
+            .expect("ensure started");
+        ensure.join().expect("ensure finished");
+        let shown_at_ready = show(None);
+        assert!(show(None));
+        assert!(show(Some("startup-failure")));
+        assert!(shown_at_ready);
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), "ensure\nopen\n");
+
+        std::fs::remove_file(&calls).unwrap();
+        set_presentation(Presentation::Browser);
+        start_for_launch(command);
+        assert!(!show_with(None, |_| panic!(
+            "normal launch must not open a browser"
+        )));
+        for reason in ["startup-failure", "integration-failure"] {
+            assert!(show_with(Some(reason), |url| {
+                assert_eq!(url, "http://127.0.0.1:4399/");
+                true
+            }));
+        }
+        assert_eq!(
+            std::fs::read_to_string(&calls).unwrap(),
+            "ensure\nopen\nopen\n"
+        );
+        assert!(
+            !show_with(Some("startup-failure"), |_| false),
+            "an earlier successful open must not hide a later browser failure on Windows"
+        );
+        std::fs::remove_dir_all(&root).expect("remove fixture");
+    }
+
+    #[cfg(unix)]
+    fn assert_stop_for_launch(service: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _gate = LAUNCH_TEST_GATE.lock().expect("launch test gate");
+        *PRESENTATION.lock().expect("presentation") = None;
+        *LAUNCH_CONSOLE.lock().expect("console state") = None;
+
+        let root = env::temp_dir().join(format!(
+            "codexhost-console-stop-{service}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create fixture");
+        let live = codexhost_platform::process_snapshot(std::process::id()).expect("fixture owner");
+        let mut web = (service == "web").then(|| {
+            Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .expect("Web fixture child")
+        });
+        if service != "none" {
+            let record = json!({
+                "pid": live.id,
+                "started_at_micros": live.started_at_micros + u64::from(service == "stale"),
+                "executable": live.executable,
+                "runtime": env::current_exe().expect("fixture runtime"),
+                "version": env!("CARGO_PKG_VERSION"),
+                "web_pid": web.as_ref().map(|child| child.id()).unwrap_or(live.id),
+                "address": "http://127.0.0.1:4398/",
+                "loginUrl": "http://127.0.0.1:4398/",
+            });
+            for file in ["shared-host-ready.json", "web-service-ready.json"] {
+                if service == "stale"
+                    || (service == "host" && file == "shared-host-ready.json")
+                    || (service == "web" && file == "web-service-ready.json")
+                {
+                    std::fs::write(root.join(file), serde_json::to_vec(&record).unwrap())
+                        .expect("service fixture");
+                }
+            }
+        }
+        let console_server = root.join("console-server.mjs");
+        std::fs::write(&console_server, "fixture").expect("console entry");
+        let calls = root.join("calls");
+        let node = root.join("node");
+        std::fs::write(
+            &node,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$3\" >> '{}'\nif [ \"$3\" = ensure ]; then echo 'codexhost console: http://127.0.0.1:4399/'; fi\n",
+                calls.display()
+            ),
+        )
+        .expect("fake Node");
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755))
+            .expect("make executable");
+
+        set_presentation(Presentation::Print);
+        start_for_launch(ConsoleCommand {
+            node,
+            console_server,
+        });
+        let ensure = LAUNCH_CONSOLE
+            .lock()
+            .expect("console state")
+            .as_mut()
+            .and_then(|console| console.ensure.take())
+            .expect("ensure started");
+        ensure.join().expect("ensure finished");
+        stop_for_launch_in(Some(&root));
+        if let Some(child) = web.as_mut() {
+            child.kill().expect("stop Web fixture child");
+            child.wait().expect("reap Web fixture child");
+        }
+        let calls = std::fs::read_to_string(&calls).unwrap_or_default();
+        let cleared = LAUNCH_CONSOLE
+            .lock()
+            .expect("console state")
+            .as_ref()
+            .is_none();
+        std::fs::remove_dir_all(&root).expect("remove fixture");
+
+        assert!(cleared);
+        assert_eq!(
+            calls,
+            if service == "host" || service == "web" {
+                "ensure\n"
+            } else {
+                "ensure\nstop\n"
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_for_launch_asks_the_console_to_stop_without_services() {
+        assert_stop_for_launch("none");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_for_launch_ignores_stale_service_records() {
+        assert_stop_for_launch("stale");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_for_launch_preserves_console_for_shared_host() {
+        assert_stop_for_launch("host");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_for_launch_preserves_console_for_web() {
+        assert_stop_for_launch("web");
+    }
+
+    #[test]
+    fn console_is_enabled_unless_explicitly_disabled() {
+        assert!(console_enabled(None));
+        assert!(console_enabled(Some(OsString::from("1"))));
+        assert!(!console_enabled(Some(OsString::from("0"))));
+    }
+
+    #[test]
+    fn reports_only_persistent_integration_failures_of_this_launch() {
+        let status = |started: u64, state: &str, failures: u64, updated: u64| {
+            json!({
+                "schemaVersion": 1,
+                "startedAt": started,
+                "renderer": { "state": state, "failures": failures, "updatedAt": updated }
+            })
+        };
+        // A single early failure the Controller will retry.
+        assert!(!integration_failing(
+            &status(100, "unavailable", 1, 150),
+            100,
+            30_000
+        ));
+        // Repeated, or lasting a minute.
+        assert!(integration_failing(
+            &status(100, "unavailable", 2, 150),
+            100,
+            30_000
+        ));
+        assert!(integration_failing(
+            &status(100, "unavailable", 1, 150),
+            100,
+            60_150
+        ));
+        // Recovered, or left by an earlier launch.
+        assert!(!integration_failing(
+            &status(100, "installed", 3, 150),
+            100,
+            90_000
+        ));
+        assert!(!integration_failing(
+            &status(50, "unavailable", 3, 60),
+            100,
+            90_000
+        ));
+    }
+
+    #[test]
+    fn accepts_only_a_loopback_console_address() {
+        assert_eq!(
+            parse_console_url(
+                b"noise\ncodexhost console: http://127.0.0.1:4399/?view=diagnostics\n"
+            )
+            .as_deref(),
+            Some("http://127.0.0.1:4399/?view=diagnostics")
+        );
+        assert_eq!(
+            parse_console_url(b"codexhost console: https://example.com/\n"),
+            None
+        );
+        assert_eq!(parse_console_url(b"nothing"), None);
+    }
+
+    #[test]
+    fn console_command_falls_back_to_installed_resources() {
+        let installed = Path::new("/opt/codexhost/app/console-server.mjs");
+        let command = console_command_for(
+            Path::new("/usr/bin/node"),
+            Path::new("/repo/packages/host-runtime/dist/main.js"),
+            installed,
+        );
+        assert_eq!(command.console_server, installed);
+        assert_eq!(command.node, Path::new("/usr/bin/node"));
+    }
+
+    #[test]
+    fn inspect_json_reports_missing_desktop_without_failing() {
+        let document =
+            inspect_json(Err("Codex Desktop was not found".into())).expect("inspect document");
+        assert_eq!(document["schemaVersion"], 1);
+        assert!(document["desktop"].is_null());
+        assert_eq!(document["desktopError"], "Codex Desktop was not found");
+    }
+
+    #[test]
+    fn runtime_inspect_ignores_an_unrelated_listener_for_a_stale_descriptor() {
+        use std::net::TcpListener;
+
+        let root = env::temp_dir().join(format!(
+            "codexhost-runtime-inspect-{}-{}",
+            std::process::id(),
+            crate::runtime_instance::random_nonce().expect("fixture nonce")
+        ));
+        let data = root.join("data");
+        std::fs::create_dir_all(&data).expect("create data fixture");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind unrelated listener");
+        let descriptor_path = root.join("desktop-runtime-v1.json");
+        let descriptor = crate::runtime_instance::RuntimeDescriptor::new(
+            u32::MAX,
+            listener.local_addr().expect("listener address").port(),
+            crate::runtime_instance::random_nonce().expect("descriptor nonce"),
+        )
+        .expect("stale descriptor");
+        crate::runtime_instance::write_descriptor(&descriptor_path, &descriptor)
+            .expect("write stale descriptor");
+
+        let document = runtime_json_at(&descriptor_path, &data);
+
+        drop(listener);
+        std::fs::remove_dir_all(&root).expect("remove fixture");
+        assert_eq!(document["running"], false);
+        assert!(document["launcherPid"].is_null());
+    }
+
+    #[test]
+    fn desktop_json_serializes_windows_package_with_and_without_appx_activation() {
+        use codexhost_platform::WindowsAppxActivationIdentity;
+
+        let msix_installation = DesktopInstallation {
+            identity: DesktopIdentity::WindowsPackage {
+                package_name: "OpenAI.Codex".into(),
+                package_family_name: "OpenAI.Codex_2p2nqsd0c76g0".into(),
+                appx_activation: Some(WindowsAppxActivationIdentity {
+                    package_full_name: "OpenAI.Codex_26.1021.2667.0_x64__2p2nqsd0c76g0".into(),
+                    app_user_model_id: "OpenAI.Codex_2p2nqsd0c76g0!App".into(),
+                }),
+            },
+            version: "26.1021.2667.0".into(),
+            build: "26.1021.2667.0".into(),
+            asar_integrity: "sha256:abc".into(),
+            install_root: PathBuf::from("C:\\Program Files\\WindowsApps\\OpenAI.Codex"),
+            desktop_launcher: PathBuf::from(
+                "C:\\Program Files\\WindowsApps\\OpenAI.Codex\\app\\ChatGPT.exe",
+            ),
+            desktop_executable: PathBuf::from(
+                "C:\\Program Files\\WindowsApps\\OpenAI.Codex\\app\\ChatGPT.exe",
+            ),
+            packaged_codex_cli: PathBuf::from(
+                "C:\\Program Files\\WindowsApps\\OpenAI.Codex\\app\\resources\\codex.exe",
+            ),
+            executable_codex_cli: PathBuf::from(
+                "C:\\Program Files\\WindowsApps\\OpenAI.Codex\\app\\resources\\codex.exe",
+            ),
+        };
+        let msix_json = desktop_json(&msix_installation, &[1234]);
+        assert_eq!(msix_json["platform"], "windows");
+        assert_eq!(msix_json["identity"]["packageName"], "OpenAI.Codex");
+        assert_eq!(
+            msix_json["identity"]["packageFamilyName"],
+            "OpenAI.Codex_2p2nqsd0c76g0"
+        );
+        assert_eq!(
+            msix_json["identity"]["appxActivation"]["packageFullName"],
+            "OpenAI.Codex_26.1021.2667.0_x64__2p2nqsd0c76g0"
+        );
+        assert_eq!(
+            msix_json["identity"]["appxActivation"]["appUserModelId"],
+            "OpenAI.Codex_2p2nqsd0c76g0!App"
+        );
+
+        let portable_installation = DesktopInstallation {
+            identity: DesktopIdentity::WindowsPackage {
+                package_name: "OpenAI.Codex".into(),
+                package_family_name: "OpenAI.Codex_portable".into(),
+                appx_activation: None,
+            },
+            version: "26.1021.3705.0".into(),
+            build: "26.1021.3705.0".into(),
+            asar_integrity: "sha256:def".into(),
+            install_root: PathBuf::from("E:\\Develop\\codex\\versions\\current"),
+            desktop_launcher: PathBuf::from(
+                "E:\\Develop\\codex\\versions\\current\\app\\ChatGPT.exe",
+            ),
+            desktop_executable: PathBuf::from(
+                "E:\\Develop\\codex\\versions\\current\\app\\ChatGPT.exe",
+            ),
+            packaged_codex_cli: PathBuf::from(
+                "E:\\Develop\\codex\\versions\\current\\app\\resources\\codex.exe",
+            ),
+            executable_codex_cli: PathBuf::from(
+                "E:\\Develop\\codex\\versions\\current\\app\\resources\\codex.exe",
+            ),
+        };
+        let portable_json = desktop_json(&portable_installation, &[]);
+        assert_eq!(portable_json["platform"], "windows");
+        assert_eq!(portable_json["identity"]["packageName"], "OpenAI.Codex");
+        assert_eq!(
+            portable_json["identity"]["packageFamilyName"],
+            "OpenAI.Codex_portable"
+        );
+        assert_eq!(
+            portable_json["identity"].get("appxActivation"),
+            Some(&Value::Null)
+        );
+    }
+}

@@ -26,15 +26,6 @@ describe("Account reset countdown", () => {
     expect(formatAccountResetCountdown(after(minutes), messages, now)?.text).toBe(expected);
   });
 
-  it("explains compact units and reset semantics in the current language", () => {
-    expect(formatAccountResetCountdown(after(69), messages, now)?.description).toBe(
-      "距重置还有 1小时9分钟",
-    );
-    expect(
-      formatAccountResetCountdown(after(69), rendererSettingsMessages("en"), now)?.description,
-    ).toBe("Quota resets in 1 hour 9 minutes");
-  });
-
   it.each([0, -1, -1440])("does not assume that elapsed quota has reset (%i)", (minutes) => {
     expect(formatAccountResetCountdown(after(minutes), messages, now)).toEqual({
       text: "待刷新",

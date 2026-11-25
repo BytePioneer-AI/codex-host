@@ -1,21 +1,30 @@
+// @vitest-environment jsdom
 import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   rendererModelPickerMainMenuPlacement,
   rendererModelPickerModelMenuPlacement,
   rendererModelPickerStandaloneModelMenuPlacement,
+  rendererModelSelectionNoticePlacement,
 } from "../src/renderer-model-picker-positioning.js";
 
 import {
+  canRetryRendererModelCatalog,
   isRendererModelPickerDisabled,
+  mountRendererModelPicker,
+  renderRendererModelPicker,
   rendererModelPickerPresentation,
+  rendererModelSelectionFailed,
+  rendererModelSelectionNoticeContent,
   shouldCloseRendererModelPicker,
+  shouldOpenRendererModelSelectionNotice,
   syncRendererLabelText,
+  type RendererModelControlView,
 } from "../src/renderer-model-picker.js";
 
 const model = harnessModelRefSchema.parse({ id: "pi-model-v1.synthetic" });
@@ -39,7 +48,159 @@ function catalog(levels: readonly string[]) {
   });
 }
 
+describe("Renderer Model picker refresh", () => {
+  it.each([false, true])(
+    "keeps the localized refresh icon visible and the menu open (search=%s)",
+    (search) => {
+      const initial = catalog([]);
+      const extraModels = Array.from({ length: search ? 4 : 0 }, (_, index) => ({
+        ref: harnessModelRefSchema.parse({ id: `other-${index}` }),
+        label: `Other ${index}`,
+      }));
+      const view: RendererModelControlView = {
+        status: "ready",
+        catalog: { ...initial, models: [...initial.models, ...extraModels] },
+        selected: model,
+      };
+      const onRefresh = vi.fn(() =>
+        renderRendererModelPicker(control, { ...view, refreshing: true }, true, "pi", "zh-CN"),
+      );
+      const control = mountRendererModelPicker("refresh", vi.fn(), vi.fn(), onRefresh);
+      // Model top-layer state explicitly; jsdom otherwise keeps the mocked popover unfocusable.
+      control.modelMenu.removeAttribute("popover");
+      let open = false;
+      const matches = control.modelMenu.matches.bind(control.modelMenu);
+      control.modelMenu.matches = ((selector: string) =>
+        selector === ":popover-open"
+          ? open
+          : matches(selector)) as typeof control.modelMenu.matches;
+      control.modelMenu.showPopover = () => {
+        open = true;
+      };
+      control.modelMenu.hidePopover = () => {
+        open = false;
+      };
+      try {
+        renderRendererModelPicker(control, view, true, "pi", "zh-CN");
+        control.trigger.click();
+        expect(open).toBe(true);
+        expect(control.searchInput.hidden).toBe(!search);
+        expect(control.modelMenu.textContent).toContain("模型");
+        const button = control.modelMenu.querySelector<HTMLButtonElement>(
+          'button[aria-label="刷新模型列表"]',
+        );
+        expect(button?.title).toBe("刷新模型列表");
+        expect(button?.querySelector("svg")).not.toBeNull();
+        if (search) {
+          control.searchInput.focus();
+          expect(document.activeElement).toBe(control.searchInput);
+        }
+        button?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+        button?.focus();
+        expect(document.activeElement).toBe(button);
+        button?.click();
+        button?.click();
+        expect(open).toBe(true);
+        expect(onRefresh).toHaveBeenCalledOnce();
+        expect(button?.getAttribute("aria-disabled")).toBe("true");
+        expect(button?.hasAttribute("data-refreshing")).toBe(true);
+        const next = catalog(["high"]);
+        renderRendererModelPicker(
+          control,
+          {
+            ...view,
+            catalog: { ...next, models: [...next.models, ...readyExtraModel()] },
+          },
+          true,
+          "pi",
+          "en",
+        );
+        expect(open).toBe(true);
+        expect(document.activeElement).toBe(button);
+        expect(button?.title).toBe("Refresh models");
+        expect(button?.hasAttribute("data-refreshing")).toBe(false);
+        expect(control.modelMenu.textContent).toContain("New model");
+        expect(control.menu.textContent).toContain("High");
+      } finally {
+        control.dispose();
+      }
+    },
+  );
+
+  it("retries a failed first catalog load from the trigger", () => {
+    const onRefresh = vi.fn();
+    const control = mountRendererModelPicker("retry", vi.fn(), vi.fn(), onRefresh);
+    const failed: RendererModelControlView = { status: "error", error: "request timed out" };
+    try {
+      expect(canRetryRendererModelCatalog(failed)).toBe(true);
+      expect(canRetryRendererModelCatalog({ ...failed, refreshing: true })).toBe(false);
+      expect(
+        canRetryRendererModelCatalog({ ...failed, catalog: catalog([]), selected: model }),
+      ).toBe(false);
+      renderRendererModelPicker(control, failed, true, "antigravity");
+      expect(control.trigger.disabled).toBe(false);
+      expect(control.trigger.title).toBe("request timed out\nRefresh models");
+      expect(control.modelButton.disabled).toBe(true);
+      control.trigger.click();
+      expect(onRefresh).toHaveBeenCalledOnce();
+      expect(control.menu.matches(":popover-open")).toBe(false);
+
+      renderRendererModelPicker(control, { status: "loading" }, true, "antigravity");
+      expect(control.trigger.disabled).toBe(true);
+      expect(control.trigger.hasAttribute("data-codexhost-retry-models")).toBe(false);
+    } finally {
+      control.dispose();
+    }
+  });
+
+  it("keeps a failed first catalog load disabled without a refresh callback", () => {
+    const control = mountRendererModelPicker("no-retry", vi.fn(), vi.fn());
+    try {
+      renderRendererModelPicker(control, { status: "error", error: "failed" }, true, "pi");
+      expect(control.trigger.disabled).toBe(true);
+    } finally {
+      control.dispose();
+    }
+  });
+
+  it("does not render the refresh action without a callback", () => {
+    const control = mountRendererModelPicker("read-only", vi.fn(), vi.fn());
+    try {
+      renderRendererModelPicker(
+        control,
+        { status: "ready", catalog: catalog([]), selected: model },
+        true,
+        "pi",
+      );
+      expect(control.modelMenu.firstElementChild?.textContent).toBe("Model");
+      expect(control.modelMenu.querySelector('button[aria-label="Refresh models"]')).toBeNull();
+    } finally {
+      control.dispose();
+    }
+  });
+});
+
+function readyExtraModel() {
+  return [{ ref: harnessModelRefSchema.parse({ id: "new-model" }), label: "New model" }];
+}
+
 describe("Renderer combined Model and Thinking picker presentation", () => {
+  it("uses the same label and Thinking options for a Fast selection", () => {
+    const fast = harnessModelRefSchema.parse({ id: "priority" });
+    const normal = catalog(["off", "high"]);
+    const withFast = harnessModelCatalogSchema.parse({
+      ...normal,
+      models: normal.models.map((entry) => ({ ...entry, fastModel: fast })),
+    });
+    expect(
+      rendererModelPickerPresentation({
+        status: "ready",
+        catalog: withFast,
+        selected: fast,
+        selectedThinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    ).toMatchObject({ modelLabel: "provider / model", thinkingLabel: "High" });
+  });
   it("anchors the main menu's right edge to the model trigger", () => {
     expect(
       rendererModelPickerMainMenuPlacement(
@@ -130,7 +291,7 @@ describe("Renderer combined Model and Thinking picker presentation", () => {
     expect(view.thinkingOptions.map(({ id }) => id)).not.toContain("max");
   });
 
-  it("shows Claude runtime-resolved Model display without exposing Thinking controls", () => {
+  it("shows a runtime-resolved Model label after the selected Model", () => {
     const claudeModel = harnessModelRefSchema.parse({ id: "claude-model-v1.c29ubmV0" });
     const claudeCatalog = harnessModelCatalogSchema.parse({
       models: [
@@ -306,5 +467,108 @@ describe("Renderer combined Model and Thinking picker presentation", () => {
       showThinkingSection: false,
       thinkingSelectionEnabled: false,
     });
+  });
+});
+
+describe("Renderer Model selection rejection notice", () => {
+  const ultracodeRejection =
+    "Claude Code reports Ultracode is unavailable for the selected Model; choose another Model or Thinking option";
+  const rejectedCatalog = catalog(["high", "ultracode"]);
+  const rejected: RendererModelControlView = {
+    status: "error",
+    catalog: rejectedCatalog,
+    selected: model,
+    selectedThinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    error: ultracodeRejection,
+    selectionRejected: "model",
+    selectionErrorId: 3,
+  };
+
+  it("marks only rejected user selections, not catalog or inspection failures", () => {
+    expect(rendererModelSelectionFailed(rejected)).toBe(true);
+    expect(rendererModelSelectionFailed({ ...rejected, selectionRejected: "thinking" })).toBe(true);
+    const catalogFailure: RendererModelControlView = {
+      status: "error",
+      catalog: rejectedCatalog,
+      selected: model,
+      error: "Existing Thread Model is absent from the current Catalog",
+    };
+    expect(rendererModelSelectionFailed(catalogFailure)).toBe(false);
+    expect(rendererModelSelectionFailed({ status: "error", error: "inspection failed" })).toBe(
+      false,
+    );
+    // A later selection or reload replaces the view, which clears the trigger mark.
+    expect(rendererModelSelectionFailed({ ...rejected, status: "selecting" })).toBe(false);
+    expect(rendererModelSelectionFailed({ ...rejected, status: "ready" })).toBe(false);
+    expect(rendererModelSelectionFailed({ ...rejected, error: "" })).toBe(false);
+  });
+
+  it("opens the notice once per rejection id, so re-renders never replay it", () => {
+    expect(shouldOpenRendererModelSelectionNotice(rejected, 0)).toBe(true);
+    expect(shouldOpenRendererModelSelectionNotice(rejected, 2)).toBe(true);
+    expect(shouldOpenRendererModelSelectionNotice(rejected, 3)).toBe(false);
+    // A remounted Composer starts from the newest presented id and skips older ones.
+    expect(shouldOpenRendererModelSelectionNotice(rejected, 5)).toBe(false);
+    // Repeating the same rejected choice gets a new id and shows the notice again.
+    expect(shouldOpenRendererModelSelectionNotice({ ...rejected, selectionErrorId: 4 }, 3)).toBe(
+      true,
+    );
+    const withoutId: RendererModelControlView = { ...rejected };
+    delete withoutId.selectionErrorId;
+    expect(shouldOpenRendererModelSelectionNotice(withoutId, 0)).toBe(false);
+    expect(
+      shouldOpenRendererModelSelectionNotice(
+        {
+          status: "error",
+          catalog: rejectedCatalog,
+          error: "External configuration control is unavailable",
+          selectionErrorId: 9,
+        },
+        0,
+      ),
+    ).toBe(false);
+  });
+
+  it("titles the notice by the rejected choice and keeps the Host message", () => {
+    expect(rendererModelSelectionNoticeContent(rejected)).toEqual({
+      heading: "Couldn't switch Model",
+      message: ultracodeRejection,
+    });
+    expect(rendererModelSelectionNoticeContent(rejected, "zh-CN")).toEqual({
+      heading: "无法切换模型",
+      message: ultracodeRejection,
+    });
+    expect(
+      rendererModelSelectionNoticeContent({ ...rejected, selectionRejected: "thinking" }, "en"),
+    ).toEqual({ heading: "Couldn't switch Thinking option", message: ultracodeRejection });
+    expect(
+      rendererModelSelectionNoticeContent({ ...rejected, selectionRejected: "thinking" }, "zh-CN")
+        .heading,
+    ).toBe("无法切换思考选项");
+  });
+
+  it("places the notice just above the Model trigger with right edges aligned", () => {
+    expect(
+      rendererModelSelectionNoticePlacement(
+        { left: 700, right: 900, top: 820 },
+        { width: 1200, height: 900 },
+      ),
+    ).toEqual({ right: 300, bottom: 88, maxWidth: 320, maxHeight: 804 });
+  });
+
+  it("keeps the notice inside a narrow viewport whatever its text width", () => {
+    const placement = rendererModelSelectionNoticePlacement(
+      { left: 0, right: 50, top: 820 },
+      { width: 240, height: 900 },
+    );
+    expect(placement).toEqual({ right: 8, bottom: 88, maxWidth: 224, maxHeight: 804 });
+    // Widest possible notice still starts at the left collision padding.
+    expect(240 - placement.right - placement.maxWidth).toBe(8);
+    expect(
+      rendererModelSelectionNoticePlacement(
+        { left: 1150, right: 1199, top: 820 },
+        { width: 1200, height: 900 },
+      ).right,
+    ).toBe(8);
   });
 });

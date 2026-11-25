@@ -1,0 +1,53 @@
+{
+  "name": "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./client": {
+      "types": "./src/client/index.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-client-store": "*",
+    "@deepseek-ai/dsh-client-ui-primitives": "*",
+    "@deepseek-ai/dsh-util-workspace-path": "*",
+    "@deepseek-ai/schemastery": "*",
+    "@fortune-sheet/core": "1.0.4",
+    "@fortune-sheet/react": "1.0.4",
+    "clsx": "^2.0.0",
+    "dompurify": "^3.4.11",
+    "exceljs": "4.4.0",
+    "fast-xml-parser": "5.11.1",
+    "fflate": "^0.8.3",
+    "papaparse": "5.5.3",
+    "pdfjs-dist": "6.3.289",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "yaml": "^2.9.0"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-gateway",
+        "@deepseek-ai/dsh-api-workspace-files",
+        "@deepseek-ai/dsh-client-resources",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  }
+}

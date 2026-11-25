@@ -2,7 +2,7 @@
 
 > **归档状态：已失效，请勿作为当前实现依据。**
 >
-> 替代文档：[`../../harness-executable-discovery.md`](../../harness-executable-discovery.md)
+> 替代文档：[`../../architecture/harness-executable-discovery.md`](../../architecture/harness-executable-discovery.md)
 >
 > 替代实现：`2df7058 feat: unify harness executable discovery`
 

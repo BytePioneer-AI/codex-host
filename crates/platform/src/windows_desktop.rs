@@ -1,4 +1,4 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::ExitStatusExt;
@@ -106,14 +106,8 @@ impl PackageEnvironment {
         })
     }
 
-    fn disable(&mut self) -> Result<(), PlatformError> {
-        if self.armed {
-            unsafe { self.settings.DisableDebugging(&self.package_full_name) }.map_err(
-                |error| windows_error("cannot remove the temporary AppX environment", error),
-            )?;
-            self.armed = false;
-        }
-        Ok(())
+    fn disarm(&mut self) {
+        self.armed = false;
     }
 }
 
@@ -125,6 +119,15 @@ impl Drop for PackageEnvironment {
     }
 }
 
+fn disable_package_environment(package_full_name: &str) -> Result<(), PlatformError> {
+    let _apartment = ComApartment::initialize()?;
+    let settings: IPackageDebugSettings =
+        unsafe { CoCreateInstance(&PackageDebugSettings, None, CLSCTX_INPROC_SERVER) }
+            .map_err(|error| windows_error("cannot initialize AppX package environment", error))?;
+    unsafe { settings.DisableDebugging(&HSTRING::from(package_full_name)) }
+        .map_err(|error| windows_error("cannot remove the temporary AppX environment", error))
+}
+
 enum WindowsDesktopBacking {
     Child(Child),
     Activated(Owned<HANDLE>),
@@ -134,6 +137,7 @@ pub struct WindowsDesktopProcess {
     process_id: u32,
     process: WindowsDesktopBacking,
     status: Option<ExitStatus>,
+    packaged_environment: Option<String>,
 }
 
 impl WindowsDesktopProcess {
@@ -142,7 +146,15 @@ impl WindowsDesktopProcess {
             process_id: child.id(),
             process: WindowsDesktopBacking::Child(child),
             status: None,
+            packaged_environment: None,
         }
+    }
+
+    pub fn finish_packaged_activation(&mut self) -> Result<(), PlatformError> {
+        let Some(package_full_name) = self.packaged_environment.take() else {
+            return Ok(());
+        };
+        disable_package_environment(&package_full_name)
     }
 
     #[must_use]
@@ -195,6 +207,7 @@ impl WindowsDesktopProcess {
     }
 
     pub fn kill(&mut self) -> io::Result<()> {
+        let _ = self.finish_packaged_activation();
         if let WindowsDesktopBacking::Child(child) = &mut self.process {
             return child.kill();
         }
@@ -203,6 +216,12 @@ impl WindowsDesktopProcess {
         };
         unsafe { TerminateProcess(**process, 1) }
             .map_err(|error| io::Error::other(format!("cannot terminate Desktop: {error}")))
+    }
+}
+
+impl Drop for WindowsDesktopProcess {
+    fn drop(&mut self) {
+        let _ = self.finish_packaged_activation();
     }
 }
 
@@ -233,40 +252,9 @@ impl Drop for ActivatedProcessGuard {
     }
 }
 
-pub fn quote_windows_argument(argument: &OsStr) -> OsString {
-    let value = argument.to_string_lossy();
-    if !value.is_empty() && !value.contains([' ', '\t', '"']) {
-        return argument.to_owned();
-    }
-    let mut output = String::from("\"");
-    let mut backslashes = 0;
-    for character in value.chars() {
-        match character {
-            '\\' => backslashes += 1,
-            '"' => {
-                output.push_str(&"\\".repeat(backslashes * 2 + 1));
-                output.push('"');
-                backslashes = 0;
-            }
-            _ => {
-                output.push_str(&"\\".repeat(backslashes));
-                output.push(character);
-                backslashes = 0;
-            }
-        }
-    }
-    output.push_str(&"\\".repeat(backslashes * 2));
-    output.push('"');
-    OsString::from(output)
-}
-
-pub fn windows_command_line(arguments: &[OsString]) -> OsString {
-    arguments
-        .iter()
-        .map(|argument| quote_windows_argument(argument))
-        .collect::<Vec<_>>()
-        .join(OsStr::new(" "))
-}
+#[cfg(test)]
+use crate::windows_command_line::quote_windows_argument;
+use crate::windows_command_line::windows_command_line;
 
 pub fn windows_environment_block(
     environment: &[(OsString, OsString)],
@@ -414,9 +402,14 @@ pub fn activate_packaged_desktop(
     }
     .map_err(|error| windows_error("cannot activate Codex Desktop AppX package", error))?;
     let desktop = ActivatedProcessGuard::new(supervise_desktop(activation_process_id)?);
-    wait_for_desktop_root(activation_process_id, Duration::from_secs(5))?;
-    package_environment.disable()?;
-    Ok(desktop.disarm())
+    wait_for_desktop_root(activation_process_id, Duration::from_secs(15))?;
+    let mut desktop = desktop.disarm();
+    // Keep the temporary AppX debugging environment active until the Launcher
+    // observes the Host chain (or drops this process) so early Electron/Store
+    // relaunches during cold boot do not lose CODEX_CLI_PATH.
+    package_environment.disarm();
+    desktop.packaged_environment = Some(package_full_name.to_owned());
+    Ok(desktop)
 }
 
 pub fn supervise_desktop(process_id: u32) -> Result<WindowsDesktopProcess, PlatformError> {
@@ -432,6 +425,7 @@ pub fn supervise_desktop(process_id: u32) -> Result<WindowsDesktopProcess, Platf
         process_id,
         process: WindowsDesktopBacking::Activated(unsafe { Owned::new(process) }),
         status: None,
+        packaged_environment: None,
     })
 }
 
@@ -478,9 +472,8 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        ActivatedProcessGuard, WindowsDesktopProcess, quote_windows_argument,
-        resume_packaged_application, supervise_desktop, windows_command_line,
-        windows_environment_block,
+        quote_windows_argument, resume_packaged_application, supervise_desktop,
+        windows_command_line, windows_environment_block,
     };
 
     #[test]
@@ -547,19 +540,5 @@ mod tests {
         let _ = child.wait();
 
         assert_eq!(status.code(), Some(7));
-    }
-
-    #[test]
-    fn armed_activation_guard_terminates_its_process() {
-        let child = Command::new("cmd.exe")
-            .args(["/d", "/c", "ping -n 30 127.0.0.1 >nul"])
-            .spawn()
-            .expect("spawn guarded process fixture");
-        let process_id = child.id();
-        let guard = ActivatedProcessGuard::new(WindowsDesktopProcess::from_child(child));
-
-        drop(guard);
-
-        assert!(!crate::process_exists(process_id));
     }
 }

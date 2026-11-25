@@ -1,0 +1,109 @@
+name: Bug report / 缺陷报告
+description: 报告 codexhost、Desktop 接入或 Harness 使用中的问题。
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！不清楚的版本可以填写“未知”，不适用的字段可说明原因。
+        请区分 Harness、Model 和 Account；不要上传 Token、Cookie、认证文件或未脱敏日志。
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: 主要影响哪个领域？不确定可以选 Other / Unknown。
+      options:
+        - Other / Unknown
+        - Desktop / Renderer
+        - Harness Adapter
+        - Thread / History
+        - Accounts / Usage
+        - Install / Update
+        - Remote
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: 简要说明问题及影响。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: 你期望看到什么？
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: 实际发生了什么？可附脱敏截图或错误文本。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: 最小复现步骤；偶发问题可说明观察到的触发条件。
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: codexhost version
+      placeholder: "例如 0.6.1，或源码 commit SHA；未知也可说明"
+    validations:
+      required: true
+  - type: input
+    id: desktop
+    attributes:
+      label: Codex Desktop version
+      description: 尽可能提供完整版本和 build；不是 Model 名称。
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / Architecture
+      placeholder: "例如 Windows 11 x64、macOS arm64、Ubuntu 22.04 arm64"
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation
+      options:
+        - npm
+        - macOS DMG
+        - Windows installer
+        - Source / 源码
+        - Other / Unknown
+    validations:
+      required: true
+  - type: input
+    id: harness
+    attributes:
+      label: Harness / Version
+      description: 例如 Codex、Claude Code、Pi 及原生 CLI 版本；不是 Model 名称。
+      placeholder: "Harness 名称和版本，或不适用／未知"
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection
+      options:
+        - Local
+        - SSH
+        - Remote Control
+        - Other / Unknown
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs / Screenshots
+      description: 可选。只保留相关片段；隐藏凭据、个人信息及私有项目内容。

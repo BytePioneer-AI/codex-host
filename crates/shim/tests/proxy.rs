@@ -90,16 +90,35 @@ fn node_repl_proxy_does_not_search_path_for_missing_runtime() {
 #[cfg(target_os = "windows")]
 #[test]
 fn desktop_helpers_do_not_reenter_host_runtime() {
-    // Test process = launcher, first fixture = Desktop, additional fixtures = helpers.
-    // Use the same inherited configuration and stdio command at every depth.
-    for depth in [0, 1, 2] {
+    // The Desktop and its utility process use the same executable image.
+    let helper_args = ["app-server", "--listen", "stdio://"];
+    let main_args = [
+        "-c",
+        "features.code_mode_host=true",
+        "app-server",
+        "--analytics-default-enabled",
+        "-c",
+        "features.prefer_mxc=true",
+        "-c",
+        "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+    ];
+    for (depth, args, uses_host) in [
+        (0, helper_args.as_slice(), true),
+        (1, helper_args.as_slice(), false),
+        (2, helper_args.as_slice(), false),
+        (1, &main_args[..6], false),
+        (1, main_args.as_slice(), true),
+    ] {
         let directory = temporary_directory();
-        let mut child = Command::new(fake_codex_path())
-            .args(["app-server", "--listen", "stdio://"])
+        let desktop = directory.join("ChatGPT.exe");
+        fs::copy(fake_codex_path(), &desktop).expect("create Desktop fixture");
+        let mut child = Command::new(&desktop)
+            .args(args)
             .env("FAKE_CODEX_HELPER_SHIM", shim_path())
             .env("FAKE_CODEX_HELPER_DEPTH", depth.to_string())
             .env("FAKE_CODEX_PRINT_INVOCATION", "1")
             .env("FAKE_CODEX_ROUTE_RESPONSE", "1")
+            .env("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "Codex Desktop")
             .env("CODEXHOST_LAUNCHER_PID", process::id().to_string())
             .env("CODEXHOST_DATA_DIR", &directory)
             .env_remove("CODEXHOST_NPM_NODE_PATH")
@@ -128,16 +147,14 @@ fn desktop_helpers_do_not_reenter_host_runtime() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "depth={depth}: {stderr}");
         assert!(output.stdout.is_empty());
-        if depth == 0 {
-            assert!(
-                !stderr.contains("args=app-server|"),
-                "main Desktop must use Host Runtime: {stderr}"
-            );
+        let stock_invocation = format!("args={}", args.join("|"));
+        // Look for the whole line since the startup probe is a prefix of the
+        // main app-server's argument list.
+        let used_stock = stderr.lines().any(|line| line == stock_invocation);
+        if uses_host {
+            assert!(!used_stock, "main Desktop must use Host Runtime: {stderr}");
         } else {
-            assert!(
-                stderr.contains("args=app-server|--listen|stdio://"),
-                "helper must use stock CLI: {stderr}"
-            );
+            assert!(used_stock, "helper must use stock CLI: {stderr}");
             assert!(
                 !directory.join("local-host-runtime-owner.lock").exists(),
                 "helper must not acquire a Host Runtime lease"
@@ -188,6 +205,8 @@ fn run_shim(
     let mut command = Command::new(shim_path());
     command
         .args(arguments)
+        .env_remove("CODEXHOST_LAUNCHER_PID")
+        .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
         .env_remove(HOST_NODE_PATH_ENV)
         .env_remove(HOST_RUNTIME_PATH_ENV)
         .env_remove(REMOTE_SSH_MANAGED_ENV)
@@ -307,6 +326,58 @@ fn preserves_arguments_and_removes_recursive_environment() {
 }
 
 #[test]
+fn routes_skysight_memory_app_server_to_the_stock_codex_cli() {
+    let fake_codex = fake_codex_path();
+    let fake_codex_text = fake_codex.to_string_lossy();
+    let output = run_shim(
+        b"",
+        &[
+            "app-server",
+            "--stdio",
+            "-c",
+            "model_provider=\"openai-memgen\"",
+        ],
+        &[
+            (HOST_NODE_PATH_ENV, fake_codex_text.as_ref()),
+            (HOST_RUNTIME_PATH_ENV, fake_codex_text.as_ref()),
+            ("FAKE_CODEX_PRINT_INVOCATION", "1"),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Even with a Host Runtime configured, the Skysight-specific provider must execute the stock
+    // CLI directly so its one-shot summary response reaches SkyComputerUseService.
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("args=app-server|--stdio|-c|model_provider=\"openai-memgen\""));
+    assert!(stderr.contains("codex_cli_path_present=false"));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn routes_internal_codex_auxiliary_app_server_to_the_stock_cli() {
+    let fake_codex = fake_codex_path();
+    let fake_codex_text = fake_codex.to_string_lossy();
+    let output = run_shim(
+        b"",
+        &["app-server", "--stdio"],
+        &[
+            (HOST_NODE_PATH_ENV, fake_codex_text.as_ref()),
+            (HOST_RUNTIME_PATH_ENV, fake_codex_text.as_ref()),
+            ("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "skysight"),
+            ("FAKE_CODEX_PRINT_INVOCATION", "1"),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The internal originator marker is an official ownership boundary. It must override an
+    // otherwise valid Host Runtime route without removing the caller's marker from the stock CLI.
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("args=app-server|--stdio"));
+    assert!(stderr.contains("codex_cli_path_present=false"));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
 fn managed_remote_child_receives_inherited_proxy_environment() {
     let output = run_shim(
         b"",
@@ -342,6 +413,40 @@ fn forwards_stderr_and_exit_code_without_polluting_stdout() {
     assert_eq!(output.status.code(), Some(23));
     assert_eq!(output.stdout, b"request");
     assert_eq!(output.stderr, b"official stderr");
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn preserves_failure_stderr_after_descendant_cleanup() {
+    for with_descendant in [false, true] {
+        // Linux throttles process-tree snapshots to one per 500 ms. Keep the root alive across
+        // one refresh so the shim records the descendant before the root exits and orphans it;
+        // otherwise this test races lineage discovery instead of exercising failure cleanup.
+        let script = format!(
+            "{}printf 'first line\\noriginal child failure\\n' >&2; exit 23",
+            if with_descendant {
+                "sleep 10 >/dev/null 2>&1 & printf '%s\\n' \"$!\"; sleep 1; "
+            } else {
+                ""
+            }
+        );
+        let output = run_shim(b"", &["-c", &script], &[(STOCK_CODEX_PATH_ENV, "/bin/sh")]);
+        assert_eq!(output.status.code(), Some(23));
+        assert_eq!(output.stderr, b"first line\noriginal child failure\n");
+        if with_descendant {
+            let child_id = String::from_utf8(output.stdout)
+                .unwrap()
+                .trim()
+                .parse::<u32>()
+                .unwrap();
+            assert!(
+                !process_exists(child_id),
+                "descendant PID {child_id} survived failure cleanup"
+            );
+        } else {
+            assert!(output.stdout.is_empty());
+        }
+    }
 }
 
 #[test]
@@ -436,6 +541,109 @@ fn macos_fixture_bundle(directory: &std::path::Path) -> PathBuf {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn macos_browser_helpers_replace_the_shim_process_with_the_official_cli() {
+    for arguments in [
+        vec!["app-server", "--listen", "stdio://"],
+        vec!["sandbox", "--", "/official/node", "/official/kernel.js"],
+    ] {
+        let directory = temporary_directory();
+        let bundle = macos_fixture_bundle(&directory);
+        let ready = directory.join("helper-ready");
+        let mut command = Command::new(shim_path());
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("CODEXHOST_") {
+                command.env_remove(key);
+            }
+        }
+        let mut child = command
+            .args(&arguments)
+            .env(CODEX_CLI_PATH_ENV, shim_path())
+            .env(CUSTOM_INSTALL_ROOT_ENV, &bundle)
+            .env("FAKE_CODEX_HOST_RUNTIME_READY", &ready)
+            .env("FAKE_CODEX_HOST_RUNTIME_EOF_DELAY_MS", "0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let shim_id = child.id();
+        let observed = wait_for_optional_file(&ready, Duration::from_secs(5));
+        drop(child.stdin.take());
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let observed = observed.expect("official helper published readiness");
+        fs::remove_dir_all(directory).unwrap();
+        assert_eq!(
+            process_id_from_ready(&observed, "root="),
+            shim_id,
+            "the official helper must retain the launched process ID: {arguments:?}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_desktop_exec_server_replaces_the_shim_process_with_the_official_cli() {
+    let directory = temporary_directory();
+    let bundle = macos_fixture_bundle(&directory);
+    let desktop = bundle.join("Contents/MacOS/ChatGPT");
+    let cli = bundle.join("Contents/Resources/codex");
+    let ready = directory.join("exec-server-ready");
+    let mut child = Command::new(&desktop)
+        .args([
+            "-c",
+            "forced_login_method=\"chatgpt\"",
+            "exec-server",
+            "--concurrent-requests",
+            "32",
+        ])
+        .env("FAKE_CODEX_HELPER_SHIM", shim_path())
+        .env("FAKE_CODEX_HELPER_DEPTH", "0")
+        .env("FAKE_CODEX_HOST_RUNTIME_READY", &ready)
+        .env("FAKE_CODEX_HOST_RUNTIME_EOF_DELAY_MS", "0")
+        .env("CODEXHOST_LAUNCHER_PID", process::id().to_string())
+        .env(
+            "CODEXHOST_LAUNCHER_EXECUTABLE",
+            std::env::current_exe().unwrap(),
+        )
+        .env("CODEXHOST_DATA_DIR", &directory)
+        .env_remove(REMOTE_SSH_MANAGED_ENV)
+        .env(STOCK_CODEX_PATH_ENV, &cli)
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(HOST_NODE_PATH_ENV, fake_codex_path())
+        .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let desktop_id = child.id();
+    let observed = wait_for_optional_file(&ready, Duration::from_secs(5))
+        .expect("official exec-server published readiness");
+    let exec_server_id = process_id_from_ready(&observed, "root=");
+    let observed_parent =
+        parent_process_id(exec_server_id).expect("read official exec-server parent");
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        observed_parent,
+        Some(desktop_id),
+        "Desktop exec-server must exec stock codex directly below Desktop without an intermediate Shim"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn macos_browser_helper_preserving_only_cli_override_reaches_official_cli() {
     let directory = temporary_directory();
     let bundle = macos_fixture_bundle(&directory);
@@ -465,7 +673,173 @@ fn macos_browser_helper_preserving_only_cli_override_reaches_official_cli() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn macos_browser_sandbox_without_cli_environment_reaches_official_cli() {
+    let directory = temporary_directory();
+    let bundle = macos_fixture_bundle(&directory);
+    let mut command = Command::new(shim_path());
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("CODEXHOST_") {
+            command.env_remove(key);
+        }
+    }
+    // node_repl resolves CODEX_CLI_PATH before clearing the kernel child's
+    // environment. Neither CLI override reaches this sandbox invocation.
+    let output = command
+        .args([
+            "sandbox",
+            "-c",
+            "shell_environment_policy.inherit=\"all\"",
+            "--",
+            "/official/node",
+            "--experimental-vm-modules",
+            "/official/kernel.js",
+        ])
+        .env_remove(CODEX_CLI_PATH_ENV)
+        .env(CUSTOM_INSTALL_ROOT_ENV, &bundle)
+        .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+        .env("FAKE_CODEX_EXIT_CODE", "7")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(7), "{stderr}");
+    assert!(output.stdout.is_empty());
+    assert!(
+        stderr.contains(
+            "args=sandbox|-c|shell_environment_policy.inherit=\"all\"|--|/official/node|--experimental-vm-modules|/official/kernel.js"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains("codex_cli_path_present=false"), "{stderr}");
+    assert!(!directory.join("local-host-runtime-owner.lock").exists());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_browser_sandbox_fallback_keeps_explicit_targets_authoritative() {
+    let directory = temporary_directory();
+    let bundle = macos_fixture_bundle(&directory);
+    for (key, target, error) in [
+        (
+            STOCK_CODEX_PATH_ENV,
+            directory.join("missing-codex"),
+            "does not exist",
+        ),
+        (STOCK_CODEX_PATH_ENV, shim_path(), "Shim itself"),
+        (
+            CODEX_CLI_PATH_ENV,
+            fake_codex_path(),
+            "does not identify the running Shim",
+        ),
+        (
+            CUSTOM_INSTALL_ROOT_ENV,
+            directory.join("missing-bundle"),
+            "Desktop-managed official Codex CLI could not be discovered",
+        ),
+    ] {
+        let output = Command::new(shim_path())
+            .args(["sandbox", "--", "/usr/bin/true"])
+            .env_remove(STOCK_CODEX_PATH_ENV)
+            .env_remove(CODEX_CLI_PATH_ENV)
+            .env(CUSTOM_INSTALL_ROOT_ENV, &bundle)
+            .env(key, target)
+            .env("PATH", fake_codex_path().parent().unwrap())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{key}: {stderr}");
+        assert!(output.stdout.is_empty());
+        assert!(stderr.contains(error), "{key}: {stderr}");
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_browser_sandbox_fallback_rejects_unrelated_commands() {
+    let directory = temporary_directory();
+    let bundle = macos_fixture_bundle(&directory);
+    for arguments in [
+        vec!["app-server", "--listen", "stdio://"],
+        vec!["exec", "sandbox"],
+        vec!["--model", "sandbox"],
+    ] {
+        let output = Command::new(shim_path())
+            .args(arguments)
+            .env_remove(STOCK_CODEX_PATH_ENV)
+            .env_remove(CODEX_CLI_PATH_ENV)
+            .env(CUSTOM_INSTALL_ROOT_ENV, &bundle)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(output.stdout.is_empty());
+        assert!(stderr.contains("CODEXHOST_STOCK_CODEX_PATH is required"));
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn macos_native_helpers_do_not_become_host_runtime_owners() {
+    assert_macos_native_helper_routing(false, LauncherState::Live);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_nested_cli_native_helpers_do_not_become_host_runtime_owners() {
+    assert_macos_native_helper_routing(true, LauncherState::Live);
+}
+
+// Computer Use keeps spawning helpers after the Launcher that started Desktop has exited.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_native_helpers_stay_on_the_official_cli_after_the_launcher_exits() {
+    assert_macos_native_helper_routing(false, LauncherState::Exited);
+    assert_macos_native_helper_routing(true, LauncherState::Exited);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_native_helpers_stay_on_the_official_cli_after_the_launcher_pid_is_reused() {
+    assert_macos_native_helper_routing(false, LauncherState::Reused);
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+enum LauncherState {
+    Live,
+    Exited,
+    Reused,
+}
+
+#[cfg(target_os = "macos")]
+fn exited_process_id() -> u32 {
+    let mut child = Command::new("/usr/bin/true")
+        .spawn()
+        .expect("spawn short-lived launcher fixture");
+    let process_id = child.id();
+    child.wait().expect("wait for short-lived launcher fixture");
+    process_id
+}
+
+#[cfg(target_os = "macos")]
+fn assert_macos_native_helper_routing(nested_cli: bool, launcher: LauncherState) {
+    // A reused launcher PID belongs to an unrelated executable started after Desktop.
+    let mut reused_launcher = matches!(launcher, LauncherState::Reused).then(|| {
+        Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn unrelated process at the launcher PID")
+    });
+    let launcher_id = match launcher {
+        LauncherState::Live => process::id(),
+        LauncherState::Exited => exited_process_id(),
+        LauncherState::Reused => reused_launcher.as_ref().unwrap().id(),
+    };
     for (depth, detached) in [
         (0, false),
         (1, false),
@@ -476,6 +850,14 @@ fn macos_native_helpers_do_not_become_host_runtime_owners() {
     ] {
         let directory = temporary_directory();
         let bundle = macos_fixture_bundle(&directory);
+        let mut cli = bundle.join("Contents/Resources/codex");
+        if nested_cli {
+            let nested =
+                bundle.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
+            fs::create_dir_all(nested.parent().unwrap()).unwrap();
+            fs::rename(&cli, &nested).unwrap();
+            cli = nested;
+        }
         let desktop = bundle.join("Contents/MacOS/ChatGPT");
         let mut command = Command::new(if detached {
             fake_codex_path()
@@ -492,7 +874,7 @@ fn macos_native_helpers_do_not_become_host_runtime_owners() {
             .env("FAKE_CODEX_HELPER_EXECUTABLE", fake_codex_path())
             .env("FAKE_CODEX_PRINT_INVOCATION", "1")
             .env("FAKE_CODEX_ROUTE_RESPONSE", "1")
-            .env("CODEXHOST_LAUNCHER_PID", process::id().to_string())
+            .env("CODEXHOST_LAUNCHER_PID", launcher_id.to_string())
             .env(
                 "CODEXHOST_LAUNCHER_EXECUTABLE",
                 std::env::current_exe().unwrap(),
@@ -501,10 +883,7 @@ fn macos_native_helpers_do_not_become_host_runtime_owners() {
             .env_remove("CODEXHOST_NPM_NODE_PATH")
             .env_remove("CODEXHOST_NPM_PACKAGE_ROOT")
             .env_remove(REMOTE_SSH_MANAGED_ENV)
-            .env(
-                STOCK_CODEX_PATH_ENV,
-                bundle.join("Contents/Resources/codex"),
-            )
+            .env(STOCK_CODEX_PATH_ENV, &cli)
             .env(CODEX_CLI_PATH_ENV, shim_path())
             .env(HOST_NODE_PATH_ENV, fake_codex_path())
             .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
@@ -539,6 +918,236 @@ fn macos_native_helpers_do_not_become_host_runtime_owners() {
         }
         fs::remove_dir_all(directory).unwrap();
     }
+    if let Some(mut reused_launcher) = reused_launcher.take() {
+        let _ = reused_launcher.kill();
+        let _ = reused_launcher.wait();
+    }
+}
+
+/// Runs `app-server --listen stdio://` from a fixture Desktop bundle through `depth` helpers,
+/// without Launcher metadata, so only Host ownership decides the route.
+#[cfg(target_os = "macos")]
+fn run_unmanaged_bundle_app_server(
+    bundle_root: &std::path::Path,
+    data_directory: &std::path::Path,
+    depth: u32,
+    exchange: bool,
+) -> std::process::Output {
+    fs::create_dir_all(bundle_root).unwrap();
+    let bundle = macos_fixture_bundle(bundle_root);
+    let mut child = Command::new(bundle.join("Contents/MacOS/ChatGPT"))
+        .args(["app-server", "--listen", "stdio://"])
+        .env("FAKE_CODEX_HELPER_SHIM", shim_path())
+        .env("FAKE_CODEX_HELPER_DEPTH", depth.to_string())
+        .env("FAKE_CODEX_HELPER_EXECUTABLE", fake_codex_path())
+        .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+        .env("FAKE_CODEX_ROUTE_RESPONSE", "1")
+        .env_remove("CODEXHOST_LAUNCHER_PID")
+        .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
+        .env_remove("CODEXHOST_NPM_NODE_PATH")
+        .env_remove("CODEXHOST_NPM_PACKAGE_ROOT")
+        .env_remove(REMOTE_SSH_MANAGED_ENV)
+        .env("CODEXHOST_DATA_DIR", data_directory)
+        .env(
+            STOCK_CODEX_PATH_ENV,
+            bundle.join("Contents/Resources/codex"),
+        )
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(HOST_NODE_PATH_ENV, fake_codex_path())
+        .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    if exchange {
+        stdin.write_all(b"x").unwrap();
+        let mut response = [0_u8; 8];
+        child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_exact(&mut response)
+            .unwrap();
+        assert_eq!(&response, b"response");
+    }
+    drop(stdin);
+    child.wait_with_output().unwrap()
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_non_desktop_caller_uses_the_official_cli_when_another_desktop_owns_the_host() {
+    let directory = temporary_directory();
+    let owner_ready = directory.join("owner-ready");
+    let mut owner = host_runtime_shim(&directory, &owner_ready);
+    let owner_stdin = owner.stdin.take().expect("owner Host Runtime stdin");
+    let owner_root = process_id_from_ready(
+        &wait_for_file(&owner_ready, Duration::from_secs(5)),
+        "root=",
+    );
+
+    let helper = run_unmanaged_bundle_app_server(&directory.join("helper"), &directory, 1, true);
+    let helper_stderr = String::from_utf8_lossy(&helper.stderr);
+    assert!(helper.status.success(), "{helper_stderr}");
+    assert!(
+        helper_stderr.contains("args=app-server|--listen|stdio://"),
+        "a non-Desktop caller must reach the official CLI: {helper_stderr}"
+    );
+    assert!(
+        helper_stderr.contains("another Codex Desktop process owns the local Host Runtime"),
+        "{helper_stderr}"
+    );
+
+    // Desktop's own main app-server keeps the explicit ownership failure.
+    let desktop = run_unmanaged_bundle_app_server(&directory.join("desktop"), &directory, 0, false);
+    let desktop_stderr = String::from_utf8_lossy(&desktop.stderr);
+    assert!(!desktop.status.success(), "{desktop_stderr}");
+    assert!(
+        desktop_stderr.contains("another Codex Desktop process owns the local Host Runtime"),
+        "{desktop_stderr}"
+    );
+    assert!(
+        !desktop_stderr.contains("args=app-server|"),
+        "{desktop_stderr}"
+    );
+
+    assert!(
+        process_exists(owner.id()) && process_exists(owner_root),
+        "the owning Shim or Host Runtime was terminated"
+    );
+    drop(owner_stdin);
+    assert!(wait_for_process_exit(&mut owner, Duration::from_secs(5)));
+    fs::remove_dir_all(directory).expect("remove Host ownership fixture");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_non_desktop_caller_routes_by_the_mapping_store_owner_identity() {
+    let directory = temporary_directory();
+    let ready = directory.join("node-started-at");
+    let mut runtime = Command::new("node")
+        .args([
+            "-e",
+            "require('node:fs').writeFileSync(process.argv[1], new Date(performance.timeOrigin).toISOString()); setInterval(() => {}, 1000)",
+        ])
+        .arg(&ready)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn live Node process");
+    let started_at = wait_for_file(&ready, Duration::from_secs(5));
+    let mut results = Vec::new();
+    for (name, identity, official_cli) in [
+        ("legacy", None, true),
+        ("matching", Some(started_at.as_str()), true),
+        ("unreadable", Some("invalid"), true),
+        ("stale", Some("2000-01-01T00:00:00.000Z"), false),
+    ] {
+        let data = directory.join(name);
+        fs::create_dir_all(data.join("mapping-store")).unwrap();
+        let identity = identity.map_or_else(String::new, |value| {
+            format!(",\"processStartedAt\":\"{value}\"")
+        });
+        fs::write(
+            data.join("mapping-store/store.lock"),
+            format!(
+                "{{\"pid\":{},\"instanceId\":\"remote-listener\",\"startedAt\":\"2026-11-07T03:59:59.986Z\"{identity}}}\n",
+                runtime.id()
+            ),
+        )
+        .unwrap();
+        let helper = run_unmanaged_bundle_app_server(&data.join("bundle"), &data, 1, true);
+        results.push((name, official_cli, data, helper));
+    }
+    let runtime_survived = process_exists(runtime.id());
+    let _ = runtime.kill();
+    let _ = runtime.wait();
+    assert!(
+        runtime_survived,
+        "the unrelated Node process was terminated"
+    );
+    for (name, official_cli, data, helper) in results {
+        let stderr = String::from_utf8_lossy(&helper.stderr);
+        assert!(helper.status.success(), "{name}: {stderr}");
+        assert_eq!(
+            stderr.contains("args=app-server|--listen|stdio://"),
+            official_cli,
+            "{name}: {stderr}"
+        );
+        assert_eq!(
+            stderr.contains(&format!(
+                "Host Runtime PID {} already owns the Mapping Store",
+                runtime.id()
+            )),
+            official_cli,
+            "{name}: {stderr}"
+        );
+        assert_eq!(
+            data.join("local-host-runtime-owner.lock").exists(),
+            !official_cli,
+            "{name}: only the Host route may acquire a lease"
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn managed_remote_listener_refuses_a_local_launcher_session_or_missing_data_directory() {
+    static NEXT_GUARD_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
+
+    let directory = PathBuf::from("/tmp").join(format!(
+        "codexhost-remote-guard-{}-{}",
+        process::id(),
+        NEXT_GUARD_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir(&directory).expect("create remote listener guard fixture");
+    let ready = directory.join("ready");
+    for (launcher, data_directory, expected) in [
+        (
+            true,
+            true,
+            "refusing to start the managed remote listener inside a local codexhost Desktop session",
+        ),
+        (
+            false,
+            false,
+            "refusing to start the managed remote listener without CODEXHOST_DATA_DIR",
+        ),
+    ] {
+        let mut command = Command::new(shim_path());
+        command
+            .args(["app-server", "--listen", "unix://"])
+            .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
+            .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
+            .env_remove("CODEXHOST_DATA_DIR")
+            .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+            .env(HOST_NODE_PATH_ENV, fake_codex_path())
+            .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
+            .env(REMOTE_SSH_MANAGED_ENV, "1")
+            .env("CODEX_HOME", directory.join("home"))
+            .env("FAKE_CODEX_READY_PATH", &ready)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if launcher {
+            command.env("CODEXHOST_LAUNCHER_PID", process::id().to_string());
+        } else {
+            command.env_remove("CODEXHOST_LAUNCHER_PID");
+        }
+        if data_directory {
+            command.env("CODEXHOST_DATA_DIR", directory.join("data"));
+        }
+        let output = command.output().expect("run guarded remote listener");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(!ready.exists(), "no listener may start: {stderr}");
+    }
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -555,6 +1164,130 @@ fn rejects_missing_stock_cli_without_a_cli_override() {
         String::from_utf8_lossy(&output.stderr)
             .contains(&format!("{STOCK_CODEX_PATH_ENV} is required"))
     );
+}
+
+#[cfg(target_os = "windows")]
+fn windows_fixture_installation(directory: &std::path::Path) -> PathBuf {
+    let installation_root = directory.join("portable-codex");
+    let app_root = installation_root.join("app");
+    let resources = app_root.join("resources");
+    fs::create_dir_all(&resources).expect("create portable Codex resources");
+    fs::write(app_root.join("ChatGPT.exe"), b"desktop").unwrap();
+    fs::write(resources.join("app.asar"), b"asar").unwrap();
+    fs::copy(fake_codex_path(), resources.join("codex.exe")).unwrap();
+    installation_root
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_browser_sandbox_without_cli_environment_reaches_official_cli() {
+    let directory = temporary_directory();
+    let installation_root = windows_fixture_installation(&directory);
+    let mut command = Command::new(shim_path());
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("CODEXHOST_") {
+            command.env_remove(key);
+        }
+    }
+    // node_repl resolves the CLI override before clearing its kernel child's
+    // environment. The sandbox invocation retains neither CLI path override.
+    let output = command
+        .args([
+            "sandbox",
+            "windows",
+            "--",
+            "C:/official tools/node.exe",
+            "--experimental-vm-modules",
+            "C:/official tools/kernel.js",
+        ])
+        .env_remove(CODEX_CLI_PATH_ENV)
+        .env(CUSTOM_INSTALL_ROOT_ENV, &installation_root)
+        .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+        .env("FAKE_CODEX_EXIT_CODE", "7")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    fs::remove_dir_all(&directory).unwrap();
+    assert_eq!(output.status.code(), Some(7), "{stderr}");
+    assert!(output.stdout.is_empty());
+    assert!(
+        stderr.contains(
+            "args=sandbox|windows|--|C:/official tools/node.exe|--experimental-vm-modules|C:/official tools/kernel.js"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains("codex_cli_path_present=false"), "{stderr}");
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_browser_sandbox_fallback_keeps_explicit_targets_authoritative() {
+    let directory = temporary_directory();
+    let installation_root = windows_fixture_installation(&directory);
+    for (key, target, error) in [
+        (
+            STOCK_CODEX_PATH_ENV,
+            directory.join("missing-codex.exe"),
+            "does not exist",
+        ),
+        (STOCK_CODEX_PATH_ENV, shim_path(), "Shim itself"),
+        (
+            CODEX_CLI_PATH_ENV,
+            fake_codex_path(),
+            "does not identify the running Shim",
+        ),
+        (
+            CUSTOM_INSTALL_ROOT_ENV,
+            directory.join("missing-installation"),
+            "Desktop-managed official Codex CLI could not be discovered",
+        ),
+    ] {
+        let output = Command::new(shim_path())
+            .args(["sandbox", "windows", "--", "C:/official/node.exe"])
+            .env_remove(STOCK_CODEX_PATH_ENV)
+            .env_remove(CODEX_CLI_PATH_ENV)
+            .env(CUSTOM_INSTALL_ROOT_ENV, &installation_root)
+            .env(key, target)
+            .env("PATH", fake_codex_path().parent().unwrap())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{key}: {stderr}");
+        assert!(output.stdout.is_empty());
+        assert!(stderr.contains(error), "{key}: {stderr}");
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_browser_sandbox_fallback_rejects_unrelated_commands() {
+    let directory = temporary_directory();
+    let installation_root = windows_fixture_installation(&directory);
+    for arguments in [
+        vec!["app-server", "--listen", "stdio://"],
+        vec!["exec", "sandbox"],
+        vec!["--model", "sandbox"],
+    ] {
+        let output = Command::new(shim_path())
+            .args(arguments)
+            .env_remove(STOCK_CODEX_PATH_ENV)
+            .env_remove(CODEX_CLI_PATH_ENV)
+            .env(CUSTOM_INSTALL_ROOT_ENV, &installation_root)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(output.stdout.is_empty());
+        assert!(
+            stderr.contains("CODEXHOST_STOCK_CODEX_PATH is required"),
+            "{stderr}"
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[cfg(target_os = "windows")]
@@ -640,21 +1373,38 @@ fn browser_helper_fallback_does_not_guess_an_official_cli_from_path() {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
+    assert_managed_remote_listener_session("ssh");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires the current user's logged-in macOS desktop and launchd"]
+fn managed_desktop_listener_detaches_and_reuses_a_matching_socket_owner() {
+    assert_managed_remote_listener_session("desktop");
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn assert_managed_remote_listener_session(session: &str) {
     static NEXT_REMOTE_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
-    let directory = PathBuf::from("/tmp").join(format!(
-        "codexhost-remote-test-{}-{}",
-        process::id(),
-        NEXT_REMOTE_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed),
-    ));
+    let directory = std::env::var_os("CODEXHOST_TEST_SHORT_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(format!(
+            "r{}-{}",
+            process::id(),
+            NEXT_REMOTE_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed),
+        ));
     fs::create_dir(&directory).expect("create short remote listener fixture directory");
-    let codex_home = directory.join("home");
+    let codex_home = directory.clone();
     let socket = codex_home
         .join("app-server-control")
         .join("app-server-control.sock");
     let ready = directory.join("ready");
     let started = Instant::now();
     let child = Command::new(shim_path())
+        .env_remove("CODEXHOST_LAUNCHER_PID")
+        .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
         .args([
             "-c",
             "features.code_mode_host=true",
@@ -668,6 +1418,8 @@ fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
         .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
         .env(CODEX_CLI_PATH_ENV, shim_path())
         .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEXHOST_DATA_DIR", directory.join("data"))
+        .env("CODEXHOST_REMOTE_EXECUTION_SESSION", session)
         .env("CODEX_HOME", &codex_home)
         .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
         .env("FAKE_CODEX_READY_PATH", &ready)
@@ -731,26 +1483,44 @@ fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
 
     let original_socket = fs::metadata(&socket).expect("read original listener socket identity");
     let repeated_started = Instant::now();
-    let repeated = Command::new(shim_path())
-        .args([
-            "-c",
-            "features.code_mode_host=true",
-            "app-server",
-            "--listen",
-            "unix://",
-        ])
-        .env_remove(HOST_NODE_PATH_ENV)
-        .env_remove(HOST_RUNTIME_PATH_ENV)
-        .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
-        .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
-        .env(CODEX_CLI_PATH_ENV, shim_path())
-        .env(REMOTE_SSH_MANAGED_ENV, "1")
-        .env("CODEX_HOME", &codex_home)
-        .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
-        .env("FAKE_CODEX_READY_PATH", &ready)
-        .stdin(Stdio::null())
-        .output()
-        .expect("repeat managed remote listener bootstrap");
+    let reconnect = || {
+        Command::new(shim_path())
+            .env_remove("CODEXHOST_LAUNCHER_PID")
+            .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
+            .args([
+                "-c",
+                "features.code_mode_host=true",
+                "app-server",
+                "--listen",
+                "unix://",
+            ])
+            .env_remove(HOST_NODE_PATH_ENV)
+            .env_remove(HOST_RUNTIME_PATH_ENV)
+            .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
+            .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+            .env(CODEX_CLI_PATH_ENV, shim_path())
+            .env(REMOTE_SSH_MANAGED_ENV, "1")
+            .env("CODEXHOST_DATA_DIR", directory.join("data"))
+            .env("CODEXHOST_REMOTE_EXECUTION_SESSION", session)
+            .env("CODEX_HOME", &codex_home)
+            .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
+            .env("FAKE_CODEX_READY_PATH", &ready)
+            .stdin(Stdio::null())
+            .output()
+            .expect("repeat managed remote listener bootstrap")
+    };
+    let repeated = thread::scope(|scope| {
+        let first = scope.spawn(reconnect);
+        let second = scope.spawn(reconnect);
+        let first = first.join().expect("join first reconnect");
+        let second = second.join().expect("join second reconnect");
+        assert!(
+            second.status.success(),
+            "concurrent reconnect failed: {:?}",
+            second.stderr
+        );
+        first
+    });
     let repeated_elapsed = repeated_started.elapsed();
     let repeated_ready = fs::read_to_string(&ready).expect("read repeated listener identity");
     let repeated_value = |label: &str| {
@@ -768,6 +1538,8 @@ fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
     let alternate_stock = directory.join("alternate-fake-codex");
     fs::copy(fake_codex_path(), &alternate_stock).expect("copy alternate stock Codex fixture");
     let mismatched = Command::new(shim_path())
+        .env_remove("CODEXHOST_LAUNCHER_PID")
+        .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
         .args([
             "-c",
             "features.code_mode_host=true",
@@ -781,6 +1553,8 @@ fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
         .env(STOCK_CODEX_PATH_ENV, &alternate_stock)
         .env(CODEX_CLI_PATH_ENV, shim_path())
         .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEXHOST_DATA_DIR", directory.join("data"))
+        .env("CODEXHOST_REMOTE_EXECUTION_SESSION", session)
         .env("CODEX_HOME", &codex_home)
         .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
         .env("FAKE_CODEX_READY_PATH", &ready)
@@ -1824,125 +2598,6 @@ fn refuses_version_one_takeover_when_the_recorded_child_outlives_its_shim() {
 
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 #[test]
-fn retires_an_exact_owner_child_after_its_shim_exits() {
-    let directory = temporary_directory();
-    let fixture_directory = temporary_directory();
-    let owner_ready = directory.join("owner-ready");
-    let fixture_ready = fixture_directory.join("fixture-ready");
-    let replacement_ready = directory.join("replacement-ready");
-
-    let mut owner = host_runtime_shim(&directory, &owner_ready);
-    let owner_stdin = owner.stdin.take().expect("owner Host Runtime stdin");
-    wait_for_file(&owner_ready, Duration::from_secs(5));
-    let owner_contents =
-        wait_for_complete_owner_record(&mut owner, &directory, Duration::from_secs(10));
-
-    // Keep an independently owned Host Runtime alive so this exact-child fixture also works on
-    // Windows, where killing a Shim normally closes its Job and retires its own process tree.
-    let mut fixture = host_runtime_shim(&fixture_directory, &fixture_ready);
-    let fixture_stdin = fixture.stdin.take().expect("fixture Host Runtime stdin");
-    let fixture_root = process_id_from_ready(
-        &wait_for_file(&fixture_ready, Duration::from_secs(5)),
-        "root=",
-    );
-    let fixture_contents =
-        wait_for_complete_owner_record(&mut fixture, &fixture_directory, Duration::from_secs(10));
-    let fixture_child_started_at_micros = fixture_contents
-        .lines()
-        .find_map(|line| line.strip_prefix("child_process_started_at_micros="))
-        .filter(|value| !value.is_empty())
-        .expect("fixture child start identity")
-        .parse::<u64>()
-        .expect("fixture child start identity micros");
-    let mut reused_desktop_process = Command::new(fake_codex_path())
-        .env("FAKE_CODEX_DELAY_MS", "60000")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn reused Desktop PID fixture");
-
-    force_stop_test_process(owner.id());
-    assert!(
-        wait_for_process_exit(&mut owner, Duration::from_secs(5)),
-        "exact owner Shim did not exit"
-    );
-    drop(owner_stdin);
-
-    let owner_record = directory.join("local-host-runtime-owner-v1").join("owner");
-    let orphaned_exact_owner = owner_contents
-        .lines()
-        .map(|line| {
-            if line.starts_with("child_process_id=") {
-                format!("child_process_id={fixture_root}")
-            } else if line.starts_with("child_process_started_at_micros=") {
-                format!("child_process_started_at_micros={fixture_child_started_at_micros}")
-            } else if line.starts_with("desktop_process_id=") {
-                format!("desktop_process_id={}", reused_desktop_process.id())
-            } else {
-                line.to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(&owner_record, format!("{orphaned_exact_owner}\n"))
-        .expect("publish orphaned exact owner record");
-    assert!(
-        exact_process_instance_is_executable(fixture_root, fixture_child_started_at_micros),
-        "exact child fixture exited before replacement"
-    );
-
-    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
-    let replacement_stdin = replacement
-        .stdin
-        .take()
-        .expect("replacement Host Runtime stdin");
-    let replacement_identity = wait_for_optional_file(&replacement_ready, Duration::from_secs(2));
-    let replacement_root = replacement_identity
-        .as_deref()
-        .map(|identity| process_id_from_ready(identity, "root="));
-    let orphaned_child_was_retired =
-        !exact_process_instance_is_executable(fixture_root, fixture_child_started_at_micros);
-    let reused_desktop_was_not_signalled = reused_desktop_process
-        .try_wait()
-        .expect("poll reused Desktop PID fixture")
-        .is_none();
-
-    drop(replacement_stdin);
-    if !wait_for_process_exit(&mut replacement, Duration::from_secs(5)) {
-        force_stop_test_process(replacement.id());
-        if let Some(replacement_root) = replacement_root {
-            force_stop_test_process(replacement_root);
-        }
-        let _ = replacement.wait();
-    }
-    drop(fixture_stdin);
-    if !wait_for_process_exit(&mut fixture, Duration::from_secs(5)) {
-        force_stop_test_process(fixture.id());
-        force_stop_test_process(fixture_root);
-        let _ = fixture.wait();
-    }
-    force_stop_test_process(reused_desktop_process.id());
-    let _ = reused_desktop_process.wait();
-    let _ = fs::remove_dir_all(&directory);
-    let _ = fs::remove_dir_all(&fixture_directory);
-
-    assert!(
-        replacement_identity.is_some(),
-        "replacement trusted a stale PID-only Desktop identity after the exact owner Shim exited"
-    );
-    assert!(
-        reused_desktop_was_not_signalled,
-        "replacement signalled the unrelated process that reused the recorded Desktop PID"
-    );
-    assert!(
-        orphaned_child_was_retired,
-        "replacement started without retiring the exact child whose recorded Shim had exited"
-    );
-}
-
-#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-#[test]
 fn replacement_does_not_signal_a_reused_owner_process_id() {
     let directory = temporary_directory();
     let owner_ready = directory.join("owner-ready");
@@ -2551,14 +3206,18 @@ fn escalates_when_the_official_cli_ignores_sigterm() {
 fn cleans_an_escaped_descendant_after_the_cli_root_exits() {
     let directory = temporary_directory();
     let ready = directory.join("ready");
+    let child_ready = directory.join("child-ready");
+    let observations = directory.join("observations");
     let mut shim = Command::new(shim_path())
         .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
         .env("FAKE_CODEX_SPAWN_CHILD", "1")
         .env("FAKE_CODEX_ROOT_EXIT", "1")
-        .env("FAKE_CODEX_ROOT_EXIT_DELAY_MS", "100")
+        .env("FAKE_CODEX_ROOT_EXIT_ON_INPUT", "1")
+        .env("CODEXHOST_TEST_PROCESS_OBSERVATIONS", &observations)
         .env("FAKE_CODEX_CHILD_NEW_GROUP", "1")
+        .env("FAKE_CODEX_CHILD_READY_PATH", &child_ready)
         .env("FAKE_CODEX_READY_PATH", &ready)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -2570,6 +3229,31 @@ fn cleans_an_escaped_descendant_after_the_cli_root_exits() {
         .expect("child identity")
         .parse::<u32>()
         .expect("child PID");
+    assert_eq!(
+        wait_for_file(&child_ready, Duration::from_secs(5)).trim(),
+        child_id.to_string()
+    );
+    // Ignore scans predating the child's completed setpgid. The first new
+    // observation may already be in flight; the second must start after it.
+    let observation_count = || fs::metadata(&observations).map_or(0, |metadata| metadata.len());
+    let previous_observations = observation_count();
+    let started = Instant::now();
+    while observation_count() < previous_observations + 2 {
+        if started.elapsed() >= Duration::from_secs(5) {
+            let _ = shim.kill();
+            let _ = Command::new("/bin/kill")
+                .args(["-KILL", &child_id.to_string()])
+                .status();
+            let _ = shim.wait();
+            panic!("Shim did not observe the fixture before root exit");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    shim.stdin
+        .take()
+        .expect("root release pipe")
+        .write_all(b"x")
+        .expect("release CLI root exit");
 
     let started = Instant::now();
     while shim.try_wait().expect("poll shim").is_none()
@@ -2585,10 +3269,11 @@ fn cleans_an_escaped_descendant_after_the_cli_root_exits() {
         panic!("Shim did not clean escaped descendant");
     }
     let output = shim.wait_with_output().expect("collect descendant output");
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("terminated official CLI descendants after root exit")
+        stderr.contains("terminated official CLI descendants after root exit"),
+        "{stderr}"
     );
     assert!(
         !process_exists(child_id),

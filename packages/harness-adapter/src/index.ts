@@ -1,12 +1,32 @@
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
 
+export type {
+  HarnessCredentialTransfer,
+  HarnessCredentialExport,
+  HarnessCredentialImports,
+} from "./credential-imports.js";
+export { parseHarnessAccountBalance, parseHarnessAccountCredits } from "./account-credits.js";
 export { validateHostApprovalResponse } from "./approval.js";
 export { validateHostInteractionResponse } from "./interaction.js";
+export { normalizeLegacyBase64ModelRef } from "./legacy-model-ref.js";
+export { compositeModelRefIds, type CompositeModelIdentity } from "./composite-model-ref.js";
 export { HarnessOutputChannel } from "./output-channel.js";
-export { sanitizeDiagnosticTail } from "./diagnostics.js";
+export { sanitizeDiagnosticTail, filterAmbientNodeWarnings } from "./diagnostics.js";
 export { validateHostQuestionResponse } from "./question.js";
-export { parseHostUsage } from "./usage.js";
-export type { HostUsage } from "./usage.js";
+export { unsupportedSteer } from "./steer.js";
+export { hostDerivedUsageFields, parseHostUsage, parseHostUsageRequest } from "./usage.js";
+export type {
+  HostUsage,
+  HostUsageCostSource,
+  HostUsageRequest,
+  HostUsageRequestTiming,
+} from "./usage.js";
+export type {
+  HarnessUsageEntry,
+  HarnessUsageSession,
+  HarnessUsageSource,
+  HarnessUsageStatisticsCapability,
+} from "./usage-statistics.js";
 export type {
   AutonomousTurnStartedEvent,
   CreateSessionInput,
@@ -31,6 +51,7 @@ export type {
   HarnessSessionCapabilities,
   HarnessSessionImportCandidate,
   HarnessSessionImportCapability,
+  HarnessSessionImportPrepared,
   HarnessSessionImportSource,
   HarnessSubagentCapability,
   HarnessWebUiAction,
@@ -60,6 +81,7 @@ export type {
   HostQuestionInteraction,
   HostQuestionResponse,
   HostReasoningItem,
+  HostUserMessageItem,
   HostSubagentDelegationItem,
   HostSubagentState,
   HostSubagentStatus,
@@ -67,12 +89,16 @@ export type {
   HostTextInput,
   HostTextQuestion,
   HostToolExecutionItem,
+  HostMcpToolCallItem,
+  HostWebSearchItem,
   HostToolOutput,
   HostTurnSnapshot,
   InteractionClosedEvent,
   InteractionRespondAccepted,
   InteractionRespondCommand,
+  ItemBackgroundStartedEvent,
   ItemCompletedEvent,
+  ItemDetachedEvent,
   ItemStartedEvent,
   InspectHarnessInput,
   ItemUpdatedEvent,
@@ -85,14 +111,20 @@ export type {
   RollbackLastTurnSessionInput,
   SessionFaultedEvent,
   SessionStateChangedEvent,
+  SessionTitleChangedEvent,
   SessionUsageChangedEvent,
   SubagentStateChangedEvent,
+  UsageHistoryEvent,
+  UsageRequestEvent,
+  UsageRequestTimingEvent,
   SubagentTranscriptChangedEvent,
   ThinkingSelectCommand,
   ThinkingSelectCompleted,
   TurnCompletedEvent,
   TurnCancelAccepted,
   TurnCancelCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
   TurnOutcome,
   TurnStartAccepted,
   TurnStartCommand,
@@ -103,3 +135,21 @@ export const packageMetadata = {
   name: "@codexhost/harness-adapter",
   contractVersion: WORKSPACE_CONTRACT_VERSION,
 } as const;
+export {
+  COMMON_EXCLUDED_LIVE_COMMAND_PREFIXES,
+  COMMON_EXCLUDED_LIVE_COMMANDS,
+  LiveHarnessCommandCatalog,
+  isExcludedLiveCommand,
+  liveHarnessCommandPrompt,
+  mergeLiveHarnessCommands,
+  type LiveCommandExclusions,
+  type LiveHarnessCommand,
+} from "./live-command-catalog.js";
+
+export {
+  subagentConfiguration,
+  inheritSubagentConfiguration,
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "./subagent-configuration.js";

@@ -1,18 +1,101 @@
 import { z } from "zod";
 
+import { harnessLocalizedTextSchema, harnessLocalizationsSchema } from "./harness-presentation.js";
 import { hostThreadIdSchema } from "./ids.js";
 
 const nonNegativeSafeIntegerSchema = z.number().int().safe().nonnegative();
 const finiteNonNegativeNumberSchema = z.number().finite().nonnegative();
 const cacheHitRatePercentSchema = z.number().finite().min(0).max(100);
 
+const usageOutputTimingSchema = z
+  .object({
+    version: z.union([z.literal(3), z.literal(4)]).optional(),
+    requestId: z.string().min(1),
+    turnId: z.string().min(1).max(1024),
+    outputTokens: nonNegativeSafeIntegerSchema,
+    startedAtMs: nonNegativeSafeIntegerSchema,
+    completedAtMs: nonNegativeSafeIntegerSchema,
+  })
+  .strict()
+  .refine((value) => value.completedAtMs > value.startedAtMs);
+export type UsageOutputTiming = z.infer<typeof usageOutputTimingSchema>;
+
+/** Request IDs are session-scoped; concurrent observers must not count one request twice. */
+export function mergeUsageOutputTimings(
+  left: readonly UsageOutputTiming[] = [],
+  right: readonly UsageOutputTiming[] = [],
+): UsageOutputTiming[] {
+  const requests = new Map<string, UsageOutputTiming>();
+  for (const value of [...left, ...right]) {
+    const previous = requests.get(value.requestId);
+    if (!previous || value.completedAtMs < previous.completedAtMs)
+      requests.set(value.requestId, value);
+  }
+  return [...requests.values()].sort((a, b) =>
+    a.requestId < b.requestId ? -1 : a.requestId > b.requestId ? 1 : 0,
+  );
+}
+
+/** Reliable display measurements and completed output intervals, never execution/billing state. */
+const usageMeasurementSchema = z
+  .object({
+    version: z.union([z.literal(2), z.literal(3), z.literal(4)]).optional(),
+    value: finiteNonNegativeNumberSchema,
+    turnId: z.string().min(1).max(1024),
+    at: nonNegativeSafeIntegerSchema,
+  })
+  .strict();
+export const usageMeasurementsSchema = z
+  .object({
+    // Older intervals can omit hidden thinking time; do not restore them into averages.
+    outputTimings: z
+      .array(usageOutputTimingSchema)
+      .transform((values) => values.filter((value) => value.version === 4))
+      .optional(),
+    // Retain independent TTFT facts when dropping incompatible speed measurements.
+    outputTokensPerSecond: usageMeasurementSchema
+      .refine((value) => value.version === 4)
+      .optional()
+      .catch(undefined),
+    timeToFirstOutputMs: usageMeasurementSchema
+      .extend({ value: nonNegativeSafeIntegerSchema })
+      .optional(),
+  })
+  .strict();
+export type UsageMeasurementsSnapshot = z.infer<typeof usageMeasurementsSchema>;
+
+const indicatorTextSchema = (maximum: number) =>
+  harnessLocalizedTextSchema.refine((entries) =>
+    Object.values(entries).every((text) => text.length <= maximum),
+  );
+
+export const composerIndicatorsSchema = z
+  .array(
+    z
+      .object({
+        kind: z.literal("countdown"),
+        id: z.string().min(1).max(64),
+        expiresAtUnix: nonNegativeSafeIntegerSchema,
+        label: indicatorTextSchema(256).optional(),
+        tooltip: indicatorTextSchema(1_024).optional(),
+      })
+      .strict(),
+  )
+  .max(2)
+  .refine((entries) => new Set(entries.map(({ id }) => id)).size === entries.length, {
+    message: "Composer indicator IDs must be unique",
+  });
+
 export const threadUsageSnapshotSchema = z
   .object({
+    composerIndicators: composerIndicatorsSchema.optional(),
     inputTokens: nonNegativeSafeIntegerSchema.optional(),
     cachedInputTokens: nonNegativeSafeIntegerSchema.optional(),
     cacheWriteInputTokens: nonNegativeSafeIntegerSchema.optional(),
     outputTokens: nonNegativeSafeIntegerSchema.optional(),
     outputTokensPerSecond: finiteNonNegativeNumberSchema.optional(),
+    sessionOutputTokensPerSecond: finiteNonNegativeNumberSchema.optional(),
+    apiOutputTokensPerSecond: finiteNonNegativeNumberSchema.optional(),
     reasoningOutputTokens: nonNegativeSafeIntegerSchema.optional(),
     totalTokens: nonNegativeSafeIntegerSchema.optional(),
     totalCostUsd: finiteNonNegativeNumberSchema.optional(),
@@ -25,6 +108,11 @@ export const threadUsageSnapshotSchema = z
     planFiveHourResetsAtUnix: nonNegativeSafeIntegerSchema.optional(),
     planSevenDayUsedPercent: cacheHitRatePercentSchema.optional(),
     planSevenDayResetsAtUnix: nonNegativeSafeIntegerSchema.optional(),
+    sessionCacheHitRatePercent: cacheHitRatePercentSchema.optional(),
+    timeToFirstOutputMs: nonNegativeSafeIntegerSchema.optional(),
+    latestRequestTimeToFirstOutputMs: nonNegativeSafeIntegerSchema.optional(),
+    costSource: z.enum(["publicPrice", "native"]).optional(),
+    unpricedModels: z.array(z.string().min(1)).min(1).optional(),
   })
   .strict()
   .superRefine((usage, context) => {
@@ -45,6 +133,20 @@ export const threadUsageSnapshotSchema = z
         code: "custom",
         message: "Thread Usage contextWindowTokens must be greater than zero",
         path: ["contextWindowTokens"],
+      });
+    }
+    if (usage.costSource !== undefined && usage.totalCostUsd === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "Thread Usage costSource must be provided with totalCostUsd",
+        path: ["costSource"],
+      });
+    }
+    if (usage.unpricedModels !== undefined && usage.costSource !== "publicPrice") {
+      context.addIssue({
+        code: "custom",
+        message: "Thread Usage unpricedModels must be provided with a publicPrice cost",
+        path: ["unpricedModels"],
       });
     }
     if (
@@ -75,9 +177,32 @@ export type ThreadUsageSnapshot = z.infer<typeof threadUsageSnapshotSchema>;
 
 const usagePercentSchema = z.number().finite().min(0).max(100);
 
+export const accountCreditsPeriodSchema = z.enum([
+  "weekly",
+  "monthly",
+  "five_hour",
+  "seven_day",
+  "unknown",
+]);
+const accountCreditsScopeSchema = z
+  .object({
+    id: z.string().min(1).max(256),
+    label: z.string().min(1).max(256),
+    localizations: harnessLocalizationsSchema.optional(),
+  })
+  .strict();
+
 export const accountCreditsProductUsageSchema = z
   .object({
     product: z.string().min(1),
+    /** Native period and scope, never inferred from the display name. */
+    periodType: accountCreditsPeriodSchema.optional(),
+    scope: accountCreditsScopeSchema.optional(),
+    localizations: harnessLocalizationsSchema.optional(),
+    used: z.number().finite().nonnegative().optional(),
+    // Zero is a real empty cap, not an absent field.
+    limit: z.number().finite().nonnegative().optional(),
+    unit: z.string().min(1).max(32).optional(),
     usagePercent: usagePercentSchema,
     resetsAt: z.string().min(1).optional(),
   })
@@ -93,11 +218,17 @@ export const accountResetCreditsSchema = z
 
 export const accountCreditsSnapshotSchema = z
   .object({
+    used: z.number().finite().nonnegative().optional(),
+    // Zero is a real empty cap, not an absent field.
+    limit: z.number().finite().nonnegative().optional(),
+    unit: z.string().min(1).max(32).optional(),
     /** Native label when the primary limit is scoped to a model or product group. */
     label: z.string().min(1).optional(),
+    scope: accountCreditsScopeSchema.optional(),
+    localizations: harnessLocalizationsSchema.optional(),
     usedPercent: usagePercentSchema,
     resetsAt: z.string().min(1).optional(),
-    periodType: z.enum(["weekly", "monthly", "five_hour", "seven_day", "unknown"]),
+    periodType: accountCreditsPeriodSchema,
     productUsage: z.array(accountCreditsProductUsageSchema).min(1).optional(),
     resetCredits: accountResetCreditsSchema.optional(),
   })
@@ -105,6 +236,18 @@ export const accountCreditsSnapshotSchema = z
 
 export type AccountResetCredits = z.infer<typeof accountResetCreditsSchema>;
 export type AccountCreditsSnapshot = z.infer<typeof accountCreditsSnapshotSchema>;
+
+/** Remaining prepaid funds, distinct from a percentage-based quota or allowance. */
+export const accountBalanceSnapshotSchema = z
+  .object({
+    amount: z.number().finite().nonnegative(),
+    /** ISO 4217 code as reported by the Provider, for example `CNY`. */
+    currency: z.string().trim().min(1).max(8),
+    /** Native label when the Harness exposes several Billing Sources. */
+    label: z.string().trim().min(1).max(128).optional(),
+  })
+  .strict();
+export type AccountBalanceSnapshot = z.infer<typeof accountBalanceSnapshotSchema>;
 
 export const threadUsageInspectionParamsSchema = z
   .object({
@@ -120,6 +263,11 @@ export const threadUsageInspectionSchema = z
     threadId: hostThreadIdSchema,
     usage: threadUsageSnapshotSchema.nullable(),
     accountCredits: accountCreditsSnapshotSchema.optional(),
+    /** Prepaid funds for the Thread's Billing Source; shown only when no percentage quota exists. */
+    accountBalance: accountBalanceSnapshotSchema.optional(),
+    /** Whether this source can provide cached account quota (credits or a prepaid balance)
+     * independently of usage. */
+    accountCreditsSupported: z.boolean().optional(),
   })
   .strict();
 

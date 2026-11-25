@@ -16,7 +16,9 @@ import {
 const CODEXHOST_STATUS_METHOD = "codexhost/update/status";
 const DIRECT_PROBE_TIMEOUT_MS = 5_000;
 const PROBE_TIMEOUT_MS = 5_000;
-const START_TIMEOUT_MS = 12_000;
+// A small server needs about ten seconds to bring the Host up when idle, and longer right
+// after an install; a tight deadline reports a failed start for a service that then comes up.
+const START_TIMEOUT_MS = 45_000;
 
 export interface RemoteHostRuntimeStatus {
   state: "stopped" | "running" | "conflict" | "unknown";
@@ -70,7 +72,7 @@ interface RemoteHostLifecycleDependencies {
     role: "stock" | "managed",
     environment: NodeJS.ProcessEnv,
   ): Promise<void>;
-  launch(manifest: RemoteHostManifestV1, environment: NodeJS.ProcessEnv): void;
+  launch(manifest: RemoteHostManifestV1, environment: NodeJS.ProcessEnv): void | Promise<void>;
   waitForRuntime(
     manifest: RemoteHostManifestV1,
     socketPath: string,
@@ -107,13 +109,17 @@ async function stopChild(child: ReturnType<typeof spawn>): Promise<void> {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 }
 
-async function probeWebSocket(input: {
+/** Exported for tests. Resolves on the reply to the status request, or on timeout. */
+export async function probeWebSocket(input: {
   socketPath: string;
   createConnection: () => Duplex;
   timeoutMs: number;
   timeoutMessage: string;
 }): Promise<RemoteHostRuntimeStatus> {
-  const socket = new WebSocket("ws://localhost/", { createConnection: input.createConnection });
+  const socket = new WebSocket("ws://localhost/", {
+    perMessageDeflate: false,
+    createConnection: input.createConnection,
+  });
   try {
     return await new Promise<RemoteHostRuntimeStatus>((resolve) => {
       let settled = false;
@@ -142,7 +148,9 @@ async function probeWebSocket(input: {
           }),
         );
       });
-      socket.once("message", (data, isBinary) => {
+      // A Host announces its Threads to every new connection before it answers, so keep
+      // reading until the reply to the status request arrives.
+      socket.on("message", (data, isBinary) => {
         if (isBinary) {
           finish({
             state: "unknown",
@@ -220,9 +228,6 @@ function installedManifest(status: RemoteHostInstallationStatus): RemoteHostMani
   if (status.state === "not-installed") {
     throw new Error("Remote Host is not installed. Run: codexhost remote install");
   }
-  if (status.state === "degraded") {
-    throw new Error(`Remote Host installation is degraded: ${status.issues.join("; ")}`);
-  }
   return status;
 }
 
@@ -237,9 +242,11 @@ function managedEnvironment(
     CODEXHOST_HOST_NODE_PATH: manifest.nodePath,
     CODEXHOST_HOST_RUNTIME_PATH: manifest.hostRuntimePath,
     CODEXHOST_DATA_DIR: manifest.dataDirectory,
-    CODEXHOST_DEFAULT_AGENT: "codex",
+    ...(manifest.sharedDataDirectory
+      ? { CODEXHOST_SHARED_DATA_DIR: manifest.sharedDataDirectory }
+      : {}),
     CODEXHOST_REMOTE_SSH_MANAGED: "1",
-    ...(manifest.claudeCommand ? { CODEXHOST_CLAUDE_COMMAND: manifest.claudeCommand } : {}),
+    CODEXHOST_REMOTE_EXECUTION_SESSION: manifest.executionSession ?? "ssh",
     PATH: `${path.dirname(manifest.wrapperPath)}${path.delimiter}${path.dirname(manifest.stockCodexPath)}${path.delimiter}${environment.PATH ?? "/usr/bin:/bin"}`,
   };
 }
@@ -298,13 +305,38 @@ async function defaultWaitForRuntime(
   throw new Error(last.message ?? `Remote Host did not become ready at ${socketPath}`);
 }
 
-function defaultLaunch(manifest: RemoteHostManifestV1, environment: NodeJS.ProcessEnv): void {
+async function defaultLaunch(
+  manifest: RemoteHostManifestV1,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
   const child = spawn(
     manifest.wrapperPath,
     ["-c", "features.code_mode_host=true", "app-server", "--listen", "unix://"],
-    { env: managedEnvironment(manifest, environment), stdio: "ignore", detached: true },
+    {
+      env: managedEnvironment(manifest, environment),
+      stdio: ["ignore", "ignore", "pipe"],
+      detached: true,
+    },
   );
-  child.unref();
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) => {
+    stderr = `${stderr}${chunk}`.slice(-2_000);
+  });
+  // The startup shim exits after handing off the listener, not with the daemon.
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) resolve();
+      else {
+        reject(
+          new Error(
+            stderr.trim() || `Remote Host startup failed (${signal ?? `exit code ${code}`})`,
+          ),
+        );
+      }
+    });
+  });
 }
 
 function dependencies(): RemoteHostLifecycleDependencies {
@@ -353,7 +385,17 @@ export async function startRemoteHost(
     throw new Error("Remote Host lifecycle must run on the macOS or Linux SSH host");
   }
   const lifecycle = dependencies();
-  const manifest = installedManifest(await lifecycle.inspectInstallation(options));
+  const installation = await lifecycle.inspectInstallation(options);
+  if (installation.state === "degraded") {
+    throw new Error(`Remote Host installation is degraded: ${installation.issues.join("; ")}`);
+  }
+  const manifest = installedManifest(installation);
+  if (
+    manifest.executionSession === "desktop" &&
+    (options.platform ?? process.platform) !== "darwin"
+  ) {
+    throw new Error("Desktop execution session requires macOS");
+  }
   const socketPath = socketPathFor(environment);
   const current = await lifecycle.probeProtocol(manifest, socketPath, environment);
   if (current.state === "running") {
@@ -364,7 +406,7 @@ export async function startRemoteHost(
     await lifecycle.runTerminator(manifest, socketPath, "stock", environment);
     replacedStockCodex = true;
   }
-  lifecycle.launch(manifest, environment);
+  await lifecycle.launch(manifest, environment);
   await lifecycle.waitForRuntime(manifest, socketPath, environment);
   return { state: "running", changed: true, socketPath, replacedStockCodex };
 }
@@ -377,6 +419,9 @@ export async function stopRemoteHost(
     throw new Error("Remote Host lifecycle must run on the macOS or Linux SSH host");
   }
   const lifecycle = dependencies();
+  // An update can make the previous shell profile/entrypoint obsolete before reinstalling it.
+  // Stopping the existing listener does not launch either: protocol probing and the native
+  // terminator's socket-owner/process-identity checks still gate termination.
   const manifest = installedManifest(await lifecycle.inspectInstallation(options));
   const socketPath = socketPathFor(environment);
   const current = await lifecycle.probeProtocol(manifest, socketPath, environment);

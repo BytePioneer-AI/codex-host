@@ -1,27 +1,52 @@
+import { subagentConfiguration } from "@codexhost/harness-adapter";
+import {
+  claudePromptCacheTtlSeconds,
+  type ClaudePromptCacheTtlSeconds,
+} from "./claude-prompt-cache.js";
+import { claudeUsageRecord, isClaudeModelRequest } from "./claude-usage.js";
 import { jsonValueSchema } from "@codexhost/shared-contracts";
 
 import { parseClaudeNativeFileChange } from "./file-change.js";
+import { isClaudeNarrationSignature } from "./thinking-signature.js";
+import { isClaudeTaskTool } from "./task-tracker.js";
 import type {
   ClaudePlanLimitEvent,
   ClaudeTransportFailureKind,
   ClaudeTransportTurnResult,
   ClaudeTurnEvent,
+  ClaudeWorkflowAgent,
 } from "./transport.js";
 
 const ABORTED_TERMINALS = new Set(["aborted_streaming", "aborted_tools"]);
 const AUTHENTICATION_ERRORS = new Set(["authentication_failed", "oauth_org_not_allowed"]);
-const SUBAGENT_TOOLS = new Set(["Agent", "Task", "SendMessage"]);
+/** Tools whose native lifecycle is a Subagent, not a Host Tool Item. */
+export const CLAUDE_SUBAGENT_TOOLS = new Set(["Agent", "Task", "SendMessage"]);
+/** The native tool that launches a Workflow run; its agents are Subagents of the run. */
+export const CLAUDE_WORKFLOW_TOOL = "Workflow";
+/** Native Bash running in the background names the file its output streams to. */
+const BACKGROUND_OUTPUT_FILE_PATTERN = /Output is being written to: (.+?\.output)\./u;
 const SUBAGENT_DESCRIPTION_LIMIT = 500;
 const SUBAGENT_SUMMARY_LIMIT = 2_000;
+/** Bounds the agents read from one native `workflow_progress` frame. */
+const WORKFLOW_PROGRESS_ENTRY_LIMIT = 500;
 
 type ClaudeNativeEvent = Exclude<
   ClaudeTurnEvent,
   { type: "interaction.requested" | "interaction.closed" }
 >;
 
+interface ThinkingBlockState {
+  text: string;
+  signature: string;
+  streamed: boolean;
+  stopped: boolean;
+  matched: boolean;
+  narrationPublished: boolean;
+}
+
 interface AssistantMessageState {
   completed: boolean;
-  reasoning: string;
+  thinking: Map<number, ThinkingBlockState>;
   text: string;
   usagePublished: boolean;
 }
@@ -29,6 +54,8 @@ interface AssistantMessageState {
 interface ActiveNativeTool {
   name: string;
   subagent: boolean;
+  workflow: boolean;
+  spawnName?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -117,18 +144,29 @@ function targetedSubagentId(argumentsValue: unknown): string | undefined {
   );
 }
 
-function includesAuthenticationFailure(
-  message: Record<string, unknown>,
-  errors: string[],
+/** SDK history may retain only the JSON text, not the structured SendMessage result. */
+function sendResultFromText(outputText: string | undefined): Record<string, unknown> | undefined {
+  if (!outputText) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(outputText);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** SendMessage can refuse delivery without setting the Tool Result's is_error flag. */
+export function claudeSendMessageFailed(
+  nativeResult: unknown,
+  outputText: string | undefined,
 ): boolean {
-  if (errors.some((error) => AUTHENTICATION_ERRORS.has(error))) return true;
-  const text = [message.result, ...(Array.isArray(message.errors) ? message.errors : [])]
-    .filter((value): value is string => typeof value === "string")
-    .join(" ")
-    .toLowerCase();
-  return (
-    text.includes("not logged in") || text.includes("invalid api key") || text.includes("oauth")
-  );
+  return isRecord(nativeResult) && typeof nativeResult.success === "boolean"
+    ? !nativeResult.success
+    : sendResultFromText(outputText)?.success === false;
+}
+
+function includesAuthenticationFailure(errors: string[]): boolean {
+  return errors.some((error) => AUTHENTICATION_ERRORS.has(error));
 }
 
 function failure(kind: ClaudeTransportFailureKind): ClaudeTransportTurnResult {
@@ -143,12 +181,19 @@ function finiteNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-function parseResultModelUsage(
-  value: unknown,
-): Array<{ inputTokens: number; outputTokens: number }> | undefined {
+export interface ClaudeResultModelUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  /** Prompt tokens incl. cache reads/writes; used only to pick the main Model. */
+  promptTokens?: number;
+  contextWindowTokens?: number;
+}
+
+function parseResultModelUsage(value: unknown): ClaudeResultModelUsage[] | undefined {
   if (!isRecord(value)) return undefined;
-  const usage: Array<{ inputTokens: number; outputTokens: number }> = [];
-  for (const entry of Object.values(value)) {
+  const usage: ClaudeResultModelUsage[] = [];
+  for (const [model, entry] of Object.entries(value)) {
     if (
       !isRecord(entry) ||
       !safeNonNegativeInteger(entry.inputTokens) ||
@@ -156,7 +201,22 @@ function parseResultModelUsage(
     ) {
       return undefined;
     }
-    usage.push({ inputTokens: entry.inputTokens, outputTokens: entry.outputTokens });
+    const cacheRead = safeNonNegativeInteger(entry.cacheReadInputTokens)
+      ? entry.cacheReadInputTokens
+      : 0;
+    const cacheWrite = safeNonNegativeInteger(entry.cacheCreationInputTokens)
+      ? entry.cacheCreationInputTokens
+      : 0;
+    const promptTokens = entry.inputTokens + cacheRead + cacheWrite;
+    usage.push({
+      model,
+      inputTokens: entry.inputTokens,
+      outputTokens: entry.outputTokens,
+      ...(Number.isSafeInteger(promptTokens) ? { promptTokens } : {}),
+      ...(safeNonNegativeInteger(entry.contextWindow) && entry.contextWindow > 0
+        ? { contextWindowTokens: entry.contextWindow }
+        : {}),
+    });
   }
   return usage;
 }
@@ -177,6 +237,7 @@ function parseLastRequestUsage(
       outputTokens: number;
       cacheCreationInputTokens: number;
       cacheReadInputTokens: number;
+      promptCacheTtlSeconds?: ClaudePromptCacheTtlSeconds;
     }
   | undefined {
   if (!isRecord(value)) return undefined;
@@ -195,6 +256,7 @@ function parseLastRequestUsage(
   const requestId = boundedString(attribution.requestId, 500);
   const model = boundedString(attribution.model, 500);
   const provider = boundedString(attribution.provider, 100);
+  const promptCacheTtlSeconds = claudePromptCacheTtlSeconds(value);
   return {
     ...(requestId ? { requestId } : {}),
     ...(model ? { model } : {}),
@@ -203,6 +265,7 @@ function parseLastRequestUsage(
     outputTokens,
     cacheCreationInputTokens,
     cacheReadInputTokens,
+    ...(promptCacheTtlSeconds !== undefined ? { promptCacheTtlSeconds } : {}),
   };
 }
 
@@ -290,7 +353,12 @@ function nativeSubagentId(
 ): string | undefined {
   if (isRecord(nativeResult)) {
     const structured = boundedString(
-      nativeResult.agentId ?? nativeResult.agent_id ?? nativeResult.task_id,
+      nativeResult.agentId ??
+        nativeResult.agent_id ??
+        nativeResult.task_id ??
+        nativeResult.resumedAgentId ??
+        nativeResult.revivedAgentId ??
+        (isRecord(nativeResult.pin) ? nativeResult.pin.id : undefined),
       SUBAGENT_DESCRIPTION_LIMIT,
     );
     if (structured) return structured;
@@ -360,12 +428,14 @@ export function parseClaudeTaskNotification(
   if (status !== "completed" && status !== "failed" && status !== "interrupted") return null;
   const summary = content.match(/<summary>([\s\S]*?)<\/summary>/u)?.[1]?.trim();
   const callId = content.match(/<tool-use-id>([^<]+)<\/tool-use-id>/u)?.[1]?.trim();
+  const outputFile = content.match(/<output-file>([^<]+)<\/output-file>/u)?.[1]?.trim();
   return {
     type: "subagent.settled",
     nativeSubagentId: taskId,
     status,
     ...(callId ? { callId } : {}),
     ...(summary ? { resultSummary: summary.slice(0, SUBAGENT_SUMMARY_LIMIT) } : {}),
+    ...(outputFile ? { outputFile } : {}),
   };
 }
 
@@ -389,6 +459,54 @@ function taskStatus(
   }
 }
 
+function workflowAgentState(entry: Record<string, unknown>): ClaudeWorkflowAgent["state"] | null {
+  switch (entry.state) {
+    case "start":
+      // Claude Code reports a queued agent as `start` before it has an agent ID or start time.
+      return typeof entry.startedAt === "number" || typeof entry.agentId === "string"
+        ? "running"
+        : "queued";
+    case "progress":
+      return "running";
+    case "done":
+      return "done";
+    case "error":
+      return "error";
+    default:
+      return null;
+  }
+}
+
+/** Reads the agent entries of a native `workflow_progress` frame; other entries are ignored. */
+export function parseClaudeWorkflowAgents(value: unknown): ClaudeWorkflowAgent[] | null {
+  if (!Array.isArray(value)) return null;
+  const agents: ClaudeWorkflowAgent[] = [];
+  for (const entry of value.slice(0, WORKFLOW_PROGRESS_ENTRY_LIMIT)) {
+    if (!isRecord(entry) || entry.type !== "workflow_agent") continue;
+    const index = entry.index;
+    const state = workflowAgentState(entry);
+    if (!safeNonNegativeInteger(index) || !state) continue;
+    const agentId = boundedString(entry.agentId, SUBAGENT_DESCRIPTION_LIMIT);
+    const phaseTitle = boundedString(entry.phaseTitle, SUBAGENT_DESCRIPTION_LIMIT);
+    const agentType = boundedString(entry.agentType, SUBAGENT_DESCRIPTION_LIMIT);
+    const model = boundedString(entry.model, SUBAGENT_DESCRIPTION_LIMIT);
+    const resultPreview = boundedString(entry.resultPreview, SUBAGENT_SUMMARY_LIMIT);
+    const error = boundedString(entry.error, SUBAGENT_SUMMARY_LIMIT);
+    agents.push({
+      index,
+      label: boundedString(entry.label, SUBAGENT_DESCRIPTION_LIMIT) ?? `Agent ${index}`,
+      state,
+      ...(agentId ? { agentId } : {}),
+      ...(phaseTitle ? { phaseTitle } : {}),
+      ...(agentType ? { agentType } : {}),
+      ...(model ? { model } : {}),
+      ...(resultPreview ? { resultPreview } : {}),
+      ...(error ? { error } : {}),
+    });
+  }
+  return agents;
+}
+
 export interface ClaudeNativeMessageResult {
   events: ClaudeNativeEvent[];
   terminal?: ClaudeTransportTurnResult;
@@ -396,7 +514,10 @@ export interface ClaudeNativeMessageResult {
 
 export class ClaudeNativeTurnAccumulator {
   readonly #provider: string | undefined;
+  readonly #subagentIdsByName: Map<string, string>;
   #activeRootStreamMessageId: string | null = null;
+  /** Native record UUIDs already published, across stream and request message IDs. */
+  #publishedCheckpointIds = new Set<string>();
   #assistantErrors: string[] = [];
   #cancelRequested = false;
   #compactionState: "idle" | "active" | "settled" = "idle";
@@ -404,17 +525,26 @@ export class ClaudeNativeTurnAccumulator {
   #completedToolIds = new Set<string>();
   #messageOrdinal = 0;
   #messages = new Map<string, AssistantMessageState>();
+  #completedThinkingBlocks = new Set<string>();
   #protocolConflict = false;
   #textConflict = false;
   #tools = new Map<string, ActiveNativeTool>();
 
-  constructor(options: { provider?: string } = {}) {
+  constructor(options: { provider?: string; subagentIdsByName?: Map<string, string> } = {}) {
     this.#provider = options.provider;
+    this.#subagentIdsByName = options.subagentIdsByName ?? new Map();
   }
 
   requestCancel(): void {
     this.#cancelRequested = true;
   }
+
+  #usageRequest: {
+    id: string;
+    model: string;
+    usage: unknown;
+    startedAtMs: number | null;
+  } | null = null;
 
   consume(message: unknown): ClaudeNativeMessageResult {
     if (this.#completed || !isRecord(message)) return { events: [] };
@@ -424,12 +554,13 @@ export class ClaudeNativeTurnAccumulator {
     this.#consumeTaskLifecycle(message, events);
     const parentCallId = parentToolUseId(message);
     const nested = parentCallId !== null;
-    if (
-      parentCallId &&
-      this.#tools.get(parentCallId)?.subagent === true &&
-      (message.type === "assistant" || message.type === "user")
-    ) {
-      events.push({ type: "subagent.transcript.changed", callId: parentCallId });
+    const parentTool = parentCallId ? this.#tools.get(parentCallId) : undefined;
+    if (parentCallId && parentTool && (message.type === "assistant" || message.type === "user")) {
+      if (parentTool.subagent) {
+        events.push({ type: "subagent.transcript.changed", callId: parentCallId });
+      } else if (parentTool.workflow) {
+        events.push({ type: "workflow.activity", callId: parentCallId });
+      }
     }
     if (!nested) {
       this.#consumeCompaction(message, events);
@@ -437,7 +568,10 @@ export class ClaudeNativeTurnAccumulator {
     }
 
     if (message.type === "stream_event" && isRecord(message.event)) {
-      if (!nested) this.#consumeStreamEvent(message, events);
+      if (!nested) {
+        this.#observeUsage(message.event, events);
+        this.#consumeStreamEvent(message, events);
+      }
     } else if (message.type === "tool_progress") {
       this.#consumeToolProgress(message, events);
     }
@@ -455,6 +589,12 @@ export class ClaudeNativeTurnAccumulator {
     }
 
     if (message.type !== "result") return { events };
+    if (this.#usageRequest) {
+      // Cancellation/failure can end a request without message_stop. Its final usage is
+      // unknown: invalidate metering rather than silently publish a partial Session total.
+      this.#usageRequest = null;
+      events.push({ type: "usage.request", record: { kind: "missing" } });
+    }
     const usageEvent = parseResultUsageEvent(message);
     if (usageEvent) events.push(usageEvent);
     this.#completed = true;
@@ -472,7 +612,7 @@ export class ClaudeNativeTurnAccumulator {
       terminal = failure("protocol");
     } else if (this.#textConflict) {
       terminal = failure("textConflict");
-    } else if (includesAuthenticationFailure(message, this.#assistantErrors)) {
+    } else if (includesAuthenticationFailure(this.#assistantErrors)) {
       terminal = failure("authentication");
     } else if (this.#cancelRequested && ABORTED_TERMINALS.has(terminalReason)) {
       terminal = { status: "cancelled", reason: terminalReason };
@@ -523,6 +663,7 @@ export class ClaudeNativeTurnAccumulator {
     events.push({
       type: "message.completed",
       messageId,
+      localCommand: true,
       ...(checkpointId ? { checkpointId } : {}),
     });
   }
@@ -534,7 +675,12 @@ export class ClaudeNativeTurnAccumulator {
   #consumeSegmentLevel(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
     if (message.type !== "system") return;
     if (message.subtype === "init") {
-      events.push({ type: "segment.started" });
+      const mcpServers = Array.isArray(message.mcp_servers)
+        ? message.mcp_servers.flatMap((server) =>
+            isRecord(server) && typeof server.name === "string" ? [server.name] : [],
+          )
+        : undefined;
+      events.push({ type: "segment.started", ...(mcpServers ? { mcpServers } : {}) });
       return;
     }
     if (message.subtype !== "background_tasks_changed" || !Array.isArray(message.tasks)) return;
@@ -556,17 +702,38 @@ export class ClaudeNativeTurnAccumulator {
       }
       const resultSummary = boundedString(message.summary, SUBAGENT_SUMMARY_LIMIT);
       const callId = boundedString(message.tool_use_id, SUBAGENT_DESCRIPTION_LIMIT);
+      const outputFile =
+        typeof message.output_file === "string" && message.output_file.length > 0
+          ? message.output_file
+          : undefined;
       events.push({
         type: "subagent.settled",
         nativeSubagentId: agentId,
         status,
         ...(callId ? { callId } : {}),
         ...(resultSummary ? { resultSummary } : {}),
+        ...(outputFile ? { outputFile } : {}),
       });
       return;
     }
     const callId = typeof message.tool_use_id === "string" ? message.tool_use_id : null;
-    if (!callId || !this.#tools.get(callId)?.subagent) return;
+    if (!callId) return;
+    const tool = this.#tools.get(callId);
+    if (
+      tool?.workflow ||
+      message.task_type === "local_workflow" ||
+      Array.isArray(message.workflow_progress)
+    ) {
+      this.#consumeWorkflowTask(callId, message, events);
+      return;
+    }
+    if (!tool) {
+      // A run launched by an earlier Segment reports agent activity without naming itself a
+      // Workflow; the Session ignores calls it does not track.
+      if (message.subtype === "task_progress") events.push({ type: "workflow.activity", callId });
+      return;
+    }
+    if (!tool.subagent) return;
 
     if (message.subtype === "task_started") {
       const description = boundedString(message.description, SUBAGENT_DESCRIPTION_LIMIT);
@@ -574,6 +741,7 @@ export class ClaudeNativeTurnAccumulator {
       const agentId = boundedString(message.task_id, SUBAGENT_DESCRIPTION_LIMIT);
       events.push({
         type: "subagent.updated",
+        ...subagentConfiguration(message),
         callId,
         status: "running",
         ...(description ? { description } : {}),
@@ -589,6 +757,7 @@ export class ClaudeNativeTurnAccumulator {
       const agentId = boundedString(message.task_id, SUBAGENT_DESCRIPTION_LIMIT);
       events.push({
         type: "subagent.updated",
+        ...subagentConfiguration(message),
         callId,
         status: "running",
         ...(description ? { description } : {}),
@@ -606,13 +775,78 @@ export class ClaudeNativeTurnAccumulator {
       const agentId = boundedString(message.task_id, SUBAGENT_DESCRIPTION_LIMIT);
       events.push({
         type: "subagent.updated",
+        ...subagentConfiguration(message),
         callId,
         status,
+        ...subagentConfiguration(message.patch),
         ...(description ? { description } : {}),
         ...(agentId ? { nativeSubagentId: agentId } : {}),
         ...(resultSummary ? { resultSummary } : {}),
       });
     }
+  }
+
+  /**
+   * Meters each root model request from the Anthropic stream: `message_start` names it and
+   * carries input and cache counts, the first `content_block_start` is its first output token,
+   * `message_delta` carries the final counts and `message_stop` completes it.
+   */
+  #observeUsage(event: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
+    if (event.type === "message_start") {
+      const message = isRecord(event.message) ? event.message : null;
+      this.#usageRequest =
+        message &&
+        typeof message.id === "string" &&
+        message.id.length > 0 &&
+        isClaudeModelRequest(message.model)
+          ? { id: message.id, model: message.model, usage: message.usage, startedAtMs: null }
+          : null;
+      return;
+    }
+    const request = this.#usageRequest;
+    if (!request) return;
+    if (event.type === "content_block_start") {
+      request.startedAtMs ??= Date.now();
+    } else if (event.type === "message_delta" && isRecord(event.usage)) {
+      request.usage = { ...(isRecord(request.usage) ? request.usage : {}), ...event.usage };
+    } else if (event.type === "message_stop") {
+      this.#usageRequest = null;
+      const promptCacheTtlSeconds = claudePromptCacheTtlSeconds(request.usage);
+      events.push({
+        type: "usage.request",
+        record: claudeUsageRecord(request.id, request.model, request.usage, {
+          startedAtMs: request.startedAtMs,
+          completedAtMs: Date.now(),
+        }),
+        ...(promptCacheTtlSeconds !== undefined ? { promptCacheTtlSeconds } : {}),
+      });
+    }
+  }
+
+  #consumeWorkflowTask(
+    callId: string,
+    message: Record<string, unknown>,
+    events: ClaudeNativeEvent[],
+  ): void {
+    const taskId = boundedString(message.task_id, SUBAGENT_DESCRIPTION_LIMIT);
+    if (message.subtype === "task_started") {
+      const description = boundedString(message.description, SUBAGENT_SUMMARY_LIMIT);
+      events.push({
+        type: "workflow.updated",
+        callId,
+        ...(taskId ? { taskId } : {}),
+        ...(description ? { description } : {}),
+      });
+      return;
+    }
+    if (message.subtype !== "task_progress") return;
+    // Frames without `workflow_progress` describe one agent's latest tool call, not the run.
+    const agents = parseClaudeWorkflowAgents(message.workflow_progress);
+    if (!agents) {
+      events.push({ type: "workflow.activity", callId });
+      return;
+    }
+    events.push({ type: "workflow.updated", callId, ...(taskId ? { taskId } : {}), agents });
   }
 
   #consumeStreamEvent(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
@@ -628,25 +862,70 @@ export class ClaudeNativeTurnAccumulator {
       this.#messageState(event.message.id);
       return;
     }
-    if (event.type !== "content_block_delta" || !isRecord(event.delta)) return;
+    const index = typeof event.index === "number" ? event.index : 0;
+    if (event.type === "content_block_stop") {
+      const messageId = this.#activeRootStreamMessageId;
+      if (messageId === null) return;
+      const thinking = this.#messages.get(messageId)?.thinking.get(index);
+      if (thinking && !thinking.stopped) {
+        const blockId = `${messageId}:thinking:${index}`;
+        this.#completeStreamedThinking(thinking, blockId, events);
+        this.#publishNarration(thinking, blockId, thinking.signature, thinking.text, events);
+      }
+      return;
+    }
+    const start =
+      event.type === "content_block_start" &&
+      isRecord(event.content_block) &&
+      event.content_block.type === "thinking"
+        ? event.content_block
+        : null;
+    const delta =
+      event.type === "content_block_delta" && isRecord(event.delta) ? event.delta : null;
+    if (!start && !delta) return;
     const messageId =
       this.#activeRootStreamMessageId ?? nativeUuid(message) ?? this.#nextMessageId();
     if (!this.#activeRootStreamMessageId) this.#activeRootStreamMessageId = messageId;
     const state = this.#messageState(messageId);
     if (state.completed) {
-      if (event.delta.type === "text_delta") this.#textConflict = true;
+      if (delta?.type === "text_delta") this.#textConflict = true;
       return;
     }
-    if (event.delta.type === "text_delta" && typeof event.delta.text === "string") {
-      if (event.delta.text.length === 0) return;
-      state.text += event.delta.text;
-      events.push({ type: "text.delta", messageId, delta: event.delta.text });
+    if (delta?.type === "text_delta" && typeof delta.text === "string") {
+      if (delta.text.length === 0) return;
+      state.text += delta.text;
+      events.push({ type: "text.delta", messageId, delta: delta.text });
       return;
     }
-    if (event.delta.type === "thinking_delta" && typeof event.delta.thinking === "string") {
-      if (event.delta.thinking.length === 0) return;
-      state.reasoning += event.delta.thinking;
-      events.push({ type: "reasoning.delta", messageId, delta: event.delta.thinking });
+    const text =
+      delta?.type === "thinking_delta" && typeof delta.thinking === "string" ? delta.thinking : "";
+    const signature =
+      delta?.type === "signature_delta" && typeof delta.signature === "string"
+        ? delta.signature
+        : "";
+    if (!start && !text && !signature) return;
+    let thinking = state.thinking.get(index);
+    if (!thinking) {
+      thinking = {
+        text: typeof start?.thinking === "string" ? start.thinking : "",
+        signature: typeof start?.signature === "string" ? start.signature : "",
+        streamed: false,
+        stopped: false,
+        matched: false,
+        narrationPublished: false,
+      };
+      state.thinking.set(index, thinking);
+    }
+    if (thinking.stopped) return;
+    thinking.signature += signature;
+    if (text) {
+      thinking.text += text;
+      thinking.streamed = true;
+      events.push({
+        type: "reasoning.delta",
+        messageId: `${messageId}:thinking:${index}`,
+        delta: text,
+      });
     }
   }
 
@@ -656,7 +935,75 @@ export class ClaudeNativeTurnAccumulator {
     const messageId =
       this.#activeRootStreamMessageId ?? nativeMessageId ?? checkpointId ?? this.#nextMessageId();
     const state = this.#messageState(messageId);
+    const content = assistantContent(message) ?? [];
+    for (const [index, block] of content.entries()) {
+      if (!isRecord(block) || block.type !== "thinking") continue;
+      const identity = `${checkpointId ?? nativeMessageId ?? messageId}:${index}`;
+      if (this.#completedThinkingBlocks.has(identity)) continue;
+      this.#completedThinkingBlocks.add(identity);
+      // The SDK can send one Assistant record per block. Those wrappers only
+      // carry index 0, so pair them with the next unmatched streamed block.
+      const streamedIndex =
+        content.length === 1
+          ? [...state.thinking].find(([, thinking]) => !thinking.matched)?.[0]
+          : index;
+      const thinking = streamedIndex === undefined ? undefined : state.thinking.get(streamedIndex);
+      const blockId = `${messageId}:thinking:${streamedIndex ?? index}`;
+      if (thinking) {
+        thinking.matched = true;
+        this.#completeStreamedThinking(thinking, blockId, events);
+      }
+      const streamed = thinking?.text ?? "";
+      const complete = typeof block.thinking === "string" ? block.thinking : "";
+      this.#publishNarration(
+        thinking,
+        blockId,
+        block.signature || thinking?.signature,
+        complete.startsWith(streamed) ? complete : streamed,
+        events,
+      );
+    }
+    // A thinking-only record can precede more deltas with the same API message
+    // ID. Publish its checkpoint without closing that stream to later blocks.
+    const keepsStreaming =
+      nativeMessageId !== null &&
+      nativeMessageId === this.#activeRootStreamMessageId &&
+      content.length === 1 &&
+      isRecord(content[0]) &&
+      content[0].type === "thinking";
+    if (keepsStreaming && checkpointId && this.#publishedCheckpointIds.has(checkpointId)) return;
+    if (!keepsStreaming) {
+      for (const [index, thinking] of state.thinking) {
+        this.#completeStreamedThinking(thinking, `${messageId}:thinking:${index}`, events);
+      }
+    }
     if (state.completed) {
+      // Non-streaming Claude can split one request into several records that share
+      // `message.id`. A later record with its own UUID carries new text, so append it
+      // and publish that record as its own checkpoint instead of dropping it.
+      const splitText =
+        checkpointId && !this.#publishedCheckpointIds.has(checkpointId)
+          ? assistantText(message)
+          : null;
+      if (checkpointId && splitText) {
+        this.#publishedCheckpointIds.add(checkpointId);
+        state.text += splitText;
+        events.push({ type: "text.delta", messageId, delta: splitText });
+        this.#consumeToolUseBlocks(message, events, true);
+        if (!this.#protocolConflict && !this.#textConflict) {
+          const usage = state.usagePublished
+            ? undefined
+            : assistantRequestUsage(message, this.#provider);
+          if (usage) state.usagePublished = true;
+          events.push({
+            type: "message.completed",
+            messageId,
+            checkpointId,
+            ...(usage ? { lastRequestUsage: usage } : {}),
+          });
+        }
+        return;
+      }
       this.#consumeToolUseBlocks(message, events, true);
       const usage = assistantRequestUsage(message, this.#provider);
       if (usage && !state.usagePublished) {
@@ -669,10 +1016,6 @@ export class ClaudeNativeTurnAccumulator {
         });
       }
       return;
-    }
-
-    if (state.reasoning.length > 0) {
-      events.push({ type: "reasoning.completed", messageId });
     }
 
     const completeText = assistantText(message);
@@ -691,8 +1034,10 @@ export class ClaudeNativeTurnAccumulator {
     this.#consumeToolUseBlocks(message, events, false);
 
     if (!this.#protocolConflict && !this.#textConflict) {
-      const usage = assistantRequestUsage(message, this.#provider);
-      state.usagePublished = usage !== undefined;
+      const usage = state.usagePublished
+        ? undefined
+        : assistantRequestUsage(message, this.#provider);
+      if (usage) state.usagePublished = true;
       events.push({
         type: "message.completed",
         messageId,
@@ -700,8 +1045,37 @@ export class ClaudeNativeTurnAccumulator {
         ...(usage ? { lastRequestUsage: usage } : {}),
       });
     }
+    if (checkpointId) this.#publishedCheckpointIds.add(checkpointId);
+    if (keepsStreaming) return;
     state.completed = true;
     if (this.#activeRootStreamMessageId === messageId) this.#activeRootStreamMessageId = null;
+  }
+
+  #completeStreamedThinking(
+    thinking: ThinkingBlockState,
+    messageId: string,
+    events: ClaudeNativeEvent[],
+  ): void {
+    if (thinking.stopped) return;
+    thinking.stopped = true;
+    if (thinking.streamed) events.push({ type: "reasoning.completed", messageId });
+  }
+
+  #publishNarration(
+    thinking: ThinkingBlockState | undefined,
+    messageId: string,
+    signature: unknown,
+    text: string,
+    events: ClaudeNativeEvent[],
+  ): void {
+    if (!text || thinking?.narrationPublished || !isClaudeNarrationSignature(signature)) return;
+    if (thinking) thinking.narrationPublished = true;
+    events.push({
+      type: "narration.completed",
+      messageId,
+      text,
+      ...(thinking?.streamed ? {} : { completeOnly: true }),
+    });
   }
 
   #consumeToolUseBlocks(
@@ -726,14 +1100,34 @@ export class ClaudeNativeTurnAccumulator {
         if (!ignoreKnownIds) this.#protocolConflict = true;
         continue;
       }
-      const subagent = SUBAGENT_TOOLS.has(block.name);
-      this.#tools.set(block.id, { name: block.name, subagent });
-      if (subagent) {
+      const subagent = CLAUDE_SUBAGENT_TOOLS.has(block.name);
+      const workflow = block.name === CLAUDE_WORKFLOW_TOOL;
+      const spawnName =
+        subagent && block.name !== "SendMessage" && isRecord(argumentsResult.data)
+          ? boundedString(argumentsResult.data.name, SUBAGENT_DESCRIPTION_LIMIT)
+          : undefined;
+      this.#tools.set(block.id, {
+        name: block.name,
+        subagent,
+        workflow,
+        ...(spawnName ? { spawnName } : {}),
+      });
+      if (workflow) {
+        const name = isRecord(argumentsResult.data)
+          ? boundedString(argumentsResult.data.name, SUBAGENT_DESCRIPTION_LIMIT)
+          : undefined;
+        events.push({ type: "workflow.started", callId: block.id, ...(name ? { name } : {}) });
+      } else if (subagent) {
         const prompt = subagentPrompt(argumentsResult.data);
         const role = subagentRole(argumentsResult.data);
-        const agentId = targetedSubagentId(argumentsResult.data);
+        const target = targetedSubagentId(argumentsResult.data);
+        const agentId =
+          block.name === "SendMessage" && target
+            ? (this.#subagentIdsByName.get(target) ?? target)
+            : target;
         events.push({
           type: "subagent.started",
+          ...subagentConfiguration(argumentsResult.data),
           callId: block.id,
           operation: block.name === "SendMessage" ? "send" : "spawn",
           description: subagentDescription(argumentsResult.data, block.name),
@@ -759,6 +1153,7 @@ export class ClaudeNativeTurnAccumulator {
     if (
       typeof callId !== "string" ||
       this.#tools.get(callId)?.subagent !== false ||
+      this.#tools.get(callId)?.workflow !== false ||
       typeof elapsedSeconds !== "number" ||
       !Number.isFinite(elapsedSeconds) ||
       elapsedSeconds < 0
@@ -807,17 +1202,44 @@ export class ClaudeNativeTurnAccumulator {
       const nativeResult =
         resultBlocks.length === 1 ? (message.tool_use_result ?? message.toolUseResult) : undefined;
       const outputText = resultText(block.content, nativeResult);
-      const structuredResult =
-        tool.name === "TaskCreate" || tool.name === "TaskUpdate" || tool.name === "TaskList"
-          ? jsonValueSchema.safeParse(nativeResult)
-          : null;
+      const structuredResult = isClaudeTaskTool(tool.name)
+        ? jsonValueSchema.safeParse(nativeResult)
+        : null;
+      if (tool.workflow) {
+        const status = isRecord(nativeResult) ? nativeResult.status : undefined;
+        const taskId = isRecord(nativeResult)
+          ? boundedString(nativeResult.taskId, SUBAGENT_DESCRIPTION_LIMIT)
+          : undefined;
+        const resultSummary = boundedString(outputText, SUBAGENT_SUMMARY_LIMIT);
+        events.push({
+          type: "workflow.launched",
+          callId,
+          isError,
+          background: !isError && (status === "async_launched" || status === "remote_launched"),
+          ...(taskId ? { taskId } : {}),
+          ...(resultSummary ? { resultSummary } : {}),
+        });
+        continue;
+      }
       if (tool.subagent) {
         const resultSummary = boundedString(outputText, SUBAGENT_SUMMARY_LIMIT);
-        const agentId = nativeSubagentId(nativeResult, outputText);
+        const send = tool.name === "SendMessage";
+        const result =
+          send && !isRecord(nativeResult) ? sendResultFromText(outputText) : nativeResult;
+        const failed = isError || (send && claudeSendMessageFailed(result, outputText));
+        const agentId = nativeSubagentId(result, outputText);
+        if (!failed) {
+          if (tool.spawnName && agentId) this.#subagentIdsByName.set(tool.spawnName, agentId);
+          if (send && isRecord(result) && isRecord(result.pin)) {
+            const name = boundedString(result.pin.name, SUBAGENT_DESCRIPTION_LIMIT);
+            const id = boundedString(result.pin.id, SUBAGENT_DESCRIPTION_LIMIT);
+            if (name && id) this.#subagentIdsByName.set(name, id);
+          }
+        }
         events.push({
           type: "subagent.completed",
           callId,
-          isError,
+          isError: failed,
           ...(subagentContinuesInBackground(nativeResult, outputText)
             ? { continuesInBackground: true }
             : {}),
@@ -827,6 +1249,20 @@ export class ClaudeNativeTurnAccumulator {
         continue;
       }
       const fileChange = isError ? null : parseClaudeNativeFileChange(tool.name, nativeResult);
+      const backgroundTaskId =
+        tool.name === "Bash" &&
+        !isError &&
+        isRecord(nativeResult) &&
+        typeof nativeResult.backgroundTaskId === "string" &&
+        nativeResult.backgroundTaskId.length > 0
+          ? nativeResult.backgroundTaskId
+          : undefined;
+      const outputFile =
+        backgroundTaskId !== undefined
+          ? BACKGROUND_OUTPUT_FILE_PATTERN.exec(outputText ?? "")?.[1]
+          : undefined;
+      const backgroundOutputFile =
+        typeof outputFile === "string" && outputFile.length > 0 ? outputFile : undefined;
       events.push({
         type: "tool.completed",
         callId,
@@ -835,6 +1271,8 @@ export class ClaudeNativeTurnAccumulator {
         ...(structuredResult?.success ? { structuredResult: structuredResult.data } : {}),
         isError,
         ...(fileChange ? { fileChange } : {}),
+        ...(backgroundTaskId ? { backgroundTaskId } : {}),
+        ...(backgroundOutputFile ? { backgroundOutputFile } : {}),
       });
     }
   }
@@ -842,7 +1280,12 @@ export class ClaudeNativeTurnAccumulator {
   #messageState(messageId: string): AssistantMessageState {
     const existing = this.#messages.get(messageId);
     if (existing) return existing;
-    const created = { completed: false, reasoning: "", text: "", usagePublished: false };
+    const created: AssistantMessageState = {
+      completed: false,
+      thinking: new Map(),
+      text: "",
+      usagePublished: false,
+    };
     this.#messages.set(messageId, created);
     return created;
   }

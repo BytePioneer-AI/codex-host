@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
+import { isDeepSeekSemVer } from "../generation-selector.js";
 import { deepSeekHarnessCommandCatalog } from "../harness-commands.js";
 
 import {
@@ -26,7 +28,7 @@ import {
   type HarnessPermissionModeId,
 } from "@codexhost/shared-contracts";
 
-import type { DeepSeekModelSelection } from "../model-catalog.js";
+import { normalizeStoredDeepSeekModelRef, type DeepSeekModelSelection } from "../model-catalog.js";
 
 import {
   loadModernModelCatalog,
@@ -62,7 +64,6 @@ import { loadModernPermissionModeCatalog, ModernPermissionModeError } from "./pe
 import {
   deepSeekModernProfile,
   type DeepSeekModernVersion,
-  isDeepSeekV015,
   type DeepSeekModernProfile,
 } from "../profiles/profile.js";
 import {
@@ -93,8 +94,8 @@ interface ParsedModernForkInput {
 interface ModernForkExpectation extends ParsedModernForkInput {
   readonly childSessionId: string;
   readonly atSeq: number;
-  readonly minimumSeedLength: number;
-  readonly exactSeedLength?: number;
+  /** V4 seeds exactly the events through the checkpoint's `turn/end`. */
+  readonly seedLength: number;
 }
 
 type ModernRollbackPlan =
@@ -106,7 +107,8 @@ type ModernRollbackPlan =
   | { readonly kind: "create"; readonly agentPreset: string };
 
 export interface ModernDeepSeekHarnessAdapterOptions extends ModernRemoteConnectionOptions {
-  readonly version?: DeepSeekModernVersion;
+  /** Probed CLI version; Native references and checkpoints record it as their locator. */
+  readonly version: DeepSeekModernVersion;
   readonly toolOutputLimit?: number;
   readonly maxEvents?: number;
   readonly maxHistoryBytes?: number;
@@ -114,6 +116,8 @@ export interface ModernDeepSeekHarnessAdapterOptions extends ModernRemoteConnect
   readonly recoveryOpenTimeoutMs?: number;
   readonly promptCorrelationGraceMs?: number;
   readonly acceptedCorrelationTimeoutMs?: number;
+  /** Called once when this managed generation enters terminal fault and must be retired. */
+  readonly onFault?: (error: HarnessError) => void;
 }
 
 export interface ModernConnectionLike extends ModernJournalRemote {
@@ -145,6 +149,15 @@ const DEFAULT_DEPENDENCIES: ModernDeepSeekHarnessAdapterDependencies = {
 
 /** Exact Modern Adapter assembly over the managed Web Remote. */
 export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef: NonNullable<HarnessAdapter["normalizeStoredModelRef"]> = (
+    ref,
+    catalog,
+  ) => {
+    const snapshot = this.#catalog;
+    if (snapshot && isDeepStrictEqual(snapshot.catalog, catalog)) {
+      return normalizeStoredDeepSeekModelRef(ref, snapshot.index);
+    }
+  };
   readonly commandCatalog = deepSeekHarnessCommandCatalog();
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
   readonly sessionImport: HarnessSessionImportCapability = Object.freeze({
@@ -170,8 +183,10 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
   #permissionModesPromise:
     Promise<Awaited<ReturnType<typeof loadModernPermissionModeCatalog>>> | undefined;
   #closePromise: Promise<void> | undefined;
+  #faultStopPromise: Promise<void> | undefined;
   #fault: HarnessError | undefined;
   #declaredEventFailure: HarnessError | undefined;
+  #faultNotified = false;
   #normalClose = false;
   #eventRecovery: Promise<void> | undefined;
   #eventReplacementUsed = false;
@@ -181,10 +196,16 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     dependencies: Partial<ModernDeepSeekHarnessAdapterDependencies> = {},
   ) {
     this.#options = options;
-    this.#profile = deepSeekModernProfile(options.version ?? "0.1.2-rc.1");
+    this.#profile = deepSeekModernProfile(options.version);
     this.#dependencies = { ...DEFAULT_DEPENDENCIES, ...dependencies };
-    const connectionOptions = { ...options };
+    const connectionOptions: ModernRemoteConnectionOptions & {
+      version?: string;
+      onFault?: (error: HarnessError) => void;
+    } = {
+      ...options,
+    };
     delete connectionOptions.version;
+    delete connectionOptions.onFault;
     this.#connection = this.#dependencies.createConnection(connectionOptions);
     if (options.openWebUi && this.#connection.openWebUi) {
       this.webUi = Object.freeze({
@@ -220,14 +241,10 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       this.#accepting = false;
       const failure = this.#declaredEventFailure;
       if (failure) {
-        this.#closePromise = (async () => {
-          await this.#events.fail(failure).catch(() => undefined);
-          await this.#performClose(this.#fault ?? failure);
-        })();
-      } else {
-        this.#normalClose = true;
-        this.#closePromise = this.#performClose();
+        return this.#startFaultClose(failure, true);
       }
+      this.#normalClose = true;
+      this.#closePromise = this.#performNormalClose();
     }
     return this.#closePromise;
   }
@@ -294,14 +311,14 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         input.kind === "fork" ? parseModernForkInput(input, this.#profile) : undefined;
       const rollbackSourceSessionId =
         input.kind === "rollbackLastTurn"
-          ? modernSessionId(input.sourceRef, "roll back", this.#profile)
+          ? modernSessionId(input.sourceRef, "roll back")
           : undefined;
       let rollbackPlan: ModernRollbackPlan | undefined;
       let sessionId =
         input.kind === "create"
           ? `session-${this.#dependencies.randomUUID()}`
           : input.kind === "resume"
-            ? modernSessionId(input.nativeRef, "resume", this.#profile)
+            ? modernSessionId(input.nativeRef, "resume")
             : undefined;
       if (sessionId) {
         if (this.#sessionIds.has(sessionId)) {
@@ -336,7 +353,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       this.#assertAccepting();
 
       if (rollbackSourceSessionId) {
-        rollbackPlan = await this.#resolveLastTurnRollback(rollbackSourceSessionId, cwd);
+        rollbackPlan = await this.#resolveLastTurnRollback(rollbackSourceSessionId, cwd, catalog);
         if (rollbackPlan.kind === "fork") {
           forkInput = rollbackPlan.input;
         } else {
@@ -356,7 +373,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       }
 
       if (forkInput) {
-        forkExpectation = await this.#forkSession(forkInput, cwd);
+        forkExpectation = await this.#forkSession(forkInput, cwd, catalog);
         sessionId = forkExpectation.childSessionId;
         if (this.#sessionIds.has(sessionId)) {
           throw forkProtocolError();
@@ -397,7 +414,6 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
             permissionModes,
             createConfiguration.permissionModeId,
             this.#lifetime.signal,
-            this.#profile,
           );
           this.#assertAccepting();
         }
@@ -410,18 +426,15 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       );
       this.#assertAccepting();
       if (forkExpectation) {
-        await this.#verifyForkJournal(forkExpectation, journal, cwd);
-        if (
-          isDeepSeekV015(this.#profile) &&
-          (await clearInheritedForkInbox(this.#connection, journal, this.#lifetime.signal))
-        ) {
+        await this.#verifyForkJournal(forkExpectation, journal, cwd, catalog);
+        if (await clearInheritedForkInbox(this.#connection, journal, this.#lifetime.signal)) {
           await journal.close();
           journal = await openModernJournal(
             this.#connection,
             { sessionId, cwd },
             this.#journalOptions(),
           );
-          await this.#verifyForkJournal(forkExpectation, journal, cwd);
+          await this.#verifyForkJournal(forkExpectation, journal, cwd, catalog);
           if (pendingForkInboxIds(journal).length !== 0) throw forkProtocolError();
           await this.#connection.flushSession(sessionId, this.#lifetime.signal);
         }
@@ -432,6 +445,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         }
         if (rollbackPlan.kind === "create") {
           const replacement = projectModernHistory({
+            modelIndex: catalog.index,
             harnessId: this.harnessId,
             sessionId,
             events: journal.events,
@@ -457,9 +471,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
           harnessId: this.harnessId,
           nativeSessionId: sessionId,
           formatVersion: 1,
-          ...(isDeepSeekV015(this.#profile)
-            ? { locator: { dshVersion: this.#profile.version } }
-            : {}),
+          locator: { dshVersion: this.#profile.version },
         }),
         modelCatalog: catalog,
         permissionModes,
@@ -481,9 +493,8 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         modelCatalog: catalog,
         permissionModes,
         sessionId,
-        ...(isDeepSeekV015(this.#profile)
-          ? { flushSession: () => this.#connection.flushSession(sessionId) }
-          : {}),
+        flushSession: () => this.#connection.flushSession(sessionId),
+        managedProcessStop: () => this.#faultStopPromise,
         randomUUID: this.#dependencies.randomUUID,
         now: this.#dependencies.now,
         ...(this.#options.toolOutputLimit === undefined
@@ -517,6 +528,13 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       this.#sessions.add(openedSession);
       await this.#startEvents();
       this.#assertAccepting();
+      if (input.kind === "resume" && input.permissionModeId) {
+        const restored = await openedSession.execute({
+          type: "permissionMode.select",
+          permissionModeId: input.permissionModeId,
+        });
+        if (!restored.ok) throw new AdapterOperationError(restored.error);
+      }
       return { ok: true, value: openedSession };
     } catch (error) {
       await session?.close().catch(() => undefined);
@@ -582,6 +600,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
   async #resolveLastTurnRollback(
     sourceSessionId: string,
     cwd: string,
+    catalog: ModernModelCatalogSnapshot,
   ): Promise<ModernRollbackPlan> {
     const source = await openModernJournal(
       this.#connection,
@@ -590,6 +609,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     );
     try {
       const projected = projectModernHistory({
+        modelIndex: catalog.index,
         harnessId: this.harnessId,
         sessionId: sourceSessionId,
         events: source.events,
@@ -633,7 +653,11 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     }
   }
 
-  async #forkSession(input: ParsedModernForkInput, cwd: string): Promise<ModernForkExpectation> {
+  async #forkSession(
+    input: ParsedModernForkInput,
+    cwd: string,
+    catalog: ModernModelCatalogSnapshot,
+  ): Promise<ModernForkExpectation> {
     const source = await openModernJournal(
       this.#connection,
       {
@@ -643,12 +667,12 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       this.#journalOptions(),
     );
     let atSeq: number;
-    let minimumSeedLength: number;
-    let exactSeedLength: number | undefined;
+    let seedLength: number;
     try {
       const boundary = resolveModernForkBoundary(source.events, input.checkpointId, this.#profile);
       if (!boundary) throw forkCheckpointError();
       const projected = projectModernHistory({
+        modelIndex: catalog.index,
         harnessId: this.harnessId,
         sessionId: input.sourceSessionId,
         events: boundary.events,
@@ -665,10 +689,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         throw forkCheckpointError();
       }
       atSeq = boundary.atSeq;
-      minimumSeedLength = boundary.events.length;
-      if (boundary.events.length < source.events.length) {
-        exactSeedLength = boundary.events.length;
-      }
+      seedLength = boundary.events.length;
     } finally {
       await source.close();
     }
@@ -693,8 +714,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       ...input,
       childSessionId: result.value.sessionId,
       atSeq,
-      minimumSeedLength,
-      ...(exactSeedLength === undefined ? {} : { exactSeedLength }),
+      seedLength,
     };
   }
 
@@ -702,14 +722,16 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     expected: ModernForkExpectation,
     child: ModernJournal,
     cwd: string,
+    catalog: ModernModelCatalogSnapshot,
   ): Promise<void> {
     const seedLength = child.inheritedEventCount;
     if (
-      child.header.parentSession !== expected.sourceSessionId ||
+      // DSH 0.2.2 writes ordinary Fork children without their source; the
+      // inherited prefix below is still compared event by event.
+      (child.header.parentSession !== undefined &&
+        child.header.parentSession !== expected.sourceSessionId) ||
       child.header.cwd !== cwd ||
-      seedLength === undefined ||
-      seedLength < expected.minimumSeedLength ||
-      (expected.exactSeedLength !== undefined && seedLength !== expected.exactSeedLength)
+      seedLength !== expected.seedLength
     ) {
       throw forkProtocolError();
     }
@@ -730,6 +752,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         throw forkProtocolError();
       }
       const expectedProjection = projectModernHistory({
+        modelIndex: catalog.index,
         harnessId: this.harnessId,
         sessionId: expected.sourceSessionId,
         events: inherited,
@@ -740,6 +763,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
         ...(this.#options.maxEvents === undefined ? {} : { maxEvents: this.#options.maxEvents }),
       });
       const childProjection = projectModernHistory({
+        modelIndex: catalog.index,
         harnessId: this.harnessId,
         sessionId: expected.childSessionId,
         events: child.events,
@@ -810,7 +834,7 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
       return Promise.resolve(this.#permissionModes ?? null);
     }
     if (this.#permissionModesPromise) return this.#permissionModesPromise;
-    const operation = loadModernPermissionModeCatalog(this.#connection)
+    const operation = loadModernPermissionModeCatalog(this.#connection, this.#lifetime.signal)
       .then((catalog) => {
         this.#permissionModes = catalog;
         this.#permissionModesLoaded = true;
@@ -857,21 +881,36 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     });
   }
 
+  #notifyFault(error: HarnessError): void {
+    if (this.#faultNotified) return;
+    this.#faultNotified = true;
+    try {
+      this.#options.onFault?.(error);
+    } catch {
+      // An outer lifecycle observer cannot disrupt fault cleanup.
+    }
+  }
+
   #fail(error: HarnessError): void {
     if (this.#fault || this.#normalClose) return;
     const failure = sanitizedHarnessError(error);
     this.#fault = failure;
     this.#accepting = false;
     this.#lifetime.abort(new Error("DeepSeek Harness Adapter faulted"));
+    this.#startFaultClose(failure);
+    // Nobody awaits fault cleanup here; its failure belongs to whoever calls close() later.
+    this.#closePromise?.catch(() => undefined);
     for (const session of this.#sessions) session.fault(failure);
-    this.#closePromise ??= this.#performClose(failure);
+    this.#notifyFault(failure);
   }
 
   #sealEventFailure(error: HarnessError): void {
     if (this.#fault || this.#normalClose || this.#declaredEventFailure) return;
-    this.#declaredEventFailure = sanitizedHarnessError(error);
+    const failure = sanitizedHarnessError(error);
+    this.#declaredEventFailure = failure;
     this.#accepting = false;
     this.#lifetime.abort(new Error("DeepSeek Harness event gateway failed"));
+    this.#notifyFault(failure);
   }
 
   #recoverEvents(error: ModernEventGatewayError): void {
@@ -899,19 +938,43 @@ export class ModernDeepSeekHarnessAdapter implements HarnessAdapter {
     await this.#events.start();
   }
 
-  async #performClose(failure?: HarnessError): Promise<void> {
+  #startFaultClose(failure: HarnessError, failEventsFirst = false): Promise<void> {
+    if (!this.#closePromise) {
+      const processStop = (async () => {
+        if (failEventsFirst) await this.#events.fail(failure).catch(() => undefined);
+        await this.#stopAfterFault(this.#fault ?? failure);
+      })();
+      this.#faultStopPromise = processStop;
+      this.#closePromise = processStop.finally(() =>
+        Promise.allSettled([...this.#inflight, this.#eventRecovery]),
+      );
+    }
+    return this.#closePromise;
+  }
+
+  async #stopAfterFault(failure: HarnessError): Promise<void> {
     this.#lifetime.abort(new Error("DeepSeek Harness Adapter closed"));
     this.#removeConnectionFaultListener();
     const sessions = [...this.#sessions];
-    const sessionClosures = sessions.map((session) => {
-      if (failure) session.fault(failure);
-      return session.close();
-    });
-    const sessionResults = await Promise.allSettled(sessionClosures);
+    await Promise.allSettled(
+      sessions.map((session) => {
+        session.fault(failure);
+        return session.waitForFaultCleanup();
+      }),
+    );
     await this.#events.close().catch(() => undefined);
     await this.#control.close().catch(() => undefined);
-    const connectionClose = this.#connection.close();
-    const [connectionResult] = await Promise.allSettled([connectionClose]);
+    await this.#connection.close();
+  }
+
+  async #performNormalClose(): Promise<void> {
+    this.#lifetime.abort(new Error("DeepSeek Harness Adapter closed"));
+    this.#removeConnectionFaultListener();
+    const sessions = [...this.#sessions];
+    const sessionResults = await Promise.allSettled(sessions.map((session) => session.close()));
+    await this.#events.close().catch(() => undefined);
+    await this.#control.close().catch(() => undefined);
+    const [connectionResult] = await Promise.allSettled([this.#connection.close()]);
     await Promise.allSettled([...this.#inflight, this.#eventRecovery]);
     if (connectionResult.status === "rejected") throw connectionResult.reason;
     const sessionFailure = sessionResults.find((result) => result.status === "rejected");
@@ -1051,16 +1114,12 @@ function delegationPermissionIsApplied(events: readonly ModernJournalEvent[]): b
   );
 }
 
-function modernSessionId(
-  ref: unknown,
-  operation: "resume" | "roll back",
-  profile: DeepSeekModernProfile,
-): string {
+function modernSessionId(ref: unknown, operation: "resume" | "roll back"): string {
   const parsed = nativeSessionRefSchema.safeParse(ref);
   if (
     !parsed.success ||
     parsed.data.harnessId !== DEEPSEEK_HARNESS_ID ||
-    !sessionLocatorMatches(parsed.data.locator, profile)
+    !sessionLocatorMatches(parsed.data.locator)
   ) {
     throw new AdapterOperationError({
       code: "invalidRequest",
@@ -1082,7 +1141,7 @@ function parseModernForkInput(
     !checkpoint.success ||
     source.data.harnessId !== DEEPSEEK_HARNESS_ID ||
     checkpoint.data.harnessId !== DEEPSEEK_HARNESS_ID ||
-    !sessionLocatorMatches(source.data.locator, profile) ||
+    !sessionLocatorMatches(source.data.locator) ||
     !checkpointLocatorMatches(checkpoint.data.locator, profile) ||
     checkpoint.data.nativeSessionId !== source.data.nativeSessionId
   ) {
@@ -1098,16 +1157,22 @@ function parseModernForkInput(
   };
 }
 
-function sessionLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {
-  if (locator === undefined) return true;
-  return isDeepSeekV015(profile) && profileLocatorMatches(locator, profile);
+/**
+ * A Native Session may be reopened after the CLI changed: codexhost only ever wrote no locator
+ * (V0 era) or the probed `dshVersion` (V3/V4 eras). DSH migrates the Session to V4 itself and its
+ * history must still pass V4 validation; checkpoints stay bound to the exact version.
+ */
+function sessionLocatorMatches(locator: unknown): boolean {
+  return (
+    locator === undefined ||
+    (isRecord(locator) &&
+      Reflect.ownKeys(locator).length === 1 &&
+      typeof locator.dshVersion === "string" &&
+      isDeepSeekSemVer(locator.dshVersion))
+  );
 }
 
 function checkpointLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {
-  return isDeepSeekV015(profile) ? profileLocatorMatches(locator, profile) : locator === undefined;
-}
-
-function profileLocatorMatches(locator: unknown, profile: DeepSeekModernProfile): boolean {
   return (
     isRecord(locator) &&
     Reflect.ownKeys(locator).length === 1 &&

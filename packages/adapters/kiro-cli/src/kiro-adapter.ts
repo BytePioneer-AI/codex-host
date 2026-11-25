@@ -1,3 +1,14 @@
+import { kiroChildSnapshot } from "./subagents.js";
+import type {
+  HarnessSubagentCapability,
+  HostEvent,
+  HostSubagentDelegationItem,
+} from "@codexhost/harness-adapter";
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -35,16 +46,22 @@ import type {
   ThinkingSelectCompleted,
   TurnCancelAccepted,
   TurnCancelCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
   TurnOutcome,
   TurnStartAccepted,
   TurnStartCommand,
 } from "@codexhost/harness-adapter";
 import {
+  unsupportedSteer,
   HarnessOutputChannel as OutputChannel,
+  liveHarnessCommandPrompt,
+  mergeLiveHarnessCommands,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
 } from "@codexhost/harness-adapter";
 import {
+  type HarnessCommandCatalog,
   harnessIdSchema,
   harnessModelRefSchema,
   hostItemIdSchema,
@@ -68,6 +85,11 @@ import {
 } from "./acp-transport.js";
 import { KiroExecutableError, resolveKiroExecutable } from "./command.js";
 import { KIRO_COMMAND_CATALOG, formatKiroCommandResult } from "./commands.js";
+import {
+  KIRO_LIVE_COMMAND_ID_PREFIX,
+  kiroLiveCommands,
+  type KiroAvailableCommand,
+} from "./kiro-slash-commands.js";
 import { KiroTurnOutput } from "./turn-output.js";
 import { KiroUsage } from "./usage.js";
 import {
@@ -80,6 +102,7 @@ import {
   readKiroSnapshot,
   type KiroNativeSessionLocation,
 } from "./history.js";
+import { KiroSessionImport } from "./session-import.js";
 import {
   confirmedKiroConfig,
   kiroConfigValue,
@@ -117,7 +140,7 @@ export const KIRO_SESSION_CAPABILITIES: HarnessSessionCapabilities = {
   },
   subagents: {
     observe: true,
-    readTranscript: false,
+    readTranscript: true,
   },
   autonomousTurns: {
     observe: false,
@@ -140,6 +163,8 @@ export interface KiroAcpTransportLike {
   compact(): Promise<unknown>;
   sendExtensionRequest(method: string, params: Record<string, unknown>): Promise<unknown>;
   close(): Promise<void>;
+  /** Latest native command list of the open Session; absent on older transports. */
+  readonly availableCommands?: readonly KiroAvailableCommand[] | null;
 }
 
 export interface KiroAdapterOptions {
@@ -162,7 +187,51 @@ export interface KiroAdapterDependencies {
 
 export class KiroAdapter implements HarnessAdapter {
   readonly harnessId: HarnessId = harnessIdSchema.parse("kiro-cli");
+  readonly subagents: HarnessSubagentCapability = {
+    readSnapshot: async ({ parent, nativeSubagentId }) => {
+      try {
+        if (parent.harnessId !== this.harnessId) throw new Error("Invalid Kiro parent");
+        for (const session of this.#sessions) {
+          if (session.initialState.nativeRef?.nativeSessionId !== parent.nativeSessionId) continue;
+          const live = session.subagentSnapshot(nativeSubagentId);
+          if (live) return { ok: true, value: live };
+        }
+        const locate = this.#deps.locateSession ?? locateKiroNativeSession;
+        const location = await locate(
+          { environment: this.#options.environment },
+          parent.nativeSessionId,
+        );
+        if (!location) throw new Error("Kiro parent history was not found");
+        const snapshot = await (this.#deps.readSnapshot ?? readKiroSnapshot)(location);
+        const item = snapshot.turns
+          .flatMap((turn) => turn.items)
+          .map(({ item }) => item)
+          .find(
+            (item) =>
+              item.type === "subagentDelegation" &&
+              item.subagents.some((child) => child.nativeSubagentId === nativeSubagentId),
+          );
+        if (!item || item.type !== "subagentDelegation")
+          throw new Error("Kiro task was not found in this parent");
+        return {
+          ok: true,
+          value: kiroChildSnapshot(parent.nativeSessionId, item, nativeSubagentId),
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: {
+            code: "sessionNotFound",
+            message: error instanceof Error ? error.message : "Kiro task could not be read",
+            retryable: false,
+          },
+        };
+      }
+    },
+  };
   readonly commandCatalog = KIRO_COMMAND_CATALOG;
+  readonly liveCommandCatalog = true;
+  readonly sessionImport: KiroSessionImport;
 
   readonly #options: KiroAdapterOptions;
   readonly #deps: KiroAdapterDependencies;
@@ -172,16 +241,25 @@ export class KiroAdapter implements HarnessAdapter {
     { result: Extract<HarnessInspection, { status: "ready" }>; refreshAfter: number }
   >();
   readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
+  readonly #inspectionTasks = new Set<Promise<HarnessInspection>>();
 
   constructor(options: KiroAdapterOptions = {}, deps: KiroAdapterDependencies = {}) {
     this.#options = options;
     this.#deps = deps;
+    this.sessionImport = new KiroSessionImport({ ...process.env, ...options.environment });
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     const cwd = path.resolve(input.cwd ?? process.cwd());
     const cached = this.#inspectionCache.get(cwd);
-    if (!input.refresh && cached) {
+    if (input.refresh) {
+      // Keep this scope's stale-while-revalidate fallback, not other directories' catalogs.
+      this.#inspectionCache.clear();
+      if (cached) this.#inspectionCache.set(cwd, cached);
+      const inFlight = this.#inspectionInFlight.get(cwd);
+      this.#inspectionInFlight.clear();
+      if (inFlight) this.#inspectionInFlight.set(cwd, inFlight);
+    } else if (cached) {
       if (cached.refreshAfter <= Date.now()) {
         void this.#refreshInspection(cwd).catch(() => undefined);
       }
@@ -198,6 +276,7 @@ export class KiroAdapter implements HarnessAdapter {
 
     const inspection = this.#inspectCwd(cwd)
       .then((result) => {
+        if (this.#inspectionInFlight.get(cwd) !== inspection) return result;
         if (result.status === "ready") {
           const now = Date.now();
           const date = new Date(now);
@@ -216,9 +295,11 @@ export class KiroAdapter implements HarnessAdapter {
         return result;
       })
       .finally(() => {
-        this.#inspectionInFlight.delete(cwd);
+        this.#inspectionTasks.delete(inspection);
+        if (this.#inspectionInFlight.get(cwd) === inspection) this.#inspectionInFlight.delete(cwd);
       });
     this.#inspectionInFlight.set(cwd, inspection);
+    this.#inspectionTasks.add(inspection);
     return inspection;
   }
 
@@ -267,7 +348,7 @@ export class KiroAdapter implements HarnessAdapter {
             status: "error",
             error: {
               code: "authenticationRequired",
-              message: "Kiro CLI authentication is required",
+              message: "Kiro CLI authentication is required (run `kiro-cli login`)",
               retryable: false,
             },
           };
@@ -548,7 +629,8 @@ export class KiroAdapter implements HarnessAdapter {
   async close(): Promise<void> {
     try {
       await Promise.all([
-        ...this.#inspectionInFlight.values(),
+        this.sessionImport.close(),
+        ...this.#inspectionTasks,
         ...[...this.#sessions].map((session) => session.close()),
       ]);
     } finally {
@@ -694,7 +776,7 @@ export class KiroSession implements HarnessSession {
     this.outputs = this.#channel.outputs;
 
     this.commands = {
-      list: async () => ({ ok: true, value: KIRO_COMMAND_CATALOG }),
+      list: async () => ({ ok: true, value: this.#liveCommandCatalog() }),
       execute: async (cmd: HarnessCommandInvocation) => this.#executeHarnessCommand(cmd),
     };
   }
@@ -746,7 +828,57 @@ export class KiroSession implements HarnessSession {
     return this.#usageRefresh;
   }
 
+  readonly #subagentItems = new Map<string, HostSubagentDelegationItem>();
+
+  subagentSnapshot(id: string): HostThreadSnapshot | undefined {
+    const item = this.#subagentItems.get(id);
+    return item ? kiroChildSnapshot(this.#sessionId, item, id) : undefined;
+  }
+
+  #subagentEvent(event: HostEvent): HostEvent {
+    const configured = configureSubagentEvent(event, this.#subagentConfiguration());
+    const item =
+      configured.type === "item.started"
+        ? configured.item
+        : configured.type === "item.completed"
+          ? configured.snapshot.item
+          : undefined;
+    if (configured.type === "item.updated" && configured.update.type === "subagents.replace") {
+      for (const previous of this.#subagentItems.values()) {
+        if (previous.itemId !== configured.itemId) continue;
+        const next = { ...previous, subagents: structuredClone(configured.update.subagents) };
+        for (const child of next.subagents)
+          if (child.nativeSubagentId) this.#subagentItems.set(child.nativeSubagentId, next);
+        break;
+      }
+    }
+    if (item?.type === "subagentDelegation") {
+      for (const child of item.subagents)
+        if (child.nativeSubagentId)
+          this.#subagentItems.set(child.nativeSubagentId, structuredClone(item));
+    }
+    return configured;
+  }
+
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state();
+    const model = state.effectiveModel ? state.effectiveModel.id : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#activeTurnId !== null || this.#configBusy) {
       return {
         ok: false,
@@ -795,6 +927,7 @@ export class KiroSession implements HarnessSession {
   }
 
   async execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  async execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   async execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   async execute(
     command: InteractionRespondCommand,
@@ -818,6 +951,8 @@ export class KiroSession implements HarnessSession {
     if (command.type === "turn.cancel") {
       return this.#cancelTurn(command);
     }
+    // Kiro's `_session/steer` is unpublished and unverified here; do not claim it.
+    if (command.type === "turn.steer") return unsupportedSteer("Kiro");
     if (command.type === "interaction.respond") {
       return this.#respondInteraction(command);
     }
@@ -859,7 +994,16 @@ export class KiroSession implements HarnessSession {
     });
 
     const userText = command.input.map((i) => i.text).join("\n");
-    const output = new KiroTurnOutput(turnId, this.#cwd, (event) => this.#channel.emit(event));
+    const output = new KiroTurnOutput(turnId, this.#cwd, (output) =>
+      this.#channel.emit(
+        output.kind === "event"
+          ? {
+              ...output,
+              event: this.#subagentEvent(output.event),
+            }
+          : output,
+      ),
+    );
     let assignedUserMessageId: string | undefined;
     const stopped = new Promise<never>((_resolve, reject) => {
       this.#stopTurn = () => reject(this.#faultError ?? new Error("Session closed"));
@@ -1114,12 +1258,12 @@ export class KiroSession implements HarnessSession {
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    if (this.#activeTurnId !== null || this.#configBusy) {
+    if (this.#configBusy) {
       return {
         ok: false,
         error: {
           code: "sessionBusy",
-          message: "Cannot change model while turn is active",
+          message: "Another configuration change is in progress",
           retryable: false,
         },
       };
@@ -1222,7 +1366,7 @@ export class KiroSession implements HarnessSession {
   async #selectThinking(
     command: ThinkingSelectCommand,
   ): Promise<HarnessResult<ThinkingSelectCompleted>> {
-    if (this.#activeTurnId !== null || this.#configBusy) {
+    if (this.#configBusy) {
       return {
         ok: false,
         error: { code: "sessionBusy", message: "Session is busy", retryable: true },
@@ -1270,9 +1414,34 @@ export class KiroSession implements HarnessSession {
     };
   }
 
+  /** Built-ins plus the steering, agent and skill commands the open Session advertises. */
+  #liveCommandCatalog(): HarnessCommandCatalog {
+    const native = this.#transport.availableCommands ?? null;
+    return mergeLiveHarnessCommands(
+      KIRO_COMMAND_CATALOG,
+      KIRO_LIVE_COMMAND_ID_PREFIX,
+      native ? kiroLiveCommands(native) : null,
+    );
+  }
+
   async #executeHarnessCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
+    const livePrompt = liveHarnessCommandPrompt(
+      this.#liveCommandCatalog(),
+      KIRO_LIVE_COMMAND_ID_PREFIX,
+      command.commandId,
+      command.arguments?.text,
+    );
+    if (livePrompt !== null) {
+      // ACP invokes advertised commands as prompt text starting with `/name`.
+      const started = await this.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse(command.turnId),
+        input: [{ type: "text", text: livePrompt }],
+      });
+      return started.ok ? { ok: true, value: { turnId: command.turnId } } : started;
+    }
     if (this.#closed)
       return {
         ok: false,

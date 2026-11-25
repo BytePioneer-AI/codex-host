@@ -98,18 +98,20 @@ interface ParsedControlBaseline {
   readonly projections: Readonly<Record<string, ParsedProjectionBaseline>>;
 }
 
+interface ParsedProjectionChange {
+  readonly key: string;
+  readonly value: ModernControlJsonValue;
+  readonly bytes: number;
+}
+
 type ParsedControlFrame =
   | { readonly type: "baseline"; readonly value: ParsedControlBaseline }
   | {
       readonly type: "projection";
       readonly sessionId: string;
-      readonly key: string;
-      readonly value: ModernControlJsonValue;
       readonly seq: number;
-      readonly bytes: number;
-    }
-  | { readonly type: "queue"; readonly sessionId: string }
-  | { readonly type: "jobs"; readonly sessionId: string };
+      readonly changes: readonly ParsedProjectionChange[];
+    };
 
 const DEFAULT_MAX_SESSIONS = 1_024;
 const DEFAULT_MAX_KEYS_PER_SESSION = 256;
@@ -181,18 +183,6 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Reflect.ownKeys(value);
   return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
-}
-
-function hasExactOptionalKeys(
-  value: Record<string, unknown>,
-  required: readonly string[],
-  optional: readonly string[],
-): boolean {
-  const allowed = new Set([...required, ...optional]);
-  return (
-    required.every((key) => Object.hasOwn(value, key)) &&
-    Reflect.ownKeys(value).every((key) => typeof key === "string" && allowed.has(key))
-  );
 }
 
 function positiveInteger(value: number, name: string, maximum = Number.MAX_SAFE_INTEGER): number {
@@ -418,75 +408,6 @@ function parseProjectionBaseline(value: unknown, maxKeys: number): ParsedProject
   return { asOfSeq: value.asOfSeq, values, rowBytes };
 }
 
-function parseQueueItem(value: unknown): void {
-  if (
-    !isRecord(value) ||
-    !hasExactOptionalKeys(value, ["id", "placement", "message"], ["rpcId"]) ||
-    !validIdentifier(value.id) ||
-    (value.placement !== "queued" &&
-      value.placement !== "steering" &&
-      value.placement !== "context") ||
-    (value.rpcId !== undefined && !validIdentifier(value.rpcId)) ||
-    !isRecord(value.message) ||
-    !hasExactKeys(value.message, ["id", "content"]) ||
-    !validIdentifier(value.message.id) ||
-    !Array.isArray(value.message.content)
-  ) {
-    throw storeError("protocolError", "DeepSeek Harness control frame has an invalid queue");
-  }
-  void measureJson(value.message.content);
-}
-
-function parseJob(value: unknown): void {
-  if (
-    !isRecord(value) ||
-    !hasExactOptionalKeys(
-      value,
-      ["id", "kind", "label", "status", "startedAt"],
-      ["detail", "finishedAt"],
-    ) ||
-    !validIdentifier(value.id) ||
-    !validIdentifier(value.kind) ||
-    typeof value.label !== "string" ||
-    (value.status !== "running" &&
-      value.status !== "stopping" &&
-      value.status !== "completed" &&
-      value.status !== "killed" &&
-      value.status !== "failed") ||
-    typeof value.startedAt !== "number" ||
-    !Number.isSafeInteger(value.startedAt) ||
-    (value.detail !== undefined && typeof value.detail !== "string") ||
-    (value.finishedAt !== undefined &&
-      (typeof value.finishedAt !== "number" || !Number.isSafeInteger(value.finishedAt)))
-  ) {
-    throw storeError("protocolError", "DeepSeek Harness control frame has invalid jobs");
-  }
-}
-
-function parseSessionCollection(
-  value: unknown,
-  kind: "jobs" | "queues",
-  sessions: Set<string>,
-  maxSessions: number,
-): void {
-  if (!isPlainRecord(value)) {
-    throw storeError("protocolError", `DeepSeek Harness control baseline has invalid ${kind}`);
-  }
-  for (const [sessionId, items] of Object.entries(value)) {
-    if (!validIdentifier(sessionId) || !Array.isArray(items)) {
-      throw storeError("protocolError", `DeepSeek Harness control baseline has invalid ${kind}`);
-    }
-    sessions.add(sessionId);
-    if (sessions.size > maxSessions || items.length > MAX_COLLECTION_ITEMS) {
-      throw storeError("resourceLimit", "DeepSeek Harness control baseline exceeded its bound");
-    }
-    for (const item of items) {
-      if (kind === "queues") parseQueueItem(item);
-      else parseJob(item);
-    }
-  }
-}
-
 function parseBaseline(
   value: unknown,
   maxSessions: number,
@@ -494,7 +415,7 @@ function parseBaseline(
 ): ParsedControlBaseline {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["queues", "jobs", "projections"]) ||
+    !hasExactKeys(value, ["projections"]) ||
     !isPlainRecord(value.projections)
   ) {
     throw storeError(
@@ -503,8 +424,6 @@ function parseBaseline(
     );
   }
   const sessions = new Set<string>();
-  parseSessionCollection(value.queues, "queues", sessions, maxSessions);
-  parseSessionCollection(value.jobs, "jobs", sessions, maxSessions);
   const projections: Record<string, ParsedProjectionBaseline> = Object.create(null) as Record<
     string,
     ParsedProjectionBaseline
@@ -534,7 +453,10 @@ function parseControlFrame(
     throw storeError("protocolError", "DeepSeek Harness control stream emitted an invalid frame");
   }
   if (value.type === "baseline" && hasExactKeys(value, ["type", "value"])) {
-    return { type: "baseline", value: parseBaseline(value.value, maxSessions, maxKeys) };
+    return {
+      type: "baseline",
+      value: parseBaseline(value.value, maxSessions, maxKeys),
+    };
   }
   if (
     value.type === "projection" &&
@@ -547,33 +469,49 @@ function parseControlFrame(
     return {
       type: "projection",
       sessionId: value.sessionId,
-      key: value.key,
-      value: projection.value,
       seq: value.seq,
-      bytes: projection.bytes,
+      changes: [{ key: value.key, value: projection.value, bytes: projection.bytes }],
     };
   }
+  // DSH 0.2.2 sends every key one committed event changed in a single frame.
   if (
-    value.type === "queue" &&
-    hasExactKeys(value, ["type", "sessionId", "items"]) &&
+    value.type === "projection" &&
+    hasExactKeys(value, ["type", "sessionId", "seq", "changes"]) &&
     validIdentifier(value.sessionId) &&
-    Array.isArray(value.items) &&
-    value.items.length <= MAX_COLLECTION_ITEMS
+    validSeq(value.seq)
   ) {
-    for (const item of value.items) parseQueueItem(item);
-    return { type: "queue", sessionId: value.sessionId };
-  }
-  if (
-    value.type === "jobs" &&
-    hasExactKeys(value, ["type", "sessionId", "jobs"]) &&
-    validIdentifier(value.sessionId) &&
-    Array.isArray(value.jobs) &&
-    value.jobs.length <= MAX_COLLECTION_ITEMS
-  ) {
-    for (const job of value.jobs) parseJob(job);
-    return { type: "jobs", sessionId: value.sessionId };
+    return {
+      type: "projection",
+      sessionId: value.sessionId,
+      seq: value.seq,
+      changes: parseProjectionChanges(value.changes, maxKeys),
+    };
   }
   throw storeError("protocolError", "DeepSeek Harness control stream emitted an invalid frame");
+}
+
+function parseProjectionChanges(value: unknown, maxKeys: number): ParsedProjectionChange[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw storeError("protocolError", "DeepSeek Harness control stream emitted an invalid frame");
+  }
+  if (value.length > maxKeys) {
+    throw storeError("resourceLimit", "DeepSeek Harness projection key limit was exceeded");
+  }
+  const keys = new Set<string>();
+  const budget = { nodes: 0 };
+  return value.map((change: unknown) => {
+    if (
+      !isRecord(change) ||
+      !hasExactKeys(change, ["key", "val"]) ||
+      !validProjectionKey(change.key) ||
+      keys.has(change.key)
+    ) {
+      throw storeError("protocolError", "DeepSeek Harness control stream emitted an invalid frame");
+    }
+    keys.add(change.key);
+    const projection = measureProjection(change.key, change.val, budget);
+    return { key: change.key, value: projection.value, bytes: projection.bytes };
+  });
 }
 
 function parseSeed(value: ModernProjectionSeed, maxKeys: number): ParsedProjectionBaseline {
@@ -880,11 +818,12 @@ export class ModernControlStore {
               this.#opened = true;
               this.#readyResolve?.();
             }
-          } else if (frame.type === "projection") {
-            this.#apply(frame.sessionId, frame.key, frame.value, frame.seq, frame.bytes);
-            if (this.#fault) return;
+          } else {
+            for (const change of frame.changes) {
+              this.#apply(frame.sessionId, change.key, change.value, frame.seq, change.bytes);
+              if (this.#fault) return;
+            }
           }
-          // queue/jobs are validated transport facts but this store deliberately owns no such state.
         }
       } catch (error) {
         if (this.#closing) return;

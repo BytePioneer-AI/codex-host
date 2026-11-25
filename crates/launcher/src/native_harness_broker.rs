@@ -24,6 +24,7 @@ pub enum NativeHarnessBrokerCliCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeHarnessBrokerCli {
     pub command: NativeHarnessBrokerCliCommand,
+    pub harness_id: String,
     pub node: Option<PathBuf>,
     pub host_runtime: Option<PathBuf>,
 }
@@ -35,13 +36,43 @@ fn macos_absolute_path(value: &str, option: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(value))
 }
 
+pub const NATIVE_HARNESS_BROKER_USAGE: &str = "usage: codexhost broker install|status|stop|uninstall [--harness <id>] [--node <absolute-file> --host-runtime <absolute-file>]
+The native Harness broker is available only on macOS.";
+
+/// The npm wrapper appends exactly `--node <file> --host-runtime <file>` after the user's
+/// arguments, so a missing subcommand reaches the launcher as that sequence rather than as
+/// nothing. Any other leading option stays an unknown-command error.
+pub fn native_harness_broker_usage_requested(arguments: &[String]) -> bool {
+    match arguments.first().map(String::as_str) {
+        None | Some("--help" | "-h" | "help") => true,
+        Some(first) if first.starts_with('-') => is_wrapper_injected_runtime_options(arguments),
+        Some("install" | "status" | "stop" | "uninstall") => arguments[1..]
+            .iter()
+            .any(|argument| argument == "--help" || argument == "-h"),
+        Some(_) => false,
+    }
+}
+
+fn is_wrapper_injected_runtime_options(arguments: &[String]) -> bool {
+    matches!(
+        arguments,
+        [node, _, host_runtime, _] if node == "--node" && host_runtime == "--host-runtime"
+    )
+}
+
+pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
+    if native_harness_broker_usage_requested(arguments) {
+        println!("{NATIVE_HARNESS_BROKER_USAGE}");
+        return Ok(());
+    }
+    run_parsed_native_harness_broker_cli(parse_native_harness_broker_cli(arguments)?)
+}
+
 pub fn parse_native_harness_broker_cli(
     arguments: &[String],
 ) -> Result<NativeHarnessBrokerCli, String> {
     let Some(command) = arguments.first() else {
-        return Err(
-            "usage: codexhost broker install|status|stop|uninstall [--node <absolute-file> --host-runtime <absolute-file>]".to_owned(),
-        );
+        return Err(NATIVE_HARNESS_BROKER_USAGE.to_owned());
     };
     let command = match command.as_str() {
         "install" => NativeHarnessBrokerCliCommand::Install,
@@ -54,18 +85,26 @@ pub fn parse_native_harness_broker_cli(
     };
     let mut node = None;
     let mut host_runtime = None;
+    let mut harness_id = None;
     let mut index = 1;
     while index < arguments.len() {
         let option = arguments[index].as_str();
         let value = arguments
             .get(index + 1)
-            .ok_or_else(|| format!("{option} requires an absolute path"))?;
+            .ok_or_else(|| format!("{option} requires a value"))?;
         match option {
             "--node" if node.is_none() => node = Some(macos_absolute_path(value, "--node")?),
             "--host-runtime" if host_runtime.is_none() => {
                 host_runtime = Some(macos_absolute_path(value, "--host-runtime")?)
             }
-            "--node" | "--host-runtime" => return Err(format!("duplicate option: {option}")),
+            "--harness" if harness_id.is_none() => {
+                codexhost_platform::native_harness_broker_label(value)
+                    .map_err(|e| e.to_string())?;
+                harness_id = Some(value.clone());
+            }
+            "--node" | "--host-runtime" | "--harness" => {
+                return Err(format!("duplicate option: {option}"));
+            }
             unknown => return Err(format!("unknown native Harness broker option: {unknown}")),
         }
         index += 2;
@@ -75,14 +114,14 @@ pub fn parse_native_harness_broker_cli(
     }
     Ok(NativeHarnessBrokerCli {
         command,
+        harness_id: harness_id.unwrap_or_else(|| "claude-code".to_owned()),
         node,
         host_runtime,
     })
 }
 
 #[cfg(target_os = "macos")]
-pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
-    let cli = parse_native_harness_broker_cli(arguments)?;
+fn run_parsed_native_harness_broker_cli(cli: NativeHarnessBrokerCli) -> Result<(), Box<dyn Error>> {
     let bundled_resources = if cli.node.is_none() {
         Some(InstalledResources::from_current_executable()?)
     } else {
@@ -110,6 +149,7 @@ pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn
         })
         .ok_or("native Harness broker Host Runtime is unavailable")?;
     let paths = NativeHarnessBrokerPaths {
+        harness_id: &cli.harness_id,
         home: &home,
         node,
         host_runtime,
@@ -130,8 +170,8 @@ pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn
         NativeHarnessBrokerCliCommand::Install => {
             let outcome = install_native_harness_broker(paths, &proxy_environment)?;
             let state = match outcome {
-                NativeHarnessBrokerInstallOutcome::AlreadyRunning => "already-running",
-                NativeHarnessBrokerInstallOutcome::Started => "restarted",
+                NativeHarnessBrokerInstallOutcome::AlreadyRegistered => "already-registered",
+                NativeHarnessBrokerInstallOutcome::Stopped => "stopped-for-update",
                 NativeHarnessBrokerInstallOutcome::Installed => "installed",
                 NativeHarnessBrokerInstallOutcome::Reinstalled => "reinstalled",
             };
@@ -161,9 +201,59 @@ pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+pub fn stop_installed_brokers(
+    home: &std::path::Path,
+    node: &std::path::Path,
+    host_runtime: &std::path::Path,
+) -> Result<bool, Box<dyn Error>> {
+    let agents = match std::fs::read_dir(home.join("Library/LaunchAgents")) {
+        Ok(agents) => agents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let mut stopped = false;
+    let mut failures = Vec::new();
+    for entry in agents {
+        let name = entry?.file_name();
+        let Some(label) = name.to_str().and_then(|name| name.strip_suffix(".plist")) else {
+            continue;
+        };
+        let harness = if label == codexhost_platform::NATIVE_HARNESS_BROKER_LABEL {
+            "claude-code"
+        } else {
+            let Some(id) = label
+                .strip_prefix("ai.bytepioneer.codexhost.")
+                .and_then(|label| label.strip_suffix("-broker"))
+            else {
+                continue;
+            };
+            if !codexhost_platform::native_harness_broker_label(id)
+                .is_ok_and(|expected| expected == label)
+            {
+                continue;
+            }
+            id
+        };
+        match stop_native_harness_broker(NativeHarnessBrokerPaths {
+            harness_id: harness,
+            home,
+            node,
+            host_runtime,
+        }) {
+            Ok(changed) => stopped |= changed,
+            Err(error) => failures.push(format!("{label}: {error}")),
+        }
+    }
+    if failures.is_empty() {
+        Ok(stopped)
+    } else {
+        Err(failures.join("\n").into())
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
-pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn Error>> {
-    let _ = parse_native_harness_broker_cli(arguments)?;
+fn run_parsed_native_harness_broker_cli(_: NativeHarnessBrokerCli) -> Result<(), Box<dyn Error>> {
     Err("the native Harness broker is available only on macOS".into())
 }
 
@@ -171,7 +261,119 @@ pub fn run_native_harness_broker_cli(arguments: &[String]) -> Result<(), Box<dyn
 mod tests {
     use std::path::Path;
 
-    use super::{NativeHarnessBrokerCliCommand, parse_native_harness_broker_cli};
+    use super::{
+        NativeHarnessBrokerCliCommand, native_harness_broker_usage_requested,
+        parse_native_harness_broker_cli,
+    };
+
+    fn arguments(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn usage_is_requested_without_a_subcommand_even_after_injected_runtime_options() {
+        for requested in [
+            &[][..],
+            &["--help"],
+            &["-h"],
+            &["help"],
+            &["--node", "/usr/bin/node", "--host-runtime", "/opt/host.mjs"],
+            &[
+                "--help",
+                "--node",
+                "/usr/bin/node",
+                "--host-runtime",
+                "/opt/host.mjs",
+            ],
+            &[
+                "status",
+                "--help",
+                "--node",
+                "/usr/bin/node",
+                "--host-runtime",
+                "/opt/host.mjs",
+            ],
+        ] {
+            assert!(
+                native_harness_broker_usage_requested(&arguments(requested)),
+                "{requested:?}"
+            );
+        }
+        for command in [
+            &["status"][..],
+            &[
+                "install",
+                "--node",
+                "/usr/bin/node",
+                "--host-runtime",
+                "/opt/host.mjs",
+            ],
+            &["bogus"],
+            &["bogus", "--help"],
+            &["nonexistent", "-h"],
+            &["--bogus"],
+            &[
+                "--bogus",
+                "--node",
+                "/usr/bin/node",
+                "--host-runtime",
+                "/opt/host.mjs",
+            ],
+            &["--node", "/usr/bin/node"],
+            &["--harness", "claude-code"],
+            &["--host-runtime", "/opt/host.mjs", "--node", "/usr/bin/node"],
+            &[
+                "bogus",
+                "--node",
+                "/usr/bin/node",
+                "--host-runtime",
+                "/opt/host.mjs",
+            ],
+        ] {
+            assert!(
+                !native_harness_broker_usage_requested(&arguments(command)),
+                "{command:?}"
+            );
+        }
+        assert!(parse_native_harness_broker_cli(&arguments(&["bogus"])).is_err());
+        assert!(parse_native_harness_broker_cli(&arguments(&["--bogus"])).is_err());
+    }
+
+    #[test]
+    fn selected_harness_is_explicit_and_defaults_to_legacy_claude() {
+        assert_eq!(
+            parse_native_harness_broker_cli(&["status".into()])
+                .unwrap()
+                .harness_id,
+            "claude-code"
+        );
+        for id in ["codebuddy", "workbuddy", "cursor-cli"] {
+            assert_eq!(
+                parse_native_harness_broker_cli(&["install".into(), "--harness".into(), id.into()])
+                    .unwrap()
+                    .harness_id,
+                id
+            );
+        }
+        assert!(
+            parse_native_harness_broker_cli(&[
+                "stop".into(),
+                "--harness".into(),
+                "../claude-code".into()
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_native_harness_broker_cli(&[
+                "stop".into(),
+                "--harness".into(),
+                "codebuddy".into(),
+                "--harness".into(),
+                "cursor-cli".into()
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn parses_the_broker_lifecycle_commands_without_accepting_extra_arguments() {

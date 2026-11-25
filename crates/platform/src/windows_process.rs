@@ -17,6 +17,9 @@ const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x0000_1000;
 const PROCESS_TERMINATE: u32 = 0x0000_0001;
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
+// Explicit native service launches request CREATE_BREAKAWAY_FROM_JOB. Ordinary
+// children (including Node's detached subprocesses) remain supervised by default.
+const JOB_OBJECT_LIMIT_BREAKAWAY_OK: u32 = 0x0000_0800;
 const MOVE_FILE_REPLACE_EXISTING: u32 = 0x0000_0001;
 const MOVE_FILE_WRITE_THROUGH: u32 = 0x0000_0008;
 const ATOMIC_REPLACE_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -103,6 +106,13 @@ unsafe extern "system" {
         information: *const c_void,
         information_length: u32,
     ) -> i32;
+    fn QueryInformationJobObject(
+        job: Handle,
+        information_class: i32,
+        information: *mut c_void,
+        information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
     fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
     fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
     fn TerminateProcess(process: Handle, exit_code: u32) -> i32;
@@ -113,11 +123,52 @@ unsafe extern "system" {
 pub struct ProcessEntry {
     pub id: u32,
     pub parent_id: u32,
+    executable_name: [u16; 260],
+}
+
+impl ProcessEntry {
+    pub fn has_executable_name(&self, name: &str) -> bool {
+        let end = self
+            .executable_name
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(260);
+        name.eq_ignore_ascii_case(&String::from_utf16_lossy(&self.executable_name[..end]))
+    }
 }
 
 pub struct ChildJob(Handle);
 
 impl ChildJob {
+    pub fn has_live_processes(&self) -> io::Result<bool> {
+        #[repr(C)]
+        struct Accounting {
+            total_user_time: i64,
+            total_kernel_time: i64,
+            period_user_time: i64,
+            period_kernel_time: i64,
+            page_faults: u32,
+            total_processes: u32,
+            active_processes: u32,
+            terminated_processes: u32,
+        }
+        let mut information: Accounting = unsafe { zeroed() };
+        let queried = unsafe {
+            QueryInformationJobObject(
+                self.0,
+                1,
+                &mut information as *mut _ as *mut c_void,
+                size_of::<Accounting>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        if queried == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(information.active_processes != 0)
+        }
+    }
+
     pub fn terminate(&self, exit_code: u32) -> io::Result<()> {
         let result = unsafe { TerminateJobObject(self.0, exit_code) };
         if result == 0 {
@@ -145,18 +196,20 @@ pub fn process_entries() -> io::Result<Vec<ProcessEntry>> {
         let mut entry: NativeProcessEntry = zeroed();
         entry.size = size_of::<NativeProcessEntry>() as u32;
         let mut entries = Vec::new();
-        if Process32FirstW(snapshot, &mut entry) != 0 {
-            loop {
-                entries.push(ProcessEntry {
-                    id: entry.process_id,
-                    parent_id: entry.parent_process_id,
-                });
-                if Process32NextW(snapshot, &mut entry) == 0 {
-                    break;
-                }
-            }
+        let mut found = Process32FirstW(snapshot, &mut entry);
+        while found != 0 {
+            entries.push(ProcessEntry {
+                id: entry.process_id,
+                parent_id: entry.parent_process_id,
+                executable_name: entry.executable_name,
+            });
+            found = Process32NextW(snapshot, &mut entry);
         }
+        let error = io::Error::last_os_error();
         CloseHandle(snapshot);
+        if error.raw_os_error() != Some(windows::Win32::Foundation::ERROR_NO_MORE_FILES.0 as i32) {
+            return Err(error);
+        }
         Ok(entries)
     }
 }
@@ -170,9 +223,10 @@ pub fn process_image_path(process_id: u32) -> io::Result<PathBuf> {
         let mut buffer = vec![0_u16; 32_768];
         let mut length = buffer.len() as u32;
         let result = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length);
+        let error = (result == 0).then(io::Error::last_os_error);
         CloseHandle(process);
-        if result == 0 {
-            return Err(io::Error::last_os_error());
+        if let Some(error) = error {
+            return Err(error);
         }
         buffer.truncate(length as usize);
         Ok(PathBuf::from(String::from_utf16_lossy(&buffer)))
@@ -311,7 +365,8 @@ pub fn guard_child(child: &Child) -> io::Result<ChildJob> {
             return Err(io::Error::last_os_error());
         }
         let mut information: ExtendedLimitInformation = zeroed();
-        information.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        information.basic_limit_information.limit_flags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
         let configured = SetInformationJobObject(
             job,
             JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,

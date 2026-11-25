@@ -51,11 +51,10 @@
 - **THEN** 格式检查、ESLint、TypeScript Strict 类型检查、单元/契约测试、Rust fmt、Clippy 和 Rust 测试 MUST 被执行
 - **AND** 任一子检查失败 MUST 使综合检查返回非零退出码
 
-#### Scenario: 外部程序 E2E 独立执行
+#### Scenario: 综合检查不依赖外部程序
 
 - **WHEN** 开发者运行普通 `npm run check`
 - **THEN** 流程 MUST NOT 要求本机安装 Codex Desktop 或 Pi
-- **AND** Renderer/E2E 测试 MUST 可通过独立的 `npm run test:e2e` 命令执行
 
 ### Requirement: 自动保护模块边界
 

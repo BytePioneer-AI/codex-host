@@ -1,11 +1,22 @@
 # Local-only references, private documentation, and agent state
 /docsp/
 /reference/
+/design-prototypes/
 /.pi/
 /downloads/
 /.codexhost/
 /pr-triage/
-/.claude/
+/.claude/*
+
+# Shared agent skills for Claude Code
+!/.claude/skills
+
+# Local third-party design skills (keep on disk, do not commit)
+.agents/skills/impeccable/
+.agents/skills/apple-design/
+.agents/skills/mobile-native/
+/.grok/
+/skills-lock.json
 
 # Environment and secrets
 .env
@@ -15,6 +26,12 @@
 
 # Dependencies and tool caches
 node_modules/
+.work/
+.dsh-build/
+/apps/web-ui/**/lib/
+/apps/wiki/.vitepress/cache/
+/apps/wiki/.vitepress/dist/
+/apps/wiki/.vercel/
 .npm/
 .cache/
 .wix/
@@ -22,6 +39,13 @@ node_modules/
 .vitest/
 .eslintcache
 *.tsbuildinfo
+
+# Local website draft and deployment workflow
+/website/
+/.github/workflows/deploy-website.yml
+
+# Local promotional video workspace (ignored)
+/promo-video/
 
 # Build, test, and coverage output
 target/

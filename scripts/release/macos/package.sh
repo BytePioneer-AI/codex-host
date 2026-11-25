@@ -26,8 +26,18 @@ for relative in \
   libexec/codexhost-updater \
   runtime/node \
   app/codexhost-distribution.json \
+  app/console-server.mjs \
+  app/console-web.js \
   app/desktop-controller.mjs \
   app/host-runtime.mjs \
+  app/web-server.mjs \
+  app/web/index.html \
+  app/web/plugins.json \
+  app/web-modules/server.mjs \
+  app/web-modules/subprocess-runner.mjs \
+  app/web-modules/office-engines.json \
+  app/web-modules/node_modules/node-pty/package.json \
+  app/web-modules/node_modules/koffi/package.json \
   app/renderer-extension.js \
   licenses/Node.js-LICENSE.txt \
   licenses/Anthropic-SDK-LICENSE.txt \
@@ -68,10 +78,19 @@ chmod 755 \
   "$RESOURCES/libexec/codexhost-updater" \
   "$RESOURCES/runtime/node"
 
+# Move the embedded desktop shell bundle into Contents/Helpers so strict
+# macOS deep signing accepts the nested app bundle.
+if [[ -d "$RESOURCES/libexec/CodexHost.app" ]]; then
+  mkdir -p "$CONTENTS/Helpers"
+  mv "$RESOURCES/libexec/CodexHost.app" "$CONTENTS/Helpers/CodexHost.app"
+  chmod 755 "$CONTENTS/Helpers/CodexHost.app/Contents/MacOS/CodexHost"
+  /usr/bin/plutil -lint "$CONTENTS/Helpers/CodexHost.app/Contents/Info.plist" >/dev/null
+elif [[ -f "$PAYLOAD_ROOT/libexec/codexhost-shell" ]]; then
+  chmod 755 "$RESOURCES/libexec/codexhost-shell"
+fi
+
 mkdir -p "$ASSETS_DIR"
 node "$(cd "$(dirname "$0")" && pwd)/assets.mjs" --output "$ASSETS_DIR"
-/usr/bin/sips -s format png "$ASSETS_DIR/codexhost.ico" \
-  --out "$ASSETS_DIR/codexhost-icon.png" >/dev/null
 mkdir -p "$ASSETS_DIR/codexhost.iconset"
 for size in 16 32 128 256 512; do
   /usr/bin/sips -z "$size" "$size" "$ASSETS_DIR/codexhost-icon.png" \
@@ -113,6 +132,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>CodexHost uses the microphone for voice input.</string>
 </dict>
 </plist>
 PLIST
@@ -121,10 +142,16 @@ PLIST
 /usr/bin/codesign --force --sign - "$RESOURCES/runtime/node"
 /usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-shim"
 /usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-updater"
+if [[ -d "$CONTENTS/Helpers/CodexHost.app" ]]; then
+  /usr/bin/codesign --force --sign - "$CONTENTS/Helpers/CodexHost.app/Contents/MacOS/CodexHost"
+  /usr/bin/codesign --force --sign - "$CONTENTS/Helpers/CodexHost.app"
+elif [[ -f "$RESOURCES/libexec/codexhost-shell" ]]; then
+  /usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-shell"
+fi
 /usr/bin/codesign --force --sign - "$CONTENTS/MacOS/codexhost"
 /usr/bin/codesign --force --sign - "$APP_PATH"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-"$RESOURCES/runtime/node" -e 'if (process.version !== "v24.13.1") process.exit(1)'
+"$RESOURCES/runtime/node" -e 'if (process.version !== "v24.22.1") process.exit(1)'
 
 mkdir -p "$DMG_STAGE"
 /usr/bin/ditto "$APP_PATH" "$DMG_STAGE/codexhost.app"

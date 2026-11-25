@@ -1,0 +1,12 @@
+diff --git a/src/axios.js b/src/axios.js
+--- a/src/axios.js
++++ b/src/axios.js
+@@ -115,3 +115,8 @@ instance.interceptors.response.use(null, async (error) => {
++    /* Preserve transport failures when no HTTP response exists. */
++    if (!response) {
++        throw error;
++    }
++
+     /* Validate and return response */
+     return validateStatus(response);
+ });

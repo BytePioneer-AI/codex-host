@@ -1,8 +1,17 @@
+import { findScopedDraftModelBinding } from "@codexhost/desktop-control/renderer-bindings";
+
 import {
   CODEX_COMPOSER_SELECTOR,
+  contractElementVisible,
   inspectRendererComposerContract,
   type RendererComposerContractInspection,
 } from "./renderer-composer-dom.js";
+import {
+  inspectComposerCodexUsageGate,
+  type RendererCodexUsageGateInspection,
+} from "./renderer-codex-usage-gate.js";
+import { isOrbitComposer } from "./renderer-composer-kind.js";
+import { hasNativeComposerRequest } from "./renderer-composer-request.js";
 import {
   inspectRendererForkContract,
   type RendererForkContractInspection,
@@ -20,6 +29,9 @@ import {
   type RendererSettingsContractInspection,
 } from "./settings/trigger.js";
 import {
+  findActivePrewarmTargets,
+  findComposerDomIdentity,
+  findComposerModelTarget,
   inspectComposerModelContract,
   type RendererComposerModelContractState,
 } from "./versioned-renderer-adapter.js";
@@ -39,9 +51,15 @@ export interface RendererContractAuditInspection {
     missingCount: number;
     ambiguousCount: number;
   };
+  draftHarnessBinding: {
+    visibleDraftCount: number;
+    boundCount: number;
+    missingCreationModeCount: number;
+  };
   settings: RendererSettingsContractInspection;
   sidebar: RendererSidebarContractInspection;
   transcript: RendererTranscriptContractInspection;
+  codexUsageGate: RendererCodexUsageGateInspection & { composerCount: number };
   fork: RendererForkContractInspection;
   production: {
     bindingPresent: boolean;
@@ -72,6 +90,62 @@ function modelCounts(states: readonly RendererComposerModelContractState[]): {
   };
 }
 
+function draftHarnessBindingCounts(
+  composers: readonly Element[],
+  rpcPolicyPublished: boolean,
+): RendererContractAuditInspection["draftHarnessBinding"] {
+  const counts = { visibleDraftCount: 0, boundCount: 0, missingCreationModeCount: 0 };
+  for (const composer of composers) {
+    if (
+      !contractElementVisible(composer) ||
+      hasNativeComposerRequest(composer) ||
+      isOrbitComposer(composer)
+    )
+      continue;
+    const target = findComposerModelTarget(composer);
+    if (
+      target?.[0] === "conversation" ||
+      (target?.[0] !== "default" && findComposerDomIdentity(composer).kind !== "draft")
+    )
+      continue;
+    counts.visibleDraftCount += 1;
+    const binding =
+      typeof target?.[1] === "string" ? findScopedDraftModelBinding(composer, target[1]) : null;
+    if (!binding) continue;
+    counts.boundCount += 1;
+    // A published policy or the absence of native request ownership requires RPC-grade evidence.
+    if (
+      (rpcPolicyPublished || findActivePrewarmTargets(composer).length === 0) &&
+      binding.creationModes?.length !== 1
+    ) {
+      counts.missingCreationModeCount += 1;
+    }
+  }
+  return counts;
+}
+
+/** Composers with an editor; each should expose one owner and one reserve gate. */
+function codexUsageGateCounts(
+  composers: readonly Element[],
+): RendererCodexUsageGateInspection & { composerCount: number } {
+  const editable = composers.filter((composer) =>
+    composer.querySelector('[contenteditable="true"][role="textbox"]'),
+  );
+  const counts = {
+    composerCount: editable.length,
+    ownerCount: 0,
+    reserveGateCount: 0,
+    accountGateCount: 0,
+  };
+  for (const composer of editable) {
+    const inspection = inspectComposerCodexUsageGate(composer);
+    counts.ownerCount += inspection.ownerCount;
+    counts.reserveGateCount += inspection.reserveGateCount;
+    counts.accountGateCount += inspection.accountGateCount;
+  }
+  return counts;
+}
+
 export function inspectRendererContracts(
   ownerWindow: Window = window,
 ): RendererContractAuditInspection {
@@ -85,9 +159,14 @@ export function inspectRendererContracts(
     schemaVersion: RENDERER_CONTRACT_AUDIT_SCHEMA_VERSION,
     composer: inspectRendererComposerContract(ownerWindow.document),
     model: modelCounts(composers.map(inspectComposerModelContract)),
+    draftHarnessBinding: draftHarnessBindingCounts(
+      composers,
+      draftPolicy?.requiresCreationMode === true,
+    ),
     settings: inspectRendererSettingsContract(ownerWindow.document),
     sidebar: inspectRendererSidebarContract(ownerWindow.document),
     transcript: inspectRendererTranscriptContract(ownerWindow.document),
+    codexUsageGate: codexUsageGateCounts(composers),
     fork: inspectRendererForkContract(ownerWindow.document),
     production: {
       bindingPresent: binding !== undefined,

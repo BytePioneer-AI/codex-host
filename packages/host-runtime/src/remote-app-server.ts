@@ -2,9 +2,10 @@ import { createServer, type Server as HttpServer } from "node:http";
 import net from "node:net";
 import { chmod, lstat, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { PassThrough, type Readable, type Writable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
+import { attachRemoteAppServerSession } from "./remote-app-server-session.js";
 
-import { WebSocketServer, type RawData, type WebSocket } from "ws";
+import { WebSocketServer } from "ws";
 
 import { withRemoteAppServerSocketInitializationLock } from "./remote-socket-lock.js";
 
@@ -33,6 +34,27 @@ const APP_SERVER_FLAG_OPTIONS = new Set([
   "--stdio",
   "--analytics-default-enabled",
 ]);
+// Hidden options Codex Desktop passes to set process-local launch directories
+// for stdio MCP servers. Each takes several space-separated values:
+// --mcp-launch-cwd <SERVER> <EXECUTABLE> <DIRECTORY>
+// --plugin-mcp-launch-cwd <PLUGIN_ID> <SERVER> <DIRECTORY>
+const APP_SERVER_MULTI_VALUE_OPTIONS = new Map([
+  ["--mcp-launch-cwd", 3],
+  ["--plugin-mcp-launch-cwd", 3],
+]);
+
+function appServerMultiValueCount(argument: string): number | undefined {
+  return APP_SERVER_MULTI_VALUE_OPTIONS.get(argument);
+}
+
+function appServerMultiValues(
+  arguments_: readonly string[],
+  index: number,
+  count: number,
+): string[] | undefined {
+  const values = arguments_.slice(index + 1, index + 1 + count);
+  return values.length === count && values.every((value) => value.length > 0) ? values : undefined;
+}
 
 export interface RemoteAppServerSession {
   run(): Promise<number>;
@@ -126,6 +148,12 @@ export function remoteUnixListenerUrl(arguments_: readonly string[]): string | n
       if (index >= arguments_.length) return null;
       continue;
     }
+    const valueCount = appServerMultiValueCount(argument);
+    if (valueCount !== undefined) {
+      if (!appServerMultiValues(arguments_, index, valueCount)) return null;
+      index += valueCount;
+      continue;
+    }
     if (
       [...APP_SERVER_VALUE_OPTIONS].some((option) => argument.startsWith(`${option}=`)) ||
       APP_SERVER_FLAG_OPTIONS.has(argument)
@@ -167,6 +195,11 @@ export function stdioArgumentsForRemoteListener(arguments_: readonly string[]): 
   if (appServerIndex === null) throw new Error("Expected an app-server invocation");
   for (let index = appServerIndex + 1; index < result.length; index += 1) {
     const argument = result[index];
+    const valueCount = argument === undefined ? undefined : appServerMultiValueCount(argument);
+    if (valueCount !== undefined) {
+      index += valueCount;
+      continue;
+    }
     if (argument === "--listen") {
       result.splice(index, 2, "--stdio");
       return result;
@@ -196,6 +229,12 @@ export function officialListenerArgumentsForRemoteListener(
   let listenerRewritten = false;
   for (let index = appServerIndex + 1; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
+    const valueCount = argument === undefined ? undefined : appServerMultiValueCount(argument);
+    if (valueCount !== undefined) {
+      result.push(...arguments_.slice(index, index + valueCount + 1));
+      index += valueCount;
+      continue;
+    }
     if (argument && APP_SERVER_WEBSOCKET_AUTH_VALUE_OPTIONS.has(argument)) {
       // The public listener already authenticated the remote Desktop client.
       // This second listener is an internal hop bound to a current-user-only
@@ -257,6 +296,16 @@ export function officialLoopbackListenerArguments(arguments_: readonly string[])
       index += 1;
       continue;
     }
+    const valueCount = appServerMultiValueCount(argument);
+    if (valueCount !== undefined) {
+      const values = appServerMultiValues(arguments_, index, valueCount);
+      if (!values) {
+        throw new Error(`${argument} requires ${valueCount} values`);
+      }
+      result.push(argument, ...values);
+      index += valueCount;
+      continue;
+    }
     if (
       [...APP_SERVER_VALUE_OPTIONS].some((option) => argument.startsWith(`${option}=`)) ||
       APP_SERVER_FLAG_OPTIONS.has(argument)
@@ -267,13 +316,6 @@ export function officialLoopbackListenerArguments(arguments_: readonly string[])
     throw new Error(`Unsupported app-server argument for a shared listener: ${argument}`);
   }
   return result;
-}
-
-function rawDataBuffer(data: RawData): Buffer {
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (Array.isArray(data)) return Buffer.concat(data);
-  throw new Error("Unsupported WebSocket frame payload");
 }
 
 interface UnixFileIdentity {
@@ -338,27 +380,6 @@ export async function prepareRemoteAppServerSocketDirectory(socketPath: string):
   await chmod(socketDirectory, 0o700);
 }
 
-function sendOutputFrames(socket: WebSocket, output: PassThrough): void {
-  let pending = Buffer.alloc(0);
-  output.on("data", (chunk: Buffer | string) => {
-    pending = Buffer.concat([pending, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
-    while (true) {
-      const newline = pending.indexOf(0x0a);
-      if (newline < 0) break;
-      const frame = pending.subarray(0, newline);
-      pending = pending.subarray(newline + 1);
-      if (socket.readyState === socket.OPEN) socket.send(frame, { binary: false });
-    }
-  });
-  output.once("end", () => {
-    if (pending.length > 0 && socket.readyState === socket.OPEN) {
-      socket.close(1011, "Host Runtime emitted an incomplete frame");
-    } else if (socket.readyState === socket.OPEN) {
-      socket.close(1000);
-    }
-  });
-}
-
 export function createRemoteAppServerWebSocketListener(input: {
   socketPath: string;
   diagnosticOutput: Writable;
@@ -376,99 +397,32 @@ export function createRemoteAppServerWebSocketListener(input: {
   const sessionClosers = new Set<() => void>();
   let listening = false;
   let ownedSocketIdentity: UnixFileIdentity | null = null;
+  let listenAttempt: Promise<void> | null = null;
   let closing: Promise<void> | null = null;
   const closed = Promise.withResolvers<undefined>();
 
   webSockets.on("connection", (socket) => {
-    const desktopInput = new PassThrough();
-    const desktopOutput = new PassThrough();
-    const session = input.createSession({
-      input: desktopInput,
-      output: desktopOutput,
+    const session = attachRemoteAppServerSession({
+      socket,
       diagnosticOutput: input.diagnosticOutput,
+      createSession: input.createSession,
     });
-    sendOutputFrames(socket, desktopOutput);
-    let inputTail = Promise.resolve();
-    let sessionDisconnecting = false;
-    let sessionClosing = false;
-    let sessionFinished = false;
-    const disconnectSession = (): void => {
-      if (sessionDisconnecting || sessionClosing || sessionFinished) return;
-      sessionDisconnecting = true;
-      const disconnect = (): void => {
-        if (sessionClosing || sessionFinished) return;
-        try {
-          session.disconnect();
-        } catch (error) {
-          input.diagnosticOutput.write(
-            `codexhost remote app-server disconnect: ${error instanceof Error ? error.message : String(error)}\n`,
-          );
-          closeSession();
-        }
-      };
-      void inputTail.then(disconnect, disconnect);
-    };
-    const closeSession = (): void => {
-      desktopInput.destroy();
-      if (sessionClosing || sessionFinished) return;
-      sessionClosing = true;
-      try {
-        session.close();
-      } catch (error) {
-        input.diagnosticOutput.write(
-          `codexhost remote app-server close: ${error instanceof Error ? error.message : String(error)}\n`,
-        );
-      }
-    };
-    socket.on("message", (data, isBinary) => {
-      if (isBinary) {
-        socket.close(1003, "Codex app-server messages must be text");
-        return;
-      }
-      const frame = rawDataBuffer(data);
-      inputTail = inputTail.then(
-        () =>
-          new Promise<void>((resolve, reject) => {
-            desktopInput.write(Buffer.concat([frame, Buffer.from("\n")]), (error) =>
-              error ? reject(error) : resolve(),
-            );
-          }),
-      );
-      void inputTail.catch(() => socket.close(1011, "Host Runtime input failed"));
+    const running = session.running.finally(() => {
+      sessions.delete(running);
+      sessionClosers.delete(session.close);
     });
-    // A transport disconnect is not a user cancellation. End the Desktop input
-    // after accepted frames drain so AppServerHost can keep an active Turn alive
-    // until its real terminal event. Listener shutdown still uses closeSession.
-    socket.once("close", disconnectSession);
-    socket.once("error", disconnectSession);
-    const running = session
-      .run()
-      .then((code) => {
-        if (code !== 0 && socket.readyState === socket.OPEN) {
-          socket.close(1011, "Host Runtime exited");
-        }
-      })
-      .catch((error: unknown) => {
-        input.diagnosticOutput.write(
-          `codexhost remote app-server: ${error instanceof Error ? error.message : String(error)}\n`,
-        );
-        if (socket.readyState === socket.OPEN) socket.close(1011, "Host Runtime failed");
-      })
-      .finally(() => {
-        sessionFinished = true;
-        desktopInput.destroy();
-        desktopOutput.end();
-        sessions.delete(running);
-        sessionClosers.delete(closeSession);
-      });
     sessions.add(running);
-    sessionClosers.add(closeSession);
+    sessionClosers.add(session.close);
   });
 
   return {
     closed: closed.promise,
     async listen() {
+      if (closing) throw new Error("Remote app-server listener is closed");
       if (listening) return;
+      // Concurrent callers share one bind, so close() always waits for the
+      // attempt that can still bind the server.
+      if (listenAttempt) return listenAttempt;
       const bind = async (): Promise<void> => {
         await new Promise<void>((resolve, reject) => {
           const onError = (error: Error) => reject(error);
@@ -489,19 +443,32 @@ export function createRemoteAppServerWebSocketListener(input: {
           }
         }
       };
-      if (process.platform !== "win32") {
-        await prepareRemoteAppServerSocketDirectory(input.socketPath);
-        await withRemoteAppServerSocketInitializationLock(input.socketPath, async () => {
-          await removeStaleSocket(input.socketPath);
+      const attempt = (async () => {
+        if (process.platform !== "win32") {
+          await prepareRemoteAppServerSocketDirectory(input.socketPath);
+          await withRemoteAppServerSocketInitializationLock(input.socketPath, async () => {
+            await removeStaleSocket(input.socketPath);
+            await bind();
+          });
+        } else {
           await bind();
-        });
-      } else {
-        await bind();
+        }
+      })();
+      listenAttempt = attempt;
+      try {
+        await attempt;
+      } catch (error) {
+        // A failed attempt may be retried; a successful one stays for close().
+        if (listenAttempt === attempt) listenAttempt = null;
+        throw error;
       }
     },
     close() {
       if (closing) return closing;
       closing = (async () => {
+        // A listen() in flight may still bind. Let it settle so the bound server
+        // and its socket are released below instead of outliving close().
+        await listenAttempt?.catch(() => undefined);
         const closingSessions = [...sessions];
         for (const closeSession of sessionClosers) closeSession();
         for (const socket of webSockets.clients) socket.terminate();

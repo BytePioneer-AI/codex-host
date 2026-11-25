@@ -17,7 +17,8 @@ const contracts = {
     trailingActionOwnerCount: 1,
   },
   model: { draftCount: 1, conversationCount: 0, missingCount: 0, ambiguousCount: 0 },
-  settings: { headerCount: 1, visibleHeaderCount: 1, insertionPointCount: 1 },
+  draftHarnessBinding: { visibleDraftCount: 1, boundCount: 1, missingCreationModeCount: 0 },
+  settings: { railCount: 1, visibleRailCount: 1, insertionPointCount: 1 },
   sidebar: { rowCount: 0, titleOwnerCount: 0, resolvedThreadCount: 0, ambiguousThreadCount: 0 },
   transcript: {
     turnCount: 0,
@@ -26,6 +27,7 @@ const contracts = {
     textBodyCount: 0,
     textBodyOwnerCount: 0,
   },
+  codexUsageGate: { composerCount: 1, ownerCount: 1, reserveGateCount: 1, accountGateCount: 1 },
   fork: { annotatedResponseCount: 0, candidateButtonCount: 0, verifiedButtonCount: 0 },
   production: {
     bindingPresent: false,
@@ -58,14 +60,77 @@ describe("Codex Desktop contract audit report", () => {
     expect(surfaces.find(({ id }) => id === "composer")?.verdict).toBe("no-impact");
   });
 
+  it("classifies the Codex usage gate from owner and gate cardinality", () => {
+    const verdictFor = (gate) =>
+      buildSurfaceResults({
+        ...contracts,
+        codexUsageGate: { ...contracts.codexUsageGate, ...gate },
+      }).find(({ id }) => id === "codex-usage-gate");
+    expect(verdictFor({})?.verdict).toBe("no-impact");
+    expect(verdictFor({ reserveGateCount: 0 })).toMatchObject({
+      verdict: "confirmed-impact",
+      reason: "codex-usage-gate-cardinality",
+    });
+    expect(verdictFor({ ownerCount: 2 })?.verdict).toBe("confirmed-impact");
+    // API-key sign-in: the Account gate returns before reading usage.
+    expect(verdictFor({ accountGateCount: 0 })).toMatchObject({
+      verdict: "unverified",
+      reason: "codex-usage-account-gate-dormant",
+    });
+    expect(verdictFor({ composerCount: 0, ownerCount: 0, reserveGateCount: 0 })?.verdict).toBe(
+      "unverified",
+    );
+  });
+
+  it("accepts a reviewed baseline that predates a newer surface", () => {
+    const newSurfaces = ["codex-usage-gate", "draft-harness-binding"];
+    const older = buildSurfaceResults(contracts).filter(({ id }) => !newSurfaces.includes(id));
+    expect(() => validateAuditReport(reportFor(older))).toThrow("incomplete");
+    const baseline = validateAuditReport(reportFor(older), { baseline: true });
+    const results = buildSurfaceResults(contracts, baseline);
+    for (const id of newSurfaces) {
+      expect(results.find((surface) => surface.id === id)).toMatchObject({
+        verdict: "no-impact",
+        baselineChanged: false,
+        evidence: { static: "not-run", liveStructure: "pass" },
+      });
+    }
+  });
+
   it("reports ambiguous active ownership as confirmed impact", () => {
     const surfaces = buildSurfaceResults({
       ...contracts,
       model: { draftCount: 0, conversationCount: 0, missingCount: 0, ambiguousCount: 1 },
+      draftHarnessBinding: { visibleDraftCount: 1, boundCount: 0, missingCreationModeCount: 0 },
     });
     expect(surfaces.find(({ id }) => id === "model")?.verdict).toBe("confirmed-impact");
+    expect(surfaces.find(({ id }) => id === "draft-harness-binding")).toMatchObject({
+      verdict: "confirmed-impact",
+      reason: "draft-writer-unverified",
+    });
     expect(aggregateVerdict(surfaces)).toBe("confirmed-impact");
   });
+
+  it.each([
+    [1, 1, "fail", "confirmed-impact"],
+    [0, 0, "inactive", "unverified"],
+  ])(
+    "classifies %i visible drafts with %i missing creation modes",
+    (count, missing, live, verdict) => {
+      const surfaces = buildSurfaceResults({
+        ...contracts,
+        draftHarnessBinding: {
+          visibleDraftCount: count,
+          boundCount: count,
+          missingCreationModeCount: missing,
+        },
+      });
+      expect(surfaces.find(({ id }) => id === "draft-harness-binding")).toMatchObject({
+        verdict,
+        evidence: { liveStructure: live, behavior: "not-run" },
+      });
+    },
+  );
 
   it("separates controlled installation from unexercised behavior", () => {
     const surfaces = buildSurfaceResults(contracts, null, {

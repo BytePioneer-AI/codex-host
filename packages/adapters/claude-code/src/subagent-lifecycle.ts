@@ -1,3 +1,4 @@
+import { subagentConfiguration } from "@codexhost/harness-adapter";
 import type {
   HarnessError,
   HostEvent,
@@ -52,6 +53,7 @@ export class ClaudeSubagentLifecycle {
       subagentId: event.nativeSubagentId ?? event.callId,
       ...(event.nativeSubagentId ? { nativeSubagentId: event.nativeSubagentId } : {}),
       description: event.description,
+      ...subagentConfiguration(event),
       ...(event.role ? { role: event.role } : {}),
       background: event.background,
       status: "running",
@@ -72,8 +74,10 @@ export class ClaudeSubagentLifecycle {
     if (!active) return;
     const current = active.item.subagents[0];
     if (!current) throw new Error("Claude Code Subagent delegation has no Agent state");
+    this.#retireSendTarget(active.item, current.nativeSubagentId, event.nativeSubagentId);
     const subagent: HostSubagentState = {
       ...current,
+      ...subagentConfiguration(event),
       status: event.status,
       ...(event.nativeSubagentId ? { nativeSubagentId: event.nativeSubagentId } : {}),
       ...(event.description ? { description: event.description } : {}),
@@ -93,13 +97,14 @@ export class ClaudeSubagentLifecycle {
     turnId: HostTurnId,
     event: Extract<ClaudeTurnEvent, { type: "subagent.completed" }>,
     cancellationRequested: boolean,
-  ): HostSubagentState {
+  ): { operation: HostSubagentDelegationItem["operation"]; subagent: HostSubagentState } {
     const active = this.#delegations.get(event.callId);
     if (!active)
       throw new Error("Claude Code Subagent completion references an unknown delegation");
     this.#delegations.delete(event.callId);
     const current = active.item.subagents[0];
     if (!current) throw new Error("Claude Code Subagent delegation has no Agent state");
+    this.#retireSendTarget(active.item, current.nativeSubagentId, event.nativeSubagentId);
     const status = cancellationRequested
       ? "interrupted"
       : event.isError
@@ -126,7 +131,19 @@ export class ClaudeSubagentLifecycle {
         ? { status: "failed", error: subagentFailure() }
         : { status: "succeeded" };
     this.#emit({ type: "item.completed", turnId, snapshot: { item, outcome } });
-    return subagent;
+    return { operation: active.item.operation, subagent };
+  }
+
+  #retireSendTarget(item: HostSubagentDelegationItem, previous?: string, resolved?: string): void {
+    // An unrecognized recipient may already have a Host child. Retire that projection,
+    // not the native task: only a real task notification settles background occupancy.
+    if (item.operation === "send" && previous && resolved && previous !== resolved) {
+      this.#emit({
+        type: "subagent.state.changed",
+        nativeSubagentId: previous,
+        status: "completed",
+      });
+    }
   }
 
   finalize(turnId: HostTurnId, outcome: HostItemOutcome): void {

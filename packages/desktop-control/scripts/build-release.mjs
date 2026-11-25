@@ -57,6 +57,9 @@ export async function buildDesktopControllerBundle({ repositoryRoot, outputPath 
     treeShaking: true,
     charset: "utf8",
     legalComments: "none",
+    banner: {
+      js: 'import { createRequire as __codexhostCreateRequire } from "node:module"; const require = __codexhostCreateRequire(import.meta.url);',
+    },
     logLevel: "silent",
   });
   if (!result.metafile) throw new Error("Desktop Controller build did not return a metafile");

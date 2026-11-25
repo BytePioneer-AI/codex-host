@@ -2,19 +2,19 @@ import {
   getSharedAgentGroupPreferenceStore,
   type AgentGroupPreferenceStore,
 } from "./agent-group-preference.js";
-import type {
-  ComposerAgentPhase,
-  ExternalRendererAgent,
-  RendererAgent,
-  RendererAgentAvailability,
-} from "./agent-selection-state.js";
-import type { CodexAccountSummary } from "@codexhost/shared-contracts";
 import {
-  createRendererCodexAccountGroup,
-  type RendererCodexAccountGroupControl,
-  type RendererCodexAccountOptionControl,
-} from "./renderer-codex-account-options.js";
-import { createRendererAgentIcon, RENDERER_AGENT_LABELS } from "./renderer-agent-icon.js";
+  isPickerAgentSelectable,
+  type ComposerAgentPhase,
+  type ExternalRendererAgent,
+  type RendererAgent,
+  type PickerAgentAvailability,
+} from "./agent-selection-state.js";
+import type { CodexAccountSummary, HarnessPluginDescriptor } from "@codexhost/shared-contracts";
+import { createRendererAgentIcon, rendererAgentLabel } from "./renderer-agent-icon.js";
+import {
+  mountRendererModelSelectionNotice,
+  type RendererModelSelectionNotice,
+} from "./renderer-model-selection-notice.js";
 import { requestConnectionsPageFocus } from "./settings/connections-page.js";
 import {
   rendererSettingsMessages,
@@ -28,19 +28,14 @@ import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 // user already sees (translated) on the Connections settings page.
 function pickerGroupMessages(): Pick<
   ReturnType<typeof rendererSettingsMessages>,
-  "pickerMoreAgentsLabel" | "pickerManageLink" | "pickerHideUnusedAgentsCta"
+  "locale" | "pickerMoreAgentsLabel" | "pickerManageLink" | "pickerHideUnusedAgentsCta"
 > & {
-  readonly codexAccountsLabel: string;
-  readonly manageCodexAccountsLabel: string;
   readonly ownershipErrorLabel: string;
 } {
   const languages = typeof navigator !== "undefined" ? navigator.languages : [];
   const messages = rendererSettingsMessages(resolveRendererSettingsLocale(languages));
   return {
     ...messages,
-    codexAccountsLabel: "Codex",
-    manageCodexAccountsLabel:
-      messages.locale === "zh-CN" ? "管理 Codex 账号" : "Manage Codex Accounts",
     ownershipErrorLabel:
       messages.locale === "zh-CN"
         ? "无法确认会话的 Agent；重新聚焦窗口以重试"
@@ -58,7 +53,7 @@ interface MinimalSettingsShellHandle {
   openSettings(opener?: HTMLElement, pageId?: string): boolean;
 }
 
-function openSettingsPage(pageId: "accounts" | "connections", opener?: HTMLElement): void {
+function openSettingsPage(pageId: "connections", opener?: HTMLElement): void {
   const shell = (window as unknown as { __codexhostSettingsShellV1?: MinimalSettingsShellHandle })
     .__codexhostSettingsShellV1;
   shell?.openSettings(opener, pageId);
@@ -68,18 +63,7 @@ function openConnectionsSettings(opener?: HTMLElement): void {
   openSettingsPage("connections", opener);
 }
 
-export const RENDERER_AGENT_INSTALL_URLS: Readonly<Record<ExternalRendererAgent, string>> = {
-  pi: "https://pi.dev/",
-  "claude-code": "https://code.claude.com/docs/en/quickstart",
-  "deepseek-harness": "https://github.com/deepseek-ai/deepseek-harness",
-  opencode: "https://opencode.ai/docs/",
-  grok: "https://grok.com/",
-  omp: "https://github.com/can1357/oh-my-pi",
-  antigravity: "https://antigravity.google/product/antigravity-cli",
-  "kiro-cli": "https://kiro.dev/docs/cli/",
-};
-
-type AgentAvailability = Partial<Record<ExternalRendererAgent, RendererAgentAvailability>>;
+type AgentAvailability = Partial<Record<ExternalRendererAgent, PickerAgentAvailability>>;
 
 export const CONTROL_ATTRIBUTE = "data-codexhost-agent-control";
 const AGENT_MENU_WIDTH = 224;
@@ -108,12 +92,10 @@ export interface RendererAgentPickerControl {
   ownershipError: HTMLElement;
   menu: HTMLElement;
   agents: readonly RendererAgent[];
+  plugins: readonly HarnessPluginDescriptor[];
   options: Partial<Record<RendererAgent, AgentOptionControl>>;
-  codexAccounts: readonly CodexAccountSummary[];
-  codexAccountOptions: Map<string, RendererCodexAccountOptionControl>;
-  codexAccountContainer: HTMLElement;
-  codexAccountGroup: RendererCodexAccountGroupControl;
-  selectCodexAccount(accountId: string): void;
+  updateAvailability(availability: AgentAvailability): void;
+  showSwitchFailure(): void;
   close(): void;
   dispose(): void;
 }
@@ -149,12 +131,13 @@ export function rendererAgentMenuPlacement(
 export function rendererAgentPickerTooltip(
   state: { agent: RendererAgent; phase: ComposerAgentPhase },
   activeAccount: CodexAccountSummary | undefined,
+  plugin?: HarnessPluginDescriptor,
 ): string {
   const account =
     state.agent === "codex" && activeAccount
       ? ` · ${activeAccount.email ?? activeAccount.label}`
       : "";
-  return `Agent: ${RENDERER_AGENT_LABELS[state.agent]}${account}${state.phase === "locked" ? " (locked)" : ""}`;
+  return `Agent: ${rendererAgentLabel(state.agent, plugin)}${account}${state.phase === "locked" ? " (locked)" : ""}`;
 }
 
 export function rendererAgentPickerView(
@@ -163,14 +146,15 @@ export function rendererAgentPickerView(
   switching: boolean,
   agents: readonly RendererAgent[],
   availability: AgentAvailability = {},
-  codexAccountCount = 0,
+  plugin?: HarnessPluginDescriptor,
 ): RendererAgentPickerView {
   const optionDisabled = Object.fromEntries(
     agents.map((agent) => [
       agent,
       switching ||
         state.phase === "locked" ||
-        (agent !== "codex" && (adapterState !== "ready" || availability[agent] !== "ready")),
+        (agent !== "codex" &&
+          (adapterState !== "ready" || !isPickerAgentSelectable(availability[agent]))),
     ]),
   ) as Partial<Record<RendererAgent, boolean>>;
   const downloadVisible = Object.fromEntries(
@@ -184,9 +168,9 @@ export function rendererAgentPickerView(
       .map((agent) => [agent, availability[agent] === "error"]),
   ) as Partial<Record<ExternalRendererAgent, boolean>>;
   return {
-    label: RENDERER_AGENT_LABELS[state.agent],
+    label: rendererAgentLabel(state.agent, plugin),
     triggerDisabled:
-      switching || state.phase === "locked" || (agents.length < 2 && codexAccountCount < 2),
+      switching || state.phase === "locked" || (agents.length < 2 && state.agent === "codex"),
     nativeModelHidden: switching || state.agent !== "codex",
     optionDisabled,
     downloadVisible,
@@ -221,9 +205,9 @@ export function mountRendererAgentPicker(
   enabledAgents: readonly RendererAgent[],
   onSelect: (agent: RendererAgent) => void,
   onDownload: (agent: ExternalRendererAgent) => void,
-  onSelectCodexAccount: (accountId: string) => void,
   onOpen?: () => void,
   groupPreference: AgentGroupPreferenceStore = getSharedAgentGroupPreferenceStore(),
+  plugins: readonly HarnessPluginDescriptor[] = [],
 ): RendererAgentPickerControl {
   const root = document.createElement("div");
   root.setAttribute(CONTROL_ATTRIBUTE, composerId);
@@ -310,6 +294,7 @@ export function mountRendererAgentPicker(
   const options: Partial<Record<RendererAgent, AgentOptionControl>> = {};
   const rowsByAgent = new Map<RendererAgent, HTMLDivElement>();
   const groupMessages = pickerGroupMessages();
+  let switchFailureNotice: RendererModelSelectionNotice | undefined;
 
   const close = (): void => {
     if (!popoverOpen(menu)) return;
@@ -317,24 +302,6 @@ export function mountRendererAgentPicker(
     else menu.hidden = true;
     trigger.setAttribute("aria-expanded", "false");
   };
-  const codexAccountGroup = createRendererCodexAccountGroup({
-    ownerDocument: document,
-    accountsLabel: groupMessages.codexAccountsLabel,
-    manageAccountsLabel: groupMessages.manageCodexAccountsLabel,
-    onSelect(accountId) {
-      close();
-      trigger.focus();
-      onSelectCodexAccount(accountId);
-    },
-    onManage() {
-      close();
-      openSettingsPage("accounts", trigger);
-    },
-  });
-  const codexAccountOptions = codexAccountGroup.options;
-  const codexAccountContainer = codexAccountGroup.root;
-  trigger.append(codexAccountGroup.badge);
-
   const focusOption = (position: "first" | "last" | "selected"): void => {
     const available = [
       ...menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"], [role="menuitem"]'),
@@ -345,6 +312,7 @@ export function mountRendererAgentPicker(
     target?.focus();
   };
   const open = (focus: "first" | "last" | "selected" = "selected"): void => {
+    switchFailureNotice?.hide();
     if (trigger.disabled || popoverOpen(menu)) return;
     setMenuPosition(control);
     if (typeof menu.showPopover === "function") menu.showPopover();
@@ -396,13 +364,14 @@ export function mountRendererAgentPicker(
     check.style.visibility = "hidden";
 
     const label = document.createElement("span");
-    label.textContent = RENDERER_AGENT_LABELS[agent];
+    const plugin = plugins.find(({ id }) => id === agent);
+    label.textContent = rendererAgentLabel(agent, plugin);
     label.style.minWidth = "0";
     label.style.flex = "1 1 auto";
     label.style.overflow = "hidden";
     label.style.textOverflow = "ellipsis";
     label.style.whiteSpace = "nowrap";
-    button.append(createRendererAgentIcon(agent), label);
+    button.append(createRendererAgentIcon(agent, 20, document, plugin), label);
     button.addEventListener("click", () => {
       const selected = button.getAttribute("aria-pressed") === "true";
       close();
@@ -563,6 +532,7 @@ export function mountRendererAgentPicker(
   });
   cta.addEventListener("click", () => openConnectionsSettings(trigger));
 
+  let notInstalled = new Set<RendererAgent>();
   let mainAgents: RendererAgent[] = [...enabledAgents];
   let moreAgents: RendererAgent[] = [];
   const regroup = (): void => {
@@ -582,11 +552,16 @@ export function mountRendererAgentPicker(
     // Order follows `groupPreference.list()` — the same order the user just
     // dragged into on the Connections page — not `enabledAgents`'s fixed
     // (host-configured) order, so reordering actually shows up here too.
-    for (const entry of groupPreference.list()) {
+    const catalog = enabledAgents.map((id) => ({
+      id,
+      name: plugins.find((plugin) => plugin.id === id)?.name ?? id,
+    }));
+    for (const entry of groupPreference.list(notInstalled, catalog)) {
       const agent = entry.agent as RendererAgent;
       if (!enabledSet.has(agent) || seen.has(agent)) continue;
       seen.add(agent);
-      (entry.section === "more" ? nextMore : nextMain).push(agent);
+      const section = groupPreference.sectionOf(entry.agent, notInstalled.has(agent));
+      (section === "more" ? nextMore : nextMain).push(agent);
     }
 
     // Defensive: an enabled Agent the preference store hasn't recorded yet
@@ -597,13 +572,16 @@ export function mountRendererAgentPicker(
       nextMain.push(agent);
     }
 
-    mainAgents = nextMain;
-    moreAgents = nextMore;
+    // Stable sorting preserves the default/custom order within each section.
+    // Only confirmed missing installations move back, not checking/error states.
+    const installationOrder = (a: RendererAgent, b: RendererAgent): number =>
+      Number(notInstalled.has(a)) - Number(notInstalled.has(b));
+    mainAgents = nextMain.sort(installationOrder);
+    moreAgents = nextMore.sort(installationOrder);
     const mainChildren: HTMLElement[] = [];
     for (const agent of mainAgents) {
       const row = rowsByAgent.get(agent);
       if (row) mainChildren.push(row);
-      if (agent === "codex") mainChildren.push(codexAccountContainer);
     }
     mainGroup.replaceChildren(...mainChildren);
     moreRows.replaceChildren(
@@ -686,15 +664,35 @@ export function mountRendererAgentPicker(
     ownershipError,
     menu,
     agents: [...enabledAgents],
+    plugins,
     options,
-    codexAccounts: [],
-    codexAccountOptions,
-    codexAccountContainer,
-    codexAccountGroup,
-    selectCodexAccount: onSelectCodexAccount,
+    updateAvailability(availability) {
+      const next = new Set(
+        enabledAgents.filter(
+          (agent) => agent !== "codex" && availability[agent] === "notInstalled",
+        ),
+      );
+      if (next.size === notInstalled.size && [...next].every((agent) => notInstalled.has(agent))) {
+        return;
+      }
+      notInstalled = next;
+      regroup();
+    },
+    showSwitchFailure() {
+      switchFailureNotice ??= mountRendererModelSelectionNotice(trigger);
+      if (groupMessages.locale === "zh-CN") {
+        switchFailureNotice.show("无法切换 Agent", "当前草稿暂时无法使用所选 Agent。");
+      } else {
+        switchFailureNotice.show(
+          "Couldn’t switch Agent",
+          "The selected Agent isn’t available for this draft.",
+        );
+      }
+    },
     close,
     dispose() {
       close();
+      switchFailureNotice?.dispose();
       unsubscribeGroup();
       trigger.removeEventListener("click", onTriggerClick);
       trigger.removeEventListener("keydown", onTriggerKeyDown);
@@ -714,22 +712,27 @@ export function renderRendererAgentPicker(
   adapterState: RendererAdapterStatus["state"],
   switching: boolean,
   availability: AgentAvailability = {},
-  codexAccounts: readonly CodexAccountSummary[] = [],
+  currentCodexAccount: CodexAccountSummary | null = null,
   ownershipError = false,
 ): RendererAgentPickerView {
-  control.codexAccounts = [...codexAccounts];
-  const codexOption = control.options.codex;
-  if (codexOption) codexOption.row.hidden = codexAccounts.length > 0;
   const view = rendererAgentPickerView(
     state,
     adapterState,
     switching,
     control.agents,
     availability,
-    codexAccounts.length,
+    control.plugins.find(({ id }) => id === state.agent),
   );
+  control.updateAvailability(availability);
   if (control.iconSlot.dataset.agent !== state.agent) {
-    control.iconSlot.replaceChildren(createRendererAgentIcon(state.agent));
+    control.iconSlot.replaceChildren(
+      createRendererAgentIcon(
+        state.agent,
+        20,
+        document,
+        control.plugins.find(({ id }) => id === state.agent),
+      ),
+    );
     control.iconSlot.dataset.agent = state.agent;
   }
   control.trigger.disabled = view.triggerDisabled || ownershipError;
@@ -742,16 +745,13 @@ export function renderRendererAgentPicker(
         ? `Agent: ${view.label}`
         : `Select Agent, current ${view.label}`,
   );
-  const activeAccount = codexAccounts.find(({ active }) => active);
-  control.codexAccountGroup.render({
-    accounts: codexAccounts,
-    selectedAccountId: state.agent === "codex" ? (activeAccount?.accountId ?? null) : null,
-    disabled: switching || state.phase === "locked",
-    showBadge: state.agent === "codex" && codexAccounts.length > 1,
-  });
   control.trigger.title = ownershipError
     ? pickerGroupMessages().ownershipErrorLabel
-    : rendererAgentPickerTooltip(state, activeAccount);
+    : rendererAgentPickerTooltip(
+        state,
+        currentCodexAccount ?? undefined,
+        control.plugins.find(({ id }) => id === state.agent),
+      );
   control.trigger.style.cursor = control.trigger.disabled ? "not-allowed" : "pointer";
   control.trigger.style.opacity = control.trigger.disabled && !switching ? "0.72" : "1";
   control.iconSlot.style.display = switching || ownershipError ? "none" : "inline-flex";
@@ -786,7 +786,10 @@ export function renderRendererAgentPicker(
         option.action.style.color = "#f87171";
         option.action.style.font = "800 13px/1 system-ui, sans-serif";
         option.action.style.opacity = "1";
-        const label = `${RENDERER_AGENT_LABELS[agent]} connection error — open Settings for details`;
+        const label = `${rendererAgentLabel(
+          agent,
+          control.plugins.find(({ id }) => id === agent),
+        )} connection error — open Settings for details`;
         option.action.setAttribute("aria-label", label);
         option.action.title = label;
       } else {
@@ -795,7 +798,10 @@ export function renderRendererAgentPicker(
         option.action.style.color = "inherit";
         option.action.style.font = "600 18px/1 system-ui, sans-serif";
         option.action.style.opacity = "0.72";
-        const label = `Install ${RENDERER_AGENT_LABELS[agent]}`;
+        const label = `Install ${rendererAgentLabel(
+          agent,
+          control.plugins.find(({ id }) => id === agent),
+        )}`;
         option.action.setAttribute("aria-label", label);
         option.action.title = label;
       }

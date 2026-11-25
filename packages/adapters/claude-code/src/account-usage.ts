@@ -14,6 +14,7 @@ export function projectClaudeAccountUsage(
   const windows: Array<{
     product: string;
     periodType: AccountCreditsSnapshot["periodType"];
+    scope?: { id: string; label: string };
     usagePercent: number;
     resetsAt?: string;
   }> = [];
@@ -21,6 +22,7 @@ export function projectClaudeAccountUsage(
     product: string,
     periodType: AccountCreditsSnapshot["periodType"],
     value: { utilization: number | null; resets_at: string | null } | null | undefined,
+    scope?: string,
   ): void => {
     if (
       !value ||
@@ -33,6 +35,7 @@ export function projectClaudeAccountUsage(
     windows.push({
       product,
       periodType,
+      ...(scope ? { scope: { id: scope, label: scope } } : {}),
       usagePercent: value.utilization,
       ...(value.resets_at && Number.isFinite(Date.parse(value.resets_at))
         ? { resetsAt: value.resets_at }
@@ -41,11 +44,11 @@ export function projectClaudeAccountUsage(
   };
   add("5-hour window", "five_hour", limits.five_hour);
   add("7-day window", "seven_day", limits.seven_day);
-  add("OAuth apps · 7-day", "seven_day", limits.seven_day_oauth_apps);
-  add("Opus · 7-day", "seven_day", limits.seven_day_opus);
-  add("Sonnet · 7-day", "seven_day", limits.seven_day_sonnet);
+  add("OAuth apps · 7-day", "seven_day", limits.seven_day_oauth_apps, "OAuth apps");
+  add("Opus · 7-day", "seven_day", limits.seven_day_opus, "Opus");
+  add("Sonnet · 7-day", "seven_day", limits.seven_day_sonnet, "Sonnet");
   for (const window of limits.model_scoped ?? [])
-    add(`${window.display_name} · 7-day`, "seven_day", window);
+    add(`${window.display_name} · 7-day`, "seven_day", window, window.display_name);
   const [primary, ...others] = windows;
   if (!primary) return null;
   // Keep a model-scoped primary's label rather than presenting it as a global weekly limit.
@@ -56,12 +59,15 @@ export function projectClaudeAccountUsage(
     credits: {
       usedPercent: primary.usagePercent,
       periodType: primary.periodType,
+      ...(primary.scope ? { scope: primary.scope } : {}),
       ...(!genericPrimary ? { label: primary.product } : {}),
       ...(primary.resetsAt ? { resetsAt: primary.resetsAt } : {}),
       ...(others.length
         ? {
-            productUsage: others.map(({ product, usagePercent, resetsAt }) => ({
+            productUsage: others.map(({ product, periodType, scope, usagePercent, resetsAt }) => ({
               product,
+              periodType,
+              ...(scope ? { scope } : {}),
               usagePercent,
               ...(resetsAt ? { resetsAt } : {}),
             })),

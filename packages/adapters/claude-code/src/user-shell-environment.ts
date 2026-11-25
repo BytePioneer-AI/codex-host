@@ -1,5 +1,5 @@
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 
 const ENVIRONMENT_MARKER = Buffer.from("\0CODEXHOST_USER_SHELL_ENV_V1\0");
 const ENVIRONMENT_COMMAND = "printf '\\0CODEXHOST_USER_SHELL_ENV_V1\\0'; /usr/bin/env -0";
@@ -23,7 +23,7 @@ interface UserShellEnvironmentDependencies {
       timeout: number;
       windowsHide: boolean;
     },
-  ): ShellEnvironmentRunResult;
+  ): Promise<ShellEnvironmentRunResult>;
 }
 
 const shellEnvironmentCache = new Map<string, Readonly<Record<string, string>>>();
@@ -67,10 +67,10 @@ function mergeMissingEnvironment(
  * them once for Claude Code without parsing shell syntax or overriding the Host
  * process environment. The snapshot is never persisted or logged.
  */
-export function withUserShellEnvironment(
+export async function withUserShellEnvironment(
   environment: NodeJS.ProcessEnv,
   dependencies?: UserShellEnvironmentDependencies,
-): NodeJS.ProcessEnv {
+): Promise<NodeJS.ProcessEnv> {
   const platform = dependencies?.platform ?? process.platform;
   if (platform === "win32" || !environment.HOME) return environment;
   const shell = environment.SHELL?.trim() || defaultShell(platform);
@@ -83,13 +83,21 @@ export function withUserShellEnvironment(
   const run =
     dependencies?.run ??
     ((command: string, arguments_: readonly string[], options) =>
-      spawnSync(command, arguments_, {
-        ...options,
-        encoding: "buffer",
-        stdio: ["ignore", "pipe", "ignore"],
+      new Promise<ShellEnvironmentRunResult>((resolve) => {
+        const child = execFile(
+          command,
+          arguments_,
+          {
+            ...options,
+            encoding: "buffer",
+            killSignal: "SIGKILL",
+          },
+          (error, stdout) => resolve({ status: error ? 1 : 0, stdout }),
+        );
+        child.stdin?.end();
       }));
   try {
-    const result = run(shell, ["-ilc", ENVIRONMENT_COMMAND], {
+    const result = await run(shell, ["-ilc", ENVIRONMENT_COMMAND], {
       env: environment,
       maxBuffer: SHELL_ENVIRONMENT_MAX_BYTES,
       timeout: SHELL_ENVIRONMENT_TIMEOUT_MS,

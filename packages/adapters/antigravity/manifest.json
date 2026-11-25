@@ -6,5 +6,24 @@
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
   "icon": "./assets/icon.svg",
-  "links": { "installation": "https://antigravity.google/product/antigravity-cli" }
+  "links": {
+    "website": "https://antigravity.google/",
+    "installation": "https://antigravity.google/download#antigravity-cli"
+  },
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux · Terminal (sh/bash)",
+        "command": "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+      },
+      {
+        "terminal": "Windows · PowerShell",
+        "command": "irm https://antigravity.google/cli/install.ps1 | iex"
+      }
+    ],
+    "after": {
+      "en": "After installation, run agy to complete login or setup.",
+      "zh-CN": "安装后运行 agy，完成登录或配置。"
+    }
+  }
 }

@@ -12,11 +12,7 @@ export type {
   SetCodexLocaleOverrideOptions,
 } from "./codex-locale-adapter.js";
 
-export {
-  DEFAULT_RENDERER_AGENTS,
-  DraftAgentController,
-  KNOWN_RENDERER_AGENTS,
-} from "./agent-selection-state.js";
+export { DEFAULT_RENDERER_AGENTS, DraftAgentController } from "./agent-selection-state.js";
 export type {
   ComposerAgentPhase,
   DraftAgentControllerOptions,
@@ -112,13 +108,10 @@ export {
   GROK_TRANSPORT_MODEL_PREFIX,
   OPENCODE_TRANSPORT_MODEL_ID,
   OPENCODE_TRANSPORT_MODEL_PREFIX,
-  antigravityTransportModelId,
-  claudeTransportModelId,
-  activeRendererDraftPrewarmPolicy,
+  hermesTransportModelId,
   decodeAntigravityTransportModelId,
   decodeClaudeTransportModelId,
   decodeDeepSeekHarnessTransportModelId,
-  deepSeekHarnessTransportModelId,
   decodeGrokTransportModelId,
   decodeOpenCodeTransportModelId,
   decodePiTransportModelId,
@@ -135,9 +128,6 @@ export {
   isOpenCodeTransportModelId,
   isPiTransportModelId,
   modelSelectionForAgent,
-  grokTransportModelId,
-  openCodeTransportModelId,
-  piTransportModelId,
   PI_TRANSPORT_MODEL_ID,
   PI_TRANSPORT_MODEL_PREFIX,
   DEEPSEEK_HARNESS_TRANSPORT_MODEL_ID,
@@ -211,6 +201,8 @@ export type {
   RendererConnectionHostSnapshot,
   RendererConnectionSnapshot,
   RendererCodexAccountClient,
+  RendererDelegationClient,
+  RendererDesktopExtensionsClient,
   RendererUpdateClient,
 } from "./settings/pages.js";
 export {
@@ -230,25 +222,32 @@ export type {
   RendererSettingsWritableLanguageSelection,
 } from "./settings/localization.js";
 export {
+  RELEASE_ANNOUNCEMENT_DIALOG_ATTRIBUTE,
+  formatReleaseAnnouncementContributors,
+  formatReleaseAnnouncementDate,
+  openReleaseAnnouncementDialog,
+  selectReleaseAnnouncementContent,
+} from "./settings/release-announcement-dialog.js";
+export type {
+  ReleaseAnnouncementDialogHandle,
+  ReleaseAnnouncementDialogOptions,
+  SelectedReleaseAnnouncementContent,
+} from "./settings/release-announcement-dialog.js";
+export {
   SETTINGS_SHELL_ATTRIBUTE,
   installRendererSettingsShell,
-  isRendererSettingsDialogSupported,
   mountRendererSettingsShell,
 } from "./settings/shell.js";
 export type { RendererSettingsShell } from "./settings/shell.js";
 export {
-  SETTINGS_HEADER_SURFACE_SELECTOR,
   SETTINGS_TRIGGER_ATTRIBUTE,
   inspectRendererSettingsContract,
-  installRendererSettingsHeaderTrigger,
+  installRendererSettingsRailTrigger,
   mountRendererSettingsTrigger,
-  selectRendererSettingsHeaderSlot,
 } from "./settings/trigger.js";
 export type {
-  RendererSettingsBounds,
   RendererSettingsContractInspection,
-  RendererSettingsHeaderSlotCandidate,
-  RendererSettingsHeaderTriggerControl,
+  RendererSettingsRailTriggerControl,
   RendererSettingsTriggerControl,
 } from "./settings/trigger.js";
 export {

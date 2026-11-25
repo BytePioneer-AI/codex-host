@@ -5,8 +5,22 @@
   "version": "0.0.0",
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
-  "icon": "./assets/icon.svg",
-  "links": {
-    "installation": "https://kiro.dev/docs/cli/"
+  "icon": "./assets/kiro-agent.svg",
+  "links": { "website": "https://kiro.dev/", "installation": "https://kiro.dev/docs/cli/" },
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux · Terminal (sh/bash)",
+        "command": "curl -fsSL https://cli.kiro.dev/install | bash"
+      },
+      {
+        "terminal": "Windows · PowerShell",
+        "command": "irm 'https://cli.kiro.dev/install.ps1' | iex"
+      }
+    ],
+    "after": {
+      "en": "After installation, run kiro-cli to complete login or setup.",
+      "zh-CN": "安装后运行 kiro-cli，完成登录或配置。"
+    }
   }
 }

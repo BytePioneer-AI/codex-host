@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -58,6 +58,29 @@ describe("delegation Skill installation", () => {
     await expect(readFile(destinations[0] ?? "", "utf8")).resolves.toBe(CODEXHOST_DELEGATION_SKILL);
   });
 
+  it.each([
+    ["v15 Skill with broad delegation triggers", "codexhost-delegation-v15.md"],
+    ["upstream v14 Skill with split CLI help", "codexhost-delegation-v14.md"],
+    ["fork v13 Skill with question instructions", "codexhost-delegation-fork-v13.md"],
+    ["v4 Skill shipped in v0.4.0-v0.6.0", "codexhost-delegation-v4.md"],
+    ["v8 Skill that ran codexhost from PATH", "codexhost-delegation-v8.md"],
+    ["v9 Skill without child-session name guidance", "codexhost-delegation-v9.md"],
+    ["v10 Skill without external-client credentials", "codexhost-delegation-v10.md"],
+  ])("updates the %s", async (_name, fixture) => {
+    const root = await home();
+    const shipped = await readFile(new URL(`./fixtures/${fixture}`, import.meta.url), "utf8");
+    const destinations = paths(root);
+    for (const destination of destinations) {
+      await mkdir(path.dirname(destination), { recursive: true });
+      await writeFile(destination, shipped, "utf8");
+    }
+    const results = await installDelegationSkills({ homeDirectory: root });
+    expect(results.map((result) => result.status)).toEqual(["updated", "updated"]);
+    for (const destination of destinations) {
+      await expect(readFile(destination, "utf8")).resolves.toBe(CODEXHOST_DELEGATION_SKILL);
+    }
+  });
+
   it("preserves a user-modified copy while independently installing the other destination", async () => {
     const root = await home();
     const [agents] = paths(root);
@@ -65,27 +88,60 @@ describe("delegation Skill installation", () => {
     await import("node:fs/promises").then(({ mkdir }) =>
       mkdir(path.dirname(agents), { recursive: true }),
     );
-    await writeFile(agents, "user content\n", "utf8");
+    const edited =
+      (await readFile(new URL("./fixtures/codexhost-delegation-v14.md", import.meta.url), "utf8")) +
+      "\nUser instructions\n";
+    await writeFile(agents, edited, "utf8");
     const results = await installDelegationSkills({ homeDirectory: root });
     expect(results.map((result) => result.status)).toEqual(["conflict", "installed"]);
-    await expect(readFile(agents, "utf8")).resolves.toBe("user content\n");
+    await expect(readFile(agents, "utf8")).resolves.toBe(edited);
+  });
+
+  it("briefly explains external integration and credentials without replacing Host access", () => {
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("suggest the external CLI, HTTP or MCP");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("~/.codexhost/cli-credentials.json");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("same-user CLI calls read them automatically");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("Authorization: Bearer <token>");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("codexhost client add <name>");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain(
+      "Host-started sessions keep their injected credentials",
+    );
   });
 
   it("uses existing Threads directly and keeps viewing requests read-only", () => {
     expect(CODEXHOST_DELEGATION_SKILL).toContain("For a new delegation, create an independent");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("operate on that Thread\ndirectly");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("operate on that Thread directly");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("is ambiguous, ask the user to identify it");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session read-only");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("short task name that tells it apart");
   });
 
-  it("routes natural agent requests and points execution to the authoritative help", () => {
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 7");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("@agent) to independently perform a task");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("session's content, progress, or results");
+  it("scopes delegation requests to CodexHost and points execution to the authoritative help", () => {
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 16");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("Use in a CodexHost-managed session");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain(
+      "when the user explicitly requests\n  delegation or Thread operations through the codexhost CLI bridge",
+    );
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("tasks to other coding agents (including @agent)");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("content, progress, or results");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("Not for recapping the current conversation");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("codexhost delegate --help");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("send a follow-up message");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("cancel its current Turn");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain('"$CODEXHOST_CLI_PATH" delegate --help');
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("& $env:CODEXHOST_CLI_PATH delegate --help");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain('"%CODEXHOST_CLI_PATH%" delegate --help');
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("If CODEXHOST_CLI_PATH is unset, try");
+    expect(CODEXHOST_DELEGATION_SKILL).not.toContain("CODEXHOST_CLI_NODE_PATH");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("send a follow-up");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("cancel,");
     expect(CODEXHOST_DELEGATION_SKILL).not.toContain("--timeout-ms");
+  });
+
+  it("teaches the pending-Question read, answer, and re-watch workflow", () => {
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("answer a pending question");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("stops or needs input");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("follow the answer command's help");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("After answering, read or watch again");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("additional authorization belong to");
+    expect(CODEXHOST_DELEGATION_SKILL).not.toContain("--answers-file");
+    expect(CODEXHOST_DELEGATION_SKILL).not.toContain("pendingQuestions");
   });
 });

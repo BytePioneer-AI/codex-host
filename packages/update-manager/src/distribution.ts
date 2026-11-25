@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type {
   CommonUpdateOptions,
+  LinuxArchiveUpdateOptions,
   MacOsDmgUpdateOptions,
   NpmUpdateOptions,
   WindowsInstallerUpdateOptions,
@@ -20,6 +21,7 @@ export const UPDATE_RUNTIME_ENV = Object.freeze({
   npmCliPath: "CODEXHOST_NPM_CLI_PATH",
   npmLauncherPath: "CODEXHOST_NPM_LAUNCHER_PATH",
   npmPackageRoot: "CODEXHOST_NPM_PACKAGE_ROOT",
+  serviceManaged: "CODEXHOST_UPDATE_SERVICE",
 });
 
 export interface DistributionMetadata {
@@ -32,11 +34,11 @@ export interface DistributionMetadata {
 export interface InstalledUpdateContext {
   metadata: DistributionMetadata;
   common: CommonUpdateOptions;
-  controller: { port: number; nonce: string };
   installation:
     | { kind: "npm"; options: NpmUpdateOptions }
     | { kind: "windows-installer"; options: Omit<WindowsInstallerUpdateOptions, "artifact"> }
-    | { kind: "macos-dmg"; options: Omit<MacOsDmgUpdateOptions, "artifact"> };
+    | { kind: "macos-dmg"; options: Omit<MacOsDmgUpdateOptions, "artifact"> }
+    | { kind: "linux-archive"; options: Omit<LinuxArchiveUpdateOptions, "artifact"> };
 }
 
 interface ResolveInstalledUpdateContextOptions {
@@ -163,21 +165,22 @@ export async function resolveInstalledUpdateContext(
     "libexec",
     platform === "win32" ? "codexhost-updater.exe" : "codexhost-updater",
   );
-  const common = {
+  const serviceManaged = environment[UPDATE_RUNTIME_ENV.serviceManaged] === "1";
+  const common: CommonUpdateOptions = {
     version: metadata.version,
     launcherPid,
     launcherExecutable,
     runtimeDescriptorPath,
     updaterExecutable,
     stateDirectory,
+    ...(serviceManaged
+      ? {
+          serviceManaged: true,
+          restartTarget: "web" as const,
+          dataDirectory: absoluteEnvironmentPath(environment, "CODEXHOST_DATA_DIR"),
+        }
+      : {}),
   };
-  const controller = {
-    port: positiveEnvironmentInteger(environment, UPDATE_RUNTIME_ENV.controllerPort),
-    nonce: environment[UPDATE_RUNTIME_ENV.controllerNonce] ?? "",
-  };
-  if (!/^[0-9a-f]{32}$/u.test(controller.nonce)) {
-    throw new Error(`${UPDATE_RUNTIME_ENV.controllerNonce} must be a lowercase nonce`);
-  }
 
   if (metadata.distribution === "npm") {
     const npmOptions = {
@@ -190,13 +193,12 @@ export async function resolveInstalledUpdateContext(
     if (path.normalize(npmOptions.packageRoot) !== resourcesRoot) {
       throw new Error("npm platform package root does not own the Host Runtime");
     }
-    return { metadata, common, controller, installation: { kind: "npm", options: npmOptions } };
+    return { metadata, common, installation: { kind: "npm", options: npmOptions } };
   }
   if (platform === "win32") {
     return {
       metadata,
       common,
-      controller,
       installation: {
         kind: "windows-installer",
         options: { ...common, installRoot: installationRoot },
@@ -207,12 +209,21 @@ export async function resolveInstalledUpdateContext(
     return {
       metadata,
       common,
-      controller,
       installation: {
         kind: "macos-dmg",
         options: { ...common, appPath: installationRoot },
       },
     };
   }
-  throw new Error("installer updates require Windows or macOS");
+  if (platform === "linux") {
+    return {
+      metadata,
+      common,
+      installation: {
+        kind: "linux-archive",
+        options: { ...common, installRoot: installationRoot },
+      },
+    };
+  }
+  throw new Error("installer updates require Windows, macOS, or Linux");
 }

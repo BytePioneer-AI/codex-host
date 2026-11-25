@@ -1,23 +1,16 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 
+import { validateReleaseVersion } from "../../packages/repository-automation/index.mjs";
+
+export { validateReleaseVersion };
+
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const execFileAsync = promisify(execFile);
-const semverPattern =
-  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
-
-export function validateReleaseVersion(version) {
-  if (!semverPattern.test(version)) {
-    throw new Error(`release version '${version}' must be valid semver`);
-  }
-  if (version === "0.0.0") {
-    throw new Error("release version must not be 0.0.0");
-  }
-  return version;
-}
 
 export function parseReleasePrepareArguments(arguments_) {
   let version;
@@ -57,9 +50,10 @@ function parseJson(source, fileName) {
   }
 }
 
-export function updateCargoWorkspaceVersion(source, version) {
-  const header = /^\[workspace\.package\][ \t]*\r?$/mu.exec(source);
-  if (!header) throw new Error("Cargo.toml must define [workspace.package]");
+function updateCargoSectionVersion(source, sectionHeader, version) {
+  const escapedHeader = sectionHeader.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const header = new RegExp(`^${escapedHeader}[ \\t]*\\r?$`, "mu").exec(source);
+  if (!header) throw new Error(`Cargo.toml must define ${sectionHeader}`);
 
   const bodyStart = header.index + header[0].length;
   const sectionPattern = /^\[[^\r\n]+\][ \t]*\r?$/gmu;
@@ -70,13 +64,21 @@ export function updateCargoWorkspaceVersion(source, version) {
   const versionPattern = /^([ \t]*version[ \t]*=[ \t]*)"[^"\r\n]*"([ \t]*(?:#.*)?)$/gmu;
   const matches = [...body.matchAll(versionPattern)];
   if (matches.length !== 1) {
-    throw new Error("Cargo.toml [workspace.package] must define exactly one version");
+    throw new Error(`Cargo.toml ${sectionHeader} must define exactly one version`);
   }
 
   const match = matches[0];
   const versionStart = bodyStart + match.index;
   const replacement = `${match[1]}"${version}"${match[2]}`;
   return source.slice(0, versionStart) + replacement + source.slice(versionStart + match[0].length);
+}
+
+export function updateCargoWorkspaceVersion(source, version) {
+  return updateCargoSectionVersion(source, "[workspace.package]", version);
+}
+
+export function updateCargoPackageVersion(source, version) {
+  return updateCargoSectionVersion(source, "[package]", version);
 }
 
 export function updateCargoLockWorkspaceVersions(source, packageNames, version) {
@@ -139,6 +141,21 @@ async function synchronizeCargoLock(root, version) {
   if (nextCargoLockSource !== cargoLockSource) {
     await writeFile(cargoLockPath, nextCargoLockSource, "utf8");
   }
+  return workspacePackageNames;
+}
+
+const DESKTOP_SHELL_CARGO_TOML = "apps/desktop-shell/src-tauri/Cargo.toml";
+const DESKTOP_SHELL_CARGO_LOCK = "apps/desktop-shell/src-tauri/Cargo.lock";
+const DESKTOP_SHELL_TAURI_CONF = "apps/desktop-shell/src-tauri/tauri.conf.json";
+
+function lockfilePackageNames(source) {
+  const names = new Set();
+  for (const match of source.matchAll(
+    /^\[\[package\]\][ \t]*\r?\nname[ \t]*=[ \t]*"([^"\r\n]+)"/gmu,
+  )) {
+    names.add(match[1]);
+  }
+  return names;
 }
 
 export async function prepareReleaseVersion({ version, root = repositoryRoot }) {
@@ -147,11 +164,27 @@ export async function prepareReleaseVersion({ version, root = repositoryRoot }) 
   const lockPath = path.join(root, "package-lock.json");
   const cargoManifestPath = path.join(root, "Cargo.toml");
   const cargoLockPath = path.join(root, "Cargo.lock");
-  const [packageSource, lockSource, cargoManifestSource, cargoLockSource] = await Promise.all([
+  const shellCargoPath = path.join(root, DESKTOP_SHELL_CARGO_TOML);
+  const shellLockPath = path.join(root, DESKTOP_SHELL_CARGO_LOCK);
+  const shellTauriConfPath = path.join(root, DESKTOP_SHELL_TAURI_CONF);
+  const hasDesktopShell = existsSync(shellCargoPath);
+
+  const [
+    packageSource,
+    lockSource,
+    cargoManifestSource,
+    cargoLockSource,
+    shellCargoSource,
+    shellLockSource,
+    shellTauriConfSource,
+  ] = await Promise.all([
     readFile(packagePath, "utf8"),
     readFile(lockPath, "utf8"),
     readFile(cargoManifestPath, "utf8"),
     readFile(cargoLockPath, "utf8"),
+    hasDesktopShell ? readFile(shellCargoPath, "utf8") : Promise.resolve(null),
+    hasDesktopShell ? readFile(shellLockPath, "utf8") : Promise.resolve(null),
+    hasDesktopShell ? readFile(shellTauriConfPath, "utf8") : Promise.resolve(null),
   ]);
   const manifest = parseJson(packageSource, "package.json");
   const lockfile = parseJson(lockSource, "package-lock.json");
@@ -174,19 +207,56 @@ export async function prepareReleaseVersion({ version, root = repositoryRoot }) 
   const nextLockSource = `${JSON.stringify(lockfile, null, 2)}\n`;
   const nextCargoManifestSource = updateCargoWorkspaceVersion(cargoManifestSource, releaseVersion);
 
+  let nextShellCargoSource = null;
+  let nextShellTauriConfSource = null;
+  if (hasDesktopShell) {
+    nextShellCargoSource = updateCargoPackageVersion(shellCargoSource, releaseVersion);
+    const tauriConf = parseJson(shellTauriConfSource, DESKTOP_SHELL_TAURI_CONF);
+    tauriConf.version = releaseVersion;
+    nextShellTauriConfSource = `${JSON.stringify(tauriConf, null, 2)}\n`;
+  }
+
   try {
     await Promise.all([
       writeFile(packagePath, nextPackageSource, "utf8"),
       writeFile(lockPath, nextLockSource, "utf8"),
       writeFile(cargoManifestPath, nextCargoManifestSource, "utf8"),
+      ...(hasDesktopShell
+        ? [
+            writeFile(shellCargoPath, nextShellCargoSource, "utf8"),
+            writeFile(shellTauriConfPath, nextShellTauriConfSource, "utf8"),
+          ]
+        : []),
     ]);
-    await synchronizeCargoLock(root, releaseVersion);
+    const workspacePackageNames = await synchronizeCargoLock(root, releaseVersion);
+    if (hasDesktopShell) {
+      const presentNames = lockfilePackageNames(shellLockSource);
+      const shellLockTargetNames = new Set(["codexhost-shell"]);
+      for (const name of workspacePackageNames) {
+        if (presentNames.has(name)) shellLockTargetNames.add(name);
+      }
+      const nextShellLockSource = updateCargoLockWorkspaceVersions(
+        shellLockSource,
+        shellLockTargetNames,
+        releaseVersion,
+      );
+      if (nextShellLockSource !== shellLockSource) {
+        await writeFile(shellLockPath, nextShellLockSource, "utf8");
+      }
+    }
   } catch (error) {
     await Promise.all([
       writeFile(packagePath, packageSource, "utf8"),
       writeFile(lockPath, lockSource, "utf8"),
       writeFile(cargoManifestPath, cargoManifestSource, "utf8"),
       writeFile(cargoLockPath, cargoLockSource, "utf8"),
+      ...(hasDesktopShell
+        ? [
+            writeFile(shellCargoPath, shellCargoSource, "utf8"),
+            writeFile(shellLockPath, shellLockSource, "utf8"),
+            writeFile(shellTauriConfPath, shellTauriConfSource, "utf8"),
+          ]
+        : []),
     ]);
     throw new Error(
       `failed to synchronize Cargo.lock: ${error instanceof Error ? error.message : error}`,
@@ -195,11 +265,21 @@ export async function prepareReleaseVersion({ version, root = repositoryRoot }) 
   }
 
   const nextCargoLockSource = await readFile(cargoLockPath, "utf8");
+  const nextShellLockSource = hasDesktopShell ? await readFile(shellLockPath, "utf8") : null;
   const changedFiles = [
     ...(nextPackageSource !== packageSource ? ["package.json"] : []),
     ...(nextLockSource !== lockSource ? ["package-lock.json"] : []),
     ...(nextCargoManifestSource !== cargoManifestSource ? ["Cargo.toml"] : []),
     ...(nextCargoLockSource !== cargoLockSource ? ["Cargo.lock"] : []),
+    ...(hasDesktopShell && nextShellCargoSource !== shellCargoSource
+      ? [DESKTOP_SHELL_CARGO_TOML]
+      : []),
+    ...(hasDesktopShell && nextShellLockSource !== shellLockSource
+      ? [DESKTOP_SHELL_CARGO_LOCK]
+      : []),
+    ...(hasDesktopShell && nextShellTauriConfSource !== shellTauriConfSource
+      ? [DESKTOP_SHELL_TAURI_CONF]
+      : []),
   ];
 
   return { changedFiles, tag: `v${releaseVersion}`, version: releaseVersion };

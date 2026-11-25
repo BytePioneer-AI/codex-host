@@ -1,16 +1,19 @@
+// @vitest-environment jsdom
 import {
   harnessIdSchema,
+  type HarnessPluginDescriptor,
   type HostThreadId,
   type ThreadOwnershipListParams,
   type ThreadOwnershipListResult,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RendererAgent } from "../src/agent-selection-state.js";
 import type { RendererModelClient } from "../src/renderer-model-client.js";
 import { RendererMethodUnavailableError } from "../src/renderer-request-sender.js";
 import {
   installRendererSidebarAgentIcons,
+  SIDEBAR_AGENT_ICON_ATTRIBUTE,
   draftIdFromSidebarRowElement,
   rendererAgentForThreadOwnership,
   threadIdFromSidebarRowElement,
@@ -22,13 +25,15 @@ const PI_HARNESS_ID = harnessIdSchema.parse("pi");
 const CLAUDE_CODE_HARNESS_ID = harnessIdSchema.parse("claude-code");
 const OPENCODE_HARNESS_ID = harnessIdSchema.parse("opencode");
 const ANTIGRAVITY_HARNESS_ID = harnessIdSchema.parse("antigravity");
+const HERMES_HARNESS_ID = harnessIdSchema.parse("hermes");
 const FUTURE_HARNESS_ID = harnessIdSchema.parse("future-agent");
 
 class FakeRow implements SidebarAgentIconRow {
   connected = true;
-  agent: Exclude<RendererAgent, "codex"> | null = null;
+  agent: RendererAgent | null = null;
   renders = 0;
   clears = 0;
+  plugin: HarnessPluginDescriptor | undefined;
 
   constructor(
     public id: string | null,
@@ -48,12 +53,19 @@ class FakeRow implements SidebarAgentIconRow {
     return this.id;
   }
 
+  path: string | null = null;
+
+  placeholderPath(): string | null {
+    return this.path;
+  }
+
   draftId(): string | null {
     return this.draft;
   }
 
-  render(agent: Exclude<RendererAgent, "codex">): void {
+  render(agent: RendererAgent, plugin?: HarnessPluginDescriptor): void {
     this.agent = agent;
+    this.plugin = plugin;
     this.renders += 1;
   }
 
@@ -64,7 +76,7 @@ class FakeRow implements SidebarAgentIconRow {
 }
 
 class FakeDom implements SidebarAgentIconDom {
-  readonly listeners = new Set<() => void>();
+  readonly listeners = new Set<(rows: readonly SidebarAgentIconRow[]) => void>();
   cleared = false;
 
   constructor(public mountedRows: FakeRow[]) {}
@@ -73,7 +85,7 @@ class FakeDom implements SidebarAgentIconDom {
     return this.mountedRows;
   }
 
-  observe(onChange: () => void): () => void {
+  observe(onChange: (rows: readonly SidebarAgentIconRow[]) => void): () => void {
     this.listeners.add(onChange);
     return () => this.listeners.delete(onChange);
   }
@@ -83,8 +95,8 @@ class FakeDom implements SidebarAgentIconDom {
     for (const row of this.mountedRows) row.clear();
   }
 
-  change(): void {
-    for (const listener of this.listeners) listener();
+  change(rows: readonly SidebarAgentIconRow[] = this.mountedRows): void {
+    for (const listener of this.listeners) listener(rows);
   }
 }
 
@@ -108,17 +120,12 @@ function clientWith(
     readUpdateStatus: vi.fn(),
     listCodexAccounts: vi.fn(),
     refreshCodexAccounts: vi.fn(),
-    createCodexAccount: vi.fn(),
-    deleteCodexAccount: vi.fn(),
-    activateCodexAccount: vi.fn(),
-    startCodexAccountLogin: vi.fn(),
-    cancelCodexAccountLogin: vi.fn(),
-    subscribeCodexAccountLogin: vi.fn(),
   };
 }
 
 async function settle(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 }
 
 function fiberRow(
@@ -155,6 +162,175 @@ function fiberRow(
 }
 
 describe("Renderer sidebar Agent ownership", () => {
+  beforeEach(() => {
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+      setTimeout(() => callback(performance.now()), 0),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("checks SSH path rows only after native ownership and rechecks them on closure", async () => {
+    const host = "remote-ssh-discovered:test";
+    const agents = ["codex", "claude-code", "deepseek-harness"] as const;
+    const rows = agents.map(() => new FakeRow(crypto.randomUUID(), null, host));
+    for (const row of rows) row.path = "/workspace";
+    const dom = new FakeDom(rows);
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) => {
+        const agent = agents[rows.findIndex((row) => row.id === threadId)];
+        return !agent || agent === "codex"
+          ? { threadId, owner: "codex" as const }
+          : { threadId, owner: "external" as const, harnessId: harnessIdSchema.parse(agent) };
+      }),
+    }));
+    const checkRemotePlaceholder = vi.fn();
+    const icons = installRendererSidebarAgentIcons({
+      dom,
+      getClient: () => client,
+      checkRemotePlaceholder,
+    });
+    try {
+      await vi.waitFor(() => expect(checkRemotePlaceholder).toHaveBeenCalledTimes(1));
+      const native = rows[0];
+      if (!native?.id) throw new Error("Missing test thread");
+      expect(checkRemotePlaceholder).toHaveBeenCalledWith(host, native.id, "/workspace");
+      icons.remoteThreadClosed(host, native.id);
+      await vi.waitFor(() => expect(checkRemotePlaceholder).toHaveBeenCalledTimes(2));
+      expect(rows.map((row) => row.agent)).toEqual(agents);
+    } finally {
+      icons.dispose();
+    }
+  });
+
+  it("rechecks a closed SSH path row even while the Composer still knows its Agent", async () => {
+    const host = "remote-ssh-discovered:test";
+    const id = crypto.randomUUID();
+    const row = new FakeRow(id, null, host);
+    const duplicate = new FakeRow(id, null, host);
+    row.path = "/workspace";
+    let external = true;
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) =>
+        external
+          ? { threadId, owner: "external", harnessId: harnessIdSchema.parse("claude-code") }
+          : { threadId, owner: "codex" },
+      ),
+    }));
+    const checkRemotePlaceholder = vi.fn();
+    const icons = installRendererSidebarAgentIcons({
+      dom: new FakeDom([duplicate, row]),
+      getLocalAgent: () => "claude-code",
+      getClient: () => client,
+      checkRemotePlaceholder,
+    });
+    try {
+      expect(row.agent).toBe("claude-code");
+      await settle();
+      expect(checkRemotePlaceholder).not.toHaveBeenCalled();
+      external = false;
+      icons.remoteThreadClosed(host, id);
+      expect(row.agent).toBe("claude-code");
+      await vi.waitFor(() =>
+        expect(checkRemotePlaceholder).toHaveBeenCalledWith(host, id, "/workspace"),
+      );
+    } finally {
+      icons.dispose();
+    }
+  });
+
+  it("checks a late path on settled ownership and bounds retries after a failed check", async () => {
+    vi.useFakeTimers();
+    const host = "remote-ssh-discovered:test";
+    const row = new FakeRow(crypto.randomUUID(), null, host);
+    const dom = new FakeDom([row]);
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) => ({ threadId, owner: "codex" })),
+    }));
+    const checkRemotePlaceholder = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(undefined);
+    const icons = installRendererSidebarAgentIcons({
+      dom,
+      getClient: () => client,
+      checkRemotePlaceholder,
+    });
+    try {
+      await vi.runAllTimersAsync();
+      const ownershipRequests = vi.mocked(client.listThreadOwnership).mock.calls.length;
+      row.path = "/workspace";
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(2);
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(2);
+      checkRemotePlaceholder.mockRejectedValue(new Error("still offline"));
+      row.path = "/another";
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(4);
+      checkRemotePlaceholder.mockResolvedValue(undefined);
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(5);
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(5);
+      expect(client.listThreadOwnership).toHaveBeenCalledTimes(ownershipRequests);
+    } finally {
+      icons.dispose();
+      vi.useRealTimers();
+    }
+  });
+  it.each([
+    ["button", "data-interactive-row-button"],
+    ["a", "data-interactive-row-link"],
+  ])(
+    "puts the icon in the native leading position for a title %s",
+    async (tag, interactiveAttribute) => {
+      const row = document.createElement("div");
+      row.setAttribute("data-app-action-sidebar-thread-row", "");
+      row.setAttribute("data-app-action-sidebar-thread-id", "local:client-new-thread:fixture");
+      row.setAttribute("data-app-action-sidebar-thread-host-id", "local");
+      row.innerHTML = `
+      <div style="display: flex">
+        <div style="display: flex; align-items: center; gap: 0.5rem">
+          <div data-thread-title-trigger style="display: flex; gap: 0.5rem">
+            <${tag} ${interactiveAttribute} style="display: flex">
+              <span data-thread-title>Long thread title</span>
+            </${tag}>
+          </div>
+        </div>
+        <span role="status"></span>
+      </div>`;
+      document.body.append(row);
+      const titleTrigger = row.querySelector("[data-thread-title-trigger]");
+      const action = row.querySelector(`[${interactiveAttribute}]`);
+      const status = row.querySelector('[role="status"]');
+      const control = installRendererSidebarAgentIcons({
+        getClient: () => null,
+        getLocalAgent: () => "codex",
+      });
+      try {
+        await settle();
+
+        const icon = row.querySelector(`[${SIDEBAR_AGENT_ICON_ATTRIBUTE}]`);
+        expect(icon).not.toBeNull();
+        expect(icon?.nextElementSibling).toBe(titleTrigger);
+        expect(action?.firstElementChild?.matches("[data-thread-title]")).toBe(true);
+        expect(titleTrigger?.parentElement?.nextElementSibling).toBe(status);
+      } finally {
+        control.dispose();
+        row.remove();
+      }
+      expect(row.querySelector(`[${SIDEBAR_AGENT_ICON_ATTRIBUTE}]`)).toBeNull();
+    },
+  );
+
   it("resolves the draft key separately from the Fiber conversation identity", () => {
     const attributes = {
       "data-app-action-sidebar-thread-row": "",
@@ -245,7 +421,7 @@ describe("Renderer sidebar Agent ownership", () => {
     }
   });
 
-  it("batches mounted rows and decorates only known external Agents", async () => {
+  it("batches mounted rows and decorates arbitrary external plugin identities", async () => {
     const rows = [
       new FakeRow("codex-thread"),
       new FakeRow("pi-thread"),
@@ -279,8 +455,191 @@ describe("Renderer sidebar Agent ownership", () => {
     expect(client.listThreadOwnership).toHaveBeenCalledWith({
       threadIds: ["codex-thread", "pi-thread", "claude-thread", "unknown-thread"],
     });
-    expect(rows.map((row) => row.agent)).toEqual([null, "pi", "claude-code", null]);
+    expect(rows.map((row) => row.agent)).toEqual(["codex", "pi", "claude-code", "future-agent"]);
     control.dispose();
+  });
+
+  it("reads each Host's artwork once per scan, including cached ownership, without retaining it across scans", async () => {
+    const rows = Array.from(
+      { length: 80 },
+      (_, index) => new FakeRow(`thread-${index}`, null, index % 2 ? "remote" : "local"),
+    );
+    const dom = new FakeDom(rows);
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId, index) => ({
+        threadId,
+        owner: "external" as const,
+        harnessId: index % 2 ? PI_HARNESS_ID : CLAUDE_CODE_HARNESS_ID,
+      })),
+    }));
+    const plugins = (host: string, version: string): HarnessPluginDescriptor[] =>
+      [PI_HARNESS_ID, CLAUDE_CODE_HARNESS_ID].map((id) => ({
+        id,
+        name: `${host}-${id}`,
+        version,
+      }));
+    let remotePlugins: readonly HarnessPluginDescriptor[] | undefined = plugins("remote", "1");
+    const getPlugins = vi.fn((host: string) =>
+      host === "local" ? plugins("local", "1") : remotePlugins,
+    );
+    const control = installRendererSidebarAgentIcons({ getClient: () => client, getPlugins, dom });
+    try {
+      await settle();
+      expect(getPlugins).toHaveBeenCalledTimes(2);
+      expect(getPlugins).toHaveBeenCalledWith("local");
+      expect(getPlugins).toHaveBeenCalledWith("remote");
+      expect(client.listThreadOwnership).toHaveBeenCalledTimes(2);
+      for (const row of rows) expect(row.plugin?.name).toBe(`${row.host}-${row.agent}`);
+
+      // Cached ownership still needs fresh artwork on the next scan: a disconnected
+      // or replaced Host must not retain the previous connection's presentation.
+      for (const next of [undefined, plugins("remote", "2")]) {
+        remotePlugins = next;
+        getPlugins.mockClear();
+        dom.change();
+        dom.change();
+        await settle();
+        expect(getPlugins).toHaveBeenCalledTimes(2);
+        expect(client.listThreadOwnership).toHaveBeenCalledTimes(2);
+        for (const row of rows) {
+          expect(row.plugin?.version).toBe(row.host === "local" ? "1" : next?.[0]?.version);
+        }
+      }
+    } finally {
+      control.dispose();
+    }
+  });
+
+  it("shares a Host artwork read between a local draft and cached sidebar ownership", async () => {
+    const draft = new FakeRow(null, "client-new-thread:draft");
+    const thread = new FakeRow("thread");
+    const dom = new FakeDom([draft, thread]);
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) => ({
+        threadId,
+        owner: "external" as const,
+        harnessId: PI_HARNESS_ID,
+      })),
+    }));
+    const plugin = { id: PI_HARNESS_ID, name: "Pi", version: "1" };
+    const getPlugins = vi.fn(() => [plugin]);
+    const control = installRendererSidebarAgentIcons({
+      getClient: () => client,
+      getLocalAgent: ({ draftId }) => (draftId ? "pi" : null),
+      getPlugins,
+      dom,
+    });
+    try {
+      await settle();
+      getPlugins.mockClear();
+      dom.change();
+      await settle();
+      expect(getPlugins).toHaveBeenCalledOnce();
+      expect(draft.plugin).toEqual(plugin);
+      expect(thread.plugin).toEqual(plugin);
+    } finally {
+      control.dispose();
+    }
+  });
+
+  it("only processes appended or changed rows in a long list, including their ownership replies", async () => {
+    const rows = Array.from({ length: 1000 }, (_, index) => new FakeRow(`thread-${index}`));
+    const dom = new FakeDom(rows);
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) => ({
+        threadId,
+        owner: "external" as const,
+        harnessId: PI_HARNESS_ID,
+      })),
+    }));
+    const readRows = vi.spyOn(dom, "rows");
+    const getLocalAgent = vi.fn(() => null);
+    const control = installRendererSidebarAgentIcons({
+      getClient: () => client,
+      getLocalAgent,
+      dom,
+    });
+    try {
+      await settle();
+      const renders = rows.map((row) => row.renders);
+      readRows.mockClear();
+      getLocalAgent.mockClear();
+      vi.mocked(client.listThreadOwnership).mockClear();
+      const added = new FakeRow("new-thread");
+      rows.push(added);
+      dom.change([added]);
+      dom.change([added]);
+      await settle();
+      await settle();
+      expect(added.agent).toBe("pi");
+      expect(client.listThreadOwnership).toHaveBeenCalledExactlyOnceWith({
+        threadIds: ["new-thread"],
+      });
+      expect(rows.slice(0, 1000).map((row) => row.renders)).toEqual(renders);
+      expect(getLocalAgent).toHaveBeenCalledTimes(2); // discovery and its asynchronous reply
+      expect(readRows).not.toHaveBeenCalled();
+
+      // A title replacement repairs just that row using cached ownership.
+      getLocalAgent.mockClear();
+      const first = rows[0];
+      if (!first) throw new Error("Missing existing row");
+      first.agent = null;
+      dom.change([first]);
+      await settle();
+      expect(first.agent).toBe("pi");
+      expect(getLocalAgent).toHaveBeenCalledOnce();
+      expect(readRows).not.toHaveBeenCalled();
+
+      // Explicit Host/plugin invalidation still refreshes the entire mounted list.
+      getLocalAgent.mockClear();
+      control.refresh();
+      await settle();
+      expect(readRows).toHaveBeenCalledOnce();
+      expect(getLocalAgent).toHaveBeenCalledTimes(1001);
+    } finally {
+      control.dispose();
+    }
+  });
+
+  it("updates every mounted copy of a Thread, but not recycled or removed rows, on a late ownership reply", async () => {
+    const first = new FakeRow("old");
+    const duplicate = new FakeRow("old");
+    const removed = new FakeRow("old");
+    const dom = new FakeDom([first, removed]);
+    const pending = Promise.withResolvers<ThreadOwnershipListResult>();
+    const client = clientWith(async ({ threadIds }) =>
+      threadIds.some((id) => id === "old")
+        ? pending.promise
+        : {
+            threads: threadIds.map((threadId) => ({
+              threadId,
+              owner: "external" as const,
+              harnessId: CLAUDE_CODE_HARNESS_ID,
+            })),
+          },
+    );
+    const control = installRendererSidebarAgentIcons({ getClient: () => client, dom });
+    try {
+      await settle();
+      first.id = "replacement";
+      removed.connected = false;
+      dom.mountedRows = [first, duplicate];
+      dom.change([first, removed, duplicate]);
+      await settle();
+      await settle();
+      expect(first.agent).toBe("claude-code");
+      const firstRenders = first.renders;
+      pending.resolve({
+        threads: [{ threadId: "old" as HostThreadId, owner: "external", harnessId: PI_HARNESS_ID }],
+      });
+      await settle();
+      expect(duplicate.agent).toBe("pi");
+      expect(removed.agent).toBeNull();
+      expect(first.agent).toBe("claude-code");
+      expect(first.renders).toBe(firstRenders);
+    } finally {
+      control.dispose();
+    }
   });
 
   it("queries local and remote sidebar rows independently", async () => {
@@ -425,6 +784,42 @@ describe("Renderer sidebar Agent ownership", () => {
     }
   });
 
+  it("retries provisional ownership without rescanning unrelated rows", async () => {
+    vi.useFakeTimers();
+    const stable = Array.from({ length: 1000 }, (_, index) => new FakeRow(`stable-${index}`));
+    const provisional = new FakeRow("provisional");
+    const dom = new FakeDom([...stable, provisional]);
+    let ready = false;
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) =>
+        threadId === "provisional" && !ready
+          ? { threadId, owner: "codex" as const }
+          : { threadId, owner: "external" as const, harnessId: PI_HARNESS_ID },
+      ),
+    }));
+    const getLocalAgent = vi.fn(() => null);
+    const control = installRendererSidebarAgentIcons({
+      getClient: () => client,
+      getLocalAgent,
+      dom,
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(32);
+      expect(provisional.agent).toBe("codex");
+      expect(stable.every((row) => row.agent === "pi")).toBe(true);
+      const renders = stable.map((row) => row.renders);
+      getLocalAgent.mockClear();
+      ready = true;
+      await vi.advanceTimersByTimeAsync(120);
+      expect(provisional.agent).toBe("pi");
+      expect(getLocalAgent).toHaveBeenCalledTimes(2);
+      expect(stable.map((row) => row.renders)).toEqual(renders);
+    } finally {
+      control.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("retries failed ownership requests without requiring an explicit refresh", async () => {
     vi.useFakeTimers();
     try {
@@ -535,7 +930,68 @@ describe("Renderer sidebar Agent ownership", () => {
     }
   });
 
-  it("maps only known external Harness ownership to Renderer Agents", () => {
+  it.each(["refresh", "retry"])(
+    "keeps Codex decoration while %s revalidates ownership",
+    async (cause) => {
+      vi.useFakeTimers();
+      const row = new FakeRow("codex-thread");
+      const reply = Promise.withResolvers<ThreadOwnershipListResult>();
+      const lookup = vi
+        .fn<(input: ThreadOwnershipListParams) => Promise<ThreadOwnershipListResult>>()
+        .mockResolvedValueOnce({
+          threads: [{ threadId: "codex-thread" as HostThreadId, owner: "codex" }],
+        })
+        .mockReturnValueOnce(reply.promise);
+      const control = installRendererSidebarAgentIcons({
+        getClient: () => clientWith(lookup),
+        dom: new FakeDom([row]),
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(32);
+        expect(row.agent).toBe("codex");
+        const clears = row.clears;
+        if (cause === "refresh") control.refresh();
+        await vi.advanceTimersByTimeAsync(cause === "refresh" ? 32 : 120);
+        expect(lookup).toHaveBeenCalledTimes(2);
+        expect(row.agent).toBe("codex");
+        expect(row.clears).toBe(clears);
+        reply.resolve({
+          threads: [
+            {
+              threadId: "codex-thread" as HostThreadId,
+              owner: "external",
+              harnessId: PI_HARNESS_ID,
+            },
+          ],
+        });
+        await vi.advanceTimersByTimeAsync(32);
+        expect(row.agent).toBe("pi");
+        expect(row.clears).toBe(clears);
+      } finally {
+        control.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("renders confirmed Codex ownership without requesting plugin artwork", async () => {
+    const row = new FakeRow("codex-thread");
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) => ({ threadId, owner: "codex" as const })),
+    }));
+    const getPlugins = vi.fn();
+    const control = installRendererSidebarAgentIcons({
+      getClient: () => client,
+      getPlugins,
+      dom: new FakeDom([row]),
+    });
+    await settle();
+    expect(row.agent).toBe("codex");
+    expect(getPlugins).not.toHaveBeenCalled();
+    control.dispose();
+  });
+
+  it("maps external Harness ownership without a static identity list", () => {
     expect(
       rendererAgentForThreadOwnership({
         threadId: "kiro-thread" as HostThreadId,
@@ -566,10 +1022,24 @@ describe("Renderer sidebar Agent ownership", () => {
     ).toBe("antigravity");
     expect(
       rendererAgentForThreadOwnership({
+        threadId: "hermes-thread" as HostThreadId,
+        owner: "external",
+        harnessId: HERMES_HARNESS_ID,
+      }),
+    ).toBe("hermes");
+    expect(
+      rendererAgentForThreadOwnership({
+        threadId: "qoder-thread" as HostThreadId,
+        owner: "external",
+        harnessId: harnessIdSchema.parse("qoder"),
+      }),
+    ).toBe("qoder");
+    expect(
+      rendererAgentForThreadOwnership({
         threadId: "future-thread" as HostThreadId,
         owner: "external",
         harnessId: FUTURE_HARNESS_ID,
       }),
-    ).toBeNull();
+    ).toBe("future-agent");
   });
 });

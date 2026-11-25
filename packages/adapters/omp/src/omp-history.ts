@@ -19,17 +19,20 @@ import {
   type NativeCheckpointRef,
 } from "@codexhost/shared-contracts";
 
-import { encodeOmpModelRef, type OmpNativeModelRef } from "./omp-model-catalog.js";
+import { createOmpModelIndex, type OmpNativeModelRef } from "./omp-model-catalog.js";
 import { projectOmpToolItem } from "./omp-tool-presentation.js";
 
 export interface OmpSessionHistory {
   entries: JsonObject[];
   leafId: string | null;
+  /** The tolerant transcript reader skipped invalid records; usage must not claim completeness. */
+  incomplete?: boolean;
 }
 
 export interface OmpHistoryState {
   sessionId: string;
   model: OmpNativeModelRef | null;
+  models?: readonly OmpNativeModelRef[];
 }
 
 interface OmpEntry extends JsonObject {
@@ -264,6 +267,11 @@ export function mapOmpSnapshot(
 ): HostThreadSnapshot {
   const active = activeOmpEntries(history);
   const turns: HostThreadSnapshot["turns"] = [];
+  const models = createOmpModelIndex([
+    ...(state.models ?? []),
+    ...(state.model ? [state.model] : []),
+    ...active.map(modelChange).filter((model) => model !== null),
+  ]);
   let effectiveModel = state.model;
   for (let index = 0; index < active.length;) {
     const model = modelChange(active[index] as OmpEntry);
@@ -300,7 +308,7 @@ export function mapOmpSnapshot(
       input: [{ type: "text", text: userText }],
       items: snapshotItems(entries, outcome),
       outcome,
-      ...(effectiveModel ? { model: encodeOmpModelRef(effectiveModel) } : {}),
+      ...(effectiveModel ? { model: models.ref(effectiveModel) } : {}),
     });
     for (const entry of entries) {
       const changed = modelChange(entry);

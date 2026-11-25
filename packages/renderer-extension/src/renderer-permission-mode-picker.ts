@@ -7,6 +7,7 @@ import type { IconNode } from "lucide";
 import createElement from "lucide/dist/esm/createElement.mjs";
 import Check from "lucide/dist/esm/icons/check.mjs";
 import ChevronDown from "lucide/dist/esm/icons/chevron-down.mjs";
+import CircleAlert from "lucide/dist/esm/icons/circle-alert.mjs";
 import Lock from "lucide/dist/esm/icons/lock.mjs";
 import Shield from "lucide/dist/esm/icons/shield.mjs";
 import ShieldAlert from "lucide/dist/esm/icons/shield-alert.mjs";
@@ -17,7 +18,10 @@ import {
 } from "./renderer-harness-localization.js";
 import type { RendererSettingsLocale } from "./settings/localization.js";
 import {
+  applyRendererTriggerChipSqueezeRoot,
+  applyRendererTriggerChipSqueezeTrigger,
   ensureRendererTriggerChipStyle,
+  rendererPermissionModeTriggerMaxWidth,
   TRIGGER_CHIP_CLASS,
 } from "./renderer-trigger-chip-style.js";
 
@@ -32,6 +36,8 @@ export interface RendererPermissionModeControlView {
   catalog?: HarnessPermissionModeCatalog;
   selected?: HarnessPermissionModeId;
   error?: string;
+  /** Set only when Host rejected a user selection, not when the catalog failed to load. */
+  selectionRejected?: boolean;
   selectionLocked?: boolean;
   selectionLockedReason?: string;
 }
@@ -48,6 +54,7 @@ export interface RendererPermissionModePickerControl {
   label: HTMLElement;
   chevron: HTMLElement;
   lockMark: HTMLElement;
+  errorMark: HTMLElement;
   menu: HTMLElement;
   options: Map<string, PermissionModeOptionControl>;
   locale: RendererSettingsLocale;
@@ -80,6 +87,22 @@ function selectedMode(view: RendererPermissionModeControlView): HarnessPermissio
 export function isPermissionModeControlReady(view: RendererPermissionModeControlView): boolean {
   if (view.status === "unsupported") return true;
   return (view.status === "ready" || view.status === "error") && selectedMode(view) !== undefined;
+}
+
+/**
+ * A rejected selection keeps the previous confirmed mode, so the label alone looks unchanged.
+ * Surface the failure on the trigger until the next successful selection or refresh.
+ */
+export function rendererPermissionModeSelectionFailed(
+  view: RendererPermissionModeControlView,
+): boolean {
+  return (
+    view.status === "error" &&
+    view.selectionRejected === true &&
+    Boolean(view.error) &&
+    view.selectionLocked !== true &&
+    selectedMode(view) !== undefined
+  );
 }
 
 export function rendererPermissionModeLabel(
@@ -133,8 +156,9 @@ export function syncRendererPermissionModeTriggerClass(
   // Codex can rename or remove those between Desktop releases; our own
   // `TRIGGER_CHIP_CLASS` chrome (see renderer-trigger-chip-style.ts) does not.
   control.trigger.className = TRIGGER_CHIP_CLASS;
-  control.trigger.style.maxWidth = "min(220px, 34vw)";
   control.trigger.style.letterSpacing = "0";
+  applyRendererTriggerChipSqueezeTrigger(control.trigger);
+  applyRendererTriggerChipSqueezeRoot(control.root, rendererPermissionModeTriggerMaxWidth());
 }
 
 export function mountRendererPermissionModePicker(
@@ -148,6 +172,7 @@ export function mountRendererPermissionModePicker(
   root.setAttribute("data-codexhost-permission-mode-control", composerId);
   root.className = "relative min-w-0";
   root.style.display = "none";
+  applyRendererTriggerChipSqueezeRoot(root, rendererPermissionModeTriggerMaxWidth());
 
   const trigger = document.createElement("button");
   trigger.type = "button";
@@ -158,28 +183,41 @@ export function mountRendererPermissionModePicker(
   trigger.style.padding = "0 6px";
   trigger.style.gap = "4px";
   trigger.style.font = "400 13px/18px system-ui, sans-serif";
+  trigger.className = TRIGGER_CHIP_CLASS;
+  applyRendererTriggerChipSqueezeTrigger(trigger);
 
   const shield = document.createElement("span");
+  shield.dataset.codexhostPermissionShield = "";
   shield.className = "inline-flex shrink-0 items-center";
   shield.append(icon(Shield, 15));
 
   const label = document.createElement("span");
+  label.dataset.codexhostPermissionLabel = "";
   label.className = "truncate";
+  label.style.flex = "1 1 auto";
   label.style.minWidth = "0";
   label.style.overflow = "hidden";
   label.style.textOverflow = "ellipsis";
   label.style.whiteSpace = "nowrap";
 
   const chevron = document.createElement("span");
+  chevron.dataset.codexhostPermissionChevron = "";
   chevron.className = "inline-flex shrink-0 items-center";
   chevron.style.color = "var(--color-text-tertiary, #8f8f8f)";
   chevron.append(icon(ChevronDown, 14));
   const lockMark = document.createElement("span");
+  lockMark.dataset.codexhostPermissionLock = "";
   lockMark.className = "inline-flex shrink-0 items-center";
   lockMark.style.color = "var(--color-text-tertiary, #8f8f8f)";
   lockMark.hidden = true;
   lockMark.append(icon(Lock, 14));
-  trigger.append(shield, label, chevron, lockMark);
+  const errorMark = document.createElement("span");
+  errorMark.dataset.codexhostPermissionError = "";
+  errorMark.className = "inline-flex shrink-0 items-center";
+  errorMark.style.color = "var(--color-text-danger, #c2413b)";
+  errorMark.hidden = true;
+  errorMark.append(icon(CircleAlert, 14));
+  trigger.append(shield, label, errorMark, chevron, lockMark);
 
   const menu = document.createElement("div");
   menu.id = `${composerId}-permission-mode-menu`;
@@ -292,6 +330,7 @@ export function mountRendererPermissionModePicker(
     label,
     chevron,
     lockMark,
+    errorMark,
     menu,
     options,
     locale,
@@ -372,8 +411,8 @@ export function renderRendererPermissionModePicker(
   control.root.style.alignItems = "center";
   control.root.style.alignSelf = "center";
   control.root.style.height = "28px";
-  control.root.style.flex = "0 0 auto";
   control.root.style.verticalAlign = "middle";
+  applyRendererTriggerChipSqueezeRoot(control.root, rendererPermissionModeTriggerMaxWidth());
   if (!visible) {
     control.close();
     return;
@@ -391,7 +430,13 @@ export function renderRendererPermissionModePicker(
     : view.error
       ? `${label}: ${view.error}`
       : label;
-  control.trigger.setAttribute("aria-label", `${messages.permissionMode}: ${label}`);
+  const selectionFailed = rendererPermissionModeSelectionFailed(view);
+  control.trigger.setAttribute(
+    "aria-label",
+    selectionFailed
+      ? `${messages.permissionMode}: ${label}: ${view.error}`
+      : `${messages.permissionMode}: ${label}`,
+  );
   control.trigger.disabled =
     locked ||
     view.status === "loading" ||
@@ -401,6 +446,7 @@ export function renderRendererPermissionModePicker(
   control.trigger.style.opacity = locked ? "0.72" : "1";
   control.chevron.hidden = locked;
   control.lockMark.hidden = !locked;
+  control.errorMark.hidden = !selectionFailed;
   control.trigger.setAttribute("aria-busy", String(view.status === "selecting"));
   if (control.trigger.disabled) control.close();
 

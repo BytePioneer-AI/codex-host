@@ -1,23 +1,25 @@
 import {
+  HARNESS_INSTALLATION_START_METHOD,
+  HARNESS_LAUNCH_SETTINGS_GET_METHOD,
+  HARNESS_LAUNCH_SETTINGS_SET_METHOD,
+  HOST_EXTENSIONS_RPC,
   harnessIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
+  type HarnessInstallationParams,
   type ThreadUsageInspection,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  CODEX_ACCOUNT_ACTIVATE_METHOD,
-  CODEX_ACCOUNT_CREATE_METHOD,
-  CODEX_ACCOUNT_DELETE_METHOD,
+  CODEX_ACCOUNT_CHANGED_METHOD,
   CODEX_ACCOUNT_LIST_METHOD,
   CODEX_ACCOUNT_REFRESH_METHOD,
-  CODEX_ACCOUNT_LOGIN_CANCEL_METHOD,
-  CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
-  CODEX_ACCOUNT_LOGIN_START_METHOD,
+  HARNESS_ACCOUNT_INSPECT_METHOD,
+  HARNESS_ACCOUNT_SOURCES_METHOD,
   HARNESS_INSPECT_METHOD,
   HARNESS_PLUGIN_LIST_METHOD,
   HARNESS_WEB_UI_OPEN_METHOD,
@@ -30,6 +32,7 @@ import {
   THREAD_TOKEN_USAGE_UPDATED_METHOD,
   THREAD_USAGE_INSPECT_METHOD,
   THREAD_USAGE_UPDATED_METHOD,
+  TURN_COMPLETED_METHOD,
   UPDATE_CHECK_METHOD,
   UPDATE_START_METHOD,
   UPDATE_STATUS_METHOD,
@@ -73,11 +76,177 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
+  it("lists Host extensions and reports a stale selection revision without treating it as a save", async () => {
+    const listing = {
+      revision: 7,
+      configuration: { revision: 7, enabled: ["layout"] },
+      diagnostics: [],
+      extensions: [],
+    };
+    const conflict = { state: "revision-conflict", revision: 8 };
+    const sendRequest = vi.fn().mockResolvedValueOnce(listing).mockResolvedValueOnce(conflict);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.listHostExtensions || !client.enableHostExtension)
+      throw new Error("Missing extension client");
+    await expect(client.listHostExtensions()).resolves.toEqual(listing);
+    await expect(client.enableHostExtension({ id: "badge", expectedRevision: 7 })).resolves.toEqual(
+      conflict,
+    );
+    expect(sendRequest.mock.calls).toEqual([
+      [HOST_EXTENSIONS_RPC.list, {}],
+      [HOST_EXTENSIONS_RPC.enable, { id: "badge", expectedRevision: 7 }],
+    ]);
+  });
+
+  it("validates Host extension catalog, install, and uninstall requests and responses", async () => {
+    const id = "sidebar-thread-tree";
+    const catalog = {
+      schemaVersion: 2,
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      catalogUrl: "https://example.com/catalog.v2.json",
+      fetchedAt: "2026-01-01T00:00:00.000Z",
+      cached: false,
+      extensions: [],
+    };
+    const text = { en: "Thread tree", "zh-CN": "委派树" };
+    const installResult = {
+      id,
+      manifest: {
+        manifestVersion: 2,
+        id,
+        name: text,
+        description: text,
+        version: "0.2.0",
+        desktop: { apiVersion: 1, script: "desktop.js" },
+      },
+      activationId: "00000000-0000-4000-8000-000000000000",
+      digest: "a".repeat(64),
+      installedAt: "2026-01-01T00:00:00.000Z",
+      replaced: false,
+    };
+    const uninstallResult = { id, removed: true };
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce(catalog)
+      .mockResolvedValueOnce(installResult)
+      .mockResolvedValueOnce(uninstallResult);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (
+      !client?.listHostExtensionCatalog ||
+      !client.installHostExtension ||
+      !client.uninstallHostExtension
+    ) {
+      throw new Error("Missing marketplace extension client methods");
+    }
+    await expect(client.listHostExtensionCatalog({ forceRefresh: true })).resolves.toEqual(catalog);
+    const install = { source: { type: "catalog" as const, id } };
+    await expect(client.installHostExtension(install)).resolves.toEqual(installResult);
+    await expect(client.uninstallHostExtension({ id })).resolves.toEqual(uninstallResult);
+    expect(sendRequest.mock.calls).toEqual([
+      [HOST_EXTENSIONS_RPC.catalog, { forceRefresh: true }],
+      [HOST_EXTENSIONS_RPC.install, install],
+      [HOST_EXTENSIONS_RPC.uninstall, { id }],
+    ]);
+  });
+
+  it.each(["check", "update", "install"] as const)(
+    "routes Harness installation %s through the fixed Host method",
+    async (action) => {
+      const params = { harnessId: piHarnessId, action };
+      const result = {
+        currentVersion: "1.0.0",
+        latestVersion: "1.1.0",
+        updateAvailable: true,
+        canUpdate: true,
+      };
+      const task = { taskId: "00000000-0000-4000-8000-000000000001", status: "succeeded", result };
+      const sendRequest = vi.fn().mockResolvedValue(task);
+      const client = createRendererModelClient([{ sendRequest }]);
+      if (!client?.installation) throw new Error("Missing installation client");
+      await expect(client.installation(params)).resolves.toEqual(result);
+      expect(sendRequest).toHaveBeenCalledExactlyOnceWith(
+        HARNESS_INSTALLATION_START_METHOD,
+        params,
+        {
+          priority: "background",
+          timeoutMs: 15_000,
+        },
+      );
+      sendRequest.mockResolvedValueOnce({ ...task, result: { ...result, currentVersion: 42 } });
+      await expect(client.installation(params)).rejects.toThrow();
+      sendRequest.mockResolvedValueOnce({
+        ...task,
+        result: { ...result, command: "private-command" },
+      });
+      await expect(client.installation(params)).rejects.toThrow();
+    },
+  );
+
+  it.each([
+    { harnessId: "pi", action: "uninstall" },
+    { harnessId: "", action: "check" },
+    { harnessId: "pi", action: "update", command: "evil" },
+  ])("rejects invalid Harness installation params before sending: %j", async (params) => {
+    const sendRequest = vi.fn();
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.installation) throw new Error("Missing installation client");
+    await expect(client.installation(params as HarnessInstallationParams)).rejects.toThrow();
+    expect(sendRequest).not.toHaveBeenCalled();
+  });
+
+  it("asks an outdated remote for its runtime status again after it was updated", async () => {
+    const status = {
+      runningVersion: "0.12.0",
+      installedVersion: "0.12.0",
+      restartRequired: false,
+      remote: true,
+      updateSupported: true,
+      update: { phase: "idle", targetVersion: null, error: null },
+    };
+    const sendRequest = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("Method not found"), { code: -32601 }))
+      .mockResolvedValueOnce(status);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.runtimeStatus) throw new Error("Missing runtime status client");
+    await expect(client.runtimeStatus()).rejects.toMatchObject({ code: -32601 });
+    await expect(client.runtimeStatus()).resolves.toEqual(status);
+    expect(sendRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it("validates launch setting requests and responses on the selected request client", async () => {
+    const harnessId = harnessIdSchema.parse("workbuddy");
+    const result = { path: "D:\\Apps\\WorkBuddy", restartRequired: true };
+    const sendRequest = vi.fn().mockResolvedValue(result);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Expected a model client");
+    expect(await client.getHarnessLaunchSettings?.({ harnessId })).toEqual(result);
+    expect(sendRequest).toHaveBeenLastCalledWith(HARNESS_LAUNCH_SETTINGS_GET_METHOD, { harnessId });
+    expect(await client.setHarnessLaunchSettings?.({ harnessId, path: result.path })).toEqual(
+      result,
+    );
+    expect(sendRequest).toHaveBeenLastCalledWith(HARNESS_LAUNCH_SETTINGS_SET_METHOD, {
+      harnessId,
+      path: result.path,
+    });
+    await client.setHarnessLaunchSettings?.({ harnessId, path: null });
+    expect(sendRequest).toHaveBeenLastCalledWith(HARNESS_LAUNCH_SETTINGS_SET_METHOD, {
+      harnessId,
+      path: null,
+    });
+    await expect(
+      client.setHarnessLaunchSettings?.({ harnessId, path: "bad\npath" }),
+    ).rejects.toThrow();
+    sendRequest.mockResolvedValueOnce({ path: 42 });
+    await expect(client.getHarnessLaunchSettings?.({ harnessId })).rejects.toThrow();
+  });
   it("reads draft quota for the selected Account without activating it", async () => {
     const result = {
       accountId: "account-b",
       usage: { planFiveHourUsedPercent: 83 },
       accountCredits: { usedPercent: 83, periodType: "five_hour" },
+      freshness: "cached" as const,
+      observedAt: "2026-09-11T00:00:00.000Z",
     };
     const sendRequest = vi.fn().mockResolvedValue(result);
     const client = createRendererModelClient([{ sendRequest }]);
@@ -90,94 +259,111 @@ describe("Renderer fixed Model request client", () => {
   });
 
   it("validates Account controls and relays device-login completion", async () => {
-    let notify: ((notification: unknown) => void) | undefined;
+    const notifications = new Map<string, (notification: unknown) => void>();
     const remove = vi.fn();
     const addNotificationCallback = vi.fn(
-      (_method: string | readonly string[], callback: (notification: unknown) => void) => {
-        notify = callback;
+      (method: string | readonly string[], callback: (notification: unknown) => void) => {
+        if (typeof method === "string") notifications.set(method, callback);
         return remove;
       },
     );
     const account = {
       accountId: "work",
       label: "Work",
-      codexHome: "/tmp/codex-work",
-      active: true,
-      isDefault: false,
+    };
+    const snapshot = {
+      version: 2 as const,
+      currentAccountId: "work",
+      phase: "ready" as const,
+      revision: 4,
+      instanceId: "host-a",
+      accounts: [account],
     };
     const sendRequest = vi
       .fn<(method: string, params: unknown) => Promise<unknown>>()
-      .mockResolvedValueOnce({ accounts: [account] })
-      .mockResolvedValueOnce({ accounts: [account] })
-      .mockResolvedValueOnce({ account })
-      .mockResolvedValueOnce({ deletedAccountId: "work" })
-      .mockResolvedValueOnce({ account })
-      .mockResolvedValueOnce({
-        accountId: "work",
-        loginId: "login-1",
-        verificationUrl: "https://example.com/device",
-        userCode: "ABCD-EFGH",
-      })
-      .mockResolvedValueOnce({ cancelled: true });
+      .mockResolvedValueOnce(snapshot)
+      .mockResolvedValueOnce(snapshot);
     const client = createRendererModelClient([{ addNotificationCallback, sendRequest }]);
     if (!client) throw new Error("Synthetic Account client was not created");
 
-    await expect(client.listCodexAccounts()).resolves.toEqual({ accounts: [account] });
-    await expect(client.refreshCodexAccounts?.()).resolves.toEqual({ accounts: [account] });
-    await expect(client.createCodexAccount({ label: "Work" })).resolves.toEqual({ account });
-    await expect(client.deleteCodexAccount({ accountId: "work" })).resolves.toEqual({
-      deletedAccountId: "work",
-    });
-    await expect(client.activateCodexAccount({ accountId: "work" })).resolves.toEqual({ account });
-    await expect(client.startCodexAccountLogin({ accountId: "work" })).resolves.toMatchObject({
-      loginId: "login-1",
-      userCode: "ABCD-EFGH",
-    });
-    await expect(client.cancelCodexAccountLogin({ loginId: "login-1" })).resolves.toEqual({
-      cancelled: true,
-    });
+    await expect(client.listCodexAccounts()).resolves.toEqual(snapshot);
+    await expect(client.refreshCodexAccounts?.()).resolves.toEqual(snapshot);
     expect(sendRequest.mock.calls).toEqual([
       [CODEX_ACCOUNT_LIST_METHOD, {}],
       [CODEX_ACCOUNT_REFRESH_METHOD, {}],
-      [CODEX_ACCOUNT_CREATE_METHOD, { label: "Work" }],
-      [CODEX_ACCOUNT_DELETE_METHOD, { accountId: "work" }],
-      [CODEX_ACCOUNT_ACTIVATE_METHOD, { accountId: "work" }],
-      [CODEX_ACCOUNT_LOGIN_START_METHOD, { accountId: "work" }],
-      [CODEX_ACCOUNT_LOGIN_CANCEL_METHOD, { loginId: "login-1" }],
     ]);
 
     const listener = vi.fn();
-    const unsubscribe = client.subscribeCodexAccountLogin(listener);
+    if (!client.subscribeCodexAccounts) throw new Error("Missing Account subscription");
+    const unsubscribe = client.subscribeCodexAccounts(listener);
     expect(addNotificationCallback).toHaveBeenCalledWith(
-      CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
+      CODEX_ACCOUNT_CHANGED_METHOD,
       expect.any(Function),
     );
-    notify?.({
-      method: CODEX_ACCOUNT_LOGIN_COMPLETED_METHOD,
-      params: { accountId: "work", loginId: "login-1", success: true, error: null },
+    notifications.get(CODEX_ACCOUNT_CHANGED_METHOD)?.({
+      method: CODEX_ACCOUNT_CHANGED_METHOD,
+      params: snapshot,
     });
-    expect(listener).toHaveBeenCalledWith({
-      accountId: "work",
-      loginId: "login-1",
-      success: true,
-      error: null,
+    expect(listener).toHaveBeenCalledWith(snapshot);
+    const stateListener = vi.fn();
+    const unsubscribeState = client.subscribeCodexAccounts?.(stateListener);
+    notifications.get(CODEX_ACCOUNT_CHANGED_METHOD)?.({
+      method: CODEX_ACCOUNT_CHANGED_METHOD,
+      params: snapshot,
     });
+    expect(stateListener).toHaveBeenCalledWith(snapshot);
+    unsubscribeState?.();
     unsubscribe();
-    expect(remove).toHaveBeenCalledOnce();
+    expect(remove).toHaveBeenCalledTimes(2);
   });
 
-  it("reads and validates read-only accounts from the bound Host without a Thread ID", async () => {
+  it("reads and validates progressive read-only accounts from the bound Host", async () => {
     const account = {
       harnessId: "sample-agent",
       harnessName: "Sample Agent",
       credits: { usedPercent: 0, periodType: "weekly" },
     };
-    const sendRequest = vi.fn().mockResolvedValue({ accounts: [account] });
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce({
+        sources: [{ harnessId: "sample-agent", harnessName: "Sample Agent" }],
+      })
+      .mockResolvedValueOnce({
+        harnessId: "sample-agent",
+        harnessName: "Sample Agent",
+        account: { credits: account.credits },
+      })
+      .mockResolvedValueOnce({ accounts: [account] });
     const client = createRendererModelClient([{ sendRequest }]);
-    expect(await client?.listHarnessAccounts?.()).toEqual({ accounts: [account] });
-    expect(sendRequest).toHaveBeenCalledExactlyOnceWith("codexhost/harness/accounts/list", {});
-    sendRequest.mockResolvedValueOnce({ accounts: [{ ...account, token: "private" }] });
-    await expect(client?.listHarnessAccounts?.()).rejects.toThrow();
+    await expect(client?.listHarnessAccountSources?.()).resolves.toEqual({
+      sources: [{ harnessId: "sample-agent", harnessName: "Sample Agent" }],
+    });
+    await expect(
+      client?.inspectHarnessAccount?.({
+        harnessId: harnessIdSchema.parse("sample-agent"),
+        refresh: true,
+      }),
+    ).resolves.toEqual({
+      harnessId: "sample-agent",
+      harnessName: "Sample Agent",
+      account: { credits: account.credits },
+    });
+    await expect(client?.listHarnessAccounts?.({ refresh: true })).resolves.toEqual({
+      accounts: [account],
+    });
+    expect(sendRequest.mock.calls).toEqual([
+      [HARNESS_ACCOUNT_SOURCES_METHOD, {}],
+      [HARNESS_ACCOUNT_INSPECT_METHOD, { harnessId: "sample-agent", refresh: true }],
+      ["codexhost/harness/accounts/list", { refresh: true }],
+    ]);
+    sendRequest.mockResolvedValueOnce({
+      harnessId: "sample-agent",
+      harnessName: "Sample Agent",
+      account: { credits: account.credits, token: "private" },
+    });
+    await expect(
+      client?.inspectHarnessAccount?.({ harnessId: harnessIdSchema.parse("sample-agent") }),
+    ).rejects.toThrow();
   });
 
   it("reads plugin descriptors from its own target and rejects backend or executable metadata", async () => {
@@ -203,6 +389,32 @@ describe("Renderer fixed Model request client", () => {
       plugins: [{ id: "remote-agent", name: "Remote", version: "1", entry: "/private/plugin.js" }],
     });
     await expect(remote?.listHarnessPlugins?.()).rejects.toThrow();
+  });
+
+  it("opens Web through its fixed Host method and validates the result", async () => {
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ url: "https://example.com/" })
+      .mockRejectedValueOnce(new Error("Host unavailable"));
+    const client = createRendererModelClient([{ addNotificationCallback: vi.fn(), sendRequest }]);
+    if (!client?.openWeb) throw new Error("Synthetic Model client cannot open Web");
+    await expect(client.openWeb()).resolves.toEqual({});
+    expect(sendRequest).toHaveBeenCalledWith("codexhost/web/open", {});
+    await expect(client.openWeb()).rejects.toThrow();
+    await expect(client.openWeb()).rejects.toThrow("Host unavailable");
+  });
+
+  it("opens the console through its fixed Host method and validates the address", async () => {
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce({ url: "http://127.0.0.1:4399/" })
+      .mockResolvedValueOnce({ url: "https://example.com/" });
+    const client = createRendererModelClient([{ addNotificationCallback: vi.fn(), sendRequest }]);
+    if (!client?.openConsole) throw new Error("Synthetic Model client cannot open the console");
+    await expect(client.openConsole()).resolves.toEqual({ url: "http://127.0.0.1:4399/" });
+    expect(sendRequest).toHaveBeenCalledWith("codexhost/console/open", {});
+    await expect(client.openConsole()).rejects.toThrow();
   });
 
   it("calls only the fixed inspect and select methods with validated params", async () => {
@@ -280,37 +492,73 @@ describe("Renderer fixed Model request client", () => {
     const client = createRendererModelClient([{ addNotificationCallback, sendRequest }]);
     if (!client) throw new Error("Synthetic Model client was not created");
     expect(Object.keys(client).sort()).toEqual([
-      "activateCodexAccount",
-      "cancelCodexAccountLogin",
+      "acknowledgeReleaseAnnouncement",
       "checkUpdate",
-      "consumeCodexAccountResetCredit",
-      "createCodexAccount",
-      "deleteCodexAccount",
+      "credentialImports",
+      "disableHostExtension",
+      "enableHostExtension",
       "executeThreadCommand",
       "forkThread",
+      "getHarnessDisplayCapabilities",
+      "getHarnessDisplaySettings",
+      "getHarnessLaunchSettings",
+      "getHarnessPreferences",
+      "getHostExtensionSettings",
+      "getReleaseAnnouncement",
+      "hasDesktopThread",
       "importHarnessSession",
       "inspectCodexAccountUsage",
       "inspectHarness",
+      "inspectHarnessAccount",
       "inspectHarnessCommands",
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
+      "installHostExtension",
+      "installation",
+      "invokeHostExtensionBackend",
       "listCodexAccounts",
+      "listHarnessAccountSources",
       "listHarnessAccounts",
       "listHarnessPlugins",
       "listHarnessSessions",
+      "listHostExtensionCatalog",
+      "listHostExtensions",
+      "listLoadedSessions",
       "listSessionImportSources",
+      "listSkills",
       "listThreadOwnership",
+      "openConsole",
       "openHarnessWebUi",
+      "openWeb",
+      "patchHarnessPreferences",
+      "readDelegationThread",
+      "readHostExtensionAsset",
       "readUpdateStatus",
+      "recoverHostExtensions",
       "refreshCodexAccounts",
+      "runtimeStatus",
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
-      "startCodexAccountLogin",
+      "setHarnessDisplaySettings",
+      "setHarnessLaunchSettings",
+      "setHostExtensionSettings",
+      "setIdleReleaseSettings",
+      "setupSsh",
+      "snapshotHostExtensions",
       "startUpdate",
-      "subscribeCodexAccountLogin",
+      "subscribeCodexAccounts",
+      "subscribeHarnessDisplaySettings",
+      "subscribeHarnessPreferences",
+      "subscribeHostExtensionsChanged",
+      "subscribeSkillsChanged",
       "subscribeThreadUsage",
+      "uninstallHostExtension",
+      "updateHostExtension",
+      "updateRemote",
+      "usesIndependentNativeInference",
+      "watchThreadTree",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(
@@ -403,7 +651,7 @@ describe("Renderer fixed Model request client", () => {
     const onUsage = vi.fn();
     const unsubscribe = client.subscribeThreadUsage?.(onUsage);
     expect(addNotificationCallback).toHaveBeenCalledWith(
-      [THREAD_TOKEN_USAGE_UPDATED_METHOD, THREAD_USAGE_UPDATED_METHOD],
+      [THREAD_TOKEN_USAGE_UPDATED_METHOD, THREAD_USAGE_UPDATED_METHOD, TURN_COMPLETED_METHOD],
       expect.any(Function),
     );
     usageNotification?.({
@@ -572,6 +820,40 @@ describe("Renderer fixed Model request client", () => {
     expect(sendRequest).toHaveBeenCalledOnce();
   });
 
+  it("re-reads account quota when a Turn completes without a dispatched Usage notification", async () => {
+    // Codex Desktop drops `codexhost/thread/usage/updated` before renderer
+    // callbacks, and `thread/tokenUsage/updated` needs Context usage, so a
+    // completed reply must still refresh the quota pill on its own.
+    let notify: ((notification: unknown) => void) | undefined;
+    const addNotificationCallback = vi.fn(
+      (_method: string | readonly string[], callback: (notification: unknown) => void) => {
+        notify = callback;
+        return () => undefined;
+      },
+    );
+    const accountCredits = { usedPercent: 81, periodType: "five_hour" as const };
+    const sendRequest = vi.fn().mockResolvedValue({
+      threadId: "thread-1",
+      usage: null,
+      accountCredits,
+    });
+    const client = createRendererModelClient([{ addNotificationCallback, sendRequest }]);
+    const onUsage = vi.fn();
+    const unsubscribe = client?.subscribeThreadUsage?.(onUsage);
+
+    notify?.({ method: TURN_COMPLETED_METHOD, params: { threadId: "", turn: {} } });
+    notify?.({
+      method: TURN_COMPLETED_METHOD,
+      params: { threadId: "thread-1", turn: { id: "turn-1" } },
+    });
+
+    await vi.waitFor(() => expect(onUsage).toHaveBeenCalledOnce());
+    expect(sendRequest).toHaveBeenCalledOnce();
+    expect(sendRequest).toHaveBeenCalledWith(THREAD_USAGE_INSPECT_METHOD, { threadId: "thread-1" });
+    expect(onUsage).toHaveBeenCalledWith({ threadId: "thread-1", usage: null, accountCredits });
+    unsubscribe?.();
+  });
+
   it("defers Usage notification registration until a request manager is available", () => {
     const relay = createThreadUsageSubscriptionRelay();
     const listener = vi.fn();
@@ -597,6 +879,60 @@ describe("Renderer fixed Model request client", () => {
     unsubscribe();
     expect(removeNotification).toHaveBeenCalledOnce();
     relay.dispose();
+  });
+
+  it("rebinds Usage to the current connection and ignores retired callbacks", () => {
+    const relay = createThreadUsageSubscriptionRelay();
+    const listener = vi.fn();
+    const unsubscribe = relay.subscribe(listener);
+    const connection = () => {
+      let notify: ((update: ThreadUsageInspection) => void) | undefined;
+      const remove = vi.fn();
+      return {
+        remove,
+        subscribeThreadUsage: vi.fn((callback: (update: ThreadUsageInspection) => void) => {
+          notify = callback;
+          return remove;
+        }),
+        push(usedPercent: number) {
+          notify?.({
+            threadId: hostThreadIdSchema.parse("thread-1"),
+            usage: null,
+            accountCredits: { usedPercent, periodType: "five_hour" },
+          });
+        },
+      };
+    };
+    const previous = connection();
+    const current = connection();
+    relay.connect(previous);
+    previous.push(16);
+    relay.connect(current);
+    relay.connect(current);
+    current.push(20);
+    expect(listener).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        accountCredits: { usedPercent: 20, periodType: "five_hour" },
+      }),
+    );
+    expect(previous.remove).toHaveBeenCalledOnce();
+    expect(current.subscribeThreadUsage).toHaveBeenCalledOnce();
+    previous.push(17);
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    relay.connect(null);
+    current.push(21);
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(current.remove).toHaveBeenCalledOnce();
+    relay.connect(current);
+    current.push(22);
+    expect(listener).toHaveBeenCalledTimes(3);
+    expect(current.subscribeThreadUsage).toHaveBeenCalledTimes(2);
+    unsubscribe();
+    current.push(23);
+    expect(listener).toHaveBeenCalledTimes(3);
+    relay.dispose();
+    expect(current.remove).toHaveBeenCalledTimes(2);
   });
 
   it("fails closed when request manager ownership is absent or ambiguous", () => {
@@ -648,6 +984,13 @@ describe("Renderer fixed Model request client", () => {
     ).rejects.toThrow("does not match");
   });
 
+  it("accepts a null update check when the Host has no update capability", async () => {
+    const client = createRendererModelClient([{ sendRequest: vi.fn(async () => null) }]);
+    if (!client) throw new Error("Synthetic update client was not created");
+
+    await expect(client.checkUpdate()).resolves.toBeNull();
+  });
+
   it("rejects update results that expose privileged artifact data", async () => {
     const sendRequest = vi.fn(async () => ({
       currentVersion: "1.2.2",
@@ -685,5 +1028,71 @@ describe("Renderer fixed Model request client", () => {
     if (!client) throw new Error("Synthetic Model client was not created");
 
     await expect(client.inspectHarness({ harnessId: piHarnessId })).rejects.toThrow();
+  });
+
+  it("retries an availability inspection without `purpose` on a Host that rejects it", async () => {
+    const sendRequest = vi
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error("Invalid Harness inspection params"), { code: -32602 }),
+      )
+      .mockResolvedValueOnce(inspection);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Synthetic Model client was not created");
+
+    await expect(
+      client.inspectHarness({ harnessId: piHarnessId, purpose: "availability" }),
+    ).resolves.toEqual(inspection);
+    expect(sendRequest.mock.calls.map(([, params]) => params)).toEqual([
+      { harnessId: piHarnessId, purpose: "availability" },
+      { harnessId: piHarnessId },
+    ]);
+  });
+
+  it("does not retry a full inspection rejected for its params", async () => {
+    const sendRequest = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("Invalid params"), { code: -32602 }));
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Synthetic Model client was not created");
+
+    await expect(client.inspectHarness({ harnessId: piHarnessId })).rejects.toThrow(
+      "Invalid params",
+    );
+    expect(sendRequest).toHaveBeenCalledOnce();
+  });
+
+  it("validates and sends Host extension asset, settings, and backend invoke RPCs", async () => {
+    const asset = { mimeType: "image/png", base64: "AAAA", digest: "a".repeat(64) };
+    const settings = { settingsRevision: 2, values: { opacity: 0.85, theme: "aurora" } };
+    const values = { opacity: 0.6, darkBlur: true };
+    const saved = { settingsRevision: 3, values };
+    const result = { result: { ok: true } };
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce(asset)
+      .mockResolvedValueOnce(settings)
+      .mockResolvedValueOnce(saved)
+      .mockResolvedValueOnce(result);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Synthetic Host extension client was not created");
+
+    const id = "aurora-theme";
+    const path = "assets/wallpaper.png";
+    const write = { id, expectedSettingsRevision: settings.settingsRevision, values };
+    const invoke = { id, method: "stats.summary", params: { range: "7d" } };
+    await expect(client.readHostExtensionAsset?.({ id, path })).resolves.toEqual(asset);
+    await expect(client.readHostExtensionAsset?.({ id, path: "../secret.png" })).rejects.toThrow();
+    await expect(client.getHostExtensionSettings?.({ id })).resolves.toEqual(settings);
+    await expect(client.setHostExtensionSettings?.(write)).resolves.toEqual(saved);
+    await expect(client.invokeHostExtensionBackend?.(invoke)).resolves.toEqual(result);
+    await expect(client.invokeHostExtensionBackend?.({ id, method: "   " })).rejects.toThrow();
+
+    expect(sendRequest.mock.calls).toEqual([
+      [HOST_EXTENSIONS_RPC.asset, { id, path }],
+      [HOST_EXTENSIONS_RPC.settingsGet, { id }],
+      [HOST_EXTENSIONS_RPC.settingsSet, write],
+      [HOST_EXTENSIONS_RPC.backendInvoke, invoke],
+    ]);
   });
 });

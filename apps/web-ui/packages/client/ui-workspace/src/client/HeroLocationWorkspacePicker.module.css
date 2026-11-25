@@ -1,0 +1,337 @@
+/* Codex-Desktop-style recessed top-rail location + project selector & searchable popovers. */
+
+.root {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 240px;
+  height: 30px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 20px;
+  font-weight: 450;
+  cursor: pointer;
+  transition:
+    background-color 110ms ease,
+    color 110ms ease;
+}
+
+.trigger:hover:not(:disabled),
+.triggerOpen {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent);
+}
+
+.trigger:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.trigger:focus-visible,
+.row:focus-visible,
+.footerAction:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid
+    var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+.triggerPlaceholder {
+  color: var(--dsw-alias-label-tertiary);
+  font-weight: 400;
+}
+
+.triggerPlaceholder:hover:not(:disabled),
+.triggerPlaceholder.triggerOpen {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.triggerLocation {
+  flex: 0 1 auto;
+  max-width: 180px;
+}
+
+.triggerProject {
+  flex: 0 1 auto;
+  max-width: 260px;
+}
+
+.triggerIcon {
+  flex: none;
+  color: currentColor;
+  opacity: 0.9;
+}
+
+.triggerPlaceholder .triggerIcon {
+  opacity: 0.8;
+}
+
+.triggerLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status dot shown only for non-connected (connecting / offline / auth-error) remote hosts. */
+.statusDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-tertiary);
+  opacity: 0.78;
+}
+
+.statusDot[data-state="connecting"] {
+  background: var(--dsw-alias-state-warning-primary, #c27803);
+  opacity: 0.92;
+}
+
+.statusDot[data-state="auth-error"] {
+  background: var(--dsw-alias-state-error-primary);
+  opacity: 0.92;
+}
+
+/* Codex Desktop `.menu-o5IS9p` geometry: 16px outer radius, 6px gutter, 11px inner pill radius. */
+.popover {
+  position: fixed;
+  z-index: 1100;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: 16px;
+  --dsw-elevation-stroke-color: transparent;
+  box-shadow: var(--dsw-elevation-prominent);
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+  color: var(--dsw-alias-label-primary);
+}
+
+.popoverLocation {
+  width: min(264px, calc(100vw - 24px));
+}
+
+.popoverProject {
+  width: min(280px, calc(100vw - 24px));
+}
+
+.searchRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 10px;
+}
+
+.searchIcon {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.searchInput {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.searchInput::placeholder {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* Inset horizontal hairline matching Codex Desktop's searchable dropdown menus. */
+.divider {
+  flex: none;
+  height: 0.5px;
+  margin: 4px 10px 6px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.footerDivider {
+  flex: none;
+  height: 0.5px;
+  margin: 6px 10px 4px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 450;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 90ms ease;
+}
+
+.row:hover,
+.rowActive {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent);
+}
+
+.rowIcon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.rowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.rowTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowHint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 400;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.rowStatus {
+  flex: none;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.checkSlot {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dsw-alias-label-primary);
+}
+
+.emptyState {
+  padding: 16px 10px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.footerAction {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 450;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 90ms ease;
+}
+
+.footerAction:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent);
+}
+
+.footerAction:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.footerIcon {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.modalAction {
+  min-width: 72px;
+}
+
+.modalError {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-error-primary);
+}
+
+@media (hover: none), (pointer: coarse) {
+  .trigger {
+    min-height: 34px;
+    padding: 0 11px;
+  }
+
+  .row,
+  .footerAction {
+    min-height: 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trigger,
+  .row,
+  .footerAction {
+    transition: none;
+  }
+}

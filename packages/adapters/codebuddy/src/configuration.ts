@@ -1,0 +1,169 @@
+import {
+  normalizeLegacyBase64ModelRef,
+  type HarnessModelCatalog,
+  type HarnessModelRef,
+  type HarnessSessionCapabilities,
+  type HarnessSessionState,
+} from "@codexhost/harness-adapter";
+import {
+  harnessModelCatalogSchema,
+  harnessModelRefSchema,
+  harnessPermissionModeCatalogSchema,
+  harnessPermissionModeIdSchema,
+  harnessThinkingOptionSchema,
+} from "@codexhost/shared-contracts";
+import {
+  CODEBUDDY_RUNTIME_PROFILE,
+  CodeBuddyError,
+  record,
+  rows,
+  text,
+  type CodeBuddyRuntimeProfile,
+} from "./common.js";
+import { permissionLocalizations } from "./permission-presentation.js";
+
+export const CODEBUDDY_CAPABILITIES: HarnessSessionCapabilities = {
+  configuration: {
+    selectModel: true,
+    selectThinkingOption: true,
+    selectPermissionMode: true,
+    permissionModeScope: "live",
+  },
+  history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+  subagents: { observe: true, readTranscript: true },
+};
+
+export function capabilitiesForProfile(
+  profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
+): HarnessSessionCapabilities {
+  return {
+    ...CODEBUDDY_CAPABILITIES,
+    history: profile.historyCapabilities ?? CODEBUDDY_CAPABILITIES.history,
+  };
+}
+
+export function modelRef(modelId: string): HarnessModelRef {
+  return harnessModelRefSchema.parse({ id: modelId });
+}
+
+export function normalizeStoredCodeBuddyModelRef(
+  ref: HarnessModelRef,
+  catalog: HarnessModelCatalog,
+): HarnessModelRef | undefined {
+  return normalizeLegacyBase64ModelRef(ref, catalog, "cb.");
+}
+
+export function configuration(
+  value: unknown,
+  profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
+) {
+  const options = rows(value);
+  const get = (id: string) => options.find((option) => option.id === id) ?? {};
+  const model = get("model"),
+    mode = get("mode"),
+    thought = get("thought_level");
+  const thinkingOptions = rows(thought.options).map((option) =>
+    harnessThinkingOptionSchema.parse({ id: option.value, label: option.name }),
+  );
+  const currentThinking = thinkingOptions.find((option) => option.id === thought.currentValue);
+  const models = rows(model.options).map((option) => ({
+    ref: modelRef(text(option.value)),
+    label: text(option.name),
+  }));
+  const currentModelRef = modelRef(text(model.currentValue));
+  let currentModel = models.find((item) => item.ref.id === currentModelRef.id);
+  if (!currentModel && profile.allowUnlistedModelSelection) {
+    currentModel = { ref: currentModelRef, label: text(model.currentValue) };
+    models.push(currentModel);
+  }
+  if (!currentModel)
+    throw new CodeBuddyError("protocolError", "ACP did not report a valid current Model");
+  const catalog = harnessModelCatalogSchema.parse({
+    models: models.map((item) => ({
+      ...item,
+      ...(item === currentModel
+        ? { supportedThinkingOptionIds: thinkingOptions.map((option) => option.id) }
+        : {}),
+    })),
+    defaultModel: currentModel.ref,
+    thinkingOptions,
+    ...(currentThinking ? { defaultThinkingOptionId: currentThinking.id } : {}),
+  });
+  const permissionModes = harnessPermissionModeCatalogSchema.parse({
+    modes: rows(mode.options).map((option) => ({
+      id: option.value,
+      label: option.name,
+      localizations: permissionLocalizations(text(option.name), text(option.description)),
+      ...(option.description ? { description: option.description } : {}),
+      ...(["bypassPermissions", "fullAccess"].includes(text(option.value))
+        ? { dangerous: true }
+        : {}),
+    })),
+    defaultModeId: mode.currentValue,
+  });
+  const state: HarnessSessionState = {
+    effectiveModel: currentModel.ref,
+    resolvedModelLabel: currentModel.label,
+    effectivePermissionModeId: harnessPermissionModeIdSchema.parse(mode.currentValue),
+    availableThinkingOptions: thinkingOptions,
+    ...(currentThinking ? { effectiveThinkingOptionId: currentThinking.id } : {}),
+  };
+  return { catalog, permissionModes, state, options };
+}
+
+type Configuration = ReturnType<typeof configuration>;
+
+export async function selectConfiguration(
+  config: Configuration | undefined,
+  id: string,
+  value: string,
+  profile: CodeBuddyRuntimeProfile,
+  request: (id: string, value: string) => Promise<unknown>,
+): Promise<Configuration> {
+  const option = config?.options.find((option) => option.id === id);
+  const listed = rows(option?.options).some((option) => option.value === value);
+  if (!listed && !(id === "model" && profile.allowUnlistedModelSelection))
+    throw new CodeBuddyError(
+      "invalidRequest",
+      `Unavailable ${profile.displayName} ${id} selection`,
+    );
+  return confirmedConfiguration(await request(id, value), id, value, profile);
+}
+
+export async function restoreConfiguration(
+  config: Configuration,
+  saved: HarnessSessionState,
+  profile: CodeBuddyRuntimeProfile,
+  request: (id: string, value: string) => Promise<unknown>,
+): Promise<Configuration> {
+  const selections = [
+    ["model", saved.effectiveModel?.id],
+    ["thought_level", saved.effectiveThinkingOptionId],
+    ["mode", saved.effectivePermissionModeId],
+  ] as const;
+  const matches = (id: string, value: string) =>
+    config.options.some((option) => option.id === id && option.currentValue === value);
+  for (const [id, value] of selections) {
+    if (value && !matches(id, value))
+      config = await selectConfiguration(config, id, value, profile, request);
+  }
+  // A later selection may reset another option. Only publish a fully restored state.
+  for (const [id, value] of selections) {
+    if (value && !matches(id, value))
+      throw new CodeBuddyError("protocolError", `ACP did not restore ${id}`);
+  }
+  return config;
+}
+
+export function confirmedConfiguration(
+  response: unknown,
+  id: string,
+  value: string,
+  profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
+) {
+  const result = configuration(record(response).configOptions, profile);
+  if (result.options.find((option) => option.id === id)?.currentValue !== value) {
+    throw new CodeBuddyError("protocolError", `ACP did not confirm ${id}`);
+  }
+  return result;
+}

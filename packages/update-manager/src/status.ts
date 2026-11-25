@@ -2,7 +2,8 @@ export const STATUS_SCHEMA_VERSION = 1;
 export const SEMVER_PATTERN =
   /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 
-export type BackgroundUpdateInstallation = "npm" | "windows-installer" | "macos-dmg";
+export type BackgroundUpdateInstallation =
+  "npm" | "windows-installer" | "macos-dmg" | "linux-archive";
 export type BackgroundUpdatePhase =
   | "prepared"
   | "downloading"
@@ -21,6 +22,7 @@ export interface BackgroundUpdateStatus {
   downloadedBytes?: number;
   totalBytes?: number;
   error?: string;
+  serviceStopOutput?: string;
 }
 
 export function requireSemanticVersion(value: string): string {
@@ -53,6 +55,7 @@ export function parseUpdateStatus(value: unknown): BackgroundUpdateStatus {
     "installation",
     "phase",
     "schemaVersion",
+    "serviceStopOutput",
     "totalBytes",
     "updatedAt",
     "version",
@@ -64,7 +67,9 @@ export function parseUpdateStatus(value: unknown): BackgroundUpdateStatus {
     status.schemaVersion !== STATUS_SCHEMA_VERSION ||
     typeof status.version !== "string" ||
     !SEMVER_PATTERN.test(status.version) ||
-    !["npm", "windows-installer", "macos-dmg"].includes(String(status.installation)) ||
+    !["npm", "windows-installer", "macos-dmg", "linux-archive"].includes(
+      String(status.installation),
+    ) ||
     ![
       "prepared",
       "downloading",
@@ -86,7 +91,8 @@ export function parseUpdateStatus(value: unknown): BackgroundUpdateStatus {
     (typeof status.downloadedBytes === "number" &&
       typeof status.totalBytes === "number" &&
       status.downloadedBytes > status.totalBytes) ||
-    (status.error !== undefined && typeof status.error !== "string")
+    (status.error !== undefined && typeof status.error !== "string") ||
+    (status.serviceStopOutput !== undefined && typeof status.serviceStopOutput !== "string")
   ) {
     throw new Error("background update status is invalid");
   }

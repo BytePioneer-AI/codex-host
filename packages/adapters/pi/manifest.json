@@ -6,5 +6,28 @@
   "adapterApiVersion": 1,
   "entry": "./dist/plugin.js",
   "icon": "./assets/icon.svg",
-  "links": { "installation": "https://pi.dev/" }
+  "iconStyle": {
+    "vector": {
+      "viewBox": "0 0 24 24",
+      "color": "currentColor",
+      "paths": [
+        { "d": "M1 1h16.5v11H12v5.5H6.5V23H1V1zm5.5 5.5V12H12V6.5H6.5z", "fillRule": "evenodd" },
+        { "d": "M17.5 12H23v11h-5.5V12z" }
+      ]
+    }
+  },
+  "links": { "website": "https://pi.dev/", "installation": "https://pi.dev/" },
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux · Terminal (sh/bash)",
+        "command": "curl -fsSL https://pi.dev/install.sh | sh"
+      },
+      { "terminal": "Windows · PowerShell", "command": "irm https://pi.dev/install.ps1 | iex" }
+    ],
+    "after": {
+      "en": "After installation, run pi to complete login or setup.",
+      "zh-CN": "安装后运行 pi，完成登录或配置。"
+    }
+  }
 }

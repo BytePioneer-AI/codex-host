@@ -1,0 +1,305 @@
+import { afterEach, expect, it, vi } from "vitest";
+import type { JsonObject, JsonValue } from "@codexhost/protocol-core";
+import { ClientChannelEvents } from "../src/client-channel-events.js";
+import { NativeClientChannel } from "../src/native-client-channel.js";
+import { officialCodexModelRef } from "../src/official-codex-model-ref.js";
+import { updateNativeThreadSettings } from "../src/codex-runtime/native-thread-controls.js";
+import { createFixture, stopFixture } from "./app-server-host-fixture.js";
+import type { DelegationControlApi } from "../src/delegation-types.js";
+import {
+  HARNESS_MODEL_LABEL_MAX_LENGTH,
+  harnessThinkingOptionIdSchema,
+} from "@codexhost/shared-contracts";
+
+const cleanup: Array<() => void | Promise<void>> = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0).reverse()) await close();
+  vi.useRealTimers();
+});
+
+it("advertises Fast and Ultrafast only from the official service tiers", async () => {
+  const suffix = " · Ultrafast";
+  const labelPrefix = "a".repeat(HARNESS_MODEL_LABEL_MAX_LENGTH - suffix.length - 1);
+  const longLabel = `${labelPrefix}😀 tail`;
+  const fixture = createFixture();
+  cleanup.push(() => stopFixture(fixture));
+  await fixture.ready;
+  let buffer = "";
+  fixture.official.stdin.on("data", (chunk: Buffer) => {
+    buffer += chunk.toString();
+    let end: number;
+    while ((end = buffer.indexOf("\n")) >= 0) {
+      const request = JSON.parse(buffer.slice(0, end));
+      buffer = buffer.slice(end + 1);
+      const result =
+        request.method === "model/list"
+          ? {
+              data: [
+                {
+                  model: "priority-capable",
+                  serviceTiers: [
+                    { id: "priority", name: "Fast", description: "Priority processing" },
+                    { id: "ultrafast", name: "Ultrafast" },
+                  ],
+                  supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+                },
+                { model: "flex-only", serviceTiers: [{ id: "flex", name: "Fast" }] },
+                { model: "legacy-fast", additionalSpeedTiers: ["fast", "priority", "ultrafast"] },
+                { model: "no-tiers" },
+                {
+                  model: "long-label",
+                  displayName: longLabel,
+                  serviceTiers: [{ id: "ultrafast" }],
+                },
+              ].map((model, i) => ({ displayName: model.model, ...model, isDefault: i === 0 })),
+            }
+          : { data: [] };
+      fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
+    }
+  });
+  const reply = await fixture.host.handleClientRequest("codexhost/harness/inspect", {
+    harnessId: "codex",
+  });
+  expect(reply).toMatchObject({
+    result: {
+      status: "ready",
+      catalog: {
+        models: [
+          {
+            ref: { id: "priority-capable" },
+            fastModel: { id: "priority-capable", serviceTier: "priority" },
+          },
+          {
+            ref: { id: "priority-capable", serviceTier: "ultrafast" },
+            label: "priority-capable · Ultrafast",
+            supportedThinkingOptionIds: ["high"],
+          },
+          { ref: { id: "flex-only" } },
+          { ref: { id: "legacy-fast" } },
+          { ref: { id: "no-tiers" } },
+          { ref: { id: "long-label" }, label: longLabel },
+          {
+            ref: { id: "long-label", serviceTier: "ultrafast" },
+            label: labelPrefix + suffix,
+          },
+        ],
+      },
+    },
+  });
+  if (!("result" in reply)) throw new Error("Missing inspection");
+  const models = (reply.result as { catalog: { models: JsonObject[] } }).catalog.models;
+  expect(models.slice(1).every((model) => model.fastModel === undefined)).toBe(true);
+});
+
+it("changes the native speed tier only after matching confirmation, preserving Thinking", async () => {
+  const fixture = createFixture();
+  cleanup.push(() => stopFixture(fixture));
+  await fixture.ready;
+  let settings: JsonObject = { model: "native", serviceTier: null, effort: "high" };
+  const updates: JsonObject[] = [];
+  let buffer = "";
+  fixture.official.stdin.on("data", (chunk: Buffer) => {
+    buffer += chunk.toString();
+    let end: number;
+    while ((end = buffer.indexOf("\n")) >= 0) {
+      const request = JSON.parse(buffer.slice(0, end));
+      buffer = buffer.slice(end + 1);
+      const params = request.params as JsonObject;
+      if (request.method === "thread/settings/update") updates.push(params);
+      const result = request.method === "thread/resume" ? settings : {};
+      fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
+    }
+  });
+  const notify = (value: JsonObject) =>
+    fixture.official.stdout.write(
+      `${JSON.stringify({
+        method: "thread/settings/updated",
+        params: { threadId: "official", threadSettings: value },
+      })}\n`,
+    );
+  for (const tier of ["priority", "ultrafast", null, "ultrafast"]) {
+    let resolved = false;
+    const selecting = fixture.host
+      .handleClientRequest("codexhost/thread/model/select", {
+        threadId: "official",
+        model: officialCodexModelRef("native", tier),
+      })
+      .then((reply) => {
+        resolved = true;
+        return reply;
+      });
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates.shift()).toEqual({ threadId: "official", model: "native", serviceTier: tier });
+    // A previous Turn's settings notification must not confirm this selection.
+    notify(settings);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(resolved).toBe(false);
+    settings = { ...settings, serviceTier: tier };
+    notify(settings);
+    expect(await selecting).toMatchObject({
+      result: {
+        effectiveModel: officialCodexModelRef("native", tier),
+        effectiveThinkingOptionId: "high",
+      },
+    });
+  }
+  const thinking = fixture.host.handleClientRequest("codexhost/thread/thinking/select", {
+    threadId: "official",
+    thinkingOptionId: "low",
+  });
+  await vi.waitFor(() => expect(updates).toHaveLength(1));
+  expect(updates.shift()).toEqual({ threadId: "official", effort: "low" });
+  settings = { ...settings, effort: "low" };
+  notify(settings);
+  expect(await thinking).toMatchObject({
+    result: {
+      effectiveModel: { id: "native", serviceTier: "ultrafast" },
+      effectiveThinkingOptionId: "low",
+    },
+  });
+});
+
+it.each(["priority", "ultrafast"])("delegates %s with Max", async (serviceTier) => {
+  let api: DelegationControlApi | undefined;
+  const fixture = createFixture({
+    onDelegationApi: (value) => {
+      api = value;
+      return undefined;
+    },
+  });
+  cleanup.push(() => stopFixture(fixture));
+  await fixture.ready;
+  await vi.waitFor(() => expect(api).toBeDefined());
+  const calls: Array<{ method: string; params: JsonObject }> = [];
+  let buffer = "";
+  fixture.official.stdin.on("data", (chunk: Buffer) => {
+    buffer += chunk.toString();
+    let end: number;
+    while ((end = buffer.indexOf("\n")) >= 0) {
+      const request = JSON.parse(buffer.slice(0, end));
+      buffer = buffer.slice(end + 1);
+      calls.push(request);
+      const result =
+        request.method === "model/list"
+          ? {
+              data: [
+                {
+                  model: "native",
+                  serviceTiers: [{ id: "priority" }, { id: "ultrafast" }],
+                  supportedReasoningEfforts: [{ reasoningEffort: "max" }],
+                },
+              ],
+            }
+          : request.method === "thread/start"
+            ? {
+                thread: { id: "native-child" },
+                model: "native",
+                serviceTier,
+              }
+            : request.method === "turn/start"
+              ? { turn: { id: "turn-child" } }
+              : request.method === "thread/read"
+                ? { thread: { id: "parent", cwd: "/synthetic" } }
+                : {};
+      fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
+    }
+  });
+  if (!api) throw new Error("Delegation API was not registered");
+  const { inspection } = await api.inspect({ harnessId: "codex", cwd: "/synthetic" });
+  if (inspection.status !== "ready") throw new Error("Missing catalog");
+  const model =
+    serviceTier === "priority"
+      ? inspection.catalog.models.find(({ label }) => label === "native")?.fastModel
+      : inspection.catalog.models.find(({ label }) => label === "native · Ultrafast")?.ref;
+  if (!model) throw new Error(`Missing advertised ${serviceTier} selection`);
+  const result = await api.start({
+    harnessId: "codex",
+    parentThreadId: "parent",
+    task: "test",
+    cwd: "/synthetic",
+    model,
+    thinkingOptionId: harnessThinkingOptionIdSchema.parse("max"),
+  });
+  for (const method of ["thread/start", "turn/start"])
+    expect(calls.find((call) => call.method === method)).toMatchObject({
+      params: { model: "native", serviceTier },
+    });
+  expect(calls.find((call) => call.method === "turn/start")).toMatchObject({
+    params: { effort: "max" },
+  });
+  expect(result).toMatchObject({
+    configuration: { requested: { model }, effective: { effectiveModel: model } },
+  });
+});
+
+it("projects confirmed Fast on creation, resume and Desktop settings changes without a Turn override", async () => {
+  const request = vi.fn(async (method: string) => ({
+    result:
+      method === "thread/start" || method === "thread/resume"
+        ? { thread: { id: "official" }, model: "native", serviceTier: "priority", effort: "high" }
+        : {},
+  }));
+  const channel = new NativeClientChannel({
+    events: new ClientChannelEvents(),
+    request,
+    respond: async () => {},
+  });
+  const fast = { id: "native", serviceTier: "priority" };
+  await channel.request("thread/start", {});
+  expect(await channel.request("codexhost/thread/inspect", { threadId: "official" })).toMatchObject(
+    { result: { effectiveModel: fast } },
+  );
+  expect(request).toHaveBeenCalledTimes(1);
+  await channel.request("thread/resume", { threadId: "official" });
+  expect(await channel.request("codexhost/thread/inspect", { threadId: "official" })).toMatchObject(
+    { result: { effectiveModel: fast } },
+  );
+  channel.observeMessage({
+    method: "thread/settings/updated",
+    params: {
+      threadId: "official",
+      threadSettings: { model: "native", serviceTier: null, effort: "low" },
+    },
+  });
+  expect(await channel.request("codexhost/thread/inspect", { threadId: "official" })).toMatchObject(
+    {
+      result: {
+        effectiveModel: { id: "native" },
+        effectiveThinkingOptionId: "low",
+      },
+    },
+  );
+  await channel.request("turn/start", { threadId: "official", input: [] });
+  expect(request).toHaveBeenLastCalledWith("turn/start", { threadId: "official", input: [] });
+});
+
+it.each(["missing-tier", "rejected", "timeout"])(
+  "does not report Fast confirmed on %s",
+  async (failure) => {
+    vi.useFakeTimers();
+    const notifications = new Set<(value: JsonValue) => void>();
+    const request = vi.fn(async () =>
+      failure === "rejected" ? { error: { message: "Tier not available" } } : {},
+    );
+    const selecting = updateNativeThreadSettings(request, notifications, "official", {
+      model: "native",
+      serviceTier: "priority",
+    });
+    const rejected = expect(selecting).rejects.toThrow(
+      failure === "rejected"
+        ? "Tier not available"
+        : failure === "timeout"
+          ? "timed out"
+          : "invalid service tier",
+    );
+    if (failure === "missing-tier")
+      for (const notify of notifications)
+        notify({
+          method: "thread/settings/updated",
+          params: { threadId: "official", threadSettings: { model: "native" } },
+        });
+    if (failure === "timeout") await vi.advanceTimersByTimeAsync(15_000);
+    await rejected;
+    expect(notifications.size).toBe(0);
+  },
+);

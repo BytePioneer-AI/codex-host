@@ -1,4 +1,15 @@
 import { WORKSPACE_CONTRACT_VERSION } from "@codexhost/shared-contracts";
+export { createLocalPageOpener } from "./local-page-control.js";
+export {
+  ensureHostService,
+  isHostClientChannelOnline,
+  type HostServiceLaunch,
+} from "./host-service-launch.js";
+export {
+  HostClientChannel,
+  discoverHostClientChannel,
+  type HostClientUpdate,
+} from "./host-client-channel.js";
 
 export {
   CdpClient,
@@ -74,18 +85,9 @@ export {
 } from "./renderer-draft-prewarm-policy.js";
 export type { RendererDraftPrewarmPolicyStatus } from "./renderer-draft-prewarm-policy.js";
 
-export {
-  parseDesktopControllerArguments,
-  runDesktopController,
-  serializeDesktopControllerReadiness,
-} from "./production-controller.js";
-export type {
-  DesktopControllerDependencies,
-  DesktopControllerOptions,
-  DesktopControllerReadiness,
-} from "./production-controller.js";
-
 export const packageMetadata = {
   name: "@codexhost/desktop-control",
   contractVersion: WORKSPACE_CONTRACT_VERSION,
 } as const;
+export { requestDesktopRemoteConnections } from "./remote-connections-control.js";
+export { requestRemoteSession, RemoteSessionError } from "./remote-session-client.js";

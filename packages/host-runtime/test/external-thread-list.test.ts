@@ -13,6 +13,7 @@ import {
   listExternalThreadMetadata,
   resolveExternalSessionTreeIds,
 } from "../src/external-thread-list.js";
+import { externalThreadValue } from "../src/external-thread-repository.js";
 
 const harnessId = harnessIdSchema.parse("pi");
 
@@ -50,6 +51,90 @@ function query(params: JsonObject = {}) {
 }
 
 describe("External Thread metadata catalog", () => {
+  it("lists scoped native Subagent children and descendants for Desktop summary hydration", () => {
+    const parent = record("parent");
+    const child = record("child", {
+      nativeSessionRef: parent.nativeSessionRef,
+      subagent: { parentHostThreadId: parent.hostThreadId, nativeSubagentId: "native-child" },
+    });
+    const grandchild = record("grandchild", {
+      nativeSessionRef: parent.nativeSessionRef,
+      subagent: { parentHostThreadId: child.hostThreadId, nativeSubagentId: "native-grandchild" },
+    });
+    const unrelated = record("unrelated", {
+      subagent: {
+        parentHostThreadId: hostThreadIdSchema.parse("other"),
+        nativeSubagentId: "other",
+      },
+    });
+    const records = [parent, child, grandchild, unrelated];
+    const list = (params: JsonObject) =>
+      listExternalThreadMetadata({
+        records,
+        query: query(params),
+        runtimeFor: () => null,
+      }).data.map(({ thread }) => thread);
+    expect(list({})).toMatchObject([{ id: "parent" }]);
+    expect(list({ parentThreadId: "parent", sourceKinds: ["subAgentThreadSpawn"] })).toMatchObject([
+      { id: "child", parentThreadId: "parent", sessionId: "parent", canAcceptDirectInput: false },
+    ]);
+    expect(
+      list({
+        ancestorThreadId: "parent",
+        sourceKinds: ["subAgentThreadSpawn"],
+        useStateDbOnly: true,
+      }).map(({ id }) => id),
+    ).toEqual(["child", "grandchild"]);
+    expect(list({ parentThreadId: "child" }).map(({ id }) => id)).toEqual(["grandchild"]);
+    expect(list({ ancestorThreadId: "parent", sourceKinds: ["vscode"] })).toEqual([]);
+    expect(list({ ancestorThreadId: "missing", sourceKinds: ["subAgentThreadSpawn"] })).toEqual([]);
+  });
+
+  it("lists attached Side Chats under their source or in a search that asks for them", () => {
+    const source = record("source");
+    const attached = {
+      attachedToThreadId: source.hostThreadId,
+      forkSource: { hostThreadId: source.hostThreadId, hostTurnId: hostTurnIdSchema.parse("turn") },
+    };
+    const sideChat = record("side-chat", attached);
+    const archived = record("archived-side-chat", { ...attached, archived: true });
+    const records = [source, sideChat, archived];
+    const list = (params: JsonObject) =>
+      listExternalThreadMetadata({
+        records,
+        query: query(params),
+        runtimeFor: () => null,
+      }).data.map(({ thread }) => thread);
+    expect(list({}).map(({ id }) => id)).toEqual(["source"]);
+    expect(list({ attachedToThreadId: "source" })).toMatchObject([
+      { id: "side-chat", attachedToThreadId: "source", forkedFromId: "source" },
+    ]);
+    expect(list({ attachedToThreadId: "source", archived: true }).map(({ id }) => id)).toEqual([
+      "archived-side-chat",
+    ]);
+    expect(list({ attachedToThreadId: "side-chat" })).toEqual([]);
+    expect(list({ searchTerm: "side" })).toEqual([]);
+    expect(list({ searchTerm: "side", includeAttachedThreads: true }).map(({ id }) => id)).toEqual([
+      "side-chat",
+    ]);
+  });
+
+  it("takes an attached Side Chat's preview from its record, never from inherited Turns", () => {
+    const sideChat = record("side-chat", {
+      attachedToThreadId: hostThreadIdSchema.parse("source"),
+      inheritedTurnCount: 1,
+    });
+    const inherited = {
+      id: "inherited",
+      items: [{ type: "userMessage", content: [{ type: "text", text: "source message" }] }],
+    };
+    const value = (input: StoredThreadRecordV1) =>
+      externalThreadValue({ record: input, turns: [inherited], sessionId: "side-chat" }).preview;
+    expect(value(sideChat)).toBe("");
+    expect(value({ ...sideChat, preview: "own question" })).toBe("own question");
+    expect(value(record("plain"))).toBe("source message");
+  });
+
   it("projects only ready records without loading Native history", () => {
     const ready = record("ready");
     const provisional = record("provisional", { state: "creating" });
@@ -68,6 +153,36 @@ describe("External Thread metadata catalog", () => {
       isPinned: false,
       canAcceptDirectInput: null,
     });
+  });
+
+  it("keeps submitted runtime Threads visible before native identity, including failed starts", () => {
+    const records = ["unsubmitted", "submitted", "failed", "archived"].map((id) =>
+      record(id, {
+        state: "creating",
+        nativeSessionRef: undefined,
+        archived: id === "archived",
+      }),
+    );
+    const runtimeFor = (id: string) => ({
+      running: id !== "failed",
+      hasSubmittedTurn: id !== "unsubmitted",
+    });
+    const page = listExternalThreadMetadata({ records, query: query(), runtimeFor });
+    expect(page.data.map(({ thread }) => thread.id)).toEqual(["failed", "submitted"]);
+    expect(page.data.map(({ thread }) => thread.status)).toEqual([
+      { type: "idle" },
+      { type: "active", activeFlags: [] },
+    ]);
+    expect(
+      listExternalThreadMetadata({
+        records,
+        query: query({ archived: true }),
+        runtimeFor,
+      }).data.map(({ thread }) => thread.id),
+    ).toEqual(["archived"]);
+    expect(
+      listExternalThreadMetadata({ records, query: query(), runtimeFor: () => null }).data,
+    ).toEqual([]);
   });
 
   it("uses current runtime state without reading a Snapshot", () => {

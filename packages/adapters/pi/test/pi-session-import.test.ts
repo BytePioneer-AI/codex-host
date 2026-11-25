@@ -127,7 +127,8 @@ describe("Pi native Session import discovery", () => {
       "First prompt",
     ],
     ["image only", [{ type: "image", data: "ignored" }], null],
-    ["long prompt", "x".repeat(5_000), "x".repeat(4_096)],
+    ["long prompt", "x".repeat(5_000), `${"x".repeat(4_095)}…`],
+    ["multi-line prompt", " First\n\tprompt\0 ", "First prompt"],
   ])(
     "uses the first user text as the unnamed session title: %s",
     async (_label, content, title) => {

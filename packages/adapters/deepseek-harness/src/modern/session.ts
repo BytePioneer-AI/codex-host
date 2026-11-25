@@ -1,7 +1,9 @@
+import { deepSeekUsageHistory, deepSeekUsageRecord } from "./usage-metering.js";
 import { randomUUID as nodeRandomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   validateHostInteractionResponse,
   type HarnessCommandAccepted,
@@ -21,11 +23,13 @@ import {
   type HostItem,
   type HostItemOutcome,
   type HostInteraction,
+  type HostQuestionResponse,
   type HostReasoningItem,
   type HostTextInput,
   type HostThreadSnapshot,
   type HostToolExecutionItem,
   type HostUsage,
+  type InteractionClosedEvent,
   type InteractionRespondAccepted,
   type InteractionRespondCommand,
   type ModelSelectCommand,
@@ -39,7 +43,10 @@ import {
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
+import { LocalMediaMarkdownStream } from "@codexhost/harness-adapter/local-media-markdown";
 import {
   harnessIdSchema,
   hostInteractionIdSchema,
@@ -56,6 +63,11 @@ import {
 import { deepSeekHarnessCommandCatalog, parseDeepSeekHarnessCommand } from "../harness-commands.js";
 import { isRecord, parseArguments, projectToolResult, structuredDiffs } from "../projection.js";
 import type { ModernModelCatalogSnapshot } from "./catalog.js";
+import {
+  MODERN_CONTEXT_PRESSURE_KEY,
+  modernCompactionOutcome,
+  withModernContextPressure,
+} from "./compaction.js";
 import { executeModernCommand, ModernCommandError } from "./commands.js";
 import {
   modernConfigurationHarnessError,
@@ -79,6 +91,7 @@ import {
   type ModernEventGateway,
   type ModernEventDelivery,
   type ModernEventSink,
+  type ModernQuestionAnswer,
   type ModernQuestionDelivery,
 } from "./event-gateway.js";
 import {
@@ -86,9 +99,12 @@ import {
   MODERN_TOOL_OUTPUT_LIMIT,
   ModernEventValidator,
   ModernHistoryError,
+  isNotStartedToolResult,
   modernCheckpointRef,
   modernItemId,
+  modernMediaRoots,
   modernNativeTurnRef,
+  modernWorkingDirectory,
   projectModernHistory,
 } from "./history.js";
 import {
@@ -104,7 +120,14 @@ import {
   type ModernJournalOptions,
   type ModernJournalRemote,
 } from "./journal.js";
-import { DEEPSEEK_V012_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
+import { DEEPSEEK_V4_PROFILE, type DeepSeekModernProfile } from "../profiles/profile.js";
+import {
+  isPtcProgramTool,
+  ptcDispatchItem,
+  ptcDispatchKey,
+  ptcDispatchOutcome,
+  ptcDispatchOutput,
+} from "./ptc-dispatch.js";
 import { ModernRemoteConnectionError } from "./remote-connection.js";
 import {
   redactModernCredential,
@@ -141,7 +164,6 @@ export function modernSessionCapabilities(
 const CORRELATION_BOUNDARIES = new Set([
   "request/header",
   "request/context",
-  "assistant/chunk",
   "assistant/attempt",
   "assistant/message",
   "tool/call",
@@ -184,7 +206,10 @@ interface NativeTurnBuffer {
   readonly initialResume: boolean;
   pending?: PendingPrompt;
   active?: ActiveHostTurn;
+  compacting?: string;
   replayed: number;
+  /** Working directory as of the last replayed event, which media in projected text resolves against. */
+  workingDirectory: string | undefined;
   sawUserMessage: boolean;
   reachedCorrelationBoundary: boolean;
 }
@@ -192,6 +217,17 @@ interface NativeTurnBuffer {
 interface LiveTextItem<T extends HostAgentMessageItem | HostReasoningItem> {
   item: T;
   text: string;
+}
+
+/** `text` is native; `item.text` is what `media` has published from it. */
+interface LiveAgentItem extends LiveTextItem<HostAgentMessageItem> {
+  readonly media: LocalMediaMarkdownStream;
+}
+
+interface LiveReasoningItem extends LiveTextItem<HostReasoningItem> {
+  readonly attemptId?: string;
+  readonly provisional: boolean;
+  pendingLineBreaks: string;
 }
 
 interface LiveTool {
@@ -205,13 +241,24 @@ interface ActiveHostTurn {
   readonly nativeTurn: number;
   readonly input: HostTextInput[];
   readonly autonomous: boolean;
-  agent?: LiveTextItem<HostAgentMessageItem>;
-  reasoning?: LiveTextItem<HostReasoningItem>;
+  agent?: LiveAgentItem;
+  reasoning?: LiveReasoningItem;
+  reasoningOrdinal: number;
+  compaction?: { nativeId: string; item: HostContextCompactionItem };
   readonly tools: Map<string, LiveTool>;
+  /** Assistant tool requests not yet started, for DSH's not-started recovery results. */
+  readonly advertisedTools: Map<string, AdvertisedTool>;
+  /** Open PTC program calls, which project no Item of their own. */
+  readonly programCalls: Set<string>;
   readonly interactions: Set<HostInteractionId>;
   terminal: boolean;
   cancelAcknowledged: boolean;
   cancelPromise?: Promise<HarnessResult<TurnCancelAccepted>>;
+}
+
+interface AdvertisedTool {
+  readonly toolName: string;
+  readonly arguments: string;
 }
 
 interface BufferedAssistantAttempt {
@@ -235,6 +282,16 @@ interface ActiveInteraction {
   readonly delivery: ModernEventDelivery;
   readonly interaction: HostInteraction;
   responding: boolean;
+  /**
+   * DSH released this timed question's foreground wait while the Host Turn went on:
+   * `released` until the call's native result is known, `continued` once it recorded pending.
+   */
+  continuation?: "released" | "continued";
+  /**
+   * Wakes an answer held until the call's native result shows whether DSH received it;
+   * `null` when the interaction closes first.
+   */
+  heldAnswer?: (outcome: TimedQuestionOutcome | null) => void;
 }
 
 interface ActiveCommand {
@@ -272,6 +329,13 @@ export interface ModernHarnessSessionOptions {
   readonly acceptedCorrelationTimeoutMs?: number;
   readonly onClosed?: () => void;
   readonly flushSession?: () => Promise<void>;
+  /**
+   * Returns the active fault teardown Promise for the owning managed `dsh web` connection, or
+   * `undefined` when no Adapter fault teardown has started. Resolution signals managed teardown
+   * completion (on Windows `.cmd` wrappers, `taskkill` status `128` after the wrapper exits cannot
+   * prove orphaned child processes have exited); rejection reports cleanup failure.
+   */
+  readonly managedProcessStop?: () => Promise<void> | undefined;
 }
 
 export interface ModernSessionControl extends ModernConfigurationControl {
@@ -312,8 +376,11 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   readonly #acceptedCorrelationTimeoutMs: number;
   readonly #onClosed: () => void;
   readonly #flushSession: (() => Promise<void>) | undefined;
+  readonly #managedProcessStop: (() => Promise<void> | undefined) | undefined;
   readonly #fallbackModel: HarnessModelRef;
   readonly #fallbackThinkingOptionId: HarnessThinkingOptionId | undefined;
+  readonly #sessionDirectory: string | undefined;
+  #workingDirectory: string | undefined;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #validator: ModernEventValidator;
   readonly #events: ModernJournalEvent[];
@@ -346,7 +413,8 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   #closedNotified = false;
   #faulted?: HarnessError;
   #faultMayHaveNativeWork = false;
-  #closePromise?: Promise<void>;
+  #closeStopUnconfirmed = false;
+  #localClosePromise?: Promise<void>;
   readonly #pumpPromise: Promise<void>;
 
   constructor(options: ModernHarnessSessionOptions) {
@@ -362,7 +430,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     this.harnessId = options.harnessId ?? DEEPSEEK_HARNESS_ID;
     this.#remote = options.remote;
     this.#journal = options.journal;
-    this.#profile = options.journal.profile ?? DEEPSEEK_V012_PROFILE;
+    this.#profile = options.journal.profile ?? DEEPSEEK_V4_PROFILE;
     this.#control = options.control;
     this.#modelCatalog = options.modelCatalog;
     this.#permissionModes = options.permissionModes;
@@ -399,12 +467,19 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     );
     this.#onClosed = options.onClosed ?? (() => undefined);
     this.#flushSession = options.flushSession;
+    this.#managedProcessStop = options.managedProcessStop;
     this.#events = [...options.journal.events];
     this.#historyBytes = journalHistoryBytes(this.#events, this.#maxHistoryBytes);
     this.#validator = new ModernEventValidator(this.#maxEvents, this.#profile);
-    for (const event of this.#events) this.#validator.accept(event);
+    this.#sessionDirectory = options.journal.header.cwd;
+    this.#workingDirectory = this.#sessionDirectory;
+    for (const event of this.#events) {
+      this.#validator.accept(event);
+      this.#workingDirectory = modernWorkingDirectory(this.#workingDirectory, event);
+    }
 
     const projection = projectModernHistory({
+      modelIndex: this.#modelCatalog.index,
       harnessId: this.harnessId,
       sessionId: this.#sessionId,
       events: this.#events,
@@ -421,25 +496,39 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     });
     this.#nativeRef = projection.nativeRef;
     this.initialState = configuration.state;
-    this.initialUsage = projection.usage;
+    this.initialUsage = withModernContextPressure(
+      projection.usage,
+      this.#control.snapshot(this.#sessionId)?.[MODERN_CONTEXT_PRESSURE_KEY],
+    );
     this.#state = this.initialState;
     this.#usage = this.initialUsage;
     this.#fallbackModel = configuration.state.effectiveModel as HarnessModelRef;
     this.#fallbackThinkingOptionId = configuration.state.effectiveThinkingOptionId;
     this.capabilities = modernSessionCapabilities(this.#permissionModes);
     this.outputs = this.#channel.outputs;
+    // Every request already in the journal, replayed for Host usage metering.
+    const usageHistory = deepSeekUsageHistory(this.#events);
+    for (const request of usageHistory.requests) this.#emit({ type: "usage.request", request });
+    this.#emit({ type: "usage.history", complete: usageHistory.complete });
     this.commands = {
       list: () => this.#listHarnessCommands(),
       execute: (command) => this.#executeHarnessCommand(command),
     };
     let resumedAutonomousBuffer: NativeTurnBuffer | undefined;
     if (projection.incompleteTurn) {
+      // The incomplete Turn is the journal's tail; replay starts from the directory before it.
+      let workingDirectory = this.#sessionDirectory;
+      const turnStart = this.#events.length - projection.incompleteTurn.events.length;
+      for (const event of this.#events.slice(0, turnStart)) {
+        workingDirectory = modernWorkingDirectory(workingDirectory, event);
+      }
       const buffer: NativeTurnBuffer = {
         nativeTurn: projection.incompleteTurn.turn,
         events: [...projection.incompleteTurn.events],
         input: [],
         initialResume: true,
         replayed: 0,
+        workingDirectory,
         sawUserMessage: false,
         reachedCorrelationBoundary: false,
       };
@@ -458,6 +547,16 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         this.#control.subscribe(this.#sessionId, MODERN_PERMISSION_PROJECTION_KEY, () =>
           this.#onConfigurationProjection(),
         ),
+      );
+      removeControlSubscriptions.push(
+        this.#control.subscribe(this.#sessionId, MODERN_CONTEXT_PRESSURE_KEY, () => {
+          if (!this.#closed && !this.#closing) {
+            this.#publishUsage(
+              this.#usage,
+              this.#active?.turnId ?? this.#activeCommand?.command.turnId,
+            );
+          }
+        }),
       );
       this.#detachEvents = options.eventGateway.attach(this.#sessionId, this);
     } catch (error) {
@@ -480,7 +579,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     if (this.#reading) return Promise.resolve({ ok: false, error: busyError("read history") });
     this.#reading = true;
     try {
-      const projection = this.#project();
+      const projection = this.#project(true);
       const configuration = this.#readConfiguration();
       return Promise.resolve({
         ok: true,
@@ -500,6 +599,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -512,6 +612,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -523,6 +624,8 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     switch (command.type) {
       case "turn.start":
         return this.#start(command);
+      case "turn.steer":
+        return Promise.resolve(unsupportedSteer("DeepSeek Harness"));
       case "turn.cancel":
         return this.#cancel(command);
       case "interaction.respond":
@@ -537,18 +640,32 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   close(): Promise<void> {
-    const faultCleanup = this.#closePromise;
-    if (this.#faultMayHaveNativeWork && !this.#closing && faultCleanup) {
-      this.#closing = true;
-      // Fault cleanup retires local projection, but cannot certify native execution stopped.
-      this.#closePromise = faultCleanup.then(() => {
+    this.#localClosePromise ??= this.#performClose();
+    return this.#localClosePromise.then(
+      () => {
+        if (!this.#faultMayHaveNativeWork) return;
+        const processStop = this.#managedProcessStop?.();
+        if (processStop) return processStop;
+        // Local fault cleanup cannot certify that the managed DSH process tree exited.
         throw new Error(
           "DeepSeek Harness native execution stop was not confirmed before the Session fault",
         );
-      });
-    }
-    this.#closePromise ??= this.#performClose();
-    return this.#closePromise;
+      },
+      (error: unknown) => {
+        // A stop result can confirm release after a fault or unconfirmed cancellation,
+        // but cannot replace a failed persistence confirmation.
+        if (this.#faulted || this.#closeStopUnconfirmed) {
+          const processStop = this.#managedProcessStop?.();
+          if (processStop) return processStop;
+        }
+        throw error;
+      },
+    );
+  }
+
+  /** Adapter-owned local teardown drain after fault; never waits on managed process exit. */
+  async waitForFaultCleanup(): Promise<void> {
+    await this.#localClosePromise?.catch(() => undefined);
   }
 
   /** Adapter-owned transport/control fault convergence. */
@@ -587,7 +704,14 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   onCancel(eventId: string): void {
     if (this.#queuedDeliveries.delete(eventId)) return;
     const interactionId = this.#interactionByEventId.get(eventId);
-    if (interactionId) this.#closeInteraction(interactionId, "cancelled");
+    if (!interactionId) return;
+    const pending = this.#interactions.get(interactionId);
+    if (pending && this.#outlivesReleasedWait(pending)) {
+      // DSH ended only the foreground wait; the call's native result decides what follows.
+      pending.continuation ??= "released";
+      return;
+    }
+    this.#closeInteraction(interactionId, "cancelled");
   }
 
   async cancelNative(): Promise<void> {
@@ -622,7 +746,20 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         error: invalidState("DeepSeek Harness Interaction response is already in progress"),
       };
     }
+    if (
+      pending.continuation &&
+      pending.delivery.type === "question" &&
+      command.response.type === "question"
+    ) {
+      return this.#respondAfterReleasedWait(
+        command.interactionId,
+        pending,
+        pending.delivery,
+        command.response,
+      );
+    }
     pending.responding = true;
+    let held: HeldTimedAnswer | undefined;
     try {
       if (pending.delivery.type === "approval") {
         if (command.response.type !== "approval") throw new Error("unreachable response type");
@@ -632,10 +769,13 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       } else {
         if (command.response.type !== "question") throw new Error("unreachable response type");
         if (command.response.cancelled) await pending.delivery.reject();
-        else
-          await pending.delivery.respond(
-            questionAnswer(pending.delivery, command.response.answers),
-          );
+        else {
+          const answer = questionAnswer(pending.delivery, command.response.answers);
+          const wait = pending.delivery.request.wait;
+          // DSH drops a result for a wait it already released without reporting it.
+          if (wait?.timed === true) held = this.#holdAnswer(pending, wait.callId, answer);
+          await pending.delivery.respond(answer);
+        }
       }
       if (this.#interactions.get(command.interactionId) !== pending || this.#closed) {
         return {
@@ -643,6 +783,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
           error: invalidState("DeepSeek Harness Interaction is no longer active"),
         };
       }
+      if (held) return await this.#settleHeldAnswer(command.interactionId, pending, held, true);
       this.#closeInteraction(
         command.interactionId,
         command.response.type === "question" && command.response.cancelled
@@ -651,6 +792,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       );
       return { ok: true, value: { accepted: true } };
     } catch (error) {
+      if (held) delete pending.heldAnswer;
       if (this.#faulted) return { ok: false, error: this.#faulted };
       if (this.#interactions.get(command.interactionId) !== pending || this.#closed) {
         return {
@@ -662,6 +804,208 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       const failure = eventGatewayHarnessError(error);
       if (eventGatewayFailureRequiresSessionFault(error)) this.#fault(failure);
       return { ok: false, error: failure };
+    }
+  }
+
+  /** Answer a timed question whose foreground wait DSH already released. */
+  async #respondAfterReleasedWait(
+    interactionId: HostInteractionId,
+    pending: ActiveInteraction,
+    delivery: ModernQuestionDelivery,
+    response: HostQuestionResponse,
+  ): Promise<HarnessResult<InteractionRespondAccepted>> {
+    const callId = delivery.request.wait?.callId;
+    if (callId === undefined) throw new Error("unreachable released question without a call");
+    if (response.cancelled) {
+      // Like closing DSH's own panel, skipping writes no native reply.
+      this.#closeInteraction(interactionId, "cancelled");
+      return { ok: true, value: { accepted: true } };
+    }
+    const answer = questionAnswer(delivery, response.answers);
+    if (pending.continuation === "released") {
+      // DSH has not recorded whether this call continued; answer only once it has.
+      pending.responding = true;
+      const held = this.#holdAnswer(pending, callId, answer);
+      return this.#settleHeldAnswer(interactionId, pending, held, false);
+    }
+    return this.#answerContinued(interactionId, pending, callId, answer);
+  }
+
+  /**
+   * Finish an answer held for its call's native result. Only a recorded pending
+   * payload leaves the question answerable, so only then does the answer go
+   * through the late-answer Remote, whose receipt decides the reply. `sent`
+   * marks an answer already given to the foreground wait.
+   */
+  async #settleHeldAnswer(
+    interactionId: HostInteractionId,
+    pending: ActiveInteraction,
+    held: HeldTimedAnswer,
+    sent: boolean,
+  ): Promise<HarnessResult<InteractionRespondAccepted>> {
+    const outcome = await held.outcome;
+    if (this.#faulted) return { ok: false, error: this.#faulted };
+    if (
+      outcome === null ||
+      this.#interactions.get(interactionId) !== pending ||
+      this.#closed ||
+      this.#closing
+    ) {
+      return {
+        ok: false,
+        error: invalidState("DeepSeek Harness Interaction is no longer active"),
+      };
+    }
+    if (outcome === "continued") {
+      return this.#answerContinued(interactionId, pending, held.callId, held.answer);
+    }
+    if (sent && outcome === "answered") {
+      this.#closeInteraction(interactionId, "responded");
+      return { ok: true, value: { accepted: true } };
+    }
+    // The call settled natively without this answer: answered elsewhere, or failed
+    // (for example aborted by a Turn cancellation) even after an in-time answer.
+    this.#closeInteraction(interactionId, outcome === "answered" ? "superseded" : "cancelled");
+    return {
+      ok: false,
+      error: invalidState("DeepSeek Harness question can no longer be answered"),
+    };
+  }
+
+  /** Answer a continued question; a transport failure leaves it open for another attempt. */
+  async #answerContinued(
+    interactionId: HostInteractionId,
+    pending: ActiveInteraction,
+    callId: string,
+    answer: ModernQuestionAnswer,
+  ): Promise<HarnessResult<InteractionRespondAccepted>> {
+    pending.responding = true;
+    let result: HarnessResult<boolean>;
+    try {
+      result = await this.#answerContinuedQuestion(callId, answer);
+    } finally {
+      pending.responding = false;
+    }
+    if (this.#faulted) return { ok: false, error: this.#faulted };
+    if (this.#interactions.get(interactionId) !== pending || this.#closed) {
+      return {
+        ok: false,
+        error: invalidState("DeepSeek Harness Interaction is no longer active"),
+      };
+    }
+    if (!result.ok) {
+      if (result.error.code !== "unavailable") this.#closeInteraction(interactionId, "superseded");
+      return result;
+    }
+    if (!result.value) {
+      this.#closeInteraction(interactionId, "superseded");
+      return {
+        ok: false,
+        error: invalidState("DeepSeek Harness question can no longer be answered"),
+      };
+    }
+    this.#closeInteraction(interactionId, "responded");
+    return { ok: true, value: { accepted: true } };
+  }
+
+  /** Steer an answer for a continued timed question into the native Agent. */
+  async #answerContinuedQuestion(
+    callId: string,
+    answer: ModernQuestionAnswer,
+  ): Promise<HarnessResult<boolean>> {
+    const abort = new AbortController();
+    this.#operationControllers.add(abort);
+    try {
+      const response = await callAbortable(
+        this.#remote.call<unknown>(
+          "userQuestions/answer",
+          { agentId: this.#sessionId, callId, answer },
+          abort.signal,
+        ),
+        abort.signal,
+      );
+      if (!response.ok) {
+        return { ok: false, error: remoteFailure("userQuestions/answer", response.error) };
+      }
+      if (typeof response.value !== "boolean") {
+        const error: HarnessError = {
+          code: "protocolError",
+          message: "DeepSeek Harness userQuestions/answer returned an invalid receipt",
+          retryable: false,
+        };
+        this.#fault(error);
+        return { ok: false, error };
+      }
+      return { ok: true, value: response.value };
+    } catch (error) {
+      return {
+        ok: false,
+        error: this.#closed
+          ? closedError()
+          : unavailableError(error, "DeepSeek Harness userQuestions/answer failed"),
+      };
+    } finally {
+      this.#operationControllers.delete(abort);
+    }
+  }
+
+  #outlivesReleasedWait(pending: ActiveInteraction): boolean {
+    const active = this.#active;
+    return (
+      !this.#closed &&
+      !this.#closing &&
+      pending.delivery.type === "question" &&
+      pending.delivery.request.wait?.timed === true &&
+      active !== undefined &&
+      !active.terminal &&
+      active.interactions.has(pending.interaction.interactionId)
+    );
+  }
+
+  /** Keep a timed answer pending until its call's native result arrives or the interaction closes. */
+  #holdAnswer(
+    pending: ActiveInteraction,
+    callId: string,
+    answer: ModernQuestionAnswer,
+  ): HeldTimedAnswer {
+    const outcome = new Promise<TimedQuestionOutcome | null>((resolve) => {
+      pending.heldAnswer = resolve;
+    });
+    return { callId, answer, outcome };
+  }
+
+  /** Apply the native result of a timed question's call to its Host interaction. */
+  #observeTimedQuestion(
+    active: ActiveHostTurn,
+    callId: string,
+    readOutcome: () => TimedQuestionOutcome,
+  ): void {
+    let interactionId: HostInteractionId | undefined;
+    for (const candidate of active.interactions) {
+      const delivery = this.#interactions.get(candidate)?.delivery;
+      if (
+        delivery?.type === "question" &&
+        delivery.request.wait?.timed === true &&
+        delivery.request.wait.callId === callId
+      ) {
+        interactionId = candidate;
+        break;
+      }
+    }
+    const pending = interactionId ? this.#interactions.get(interactionId) : undefined;
+    if (!interactionId || !pending) return;
+    const outcome = readOutcome();
+    if (outcome === "continued") pending.continuation = "continued";
+    const held = pending.heldAnswer;
+    if (held) {
+      // The held answer decides how this interaction closes.
+      delete pending.heldAnswer;
+      held(outcome);
+      return;
+    }
+    // The call settled natively: answered elsewhere in time, skipped, cancelled, or failed.
+    if (outcome !== "continued" && !pending.responding) {
+      this.#closeInteraction(interactionId, outcome === "answered" ? "superseded" : "cancelled");
     }
   }
 
@@ -679,7 +1023,10 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         type: "approval",
         interactionId,
         turnId: active.turnId,
-        title: delivery.request.reason ?? `Allow ${delivery.request.toolName}?`,
+        title:
+          delivery.request.displayReason?.en ??
+          delivery.request.reason ??
+          `Allow ${delivery.request.toolName}?`,
         description: delivery.request.callId
           ? `${delivery.request.toolName} (${delivery.request.callId})`
           : delivery.request.toolName,
@@ -717,7 +1064,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
                   ...(option.description ? { description: option.description } : {}),
                 })),
                 multiple: question.multiSelect === true,
-                allowOther: question.intent?.kind !== "plan-review",
+                allowOther: question.intent === undefined,
                 optional: false,
               }
             : {
@@ -745,12 +1092,18 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     }
   }
 
-  #closeInteraction(interactionId: HostInteractionId, reason: "responded" | "cancelled"): void {
+  #closeInteraction(
+    interactionId: HostInteractionId,
+    reason: InteractionClosedEvent["reason"],
+  ): void {
     const pending = this.#interactions.get(interactionId);
     if (!pending) return;
     this.#interactions.delete(interactionId);
     this.#interactionByEventId.delete(pending.delivery.eventId);
     this.#active?.interactions.delete(interactionId);
+    const held = pending.heldAnswer;
+    delete pending.heldAnswer;
+    held?.(null);
     this.#emit({
       type: "interaction.closed",
       interactionId,
@@ -762,6 +1115,11 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   #closeActiveInteractions(active: ActiveHostTurn): void {
     for (const interactionId of [...active.interactions]) {
       const pending = this.#interactions.get(interactionId);
+      if (pending?.continuation) {
+        // DSH released this wait earlier; answers cannot cross into another Host Turn.
+        this.#closeInteraction(interactionId, "expired");
+        continue;
+      }
       if (pending) void settleCancelledInteraction(pending.delivery).catch(() => undefined);
       this.#closeInteraction(interactionId, "cancelled");
     }
@@ -806,16 +1164,17 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     if (force || changed) this.#emit({ type: "session.state.changed", state: next });
   }
 
-  #configurationBusy(area: string): HarnessError | undefined {
+  #configurationBusy(area: string, allowActiveTurn = false): HarnessError | undefined {
     if (
-      this.#active ||
-      this.#buffer ||
-      this.#pendingByRequestId.size > 0 ||
-      this.#activeCommand ||
-      this.#commandAdmission ||
-      this.#queuedDeliveries.size > 0 ||
       this.#configuring ||
-      this.#reading
+      this.#reading ||
+      (!allowActiveTurn &&
+        (this.#active ||
+          this.#buffer ||
+          this.#pendingByRequestId.size > 0 ||
+          this.#activeCommand ||
+          this.#commandAdmission ||
+          this.#queuedDeliveries.size > 0))
     ) {
       return busyError(`select ${area}`);
     }
@@ -823,7 +1182,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   async #selectModel(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>> {
-    const busy = this.#configurationBusy("a Model");
+    const busy = this.#configurationBusy("a Model", true);
     if (busy) return { ok: false, error: busy };
     let requested;
     try {
@@ -847,7 +1206,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   async #selectThinking(
     command: ThinkingSelectCommand,
   ): Promise<HarnessResult<ThinkingSelectCompleted>> {
-    const busy = this.#configurationBusy("Thinking");
+    const busy = this.#configurationBusy("Thinking", true);
     if (busy) return { ok: false, error: busy };
     let requested;
     try {
@@ -892,7 +1251,6 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         this.#permissionModes,
         command.permissionModeId,
         signal,
-        this.#profile,
       );
       return { value: { completed: true } as const, changed: selected.changed };
     });
@@ -1074,7 +1432,14 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     pending.admitted = true;
     this.#acceptedTurnIds.add(pending.command.turnId);
     this.#scheduleBoundTurn(pending);
-    if (!pending.buffer && !pending.correlationTimer) {
+    this.#armAcceptedPromptCorrelation(pending);
+    return { ok: true, value: { turnId: pending.command.turnId } };
+  }
+
+  #armAcceptedPromptCorrelation(pending: PendingPrompt): void {
+    // DSH can compact in pre-step before appending the requestId-bearing user message.
+    // Wait for native completion rather than timing out a known accepted prompt.
+    if (!pending.buffer && !pending.correlationTimer && !this.#buffer?.compacting) {
       const timer = setTimeout(() => {
         if (pending.correlationTimer !== timer) return;
         pending.correlationTimer = undefined;
@@ -1087,7 +1452,6 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       }, this.#acceptedCorrelationTimeoutMs);
       pending.correlationTimer = timer;
     }
-    return { ok: true, value: { turnId: pending.command.turnId } };
   }
 
   #beginPromptCorrelationGrace(
@@ -1229,7 +1593,6 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         this.#sessionId,
         active.line,
         active.abort.signal,
-        this.#profile,
       );
       if (this.#activeCommand !== active) return;
       if (!execution) {
@@ -1429,6 +1792,8 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     this.#validator.accept(event);
     this.#observeAssistantSettlement(event);
     this.#events.push(event);
+    this.#workingDirectory = modernWorkingDirectory(this.#workingDirectory, event);
+    this.#meterUsage(event);
     this.#historyBytes += bytes;
     this.#receive(event);
   }
@@ -1443,20 +1808,18 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
             previous.turn !== frame.turn ||
             previous.step !== frame.step
           ) {
-            throw new ModernJournalDesyncError(
-              "DSH v0.1.5 Assistant baseline changed attempt identity",
-            );
+            throw new ModernJournalDesyncError("DSH Assistant baseline changed attempt identity");
           }
           previous.nextIndex = 0;
           this.#assistantRebaseline = false;
           return;
         }
         if (previous && !previous.ended && !this.#assistantRebaseline && frame.revision !== 1) {
-          throw new ModernJournalDesyncError("DSH v0.1.5 Assistant attempts overlap");
+          throw new ModernJournalDesyncError("DSH Assistant attempts overlap");
         }
         if (frame.startedAfterSeq > this.#events.length - 1) {
           throw new ModernJournalDesyncError(
-            "DSH v0.1.5 Assistant attempt starts after the durable cursor",
+            "DSH Assistant attempt starts after the durable cursor",
           );
         }
         this.#discardAssistantAttempt();
@@ -1508,16 +1871,14 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         const attempt = this.#assistantAttempt;
         if (!attempt || attempt.ended || attempt.attemptId !== frame.attemptId) return;
         if (frame.index !== attempt.nextIndex) {
-          throw new ModernJournalDesyncError(
-            "DSH v0.1.5 Assistant stream is not attempt-contiguous",
-          );
+          throw new ModernJournalDesyncError("DSH Assistant stream is not attempt-contiguous");
         }
         this.#profile.validateChunk(frame.chunk);
         const replayed = attempt.chunks[frame.index];
         if (replayed) {
           if (replayed.time !== frame.time || !isDeepStrictEqual(replayed.chunk, frame.chunk)) {
             throw new ModernJournalDesyncError(
-              "DSH v0.1.5 Assistant baseline conflicts with streamed chunks",
+              "DSH Assistant baseline conflicts with streamed chunks",
             );
           }
           attempt.nextIndex += 1;
@@ -1527,7 +1888,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         if (bytes > this.#maxBufferedLiveBytes - attempt.retainedBytes) {
           throw new ModernJournalError(
             "limitExceeded",
-            "DSH v0.1.5 Assistant attempt exceeded maxBufferedLiveBytes",
+            "DSH Assistant attempt exceeded maxBufferedLiveBytes",
           );
         }
         attempt.retainedBytes += bytes;
@@ -1540,14 +1901,12 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         const attempt = this.#assistantAttempt;
         if (!attempt || attempt.attemptId !== frame.attemptId || attempt.ended) return;
         if (frame.index !== attempt.nextIndex || frame.index !== attempt.chunks.length) {
-          throw new ModernJournalDesyncError(
-            "DSH v0.1.5 Assistant stream ended outside its attempt",
-          );
+          throw new ModernJournalDesyncError("DSH Assistant stream ended outside its attempt");
         }
         if (frame.outcome.kind === "abandoned") {
           if (attempt.settlement) {
             throw new ModernJournalDesyncError(
-              "DSH v0.1.5 abandoned Assistant attempt has a durable settlement",
+              "DSH abandoned Assistant attempt has a durable settlement",
             );
           }
           this.#discardAssistantAttempt();
@@ -1563,7 +1922,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
             return;
           }
           throw new ModernJournalDesyncError(
-            "DSH v0.1.5 Assistant settlement does not match its stream end",
+            "DSH Assistant settlement does not match its stream end",
           );
         }
         attempt.ended = true;
@@ -1578,14 +1937,17 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     if (attempt && !attempt.projected && active?.nativeTurn === attempt.turn && active.agent) {
       this.#cancelAgentItem(active);
     }
+    if (attempt && active?.reasoning?.attemptId === attempt.attemptId) {
+      this.#cancelReasoningItem(active);
+    }
     this.#assistantAttempt = undefined;
   }
 
   #cancelAgentItem(active: ActiveHostTurn): void {
     const agent = active.agent;
     if (!agent) return;
-    agent.text += CANCELLED_ASSISTANT_ATTEMPT_SUFFIX;
-    agent.item = { ...agent.item, text: agent.text };
+    this.#flushAgent(active, agent);
+    agent.item = { ...agent.item, text: agent.item.text + CANCELLED_ASSISTANT_ATTEMPT_SUFFIX };
     this.#emit({
       type: "item.updated",
       turnId: active.turnId,
@@ -1594,6 +1956,13 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     });
     delete active.agent;
     this.#completeItem(active, agent.item, { status: "cancelled" });
+  }
+
+  #cancelReasoningItem(active: ActiveHostTurn): void {
+    const reasoning = active.reasoning;
+    if (!reasoning) return;
+    delete active.reasoning;
+    this.#completeItem(active, reasoning.item, { status: "cancelled" });
   }
 
   #projectAssistantLiveChunks(): void {
@@ -1649,7 +2018,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     if (attempt.settlement) {
       throw new ModernHistoryError(
         "protocolError",
-        "DSH v0.1.5 Assistant attempt has multiple durable settlements",
+        "DSH Assistant attempt has multiple durable settlements",
       );
     }
     attempt.settlement = { eventType: event.type, seq: event.seq };
@@ -1666,6 +2035,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       if (!initialReplay) this.#projectAssistantLiveChunks();
     } else {
       this.#cancelAgentItem(active);
+      this.#cancelReasoningItem(active);
     }
     attempt.projected = true;
     if (attempt.ended) this.#assistantAttempt = undefined;
@@ -1747,6 +2117,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         input: [],
         initialResume: false,
         replayed: 0,
+        workingDirectory: this.#workingDirectory,
         sawUserMessage: false,
         reachedCorrelationBoundary: false,
       };
@@ -1756,6 +2127,22 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     const buffer = this.#buffer;
     if (!buffer) return;
     buffer.events.push(event);
+    if (isRecord(event.data) && event.data.turn === buffer.nativeTurn) {
+      if (event.type === "compaction/start" && event.data.sourceCommandId === undefined) {
+        buffer.compacting = event.data.compactionId as string;
+        for (const pending of this.#pendingByRequestId.values()) {
+          if (pending.admitted) this.#clearPromptCorrelationTimer(pending);
+        }
+      } else if (
+        (event.type === "compaction/end" && event.data.compactionId === buffer.compacting) ||
+        event.type === "turn/end"
+      ) {
+        delete buffer.compacting;
+        for (const pending of this.#pendingByRequestId.values()) {
+          if (pending.admitted) this.#armAcceptedPromptCorrelation(pending);
+        }
+      }
+    }
     this.#observeBufferedCorrelation(buffer, event, true);
 
     if (buffer.active) {
@@ -1965,6 +2352,9 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       input: [...input],
       autonomous,
       tools: new Map(),
+      advertisedTools: new Map(),
+      programCalls: new Set(),
+      reasoningOrdinal: 0,
       interactions: new Set(),
       terminal: false,
       cancelAcknowledged: false,
@@ -1978,6 +2368,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     while (!this.#closed && buffer.replayed < buffer.events.length) {
       const event = buffer.events[buffer.replayed] as ModernJournalEvent;
       buffer.replayed += 1;
+      buffer.workingDirectory = modernWorkingDirectory(buffer.workingDirectory, event);
       this.#projectLiveEvent(buffer, event, initialReplay);
     }
     this.#projectAssistantLiveChunks();
@@ -2000,10 +2391,34 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       case "request/context":
       case "model/selection":
         return;
-      case "assistant/chunk":
-        if (!isRecord(data.chunk)) return;
-        this.#projectAssistantChunk(active, data.chunk, data.step as number, initialReplay);
+      case "compaction/start": {
+        // Manual commands own a separate Host Turn; do not duplicate their Item.
+        if (data.turn !== active.nativeTurn || data.sourceCommandId !== undefined) return;
+        if (active.compaction)
+          throw new ModernHistoryError("protocolError", "Modern compactions overlap");
+        const nativeId = data.compactionId as string;
+        const item: HostContextCompactionItem = {
+          type: "contextCompaction",
+          itemId: modernItemId(this.#sessionId, `compaction:${nativeId}`),
+        };
+        active.compaction = { nativeId, item };
+        this.#emit({ type: "item.started", turnId: active.turnId, item });
         return;
+      }
+      case "compaction/end": {
+        if (data.turn !== active.nativeTurn || data.sourceCommandId !== undefined) return;
+        if (!active.compaction || active.compaction.nativeId !== data.compactionId) {
+          throw new ModernHistoryError(
+            "protocolError",
+            "Modern compaction ended without its start",
+          );
+        }
+        const { item } = active.compaction;
+        delete active.compaction;
+        this.#completeItem(active, item, modernCompactionOutcome(data));
+        if (!initialReplay) this.#publishUsageChanges(active.turnId);
+        return;
+      }
       case "assistant/message":
         this.#projectAssistantSettlement(active, event, initialReplay);
         if (event.surfaceOp === "append") this.#completeAssistant(active, data);
@@ -2019,7 +2434,24 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         this.#startTool(active, data, event.seq);
         return;
       case "tool/result":
-        if (event.surfaceOp === "append") this.#completeTool(active, data, event.seq);
+        if (event.surfaceOp === "append") {
+          const callId = this.#completeTool(active, event);
+          this.#observeTimedQuestion(active, callId, () => toolResultQuestionOutcome(data));
+        }
+        return;
+      case "tool/ptc-dispatch-start":
+        this.#startPtcDispatch(active, data, event.seq, event.time);
+        return;
+      case "tool/ptc-dispatch":
+        this.#settlePtcDispatch(active, data, event.seq, event.time);
+        if (typeof data.subCallId === "string") {
+          this.#observeTimedQuestion(active, data.subCallId, () =>
+            ptcDispatchQuestionOutcome(data),
+          );
+        }
+        return;
+      case "step/end":
+        this.#cancelReasoningItem(active);
         return;
       case "turn/end":
         this.#finishTurn(buffer, active, data.reason, event.seq);
@@ -2039,7 +2471,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     if (chunk.type === "text-delta") {
       this.#appendAgent(active, chunk.text as string, step, attemptId);
     } else if (chunk.type === "reasoning-delta") {
-      // DSH may revise this provisional text in block-end; assistant/message is authoritative.
+      this.#appendReasoning(active, chunk.text as string, step, true, attemptId);
     } else if (chunk.type === "usage" && !initialReplay) {
       this.#publishUsageChanges(active.turnId);
     }
@@ -2056,70 +2488,116 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         ),
         text: "",
       };
-      active.agent = { item, text: "" };
+      // The directory where the Turn's replay stands, not the journal's latest: replay may lag.
+      const buffer = this.#buffer;
+      const workingDirectory =
+        buffer?.active === active ? buffer.workingDirectory : this.#workingDirectory;
+      const roots = modernMediaRoots(workingDirectory, this.#sessionDirectory);
+      active.agent = { item, text: "", media: new LocalMediaMarkdownStream(roots) };
       this.#emit({ type: "item.started", turnId: active.turnId, item });
     }
     active.agent.text += text;
-    active.agent.item = { ...active.agent.item, text: active.agent.text };
+    this.#publishAgent(active, active.agent, active.agent.media.append(text));
+  }
+
+  /** Publish text the media projection held for a trailing construct before the Item ends. */
+  #flushAgent(active: ActiveHostTurn, agent: LiveAgentItem): void {
+    this.#publishAgent(active, agent, agent.media.flush());
+  }
+
+  #publishAgent(active: ActiveHostTurn, agent: LiveAgentItem, delta: string): void {
+    if (!delta) return;
+    agent.item = { ...agent.item, text: agent.media.text };
     this.#emit({
       type: "item.updated",
       turnId: active.turnId,
-      itemId: active.agent.item.itemId,
-      update: { type: "text.append", text },
+      itemId: agent.item.itemId,
+      update: { type: "text.append", text: delta },
     });
   }
 
-  #startReasoning(active: ActiveHostTurn, step: number): LiveTextItem<HostReasoningItem> {
+  #startReasoning(
+    active: ActiveHostTurn,
+    step: number,
+    provisional: boolean,
+    attemptId?: string,
+  ): LiveReasoningItem {
     if (!active.reasoning) {
+      const key = provisional ? `reasoning:provisional:${++active.reasoningOrdinal}` : "reasoning";
       const item: HostReasoningItem = {
         type: "reasoning",
-        itemId: modernItemId(this.#sessionId, `turn:${active.nativeTurn}:step:${step}:reasoning`),
+        itemId: modernItemId(this.#sessionId, `turn:${active.nativeTurn}:step:${step}:${key}`),
         text: "",
       };
-      active.reasoning = { item, text: "" };
+      active.reasoning = {
+        item,
+        text: "",
+        provisional,
+        pendingLineBreaks: "",
+        ...(attemptId ? { attemptId } : {}),
+      };
       this.#emit({ type: "item.started", turnId: active.turnId, item });
     }
     return active.reasoning;
   }
 
-  #appendReasoning(active: ActiveHostTurn, text: string, step: number): void {
+  #appendReasoning(
+    active: ActiveHostTurn,
+    text: string,
+    step: number,
+    provisional = false,
+    attemptId?: string,
+    final = false,
+  ): void {
     if (!text) return;
-    const reasoning = this.#startReasoning(active, step);
-    reasoning.text += text;
+    const reasoning = this.#startReasoning(active, step, provisional, attemptId);
+    const candidate = final ? text : reasoning.pendingLineBreaks + text;
+    const appended = final ? candidate : candidate.replace(/[\r\n]+$/u, "");
+    reasoning.pendingLineBreaks = final ? "" : candidate.slice(appended.length);
+    if (!appended) return;
+    reasoning.text += appended;
     reasoning.item = { ...reasoning.item, text: reasoning.text };
     this.#emit({
       type: "item.updated",
       turnId: active.turnId,
       itemId: reasoning.item.itemId,
-      update: { type: "text.append", text },
+      update: { type: "text.append", text: appended },
     });
   }
 
   #completeAssistant(active: ActiveHostTurn, data: Record<string, unknown>): void {
     const message = data.message as Record<string, unknown>;
     const step = data.step as number;
+    if (Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (
+          isRecord(block) &&
+          block.type === "tool-call" &&
+          typeof block.id === "string" &&
+          typeof block.name === "string" &&
+          typeof block.arguments === "string"
+        ) {
+          active.advertisedTools.set(block.id, {
+            toolName: block.name,
+            arguments: block.arguments,
+          });
+        }
+      }
+    }
     const reasoning = contentText(message.content, "reasoning");
     const text = contentText(message.content, "text");
-    if (this.#profile.assistantStream && active.agent && !text.startsWith(active.agent.text)) {
-      this.#cancelAgentItem(active);
-    }
-    this.#assertAgentPrefix(active, text);
+    // A settled message that revised its streamed text cancels the streamed Item.
+    if (active.agent && !text.startsWith(active.agent.text)) this.#cancelAgentItem(active);
     this.#completeReasoning(active, reasoning, step);
     this.#completeAgentPrefix(active, text, step);
   }
 
-  #assertAgentPrefix(active: ActiveHostTurn, finalText: string): void {
-    const streamedText = active.agent?.text ?? "";
-    if (streamedText && !finalText.startsWith(streamedText)) {
-      throw new ModernHistoryError(
-        "protocolError",
-        "Modern assistant message does not match its streamed prefix",
-      );
-    }
-  }
-
   #completeReasoning(active: ActiveHostTurn, finalText: string, step: number): void {
-    if (finalText) this.#appendReasoning(active, finalText, step);
+    if (active.reasoning && !finalText.startsWith(active.reasoning.text)) {
+      this.#cancelReasoningItem(active);
+    }
+    const suffix = finalText.slice(active.reasoning?.text.length ?? 0);
+    if (suffix) this.#appendReasoning(active, suffix, step, false, undefined, true);
     const current = active.reasoning;
     if (!current) return;
     delete active.reasoning;
@@ -2143,33 +2621,58 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       current = active.agent;
     }
     if (!current) return;
+    this.#flushAgent(active, current);
     delete active.agent;
     this.#completeItem(active, current.item, { status: "succeeded" });
   }
 
   #startTool(active: ActiveHostTurn, data: Record<string, unknown>, seq: number): void {
     const callId = data.callId as string;
-    if (active.tools.has(callId)) {
+    if (active.tools.has(callId) || active.programCalls.has(callId)) {
       throw new ModernHistoryError("protocolError", "Modern tool/call is duplicated");
     }
+    active.advertisedTools.delete(callId);
+    if (isPtcProgramTool(data.name as string)) {
+      active.programCalls.add(callId);
+      return;
+    }
+    this.#openTool(active, callId, seq, data.name as string, data.arguments);
+  }
+
+  #openTool(
+    active: ActiveHostTurn,
+    callId: string,
+    seq: number,
+    toolName: string,
+    rawArguments: unknown,
+  ): LiveTool {
     const item: HostToolExecutionItem = {
       type: "toolExecution",
       itemId: modernItemId(this.#sessionId, `event:${seq}:tool`),
-      toolName: data.name as string,
-      arguments: parseArguments(data.arguments),
+      toolName,
+      arguments: parseArguments(rawArguments),
     };
-    active.tools.set(callId, {
-      item,
-      toolName: item.toolName,
-      startedAtMs: this.#now(),
-    });
+    const tool = { item, toolName, startedAtMs: this.#now() };
+    active.tools.set(callId, tool);
     this.#emit({ type: "item.started", turnId: active.turnId, item });
+    return tool;
   }
 
-  #completeTool(active: ActiveHostTurn, data: Record<string, unknown>, seq: number): void {
+  /** Complete the Tool Item of one appended native result and return its call. */
+  #completeTool(active: ActiveHostTurn, event: ModernJournalEvent): string {
+    const data = event.data as Record<string, unknown>;
+    const seq = event.seq;
     const result = projectToolResult(data.message, this.#toolOutputLimit);
     if (!result) throw new ModernHistoryError("protocolError", "Modern tool/result is malformed");
-    const tool = active.tools.get(result.callId);
+    const advertised = active.advertisedTools.get(result.callId);
+    active.advertisedTools.delete(result.callId);
+    if (active.programCalls.delete(result.callId)) return result.callId;
+    let tool = active.tools.get(result.callId);
+    if (!tool && advertised && isNotStartedToolResult(data, event.sourceEventSeqs, seq)) {
+      // Cold history shows a call DSH closed before it started as one failed Tool.
+      if (isPtcProgramTool(advertised.toolName)) return result.callId;
+      tool = this.#openTool(active, result.callId, seq, advertised.toolName, advertised.arguments);
+    }
     if (!tool) throw new ModernHistoryError("protocolError", "Modern tool/result is unmatched");
     active.tools.delete(result.callId);
     const item: HostToolExecutionItem = {
@@ -2198,12 +2701,51 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         const fileItem: HostFileChangeItem = {
           type: "fileChange",
           itemId: modernItemId(this.#sessionId, `event:${seq}:file-change`),
+          sourceItemIds: [item.itemId],
           changes,
         };
         this.#emit({ type: "item.started", turnId: active.turnId, item: fileItem });
         this.#completeItem(active, fileItem, { status: "succeeded" });
       }
     }
+    return result.callId;
+  }
+
+  #startPtcDispatch(
+    active: ActiveHostTurn,
+    data: Record<string, unknown>,
+    seq: number,
+    time: number,
+  ): LiveTool {
+    const key = ptcDispatchKey(data);
+    if (active.tools.has(key)) {
+      throw new ModernHistoryError("protocolError", "Modern PTC dispatch is duplicated");
+    }
+    const item = ptcDispatchItem(modernItemId(this.#sessionId, `event:${seq}:tool`), data);
+    // Native event times give the sub-call's real duration, including on replay.
+    const tool = { item, toolName: item.toolName, startedAtMs: time };
+    active.tools.set(key, tool);
+    this.#emit({ type: "item.started", turnId: active.turnId, item });
+    return tool;
+  }
+
+  #settlePtcDispatch(
+    active: ActiveHostTurn,
+    data: Record<string, unknown>,
+    seq: number,
+    time: number,
+  ): void {
+    // Dispatch events are log-only; a settle without its start still shows the call.
+    const tool =
+      active.tools.get(ptcDispatchKey(data)) ?? this.#startPtcDispatch(active, data, seq, time);
+    active.tools.delete(ptcDispatchKey(data));
+    const output = ptcDispatchOutput(data, this.#toolOutputLimit);
+    const item: HostToolExecutionItem = {
+      ...tool.item,
+      ...(output ? { output } : {}),
+      durationMs: Math.max(0, time - tool.startedAtMs),
+    };
+    this.#completeItem(active, item, ptcDispatchOutcome(data, tool.toolName));
   }
 
   #finishTurn(
@@ -2216,6 +2758,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     const projected = turnOutcome(reason);
     const itemOutcome = toItemOutcome(projected);
     this.#discardAssistantAttempt();
+    this.#cancelReasoningItem(active);
     this.#closeActiveInteractions(active);
     this.#completeOpenItems(active, itemOutcome);
     active.terminal = true;
@@ -2233,15 +2776,33 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   #completeOpenItems(active: ActiveHostTurn, outcome: HostItemOutcome): void {
+    if (active.compaction) {
+      this.#completeItem(
+        active,
+        active.compaction.item,
+        outcome.status === "succeeded"
+          ? {
+              status: "failed",
+              error: {
+                code: "nativeFailure",
+                message: "DeepSeek Harness compaction ended without a terminal event",
+                retryable: true,
+              },
+            }
+          : outcome,
+      );
+      delete active.compaction;
+    }
     if (active.reasoning) {
       const item = active.reasoning.item;
       delete active.reasoning;
       this.#completeItem(active, item, outcome);
     }
     if (active.agent) {
-      const item = active.agent.item;
+      const agent = active.agent;
+      this.#flushAgent(active, agent);
       delete active.agent;
-      this.#completeItem(active, item, outcome);
+      this.#completeItem(active, agent.item, outcome);
     }
     for (const tool of active.tools.values()) this.#completeItem(active, tool.item, outcome);
     active.tools.clear();
@@ -2256,23 +2817,38 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   }
 
   #publishUsageChanges(observedForTurnId?: HostTurnId): void {
-    const projection = this.#project();
-    if (JSON.stringify(projection.usage) !== JSON.stringify(this.#usage)) {
-      this.#usage = projection.usage;
+    this.#publishUsage(this.#project().usage, observedForTurnId);
+  }
+
+  #publishUsage(nativeUsage: HostUsage | null, observedForTurnId?: HostTurnId): void {
+    const usage = withModernContextPressure(
+      nativeUsage,
+      this.#control.snapshot(this.#sessionId)?.[MODERN_CONTEXT_PRESSURE_KEY],
+    );
+    if (JSON.stringify(usage) !== JSON.stringify(this.#usage)) {
+      this.#usage = usage;
       this.#emit({
         type: "session.usage.changed",
-        usage: projection.usage,
+        usage,
         ...(observedForTurnId ? { observedForTurnId } : {}),
       });
     }
   }
 
-  #project(): ReturnType<typeof projectModernHistory> {
+  /** `media` also resolves local media paths, which only displayed history needs. */
+  #project(media = false): ReturnType<typeof projectModernHistory> {
     return projectModernHistory({
+      modelIndex: this.#modelCatalog.index,
       harnessId: this.harnessId,
       sessionId: this.#sessionId,
       events: this.#events,
       profile: this.#profile,
+      ...(media
+        ? {
+            media: true,
+            ...(this.#sessionDirectory !== undefined ? { cwd: this.#sessionDirectory } : {}),
+          }
+        : {}),
       ...(this.#fallbackModel ? { fallbackModel: this.#fallbackModel } : {}),
       ...(this.#fallbackThinkingOptionId
         ? { fallbackThinkingOptionId: this.#fallbackThinkingOptionId }
@@ -2311,7 +2887,8 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
     }
     this.#settleAllPromptCorrelationGraces({ kind: "fault", error: failure });
     this.#abortOperations();
-    this.#closePromise ??= this.#performFault(failure, acceptedPending);
+    this.#nativeCloseTerminal?.();
+    this.#localClosePromise ??= this.#performFault(failure, acceptedPending);
   }
 
   async #performFault(failure: HarnessError, acceptedPending: PendingPrompt[]): Promise<void> {
@@ -2340,6 +2917,9 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
         input: hostBound ? [...pending.command.input] : [...buffer.input],
         autonomous: !hostBound,
         tools: new Map(),
+        advertisedTools: new Map(),
+        programCalls: new Set(),
+        reasoningOrdinal: 0,
         interactions: new Set(),
         terminal: false,
         cancelAcknowledged: false,
@@ -2387,7 +2967,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const terminal = new Promise<void>((resolve) => {
         this.#nativeCloseTerminal = () => {
-          if (activeAtClose?.terminal) resolve();
+          if (activeAtClose?.terminal || this.#faulted) resolve();
         };
       });
       try {
@@ -2478,13 +3058,18 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
       this.#channel.end();
     }
     await Promise.allSettled([this.#journal.close(), this.#pumpPromise]);
+    let flushFailure: unknown;
     try {
       await this.#flushSession?.();
     } catch (error) {
+      flushFailure = error;
       stopFailure ??= error;
     }
     this.#notifyClosed();
-    if (stopFailure) throw stopFailure;
+    if (stopFailure) {
+      this.#closeStopUnconfirmed = !flushFailure;
+      throw stopFailure;
+    }
   }
 
   #abortOperations(): void {
@@ -2544,6 +3129,13 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
 
   #emit(event: Extract<HarnessOutput, { kind: "event" }>["event"]): void {
     this.#channel.emit({ kind: "event", event });
+  }
+
+  /** Publishes a live model request settled in the journal to Host usage metering. */
+  #meterUsage(event: ModernJournalEvent): void {
+    const record = deepSeekUsageRecord(event, false);
+    if (record.kind === "request") this.#emit({ type: "usage.request", request: record.request });
+    else if (record.kind === "missing") this.#emit({ type: "usage.history", complete: false });
   }
 }
 
@@ -2838,6 +3430,45 @@ function questionAnswer(
   };
 }
 
+type TimedQuestionOutcome = "continued" | "answered" | "failed";
+
+/** A timed answer whose delivery waits for the native result of its call. */
+interface HeldTimedAnswer {
+  readonly callId: string;
+  readonly answer: ModernQuestionAnswer;
+  /** The call's outcome, or `null` when the interaction closed first. */
+  readonly outcome: Promise<TimedQuestionOutcome | null>;
+}
+
+/** DSH keeps a timed question answerable after its pending payload or an unknown outcome. */
+function toolResultQuestionOutcome(data: Readonly<Record<string, unknown>>): TimedQuestionOutcome {
+  const message = isRecord(data.message) ? data.message : {};
+  if (
+    pendingQuestionPayload(message.content) ||
+    (isRecord(data.error) && data.error.code === "TOOL_OUTCOME_UNKNOWN")
+  ) {
+    return "continued";
+  }
+  return data.error === undefined && message.isError !== true ? "answered" : "failed";
+}
+
+function ptcDispatchQuestionOutcome(data: Readonly<Record<string, unknown>>): TimedQuestionOutcome {
+  if (data.isError === true || data.error !== undefined) return "failed";
+  return pendingQuestionPayload(data.content) ? "continued" : "answered";
+}
+
+function pendingQuestionPayload(content: unknown): boolean {
+  if (!Array.isArray(content)) return false;
+  const text: unknown = content.find((block) => isRecord(block) && block.type === "text");
+  if (!isRecord(text) || typeof text.text !== "string") return false;
+  try {
+    const parsed: unknown = JSON.parse(text.text);
+    return isRecord(parsed) && parsed.pending === true;
+  } catch {
+    return false;
+  }
+}
+
 function settleCancelledInteraction(delivery: ModernEventDelivery): Promise<void> {
   return delivery.type === "approval" ? delivery.respond("cancelled") : delivery.reject();
 }
@@ -2883,6 +3514,9 @@ function turnOutcome(reason: unknown): TurnOutcome {
   if (reason.kind === "completed" || reason.kind === "max-tokens") return { status: "succeeded" };
   if (reason.kind === "aborted") {
     return { status: "cancelled", reason: "Cancelled by user" };
+  }
+  if (reason.kind === "forked") {
+    return { status: "cancelled", reason: "Forked from parent Session" };
   }
   return {
     status: "failed",
@@ -2931,7 +3565,7 @@ function isVisibleWork(event: ModernJournalEvent): boolean {
   if (event.type === "assistant/message" || event.type === "tool/result") {
     return event.surfaceOp === "append";
   }
-  return event.type === "assistant/chunk" || event.type === "tool/call";
+  return event.type === "tool/call";
 }
 
 function safeLimit(value: number, name: string, minimum: number): number {

@@ -1,0 +1,285 @@
+/** Native CH pagination feeding a disposable, backwards-extensible Web journal. */
+import type { ChHostClient } from "./ch-host-client.ts";
+import type { ClientThreadSnapshot } from "@codexhost/shared-contracts";
+import { ChThreadView, type ChThread, type ChTurn } from "./ch-thread-view.ts";
+import { threadListTitle } from "./ch-thread-title.ts";
+import { ChCommandPresentation } from "./ch-command-presentation.ts";
+import { ChQueueProjectionCache, type QueueEditEvaluator } from "./ch-queue-edit.ts";
+import type { ProjectionListener } from "./session-log.ts";
+import { RpcError } from "./transport.ts";
+
+const PAGE_TURNS = 5;
+// The Web wire protocol requires non-negative, stable rendering coordinates. Start
+// its memory-only window in the middle of the safe integer range so older pages
+// can prepend without renumbering visible messages, tool references or anchors.
+// These are NOT native Turn numbers/cursors and are never persisted or sent to CH.
+const RENDER_ORIGIN = 2 ** 40;
+// Completed Turns offered to the Host as already held; its page holds five.
+const KNOWN_TURNS = 16;
+interface TurnsPage {
+  data: ChTurn[];
+  nextCursor: string | null;
+}
+
+export class ChThreadHistory extends ChThreadView {
+  private loaded = false;
+  private readonly commands: ChCommandPresentation;
+  private readonly queueProjection = new ChQueueProjectionCache();
+  private readonly hasProjectInput: boolean;
+  private readonly canEditQueueItem: QueueEditEvaluator | undefined;
+  ownerSnapshot: ClientThreadSnapshot | undefined;
+  private lastHeadReadAt = 0;
+  private prefetched = false;
+  private refreshing: Promise<void> | undefined;
+  private loadingOlder: Promise<void> | undefined;
+  private readonly seenCursors = new Set<string>();
+  private readonly pagination: { cursor: string | null };
+  private readonly hostThreadId: string;
+  private readonly overrideThreadIdentity: boolean;
+  private readonly viewId: string;
+  private readonly viewCwd: string;
+
+  constructor(
+    private readonly host: ChHostClient,
+    thread: ChThread,
+    harnessId: string,
+    onProjection: ProjectionListener,
+    origin = RENDER_ORIGIN,
+    projectInput?: (content: unknown[]) => unknown[],
+    projectImage?: (path: string, projectionKey: string) => unknown,
+    options?: { hostThreadId?: string; canEditQueueItem?: QueueEditEvaluator },
+  ) {
+    const pagination = { cursor: null as string | null };
+    super(
+      { ...thread, turns: [] },
+      harnessId,
+      onProjection,
+      origin,
+      origin,
+      () => pagination.cursor !== null,
+      projectInput,
+      projectImage,
+    );
+    this.pagination = pagination;
+    this.hasProjectInput = projectInput !== undefined;
+    this.canEditQueueItem = options?.canEditQueueItem;
+    this.hostThreadId = options?.hostThreadId ?? thread.id;
+    this.overrideThreadIdentity = options?.hostThreadId !== undefined;
+    this.viewId = thread.id;
+    this.viewCwd = thread.cwd;
+    this.commands = new ChCommandPresentation(this.log);
+  }
+
+  private viewThread(thread: ChThread): ChThread {
+    if (!this.overrideThreadIdentity) return thread;
+    if (thread.id !== this.hostThreadId) {
+      throw new RpcError("remote/read-failed", "Remote identity mismatch");
+    }
+    return { ...thread, id: this.viewId, cwd: this.viewCwd };
+  }
+
+  private async page(cursor: string | null): Promise<TurnsPage> {
+    const result = await this.host.request<TurnsPage>("thread/turns/list", {
+      threadId: this.hostThreadId,
+      cursor,
+      limit: PAGE_TURNS,
+      sortDirection: "desc",
+      itemsView: "full",
+    });
+    if (
+      (result.nextCursor && result.nextCursor === cursor) ||
+      (!result.data.length && result.nextCursor)
+    )
+      throw new RpcError("host/history-invalid", "CH history cursor did not advance.");
+    if (new Set(result.data.map((turn) => turn.id)).size !== result.data.length)
+      throw new RpcError("host/history-invalid", "CH history repeated a Turn within a page.");
+    return result;
+  }
+
+  /** After a Host `reset`, the next read uses full snapshot semantics. */
+  forgetKnownTurns(): void {
+    for (const turn of this.thread.turns) delete turn.fingerprint;
+  }
+
+  /** Ask the Host to replace completed Turns this window already holds with
+   * placeholders, then resolve each placeholder to the held copy. A placeholder
+   * this window cannot satisfy falls back to one full read; an older Host that
+   * ignores the option simply returns full Turns.
+   */
+  private async snapshot(
+    realtime: NonNullable<ChHostClient["realtime"]>,
+  ): Promise<ClientThreadSnapshot> {
+    const held = new Map(this.thread.turns.map((turn) => [turn.id, turn]));
+    const knownTurns = this.thread.turns
+      .slice(-KNOWN_TURNS)
+      .flatMap((turn) =>
+        turn.fingerprint ? [{ id: turn.id, fingerprint: turn.fingerprint }] : [],
+      );
+    let snapshot = await realtime.snapshot(this.hostThreadId, { knownTurns });
+    const unresolved = (value: ClientThreadSnapshot) =>
+      value.turnsPage.data.some(
+        (turn) => turn.unchanged && held.get(turn.id)?.fingerprint !== turn.fingerprint,
+      );
+    if (unresolved(snapshot)) {
+      // `knownTurns: []` still requests fingerprints but can never match a placeholder.
+      snapshot = await realtime.snapshot(this.hostThreadId, { knownTurns: [] });
+      if (snapshot.turnsPage.data.some((turn) => turn.unchanged))
+        throw new RpcError("host/history-invalid", "CH replaced a Turn it was not asked to.");
+    }
+    return {
+      ...snapshot,
+      turnsPage: {
+        ...snapshot.turnsPage,
+        data: snapshot.turnsPage.data.map((turn) => (turn.unchanged ? held.get(turn.id) : turn)),
+      },
+    } as ClientThreadSnapshot;
+  }
+
+  /** First open reads only the newest five Turns. Later opens reuse this window;
+   * a metadata probe avoids rereading unchanged idle history, even after cache TTL.
+   */
+  refresh(force = false): Promise<void> {
+    this.refreshing ??= (async () => {
+      const snapshot = this.host.realtime ? await this.snapshot(this.host.realtime) : undefined;
+      const { thread: rawThread } = snapshot
+        ? { thread: snapshot.thread }
+        : await this.host.request<{ thread: ChThread }>("thread/read", {
+            threadId: this.hostThreadId,
+            includeTurns: false,
+          });
+      const thread = this.viewThread(rawThread);
+      this.ensureCurrent();
+      this.ownerSnapshot = snapshot;
+      if (snapshot) {
+        const readOnly = thread.canAcceptDirectInput === false;
+        const allowsAttachments =
+          !readOnly && !(thread.parentThreadId ?? this.thread.parentThreadId);
+        const projectedQueue = this.queueProjection.project(snapshot.queue?.items ?? [], {
+          ...(this.hasProjectInput
+            ? { projectInput: (content) => this.projectInput(content) }
+            : {}),
+          ...(this.canEditQueueItem ? { canEdit: this.canEditQueueItem } : {}),
+          allowsAttachments,
+          readOnly,
+        });
+        this.log.setProjection("inbox", {
+          "next-turn": projectedQueue.nextTurn,
+          "next-step": [],
+        });
+        this.log.setProjection("queueState", {
+          pausedReason: snapshot.queue?.pausedReason ?? null,
+          ...(this.canEditQueueItem ? { editable: projectedQueue.editable } : {}),
+        });
+      }
+      if (
+        !snapshot &&
+        !force &&
+        this.loaded &&
+        Date.now() - this.lastHeadReadAt < 60_000 &&
+        thread.updatedAt === this.thread.updatedAt &&
+        thread.status.type !== "active" &&
+        this.thread.status.type !== "active"
+      ) {
+        Object.assign(this.thread, { ...thread, turns: this.thread.turns });
+        this.log.setProjection("title", threadListTitle(thread));
+        this.log.setProjection("codexhostImportSource", thread.codexhostImportSource ?? null);
+        this.commands.update(undefined, this.thread.turns);
+        return;
+      }
+      const recent = snapshot ? snapshot.turnsPage : await this.page(null);
+      const descending = [...recent.data];
+      const newestKnown = this.thread.turns.at(-1)?.id;
+      let cursor = recent.nextCursor;
+      const seen = new Set<string>();
+      // If multiple Turns arrived since last observation, fill the gap to the
+      // loaded tail. Never silently skip Turns just because the head page is small.
+      while (
+        this.loaded &&
+        newestKnown &&
+        !descending.some((turn) => turn.id === newestKnown) &&
+        cursor
+      ) {
+        if (seen.has(cursor))
+          throw new RpcError("host/history-invalid", "CH history cursor did not advance.");
+        seen.add(cursor);
+        const more = await this.page(cursor);
+        descending.push(...more.data);
+        cursor = more.nextCursor;
+      }
+      if (new Set(descending.map((turn) => turn.id)).size !== descending.length)
+        throw new RpcError("host/history-invalid", "CH history repeated a Turn across pages.");
+      if (this.loaded && newestKnown && !descending.some((turn) => turn.id === newestKnown))
+        throw new RpcError(
+          "host/history-changed",
+          "CH history was rewritten. Reload this page to reopen its current history.",
+        );
+      if (!this.loaded) {
+        this.pagination.cursor = recent.nextCursor;
+        this.update({ ...thread, turns: descending.reverse() }, snapshot?.activeTurnId);
+        this.loaded = true;
+      } else {
+        if (!newestKnown) this.pagination.cursor = recent.nextCursor;
+        const newTurns = newestKnown
+          ? descending.slice(
+              0,
+              descending.findIndex((turn) => turn.id === newestKnown),
+            )
+          : descending;
+        const incoming = new Map(descending.map((turn) => [turn.id, turn]));
+        const known = new Set(this.thread.turns.map((turn) => turn.id));
+        this.update(
+          {
+            ...thread,
+            turns: [
+              ...this.thread.turns.map((turn) => incoming.get(turn.id) ?? turn),
+              ...newTurns.reverse().filter((turn) => !known.has(turn.id)),
+            ],
+          },
+          snapshot?.activeTurnId,
+        );
+      }
+      this.commands.update(snapshot?.command, this.thread.turns);
+      this.lastHeadReadAt = Date.now();
+    })().finally(() => {
+      this.refreshing = undefined;
+    });
+    return this.refreshing;
+  }
+
+  /** Warm one page once per loaded window, not once per browser subscriber. */
+  async prefetchOlder(): Promise<void> {
+    if (this.prefetched) return;
+    this.prefetched = true;
+    try {
+      await this.loadOlder();
+    } catch (error) {
+      this.prefetched = false;
+      throw error;
+    }
+  }
+
+  /** One older page, shared by foreground paging and bounded background prefetch.
+   * Failed requests do not advance the cursor; retry remains possible.
+   */
+  loadOlder(): Promise<void> {
+    this.loadingOlder ??= (async () => {
+      const cursor = this.pagination.cursor;
+      if (!cursor) return;
+      const page = await this.page(cursor);
+      if (page.nextCursor && this.seenCursors.has(page.nextCursor))
+        throw new RpcError("host/history-invalid", "CH history cursor did not advance.");
+      this.prepend([...page.data].reverse());
+      this.seenCursors.add(cursor);
+      this.pagination.cursor = page.nextCursor;
+    })().finally(() => {
+      this.loadingOlder = undefined;
+    });
+    return this.loadingOlder;
+  }
+
+  /** Extend only when the requested backwards boundary reaches native history. */
+  async olderPage(throughSeq: number, beforeSeq: number | undefined, maxMessages?: number) {
+    if (beforeSeq !== undefined && beforeSeq <= this.log.firstSeq) await this.loadOlder();
+    return this.log.page(throughSeq, beforeSeq, { ...(maxMessages ? { maxMessages } : {}) });
+  }
+}

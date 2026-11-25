@@ -1,0 +1,296 @@
+/** Web-owned opaque file bytes and disposable, Session-scoped upload receipts. */
+import { createHash, randomUUID } from "node:crypto";
+import { constants, createReadStream } from "node:fs";
+import { mkdir, open, realpath, lstat, link, rm } from "node:fs/promises";
+import { mkdirSync, realpathSync, lstatSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import type { DataDir } from "./store.ts";
+import { RpcError } from "./transport.ts";
+import { WebImages, inspectImage, WEB_IMAGE_LIMITS, type WebImageRef } from "./web-images.ts";
+
+export const WEB_FILE_INPUT = { enabled: true };
+export interface WebFileRef {
+  attachmentId: string;
+  name: string;
+  bytes: number;
+}
+export interface SavedFile {
+  path: string;
+  file: WebFileRef;
+  image?: WebImageRef;
+}
+export interface StagedWebAttachment {
+  readonly kind: "image" | "file";
+  readonly receiptId: string;
+  readonly file: WebFileRef;
+  readonly image?: WebImageRef;
+}
+interface Receipt extends SavedFile {
+  sessionId: string;
+  hash: string;
+  expiresAt: number;
+}
+function invalid(reason: string, message: string): never {
+  throw new RpcError("session/attachment-invalid", message, { reason });
+}
+const MAX_NAME_BYTES = 160;
+const MAX_EXTENSION_BYTES = 32;
+/** Longest prefix of `value` within `bytes` UTF-8 bytes, never splitting a code point. */
+function truncateBytes(value: string, bytes: number): string {
+  let result = "";
+  for (const char of value) {
+    if (Buffer.byteLength(result + char) > bytes) break;
+    result += char;
+  }
+  return result;
+}
+// Windows drops trailing dots and spaces. Strip dots and every `trim()` whitespace in one
+// pass, so a cut ending in "\u00a0." cannot leave a no-break space that a second pass removes.
+const trimName = (value: string): string => value.trim().replace(/[.\s]+$/u, "");
+const RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
+/** Fits an already trimmed name within `limit` bytes, keeping a short extension. */
+function fitName(clean: string, limit: number): string {
+  if (Buffer.byteLength(clean) <= limit) return clean;
+  // Keep a short extension so a long file name still opens as its type.
+  const extension = /\.[^. ]+$/u.exec(clean)?.[0] ?? "";
+  const kept = Buffer.byteLength(extension) <= MAX_EXTENSION_BYTES ? extension : "";
+  const stem = trimName(
+    truncateBytes(clean.slice(0, clean.length - kept.length), limit - Buffer.byteLength(kept)),
+  );
+  // A cut may end on a dot or space, which Windows drops and `trimName` removes.
+  if (stem) return `${stem}${kept}`;
+  // A stem of only dots or spaces trims away; name it so the extension survives.
+  return kept ? `attachment${kept}` : trimName(truncateBytes(clean, limit));
+}
+/** Idempotent: `reference()` accepts a stored object only when its name is already safe. */
+function safeName(name = "attachment"): string {
+  const clean = trimName(name.normalize("NFC").replace(/[\\/<>:"|?*\u0000-\u001f\u007f]/gu, "_"));
+  let result = fitName(clean, MAX_NAME_BYTES);
+  // Check device names on the final name: trimming a cut can expose one ("CON   .txt").
+  // The prefix gets its byte from the name so the result stays within the limit.
+  if (RESERVED_NAME.test(result)) result = `_${fitName(result, MAX_NAME_BYTES - 1)}`;
+  return result || "attachment";
+}
+
+export class WebFiles {
+  readonly directory: string;
+  private readonly receipts = new Map<string, Receipt>();
+  constructor(
+    data: DataDir,
+    private readonly images = new WebImages(data),
+  ) {
+    const path = data.path("attachments", "files");
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    if (lstatSync(path).isSymbolicLink())
+      throw new Error("Web file directory must not be a symlink");
+    // Match fs/promises.realpath's native Windows representation (drive case,
+    // junction resolution and expanded 8.3 names), not the JS fallback spelling.
+    this.directory = realpathSync.native(path);
+    if (/[\u0000-\u001f\u007f]/u.test(this.directory))
+      throw new Error("Invalid Web file directory");
+  }
+  private prune(): void {
+    for (const [id, receipt] of this.receipts)
+      if (receipt.expiresAt <= Date.now()) this.receipts.delete(id);
+  }
+  async upload(
+    sessionId: string,
+    chunks: AsyncIterable<Uint8Array>,
+    name?: string,
+    imageMediaType?: string,
+  ) {
+    this.prune();
+    if (imageMediaType !== undefined) {
+      const parts: Buffer[] = [];
+      let length = 0;
+      for await (const chunk of chunks) {
+        length += chunk.byteLength;
+        if (length > WEB_IMAGE_LIMITS.maxImageBytes)
+          invalid("IMAGE_TOO_LARGE", "Image exceeds 50 MiB.");
+        parts.push(Buffer.from(chunk));
+      }
+      const image = inspectImage(Buffer.concat(parts), imageMediaType);
+      const path = this.images.store(image);
+      const file = {
+        attachmentId: image.ref.attachmentId,
+        name: name || `image.${image.leaf.split(".").at(-1)}`,
+        bytes: length,
+      };
+      const receiptId = randomUUID();
+      this.receipts.set(receiptId, {
+        sessionId,
+        path,
+        file,
+        image: image.ref,
+        hash: image.leaf.slice(0, 64),
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      });
+      return { receiptId, file };
+    }
+    // UUID directories isolate incomplete streams; only completed objects receive a receipt.
+    const pending = join(this.directory, randomUUID());
+    await mkdir(pending, { mode: 0o700 });
+    const temporary = join(pending, "pending");
+    const fd = await open(temporary, "wx", 0o600);
+    const digest = createHash("sha256");
+    let bytes = 0;
+    try {
+      for await (const chunk of chunks) {
+        bytes += chunk.byteLength;
+        if (!Number.isSafeInteger(bytes)) throw new Error("File size cannot be represented safely");
+        digest.update(chunk);
+        let offset = 0;
+        while (offset < chunk.byteLength) {
+          const written = await fd.write(chunk, offset, chunk.byteLength - offset);
+          if (!written.bytesWritten) throw new Error("File write made no progress");
+          offset += written.bytesWritten;
+        }
+      }
+      await fd.close();
+      const hash = digest.digest("hex");
+      const folder = join(this.directory, hash);
+      await mkdir(folder, { recursive: true, mode: 0o700 });
+      if ((await lstat(folder)).isSymbolicLink() || (await realpath(folder)) !== folder)
+        throw new Error("File directory symlink refused");
+      const filename = safeName(name);
+      const path = join(folder, filename);
+      try {
+        await link(temporary, path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        await this.verify(path, hash, bytes);
+      }
+      const file = this.reference(path);
+      if (!file) throw new Error("Stored file unavailable");
+      const receiptId = randomUUID();
+      this.receipts.set(receiptId, {
+        sessionId,
+        hash,
+        path,
+        file,
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      });
+      return { receiptId, file };
+    } finally {
+      await fd.close().catch(() => {});
+      await rm(pending, { recursive: true, force: true });
+    }
+  }
+  bind(from: string, to: string): void {
+    for (const receipt of this.receipts.values())
+      if (receipt.sessionId === from) receipt.sessionId = to;
+  }
+  async resolve(sessionId: string, ids: readonly string[]): Promise<SavedFile[]> {
+    this.prune();
+    const files: SavedFile[] = [];
+    for (const id of ids) {
+      const receipt = this.receipts.get(id);
+      if (!receipt || receipt.sessionId !== sessionId)
+        invalid("FILE_NOT_STAGED", "File was not uploaded for this session; select it again.");
+      if (receipt.image) this.images.readBytes(receipt.image.attachmentId);
+      else await this.verify(receipt.path, receipt.hash, receipt.file.bytes);
+      files.push(receipt);
+    }
+    return files;
+  }
+  consume(sessionId: string, ids: readonly string[]): void {
+    for (const id of ids)
+      if (this.receipts.get(id)?.sessionId === sessionId) this.receipts.delete(id);
+  }
+  /**
+   * Re-issue a session-scoped upload receipt for an already-stored Web image or file path.
+   * Canonicalizes the stored path and verifies content integrity before issuing a receipt so
+   * corrupted/tampered files fail closed before destructive queue removal.
+   */
+  async stage(sessionId: string, path: string, name?: string): Promise<StagedWebAttachment> {
+    this.prune();
+    const imageId = this.images.idForPath(path);
+    if (imageId) {
+      const image = this.images.readBytes(imageId);
+      const canonical = join(this.images.directory, image.leaf);
+      const file: WebFileRef = {
+        attachmentId: image.ref.attachmentId,
+        name: name || `image.${image.leaf.split(".").at(-1)}`,
+        bytes: image.ref.bytes,
+      };
+      const receiptId = randomUUID();
+      this.receipts.set(receiptId, {
+        sessionId,
+        path: canonical,
+        file,
+        image: image.ref,
+        hash: image.leaf.slice(0, 64),
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      });
+      return { kind: "image", receiptId, file, image: image.ref };
+    }
+    const file = this.reference(path);
+    if (!file) invalid("FILE_UNAVAILABLE", "The referenced file is unavailable or not Web-owned.");
+    const hash = basename(dirname(resolve(path)));
+    const canonical = join(this.directory, hash, file.name);
+    await this.verify(canonical, hash, file.bytes);
+    const receiptId = randomUUID();
+    this.receipts.set(receiptId, {
+      sessionId,
+      hash,
+      path: canonical,
+      file,
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    });
+    return { kind: "file", receiptId, file };
+  }
+  /** Only Web-owned paths receive byte metadata; ordinary native files remain references. */
+  reference(path: string): WebFileRef | undefined {
+    const folder = dirname(resolve(path));
+    const name = basename(path);
+    if (
+      dirname(folder) !== this.directory ||
+      !/^[a-f0-9]{64}$/u.test(basename(folder)) ||
+      safeName(name) !== name
+    )
+      return undefined;
+    try {
+      if (realpathSync.native(path) !== join(folder, name) || lstatSync(path).isSymbolicLink())
+        return undefined;
+      const stat = lstatSync(path);
+      if (!stat.isFile() || !Number.isSafeInteger(stat.size)) return undefined;
+      return {
+        attachmentId: `web-file:${basename(folder)}/${encodeURIComponent(name)}`,
+        name,
+        bytes: stat.size,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+  private async verify(path: string, hash: string, bytes: number): Promise<void> {
+    let fd;
+    try {
+      if ((await realpath(path)) !== path || (await lstat(path)).isSymbolicLink())
+        throw new Error("File symlink refused");
+      fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const before = await fd.stat();
+      if (!before.isFile() || before.size !== bytes || !Number.isSafeInteger(bytes))
+        throw new Error("File size changed");
+      const digest = createHash("sha256");
+      let length = 0;
+      for await (const chunk of createReadStream(path, { fd: fd.fd, autoClose: false })) {
+        length += (chunk as Buffer).length;
+        if (length > bytes) throw new Error("File grew while reading");
+        digest.update(chunk as Buffer);
+      }
+      const after = await fd.stat();
+      if (
+        length !== bytes ||
+        digest.digest("hex") !== hash ||
+        after.size !== before.size ||
+        after.mtimeMs !== before.mtimeMs
+      )
+        throw new Error("File content changed");
+    } catch {
+      invalid("FILE_UNAVAILABLE", "The uploaded file is unavailable or changed; select it again.");
+    } finally {
+      await fd?.close();
+    }
+  }
+}

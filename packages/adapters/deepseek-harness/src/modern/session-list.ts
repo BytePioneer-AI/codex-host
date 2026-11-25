@@ -175,7 +175,8 @@ function titleFromProjections(value: unknown): string | null {
   if (value === undefined) return null;
   if (
     !isPlainRecord(value) ||
-    !exactKeys(value, ["asOfSeq", "values"]) ||
+    !exactKeys(value, ["kind", "asOfSeq", "values"]) ||
+    (value.kind !== "cached" && value.kind !== "sequenced") ||
     !Number.isSafeInteger(value.asOfSeq) ||
     (value.asOfSeq as number) < -1 ||
     !isPlainRecord(value.values)
@@ -199,11 +200,16 @@ function parseSummary(value: unknown): ParsedSessionSummary {
     !isPlainRecord(value) ||
     !exactKeys(
       value,
-      ["sessionId", "updatedAt", "running", "blank"],
-      ["parentSessionId", "origin", "cwd", "projections"],
+      ["sessionId", "updatedAt", "agentAvailable", "running", "blank"],
+      ["parentSessionId", "origin", "cwd", "projections", "formatStatus"],
     ) ||
+    // DSH 0.2.1 marks rows whose stored log still awaits migration on open.
+    (value.formatStatus !== undefined &&
+      value.formatStatus !== "current" &&
+      value.formatStatus !== "migration-required") ||
     typeof value.running !== "boolean" ||
     typeof value.blank !== "boolean" ||
+    typeof value.agentAvailable !== "boolean" ||
     !validUpdatedAt(value.updatedAt)
   ) {
     throw sessionListError("protocolError", "DeepSeek Harness returned an invalid Session row");
@@ -242,7 +248,7 @@ function isCanonicalAbsoluteCwd(value: string | undefined): value is string {
   );
 }
 
-/** Strictly parse and filter one exact rc.1 Modern `session/list` value. */
+/** Strictly parse and filter one Modern `session/list` value. */
 export function parseModernSessionCandidates(value: unknown): DeepSeekModernSessionCandidate[] {
   assertBoundedJson(value);
   if (!isPlainRecord(value) || !exactKeys(value, ["items"]) || !Array.isArray(value.items)) {

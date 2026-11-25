@@ -8,6 +8,7 @@ import {
 
 import {
   normalizeDeepSeekModelCatalog,
+  type DeepSeekModelIndex,
   type DeepSeekModelProviderGroup,
   type DeepSeekModelSelection,
 } from "../model-catalog.js";
@@ -63,6 +64,7 @@ export interface ModernModelCatalogRemote {
 /** Validated Modern catalog facts needed by inspection and Session configuration. */
 export interface ModernModelCatalogSnapshot {
   readonly catalog: HarnessModelCatalog;
+  readonly index: DeepSeekModelIndex;
   readonly defaultSelection: DeepSeekModelSelection;
   readonly routableProviders: readonly string[];
   readonly groups: readonly DeepSeekModelProviderGroup[];
@@ -244,6 +246,27 @@ function reasoning(
   return { efforts, ...(defaultEffort === undefined ? {} : { defaultEffort }) };
 }
 
+const BADGE_TONES: ReadonlySet<unknown> = new Set(["neutral", "info", "success", "warning"]);
+
+/**
+ * DSH 0.2.2 forwards a provider-authored label shown beside a Model name. It is
+ * display data only; codexhost validates it and keeps its own Model labels.
+ */
+function validateBadge(value: unknown): void {
+  if (
+    !isPlainRecord(value) ||
+    !exactKeys(value, ["text", "tone"]) ||
+    !BADGE_TONES.has(value.tone)
+  ) {
+    throw catalogError("protocolError", "DeepSeek Harness returned an invalid Model badge");
+  }
+  const texts = typeof value.text === "string" ? { en: value.text } : value.text;
+  if (!isPlainRecord(texts) || !Object.hasOwn(texts, "en")) {
+    throw catalogError("protocolError", "DeepSeek Harness returned an invalid Model badge");
+  }
+  for (const text of Object.values(texts)) boundedString(text, MAX_NAME_LENGTH, "Model badge");
+}
+
 function groups(value: unknown, routable: ReadonlySet<string>): DeepSeekModelProviderGroup[] {
   let modelCount = 0;
   const parsed = array(value, MAX_PROVIDERS, "Model provider group list").map((candidate) => {
@@ -265,10 +288,11 @@ function groups(value: unknown, routable: ReadonlySet<string>): DeepSeekModelPro
       }
       if (
         !isPlainRecord(model) ||
-        !exactKeys(model, ["id", "name"], ["description", "reasoning"])
+        !exactKeys(model, ["id", "name"], ["description", "reasoning", "badge"])
       ) {
         throw catalogError("protocolError", "DeepSeek Harness returned an invalid Model");
       }
+      if (model.badge !== undefined) validateBadge(model.badge);
       const modelId = boundedString(model.id, MAX_ID_LENGTH, "Model id");
       const modelName = boundedString(model.name, MAX_NAME_LENGTH, "Model name");
       if (`${name} / ${modelName}`.length > HARNESS_MODEL_LABEL_MAX_LENGTH) {
@@ -363,21 +387,19 @@ export function parseModernModelCatalog(value: unknown): ModernModelCatalogSnaps
   const parsedGroups = groups(value.groups, routable);
   validateFailures(value.failures, routable, new Set(parsedGroups.map(({ id }) => id)));
 
-  let catalog: HarnessModelCatalog;
   try {
-    catalog = normalizeDeepSeekModelCatalog(
-      parsedGroups,
-      routable.has(defaultSelection.provider) ? defaultSelection : undefined,
-    );
+    return {
+      ...normalizeDeepSeekModelCatalog(
+        parsedGroups,
+        routable.has(defaultSelection.provider) ? defaultSelection : undefined,
+      ),
+      defaultSelection,
+      routableProviders,
+      groups: parsedGroups,
+    };
   } catch {
     throw catalogError("protocolError", "DeepSeek Harness returned an unusable model catalog");
   }
-  return {
-    catalog,
-    defaultSelection,
-    routableProviders,
-    groups: parsedGroups,
-  };
 }
 
 /** Read the exact no-argument Modern Model catalog endpoint. */

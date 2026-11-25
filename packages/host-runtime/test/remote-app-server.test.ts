@@ -67,7 +67,9 @@ import {
   createRemoteAppServerWebSocketListener,
   isRemoteUnixListenerInvocation,
   officialListenerArgumentsForRemoteListener,
+  officialLoopbackListenerArguments,
   remoteAppServerSocketPath,
+  stdioArgumentsForRemoteListener,
   withRemoteAppServerSocketInitializationLock,
 } from "../src/remote-app-server.js";
 
@@ -109,20 +111,6 @@ async function withLegacyRemoteSocketInitializationLock<T>(
     await handle.close();
     await rm(lockPath, { force: true });
   }
-}
-
-async function socketAcceptsConnections(socketPath: string): Promise<boolean> {
-  return new Promise((resolve, reject) => {
-    const connection = net.createConnection(socketPath);
-    connection.once("connect", () => {
-      connection.destroy();
-      resolve(true);
-    });
-    connection.once("error", (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT" || error.code === "ECONNREFUSED") resolve(false);
-      else reject(error);
-    });
-  });
 }
 
 describe("remote SSH app-server transport", () => {
@@ -223,6 +211,123 @@ describe("remote SSH app-server transport", () => {
       "--ws-max-clock-skew-seconds=30",
       "--analytics-default-enabled",
     ]);
+  });
+
+  describe("Desktop MCP launch directories", () => {
+    const desktopAppServer = [
+      "-c",
+      "features.code_mode_host=true",
+      "app-server",
+      "--analytics-default-enabled",
+      "-c",
+      "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+    ];
+    const mcpLaunchCwd = ["--mcp-launch-cwd", "files", "/usr/bin/node", "/tmp/project"];
+    const pluginMcpLaunchCwd = [
+      "--plugin-mcp-launch-cwd",
+      "github@openai-curated",
+      "github",
+      "/tmp/project",
+    ];
+
+    it("forwards every launch directory value to the shared loopback listener", () => {
+      expect(officialLoopbackListenerArguments([...desktopAppServer, "--stdio"])).toEqual([
+        "-c",
+        "features.code_mode_host=true",
+        "app-server",
+        "--listen",
+        "ws://127.0.0.1:0",
+        "--analytics-default-enabled",
+        "-c",
+        "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+      ]);
+      expect(officialLoopbackListenerArguments([...desktopAppServer, ...mcpLaunchCwd])).toEqual([
+        "-c",
+        "features.code_mode_host=true",
+        "app-server",
+        "--listen",
+        "ws://127.0.0.1:0",
+        "--analytics-default-enabled",
+        "-c",
+        "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+        ...mcpLaunchCwd,
+      ]);
+      expect(
+        officialLoopbackListenerArguments([
+          ...desktopAppServer,
+          ...pluginMcpLaunchCwd,
+          ...mcpLaunchCwd,
+          "--stdio",
+        ]),
+      ).toEqual([
+        "-c",
+        "features.code_mode_host=true",
+        "app-server",
+        "--listen",
+        "ws://127.0.0.1:0",
+        "--analytics-default-enabled",
+        "-c",
+        "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+        ...pluginMcpLaunchCwd,
+        ...mcpLaunchCwd,
+      ]);
+    });
+
+    it("rejects launch directories with missing values and still rejects unknown options", () => {
+      expect(() =>
+        officialLoopbackListenerArguments([...desktopAppServer, "--mcp-launch-cwd", "files"]),
+      ).toThrow("--mcp-launch-cwd requires 3 values");
+      expect(() =>
+        officialLoopbackListenerArguments([
+          ...desktopAppServer,
+          "--plugin-mcp-launch-cwd",
+          "github@openai-curated",
+          "github",
+        ]),
+      ).toThrow("--plugin-mcp-launch-cwd requires 3 values");
+      for (const option of [mcpLaunchCwd, pluginMcpLaunchCwd]) {
+        const emptyDirectory = [...option.slice(0, -1), ""];
+        expect(() =>
+          officialLoopbackListenerArguments([...desktopAppServer, ...emptyDirectory]),
+        ).toThrow(`${option[0]} requires 3 values`);
+        expect(
+          isRemoteUnixListenerInvocation(["app-server", "--listen", "unix://", ...emptyDirectory]),
+        ).toBe(false);
+      }
+      expect(() =>
+        officialLoopbackListenerArguments([...desktopAppServer, "--unknown-option"]),
+      ).toThrow("Unsupported app-server argument for a shared listener: --unknown-option");
+    });
+
+    it("keeps launch directories on remote Unix listener invocations", () => {
+      const incoming = [
+        "app-server",
+        ...mcpLaunchCwd,
+        "--listen",
+        "unix://",
+        ...pluginMcpLaunchCwd,
+      ];
+
+      expect(isRemoteUnixListenerInvocation(incoming)).toBe(true);
+      expect(
+        officialListenerArgumentsForRemoteListener(incoming, "/tmp/codexhost-official.sock"),
+      ).toEqual([
+        "app-server",
+        ...mcpLaunchCwd,
+        "--listen",
+        "unix:///tmp/codexhost-official.sock",
+        ...pluginMcpLaunchCwd,
+      ]);
+      expect(stdioArgumentsForRemoteListener(incoming)).toEqual([
+        "app-server",
+        ...mcpLaunchCwd,
+        "--stdio",
+        ...pluginMcpLaunchCwd,
+      ]);
+      expect(
+        isRemoteUnixListenerInvocation(["app-server", "--listen", "unix://", "--mcp-launch-cwd"]),
+      ).toBe(false);
+    });
   });
 
   it("uses the Codex control socket under the remote CODEX_HOME", () => {
@@ -553,73 +658,89 @@ describe("remote SSH app-server transport", () => {
   );
 
   it.skipIf(process.platform === "win32")(
-    "does not unlink a replacement socket while prior sessions settle",
+    "releases a socket bound by a listen that was in flight when close started",
     async () => {
-      const root = await mkdtemp(path.join("/tmp", "ch-replacement-"));
+      const root = await mkdtemp(path.join("/tmp", "ch-close-listen-"));
       const socketPath = path.join(root, "control.sock");
-      let finishFirstSession = (): void => undefined;
-      const first = createRemoteAppServerWebSocketListener({
+      const listener = createRemoteAppServerWebSocketListener({
         socketPath,
         diagnosticOutput: new PassThrough(),
         createSession: () => ({
-          run: () =>
-            new Promise<number>((resolve) => {
-              finishFirstSession = () => resolve(0);
-            }),
+          run: async () => 0,
           disconnect: () => undefined,
           close: () => undefined,
         }),
       });
-      const replacement = createRemoteAppServerWebSocketListener({
-        socketPath,
-        diagnosticOutput: new PassThrough(),
-        createSession: ({ output }) => ({
-          run: async () => {
-            output.end();
-            return 0;
-          },
-          disconnect: () => undefined,
-          close: () => undefined,
-        }),
-      });
-      let firstClosing: Promise<void> | null = null;
 
       try {
-        await first.listen();
-        const firstClient = new WebSocket("ws://localhost/", {
-          createConnection: () => net.createConnection(socketPath),
-        });
-        await once(firstClient, "open");
-        const firstClientClosed = once(firstClient, "close");
-        firstClosing = first.close();
-        await firstClientClosed;
-
-        let inactive = false;
-        for (let attempt = 0; attempt < 100; attempt += 1) {
-          if (!(await socketAcceptsConnections(socketPath))) {
-            inactive = true;
-            break;
-          }
-          await new Promise<void>((resolve) => setTimeout(resolve, 10));
-        }
-        expect(inactive).toBe(true);
-        await replacement.listen();
-
-        finishFirstSession();
-        await firstClosing;
-        const replacementClient = new WebSocket("ws://localhost/", {
-          createConnection: () => net.createConnection(socketPath),
-        });
-        await once(replacementClient, "open");
-        replacementClient.close();
-        await once(replacementClient, "close");
+        // Supervisor loss can request shutdown while startup is still binding.
+        const listening = listener.listen();
+        const closing = listener.close();
+        await listening;
+        await closing;
+        await expect(lstat(socketPath)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(listener.listen()).rejects.toThrow("listener is closed");
+        await expect(lstat(socketPath)).rejects.toMatchObject({ code: "ENOENT" });
       } finally {
-        finishFirstSession();
-        await Promise.allSettled([firstClosing ?? first.close(), replacement.close()]);
+        await listener.close();
         await rm(root, { recursive: true, force: true });
       }
     },
   );
+
+  it.skipIf(process.platform === "win32")(
+    "shares one bind between concurrent listen calls",
+    async () => {
+      const root = await mkdtemp(path.join("/tmp", "ch-listen-twice-"));
+      const socketPath = path.join(root, "control.sock");
+      const listener = createRemoteAppServerWebSocketListener({
+        socketPath,
+        diagnosticOutput: new PassThrough(),
+        createSession: () => ({
+          run: async () => 0,
+          disconnect: () => undefined,
+          close: () => undefined,
+        }),
+      });
+
+      try {
+        const first = listener.listen();
+        const second = listener.listen();
+        const closing = listener.close();
+        await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+        await closing;
+        await expect(lstat(socketPath)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        await listener.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")("retries listen after a failed attempt", async () => {
+    const root = await mkdtemp(path.join("/tmp", "ch-listen-retry-"));
+    const socketPath = path.join(root, "control.sock");
+    const listener = createRemoteAppServerWebSocketListener({
+      socketPath,
+      diagnosticOutput: new PassThrough(),
+      createSession: () => ({
+        run: async () => 0,
+        disconnect: () => undefined,
+        close: () => undefined,
+      }),
+    });
+
+    try {
+      await writeFile(socketPath, "not a socket");
+      await expect(listener.listen()).rejects.toThrow("is not a socket");
+      await rm(socketPath);
+      await listener.listen();
+      expect((await lstat(socketPath)).isSocket()).toBe(true);
+    } finally {
+      await listener.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   it.skipIf(process.platform === "win32")(
     "makes an existing control-socket directory private",

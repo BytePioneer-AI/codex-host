@@ -232,7 +232,11 @@ function verifyProjection(): void {
           output.interaction,
           hostItemIdSchema.parse(`question-${output.interaction.interactionId}`),
         );
-    } else if ("turnId" in output.event && output.event.type !== "turn.autonomous.started") {
+    } else if (
+      "turnId" in output.event &&
+      output.event.type !== "turn.autonomous.started" &&
+      output.event.type !== "usage.request.timing"
+    ) {
       projector.project(output.event);
     }
   }
@@ -252,6 +256,31 @@ function selectConfig(command: (typeof configCommands)[number]) {
   if (command.type === "thinking.select") return session.execute(command);
   return session.execute(command);
 }
+
+describe("Kiro startup authentication diagnostics", () => {
+  it.each([
+    ["error: You are not logged in, please log in with kiro-cli login", "authenticationRequired"],
+    ["error: connection refused", "unavailable"],
+  ])("classifies native stderr %j as %s", async (stderr, code) => {
+    peer = new NativePeer();
+    vi.spyOn(peer, "receive").mockImplementation(() => {
+      peer.child.stderr.write(stderr);
+      peer.exit(1);
+    });
+    const probe = new KiroAdapter({ commandTimeoutMs: 200 }, { locateSession: async () => null });
+    try {
+      const inspection = await probe.inspect({ cwd: process.cwd(), refresh: true });
+      expect(inspection).toMatchObject({ error: { code } });
+      if (code === "authenticationRequired") {
+        expect(inspection).toMatchObject({
+          error: { message: "Kiro CLI authentication is required (run `kiro-cli login`)" },
+        });
+      }
+    } finally {
+      await probe.close();
+    }
+  });
+});
 
 describe("Kiro ACP configuration timeouts", () => {
   it.each(configCommands)(

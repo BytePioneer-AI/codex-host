@@ -55,6 +55,59 @@ function shellQuote(value: string): string {
 }
 
 describe("remote SSH Host installation", () => {
+  it("preserves the shared directory and desktop session across updates and switching back to SSH", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "remote-session-"));
+    try {
+      const sharedDataDirectory = path.join(home, "shared-host");
+      const options = {
+        home,
+        stockCodexPath: await executable(path.join(home, "codex")),
+        nodePath: await executable(path.join(home, "node")),
+        shimPath: await executable(path.join(home, "shim")),
+        hostRuntimePath: await regularFile(path.join(home, "runtime.mjs")),
+        platform: "darwin" as const,
+        environment: { HOME: home, SHELL: "/bin/zsh" },
+      };
+      const original = await installRemoteHost({ ...options, sharedDataDirectory });
+      expect(original.executionSession).toBeUndefined();
+      expect(await readFile(original.profilePath, "utf8")).not.toContain(
+        "REMOTE_EXECUTION_SESSION",
+      );
+      await installRemoteHost({ ...options, executionSession: "desktop" });
+      const updated = await installRemoteHost(options);
+      expect(updated.executionSession).toBe("desktop");
+      expect(await inspectRemoteHostInstallation(options)).toMatchObject({
+        state: "ready",
+        executionSession: "desktop",
+        sharedDataDirectory,
+      });
+      expect(await readFile(updated.profilePath, "utf8")).toContain(
+        "CODEXHOST_REMOTE_EXECUTION_SESSION='desktop'",
+      );
+      expect(await readFile(updated.profilePath, "utf8")).toContain(
+        `CODEXHOST_SHARED_DATA_DIR=${shellQuote(sharedDataDirectory)}`,
+      );
+      const reset = await installRemoteHost({ ...options, executionSession: "ssh" });
+      expect(reset.executionSession).toBeUndefined();
+      expect(reset.sharedDataDirectory).toBe(sharedDataDirectory);
+      expect(await readFile(reset.profilePath, "utf8")).not.toContain("REMOTE_EXECUTION_SESSION");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects desktop execution on Linux before creating installation files", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "remote-session-linux-"));
+    try {
+      await expect(
+        installRemoteHost({ home, platform: "linux", executionSession: "desktop" }),
+      ).rejects.toThrow("requires macOS");
+      await expect(lstat(path.join(home, ".codexhost"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("uses the startup file read by non-interactive zsh SSH commands", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-zsh-"));
     try {
@@ -85,6 +138,42 @@ describe("remote SSH Host installation", () => {
       });
 
       await installRemoteHost(options);
+      expect(await readFile(installed.profilePath, "utf8")).toBe(profile);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("identifies and migrates a profile containing the retired default Agent export", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-legacy-profile-"));
+    try {
+      const options = {
+        home,
+        stockCodexPath: await executable(path.join(home, "stock-codex")),
+        nodePath: await executable(path.join(home, "node")),
+        shimPath: await executable(path.join(home, "codexhost-shim")),
+        hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
+        platform: "darwin" as const,
+        environment: { HOME: home, SHELL: "/bin/zsh" },
+      };
+      const installed = await installRemoteHost(options);
+      const profile = await readFile(installed.profilePath, "utf8");
+      await writeFile(
+        installed.profilePath,
+        profile.replace(
+          "  export CODEXHOST_REMOTE_SSH_MANAGED='1'",
+          "  export CODEXHOST_DEFAULT_AGENT='codex'\n  export CODEXHOST_REMOTE_SSH_MANAGED='1'",
+        ),
+      );
+      await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
+        state: "degraded",
+        issues: ["shell profile does not configure the managed native entrypoint"],
+      });
+      await installRemoteHost(options);
+      await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
+        state: "ready",
+        issues: [],
+      });
       expect(await readFile(installed.profilePath, "utf8")).toBe(profile);
     } finally {
       await rm(home, { recursive: true, force: true });
@@ -192,7 +281,7 @@ describe("remote SSH Host installation", () => {
     const nodePath = await executable(path.join(home, "node"));
     const shimPath = await executable(path.join(home, "codexhost-shim"));
     const hostRuntimePath = await regularFile(path.join(home, "host-runtime.mjs"));
-    const claudeCommand = await executable(path.join(home, "claude"));
+    await executable(path.join(home, "claude"));
     await writeFile(profilePath, "export EXISTING_SETTING=1\n", "utf8");
 
     try {
@@ -203,8 +292,8 @@ describe("remote SSH Host installation", () => {
         nodePath,
         shimPath,
         hostRuntimePath,
-        claudeCommand,
         platform: "darwin" as const,
+        environment: { HOME: home, PATH: home },
       };
       const first = await installRemoteHost(options);
       const second = await installRemoteHost(options);
@@ -221,7 +310,14 @@ describe("remote SSH Host installation", () => {
       );
       expect(profile).toContain(`export CODEXHOST_HOST_RUNTIME_PATH='${hostRuntimePath}'`);
       expect(profile).toContain("export CODEXHOST_REMOTE_SSH_MANAGED='1'");
-      expect(profile).toContain(`export CODEXHOST_CLAUDE_COMMAND='${claudeCommand}'`);
+      expect(profile).not.toContain("CODEXHOST_CLAUDE_COMMAND");
+      expect(first).not.toHaveProperty("claudeCommand");
+      expect(second).not.toHaveProperty("claudeCommand");
+      expect(
+        JSON.parse(
+          await readFile(path.join(home, ".codexhost", "remote", "manifest.json"), "utf8"),
+        ),
+      ).not.toHaveProperty("claudeCommand");
       expect(profile).toContain(
         `CODEXHOST_DATA_DIR='${path.join(home, ".codexhost", "remote", "data")}'`,
       );
@@ -234,6 +330,46 @@ describe("remote SSH Host installation", () => {
         stockCodexPath,
         profilePath,
         dataDirectory: path.join(home, ".codexhost", "remote", "data"),
+      });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("reinstalls without depending on a previously recorded Claude path", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-harness-discovery-"));
+    const options = {
+      home,
+      stockCodexPath: await executable(path.join(home, "stock-codex")),
+      nodePath: await executable(path.join(home, "node")),
+      shimPath: await executable(path.join(home, "codexhost-shim")),
+      hostRuntimePath: await regularFile(path.join(home, "host-runtime.mjs")),
+      platform: "linux" as const,
+      environment: { HOME: home, SHELL: "/bin/bash", PATH: home },
+    };
+
+    try {
+      const installed = await installRemoteHost(options);
+      const manifestPath = path.join(home, ".codexhost", "remote", "manifest.json");
+      const oldCommand = path.join(home, "removed-claude");
+      await writeFile(
+        manifestPath,
+        JSON.stringify({ ...installed, claudeCommand: oldCommand }),
+        "utf8",
+      );
+      const profile = await readFile(installed.profilePath, "utf8");
+      await writeFile(
+        installed.profilePath,
+        profile.replace("\nfi\n", `\n  export CODEXHOST_CLAUDE_COMMAND='${oldCommand}'\nfi\n`),
+        "utf8",
+      );
+
+      const reinstalled = await installRemoteHost(options);
+      expect(reinstalled).not.toHaveProperty("claudeCommand");
+      expect(await readFile(installed.profilePath, "utf8")).toBe(profile);
+      await expect(inspectRemoteHostInstallation(options)).resolves.toMatchObject({
+        state: "ready",
+        issues: [],
       });
     } finally {
       await rm(home, { recursive: true, force: true });
@@ -745,4 +881,60 @@ describe("remote SSH Host installation", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+});
+
+it("persists a custom shared directory separately from the SSH store across reinstalls", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "shared-directory-"));
+  try {
+    const options = {
+      home,
+      stockCodexPath: await executable(path.join(home, "codex")),
+      nodePath: await executable(path.join(home, "node")),
+      shimPath: await executable(path.join(home, "shim")),
+      hostRuntimePath: await regularFile(path.join(home, "runtime.mjs")),
+      platform: "darwin" as const,
+      environment: {
+        HOME: home,
+        SHELL: "/bin/zsh",
+        CODEXHOST_DATA_DIR: path.join(home, "custom-host"),
+      },
+    };
+    const first = await installRemoteHost(options);
+    expect(first.sharedDataDirectory).toBe(path.join(home, "custom-host"));
+    expect(first.dataDirectory).toBe(path.join(home, ".codexhost/remote/data"));
+    expect(await readFile(first.profilePath, "utf8")).toContain(
+      "CODEXHOST_SHARED_DATA_DIR=" + shellQuote(first.sharedDataDirectory ?? ""),
+    );
+    const next = await installRemoteHost({
+      ...options,
+      environment: { HOME: home, SHELL: "/bin/zsh" },
+    });
+    expect(next.sharedDataDirectory).toBe(first.sharedDataDirectory);
+    const emptyEnv = await installRemoteHost({
+      ...options,
+      environment: {
+        HOME: home,
+        SHELL: "/bin/zsh",
+        CODEXHOST_SHARED_DATA_DIR: "",
+        CODEXHOST_DATA_DIR: "  ",
+      },
+    });
+    expect(emptyEnv.sharedDataDirectory).toBe(first.sharedDataDirectory);
+    await expect(installRemoteHost({ ...options, sharedDataDirectory: "" })).rejects.toThrow(
+      "absolute path",
+    );
+    await expect(
+      installRemoteHost({ ...options, sharedDataDirectory: "relative" }),
+    ).rejects.toThrow("absolute path");
+    const overridden = await installRemoteHost({
+      ...options,
+      sharedDataDirectory: path.join(home, "explicit-host"),
+    });
+    expect(overridden.sharedDataDirectory).toBe(path.join(home, "explicit-host"));
+    await expect(
+      installRemoteHost({ ...options, sharedDataDirectory: first.dataDirectory }),
+    ).rejects.toThrow("must differ");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
 });

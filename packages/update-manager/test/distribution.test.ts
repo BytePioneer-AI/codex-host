@@ -64,7 +64,43 @@ describe("installed update context", () => {
     ).resolves.toMatchObject({
       metadata: { version: "1.2.3", target: "macos-arm64" },
       installation: { kind: "macos-dmg", options: { appPath: app } },
-      controller: { port: 41234 },
+    });
+  });
+
+  it("resolves a Linux archive installation from its extracted directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-distribution-"));
+    roots.push(root);
+    const installRoot = path.join(root, "codexhost");
+    const host = path.join(installRoot, "app", "host-runtime.mjs");
+    await file(host);
+    await file(path.join(installRoot, "libexec", "codexhost-updater"));
+    await file(
+      path.join(installRoot, "app", "codexhost-distribution.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        version: "1.2.3",
+        distribution: "installer",
+        target: "linux-arm64",
+      }),
+    );
+
+    await expect(
+      resolveInstalledUpdateContext({
+        hostRuntimePath: host,
+        environment: runtimeEnvironment(root),
+        platform: "linux",
+        architecture: "arm64",
+        stateDirectory: path.join(root, "state"),
+      }),
+    ).resolves.toMatchObject({
+      metadata: { version: "1.2.3", target: "linux-arm64" },
+      installation: {
+        kind: "linux-archive",
+        options: {
+          installRoot,
+          updaterExecutable: path.join(installRoot, "libexec", "codexhost-updater"),
+        },
+      },
     });
   });
 
@@ -74,6 +110,10 @@ describe("installed update context", () => {
     const packageRoot = path.join(root, "platform-package");
     const host = path.join(packageRoot, "app", "host-runtime.mjs");
     const environment = runtimeEnvironment(root);
+    delete environment.CODEXHOST_CONTROL_PORT;
+    delete environment.CODEXHOST_CONTROL_NONCE;
+    environment[UPDATE_RUNTIME_ENV.serviceManaged] = "1";
+    environment.CODEXHOST_DATA_DIR = path.join(root, "host-data");
     Object.assign(environment, {
       [UPDATE_RUNTIME_ENV.npmNodePath]: path.join(root, "node"),
       [UPDATE_RUNTIME_ENV.npmCliPath]: path.join(root, "npm-cli.js"),
@@ -106,7 +146,25 @@ describe("installed update context", () => {
         architecture: "arm64",
         stateDirectory: path.join(root, "state"),
       }),
-    ).resolves.toMatchObject({ installation: { kind: "npm", options: { packageRoot } } });
+    ).resolves.toMatchObject({
+      common: {
+        serviceManaged: true,
+        restartTarget: "web",
+        dataDirectory: environment.CODEXHOST_DATA_DIR,
+      },
+      installation: { kind: "npm", options: { packageRoot } },
+    });
+    await expect(
+      resolveInstalledUpdateContext({
+        hostRuntimePath: host,
+        environment: {
+          ...environment,
+          [UPDATE_RUNTIME_ENV.npmPackageRoot]: path.join(root, "other"),
+        },
+        platform: "darwin",
+        architecture: "arm64",
+      }),
+    ).rejects.toThrow("does not own the Host Runtime");
   });
 
   it.each([

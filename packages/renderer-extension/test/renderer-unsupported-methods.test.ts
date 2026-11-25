@@ -3,6 +3,7 @@ import {
   hostThreadIdSchema,
   harnessModelRefSchema,
   type HarnessInspection,
+  type CodexAccountListResult,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -20,6 +21,13 @@ const missingHarness = {
   error: { code: "notInstalled", message: "not installed", retryable: false },
 };
 const usage = { threadId, usage: null };
+const accounts: CodexAccountListResult = {
+  version: 2,
+  currentAccountId: null,
+  phase: "ready",
+  revision: 1,
+  accounts: [],
+};
 const readyHarness: HarnessInspection = {
   status: "ready",
   catalog: {
@@ -64,6 +72,52 @@ describe("unsupported methods on one Host connection", () => {
     expect(sendRequest).toHaveBeenCalledTimes(1);
   });
 
+  it("remembers unsupported discovery across background and interactive priorities", async () => {
+    const sendRequest = vi.fn(async (method: string) => {
+      throw unsupported(method);
+    });
+    const client = clientFor(sendRequest);
+    const input = { harnessId: harnessIdSchema.parse("pi") };
+    await expect(client.inspectHarness(input, { priority: "background" })).rejects.toThrow(
+      "unsupported",
+    );
+    await expect(client.inspectHarness(input)).rejects.toThrow("unsupported");
+    expect(sendRequest).toHaveBeenCalledExactlyOnceWith(HARNESS_INSPECT_METHOD, input, {
+      priority: "background",
+    });
+  });
+
+  it("keeps a selected Harness request independent of pending background discovery", async () => {
+    const pending = Promise.withResolvers<HarnessInspection>();
+    const sendRequest = vi
+      .fn()
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce(readyHarness);
+    const client = clientFor(sendRequest);
+    const input = { harnessId: harnessIdSchema.parse("pi") };
+    const background = client.inspectHarness(input, { priority: "background" });
+    try {
+      await expect(client.inspectHarness(input)).resolves.toEqual(readyHarness);
+      expect(sendRequest).toHaveBeenNthCalledWith(1, HARNESS_INSPECT_METHOD, input, {
+        priority: "background",
+      });
+      expect(sendRequest).toHaveBeenNthCalledWith(2, HARNESS_INSPECT_METHOD, input);
+    } finally {
+      pending.resolve(readyHarness);
+      await background;
+    }
+  });
+
+  it("a transient background failure does not disable foreground recovery", async () => {
+    const error = Object.assign(new Error("timeout"), { code: -32000 });
+    const sendRequest = vi.fn().mockRejectedValueOnce(error).mockResolvedValueOnce(readyHarness);
+    const client = clientFor(sendRequest);
+    const input = { harnessId: harnessIdSchema.parse("pi") };
+    await expect(client.inspectHarness(input, { priority: "background" })).rejects.toBe(error);
+    await expect(client.inspectHarness(input)).resolves.toEqual(readyHarness);
+    expect(sendRequest).toHaveBeenCalledTimes(2);
+  });
+
   it("an unsupported Account API does not suppress Harness discovery, usage, or another Host", async () => {
     const sendRequest = vi.fn(async (method: string) => {
       if (method === CODEX_ACCOUNT_LIST_METHOD) throw unsupported(method);
@@ -78,8 +132,8 @@ describe("unsupported methods on one Host connection", () => {
       ).resolves.toEqual(readyHarness);
     }
     await expect(client.inspectThreadUsage({ threadId })).resolves.toEqual(usage);
-    const otherHost = clientFor(async () => ({ accounts: [] }));
-    await expect(otherHost.listCodexAccounts()).resolves.toEqual({ accounts: [] });
+    const otherHost = clientFor(async () => accounts);
+    await expect(otherHost.listCodexAccounts()).resolves.toEqual(accounts);
     expect(sendRequest.mock.calls.filter(([m]) => m === CODEX_ACCOUNT_LIST_METHOD)).toHaveLength(1);
     expect(sendRequest.mock.calls.filter(([m]) => m === HARNESS_INSPECT_METHOD)).toHaveLength(2);
   });
@@ -127,13 +181,10 @@ describe("unsupported methods on one Host connection", () => {
     Object.assign(new Error("unauthorized"), { code: -32001 }),
     Object.assign(new Error("Invalid request: unknown variant `some-param`"), { code: -32600 }),
   ])("retains recovery after a transient, auth, or parameter error: %s", async (error) => {
-    const sendRequest = vi
-      .fn()
-      .mockRejectedValueOnce(error)
-      .mockResolvedValueOnce({ accounts: [] });
+    const sendRequest = vi.fn().mockRejectedValueOnce(error).mockResolvedValueOnce(accounts);
     const client = clientFor(sendRequest);
     await expect(client.listCodexAccounts()).rejects.toBe(error);
-    await expect(client.listCodexAccounts()).resolves.toEqual({ accounts: [] });
+    await expect(client.listCodexAccounts()).resolves.toEqual(accounts);
     expect(sendRequest).toHaveBeenCalledTimes(2);
   });
 
@@ -141,9 +192,9 @@ describe("unsupported methods on one Host connection", () => {
     const sendRequest = vi
       .fn()
       .mockRejectedValueOnce(unsupported(CODEX_ACCOUNT_LIST_METHOD))
-      .mockResolvedValueOnce({ accounts: [] });
+      .mockResolvedValueOnce(accounts);
     await expect(clientFor(sendRequest).listCodexAccounts()).rejects.toThrow();
-    await expect(clientFor(sendRequest).listCodexAccounts()).resolves.toEqual({ accounts: [] });
+    await expect(clientFor(sendRequest).listCodexAccounts()).resolves.toEqual(accounts);
   });
 
   it("skips repeat unsupported inspections but still verifies every native Thread", async () => {

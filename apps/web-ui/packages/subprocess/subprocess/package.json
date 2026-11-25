@@ -1,0 +1,23 @@
+{
+  "name": "@deepseek-ai/dsh-subprocess",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./control": {
+      "types": "./src/control.ts",
+      "default": "./src/control.ts"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-http-proxy": "*"
+  }
+}

@@ -1,3 +1,4 @@
+import { expectedWebPaths, isWebResource, webBuildCommand } from "./web-resources.mjs";
 import { spawn } from "node:child_process";
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -8,11 +9,48 @@ import {
   buildPreinstalledHarnessPlugins,
   preinstalledHarnessPluginPaths,
 } from "./harness-plugins.mjs";
+import {
+  linuxGlibcCargoArguments,
+  stripLinuxDebugInfo,
+  verifyLinuxGlibcBaseline,
+} from "./linux-glibc.mjs";
+import { MACOS_SHELL_BUNDLE_PATHS, stageMacosShellBundle } from "./macos-shell-bundle.mjs";
 import { ensureNodeArchive, extractNodeRuntime } from "./node-runtime.mjs";
 import { parseReleaseArguments, releaseUsage } from "./targets.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const runtimeLicenses = [
+  {
+    packageName: "@github/copilot-sdk",
+    license: "MIT",
+    source: "scripts/release/licenses/copilot-sdk-1.0.25-MIT.txt",
+    output: "Copilot-SDK-LICENSE.txt",
+  },
+  { packageName: "koffi", license: "MIT", source: "LICENSE.txt", output: "Koffi-LICENSE.txt" },
+  {
+    packageName: "vscode-jsonrpc",
+    license: "MIT",
+    source: "License.txt",
+    output: "VSCode-JSONRPC-LICENSE.txt",
+  },
+  {
+    packageName: "@deepseek-ai/cordis",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Cordis-LICENSE.txt",
+  },
+  {
+    packageName: "@deepseek-ai/cosmokit",
+    license: "MIT",
+    source: "LICENSE",
+    output: "Cosmokit-LICENSE.txt",
+  },
+  {
+    packageName: "@agentclientprotocol/sdk",
+    license: "Apache-2.0",
+    source: "LICENSE",
+    output: "Agent-Client-Protocol-SDK-LICENSE.txt",
+  },
   {
     packageName: "@anthropic-ai/claude-agent-sdk",
     license: "SEE LICENSE IN README.md",
@@ -32,13 +70,43 @@ const runtimeLicenses = [
     output: "MCP-SDK-LICENSE.txt",
   },
   {
+    packageName: "@opencode/client",
+    license: "MIT",
+    source: "scripts/release/licenses/opencode-client-2.0.16-MIT.txt",
+    output: "OpenCode-v2-Client-LICENSE.txt",
+  },
+  {
     packageName: "@opencode-ai/sdk",
     license: "MIT",
     source: "scripts/release/licenses/opencode-ai-sdk-1.18.25-MIT.txt",
     output: "OpenCode-SDK-LICENSE.txt",
   },
+  {
+    packageName: "@qoder-ai/qoder-agent-sdk",
+    license: "SEE LICENSE IN LICENSE",
+    source: "LICENSE",
+    output: "Qoder-Agent-SDK-LICENSE.txt",
+  },
+  {
+    packageName: "@qodercn-ai/qodercn-agent-sdk",
+    license: "SEE LICENSE IN LICENSE",
+    source: "LICENSE",
+    output: "QoderCN-Agent-SDK-LICENSE.txt",
+  },
+  {
+    packageName: "@qwen-code/sdk",
+    license: "Apache-2.0",
+    source: "scripts/release/licenses/qwen-code-sdk-0.1.26-Apache-2.0.txt",
+    output: "Qwen-Code-SDK-LICENSE.txt",
+  },
   { packageName: "diff", license: "BSD-3-Clause", source: "LICENSE", output: "diff-LICENSE.txt" },
   { packageName: "lucide", license: "ISC", source: "LICENSE", output: "lucide-LICENSE.txt" },
+  {
+    packageName: "tailwindcss",
+    license: "MIT",
+    source: "LICENSE",
+    output: "tailwindcss-LICENSE.txt",
+  },
   { packageName: "ws", license: "MIT", source: "LICENSE", output: "ws-LICENSE.txt" },
   { packageName: "zod", license: "MIT", source: "LICENSE", output: "zod-LICENSE.txt" },
 ];
@@ -76,11 +144,11 @@ export function releaseBuildCommands(
       label: "Rust release build",
       command: "cargo",
       args: [
-        "build",
+        ...(target.hostPlatform === "linux"
+          ? linuxGlibcCargoArguments(target.rustTarget)
+          : ["build", "--target", target.rustTarget]),
         "--release",
         "--locked",
-        "--target",
-        target.rustTarget,
         "--package",
         "codexhost-launcher",
         "--package",
@@ -89,6 +157,24 @@ export function releaseBuildCommands(
         "codexhost-updater",
       ],
     },
+    // Linux releases have no native Desktop shell; Web and Codex Desktop remain the interfaces.
+    ...(target.hostPlatform === "linux"
+      ? []
+      : [
+          {
+            label: "Desktop shell release build",
+            command: "cargo",
+            args: [
+              "build",
+              "--manifest-path",
+              "apps/desktop-shell/src-tauri/Cargo.toml",
+              "--release",
+              "--locked",
+              "--target",
+              target.rustTarget,
+            ],
+          },
+        ]),
   ];
 }
 
@@ -161,7 +247,7 @@ export async function writeThirdPartyNotices(root, payloadRoot) {
   const notices = [
     "codexhost third-party notices",
     "",
-    "Node.js 24.13.1",
+    "Node.js 24.22.1",
     "License: see licenses/Node.js-LICENSE.txt",
     "",
   ];
@@ -177,7 +263,7 @@ export async function writeThirdPartyNotices(root, payloadRoot) {
       );
     }
     await copyReleaseFile(
-      dependency.packageName === "@opencode-ai/sdk"
+      dependency.source.startsWith("scripts/release/licenses/")
         ? resolveRuntimeLicenseSource(root, dependency)
         : path.join(dependencyRoot, dependency.source),
       path.join(licensesDirectory, dependency.output),
@@ -201,6 +287,16 @@ export async function writeThirdPartyNotices(root, payloadRoot) {
     "License text: licenses/create-dmg-background-LICENSE.txt",
     "",
   );
+  await copyReleaseFile(
+    path.join(root, "scripts/release/licenses/desktop-screenshot-NOTICES.txt"),
+    path.join(licensesDirectory, "DesktopScreenshot-NOTICES.txt"),
+    "desktop screenshot native dependency notices",
+  );
+  notices.push(
+    "Desktop screenshot native dependencies (Windows/macOS)",
+    "License and copyright texts: licenses/DesktopScreenshot-NOTICES.txt",
+    "",
+  );
   await writeFile(
     path.join(payloadRoot, "THIRD_PARTY_NOTICES.txt"),
     `${notices.join("\n").trimEnd()}\n`,
@@ -210,26 +306,46 @@ export async function writeThirdPartyNotices(root, payloadRoot) {
 
 export function expectedPayloadPaths(target) {
   const paths = [
+    ...expectedWebPaths(target),
     `bin/codexhost${target.executableSuffix}`,
     `libexec/codexhost-shim${target.executableSuffix}`,
     ...(target.hostPlatform === "win32" ? ["libexec/codexhost-node-repl.exe"] : []),
+    ...(target.hostPlatform === "darwin"
+      ? MACOS_SHELL_BUNDLE_PATHS
+      : target.hostPlatform === "linux"
+        ? []
+        : [`libexec/codexhost-shell${target.executableSuffix}`]),
     `libexec/codexhost-updater${target.executableSuffix}`,
     `runtime/node${target.executableSuffix}`,
     "app/codexhost-distribution.json",
+    "app/console-server.mjs",
+    "app/console-web.js",
     "app/desktop-controller.mjs",
     "app/host-runtime.mjs",
     "app/renderer-extension.js",
     ...preinstalledHarnessPluginPaths(),
     "licenses/Node.js-LICENSE.txt",
+    "licenses/Copilot-SDK-LICENSE.txt",
+    "licenses/Koffi-LICENSE.txt",
+    "licenses/VSCode-JSONRPC-LICENSE.txt",
+    "licenses/Agent-Client-Protocol-SDK-LICENSE.txt",
     "licenses/Anthropic-SDK-LICENSE.txt",
     "licenses/Claude-Agent-SDK-LICENSE.md",
     "licenses/create-dmg-background-LICENSE.txt",
     "licenses/MCP-SDK-LICENSE.txt",
     "licenses/OpenCode-SDK-LICENSE.txt",
+    "licenses/OpenCode-v2-Client-LICENSE.txt",
+    "licenses/Qoder-Agent-SDK-LICENSE.txt",
+    "licenses/QoderCN-Agent-SDK-LICENSE.txt",
+    "licenses/Qwen-Code-SDK-LICENSE.txt",
+    "licenses/Cordis-LICENSE.txt",
+    "licenses/Cosmokit-LICENSE.txt",
     "licenses/diff-LICENSE.txt",
     "licenses/lucide-LICENSE.txt",
+    "licenses/tailwindcss-LICENSE.txt",
     "licenses/ws-LICENSE.txt",
     "licenses/zod-LICENSE.txt",
+    "licenses/DesktopScreenshot-NOTICES.txt",
     "THIRD_PARTY_NOTICES.txt",
   ];
   if (target.hostPlatform === "win32") {
@@ -260,7 +376,9 @@ export async function validatePayload({ payloadRoot, target, root }) {
   const files = await walkFiles(payloadRoot);
   const actual = files.map((file) => file.relative).sort();
   const missing = expected.filter((relative) => !actual.includes(relative));
-  const extra = actual.filter((relative) => !expected.includes(relative));
+  const extra = actual.filter(
+    (relative) => !expected.includes(relative) && !isWebResource(relative, target),
+  );
   if (missing.length > 0)
     throw new Error(`release Payload is missing files: ${missing.join(", ")}`);
   if (extra.length > 0) {
@@ -270,7 +388,14 @@ export async function validatePayload({ payloadRoot, target, root }) {
   for (const file of files.filter((entry) => /\.(?:js|md|mjs|txt)$/u.test(entry.relative))) {
     const text = await readFile(file.absolute, "utf8");
     const forbiddenReferences = [root];
-    if (["app/desktop-controller.mjs", "app/renderer-extension.js"].includes(file.relative)) {
+    if (
+      [
+        "app/console-server.mjs",
+        "app/console-web.js",
+        "app/desktop-controller.mjs",
+        "app/renderer-extension.js",
+      ].includes(file.relative)
+    ) {
       forbiddenReferences.push("@anthropic-ai/", "@codexhost/adapter-claude-code");
     }
     if (forbiddenReferences.some((reference) => text.includes(reference))) {
@@ -330,6 +455,33 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     "release Updater",
     true,
   );
+  const shellOutput = path.join(
+    root,
+    "apps",
+    "desktop-shell",
+    "src-tauri",
+    "target",
+    target.rustTarget,
+    "release",
+  );
+  if (target.hostPlatform === "darwin") {
+    await stageMacosShellBundle({
+      sourceExecutable: path.join(shellOutput, `codexhost-shell${target.executableSuffix}`),
+      iconSource: path.join(root, "apps/desktop-shell/src-tauri/icons/AppIcon.icns"),
+      destinationRoot: payloadRoot,
+      version,
+    });
+  } else if (target.hostPlatform === "linux") {
+    stripLinuxDebugInfo({ packageRoot: payloadRoot });
+    verifyLinuxGlibcBaseline({ packageRoot: payloadRoot });
+  } else {
+    await copyReleaseFile(
+      path.join(shellOutput, `codexhost-shell${target.executableSuffix}`),
+      path.join(payloadRoot, "libexec", `codexhost-shell${target.executableSuffix}`),
+      "release Desktop shell",
+      true,
+    );
+  }
 
   await runCommand(
     {
@@ -359,10 +511,27 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     },
     root,
   );
+  await runCommand(
+    {
+      label: "Console Server Bundle build",
+      command: process.execPath,
+      args: [
+        "packages/console-server/scripts/build-release.mjs",
+        "--output",
+        path.join(payloadRoot, "app", "console-server.mjs"),
+      ],
+    },
+    root,
+  );
   await copyReleaseFile(
     path.join(root, "packages", "renderer-extension", "dist", "production.js"),
     path.join(payloadRoot, "app", "renderer-extension.js"),
     "production Renderer Bundle",
+  );
+  await copyReleaseFile(
+    path.join(root, "packages", "renderer-extension", "dist", "console.js"),
+    path.join(payloadRoot, "app", "console-web.js"),
+    "console page Bundle",
   );
   await writeDistributionMetadata(path.join(payloadRoot, "app", "codexhost-distribution.json"), {
     version,
@@ -375,6 +544,7 @@ export async function prepareReleasePayload({ target, root = repositoryRoot }) {
     cacheDirectory: path.join(root, ".codexhost", "release-cache", "node"),
   });
   await extractNodeRuntime({ target, archivePath, payloadRoot });
+  await runCommand(webBuildCommand(path.join(payloadRoot, "app"), target), root);
   await writeThirdPartyNotices(root, payloadRoot);
   await validatePayload({ payloadRoot, target, root });
   return { version, installerVersion, outputRoot, payloadRoot };
@@ -385,18 +555,60 @@ async function requireNonEmptyArtifact(artifactPath) {
   if (metadata.size === 0) throw new Error(`release artifact is empty: ${artifactPath}`);
 }
 
+export function releaseArtifactExtension(target) {
+  if (target.hostPlatform === "darwin") return ".dmg";
+  if (target.hostPlatform === "win32") return ".exe";
+  return ".tar.gz";
+}
+
+// The archive holds one versioned top-level directory, so extraction never spills into the
+// destination; the Updater relies on that single root when it stages an update.
+export function linuxArchiveCommand({ payloadRoot, artifactPath, rootName }) {
+  return {
+    label: "Linux archive packaging",
+    command: "tar",
+    args: [
+      "--create",
+      "--gzip",
+      "--file",
+      artifactPath,
+      "--sort=name",
+      "--owner=0",
+      "--group=0",
+      "--numeric-owner",
+      "--directory",
+      path.dirname(payloadRoot),
+      `--transform=s,^${path.basename(payloadRoot)},${rootName},`,
+      path.basename(payloadRoot),
+    ],
+  };
+}
+
 export async function packageReleaseTarget({ target, root = repositoryRoot }) {
   const prepared = await prepareReleasePayload({ target, root });
-  const extension = target.hostPlatform === "darwin" ? ".dmg" : ".exe";
-  const artifactBase = path.join(prepared.outputRoot, `codexhost-${prepared.version}-${target.id}`);
-  const artifactPath = `${artifactBase}${extension}`;
+  const artifactName = `codexhost-${prepared.version}-${target.id}`;
+  const artifactBase = path.join(prepared.outputRoot, artifactName);
+  const artifactPath = `${artifactBase}${releaseArtifactExtension(target)}`;
   const priorExtensions =
-    target.hostPlatform === "darwin" ? [".app.zip", ".dmg"] : [".msi", ".exe"];
+    target.hostPlatform === "darwin"
+      ? [".app.zip", ".dmg"]
+      : target.hostPlatform === "win32"
+        ? [".msi", ".exe"]
+        : [".tar.gz"];
   await Promise.all(
     priorExtensions.map((suffix) => rm(`${artifactBase}${suffix}`, { force: true })),
   );
 
-  if (target.hostPlatform === "darwin") {
+  if (target.hostPlatform === "linux") {
+    await runCommand(
+      linuxArchiveCommand({
+        payloadRoot: prepared.payloadRoot,
+        artifactPath,
+        rootName: artifactName,
+      }),
+      root,
+    );
+  } else if (target.hostPlatform === "darwin") {
     await runCommand(
       {
         label: "macOS DMG packaging",

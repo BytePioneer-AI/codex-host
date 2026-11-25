@@ -25,6 +25,7 @@
     "@codexhost/harness-adapter": "0.0.0",
     "@codexhost/harness-discovery": "0.0.0",
     "@codexhost/shared-contracts": "0.0.0",
-    "@opencode-ai/sdk": "1.18.25"
+    "@opencode-ai/sdk": "1.18.25",
+    "@opencode/client": "2.0.16"
   }
 }

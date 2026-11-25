@@ -18,8 +18,8 @@ A `HarnessAdapter` MAY expose a strict browser-safe Permission Mode catalog toge
 
 #### Scenario: DeepSeek exposes dynamic native presets
 
-- **WHEN** DeepSeek Harness inspection finds a valid native `permission` settings namespace
-- **THEN** it SHALL derive the Permission Mode IDs, order, labels, and default from that namespace's schema and value
+- **WHEN** DeepSeek Harness inspection finds a valid V4 `permissionPresets/catalog` value
+- **THEN** it SHALL derive the Permission Mode IDs, order, labels, and default from the catalog's options and default
 - **AND** codexhost SHALL NOT hardcode the deployment's preset catalog
 
 #### Scenario: Pi has no native Permission Mode
@@ -31,14 +31,16 @@ A `HarnessAdapter` MAY expose a strict browser-safe Permission Mode catalog toge
 
 A capable Adapter SHALL report `configuration.permissionModeScope`. `live` means the current Session can change mode after creation. `atCreate` means the mode is fixed once the Session exists. The field SHALL default to `live` when omitted so existing capable Adapters keep live selection. `selectPermissionMode` SHALL remain true for an `atCreate` Adapter that still offers create-time selection.
 
-#### Scenario: Grok mode is fixed at create
+#### Scenario: Grok changes mode after creation
 
 - **WHEN** Grok is inspected or opened
-- **THEN** it SHALL report `selectPermissionMode=true` and `permissionModeScope=atCreate`
-- **AND** `permissionMode.select` on an already-open Session SHALL return a non-retryable invalid request
-- **AND** Host SHALL NOT persist `transportModelId` or `requestedPermissionModeId` for that rejected selection
-- **AND** resume SHALL restore the stored Permission Mode while loading that Session
-- **AND** restoring the mode SHALL NOT enable `permissionMode.select` on the already-open Session
+- **THEN** it SHALL report `selectPermissionMode=true` and `permissionModeScope=live`
+- **AND** an idle Session SHALL accept `permissionMode.select` without changing its Native Session identity
+- **AND** the Adapter SHALL send the underscore-prefixed native extension notification and confirm both effective native permission flags plus the target Session round trip before publishing state or completing the command
+- **AND** a busy Session SHALL reject the selection with retryable `sessionBusy`
+- **AND** missing, mismatched or interrupted confirmation SHALL fail and retire the Transport without publishing the requested mode
+- **AND** Host SHALL NOT persist `transportModelId` or `requestedPermissionModeId` for a failed selection
+- **AND** startup, resume and history-derived Sessions SHALL confirm their selected mode before opening successfully
 
 ### Requirement: Session state carries the current native mode
 

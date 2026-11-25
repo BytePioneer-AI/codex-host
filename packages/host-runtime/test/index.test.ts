@@ -23,52 +23,42 @@ describe("host-runtime package", () => {
       params: { model },
     });
 
-    expect(classifyCreateRequestRoute(request("official/model"), "codex")).toEqual({
+    expect(classifyCreateRequestRoute(request("official/model"))).toEqual({
       requestMethod: "thread/start",
       modelCarrier: "official-model",
       selectedHarness: "codex",
       selectionSource: "official-model",
     });
-    expect(classifyCreateRequestRoute(request("official/model"), "pi")).toEqual({
-      requestMethod: "thread/start",
-      modelCarrier: "official-model",
-      selectedHarness: "pi",
-      selectionSource: "default-agent",
-    });
-    expect(classifyCreateRequestRoute(request("codexhost/pi-native"), "codex")).toEqual({
+    expect(classifyCreateRequestRoute(request("codexhost/pi-native"))).toEqual({
       requestMethod: "thread/start",
       modelCarrier: "pi-transport",
       selectedHarness: "pi",
       selectionSource: "transport-model",
     });
-    expect(classifyCreateRequestRoute(request("codexhost/claude-code-native"), "codex")).toEqual({
+    expect(classifyCreateRequestRoute(request("codexhost/claude-code-native"))).toEqual({
       requestMethod: "thread/start",
       modelCarrier: "claude-code-transport",
       selectedHarness: "claude-code",
       selectionSource: "transport-model",
     });
-    expect(classifyCreateRequestRoute(request("codexhost/grok-native"), "codex")).toEqual({
+    expect(classifyCreateRequestRoute(request("codexhost/grok-native"))).toEqual({
       requestMethod: "thread/start",
       modelCarrier: "grok-transport",
       selectedHarness: "grok",
       selectionSource: "transport-model",
     });
-    expect(classifyCreateRequestRoute(request("codexhost/opencode-native"), "codex")).toEqual({
+    expect(classifyCreateRequestRoute(request("codexhost/opencode-native"))).toEqual({
       requestMethod: "thread/start",
       modelCarrier: "opencode-transport",
       selectedHarness: "opencode",
       selectionSource: "transport-model",
     });
-    expect(
-      classifyCreateRequestRoute(request("codexhost/deepseek-harness-native"), "codex"),
-    ).toEqual({
+    expect(classifyCreateRequestRoute(request("codexhost/deepseek-harness-native"))).toEqual({
       requestMethod: "thread/start",
       modelCarrier: "deepseek-harness-transport",
       selectedHarness: "deepseek-harness",
       selectionSource: "transport-model",
     });
-    expect(
-      classifyCreateRequestRoute({ id: 43, method: "thread/read", params: {} }, "codex"),
-    ).toBeNull();
+    expect(classifyCreateRequestRoute({ id: 43, method: "thread/read", params: {} })).toBeNull();
   });
 });

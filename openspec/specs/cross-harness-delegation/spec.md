@@ -1,0 +1,740 @@
+# cross-harness-delegation Specification
+
+## Purpose
+TBD - created by archiving change add-cross-harness-delegation. Update Purpose after archive.
+## Requirements
+### Requirement: 委派能力通过两处内容一致的薄 Agent Skill 发现
+codexhost SHALL 从同一权威模板向 `~/.agents/skills/codexhost-delegation/SKILL.md` 与 `~/.claude/skills/codexhost-delegation/SKILL.md` 安装内容完全一致的用户级 Skill。Skill SHALL 仅服务发起方发现委派能力，并 SHALL 指示 Agent 在执行前通过 Host 提供的 `CODEXHOST_CLI_PATH` 运行 `delegate --help` 获取当前版本的权威用法；该变量缺失时可回退到 PATH 上的 `codexhost`。Host MUST NOT 为委派发现而扫描或改写用户 Turn、追加提示文本，或重写原生 Codex 请求。
+
+#### Scenario: 首次安装 Skill
+- **WHEN** codexhost 首次执行 Skill 安装且两个目标均不存在
+- **THEN** 安装器 SHALL 向 `~/.agents/skills/codexhost-delegation/SKILL.md` 与 `~/.claude/skills/codexhost-delegation/SKILL.md` 写入同一内置模板
+- **AND** 两份文件 SHALL 声明相同版本并具有相同内容摘要
+- **AND** 每个目标 SHALL 通过同目录 staging 文件与原子替换完成写入
+
+#### Scenario: 受管 Skill 缺失或版本落后
+- **WHEN** codexhost 安装或更新后检查两处 Skill，且任一受管副本缺失、版本低于当前内置版本或摘要对应旧的受管内容
+- **THEN** 安装器 SHALL 将该副本原子更新为当前内置模板
+- **AND** 更新后两处受管副本 SHALL 内容一致
+
+#### Scenario: Skill 已是当前版本
+- **WHEN** 两处 Skill 的受管版本与内容摘要均匹配当前内置模板
+- **THEN** 安装器 SHALL 保持文件不变
+- **AND** MUST NOT 产生无意义的重写
+
+#### Scenario: 目标 Skill 被用户修改或不是受管文件
+- **WHEN** 目标路径已存在，但其摘要不匹配当前或上一受管版本的记录
+- **THEN** 安装器 SHALL 保留该文件并报告可辨识的冲突
+- **AND** MUST NOT 静默覆盖用户修改或非受管内容
+- **AND** 另一处无冲突的受管副本 MAY 独立完成安装或更新
+
+#### Scenario: Skill 内容边界
+- **WHEN** Agent 读取任一目录中的 `codexhost-delegation` Skill
+- **THEN** Skill SHALL 说明明确委派请求或有效 `@<harnessId>` 可通过 codexhost 创建目标 Harness 的独立会话
+- **AND** SHALL 要求执行前先通过 `CODEXHOST_CLI_PATH` 运行 `delegate --help`
+- **AND** SHALL 指示 Agent 不要凭记忆猜测命令、参数、标识、等待或结果回流行为
+- **AND** SHALL 指示 Agent 在用户只是在讨论 Harness 时忽略该能力
+- **AND** MUST NOT 复制完整 CLI 命令文档、动态 Thread 标识或结果回流规则
+
+#### Scenario: 任意 Harness 的用户 Turn 被提交
+- **WHEN** 用户向外部 Harness 或原生 Codex Thread 提交 Turn
+- **THEN** Host SHALL 将用户输入按该 Harness 的既有语义处理
+- **AND** MUST NOT 为委派发现追加隐藏或可见提示
+- **AND** 原生 Codex 请求的字段与转发语义 SHALL 保持不变
+
+#### Scenario: Host 向被委派方投递任务
+- **WHEN** Host 为目标 Harness 创建 Session/Thread 并投递任务 Turn
+- **THEN** 目标执行 MUST NOT 依赖目标 Harness 已安装、加载或理解 `codexhost-delegation` Skill
+- **AND** 即使任务文本含有 `@<harnessId>`，Host 也 MUST NOT 自动触发再次委派
+
+#### Scenario: 用户在子 Thread 中明确发起新的委派
+- **WHEN** 用户在一个委派产生的子 Thread 中明确请求新的委派，且当前 Agent 通过 Skill 调用 CLI
+- **THEN** Host SHALL 按普通委派处理该请求
+- **AND** MUST NOT 因为该 Thread 自身由委派产生而拒绝
+
+### Requirement: 委派创建归属目标 Harness 的独立可写子 Thread
+委派 SHALL 创建一个归属目标 Harness、可继续交互的子 Thread，并使其出现在 Codex Desktop 会话列表中。父子双方的会话身份 MUST NOT 被共享或迁移，每个 Thread SHALL 只归属一个 Harness。
+
+#### Scenario: 委派给外部 Harness
+- **WHEN** 调用方发起一次委派且目标为可用的外部 Harness
+- **THEN** Host SHALL 为目标 Harness 建立独立的 Native Session 与一个普通可写 Host Thread
+- **AND** SHALL 请求该 Adapter 使用其委派默认的原生无人值守执行策略创建 Session
+- **AND** SHALL 在无 Desktop 请求上下文的情况下主动发布该子 Host Thread 为已开始
+- **AND** 调用方 SHALL 收到该子 Thread 的标识与其深度链接
+
+#### Scenario: 委派给 DeepSeek Harness
+- **WHEN** 调用方发起一次委派且目标为 DeepSeek Harness
+- **THEN** Adapter SHALL 在创建 Native Session 后通过最新版 `commands/execute` 执行 `/permission danger-full-access`
+- **AND** 调用 SHALL 显式传递空的 `images` 列表
+- **AND** Adapter SHALL 在投递任务前确认命令成功，并从原生历史确认最终状态为 `permission/preset=danger-full-access`、`sandbox/mode=danger-full-access` 与 `approval/policy=never`
+- **AND** 任一确认失败时创建 SHALL 失败并触发现有委派回滚
+
+#### Scenario: 委派给原生 Codex
+- **WHEN** 调用方发起一次委派且目标为原生 Codex Harness
+- **THEN** Host SHALL 通过对官方 App Server 的带外请求创建一个原生 Codex Thread 并投递任务
+- **AND** `thread/start` SHALL 使用 `approvalPolicy: "never"` 与 `sandbox: "danger-full-access"`
+- **AND** 带外请求与其响应 MUST NOT 作为 Desktop 发起的请求被回送给 Desktop
+- **AND** Host SHALL 跟踪该 Thread 的官方通知以便后续提取结果
+- **AND** 该 Thread SHALL 按官方既有语义出现在聚合会话列表中
+
+#### Scenario: 委派给 Cursor CLI
+- **WHEN** 用户已授权使用 Cursor 原生 Run Everything，且委派请求采用 `unattended-full-access`
+- **THEN** Cursor Adapter SHALL 通过原生 `--force acp` 请求该执行策略，并继续服从 Cursor 的团队策略与原生拒绝规则
+- **AND** Adapter SHALL 持久化该请求策略，使恢复、Fork 和上一轮修订沿用同一策略
+- **AND** Host MUST NOT 将 Agent/Plan/Ask 配置或启动成功解释为 ACP 已确认 effective 全权限
+- **AND** 若无人值守会话仍请求工具或计划审批，Adapter SHALL 取消该原生请求并让当前 Turn 以明确错误结束，不自动批准、不挂起等待、不伪报成功
+- **AND** 显式用户取消 SHALL 保留既有取消结果，不被随后到达的权限请求改写为失败
+- **AND** 普通会话、目录检查和只读历史读取 SHALL 保留既有权限行为
+
+#### Scenario: 用户在子 Thread 中继续交互
+- **WHEN** 用户打开投影出来的子 Thread 并提交输入
+- **THEN** 该 Thread SHALL 接受输入并按其所属 Harness 的普通 Thread 语义执行
+- **AND** 它 MUST NOT 被当作只读的 Subagent 子 Thread
+
+#### Scenario: 子 Thread 参与列表过滤
+- **WHEN** 会话列表按当前受支持的过滤条件枚举记录
+- **THEN** 委派子 Thread SHALL 作为普通行参与匹配
+- **AND** 它 MUST NOT 因为存在父子关系而被排除出列表
+
+#### Scenario: 目标启动失败
+- **WHEN** 目标 Harness 的会话无法建立，或其委派默认无人值守执行策略无法应用
+- **THEN** 委派 SHALL 失败并返回可辨识的错误原因
+- **AND** Host MUST NOT 留下已发布或半持久化的子 Thread
+
+#### Scenario: 普通 Thread 的权限不受影响
+- **WHEN** 用户通过 Desktop 的普通创建路径建立 Thread
+- **THEN** Host SHALL 继续使用该请求与目标 Adapter 的既有权限选择语义
+- **AND** MUST NOT 因委派默认策略而强制提升普通 Thread 权限
+
+### Requirement: 委派关系独立持久化且重复请求幂等
+Host SHALL 独立于 Thread 记录持久化 Delegation 关系，包含 Delegation 标识、父子 Thread 标识、父与目标 Harness、状态与可选 Request ID。调用方 SHALL 可以省略 Request ID；省略时 Host SHALL 在一个有界时间窗内依据父 Thread 与任务文本判定重复。Host MUST NOT 依据委派层级拒绝委派。
+
+#### Scenario: 调用方提供重复的 Request ID
+- **WHEN** 调用方以一个已经成功使用过的 Request ID 再次发起委派
+- **THEN** Host SHALL 返回原有的子 Thread 标识
+- **AND** MUST NOT 创建第二个子 Thread 或第二个会话
+
+#### Scenario: 调用方省略 Request ID 且重复发起
+- **WHEN** 同一父 Thread 在有界时间窗内以相同任务文本再次发起同一目标 Harness 的委派
+- **THEN** Host SHALL 返回原有的子 Thread 标识
+- **AND** MUST NOT 创建第二个子 Thread
+
+#### Scenario: 任务文本不同的连续委派
+- **WHEN** 同一父 Thread 以不同任务文本发起多次委派
+- **THEN** 每次 SHALL 创建各自独立的子 Thread
+- **AND** 去重 MUST NOT 阻止正当的并行委派
+
+#### Scenario: 子 Thread 自身成为委派发起方
+- **WHEN** 一个委派产生的子 Thread 发起新的委派
+- **THEN** Host SHALL 正常受理并记录一条新的 Delegation 关系
+- **AND** 已有关系 MUST NOT 被改写
+
+#### Scenario: Host 重启后恢复关系
+- **WHEN** Host 重启后查询某个委派关系
+- **THEN** 父子 Thread 标识、Harness 与状态 SHALL 被恢复
+- **AND** 关系记录 MUST NOT 包含会话内容
+
+### Requirement: 委派 CLI 的运行时连接与调用方身份由 Host 解析
+Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runtime 端点与令牌，并 SHALL 通过显式白名单将这些连接参数放行给官方 App Server 进程。除该白名单外，Host MUST NOT 向官方 App Server 泄漏其他内部环境变量。CLI SHALL 仅使用被提供的连接参数，MUST NOT 自行发现 Runtime、在多个 Runtime 之间选择，或从 PATH 猜测替代 CLI。调用方身份 SHALL 优先取自显式父 Thread 参数，其次取自被提供的 Host Thread 标识，再次由 Host 依据当前活跃 Turn 推断。
+
+#### Scenario: 外部 Harness 进程中调用
+- **WHEN** CLI 在 Host 拉起的外部 Harness 进程中被调用且未提供显式父 Thread 参数
+- **THEN** 调用方身份 SHALL 取自被提供的 Host Thread 标识
+
+#### Scenario: 原生 Codex 的工具调用中使用
+- **WHEN** CLI 在允许本地 Runtime 连接的原生 Codex 工具调用中被启动且未提供显式父 Thread 参数
+- **THEN** Host SHALL 将调用方解析为当前唯一存在活跃 Turn 的原生 Thread
+- **AND** 它 SHALL 通过白名单放行的连接参数连接同一 Runtime
+
+#### Scenario: 原生 Codex 默认沙箱阻止本地连接
+- **WHEN** 原生 Codex 的当前沙箱阻止工具调用连接 Host 提供的 Runtime 端点
+- **THEN** CLI SHALL 以 `RUNTIME_UNREACHABLE` 明确失败
+- **AND** 错误 SHALL 指示调用方改用允许本地连接的会话沙箱或由用户显式执行命令
+- **AND** MUST NOT 回退到 PATH、另一个 Runtime 或隐式 Host 请求注入
+
+#### Scenario: 调用方身份无法唯一确定
+- **WHEN** 多个原生 Thread 同时存在活跃 Turn 且未提供显式父 Thread 参数
+- **THEN** 命令 SHALL 以可辨识的歧义错误失败
+- **AND** 错误信息 SHALL 指示调用方补充显式父 Thread 参数
+
+#### Scenario: 官方进程环境被检查
+- **WHEN** 传递给官方 App Server 的环境被构造
+- **THEN** 它 SHALL 仅包含白名单内的 Runtime 连接参数
+- **AND** 其余 codexhost 内部环境变量 SHALL 保持被剥离
+
+#### Scenario: 连接参数缺失或不可用
+- **WHEN** Runtime 端点缺失或无法连接
+- **THEN** CLI SHALL 以可辨识的错误失败
+- **AND** MUST NOT 回退到 PATH 上的其他 codexhost CLI
+
+#### Scenario: 帮助文档被请求
+- **WHEN** 调用方执行 `codexhost delegate --help`
+- **THEN** CLI SHALL 输出随二进制提供的权威文档，列出 `codexhost delegate start` 与 `codexhost thread read|wait|list|send|cancel|watch|watches` 的完整语法
+- **AND** SHALL 说明各参数、Thread 标识形式、读取视图、等待、分页、排序、幂等语义、输出字段、错误代码及其处置
+- **AND** 该文档 SHALL 与当前 Runtime 版本一致
+
+#### Scenario: 目标 Harness 标识非法
+- **WHEN** 调用方提供了未注册的 Harness 标识
+- **THEN** CLI SHALL 失败并在错误信息中列出当前合法的 Harness 标识
+
+#### Scenario: 命令输出被模型消费
+- **WHEN** 任一委派或 Thread 命令成功或失败返回
+- **THEN** 输出 SHALL 默认为结构化机器可读格式
+- **AND** 失败输出 SHALL 携带可辨识的错误代码
+
+### Requirement: 委派创建与结果观察解耦且不主动注入父 Session
+`codexhost delegate start --harness <harnessId> --task <text> [--parent-thread <thread>] [--request-id <id>] [--watch true|false] [--watch-timeout-ms <n>]` SHALL 在创建目标 Session/Thread 并投递任务后立即返回。`--harness` 与 `--task` SHALL 为必填参数；`--parent-thread` SHALL 显式覆盖 Host 推断的调用方 Thread；`--request-id` SHALL 承载调用方提供的幂等标识。发起方 Agent SHALL 可以自主选择通过 `thread read` 读取、通过有界 `thread wait` 等待、通过 `thread watch` 或 `--watch true` 注册一次性停下通知、稍后再次观察，或不再跟踪。除调用方显式注册的 watch 外，Host MUST NOT 在子任务完成后向父 Session 注入结果、唤醒父 Agent 或为此创建自主 Turn。
+
+#### Scenario: 委派创建成功返回
+- **WHEN** 调用方执行有效的 `codexhost delegate start --harness <harnessId> --task <text>`
+- **THEN** CLI SHALL 返回包含 `delegationId`、`threadId`、`harnessId`、`deepLink` 与当前 `status` 的 JSON 对象
+- **AND** MUST NOT 等待被委派工作完成
+- **AND** SHALL 在响应中给出可用于 `thread read` 与 `thread wait` 的下一步命令提示
+
+#### Scenario: 运行期间打开外部 Harness 委派 Thread
+- **WHEN** 外部 Harness 的委派 Turn 仍在运行且用户打开其子 Thread
+- **THEN** Host 的实时 Turn 投影 SHALL 包含本次委派任务对应的 `userMessage`
+- **AND** SHALL 在同一 Turn 中继续投影 Agent 的可见进度与最终消息
+- **AND** 完成后的实时 Turn 与原生历史恢复结果 MUST NOT 重复该 `userMessage`
+
+#### Scenario: 显式指定父 Thread 与 Request ID
+- **WHEN** 调用方同时提供 `--parent-thread <thread>` 与 `--request-id <id>`
+- **THEN** Host SHALL 使用规范化后的父 Thread 标识记录 Delegation 关系
+- **AND** SHALL 使用该 Request ID 执行幂等创建
+- **AND** MUST NOT 以环境中的 Host Thread 标识或活跃 Turn 推断覆盖显式参数
+
+#### Scenario: 发起方选择等待
+- **WHEN** 发起方对一个运行中的子 Thread 调用有界 `thread wait`
+- **THEN** Host SHALL 等待到子任务达到终态或期限到期
+- **AND** 目标在期限内完成时 SHALL 返回结构化结果
+
+#### Scenario: 等待超时
+- **WHEN** 一次有界等待在被委派工作结束前到期
+- **THEN** 命令 SHALL 以成功退出并报告状态为运行中
+- **AND** 被委派的工作 SHALL 继续执行
+- **AND** 该结果 MUST NOT 被表述为失败
+
+#### Scenario: 发起方选择后台运行或不再跟踪
+- **WHEN** 发起方未注册 watch，并在创建后不调用 `thread wait` 或结束当前 Turn
+- **THEN** 被委派工作 SHALL 独立继续执行
+- **AND** Host MUST NOT 为发起方建立完成通知、输入注入或续写义务
+- **AND** 子 Thread SHALL 继续可由用户或后续 Agent 调用通过标识读取
+
+#### Scenario: 发起方在创建时注册 watch
+- **WHEN** 调用方执行 `delegate start ... --watch true`
+- **THEN** Host SHALL 先完成委派，再以委派已解析的父 Thread 作为被通知方为子 Thread 注册 watch
+- **AND** 响应 SHALL 在 `watch` 字段中报告注册结果
+- **AND** watch 注册失败或无父 Thread 时 SHALL 报告 `notRegistered` 与原因，MUST NOT 使委派本身失败
+
+#### Scenario: 子任务完成
+- **WHEN** 被委派的子 Thread 达到完成、失败或取消终态
+- **THEN** Host SHALL 更新该子 Thread 与 Delegation 关系的状态，并保留可读取的结构化结果
+- **AND** 没有针对该子 Thread 的已注册 watch 时，MUST NOT 因该终态向父 Session 提交新的输入
+
+#### Scenario: 结果被结构化描述
+- **WHEN** 委派结果通过 `thread read` 或 `thread wait` 返回
+- **THEN** 它 SHALL 包含子 Thread 标识、当前状态，以及由 `availability` 和可选 `text` 构成的结果判定
+- **AND** `availability` SHALL 为 `pending`、`available` 或 `unavailable`
+- **AND** 它 MUST NOT 仅以自由文本表述成败
+
+### Requirement: 调用方可显式注册一次性 Thread 停下通知
+系统 SHALL 提供 `thread watch` 与 `thread watches`，在任意两个不同 Thread 间注册一次性通知，不要求委派血缘。watch 在被观察 Thread 停下、等待回答或到期时，SHALL 通过与 `thread send` 相同的路径在被通知 Thread 中启动一个新 Turn，作为一次性通知；被通知 Thread 正在运行时 MUST NOT 插入或中断其当前 Turn，SHALL 等其空闲后再送达。通知 SHALL 只报告执行状态、Thread 链接及问题身份，不携带或摘要会话内容，也不表示工作已验收。终态 SHALL 优先于待答题；仅非终态存在问题时报告 `needsInput`，题目 MUST NOT 改写 Thread 状态。未送达 watch SHALL 持久化并在 Runtime 重启后接续；被观察 Thread 的取消被接受时 SHALL 移除其 watch。
+
+#### Scenario: 注册后立即返回
+- **WHEN** 调用方对一个运行中且没有待回答问题的 Thread 执行 `thread watch`
+- **THEN** 命令 SHALL 立即返回 `state: "watching"`
+- **AND** 调用方 SHALL 可以结束自己的 Turn，无需等待或轮询
+
+#### Scenario: 注册时已是终态
+- **WHEN** 被观察 Thread 在注册时已是终态，即使仍有未答异步题
+- **THEN** 命令 SHALL 返回 `state: "alreadyTerminal"` 与当前状态
+- **AND** MUST NOT 注册 watch 或发送通知
+
+#### Scenario: 注册时已经在等待回答
+- **WHEN** 被观察 Thread 在注册时尚非终态且已经存在待回答的问题
+- **THEN** 命令 SHALL 返回 `state: "alreadyNeedsInput"` 与当前 `pendingQuestions`
+- **AND** MUST NOT 注册 watch 或异步重复通知
+- **AND** 调用方回答问题后 SHALL 能够再次注册 watch，等待下一个问题或终态
+
+#### Scenario: 被通知 Thread 的确定
+- **WHEN** 调用方执行 `thread watch`
+- **THEN** 被通知 Thread SHALL 依次取显式 `--notify`、Host 提供的 `CODEXHOST_THREAD_ID`
+- **AND** 两者都没有时 SHALL 以 `INVALID_ARGUMENT` 失败并要求 `--notify`
+- **AND** MUST NOT 根据活跃 Turn 推断被通知方
+
+#### Scenario: 通知结果
+- **WHEN** 被观察 Thread 停下、等待回答、到期、持续无法读取或不再存在
+- **THEN** 通知结果 SHALL 分别为 `completed`、`failed`、`interrupted`、`needsInput`、`timedOut`、`unreadable` 或 `notFound`
+- **AND** 终态 SHALL 优先于待答题；终态结果 SHALL 在快照提供 Turn 身份时注明其来源 Turn，只有非终态的 `needsInput` SHALL 注明问题请求标识与 Turn
+- **AND** 异步题 MAY 在空闲时仍待答，调用方收到终态后 SHALL 通过 read 查看并处理这些题目
+- **AND** 读取失败 SHALL 在持续 60 秒后才报告 `unreadable`，仅在确认 Thread 不存在时报告 `notFound`
+
+#### Scenario: 等待回答期间的通知只发一次
+- **WHEN** 被观察 Thread 出现待回答的问题并触发一次 `needsInput` 通知
+- **THEN** 该 watch SHALL 在成功送达后移除
+- **AND** 同一个问题 MUST NOT 再次触发同一 watch 的通知
+- **AND** 调用方回答后重新注册 watch SHALL 覆盖后续的问题或终态
+
+#### Scenario: 调整方向不视为停下
+- **WHEN** 被观察 Thread 的旧 Turn 因“调整方向”被停止并由新 Turn 接续
+- **THEN** watch MUST NOT 仅因旧 Turn 的终态通知
+- **AND** SHALL 继续观察 Thread，直到真正停下、出现待回答的问题或达到观察期限
+
+#### Scenario: 重复注册与下一次就绪
+- **WHEN** 同一对 Thread 再次注册 watch，且被观察 Thread 正在运行、没有待回答的问题
+- **THEN** 仍处于观察中的注册 SHALL 去重并保留原观察期限
+- **AND** 旧通知已待投递时，SHALL 为下一次停下、待回答问题或到期建立新观察
+- **AND** 旧通知（包括 `needsInput`）MUST NOT 被新注册替换或丢弃
+
+#### Scenario: 被通知 Thread 正忙
+- **WHEN** 通知到期时被通知 Thread 有活跃 Turn
+- **THEN** 通知 SHALL 保持待送达并在最长 6 小时内重试
+- **AND** `THREAD_BUSY` MUST NOT 被视为已送达
+- **AND** `thread send` 自身 MUST NOT 因此改为排队
+- **AND** 每次投递 SHALL 合并该接收方当前所有待投递通知，包括此前轮询积累的终态或 `needsInput` 通知
+
+#### Scenario: 已确认未启动的投递失败
+- **WHEN** 投递失败且调用链确认未启动 Turn，例如 resume 校验失败或原生明确拒绝启动
+- **THEN** Host SHALL 在投递期限内保留通知并重试
+- **AND** 接收方已不存在或只读时 SHALL 直接标记 `undeliverable`
+
+#### Scenario: 投递结果未知
+- **WHEN** 投递失败且调用链不能证明未启动 Turn，例如 Harness 启动确认超时
+- **THEN** Host MUST NOT 重试该投递
+- **AND** SHALL 将 watch 标记为 `undeliverable` 并保留结果未知的原因
+
+#### Scenario: 无法投递
+- **WHEN** 被通知 Thread 不存在、只读，或超过 6 小时仍无法送达
+- **THEN** watch SHALL 标记为 `undeliverable` 并保留原因
+- **AND** `thread watches` SHALL 列出观察中、待投递及保留中的无法投递记录；无法投递记录最多保留最近 50 条
+
+#### Scenario: 用户 Stop 被通知 Thread
+- **WHEN** 用户停止被通知 Thread 的当前 Turn
+- **THEN** 已注册的 watch SHALL 保持有效
+- **AND** 该 Thread 空闲后，到期的通知 SHALL 仍启动一个新 Turn
+
+#### Scenario: Host Runtime 重启
+- **WHEN** Host Runtime 在 watch 送达前重启
+- **THEN** 未送达的 watch SHALL 从持久记录接续观察或投递
+- **AND** Delegation 关系 SHALL 保持持久化，MUST NOT 把重启当作已送达
+
+### Requirement: `thread read` 返回精简的可见对话结果而非执行轨迹
+`codexhost thread read <thread> [--view result|messages] [--cursor <cursor>] [--limit <n>]` SHALL 立即读取指定 Thread 当前已由 Host 投影的可见对话结果。`<thread>` SHALL 接受裸 Thread 标识或 `codex://threads/<id>` 深度链接。`--view` 默认 SHALL 为 `result`；`--view messages` SHALL 附带有界的用户与 Agent 可见消息。首版 `thread read` MUST NOT 返回工具调用、工具参数、工具输出、文件变更、reasoning summary、隐藏推理或 Harness 私有 Transcript。快照 SHALL 同时返回 `pendingQuestions`，列出该 Thread 当前等待回答的结构化问题请求；空数组 SHALL 表示没有问题，且读取或回答问题 MUST NOT 要求先注册 watch。
+
+#### Scenario: 默认读取已完成 Thread
+- **WHEN** 调用方执行 `codexhost thread read <thread>` 且最近 Turn 已完成并存在最终 Agent 消息
+- **THEN** CLI SHALL 返回 `threadId`、`harnessId`、`status`、最近 Turn 的 `turnId` 与 `status`、`result` 和 `nextCursor`
+- **AND** `result.availability` SHALL 为 `available`
+- **AND** `result.text` SHALL 为最近已完成 Turn 的最终 Agent 消息
+- **AND** 响应 MUST NOT 重复返回该 Turn 的用户输入或中间执行轨迹
+
+#### Scenario: 默认读取正在运行的 Thread
+- **WHEN** 调用方执行 `codexhost thread read <thread>` 且存在活跃 Turn
+- **THEN** CLI SHALL 立即返回 `status: "running"`、活跃 Turn 的标识与状态、截至读取时最新的 Agent 可见进度消息、`result.availability: "pending"` 和 `nextCursor`
+- **AND** 没有 Agent 可见进度消息时 SHALL 返回空的 `progress` 数组
+- **AND** 读取 MUST NOT 等待 Turn 完成
+
+#### Scenario: 读取待回答的问题
+- **WHEN** Thread 正在等待回答一个由原生结构化请求报告的问题
+- **THEN** 快照 SHALL 在 `pendingQuestions` 中包含该请求的唯一交互 ID、`turnId`，以及 `request` 中未经重新解释的原有 Desktop 请求参数
+- **AND** 题目 MUST NOT 改写 Thread 的实际执行状态或新建 `waiting` 状态；异步题 MAY 在来源 Turn 结束、Thread 空闲后仍待答
+- **AND** JSON 与 compact 输出 SHALL 都暴露该字段
+
+#### Scenario: 没有待回答的问题
+- **WHEN** Thread 当前没有被 Host 观察到的待回答请求
+- **THEN** `pendingQuestions` SHALL 为空数组
+- **AND** Host MUST NOT 从聊天正文、工具输出或屏幕内容反推一个问题
+
+#### Scenario: 消息视图读取多轮对话
+- **WHEN** 调用方执行 `codexhost thread read <thread> --view messages`
+- **THEN** CLI SHALL 在默认结果字段之外返回按发生顺序排列的 `messages`
+- **AND** 每条消息 SHALL 包含稳定消息标识、所属 `turnId`、`role` 与文本
+- **AND** Agent 消息在 Harness 已投影阶段信息时 MAY 包含 `phase: "commentary"` 或 `phase: "final"`
+- **AND** `messages` SHALL 只包含用户可见输入、Agent 可见中间消息和 Agent 最终消息
+
+#### Scenario: 读取增量消息
+- **WHEN** 调用方使用前一次响应的 `nextCursor` 再次执行 `thread read --view messages --cursor <cursor>`
+- **THEN** CLI SHALL 只返回该游标之后新增的可见消息
+- **AND** 读取 SHALL 是非消费性的，相同游标重试 MUST NOT 标记消息已读或删除消息
+- **AND** 新响应 SHALL 返回新的 `nextCursor`
+
+#### Scenario: 消息分页受限
+- **WHEN** `--view messages` 的可见消息数量超过 `--limit <n>` 或默认条数上限
+- **THEN** CLI SHALL 只返回该页消息并返回继续读取所需的 `nextCursor`
+- **AND** `--limit` SHALL 只限制 `messages` 数量，不得改变 Thread、Turn 或 `result` 字段
+
+#### Scenario: 已终止但没有可用结果
+- **WHEN** Thread 已失败、取消或完成但没有最终 Agent 消息
+- **THEN** `result.availability` SHALL 为 `unavailable`
+- **AND** 响应 MAY 包含已投影的失败或取消说明
+- **AND** MUST NOT 从工具输出或私有 Transcript 推导一个伪造的最终结果
+
+#### Scenario: 读取不支持的视图
+- **WHEN** 调用方传入 `--view result|messages` 以外的值
+- **THEN** 命令 SHALL 以可辨识的参数错误失败
+- **AND** MUST NOT 将 `activity`、`raw` 或 `full-transcript` 作为首版读取视图
+
+### Requirement: `thread wait` 有界等待并复用 `thread read` 的结果形状
+`codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--cursor <cursor>] [--limit <n>]` SHALL 有界等待指定 Thread 达到终态、出现待回答的问题或等待期限到期。等待结束后 SHALL 返回与相同读取参数下 `thread read` 一致的快照字段，并额外返回 `timedOut`。`--view` 默认 SHALL 为 `result`；`--cursor` 与 `--limit` SHALL 仅在 `--view messages` 时控制消息增量与页大小。
+
+#### Scenario: 等待已终止 Thread
+- **WHEN** 调用方等待一个已处于终态的 Thread
+- **THEN** CLI SHALL 不作额外等待并返回 `timedOut: false`
+- **AND** SHALL 返回当前 `result` 与可选 `messages`
+
+#### Scenario: 等待期间 Thread 完成
+- **WHEN** Thread 在 `--timeout-ms` 指定的期限内达到终态
+- **THEN** CLI SHALL 返回 `timedOut: false` 与终态快照
+- **AND** 若最终 Agent 消息可用，`result.availability` SHALL 为 `available`
+
+#### Scenario: 等待期间出现待回答的问题
+- **WHEN** Thread 在等待期限内开始等待回答一个结构化问题
+- **THEN** CLI SHALL 立即返回 `timedOut: false`、`status: "running"` 与包含该请求的 `pendingQuestions`
+- **AND** MUST NOT 等到 Turn 终态或等待期限到期
+- **AND** 调用方 SHALL 通过 `status` 与 `pendingQuestions` 区分完成与等待回答
+
+#### Scenario: 等待到期但 Thread 仍在运行
+- **WHEN** Thread 在等待期限到期时仍有活跃 Turn 且没有待回答的问题
+- **THEN** CLI SHALL 以成功退出返回 `timedOut: true`、`status: "running"` 和 `result.availability: "pending"`
+- **AND** 被观察的 Thread SHALL 继续执行
+
+#### Scenario: 等待参数非法
+- **WHEN** `--timeout-ms` 不是正整数，或 `--cursor`、`--limit` 与所选读取视图不兼容
+- **THEN** 命令 SHALL 以可辨识的参数错误失败
+- **AND** MUST NOT 启动无界等待
+
+### Requirement: Thread 观察与列举命令接受用户提供的标识并覆盖两类 Thread
+Thread 观察命令 SHALL 接受裸 Thread 标识与 Codex 深度链接两种形式，并可作用于外部 Harness Thread 与原生 Codex Thread，不限于调用方自己委派产生的 Thread。对原生 Codex Thread 的读取与等待 SHALL 通过对官方 App Server 的带外请求实现，且 MUST NOT 改变该 Thread 的状态。`codexhost thread list [--cwd <path>] [--parent <thread>] [--limit <n>] [--cursor <cursor>] [--sort created-asc|created-desc|updated-asc|updated-desc|recency-asc|recency-desc]` SHALL 返回结构化会话页；`--parent` SHALL 只列举该父 Thread 的 Delegation 子 Thread。
+
+#### Scenario: 用户提供深度链接
+- **WHEN** 调用方传入 Codex 深度链接形式的 Thread 标识
+- **THEN** 命令 SHALL 将其规范化为 Thread 标识后执行
+- **AND** 裸标识 SHALL 得到相同结果
+
+#### Scenario: 观察非自身委派的 Thread
+- **WHEN** 调用方以用户提供的标识读取或等待一个并非由它委派产生的 Thread
+- **THEN** 命令 SHALL 正常执行
+- **AND** Host SHALL 视用户显式提供标识为授权
+
+#### Scenario: 观察原生 Codex Thread
+- **WHEN** 被观察的 Thread 由原生 Codex Harness 拥有
+- **THEN** Host SHALL 通过带外官方请求获取其可见消息与当前结果
+- **AND** 结果 SHALL 以与外部 Thread 相同的结构化形状返回
+- **AND** 该 Thread 的状态 MUST NOT 被改变
+
+#### Scenario: 列举会话
+- **WHEN** 调用方未指定 `--cwd`、`--limit` 或 `--sort`
+- **THEN** 列举 SHALL 默认限定在调用方自身的工作目录、默认返回最多 25 条并按 `created-desc` 排序
+- **AND** `--limit` SHALL 被限制为最多 100 条
+- **AND** 响应 SHALL 包含 `threads` 与可选 `nextCursor`
+
+#### Scenario: 列举委派血缘
+- **WHEN** 调用方执行 `codexhost thread list --parent <thread>`
+- **THEN** 结果 SHALL 由 Delegation 关系记录解析
+- **AND** MAY 与 `--limit`、`--cursor` 及 `--sort` 组合
+- **AND** MUST NOT 依赖会话列表的父子过滤，也 MUST NOT 将委派血缘表述为 Codex Subagent 关系
+
+#### Scenario: 只读观察
+- **WHEN** 调用方执行 `thread read` 或 `thread wait`
+- **THEN** 命令 MUST NOT 启动新 Turn、向目标或父 Session 发送输入、唤醒 Agent、中断活跃 Turn、抢占用户输入、消费事件或标记消息已读
+- **AND** 相同请求在 Thread 未变化时 SHALL 返回语义相同的结果
+
+### Requirement: 调用方可向已有可写 Thread 发送后续消息
+系统 SHALL 提供 `codexhost thread send <thread> --message <text> [--steer true|false]`，在用户明确指定的普通可写 Thread 中提交输入并立即返回。该操作 SHALL 同时支持外部 Harness Thread 与原生 Codex Thread，并接受裸 Thread ID 或 `codex://threads/<id>`。省略 `--steer` 或传 `false` SHALL 保留空闲发送、忙时拒绝的行为。CLI、HTTP 与 MCP SHALL 提供同一 `steer` 契约。
+
+#### Scenario: 向已完成的委派 Thread 发送第二轮消息
+- **WHEN** 调用方对没有活跃 Turn 的委派子 Thread 执行 `thread send`
+- **THEN** Host SHALL 在同一 Thread 中启动新的 Turn
+- **AND** 响应 SHALL 包含 `threadId`、新 `turnId`、`harnessId`、`status: "running"`、`next.read` 与 `next.wait`
+- **AND** 命令 SHALL 在目标 Turn 完成前返回
+
+#### Scenario: 使用用户提供的深度链接继续普通会话
+- **WHEN** 调用方对一个用户提供的 `codex://threads/<id>` 执行 `thread send`
+- **THEN** Host SHALL 规范化标识并向该普通可写 Thread 发送消息
+- **AND** 裸 ID SHALL 得到等价结果
+
+#### Scenario: Thread 正在运行
+- **WHEN** 调用方对已有活跃 Turn 的 Thread 执行 `thread send`，且没有开启 `--steer true`
+- **THEN** 命令 SHALL 以 `THREAD_BUSY` 失败
+- **AND** MUST NOT 排队、取消旧 Turn 或启动并发 Turn
+
+#### Scenario: 调用方显式调整运行中任务
+- **WHEN** 调用方执行 `thread send --steer true`，或通过 HTTP `/v1/thread/send`、MCP `thread_send` 传 `steer: true`
+- **THEN** 空闲 Thread SHALL 启动新 Turn；运行中 Thread SHALL 复用 Desktop 的同一个调整方向操作
+- **AND** 原生 Codex SHALL 使用 `turn/steer`；外部 Harness SHALL 按 Session 能力选择原生接受或既有停止后重发
+- **AND** 入口 SHALL 只校验和传递参数，不先探测忙碌状态，不新增队列或重试
+- **AND** 成功回执 SHALL 不被解释为已在当前轮执行或任务完成；回执不额外暴露送达方式，调用方通过 read/wait 观察后续结果
+
+#### Scenario: steer 与 interrupt 互斥
+- **WHEN** 调用方同时请求 `steer` 与 `interrupt`
+- **THEN** 入口 SHALL 在发送前以 `INVALID_ARGUMENT` 拒绝，且 MUST NOT 启动 Turn 或取消现有 Turn
+- **AND** CLI、HTTP 与 MCP SHALL 返回相同的错误代码
+
+#### Scenario: steer 参数非法
+- **WHEN** `steer` 的值不是布尔值（CLI 的 `--steer` 不是 `true` 或 `false`）
+- **THEN** 入口 SHALL 在发送请求前以 `INVALID_ARGUMENT` 失败
+
+### Requirement: 调用方可取消已有 Thread 的当前 Turn
+系统 SHALL 提供 `codexhost thread cancel <thread>`，请求取消目标 Thread 当前活跃 Turn，同时保留 Thread、既有消息和持久化映射。该操作 SHALL 同时支持外部 Harness Thread 与原生 Codex Thread。
+
+#### Scenario: 取消外部 Harness Turn
+- **WHEN** 外部 Harness Thread 有活跃 Turn 且调用方执行 `thread cancel`
+- **THEN** Host SHALL 通过统一 Harness Session cancel 命令请求取消该 Turn
+- **AND** 响应 SHALL 包含 `threadId`、`turnId` 与 `cancelled: true`
+
+#### Scenario: 取消原生 Codex Turn
+- **WHEN** 原生 Codex Thread 有活跃 Turn 且调用方执行 `thread cancel`
+- **THEN** Host SHALL 通过官方 App Server 的 Turn interrupt 请求取消该 Turn
+- **AND** MUST NOT 删除或归档该 Thread
+
+#### Scenario: Thread 没有活跃 Turn
+- **WHEN** 目标 Thread 当前没有活跃 Turn
+- **THEN** 命令 SHALL 成功返回 `cancelled: false` 与 `turnId: null`
+- **AND** MUST NOT 修改 Thread 历史
+
+#### Scenario: 取消后继续对话
+- **WHEN** 被取消的 Turn 达到终态且 Thread 再次空闲
+- **THEN** 调用方 SHALL 能够继续通过 `thread send` 在同一 Thread 中启动新 Turn
+
+### Requirement: Thread 观察操作继续保持只读
+新增 send/cancel 后，`thread read` 与 `thread wait` MUST 保持非消费性只读行为。
+
+#### Scenario: 读取不会执行控制操作
+- **WHEN** 调用方执行 `thread read` 或 `thread wait`
+- **THEN** Host MUST NOT 启动或取消 Turn、发送消息或回复 Interaction
+- **AND** send/cancel MUST 仅由对应的显式命令触发
+
+### Requirement: Web 提供身份明确的委派 Agent 候选列表
+Web SHALL 在未发送的 Web 草稿及已创建、可输入的本地共享 external Thread 的 `@`、`#` 共享菜单中提供独立的“委派 Agent”分组。首版候选 SHALL 取自 Web 已有、已确认就绪且在当前 Web 可见范围内的会话 Harness 目录，复用其名称、图标与展示顺序，并支持按名称和 Harness ID 搜索。该列表不是 Model、Provider、原生 Subagent 角色或既有 Thread 列表，也不声称覆盖 CLI 的全部委派目标。
+
+#### Scenario: 列出可用目标
+- **WHEN** 用户在受支持会话中打开菜单
+- **THEN** 委派分组 SHALL 展示已有 Web 目录中的就绪会话 Harness，排除用量统计插件及未确认就绪的目标
+- **AND** MUST NOT 为打开或搜索该列表逐个启动 Harness、发起模型请求或创建委派任务
+- **AND** 原生命令目录为空或加载失败 MUST NOT 阻止显示已确认的委派候选
+
+#### Scenario: 保留真实 Harness 身份
+- **WHEN** 目录包含名称相同的两个 Harness，或包含名称为 Codex 的 `codex-cli`
+- **THEN** 菜单 SHALL 展示足以区分目标的 Harness ID，并在选择后保留该身份
+- **AND** `codex-cli` MUST NOT 被改写成官方 `codex`
+- **AND** Web 目录未提供的官方 Codex 或其他目标 MUST NOT 被硬编码补入
+
+#### Scenario: 同 Harness 委派与动态变化
+- **WHEN** 当前 Thread 所属 Harness 也是就绪候选，或目标可用性发生变化
+- **THEN** 同 Harness 候选 SHALL 可选，用于请求独立子 Thread，而非切换当前 Session
+- **AND** 候选 SHALL 随既有 Web 目录更新；选择已撤下的候选 MUST NOT 插入错误目标，应提示重新选择
+
+#### Scenario: 未发送草稿选择目标
+- **WHEN** 用户在未发送的 Web 草稿中通过 `@` 或 `#`打开菜单并选择目标
+- **THEN** 委派分组 SHALL 复用已有就绪 Harness 目录并仅插入目标引用，保留正文和附件
+- **AND** MUST NOT 查询原生命令目录、创建 canonical Thread、预热 Session 或发送消息
+- **AND** 原生命令与 Skills SHALL 仍不可用
+
+#### Scenario: 只读及未支持来源
+- **WHEN** 当前页面是只读子会话、官方 Codex 或远程来源
+- **THEN** 本次新增的委派分组 SHALL 不可用
+
+### Requirement: Web 选择委派 Agent 只编辑当前输入
+选择委派 Agent SHALL 在输入位置插入可识别的 `@名称` 引用，并保留稳定 Harness 身份。引用 SHALL 可删除、撤销、复制并与正文及其他引用混排；已有正文和附件 SHALL 保留。选择动作 MUST NOT 发送消息、切换当前 Harness、创建子 Thread、预读目标历史或直接调用委派执行接口。
+
+#### Scenario: 插入并取消选择
+- **WHEN** 用户在正文中打开菜单并选择目标，然后删除或撤销引用
+- **THEN** 仅菜单触发文本 SHALL 被引用替换，其他正文、原有引用和附件不变
+- **AND** 撤销或删除 SHALL 只影响本地草稿，不产生任何原生操作
+
+#### Scenario: 多目标与复制
+- **WHEN** 用户插入多个目标引用，或复制包含目标引用的输入
+- **THEN** 每个引用 SHALL 保留各自真实 Harness ID，不以展示名称寻址
+- **AND** 复制及既有草稿序列化 SHALL 保留可恢复目标身份的既有委派引用文本，不退化成有歧义的裸名称
+
+#### Scenario: 保持现有输入功能
+- **WHEN** 用户使用文件或会话引用、上传附件、打开模型或权限菜单
+- **THEN** 委派分组 MUST NOT 接管这些入口、改变其身份或破坏其编辑行为
+- **AND** `@`、`#` SHALL 作为同一原生能力菜单的触发别名，共享原生命令、Skills 和委派候选的目录、缓存、选择及提交路径，保留既有文件及会话引用
+
+### Requirement: Web 委派引用通过既有用户提交路径生效
+用户发送含委派引用的消息时，Web SHALL 通过当前 Thread 的普通消息路径提交既有身份明确的引用，由现有 Host 引用处理和当前 Agent 的委派 Skill/CLI 流程决定执行。Web MUST NOT 自行添加委派教程或指令、调用 CLI、创建任务、自动注册 watch 或把发送回执当作子任务已创建。实际目标能力及可用性仍由既有执行链路校验。
+
+#### Scenario: 显式发送委派请求
+- **WHEN** 用户发送含目标引用和任务描述的消息
+- **THEN** Web SHALL 将消息提交给当前 Thread，保留目标身份并沿用既有队列或 Steer 规则
+- **AND** 菜单层 MUST NOT 并行发起另一份委派、切换当前 Harness 或自行选择目标 Model/Thinking/权限
+- **AND** 子 Thread 是否建立及执行结果 SHALL 以既有委派反馈为准
+
+#### Scenario: 草稿首条消息包含委派引用
+- **WHEN** 用户显式发送包含目标引用的草稿首条消息
+- **THEN** Web SHALL 沿既有新会话路径创建当前 Thread 并提交首条消息，保留真实目标身份、正文和附件
+- **AND** 菜单层 MUST NOT 额外创建子任务、注册 watch 或提交原生命令
+
+#### Scenario: 普通文本不升级为委派选择
+- **WHEN** 用户仅讨论 Harness 名称、输入裸 `@名称` 或引用普通 Thread
+- **THEN** Web MUST NOT 自动构造委派引用、追加委派说明或启动目标任务
+- **AND** 普通文本的解释 SHALL 继续由当前 Agent 及既有 Skill 规则负责
+
+#### Scenario: 提交失败或结果未知
+- **WHEN** 含委派引用的消息被拒绝，或提交结果因断线而未知
+- **THEN** Web SHALL 保留输入及目标身份并反馈对应状态
+- **AND** MUST NOT 自动重发或宣称委派任务已启动
+
+### Requirement: 委派侧可读取并回答待处理的问题请求
+系统 SHALL 提供 `thread answer`，把同步问题答复交给既有协议处理者。Desktop 与委派 SHALL 共用挂起请求及一次性结算，不重新解释答案或改变取消、非法输入和权限语义。已领取或失效的同步请求 MUST NOT 重复投递；结果未知 MUST NOT 自动重发。CLI 提交后 SHALL 关闭 Desktop 中的同一问题。原生异步题遵循独立场景规定的生命周期。
+
+#### Scenario: 回答待处理的问题
+- **WHEN** 调用方对 `thread read` 报告的交互 ID 执行 `thread answer`，答案满足该请求的约束
+- **THEN** Host SHALL 把答案交回原生请求，并返回被回答的 Thread、交互 ID、Turn、Harness 与 `status: "running"`
+- **AND** 原 Turn SHALL 继续执行，MUST NOT 被当作已成功完成
+- **AND** Desktop 中的同一问题 SHALL 被同步关闭
+
+#### Scenario: 原有回复语义保持
+- **WHEN** 委派方提交解析成功的答复结果
+- **THEN** 该结果 SHALL 交给与 Desktop 相同的既有处理函数
+- **AND** 外部 Harness 的选项映射与非法输入取消行为 SHALL 沿用原解析器
+- **AND** 原生 Codex 同步问题的答复内容 SHALL 原样沿既有服务端请求映射转发
+- **AND** 新增委派层 MUST NOT 另行承诺统一的非法答案重试语义
+
+#### Scenario: 答案文件不是 JSON
+- **WHEN** CLI 无法解析答案文件
+- **THEN** CLI SHALL 返回 INVALID_ARGUMENT，MUST NOT 提交回复或消费请求
+
+#### Scenario: 并发回答只结算一次
+- **WHEN** Desktop 与委派 CLI 同时回答同一个同步请求
+- **THEN** 只有一个答案 SHALL 被交回原生请求
+- **AND** 其余回答 SHALL 以 `QUESTION_NOT_PENDING` 失败，MUST NOT 产生第二个原生回答
+
+#### Scenario: Desktop 已回答
+- **WHEN** 用户已经在 Desktop 中回答该问题
+- **THEN** 后续 CLI 回答 SHALL 以 `QUESTION_NOT_PENDING` 失败
+- **AND** `thread read` SHALL 不再列出该请求
+
+#### Scenario: 旧交互 ID 失效
+- **WHEN** 同步请求已被取消、过期，其 Turn 已结束，原生已自行解决，或所属 Host Runtime 已关闭
+- **THEN** 该交互 ID 的回答 SHALL 以 `QUESTION_NOT_PENDING` 失败
+- **AND** MUST NOT 把旧答案交回新 Turn、新请求或新进程
+
+#### Scenario: 原生关闭通知落到同一请求
+- **WHEN** 原生 Codex 报告服务端请求已解决
+- **THEN** Host SHALL 清除对应待回答请求，并把关闭通知的请求标识改写为 Desktop 已知的请求标识；CLI 的公开凭证 SHALL 同时失效
+- **AND** MUST NOT 用原生请求 ID 对照改写后的标识
+
+#### Scenario: 问题不是权限许可
+- **WHEN** 被回答的请求是问题而不是 `approval`
+- **THEN** 回答 SHALL 只作用于该问题请求
+- **AND** MUST NOT 改变 Native 权限策略、审批结果或 sandbox 设置
+
+#### Scenario: 问题请求的生命周期
+- **WHEN** Host Runtime 未观察到某个旧问题请求（例如重启之前）
+- **THEN** 该请求 MUST NOT 从历史文本、工具输出或屏幕内容重建为可回答请求
+- **AND** 待回答请求 SHALL 只存在于当前 Runtime 内存中
+
+
+### Requirement: 原生异步委派问题
+
+原生 Codex 的 `delivery: "async"` 结构化问题 SHALL 通过 `pendingQuestions`、answer、wait 和一次性 watch 暴露。Web 与委派 SHALL 共用原生客户端通道的题目解析、待答事实、领取和结算；每题 SHALL 有独立凭证和 `kind: "requestUserInputAsync"`，保留原生题目和来源身份。异步问题 MUST NOT 强制阻塞原生 Turn；同步请求 SHALL 保留原答复格式。
+
+#### Scenario: Web 与委派同时答题
+
+- **WHEN** Web 与 CLI、HTTP 或 MCP 通过不同公开凭证提交同一个原生异步题的答案
+- **THEN** 同一原生运行范围的共享领取 SHALL 在一次领取中至多向原生提交一次，已接纳的题目 SHALL 从各投影撤下
+- **AND** 原生校验错误 `-32600` / `-32602` SHALL 释放领取，其余未知结果 MUST NOT 自动重发
+- **AND** 回答一题 MUST NOT 结算未答的其他题目，重复通知和旧历史 MUST NOT 重新打开已答题
+
+#### Scenario: 原 Turn 结束后回答未答题
+
+- **WHEN** 最近五轮原生历史仍包含未答异步题，而提问的 Turn 已结束
+- **THEN** Host SHALL 沿用原生客户端策略，先检查最近五轮的已答消息，再向当前活动 Turn steer，或在空闲时 start
+- **AND** 回执 SHALL 保留提问来源 Turn，MUST NOT 伪造服务端请求 resolved 通知
+
+#### Scenario: Desktop 与 Web Skip 保持原生客户端边界
+
+- **WHEN** 用户在 Desktop 答题，或在 Web 跳过该题
+- **THEN** Desktop 输入 SHALL 沿原生路径处理，观察到已答消息后各投影 SHALL 撤下同题；Host MUST NOT 声称与 Desktop 的同时提交具有原子互斥
+- **AND** Web Skip SHALL 只隐藏 Web 的投影，不结算委派可见的待答题目，也不提交原生答案或取消；运行代次重建后 MAY 从最近五轮恢复
+
+#### Scenario: 连接关闭不清理共享题目事实
+
+- **WHEN** 多个 Desktop 与 Web/委派连接共享同一个原生运行范围，其中一个连接关闭或重置
+- **THEN** 其余连接的待答事实和未知投递领取 SHALL 保留，MUST NOT 因局部连接关闭而再次提交
+- **AND** 后端运行代次停止时 SHALL 统一清理这些内存事实，随后只按既有历史窗口恢复
+
+### Requirement: MCP 复用委派答题接口
+
+MCP SHALL 提供 `thread_answer`，使用 `thread`、`interactionId` 和既有回复 `result`，复用 HTTP `/v1/thread/answer` 的同一处理者；同步题 SHALL 使用原回复结构，异步题 SHALL 使用 `{ "answer": "选择或自由文本" }`。提交回执 MUST NOT 被当成任务完成。
+
+#### Scenario: MCP 提交一题
+
+- **WHEN** 经认证的 MCP 调用方使用 read 返回的凭证及对应 result 答题
+- **THEN** 请求 SHALL 到达同一个委派答题入口，不新增题目登记或答案解释
+- **AND** 调用方 SHALL 通过 read、wait 或重新 watch 获取后续结果
+
+### Requirement: 委派默认模型与思考强度按 Harness 持久化并在新建委派时按三级优先级生效
+
+codexhost SHALL 在共享 Harness 偏好中为每个 Harness 独立保存被委派时的默认 Model 与默认 Thinking 选项，与普通新会话偏好分离，并支持官方 Codex 与外部 Harness。发起新委派时，Host SHALL 按「本次显式指定 › 委派默认设置 › Agent 原生默认」解析模型与思考强度，不改变既有 CLI 协议、去重语义或已存在的委派子 Thread。
+
+#### Scenario: 发起委派未显式指定模型与思考强度
+
+- **WHEN** 调用方发起一次新委派且省略模型与思考强度参数，且目标 Harness 已保存委派默认模型与思考强度
+- **THEN** Host SHALL 在创建目标子 Thread 时应用该委派默认模型与思考强度
+- **AND** 官方 Codex 与外部 Harness 均 SHALL 按各自既有原生路径接收该选择
+
+#### Scenario: 发起委派显式指定模型或思考强度
+
+- **WHEN** 调用方在单次委派中显式指定了模型或思考强度
+- **THEN** 显式指定的参数 SHALL 覆盖委派默认设置
+- **AND** 若仅显式指定了与已保存默认不同的模型而未指定思考强度，Host MUST NOT 将旧默认模型的思考强度套用到本次显式模型上
+
+#### Scenario: 未配置委派默认或已清空覆盖
+
+- **WHEN** 目标 Harness 未保存委派默认设置或用户已在设置中重置该 Harness 的默认配置
+- **THEN** Host SHALL 在省略参数时不传入额外模型或思考强度，继续沿用该 Harness 原生默认行为
+
+#### Scenario: 已保存的委派默认确认失效
+
+- **WHEN** 发起未显式指定参数的委派，且已保存的默认模型或思考强度不再被目标 Harness 当前目录支持
+- **THEN** Host SHALL 静默忽略失效的默认项并回退到该 Harness 原生默认，不中断委派
+- **AND** 若调用方本次显式传入了非法模型或思考强度，Host SHALL 继续拒绝并返回错误
+
+#### Scenario: 修改委派默认不影响既有请求幂等性
+
+- **WHEN** 调用方以同一 Request ID 重试此前已创建的委派，且期间用户修改了委派默认模型
+- **THEN** Host SHALL 基于调用方原始请求保持幂等并命中原委派记录，MUST NOT 误报参数冲突
+
+### Requirement: 通过已配对 Peer 通道发现远端主机与工作区
+系统 SHALL 提供 `codexhost host list`（及控制路由 `/v1/host/list`、MCP `host_list`）列出已启用的配对 Peer 主机摘要，包含 `hostId`、展示名称、在线状态、委派能力与已知工作区路径。摘要 MUST NOT 暴露 Peer 访问令牌或原始 Origin URL。
+
+#### Scenario: 发现远端 Peer 主机
+- **WHEN** 调用方在 A 机执行 `codexhost host list` 或 MCP `host_list`
+- **THEN** 系统返回已配对 Peer 的主机摘要与工作区路径，且不包含任何访问令牌或原始 URL
+
+### Requirement: 通过已配对 Peer 通道执行跨机委派与会话控制
+对于 `remote-peer:<peerId>` 主机，CLI、控制服务与 MCP SHALL 支持 `--host <hostId>` 及 `thread://<id>?hostId=<encoded-host-id>` 执行 `read`、`wait`、`send`（含 `steer`/`interrupt`）、`cancel`、`answer`、`delegate start`、`thread list`、`harness list` 与 `harness inspect`。远端 `delegate start` 的 `worktree`/`base` SHALL 在目标机 B 本地创建并参与 `requestId` 幂等去重；`wait` SHALL 在 A 端按单调总期限约束分段轮询远端 `read`。所有返回链接与下一步命令提示 SHALL 保留 `thread://<id>?hostId=<encoded-host-id>`，远端失败 MUST NOT 回退到本机，且 `callerThreadId` MUST NOT 转发到远端。
+
+#### Scenario: 远端委派与 worktree 幂等重放
+- **WHEN** 调用方对 `remote-peer:<peerId>` 执行带 `--worktree` 与 `--request-id` 的 `delegate start`，并重复提交相同请求
+- **THEN** B 机在本地创建 worktree 并启动目标 Thread，重放返回同一 Thread 与 worktree 信息且不创建重复分支
+- **AND** 返回的 `deepLink`、compact `thread` 链接与 `next` 提示均包含 `thread://<id>?hostId=<encoded-host-id>`
+
+#### Scenario: 跨机 `thread wait` 受总期限约束
+- **WHEN** 调用方对 `remote-peer:<peerId>` 上的运行中 Thread 执行有界 `thread wait`
+- **THEN** A 端按剩余预算约束单次远端读取并分段轮询，直到终态、出现待回答问题或总期限到期返回 `timedOut: true`
+
+### Requirement: 跨机委派的一跳防环路限制
+本机委派层级继续不受深度限制；跨机 Peer 委派 SHALL 严格限制为 1 跳（`hopCount === 1`）。该限制运行在同 OS 用户（同 UID）信任边界内，作为协作式委派调用路径的防递归护栏（非针对同 UID 全权限 Shell 的 OS 沙箱）：外部 Harness 使用每 Thread HMAC 绑定令牌；原生 Codex 因官方 `app-server` 共进程且无每 Thread 环境注入，使用仅限活跃原生 Codex Thread 的共享令牌并配合持久化祖先链；祖先链查询异常或超深 MUST fail-closed 拒绝，且远端来源 Thread 创建本机子 Thread 时不得以普通 `parentThreadId` 洗白来源。
+
+#### Scenario: 远端发起会话及重启后子线程被阻止再次跨机
+- **WHEN** B 机上由远端 Peer 委派创建的 Thread（包含首轮、重启续聊、以及尝试指定普通父 Thread 的本机子 Thread）尝试发起指向任意远端主机的委派或读取
+- **THEN** B 机以 `FORBIDDEN` 拒绝该请求，防止 `A -> B -> A` 或 `A -> B -> C` 环路
+
+#### Scenario: 伪造、跨类型冒充或无法确认祖先链时 fail-closed 拒绝
+- **WHEN** 共享令牌冒充外部 Harness 活跃 Thread、绑定令牌试图伪造其他 `callerThreadId`，或持久化祖先链查询出错/超过最大深度
+- **THEN** 控制层以 `FORBIDDEN` 拒绝该远端操作
+
+### Requirement: 跨机观测边界与 Codex Desktop 只读兼容
+第 1 阶段跨机 `thread watch`、`thread export`、`thread file` 及远端 `start`/`send` 的 `--watch true` MUST 在访问本机 Thread 前以明确错误拒绝（不降级为裸本机 ID）。`remote-ssh*` 与 `remote-control:*` 等 Codex Desktop 远端主机 MUST 保持 `thread read` 兼容且继续拒绝所有写操作与 `wait`，绝不回退本机。远端错误响应 MUST 脱敏为客户端安全文案，不泄漏宿主绝对路径、Git stderr 或 Peer URL/Token。
+
+#### Scenario: 跨机不支持操作在 CLI、HTTP 与 MCP 均被一致拒绝
+- **WHEN** 调用方对远端 `thread://<id>?hostId=...` 执行 `watch`、`export` 或 `file` 读取
+- **THEN** 系统在查找本机同 ID Thread 前明确拒绝，不误操作本机 Thread
+
+#### Scenario: Codex Desktop 远端主机保持只读边界
+- **WHEN** 调用方对 `remote-ssh*` 或 `remote-control:*` 主机执行 `thread read` 以外的写操作或 `wait`
+- **THEN** 系统明确拒绝且不回退到本机，而 `thread read` 保持既有行为不变

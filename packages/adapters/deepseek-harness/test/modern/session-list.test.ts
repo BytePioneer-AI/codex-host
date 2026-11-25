@@ -28,6 +28,7 @@ function row(overrides: Readonly<Record<string, unknown>> = {}): Record<string, 
   return {
     sessionId: "session-1",
     updatedAt: 1,
+    agentAvailable: false,
     running: false,
     blank: false,
     cwd,
@@ -62,6 +63,47 @@ class FakeRemote implements ModernSessionListRemote {
 }
 
 describe("DeepSeek Harness Modern Session list", () => {
+  it("parses availability and projection provenance without exposing them as import metadata", () => {
+    const withoutAvailability = row();
+    delete withoutAvailability.agentAvailable;
+    const value = {
+      items: [
+        row({
+          agentAvailable: true,
+          projections: { kind: "sequenced", asOfSeq: 3, values: { title: "Live title" } },
+        }),
+        row({
+          sessionId: "cold",
+          agentAvailable: false,
+          projections: { kind: "cached", asOfSeq: 2, values: { title: "Cold title" } },
+        }),
+      ],
+    };
+    expect(parseModernSessionCandidates(value).map(({ title }) => title)).toEqual([
+      "Live title",
+      "Cold title",
+    ]);
+    for (const invalid of [
+      { items: [withoutAvailability] },
+      { items: [row({ agentAvailable: 1 })] },
+      {
+        items: [row({ agentAvailable: true, projections: { asOfSeq: 0, values: {} } })],
+      },
+      {
+        items: [
+          row({
+            agentAvailable: true,
+            projections: { kind: "unknown", asOfSeq: 0, values: {} },
+          }),
+        ],
+      },
+    ]) {
+      expect(() => parseModernSessionCandidates(invalid)).toThrowError(
+        expect.objectContaining({ code: "protocolError" }),
+      );
+    }
+  });
+
   it("projects eligible roots and ordinary Forks in authoritative order", () => {
     const nonCanonicalCwd = `${cwd}${path.sep}child${path.sep}..`;
     const missingCwd = row({ sessionId: "missing-cwd" });
@@ -72,6 +114,7 @@ describe("DeepSeek Harness Modern Session list", () => {
           sessionId: "titled",
           updatedAt: 50,
           projections: {
+            kind: "sequenced",
             asOfSeq: 3,
             values: { title: "Native title", unknownProjection: { retainedByDsh: true } },
           },
@@ -85,7 +128,7 @@ describe("DeepSeek Harness Modern Session list", () => {
         row({
           sessionId: "invalid-title",
           updatedAt: 30,
-          projections: { asOfSeq: -1, values: { title: { text: "not a title" } } },
+          projections: { kind: "cached", asOfSeq: -1, values: { title: { text: "not a title" } } },
         }),
         row({ sessionId: "subagent", origin: "subagent" }),
         row({ sessionId: "blank", blank: true }),
@@ -121,6 +164,18 @@ describe("DeepSeek Harness Modern Session list", () => {
     ]);
   });
 
+  // DSH 0.2.1-rc.1 reports `current` for attached rows and the stored status for cold rows.
+  it.each(["current", "migration-required"])(
+    "keeps a %s row as an import candidate without exposing its format status",
+    (formatStatus) => {
+      expect(
+        parseModernSessionCandidates({
+          items: [row({ formatStatus, agentAvailable: formatStatus === "current" })],
+        }),
+      ).toEqual([{ nativeSessionId: "session-1", title: null, updatedAt: 1, cwd, running: false }]);
+    },
+  );
+
   it.each([
     ["non-object root", []],
     ["extra root key", { items: [], extra: true }],
@@ -128,9 +183,13 @@ describe("DeepSeek Harness Modern Session list", () => {
     ["extra row key", { items: [row({ extra: true })] }],
     ["invalid running", { items: [row({ running: 1 })] }],
     ["invalid origin", { items: [row({ origin: "user" })] }],
+    ["invalid format status", { items: [row({ formatStatus: "migrated" })] }],
     ["invalid parent identity", { items: [row({ parentSessionId: " " })] }],
     ["invalid projections", { items: [row({ projections: { asOfSeq: 0 } })] }],
-    ["invalid projection cursor", { items: [row({ projections: { asOfSeq: -2, values: {} } })] }],
+    [
+      "invalid projection cursor",
+      { items: [row({ projections: { kind: "cached", asOfSeq: -2, values: {} } })] },
+    ],
     ["empty identity", { items: [row({ sessionId: " " })] }],
     ["NUL identity", { items: [row({ sessionId: "session\0suffix" })] }],
     ["negative time", { items: [row({ updatedAt: -1 })] }],
@@ -173,11 +232,11 @@ describe("DeepSeek Harness Modern Session list", () => {
         items: [
           row({
             sessionId: "exact-title",
-            projections: { asOfSeq: 0, values: { title: exact } },
+            projections: { kind: "cached", asOfSeq: 0, values: { title: exact } },
           }),
           row({
             sessionId: "oversized-title",
-            projections: { asOfSeq: 0, values: { title: `${exact}x` } },
+            projections: { kind: "cached", asOfSeq: 0, values: { title: `${exact}x` } },
           }),
         ],
       }).map(({ title }) => title),
@@ -189,7 +248,7 @@ describe("DeepSeek Harness Modern Session list", () => {
     cyclic.self = cyclic;
     expect(() =>
       parseModernSessionCandidates({
-        items: [row({ projections: { asOfSeq: 0, values: cyclic } })],
+        items: [row({ projections: { kind: "cached", asOfSeq: 0, values: cyclic } })],
       }),
     ).toThrowError(expect.objectContaining({ code: "protocolError" }));
 
@@ -202,24 +261,32 @@ describe("DeepSeek Harness Modern Session list", () => {
     }
     expect(() =>
       parseModernSessionCandidates({
-        items: [row({ projections: { asOfSeq: 0, values: deep } })],
+        items: [row({ projections: { kind: "cached", asOfSeq: 0, values: deep } })],
       }),
     ).toThrowError(expect.objectContaining({ code: "limitExceeded" }));
   });
 
   it("accepts the exact JSON node work bound and rejects one additional node", () => {
-    // root + items + row + five scalar fields + projections/asOfSeq/values/array = 12 nodes.
-    const exactProjectionNodes = Array(199_988).fill(null);
+    // root + items + row + six scalar fields + projections/kind/asOfSeq/values/array = 14 nodes.
+    const exactProjectionNodes = Array(199_986).fill(null);
     expect(
       parseModernSessionCandidates({
-        items: [row({ projections: { asOfSeq: 0, values: { nodes: exactProjectionNodes } } })],
+        items: [
+          row({
+            projections: { kind: "cached", asOfSeq: 0, values: { nodes: exactProjectionNodes } },
+          }),
+        ],
       }),
     ).toHaveLength(1);
     expect(() =>
       parseModernSessionCandidates({
         items: [
           row({
-            projections: { asOfSeq: 0, values: { nodes: [...exactProjectionNodes, null] } },
+            projections: {
+              kind: "cached",
+              asOfSeq: 0,
+              values: { nodes: [...exactProjectionNodes, null] },
+            },
           }),
         ],
       }),

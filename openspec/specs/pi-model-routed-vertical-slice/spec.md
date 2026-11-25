@@ -121,6 +121,26 @@ Protocol Facade MUST以官方 app-server为默认处理路径。除新 Pi Thread
 - **THEN**系统 MUST NOT伪造为已支持的Codex UI能力
 - **AND**MUST返回明确受限结果或按已评审的最小错误语义终止当前操作
 
+### Requirement: Pi execution identities and exact history boundaries agree
+
+Pi Adapter SHALL identify requested executions by their native User Entry IDs and independent custom-triggered executions by their triggering custom Entry IDs. Live completion and repeated history reads SHALL use the same identities. Provider response IDs and generated IDs SHALL NOT substitute for persisted Turn identity. Custom messages injected during an execution, or appended without subsequent execution, SHALL NOT alone create another Turn.
+
+#### Scenario: Custom message resumes an idle Pi Session
+
+- **WHEN** a custom message follows a terminal Assistant and triggers a new execution
+- **THEN** history SHALL contain a separate Turn with empty User input
+- **AND** live settlement SHALL confirm its persisted custom Entry and matching first Assistant before publishing its Native Turn identity
+- **AND** stale or missing history SHALL NOT be silently assigned to that execution
+
+#### Scenario: Pi cannot express a requested historical cut
+
+- **WHEN** the next execution starts with a custom Entry rather than a User Entry
+- **THEN** the preceding Turn SHALL have no Checkpoint, and Fork at that Turn SHALL fail explicitly
+- **AND** Fork at a Turn followed by a User Entry SHALL cut before that User Entry
+- **AND** Fork at the final Turn SHALL copy the current native position
+- **AND** Rollback of a final custom-triggered Turn SHALL return unsupported rather than removing the preceding human execution too
+- **AND** Rollback of a final User Turn SHALL retain the exact prefix, including preceding custom-triggered executions
+
 ### Requirement: Pi maps only explicit native thinking into live Reasoning
 
 PiAdapter SHALL map non-empty thinking text explicitly emitted by Pi for an accepted Turn into ordered Host Reasoning Items. PiAdapter SHALL keep Pi event names and message blocks private and SHALL NOT derive Reasoning from Thinking level, Model `reasoning` metadata, Usage, Tool activity, or elapsed time.

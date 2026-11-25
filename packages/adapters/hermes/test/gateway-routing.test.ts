@@ -1,0 +1,448 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { HermesAdapter } from "../src/hermes-adapter.js";
+import * as nativeSessions from "../src/gateway-session-list.js";
+import { HermesGatewayTransport } from "../src/gateway-transport.js";
+import { harnessModelRefSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
+import * as gatewayOpen from "../src/gateway-open.js";
+import * as inventory from "../src/hermes-inventory.js";
+import { HermesGatewayHistory } from "../src/gateway-history.js";
+import type { HermesSession } from "../src/hermes-session.js";
+import * as runtime from "../src/hermes-runtime.js";
+
+afterEach(() => vi.restoreAllMocks());
+describe("Hermes Gateway-only chat routing", () => {
+  it("routes the same model on two named providers without sending the catalog ID as the model", async () => {
+    const cwd = process.cwd();
+    const model = "example/model:tag";
+    const first = harnessModelRefSchema.parse({ id: `relay-a:${model}` });
+    const second = harnessModelRefSchema.parse({ id: `relay-b:${model}` });
+    vi.spyOn(inventory, "readHermesModelInventory").mockResolvedValue({
+      currentModelId: first.id,
+      models: ["relay-a", "relay-b"].map((provider) => ({
+        modelId: `${provider}:${model}`,
+        label: model,
+        provider,
+        gatewaySelection: { provider, model },
+      })),
+    });
+    vi.spyOn(HermesGatewayTransport, "probe").mockResolvedValue("/supported/python");
+    vi.spyOn(HermesGatewayTransport.prototype, "prepareSession").mockResolvedValue();
+    vi.spyOn(HermesGatewayTransport.prototype, "start").mockResolvedValue();
+    vi.spyOn(HermesGatewayTransport.prototype, "close").mockResolvedValue();
+    const request = vi
+      .spyOn(HermesGatewayTransport.prototype, "request")
+      .mockImplementation(async function (this: HermesGatewayTransport, method, params) {
+        if (method === "session.create")
+          return {
+            session_id: "runtime",
+            stored_session_id: "saved",
+            revision: 0,
+            execution_generation: 0,
+            info: { cwd, model: params.model, provider: params.provider ?? "relay-a" },
+          };
+        if (method === "session.mutate") {
+          const selection = params.payload as { model: string; provider?: string };
+          return { model: selection.model, provider: selection.provider ?? "relay-a", revision: 1 };
+        }
+        if (method === "config.get")
+          this.onEvent({ type: "session.info", session_id: "runtime", payload: { cwd, model } });
+        return { value: "low" };
+      });
+    const adapter = new HermesAdapter({ command: process.execPath });
+    try {
+      expect(await adapter.inspect()).toMatchObject({
+        status: "ready",
+        catalog: { defaultModel: first, models: [{ ref: first }, { ref: second }] },
+      });
+      const opened = await adapter.open({ kind: "create", cwd, model: first });
+      expect(request).toHaveBeenCalledWith("session.create", { cwd, model, provider: "relay-a" });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.initialState.effectiveModel).toEqual(first);
+      expect(request).toHaveBeenCalledWith(
+        "session.mutate",
+        expect.objectContaining({
+          operation: "model",
+          expected_revision: 0,
+          payload: { model, provider: "relay-a" },
+        }),
+      );
+      expect(await opened.value.execute({ type: "model.select", model: second })).toMatchObject({
+        ok: true,
+      });
+      expect(request).toHaveBeenCalledWith(
+        "session.mutate",
+        expect.objectContaining({
+          operation: "model",
+          expected_revision: 1,
+          payload: { model, provider: "relay-b" },
+        }),
+      );
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it.each([undefined, 7, 999])("resumes saved gateway contract metadata %s", async (contract) => {
+    const cwd = process.cwd();
+    const transport = new HermesGatewayTransport("unused", cwd, {});
+    vi.spyOn(transport, "prepareSession").mockResolvedValue();
+    vi.spyOn(transport, "start").mockResolvedValue();
+    vi.spyOn(transport, "close").mockResolvedValue();
+    const request = vi.spyOn(transport, "request").mockImplementation(async (method) => {
+      if (method === "session.resume")
+        return {
+          session_id: "runtime",
+          info: { stored_session_id: "saved", cwd, model: "test", provider: "custom" },
+        };
+      return { value: "low" };
+    });
+    vi.spyOn(HermesGatewayHistory.prototype, "resolvePhysicalSessionId").mockResolvedValue("saved");
+    const nativeRef = nativeSessionRefSchema.parse({
+      harnessId: "hermes",
+      nativeSessionId: "saved",
+      formatVersion: 1,
+      locator: { transport: "gateway", ...(contract === undefined ? {} : { contract }) },
+    });
+    const session = await gatewayOpen.openGatewaySession(
+      { kind: "resume", nativeRef, cwd },
+      transport,
+      () => {},
+    );
+    try {
+      expect(request).toHaveBeenCalledWith("session.resume", {
+        session_id: "saved",
+        omit_messages: true,
+      });
+      expect(session.initialState.nativeRef?.nativeSessionId).toBe("saved");
+      expect(session.initialState.nativeRef?.locator).not.toHaveProperty("contract");
+    } finally {
+      await session.close();
+    }
+  });
+  it.each(["create", "resume"] as const)(
+    "publishes a finalized native title on %s",
+    async (kind) => {
+      const cwd = process.cwd();
+      const transport = new HermesGatewayTransport("unused", cwd, {});
+      vi.spyOn(transport, "prepareSession").mockResolvedValue();
+      vi.spyOn(transport, "start").mockResolvedValue();
+      vi.spyOn(transport, "close").mockResolvedValue();
+      const method = kind === "create" ? "session.create" : "session.resume";
+      const title = "Trip budget";
+      const request = vi.spyOn(transport, "request").mockImplementation(async (rpc) =>
+        rpc === method
+          ? {
+              session_id: "runtime",
+              stored_session_id: "saved",
+              info: { cwd, model: "test", ...(kind === "resume" ? { title } : {}) },
+            }
+          : { value: "low" },
+      );
+      const nativeCommand = (storedTitle: string | null) => ({
+        command: process.execPath,
+        arguments: [
+          "-e",
+          `
+        const { operation, sessionId } = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+        if (sessionId !== 'saved' || !['resolve', 'title'].includes(operation)) process.exit(1);
+        process.stdout.write(JSON.stringify(operation === 'resolve'
+          ? { physicalSessionId: 'saved' }
+          : { title: ${JSON.stringify(storedTitle)} }));
+      `,
+        ],
+      });
+      const command = vi
+        .spyOn(runtime, "hermesPythonCommand")
+        .mockResolvedValue(nativeCommand(title));
+      const pendingRead = Promise.withResolvers<runtime.HermesPythonCommand>();
+      if (kind === "create") command.mockReturnValueOnce(pendingRead.promise);
+      const nativeRef = nativeSessionRefSchema.parse({
+        harnessId: "hermes",
+        nativeSessionId: "saved",
+        formatVersion: 1,
+        locator: { transport: "gateway" },
+      });
+      const session = await gatewayOpen.openGatewaySession(
+        kind === "create" ? { kind, cwd } : { kind, cwd, nativeRef },
+        transport,
+        () => {},
+      );
+      const titles: string[] = [];
+      const drain = (async () => {
+        for await (const output of session.outputs) {
+          if (output.kind === "event" && output.event.type === "session.title.changed")
+            titles.push(output.event.title);
+        }
+      })();
+      try {
+        if (kind === "create") {
+          const info = { type: "session.info", session_id: "runtime", payload: { title } };
+          transport.onEvent(info);
+          await vi.waitFor(() => expect(command).toHaveBeenCalled());
+          // The placeholder read is in flight when an equal-text finalized frame arrives.
+          transport.onEvent(info);
+          pendingRead.resolve(nativeCommand(null));
+        }
+        await vi.waitFor(() => expect(titles).toEqual([title]), { timeout: 3_000 });
+        expect(request.mock.calls.map(([rpc]) => rpc)).toEqual([
+          method,
+          "config.get",
+          "session.usage",
+        ]);
+      } finally {
+        pendingRead.resolve(nativeCommand(null));
+        await session.close();
+        await drain;
+      }
+    },
+  );
+  it("re-reads when a title update arrives while the first read is in flight", async () => {
+    const cwd = process.cwd();
+    const transport = new HermesGatewayTransport("unused", cwd, {});
+    vi.spyOn(transport, "prepareSession").mockResolvedValue();
+    vi.spyOn(transport, "start").mockResolvedValue();
+    vi.spyOn(transport, "close").mockResolvedValue();
+    vi.spyOn(transport, "request").mockImplementation(async (rpc) =>
+      rpc === "session.create"
+        ? { session_id: "runtime", stored_session_id: "saved", info: { cwd, model: "test" } }
+        : { value: "low" },
+    );
+    const nativeCommand = (storedTitle: string | null) => ({
+      command: process.execPath,
+      arguments: [
+        "-e",
+        `
+        const { operation, sessionId } = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+        if (sessionId !== 'saved' || !['resolve', 'title'].includes(operation)) process.exit(1);
+        process.stdout.write(JSON.stringify(operation === 'resolve'
+          ? { physicalSessionId: 'saved' }
+          : { title: ${JSON.stringify(storedTitle)} }));
+      `,
+      ],
+    });
+    // The first read is held open; the re-read returns the newer saved title.
+    const pendingRead = Promise.withResolvers<runtime.HermesPythonCommand>();
+    const command = vi
+      .spyOn(runtime, "hermesPythonCommand")
+      .mockResolvedValue(nativeCommand("Renamed budget"));
+    command.mockReturnValueOnce(pendingRead.promise);
+    const session = await gatewayOpen.openGatewaySession(
+      { kind: "create", cwd },
+      transport,
+      () => {},
+    );
+    const titles: string[] = [];
+    const drain = (async () => {
+      for await (const output of session.outputs) {
+        if (output.kind === "event" && output.event.type === "session.title.changed")
+          titles.push(output.event.title);
+      }
+    })();
+    try {
+      transport.onEvent({
+        type: "session.info",
+        session_id: "runtime",
+        payload: { title: "Trip budget" },
+      });
+      await vi.waitFor(() => expect(command).toHaveBeenCalled());
+      // The user renames the session while the first read is still running.
+      transport.onEvent({
+        type: "session.info",
+        session_id: "runtime",
+        payload: { title: "Renamed budget" },
+      });
+      pendingRead.resolve(nativeCommand("Trip budget"));
+      await vi.waitFor(() => expect(titles).toEqual(["Renamed budget"]), { timeout: 3_000 });
+    } finally {
+      pendingRead.resolve(nativeCommand("Trip budget"));
+      await session.close();
+      await drain;
+    }
+  });
+  it("does not start a Session when the Adapter closes during gateway discovery", async () => {
+    let finishProbe: (python: string | null) => void = () => undefined;
+    const pendingProbe = new Promise<string | null>((resolve) => {
+      finishProbe = resolve;
+    });
+    const probe = vi.spyOn(HermesGatewayTransport, "probe").mockReturnValue(pendingProbe);
+    const prepare = vi
+      .spyOn(HermesGatewayTransport.prototype, "prepareSession")
+      .mockResolvedValue();
+    const start = vi
+      .spyOn(HermesGatewayTransport.prototype, "start")
+      .mockRejectedValue(new Error("Unexpected gateway startup"));
+    const imports = vi.spyOn(nativeSessions, "readHermesSessions");
+    const adapter = new HermesAdapter({ command: process.execPath });
+    const opening = adapter.open({ kind: "create", cwd: process.cwd() });
+    expect(probe).toHaveBeenCalledOnce();
+    await adapter.close();
+    finishProbe("/supported/python");
+    expect(await opening).toMatchObject({ ok: false, error: { code: "invalidState" } });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(imports).not.toHaveBeenCalled();
+  });
+  it.each(["fork", "rollbackLastTurn"] as const)(
+    "rejects non-Gateway references for %s rather than relabelling them",
+    async (kind) => {
+      const probe = vi.spyOn(HermesGatewayTransport, "probe");
+      const imports = vi.spyOn(nativeSessions, "readHermesSessions");
+      const adapter = new HermesAdapter({ command: process.execPath });
+      const ref = nativeSessionRefSchema.parse({
+        harnessId: "hermes",
+        nativeSessionId: "old",
+        formatVersion: 1,
+      });
+      try {
+        expect(
+          await adapter.open(
+            kind === "fork"
+              ? {
+                  kind,
+                  sourceRef: ref,
+                  cwd: process.cwd(),
+                  checkpoint: {
+                    harnessId: ref.harnessId,
+                    nativeSessionId: ref.nativeSessionId,
+                    checkpointId: "1",
+                    formatVersion: 1,
+                  },
+                }
+              : { kind, sourceRef: ref, cwd: process.cwd() },
+          ),
+        ).toMatchObject({ ok: false, error: { code: "unsupported" } });
+        expect(probe).not.toHaveBeenCalled();
+        expect(imports).not.toHaveBeenCalled();
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+  it("resumes an unmarked import identity through the actual Gateway without mutating the input reference", async () => {
+    vi.spyOn(HermesGatewayTransport, "probe").mockResolvedValue("/supported/python");
+    vi.spyOn(HermesGatewayTransport.prototype, "prepareSession").mockResolvedValue();
+    vi.spyOn(HermesGatewayTransport.prototype, "start").mockResolvedValue();
+    const imports = vi.spyOn(nativeSessions, "readHermesSessions");
+    const ref = nativeSessionRefSchema.parse({
+      harnessId: "hermes",
+      nativeSessionId: "imported",
+      formatVersion: 1,
+    });
+    const open = vi.spyOn(gatewayOpen, "openGatewaySession").mockResolvedValue({
+      initialState: {},
+      close: vi.fn(async () => undefined),
+    } as unknown as HermesSession);
+    const adapter = new HermesAdapter({ command: process.execPath });
+    try {
+      expect(
+        await adapter.open({ kind: "resume", nativeRef: ref, cwd: process.cwd() }),
+      ).toMatchObject({ ok: true });
+      expect(open.mock.calls[0]?.[0]).toMatchObject({ kind: "resume", nativeRef: ref });
+      expect(ref.locator).toBeUndefined();
+      expect(imports).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+  it.each(["create", "resume"] as const)(
+    "reports unavailable Gateway without import discovery for %s",
+    async (kind) => {
+      vi.spyOn(HermesGatewayTransport, "probe").mockResolvedValue(null);
+      const imports = vi.spyOn(nativeSessions, "readHermesSessions");
+      const adapter = new HermesAdapter({ command: process.execPath });
+      const ref = nativeSessionRefSchema.parse({
+        harnessId: "hermes",
+        nativeSessionId: "gateway",
+        formatVersion: 1,
+        locator: { transport: "gateway" },
+      });
+      try {
+        expect(
+          await adapter.open(
+            kind === "create"
+              ? { kind, cwd: process.cwd() }
+              : { kind, nativeRef: ref, cwd: process.cwd() },
+          ),
+        ).toMatchObject({ ok: false, error: { code: "unavailable" } });
+        expect(await adapter.inspect()).toMatchObject({
+          status: "error",
+          error: { code: "HERMES_UNAVAILABLE" },
+        });
+        expect(imports).not.toHaveBeenCalled();
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+  it("creates through Gateway with the complete Thread environment and no import process", async () => {
+    vi.spyOn(HermesGatewayTransport, "probe").mockResolvedValue("/supported/python");
+    vi.spyOn(HermesGatewayTransport.prototype, "prepareSession").mockResolvedValue();
+    vi.spyOn(HermesGatewayTransport.prototype, "start").mockResolvedValue();
+    const imports = vi.spyOn(nativeSessions, "readHermesSessions");
+    const session = {
+      initialState: {},
+      close: vi.fn(async () => undefined),
+    } as unknown as HermesSession;
+    const open = vi.spyOn(gatewayOpen, "openGatewaySession").mockResolvedValue(session);
+    const adapter = new HermesAdapter({
+      command: process.execPath,
+      environment: { BASE: "installation" },
+    });
+    const input = {
+      kind: "create" as const,
+      cwd: process.cwd(),
+      environment: { CODEXHOST_THREAD_ID: "thread-id", THREAD_CONFIG: "native" },
+    };
+    try {
+      expect(await adapter.open(input)).toEqual({ ok: true, value: session });
+      expect(open).toHaveBeenCalledOnce();
+      const transport = open.mock.calls[0]?.[1];
+      expect(transport?.environment).toEqual({
+        BASE: "installation",
+        CODEXHOST_THREAD_ID: "thread-id",
+        THREAD_CONFIG: "native",
+      });
+      expect(imports).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+    }
+  });
+  it("keeps a single owner during concurrent Gateway resume", async () => {
+    vi.spyOn(HermesGatewayTransport, "probe").mockResolvedValue("/supported/python");
+    vi.spyOn(HermesGatewayTransport.prototype, "prepareSession").mockResolvedValue();
+    vi.spyOn(HermesGatewayTransport.prototype, "start").mockResolvedValue();
+    let finish!: (session: HermesSession) => void;
+    const open = vi.spyOn(gatewayOpen, "openGatewaySession").mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const adapter = new HermesAdapter({ command: process.execPath });
+    const ref = nativeSessionRefSchema.parse({
+      harnessId: "hermes",
+      nativeSessionId: "saved",
+      formatVersion: 1,
+      locator: { transport: "gateway" },
+    });
+    const input = { kind: "resume" as const, nativeRef: ref, cwd: process.cwd() };
+    try {
+      const pending = adapter.open(input);
+      await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
+      expect(await adapter.open(input)).toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      finish({
+        initialState: { nativeRef: ref },
+        close: vi.fn(async () => undefined),
+      } as unknown as HermesSession);
+      expect(await pending).toMatchObject({ ok: true });
+      expect(await adapter.open(input)).toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+    } finally {
+      await adapter.close();
+    }
+  });
+});

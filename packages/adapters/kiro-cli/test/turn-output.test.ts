@@ -24,7 +24,8 @@ describe("Kiro progress and final answer presentation", () => {
         if (
           output.kind === "event" &&
           "turnId" in output.event &&
-          output.event.type !== "turn.autonomous.started"
+          output.event.type !== "turn.autonomous.started" &&
+          output.event.type !== "usage.request.timing"
         )
           messages.push(...projector.project(output.event).messages);
       });
@@ -149,7 +150,11 @@ describe("Kiro progress and final answer presentation", () => {
     });
     projector.project({ type: "turn.started", turnId }, 1_000);
     for (const event of events) {
-      if ("turnId" in event && event.type !== "turn.autonomous.started")
+      if (
+        "turnId" in event &&
+        event.type !== "turn.autonomous.started" &&
+        event.type !== "usage.request.timing"
+      )
         projector.project(event, 2_000);
     }
     const completed = projector.project(
@@ -203,5 +208,36 @@ describe("Kiro progress and final answer presentation", () => {
     );
     expect(messages.map((message) => message.phase)).toEqual(["commentary", "commentary"]);
     expect(messages.map((message) => message.text)).toEqual(["Working", "Partial response"]);
+  });
+});
+
+it("settles a Kiro child interrupted by parent cancellation without leaving a running card", () => {
+  const outputs: HarnessOutput[] = [];
+  const turn = new KiroTurnOutput(turnId, "/workspace", (output) => outputs.push(output));
+  turn.accept({
+    type: "tool.call",
+    callId: "task",
+    title: "Inspect",
+    status: "in_progress",
+    rawInput: { prompt: "Check files" },
+    metadata: { kiro: { kind: "agent-subtask", agentSubtaskId: "child" } },
+  });
+  turn.finish({ status: "cancelled" });
+  expect(outputs).toContainEqual(
+    expect.objectContaining({
+      event: expect.objectContaining({
+        type: "item.completed",
+        snapshot: expect.objectContaining({
+          item: expect.objectContaining({
+            subagents: [
+              expect.objectContaining({ nativeSubagentId: "child", status: "interrupted" }),
+            ],
+          }),
+        }),
+      }),
+    }),
+  );
+  expect(outputs.at(-1)).toMatchObject({
+    event: { type: "subagent.transcript.changed", nativeSubagentId: "child" },
   });
 });

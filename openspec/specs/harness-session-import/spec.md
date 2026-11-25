@@ -2,7 +2,7 @@
 
 ## Purpose
 
-定义由公共 Adapter 驱动的本地原生 Session 导入。Pi 与 DSH Modern 共用 Host/RPC/Renderer 流程；本规范扩展原 DeepSeek 导入页面的单 Harness 范围，但不放宽 DSH Modern 的运行时限定。
+定义由目标 Host 的公共 Adapter 驱动的原生 Session 导入。Pi 与 DSH Modern 共用 Host/RPC/Renderer 流程；本规范扩展原 DeepSeek 导入页面的单 Harness 范围，但不放宽 DSH Modern 的运行时限定。
 
 ## Requirements
 
@@ -81,14 +81,24 @@ Host SHALL filter ordinary mapped Sessions and search all candidate titles, nati
 - **WHEN** the requested offset exceeds the new result count
 - **THEN** Renderer SHALL return to a valid page rather than leave the user stuck on an empty page
 
-### Requirement: Renderer uses fixed local generic APIs
+### Requirement: Renderer uses fixed Host-scoped generic APIs
 
-Renderer SHALL obtain import sources from the local Host and use strict fixed sources/list/import RPCs. Source availability SHALL be distinguished from current native protocol availability. Harness switching or page disposal SHALL invalidate stale results and prevent stale navigation.
+Desktop Renderer SHALL expose an explicit Host selector and use strict fixed sources/list/import RPCs. Before manual selection it SHALL obtain import sources from the uniquely determined Composer Host. If multiple tabs make that identity ambiguous, it SHALL request a Host selection rather than report unsupported import. A manually selected Host SHALL remain selected across refreshes and Composer changes. Host switching SHALL invalidate pending list results, including when the new Host is unavailable, and SHALL be disabled during import and navigation retry. It SHALL capture the client used to load candidates and use that same Host for import, navigation and navigation retry. Installation filtering SHALL use only that Host's diagnostics. An unknown or unavailable target Host SHALL NOT fall back to local. Source availability SHALL be distinguished from current native protocol availability. Harness switching or page disposal SHALL invalidate stale results and prevent stale navigation.
 
 #### Scenario: Composer is on a remote Host
 
 - **WHEN** the user opens Session Import while Composer targets a remote Host
-- **THEN** discovery, import and imported Thread navigation SHALL remain local
+- **THEN** discovery, import and imported Thread navigation SHALL use that remote Host
+- **AND** switching Composer Host after listing SHALL NOT redirect an import or navigation retry for the displayed candidates
+- **AND** before manual Host selection, a refreshed list SHALL use the newly selected Composer Host
+- **AND** after manual Host selection, refreshing SHALL keep that explicit Host
+
+#### Scenario: Native discovery is brokered
+
+- **WHEN** a plugin enables its Broker Session Import capability
+- **THEN** the Broker SHALL forward discovery and resolution to its native Adapter and validate the Harness and Session identities
+- **AND** candidate pages SHALL come from one connection-scoped snapshot; a lost snapshot SHALL fail rather than return a partial list
+- **AND** discovery SHALL NOT copy Transcripts, create Host mappings or send a Turn
 
 #### Scenario: Unsupported runtime or older Host
 

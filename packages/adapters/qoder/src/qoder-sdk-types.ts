@@ -1,0 +1,82 @@
+import type {
+  CanUseTool,
+  CanUseToolOptions,
+  ForkSessionOptions,
+  ForkSessionResult,
+  GetSessionInfoOptions,
+  GetSessionMessagesOptions,
+  ModelInfo as QoderModelInfo,
+  Options as QoderOptions,
+  PermissionMode as QoderPermissionMode,
+  PermissionResult,
+  Query as SdkQuery,
+  SDKAssistantMessage,
+  SDKMessage,
+  SDKPartialAssistantMessage,
+  SDKResultMessage,
+  SDKSessionInfo,
+  SDKSystemMessage,
+  SDKUserMessage,
+  SessionMessage,
+  SlashCommand as QoderSlashCommand,
+  SDKCommandsChangedMessage,
+} from "@qoder-ai/qoder-agent-sdk";
+
+export type CanUseToolContext = CanUseToolOptions;
+
+export type {
+  CanUseTool,
+  CanUseToolOptions,
+  ForkSessionOptions,
+  ForkSessionResult,
+  GetSessionInfoOptions,
+  GetSessionMessagesOptions,
+  QoderModelInfo,
+  QoderOptions,
+  QoderPermissionMode,
+  PermissionResult,
+  SDKAssistantMessage,
+  SDKCommandsChangedMessage,
+  SDKMessage,
+  SDKPartialAssistantMessage,
+  SDKResultMessage,
+  SDKSessionInfo,
+  SDKSystemMessage,
+  SDKUserMessage,
+  SdkQuery,
+  SessionMessage,
+  QoderSlashCommand,
+};
+
+export interface QoderContextUsage {
+  contextWindow?: {
+    usedPercentage?: number;
+    totalTokens?: number;
+    maxTokens?: number;
+  };
+  totalTokens?: number;
+  maxTokens?: number;
+}
+
+export interface QoderQuery extends AsyncIterable<SDKMessage> {
+  interrupt(): Promise<unknown>;
+  close(): void | Promise<void>;
+  initializationResult?(): Promise<unknown>;
+  getAvailableModels?(options?: {
+    fetchStrategy?: "live" | "cache";
+    uid?: string;
+  }): Promise<QoderModelInfo[]>;
+  getContextUsage?(): Promise<unknown>;
+  getUsageInfo?(): Promise<unknown>;
+  accountInfo?(): Promise<unknown>;
+  setModel?(model?: string): Promise<void>;
+  setPermissionMode?(mode: QoderPermissionMode): Promise<void>;
+  setPlanMode?(active: boolean): Promise<unknown>;
+  request?(request: Record<string, unknown>): Promise<unknown>;
+  supportedCommands?(): Promise<QoderSlashCommand[]>;
+}
+
+export type QoderQueryFactory = (input: {
+  prompt: string | AsyncIterable<SDKUserMessage>;
+  options?: QoderOptions;
+}) => QoderQuery;

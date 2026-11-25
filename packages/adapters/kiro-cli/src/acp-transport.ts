@@ -22,6 +22,7 @@ import {
   type SessionUpdate,
 } from "@agentclientprotocol/sdk";
 
+import { parseKiroAvailableCommands, type KiroAvailableCommand } from "./kiro-slash-commands.js";
 import { KiroExecutableError, kiroInvocation, resolveKiroExecutable } from "./command.js";
 import type { KiroUserInputParams, KiroUserInputResult } from "./projection.js";
 import {
@@ -181,23 +182,28 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function classifyStartupError(error: unknown): KiroTransportError {
-  if (error instanceof KiroTransportError) return error;
+function classifyStartupError(error: unknown, stderr = ""): KiroTransportError {
   if (error instanceof KiroExecutableError) {
     return new KiroTransportError("notInstalled", error.message, { cause: error });
   }
-  const text = errorText(error).toLowerCase();
+  const text = `${errorText(error)}\n${stderr}`.toLowerCase();
   if (
     text.includes("auth_required") ||
     text.includes("authentication") ||
     text.includes("not logged in") ||
+    text.includes("not log in") ||
     text.includes("sign in") ||
     text.includes("unauthorized")
   ) {
-    return new KiroTransportError("authenticationRequired", "Kiro CLI authentication is required", {
-      cause: error,
-    });
+    return new KiroTransportError(
+      "authenticationRequired",
+      "Kiro CLI authentication is required (run `kiro-cli login`)",
+      {
+        cause: error,
+      },
+    );
   }
+  if (error instanceof KiroTransportError) return error;
   return new KiroTransportError("unavailable", "Kiro CLI could not start", { cause: error });
 }
 
@@ -254,6 +260,7 @@ export class KiroAcpTransport {
   #initialize: InitializeResponse | null = null;
   #replay: KiroTransportEvent[] | null = null;
   #sessionId: string | null = null;
+  #availableCommands: KiroAvailableCommand[] | null = null;
   #stderrTail = "";
   readonly #configUpdates = new Set<{
     update(params: SessionNotification): void;
@@ -337,9 +344,8 @@ export class KiroAcpTransport {
       });
       return { ...initialize, catalog: parseKiroCliModels(JSON.parse(stdout)) };
     } catch (error) {
-      const classified = classifyStartupError(error);
       await this.close().catch(() => undefined);
-      throw classified;
+      throw classifyStartupError(error, this.#stderrTail);
     }
   }
 
@@ -494,9 +500,8 @@ export class KiroAcpTransport {
         replay,
       };
     } catch (error) {
-      const classified = classifyStartupError(error);
       await this.close().catch(() => undefined);
-      throw classified;
+      throw classifyStartupError(error, this.#stderrTail);
     }
   }
 
@@ -791,7 +796,23 @@ export class KiroAcpTransport {
     return initialize;
   }
 
+  /** Latest ACP `available_commands_update` of the open Session, if any. */
+  get availableCommands(): readonly KiroAvailableCommand[] | null {
+    return this.#availableCommands;
+  }
+
   #handleUpdate(params: SessionNotification): void {
+    const commandsUpdate = params.update as {
+      sessionUpdate?: unknown;
+      availableCommands?: unknown;
+    };
+    if (commandsUpdate.sessionUpdate === "available_commands_update") {
+      // Command catalog state, not Turn or replay content.
+      if (!this.#sessionId || params.sessionId === this.#sessionId) {
+        this.#availableCommands = parseKiroAvailableCommands(commandsUpdate.availableCommands);
+      }
+      return;
+    }
     for (const listener of this.#configUpdates) listener.update(params);
     const update = params.update;
     const meta =

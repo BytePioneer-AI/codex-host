@@ -6,6 +6,7 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   type HarnessModelRef,
+  type HarnessPluginRoute,
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
   type JsonRpcRequest,
@@ -49,6 +50,10 @@ const transportModelByHarness: Readonly<Record<string, string>> = {
   antigravity: ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID,
 } as const satisfies Record<ExternalHarnessId, string>;
 
+const legacyTransportModelRefSchema = harnessModelRefSchema.refine(({ id }) =>
+  /^[A-Za-z0-9._~-]+$/u.test(id),
+);
+
 const harnessByTransportModel = new Map<string, ExternalHarnessId>(
   Object.entries(transportModelByHarness).map(([harnessId, transportModelId]) => [
     transportModelId,
@@ -63,6 +68,7 @@ export interface CreateRoute {
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
   permissionModeId?: HarnessPermissionModeId;
+  prewarm?: true;
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -80,69 +86,6 @@ export interface ExternalConfigurationSelection {
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
   permissionModeId?: HarnessPermissionModeId;
-}
-
-export function encodePiTransportModel(
-  model?: HarnessModelRef,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (thinkingOptionId) throw new Error("Pi transport Thinking requires a Model Ref");
-    return PI_NATIVE_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  return `${PI_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
-}
-
-export function encodeOmpTransportModel(
-  model?: HarnessModelRef,
-  thinkingOptionId?: HarnessThinkingOptionId,
-  permissionModeId?: HarnessPermissionModeId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("OMP transport configuration requires a Model Ref");
-    }
-    return OMP_NATIVE_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionMode = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedPermissionMode) {
-    return `${OMP_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode}@${parsedThinking ?? ""}`;
-  }
-  return `${OMP_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedThinking ? `@${parsedThinking}` : ""}`;
-}
-
-export function encodeAntigravityTransportModel(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("Antigravity transport configuration requires a Model Ref");
-    }
-    return ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermission = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedThinking) {
-    return `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermission ?? ""}@${parsedThinking}`;
-  }
-  return `${ANTIGRAVITY_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermission ? `@${parsedPermission}` : ""}`;
 }
 
 export function decodeAntigravityTransportSelection(
@@ -163,7 +106,7 @@ export function decodeAntigravityTransportSelection(
   if (components.length === 3 && !thinkingOptionId) {
     throw new Error("Antigravity transport configuration has an empty Thinking option");
   }
-  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  const model = legacyTransportModelRefSchema.safeParse({ id: modelId });
   if (!model.success) throw new Error("Antigravity transport Model contains an invalid Model Ref");
   const permissionMode = permissionModeId
     ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
@@ -186,6 +129,8 @@ export function decodeAntigravityTransportSelection(
 
 export function decodeOmpTransportSelection(value: unknown): ExternalConfigurationSelection | null {
   if (value === OMP_NATIVE_TRANSPORT_MODEL_ID) return {};
+  const route = decodeHarnessPluginRoute(value);
+  if (route) return route.harnessId === "omp" ? pluginConfiguration(route) : null;
   if (typeof value !== "string" || !value.startsWith(OMP_NATIVE_TRANSPORT_MODEL_PREFIX))
     return null;
   const components = value.slice(OMP_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
@@ -196,7 +141,7 @@ export function decodeOmpTransportSelection(value: unknown): ExternalConfigurati
     throw new Error("OMP transport configuration has an empty Thinking option");
   if (components.length === 3 && !permissionOrThinkingId)
     throw new Error("OMP transport configuration has an empty Permission Mode");
-  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  const model = legacyTransportModelRefSchema.safeParse({ id: modelId });
   if (!model.success) throw new Error("OMP transport Model contains an invalid Model Ref");
   const permissionMode =
     components.length === 3
@@ -224,34 +169,12 @@ export function decodeOmpTransportModel(value: unknown): HarnessModelRef | null 
   return selection === null ? null : selection.model;
 }
 
-export function encodeOpenCodeTransportModel(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("OpenCode transport configuration requires a Model Ref");
-    }
-    return OPENCODE_NATIVE_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionMode = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedThinking) {
-    return `${OPENCODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode ?? ""}@${parsedThinking}`;
-  }
-  return `${OPENCODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
-}
-
 export function decodeOpenCodeTransportSelection(
   value: unknown,
 ): ExternalConfigurationSelection | null {
   if (value === OPENCODE_NATIVE_TRANSPORT_MODEL_ID) return {};
+  const route = decodeHarnessPluginRoute(value);
+  if (route) return route.harnessId === "opencode" ? pluginConfiguration(route) : null;
   if (typeof value !== "string" || !value.startsWith(OPENCODE_NATIVE_TRANSPORT_MODEL_PREFIX)) {
     return null;
   }
@@ -266,7 +189,7 @@ export function decodeOpenCodeTransportSelection(
   if (components.length === 3 && !thinkingOptionId) {
     throw new Error("OpenCode transport configuration has an empty Thinking option");
   }
-  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  const model = legacyTransportModelRefSchema.safeParse({ id: modelId });
   if (!model.success) throw new Error("OpenCode transport Model contains an invalid Model Ref");
   const permissionMode = permissionModeId
     ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
@@ -289,6 +212,8 @@ export function decodeOpenCodeTransportSelection(
 
 export function decodePiTransportSelection(value: unknown): ExternalConfigurationSelection | null {
   if (value === PI_NATIVE_TRANSPORT_MODEL_ID) return {};
+  const route = decodeHarnessPluginRoute(value);
+  if (route) return route.harnessId === "pi" ? pluginConfiguration(route) : null;
   if (typeof value !== "string" || !value.startsWith(PI_NATIVE_TRANSPORT_MODEL_PREFIX)) return null;
   const components = value.slice(PI_NATIVE_TRANSPORT_MODEL_PREFIX.length).split("@");
   if (components.length < 1 || components.length > 2) {
@@ -298,7 +223,7 @@ export function decodePiTransportSelection(value: unknown): ExternalConfiguratio
   if (components.length === 2 && !thinkingOptionId) {
     throw new Error("Pi transport configuration has an empty Thinking option");
   }
-  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  const model = legacyTransportModelRefSchema.safeParse({ id: modelId });
   if (!model.success) throw new Error("Pi transport Model contains an invalid Model Ref");
   const thinking = thinkingOptionId
     ? harnessThinkingOptionIdSchema.safeParse(thinkingOptionId)
@@ -315,54 +240,6 @@ export function decodePiTransportSelection(value: unknown): ExternalConfiguratio
 export function decodePiTransportModel(value: unknown): HarnessModelRef | null | undefined {
   const selection = decodePiTransportSelection(value);
   return selection === null ? null : selection.model;
-}
-
-export function encodeClaudeTransportModel(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("Claude Code transport configuration requires a Model Ref");
-    }
-    return CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionModeId = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinkingOptionId = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedThinkingOptionId) {
-    return `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionModeId ?? ""}@${parsedThinkingOptionId}`;
-  }
-  return `${CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionModeId ? `@${parsedPermissionModeId}` : ""}`;
-}
-
-export function encodeGrokTransportModel(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-  thinkingOptionId?: HarnessThinkingOptionId,
-): string {
-  if (!model) {
-    if (permissionModeId || thinkingOptionId) {
-      throw new Error("Grok transport configuration requires a Model Ref");
-    }
-    return GROK_NATIVE_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionMode = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  const parsedThinking = thinkingOptionId
-    ? harnessThinkingOptionIdSchema.parse(thinkingOptionId)
-    : undefined;
-  if (parsedThinking) {
-    return `${GROK_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}@${parsedPermissionMode ?? ""}@${parsedThinking}`;
-  }
-  return `${GROK_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionMode ? `@${parsedPermissionMode}` : ""}`;
 }
 
 export function decodeGrokTransportSelection(
@@ -383,7 +260,7 @@ export function decodeGrokTransportSelection(
   if (components.length === 3 && !thinkingOptionId) {
     throw new Error("Grok transport configuration has an empty Thinking option");
   }
-  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  const model = legacyTransportModelRefSchema.safeParse({ id: modelId });
   if (!model.success) throw new Error("Grok transport Model contains an invalid Model Ref");
   const permissionMode = permissionModeId
     ? harnessPermissionModeIdSchema.safeParse(permissionModeId)
@@ -422,7 +299,7 @@ export function decodeClaudeTransportSelection(
   if (components.length === 3 && !thinkingOptionId) {
     throw new Error("Claude Code transport configuration has an empty Thinking option");
   }
-  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  const model = legacyTransportModelRefSchema.safeParse({ id: modelId });
   if (!model.success) {
     throw new Error("Claude Code transport Model contains an invalid Model Ref");
   }
@@ -445,23 +322,6 @@ export function decodeClaudeTransportSelection(
   };
 }
 
-export function encodeDeepSeekHarnessTransportModel(
-  model?: HarnessModelRef,
-  permissionModeId?: HarnessPermissionModeId,
-): string {
-  if (!model) {
-    if (permissionModeId) {
-      throw new Error("DeepSeek Harness transport Permission Mode requires a Model Ref");
-    }
-    return DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_ID;
-  }
-  const parsedModel = harnessModelRefSchema.parse(model);
-  const parsedPermissionModeId = permissionModeId
-    ? harnessPermissionModeIdSchema.parse(permissionModeId)
-    : undefined;
-  return `${DEEPSEEK_HARNESS_NATIVE_TRANSPORT_MODEL_PREFIX}${parsedModel.id}${parsedPermissionModeId ? `@${parsedPermissionModeId}` : ""}`;
-}
-
 export function decodeDeepSeekHarnessTransportSelection(
   value: unknown,
 ): ExternalConfigurationSelection | null {
@@ -480,7 +340,7 @@ export function decodeDeepSeekHarnessTransportSelection(
   if (components.length === 2 && !permissionModeId) {
     throw new Error("DeepSeek Harness transport configuration has an empty Permission Mode");
   }
-  const model = harnessModelRefSchema.safeParse({ id: modelId });
+  const model = legacyTransportModelRefSchema.safeParse({ id: modelId });
   if (!model.success) {
     throw new Error("DeepSeek Harness transport Model contains an invalid Model Ref");
   }
@@ -498,49 +358,24 @@ export function decodeDeepSeekHarnessTransportSelection(
 
 export function encodeExternalTransportSelection(
   harnessId: ExternalHarnessId,
-  selection: ExternalConfigurationSelection,
+  selection: Omit<HarnessPluginRoute, "harnessId" | "prewarm">,
 ): string {
-  switch (harnessId) {
-    case "pi":
-      return encodePiTransportModel(selection.model, selection.thinkingOptionId);
-    case "claude-code":
-      return encodeClaudeTransportModel(
-        selection.model,
-        selection.permissionModeId,
-        selection.thinkingOptionId,
-      );
-    case "deepseek-harness":
-      return encodeDeepSeekHarnessTransportModel(selection.model, selection.permissionModeId);
-    case "opencode":
-      return encodeOpenCodeTransportModel(
-        selection.model,
-        selection.permissionModeId,
-        selection.thinkingOptionId,
-      );
-    case "grok":
-      return encodeGrokTransportModel(
-        selection.model,
-        selection.permissionModeId,
-        selection.thinkingOptionId,
-      );
-    case "omp":
-      return encodeOmpTransportModel(
-        selection.model,
-        selection.thinkingOptionId,
-        selection.permissionModeId,
-      );
-    case "antigravity":
-      return encodeAntigravityTransportModel(
-        selection.model,
-        selection.permissionModeId,
-        selection.thinkingOptionId,
-      );
-    default:
-      return encodeHarnessPluginRoute({
-        harnessId: harnessPluginIdSchema.parse(harnessId),
-        ...selection,
-      });
-  }
+  return encodeHarnessPluginRoute({
+    harnessId: harnessPluginIdSchema.parse(harnessId),
+    ...selection,
+  });
+}
+
+function pluginConfiguration({
+  model,
+  thinkingOptionId,
+  permissionModeId,
+}: HarnessPluginRoute): ExternalConfigurationSelection {
+  return {
+    ...(model ? { model } : {}),
+    ...(thinkingOptionId ? { thinkingOptionId } : {}),
+    ...(permissionModeId ? { permissionModeId } : {}),
+  };
 }
 
 export function decodeExternalTransportSelection(
@@ -550,11 +385,7 @@ export function decodeExternalTransportSelection(
   const route = decodeHarnessPluginRoute(value);
   if (route) {
     if (route.harnessId !== harnessId) return null;
-    return {
-      ...(route.model ? { model: route.model } : {}),
-      ...(route.thinkingOptionId ? { thinkingOptionId: route.thinkingOptionId } : {}),
-      ...(route.permissionModeId ? { permissionModeId: route.permissionModeId } : {}),
-    };
+    return pluginConfiguration(route);
   }
   switch (harnessId) {
     case "pi":
@@ -584,18 +415,24 @@ export function decodeExternalTransportModel(
   return selection === null ? null : selection.model;
 }
 
+/**
+ * Recognizes a Thread create the Host owns. Only a text Model can carry a codexhost transport
+ * marker; any other shape belongs to native Codex and is never validated here. A malformed
+ * codexhost marker still throws because the Host owns that format.
+ */
 export function decodeCreateRoute(request: JsonRpcRequest): CreateRoute | null {
   if (request.method !== "thread/start") return null;
-  if (!isJsonObject(request.params) || typeof request.params.model !== "string") {
-    throw new Error("thread/start params.model must be text");
-  }
+  if (!isJsonObject(request.params) || typeof request.params.model !== "string") return null;
 
   const pluginRoute = decodeHarnessPluginRoute(request.params.model);
   if (pluginRoute) {
+    // The prewarm marker describes this create only; the Thread keeps its selection.
+    const { prewarm, ...selection } = pluginRoute;
     return {
       harnessId: pluginRoute.harnessId,
       routeMode: "native",
-      transportModelId: request.params.model,
+      transportModelId: prewarm ? encodeHarnessPluginRoute(selection) : request.params.model,
+      ...(prewarm ? { prewarm } : {}),
       ...(pluginRoute.model ? { model: pluginRoute.model } : {}),
       ...(pluginRoute.thinkingOptionId ? { thinkingOptionId: pluginRoute.thinkingOptionId } : {}),
       ...(pluginRoute.permissionModeId ? { permissionModeId: pluginRoute.permissionModeId } : {}),

@@ -11,7 +11,6 @@ import {
   type ModernRemoteConnectionErrorCode,
 } from "../../src/modern/remote-connection.js";
 import type { ModernRemoteResult } from "../../src/modern/wire.js";
-import { DEEPSEEK_V015_PROFILE } from "../../src/profiles/profile.js";
 
 interface RemoteCall {
   readonly endpoint: string;
@@ -39,11 +38,11 @@ class FakeRemote implements ModernCommandRemote {
 }
 
 describe("DeepSeek Harness Modern native commands", () => {
-  it("sends the 015 command attachment argument for slash and permission commands", async () => {
+  it("sends the V4 command attachment argument for slash and permission commands", async () => {
     const signal = new AbortController().signal;
     const remote = new FakeRemote({ ok: true, value: undefined });
     for (const line of ["/compact", "/permission workspace-write"]) {
-      await executeModernCommand(remote, "session-1", line, signal, DEEPSEEK_V015_PROFILE);
+      await executeModernCommand(remote, "session-1", line, signal);
       expect(remote.calls.at(-1)).toEqual({
         endpoint: "commands/execute",
         args: { agentId: "session-1", line, submittedAttachments: [] },
@@ -53,7 +52,7 @@ describe("DeepSeek Harness Modern native commands", () => {
     }
   });
 
-  it("executes the complete native line once with empty images and no transport timeout", async () => {
+  it("executes the complete native line once with no attachments and no transport timeout", async () => {
     const signal = new AbortController().signal;
     const line = "/goal edit  preserve spacing  ";
     const remote = new FakeRemote({
@@ -71,7 +70,7 @@ describe("DeepSeek Harness Modern native commands", () => {
     expect(remote.calls).toEqual([
       {
         endpoint: "commands/execute",
-        args: { agentId: "session-1", line, images: [] },
+        args: { agentId: "session-1", line, submittedAttachments: [] },
         signal,
         options: { timeoutMs: null },
       },
@@ -206,7 +205,7 @@ describe("DeepSeek Harness Modern native commands", () => {
     expect(remote.calls).toEqual([
       {
         endpoint: "commands/execute",
-        args: { agentId: "session-1", line: "/compact", images: [] },
+        args: { agentId: "session-1", line: "/compact", submittedAttachments: [] },
         signal: controller.signal,
         options: { timeoutMs: null },
       },

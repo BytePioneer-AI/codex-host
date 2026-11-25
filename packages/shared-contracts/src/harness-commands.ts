@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "./ids.js";
+import { harnessLocalizationsSchema } from "./harness-presentation.js";
 import { jsonObjectSchema } from "./json-value.js";
 
 const commandIdSchema = z
@@ -21,7 +22,13 @@ export const harnessCommandDescriptorSchema = z
     invocation: commandInvocationSchema,
     label: commandLabelSchema,
     description: commandDescriptionSchema.optional(),
+    localizations: harnessLocalizationsSchema.optional(),
     argumentMode: z.enum(["none", "text"]),
+    /**
+     * Native distinction reported by the Harness. Omitted when the Harness does
+     * not tell skills and commands apart; consumers treat that as "command".
+     */
+    kind: z.enum(["command", "skill"]).optional(),
   })
   .strict();
 
@@ -30,6 +37,15 @@ export type HarnessCommandDescriptor = z.infer<typeof harnessCommandDescriptorSc
 export const harnessCommandCatalogSchema = z
   .object({
     commands: z.array(harnessCommandDescriptorSchema),
+    /** Partial discovery failures; valid commands remain available. */
+    warnings: z.array(z.string().min(1)).optional(),
+    /**
+     * `live` when a native Session has reported its live catalog for the
+     * workspace (even when filtering leaves only built-ins); `static` for
+     * Adapter built-ins only before live commands arrive. Adapters may set
+     * `live` once their Session's live catalog has loaded.
+     */
+    source: z.enum(["live", "static"]).optional(),
   })
   .strict()
   .superRefine((catalog, context) => {
@@ -48,7 +64,13 @@ export const harnessCommandCatalogSchema = z
 
 export type HarnessCommandCatalog = z.infer<typeof harnessCommandCatalogSchema>;
 
-export const harnessCommandsInspectParamsSchema = z.object({ harnessId: harnessIdSchema }).strict();
+export const harnessCommandsInspectParamsSchema = z
+  .object({
+    harnessId: harnessIdSchema,
+    /** Workspace of a draft without a Thread, for its live catalog when known. */
+    cwd: z.string().min(1).optional(),
+  })
+  .strict();
 
 export type HarnessCommandsInspectParams = z.infer<typeof harnessCommandsInspectParamsSchema>;
 
@@ -74,7 +96,7 @@ export type ThreadCommandExecuteParams = z.infer<typeof threadCommandExecutePara
 export const threadCommandExecuteResultSchema = z
   .object({
     accepted: z.literal(true),
-    turnId: hostTurnIdSchema,
+    turnId: hostTurnIdSchema.optional(),
   })
   .strict();
 

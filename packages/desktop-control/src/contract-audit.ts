@@ -31,9 +31,14 @@ export interface RendererContractAuditInspection {
     missingCount: number;
     ambiguousCount: number;
   };
+  draftHarnessBinding: {
+    visibleDraftCount: number;
+    boundCount: number;
+    missingCreationModeCount: number;
+  };
   settings: {
-    headerCount: number;
-    visibleHeaderCount: number;
+    railCount: number;
+    visibleRailCount: number;
     insertionPointCount: number;
   };
   sidebar: {
@@ -48,6 +53,12 @@ export interface RendererContractAuditInspection {
     identifiedItemCount: number;
     textBodyCount: number;
     textBodyOwnerCount: number;
+  };
+  codexUsageGate: {
+    composerCount: number;
+    ownerCount: number;
+    reserveGateCount: number;
+    accountGateCount: number;
   };
   fork: {
     annotatedResponseCount: number;
@@ -128,9 +139,11 @@ export function validateRendererContractAuditInspection(
       "schemaVersion",
       "composer",
       "model",
+      "draftHarnessBinding",
       "settings",
       "sidebar",
       "transcript",
+      "codexUsageGate",
       "fork",
       "production",
     ],
@@ -184,9 +197,14 @@ export function validateRendererContractAuditInspection(
       ["draftCount", "conversationCount", "missingCount", "ambiguousCount"] as const,
       "Renderer model contract",
     ),
+    draftHarnessBinding: integerRecord(
+      value.draftHarnessBinding,
+      ["visibleDraftCount", "boundCount", "missingCreationModeCount"] as const,
+      "Renderer draft Harness binding contract",
+    ),
     settings: integerRecord(
       value.settings,
-      ["headerCount", "visibleHeaderCount", "insertionPointCount"] as const,
+      ["railCount", "visibleRailCount", "insertionPointCount"] as const,
       "Renderer settings contract",
     ),
     sidebar: integerRecord(
@@ -204,6 +222,11 @@ export function validateRendererContractAuditInspection(
         "textBodyOwnerCount",
       ] as const,
       "Renderer transcript contract",
+    ),
+    codexUsageGate: integerRecord(
+      value.codexUsageGate,
+      ["composerCount", "ownerCount", "reserveGateCount", "accountGateCount"] as const,
+      "Renderer Codex usage gate contract",
     ),
     fork: integerRecord(
       value.fork,

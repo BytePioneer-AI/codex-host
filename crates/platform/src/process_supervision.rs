@@ -8,6 +8,8 @@ use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitSta
 use std::time::{Duration, Instant};
 
 use super::PlatformError;
+#[cfg(target_os = "macos")]
+use super::macos_process_events::ProcessEvents;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use super::process::{ObservedProcessTree, ProcessSnapshot, unix_process_snapshot};
 #[cfg(target_os = "windows")]
@@ -21,7 +23,14 @@ pub struct ChildProcessGuard {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub struct ChildProcessGuard {
     tree: std::sync::Mutex<ObservedProcessTree>,
+    #[cfg(target_os = "macos")]
+    events: Option<ProcessEvents>,
     armed: bool,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn poisoned_tree_lock() -> PlatformError {
+    PlatformError::Invalid("supervised process identity lock was poisoned".into())
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -30,14 +39,47 @@ impl ChildProcessGuard {
         &self,
         operation: impl FnOnce(&mut ObservedProcessTree) -> Result<T, PlatformError>,
     ) -> Result<T, PlatformError> {
-        let mut tree = self.tree.lock().map_err(|_| {
-            PlatformError::Invalid("supervised process identity lock was poisoned".into())
-        })?;
+        let mut tree = self.tree.lock().map_err(|_| poisoned_tree_lock())?;
         operation(&mut tree)
     }
 
     fn has_live_members(&self) -> Result<bool, PlatformError> {
         self.with_tree(|tree| Ok(!tree.observe()?.is_empty()))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn retain_descendants(&mut self) -> Result<(), PlatformError> {
+        let now = Instant::now();
+        let scan_due = {
+            let events = match &mut self.events {
+                Some(events) => Some(events),
+                unset => match ProcessEvents::new() {
+                    Ok(events) => Some(unset.insert(events)),
+                    Err(_) => None,
+                },
+            };
+            match events {
+                Some(events) => match events.scan_due(now) {
+                    Ok(due) => due,
+                    Err(_) => {
+                        self.events = None;
+                        true
+                    }
+                },
+                None => true,
+            }
+        };
+        if scan_due {
+            let owned = self
+                .tree
+                .get_mut()
+                .map_err(|_| poisoned_tree_lock())?
+                .observe()?;
+            if let Some(events) = &mut self.events {
+                events.record_scan(&owned, now);
+            }
+        }
+        Ok(())
     }
 
     fn process_group_id(&self) -> Result<u32, PlatformError> {
@@ -166,6 +208,29 @@ impl SupervisedChild {
             .signal(signal)
     }
 
+    /// A root process exit is insufficient while retained supervised members are alive.
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+    pub fn wait_for_tree_exit(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Result<ExitStatus, PlatformError> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let status = self.child.try_wait()?;
+            if !self.has_live_processes()?
+                && let Some(status) = status
+            {
+                return Ok(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(PlatformError::Invalid(
+                    "supervised process tree exit is unconfirmed".into(),
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     pub fn disarm_cleanup(&mut self) {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         if let Some(guard) = &mut self.guard {
@@ -178,6 +243,34 @@ impl SupervisedChild {
         self.guard
             .as_ref()
             .map_or(Ok(false), ChildProcessGuard::has_live_members)
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn has_live_processes(&self) -> Result<bool, PlatformError> {
+        self.guard
+            .as_ref()
+            .ok_or_else(|| {
+                PlatformError::Invalid("process tree ownership was not established".into())
+            })?
+            .job
+            .has_live_processes()
+            .map_err(PlatformError::Io)
+    }
+
+    /// Keeps the ownership ledger current between lifecycle ticks, so a descendant
+    /// stays attributable after its parent exits. On macOS the tree is rescanned
+    /// only after an owned process forks, exits or execs, or at a fallback
+    /// interval; signals and tree-exit waits always rescan.
+    #[cfg(target_os = "macos")]
+    pub fn retain_descendants(&mut self) -> Result<(), PlatformError> {
+        self.guard
+            .as_mut()
+            .map_or(Ok(()), ChildProcessGuard::retain_descendants)
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    pub fn retain_descendants(&mut self) -> Result<(), PlatformError> {
+        self.has_live_processes().map(drop)
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -306,6 +399,8 @@ pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, Platfo
         child,
         guard: Some(ChildProcessGuard {
             tree: std::sync::Mutex::new(ObservedProcessTree::new_following_root_exec(root)),
+            #[cfg(target_os = "macos")]
+            events: None,
             armed: true,
         }),
     })
@@ -372,6 +467,65 @@ mod tests {
             .expect("terminate supervised script");
         child.wait().expect("wait for supervised script");
         fs::remove_dir_all(directory).expect("remove temporary directory");
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::spawn_supervised;
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    #[test]
+    fn tracks_descendants_after_root_exit() {
+        const MODE: &str = "CODEXHOST_TEST_JOB_ACCOUNTING";
+        const TEST: &str = "process_supervision::windows_tests::tracks_descendants_after_root_exit";
+        let executable = std::env::current_exe().expect("test executable");
+        if std::env::var(MODE).as_deref() == Ok("leaf") {
+            std::thread::sleep(Duration::from_secs(20));
+            return;
+        }
+        if std::env::var(MODE).as_deref() == Ok("root") {
+            // Wait until the root is assigned to its cleanup Job.
+            std::io::stdin()
+                .read_exact(&mut [0_u8; 1])
+                .expect("release root");
+            let child = Command::new(executable)
+                .args(["--exact", TEST])
+                .env(MODE, "leaf")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn test descendant");
+            // Windows has no Unix zombie reaping requirement; deliberately leave
+            // the descendant alive when this root's test process exits.
+            drop(child);
+            return;
+        }
+        let mut command = Command::new(&executable);
+        command
+            .args(["--exact", TEST])
+            .env(MODE, "root")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = spawn_supervised(&mut command).expect("supervise test root");
+        child
+            .take_stdin()
+            .expect("root stdin")
+            .write_all(b"x")
+            .expect("release root");
+        assert!(child.wait().expect("root exit").success());
+        assert!(child.has_live_processes().expect("query retained Job"));
+        assert!(child.wait_for_tree_exit(Duration::from_millis(10)).is_err());
+        child
+            .force_terminate()
+            .expect("terminate remaining Job members");
+        child
+            .wait_for_tree_exit(Duration::from_secs(5))
+            .expect("confirmed tree exit");
     }
 }
 

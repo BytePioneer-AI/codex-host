@@ -5,15 +5,63 @@ import os from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type * as UpdateManager from "@codexhost/update-manager";
 
 import {
   createBackgroundUpdateManager,
+  defaultUpdateStateDirectory,
   type CodexhostLatestRelease,
 } from "@codexhost/update-manager";
 
 import { createHostUpdateCoordinator } from "../src/update-coordinator.js";
 
+const discovery = vi.hoisted(() => ({ cli: vi.fn(), http: vi.fn() }));
+// The user's npm and its registry are external: every npm release is installable by default.
+const npmRegistry = vi.hoisted(() => ({
+  installable: vi.fn(async (): Promise<boolean> => true),
+  prefetch: vi.fn(async (): Promise<void> => {}),
+}));
+vi.mock("@codexhost/update-manager", async (importOriginal) => {
+  const original = await importOriginal<typeof UpdateManager>();
+  return {
+    ...original,
+    fetchLatestGitHubReleaseWithGitHubCli: discovery.cli,
+    fetchLatestGitHubRelease: discovery.http,
+    createNpmReleaseAvailability: () => ({ installable: npmRegistry.installable }),
+    createBackgroundUpdateManager: (
+      dependencies: UpdateManager.BackgroundUpdateManagerDependencies = {},
+    ) =>
+      original.createBackgroundUpdateManager({
+        prefetchNpm: npmRegistry.prefetch,
+        ...dependencies,
+      }),
+  };
+});
+
 const roots: string[] = [];
+it("reports the shared source launch version when packaged update resources are absent", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-source-update-"));
+  roots.push(root);
+  const hostRuntimePath = path.join(root, "packages/host-runtime/dist/main.js");
+  await file(hostRuntimePath);
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ name: "codexhost", version: "0.12.0" }),
+  );
+  const coordinator = createHostUpdateCoordinator({
+    hostRuntimePath,
+    environment: { CODEXHOST_DEV_VERSION: "0.11.0" },
+  });
+  await expect(coordinator.check()).resolves.toMatchObject({
+    currentVersion: "0.11.0",
+    installation: null,
+    installationAvailable: false,
+  });
+});
+afterEach(() => {
+  vi.clearAllMocks();
+  vi.useRealTimers();
+});
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true }))));
 
 async function file(filePath: string, contents = "fixture"): Promise<void> {
@@ -22,19 +70,21 @@ async function file(filePath: string, contents = "fixture"): Promise<void> {
   await chmod(filePath, 0o700);
 }
 
-async function npmFixture(): Promise<{
+async function npmFixture(platform: "darwin" | "win32" | "linux" = "darwin"): Promise<{
   root: string;
   hostRuntimePath: string;
   environment: NodeJS.ProcessEnv;
 }> {
+  const windows = platform === "win32";
   const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-host-update-"));
   roots.push(root);
   const packageRoot = path.join(root, "platform");
   const hostRuntimePath = path.join(packageRoot, "app", "host-runtime.mjs");
   const environment = {
     HOME: path.join(root, "home"),
+    LOCALAPPDATA: path.join(root, "local-app-data"),
     CODEXHOST_LAUNCHER_PID: "4321",
-    CODEXHOST_LAUNCHER_EXECUTABLE: path.join(root, "codexhost"),
+    CODEXHOST_LAUNCHER_EXECUTABLE: path.join(root, windows ? "codexhost.exe" : "codexhost"),
     CODEXHOST_RUNTIME_DESCRIPTOR_PATH: path.join(root, "runtime", "desktop-runtime-v1.json"),
     CODEXHOST_CONTROL_PORT: "43124",
     CODEXHOST_CONTROL_NONCE: "0123456789abcdef0123456789abcdef",
@@ -45,7 +95,9 @@ async function npmFixture(): Promise<{
   };
   await Promise.all([
     file(hostRuntimePath),
-    file(path.join(packageRoot, "libexec", "codexhost-updater")),
+    file(
+      path.join(packageRoot, "libexec", windows ? "codexhost-updater.exe" : "codexhost-updater"),
+    ),
     file(environment.CODEXHOST_LAUNCHER_EXECUTABLE),
     file(environment.CODEXHOST_NPM_NODE_PATH),
     file(environment.CODEXHOST_NPM_CLI_PATH),
@@ -56,7 +108,7 @@ async function npmFixture(): Promise<{
         schemaVersion: 1,
         version: "1.2.2",
         distribution: "npm",
-        target: "macos-arm64",
+        target: windows ? "windows-x64" : platform === "linux" ? "linux-x64" : "macos-arm64",
       }),
     ),
   ]);
@@ -112,6 +164,89 @@ function release(version = "1.2.3"): CodexhostLatestRelease {
 }
 
 describe("Host update coordinator", () => {
+  it.each([true, false])(
+    "prefers gh and only falls back when needed (CLI available: %s)",
+    async (available) => {
+      const fixture = await npmFixture();
+      discovery.cli.mockResolvedValue(available ? release() : null);
+      discovery.http.mockResolvedValue(release());
+      const coordinator = createHostUpdateCoordinator({
+        ...fixture,
+        platform: "darwin",
+        architecture: "arm64",
+      });
+      await expect(coordinator.check()).resolves.toMatchObject({
+        latestVersion: "1.2.3",
+        error: null,
+      });
+      expect(discovery.cli).toHaveBeenCalledWith(
+        expect.objectContaining({ environment: fixture.environment, platform: "darwin" }),
+      );
+      expect(discovery.http).toHaveBeenCalledTimes(available ? 0 : 1);
+      if (!available)
+        expect(discovery.http.mock.calls[0]?.[0].signal).toBe(
+          discovery.cli.mock.calls[0]?.[0].signal,
+        );
+    },
+  );
+
+  it.each([
+    [
+      "waits for an npm registry that has not synced the release",
+      async () => false,
+      { updateAvailable: true, installationAvailable: false, error: null },
+    ],
+    [
+      "reports an npm registry it cannot query",
+      async () => {
+        throw new Error("Could not query the npm registry: npm error code ENOTFOUND");
+      },
+      {
+        updateAvailable: true,
+        installationAvailable: false,
+        error: "Could not query the npm registry: npm error code ENOTFOUND",
+      },
+    ],
+  ])("%s", async (_case, installable, expected) => {
+    const fixture = await npmFixture();
+    npmRegistry.installable.mockImplementationOnce(installable);
+    const coordinator = createHostUpdateCoordinator({
+      ...fixture,
+      platform: "darwin",
+      architecture: "arm64",
+      fetchLatest: async () => release(),
+    });
+    await expect(coordinator.check()).resolves.toMatchObject({
+      latestVersion: "1.2.3",
+      ...expected,
+    });
+    expect(npmRegistry.installable).toHaveBeenCalledWith({
+      nodePath: fixture.environment.CODEXHOST_NPM_NODE_PATH,
+      npmCliPath: fixture.environment.CODEXHOST_NPM_CLI_PATH,
+      packageRoot: fixture.environment.CODEXHOST_NPM_PACKAGE_ROOT,
+      version: "1.2.3",
+    });
+  });
+
+  it("does not fall back after caller cancellation", async () => {
+    const fixture = await npmFixture();
+    const controller = new AbortController();
+    discovery.cli.mockImplementation(async ({ signal }: { signal: AbortSignal }) => {
+      controller.abort();
+      signal.throwIfAborted();
+    });
+    const coordinator = createHostUpdateCoordinator({
+      ...fixture,
+      platform: "darwin",
+      architecture: "arm64",
+    });
+    await expect(coordinator.check(controller.signal)).resolves.toMatchObject({
+      latestVersion: null,
+      error: expect.any(String),
+    });
+    expect(discovery.http).not.toHaveBeenCalled();
+  });
+
   it("hands a macOS update to Launcher without starting the Helper", async () => {
     const fixture = await npmFixture();
     const spawnUpdater = vi.fn(() => ({ pid: 777 }) as unknown as ChildProcess);
@@ -140,8 +275,9 @@ describe("Host update coordinator", () => {
     await expect(coordinator.start()).resolves.toMatchObject({
       status: { version: "1.2.3", installation: "npm", phase: "prepared" },
     });
+    // A second request joins the operation in progress, which may still be downloading.
     await expect(coordinator.start()).resolves.toMatchObject({
-      status: { version: "1.2.3", phase: "prepared" },
+      status: { version: "1.2.3", installation: "npm" },
     });
     const home = fixture.environment.HOME;
     if (!home) throw new Error("fixture HOME is missing");
@@ -160,6 +296,39 @@ describe("Host update coordinator", () => {
     expect(spawnUpdater).not.toHaveBeenCalled();
   });
 
+  it("hands a Windows update to Launcher instead of starting the Helper in the Host Job", async () => {
+    const fixture = await npmFixture("win32");
+    const spawnUpdater = vi.fn(() => ({ pid: 777 }) as unknown as ChildProcess);
+    const manager = createBackgroundUpdateManager({
+      platform: "win32",
+      randomId: () => "one",
+      spawnUpdater,
+      now: () => 10_000,
+    });
+    const coordinator = createHostUpdateCoordinator({
+      hostRuntimePath: fixture.hostRuntimePath,
+      environment: fixture.environment,
+      platform: "win32",
+      architecture: "x64",
+      manager,
+      fetchLatest: async () => release(),
+    });
+
+    await expect(coordinator.start()).resolves.toMatchObject({
+      status: { version: "1.2.3", installation: "npm", phase: "prepared" },
+    });
+    const localAppData = fixture.environment.LOCALAPPDATA;
+    if (!localAppData) throw new Error("fixture LOCALAPPDATA is missing");
+    const operation = path.join(localAppData, "codexhost", "updates", "update-1.2.3-one");
+    await vi.waitFor(async () =>
+      expect(await readFile(path.join(operation, "request-v1.json"), "utf8")).not.toEqual(""),
+    );
+    await expect(readFile(path.join(operation, "codexhost-updater.exe"))).resolves.toBeDefined();
+    // Preparation finishes after start() resolves; let the background step settle.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(spawnUpdater).not.toHaveBeenCalled();
+  });
+
   it("returns before a macOS artifact download completes", async () => {
     const fixture = await macFixture();
     const bytes = Buffer.from("macos-dmg-fixture");
@@ -168,10 +337,11 @@ describe("Host update coordinator", () => {
     const downloadObserved = new Promise<void>((resolve) => {
       resolveDownloadObserved = resolve;
     });
+    const spawnUpdater = vi.fn(() => ({ pid: 778 }) as unknown as ChildProcess);
     const manager = createBackgroundUpdateManager({
       platform: "darwin",
       randomId: () => "async-macos",
-      spawnUpdater: vi.fn(() => ({ pid: 778 }) as unknown as ChildProcess),
+      spawnUpdater,
       download: async (_source, destination, onProgress) => {
         resolveDownloadObserved();
         await onProgress?.({ downloadedBytes: 1, totalBytes: bytes.length });
@@ -215,6 +385,8 @@ describe("Host update coordinator", () => {
         totalBytes: bytes.length,
       }),
     );
+    expect(spawnUpdater).not.toHaveBeenCalled();
+    expect((await coordinator.status()).status).not.toHaveProperty("serviceStopOutput");
     unblockDownload();
     const home = fixture.environment.HOME;
     if (!home) throw new Error("fixture HOME is missing");
@@ -231,33 +403,133 @@ describe("Host update coordinator", () => {
     await expect(coordinator.status()).resolves.toMatchObject({
       status: { phase: "prepared", version: "1.2.3", installation: "macos-dmg" },
     });
+    expect(spawnUpdater).not.toHaveBeenCalled();
   });
 
-  it("ignores a prepared status without an active operation lock", async () => {
+  it.each(["succeeded", "failed"])(
+    "recovers %s service stop output after relaunch",
+    async (phase) => {
+      const fixture = await npmFixture();
+      const home = fixture.environment.HOME;
+      if (!home) throw new Error("fixture HOME is missing");
+      const operation = path.join(
+        home,
+        "Library",
+        "Application Support",
+        "codexhost",
+        "updates",
+        "update-result",
+      );
+      await mkdir(operation, { recursive: true });
+      const serviceStopOutput = "Shared Host stopped; interrupted 7 running task(s)\n";
+      await writeFile(
+        path.join(operation, "status-v1.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          version: "1.2.3",
+          installation: "npm",
+          phase,
+          updatedAt: Math.floor(Date.now() / 1000),
+          serviceStopOutput,
+        }),
+      );
+      const coordinator = createHostUpdateCoordinator({
+        hostRuntimePath: fixture.hostRuntimePath,
+        environment: fixture.environment,
+        platform: "darwin",
+        architecture: "arm64",
+        fetchLatest: async () => release(),
+      });
+      await expect(coordinator.check()).resolves.toMatchObject({
+        status: { phase, serviceStopOutput },
+      });
+      await expect(coordinator.status()).resolves.toMatchObject({
+        status: { phase, serviceStopOutput },
+      });
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 86_401_000);
+      try {
+        await expect(coordinator.status()).resolves.toEqual({ status: null });
+        await expect(coordinator.check()).resolves.toMatchObject({ status: null });
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it.each(["prepared", "failed", "succeeded"])(
+    "ignores historical %s status without an active operation lock",
+    async (phase) => {
+      const fixture = await npmFixture();
+      const home = fixture.environment.HOME;
+      if (!home) throw new Error("fixture HOME is missing");
+      const stateDirectory = path.join(
+        home,
+        "Library",
+        "Application Support",
+        "codexhost",
+        "updates",
+      );
+      await mkdir(path.join(stateDirectory, "update-stale"), { recursive: true });
+      await writeFile(
+        path.join(stateDirectory, "update-stale", "status-v1.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          version: "1.2.3",
+          installation: "npm",
+          phase,
+          updatedAt: Math.floor(Date.now() / 1000) - 86_401,
+        }),
+      );
+      const coordinator = createHostUpdateCoordinator({
+        hostRuntimePath: fixture.hostRuntimePath,
+        environment: fixture.environment,
+        platform: "darwin",
+        architecture: "arm64",
+        fetchLatest: async () => release(),
+      });
+
+      await expect(coordinator.check()).resolves.toMatchObject({ status: null });
+      await expect(coordinator.status()).resolves.toEqual({ status: null });
+    },
+  );
+
+  it("recovers a failed update after Host restart even when stopping produced no output", async () => {
     const fixture = await npmFixture();
-    const home = fixture.environment.HOME;
-    if (!home) throw new Error("fixture HOME is missing");
-    const stateDirectory = path.join(home, ".codexhost", "updates");
-    await mkdir(path.join(stateDirectory, "update-stale"), { recursive: true });
+    const stateDirectory = defaultUpdateStateDirectory("darwin", fixture.environment);
+    const operation = path.join(stateDirectory, "update-result");
+    await mkdir(operation, { recursive: true });
+    const statusPath = path.join(operation, "status-v1.json");
+    const error = "Host supervisor cleanup timed out; service recovery succeeded";
     await writeFile(
-      path.join(stateDirectory, "update-stale", "status-v1.json"),
+      statusPath,
       JSON.stringify({
         schemaVersion: 1,
         version: "1.2.3",
         installation: "npm",
-        phase: "prepared",
-        updatedAt: 20,
+        phase: "failed",
+        updatedAt: Math.floor(Date.now() / 1000),
+        error,
       }),
     );
-    const coordinator = createHostUpdateCoordinator({
-      hostRuntimePath: fixture.hostRuntimePath,
-      environment: fixture.environment,
-      platform: "darwin",
+    const lockPath = path.join(stateDirectory, "active-update-v1.lock");
+    await writeFile(lockPath, JSON.stringify({ ownerPid: process.pid, statusPath }));
+    const options = {
+      ...fixture,
+      platform: "darwin" as const,
       architecture: "arm64",
       fetchLatest: async () => release(),
+    };
+    const coordinator = createHostUpdateCoordinator(options);
+    await expect(coordinator.status()).resolves.toMatchObject({
+      status: { phase: "failed", error },
     });
-
-    await expect(coordinator.check()).resolves.toMatchObject({ status: null });
+    await expect(readFile(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(createHostUpdateCoordinator(options).status()).resolves.toMatchObject({
+      status: { phase: "failed", error },
+    });
+    await expect(createHostUpdateCoordinator(options).check()).resolves.toMatchObject({
+      status: { phase: "failed", error },
+    });
   });
 
   it("does not reject during construction when npm runtime paths are missing", async () => {

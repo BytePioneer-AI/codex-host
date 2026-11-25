@@ -2,7 +2,9 @@
 
 ## Purpose
 TBD - created by archiving change implement-pi-model-catalog-slice. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Harness inspection returns a normalized Model Catalog without creating a Session
 The `HarnessAdapter` SHALL provide side-effect-free Model inspection that returns browser-safe normalized Models, optional runtime-resolved Model labels, and structural Model-selection capability without exposing native protocol objects or creating a persistent Native Session. Inspection SHALL own and close every temporary runtime resource before resolving.
 
@@ -31,7 +33,7 @@ The `HarnessAdapter` SHALL provide side-effect-free Model inspection that return
 - **THEN** those values do not enter the Harness Catalog, Host response, Renderer state, logs, or committed fixtures
 
 ### Requirement: Model references preserve exact Adapter-owned identity
-A `HarnessModelRef` SHALL be opaque outside its owning Adapter, SHALL be stable for the same native Model identity, and SHALL distinguish every native Model the Harness can select.
+A `HarnessModelRef` SHALL be opaque outside its owning Adapter, SHALL be stable for the same native Model identity, and SHALL distinguish every native Model the Harness can select. Its ID SHALL accept any non-empty string of at most 512 UTF-16 code units without control characters. When one native value identifies the Model, the Adapter SHALL use that native value unchanged as the Ref ID.
 
 #### Scenario: Two Providers expose the same Model ID
 - **WHEN** Pi returns the same Model ID for two different Providers
@@ -44,6 +46,14 @@ A `HarnessModelRef` SHALL be opaque outside its owning Adapter, SHALL be stable 
 #### Scenario: Catalog contains exact duplicates
 - **WHEN** Pi returns the same Provider and Model ID pair more than once
 - **THEN** PiAdapter emits one entry for that pair and returns all entries in deterministic order
+
+#### Scenario: Single-value native ID is used as-is
+- **WHEN** a single-value Harness such as Codex, Qwen Code, or Hermes reports a native Model ID such as `xai/grok-4.6`, `GLM-5.3-flash(openai)`, or `模型 A`
+- **THEN** the Catalog entry's Ref ID equals that native ID exactly, and selecting it sends that native ID to the Harness
+
+#### Scenario: Control characters are rejected
+- **WHEN** a Ref ID is empty, longer than 512, or contains a control character such as a newline
+- **THEN** the Ref is rejected as invalid at the contract boundary
 
 ### Requirement: Session effective Model uses the ordered state stream
 A Harness Session SHALL expose structural Model-selection capability, an optional replayable `effectiveModel`, and an optional display-only `resolvedModelLabel` in its complete Session state. After `open()` resolves, effective or resolved Model changes SHALL be published only through ordered `session.state.changed` events.
@@ -185,3 +195,88 @@ An Adapter SHALL preserve every distinct native selectable value as an Adapter-o
 #### Scenario: Default policy changes its resolved Model
 - **WHEN** the same default Ref resolves to a different actual Model after refresh or Session initialization
 - **THEN** the default Ref remains stable while the resolved Model label is refreshed from native readback
+
+### Requirement: Delegation 使用公共 Harness Catalog 验证显式配置
+当 `delegate start` 显式指定外部 Harness Model 或 Thinking 时，Host SHALL 使用目标 `HarnessAdapter.inspect()` 返回的公共 Catalog 和 capabilities 验证请求，并 SHALL 由 Adapter `open()` 执行最终原生校验。
+
+#### Scenario: 显式 Model 存在
+- **WHEN** 调用方指定 Catalog 中存在的 opaque Model Ref
+- **THEN** Host SHALL 将该 Model Ref 传给目标 Adapter 的 Create Session 输入
+
+#### Scenario: 显式 Model 不存在
+- **WHEN** 调用方指定的 Model Ref 不属于目标 Harness 当前 Catalog
+- **THEN** 创建 SHALL 以结构化参数错误失败
+- **AND** 错误详情 SHALL 提供目标 Harness 和可用 Model Ref
+- **AND** MUST NOT 发布子 Thread 或 Delegation 成功结果
+
+#### Scenario: 显式 Thinking 受所选 Model 支持
+- **WHEN** 调用方指定 Thinking Option 且该 Option 被显式 Model 或目标默认 Model 支持
+- **THEN** Host SHALL 将该 Thinking Option 传给 Adapter 的 Create Session 输入
+
+#### Scenario: Thinking 能力不受支持
+- **WHEN** 调用方对不支持 Thinking 选择的 Harness 指定 `--thinking`
+- **THEN** 创建 SHALL 以结构化参数错误失败
+- **AND** MUST NOT 静默忽略该选项
+
+### Requirement: 省略配置时保持 Harness 默认选择
+当调用方未显式指定 Model 或 Thinking 时，Host MUST NOT 从 Catalog 人为填充该配置，目标 Harness SHALL 继续使用自身当前或默认选择。
+
+#### Scenario: 同时省略 Model 和 Thinking
+- **WHEN** 调用方执行 `delegate start` 且未传入 `--model` 与 `--thinking`
+- **THEN** Adapter Create Session 输入 SHALL 省略 `model` 与 `thinkingOptionId`
+- **AND** 行为 SHALL 与本能力加入前的默认委派一致
+
+#### Scenario: 只指定 Model
+- **WHEN** 调用方指定 Model 但省略 Thinking
+- **THEN** Host SHALL 传递 Model 并省略 `thinkingOptionId`
+- **AND** 目标 SHALL 使用该 Model 自身的默认 Thinking 配置
+
+#### Scenario: 只指定 Thinking
+- **WHEN** 调用方省略 Model 但指定 Thinking
+- **THEN** Host SHALL 针对目标默认 Model 验证该 Thinking
+- **AND** SHALL 省略 Model 并传递 Thinking Option
+
+### Requirement: Model selection carries an explicit service tier
+A Model Ref SHALL carry an optional service tier, separate from the ID, for Harnesses that offer speed tiers of the same Model. Two Refs SHALL be the same selection only when ID and tier both match. Codex Fast and Ultrafast SHALL use the tier field, and a Catalog fast variant SHALL share its standard entry's ID.
+
+#### Scenario: Codex Fast uses the tier field
+- **WHEN** the Codex Catalog advertises Fast for `gpt-6.2-sol`
+- **THEN** the standard entry's Ref is `gpt-6.2-sol` with no tier and its fast variant is `gpt-6.2-sol` with the priority tier
+
+#### Scenario: Literal suffix stays part of the ID
+- **WHEN** a native Model ID itself ends with `~fast`
+- **THEN** its Ref ID keeps that suffix and carries no tier
+
+#### Scenario: CLI shorthand resolves to the tier field
+- **WHEN** a delegation request passes `--model gpt-6.2-sol~fast` and the Catalog advertises Fast for `gpt-6.2-sol`
+- **THEN** the Host selects `gpt-6.2-sol` with the priority tier; without that advertised tier the whole value is treated as the native ID
+
+### Requirement: Route carriers round-trip any valid Model identity
+Every carrier that transports a Model selection through Desktop or Web, including draft creation, scheduled tasks, Web Thread creation and Host recovery, SHALL round-trip any valid Model Ref, tier, Thinking option and Permission mode exactly. A carrier SHALL accept the longest valid Ref together with its other fields, and SHALL NOT split a Model identity on characters that the Ref may contain.
+
+#### Scenario: Separator characters inside a Model ID
+- **WHEN** a draft is created with a Model whose ID contains `@`, `/`, or `:` together with a Thinking option
+- **THEN** the created Thread uses exactly that Model ID and that Thinking option
+
+#### Scenario: Non-ASCII Model ID
+- **WHEN** a Thread is created, restored after a Host restart, or scheduled with a Model ID containing non-ASCII characters
+- **THEN** the Harness receives the identical ID with no character substitution
+
+#### Scenario: Longest valid Ref is persisted
+- **WHEN** a Thread switches to a Model whose Ref ID is 512 code units long
+- **THEN** the switch is both applied and saved, and the Model is restored after a Host restart
+
+### Requirement: Previously stored Model Refs remain readable
+Refs saved in an earlier encoded form, including encoded Codex Refs with tier prefixes, SHALL be read and normalized to the current form wherever a stored selection is used: preferences, favorites, delegation defaults, Thread records, and delegation deduplication. Reads SHALL NOT rewrite files. A stored legacy value whose native identity cannot be determined uniquely SHALL be treated as unavailable rather than guessed.
+
+#### Scenario: Encoded Codex default still applies
+- **WHEN** the saved delegation default is the encoded Codex Fast Ref for `gpt-6.2-sol`
+- **THEN** delegation uses `gpt-6.2-sol` with the priority tier, and Settings shows that selection as current
+
+#### Scenario: Retried delegation with an encoded Ref
+- **WHEN** a delegation is retried with the same request ID, once with the encoded Ref and once with the native ID for the same Model and tier
+- **THEN** both are treated as the same request
+
+#### Scenario: Ambiguous legacy Qwen alias
+- **WHEN** a stored Qwen Ref was a character-replaced alias that matches no single current native ID
+- **THEN** the saved selection is treated as unavailable and the Harness default applies, without an error that blocks the Thread

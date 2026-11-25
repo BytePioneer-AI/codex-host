@@ -1,0 +1,24 @@
+{
+  "name": "@codexhost/adapter-qoder-cn",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist",
+    "manifest.json",
+    "assets"
+  ],
+  "exports": {
+    "./plugin": {
+      "types": "./dist/plugin.d.ts",
+      "import": "./dist/plugin.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@codexhost/adapter-qoder": "0.0.0",
+    "@codexhost/harness-adapter": "0.0.0"
+  }
+}

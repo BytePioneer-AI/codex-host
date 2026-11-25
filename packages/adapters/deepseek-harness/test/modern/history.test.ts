@@ -1,7 +1,13 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { LocalMediaMarkdownStream } from "@codexhost/harness-adapter/local-media-markdown";
 import {
   matchesModernForkHistory,
+  modernMediaRoots,
   ModernEventValidator,
   ModernHistoryError,
   resolveModernForkBoundary,
@@ -56,6 +62,7 @@ function assistantMessage(
     cacheReadTokens: 2,
     reasoningTokens: 1,
   },
+  toolCall = false,
 ): ModernJournalEvent {
   return event(
     seq,
@@ -69,17 +76,23 @@ function assistantMessage(
         content: [
           { type: "reasoning", text: reasoning },
           { type: "text", text },
-          { type: "tool-call", id: "call-1", name: "write", arguments: '{"path":"a.txt"}' },
+          ...(toolCall
+            ? [{ type: "tool-call", id: "call-1", name: "write", arguments: '{"path":"a.txt"}' }]
+            : []),
         ],
         source: { kind: "model", provider: "deepseek", model: "deepseek-v4" },
       },
+      stream: [
+        { type: "reasoning-chunks", time0: 1_000, index: 0, dt: [], texts: [reasoning] },
+        { type: "text-chunks", time0: 1_001, index: 1, dt: [], texts: [text] },
+      ],
       usage,
     },
     true,
   );
 }
 
-function toolResult(seq: number): ModernJournalEvent {
+function toolResult(seq: number, text = "written"): ModernJournalEvent {
   return event(
     seq,
     "tool/result",
@@ -88,20 +101,26 @@ function toolResult(seq: number): ModernJournalEvent {
       step: 1,
       message: {
         id: `tool-result-${seq}`,
-        role: "user",
-        content: [
-          {
-            type: "tool-result",
-            toolCallId: "call-1",
-            content: [{ type: "text", text: "written" }],
-          },
-        ],
+        role: "tool",
+        toolCallId: "call-1",
+        isError: false,
+        content: [{ type: "text", text }],
         source: { kind: "tool", callId: "call-1" },
       },
       meta: { diffs: [{ path: "a.txt", oldText: null, newText: "hello\n" }] },
     },
     true,
   );
+}
+
+function toolCall(seq: number): ModernJournalEvent {
+  return event(seq, "tool/call", {
+    turn: 1,
+    step: 1,
+    callId: "call-1",
+    name: "write",
+    arguments: '{"path":"a.txt"}',
+  });
 }
 
 function completeHistory(): ModernJournalEvent[] {
@@ -125,37 +144,16 @@ function completeHistory(): ModernJournalEvent[] {
       model: "deepseek-v4",
       contextWindow: 128_000,
     }),
-    event(6, "assistant/chunk", {
-      turn: 1,
-      step: 1,
-      chunk: { type: "reasoning-delta", index: 0, text: "think" },
-    }),
-    event(7, "assistant/chunk", {
-      turn: 1,
-      step: 1,
-      chunk: { type: "text-delta", index: 1, text: "done" },
-    }),
-    event(8, "assistant/chunk", {
-      turn: 1,
-      step: 1,
-      chunk: { type: "usage", usage: { inputTokens: 4, outputTokens: 2 } },
-    }),
-    assistantMessage(9, 1, 1, "done", "think"),
-    event(10, "tool/call", {
-      turn: 1,
-      step: 1,
-      callId: "call-1",
-      name: "write",
-      arguments: '{"path":"a.txt"}',
-    }),
-    toolResult(11),
-    event(12, "step/end", { turn: 1, step: 1 }),
-    event(13, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+    assistantMessage(6, 1, 1, "done", "think", undefined, true),
+    toolCall(7),
+    toolResult(8),
+    event(9, "step/end", { turn: 1, step: 1 }),
+    event(10, "turn/end", { turn: 1, reason: { kind: "completed" } }),
   ];
 }
 
 describe("DeepSeek Harness Modern history projection", () => {
-  it("resolves and verifies the exact fork prefix including its between-Turn tail", () => {
+  it("resolves and verifies the exact V4 fork prefix and its inherited marker", () => {
     const source = [
       event(0, "turn/start", { turn: 1 }),
       userMessage(1, ["first"]),
@@ -164,15 +162,15 @@ describe("DeepSeek Harness Modern history projection", () => {
       event(4, "permission/preset", { preset: "workspace-write" }),
       event(5, "turn/start", { turn: 2 }),
     ];
-    const boundary = resolveModernForkBoundary(source, "turn-end:2");
+    const boundary = resolveModernForkBoundary(source, "v4-turn-end:2");
 
-    expect(boundary).toEqual({ atSeq: 2, events: source.slice(0, 5) });
+    expect(boundary).toEqual({ atSeq: 2, events: source.slice(0, 3) });
     if (!boundary) return;
-    const marker = event(5, "session/end-seed", {});
+    const marker = event(3, "session/end-seed", { inherited: true });
     const child = [
       ...boundary.events,
       marker,
-      event(6, "sandbox/mode", { mode: "workspace-write" }),
+      event(4, "sandbox/mode", { mode: "workspace-write" }),
     ];
     expect(matchesModernForkHistory(boundary.events, child)).toBe(true);
     expect(
@@ -186,20 +184,19 @@ describe("DeepSeek Harness Modern history projection", () => {
     expect(
       matchesModernForkHistory(boundary.events, [
         ...boundary.events,
-        marker,
-        event(6, "turn/start", { turn: 2 }),
+        event(3, "session/end-seed", {}),
       ]),
     ).toBe(false);
-    expect(resolveModernForkBoundary(source, "turn-end:3")).toBeNull();
-    expect(resolveModernForkBoundary(source, "turn-end:02")).toBeNull();
-
-    const alreadyMarked = [...source.slice(0, 3), event(3, "session/end-seed", {})];
-    const nested = resolveModernForkBoundary(alreadyMarked, "turn-end:2");
-    expect(nested?.events).toEqual(alreadyMarked);
-    expect(matchesModernForkHistory(alreadyMarked, alreadyMarked)).toBe(true);
     expect(
-      matchesModernForkHistory(alreadyMarked, [...alreadyMarked, event(4, "session/end-seed", {})]),
+      matchesModernForkHistory(boundary.events, [
+        ...boundary.events,
+        marker,
+        event(4, "turn/start", { turn: 2 }),
+      ]),
     ).toBe(false);
+    expect(resolveModernForkBoundary(source, "v4-turn-end:3")).toBeNull();
+    expect(resolveModernForkBoundary(source, "v4-turn-end:02")).toBeNull();
+    expect(resolveModernForkBoundary(source, "turn-end:2")).toBeNull();
   });
 
   it("projects complete text, reasoning, Tool, Diff, Model, Thinking and Usage history", () => {
@@ -213,7 +210,7 @@ describe("DeepSeek Harness Modern history projection", () => {
     const turn = projection.snapshot.turns[0];
     expect(turn).toMatchObject({
       nativeTurnRef: { nativeTurnKey: "turn:1" },
-      checkpoint: { checkpointId: "turn-end:13" },
+      checkpoint: { checkpointId: "v4-turn-end:10" },
       input: [
         { type: "text", text: "first" },
         { type: "text", text: "second" },
@@ -249,22 +246,84 @@ describe("DeepSeek Harness Modern history projection", () => {
       contextWindowTokens: 128_000,
     });
     expect(projection.incompleteTurn).toBeUndefined();
-    expect(projection.lastSeq).toBe(13);
+    expect(projection.lastSeq).toBe(10);
+  });
+
+  it("makes local media in agent text absolute, following working-directory changes", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexhost-dsh-history-media-"));
+    const shots = path.join(workspace, "shots");
+    try {
+      await mkdir(shots);
+      await writeFile(path.join(shots, "a.png"), "png");
+      await writeFile(path.join(shots, "b.png"), "png");
+      const events = [
+        event(0, "turn/start", { turn: 1 }),
+        event(1, "step/start", { turn: 1, step: 1 }),
+        userMessage(2, ["show"]),
+        assistantMessage(3, 1, 1, "![a](shots/a.png) `shots/b.png` ![b](b.png)", "think"),
+        event(4, "step/end", { turn: 1, step: 1 }),
+        event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+        event(6, "working-directory/change", { cwd: "shots" }),
+        event(7, "turn/start", { turn: 2 }),
+        event(8, "step/start", { turn: 2, step: 1 }),
+        userMessage(9, ["again"], "request-2"),
+        assistantMessage(10, 2, 1, "![b](b.png) ![a](shots/a.png)", "think"),
+        event(11, "step/end", { turn: 2, step: 1 }),
+        event(12, "turn/end", { turn: 2, reason: { kind: "completed" } }),
+      ];
+      const agentTexts = (cwd?: string) =>
+        projectModernHistory({
+          sessionId: SESSION_ID,
+          events,
+          ...(cwd === undefined ? {} : { cwd }),
+        }).snapshot.turns.flatMap(({ items }) =>
+          items.flatMap(({ item }) => (item.type === "agentMessage" ? [item.text] : [])),
+        );
+      const a = path.join(shots, "a.png").replaceAll("\\", "/");
+      const b = path.join(shots, "b.png").replaceAll("\\", "/");
+
+      expect(agentTexts(workspace)).toEqual([
+        `![a](${a}) ![b.png](${b}) ![b](b.png)`,
+        `![b](${b}) ![a](${a})`,
+      ]);
+      expect(agentTexts()).toEqual([
+        "![a](shots/a.png) `shots/b.png` ![b](b.png)",
+        "![b](b.png) ![a](shots/a.png)",
+      ]);
+
+      // A journal without a header cwd still reloads with the images live output showed.
+      const absolute = path.join(shots, "a.png");
+      const live = new LocalMediaMarkdownStream(modernMediaRoots(undefined, undefined));
+      const liveText = live.append(`see \`${absolute}\``) + live.flush();
+      const reloaded = (media?: boolean) =>
+        projectModernHistory({
+          sessionId: SESSION_ID,
+          events: [
+            event(0, "turn/start", { turn: 1 }),
+            event(1, "step/start", { turn: 1, step: 1 }),
+            userMessage(2, ["show"]),
+            assistantMessage(3, 1, 1, `see \`${absolute}\``, "think"),
+            event(4, "step/end", { turn: 1, step: 1 }),
+            event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+          ],
+          ...(media === undefined ? {} : { media }),
+        }).snapshot.turns.flatMap(({ items }) =>
+          items.flatMap(({ item }) => (item.type === "agentMessage" ? [item.text] : [])),
+        );
+      expect(liveText).toBe(`see ![a.png](${a})`);
+      expect(reloaded(true)).toEqual([liveText]);
+      // Usage projections do not ask for media and keep the native text.
+      expect(reloaded()).toEqual([`see \`${absolute}\``]);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 
   it("keeps surface replacement copies out of the human transcript and Usage", () => {
     const replacementUser = {
       ...userMessage(3, ["model-only replacement"]),
-      surfaceOp: { op: "replace" as const, start: 2, end: 2 },
+      surfaceOp: { op: "replace" as const, startSeq: 2, endSeq: 2 },
       sourceEventSeqs: [2],
-    };
-    const replacementAssistant = {
-      ...assistantMessage(5, 1, 1, "model-only answer", "model-only thought", {
-        inputTokens: 500,
-        outputTokens: 300,
-      }),
-      surfaceOp: { op: "replace" as const, start: 4, end: 4 },
-      sourceEventSeqs: [4],
     };
     const projection = projectModernHistory({
       sessionId: SESSION_ID,
@@ -274,9 +333,8 @@ describe("DeepSeek Harness Modern history projection", () => {
         userMessage(2, ["visible prompt"]),
         replacementUser,
         assistantMessage(4, 1, 1, "visible answer", "visible thought"),
-        replacementAssistant,
-        event(6, "step/end", { turn: 1, step: 1 }),
-        event(7, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+        event(5, "step/end", { turn: 1, step: 1 }),
+        event(6, "turn/end", { turn: 1, reason: { kind: "completed" } }),
       ],
     });
 
@@ -290,6 +348,101 @@ describe("DeepSeek Harness Modern history projection", () => {
     expect(projection.usage).toMatchObject({ inputTokens: 5, outputTokens: 3 });
   });
 
+  it("keeps a late timed-question reply out of the human transcript", () => {
+    // DSH 0.2.0-rc.2 steers a late answer as a sourced user message.
+    const reply = {
+      id: "reply-6",
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            kind: "answer_to_pending_question",
+            tool: "ask_user_question",
+            callId: "call-ask",
+            questions: [{ id: "pick", question: "Pick one" }],
+            answers: [{ id: "pick", selected: ["B"] }],
+          }),
+        },
+      ],
+      source: { kind: "user-question-reply", callId: "call-ask", outcome: "answered" },
+    };
+    const projection = projectModernHistory({
+      sessionId: SESSION_ID,
+      events: [
+        event(0, "turn/start", { turn: 1 }),
+        event(1, "step/start", { turn: 1, step: 1 }),
+        userMessage(2, ["ask"]),
+        assistantMessage(3, 1, 1, "waiting", "ask first"),
+        event(4, "step/end", { turn: 1, step: 1 }),
+        event(5, "step/start", { turn: 1, step: 2 }),
+        event(6, "agent/inbox/spliced", { target: "next-step", start: 0, inserted: [reply] }),
+        event(7, "user/message", reply, true),
+        assistantMessage(8, 1, 2, "Using B", "got B"),
+        event(9, "step/end", { turn: 1, step: 2 }),
+        event(10, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+      ],
+    });
+
+    expect(projection.snapshot.turns.map(({ input }) => input)).toEqual([
+      [{ type: "text", text: "ask" }],
+    ]);
+    expect(projection.snapshot.turns[0]?.items.map(({ item }) => item.type)).toEqual([
+      "reasoning",
+      "agentMessage",
+      "reasoning",
+      "agentMessage",
+    ]);
+    expect(JSON.stringify(projection.snapshot)).not.toContain("answer_to_pending_question");
+  });
+
+  it("accepts the DSH 0.2.2 message sources without widening the human transcript", () => {
+    const sourced = (seq: number, text: string, source: Record<string, unknown>) =>
+      event(
+        seq,
+        "user/message",
+        { id: `user-${seq}`, role: "user", content: [{ type: "text", text }], source },
+        true,
+      );
+    const projection = projectModernHistory({
+      sessionId: SESSION_ID,
+      events: [
+        event(0, "turn/start", { turn: 1 }),
+        event(1, "step/start", { turn: 1, step: 1 }),
+        // A LiveShare reader's prompt keeps kind `user`; the principal is attribution only.
+        sourced(2, "reader prompt", {
+          kind: "user",
+          rpcId: "request-1",
+          principal: {
+            kind: "share-viewer",
+            shareId: "share-1",
+            actor: { providerId: "github", tenantId: "t", subjectId: "s", displayName: "Reader" },
+          },
+        }),
+        sourced(3, "SKILL CATALOG", {
+          kind: "skill-catalog",
+          form: "catalog",
+          incomplete: true,
+          entries: [{ name: "readable", description: "found" }],
+        }),
+        sourced(4, "ACTION CARD STATUS", {
+          kind: "action-cards",
+          through: 3,
+          form: "notice",
+          summary: "Action card status updated",
+        }),
+        assistantMessage(5, 1, 1, "answer", "thought"),
+        event(6, "step/end", { turn: 1, step: 1 }),
+        event(7, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+      ],
+    });
+
+    expect(projection.snapshot.turns.map(({ input }) => input)).toEqual([
+      [{ type: "text", text: "reader prompt" }],
+    ]);
+    expect(JSON.stringify(projection.snapshot)).not.toMatch(/SKILL CATALOG|ACTION CARD STATUS/u);
+  });
+
   it.each([
     [
       "a range outside the current surface",
@@ -298,8 +451,8 @@ describe("DeepSeek Harness Modern history projection", () => {
         event(1, "step/start", { turn: 1, step: 1 }),
         userMessage(2, ["visible"]),
         {
-          ...assistantMessage(3, 1, 1, "replacement", ""),
-          surfaceOp: { op: "replace" as const, start: 1, end: 1 },
+          ...userMessage(3, ["replacement"]),
+          surfaceOp: { op: "replace" as const, startSeq: 1, endSeq: 1 },
           sourceEventSeqs: [1],
         },
       ],
@@ -310,10 +463,10 @@ describe("DeepSeek Harness Modern history projection", () => {
         event(0, "turn/start", { turn: 1 }),
         event(1, "step/start", { turn: 1, step: 1 }),
         userMessage(2, ["visible"]),
-        assistantMessage(3, 1, 1, "answer", ""),
+        userMessage(3, ["second"]),
         {
-          ...assistantMessage(4, 1, 1, "replacement", ""),
-          surfaceOp: { op: "replace" as const, start: 3, end: 2 },
+          ...userMessage(4, ["replacement"]),
+          surfaceOp: { op: "replace" as const, startSeq: 3, endSeq: 2 },
           sourceEventSeqs: [2, 3],
         },
       ],
@@ -325,18 +478,39 @@ describe("DeepSeek Harness Modern history projection", () => {
         event(1, "step/start", { turn: 1, step: 1 }),
         userMessage(2, ["visible"]),
         {
-          ...assistantMessage(3, 1, 1, "replacement", ""),
-          surfaceOp: { op: "replace" as const, start: 2, end: 2 },
-          sourceEventSeqs: [],
+          ...userMessage(3, ["replacement"]),
+          surfaceOp: { op: "replace" as const, startSeq: 2, endSeq: 2 },
         },
       ],
     ],
     [
-      "an empty non-assistant source list",
+      "pre-V4 replacement coordinates",
+      [
+        event(0, "turn/start", { turn: 1 }),
+        event(1, "step/start", { turn: 1, step: 1 }),
+        userMessage(2, ["visible"]),
+        {
+          ...userMessage(3, ["replacement"]),
+          surfaceOp: { op: "replace", start: 2, end: 2 } as never,
+          sourceEventSeqs: [2],
+        },
+      ],
+    ],
+    [
+      "an empty source list",
       [
         event(0, "turn/start", { turn: 1 }),
         event(1, "step/start", { turn: 1, step: 1 }),
         { ...userMessage(2, ["visible"]), sourceEventSeqs: [] },
+      ],
+    ],
+    [
+      "assistant provenance",
+      [
+        event(0, "turn/start", { turn: 1 }),
+        event(1, "step/start", { turn: 1, step: 1 }),
+        userMessage(2, ["visible"]),
+        { ...assistantMessage(3, 1, 1, "answer", ""), sourceEventSeqs: [2] },
       ],
     ],
   ])("rejects a surface event with %s", (_label, events) => {
@@ -346,39 +520,25 @@ describe("DeepSeek Harness Modern history projection", () => {
   });
 
   it("allows tool/result replacement to change only one current result's content", () => {
-    const original = toolResult(3);
+    const original = toolResult(4);
     const originalData = original.data as Record<string, unknown>;
     const originalMessage = originalData.message as Record<string, unknown>;
-    const originalBlock = (originalMessage.content as Record<string, unknown>[])[0];
     const replacement = {
       ...original,
-      seq: 4,
-      time: 1_004,
+      seq: 5,
+      time: 1_005,
       data: {
         ...originalData,
-        message: {
-          ...originalMessage,
-          content: [
-            {
-              ...originalBlock,
-              content: [{ type: "text", text: "pruned" }],
-            },
-          ],
-        },
+        message: { ...originalMessage, content: [{ type: "text", text: "pruned" }] },
       } as never,
-      surfaceOp: { op: "replace" as const, start: 3, end: 3 },
-      sourceEventSeqs: [3],
+      surfaceOp: { op: "replace" as const, startSeq: 4, endSeq: 4 },
+      sourceEventSeqs: [4],
     };
     const prefix = [
       event(0, "turn/start", { turn: 1 }),
       event(1, "step/start", { turn: 1, step: 1 }),
-      event(2, "tool/call", {
-        turn: 1,
-        step: 1,
-        callId: "call-1",
-        name: "write",
-        arguments: "{}",
-      }),
+      assistantMessage(2, 1, 1, "writing", "plan", undefined, true),
+      toolCall(3),
       original,
     ];
 
@@ -391,9 +551,9 @@ describe("DeepSeek Harness Modern history projection", () => {
         events: [
           ...prefix,
           {
-            ...toolResult(4),
-            surfaceOp: { op: "replace", start: 3, end: 3 },
-            sourceEventSeqs: [3],
+            ...toolResult(5),
+            surfaceOp: { op: "replace", startSeq: 4, endSeq: 4 },
+            sourceEventSeqs: [4],
           },
         ],
       }),
@@ -401,14 +561,14 @@ describe("DeepSeek Harness Modern history projection", () => {
   });
 
   it("keeps an incomplete Turn out of completed history and returns its exact event suffix", () => {
-    const events = completeHistory().slice(0, 10);
+    const events = completeHistory().slice(0, 9);
     const projection = projectModernHistory({ sessionId: SESSION_ID, events });
 
     expect(projection.snapshot.turns).toEqual([]);
     expect(projection.incompleteTurn?.turn).toBe(1);
     expect(projection.incompleteTurn?.events).toEqual(events.slice(1));
     expect(projection.incompleteTurn?.events.map(({ seq }) => seq)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9,
+      1, 2, 3, 4, 5, 6, 7, 8,
     ]);
   });
 
@@ -419,6 +579,7 @@ describe("DeepSeek Harness Modern history projection", () => {
         events: [{ ...event(0, "plugin/future", { any: true }), ignorable: true }],
       }),
     ).not.toThrow();
+    // V4 keeps an ignorable future event's surface metadata opaque.
     expect(() =>
       projectModernHistory({
         sessionId: SESSION_ID,
@@ -430,7 +591,7 @@ describe("DeepSeek Harness Modern history projection", () => {
           },
         ],
       }),
-    ).toThrowError(ModernHistoryError);
+    ).not.toThrow();
     expect(() =>
       projectModernHistory({
         sessionId: SESSION_ID,
@@ -492,8 +653,8 @@ describe("DeepSeek Harness Modern history projection", () => {
       }),
     ],
     [
-      "code dispatch",
-      event(0, "tool/code-dispatch", {
+      "PTC dispatch",
+      event(0, "tool/ptc-dispatch", {
         rootCallId: "root",
         parentCallId: "parent",
         subCallId: "sub",
@@ -519,6 +680,21 @@ describe("DeepSeek Harness Modern history projection", () => {
     );
   });
 
+  it("accepts the fractional jittered delay DSH records for an LLM retry (#367)", () => {
+    expect(() =>
+      projectModernHistory({ sessionId: SESSION_ID, events: [llmRetry(462.36616349221646)] }),
+    ).not.toThrow();
+  });
+
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, "462"])(
+    "refuses an LLM retry delay of %s",
+    (delayMs) => {
+      expect(() =>
+        projectModernHistory({ sessionId: SESSION_ID, events: [llmRetry(delayMs)] }),
+      ).toThrowError(ModernHistoryError);
+    },
+  );
+
   it("accepts canonical delegated sandbox and approval sources", () => {
     expect(() =>
       projectModernHistory({
@@ -529,6 +705,27 @@ describe("DeepSeek Harness Modern history projection", () => {
             source: "delegation",
           }),
           event(1, "approval/policy", { policy: "never", source: "delegation" }),
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it("accepts approval/asked events that include DSH displayReason (#650)", () => {
+    expect(() =>
+      projectModernHistory({
+        sessionId: SESSION_ID,
+        events: [
+          event(0, "approval/asked", {
+            id: "approval-1",
+            toolName: "bash",
+            callId: "call-esc",
+            reason: "escalate sandbox to danger-full-access",
+            displayReason: {
+              en: "Allow this operation with danger-full-access permissions",
+              zh: "允许本次操作使用 danger-full-access 权限",
+            },
+          }),
+          event(1, "approval/decided", { id: "approval-1", outcome: "allowed-once" }),
         ],
       }),
     ).not.toThrow();
@@ -736,20 +933,18 @@ describe("DeepSeek Harness Modern history projection", () => {
   });
 
   it("ignores malformed Usage telemetry without changing valid Usage or Turn outcome", () => {
+    const usageAttempt = (seq: number, usage: Record<string, unknown>) =>
+      event(seq, "assistant/attempt", {
+        turn: 1,
+        step: 1,
+        stream: [{ type: "chunk", time: 1_000 + seq, chunk: { type: "usage", usage } }],
+      });
     const events = [
       event(0, "turn/start", { turn: 1 }),
       event(1, "step/start", { turn: 1, step: 1 }),
       userMessage(2, ["hello"]),
-      event(3, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "usage", usage: { inputTokens: 4, outputTokens: 2 } },
-      }),
-      event(4, "assistant/chunk", {
-        turn: 1,
-        step: 1,
-        chunk: { type: "usage", usage: { inputTokens: "broken", outputTokens: 99 } },
-      }),
+      usageAttempt(3, { inputTokens: 4, outputTokens: 2 }),
+      usageAttempt(4, { inputTokens: "broken", outputTokens: 99 }),
       assistantMessage(5, 1, 1, "done", "think", {
         inputTokens: 10,
         outputTokens: "broken",
@@ -763,3 +958,18 @@ describe("DeepSeek Harness Modern history projection", () => {
     expect(projection.snapshot.turns[0]?.outcome).toEqual({ status: "succeeded" });
   });
 });
+
+function llmRetry(delayMs: unknown) {
+  return event(0, "llm/retry", {
+    retryId: "retry-1",
+    turn: 1,
+    step: 1,
+    provider: "deepseek",
+    mode: "normal",
+    policyKey: "default",
+    retry: 1,
+    maxRetries: 5,
+    delayMs,
+    failure: { message: "502 status code (no body)", code: "SERVER" },
+  });
+}

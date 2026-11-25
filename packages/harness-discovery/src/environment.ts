@@ -52,6 +52,14 @@ export function isExecutableFile(filePath: string, platform: NodeJS.Platform): b
   }
 }
 
+export function isDirectory(candidate: string): boolean {
+  try {
+    return fs.statSync(candidate).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 export function subdirectoryNames(directory: string): string[] {
   try {
     return fs

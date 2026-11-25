@@ -1,21 +1,31 @@
+import { configureSubagentEvent } from "@codexhost/harness-adapter";
 import { describe, expect, it } from "vitest";
 import type {
+  HostApprovalInteraction,
   HostCommandExecutionItem,
   HostFileChangeItem,
+  HostMcpToolCallItem,
   HostQuestionInteraction,
   HostSubagentDelegationItem,
   HostThreadSnapshot,
   HostToolExecutionItem,
+  HostWebSearchItem,
 } from "@codexhost/harness-adapter";
 import {
   hostInteractionIdSchema,
   hostItemIdSchema,
   hostTurnIdSchema,
+  type JsonValue,
   nativeCheckpointRefSchema,
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 
-import { CodexTurnProjector, projectHistoricalTurn } from "../src/index.js";
+import {
+  CodexTurnProjector,
+  historicalPlanUpdate,
+  projectHistoricalTurn,
+  type TodoPlan,
+} from "../src/index.js";
 
 const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = (value: string) => hostItemIdSchema.parse(value);
@@ -30,6 +40,242 @@ function projector(): CodexTurnProjector {
 }
 
 describe("Codex UI projector", () => {
+  it("omits terminal Reasoning line breaks in live and historical Desktop text", () => {
+    const value = projector();
+    const reasoningId = itemId("line-break-reasoning");
+    const rawText = "First\n\n\r\nSecond\r\n\n";
+    const visibleText = "First\n\n\r\nSecond";
+    const summary = ["**First**", "**Second**"];
+    value.project({ type: "turn.started", turnId });
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: { type: "reasoning", itemId: reasoningId, text: "" },
+      }).messages,
+    ).toEqual([]);
+    const first = value.project({
+      type: "item.updated",
+      turnId,
+      itemId: reasoningId,
+      update: { type: "text.append", text: "First\n\n" },
+    });
+    expect(
+      first.messages.filter(({ method }) => method === "item/commandExecution/outputDelta"),
+    ).toMatchObject([{ params: { delta: "First" } }]);
+    expect(
+      value.project({
+        type: "item.updated",
+        turnId,
+        itemId: reasoningId,
+        update: { type: "text.append", text: "\r\n" },
+      }).messages,
+    ).toEqual([]);
+    const continued = value.project({
+      type: "item.updated",
+      turnId,
+      itemId: reasoningId,
+      update: { type: "text.append", text: "Second\r\n\n" },
+    });
+    expect(
+      continued.messages.filter(({ method }) => method === "item/commandExecution/outputDelta"),
+    ).toMatchObject([{ params: { delta: "\n\n\r\nSecond" } }]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { type: "reasoning", itemId: reasoningId, text: rawText },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      { method: "item/reasoning/summaryPartAdded", params: { summaryIndex: 1 } },
+      {
+        method: "item/reasoning/summaryTextDelta",
+        params: { summaryIndex: 1, delta: "**Second**" },
+      },
+      { params: { item: { type: "reasoning", summary } } },
+      { params: { item: { type: "commandExecution", aggregatedOutput: visibleText } } },
+    ]);
+    expect(
+      value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } })
+        .completedTurn,
+    ).toMatchObject({
+      items: [
+        { type: "reasoning", summary },
+        { type: "commandExecution", aggregatedOutput: visibleText },
+      ],
+    });
+
+    const snapshot: HostThreadSnapshot["turns"][number] = {
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: "pi",
+        nativeSessionId: "session-1",
+        nativeTurnKey: "turn-1",
+        formatVersion: 1,
+      }),
+      input: [],
+      items: [
+        {
+          item: { type: "reasoning", itemId: reasoningId, text: rawText },
+          outcome: { status: "succeeded" },
+        },
+      ],
+      outcome: { status: "succeeded" },
+    };
+    expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toMatchObject({
+      items: [
+        { type: "reasoning", summary },
+        { type: "commandExecution", aggregatedOutput: visibleText },
+      ],
+    });
+    expect(
+      projectHistoricalTurn({
+        turnId,
+        cwd: "/workspace",
+        snapshot: {
+          ...snapshot,
+          items: [
+            {
+              item: { type: "reasoning", itemId: reasoningId, text: "\r\n\n" },
+              outcome: { status: "succeeded" },
+            },
+          ],
+        },
+      }).items,
+    ).toEqual([]);
+  });
+
+  it("keeps steered input inside its Turn, tagged for Desktop only while live", () => {
+    const steered = {
+      type: "userMessage" as const,
+      itemId: itemId("steer-1"),
+      input: [{ type: "text" as const, text: "also run the tests" }],
+    };
+    const live = projector();
+    live.project({ type: "turn.started", turnId });
+    live.bindUserMessageClientId(steered.itemId, "desktop-message");
+    const started = live.project({ type: "item.started", turnId, item: steered });
+    expect(started.messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          turnId,
+          item: { id: "steer-1", type: "userMessage", clientId: "desktop-message" },
+        },
+      },
+    ]);
+    live.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: steered, outcome: { status: "succeeded" } },
+    });
+    expect(live.pendingTurn().items).toContainEqual(
+      expect.objectContaining({ id: "steer-1", clientId: "desktop-message" }),
+    );
+
+    const historical = projectHistoricalTurn({
+      turnId,
+      cwd: "/workspace",
+      snapshot: {
+        nativeTurnRef: nativeTurnRefSchema.parse({
+          harnessId: "pi",
+          nativeSessionId: "native",
+          nativeTurnKey: "user",
+          formatVersion: 1,
+        }),
+        input: [{ type: "text", text: "start" }],
+        items: [{ item: steered, outcome: { status: "succeeded" } }],
+        outcome: { status: "succeeded" },
+      },
+    });
+    expect(historical.items).toEqual([
+      expect.objectContaining({ type: "userMessage", id: "turn-1-user" }),
+      {
+        id: "steer-1",
+        type: "userMessage",
+        clientId: null,
+        content: [{ type: "text", text: "also run the tests", text_elements: [] }],
+      },
+    ]);
+  });
+
+  it.each([true, false])("restores Desktop image attachments (request heading: %s)", (request) => {
+    const text = [
+      "",
+      "# Files mentioned by the user:",
+      "",
+      "## codex-clipboard-1.png: C:/Users/me/AppData/Local/Temp/codex-clipboard-1.png",
+      "Image attachment: true",
+      "",
+      "## notes.md: /work/notes.md",
+      "",
+      ...(request
+        ? ["## My request:", "## typed.png: /work/typed.png", "Image attachment: true"]
+        : []),
+    ].join("\n");
+    const input = [{ type: "text" as const, text }];
+    const content = [
+      { type: "text", text, text_elements: [] },
+      { type: "localImage", path: "C:/Users/me/AppData/Local/Temp/codex-clipboard-1.png" },
+    ];
+
+    const live = new CodexTurnProjector({
+      threadId: "thread-1",
+      turnId,
+      cwd: "/workspace",
+      startedAtMs: 1_000,
+      initialInput: input,
+    });
+    expect(live.project({ type: "turn.started", turnId }).messages).toContainEqual(
+      expect.objectContaining({
+        method: "item/started",
+        params: expect.objectContaining({
+          item: { id: "turn-1-user", type: "userMessage", clientId: null, content },
+        }),
+      }),
+    );
+    const snapshotOnly = new CodexTurnProjector({
+      threadId: "thread-1",
+      turnId,
+      cwd: "/workspace",
+      startedAtMs: 1_000,
+      snapshotInput: input,
+    });
+    expect(snapshotOnly.project({ type: "turn.started", turnId }).messages).not.toContainEqual(
+      expect.objectContaining({ method: "item/started" }),
+    );
+    expect(snapshotOnly.pendingTurn().items).toEqual([]);
+    expect(snapshotOnly.snapshotTurn().items).toEqual([
+      { id: "turn-1-user", type: "userMessage", clientId: null, content },
+    ]);
+
+    const steered = { type: "userMessage" as const, itemId: itemId("steer-1"), input };
+    expect(live.project({ type: "item.started", turnId, item: steered }).messages).toMatchObject([
+      { method: "item/started", params: { item: { id: "steer-1", content } } },
+    ]);
+
+    const historical = projectHistoricalTurn({
+      turnId,
+      cwd: "/workspace",
+      snapshot: {
+        nativeTurnRef: nativeTurnRefSchema.parse({
+          harnessId: "claude-code",
+          nativeSessionId: "native",
+          nativeTurnKey: "user",
+          formatVersion: 1,
+        }),
+        input,
+        items: [],
+        outcome: { status: "succeeded" },
+      },
+    });
+    expect(historical.items).toEqual([
+      { id: "turn-1-user", type: "userMessage", clientId: null, content },
+    ]);
+  });
+
   it("does not invent historical duration from invalid native timing", () => {
     const snapshot: HostThreadSnapshot["turns"][number] = {
       nativeTurnRef: nativeTurnRefSchema.parse({
@@ -45,10 +291,27 @@ describe("Codex UI projector", () => {
       completedAtMs: 1_000,
     };
     expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toMatchObject({
+      items: [],
       startedAt: null,
       completedAt: null,
       durationMs: null,
     });
+    const wake = projectHistoricalTurn({
+      turnId,
+      cwd: "/workspace",
+      snapshot: {
+        ...snapshot,
+        items: [
+          {
+            item: { type: "agentMessage", itemId: itemId("wake"), text: "Timer expired" },
+            outcome: { status: "succeeded" },
+          },
+        ],
+      },
+    });
+    expect(wake.items).toMatchObject([
+      { id: "wake", type: "agentMessage", text: "Timer expired", phase: "final_answer" },
+    ]);
   });
 
   it("projects a complete historical Snapshot without replaying notifications", () => {
@@ -111,6 +374,7 @@ describe("Codex UI projector", () => {
     };
 
     expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toEqual({
+      codexhostFileOperations: [],
       id: "turn-1",
       status: "completed",
       items: [
@@ -123,7 +387,7 @@ describe("Codex UI projector", () => {
         {
           id: "historical-reasoning-summary",
           type: "reasoning",
-          summary: ["visible analysis"],
+          summary: ["**visible analysis**"],
           content: [],
         },
         {
@@ -434,6 +698,8 @@ describe("Codex UI projector", () => {
       13_000,
     );
     expect(reasoningCompleted.messages).toMatchObject([
+      { method: "item/reasoning/summaryPartAdded" },
+      { method: "item/reasoning/summaryTextDelta", params: { delta: "**thinking**" } },
       {
         method: "item/completed",
         params: {
@@ -648,6 +914,43 @@ describe("Codex UI projector", () => {
     },
   );
 
+  it.each([
+    [{ status: "succeeded" }, "completed"],
+    [
+      {
+        status: "failed",
+        error: { code: "nativeFailure", message: "Summary failed", retryable: true },
+      },
+      "failed",
+    ],
+    [{ status: "cancelled", reason: "Summary cancelled" }, "interrupted"],
+  ] as const)("includes compaction outcome only in client snapshots: %s", (outcome, status) => {
+    const value = projector();
+    const item = { type: "contextCompaction" as const, itemId: itemId("compact-snapshot") };
+    value.project({ type: "turn.started", turnId });
+    const started = value.project({ type: "item.started", turnId, item });
+    expect(started.messages).toMatchObject([
+      {
+        method: "item/started",
+        params: { item: { id: item.itemId, type: item.type } },
+      },
+    ]);
+    expect(value.snapshotTurn()).toMatchObject({
+      status: "inProgress",
+      items: expect.arrayContaining([{ id: item.itemId, type: item.type, status: "inProgress" }]),
+    });
+    value.project({ type: "item.completed", turnId, snapshot: { item, outcome } });
+    expect(value.snapshotTurn()).toMatchObject({
+      status: "inProgress",
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: item.itemId, type: item.type, status }),
+      ]),
+    });
+    expect(value.pendingTurn().items).not.toContainEqual(
+      expect.objectContaining({ type: item.type }),
+    );
+  });
+
   it("projects native context compaction before the continued Agent reply", () => {
     const value = projector();
     const compactionId = itemId("compaction-1");
@@ -726,7 +1029,7 @@ describe("Codex UI projector", () => {
         type: "item.updated",
         turnId,
         itemId: reasoningId,
-        update: { type: "text.append", text: "visible " },
+        update: { type: "text.append", text: "Visible step. Then" },
       }).messages,
     ).toMatchObject([
       {
@@ -743,7 +1046,7 @@ describe("Codex UI projector", () => {
       },
       {
         method: "item/commandExecution/outputDelta",
-        params: { itemId: reasoningId, delta: "visible " },
+        params: { itemId: reasoningId, delta: "Visible step. Then" },
       },
       {
         method: "item/reasoning/summaryPartAdded",
@@ -751,7 +1054,11 @@ describe("Codex UI projector", () => {
       },
       {
         method: "item/reasoning/summaryTextDelta",
-        params: { itemId: `${reasoningId}-summary`, summaryIndex: 0, delta: "visible " },
+        params: {
+          itemId: `${reasoningId}-summary`,
+          summaryIndex: 0,
+          delta: "**Visible step**\n\nThen",
+        },
       },
     ]);
     expect(
@@ -759,23 +1066,23 @@ describe("Codex UI projector", () => {
         type: "item.updated",
         turnId,
         itemId: reasoningId,
-        update: { type: "text.append", text: "analysis" },
+        update: { type: "text.append", text: " more." },
       }).messages,
     ).toMatchObject([
       {
         method: "item/commandExecution/outputDelta",
-        params: { itemId: reasoningId, delta: "analysis" },
+        params: { itemId: reasoningId, delta: " more." },
       },
       {
         method: "item/reasoning/summaryTextDelta",
-        params: { itemId: `${reasoningId}-summary`, summaryIndex: 0, delta: "analysis" },
+        params: { itemId: `${reasoningId}-summary`, summaryIndex: 0, delta: " more." },
       },
     ]);
     const reasoningCompleted = value.project({
       type: "item.completed",
       turnId,
       snapshot: {
-        item: { type: "reasoning", itemId: reasoningId, text: "visible analysis" },
+        item: { type: "reasoning", itemId: reasoningId, text: "Visible step. Then more." },
         outcome: { status: "succeeded" },
       },
     });
@@ -786,7 +1093,7 @@ describe("Codex UI projector", () => {
           item: {
             id: `${reasoningId}-summary`,
             type: "reasoning",
-            summary: ["visible analysis"],
+            summary: ["**Visible step**\n\nThen more."],
             content: [],
           },
         },
@@ -798,7 +1105,7 @@ describe("Codex UI projector", () => {
             id: reasoningId,
             type: "commandExecution",
             command: "thinking",
-            aggregatedOutput: "visible analysis",
+            aggregatedOutput: "Visible step. Then more.",
           },
         },
       },
@@ -834,14 +1141,14 @@ describe("Codex UI projector", () => {
         {
           id: `${reasoningId}-summary`,
           type: "reasoning",
-          summary: ["visible analysis"],
+          summary: ["**Visible step**\n\nThen more."],
           content: [],
         },
         {
           id: reasoningId,
           type: "commandExecution",
           command: "thinking",
-          aggregatedOutput: "visible analysis",
+          aggregatedOutput: "Visible step. Then more.",
         },
         { id: agentId, type: "agentMessage", text: "answer" },
       ],
@@ -970,6 +1277,267 @@ describe("Codex UI projector", () => {
     expect(JSON.stringify(completed)).not.toContain("mcpToolCall");
   });
 
+  it("projects MCP tool calls and successful web searches onto Codex's native Items, live and historical", () => {
+    const value = projector();
+    const mcpId = itemId("mcp-1");
+    const failedMcpId = itemId("mcp-2");
+    const searchId = itemId("search-1");
+    const failedSearchId = itemId("search-2");
+    const mcp: HostMcpToolCallItem = {
+      type: "mcpToolCall",
+      itemId: mcpId,
+      server: "docs",
+      tool: "lookup",
+      arguments: { id: 7 },
+    };
+    const search: HostWebSearchItem = { type: "webSearch", itemId: searchId, query: "codex" };
+    value.project({ type: "turn.started", turnId });
+    expect(value.project({ type: "item.started", turnId, item: mcp }).messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            id: mcpId,
+            type: "mcpToolCall",
+            server: "docs",
+            tool: "lookup",
+            status: "inProgress",
+            arguments: { id: 7 },
+            result: null,
+            error: null,
+          },
+        },
+      },
+    ]);
+    const completedMcp = {
+      ...mcp,
+      output: { content: [{ type: "text" as const, text: "found" }] },
+      durationMs: 5,
+    };
+    const mcpCompleted = {
+      id: mcpId,
+      type: "mcpToolCall",
+      server: "docs",
+      tool: "lookup",
+      status: "completed",
+      arguments: { id: 7 },
+      appContext: null,
+      mcpAppUi: null,
+      pluginId: null,
+      readOnlyHint: null,
+      result: { content: [{ type: "text", text: "found" }], structuredContent: null, _meta: null },
+      error: null,
+      durationMs: 5,
+    };
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item: completedMcp, outcome: { status: "succeeded" } },
+      }).messages,
+    ).toMatchObject([{ method: "item/completed", params: { item: mcpCompleted } }]);
+
+    const failedMcp: HostMcpToolCallItem = { ...mcp, itemId: failedMcpId };
+    const failure = {
+      status: "failed" as const,
+      error: { code: "nativeFailure" as const, message: "lookup failed", retryable: false },
+    };
+    value.project({ type: "item.started", turnId, item: failedMcp });
+    const failedMcpCompleted = {
+      status: "failed",
+      result: null,
+      error: { message: "server unavailable" },
+    };
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            ...failedMcp,
+            output: { content: [{ type: "text", text: "server unavailable" }] },
+          },
+          outcome: failure,
+        },
+      }).messages,
+    ).toMatchObject([{ params: { item: failedMcpCompleted } }]);
+
+    const searchItem = {
+      id: searchId,
+      type: "webSearch",
+      query: "codex",
+      action: { type: "search", query: "codex", queries: null },
+      results: null,
+    };
+    // A web search has no status, so its wire type waits for the outcome.
+    expect(value.project({ type: "item.started", turnId, item: search }).messages).toEqual([]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item: search, outcome: { status: "succeeded" } },
+      }).messages,
+    ).toEqual([
+      expect.objectContaining({
+        method: "item/started",
+        params: expect.objectContaining({ item: searchItem }),
+      }),
+      expect.objectContaining({
+        method: "item/completed",
+        params: expect.objectContaining({ item: searchItem }),
+      }),
+    ]);
+    const failedSearch: HostWebSearchItem = {
+      type: "webSearch",
+      itemId: failedSearchId,
+      query: "codex",
+      output: { content: [{ type: "text", text: "rate limited" }] },
+    };
+    const failedSearchItem = {
+      id: failedSearchId,
+      type: "dynamicToolCall",
+      tool: "web_search",
+      arguments: { query: "codex" },
+      status: "failed",
+      contentItems: [{ type: "inputText", text: "rate limited" }],
+      success: false,
+    };
+    value.project({ type: "item.started", turnId, item: failedSearch }, 2_000);
+    expect(
+      value.project(
+        {
+          type: "item.completed",
+          turnId,
+          snapshot: { item: failedSearch, outcome: failure },
+        },
+        2_125,
+      ).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: { item: { ...failedSearchItem, status: "inProgress", success: null } },
+      },
+      { method: "item/completed", params: { item: { ...failedSearchItem, durationMs: 125 } } },
+    ]);
+
+    const snapshot: HostThreadSnapshot["turns"][number] = {
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "session-1",
+        nativeTurnKey: "turn-1",
+        formatVersion: 1,
+      }),
+      input: [],
+      items: [
+        { item: completedMcp, outcome: { status: "succeeded" } },
+        {
+          item: {
+            ...failedMcp,
+            output: { content: [{ type: "text", text: "server unavailable" }] },
+          },
+          outcome: failure,
+        },
+        { item: search, outcome: { status: "succeeded" } },
+        { item: failedSearch, outcome: failure },
+      ],
+      outcome: { status: "succeeded" },
+    };
+    expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot }).items).toEqual([
+      mcpCompleted,
+      expect.objectContaining({ id: failedMcpId, ...failedMcpCompleted }),
+      searchItem,
+      expect.objectContaining({ ...failedSearchItem, durationMs: null }),
+    ]);
+  });
+
+  it("keeps the failure reason on a web search that produced no output", () => {
+    const value = projector();
+    const failedId = itemId("search-failed-no-output");
+    const cancelledId = itemId("search-cancelled-no-output");
+    const failed: HostWebSearchItem = { type: "webSearch", itemId: failedId, query: "codex" };
+    const cancelled: HostWebSearchItem = { type: "webSearch", itemId: cancelledId, query: "codex" };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: failed });
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: {
+        item: failed,
+        outcome: {
+          status: "failed",
+          error: { code: "nativeFailure", message: "upstream timed out", retryable: false },
+        },
+      },
+    });
+    value.project({ type: "item.started", turnId, item: cancelled });
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: cancelled, outcome: { status: "cancelled", reason: "Cancelled by user" } },
+    });
+    const { completedTurn } = value.project({
+      type: "turn.completed",
+      turnId,
+      outcome: {
+        status: "failed",
+        error: { code: "nativeFailure", message: "turn failed", retryable: false },
+      },
+    });
+    // The generic tool card has no outcome field, so the reason travels as its output.
+    expect(value.snapshotTurn(completedTurn).items).toMatchObject([
+      {
+        id: failedId,
+        type: "dynamicToolCall",
+        tool: "web_search",
+        status: "failed",
+        contentItems: [{ type: "inputText", text: "upstream timed out" }],
+      },
+      {
+        id: cancelledId,
+        type: "dynamicToolCall",
+        tool: "web_search",
+        status: "failed",
+        contentItems: [{ type: "inputText", text: "Cancelled by user" }],
+      },
+    ]);
+  });
+
+  it("keeps a live web search in start order and in its presented form for snapshots", () => {
+    const value = projector();
+    const searchId = itemId("search-order");
+    const mcpId = itemId("mcp-order");
+    const search: HostWebSearchItem = { type: "webSearch", itemId: searchId, query: "codex" };
+    const mcp: HostMcpToolCallItem = {
+      type: "mcpToolCall",
+      itemId: mcpId,
+      server: "docs",
+      tool: "lookup",
+      arguments: {},
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: search });
+    value.project({ type: "item.started", turnId, item: mcp });
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: mcp, outcome: { status: "succeeded" } },
+    });
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: search, outcome: { status: "cancelled", reason: "Cancelled by user" } },
+    });
+    const { completedTurn } = value.project({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "cancelled" },
+    });
+    expect(value.snapshotTurn(completedTurn).items).toMatchObject([
+      { id: searchId, type: "dynamicToolCall", tool: "web_search", status: "failed" },
+      { id: mcpId, type: "mcpToolCall", status: "completed" },
+    ]);
+  });
+
   it("lifts Read/Glob/Grep Generic Tools into Command Execution cards with paths", () => {
     const value = projector();
     const readId = itemId("read-1");
@@ -1075,6 +1643,181 @@ describe("Codex UI projector", () => {
         },
       },
     ]);
+  });
+
+  it("shows a DSH pwsh command and output in the Command Execution card", () => {
+    const value = projector();
+    const commandId = itemId("dsh-pwsh");
+    const command: HostToolExecutionItem = {
+      type: "toolExecution",
+      itemId: commandId,
+      toolName: "pwsh",
+      arguments: {
+        command: "Get-ChildItem src",
+        description: "List source files",
+        workdir: "scripts",
+      },
+    };
+    value.project({ type: "turn.started", turnId });
+    expect(value.project({ type: "item.started", turnId, item: command }).messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            type: "commandExecution",
+            command: "Get-ChildItem src",
+            cwd: "/workspace/scripts",
+          },
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { ...command, output: { content: [{ type: "text", text: "file.ts" }] } },
+          outcome: { status: "succeeded" },
+        },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/completed",
+        params: {
+          item: {
+            type: "commandExecution",
+            command: "Get-ChildItem src",
+            aggregatedOutput: "file.ts",
+            cwd: "/workspace/scripts",
+            exitCode: null,
+          },
+        },
+      },
+    ]);
+    expect(
+      value.project({
+        type: "item.started",
+        turnId,
+        item: { ...command, itemId: itemId("dsh-pwsh-missing"), arguments: { description: "x" } },
+      }).messages,
+    ).toMatchObject([{ params: { item: { type: "dynamicToolCall", tool: "pwsh" } } }]);
+  });
+
+  it("resolves Windows tool workdir using session path rules on any host", () => {
+    const value = new CodexTurnProjector({
+      threadId: "thread-1",
+      turnId,
+      cwd: "C:\\repo",
+      startedAtMs: 1_000,
+    });
+    value.project({ type: "turn.started", turnId });
+    for (const [index, workdir, cwd] of [
+      ["relative", "scripts", "C:\\repo\\scripts"],
+      ["absolute", "D:\\tools", "D:\\tools"],
+    ] as const) {
+      expect(
+        value.project({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "toolExecution",
+            itemId: itemId(`dsh-pwsh-${index}`),
+            toolName: "pwsh",
+            arguments: { command: "Get-ChildItem", workdir },
+          },
+        }).messages,
+      ).toMatchObject([{ params: { item: { type: "commandExecution", cwd } } }]);
+    }
+  });
+
+  it("clears the plan from an empty Todo list, live and in replayed history", () => {
+    const todo = (
+      id: string,
+      todos: JsonValue[],
+    ): HostThreadSnapshot["turns"][number]["items"][number] => ({
+      item: { type: "toolExecution", itemId: itemId(id), toolName: "Todo", arguments: { todos } },
+      outcome: { status: "succeeded" },
+    });
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+    const empty = todo("todo-empty", []);
+    expect(value.project({ type: "item.started", turnId, item: empty.item }).messages).toEqual([]);
+    expect(
+      value.project({ type: "item.completed", turnId, snapshot: empty }).messages,
+    ).toMatchObject([{ method: "turn/plan/updated", params: { plan: [] } }]);
+
+    const plansByTurnId = new Map<string, TodoPlan>();
+    const historicalTurn = (
+      id: string,
+      todos: JsonValue[],
+      status: "succeeded" | "failed" = "succeeded",
+    ) =>
+      projectHistoricalTurn(
+        {
+          turnId: hostTurnIdSchema.parse(id),
+          cwd: "/workspace",
+          snapshot: {
+            nativeTurnRef: nativeTurnRefSchema.parse({
+              harnessId: "claude-code",
+              nativeSessionId: "session-1",
+              nativeTurnKey: id,
+              formatVersion: 1,
+            }),
+            input: [],
+            items: [
+              {
+                ...todo(`${id}-todo`, todos),
+                outcome:
+                  status === "failed"
+                    ? {
+                        status,
+                        error: { code: "nativeFailure", message: "todo failed", retryable: false },
+                      }
+                    : { status },
+              },
+            ],
+            outcome: { status: "succeeded" },
+          },
+        },
+        plansByTurnId,
+      );
+    const planned = historicalTurn("turn-1", [{ content: "Ship", status: "pending" }]);
+    const cleared = historicalTurn("turn-2", []);
+    const failed = historicalTurn("turn-3", [], "failed");
+    expect(JSON.stringify(planned)).not.toContain("Ship");
+    expect(historicalPlanUpdate("thread-1", [planned, failed], plansByTurnId)).toMatchObject({
+      params: { turnId: "turn-1", plan: [{ step: "Ship", status: "pending" }] },
+    });
+    expect(
+      historicalPlanUpdate("thread-1", [planned, { ...cleared }, failed], plansByTurnId),
+    ).toEqual({
+      method: "turn/plan/updated",
+      params: { threadId: "thread-1", turnId: "turn-2", explanation: null, plan: [] },
+    });
+  });
+
+  it("does not clear the plan for a failed generic todo_write", () => {
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+    const item = {
+      type: "toolExecution" as const,
+      itemId: itemId("empty-write"),
+      toolName: "todo_write",
+      arguments: { todos: [] },
+    };
+    const started = value.project({ type: "item.started", turnId, item });
+    const failed = value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: {
+        item,
+        outcome: {
+          status: "failed",
+          error: { code: "nativeFailure", message: "todo failed", retryable: false },
+        },
+      },
+    });
+    expect([...started.messages, ...failed.messages]).toEqual([]);
   });
 
   it("docks Todo tools on turn/plan/updated and hides the name-only card", () => {
@@ -1279,9 +2022,10 @@ describe("Codex UI projector", () => {
       }).messages,
     ).toMatchObject([
       {
-        method: "item/completed",
-        params: { item: { type: "fileChange", status: "completed" } },
+        method: "item/fileChange/patchUpdated",
+        params: { itemId: "edit-1", changes: [{ path: "src/app.ts" }] },
       },
+      { method: "turn/diff/updated" },
     ]);
   });
 
@@ -1326,7 +2070,9 @@ describe("Codex UI projector", () => {
       ],
     };
     const secondStarted = value.project({ type: "item.started", turnId, item: secondFile });
-    expect(secondStarted.messages[2]).toMatchObject({
+    expect(
+      secondStarted.messages.find(({ method }) => method === "turn/diff/updated"),
+    ).toMatchObject({
       params: {
         diff: expect.stringMatching(/sample\.txt[\s\S]*other\.txt/u),
       },
@@ -1343,8 +2089,12 @@ describe("Codex UI projector", () => {
     });
     expect(completed.completedTurn).toMatchObject({
       items: [
-        { type: "fileChange", id: "file-1", status: "completed" },
-        { type: "fileChange", id: "file-2", status: "completed" },
+        {
+          type: "fileChange",
+          id: "file-1",
+          status: "completed",
+          changes: [{ path: "sample.txt" }, { path: "other.txt" }],
+        },
       ],
     });
   });
@@ -1472,6 +2222,301 @@ describe("Codex UI projector", () => {
     });
   });
 
+  it("rejects a synthetic Question after its Turn completed", () => {
+    const value = projector();
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-completed"),
+      turnId,
+      title: "Question",
+      questions: [
+        {
+          id: "decision",
+          type: "choice",
+          prompt: "Continue?",
+          options: [{ value: "yes", label: "Yes" }],
+          multiple: false,
+          allowOther: false,
+          optional: false,
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    const owner: HostCommandExecutionItem = {
+      type: "commandExecution",
+      itemId: itemId("synthetic-owner"),
+      command: "await-user",
+    };
+    value.project({ type: "item.started", turnId, item: owner });
+    value.project({ type: "item.detached", turnId, itemId: owner.itemId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    expect(() => value.projectQuestion(question, itemId("completed-question"), 2_000)).toThrow(
+      "follows the Turn terminal",
+    );
+  });
+
+  it.each([
+    { status: "succeeded" as const },
+    {
+      status: "failed" as const,
+      error: { code: "nativeFailure" as const, message: "failed", retryable: false },
+    },
+    { status: "cancelled" as const, reason: "cancelled" },
+  ])("rejects a post-terminal Question without a detached owner (%s)", (outcome) => {
+    const value = projector();
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse(`interaction-${outcome.status}`),
+      turnId,
+      questions: [
+        {
+          id: "decision",
+          type: "choice",
+          prompt: "Continue?",
+          options: [{ value: "yes", label: "Yes" }],
+          multiple: false,
+          allowOther: false,
+          optional: false,
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "turn.completed", turnId, outcome });
+    expect(() => value.projectQuestion(question, itemId(`unowned-${outcome.status}`))).toThrow(
+      /follows (a non-successful Turn terminal|the Turn terminal)/u,
+    );
+    const approval: HostApprovalInteraction = {
+      type: "approval",
+      interactionId: hostInteractionIdSchema.parse(`approval-${outcome.status}`),
+      turnId,
+      title: "Approve",
+      subject: { type: "nativeAction" },
+      actions: [
+        { id: "allow", label: "Allow", effect: "allowOnce" },
+        { id: "deny", label: "Deny", effect: "deny" },
+      ],
+    };
+    expect(() => value.projectApproval(approval, "test-server")).toThrow(
+      /follows (a non-successful Turn terminal|the Turn terminal)/u,
+    );
+    expect(value.hasOpenDetachedItems).toBe(false);
+  });
+
+  it("allows terminal interaction only for a successful detached tool owner", () => {
+    const value = projector();
+    const toolId = itemId("detached-question-tool");
+    const tool: HostToolExecutionItem = {
+      type: "toolExecution",
+      itemId: toolId,
+      toolName: "user_question_tool",
+      arguments: {},
+    };
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-detached-tool"),
+      turnId,
+      itemId: toolId,
+      questions: [
+        {
+          id: "answer",
+          type: "text",
+          prompt: "Answer",
+          multiline: false,
+          secret: false,
+          optional: false,
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: tool });
+    value.project({ type: "item.detached", turnId, itemId: toolId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    expect(value.hasOpenDetachedTool()).toBe(true);
+    expect(value.hasOpenDetachedTool(toolId)).toBe(true);
+    expect(value.hasOpenDetachedTool(itemId("other-owner"))).toBe(false);
+
+    expect(value.projectQuestion(question, itemId("unused"))).toMatchObject({
+      itemId: toolId,
+    });
+    expect(value.hasOpenDetachedItems).toBe(true);
+    value.project({
+      type: "interaction.closed",
+      interactionId: question.interactionId,
+      turnId,
+      reason: "cancelled",
+    });
+    expect(value.hasOpenDetachedItems).toBe(true);
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: tool, outcome: { status: "cancelled" } },
+    });
+    expect(value.hasOpenDetachedItems).toBe(false);
+  });
+
+  it("rejects terminal approval without an explicit detached owner", () => {
+    const value = projector();
+    const command: HostCommandExecutionItem = {
+      type: "commandExecution",
+      itemId: itemId("detached-approval-command"),
+      command: "await-user",
+    };
+    const approval: HostApprovalInteraction = {
+      type: "approval",
+      interactionId: hostInteractionIdSchema.parse("interaction-detached-approval"),
+      turnId,
+      title: "Approve",
+      subject: { type: "nativeAction" },
+      actions: [
+        { id: "allow", label: "Allow", effect: "allowOnce" },
+        { id: "deny", label: "Deny", effect: "deny" },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: command });
+    value.project({ type: "item.detached", turnId, itemId: command.itemId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    expect(() => value.projectApproval(approval, "test-server")).toThrow(
+      "follows the Turn terminal",
+    );
+    expect(value.hasOpenDetachedItems).toBe(true);
+  });
+
+  it.each(["succeeded", "failed", "cancelled"] as const)(
+    "rejects pending approvals without an explicit owner: %s",
+    (status) => {
+      const value = projector();
+      const owner = {
+        type: "toolExecution" as const,
+        itemId: itemId("pending-approval-owner"),
+        namespace: "test",
+        toolName: "edit_file",
+        arguments: {},
+      };
+      value.project({ type: "turn.started", turnId });
+      value.project({ type: "item.started", turnId, item: owner });
+      value.project({ type: "item.detached", turnId, itemId: owner.itemId });
+      value.projectApproval(
+        {
+          type: "approval",
+          interactionId: hostInteractionIdSchema.parse("pending-owned-approval"),
+          turnId,
+          title: "Approve edit",
+          subject: { type: "nativeAction" },
+          actions: [
+            { id: "allow", label: "Allow", effect: "allowOnce" },
+            { id: "deny", label: "Deny", effect: "deny" },
+          ],
+        },
+        "test-server",
+      );
+      const complete = () =>
+        value.project({
+          type: "turn.completed",
+          turnId,
+          outcome:
+            status === "succeeded"
+              ? { status }
+              : status === "failed"
+                ? { status, error: { code: "nativeFailure", message: "failed", retryable: false } }
+                : { status, reason: "cancelled" },
+        });
+      expect(complete).toThrow("pending Interactions");
+    },
+  );
+
+  it("does not treat background text as a terminal interaction owner", () => {
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    value.project({
+      type: "item.background.started",
+      turnId,
+      item: { type: "agentMessage", itemId: itemId("background-text"), text: "late output" },
+    });
+    expect(value.hasOpenDetachedItems).toBe(true);
+    expect(value.hasOpenDetachedTool()).toBe(false);
+
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-background-text"),
+      turnId,
+      questions: [
+        {
+          id: "answer",
+          type: "text",
+          prompt: "Answer",
+          multiline: false,
+          secret: false,
+          optional: false,
+        },
+      ],
+    };
+    expect(() => value.projectQuestion(question, itemId("unowned-background-text"))).toThrow(
+      "follows the Turn terminal",
+    );
+    const approval: HostApprovalInteraction = {
+      type: "approval",
+      interactionId: hostInteractionIdSchema.parse("approval-background-text"),
+      turnId,
+      title: "Approve",
+      subject: { type: "nativeAction" },
+      actions: [
+        { id: "allow", label: "Allow", effect: "allowOnce" },
+        { id: "deny", label: "Deny", effect: "deny" },
+      ],
+    };
+    expect(() => value.projectApproval(approval, "test-server")).toThrow(
+      "follows the Turn terminal",
+    );
+  });
+
+  it("does not reuse a settled owner or synthetic Question as a new owner", () => {
+    const value = projector();
+    const owner: HostCommandExecutionItem = {
+      type: "commandExecution",
+      itemId: itemId("settled-owner"),
+      command: "await-user",
+    };
+    const firstQuestion: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-synthetic-pending"),
+      turnId,
+      questions: [
+        {
+          id: "answer",
+          type: "text",
+          prompt: "Answer",
+          multiline: false,
+          secret: false,
+          optional: false,
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: owner });
+    value.project({ type: "item.detached", turnId, itemId: owner.itemId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    expect(() => value.projectQuestion(firstQuestion, itemId("synthetic-pending"))).toThrow(
+      "follows the Turn terminal",
+    );
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: owner, outcome: { status: "succeeded" } },
+    });
+    expect(value.hasOpenDetachedTool()).toBe(false);
+
+    const secondQuestion = {
+      ...firstQuestion,
+      interactionId: hostInteractionIdSchema.parse("interaction-after-settle"),
+    };
+    expect(() => value.projectQuestion(secondQuestion, itemId("synthetic-second"))).toThrow(
+      "follows the Turn terminal",
+    );
+    expect(value.hasOpenDetachedItems).toBe(false);
+  });
+
   it("fails a secret Question without mutating synthetic Item state", () => {
     const value = projector();
     value.project({ type: "turn.started", turnId });
@@ -1555,5 +2600,80 @@ describe("Codex UI projector", () => {
     expect(() =>
       value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } }),
     ).toThrow("follows the Turn terminal");
+  });
+});
+
+it.each([false, true])(
+  "keeps native Codex cards and the heterogeneous sibling guard after inheritance (mixed=%s)",
+  (mixed) => {
+    const value = projector();
+    const event = configureSubagentEvent(
+      {
+        type: "item.started",
+        turnId,
+        item: {
+          type: "subagentDelegation",
+          itemId: itemId("inherited-card"),
+          operation: "spawn",
+          prompt: "Inspect the repository",
+          subagents: [
+            {
+              subagentId: "child-1",
+              description: "Explorer",
+              role: "explorer",
+              background: true,
+              status: "running",
+            },
+            {
+              subagentId: "child-2",
+              description: "Reviewer",
+              role: "reviewer",
+              background: true,
+              status: "pending",
+              ...(mixed ? { model: "native-override", reasoningEffort: "low" } : {}),
+            },
+          ],
+        },
+      },
+      { model: "parent-model", reasoningEffort: "high" },
+    );
+    if (event.type !== "item.started") throw new Error("Expected delegation start");
+    value.project({ type: "turn.started", turnId });
+    expect(value.project(event).messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            prompt: "Inspect the repository",
+            receiverThreadIds: ["child-1", "child-2"],
+            model: mixed ? null : "parent-model",
+            reasoningEffort: mixed ? null : "high",
+            agentsStates: {
+              "child-1": { status: "running" },
+              "child-2": { status: "pendingInit" },
+            },
+          },
+        },
+      },
+    ]);
+  },
+);
+
+it("preserves startedAt on in-progress snapshotTurn() while keeping explicit base compatible", () => {
+  const turnId = hostTurnIdSchema.parse("turn-started-at");
+  const startedAtMs = 1_750_000_123_456;
+  const projector = new CodexTurnProjector({
+    threadId: "thread-started-at",
+    turnId,
+    cwd: "/workspace",
+    startedAtMs,
+  });
+  projector.project({ type: "turn.started", turnId });
+  expect(projector.snapshotTurn().startedAt).toBe(Math.floor(startedAtMs / 1000));
+  expect(projector.snapshotTurn({ ...projector.pendingTurn(null), custom: true })).toMatchObject({
+    startedAt: null,
+    custom: true,
   });
 });

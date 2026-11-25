@@ -2,24 +2,21 @@ import { spawn } from "node:child_process";
 import { constants, accessSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { runQuietWebBuild } from "./build.mjs";
+import { runDevelopmentApp } from "./app.mjs";
+import { restartDevelopmentHost } from "./host.mjs";
+import { hostRestartMode } from "./host-restart.mjs";
+import {
+  windowsDesktopDetectionScript,
+  macOsDesktopDetectionScript,
+} from "./interface-processes.mjs";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 const windowsDesktopCleanupScript = String.raw`
 $ErrorActionPreference = 'Stop'
 
-function Test-CodexDesktopProcess($process) {
-  if ($null -eq $process) {
-    return $false
-  }
-
-  $executablePath = ([string]$process.ExecutablePath).Replace([char]47, [char]92).ToLowerInvariant()
-  return (
-    $process.Name -ieq 'ChatGPT.exe' -and
-    $executablePath.Contains('\windowsapps\openai.codex_') -and
-    $executablePath.EndsWith('\app\chatgpt.exe')
-  )
-}
+${windowsDesktopDetectionScript}
 
 $desktopProcesses = @(
   Get-CimInstance Win32_Process -ErrorAction Stop |
@@ -50,27 +47,8 @@ if ($remainingDesktopProcesses.Count -ne 0) {
   throw 'Codex Desktop did not exit before timeout.'
 }
 
-$graceDeadline = [DateTime]::UtcNow.AddSeconds(2)
-do {
-  $runtimeProcesses = @(Get-Process -Name 'codexhost', 'codexhost-shim' -ErrorAction SilentlyContinue)
-  if ($runtimeProcesses.Count -eq 0) {
-    break
-  }
-  if ([DateTime]::UtcNow -ge $graceDeadline) {
-    $runtimeProcessIds = @($runtimeProcesses | ForEach-Object { [int]$_.Id })
-    Stop-Process -Id $runtimeProcessIds -Force -ErrorAction SilentlyContinue
-    Wait-Process -Id $runtimeProcessIds -Timeout 10 -ErrorAction SilentlyContinue
-    break
-  }
-  Start-Sleep -Milliseconds 50
-} while ($true)
-
-$remainingRuntimeProcesses = @(
-  Get-Process -Name 'codexhost', 'codexhost-shim' -ErrorAction SilentlyContinue
-)
-if ($remainingRuntimeProcesses.Count -ne 0) {
-  throw 'The previous codexhost runtime did not exit before timeout.'
-}
+# The native Desktop Launcher owns cleanup of its process tree. Do not stop
+# codexhost by name: an independent shared Host may own running Web tasks.
 
 Write-Output "codexhost dev: stopped $($desktopProcessIds.Count) Codex Desktop process(es)"
 `;
@@ -78,12 +56,7 @@ Write-Output "codexhost dev: stopped $($desktopProcessIds.Count) Codex Desktop p
 const macOsDesktopCleanupScript = String.raw`
 set -eu
 
-system_desktop_pattern='^/Applications/(ChatGPT|Codex)\.app/Contents/'
-user_desktop_pattern="^$HOME/Applications/(ChatGPT|Codex)\.app/Contents/"
-desktop_running() {
-  /usr/bin/pgrep -f "$system_desktop_pattern" >/dev/null 2>&1 ||
-    /usr/bin/pgrep -f "$user_desktop_pattern" >/dev/null 2>&1
-}
+${macOsDesktopDetectionScript}
 
 if desktop_running; then
   /usr/bin/pkill -KILL -f "$system_desktop_pattern" >/dev/null 2>&1 || true
@@ -128,10 +101,11 @@ controller_pid() {
   esac
 }
 
+# The native Launcher cleans its Desktop tree while preserving transferred
+# independent services. Only the verified Desktop Controller is ours to stop;
+# never kill codexhost by name, since Web may already own a shared Host.
 runtime_running() {
-  /usr/bin/pgrep -x codexhost >/dev/null 2>&1 ||
-    /usr/bin/pgrep -x codexhost-shim >/dev/null 2>&1 ||
-    [ -n "$(controller_pid)" ]
+  [ -n "$(controller_pid)" ]
 }
 
 controller="$(controller_pid)"
@@ -149,8 +123,6 @@ if runtime_running; then
   if [ -n "$controller" ]; then
     /bin/kill -KILL "$controller" >/dev/null 2>&1 || true
   fi
-  /usr/bin/pkill -KILL -x codexhost >/dev/null 2>&1 || true
-  /usr/bin/pkill -KILL -x codexhost-shim >/dev/null 2>&1 || true
 fi
 
 attempt=0
@@ -167,12 +139,29 @@ echo 'codexhost dev: stopped the running Codex Desktop'
 `;
 
 export function usage() {
-  return `usage: npm start -- [--no-build]
+  return `usage: npm start [version] [-- --no-build]
+       npm start app [-- --no-build | --shell-only] [--no-onboarding]
+       npm start web [-- --port 3181] [--no-watch]
 
 Stop any running Codex Desktop, then build and run the current codexhost worktree.
+After building, reuse an unchanged shared Host; restart a changed Host unless the other interface is open.
+If the other interface is open, ask whether to keep Host (default) or restart it, interrupting tasks.
+Non-interactive prompts keep Host and warn; an absent Host is started by the interface.
+The app subcommand builds and opens the native desktop shell launch page (CodexHost Desktop, Codex Desktop, and Web).
+The web subcommand replaces this worktree's Web preview on the selected port without stopping Desktop.
+
+arguments:
+  version            set the runtime version, e.g. npm start 0.12.0
 
 options:
   --no-build          reuse existing development artifacts
+  --shell-only        app only: rebuild only the native desktop shell (skip build:web)
+  --no-onboarding     app only: skip the launch-mode page and open CodexHost Desktop directly
+  --restart-host      force restart of a running Host (mutually exclusive with --keep-host)
+  --keep-host         keep the running Host without asking
+  --watch             web only: enable Web UI hot reload (default)
+  --no-watch          web only: disable Web UI rebuild watching and hot reload
+  --version <semver>  alternative version syntax (npm start -- --version 0.12.0)
   --help              show this help`;
 }
 
@@ -186,10 +175,28 @@ export function parseArguments(arguments_) {
       options.help = true;
       continue;
     }
+    if (argument === "--restart-host" || argument === "--keep-host") {
+      options[argument.slice(2)] = true;
+      hostRestartMode(options);
+      continue;
+    }
     if (argument === "--no-build") {
       if (buildProvided) throw new Error("--no-build may only be provided once");
       buildProvided = true;
       options.build = false;
+      continue;
+    }
+    if (argument === "--version" || !argument.startsWith("-")) {
+      if (options.version !== undefined) throw new Error("version may only be provided once");
+      const version = argument === "--version" ? arguments_[++index] : argument;
+      if (
+        !version ||
+        !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u.test(
+          version,
+        )
+      )
+        throw new Error("expected a semantic version, such as 0.12.0 or 0.13.0-rc.1");
+      options.version = version;
       continue;
     }
     throw new Error(`unknown option: ${argument}`);
@@ -280,11 +287,12 @@ export function npmBuildInvocation(
   environment = process.env,
   platform = process.platform,
   nodePath = process.execPath,
+  script = "build",
 ) {
   const npmExecPath = environment.npm_execpath;
   return npmExecPath
-    ? { command: nodePath, arguments: [npmExecPath, "run", "build"] }
-    : { command: platform === "win32" ? "npm.cmd" : "npm", arguments: ["run", "build"] };
+    ? { command: nodePath, arguments: [npmExecPath, "run", script] }
+    : { command: platform === "win32" ? "npm.cmd" : "npm", arguments: ["run", script] };
 }
 
 export function runningDesktopCleanupInvocation(platform = process.platform) {
@@ -324,11 +332,12 @@ export function launcherInvocation(artifacts, piPath = null) {
   return { command: artifacts.launcher, arguments: arguments_ };
 }
 
-function runChild(invocation, root, spawnImplementation = spawn) {
+function runChild(invocation, root, spawnImplementation = spawn, environment = process.env) {
   return new Promise((resolve, reject) => {
     const child = spawnImplementation(invocation.command, invocation.arguments, {
       cwd: root,
       stdio: "inherit",
+      env: environment,
       windowsHide: false,
     });
     child.once("error", reject);
@@ -336,15 +345,54 @@ function runChild(invocation, root, spawnImplementation = spawn) {
   });
 }
 
+// Start the watcher after the preview finishes its Host decision so build logs
+// cannot obscure the prompt. Either process ending stops the other.
+function runWatchedWeb(preview, watcher, root, spawnImplementation, environment) {
+  const start = (invocation, stdio) =>
+    spawnImplementation(invocation.command, invocation.arguments, {
+      cwd: root,
+      stdio,
+      env: environment,
+      windowsHide: false,
+    });
+  return new Promise((resolve, reject) => {
+    const previewProcess = start(preview, ["inherit", "inherit", "inherit", "ipc"]);
+    let watchProcess;
+    let previewExited = false;
+    let watcherExited = false;
+    previewProcess.once("error", reject);
+    previewProcess.on("message", (message) => {
+      if (message !== "ready" || watchProcess || previewExited) return;
+      watchProcess = start(watcher, "inherit");
+      watchProcess.once("error", (error) => {
+        previewProcess.kill("SIGTERM");
+        reject(error);
+      });
+      watchProcess.once("exit", () => {
+        watcherExited = true;
+        if (previewExited) return;
+        console.error("codexhost web: the Web UI watcher exited; stopping the Web preview");
+        previewProcess.kill("SIGTERM");
+      });
+    });
+    previewProcess.once("exit", (code) => {
+      previewExited = true;
+      if (!watcherExited) watchProcess?.kill("SIGTERM");
+      resolve(watcherExited ? 1 : (code ?? 1));
+    });
+  });
+}
+
 // The Launcher prints a single "ready\n" line once the Desktop, Controller,
 // and Host chain are up, then detaches from the terminal to keep supervising.
 // Resolve on that signal so `npm start` returns instead of holding the terminal
 // open, while still propagating a real failure (exit without "ready").
-function runLauncher(invocation, root, spawnImplementation = spawn) {
+function runLauncher(invocation, root, spawnImplementation = spawn, environment = process.env) {
   return new Promise((resolve, reject) => {
     const child = spawnImplementation(invocation.command, invocation.arguments, {
       cwd: root,
       stdio: ["ignore", "pipe", "inherit"],
+      env: environment,
       windowsHide: false,
     });
     let settled = false;
@@ -388,6 +436,58 @@ export async function runDevelopmentDesktop({
   nodePath = process.execPath,
   spawnImplementation = spawn,
 } = {}) {
+  if (arguments_[0] === "app") {
+    return runDevelopmentApp({
+      arguments_: arguments_.slice(1),
+      root,
+      environment,
+      platform,
+      nodePath,
+      spawnImplementation,
+      npmBuildInvocation,
+      validateArtifacts: validateDevelopmentArtifacts,
+      nodeVersionSupported,
+      runChild,
+    });
+  }
+  if (arguments_[0] === "web") {
+    const webArguments = arguments_.slice(1);
+    hostRestartMode({
+      "restart-host": webArguments.includes("--restart-host"),
+      "keep-host": webArguments.includes("--keep-host"),
+    });
+    if (webArguments.includes("--watch") && webArguments.includes("--no-watch")) {
+      throw new Error("--watch and --no-watch are mutually exclusive");
+    }
+    const watch = !webArguments.includes("--no-watch");
+    if (!webArguments.includes("--no-build")) {
+      const buildResult = await runQuietWebBuild(
+        npmBuildInvocation(environment, platform, nodePath, "build:web"),
+        { root, spawnImplementation, environment },
+      );
+      if (buildResult.code !== 0) return buildResult.code ?? 1;
+    }
+    const preview = {
+      command: nodePath,
+      arguments: [
+        "--import",
+        "tsx",
+        path.join(root, "packages/web-server/scripts/preview.ts"),
+        "--restart",
+        ...(watch ? ["--dev-web-ui", path.join(root, "apps/web-ui")] : []),
+        ...webArguments.filter(
+          (argument) => !["--no-build", "--watch", "--no-watch"].includes(argument),
+        ),
+      ],
+    };
+    if (!watch) return (await runChild(preview, root, spawnImplementation, environment)).code ?? 1;
+    const watcher = {
+      command: nodePath,
+      arguments: ["--import", "tsx", path.join(root, "apps/web-ui/scripts/build.ts"), "--watch"],
+    };
+    return runWatchedWeb(preview, watcher, root, spawnImplementation, environment);
+  }
+
   const options = parseArguments(arguments_);
   if (options.help) {
     console.log(usage());
@@ -399,10 +499,23 @@ export async function runDevelopmentDesktop({
     );
   }
 
+  // Keep environment proxy support enabled, but silence its experimental
+  // warning in build/runtime children. Preserve all existing Node options.
+  environment = {
+    ...environment,
+    NODE_OPTIONS: [environment.NODE_OPTIONS, "--disable-warning=UNDICI-EHPA"]
+      .filter(Boolean)
+      .join(" "),
+  };
+
+  const startedAt = performance.now();
+  const logElapsed = (label, since) => {
+    console.log(`codexhost dev: ${label}: ${((performance.now() - since) / 1000).toFixed(2)}s`);
+  };
   const cleanupInvocation = runningDesktopCleanupInvocation(platform);
   if (cleanupInvocation) {
     console.log("codexhost dev: stopping any running Codex Desktop");
-    const cleanupResult = await runChild(cleanupInvocation, root, spawnImplementation);
+    const cleanupResult = await runChild(cleanupInvocation, root, spawnImplementation, environment);
     if (cleanupResult.code !== 0) {
       const reason = cleanupResult.signal
         ? `signal ${cleanupResult.signal}`
@@ -411,16 +524,24 @@ export async function runDevelopmentDesktop({
     }
   }
 
+  if (cleanupInvocation) logElapsed("stop previous Desktop", startedAt);
+
   if (options.build) {
+    const buildStartedAt = performance.now();
     console.log("codexhost dev: building workspace");
     const buildResult = await runChild(
       npmBuildInvocation(environment, platform, nodePath),
       root,
       spawnImplementation,
+      environment,
     );
+    logElapsed("build elapsed", buildStartedAt);
     if (buildResult.code !== 0) {
+      logElapsed("total elapsed (build failed)", startedAt);
       return buildResult.code ?? 1;
     }
+  } else {
+    console.log("codexhost dev: build skipped (--no-build)");
   }
 
   const artifacts = developmentArtifacts(root, platform, nodePath);
@@ -429,11 +550,49 @@ export async function runDevelopmentDesktop({
   if (piPath) console.log(`codexhost dev: using Pi at ${piPath}`);
   else console.warn("codexhost dev: Pi was not found on PATH and will be unavailable");
 
+  const launchEnvironment = { ...environment, CODEXHOST_WEB_SERVICE: "0" };
+  // A Harness launched by an npm installation may inherit its update routing. The Shim
+  // prefers that routing over --host-runtime; a source launch must use this worktree instead.
+  for (const name of [
+    "CODEXHOST_NPM_NODE_PATH",
+    "CODEXHOST_NPM_CLI_PATH",
+    "CODEXHOST_NPM_LAUNCHER_PATH",
+    "CODEXHOST_NPM_PACKAGE_ROOT",
+    "CODEXHOST_HOST_RUNTIME_PATH",
+    "CODEXHOST_HOST_NODE_PATH",
+    "CODEXHOST_DESKTOP_SHELL_PATH",
+  ]) {
+    delete launchEnvironment[name];
+  }
+  delete launchEnvironment.CODEXHOST_DEV_VERSION;
+  if (options.version) {
+    launchEnvironment.CODEXHOST_DEV_VERSION = options.version;
+    console.log(`codexhost dev: source runtime version is ${options.version}`);
+  }
+  await restartDevelopmentHost({
+    root,
+    mode: hostRestartMode(options),
+    artifacts,
+    environment: launchEnvironment,
+    run: (invocation, env) => runChild(invocation, root, spawnImplementation, env),
+  });
+  const launchStartedAt = performance.now();
   const launchResult = await runLauncher(
     launcherInvocation(artifacts, piPath),
     root,
     spawnImplementation,
+    launchEnvironment,
   );
+  logElapsed(
+    launchResult.ready ? "Launcher ready" : "Launcher exited before ready",
+    launchStartedAt,
+  );
+  logElapsed("total elapsed (including cleanup and build)", startedAt);
+  if (launchResult.ready) {
+    console.log(
+      "codexhost dev: Launcher readiness does not mean Renderer installation is complete",
+    );
+  }
   if (launchResult.signal) {
     console.error(`codexhost dev: Launcher exited from signal ${launchResult.signal}`);
   }

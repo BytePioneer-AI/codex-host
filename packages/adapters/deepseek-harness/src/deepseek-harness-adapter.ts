@@ -1,3 +1,5 @@
+import { DeepSeekBalanceCache, fetchDeepSeekBalances } from "./account-balance.js";
+import { createDshUsageStatistics } from "./modern/usage-statistics.js";
 import { deepSeekHarnessCommandCatalog } from "./harness-commands.js";
 
 import type {
@@ -16,6 +18,8 @@ import {
   harnessIdSchema,
   nativeSessionRefSchema,
   type DeepSeekModernSessionCandidate,
+  type AccountBalanceSnapshot,
+  type HarnessAccountSnapshot,
   type HarnessId,
 } from "@codexhost/shared-contracts";
 
@@ -63,6 +67,7 @@ interface DelegateOwner {
   readonly adapter: ModernDelegateAdapter;
   readonly version: DeepSeekExecutableGeneration["version"];
   inspection: HarnessInspection;
+  faultError?: HarnessError;
   closePromise?: Promise<void>;
 }
 
@@ -78,10 +83,15 @@ class DelegateSelectionError extends Error {
   }
 }
 
-/** Public DeepSeek Adapter that verifies one supported DSH version for its lifetime. */
+/** Public DeepSeek Adapter that gates the local CLI version and delegates to the managed Web. */
 export class DeepSeekHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog = deepSeekHarnessCommandCatalog();
+  readonly normalizeStoredModelRef: NonNullable<HarnessAdapter["normalizeStoredModelRef"]> = (
+    ref,
+    catalog,
+  ) => this.#delegate?.adapter.normalizeStoredModelRef?.(ref, catalog);
   readonly harnessId: HarnessId = DEEPSEEK_HARNESS_ID;
+  readonly usageStatistics: ReturnType<typeof createDshUsageStatistics>;
   readonly sessionImport = Object.freeze({
     listCandidates: () => this.#listSessionImportCandidates(),
     resolveCandidate: async (
@@ -107,9 +117,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
             harnessId: this.harnessId,
             nativeSessionId,
             formatVersion: 1,
-            ...(this.#delegate?.version === "0.1.5-rc.1"
-              ? { locator: { dshVersion: "0.1.5-rc.1" } }
-              : {}),
+            ...(this.#delegate ? { locator: { dshVersion: this.#delegate.version } } : {}),
           }),
         },
       };
@@ -119,18 +127,22 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     open: () => this.#openWebUi(),
   });
   readonly #options: DeepSeekHarnessAdapterOptions;
+  readonly #balance: DeepSeekBalanceCache;
   readonly #probeExecutable: (
     options: ProbeDeepSeekGenerationOptions,
   ) => Promise<DeepSeekExecutableGeneration>;
   readonly #createModernAdapter: (
     options: ModernDeepSeekHarnessAdapterOptions,
   ) => ModernDelegateAdapter;
+  /** Aborted by close() so a balance request in flight does not outlive the Adapter. */
+  readonly #accountInspection = new AbortController();
   #candidate: DelegateOwner | undefined;
-  #cleanupFailedDuringClose = false;
+  #cleanupFailed = false;
   #closePromise: Promise<void> | undefined;
   #closed = false;
   #delegate: DelegateOwner | undefined;
   #failure: HarnessError | undefined;
+  #retiring: Promise<void> | undefined;
   #selection: ActiveSelection | undefined;
   #terminalFailure: HarnessError | undefined;
 
@@ -139,6 +151,14 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     dependencies: DeepSeekHarnessAdapterDependencies = {},
   ) {
     this.#options = options;
+    this.#balance = new DeepSeekBalanceCache(() =>
+      fetchDeepSeekBalances({
+        environment: options.environment ?? process.env,
+        signal: this.#accountInspection.signal,
+      }),
+    );
+    // Read-only over dsh's session files; no dsh process is started.
+    this.usageStatistics = createDshUsageStatistics(options.environment ?? process.env);
     this.#probeExecutable =
       dependencies.probeExecutable ?? ((input) => probeDeepSeekExecutableGeneration(input));
     this.#createModernAdapter =
@@ -173,6 +193,25 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
   close(): Promise<void> {
     this.#closePromise ??= this.#performClose();
     return this.#closePromise;
+  }
+
+  /** Report the official DeepSeek API key's prepaid balance, not the DSH sign-in account. */
+  async inspectAccounts(): Promise<readonly HarnessAccountSnapshot[]> {
+    if (this.#closed) return [];
+    return this.#balance.inspect();
+  }
+
+  /** Cached balance for the Composer; refreshed by {@link refreshBalance}. */
+  balance(): AccountBalanceSnapshot | null {
+    return this.#balance.read();
+  }
+
+  refreshBalance(): Promise<AccountBalanceSnapshot | null> {
+    return this.#balance.refresh();
+  }
+
+  async inspectAccount(): Promise<HarnessAccountSnapshot | null> {
+    return (await this.inspectAccounts())[0] ?? null;
   }
 
   async #listSessionImportCandidates(): Promise<
@@ -222,6 +261,10 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
           throw new DelegateSelectionError(closedError());
         }
         this.#candidate = undefined;
+        if (selected.faultError) {
+          await this.#closeFailedCandidate(selected);
+          throw new DelegateSelectionError(selected.faultError);
+        }
         this.#delegate = selected;
         return selected;
       })
@@ -239,6 +282,11 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
   }
 
   async #performSelection(signal: AbortSignal): Promise<DelegateOwner> {
+    while (this.#retiring) {
+      await this.#retiring;
+    }
+    if (this.#closed || signal.aborted) throw new DelegateSelectionError(closedError());
+    if (this.#terminalFailure) throw new DelegateSelectionError(this.#terminalFailure);
     const startedAt = Date.now();
     let endpoint: string;
     try {
@@ -263,7 +311,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
           stage: "version",
           durationMs: Math.max(0, Date.now() - startedAt),
         } satisfies HarnessError;
-        if (this.#closed || signal.aborted) this.#cleanupFailedDuringClose = true;
+        if (this.#closed || signal.aborted) this.#cleanupFailed = true;
         else this.#terminalFailure ??= failure;
         throw new DelegateSelectionError(this.#terminalFailure ?? failure);
       }
@@ -276,10 +324,6 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         durationMs: Math.max(0, Date.now() - startedAt),
       };
     }
-    if (executableFailure?.code === "unsupported") {
-      throw new DelegateSelectionError(executableFailure);
-    }
-
     if (await hasDeepSeekModernAuthenticationFingerprint(endpoint, signal)) {
       throw new DelegateSelectionError({
         code: "authenticationRequired",
@@ -298,7 +342,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
           ? { ...executableFailure, durationMs: Math.max(0, Date.now() - startedAt) }
           : {
               code: "notInstalled",
-              message: "No supported local DeepSeek Harness executable was found",
+              message: "No local DeepSeek Harness executable was found",
               retryable: false,
               stage: "resolve-executable",
               durationMs: Math.max(0, Date.now() - startedAt),
@@ -321,6 +365,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
       version: executable.version,
       command: executable.command.command,
       commandArguments: executable.command.arguments,
+      onFault: (error) => this.#handleDelegateFault(owner, error),
     });
     const owner: DelegateOwner = {
       adapter,
@@ -339,16 +384,41 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
       owner.inspection = inspection;
       return owner;
     } catch (error) {
-      await this.#closeFailedCandidate(owner);
-      throw error;
+      const firstFault = owner.faultError;
+      const cleanupFailure = await this.#closeFailedCandidate(owner);
+      if (firstFault) throw new DelegateSelectionError(firstFault);
+      throw cleanupFailure ?? error;
     }
+  }
+
+  #handleDelegateFault(owner: DelegateOwner, error: HarnessError): void {
+    owner.faultError ??= error;
+    if (this.#closed || this.#delegate !== owner) return;
+    this.#delegate = undefined;
+    this.#failure = undefined;
+    const previous = this.#retiring ?? Promise.resolve();
+    const retiring = previous
+      .then(() =>
+        this.#closeOwner(owner).catch(() => {
+          this.#recordCleanupFailure();
+        }),
+      )
+      .finally(() => {
+        if (this.#retiring === retiring) this.#retiring = undefined;
+      });
+    this.#retiring = retiring;
   }
 
   async #performClose(): Promise<void> {
     this.#closed = true;
+    this.#accountInspection.abort(new Error("DeepSeek Harness account inspection closed"));
+    this.#balance.close();
     let cleanupFailed = false;
     const selection = this.#selection;
     selection?.abort.abort(new Error("DeepSeek Harness generation selection closed"));
+    while (this.#retiring) {
+      await this.#retiring;
+    }
     const candidate = this.#candidate;
     if (candidate) {
       await this.#closeOwner(candidate).catch(() => {
@@ -368,7 +438,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         cleanupFailed = true;
       });
     }
-    if (cleanupFailed || this.#cleanupFailedDuringClose) {
+    if (cleanupFailed || this.#cleanupFailed) {
       throw new Error("DeepSeek Harness Adapter cleanup did not complete");
     }
   }
@@ -378,11 +448,11 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     return owner.closePromise;
   }
 
-  async #closeFailedCandidate(owner: DelegateOwner): Promise<void> {
+  async #closeFailedCandidate(owner: DelegateOwner): Promise<DelegateSelectionError | undefined> {
     try {
       await this.#closeOwner(owner);
     } catch {
-      throw this.#recordCleanupFailure();
+      return this.#recordCleanupFailure();
     } finally {
       if (this.#candidate === owner) this.#candidate = undefined;
     }
@@ -395,8 +465,8 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
       retryable: false,
       stage: "cleanup",
     };
-    if (this.#closed) this.#cleanupFailedDuringClose = true;
-    else this.#terminalFailure ??= failure;
+    this.#cleanupFailed = true;
+    if (!this.#closed) this.#terminalFailure ??= failure;
     return new DelegateSelectionError(this.#terminalFailure ?? failure);
   }
 

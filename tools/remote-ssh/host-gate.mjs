@@ -79,7 +79,6 @@ const environment = {
   CODEX_HOME: codexHome,
   CODEXHOST_DATA_DIR: path.join(temporary, "host-data"),
   CODEXHOST_STOCK_CODEX_PATH: stockCodexPath,
-  CODEXHOST_DEFAULT_AGENT: "codex",
   CODEXHOST_CLAUDE_COMMAND: claudeCommand,
   PATH: `${path.dirname(nodePath)}:${process.env.PATH ?? "/usr/bin:/bin"}`,
 };

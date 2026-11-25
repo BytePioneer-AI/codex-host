@@ -12,6 +12,10 @@ const ICON_SOURCE = path.resolve(
   import.meta.dirname,
   "../../../crates/launcher/assets/codexhost.ico",
 );
+const PNG_SOURCE = path.resolve(
+  import.meta.dirname,
+  "../../../crates/launcher/assets/codexhost.png",
+);
 
 export function readIcon() {
   return readFileSync(ICON_SOURCE);
@@ -54,5 +58,6 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const output = parseArguments(process.argv.slice(2));
   await mkdir(output, { recursive: true });
   await writeFile(path.join(output, "codexhost.ico"), await readFile(ICON_SOURCE));
+  await writeFile(path.join(output, "codexhost-icon.png"), await readFile(PNG_SOURCE));
   console.log(`icon=${path.join(output, "codexhost.ico")}`);
 }

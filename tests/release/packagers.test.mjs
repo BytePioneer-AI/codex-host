@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
+import { createMacosShellInfoPlist } from "../../scripts/release/macos-shell-bundle.mjs";
 
 const root = path.resolve(import.meta.dirname, "../..");
 
@@ -10,14 +11,17 @@ describe("platform packagers", () => {
     const source = await readFile(path.join(root, "scripts/release/macos/package.sh"), "utf8");
     expect(source).toContain('CONTENTS="$APP_PATH/Contents"');
     expect(source).toContain('RESOURCES="$CONTENTS/Resources"');
+    expect(source).toContain('"$CONTENTS/Helpers/CodexHost.app"');
     expect(source).toContain("codesign --verify --deep --strict");
     expect(source).toContain('runtime/node" -e');
     expect(source).not.toContain("--options runtime");
-    expect(source).toContain('"$ASSETS_DIR/codexhost.ico"');
-    expect(source).toContain("sips -s format png");
+    expect(source).toContain('"$ASSETS_DIR/codexhost-icon.png"');
+    expect(source).not.toContain("sips -s format png");
     expect(source).toContain("iconutil -c icns");
     expect(source).toContain("CFBundleIconFile");
     expect(source).toContain("codexhost.icns");
+    expect(source).toContain("NSMicrophoneUsageDescription");
+    expect(createMacosShellInfoPlist("0.26.1")).toContain("NSMicrophoneUsageDescription");
     expect(source).toContain("create-dmg");
     expect(source).toContain("--window-size 800 400");
     expect(source).toContain("--window-pos 200 120");
@@ -34,24 +38,32 @@ describe("platform packagers", () => {
   });
 
   it("publishes one tag-bound four-platform installer and npm release", async () => {
-    const [workflow, releaseBuilder, releaseClient] = await Promise.all([
+    const [workflow, releaseBuilder, releaseClient, releaseValidation] = await Promise.all([
       readFile(path.join(root, ".github/workflows/release-packages.yml"), "utf8"),
       readFile(path.join(root, "scripts/release/prepare-payload.mjs"), "utf8"),
       readFile(path.join(root, "packages/update-manager/src/github-release.ts"), "utf8"),
+      readFile(path.join(root, "packages/repository-automation/src/release.mjs"), "utf8"),
     ]);
     expect(workflow).toContain('tags:\n      - "v*"');
     expect(workflow).not.toContain("types: [published]");
     expect(workflow).toContain("Resolve release metadata");
-    expect(workflow).toContain("does not match package.json version");
-    expect(workflow).toContain("does not match Cargo workspace version");
-    expect(workflow).toContain("must be an annotated tag with release notes");
-    expect(workflow).toContain("%(contents:body)");
-    expect(workflow).toContain("npm_tag=test");
-    expect(workflow).toContain("npm_tag=next");
-    expect(workflow).toContain("npm_tag=latest");
+    expect(releaseValidation).toContain("does not match package.json version");
+    expect(releaseValidation).toContain("does not match Cargo workspace version");
+    expect(releaseValidation).toContain("must be an annotated tag with release notes");
+    expect(releaseValidation).toContain("%(contents:body)");
+    expect(workflow).toContain("npm_tag: result.npmTag");
+    expect(workflow).toContain("ref: ${{ needs.prepare.outputs.commit_sha }}");
+    expect(workflow).not.toContain("ref: ${{ needs.prepare.outputs.tag }}");
+    expect(workflow).toContain(
+      "Revalidate tag and selected CI policy immediately before npm publication",
+    );
+    expect(workflow).toContain(
+      "Revalidate tag and selected CI policy immediately before GitHub publication",
+    );
 
     expect(workflow).toContain("codexhost-*.dmg");
     expect(workflow).toContain("codexhost-*.exe");
+    expect(workflow).toContain("codexhost-*.tar.gz");
     expect(workflow).not.toContain("codexhost-*.msi");
     expect(workflow).toContain("npm run release:npm --");
     expect(workflow).toContain("Build npm package from installer outputs");
@@ -69,6 +81,9 @@ describe("platform packagers", () => {
     expect(workflow).toContain("if: runner.os != 'Linux'");
     expect(workflow).toContain("target: linux-x64");
     expect(workflow).toContain("runner: ubuntu-22.04");
+    expect(workflow).toContain(
+      "--require-hashes --only-binary :all: -r scripts/release/linux-zigbuild-requirements.txt",
+    );
     expect(workflow).toContain("rustTarget: x86_64-unknown-linux-gnu");
     expect(workflow).toContain("target: linux-arm64");
     expect(workflow).toContain("runner: ubuntu-22.04-arm");
@@ -77,7 +92,8 @@ describe("platform packagers", () => {
     expect(workflow).toContain("release:npm:meta");
     expect(workflow).toContain("release:npm:publish");
     expect(workflow).toContain('--tag "$NPM_TAG"');
-    expect(workflow).toContain("secrets.NPM_TOKEN");
+    expect(workflow).not.toContain("secrets.NPM_TOKEN");
+    expect(workflow).not.toContain("NODE_AUTH_TOKEN");
     expect(workflow).toContain("id-token: write");
 
     expect(workflow).not.toContain("smoke-npm:");
@@ -89,6 +105,8 @@ describe("platform packagers", () => {
     expect(publishRelease).toContain('"codexhost-${VERSION}-windows-arm64.exe"');
     expect(publishRelease).toContain('"codexhost-${VERSION}-macos-x64.dmg"');
     expect(publishRelease).toContain('"codexhost-${VERSION}-macos-arm64.dmg"');
+    expect(publishRelease).toContain('"codexhost-${VERSION}-linux-x64.tar.gz"');
+    expect(publishRelease).toContain('"codexhost-${VERSION}-linux-arm64.tar.gz"');
     expect(publishRelease).not.toContain('"codexhost-cli-${VERSION}');
     expect(workflow).not.toContain("softprops/action-gh-release");
     expect(workflow).not.toContain("codexhost-*.sha256");
@@ -102,6 +120,59 @@ describe("platform packagers", () => {
     expect(releaseClient).toContain("sha256:");
   });
 
+  it("prepares Windows process shutdown only after Install, using the bundled temporary helper", async () => {
+    const installer = await readFile(
+      path.join(root, "scripts/release/windows/Installer.iss"),
+      "utf8",
+    );
+    const helper =
+      'Source: "{#PayloadRoot}\\libexec\\codexhost-updater.exe"; DestName: "codexhost-install-helper.exe"; Flags: dontcopy';
+    expect(installer).toContain(helper);
+    expect(installer.indexOf(helper)).toBeLessThan(
+      installer.indexOf('Source: "{#PayloadRoot}\\*"'),
+    );
+    const code = installer.split("[Code]")[1];
+    expect(code).toContain("function PrepareToInstall(var NeedsRestart: Boolean): String;");
+    expect(code).not.toMatch(/InitializeSetup|InitializeWizard|MsgBox|WizardForm/);
+    expect(code).toContain("ExtractTemporaryFile('codexhost-install-helper.exe')");
+    expect(code).toContain("ExpandConstant('{tmp}\\codexhost-install-helper.exe')");
+    expect(code).toContain(
+      "'prepare-install --install-root ' + AddQuotes(AddBackslash(ExpandConstant('{app}')) + '.')",
+    );
+    expect(code).toContain("ExecAndLogOutput(");
+    expect(code).toContain("ewWaitUntilTerminated, ResultCode, nil");
+    expect(code).toContain("else if ResultCode <> 0 then begin");
+    expect(code).toContain("Could not close the running codexhost installation");
+    expect(installer).not.toMatch(/CloseApplications\s*=\s*no/i);
+    expect(installer).not.toMatch(/taskkill|powershell|\[Run\]/i);
+  });
+
+  it("runs service shutdown and autostart removal only during uninstall, before deleting files", async () => {
+    const installer = await readFile(
+      path.join(root, "scripts/release/windows/Installer.iss"),
+      "utf8",
+    );
+    const uninstall = installer.split(/\[UninstallRun\]\r?\n/u)[1].split(/\r?\n\[/u)[0];
+    expect(uninstall.trim().split(/\r?\n/u)).toEqual([
+      'Filename: "{app}\\bin\\codexhost.exe"; Parameters: "stop"; Flags: runhidden; RunOnceId: "StopCodexhostServices"',
+      'Filename: "{app}\\bin\\codexhost.exe"; Parameters: "autostart off"; Flags: runhidden; RunOnceId: "DisableCodexhostAutostart"',
+    ]);
+    expect(installer.split("[Code]")[1]).not.toMatch(/autostart|unins|Serve/u);
+    expect(installer).not.toMatch(/\[Registry\]|RegDelete|taskkill|powershell/iu);
+    expect(installer).toContain("UninstalledAll=%1 was successfully removed");
+    expect(installer).toContain("Tailscale Serve configuration is still retained");
+    expect(installer).toContain("tailscale serve --https=443 --set-path=/ off");
+  });
+
+  it("statically links the MSVC runtime so Windows executables need no VC++ Redistributable", async () => {
+    const config = await readFile(path.join(root, ".cargo/config.toml"), "utf8");
+    for (const target of ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]) {
+      expect(config).toContain(
+        `[target.${target}]\nrustflags = ["-C", "target-feature=+crt-static"]`,
+      );
+    }
+  });
+
   it("builds a standard Inno Setup installer for both Windows architectures", async () => {
     const [script, installer] = await Promise.all([
       readFile(path.join(root, "scripts/release/windows/package.ps1"), "utf8"),
@@ -113,6 +184,9 @@ describe("platform packagers", () => {
     expect(installer).toContain("DefaultDirName={localappdata}\\Programs\\codexhost");
     expect(installer).toContain("PrivilegesRequired=lowest");
     expect(installer).toContain("DisableProgramGroupPage=yes");
+    expect(installer.split(/\r?\n/)).toContain(
+      'Name: "{userdesktop}\\codexhost"; Filename: "{app}\\bin\\codexhost-start.exe"; WorkingDir: "{app}"',
+    );
     expect(installer).toContain("ArchitecturesAllowed=x64compatible");
     expect(installer).toContain("ArchitecturesAllowed=arm64");
   });

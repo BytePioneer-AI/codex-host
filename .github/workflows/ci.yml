@@ -1,7 +1,21 @@
 name: CI
 
 on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to check
+        type: choice
+        default: all
+        options:
+          - all
+          - ubuntu-22.04
+          - macos-26
+          - windows-latest
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
   push:
     branches:
       - main
@@ -9,18 +23,22 @@ on:
 permissions:
   contents: read
 
+# Cold CI builds skip incremental state and debug symbols, retaining debug assertions.
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+# Superseded PR runs are disposable; main runs provide per-commit release evidence.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  check:
-    name: Check ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        os:
-          - ubuntu-22.04
-          - macos-14
-          - windows-latest
+  static:
+    name: Static checks
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'ubuntu-22.04'
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,28 +50,167 @@ jobs:
           cache: npm
 
       - name: Setup npm
-        run: npm install --global npm@11.8.0
+        run: npm install --global --prefer-offline npm@11.8.0
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      # Rust formatting belongs to the native lane, which installs Rust.
+      - name: Check formatting
+        run: npx prettier --check .
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+  vitest:
+    name: Vitest
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'ubuntu-22.04'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Setup npm
+        run: npm install --global --prefer-offline npm@11.8.0
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Build TypeScript
+        run: npm run build:typescript
+
+      - name: Test Vitest (full suite)
+        run: npx vitest run --config tests/vitest.config.js
+
+  web:
+    name: Web Host tests
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'ubuntu-22.04'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Setup npm
+        run: npm install --global --prefer-offline npm@11.8.0
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Build TypeScript
+        run: npm run build:typescript
+
+      # test:web's pretest builds the Web UI assets used by these suites.
+      - name: Test Web Host (full suite)
+        run: npm run test:web
+
+  # Release and repository maintenance require these existing Check job names.
+  # Linux x64 owns native checks here; secondary OS lanes also test OS-sensitive TS.
+  check:
+    name: Check ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.platform != 'all' && format('["{0}"]', inputs.platform) || '["ubuntu-22.04","macos-26","windows-latest"]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Setup npm
+        run: npm install --global --prefer-offline npm@11.8.0
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.1
 
+      # Reuse compiled dependencies; only main refreshes the cache so PRs cannot evict it.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Install dependencies
-        run: npm ci
+        id: dependencies
+        run: npm ci --prefer-offline
 
-      - name: Check
-        run: npm run check
-
-      - name: Smoke-test Linux npm package
+      - name: Check Rust formatting
         if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+
+      # Linux x64 covers governance, browser/contracts, and the nested Gate runner test.
+      # Secondary OS lanes filter both Vitest and Web Host files (tests/platform-tests.mjs);
+      # Linux x64 covers platform-independent logic.
+      - name: Test TypeScript (cross-platform)
+        if: runner.os != 'Linux'
+        env:
+          CODEXHOST_TEST_SCOPE: platform
         run: >
-          node scripts/release/smoke-npm-package.mjs
-          --target linux-x64
-          --version 0.1.6-ci.0
+          npm run build:typescript &&
+          npx vitest run --config tests/vitest.config.js
+          --exclude 'packages/repository-automation/test/**'
+          --exclude 'packages/shared-contracts/test/**'
+          --exclude 'packages/renderer-extension/test/**'
+          --exclude 'tools/gate-claude-code/run.test.mjs'
+          && npm run test:web
+
+      # Real Launcher + Node service, with isolated HOME/data and fake Harnesses.
+      - name: Test independent Host lifecycle
+        run: npm run test:shared-host
+
+      - name: Test Unix Desktop Controller recovery
+        if: runner.os != 'Windows'
+        run: |
+          export CODEXHOST_TEST_CONTROLLER_BUNDLE="$RUNNER_TEMP/desktop-controller.mjs"
+          npm run build:release -w @codexhost/desktop-control -- --output "$CODEXHOST_TEST_CONTROLLER_BUNDLE"
+          cargo test -p codexhost-launcher --locked --bin codexhost -- recovers_release_controller --ignored
+
+      # Rust formatting is already covered by the Linux x64 formatting step.
+      - name: Check Rust
+        run: >
+          cargo clippy --workspace --all-targets --locked
+          --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools
+          -- -D warnings && npm run test:rust
+
+      - name: Setup cargo-zigbuild
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.dependencies.outcome == 'success' }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zigbuild"
+          "$RUNNER_TEMP/zigbuild/bin/python" -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary :all: -r scripts/release/linux-zigbuild-requirements.txt
+          echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
+
+      # Keep packaging evidence even when an unrelated check fails; reuse this runner.
+      - name: Smoke-test Linux npm package
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.dependencies.outcome == 'success' }}
+        run: |
+          npm run build:typescript
+          node scripts/release/smoke-npm-package.mjs --target linux-x64 --version 0.1.6-ci.0
 
   check-linux-arm64:
     name: Check Linux ARM64
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
     runs-on: ubuntu-22.04-arm
     steps:
       - name: Checkout
@@ -66,21 +223,43 @@ jobs:
           cache: npm
 
       - name: Setup npm
-        run: npm install --global npm@11.8.0
+        run: npm install --global --prefer-offline npm@11.8.0
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97.1
 
-      - name: Install dependencies
-        run: npm ci
+      # Reuse compiled dependencies; only main refreshes the cache so PRs cannot evict it.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Check
-        run: npm run check
+      - name: Install dependencies
+        id: dependencies
+        run: npm ci --prefer-offline
+
+      # Linux x64 owns TS tests; ARM64 verifies native code and the installed package.
+      - name: Test independent Host lifecycle
+        run: npm run test:shared-host
+
+      - name: Check Rust
+        run: >
+          cargo clippy --workspace --all-targets --locked
+          --features codexhost-shim/test-utils,codexhost-gate-a-native/gate-tools
+          -- -D warnings && npm run test:rust
+
+      - name: Setup cargo-zigbuild
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zigbuild"
+          "$RUNNER_TEMP/zigbuild/bin/python" -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary :all: -r scripts/release/linux-zigbuild-requirements.txt
+          echo "$RUNNER_TEMP/zigbuild/bin" >> "$GITHUB_PATH"
 
       - name: Smoke-test Linux ARM64 npm package
-        run: >
-          node scripts/release/smoke-npm-package.mjs
-          --target linux-arm64
-          --version 0.1.6-ci.0
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: |
+          npm run build:typescript
+          node scripts/release/smoke-npm-package.mjs --target linux-arm64 --version 0.1.6-ci.0

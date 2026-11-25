@@ -1,0 +1,145 @@
+.popover {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  padding: 2px;
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
+  border-radius: 9999px;
+  border: 0.5px solid color-mix(in srgb, var(--dsw-alias-label-primary-foreground) 16%, transparent);
+  box-shadow: var(--dsw-shadow-lv3);
+  animation: selection-island-in 140ms cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  overflow: hidden;
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 9999px;
+  background: transparent;
+  color: inherit;
+  font-family: var(--dsw-font-family);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    transform 120ms cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.action + .action {
+  position: relative;
+  margin-left: 1px;
+}
+
+.action + .action::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 5px;
+  bottom: 5px;
+  width: 1px;
+  background: color-mix(in srgb, currentColor 24%, transparent);
+}
+
+.action svg {
+  flex-shrink: 0;
+  color: currentColor;
+}
+
+.action:hover {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.action:active {
+  transform: scale(0.96);
+  background: color-mix(in srgb, currentColor 22%, transparent);
+}
+
+.answer {
+  position: relative;
+}
+
+:global(::highlight(codexhost-response-annotation)) {
+  background-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent);
+  text-decoration: underline
+    color-mix(in srgb, var(--dsw-alias-state-business-primary) 65%, transparent);
+}
+
+:global(::highlight(codexhost-response-annotation-hover)) {
+  background-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 30%, transparent);
+  text-decoration: underline var(--dsw-alias-state-business-primary);
+}
+
+.annotationMark {
+  position: absolute;
+  z-index: 1;
+  inset-inline-start: 100%;
+  user-select: none;
+}
+
+.annotationMark button {
+  width: 24px;
+  height: 24px;
+  justify-content: center;
+}
+
+.annotationNumber {
+  display: inline-grid;
+  box-sizing: border-box;
+  min-width: 18px;
+  min-height: 18px;
+  place-items: center;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-state-business-primary) 14%,
+    var(--dsw-alias-bg-base)
+  );
+  color: var(--dsw-alias-state-business-primary);
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  transition:
+    background-color 120ms ease,
+    transform 120ms ease;
+}
+
+.annotationNumberHovered {
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-state-business-primary) 28%,
+    var(--dsw-alias-bg-base)
+  );
+  transform: scale(1.1);
+}
+
+@keyframes selection-island-in {
+  from {
+    opacity: 0;
+    scale: 0.9;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .popover {
+    animation: none;
+  }
+
+  .action,
+  .annotationNumber {
+    transition: none;
+  }
+}

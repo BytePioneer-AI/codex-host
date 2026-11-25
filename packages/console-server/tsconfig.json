@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
+  },
+  "references": [
+    { "path": "../harness-plugin-files/tsconfig.json" },
+    { "path": "../shared-contracts/tsconfig.json" },
+    { "path": "../update-manager/tsconfig.json" }
+  ],
+  "include": ["src/**/*.ts"]
+}

@@ -13,22 +13,18 @@ export type {
 } from "./harness-plugin-loader.js";
 export { HarnessPluginRegistry } from "./harness-plugin-registry.js";
 export { installedHarnessPluginOptions } from "./installed-harness-plugins.js";
+export { ClientChannelEvents } from "./client-channel-events.js";
+export { startClientChannelServer } from "./client-channel-server.js";
+export type { ClientChannelTarget } from "./client-channel-server.js";
 export {
   AppServerHost,
   classifyCreateRequestRoute,
-  officialAccountEnvironment,
   officialEnvironment,
 } from "./app-server-host.js";
 export type { AppServerHostOptions } from "./app-server-host.js";
-export { AccountRepository } from "./account/account-repository.js";
-export type { AccountRepositoryLike, CodexAccount } from "./account/account-repository.js";
-export { ThreadAccountStore } from "./account/thread-account-store.js";
-export type { ThreadAccountStoreLike } from "./account/thread-account-store.js";
+export type { CodexAccountControl } from "./account/codex-account-control.js";
+export { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
 export { CodexRuntime } from "./codex-runtime/codex-runtime.js";
-export {
-  CodexRuntimePool,
-  UnknownCodexThreadAccountError,
-} from "./codex-runtime/codex-runtime-pool.js";
 export {
   createRemoteAppServerWebSocketListener,
   isRemoteUnixListenerInvocation,
@@ -43,10 +39,13 @@ export type {
 } from "./remote-app-server.js";
 export { runDelegationCli, DELEGATION_HELP } from "./delegation-cli.js";
 export { DelegationControlRegistry } from "./delegation-control-registry.js";
+export { createRemotePeerDelegationClient } from "./remote-peer-delegation.js";
+export type { RemotePeerDelegationClient } from "./remote-peer-delegation.js";
 export { startDelegationControlServer } from "./delegation-control-server.js";
 export { installDelegationSkills, CODEXHOST_DELEGATION_SKILL } from "./delegation-skill.js";
 export {
   DELEGATION_CLI_PATH_ENV,
+  DELEGATION_CLI_NODE_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
   DELEGATION_RUNTIME_TOKEN_ENV,
   DELEGATION_THREAD_ID_ENV,
@@ -54,14 +53,18 @@ export {
 } from "./delegation-types.js";
 export type {
   DelegationControlApi,
+  DelegationPendingQuestion,
   DelegationStartInput,
   DelegationStartResult,
   DelegationThreadListResult,
   DelegationThreadSnapshot,
+  ThreadAnswerInput,
+  ThreadAnswerResult,
   ThreadListInput,
   ThreadReadInput,
   ThreadWaitInput,
 } from "./delegation-types.js";
+export type { ThreadExportInput, ThreadExportResult } from "./delegation-thread-export.js";
 export { hasLauncherManagedUpdateRuntime, runHostRuntime } from "./run-host-runtime.js";
 export { runClaudeAquaHarnessBroker } from "./aqua-harness-broker.js";
 export {
@@ -99,6 +102,7 @@ export type {
   RemoteHostStatus,
 } from "./remote-host-lifecycle.js";
 export { createHostUpdateCoordinator } from "./update-coordinator.js";
+export { HostExtensionManager } from "./host-extension-manager.js";
 export type {
   CreateHostUpdateCoordinatorOptions,
   HostUpdateCoordinator,

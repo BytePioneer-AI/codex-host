@@ -1,0 +1,16 @@
+{
+  "name": "@codexhost/dsh-web-include",
+  "version": "1.0.10-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/cordis-plugin-loader": "*",
+    "js-yaml": "^4.1.0"
+  }
+}

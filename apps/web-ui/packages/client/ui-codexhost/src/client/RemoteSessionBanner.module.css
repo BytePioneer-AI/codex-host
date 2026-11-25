@@ -1,0 +1,190 @@
+/* Hide ambient chip in Hero mode where the docked top cap already shows location & project. */
+:global([data-composer-variant="hero"]) .chip {
+  display: none;
+}
+
+/* Minimal borderless remote indicator inside `conversation.input.left` */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4.5px;
+  min-width: 0;
+  max-width: 150px;
+  height: 24px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  white-space: nowrap;
+  user-select: none;
+  cursor: default;
+  transition: color 120ms ease;
+}
+
+.chip:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+.chip:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -1px;
+}
+
+.chipGlobe {
+  --ch-peer-dot-color: #3b76cc;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ch-peer-dot-color);
+}
+
+.chipGlobe[data-color="blue"] {
+  --ch-peer-dot-color: #3b76cc;
+}
+.chipGlobe[data-color="purple"] {
+  --ch-peer-dot-color: #7460cc;
+}
+.chipGlobe[data-color="cyan"] {
+  --ch-peer-dot-color: #0e8fa8;
+}
+.chipGlobe[data-color="green"] {
+  --ch-peer-dot-color: #2f8c70;
+}
+.chipGlobe[data-color="amber"] {
+  --ch-peer-dot-color: #c27803;
+}
+.chipGlobe[data-color="rose"] {
+  --ch-peer-dot-color: #c94a6a;
+}
+.chipGlobe[data-color="slate"] {
+  --ch-peer-dot-color: #64748b;
+}
+
+:global(body[data-ds-dark-theme]) .chipGlobe[data-color="blue"] {
+  --ch-peer-dot-color: #7bb0f8;
+}
+:global(body[data-ds-dark-theme]) .chipGlobe[data-color="purple"] {
+  --ch-peer-dot-color: #a899f2;
+}
+:global(body[data-ds-dark-theme]) .chipGlobe[data-color="cyan"] {
+  --ch-peer-dot-color: #63c5da;
+}
+:global(body[data-ds-dark-theme]) .chipGlobe[data-color="green"] {
+  --ch-peer-dot-color: #6ec4a7;
+}
+:global(body[data-ds-dark-theme]) .chipGlobe[data-color="amber"] {
+  --ch-peer-dot-color: #e0ae58;
+}
+:global(body[data-ds-dark-theme]) .chipGlobe[data-color="rose"] {
+  --ch-peer-dot-color: #e08298;
+}
+:global(body[data-ds-dark-theme]) .chipGlobe[data-color="slate"] {
+  --ch-peer-dot-color: #94a3b8;
+}
+
+.chipHost {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Slim subtle reconnect strip shown only when remote host is disconnected */
+.strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 30px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dsw-alias-state-warning-primary, #d97706) 8%, transparent);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  min-width: 0;
+}
+
+.strip[data-remote-state="auth-error"] {
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, transparent);
+}
+
+.stripLead {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+}
+
+.stripText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-primary);
+}
+
+.dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-tertiary);
+}
+
+.dot[data-state="connecting"] {
+  background: var(--dsw-alias-state-warning-primary, #c27803);
+}
+
+.dot[data-state="auth-error"] {
+  background: var(--dsw-alias-state-error-primary);
+}
+
+.reconnectBtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 120ms ease;
+}
+
+.reconnectBtn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
+}
+
+.reconnectBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.reconnectBtn:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -1px;
+}
+
+.spinner {
+  display: inline-flex;
+  animation: spin 0.85s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

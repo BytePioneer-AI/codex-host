@@ -16,6 +16,7 @@ import type {
 } from "@opencode-ai/sdk/v2";
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import {
+  harnessModelRefSchema,
   hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
@@ -30,6 +31,7 @@ import {
   type OpenCodeProviderCatalog,
 } from "../src/model-catalog.js";
 import { OpenCodeAdapter, type OpenCodeAdapterDependencies } from "../src/opencode-adapter.js";
+import { OpenCodeAdapter as VersionedOpenCodeAdapter } from "../src/versioned-adapter.js";
 import type {
   OpenCodePromptInput,
   OpenCodeTransport,
@@ -726,7 +728,7 @@ describe("OpenCode HarnessAdapter", () => {
 
   it("opens the SDK Session with native configuration and selectable permissions", async () => {
     const transport = new FakeOpenCodeTransport();
-    const adapter = new OpenCodeAdapter(
+    const adapter = new VersionedOpenCodeAdapter(
       {},
       {
         createConnection: () => ({
@@ -738,7 +740,15 @@ describe("OpenCode HarnessAdapter", () => {
         randomUUID: () => "uuid-1",
       },
     );
-    const model = encodeOpenCodeModelRef({ providerID: "provider-1", modelID: "model-1" });
+    const model = harnessModelRefSchema.parse({ id: "provider-1/model-1" });
+    const inspected = await adapter.inspect({ cwd });
+    if (inspected.status !== "ready") throw new Error(inspected.error.message);
+    const saved = harnessModelRefSchema.parse({
+      id: "opencode-model-v1.WyJwcm92aWRlci0xIiwibW9kZWwtMSJd",
+    });
+    expect(adapter.normalizeStoredModelRef(saved, structuredClone(inspected.catalog))).toEqual(
+      model,
+    );
     const thinkingOptionId = encodeOpenCodeVariant("high");
     const opened = await adapter.open({ kind: "create", cwd, model, thinkingOptionId });
     if (!opened.ok) throw new Error(opened.error.message);
@@ -875,9 +885,12 @@ describe("OpenCode HarnessAdapter", () => {
   it("applies dynamic Model and Thinking selection to the next native prompt", async () => {
     const { adapter, session, transport } = await openFixture();
     const iterator = session.outputs[Symbol.asyncIterator]();
-    const model = encodeOpenCodeModelRef({ providerID: "provider-1", modelID: "model-1" });
+    const model = harnessModelRefSchema.parse({ id: "provider-1/model-1" });
     const thinkingOptionId = encodeOpenCodeVariant("high");
 
+    await session.execute(turn("in-progress", "before switching"));
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
+    const runningPrompt = structuredClone(transport.promptCalls.at(-1));
     await expect(session.execute({ type: "model.select", model })).resolves.toEqual({
       ok: true,
       value: { completed: true },
@@ -910,6 +923,11 @@ describe("OpenCode HarnessAdapter", () => {
       state: { effectiveModel: model, effectiveThinkingOptionId: thinkingOptionId },
     });
 
+    expect(transport.promptCalls.at(-1)).toEqual(runningPrompt);
+    appendTerminal(transport);
+    await completeAfterBusy(transport);
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed" });
+
     await expect(session.execute(turn("selected", "hello"))).resolves.toMatchObject({ ok: true });
     expect(transport.promptCalls.at(-1)).toMatchObject({
       model: { providerID: "provider-1", modelID: "model-1" },
@@ -918,7 +936,9 @@ describe("OpenCode HarnessAdapter", () => {
     expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
     appendTerminal(transport);
     await completeAfterBusy(transport);
-    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.completed" });
+    let event = await nextEvent(iterator);
+    while (event.type === "session.usage.changed") event = await nextEvent(iterator);
+    expect(event).toMatchObject({ type: "turn.completed" });
     await session.close();
     await adapter.close();
   });
@@ -1230,6 +1250,111 @@ describe("OpenCode HarnessAdapter", () => {
     await adapter.close();
   });
 
+  it.each(["text", "reasoning"] as const)(
+    "streams %s deltas after an empty initial Part",
+    async (type) => {
+      const { adapter, session, transport } = await openFixture();
+      const outputs: HarnessOutput[] = [];
+      const consumed = (async () => {
+        for await (const output of session.outputs) outputs.push(output);
+      })();
+      try {
+        await session.execute(turn("empty-part-stream"));
+        const promptID = transport.promptCalls.at(-1)?.messageID;
+        if (!promptID) throw new Error("OpenCode prompt has no Message ID");
+        const info = assistantMessage("assistant-live", promptID).info;
+        if (info.role !== "assistant") throw new Error("Expected an Assistant Message");
+        info.time = { created: 2 };
+        delete info.finish;
+        transport.emit({
+          id: "assistant-stream",
+          type: "message.updated",
+          properties: { sessionID: "session-1", info },
+        });
+        const part: Extract<Part, { type: "text" | "reasoning" }> = {
+          id: "empty-part",
+          sessionID: "session-1",
+          messageID: "assistant-live",
+          type,
+          text: "",
+          time: { start: 1 },
+        };
+        transport.emit({
+          id: "part-start",
+          type: "message.part.updated",
+          properties: { sessionID: "session-1", part, time: 1 },
+        });
+        for (const delta of ["first", " second"]) {
+          transport.emit({
+            id: `delta-${delta}`,
+            type: "message.part.delta",
+            properties: {
+              sessionID: "session-1",
+              messageID: "assistant-live",
+              partID: part.id,
+              field: "text",
+              delta,
+            },
+          });
+        }
+        await vi.waitFor(() =>
+          expect(
+            outputs.filter(
+              (output) => output.kind === "event" && output.event.type === "item.updated",
+            ),
+          ).toHaveLength(2),
+        );
+        expect(
+          outputs.some(
+            (output) => output.kind === "event" && output.event.type === "turn.completed",
+          ),
+        ).toBe(false);
+        expect(
+          outputs.filter(
+            (output) => output.kind === "event" && output.event.type === "item.updated",
+          ),
+        ).toMatchObject([
+          { event: { update: { type: "text.append", text: "first" } } },
+          { event: { update: { type: "text.append", text: " second" } } },
+        ]);
+        transport.emit({
+          id: "part-end",
+          type: "message.part.updated",
+          properties: {
+            sessionID: "session-1",
+            part: { ...part, text: "first second", time: { start: 1, end: 2 } },
+            time: 2,
+          },
+        });
+        await vi.waitFor(() =>
+          expect(
+            outputs.some(
+              (output) => output.kind === "event" && output.event.type === "item.completed",
+            ),
+          ).toBe(true),
+        );
+        expect(
+          outputs.filter(
+            (output) => output.kind === "event" && output.event.type === "item.updated",
+          ),
+        ).toHaveLength(2);
+        appendTerminal(transport, [{ ...part, text: "first second", time: { start: 1, end: 2 } }]);
+        await completeAfterBusy(transport);
+        await vi.waitFor(() =>
+          expect(
+            outputs.some(
+              (output) => output.kind === "event" && output.event.type === "turn.completed",
+            ),
+          ).toBe(true),
+        );
+      } finally {
+        await session.close();
+        await adapter.close();
+        await consumed;
+      }
+    },
+  );
+
   it("waits for Part identity before projecting an early delta", async () => {
     const { adapter, session, transport } = await openFixture();
     const iterator = session.outputs[Symbol.asyncIterator]();
@@ -1534,6 +1659,21 @@ describe("OpenCode HarnessAdapter", () => {
       ok: true,
       value: { turns: [{ input: [{ text: "one" }] }] },
     });
+    vi.spyOn(rollbackTransport, "getMessages").mockRejectedValueOnce(
+      new Error("native transcript unavailable"),
+    );
+    await expect(rollbackFixture.session.readSnapshot()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "nativeFailure", message: "native transcript unavailable" },
+    });
+    rollbackTransport.messages.set("session-fork", [
+      userMessage("user-1", "updated native prompt"),
+      assistantMessage("assistant-1", "user-1"),
+    ]);
+    await expect(rollbackFixture.session.readSnapshot()).resolves.toMatchObject({
+      ok: true,
+      value: { turns: [{ input: [{ text: "updated native prompt" }] }] },
+    });
     expect(rollbackTransport.sessions.get("session-1")?.revert).toBeUndefined();
     expect(rollbackTransport.messages.get("session-1")).toEqual(sourceMessages);
     await rollbackFixture.session.close();
@@ -1671,6 +1811,35 @@ describe("OpenCode HarnessAdapter", () => {
       ok: true,
       value: { turns: [] },
     });
+    await adapter.close();
+  });
+
+  it("rejects turn.steer without submitting another prompt", async () => {
+    const { adapter, session, transport } = await openFixture();
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(turn("running", "work"));
+    expect(await nextEvent(iterator)).toMatchObject({ type: "turn.started" });
+    expect(session.capabilities.steer).toBeUndefined();
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("running"),
+        input: [{ type: "text", text: "insert" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    await expect(
+      session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("other"),
+        input: [{ type: "text", text: "insert" }],
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(transport.promptCalls).toHaveLength(1);
+    await expect(session.execute(turn("again"))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy" },
+    });
+    await session.close();
     await adapter.close();
   });
 

@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 
@@ -34,15 +35,29 @@ function validMetafile(extraInputs = {}) {
 }
 
 async function runPackagedHost(host, directory, requests) {
-  const official = path.join(directory, "official.mjs");
+  const official = path.join(directory, ".codex", "app-server");
+  await mkdir(path.dirname(official), { recursive: true });
+  const require = createRequire(import.meta.url);
   await writeFile(
     official,
     `
-    import readline from "node:readline";
-    for await (const line of readline.createInterface({ input: process.stdin })) {
-      const request = JSON.parse(line);
-      process.stdout.write(JSON.stringify({ id: request.id, result: { official: true } }) + "\\n");
-    }
+    const { WebSocketServer } = require(${JSON.stringify(require.resolve("ws"))});
+
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0, perMessageDeflate: false });
+    server.on("connection", (socket) => {
+      socket.on("message", (frame) => {
+        const request = JSON.parse(frame.toString());
+        if (request.id === undefined) return;
+        const result = request.method === "account/read"
+          ? { account: null, requiresOpenaiAuth: true }
+          : { official: true };
+        socket.send(JSON.stringify({ id: request.id, result }));
+      });
+    });
+    server.on("listening", () => {
+      const address = server.address();
+      process.stderr.write("  listening on: ws://127.0.0.1:" + address.port + "\\n");
+    });
   `,
   );
   const environment = { ...process.env };
@@ -51,14 +66,15 @@ async function runPackagedHost(host, directory, requests) {
   Object.assign(environment, {
     HOME: directory,
     USERPROFILE: directory,
+    CODEX_HOME: path.join(directory, ".codex"),
     CODEXHOST_DATA_DIR: path.join(directory, "data"),
     CODEXHOST_PLUGIN_DIRECTORY: path.join(directory, "user-plugins"),
     CODEXHOST_STOCK_CODEX_PATH: process.execPath,
-    CODEXHOST_DEFAULT_AGENT: "codex",
     CODEXHOST_CLAUDE_COMMAND: path.join(directory, "missing-claude"),
     CODEXHOST_ANTIGRAVITY_COMMAND: path.join(directory, "missing-antigravity"),
+    CODEXHOST_COPILOT_COMMAND: path.join(directory, "missing-copilot"),
   });
-  const child = spawn(process.execPath, [host, official], {
+  const child = spawn(process.execPath, [host, "app-server"], {
     cwd: directory,
     env: environment,
     stdio: ["pipe", "pipe", "pipe"],
@@ -122,6 +138,7 @@ describe("release Host and independent plugin Bundles", () => {
     "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
     "node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/sdk.mjs",
     "node_modules/@opencode-ai/sdk/index.js",
+    "node_modules/@deepseek-ai/dsh-session/index.js",
   ])("rejects a concrete Adapter or Harness SDK leaking into Host: %s", (input) => {
     expect(() => auditHostBundleMetafile(validMetafile({ [input]: {} }))).toThrow(
       "forbidden inputs",
@@ -147,7 +164,7 @@ describe("release Host and independent plugin Bundles", () => {
     }
   });
 
-  it("runs relocated release artifacts with seven plugins, an unknown plugin, and no plugins", async () => {
+  it("runs relocated release artifacts with the preinstalled set, an unknown plugin, and no plugins", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-plugin-release-"));
     const app = path.join(directory, "build", "app");
     const relocated = path.join(directory, "relocated runtime", "app");
@@ -157,12 +174,38 @@ describe("release Host and independent plugin Bundles", () => {
         repositoryRoot,
         outputPath: path.join(app, "host-runtime.mjs"),
       });
-      expect(hostAudit.runtimePackages).toEqual(["ws", "zod"]);
+      expect(hostAudit.runtimePackages).toEqual([
+        "@deepseek-ai/cordis",
+        "@deepseek-ai/cosmokit",
+        "@modelcontextprotocol/sdk",
+        "content-type",
+        "cross-spawn",
+        "diff",
+        "eventsource-parser",
+        "graceful-fs",
+        "isexe",
+        "path-key",
+        "pkce-challenge",
+        "proper-lockfile",
+        "retry",
+        "shebang-command",
+        "shebang-regex",
+        "signal-exit",
+        "which",
+        "ws",
+        "yaml",
+        "zod",
+      ]);
       const pluginAudits = await buildPreinstalledHarnessPlugins({
         repositoryRoot,
         outputDirectory: path.join(app, "plugins"),
       });
-      const expectedIds = preinstalledHarnessPlugins().configuration.enabled;
+      const preinstalled = preinstalledHarnessPlugins();
+      const expectedIds = preinstalled.configuration.enabled;
+      // Desktop hides Web-only Harnesses; the client channel would still list them.
+      const desktopIds = preinstalled.plugins
+        .filter(({ manifest }) => manifest.surfaces?.includes("desktop") ?? true)
+        .map(({ manifest }) => manifest.id);
       expect(pluginAudits.map(({ id }) => id)).toEqual(expectedIds);
       expect(pluginAudits.find(({ id }) => id === "claude-code").runtimePackages).toContain(
         "@anthropic-ai/claude-agent-sdk",
@@ -170,12 +213,14 @@ describe("release Host and independent plugin Bundles", () => {
       expect(pluginAudits.find(({ id }) => id === "grok").runtimePackages).toContain(
         "@agentclientprotocol/sdk",
       );
-      expect(pluginAudits.find(({ id }) => id === "opencode").runtimePackages).toContain(
-        "@opencode-ai/sdk",
+      expect(pluginAudits.find(({ id }) => id === "opencode").runtimePackages).toEqual(
+        expect.arrayContaining(["@opencode-ai/sdk", "@opencode/client"]),
       );
-      expect(pluginAudits.find(({ id }) => id === "deepseek-harness").runtimePackages).toContain(
-        "@deepseek-ai/schemastery",
-      );
+      expect(pluginAudits.find(({ id }) => id === "deepseek-harness").runtimePackages).toEqual([
+        "diff",
+        "ws",
+        "zod",
+      ]);
       const source = await readFile(path.join(app, "host-runtime.mjs"), "utf8");
       expect(source).not.toContain("class ClaudeCodeAdapter");
       expect(source).not.toContain("Claude Code is not installed");
@@ -196,7 +241,7 @@ describe("release Host and independent plugin Bundles", () => {
           .find(({ id }) => id === 1)
           .result.plugins.map(({ id }) => id)
           .sort(),
-      ).toEqual([...expectedIds].sort());
+      ).toEqual([...desktopIds].sort());
       expect(first.lines.find(({ id }) => id === 2)).toMatchObject({ result: { official: true } });
       expect(first.stderr).not.toMatch(/loadFailed|loadTimeout|Dynamic require/u);
 
@@ -236,7 +281,7 @@ describe("release Host and independent plugin Bundles", () => {
           .find(({ id }) => id === 1)
           .result.plugins.map(({ id }) => id)
           .sort(),
-      ).toEqual([...expectedIds, "unknown-agent"].sort());
+      ).toEqual([...desktopIds, "unknown-agent"].sort());
 
       await rm(path.join(relocated, "plugins"), { recursive: true });
       await rm(userRoot, { recursive: true });

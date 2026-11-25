@@ -64,6 +64,11 @@ use super::{
     PROBE_PACKAGE_FAMILY_ENV, PROBE_PACKAGE_FULL_NAME_ENV, PROBE_PACKAGE_NAME_ENV,
 };
 
+#[cfg(any(target_os = "windows", test))]
+mod asar;
+#[cfg(any(target_os = "windows", test))]
+use asar::parse_asar_package_json_version;
+
 #[cfg(target_os = "windows")]
 const WINDOWS_CODEX_PACKAGE_NAME: &str = "OpenAI.Codex";
 
@@ -268,9 +273,60 @@ fn find_desktop_cli_cache(local_app_data: &Path) -> Result<Option<PathBuf>, Plat
 }
 
 #[cfg(target_os = "windows")]
+fn windows_codex_cli_runnable(path: &Path) -> bool {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    Command::new(path)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn resolve_windows_executable_codex_cli(
+    packaged_codex_cli: &Path,
+    cached_codex_cli: Option<PathBuf>,
+    is_runnable: impl Fn(&Path) -> bool,
+) -> Result<PathBuf, PlatformError> {
+    let packaged = packaged_codex_cli.canonicalize().ok();
+    if let (Some(cached), Some(packaged)) = (cached_codex_cli.as_ref(), packaged.as_ref())
+        && let (Ok(cached_hash), Ok(packaged_hash)) = (sha256_file(cached), sha256_file(packaged))
+        && cached_hash == packaged_hash
+    {
+        return Ok(cached.clone());
+    }
+    if let Some(packaged) = packaged
+        && is_runnable(&packaged)
+    {
+        return Ok(packaged);
+    }
+    cached_codex_cli.ok_or_else(|| {
+        PlatformError::NotFound(
+            "no runnable Codex CLI was found in the Desktop-managed cache and the packaged CLI could not be executed directly; launch the official Desktop once to create the cache".into(),
+        )
+    })
+}
+
+#[cfg(target_os = "windows")]
 fn windows_installation(
     details: WindowsPackageDetails,
     local_app_data: &Path,
+) -> Result<DesktopInstallation, PlatformError> {
+    windows_installation_with_probe(details, local_app_data, windows_codex_cli_runnable)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_installation_with_probe(
+    details: WindowsPackageDetails,
+    local_app_data: &Path,
+    is_runnable: impl Fn(&Path) -> bool,
 ) -> Result<DesktopInstallation, PlatformError> {
     let install_root = details.install_root.canonicalize().map_err(|error| {
         PlatformError::NotFound(format!(
@@ -287,14 +343,16 @@ fn windows_installation(
             install_root.display()
         )));
     }
-    // WindowsApps resources are not directly executable by a normal desktop
-    // process. Use any Desktop-managed CLI copy, without requiring it to match
-    // the bundled CLI byte-for-byte or by version.
-    let executable_codex_cli = find_desktop_cli_cache(local_app_data)?.ok_or_else(|| {
-        PlatformError::NotFound(
-            "no runnable Codex CLI was found in the Desktop-managed cache; launch the official Desktop once to create it".into(),
-        )
-    })?;
+    // Older Windows builds cannot directly execute `codex.exe` from WindowsApps
+    // and rely on the Desktop-managed cache under `%LOCALAPPDATA%\OpenAI\Codex\bin`.
+    // Newer Desktop builds in app-package core runtime mode run the packaged
+    // `codex.exe` directly and stop staging cache copies. Reuse a cache copy
+    // when it matches the installed package hash; otherwise prefer the packaged
+    // CLI when it is directly runnable, falling back to any cached copy when
+    // WindowsApps ACLs block direct execution.
+    let cached_codex_cli = find_desktop_cli_cache(local_app_data)?;
+    let executable_codex_cli =
+        resolve_windows_executable_codex_cli(&packaged_codex_cli, cached_codex_cli, is_runnable)?;
 
     Ok(DesktopInstallation {
         identity: DesktopIdentity::WindowsPackage {
@@ -358,6 +416,9 @@ pub fn discover_desktop_managed_codex_cli() -> Result<PathBuf, PlatformError> {
             )));
         }
         return Ok(executable);
+    }
+    if let Ok(installation) = discover_registered_codex_desktop() {
+        return canonical_existing_file(&installation.executable_codex_cli);
     }
     find_desktop_cli_cache(&windows_local_app_data()?)?.ok_or_else(|| {
         PlatformError::NotFound(
@@ -436,35 +497,114 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     if let Some(root) = custom_install_root(env::var_os) {
         return discover_codex_desktop_from_root(&root);
     }
+    discover_registered_codex_desktop()
+}
+
+/// Discover the current user's registered Store installation, ignoring overrides.
+#[cfg(target_os = "windows")]
+pub fn discover_registered_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     let details = discover_installed_windows_package()?;
     windows_installation(details, &windows_local_app_data()?)
 }
 
+/// Best-effort validation of a marketing or build version string.
+/// Rejects empty values, non-version strings, and the misleading placeholder "0.0.0.0".
+#[cfg(any(target_os = "windows", test))]
+fn validate_desktop_version(version: &str) -> Option<String> {
+    let trimmed = version.trim();
+    if !trimmed.is_empty()
+        && trimmed != "0.0.0.0"
+        && trimmed.len() <= 64
+        && trimmed.starts_with(|c: char| c.is_ascii_digit())
+        && trimmed.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-' || byte == b'+'
+        })
+    {
+        Some(trimmed.to_owned())
+    } else {
+        None
+    }
+}
+
 /// Best-effort read of the packaged Desktop version from `AppxManifest.xml`.
-///
-/// A portable/unpacked installation has no registered AppX package, so the
-/// version is not available from the Windows PackageManager. The official MSIX
-/// embeds the marketing version in the `<Identity Version="..."/>` attribute of
-/// its manifest; fall back to a placeholder when it cannot be parsed.
-#[cfg(target_os = "windows")]
-fn portable_package_version(package_root: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(package_root.join("AppxManifest.xml")).ok()?;
+#[cfg(any(target_os = "windows", test))]
+fn parse_manifest_version(content: &str) -> Option<String> {
     let identity = content.find("<Identity")?;
     let rest = &content[identity..];
     let marker = rest.find("Version=")?;
     let after = &rest[marker + "Version=".len()..];
     let value = after.strip_prefix('"')?;
-    let version = value[..value.find('"')?].to_owned();
-    if !version.is_empty()
-        && version.len() <= 64
-        && version
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b'.')
-    {
-        Some(version)
-    } else {
-        None
+    let raw = &value[..value.find('"')?];
+    validate_desktop_version(raw)
+}
+
+/// Best-effort read of the "version" field from a `package.json` file.
+#[cfg(any(target_os = "windows", test))]
+fn parse_package_json_version(content: &str) -> Option<String> {
+    let pkg: serde_json::Value = serde_json::from_str(content).ok()?;
+    let raw = pkg.get("version")?.as_str()?;
+    validate_desktop_version(raw)
+}
+
+#[cfg(any(target_os = "windows", test))]
+const MAX_VERSION_METADATA_BYTES: u64 = 1024 * 1024;
+
+#[cfg(any(target_os = "windows", test))]
+fn read_version_metadata(path: &Path) -> Option<String> {
+    if !path.is_file() {
+        return None;
     }
+    let file = File::open(path).ok()?;
+    let mut content = String::new();
+    let size = file
+        .take(MAX_VERSION_METADATA_BYTES + 1)
+        .read_to_string(&mut content)
+        .ok()?;
+    (size as u64 <= MAX_VERSION_METADATA_BYTES).then_some(content)
+}
+
+/// Reads the desktop version from a portable installation across candidate metadata sources:
+/// 1. `AppxManifest.xml` (package or app root)
+/// 2. `app.asar` package.json
+/// 3. `package.json` on disk
+#[cfg(any(target_os = "windows", test))]
+fn portable_desktop_version(
+    package_root: &Path,
+    app_root: &Path,
+    asar_path: &Path,
+) -> Option<String> {
+    // 1. Try AppxManifest.xml from package_root or app_root
+    for dir in [package_root, app_root] {
+        if let Some(content) = read_version_metadata(&dir.join("AppxManifest.xml"))
+            && let Some(version) = parse_manifest_version(&content)
+        {
+            return Some(version);
+        }
+    }
+
+    // 2. Try app.asar package.json
+    if asar_path.is_file()
+        && let Some(version) = parse_asar_package_json_version(asar_path)
+    {
+        return Some(version);
+    }
+
+    // 3. Try package.json on disk
+    let candidates = [
+        app_root.join("package.json"),
+        package_root.join("package.json"),
+        app_root.join("resources/app/package.json"),
+        app_root.join("resources/package.json"),
+    ];
+    for path in &candidates {
+        if let Some(content) = read_version_metadata(path)
+            && let Some(version) = parse_package_json_version(&content)
+        {
+            return Some(version);
+        }
+    }
+
+    None
 }
 
 /// Discover Codex Desktop from an explicitly supplied installation directory.
@@ -509,7 +649,8 @@ pub fn discover_codex_desktop_from_root(
     }
     let executable_codex_cli = packaged_codex_cli.clone();
 
-    let version = portable_package_version(&package_root).unwrap_or_else(|| "0.0.0.0".to_owned());
+    let version = portable_desktop_version(&package_root, &app_root, &asar_path)
+        .unwrap_or_else(|| "unknown".to_owned());
 
     Ok(DesktopInstallation {
         identity: DesktopIdentity::WindowsPackage {
@@ -535,7 +676,7 @@ mod windows_tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use super::{WindowsPackageDetails, probe_package_details, windows_installation};
+    use super::{WindowsPackageDetails, probe_package_details, windows_installation_with_probe};
     use crate::{
         CUSTOM_INSTALL_ROOT_ENV, PROBE_APP_USER_MODEL_ID_ENV, PROBE_DESKTOP_VERSION_ENV,
         PROBE_INSTALL_ROOT_ENV, PROBE_PACKAGE_FAMILY_ENV, PROBE_PACKAGE_FULL_NAME_ENV,
@@ -612,20 +753,21 @@ mod windows_tests {
         fs::create_dir_all(cached_cli.parent().expect("cache parent")).expect("create CLI cache");
         fs::write(&cached_cli, b"different cached codex cli").expect("write cached CLI");
 
-        let installation = windows_installation(
-            WindowsPackageDetails {
-                package_name: "OpenAI.Codex".into(),
-                package_family_name: "OpenAI.Codex_family".into(),
-                appx_activation: WindowsAppxActivationIdentity {
-                    package_full_name: "OpenAI.Codex_1.2.3.4_x64_family".into(),
-                    app_user_model_id: "OpenAI.Codex_family!App".into(),
-                },
-                version: "1.2.3.4".into(),
-                install_root: install_root.clone(),
+        let package_details = || WindowsPackageDetails {
+            package_name: "OpenAI.Codex".into(),
+            package_family_name: "OpenAI.Codex_family".into(),
+            appx_activation: WindowsAppxActivationIdentity {
+                package_full_name: "OpenAI.Codex_1.2.3.4_x64_family".into(),
+                app_user_model_id: "OpenAI.Codex_family!App".into(),
             },
-            &local_app_data,
-        )
-        .expect("valid Windows installation");
+            version: "1.2.3.4".into(),
+            install_root: install_root.clone(),
+        };
+
+        // When the packaged CLI is directly runnable, it wins over a stale cache copy.
+        let installation =
+            windows_installation_with_probe(package_details(), &local_app_data, |_| true)
+                .expect("valid Windows installation");
 
         assert_eq!(
             installation.identity,
@@ -647,7 +789,27 @@ mod windows_tests {
         );
         assert_eq!(
             installation.executable_codex_cli,
+            packaged_cli.canonicalize().expect("canonical packaged CLI")
+        );
+
+        // When WindowsApps ACLs prevent direct execution, fall back to the cache copy.
+        let fallback =
+            windows_installation_with_probe(package_details(), &local_app_data, |_| false)
+                .expect("Windows installation falling back to cache");
+        assert_eq!(
+            fallback.executable_codex_cli,
             cached_cli.canonicalize().expect("canonical cached CLI")
+        );
+
+        // Removing the stale cache copy (or the whole cache) must not break
+        // discovery when the packaged CLI is runnable.
+        fs::remove_dir_all(&local_app_data).expect("remove Desktop CLI cache");
+        let installation =
+            windows_installation_with_probe(package_details(), &local_app_data, |_| true)
+                .expect("valid Windows installation without a Desktop CLI cache");
+        assert_eq!(
+            installation.executable_codex_cli,
+            packaged_cli.canonicalize().expect("canonical packaged CLI")
         );
 
         fs::remove_dir_all(root).expect("remove Windows installation fixture");
@@ -742,14 +904,47 @@ mod windows_tests {
     }
 
     #[test]
-    fn custom_root_without_a_manifest_falls_back_to_a_placeholder_version() {
+    fn custom_root_without_a_manifest_falls_back_to_unknown_version() {
         let (root, install_root) = portable_fixture("codexhost-windows-no-manifest", None);
 
         let installation =
             super::discover_codex_desktop_from_root(&install_root).expect("portable installation");
 
-        assert_eq!(installation.version, "0.0.0.0");
-        assert_eq!(installation.build, "0.0.0.0");
+        assert_eq!(installation.version, "unknown");
+        assert_eq!(installation.build, "unknown");
+
+        fs::remove_dir_all(root).expect("remove portable fixture");
+    }
+
+    #[test]
+    fn custom_root_without_manifest_reads_version_from_asar() {
+        let (root, install_root) = portable_fixture("codexhost-windows-asar-version", None);
+        let asar_path = install_root.join("app/resources/app.asar");
+        let asar_bytes = super::portable_version_tests::create_fake_asar(
+            r#"{"name":"ChatGPT","version":"26.1021.3705.0"}"#,
+        );
+        fs::write(&asar_path, asar_bytes).expect("write fake asar");
+
+        let installation =
+            super::discover_codex_desktop_from_root(&install_root).expect("portable installation");
+
+        assert_eq!(installation.version, "26.1021.3705.0");
+        assert_eq!(installation.build, "26.1021.3705.0");
+
+        fs::remove_dir_all(root).expect("remove portable fixture");
+    }
+
+    #[test]
+    fn custom_root_without_manifest_reads_version_from_package_json() {
+        let (root, install_root) = portable_fixture("codexhost-windows-pkg-json-version", None);
+        let pkg_json = install_root.join("app/package.json");
+        fs::write(&pkg_json, b"{\"version\":\"26.1021.3705.0\"}").expect("write package.json");
+
+        let installation =
+            super::discover_codex_desktop_from_root(&install_root).expect("portable installation");
+
+        assert_eq!(installation.version, "26.1021.3705.0");
+        assert_eq!(installation.build, "26.1021.3705.0");
 
         fs::remove_dir_all(root).expect("remove portable fixture");
     }
@@ -771,18 +966,26 @@ mod windows_tests {
     #[test]
     fn portable_version_parsing_is_best_effort() {
         let root = temporary_directory("codexhost-version-parse");
-        assert_eq!(super::portable_package_version(&root), None);
+        let app_root = root.join("app");
+        let asar_path = app_root.join("resources/app.asar");
+        assert_eq!(
+            super::portable_desktop_version(&root, &app_root, &asar_path),
+            None
+        );
         fs::write(
             root.join("AppxManifest.xml"),
             b"<Package><Identity Name=\"OpenAI.Codex\" Version=\"1.2.3.4\"/></Package>",
         )
         .expect("write versioned manifest");
         assert_eq!(
-            super::portable_package_version(&root).as_deref(),
+            super::portable_desktop_version(&root, &app_root, &asar_path).as_deref(),
             Some("1.2.3.4")
         );
         fs::write(root.join("AppxManifest.xml"), b"not xml").expect("write invalid manifest");
-        assert_eq!(super::portable_package_version(&root), None);
+        assert_eq!(
+            super::portable_desktop_version(&root, &app_root, &asar_path),
+            None
+        );
         fs::remove_dir_all(root).expect("remove version fixture");
     }
 
@@ -939,8 +1142,15 @@ fn inspect_bundle(bundle: &Path) -> Result<DesktopInstallation, PlatformError> {
         &bundle.join("Contents/MacOS").join(executable_name),
         "Desktop executable",
     )?;
-    let packaged_codex_cli =
-        canonical_macho_executable(&bundle.join("Contents/Resources/codex"), "Codex CLI")?;
+    // Desktop 26.924+ packages the CLI in its own app bundle and only launches
+    // that copy; older builds ship the flat legacy CLI.
+    let mut cli_path =
+        bundle.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
+    if matches!(cli_path.symlink_metadata(), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
+        cli_path = bundle.join("Contents/Resources/codex");
+    }
+    let packaged_codex_cli = canonical_macho_executable(&cli_path, "Codex CLI")?;
     if !desktop_executable.starts_with(&bundle) || !packaged_codex_cli.starts_with(&bundle) {
         return Err(PlatformError::Invalid(format!(
             "App bundle '{}' resolves an executable outside the bundle",
@@ -999,17 +1209,30 @@ fn discover_from_candidates(
 }
 
 #[cfg(target_os = "macos")]
-pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
-    let mut candidates = vec![
-        PathBuf::from("/Applications/Codex.app"),
-        PathBuf::from("/Applications/ChatGPT.app"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        let applications = PathBuf::from(home).join("Applications");
-        candidates.push(applications.join("Codex.app"));
-        candidates.push(applications.join("ChatGPT.app"));
+fn discover_with_custom_root(
+    custom_root: Option<PathBuf>,
+    candidates: impl FnOnce() -> Vec<PathBuf>,
+) -> Result<DesktopInstallation, PlatformError> {
+    match custom_root {
+        Some(root) => inspect_bundle(&root),
+        None => discover_from_candidates(candidates()),
     }
-    discover_from_candidates(candidates)
+}
+
+#[cfg(target_os = "macos")]
+pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
+    discover_with_custom_root(custom_install_root(env::var_os), || {
+        let mut candidates = vec![
+            PathBuf::from("/Applications/Codex.app"),
+            PathBuf::from("/Applications/ChatGPT.app"),
+        ];
+        if let Some(home) = std::env::var_os("HOME") {
+            let applications = PathBuf::from(home).join("Applications");
+            candidates.push(applications.join("Codex.app"));
+            candidates.push(applications.join("ChatGPT.app"));
+        }
+        candidates
+    })
 }
 
 /// Resolve a helper's official CLI from a validated Desktop bundle, never PATH.
@@ -1042,7 +1265,9 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::PathBuf;
 
-    use super::{DesktopIdentity, PlatformError, discover_from_candidates};
+    use super::{
+        DesktopIdentity, PlatformError, discover_from_candidates, discover_with_custom_root,
+    };
     use crate::temporary_directory;
 
     fn temporary_bundle(name: &str, bundle_identifier: &str, include_cli: bool) -> PathBuf {
@@ -1110,6 +1335,51 @@ mod tests {
     }
 
     #[test]
+    fn prefers_nested_cli_over_legacy_path_when_present() {
+        for include_legacy_cli in [false, true] {
+            let bundle = temporary_bundle("ChatGPT.app", "com.openai.codex", include_legacy_cli);
+            let nested_cli =
+                bundle.join("Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
+            fs::create_dir_all(nested_cli.parent().expect("CLI parent"))
+                .expect("create nested CLI directory");
+            fs::copy(bundle.join("Contents/MacOS/ChatGPT"), &nested_cli)
+                .expect("copy executable fixture");
+            let installation = discover_from_candidates([bundle.clone()]).expect("valid bundle");
+            let expected = nested_cli.canonicalize().expect("CLI path");
+            assert_eq!(installation.packaged_codex_cli, expected);
+            assert_eq!(installation.executable_codex_cli, expected);
+        }
+    }
+
+    #[test]
+    fn explicit_install_root_is_authoritative_over_default_candidates() {
+        let default = temporary_bundle("ChatGPT.app", "com.openai.codex", true);
+        let custom = temporary_bundle("CodexSide.app", "com.openai.codex", true);
+
+        let installation = discover_with_custom_root(Some(custom.clone()), || {
+            panic!("default candidates must not be consulted")
+        })
+        .expect("custom bundle");
+        assert_eq!(
+            installation.install_root,
+            custom.canonicalize().expect("bundle")
+        );
+
+        let installation =
+            discover_with_custom_root(None, || vec![default.clone()]).expect("default bundle");
+        assert_eq!(
+            installation.install_root,
+            default.canonicalize().expect("bundle")
+        );
+
+        let invalid = temporary_bundle("Wrong.app", "example.invalid", true);
+        assert!(matches!(
+            discover_with_custom_root(Some(invalid), || vec![default]),
+            Err(PlatformError::Invalid(_))
+        ));
+    }
+
+    #[test]
     fn rejects_wrong_bundle_identity_and_missing_cli() {
         let wrong = temporary_bundle("Wrong.app", "example.invalid", true);
         let missing = temporary_bundle("Missing.app", "com.openai.codex", false);
@@ -1125,16 +1395,24 @@ mod tests {
 
     #[test]
     fn rejects_cli_symlink_outside_bundle() {
-        let bundle = temporary_bundle("Codex.app", "com.openai.codex", false);
-        let external = bundle.parent().expect("parent").join("external-codex");
-        fs::write(&external, [0xcf, 0xfa, 0xed, 0xfe]).expect("write external CLI");
-        fs::set_permissions(&external, fs::Permissions::from_mode(0o755))
-            .expect("make external CLI executable");
-        symlink(&external, bundle.join("Contents/Resources/codex")).expect("link external CLI");
-        assert!(matches!(
-            discover_from_candidates([bundle]),
-            Err(PlatformError::Invalid(_))
-        ));
+        for relative_path in [
+            "Contents/Resources/codex",
+            "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+        ] {
+            let bundle = temporary_bundle("Codex.app", "com.openai.codex", false);
+            let external = bundle.parent().expect("parent").join("external-codex");
+            fs::write(&external, [0xcf, 0xfa, 0xed, 0xfe]).expect("write external CLI");
+            fs::set_permissions(&external, fs::Permissions::from_mode(0o755))
+                .expect("make external CLI executable");
+            let cli_path = bundle.join(relative_path);
+            fs::create_dir_all(cli_path.parent().expect("CLI parent"))
+                .expect("create CLI directory");
+            symlink(&external, cli_path).expect("link external CLI");
+            assert!(matches!(
+                discover_from_candidates([bundle]),
+                Err(PlatformError::Invalid(_))
+            ));
+        }
     }
 
     #[test]
@@ -1145,5 +1423,346 @@ mod tests {
             discover_from_candidates([first, second]),
             Err(PlatformError::Invalid(message)) if message.contains("multiple valid")
         ));
+    }
+}
+
+#[cfg(test)]
+mod portable_version_tests {
+    use super::{
+        parse_asar_package_json_version, parse_manifest_version, parse_package_json_version,
+        portable_desktop_version, validate_desktop_version,
+    };
+    use crate::temporary_directory;
+    use std::fs;
+
+    pub(super) fn create_fake_asar(pkg_json: &str) -> Vec<u8> {
+        let pkg_bytes = pkg_json.as_bytes();
+        let header_obj = format!(
+            r#"{{"files":{{"package.json":{{"size":{},"offset":"0"}}}}}}"#,
+            pkg_bytes.len()
+        );
+        fake_asar_with_header(&header_obj, pkg_bytes)
+    }
+
+    fn fake_asar_with_header(header: &str, data: &[u8]) -> Vec<u8> {
+        let json_bytes = header.as_bytes();
+        let json_len = json_bytes.len() as u32;
+        let pad = (4 - (json_len % 4)) % 4;
+        let header_size = 4 + 4 + json_len + pad;
+
+        let mut asar = Vec::new();
+        asar.extend_from_slice(&4_u32.to_le_bytes());
+        asar.extend_from_slice(&header_size.to_le_bytes());
+        asar.extend_from_slice(&(json_len + pad + 4).to_le_bytes());
+        asar.extend_from_slice(&json_len.to_le_bytes());
+        asar.extend_from_slice(json_bytes);
+        asar.extend(std::iter::repeat_n(0, pad as usize));
+        asar.extend_from_slice(data);
+        asar
+    }
+
+    #[test]
+    fn validates_desktop_version_and_rejects_placeholder_and_invalid() {
+        assert_eq!(
+            validate_desktop_version("26.1021.3705.0").as_deref(),
+            Some("26.1021.3705.0")
+        );
+        assert_eq!(validate_desktop_version("1.2.3").as_deref(), Some("1.2.3"));
+        assert_eq!(
+            validate_desktop_version("1.2.3-beta.1").as_deref(),
+            Some("1.2.3-beta.1")
+        );
+        assert_eq!(validate_desktop_version("0.0.0.0"), None);
+        assert_eq!(validate_desktop_version(""), None);
+        assert_eq!(validate_desktop_version("not_a_version"), None);
+    }
+
+    #[test]
+    fn parses_manifest_version() {
+        let xml = r#"<?xml version="1.0"?><Package><Identity Name="OpenAI.Codex" Version="26.1021.2667.0"/></Package>"#;
+        assert_eq!(
+            parse_manifest_version(xml).as_deref(),
+            Some("26.1021.2667.0")
+        );
+
+        let placeholder_xml =
+            r#"<Package><Identity Name="OpenAI.Codex" Version="0.0.0.0"/></Package>"#;
+        assert_eq!(parse_manifest_version(placeholder_xml), None);
+
+        let invalid = "<Package></Package>";
+        assert_eq!(parse_manifest_version(invalid), None);
+    }
+
+    #[test]
+    fn parses_package_json_version() {
+        let json = r#"{"name": "ChatGPT", "version": "26.1021.3705.0", "main": "app.js"}"#;
+        assert_eq!(
+            parse_package_json_version(json).as_deref(),
+            Some("26.1021.3705.0")
+        );
+
+        let spaces = r#"{"name":"test",  "version"  :  "1.2.3"  }"#;
+        assert_eq!(parse_package_json_version(spaces).as_deref(), Some("1.2.3"));
+
+        let placeholder = r#"{"version": "0.0.0.0"}"#;
+        assert_eq!(parse_package_json_version(placeholder), None);
+
+        let no_version = r#"{"name": "test"}"#;
+        assert_eq!(parse_package_json_version(no_version), None);
+    }
+
+    #[test]
+    fn parses_asar_package_json_version() {
+        let root = temporary_directory("codexhost-asar-test");
+        let asar_path = root.join("app.asar");
+
+        let asar_bytes = create_fake_asar(r#"{"name":"ChatGPT","version":"26.1021.3705.0"}"#);
+        fs::write(&asar_path, asar_bytes).expect("write fake asar");
+
+        assert_eq!(
+            parse_asar_package_json_version(&asar_path).as_deref(),
+            Some("26.1021.3705.0")
+        );
+
+        // Corrupt / truncated asar
+        fs::write(&asar_path, b"not an asar file").expect("write corrupt asar");
+        assert_eq!(parse_asar_package_json_version(&asar_path), None);
+
+        fs::remove_dir_all(root).expect("remove asar fixture");
+    }
+
+    #[test]
+    fn rejects_invalid_asar_header_and_package_ranges() {
+        let root = temporary_directory("codexhost-asar-invalid");
+        let asar_path = root.join("app.asar");
+        let pkg = br#"{"version":"1.2.3"}"#;
+        let valid = create_fake_asar(std::str::from_utf8(pkg).unwrap());
+        let assert_rejected = |label, bytes: &[u8]| {
+            fs::write(&asar_path, bytes).expect("write invalid asar");
+            assert_eq!(parse_asar_package_json_version(&asar_path), None, "{label}");
+        };
+
+        let mut bad = valid.clone();
+        bad[8..12].copy_from_slice(&0_u32.to_le_bytes());
+        assert_rejected("inconsistent Pickle payload size", &bad);
+        bad = valid.clone();
+        bad[12..16].copy_from_slice(&(16_u32 * 1024 * 1024 + 1).to_le_bytes());
+        assert_rejected("oversized header JSON", &bad);
+        assert_rejected("truncated header JSON", &valid[..17]);
+        assert_rejected("entry extends beyond EOF", &valid[..valid.len() - 1]);
+
+        let size = pkg.len();
+        for (label, header) in [
+            (
+                "overflowing entry offset",
+                format!(
+                    r#"{{"files":{{"package.json":{{"size":{size},"offset":"{}"}}}}}}"#,
+                    u64::MAX
+                ),
+            ),
+            (
+                "entry offset beyond EOF",
+                format!(r#"{{"files":{{"package.json":{{"size":{size},"offset":1000}}}}}}"#),
+            ),
+            (
+                "oversized entry",
+                r#"{"files":{"package.json":{"size":1048577,"offset":"0"}}}"#.into(),
+            ),
+            (
+                "unpacked entry cannot identify in-archive bytes",
+                format!(
+                    r#"{{"files":{{"package.json":{{"size":{size},"offset":"0","unpacked":true}}}}}}"#
+                ),
+            ),
+            (
+                "files must be a named object",
+                format!(r#"{{"files":[{{"size":{size},"offset":"0"}}]}}"#),
+            ),
+            ("invalid JSON", "{".into()),
+        ] {
+            assert_rejected(label, &fake_asar_with_header(&header, pkg));
+        }
+
+        fs::remove_dir_all(root).expect("remove asar fixture");
+    }
+
+    #[test]
+    fn parses_asar_root_package_json_and_ignores_nested_node_modules() {
+        let root = temporary_directory("codexhost-asar-node-modules-test");
+        let asar_path = root.join("app.asar");
+
+        // Construct an ASAR with node_modules/atob-lite/package.json (v2.0.0)
+        // and root package.json (v26.1023.50603)
+        let dep_pkg = r#"{"name":"atob-lite","version":"2.0.0"}"#;
+        let root_pkg = r#"{"name":"ChatGPT","version":"26.1023.50603"}"#;
+
+        let header_obj = serde_json::json!({
+            "files": {
+                "node_modules": {
+                    "files": {
+                        "atob-lite": {
+                            "files": {
+                                "package.json": {
+                                    "size": dep_pkg.len(),
+                                    "offset": "0",
+                                    "integrity": {
+                                        "algorithm": "SHA256",
+                                        "hash": "somehash"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "package.json": {
+                    "integrity": {
+                        "algorithm": "SHA256",
+                        "hash": "rootpkgjsonhash"
+                    },
+                    "size": root_pkg.len(),
+                    "offset": dep_pkg.len()
+                }
+            }
+        });
+
+        let data = format!("{dep_pkg}{root_pkg}");
+        let asar = fake_asar_with_header(&header_obj.to_string(), data.as_bytes());
+
+        fs::write(&asar_path, asar).expect("write asar with node_modules");
+
+        assert_eq!(
+            parse_asar_package_json_version(&asar_path).as_deref(),
+            Some("26.1023.50603")
+        );
+
+        fs::remove_dir_all(root).expect("remove asar fixture");
+    }
+
+    #[test]
+    fn portable_desktop_version_prioritizes_manifest_then_asar_then_package_json() {
+        let root = temporary_directory("codexhost-portable-priority");
+        let package_root = root.join("package");
+        let app_root = package_root.join("app");
+        let resources = app_root.join("resources");
+        fs::create_dir_all(&resources).expect("create layout");
+
+        let asar_path = resources.join("app.asar");
+        let manifest_path = package_root.join("AppxManifest.xml");
+        let pkg_json_path = app_root.join("package.json");
+
+        // 1. When manifest, asar, and package.json are all present, manifest wins
+        fs::write(
+            &manifest_path,
+            b"<Package><Identity Name=\"OpenAI.Codex\" Version=\"26.1021.2667.0\"/></Package>",
+        )
+        .expect("write manifest");
+        let asar_bytes = create_fake_asar(r#"{"version":"26.1021.3705.0"}"#);
+        fs::write(&asar_path, &asar_bytes).expect("write asar");
+        fs::write(&pkg_json_path, b"{\"version\":\"1.0.0\"}").expect("write pkg.json");
+
+        assert_eq!(
+            portable_desktop_version(&package_root, &app_root, &asar_path).as_deref(),
+            Some("26.1021.2667.0")
+        );
+
+        // 2. When manifest is absent, app.asar wins (Issue #599 scenario!)
+        fs::remove_file(&manifest_path).expect("remove manifest");
+        assert_eq!(
+            portable_desktop_version(&package_root, &app_root, &asar_path).as_deref(),
+            Some("26.1021.3705.0")
+        );
+
+        // 3. When asar has no valid version / missing, package.json on disk wins
+        fs::write(&asar_path, b"invalid asar").expect("overwrite with invalid asar");
+        assert_eq!(
+            portable_desktop_version(&package_root, &app_root, &asar_path).as_deref(),
+            Some("1.0.0")
+        );
+
+        // 4. Oversized fallback metadata is ignored, so the version is unknown.
+        let mut oversized_json = b"{\"version\":\"1.0.0\"}".to_vec();
+        oversized_json.resize(super::MAX_VERSION_METADATA_BYTES as usize + 1, b' ');
+        fs::write(&pkg_json_path, oversized_json).expect("write oversized pkg.json");
+        assert_eq!(
+            portable_desktop_version(&package_root, &app_root, &asar_path),
+            None
+        );
+
+        fs::remove_dir_all(root).expect("remove priority fixture");
+    }
+}
+
+#[cfg(test)]
+mod windows_cli_selection_tests {
+    use std::cell::Cell;
+    use std::fs;
+
+    use super::resolve_windows_executable_codex_cli;
+    use crate::{PlatformError, temporary_directory};
+
+    #[test]
+    fn reuses_matching_cache_without_probing_and_handles_runnable_or_blocked_packaged_cli() {
+        let root = temporary_directory("codexhost-windows-cli-selection");
+        let packaged = root.join("packaged/codex.exe");
+        let cached = root.join("cache/codex.exe");
+        fs::create_dir_all(packaged.parent().expect("packaged parent")).expect("create packaged");
+        fs::create_dir_all(cached.parent().expect("cache parent")).expect("create cache");
+        fs::write(&packaged, b"codex-v2").expect("write packaged CLI");
+        fs::write(&cached, b"codex-v2").expect("write matching cache CLI");
+
+        // 1. Matching hash reuses cache without spawning a probe.
+        let probe_calls = Cell::new(0usize);
+        let selected = resolve_windows_executable_codex_cli(
+            &packaged,
+            Some(cached.canonicalize().expect("canonical cached")),
+            |_| {
+                probe_calls.set(probe_calls.get() + 1);
+                true
+            },
+        )
+        .expect("select matching cache");
+        assert_eq!(selected, cached.canonicalize().expect("canonical cached"));
+        assert_eq!(probe_calls.get(), 0);
+
+        // 2. Stale cache + runnable packaged CLI selects packaged CLI.
+        fs::write(&cached, b"codex-v1-stale").expect("write stale cache CLI");
+        let selected = resolve_windows_executable_codex_cli(
+            &packaged,
+            Some(cached.canonicalize().expect("canonical cached")),
+            |_| {
+                probe_calls.set(probe_calls.get() + 1);
+                true
+            },
+        )
+        .expect("select runnable packaged CLI over stale cache");
+        assert_eq!(
+            selected,
+            packaged.canonicalize().expect("canonical packaged")
+        );
+        assert_eq!(probe_calls.get(), 1);
+
+        // 3. Stale cache + blocked packaged CLI (legacy WindowsApps ACL) falls back to cache.
+        let selected = resolve_windows_executable_codex_cli(
+            &packaged,
+            Some(cached.canonicalize().expect("canonical cached")),
+            |_| false,
+        )
+        .expect("fall back to cached CLI when packaged CLI is not runnable");
+        assert_eq!(selected, cached.canonicalize().expect("canonical cached"));
+
+        // 4. Missing cache + runnable packaged CLI succeeds (app-package mode).
+        let selected = resolve_windows_executable_codex_cli(&packaged, None, |_| true)
+            .expect("select runnable packaged CLI without cache");
+        assert_eq!(
+            selected,
+            packaged.canonicalize().expect("canonical packaged")
+        );
+
+        // 5. Missing cache + blocked packaged CLI fails clearly.
+        let error = resolve_windows_executable_codex_cli(&packaged, None, |_| false)
+            .expect_err("reject when neither cache nor runnable packaged CLI is available");
+        assert!(matches!(error, PlatformError::NotFound(_)));
+
+        fs::remove_dir_all(root).expect("remove selection fixture");
     }
 }

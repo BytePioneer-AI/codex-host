@@ -7,20 +7,19 @@ import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapt
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   harnessIdSchema,
+  encodeHarnessPluginRoute,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
+  hostTurnIdSchema,
   hostThreadIdSchema,
   nativeSessionRefSchema,
+  nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
-import {
-  encodeGrokTransportModel,
-  encodeOmpTransportModel,
-  encodeOpenCodeTransportModel,
-  type ExternalHarnessId,
-} from "@codexhost/protocol-core";
+import { encodeExternalTransportSelection, type ExternalHarnessId } from "@codexhost/protocol-core";
 import { describe, expect, it, vi } from "vitest";
 
+import { boundDelegationToken } from "../src/bearer-token.js";
 import type { ExternalThreadRepository } from "../src/external-thread-repository.js";
 import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
 
@@ -51,6 +50,101 @@ function record(): StoredThreadRecordV1 {
     updatedAt: "2026-08-01T01:00:00.000Z",
   } as StoredThreadRecordV1;
 }
+
+describe("ExternalThreadRuntime delete", () => {
+  it("waits for output consumption to finish before removing the mapping and Session owner", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const close = vi.spyOn(opened.value, "close");
+    const outputDrained = Promise.withResolvers<undefined>();
+    const removeThread = vi.fn(async () => undefined);
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository: { removeThread } as unknown as ExternalThreadRepository,
+      consumeOutputs: () => outputDrained.promise,
+      diagnose: () => undefined,
+    });
+    const thread = runtime.register({
+      record: record(),
+      session: opened.value,
+      sessionId: hostThreadId,
+      thread: { id: hostThreadId },
+      turns: [],
+    });
+    const deleting = runtime.deleteThread(hostThreadId);
+    try {
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(removeThread).not.toHaveBeenCalled();
+      expect(runtime.get(hostThreadId)).toBe(thread);
+    } finally {
+      outputDrained.resolve(undefined);
+      await deleting;
+    }
+    expect(removeThread).toHaveBeenCalledWith(hostThreadId);
+    expect(runtime.get(hostThreadId)).toBeUndefined();
+  });
+});
+
+describe("ExternalThreadRuntime terminal identity", () => {
+  it("reports the persistence cause and recovers after a transient failure", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const persistTurn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Turn identity mapping conflicts"))
+      .mockResolvedValueOnce(record());
+    const diagnostics: unknown[] = [];
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository: { persistTurn } as unknown as ExternalThreadRepository,
+      consumeOutputs: async () => undefined,
+      diagnose: (error) => diagnostics.push(error),
+    });
+    const thread = runtime.register({
+      record: record(),
+      session: opened.value,
+      sessionId: hostThreadId,
+      thread: { id: hostThreadId },
+      turns: [],
+    });
+    const nativeTurnRef = nativeTurnRefSchema.parse({
+      harnessId,
+      nativeSessionId: "native-1",
+      nativeTurnKey: "turn:1",
+      formatVersion: 1,
+    });
+
+    const first = await runtime.persistTerminalIdentity(thread, {
+      type: "turn.completed",
+      turnId: hostTurnIdSchema.parse("turn-1"),
+      nativeTurnRef,
+      outcome: { status: "succeeded" },
+    });
+
+    expect(first).toBeInstanceOf(Error);
+    expect(first?.message).toContain(
+      "External Turn identity could not be persisted: Turn identity mapping conflicts",
+    );
+    expect(thread.persistenceError).toBe(first);
+    expect(diagnostics).toEqual([first]);
+
+    const retry = await runtime.persistTerminalIdentity(thread, {
+      type: "turn.completed",
+      turnId: hostTurnIdSchema.parse("turn-2"),
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        ...nativeTurnRef,
+        nativeTurnKey: "turn:2",
+      }),
+      outcome: { status: "succeeded" },
+    });
+
+    expect(retry).toBeNull();
+    expect(persistTurn).toHaveBeenCalledTimes(2);
+    expect(thread.persistenceError).toBeNull();
+  });
+});
 
 describe("ExternalThreadRuntime register", () => {
   it("exposes the requested create Model before the Session publishes state", async () => {
@@ -89,88 +183,117 @@ describe("ExternalThreadRuntime register", () => {
     });
   });
 
-  it("uses live OMP state instead of stale persisted configuration", async () => {
-    const ompHarnessId = harnessIdSchema.parse("omp");
-    const permissionModes = harnessPermissionModeCatalogSchema.parse({
-      modes: [
-        { id: "always-ask", label: "Always ask" },
-        { id: "write", label: "Write" },
-        { id: "yolo", label: "Full access" },
-      ],
-      defaultModeId: "yolo",
-    });
-    const catalog = new FakeHarnessAdapter(ompHarnessId).catalog;
-    const adapter = new FakeHarnessAdapter(
-      ompHarnessId,
-      catalog,
-      true,
-      true,
-      null,
-      permissionModes,
-    );
-    const writeMode = harnessPermissionModeIdSchema.parse("write");
-    const created = await adapter.open({
-      kind: "create",
-      cwd: "/synthetic",
-      permissionModeId: writeMode,
-    });
-    if (!created.ok) throw new Error(created.error.message);
+  it.each(["current", "legacy", "unavailable", "catalog offline"])(
+    "restores an OMP Thread with a saved Model (%s)",
+    async (storedModel) => {
+      const ompHarnessId = harnessIdSchema.parse("omp");
+      const permissionModes = harnessPermissionModeCatalogSchema.parse({
+        modes: [
+          { id: "always-ask", label: "Always ask" },
+          { id: "write", label: "Write" },
+          { id: "yolo", label: "Full access" },
+        ],
+        defaultModeId: "yolo",
+      });
+      const catalog = new FakeHarnessAdapter(ompHarnessId).catalog;
+      const adapter = new FakeHarnessAdapter(
+        ompHarnessId,
+        catalog,
+        true,
+        true,
+        null,
+        permissionModes,
+      );
+      const writeMode = harnessPermissionModeIdSchema.parse("write");
+      const created = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        permissionModeId: writeMode,
+      });
+      if (!created.ok) throw new Error(created.error.message);
 
-    const nativeRef = created.value.initialState.nativeRef;
-    const actualModel = created.value.initialState.effectiveModel;
-    const actualThinking = created.value.initialState.effectiveThinkingOptionId;
-    const staleModel = adapter.catalog.models[1]?.ref;
-    if (!nativeRef || !actualModel || !actualThinking || !staleModel) {
-      throw new Error("Fake OMP Session did not expose the expected configuration state");
-    }
+      const nativeRef = created.value.initialState.nativeRef;
+      const actualModel = created.value.initialState.effectiveModel;
+      const actualThinking = created.value.initialState.effectiveThinkingOptionId;
+      const staleModel = adapter.catalog.models[1]?.ref;
+      if (!nativeRef || !actualModel || !actualThinking || !staleModel) {
+        throw new Error("Fake OMP Session did not expose the expected configuration state");
+      }
 
-    let stored: StoredThreadRecordV1 = {
-      ...record(),
-      harnessId: ompHarnessId,
-      nativeSessionRef: nativeRef,
-      transportModelId: encodeOmpTransportModel(
-        staleModel,
-        harnessThinkingOptionIdSchema.parse("low"),
-      ),
-      historyMode: "legacy",
-    };
-    const setTransportModelId = vi.fn(
-      async (_threadId: string, transportModelId: string): Promise<StoredThreadRecordV1> => {
-        stored = { ...stored, transportModelId };
-        return stored;
-      },
-    );
-    const repository = {
-      find: async () => stored,
-      alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
-      sessionTreeId: async () => hostThreadId,
-      setTransportModelId,
-    } as unknown as ExternalThreadRepository;
-    const runtime = new ExternalThreadRuntime({
-      adapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["omp", adapter]]),
-      repository,
-      consumeOutputs: async () => undefined,
-      diagnose: () => undefined,
-    });
+      Object.assign(adapter, {
+        normalizeStoredModelRef: (ref: { id: string }) =>
+          ref.id === "legacy-model" ? staleModel : undefined,
+      });
+      const open = vi.spyOn(adapter, "open");
+      if (storedModel === "catalog offline") {
+        vi.spyOn(adapter, "inspect").mockRejectedValueOnce(new Error("Catalog unavailable"));
+      }
+      const savedModelIsCurrent = storedModel === "current" || storedModel === "catalog offline";
+      const savedCarrier = savedModelIsCurrent
+        ? encodeExternalTransportSelection("omp", {
+            model: staleModel,
+            thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
+          })
+        : storedModel === "legacy"
+          ? "codexhost/omp-native@legacy-model@low"
+          : "codexhost/omp-native@retired-model@low";
+      let stored: StoredThreadRecordV1 = {
+        ...record(),
+        harnessId: ompHarnessId,
+        nativeSessionRef: nativeRef,
+        transportModelId: savedCarrier,
+        historyMode: "legacy",
+      };
+      const setTransportModelId = vi.fn(
+        async (_threadId: string, transportModelId: string): Promise<StoredThreadRecordV1> => {
+          stored = { ...stored, transportModelId };
+          return stored;
+        },
+      );
+      const repository = {
+        find: async () => stored,
+        alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
+        sessionTreeId: async () => hostThreadId,
+        setTransportModelId,
+      } as unknown as ExternalThreadRepository;
+      const runtime = new ExternalThreadRuntime({
+        adapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["omp", adapter]]),
+        repository,
+        consumeOutputs: async () => undefined,
+        diagnose: () => undefined,
+      });
 
-    const resolved = await runtime.resolve(hostThreadId);
+      const resolved = await runtime.resolve(hostThreadId);
 
-    expect(resolved.kind).toBe("external");
-    if (resolved.kind !== "external") return;
-    expect(resolved.thread.stateObserver.state).toMatchObject({
-      effectiveModel: actualModel,
-      effectiveThinkingOptionId: actualThinking,
-    });
-    const effectiveTransportModelId = encodeOmpTransportModel(
-      actualModel,
-      actualThinking,
-      writeMode,
-    );
-    expect(resolved.thread.record.transportModelId).toBe(effectiveTransportModelId);
-    expect(setTransportModelId).toHaveBeenCalledWith(hostThreadId, effectiveTransportModelId);
+      expect(resolved.kind).toBe("external");
+      if (resolved.kind !== "external") return;
+      expect(resolved.thread.stateObserver.state).toMatchObject({
+        effectiveModel: actualModel,
+        effectiveThinkingOptionId: actualThinking,
+      });
+      const effectiveTransportModelId = encodeHarnessPluginRoute({
+        harnessId: ompHarnessId,
+        model: actualModel,
+        thinkingOptionId: actualThinking,
+        permissionModeId: writeMode,
+      });
+      expect(resolved.thread.transportModelId).toBe(effectiveTransportModelId);
+      const resumed = open.mock.calls[0]?.[0];
+      expect(resumed?.kind).toBe("resume");
+      if (resumed?.kind !== "resume") throw new Error("Expected to resume the Thread");
+      expect(resumed.model).toEqual(storedModel === "unavailable" ? undefined : staleModel);
+      expect(resumed.thinkingOptionId).toBe(storedModel === "unavailable" ? undefined : "low");
+      if (savedModelIsCurrent) {
+        expect(resolved.thread.record.transportModelId).toBe(effectiveTransportModelId);
+        expect(setTransportModelId).toHaveBeenCalledWith(hostThreadId, effectiveTransportModelId);
+      } else {
+        expect(resolved.thread.record.transportModelId).toBe(savedCarrier);
+        expect(setTransportModelId).not.toHaveBeenCalled();
+      }
 
-    await adapter.close();
-  });
+      await adapter.close();
+    },
+  );
 
   it("does not restore persisted Thinking when live OMP state omits it", async () => {
     const ompHarnessId = harnessIdSchema.parse("omp");
@@ -187,7 +310,10 @@ describe("ExternalThreadRuntime register", () => {
     }
     session.setStateForSnapshot({ nativeRef, effectiveModel: actualModel });
 
-    const staleTransportModelId = encodeOmpTransportModel(actualModel, staleThinking);
+    const staleTransportModelId = encodeExternalTransportSelection("omp", {
+      model: actualModel,
+      thinkingOptionId: staleThinking,
+    });
     const stored: StoredThreadRecordV1 = {
       ...record(),
       harnessId: ompHarnessId,
@@ -220,7 +346,9 @@ describe("ExternalThreadRuntime register", () => {
     });
     expect(resolved.thread.stateObserver.state.effectiveThinkingOptionId).toBeUndefined();
     expect(resolved.thread.requestedThinkingOptionId).toBeUndefined();
-    expect(resolved.thread.transportModelId).toBe(encodeOmpTransportModel(actualModel));
+    expect(resolved.thread.transportModelId).toBe(
+      encodeHarnessPluginRoute({ harnessId: ompHarnessId, model: actualModel }),
+    );
 
     await adapter.close();
   });
@@ -239,10 +367,10 @@ describe("ExternalThreadRuntime register", () => {
       throw new Error("Fake OMP Session did not expose the expected configuration state");
     }
 
-    const staleTransportModelId = encodeOmpTransportModel(
-      staleModel,
-      harnessThinkingOptionIdSchema.parse("low"),
-    );
+    const staleTransportModelId = encodeExternalTransportSelection("omp", {
+      model: staleModel,
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
+    });
     const setTransportModelId = vi.fn(async () => {
       throw new Error("synthetic mapping persistence failure");
     });
@@ -277,7 +405,11 @@ describe("ExternalThreadRuntime register", () => {
     });
     expect(resolved.thread.record.transportModelId).toBe(staleTransportModelId);
     expect(resolved.thread.transportModelId).toBe(
-      encodeOmpTransportModel(actualModel, actualThinking),
+      encodeHarnessPluginRoute({
+        harnessId: ompHarnessId,
+        model: actualModel,
+        thinkingOptionId: actualThinking,
+      }),
     );
     expect(setTransportModelId).toHaveBeenCalledOnce();
     expect(diagnose).toHaveBeenCalledWith(expect.any(Error));
@@ -330,7 +462,10 @@ describe("ExternalThreadRuntime register", () => {
       harnessId: openCodeHarnessId,
       nativeSessionRef: created.value.initialState.nativeRef,
       title: "OpenCode Thread",
-      transportModelId: encodeOpenCodeTransportModel(model, defaultMode),
+      transportModelId: encodeExternalTransportSelection("opencode", {
+        model,
+        permissionModeId: defaultMode,
+      }),
     } as StoredThreadRecordV1;
     const setTransportModelId = vi.fn(
       async (_threadId: string, transportModelId: string): Promise<StoredThreadRecordV1> => ({
@@ -358,13 +493,14 @@ describe("ExternalThreadRuntime register", () => {
     const liveThinking = created.value.initialState.effectiveThinkingOptionId;
     expect(execute).not.toHaveBeenCalled();
     expect(resolved.thread.stateObserver.state.effectivePermissionModeId).toBe(askMode);
-    expect(resolved.thread.transportModelId).toBe(
-      encodeOpenCodeTransportModel(model, askMode, liveThinking),
-    );
-    expect(setTransportModelId).toHaveBeenCalledWith(
-      hostThreadId,
-      encodeOpenCodeTransportModel(model, askMode, liveThinking),
-    );
+    const route = encodeHarnessPluginRoute({
+      harnessId: adapter.harnessId,
+      model,
+      permissionModeId: askMode,
+      ...(liveThinking ? { thinkingOptionId: liveThinking } : {}),
+    });
+    expect(resolved.thread.transportModelId).toBe(route);
+    expect(setTransportModelId).toHaveBeenCalledWith(hostThreadId, route);
 
     await adapter.close();
   });
@@ -391,7 +527,7 @@ describe("ExternalThreadRuntime register", () => {
         null,
         permissionModes,
         false,
-        "atCreate",
+        "live",
       );
       const model = adapter.catalog.defaultModel;
       if (!model) throw new Error("Fake Grok catalog has no default Model");
@@ -413,7 +549,10 @@ describe("ExternalThreadRuntime register", () => {
         harnessId: grokHarnessId,
         nativeSessionRef: created.value.initialState.nativeRef,
         title: "Grok Thread",
-        transportModelId: encodeGrokTransportModel(model, storedMode),
+        transportModelId: encodeExternalTransportSelection("grok", {
+          model,
+          permissionModeId: storedMode,
+        }),
       } as StoredThreadRecordV1;
       const execute = vi.spyOn(session, "execute");
       const repository = {
@@ -453,10 +592,10 @@ describe("ExternalThreadRuntime register", () => {
       expect(resolved.kind).toBe("external");
       if (resolved.kind !== "external") throw new Error("Grok Thread did not restore");
       expect(execute).not.toHaveBeenCalled();
-      expect(session.capabilities.configuration.permissionModeScope).toBe("atCreate");
+      expect(session.capabilities.configuration.permissionModeScope).toBe("live");
       expect(resolved.thread.stateObserver.state.effectivePermissionModeId).toBe(storedMode);
       expect(resolved.thread.record.transportModelId).toBe(
-        encodeGrokTransportModel(model, storedMode),
+        encodeExternalTransportSelection("grok", { model, permissionModeId: storedMode }),
       );
       expect(open).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -464,7 +603,7 @@ describe("ExternalThreadRuntime register", () => {
           environment: expect.objectContaining({
             CODEXHOST_CLI_PATH: "/opt/codexhost",
             CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
-            CODEXHOST_RUNTIME_TOKEN: "token",
+            CODEXHOST_RUNTIME_TOKEN: boundDelegationToken("token", hostThreadId),
             CODEXHOST_THREAD_ID: hostThreadId,
           }),
         }),
@@ -473,4 +612,328 @@ describe("ExternalThreadRuntime register", () => {
       await adapter.close();
     },
   );
+});
+
+describe("ExternalThreadRuntime unavailable Session recovery", () => {
+  it("restores after a faulted idle Session instead of reusing it", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!created.ok) throw new Error(created.error.message);
+    const session = created.value;
+    if (!(session instanceof FakeHarnessSession)) throw new Error("expected FakeHarnessSession");
+    const nativeRef = session.initialState.nativeRef;
+    if (!nativeRef) throw new Error("missing nativeRef");
+
+    const stored: StoredThreadRecordV1 = {
+      ...record(),
+      nativeSessionRef: nativeRef,
+    };
+    const repository = {
+      find: async () => stored,
+      alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
+      sessionTreeId: async () => hostThreadId,
+      setTransportModelId: async (_threadId: string, transportModelId: string) => ({
+        ...stored,
+        transportModelId,
+      }),
+    } as unknown as ExternalThreadRepository;
+    // Fake Adapter resumes the same object; real adapters reopen a process.
+    const realOpen = adapter.open.bind(adapter);
+    const open = vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+      if (input.kind === "resume") {
+        return realOpen({
+          kind: "create",
+          cwd: input.cwd,
+          ...(input.model !== undefined ? { model: input.model } : {}),
+          ...(input.thinkingOptionId !== undefined
+            ? { thinkingOptionId: input.thinkingOptionId }
+            : {}),
+          ...(input.permissionModeId !== undefined
+            ? { permissionModeId: input.permissionModeId }
+            : {}),
+        });
+      }
+      return realOpen(input);
+    });
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+
+    const first = await runtime.resolve(hostThreadId);
+    expect(first.kind).toBe("external");
+    if (first.kind !== "external") return;
+    expect(first.historyFresh).toBe(true);
+    const opensAfterFirst = open.mock.calls.length;
+    const live = first.thread.session;
+    if (!(live instanceof FakeHarnessSession)) throw new Error("expected FakeHarnessSession");
+
+    live.fault({
+      code: "processExited",
+      message: "Claude Code Session became unavailable",
+      retryable: false,
+    });
+    runtime.markSessionUnavailable(first.thread);
+    await runtime.discardUnavailableIdle(first.thread);
+    expect(runtime.get(hostThreadId)).toBeUndefined();
+
+    const second = await runtime.resolve(hostThreadId);
+    expect(second.kind).toBe("external");
+    if (second.kind !== "external") return;
+    expect(second.historyFresh).toBe(true);
+    expect(second.thread).not.toBe(first.thread);
+    expect(second.thread.sessionUnavailable).toBe(false);
+    expect(open.mock.calls.length).toBeGreaterThan(opensAfterFirst);
+    await expect(runtime.refresh(second.thread)).resolves.toBeNull();
+
+    await adapter.close();
+  });
+
+  it("revives in place from refresh when readSnapshot returns invalidState", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!created.ok) throw new Error(created.error.message);
+    const session = created.value;
+    if (!(session instanceof FakeHarnessSession)) throw new Error("expected FakeHarnessSession");
+    const nativeRef = session.initialState.nativeRef;
+    if (!nativeRef) throw new Error("missing nativeRef");
+
+    const stored: StoredThreadRecordV1 = {
+      ...record(),
+      nativeSessionRef: nativeRef,
+    };
+    const repository = {
+      find: async () => stored,
+      alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
+      sessionTreeId: async () => hostThreadId,
+      setTransportModelId: async (_threadId: string, transportModelId: string) => ({
+        ...stored,
+        transportModelId,
+      }),
+    } as unknown as ExternalThreadRepository;
+    const realOpen = adapter.open.bind(adapter);
+    vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+      if (input.kind === "resume") {
+        return realOpen({
+          kind: "create",
+          cwd: input.cwd,
+          ...(input.model !== undefined ? { model: input.model } : {}),
+          ...(input.thinkingOptionId !== undefined
+            ? { thinkingOptionId: input.thinkingOptionId }
+            : {}),
+          ...(input.permissionModeId !== undefined
+            ? { permissionModeId: input.permissionModeId }
+            : {}),
+        });
+      }
+      return realOpen(input);
+    });
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+
+    const resolved = await runtime.resolve(hostThreadId);
+    expect(resolved.kind).toBe("external");
+    if (resolved.kind !== "external") return;
+    const thread = resolved.thread;
+    const live = thread.session;
+    if (!(live instanceof FakeHarnessSession)) throw new Error("expected FakeHarnessSession");
+    live.fault({ code: "processExited", message: "gone", retryable: false });
+
+    await expect(runtime.refresh(thread)).resolves.toBeNull();
+    expect(thread.sessionUnavailable).toBe(false);
+    expect(thread.session).not.toBe(live);
+    expect(runtime.get(hostThreadId)).toBe(thread);
+
+    await adapter.close();
+  });
+
+  it("serializes concurrent refresh revivals to a single resume", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!created.ok) throw new Error(created.error.message);
+    const session = created.value;
+    if (!(session instanceof FakeHarnessSession)) throw new Error("expected FakeHarnessSession");
+    const nativeRef = session.initialState.nativeRef;
+    if (!nativeRef) throw new Error("missing nativeRef");
+
+    const stored: StoredThreadRecordV1 = {
+      ...record(),
+      nativeSessionRef: nativeRef,
+    };
+    const repository = {
+      find: async () => stored,
+      alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
+      sessionTreeId: async () => hostThreadId,
+      setTransportModelId: async (_threadId: string, transportModelId: string) => ({
+        ...stored,
+        transportModelId,
+      }),
+    } as unknown as ExternalThreadRepository;
+    const realOpen = adapter.open.bind(adapter);
+    let gateResumes = false;
+    let resumeStarts = 0;
+    let releaseResume: (() => void) | undefined;
+    const resumeGate = new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    });
+    let sawResume: (() => void) | undefined;
+    const sawResumePromise = new Promise<void>((resolve) => {
+      sawResume = resolve;
+    });
+    const open = vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+      if (input.kind === "resume") {
+        if (gateResumes) {
+          resumeStarts += 1;
+          sawResume?.();
+          await resumeGate;
+        }
+        return realOpen({
+          kind: "create",
+          cwd: input.cwd,
+          ...(input.model !== undefined ? { model: input.model } : {}),
+          ...(input.thinkingOptionId !== undefined
+            ? { thinkingOptionId: input.thinkingOptionId }
+            : {}),
+          ...(input.permissionModeId !== undefined
+            ? { permissionModeId: input.permissionModeId }
+            : {}),
+        });
+      }
+      return realOpen(input);
+    });
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+
+    const resolved = await runtime.resolve(hostThreadId);
+    expect(resolved.kind).toBe("external");
+    if (resolved.kind !== "external") return;
+    const thread = resolved.thread;
+    const live = thread.session;
+    if (!(live instanceof FakeHarnessSession)) throw new Error("expected FakeHarnessSession");
+    live.fault({ code: "processExited", message: "gone", retryable: false });
+    gateResumes = true;
+
+    const first = runtime.refresh(thread);
+    const second = runtime.refresh(thread);
+    await sawResumePromise;
+    expect(resumeStarts).toBe(1);
+    releaseResume?.();
+    await expect(Promise.all([first, second])).resolves.toEqual([null, null]);
+    expect(resumeStarts).toBe(1);
+    expect(open.mock.calls.filter((call) => call[0]?.kind === "resume").length).toBe(2);
+
+    await adapter.close();
+  });
+
+  it("does not discard an idle parent while descendants are running", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!created.ok) throw new Error(created.error.message);
+    const session = created.value;
+    if (!(session instanceof FakeHarnessSession)) throw new Error("expected FakeHarnessSession");
+    const nativeRef = session.initialState.nativeRef;
+    if (!nativeRef) throw new Error("missing nativeRef");
+
+    const stored: StoredThreadRecordV1 = {
+      ...record(),
+      nativeSessionRef: nativeRef,
+    };
+    const repository = {
+      find: async () => stored,
+      alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
+      sessionTreeId: async () => hostThreadId,
+    } as unknown as ExternalThreadRepository;
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+      hasRunningDescendants: () => true,
+    });
+
+    const resolved = await runtime.resolve(hostThreadId);
+    expect(resolved.kind).toBe("external");
+    if (resolved.kind !== "external") return;
+    runtime.markSessionUnavailable(resolved.thread);
+    await runtime.discardUnavailableIdle(resolved.thread);
+    expect(runtime.get(hostThreadId)).toBe(resolved.thread);
+
+    await adapter.close();
+  });
+
+  it("clears outputFailed after a successful refresh revival", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const created = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!created.ok) throw new Error(created.error.message);
+    const session = created.value;
+    if (!(session instanceof FakeHarnessSession)) throw new Error("expected FakeHarnessSession");
+    const nativeRef = session.initialState.nativeRef;
+    if (!nativeRef) throw new Error("missing nativeRef");
+
+    const stored: StoredThreadRecordV1 = {
+      ...record(),
+      nativeSessionRef: nativeRef,
+    };
+    const repository = {
+      find: async () => stored,
+      alignSnapshot: async (current: StoredThreadRecordV1) => ({ record: current, turns: [] }),
+      sessionTreeId: async () => hostThreadId,
+      setTransportModelId: async (_threadId: string, transportModelId: string) => ({
+        ...stored,
+        transportModelId,
+      }),
+    } as unknown as ExternalThreadRepository;
+    const realOpen = adapter.open.bind(adapter);
+    vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+      if (input.kind === "resume") {
+        return realOpen({
+          kind: "create",
+          cwd: input.cwd,
+          ...(input.model !== undefined ? { model: input.model } : {}),
+          ...(input.thinkingOptionId !== undefined
+            ? { thinkingOptionId: input.thinkingOptionId }
+            : {}),
+          ...(input.permissionModeId !== undefined
+            ? { permissionModeId: input.permissionModeId }
+            : {}),
+        });
+      }
+      return realOpen(input);
+    });
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository,
+      consumeOutputs: async () => undefined,
+      diagnose: () => undefined,
+    });
+
+    const resolved = await runtime.resolve(hostThreadId);
+    expect(resolved.kind).toBe("external");
+    if (resolved.kind !== "external") return;
+    const thread = resolved.thread;
+    runtime.idleRelease.outputFailed(thread);
+    expect(runtime.idleRelease.list().find((row) => row.threadId === hostThreadId)?.reason).toBe(
+      "persistence",
+    );
+    const live = thread.session;
+    if (!(live instanceof FakeHarnessSession)) throw new Error("expected FakeHarnessSession");
+    live.fault({ code: "processExited", message: "gone", retryable: false });
+
+    await expect(runtime.refresh(thread)).resolves.toBeNull();
+    const listed = runtime.idleRelease.list().find((row) => row.threadId === hostThreadId);
+    expect(listed?.reason).not.toBe("persistence");
+    expect(listed?.state).not.toBe("blocked");
+
+    await adapter.close();
+  });
 });

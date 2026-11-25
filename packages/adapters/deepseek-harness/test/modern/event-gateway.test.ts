@@ -175,7 +175,11 @@ function approval(
   };
 }
 
-function question(eventId: string, agentId = "session-1"): Record<string, unknown> {
+function question(
+  eventId: string,
+  agentId = "session-1",
+  callId?: string,
+): Record<string, unknown> {
   return {
     type: "waterfall",
     event: "user-questions/request",
@@ -190,7 +194,11 @@ function question(eventId: string, agentId = "session-1"): Record<string, unknow
           header: "Review",
           options: [{ label: "Yes", description: "Continue" }, { label: "No" }],
           multiSelect: false,
-          intent: { kind: "plan-review", approve: "Yes" },
+          intent: {
+            kind: "plan-review",
+            approve: "Yes",
+            ...(callId === undefined ? {} : { callId }),
+          },
         },
       ],
     },
@@ -207,6 +215,111 @@ async function startGateway(
   await gateway.start();
   return gateway;
 }
+
+it("preserves the optional V4 plan-review intent callId", async () => {
+  const feed = new EventFeed();
+  const remote = new FakeRemote(feed);
+  const gateway = await startGateway(remote, feed);
+  const sink = sinkProbe();
+  const detach = gateway.attach("session-1", sink);
+  feed.push(question("question-call-id", "session-1", "tool-call-1"));
+  await vi.waitFor(() => expect(sink.deliveries).toHaveLength(1));
+  expect(sink.deliveries[0]?.request).toMatchObject({
+    questions: [{ intent: { kind: "plan-review", approve: "Yes", callId: "tool-call-1" } }],
+  });
+  await detach();
+  await gateway.close();
+});
+
+/** DSH 0.2.2 computer-use consent: one blocking question whose options are its fixed actions. */
+function approvalQuestion(overrides: Readonly<Record<string, unknown>> = {}) {
+  return {
+    id: "consent",
+    question: "Allow Calculator?",
+    detail: "Calculator: view and control",
+    options: [{ label: "Allow once" }, { label: "Deny" }, { label: "Always allow" }],
+    intent: {
+      kind: "approval",
+      approve: "Allow once",
+      reject: "Deny",
+      always: "Always allow",
+      subject: { name: "Calculator", icon: "file:///Applications/Calculator.app" },
+      display: { question: { en: "Allow Calculator?", zh: "允许 Calculator？" } },
+    },
+    ...overrides,
+  };
+}
+
+it("delivers a DSH 0.2.2 approval intent as fixed actions", async () => {
+  const feed = new EventFeed();
+  const remote = new FakeRemote(feed);
+  const gateway = await startGateway(remote, feed);
+  const sink = sinkProbe();
+  const detach = gateway.attach("session-1", sink);
+  feed.push({ ...question("question-approval"), request: { questions: [approvalQuestion()] } });
+  await vi.waitFor(() => expect(sink.deliveries).toHaveLength(1));
+  expect(sink.deliveries[0]?.request).toEqual({
+    questions: [
+      {
+        id: "consent",
+        question: "Allow Calculator?",
+        detail: "Calculator: view and control",
+        options: [{ label: "Allow once" }, { label: "Deny" }, { label: "Always allow" }],
+        intent: { kind: "approval", approve: "Allow once", reject: "Deny", always: "Always allow" },
+      },
+    ],
+  });
+  expect(sink.faults).toEqual([]);
+  await detach();
+  await gateway.close();
+});
+
+it("rejects approval intents that DSH itself would refuse", async () => {
+  const feed = new EventFeed();
+  const remote = new FakeRemote(feed);
+  const gateway = await startGateway(remote, feed);
+  const intent = approvalQuestion().intent;
+  const malformedRequests: Readonly<Record<string, unknown>>[] = [
+    { questions: [approvalQuestion({ detail: undefined })] },
+    { questions: [approvalQuestion({ multiSelect: true })] },
+    { questions: [approvalQuestion({ options: [{ label: "Allow once" }, { label: "Deny" }] })] },
+    {
+      questions: [
+        approvalQuestion({
+          options: [
+            { label: "Allow once" },
+            { label: "Deny" },
+            { label: "Always allow" },
+            { label: "Ask" },
+          ],
+        }),
+      ],
+    },
+    { questions: [approvalQuestion({ intent: { ...intent, reject: "Allow once" } })] },
+    { questions: [approvalQuestion({ intent: { ...intent, reject: "" } })] },
+    { questions: [approvalQuestion({ intent: { ...intent, subject: { icon: "x" } } })] },
+    {
+      questions: [approvalQuestion({ intent: { ...intent, display: { question: { zh: "?" } } } })],
+    },
+    { questions: [approvalQuestion({ intent: { ...intent, callId: "call-1" } })] },
+    { questions: [approvalQuestion(), approvalQuestion({ id: "second" })] },
+    { questions: [approvalQuestion()], wait: { callId: "call-1" } },
+  ];
+  const broken = malformedRequests.map((request, index) => {
+    const sink = sinkProbe();
+    const sessionId = `session-broken-${index}`;
+    gateway.attach(sessionId, sink);
+    feed.push({ ...question(`event-malformed-${index}`, sessionId), request });
+    return sink;
+  });
+
+  await vi.waitFor(() => expect(broken.every(({ faults }) => faults.length === 1)).toBe(true));
+  for (const sink of broken) {
+    expect(sink.deliveries).toEqual([]);
+    expect(sink.faults[0]).toMatchObject({ code: "protocolError" });
+  }
+  await gateway.close();
+});
 
 function captureRejection(promise: Promise<unknown>): Promise<unknown> {
   return promise.then(
@@ -457,6 +570,106 @@ describe("DeepSeek Harness Modern event gateway", () => {
     await gateway.close();
   });
 
+  it("delivers sandbox-escalation approvals that include DSH displayReason", async () => {
+    const feed = new EventFeed();
+    const remote = new FakeRemote(feed);
+    const gateway = await startGateway(remote, feed);
+    const sink = sinkProbe();
+    gateway.attach("session-1", sink);
+
+    const displayReason = {
+      en: "Allow this operation with danger-full-access permissions: write /tmp/out",
+      zh: "允许本次操作使用 danger-full-access 权限：write /tmp/out",
+    };
+    feed.push(
+      approval("event-display-reason", "session-1", {
+        toolName: "bash",
+        callId: "call-esc",
+        reason: "escalate sandbox to danger-full-access: write /tmp/out",
+        displayReason,
+      }),
+    );
+    await vi.waitFor(() => expect(sink.deliveries).toHaveLength(1));
+    expect(sink.deliveries[0]).toMatchObject({
+      type: "approval",
+      eventId: "event-display-reason",
+      sessionId: "session-1",
+      request: {
+        toolName: "bash",
+        callId: "call-esc",
+        reason: "escalate sandbox to danger-full-access: write /tmp/out",
+        displayReason,
+      },
+    });
+    expect(sink.faults).toEqual([]);
+    expect(remote.calls).toEqual([]);
+    await gateway.close();
+  });
+
+  it("keeps the DSH 0.2.0-rc.2 wait descriptor and reports native release as cancel", async () => {
+    const feed = new EventFeed();
+    const remote = new FakeRemote(feed);
+    const gateway = await startGateway(remote, feed);
+    const sink = sinkProbe();
+    gateway.attach("session-1", sink);
+    const questions = [{ id: "pick", question: "Which?", options: [{ label: "A" }] }];
+    feed.push({
+      ...question("event-timed"),
+      request: { questions, wait: { callId: "call-ask", timed: true } },
+    });
+    feed.push({
+      ...question("event-indefinite"),
+      request: { questions, wait: { callId: "call-ask-2" } },
+    });
+    await vi.waitFor(() => expect(sink.deliveries).toHaveLength(2));
+    expect(sink.deliveries.map(({ request }) => request)).toEqual([
+      { questions, wait: { callId: "call-ask", timed: true } },
+      { questions, wait: { callId: "call-ask-2" } },
+    ]);
+
+    // DSH releasing its foreground wait arrives as an ordinary cancel frame.
+    feed.push({ type: "cancel", eventId: "event-timed" });
+    await vi.waitFor(() => expect(sink.cancelled).toEqual(["event-timed"]));
+    const released = sink.deliveries[0];
+    if (released?.type !== "question") throw new Error("expected question delivery");
+    await released.respond({ answers: [{ id: "pick", selected: ["A"] }] });
+    expect(remote.calls).toEqual([]);
+    await gateway.close();
+  });
+
+  it("faults when a replay changes a question's wait descriptor", async () => {
+    const first = new EventFeed();
+    const second = new EventFeed();
+    const remote = new FakeRemote(first, second);
+    const lost: ModernEventGatewayError[] = [];
+    const gateway = await startGateway(remote, first, {
+      onGenerationLost: (error) => lost.push(error),
+    });
+    const sink = sinkProbe();
+    gateway.attach("session-1", sink);
+    const questions = [{ id: "pick", question: "Which?" }];
+    first.push({
+      ...question("event-wait-replay"),
+      request: { questions, wait: { callId: "call-ask", timed: true } },
+    });
+    await vi.waitFor(() => expect(sink.deliveries).toHaveLength(1));
+    first.finish();
+    await vi.waitFor(() => expect(lost).toHaveLength(1));
+    second.push(ready("client-2"));
+    await gateway.replace();
+    second.push({
+      ...question("event-wait-replay"),
+      request: { questions, wait: { callId: "call-ask" } },
+    });
+
+    await vi.waitFor(() => expect(sink.faults).toHaveLength(1));
+    expect(sink.faults[0]).toMatchObject({
+      code: "protocolError",
+      message: "DeepSeek Harness replay changed a pending event",
+    });
+    await gateway.close();
+  });
+
   it("rejects malformed owned question batches while delegating an unowned one", async () => {
     const feed = new EventFeed();
     const remote = new FakeRemote(feed);
@@ -492,6 +705,13 @@ describe("DeepSeek Harness Modern event gateway", () => {
           { id: "other", question: "Other?", options: [{ label: "Yes" }] },
         ],
       },
+      { questions: [validQuestion], wait: {} },
+      { questions: [validQuestion], wait: { callId: "" } },
+      { questions: [validQuestion], wait: { callId: "call-1", timed: "yes" } },
+      { questions: [validQuestion], wait: { callId: "call-1", timed: true, deadline: 1 } },
+      { questions: [validQuestion], wait: null },
+      { questions: [validQuestion], wait: "call-1" },
+      { questions: [validQuestion], expiresAt: 1 },
     ];
     const broken = malformedRequests.map((request, index) => {
       const sink = sinkProbe();

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { installRendererExternalSteering } from "../src/renderer-external-steering.js";
 
-function fixture(owner: "external" | "codex" = "external") {
+function fixture(delivery: "newTurn" | "activeTurn" | "official" = "newTurn") {
   const events: string[] = [];
   const requestOptions: Record<string, unknown> = { timeoutMs: 30_000 };
   let queued: Array<{ id: string; pausedReason?: string }> = [];
@@ -16,13 +16,7 @@ function fixture(owner: "external" | "codex" = "external") {
   const rpc = vi.fn(
     async (method: unknown, params: unknown, options?: unknown): Promise<unknown> => {
       void options;
-      if (method === "codexhost/thread/ownership/list") {
-        return {
-          threads: [
-            { threadId: "thread", owner, ...(owner === "external" ? { harnessId: "pi" } : {}) },
-          ],
-        };
-      }
+      if (method === "codexhost/thread/steering/inspect") return { delivery };
       if (method === "turn/steer") {
         events.push("cancel old");
         originalTurn.status = "interrupted";
@@ -142,8 +136,38 @@ describe("external direction changes use normal Desktop start presentation", () 
     f.dispose();
   });
 
+  it("preserves native admission and current-request callbacks in replacement start context", async () => {
+    const f = fixture();
+    const beforeSendRequest = vi.fn();
+    const assertRequestCurrent = vi.fn();
+    f.args.push(beforeSendRequest, assertRequestCurrent);
+    try {
+      await f.manager.steerTurn(...f.args);
+      expect(f.manager.startTurn).toHaveBeenCalledWith(
+        "thread",
+        expect.objectContaining({
+          context: expect.objectContaining({ beforeSendRequest, assertRequestCurrent }),
+        }),
+        f.args[8],
+      );
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("keeps Desktop's own steer for an external Thread that steers natively", async () => {
+    const f = fixture("activeTurn");
+    await expect(f.manager.steerTurn(...f.args)).resolves.toEqual({ turnId: "official" });
+    expect(f.originalSteer).toHaveBeenCalledWith(...f.args);
+    expect(f.manager.startTurn).not.toHaveBeenCalled();
+    expect(f.rpc.mock.calls.map(([method]) => method)).toEqual([
+      "codexhost/thread/steering/inspect",
+    ]);
+    f.dispose();
+  });
+
   it("passes official steering and unrelated requests through unchanged", async () => {
-    const f = fixture("codex");
+    const f = fixture("official");
     await expect(f.manager.steerTurn(...f.args)).resolves.toEqual({ turnId: "official" });
     expect(f.originalSteer).toHaveBeenCalledWith(...f.args);
     expect(f.manager.startTurn).not.toHaveBeenCalled();
@@ -163,19 +187,80 @@ describe("external direction changes use normal Desktop start presentation", () 
   });
 
   it.each([
+    { code: -32601, message: "Method not found" },
+    {
+      code: -32600,
+      message:
+        "Invalid request: unknown variant `codexhost/thread/steering/inspect`, expected one of `thread/read`",
+    },
+  ])(
+    "uses native steering after a stock app-server rejects steering inspection: %j",
+    async (error) => {
+      const f = fixture();
+      const original = f.rpc.getMockImplementation();
+      f.rpc.mockImplementation(async (method, params, options) => {
+        if (method === "codexhost/thread/steering/inspect") throw error;
+        if (method === "codexhost/thread/ownership/list") {
+          throw {
+            ...(error as object),
+            message: String((error as { message: string }).message).replace(
+              "codexhost/thread/steering/inspect",
+              "codexhost/thread/ownership/list",
+            ),
+          };
+        }
+        if (method === "thread/read") {
+          return {
+            thread: { id: "thread", modelProvider: "openai", cliVersion: "0.9.0" },
+          };
+        }
+        return original?.(method, params, options);
+      });
+      await expect(f.manager.steerTurn(...f.args)).resolves.toEqual({ turnId: "official" });
+      expect(f.rpc.mock.calls.map(([method]) => method)).toEqual([
+        "codexhost/thread/steering/inspect",
+        "codexhost/thread/ownership/list",
+        "thread/read",
+      ]);
+      expect(f.originalSteer).toHaveBeenCalledWith(...f.args);
+      expect(f.manager.startTurn).not.toHaveBeenCalled();
+      f.dispose();
+    },
+  );
+
+  it.each([
+    { id: "other", modelProvider: "openai", cliVersion: "0.9.0" },
+    { id: "thread", modelProvider: "codexhost", cliVersion: "codexhost" },
+    { id: "thread", modelProvider: "openai" },
+  ])("does not steer when stock ownership cannot prove a native Thread: %j", async (thread) => {
+    const f = fixture();
+    f.rpc.mockImplementation(async (method) => {
+      for (const unsupported of [
+        "codexhost/thread/steering/inspect",
+        "codexhost/thread/ownership/list",
+      ]) {
+        if (method === unsupported)
+          throw { code: -32600, message: `Invalid request: unknown variant \`${unsupported}\`` };
+      }
+      if (method === "thread/read") return { thread };
+      throw new Error("unexpected request");
+    });
+    await expect(f.manager.steerTurn(...f.args)).rejects.toThrow(/ownership/);
+    expect(f.originalSteer).not.toHaveBeenCalled();
+    expect(f.manager.startTurn).not.toHaveBeenCalled();
+    f.dispose();
+  });
+
+  it.each([
     { input: [] },
     { input: [{ type: "text", text: " " }] },
-    { input: [{ type: "image", url: "image" }] },
-    {
-      input: [
-        { type: "text", text: "new input" },
-        { type: "localImage", path: "/image.png" },
-      ],
-    },
+    { input: [{ type: "image", url: "" }] },
+    { input: [{ type: "localImage", path: "" }] },
+    { input: [{ type: "toolResponse", text: "not a prompt" }] },
   ])("rejects unsupported input before cancel or creating a placeholder: %j", async ({ input }) => {
     const f = fixture();
     f.args[1] = input;
-    await expect(f.manager.steerTurn(...f.args)).rejects.toThrow("text input");
+    await expect(f.manager.steerTurn(...f.args)).rejects.toThrow("text or image input");
     expect(f.manager.startTurn).not.toHaveBeenCalled();
     expect(f.events).toEqual([]);
     f.dispose();
@@ -235,7 +320,9 @@ describe("external direction changes use normal Desktop start presentation", () 
     f.dispose();
     waiting.resolve(undefined);
     await expect(result).rejects.toThrow("disposed");
-    expect(f.rpc.mock.calls.map(([method]) => method)).toEqual(["codexhost/thread/ownership/list"]);
+    expect(f.rpc.mock.calls.map(([method]) => method)).toEqual([
+      "codexhost/thread/steering/inspect",
+    ]);
   });
 
   it("resumes automatically paused queue messages without unpausing older paused entries", async () => {
@@ -262,18 +349,98 @@ describe("external direction changes use normal Desktop start presentation", () 
     f.dispose();
   });
 
-  it("does not swallow an ownership failure or retry a failed replacement", async () => {
+  it("does not swallow a steering inspection failure or retry a failed replacement", async () => {
     const f = fixture();
-    f.rpc.mockRejectedValueOnce(new Error("ownership unavailable"));
-    await expect(f.manager.steerTurn(...f.args)).rejects.toThrow("ownership unavailable");
+    f.rpc.mockRejectedValueOnce(new Error("steering unavailable"));
+    await expect(f.manager.steerTurn(...f.args)).rejects.toThrow("steering unavailable");
     expect(f.originalSteer).not.toHaveBeenCalled();
     f.rpc.mockImplementation(async (method) => {
-      if (method === "codexhost/thread/ownership/list")
-        return { threads: [{ threadId: "thread", owner: "external", harnessId: "pi" }] };
+      if (method === "codexhost/thread/steering/inspect") return { delivery: "newTurn" };
       throw new Error("cancel failed");
     });
     await expect(f.manager.steerTurn(...f.args)).rejects.toThrow("cancel failed");
     expect(f.manager.startTurn).toHaveBeenCalledOnce();
+    f.dispose();
+  });
+
+  it("does not classify an invalid steering inspection request as a stock endpoint", async () => {
+    const f = fixture();
+    f.rpc.mockRejectedValueOnce({ code: -32600, message: "Invalid request: invalid params" });
+    await expect(f.manager.steerTurn(...f.args)).rejects.toMatchObject({ code: -32600 });
+    expect(f.rpc.mock.calls.map(([method]) => method)).toEqual([
+      "codexhost/thread/steering/inspect",
+    ]);
+    expect(f.originalSteer).not.toHaveBeenCalled();
+    f.dispose();
+  });
+});
+
+describe("steer delivery handshake", () => {
+  it("asks the Host with the steered text and names newTurn on the replacement request", async () => {
+    const f = fixture();
+    await f.manager.steerTurn(...f.args);
+    expect(f.rpc).toHaveBeenCalledWith("codexhost/thread/steering/inspect", {
+      threadId: "thread",
+      text: "new input",
+    });
+    const steer = f.rpc.mock.calls.find(([method]) => method === "turn/steer");
+    expect(steer?.[1]).toMatchObject({ codexhostSteerDelivery: "newTurn" });
+    f.dispose();
+  });
+
+  it("names activeTurn on the steer Desktop sends for its own presentation", async () => {
+    const f = fixture("activeTurn");
+    f.originalSteer.mockImplementation(async () => {
+      await f.manager.sendRequest("turn/steer", {
+        threadId: "thread",
+        expectedTurnId: "old",
+        input: [{ type: "text", text: "new input" }],
+      });
+      return { turnId: "old" };
+    });
+    await expect(f.manager.steerTurn(...f.args)).resolves.toEqual({ turnId: "old" });
+    const steer = f.rpc.mock.calls.find(([method]) => method === "turn/steer");
+    expect(steer?.[1]).toMatchObject({ codexhostSteerDelivery: "activeTurn" });
+    expect(f.manager.startTurn).not.toHaveBeenCalled();
+    // A later steer outside this presentation is not tagged.
+    await f.manager.sendRequest("turn/steer", { threadId: "thread", input: [] });
+    expect(f.rpc.mock.calls.at(-1)?.[1]).not.toHaveProperty("codexhostSteerDelivery");
+    f.dispose();
+  });
+
+  it("stops and restarts through Thread ownership on a Host without steering inspection", async () => {
+    const f = fixture();
+    const original = f.rpc.getMockImplementation();
+    f.rpc.mockImplementation(async (method, params, options) => {
+      if (method === "codexhost/thread/steering/inspect") {
+        throw { code: -32601, message: "Method not found" };
+      }
+      if (method === "codexhost/thread/ownership/list") {
+        return { threads: [{ threadId: "thread", owner: "external", harnessId: "claude-code" }] };
+      }
+      return original?.(method, params, options);
+    });
+    await expect(f.manager.steerTurn(...f.args)).resolves.toEqual({ turnId: "replacement" });
+    expect(f.originalSteer).not.toHaveBeenCalled();
+    expect(f.manager.startTurn).toHaveBeenCalledOnce();
+    f.dispose();
+  });
+
+  it("keeps Desktop's own steer for a Codex Thread on a Host without steering inspection", async () => {
+    const f = fixture();
+    const original = f.rpc.getMockImplementation();
+    f.rpc.mockImplementation(async (method, params, options) => {
+      if (method === "codexhost/thread/steering/inspect") {
+        throw { code: -32601, message: "Method not found" };
+      }
+      if (method === "codexhost/thread/ownership/list") {
+        return { threads: [{ threadId: "thread", owner: "codex" }] };
+      }
+      return original?.(method, params, options);
+    });
+    await expect(f.manager.steerTurn(...f.args)).resolves.toEqual({ turnId: "official" });
+    expect(f.originalSteer).toHaveBeenCalledWith(...f.args);
+    expect(f.manager.startTurn).not.toHaveBeenCalled();
     f.dispose();
   });
 });

@@ -366,6 +366,14 @@ export async function readKiroSnapshot(
           !["Reasoning", "Summary"].includes(String(row.payload.operationType))),
     );
 
+    const toolSources = new Map(
+      turn.rows
+        .filter((row) => row.payload.type === "tool_call")
+        .map((row) => [
+          row.payload.toolCallId,
+          hostItemIdSchema.parse(`kiro-${nativeSessionId}-${row.id}`),
+        ]),
+    );
     for (const row of turn.rows) {
       const type = row.payload?.type;
       const itemId = hostItemIdSchema.parse(`kiro-${nativeSessionId}-${row.id}`);
@@ -424,10 +432,12 @@ export async function readKiroSnapshot(
             ? projectKiroFileChanges(row.payload.content, location.cwd)
             : null;
         if (changes) {
+          const sourceItemId = toolSources.get(row.payload.toolCallId);
           items.push({
             item: {
               type: "fileChange",
               itemId,
+              sourceItemIds: sourceItemId ? [sourceItemId] : [],
               changes,
             },
             outcome: { status: "succeeded" },

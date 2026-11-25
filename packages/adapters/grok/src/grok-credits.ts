@@ -1,13 +1,18 @@
 import { readFile } from "node:fs/promises";
-import type { HarnessAccountSnapshot } from "@codexhost/shared-contracts";
+import type { HarnessAccountSnapshot, HarnessLocalizations } from "@codexhost/shared-contracts";
 import os from "node:os";
 import path from "node:path";
 
 export const GROK_CREDITS_ENDPOINT = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
+/** The native CLI reads the subscription name from here (`subscription_tier_display`). */
+export const GROK_SETTINGS_ENDPOINT = "https://cli-chat-proxy.grok.com/v1/settings";
 const REQUEST_TIMEOUT_MS = 15_000;
+/** The plan is optional decoration, so it never delays the quota for long. */
+const PLAN_TIMEOUT_MS = 2_000;
 
 export interface GrokProductUsage {
   product: string;
+  localizations?: HarnessLocalizations | undefined;
   usagePercent: number;
 }
 
@@ -15,7 +20,7 @@ export interface GrokCreditsSnapshot {
   usedPercent: number;
   resetsAt?: string;
   periodType: "weekly" | "monthly" | "unknown";
-  productUsage?: ReadonlyArray<GrokProductUsage>;
+  productUsage?: GrokProductUsage[];
   fetchedAt: string;
 }
 
@@ -25,6 +30,19 @@ export interface FetchGrokCreditsInput {
   now?: Date;
   readAuthFile?(filePath: string): Promise<string>;
   fetch?(url: string, init: RequestInit): Promise<Response>;
+}
+
+export interface FetchGrokAccountInput extends FetchGrokCreditsInput {
+  /** Also read the subscription name for the account page; Composer polling skips it. */
+  includePlan?: boolean;
+  planTimeoutMs?: number;
+}
+
+/** The subscription name from native /v1/settings, or undefined when it is not usable. */
+export function parseGrokPlan(value: unknown): string | undefined {
+  if (!isRecord(value) || typeof value.subscription_tier_display !== "string") return undefined;
+  const plan = value.subscription_tier_display.trim();
+  return plan && plan.length <= 128 && !/[\u0000-\u001f\u007f]/u.test(plan) ? plan : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -64,7 +82,22 @@ function productUsageFrom(value: unknown): GrokProductUsage[] | undefined {
   const products = value.flatMap((entry) => {
     if (!isRecord(entry) || typeof entry.product !== "string") return [];
     const usagePercent = finitePercent(entry.usagePercent);
-    return usagePercent === undefined ? [] : [{ product: entry.product, usagePercent }];
+    const labels: Readonly<Record<string, string>> = {
+      GrokBuild: "Build",
+      GrokChat: "Chat",
+      GrokImagine: "Imagine",
+      GrokVoice: "Voice",
+    };
+    const label = Object.hasOwn(labels, entry.product) ? labels[entry.product] : undefined;
+    return usagePercent === undefined
+      ? []
+      : [
+          {
+            product: entry.product,
+            ...(label ? { localizations: { en: { label }, "zh-CN": { label } } } : {}),
+            usagePercent,
+          },
+        ];
   });
   return products.length > 0 ? products : undefined;
 }
@@ -152,7 +185,7 @@ function selectAccessToken(
 }
 
 export async function fetchGrokAccount(
-  input: FetchGrokCreditsInput = {},
+  input: FetchGrokAccountInput = {},
 ): Promise<HarnessAccountSnapshot | null> {
   try {
     const environment = input.environment ?? process.env;
@@ -171,20 +204,33 @@ export async function fetchGrokAccount(
     const token = selectAccessToken(JSON.parse(raw) as unknown, now);
     if (!token) return null;
     const fetchImpl = input.fetch ?? fetch;
-    const response = await fetchImpl(GROK_CREDITS_ENDPOINT, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${token.key}`,
-        "x-xai-token-auth": "xai-grok-cli",
-        Accept: "application/json",
-      },
-      signal: input.signal
-        ? AbortSignal.any([input.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
-        : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
+    const request = (url: string, timeoutMs: number): Promise<Response> =>
+      fetchImpl(url, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token.key}`,
+          "x-xai-token-auth": "xai-grok-cli",
+          Accept: "application/json",
+        },
+        signal: input.signal
+          ? AbortSignal.any([input.signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs),
+      });
+    const credits = request(GROK_CREDITS_ENDPOINT, REQUEST_TIMEOUT_MS);
+    // Read in parallel with the quota; any failure only omits the plan.
+    const plan =
+      input.includePlan === false
+        ? Promise.resolve(undefined)
+        : request(GROK_SETTINGS_ENDPOINT, input.planTimeoutMs ?? PLAN_TIMEOUT_MS)
+            .then(async (response) =>
+              response.ok ? parseGrokPlan(await response.json()) : undefined,
+            )
+            .catch(() => undefined);
+    const response = await credits;
     if (!response.ok) return null;
     const snapshot = parseGrokCreditsResponse(await response.json(), now.toISOString());
     if (!snapshot) return null;
+    const planName = await plan;
     return {
       credits: {
         usedPercent: snapshot.usedPercent,
@@ -194,6 +240,7 @@ export async function fetchGrokAccount(
       },
       ...(token.email ? { email: token.email } : {}),
       ...(token.label ? { label: token.label } : {}),
+      ...(planName ? { plan: planName } : {}),
     };
   } catch {
     return null;
@@ -203,8 +250,8 @@ export async function fetchGrokAccount(
 export async function fetchGrokCredits(
   input: FetchGrokCreditsInput = {},
 ): Promise<GrokCreditsSnapshot | null> {
-  const account = await fetchGrokAccount(input);
-  if (!account) return null;
+  const account = await fetchGrokAccount({ ...input, includePlan: false });
+  if (!account?.credits) return null;
   const { credits } = account;
   return {
     usedPercent: credits.usedPercent,

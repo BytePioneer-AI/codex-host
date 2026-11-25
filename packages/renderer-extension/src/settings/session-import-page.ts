@@ -10,14 +10,18 @@ import {
   type RendererSessionImportClient,
 } from "../renderer-session-import-client.js";
 export type { RendererSessionImportClient } from "../renderer-session-import-client.js";
+import { connectionHostName, type RendererConnectionDiagnostics } from "./connections-page.js";
+import { createHorizontalScrollHint } from "./horizontal-scroll-hint.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 import { createSessionImportListControls } from "./session-import-list-controls.js";
+import { loadSessionImportSources } from "./session-import-sources.js";
 
 export type RendererImportedThreadOpener = (
   threadId: HostThreadId,
   signal: AbortSignal,
+  hostId?: string,
 ) => Promise<void>;
 
 function shortSessionId(value: string): string {
@@ -46,8 +50,11 @@ function createAccessibleText(document: Document, message: string): HTMLElement 
 
 export function createSessionImportSettingsPage(
   messages: RendererSettingsMessages,
-  getClient: () => RendererSessionImportClient | null,
-  openImportedThread: RendererImportedThreadOpener,
+  getClient: (hostId?: string) => RendererSessionImportClient | null,
+  // Web imports end at a success message; Desktop supplies its native navigator.
+  openImportedThread: RendererImportedThreadOpener | null,
+  // Reuse the connection cache and its Host-scoped inspection path.
+  getDiagnostics: () => RendererConnectionDiagnostics | null = () => null,
 ): RendererSettingsPageDefinition {
   return Object.freeze({
     id: "session-import",
@@ -73,6 +80,53 @@ export function createSessionImportSettingsPage(
       setRefreshLabel(false);
       header.append(heading, refresh);
 
+      let selectedHostId: string | undefined;
+      let availableHostIds: string[] = [];
+      let displayedHostId = "";
+      let hostsLocked = false;
+      const hostButtons: HTMLButtonElement[] = [];
+      const hostLabel = document.createElement("div");
+      hostLabel.className = "settings-session-import-host";
+      const hostCaption = document.createElement("span");
+      hostCaption.textContent = "Host";
+      const hostOptions = document.createElement("div");
+      hostOptions.className = "settings-connection-host-tabs";
+      hostOptions.setAttribute("role", "group");
+      hostOptions.setAttribute("aria-label", "Host");
+      hostLabel.append(hostCaption, hostOptions);
+      const lockHosts = (locked: boolean): void => {
+        hostsLocked = locked;
+        for (const button of hostButtons) button.disabled = locked;
+      };
+      const renderHosts = (client: RendererSessionImportClient | null): void => {
+        const current = selectedHostId ?? (client ? (client.hostId ?? "local") : "");
+        availableHostIds = [
+          ...new Set([
+            ...(getDiagnostics()
+              ?.snapshot()
+              .hosts.map(({ hostId }) => hostId) ?? []),
+            ...(current ? [current] : []),
+          ]),
+        ].filter((hostId) => hostId !== "durable");
+        displayedHostId = current;
+        const scrollLeft = hostOptions.scrollLeft;
+        hostOptions.replaceChildren();
+        hostButtons.length = 0;
+        for (const hostId of availableHostIds) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "settings-connection-host-tab";
+          button.dataset.sessionImportHost = hostId;
+          button.textContent = connectionHostName(hostId, messages);
+          button.setAttribute("aria-pressed", String(hostId === current));
+          button.disabled = hostsLocked;
+          button.addEventListener("click", () => selectHost(hostId));
+          hostButtons.push(button);
+          hostOptions.append(button);
+        }
+        hostOptions.scrollLeft = scrollLeft;
+      };
+
       const harness = document.createElement("div");
       harness.className = "settings-session-import-harness";
       const harnessLabel = document.createElement("span");
@@ -82,10 +136,20 @@ export function createSessionImportSettingsPage(
       harnessOptions.dataset.sessionImportHarness = "selector";
       harnessOptions.setAttribute("role", "group");
       harnessOptions.setAttribute("aria-label", messages.sessionImportHarness);
+      const harnessScroller = document.createElement("div");
+      harnessScroller.className = "settings-session-import-harness__scroller";
+      const harnessHint = createHorizontalScrollHint(
+        document,
+        harnessOptions,
+        "settings-session-import-harness__indicator",
+      );
+      harnessScroller.append(harnessOptions, harnessHint.element);
       let selectedHarness: HarnessId | null = null;
       let sources: HarnessSessionImportSourcesResult["harnesses"] = [];
       const sourceButtons: HTMLButtonElement[] = [];
       const renderHarnessOptions = (): void => {
+        // Rebuilding the options must not throw a scrolled selector back to its start.
+        const scrolled = harnessOptions.scrollLeft;
         harnessOptions.replaceChildren();
         sourceButtons.length = 0;
         for (const source of sources) {
@@ -106,8 +170,14 @@ export function createSessionImportSettingsPage(
           sourceButtons.push(option);
           harnessOptions.append(option);
         }
+        harnessOptions.scrollLeft = scrolled;
+        // A selection restored from an earlier visit may sit beyond the visible options.
+        harnessOptions
+          .querySelector<HTMLElement>('[aria-pressed="true"]')
+          ?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+        harnessHint.update();
       };
-      harness.append(harnessLabel, harnessOptions);
+      harness.append(harnessLabel, harnessScroller);
 
       const description = document.createElement("p");
       description.className = "settings-page-description";
@@ -116,20 +186,25 @@ export function createSessionImportSettingsPage(
       availabilityNote.className =
         "settings-page-description settings-session-import-availability-note";
       availabilityNote.textContent = messages.sessionImportAvailabilityNote;
+      const importStatus = document.createElement("div");
+      importStatus.setAttribute("role", "status");
       const content = document.createElement("section");
       content.className = "settings-session-import-content";
       const listControls = createSessionImportListControls(document, messages, () => load());
       context.content.append(
         header,
+        hostLabel,
         harness,
         description,
         availabilityNote,
         listControls.searchForm,
+        importStatus,
         content,
         listControls.pagination,
       );
 
       let candidates: readonly HarnessSessionImportCandidate[] = [];
+      let loadedClient: RendererSessionImportClient | null = null;
       let importingId: string | null = null;
       let actions: Array<{
         readonly button: HTMLButtonElement;
@@ -137,6 +212,7 @@ export function createSessionImportSettingsPage(
       }> = [];
 
       const updateImportActions = (): void => {
+        lockHosts(importingId !== null);
         listControls.setBusy(importingId !== null, importingId !== null);
         for (const button of sourceButtons) button.disabled = importingId !== null;
         for (const { button, candidate } of actions) {
@@ -158,7 +234,12 @@ export function createSessionImportSettingsPage(
         listControls.setTotal(0);
         candidates = [];
         actions = [];
-        const status = createStatus(document, messages.sessionImportUnavailable);
+        const status = createStatus(
+          document,
+          !displayedHostId && availableHostIds.length > 1
+            ? messages.sessionImportSelectHost
+            : messages.sessionImportUnavailable,
+        );
         content.replaceChildren(status);
         if (focus) {
           status.tabIndex = -1;
@@ -188,7 +269,9 @@ export function createSessionImportSettingsPage(
       const renderOpenRecovery = (
         candidate: HarnessSessionImportCandidate,
         threadId: HostThreadId,
+        hostId: string | undefined,
       ): void => {
+        if (!openImportedThread) return;
         actions = [];
         refresh.disabled = false;
         const recovery = document.createElement("section");
@@ -243,6 +326,7 @@ export function createSessionImportSettingsPage(
         retry.className = "settings-command-button";
         retry.dataset.sessionImportAction = "retry-open";
         const setRetrying = (pending: boolean): void => {
+          lockHosts(pending);
           listControls.setBusy(pending, pending);
           for (const button of sourceButtons) button.disabled = pending;
           retry.disabled = pending;
@@ -257,12 +341,12 @@ export function createSessionImportSettingsPage(
         retry.addEventListener("click", () => {
           if (retry.disabled) return;
           setRetrying(true);
-          void context.runLatest((signal) => openImportedThread(threadId, signal), {
+          void context.runLatest((signal) => openImportedThread(threadId, signal, hostId), {
             success() {
               setRetrying(false);
             },
             failure() {
-              renderOpenRecovery(candidate, threadId);
+              renderOpenRecovery(candidate, threadId, hostId);
             },
           });
         });
@@ -323,13 +407,10 @@ export function createSessionImportSettingsPage(
 
           const actionArea = document.createElement("div");
           actionArea.className = "settings-session-import-row__action";
-          if (candidate.running !== false) {
+          if (candidate.running === true) {
             const running = document.createElement("span");
             running.className = "settings-session-import-running";
-            running.textContent =
-              candidate.running === null
-                ? messages.sessionImportRunningUnknown
-                : messages.sessionImportRunning;
+            running.textContent = messages.sessionImportRunning;
             running.title = messages.sessionImportRunningHint;
             running.setAttribute("aria-hidden", "true");
             actionArea.append(
@@ -348,7 +429,7 @@ export function createSessionImportSettingsPage(
             if (candidate.running === true || importingId !== null || selectedHarness === null)
               return;
             const harnessId = selectedHarness;
-            const client = getClient();
+            const client = loadedClient;
             if (!client) {
               renderUnavailable(true);
               return;
@@ -359,15 +440,22 @@ export function createSessionImportSettingsPage(
             let committedThreadId: HostThreadId | null = null;
             void context.runLatest(
               async (signal) => {
+                importStatus.replaceChildren();
                 const result = await client.importHarnessSession({
                   harnessId,
                   nativeSessionId: candidate.nativeSessionId,
                 });
                 committedThreadId = result.threadId;
-                if (!signal.aborted) await openImportedThread(result.threadId, signal);
+                if (!signal.aborted && openImportedThread)
+                  await openImportedThread(result.threadId, signal, client.hostId);
               },
               {
                 success() {
+                  if (!openImportedThread) {
+                    importStatus.replaceChildren(
+                      createStatus(document, messages.sessionImportImportedInCodex),
+                    );
+                  }
                   importingId = null;
                   refresh.disabled = false;
                   updateImportActions();
@@ -377,7 +465,7 @@ export function createSessionImportSettingsPage(
                   updateImportActions();
                   refresh.disabled = false;
                   if (committedThreadId) {
-                    renderOpenRecovery(candidate, committedThreadId);
+                    renderOpenRecovery(candidate, committedThreadId, client.hostId);
                   } else {
                     renderFailure(error, "import");
                   }
@@ -394,31 +482,40 @@ export function createSessionImportSettingsPage(
         updateImportActions();
       };
 
-      const load = (): void => {
+      const load = (refreshDiagnostics = false): void => {
         if (importingId !== null || context.signal.aborted) return;
-        const client = getClient();
-        if (!client) {
-          refresh.disabled = false;
-          setRefreshLabel(false);
-          renderUnavailable();
-          return;
+        loadedClient = null;
+        let client = getClient(selectedHostId);
+        // Desktop's reserved durable Host cannot import external Harness sessions.
+        if (client?.hostId === "durable") {
+          selectedHostId = "local";
+          client = getClient(selectedHostId);
         }
-        listControls.setBusy(true);
-        refresh.disabled = true;
-        setRefreshLabel(true);
-        content.replaceChildren(createStatus(document, messages.sessionImportRefreshing));
+        renderHosts(client);
+        listControls.setBusy(client !== null);
+        refresh.disabled = client !== null;
+        setRefreshLabel(client !== null);
+        if (client)
+          content.replaceChildren(createStatus(document, messages.sessionImportRefreshing));
+        else renderUnavailable();
         const requestedHarness = selectedHarness;
         const pageParams = listControls.params();
         void context.runLatest(
           async (signal) => {
-            const result = await client.listSessionImportSources();
+            if (!client) throw new RendererSessionImportUnavailableError();
+            const harnesses = await loadSessionImportSources(
+              client,
+              getDiagnostics(),
+              signal,
+              refreshDiagnostics,
+            );
             const selected =
-              result.harnesses.find(({ harnessId }) => harnessId === requestedHarness)?.harnessId ??
-              result.harnesses[0]?.harnessId ??
+              harnesses.find(({ harnessId }) => harnessId === requestedHarness)?.harnessId ??
+              harnesses[0]?.harnessId ??
               null;
             if (signal.aborted) throw new Error("Session import selection changed");
             // Keep the selector available even if one Harness's current native protocol is unsupported.
-            sources = result.harnesses;
+            sources = harnesses;
             selectedHarness = selected;
             if (selected !== requestedHarness) {
               listControls.reset();
@@ -431,6 +528,7 @@ export function createSessionImportSettingsPage(
           },
           {
             success(result) {
+              loadedClient = client;
               listControls.setBusy(false);
               if (listControls.setTotal(result.total)) {
                 load();
@@ -443,6 +541,7 @@ export function createSessionImportSettingsPage(
               else renderCandidates();
             },
             failure(error) {
+              loadedClient = null;
               listControls.setBusy(false);
               candidates = [];
               refresh.disabled = false;
@@ -453,7 +552,20 @@ export function createSessionImportSettingsPage(
         );
       };
 
-      refresh.addEventListener("click", load);
+      const selectHost = (hostId: string): void => {
+        if (hostsLocked || !availableHostIds.includes(hostId) || hostId === selectedHostId) return;
+        selectedHostId = hostId;
+        selectedHarness = null;
+        sources = [];
+        candidates = [];
+        actions = [];
+        importStatus.replaceChildren();
+        listControls.reset();
+        renderHarnessOptions();
+        load();
+        hostButtons.find((button) => button.dataset.sessionImportHost === hostId)?.focus();
+      };
+      refresh.addEventListener("click", () => load(true));
       load();
       return undefined;
     },

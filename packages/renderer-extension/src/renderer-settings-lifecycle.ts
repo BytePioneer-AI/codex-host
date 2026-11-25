@@ -1,3 +1,9 @@
+import type { RendererUsageStatisticsRequest } from "./console/pages/usage-statistics.js";
+import type { RendererUsageStatisticsHostsProvider } from "./console/usage/usage-hosts.js";
+import type { RemoteConnectionsControl } from "./remote-connections-control.js";
+import type { LoadedSessionsClient } from "./settings/loaded-sessions-table.js";
+import type { HarnessSchedulesPageOptions } from "./settings/harness-schedules-page.js";
+import { RendererMethodUnavailableError } from "./renderer-request-sender.js";
 import { readCodexLocaleSettings, type CodexLocaleSettings } from "./codex-locale-adapter.js";
 import {
   rendererSettingsMessages,
@@ -5,9 +11,15 @@ import {
   type RendererSettingsLocale,
 } from "./settings/localization.js";
 import {
+  createDesktopExtensionPluginPagesSource,
+  type RendererSettingsPluginPagesSource,
+} from "./settings/desktop-extension-settings-pages.js";
+import {
   createDefaultRendererSettingsPages,
   type RendererConnectionDiagnostics,
   type RendererCodexAccountClient,
+  type RendererDelegationClient,
+  type RendererDesktopExtensionsClient,
   type RendererUpdateClient,
 } from "./settings/pages.js";
 import type {
@@ -16,18 +28,32 @@ import type {
 } from "./settings/session-import-page.js";
 import { installRendererSettingsShell, type RendererSettingsShell } from "./settings/shell.js";
 import {
-  installRendererSettingsHeaderTrigger,
-  type RendererSettingsHeaderTriggerControl,
+  openReleaseAnnouncementDialog,
+  type ReleaseAnnouncementDialogHandle,
+} from "./settings/release-announcement-dialog.js";
+import {
+  installRendererSettingsRailTrigger,
+  type RendererSettingsRailTriggerControl,
 } from "./settings/trigger.js";
 
 const UPDATE_CHECK_TIMEOUT_MS = 5_000;
+const ANNOUNCEMENT_CHECK_TIMEOUT_MS = 20_000;
 const UPDATE_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000] as const;
+const PLUGIN_PAGES_SYNC_INTERVAL_MS = 5_000;
 
 export interface RendererSettingsLifecycleOptions {
+  harnessSchedules?: HarnessSchedulesPageOptions;
   getUpdateClient?(): RendererUpdateClient | null;
   getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
   getAccountClient?(): RendererCodexAccountClient | null;
-  getSessionImportClient?(): RendererSessionImportClient | null;
+  getDelegationClient?(): RendererDelegationClient | null;
+  getSessionImportClient?(hostId?: string): RendererSessionImportClient | null;
+  getLoadedSessionsClient?(): LoadedSessionsClient | null;
+  getDesktopExtensionsClient?(): RendererDesktopExtensionsClient | null;
+  getRemoteConnections?(): RemoteConnectionsControl | null;
+  requestUsageStatistics?: RendererUsageStatisticsRequest;
+  /** Machines the usage statistics page may read besides the local Host. */
+  usageStatisticsHosts?: RendererUsageStatisticsHostsProvider;
   openImportedThread?: RendererImportedThreadOpener;
   onLocaleChange?(locale: RendererSettingsLocale): void;
 }
@@ -45,7 +71,8 @@ export function installRendererSettingsLifecycle(
   const lifecycleController = new AbortController();
   let locale = resolveRendererSettingsLocale(ownerWindow.navigator.languages);
   let shell: RendererSettingsShell | null = null;
-  let trigger: RendererSettingsHeaderTriggerControl | null = null;
+  let pluginPages: RendererSettingsPluginPagesSource | null = null;
+  let trigger: RendererSettingsRailTriggerControl | null = null;
   let localeRequest: Promise<void> | null = null;
   let checkedUpdateClient: RendererUpdateClient | null = null;
   let retryUpdateClient: RendererUpdateClient | null = null;
@@ -53,34 +80,146 @@ export function installRendererSettingsLifecycle(
   let updateRetryAttempt = 0;
   let updateCheckGeneration = 0;
   let updateAvailable = false;
+  let announcementChecked = false;
+  let announcementShown = false;
+  let activeAnnouncementDialog: ReleaseAnnouncementDialogHandle | null = null;
+  let settingsOpen = false;
+  let pluginPagesSyncTimer: number | null = null;
+  let pluginPagesSyncGeneration = 0;
+  let pluginPagesSyncInFlight = false;
   let openGeneration = 0;
   let disposed = false;
 
+  const clearPluginPagesSync = (): void => {
+    pluginPagesSyncGeneration += 1;
+    pluginPagesSyncInFlight = false;
+    if (pluginPagesSyncTimer === null) return;
+    ownerWindow.clearTimeout(pluginPagesSyncTimer);
+    pluginPagesSyncTimer = null;
+  };
+
+  const scheduleNextPluginPagesSync = (
+    targetPluginPages: RendererSettingsPluginPagesSource,
+    generation: number,
+  ): void => {
+    if (
+      disposed ||
+      !settingsOpen ||
+      generation !== pluginPagesSyncGeneration ||
+      pluginPages !== targetPluginPages ||
+      pluginPagesSyncTimer !== null
+    ) {
+      return;
+    }
+    pluginPagesSyncTimer = ownerWindow.setTimeout(() => {
+      pluginPagesSyncTimer = null;
+      syncPluginPages(targetPluginPages, generation);
+    }, PLUGIN_PAGES_SYNC_INTERVAL_MS);
+  };
+
+  const syncPluginPages = (
+    targetPluginPages: RendererSettingsPluginPagesSource,
+    generation: number,
+  ): void => {
+    if (
+      disposed ||
+      !settingsOpen ||
+      generation !== pluginPagesSyncGeneration ||
+      pluginPagesSyncInFlight ||
+      pluginPages !== targetPluginPages
+    ) {
+      return;
+    }
+    if (ownerWindow.document?.visibilityState === "hidden") {
+      scheduleNextPluginPagesSync(targetPluginPages, generation);
+      return;
+    }
+    const client = options.getDesktopExtensionsClient?.();
+    if (!client?.listHostExtensions) return;
+    pluginPagesSyncInFlight = true;
+    let stopPolling = false;
+    void client
+      .listHostExtensions()
+      .then((result) => {
+        if (disposed || !settingsOpen || generation !== pluginPagesSyncGeneration) return;
+        targetPluginPages.syncInstalledExtensions?.(
+          result.extensions,
+          result.configuration.revision,
+        );
+      })
+      .catch((error: unknown) => {
+        if (error instanceof RendererMethodUnavailableError) {
+          stopPolling = true;
+        }
+      })
+      .finally(() => {
+        if (generation !== pluginPagesSyncGeneration) return;
+        pluginPagesSyncInFlight = false;
+        if (!stopPolling) {
+          scheduleNextPluginPagesSync(targetPluginPages, generation);
+        }
+      });
+  };
+
   const mount = (): {
     shell: RendererSettingsShell;
-    trigger: RendererSettingsHeaderTriggerControl;
+    trigger: RendererSettingsRailTriggerControl;
   } => {
     const messages = rendererSettingsMessages(locale);
+    const schedules = options.harnessSchedules;
+    const getDesktopExtensionsClient = options.getDesktopExtensionsClient ?? (() => null);
+    const nextPluginPages = createDesktopExtensionPluginPagesSource({
+      messages,
+      getHost: () => ownerWindow.__codexhostDesktopExtensionsV1 ?? null,
+      getClient: getDesktopExtensionsClient,
+    });
     const definitions = createDefaultRendererSettingsPages(
       messages,
       options.getUpdateClient ?? (() => null),
       options.getConnectionDiagnostics ?? (() => null),
       options.getAccountClient ?? (() => null),
       options.getSessionImportClient ?? (() => null),
-      async (threadId, signal) => {
+      async (threadId, signal, hostId) => {
         if (!options.openImportedThread) {
           throw new Error("Imported Thread navigation is unavailable");
         }
-        await options.openImportedThread(threadId, signal);
+        await options.openImportedThread(threadId, signal, hostId);
         if (!disposed && !signal.aborted) shell?.close();
       },
+      options.getLoadedSessionsClient ?? (() => null),
+      options.getRemoteConnections ?? (() => null),
+      options.requestUsageStatistics,
+      options.usageStatisticsHosts,
+      schedules
+        ? {
+            openSchedules: async (signal) => {
+              await schedules.openSchedules(signal);
+              if (!disposed && !signal.aborted) shell?.close();
+            },
+          }
+        : undefined,
+      getDesktopExtensionsClient,
+      nextPluginPages,
+      options.getDelegationClient ?? (() => null),
     );
-    const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document);
-    const nextTrigger = installRendererSettingsHeaderTrigger({
+    const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document, {
+      pluginPages: nextPluginPages,
+      onOpenChange(open) {
+        settingsOpen = open;
+        trigger?.setSelected(open);
+        clearPluginPagesSync();
+        if (open) {
+          syncPluginPages(nextPluginPages, pluginPagesSyncGeneration);
+        }
+      },
+    });
+    const nextTrigger = installRendererSettingsRailTrigger({
       available: nextShell.supported,
       messages,
       ownerDocument: ownerWindow.document,
       onOpen(opener, pageId) {
+        // Like a native destination, the current page ignores repeat activation.
+        if (shell?.open) return;
         const generation = ++openGeneration;
         void refreshLocale().then(() => {
           if (disposed || generation !== openGeneration) return;
@@ -93,6 +232,7 @@ export function installRendererSettingsLifecycle(
     });
     nextTrigger.setUpdateAvailable(updateAvailable);
     shell = nextShell;
+    pluginPages = nextPluginPages;
     trigger = nextTrigger;
     return { shell: nextShell, trigger: nextTrigger };
   };
@@ -104,10 +244,14 @@ export function installRendererSettingsLifecycle(
     const reopen = preserveOpen && shell?.open === true;
     const activePageId = shell?.activePageId;
     locale = nextLocale;
+    settingsOpen = false;
+    clearPluginPagesSync();
     trigger?.dispose();
     shell?.dispose();
+    pluginPages?.dispose?.();
     trigger = null;
     shell = null;
+    pluginPages = null;
     const mounted = mount();
     options.onLocaleChange?.(locale);
 
@@ -150,6 +294,7 @@ export function installRendererSettingsLifecycle(
     if (disposed || updateRetryTimer !== null) return;
     const delay = UPDATE_RETRY_DELAYS_MS[updateRetryAttempt];
     if (delay === undefined) return;
+    checkedUpdateClient = null;
     updateRetryAttempt += 1;
     updateRetryTimer = ownerWindow.setTimeout(() => {
       updateRetryTimer = null;
@@ -191,28 +336,75 @@ export function installRendererSettingsLifecycle(
     void checkUpdateWithTimeout(client)
       .then((result) => {
         if (disposed || generation !== updateCheckGeneration) return;
-        updateAvailable = result.updateAvailable;
+        // A release the npm registry has not synced yet is offered once it can be installed.
+        updateAvailable =
+          (result?.updateAvailable ?? false) &&
+          (result?.installationAvailable === true || result?.error != null);
         trigger?.setUpdateAvailable(updateAvailable);
-        if (result.error === null) {
+        if (result === null || result.error === null) {
           updateRetryAttempt = 0;
           clearUpdateRetry();
           return;
         }
-        checkedUpdateClient = null;
         scheduleUpdateRetry(client);
       })
       .catch(() => {
         if (disposed || generation !== updateCheckGeneration || checkedUpdateClient !== client) {
           return;
         }
-        checkedUpdateClient = null;
         scheduleUpdateRetry(client);
+      });
+  };
+
+  const checkReleaseAnnouncement = (): void => {
+    if (disposed || announcementChecked || announcementShown) return;
+    const client = options.getUpdateClient?.() ?? null;
+    if (!client?.getReleaseAnnouncement) return;
+    announcementChecked = true;
+    const getAnnouncement = client.getReleaseAnnouncement.bind(client);
+    const acknowledge = client.acknowledgeReleaseAnnouncement?.bind(client);
+    const readWithTimeout = new Promise<Awaited<ReturnType<typeof getAnnouncement>>>(
+      (resolve, reject) => {
+        const timeout = ownerWindow.setTimeout(
+          () => reject(new Error("Release announcement request timed out")),
+          ANNOUNCEMENT_CHECK_TIMEOUT_MS,
+        );
+        void getAnnouncement({}).then(
+          (result) => {
+            ownerWindow.clearTimeout(timeout);
+            resolve(result);
+          },
+          (error: unknown) => {
+            ownerWindow.clearTimeout(timeout);
+            reject(error);
+          },
+        );
+      },
+    );
+    void Promise.all([readWithTimeout, localeRequest?.catch(() => undefined)])
+      .then(([result]) => {
+        if (disposed || announcementShown || !result?.unread || !result.announcement) return;
+        const { announcement } = result;
+        announcementShown = true;
+        activeAnnouncementDialog = openReleaseAnnouncementDialog({
+          announcement,
+          locale,
+          ownerDocument: ownerWindow.document,
+          onClose() {
+            activeAnnouncementDialog = null;
+            void acknowledge?.({ version: announcement.version }).catch(() => undefined);
+          },
+        });
+      })
+      .catch(() => {
+        // Missing RPC, offline state, or invalid payloads remain silent and unacknowledged.
       });
   };
 
   mount();
   void refreshLocale();
   refreshUpdateIndicator();
+  checkReleaseAnnouncement();
 
   return {
     get locale() {
@@ -221,19 +413,26 @@ export function installRendererSettingsLifecycle(
     refresh() {
       const refreshed = trigger?.refresh() ?? false;
       refreshUpdateIndicator();
+      checkReleaseAnnouncement();
       return refreshed;
     },
     dispose() {
       if (disposed) return;
       disposed = true;
+      settingsOpen = false;
       openGeneration += 1;
       updateCheckGeneration += 1;
       lifecycleController.abort();
+      clearPluginPagesSync();
       clearUpdateRetry();
+      activeAnnouncementDialog?.dispose();
+      activeAnnouncementDialog = null;
       trigger?.dispose();
       shell?.dispose();
+      pluginPages?.dispose?.();
       trigger = null;
       shell = null;
+      pluginPages = null;
     },
   };
 }

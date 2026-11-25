@@ -1,13 +1,18 @@
 use std::ffi::c_void;
 use std::io;
 use std::mem::{size_of, transmute};
+use std::os::windows::ffi::OsStrExt;
+use std::path::Path;
 use std::ptr::null_mut;
 
+use windows::Win32::System::Com::{
+    COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+};
 use windows::Win32::UI::Controls::{
     TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TD_INFORMATION_ICON,
     TDF_ALLOW_DIALOG_CANCELLATION, TDF_SIZE_TO_CONTENT,
 };
-use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::Shell::{SHOpenFolderAndSelectItems, SHParseDisplayName, ShellExecuteW};
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::PCWSTR;
 
@@ -103,6 +108,22 @@ pub fn open_external_url(url: &str) -> io::Result<()> {
         )
     };
     shell_execute_result(result.0 as usize)
+}
+
+pub(super) fn reveal_file(path: &Path) -> io::Result<()> {
+    let path: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+            .ok()
+            .map_err(io::Error::other)?;
+        let mut item = null_mut();
+        // With no child array, Explorer opens the item's parent and selects the item itself.
+        let result = SHParseDisplayName(PCWSTR(path.as_ptr()), None, &mut item, 0, None)
+            .and_then(|()| SHOpenFolderAndSelectItems(item, None, 0));
+        CoTaskMemFree(Some(item.cast()));
+        CoUninitialize();
+        result.map_err(io::Error::other)
+    }
 }
 
 fn user_locale_name() -> String {

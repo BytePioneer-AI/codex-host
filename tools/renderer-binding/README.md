@@ -74,3 +74,18 @@ npm run probe:renderer-binding -- \
 ```
 
 The runner installs the title policy, reloads the Renderer, verifies metadata-service ownership, installs the narrow draft prewarm policy, marks the Renderer ready, and only then injects the Renderer binding and its tooling-only observer. The schema v2 local report stores production state under `status` and Gate-only observations, switch counters, and structural diagnostics under `observer`.
+
+## Local media path contract
+
+For a read-only check of an **already running** Desktop, build `desktop-control` and run the separate tooling entry:
+
+```text
+npx tsc -b packages/desktop-control
+node tools/renderer-binding/media-path-probe.mjs --endpoint http://127.0.0.1:9222
+```
+
+Unlike the controlled binding runner above, this entry does not reload, install policies, mount UI, read media files, or submit a Turn. CDP supplies the loaded module sources; semantic structure and import/export edges must identify a unique native image token renderer, local path normalizer, and media-loading consumer. Minified function names and hashed asset names are not contracts. Only functions from an already loaded, same-origin module are invoked.
+
+The check passes synthetic absolute paths through the real token renderer and then the same native normalizer used by media loading. Cases include literal `%`, `%41`, `%25`, `%2F`, `%5C`, encoded Chinese, spaces, `#` / `?`, and a Windows drive path. It checks both the intermediate source and the final path, rather than assuming two calls to a locally implemented decoder. Adapter tests separately cover resolving relative paths and converting `file:` URLs before escaping the filesystem path.
+
+Output is bounded JSON: `pass` with case counts, `mismatch` when native semantics differ, or `unverified` when source structure, exports, or the Renderer cannot be verified. `mismatch` exits nonzero. No native source, user paths, prompts, or transcript is persisted. Record the Desktop version/build with the result using the normal Desktop audit; a successful normalization check is not proof of pixel rendering, Windows filesystem behavior, or SSH media transport.

@@ -51,6 +51,29 @@ pub fn detach_from_terminal() -> Result<(), PlatformError> {
     Ok(())
 }
 
+/// Start a child as the leader of a new session without a controlling terminal.
+///
+/// Like `process_group(0)`, the child becomes its own process-group leader
+/// (PGID == PID), so group-based ownership and cleanup are unchanged. A new
+/// process group alone is still a background job of the invoking terminal:
+/// an interactive shell spawned inside it (for example to resolve the login
+/// environment) opens `/dev/tty` and stops its whole group with SIGTTIN or
+/// SIGTTOU. Without a controlling terminal, job control cannot suspend it.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[allow(unsafe_code)]
+pub(crate) fn start_in_new_session(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+
+    // SAFETY: the hook runs in the child between fork and exec and only calls
+    // setsid(2), which is async-signal-safe and does not allocate. A freshly
+    // forked child is never a process-group leader, so setsid cannot fail
+    // with EPERM here; any error aborts the spawn instead of leaving the child
+    // attached to the terminal.
+    unsafe {
+        command.pre_exec(|| nix::unistd::setsid().map(|_| ()).map_err(io::Error::from));
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub fn detach_from_terminal() -> Result<(), PlatformError> {
     use windows::Win32::System::Console::SetConsoleCtrlHandler;
@@ -76,6 +99,50 @@ pub fn detach_from_terminal() -> Result<(), PlatformError> {
         "background detachment currently supports Windows, macOS, and Linux only",
     ))
 }
+
+/// A shared service outlives the calling Desktop/Web process and its native job.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn configure_detached_service_command(
+    command: &mut std::process::Command,
+) -> Result<(), PlatformError> {
+    start_in_new_session(command);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn configure_detached_service_command(
+    command: &mut std::process::Command,
+) -> Result<(), PlatformError> {
+    use std::os::windows::process::CommandExt;
+    use windows::Win32::Foundation::{HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation};
+    use windows::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    use windows::Win32::System::Threading::{
+        CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
+    };
+    // Null child stdio alone is insufficient: CreateProcess can also inherit the
+    // caller's original stdio handles, keeping Node execFile capture pipes open
+    // for the entire service lifetime. This native launch caller relinquishes
+    // inheritance, not its own ability to read/write those handles. Command
+    // prepares separate inheritable handles for explicitly configured child stdio.
+    for standard in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        if let Ok(handle) = unsafe { GetStdHandle(standard) }
+            && !handle.is_invalid()
+        {
+            unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) }
+                .map_err(|error| PlatformError::Io(io::Error::other(error.to_string())))?;
+        }
+    }
+    command.creation_flags(
+        (CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS).0,
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "background_service_tests.rs"]
+mod service_tests;
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {

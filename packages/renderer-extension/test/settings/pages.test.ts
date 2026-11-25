@@ -1,20 +1,38 @@
 import {
   harnessIdSchema,
   hostThreadIdSchema,
+  type CodexAccountListResult,
+  type CredentialImportsRequest,
+  type HarnessAccountInspectResult,
   type HarnessAccountListResult,
+  type HarnessAccountSourceListResult,
+  type HarnessId,
   type HarnessSessionListParams,
   type UpdateCheckResult,
   type UpdateStatus,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it, vi } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/settings/icons.js", () => ({
-  createRendererSettingsIcon: () => "icon",
+  createRendererSettingsIcon: () => ({ classList: { add() {} } }),
   isRendererSettingsIconName: () => true,
 }));
 
 import { RendererSettingsPageScope } from "../../src/settings/core.js";
+import type { CodexSshConnection } from "../../src/codex-ssh-adapter.js";
+import type { RemoteConnectionsControl } from "../../src/remote-connections-control.js";
+import {
+  RENDERER_UPDATE_REQUEST_TIMEOUT_MS,
+  RendererUpdateRequestTimeoutError,
+} from "../../src/settings/update-request.js";
+import {
+  defaultImportName,
+  mountCredentialImports,
+} from "../../src/settings/credential-imports.js";
+import { credentialImportChinese } from "../../src/settings/credential-import-messages.js";
 import { createHarnessAccounts } from "../../src/settings/harness-accounts.js";
+import { createHarnessVersionPanel } from "../../src/settings/harness-version-panel.js";
+import { createConnectionUpdates } from "../../src/settings/connection-updates.js";
 import { rendererSettingsMessages } from "../../src/settings/localization.js";
 import { createRendererModelClient } from "../../src/renderer-model-client.js";
 import { RendererSessionImportUnavailableError } from "../../src/renderer-session-import-client.js";
@@ -28,6 +46,11 @@ import type {
   RendererConnectionDiagnostics,
   RendererConnectionSnapshot,
 } from "../../src/settings/pages.js";
+
+import { pluginDescriptor } from "../../../../tests/fixtures/harness-plugin-descriptors.js";
+import { createAgentGroupPreferenceStore } from "../../src/agent-group-preference.js";
+import { createConnectionsSettingsPage } from "../../src/settings/connections-page.js";
+import { createHarnessInstallationPanel } from "../../src/settings/harness-installation-panel.js";
 
 class FakeElement {
   readonly children: unknown[] = [];
@@ -47,6 +70,32 @@ class FakeElement {
   tabIndex = 0;
   disabled = false;
   focused = false;
+  open = false;
+  parent: FakeElement | undefined;
+  get isConnected(): boolean {
+    return Boolean(this.parent);
+  }
+  showModal(): void {
+    this.open = true;
+  }
+  close(): void {
+    this.open = false;
+    this.dispatch("close");
+  }
+  remove(): void {
+    if (this.parent) {
+      const index = this.parent.children.indexOf(this);
+      if (index >= 0) this.parent.children.splice(index, 1);
+    }
+    this.parent = undefined;
+  }
+  querySelector(selector: string): FakeElement | null {
+    return (
+      descendants(this).find(
+        (element) => selector === "[role=alert]" && element.getAttribute("role") === "alert",
+      ) ?? null
+    );
+  }
   scrollLeft = 0;
   scrollWidth = 0;
   clientWidth = 0;
@@ -65,7 +114,28 @@ class FakeElement {
   }
 
   append(...children: unknown[]): void {
+    for (const child of children) {
+      if (child instanceof FakeElement) {
+        child.remove();
+        child.parent = this;
+      }
+    }
     this.children.push(...children);
+  }
+
+  insertBefore(node: unknown, reference: unknown): unknown {
+    if (node instanceof FakeElement) {
+      node.remove();
+      node.parent = this;
+    }
+    if (reference === null || reference === undefined) {
+      this.children.push(node);
+      return node;
+    }
+    const index = this.children.indexOf(reference);
+    if (index >= 0) this.children.splice(index, 0, node);
+    else this.children.push(node);
+    return node;
   }
 
   get childElementCount(): number {
@@ -74,6 +144,10 @@ class FakeElement {
 
   dispatch(name: string, event?: unknown): void {
     this.#listeners.get(name)?.(event);
+  }
+
+  click(): void {
+    if (!this.disabled) this.dispatch("click", new Event("click"));
   }
 
   focus(): void {
@@ -89,14 +163,18 @@ class FakeElement {
     this.dispatch("scroll");
   }
 
-  scrollIntoView(): void {}
+  scrollIntoView = vi.fn();
 
   getAttribute(name: string): string | null {
     return this.attributes.get(name) ?? null;
   }
 
   replaceChildren(...children: unknown[]): void {
-    this.children.splice(0, this.children.length, ...children);
+    for (const existing of this.children) {
+      if (existing instanceof FakeElement) existing.parent = undefined;
+    }
+    this.children.length = 0;
+    this.append(...children);
   }
 
   setAttribute(name: string, value: string): void {
@@ -211,6 +289,283 @@ function visibleText(root: FakeElement): string {
     .join(" ");
 }
 
+describe("Credential import controls", () => {
+  const source = {
+    id: "source-a",
+    harnessId: "codex",
+    label: "a@example.com",
+    provider: "openai-codex" as const,
+  };
+  const wait = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const buttonNamed = (root: FakeElement, text: string): FakeElement => {
+    const button = descendants(root).find(
+      (element) => element.tagName === "button" && element.textContent === text,
+    );
+    if (!button) throw new Error(`Expected button ${text}`);
+    return button;
+  };
+  const mount = (
+    imports: () => unknown[],
+    sources: unknown[] = [source],
+    others: unknown[] = [],
+  ) => {
+    const doc = new FakeDocument();
+    const root = new FakeElement("div", doc);
+    const scope = new AbortController();
+    const credentialImports = vi.fn(async (request: CredentialImportsRequest) => {
+      if (request.action === "import") {
+        imports().push({
+          name: request.name,
+          source,
+          importedAt: "2026-01-01T00:00:00Z",
+        });
+      }
+      if (request.action === "remove") {
+        imports().splice(
+          imports().findIndex((record) => (record as { name: string }).name === request.name),
+          1,
+        );
+      }
+      return {
+        sources,
+        targets: [
+          { harnessId: "pi", providers: ["openai-codex" as const], imports: imports(), others },
+        ],
+      };
+    });
+    const controls = mountCredentialImports(
+      root as unknown as HTMLElement,
+      scope.signal,
+      () => ({ credentialImports }) as never,
+      credentialImportChinese,
+      () => {},
+    );
+    return { root, scope, credentialImports, controls };
+  };
+
+  it("renders no target for an incompatible or unknown login", async () => {
+    const { controls, scope } = mount(() => []);
+    expect(controls.button("codex", source.label)).toBeNull();
+    await controls.refresh();
+    expect(controls.button("claude-code", "person@example.com")).toBeNull();
+    expect(controls.button("codex", source.label)).not.toBeNull();
+    scope.abort();
+  });
+
+  it("requires confirmation, then lists the copy in the Pi section and removes it", async () => {
+    const imports: unknown[] = [];
+    const { root, scope, credentialImports, controls } = mount(() => imports);
+    const section = controls.section as unknown as FakeElement;
+    expect(section.hidden).toBe(true);
+    await controls.refresh();
+    expect(section.hidden).toBe(false);
+    expect(visibleText(section)).toContain(credentialImportChinese.sectionEmpty);
+    const first = controls.button("codex", source.label) as unknown as FakeElement;
+    expect(first.title).toBe(credentialImportChinese.add);
+    expect(first.dataset.state).toBeUndefined();
+    first.dispatch("click");
+    expect(credentialImports).toHaveBeenCalledTimes(1);
+    expect(visibleText(root)).toContain("保留全部已有 Provider 配置");
+    buttonNamed(root, credentialImportChinese.confirm).dispatch("click");
+    await wait();
+    expect(credentialImports).toHaveBeenLastCalledWith(
+      { action: "import", sourceId: source.id, name: "codex", confirmed: true },
+      "pi",
+    );
+    expect(visibleText(root)).toContain(credentialImportChinese.doneTitle);
+    expect(visibleText(root)).toContain("无需重启");
+    buttonNamed(root, credentialImportChinese.close).dispatch("click");
+
+    const imported = controls.button("codex", source.label) as unknown as FakeElement;
+    expect(imported.dataset.state).toBe("imported");
+    expect(imported.title).toContain("已复制");
+    expect(visibleText(section)).toContain(source.label);
+    expect(visibleText(section)).toContain("codex/…");
+    expect(visibleText(section)).toContain(credentialImportChinese.copied);
+    // The icon of an existing copy moves focus to its row instead of opening another dialog.
+    imported.dispatch("click");
+    expect(descendants(root).filter((element) => element.tagName === "dialog")).toHaveLength(0);
+
+    buttonNamed(section, credentialImportChinese.rowRemove).dispatch("click");
+    expect(credentialImports).toHaveBeenCalledTimes(2);
+    expect(visibleText(root)).toContain("不影响来源登录");
+    const dialog = descendants(root).find((element) => element.tagName === "dialog");
+    if (!dialog) throw new Error("Expected remove dialog");
+    buttonNamed(dialog, credentialImportChinese.remove).dispatch("click");
+    await wait();
+    expect(credentialImports).toHaveBeenLastCalledWith(
+      { action: "remove", name: "codex", confirmed: true },
+      "pi",
+    );
+    expect(visibleText(section)).toContain(credentialImportChinese.sectionEmpty);
+    expect((controls.button("codex", source.label) as unknown as FakeElement).dataset.state).toBe(
+      undefined,
+    );
+    scope.abort();
+  });
+
+  it("hides the whole Pi surface when Pi is not an import target", async () => {
+    const doc = new FakeDocument();
+    const root = new FakeElement("div", doc);
+    const scope = new AbortController();
+    // A missing or unconfigured Pi reports no target at all.
+    const credentialImports = vi.fn(async () => ({ sources: [source], targets: [] }));
+    const controls = mountCredentialImports(
+      root as unknown as HTMLElement,
+      scope.signal,
+      () => ({ credentialImports }) as never,
+      credentialImportChinese,
+      () => {},
+    );
+    await controls.refresh();
+    expect((controls.section as unknown as FakeElement).hidden).toBe(true);
+    expect(controls.button("codex", source.label)).toBeNull();
+    scope.abort();
+  });
+
+  it("lists every login in Pi in one list, with actions only on codexhost's own copies", async () => {
+    const ours = {
+      name: "codex",
+      source,
+      importedAt: "2026-01-01T00:00:00Z",
+    };
+    const { controls, scope } = mount(
+      () => [ours],
+      [source],
+      [
+        { provider: "anthropic", type: "oauth" },
+        { provider: "codex1", type: "oauth", label: "me@example.com", vendor: "openai-codex" },
+        { provider: "openai-codex", type: "api_key" },
+      ],
+    );
+    const section = controls.section as unknown as FakeElement;
+    await controls.refresh();
+    const text = visibleText(section);
+    // 1 codexhost copy + 3 logins Pi already had.
+    expect(text).toContain("4");
+    expect(text).toContain(source.label);
+    expect(text).toContain("me@example.com");
+    expect(text).toContain("codex1");
+    expect(text).toContain("anthropic");
+    expect(text).toContain("openai-codex");
+    expect(text).toContain("API Key");
+    // Pi's own logins start collapsed behind a disclosure and carry no actions.
+    const group = elementWithClass(section, "settings-pi-accounts__others");
+    expect(group.hidden).toBe(true);
+    const toggle = elementWithClass(section, "settings-pi-accounts__toggle");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(visibleText(toggle)).toContain(credentialImportChinese.othersTitle);
+    expect(visibleText(toggle)).toContain("3");
+    toggle.dispatch("click");
+    expect(group.hidden).toBe(false);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const others = descendants(group).filter((element) =>
+      element.className.split(" ").includes("settings-pi-accounts__row--other"),
+    );
+    expect(others).toHaveLength(3);
+    // A recognized vendor gets the account table's own mark; the rest keep the neutral Pi mark.
+    expect(others[1]?.getAttribute("aria-label")).toBe("me@example.com · Codex");
+    expect(others[1]?.children.find((child) => child instanceof FakeElement)?.dataset.agent).toBe(
+      "codex",
+    );
+    expect(
+      others[0]?.children.find((child) => child instanceof FakeElement)?.dataset.agent,
+    ).toBeUndefined();
+    expect(others[0]?.getAttribute("aria-label")).toBe("anthropic");
+    for (const row of others) {
+      expect(descendants(row).some((element) => element.tagName === "button")).toBe(false);
+    }
+    expect(buttonNamed(section, credentialImportChinese.rowRemove).disabled).toBe(false);
+    scope.abort();
+  });
+
+  it("shows the empty guidance only when Pi has no logins at all", async () => {
+    const { controls, scope } = mount(() => []);
+    await controls.refresh();
+    expect(visibleText(controls.section as unknown as FakeElement)).toContain(
+      credentialImportChinese.sectionEmpty,
+    );
+    scope.abort();
+  });
+
+  it("keeps a copy of a non-current login listed without warnings or a re-copy button", async () => {
+    const other = {
+      name: "codex",
+      source: { ...source, id: "gone", label: "old@example.com" },
+      importedAt: "2026-01-01T00:00:00Z",
+    };
+    const { controls, scope } = mount(() => [other]);
+    const section = controls.section as unknown as FakeElement;
+    await controls.refresh();
+    expect(visibleText(section)).toContain("old@example.com");
+    expect(visibleText(section)).not.toContain("退出");
+    expect(
+      descendants(section).some(
+        (element) =>
+          element.tagName === "button" &&
+          element.textContent === credentialImportChinese.rowReimport,
+      ),
+    ).toBe(false);
+    expect(buttonNamed(section, credentialImportChinese.rowRemove).disabled).toBe(false);
+    scope.abort();
+  });
+
+  it("adds a second account beside the first under an account-specific default name", async () => {
+    const first = {
+      name: "codex",
+      source: { ...source, id: "gone", label: "old@example.com" },
+      importedAt: "2026-01-01T00:00:00Z",
+    };
+    const imports: unknown[] = [first];
+    const { root, scope, credentialImports, controls } = mount(() => imports);
+    await controls.refresh();
+    (controls.button("codex", source.label) as unknown as FakeElement).dispatch("click");
+    const input = descendants(root).find((element) => element.tagName === "input");
+    expect(input?.value).toBe("codex-a");
+    buttonNamed(root, credentialImportChinese.confirm).dispatch("click");
+    await wait();
+    expect(credentialImports).toHaveBeenLastCalledWith(
+      { action: "import", sourceId: source.id, name: "codex-a", confirmed: true },
+      "pi",
+    );
+    const section = controls.section as unknown as FakeElement;
+    expect(visibleText(section)).toContain("old@example.com");
+    expect(visibleText(section)).toContain("a@example.com");
+    scope.abort();
+  });
+});
+
+describe("Default import entry names", () => {
+  const record = (name: string) => ({
+    name,
+    source: { id: name, harnessId: "codex", label: "x", provider: "openai-codex" as const },
+    importedAt: "2026-01-01T00:00:00Z",
+  });
+  const codex = (label: string) => ({
+    id: "s",
+    harnessId: "codex",
+    label,
+    provider: "openai-codex" as const,
+  });
+  it("uses the plain name first, then the account, then a number", () => {
+    expect(defaultImportName(codex("a@x.com"), [])).toBe("codex");
+    expect(defaultImportName(codex("Ann.Lee+work@x.com"), [record("codex")])).toBe(
+      "codex-ann-lee-work",
+    );
+    expect(defaultImportName(codex("a@x.com"), [record("codex"), record("codex-a")])).toBe(
+      "codex2",
+    );
+    expect(defaultImportName(codex("Codex"), [record("codex")])).toBe("codex2");
+    expect(defaultImportName(codex("___@x.com"), [record("codex")])).toBe("codex2");
+    expect(
+      defaultImportName({ ...codex("9s74@relay.com"), provider: "xai" }, [record("grok")]),
+    ).toBe("grok-9s74");
+    expect(
+      defaultImportName(codex(`${"a".repeat(80)}@x.com`), [record("codex")]).length,
+    ).toBeLessThanOrEqual(48);
+  });
+});
+
 describe("Read-only Harness accounts", () => {
   const result: HarnessAccountListResult = {
     accounts: [
@@ -256,9 +611,1611 @@ describe("Read-only Harness accounts", () => {
     expect(mounted.accounts).toEqual([]);
     expect(changed).toHaveBeenCalledOnce();
   });
+
+  it("keeps Antigravity after the other Harness account rows", async () => {
+    const scope = new RendererSettingsPageScope();
+    const mounted = createHarnessAccounts(
+      scope.signal,
+      () => ({
+        listHarnessAccounts: async () => ({
+          accounts: [
+            {
+              harnessId: harnessIdSchema.parse("antigravity"),
+              harnessName: "Antigravity CLI",
+              credits: { usedPercent: 10, periodType: "weekly" },
+            },
+            {
+              harnessId: harnessIdSchema.parse("grok"),
+              harnessName: "Grok",
+              credits: { usedPercent: 20, periodType: "weekly" },
+            },
+            {
+              harnessId: harnessIdSchema.parse("claude-code"),
+              harnessName: "Claude Code",
+              credits: { usedPercent: 30, periodType: "weekly" },
+            },
+          ],
+        }),
+      }),
+      vi.fn(),
+    );
+    await mounted.refresh();
+    expect(mounted.accounts.map(({ harnessId }) => harnessId)).toEqual([
+      "claude-code",
+      "grok",
+      "antigravity",
+    ]);
+    scope.dispose();
+  });
+
+  it("falls back to the aggregate account request when progressive discovery is unavailable", async () => {
+    const scope = new RendererSettingsPageScope();
+    const listHarnessAccounts = vi.fn(async () => result);
+    const mounted = createHarnessAccounts(
+      scope.signal,
+      () => ({
+        listHarnessAccountSources: vi.fn(async () => {
+          throw new Error("unsupported");
+        }),
+        inspectHarnessAccount: vi.fn(),
+        listHarnessAccounts,
+      }),
+      vi.fn(),
+    );
+    await mounted.refresh();
+    expect(listHarnessAccounts).toHaveBeenCalledOnce();
+    expect(mounted.accounts).toEqual(result.accounts);
+    scope.dispose();
+  });
+
+  it("forces progressive Harness inspection only for an explicit quota refresh", async () => {
+    const scope = new RendererSettingsPageScope();
+    const inspectHarnessAccount = vi.fn(async ({ harnessId }: { harnessId: HarnessId }) => ({
+      harnessId,
+      harnessName: "Sample Agent",
+      account: {
+        email: "person@example.com",
+        credits: { usedPercent: 25, periodType: "weekly" as const },
+      },
+    }));
+    const mounted = createHarnessAccounts(
+      scope.signal,
+      () => ({
+        listHarnessAccountSources: async () => ({
+          sources: [
+            { harnessId: harnessIdSchema.parse("sample-agent"), harnessName: "Sample Agent" },
+          ],
+        }),
+        inspectHarnessAccount,
+      }),
+      vi.fn(),
+    );
+
+    await mounted.refresh();
+    expect(inspectHarnessAccount).toHaveBeenLastCalledWith({ harnessId: "sample-agent" });
+    await mounted.refresh(true);
+    expect(inspectHarnessAccount).toHaveBeenLastCalledWith({
+      harnessId: "sample-agent",
+      refresh: true,
+    });
+    scope.dispose();
+  });
+
+  it("renders each Harness account as soon as its independent inspection completes", async () => {
+    const scope = new RendererSettingsPageScope();
+    const sources = deferred<HarnessAccountSourceListResult>();
+    const grok = deferred<HarnessAccountInspectResult>();
+    const claude = deferred<HarnessAccountInspectResult>();
+    const inspectHarnessAccount = vi.fn(({ harnessId }: { harnessId: string }) =>
+      harnessId === "grok" ? grok.promise : claude.promise,
+    );
+    const changed = vi.fn();
+    const mounted = createHarnessAccounts(
+      scope.signal,
+      () => ({
+        listHarnessAccountSources: () => sources.promise,
+        inspectHarnessAccount,
+      }),
+      changed,
+    );
+
+    const refresh = mounted.refresh();
+    sources.resolve({
+      sources: [
+        { harnessId: harnessIdSchema.parse("grok"), harnessName: "Grok" },
+        { harnessId: harnessIdSchema.parse("claude-code"), harnessName: "Claude Code" },
+      ],
+    });
+    await vi.waitFor(() => expect(inspectHarnessAccount).toHaveBeenCalledTimes(2));
+
+    grok.resolve({
+      harnessId: harnessIdSchema.parse("grok"),
+      harnessName: "Grok",
+      account: { credits: { usedPercent: 25, periodType: "weekly" } },
+    });
+    await vi.waitFor(() =>
+      expect(mounted.accounts).toEqual([
+        {
+          harnessId: "grok",
+          harnessName: "Grok",
+          credits: { usedPercent: 25, periodType: "weekly" },
+        },
+      ]),
+    );
+    expect(mounted.refreshing).toBe(true);
+
+    claude.resolve({
+      harnessId: harnessIdSchema.parse("claude-code"),
+      harnessName: "Claude Code",
+      account: { credits: { usedPercent: 50, periodType: "five_hour" } },
+    });
+    await refresh;
+    expect(mounted.accounts.map(({ harnessId }) => harnessId)).toEqual(["claude-code", "grok"]);
+    expect(mounted.refreshing).toBe(false);
+    scope.dispose();
+  });
+
+  it("shows every Billing Source from one Harness inspection", async () => {
+    const scope = new RendererSettingsPageScope();
+    const mounted = createHarnessAccounts(
+      scope.signal,
+      () => ({
+        listHarnessAccountSources: async () => ({
+          sources: [{ harnessId: harnessIdSchema.parse("pi"), harnessName: "Pi" }],
+        }),
+        inspectHarnessAccount: async () => ({
+          harnessId: harnessIdSchema.parse("pi"),
+          harnessName: "Pi",
+          account: {
+            label: "qingge",
+            balance: { amount: 4, currency: "USD", label: "钱包余额" },
+          },
+          accounts: [
+            { label: "qingge", balance: { amount: 4, currency: "USD", label: "钱包余额" } },
+            {
+              label: "DeepSeek",
+              balance: { amount: 12.5, currency: "CNY", label: "DeepSeek API" },
+            },
+          ],
+        }),
+      }),
+      vi.fn(),
+    );
+    await mounted.refresh();
+    expect(mounted.accounts.map((account) => account.label)).toEqual(["DeepSeek", "qingge"]);
+    scope.dispose();
+  });
+});
+
+describe("Harness CLI version panel", () => {
+  const state = {
+    currentVersion: "1.0.0",
+    latestVersion: "1.1.0",
+    updateAvailable: true,
+    canUpdate: true,
+  };
+  const mount = (run: (action: "check" | "update") => Promise<typeof state>) => {
+    const document = new FakeDocument();
+    const abort = new AbortController();
+    const panel = createHarnessVersionPanel(
+      document as unknown as Document,
+      rendererSettingsMessages("en"),
+      abort.signal,
+      "pi",
+      { run },
+    ).element as unknown as FakeElement;
+    const button = (action: string) => {
+      const element = descendants(panel).find(
+        (element) => element.dataset.harnessVersionAction === action,
+      );
+      if (!element) throw new Error(`Missing version action ${action}`);
+      return element;
+    };
+    return { panel, abort, button };
+  };
+  it("checks automatically without a check button, updates explicitly, and prevents duplicate clicks", async () => {
+    const updated = deferred<typeof state>();
+    const run = vi.fn((action: "check" | "update") =>
+      action === "check" ? Promise.resolve(state) : updated.promise,
+    );
+    const { panel, abort, button } = mount(run);
+    expect(button("update").disabled).toBe(true);
+    await vi.waitFor(() => expect(button("update").disabled).toBe(false));
+    expect(visibleText(panel)).toContain("Current version: 1.0.0");
+    expect(
+      descendants(panel).find((element) => element.dataset.harnessVersionAction === "check"),
+    ).toBeUndefined();
+    button("update").dispatch("click");
+    button("update").dispatch("click");
+    expect(run.mock.calls).toEqual([["check"], ["update"]]);
+    expect(button("update").disabled).toBe(true);
+    updated.resolve({ ...state, currentVersion: "1.1.0", updateAvailable: false });
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("Update verified"));
+    expect(visibleText(panel)).toContain(
+      "may still use the old version until that process restarts",
+    );
+    expect(button("update").disabled).toBe(true);
+    abort.abort();
+  });
+  it("shows check failures without a duplicate website link, and checks again when the page reopens", async () => {
+    const run = vi.fn(async () => state).mockRejectedValueOnce(new Error("secret-native-output"));
+    const { panel, button, abort } = mount(run);
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("Could not complete"));
+    expect(visibleText(panel)).not.toContain("secret-native-output");
+    expect(button("update").disabled).toBe(true);
+    expect(descendants(panel).some((element) => element.tagName === "a")).toBe(false);
+    abort.abort();
+    const reopened = mount(run);
+    await vi.waitFor(() => expect(reopened.button("update").disabled).toBe(false));
+    expect(run.mock.calls).toEqual([["check"], ["check"]]);
+    reopened.abort.abort();
+  });
+  it("keeps unsupported plugins and manual installations from updating", async () => {
+    const unsupported = mount(async () => {
+      throw { code: -32078 };
+    });
+    await vi.waitFor(() => expect(visibleText(unsupported.panel)).toContain("does not support"));
+    expect(unsupported.button("update").disabled).toBe(true);
+    unsupported.abort.abort();
+    const manual = mount(async () => ({ ...state, canUpdate: false }));
+    await vi.waitFor(() => expect(visibleText(manual.panel)).toContain("original installer"));
+    expect(manual.button("update").disabled).toBe(true);
+    manual.abort.abort();
+  });
+  it("shows localized manual-update guidance without claiming an unknown latest version is current", async () => {
+    const { panel, button, abort } = mount(async () => ({
+      ...state,
+      latestVersion: "Unknown",
+      updateAvailable: false,
+      canUpdate: false,
+      message: "This installation belongs to its desktop app.",
+    }));
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("original installer"));
+    expect(visibleText(panel)).not.toContain("belongs to its desktop app");
+    expect(button("update").textContent).toBe("Update");
+    expect(button("update").disabled).toBe(true);
+    abort.abort();
+  });
+  it("offers a manual installer without submitting an update or claiming installation succeeded", async () => {
+    const run = vi.fn(async () => ({
+      ...state,
+      canUpdate: false,
+      manualUpdateUrl: "https://download.codebuddy.ai/WorkBuddy.dmg",
+      notice: { en: "Complete installation, then reopen Connections to verify the version." },
+    }));
+    const { panel, button, abort } = mount(run);
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("Download update"));
+    const download = button("download-update");
+    expect(download.tagName).toBe("a");
+    expect(download.href).toBe("https://download.codebuddy.ai/WorkBuddy.dmg");
+    expect(download.target).toBe("_blank");
+    expect(download.rel).toBe("noopener noreferrer");
+    expect(button("update").hidden).toBe(true);
+    download.dispatch("click");
+    button("update").dispatch("click");
+    expect(run.mock.calls).toEqual([["check"]]);
+    expect(visibleText(panel)).toContain("Current version: 1.0.0");
+    expect(visibleText(panel)).not.toContain("Update verified");
+    expect(visibleText(panel)).not.toContain("an update already started continues");
+    abort.abort();
+    expect(descendants(panel).some(({ tagName }) => tagName === "a")).toBe(false);
+  });
+  it("does not offer a manual download when the checked application is current", async () => {
+    const { panel, button, abort } = mount(async () => ({
+      ...state,
+      latestVersion: "1.0.0",
+      updateAvailable: false,
+      canUpdate: false,
+      manualUpdateUrl: "https://download.codebuddy.ai/WorkBuddy.dmg",
+    }));
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("original installer"));
+    expect(descendants(panel).some(({ tagName }) => tagName === "a")).toBe(false);
+    expect(button("update").textContent).toBe("Update");
+    expect(button("update").disabled).toBe(true);
+    abort.abort();
+  });
+  it("does not label an unknown latest version current even when updates are supported", async () => {
+    const { panel, button, abort } = mount(async () => ({
+      ...state,
+      latestVersion: "Unknown",
+      updateAvailable: false,
+    }));
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("Latest version: Unknown"));
+    expect(button("update").textContent).toBe("Update");
+    expect(button("update").disabled).toBe(true);
+    abort.abort();
+  });
+  it("does not apply late responses after the page closes", async () => {
+    const result = deferred<typeof state>();
+    const { panel, abort, button } = mount(() => result.promise);
+    abort.abort();
+    result.resolve(state);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(visibleText(panel)).not.toContain("1.0.0");
+    expect(button("update").disabled).toBe(true);
+  });
+});
+
+describe("Harness installation actions", () => {
+  it.each(["codebuddy", "kiro-cli"] as const)(
+    "provides one automatic install action for %s",
+    (agent) => {
+      const document = new FakeDocument();
+      const run = vi.fn();
+      const panel = createHarnessInstallationPanel(
+        document as unknown as Document,
+        pluginDescriptor(agent),
+        "local",
+        rendererSettingsMessages("zh-CN"),
+        vi.fn(),
+        { run, status: "idle" },
+      ) as unknown as FakeElement;
+      const installs = descendants(panel).filter(
+        ({ dataset }) => dataset.connectionAction === "install",
+      );
+      expect(installs).toHaveLength(1);
+      const install = installs[0];
+      assert(install);
+      expect(install.textContent).toBe("一键安装");
+      if (agent === "codebuddy") {
+        const actions = elementWithClass(panel, "settings-harness-installation-actions");
+        expect(descendants(actions)).toContain(install);
+        expect(
+          descendants(actions).some(({ dataset }) => dataset.connectionAction === "copy-install"),
+        ).toBe(true);
+      } else {
+        expect(panel.children).toContain(install);
+      }
+      install.dispatch("click");
+      install.dispatch("click");
+      expect(run).toHaveBeenCalledOnce();
+      expect(install.disabled).toBe(true);
+    },
+  );
+
+  it.each(["installing", "checking"] as const)(
+    "disables automatic installation while %s",
+    (status) => {
+      const document = new FakeDocument();
+      const run = vi.fn();
+      const panel = createHarnessInstallationPanel(
+        document as unknown as Document,
+        pluginDescriptor("codebuddy"),
+        "local",
+        rendererSettingsMessages("en"),
+        vi.fn(),
+        { run, status },
+      ) as unknown as FakeElement;
+      const install = descendants(panel).find(
+        ({ dataset }) => dataset.connectionAction === "install",
+      );
+      assert(install);
+      expect(install.disabled).toBe(true);
+      install.dispatch("click");
+      expect(run).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("Renderer Connections page", () => {
+  it.each([
+    { hostId: "local", directoryUnsupported: true, showsGuidance: true },
+    { hostId: "remote-test", directoryUnsupported: true, showsGuidance: false },
+    { hostId: "local", directoryUnsupported: false, showsGuidance: false },
+  ])(
+    "scopes WSL guidance to missing local Harness RPCs (%j)",
+    ({ hostId, directoryUnsupported, showsGuidance }) => {
+      const directoryError = directoryUnsupported
+        ? "codexhost/harness/plugins/list is unsupported on this Host connection"
+        : "Connection timed out";
+      const local = {
+        hostId: "local",
+        active: hostId === "local",
+        agents: [],
+      };
+      const failedHost = {
+        hostId,
+        active: true,
+        directoryError,
+        directoryUnsupported,
+        agents: [],
+      };
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: hostId === "local" ? [failedHost] : [local, failedHost],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const store = createAgentGroupPreferenceStore(null);
+      store.setSyncStatus("error");
+      const page = createConnectionsSettingsPage(
+        rendererSettingsMessages("en"),
+        () => diagnostics,
+        store,
+      );
+      const document = new FakeDocument("Win32");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const text = visibleText(content);
+      expect(text).toContain("Renderer adapter");
+      expect(text).toContain(directoryError);
+      if (showsGuidance) {
+        expect(text).toMatch(/if .*Agent environment.*WSL/i);
+        expect(text).toContain("Remote SSH");
+        expect(text).not.toContain("Could not sync Harness order");
+      } else {
+        expect(text).not.toContain("WSL");
+        expect(text).toContain("Could not sync Harness order");
+      }
+      expect(elementWithClass(content, "settings-connection-stderr").textContent).toContain(
+        `retryable: ${!directoryUnsupported}`,
+      );
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it("keeps the last confirmed Harness order read-only until the local RPCs are available", async () => {
+    let directoryUnsupported = true;
+    let notify: () => void = () => undefined;
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          { hostId: "local", active: false, agents: [], directoryUnsupported },
+          {
+            hostId: "remote-test",
+            active: true,
+            agents: [
+              { agent: "pi", plugin: pluginDescriptor("pi"), availability: "ready", error: null },
+            ],
+          },
+        ],
+      }),
+      refresh: vi.fn(async () => undefined),
+      subscribe: (listener) => {
+        notify = listener;
+        return () => undefined;
+      },
+    };
+    const store = createAgentGroupPreferenceStore(null);
+    store.replace([{ agent: "pi", section: "more" }]);
+    store.setSyncStatus("error");
+    const write = vi.fn();
+    store.setWriter(write);
+    const page = createConnectionsSettingsPage(
+      rendererSettingsMessages("en"),
+      () => diagnostics,
+      store,
+    );
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const reset = elementWithClass(content, "settings-connection-group-reset");
+    const toggle = elementWithClass(content, "settings-connection-row__group-toggle");
+    expect(reset.disabled).toBe(true);
+    expect(toggle.disabled).toBe(true);
+    expect(
+      descendants(content).find(({ dataset }) => dataset.connectionItem === "pi")?.dataset
+        .connectionGroupSection,
+    ).toBe("more");
+    expect(visibleText(content)).toContain("Harness order is read-only");
+    expect(visibleText(content)).not.toContain("WSL");
+    reset.click();
+    toggle.click();
+    expect(write).not.toHaveBeenCalled();
+
+    directoryUnsupported = false;
+    notify();
+    await vi.waitFor(() => {
+      expect(reset.disabled).toBe(false);
+      expect(toggle.disabled).toBe(false);
+      expect(visibleText(content)).not.toContain("Harness order is read-only");
+    });
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it("starts all eligible updates concurrently on the original Host and isolates failures", async () => {
+    const first = deferred<{
+      currentVersion: string;
+      latestVersion: string;
+      updateAvailable: boolean;
+      canUpdate: boolean;
+    }>();
+    const last = deferred<{
+      currentVersion: string;
+      latestVersion: string;
+      updateAvailable: boolean;
+      canUpdate: boolean;
+    }>();
+    const installation = vi.fn(async (_host: string, agent: string, action: string) => {
+      if (action === "update") {
+        if (agent === "pi") return first.promise;
+        if (agent === "claude-code") throw new Error("native-failure");
+        if (agent === "grok") return last.promise;
+      }
+      return {
+        currentVersion: "1.0.0",
+        latestVersion: "1.1.0",
+        updateAvailable: agent !== "hermes",
+        canUpdate: agent !== "kiro-cli",
+      };
+    });
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: ["local", "remote-test"].map((hostId) => ({
+          hostId,
+          active: hostId === "local",
+          agents: ["pi", "claude-code", "omp", "grok", "kiro-cli", "hermes"].map((agent) => ({
+            agent,
+            availability: "ready" as const,
+            error: null,
+          })),
+        })),
+      }),
+      installation,
+      refresh: async () => undefined,
+      subscribe: () => () => undefined,
+    };
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    assert(page);
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const bulk = () => {
+      const button = descendants(content).find(
+        ({ dataset }) => dataset.connectionAction === "update-all",
+      );
+      assert(button);
+      return button;
+    };
+    const switchHost = (host: string) =>
+      descendants(content)
+        .find(({ dataset }) => dataset.connectionHostTab === host)
+        ?.dispatch("click");
+    const updates = () => installation.mock.calls.filter(([, , action]) => action === "update");
+    await vi.waitFor(() => expect(visibleNotesText(bulk())).toContain("Update all (4)"));
+    const button = bulk();
+    button.dispatch("click");
+    button.dispatch("click");
+    expect(updates()).toEqual(
+      ["pi", "claude-code", "omp", "grok"].map((agent) => ["local", agent, "update"]),
+    );
+    await vi.waitFor(() => expect(bulk().disabled).toBe(true));
+    switchHost("remote-test");
+    await vi.waitFor(() => expect(visibleNotesText(bulk())).toContain("Update all (4)"));
+    expect(bulk().disabled).toBe(false);
+    switchHost("local");
+    expect(visibleNotesText(bulk())).toContain("Updating 2/4");
+    last.resolve({
+      currentVersion: "1.1.0",
+      latestVersion: "1.1.0",
+      updateAvailable: false,
+      canUpdate: true,
+    });
+    await vi.waitFor(() => expect(updates()).toHaveLength(4));
+    await vi.waitFor(() => expect(visibleNotesText(bulk())).toContain("Updating 3/4"));
+    first.resolve({
+      currentVersion: "1.1.0",
+      latestVersion: "1.1.0",
+      updateAvailable: false,
+      canUpdate: true,
+    });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Updated 2; failed 2."));
+    expect(updates()).toEqual(
+      ["pi", "claude-code", "omp", "grok"].map((agent) => ["local", agent, "update"]),
+    );
+    expect(visibleText(content)).not.toContain("native-failure");
+    switchHost("remote-test");
+    expect(visibleText(content)).not.toContain("Updated 2; failed 2.");
+    if (typeof cleanup === "function") cleanup();
+    scope.dispose();
+  });
+
+  it.each([
+    { choice: "Skip this update" },
+    { choice: "Escape" },
+    { choice: "Update anyway" },
+    { choice: "Update anyway", newTarget: { version: "3.0.0", choice: "Skip this update" } },
+    { choice: "Update anyway", newTarget: { version: "1.5.0", choice: "Update" } },
+  ])(
+    "requires confirmation for the exact target even if it changes during a batch update: %j",
+    async ({ choice, newTarget }) => {
+      const installation = vi.fn(
+        async (_host: string, agent: string, action: string, confirmedVersion?: string) => {
+          const isDeepSeek = agent === "deepseek-harness";
+          const latestVersion =
+            (isDeepSeek && action === "update" && newTarget?.version) || "2.0.0";
+          const confirmationRequired =
+            isDeepSeek && action === "update" && confirmedVersion !== latestVersion;
+          const updateAvailable = action === "check" || confirmationRequired;
+          return {
+            currentVersion: updateAvailable ? "1.0.0" : latestVersion,
+            latestVersion,
+            canUpdate: true,
+            updateAvailable,
+            ...(confirmationRequired ? { confirmationRequired: true as const } : {}),
+            ...(isDeepSeek && updateAvailable && latestVersion !== "1.5.0"
+              ? { latestVerifiedVersion: "1.5.0" }
+              : {}),
+          };
+        },
+      );
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: ["pi", "deepseek-harness"].map((agent) => ({
+                agent,
+                availability: "ready" as const,
+                error: null,
+              })),
+            },
+          ],
+        }),
+        installation,
+        refresh: async () => undefined,
+        subscribe: () => () => undefined,
+      };
+      const content = new FakeDocument().createElement("main");
+      const scope = new RendererSettingsPageScope();
+      try {
+        const page = createDefaultRendererSettingsPages(
+          rendererSettingsMessages("en"),
+          () => null,
+          () => diagnostics,
+        ).find(({ id }) => id === "connections");
+        assert(page);
+        page.mount({
+          content: content as unknown as HTMLElement,
+          signal: scope.signal,
+          runLatest: (op, handlers) => scope.runLatest(op, handlers),
+        });
+        const bulk = () => {
+          const button = descendants(content).find(
+            ({ dataset }) => dataset.connectionAction === "update-all",
+          );
+          assert(button);
+          return button;
+        };
+        const updates = () => installation.mock.calls.filter(([, , action]) => action === "update");
+        await vi.waitFor(() => expect(visibleNotesText(bulk())).toContain("Update all (2)"));
+        const deepSeekRow = descendants(content).find(
+          ({ dataset }) => dataset.connectionItem === "deepseek-harness",
+        );
+        assert(deepSeekRow);
+        deepSeekRow.dispatch("click", { target: null });
+        bulk().dispatch("click");
+        const firstDialog = descendants(content).find(({ tagName }) => tagName === "dialog");
+        assert(firstDialog?.open);
+        expect(visibleNotesText(firstDialog)).toContain("2.0.0");
+        expect(visibleNotesText(firstDialog)).toContain("1.5.0");
+        expect(updates()).toEqual([["local", "pi", "update"]]);
+        if (choice === "Escape") {
+          const preventDefault = vi.fn();
+          const stopPropagation = vi.fn();
+          firstDialog.dispatch("keydown", { key: "Escape", preventDefault, stopPropagation });
+          expect(preventDefault).toHaveBeenCalledOnce();
+          expect(stopPropagation).toHaveBeenCalledOnce();
+        } else {
+          const button = descendants(firstDialog).find(({ textContent }) => textContent === choice);
+          assert(button);
+          button.dispatch("click");
+        }
+
+        const expectedUpdates = [["local", "pi", "update"]];
+        if (choice === "Update anyway")
+          expectedUpdates.push(["local", "deepseek-harness", "update", "2.0.0"]);
+        if (newTarget) {
+          const nextDialog = await vi.waitFor(() => {
+            const dialog = descendants(content).find(({ tagName }) => tagName === "dialog");
+            assert(dialog?.open);
+            expect(dialog).not.toBe(firstDialog);
+            expect(visibleNotesText(dialog)).toContain(newTarget.version);
+            expect(visibleNotesText(bulk())).toContain("Updating 1/2");
+            return dialog;
+          });
+          expect(updates()).toEqual(expectedUpdates);
+          expect(visibleText(content)).toContain("Current version: 1.0.0");
+          expect(visibleText(content)).not.toContain("Could not complete");
+          const nextChoice = descendants(nextDialog).find(
+            ({ textContent }) => textContent === newTarget.choice,
+          );
+          assert(nextChoice);
+          nextChoice.dispatch("click");
+          if (newTarget.choice === "Update")
+            expectedUpdates.push(["local", "deepseek-harness", "update", newTarget.version]);
+        }
+        const skipped = (newTarget?.choice ?? choice) === "Skip this update" || choice === "Escape";
+        await vi.waitFor(() =>
+          expect(visibleText(content)).toContain(
+            skipped ? "Updated 1; failed 0. Skipped 1." : "Updated 2; failed 0.",
+          ),
+        );
+        expect(updates()).toEqual(expectedUpdates);
+      } finally {
+        scope.dispose();
+      }
+    },
+  );
+
+  it("reuses a single update in a concurrent batch and stops notifying after the page closes", async () => {
+    const document = new FakeDocument();
+    const abort = new AbortController();
+    const pending = deferred<{
+      currentVersion: string;
+      latestVersion: string;
+      updateAvailable: boolean;
+      canUpdate: boolean;
+    }>();
+    const state = {
+      currentVersion: "1.0.0",
+      latestVersion: "1.1.0",
+      updateAvailable: true,
+      canUpdate: true,
+    };
+    const firstRun = vi.fn((action: "check" | "update") =>
+      action === "check" ? Promise.resolve(state) : pending.promise,
+    );
+    const secondPending = deferred<typeof state>();
+    const secondRun = vi.fn((action: "check" | "update") =>
+      action === "check" ? Promise.resolve(state) : secondPending.promise,
+    );
+    const panels = [firstRun, secondRun].map((run, index) =>
+      createHarnessVersionPanel(
+        document as unknown as Document,
+        rendererSettingsMessages("en"),
+        abort.signal,
+        index === 0 ? "pi" : "grok",
+        { run },
+      ),
+    );
+    await vi.waitFor(() => expect(panels.every((panel) => panel.state)).toBe(true));
+    const notify = vi.fn();
+    const updates = createConnectionUpdates(
+      document as unknown as Document,
+      rendererSettingsMessages("en"),
+      abort.signal,
+      notify,
+    );
+    const firstPanel = panels[0];
+    const secondPanel = panels[1];
+    assert(firstPanel);
+    assert(secondPanel);
+    const single = firstPanel.update();
+    const controls = updates.createControls("local", panels);
+    expect(controls.button.disabled).toBe(false);
+    (controls.button as unknown as FakeElement).dispatch("click");
+    const other = secondPanel.update();
+    expect(firstRun.mock.calls).toEqual([["check"], ["update"]]);
+    expect(secondRun.mock.calls).toEqual([["check"], ["update"]]);
+    abort.abort();
+    notify.mockClear();
+    pending.resolve({ ...state, currentVersion: "1.1.0", updateAvailable: false });
+    secondPending.resolve({ ...state, currentVersion: "1.1.0", updateAvailable: false });
+    await Promise.all([single, other]);
+    await Promise.resolve();
+    expect(notify).not.toHaveBeenCalled();
+    (controls.button as unknown as FakeElement).dispatch("click");
+    expect(firstRun).toHaveBeenCalledTimes(2);
+    expect(secondRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("checks eligible rows automatically, isolates failures, and updates only on an explicit click", async () => {
+    const updated = deferred<{
+      currentVersion: string;
+      latestVersion: string;
+      updateAvailable: boolean;
+      canUpdate: boolean;
+    }>();
+    const installation = vi.fn(async (_host: string, agent: string, action: string) => {
+      if (action === "update") return updated.promise;
+      if (agent === "grok") throw { code: -32078 };
+      if (agent === "omp") throw new Error("private-native-output");
+      return {
+        currentVersion: "1.0.0",
+        latestVersion: "1.1.0",
+        updateAvailable: agent !== "claude-code",
+        canUpdate: agent !== "kiro-cli",
+      };
+    });
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: [
+              ...["pi", "claude-code", "kiro-cli", "grok", "omp"].map((agent) => ({
+                agent,
+                availability: "ready" as const,
+                error: null,
+              })),
+              { agent: "deepseek-harness", availability: "notInstalled", error: null },
+              { agent: "qoder", availability: "checking", error: null },
+            ],
+          },
+        ],
+      }),
+      installation,
+      refresh: async () => undefined,
+      subscribe: () => () => undefined,
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    assert(page);
+    const doc = new FakeDocument();
+    const content = doc.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const row = (agent: string) => {
+      const element = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+      assert(element);
+      return element;
+    };
+    const updateButton = (agent: string) =>
+      descendants(row(agent)).find(({ dataset }) => dataset.connectionAction === "update");
+    await vi.waitFor(() => expect(updateButton("pi")).toBeDefined());
+    expect(installation.mock.calls).toEqual(
+      ["pi", "claude-code", "kiro-cli", "grok", "omp"].map((agent) => ["local", agent, "check"]),
+    );
+    for (const agent of ["pi", "kiro-cli"]) {
+      const action = descendants(row(agent)).find(
+        ({ className }) => className === "settings-connection-row__action",
+      );
+      assert(action);
+      const hint = action.children.find(
+        (child) => (child as FakeElement).className === "settings-connection-version-available",
+      ) as FakeElement | undefined;
+      expect(hint?.textContent).toBe("Update available");
+      expect(hint?.title).toBe("Current version: 1.0.0\nLatest version: 1.1.0");
+      expect(visibleText(row(agent))).not.toContain("1.1.0");
+      if (agent === "pi") {
+        expect(action.children.indexOf(updateButton(agent))).toBe(
+          action.children.indexOf(hint) + 1,
+        );
+      }
+    }
+    for (const agent of ["claude-code", "kiro-cli", "grok", "omp"]) {
+      expect(updateButton(agent)).toBeUndefined();
+    }
+    row("omp").dispatch("click", { target: null });
+    expect(visibleText(content)).toContain("Could not complete");
+    expect(visibleText(content)).not.toContain("private-native-output");
+    const update = updateButton("pi");
+    assert(update);
+    update.dispatch("click", { stopPropagation() {} });
+    update.dispatch("click", { stopPropagation() {} });
+    await vi.waitFor(() => expect(visibleText(row("pi"))).toContain("Updating"));
+    expect(installation.mock.calls.filter(([, , action]) => action === "update")).toEqual([
+      ["local", "pi", "update"],
+    ]);
+    expect(updateButton("pi")?.disabled).toBe(true);
+    updated.resolve({
+      currentVersion: "1.1.0",
+      latestVersion: "1.1.0",
+      updateAvailable: false,
+      canUpdate: true,
+    });
+    await vi.waitFor(() => expect(updateButton("pi")).toBeUndefined());
+    expect(visibleText(row("pi"))).not.toContain("Update available");
+    expect(visibleText(content)).toContain("Current version: 1.1.0");
+    if (typeof cleanup === "function") cleanup();
+    scope.dispose();
+  });
+
+  it("checks Harnesses when diagnostics finish, but ignores late results after closing", async () => {
+    let ready = false;
+    let notify = () => {};
+    const result = deferred<{
+      currentVersion: string;
+      latestVersion: string;
+      updateAvailable: boolean;
+      canUpdate: boolean;
+    }>();
+    const installation = vi.fn(() => result.promise);
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: [{ agent: "pi", availability: ready ? "ready" : "checking", error: null }],
+          },
+        ],
+      }),
+      installation,
+      refresh: async () => undefined,
+      subscribe: (listener) => {
+        notify = listener;
+        return () => {};
+      },
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    assert(page);
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    expect(installation).not.toHaveBeenCalled();
+    ready = true;
+    notify();
+    await vi.waitFor(() => expect(installation).toHaveBeenCalledOnce());
+    if (typeof cleanup === "function") cleanup();
+    scope.dispose();
+    result.resolve({
+      currentVersion: "1.0.0",
+      latestVersion: "1.1.0",
+      updateAvailable: true,
+      canUpdate: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(visibleText(content)).not.toContain("Update available");
+  });
+
+  it("places version controls in the selected Host's inspector and preserves them across diagnostics", async () => {
+    const installation = vi.fn(async () => ({
+      currentVersion: "1.0.0",
+      latestVersion: "1.1.0",
+      updateAvailable: true,
+      canUpdate: true,
+    }));
+    let notify: () => void = () => undefined;
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: ["local", "remote-test"].map((hostId) => ({
+          hostId,
+          active: hostId === "local",
+          agents: [{ agent: "pi" as const, availability: "ready" as const, error: null }],
+        })),
+      }),
+      installation,
+      refresh: async () => undefined,
+      subscribe: (listener) => {
+        notify = listener;
+        return () => undefined;
+      },
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Expected Connections page");
+    const doc = new FakeDocument();
+    const content = doc.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    await vi.waitFor(() => expect(installation).toHaveBeenCalledWith("local", "pi", "check"));
+    expect(installation).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Update available"));
+    const row = descendants(content).find((element) => element.dataset.connectionItem === "pi");
+    if (!row) throw new Error("Expected Pi row");
+    row.dispatch("click", { target: null });
+    const first = descendants(content).find((element) => element.dataset.harnessVersion === "pi");
+    expect(first).toBeDefined();
+    notify();
+    expect(descendants(content).find((element) => element.dataset.harnessVersion === "pi")).toBe(
+      first,
+    );
+    expect(installation).toHaveBeenCalledTimes(1);
+    const remoteTab = descendants(content).find(
+      (element) => element.dataset.connectionHostTab === "remote-test",
+    );
+    if (!remoteTab) throw new Error("Expected remote Host tab");
+    remoteTab.dispatch("click");
+    await vi.waitFor(() => expect(installation).toHaveBeenCalledWith("remote-test", "pi", "check"));
+    expect(
+      descendants(content).find((element) => element.dataset.harnessVersion === "pi"),
+    ).not.toBe(first);
+    if (typeof cleanup === "function") cleanup();
+    scope.dispose();
+  });
+  it.each([
+    ["pi", "https://pi.dev/"],
+    ["claude-code", "https://code.claude.com/"],
+    ["deepseek-harness", "https://github.com/deepseek-ai/deepseek-harness"],
+    ["opencode", "https://opencode.ai/"],
+    ["grok", "https://www.npmjs.com/package/@xai-official/grok"],
+    ["omp", "https://github.com/can1357/oh-my-pi"],
+    ["antigravity", "https://antigravity.google/"],
+    ["kiro-cli", "https://kiro.dev/"],
+    ["codebuddy", "https://www.codebuddy.ai/"],
+    ["workbuddy", "https://www.workbuddy.ai/"],
+    ["cursor-cli", "https://cursor.com/"],
+    ["devin", "https://devin.ai/"],
+    ["hermes", "https://hermes-agent.nousresearch.com/"],
+    ["qoder", "https://qoder.com/"],
+    ["qoder-cn", "https://qoder.cn/"],
+    ["kimi-code", "https://code.kimi.com/"],
+    ["zcode", "https://zcode.z.ai/"],
+  ] as const)(
+    "shows manual commands and supported download guides for %s",
+    async (agent, expected) => {
+      const refresh = vi.fn(async () => undefined);
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "remote-test",
+              active: true,
+              agents: [
+                {
+                  agent,
+                  plugin: pluginDescriptor(agent),
+                  availability: "notInstalled",
+                  error: null,
+                },
+              ],
+            },
+          ],
+        }),
+        refresh,
+        subscribe: () => () => undefined,
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("zh-CN"),
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections");
+      if (!page) throw new Error("Expected connections page");
+      const document = new FakeDocument("Win32");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+      if (!row) throw new Error("Expected Harness row");
+      expect(
+        descendants(row).some(({ className }) => className === "settings-connection-website"),
+      ).toBe(false);
+      row.dispatch("click", { target: null });
+      const header = elementWithClass(content, "settings-connection-inspector__header");
+      const website = elementWithClass(header, "settings-connection-website");
+      expect(website).toMatchObject({
+        tagName: "a",
+        href: expected,
+        target: "_blank",
+        rel: "noopener noreferrer",
+        title: "访问官网",
+      });
+      expect(website.getAttribute("aria-label")).toContain("访问官网:");
+      expect(visibleText(website)).toBe("");
+      const stopPropagation = vi.fn();
+      website.dispatch("click", { stopPropagation });
+      expect(stopPropagation).toHaveBeenCalledOnce();
+      expect(
+        descendants(content).some(
+          ({ className }) => className === "settings-connection-install-link",
+        ),
+      ).toBe(false);
+      const panel = elementWithClass(content, "settings-connection-inspector__body");
+      expect(
+        descendants(content).some(({ className }) => className === "settings-harness-installation"),
+      ).toBe(true);
+      const guides = descendants(panel).filter(({ tagName }) => tagName === "a");
+      const desktopApp = agent === "workbuddy" || agent === "zcode";
+      expect(guides).toHaveLength(desktopApp ? 1 : 0);
+      if (desktopApp) {
+        expect(guides).toMatchObject([
+          {
+            textContent: "下载",
+            href: expected,
+            target: "_blank",
+            rel: "noopener noreferrer",
+          },
+        ]);
+      }
+      if (agent === "workbuddy") {
+        expect(visibleText(panel)).toContain("请下载并安装 WorkBuddy 桌面应用。");
+        expect(visibleText(panel)).not.toContain("下载与安装指南");
+      }
+      if (agent === "zcode") expect(visibleText(panel)).toContain("请安装 ZCode Desktop");
+      expect(
+        visibleText(content).includes(
+          pluginDescriptor("deepseek-harness").notice?.["zh-CN"] ?? "missing plugin notice",
+        ),
+      ).toBe(agent === "deepseek-harness");
+      expect(visibleText(panel)).toContain("请在远程 Host 上安装。");
+      expect(visibleText(panel)).not.toMatch(
+        /选择本机系统|此页面不会自动执行|Windows ARM64|PATH|WSL|安装完成不代表已就绪/,
+      );
+      expect(refresh).not.toHaveBeenCalled();
+      const blocks = descendants(panel).filter(
+        ({ className }) => className === "settings-harness-installation-command",
+      );
+      expect(blocks).toHaveLength(
+        desktopApp
+          ? 0
+          : ["deepseek-harness", "opencode", "grok", "codebuddy"].includes(agent)
+            ? 1
+            : 2,
+      );
+      for (const block of blocks) {
+        const code = descendants(block).find(({ tagName }) => tagName === "code");
+        const copy = descendants(block).find(
+          ({ dataset }) => dataset.connectionAction === "copy-install",
+        );
+        if (!code || !copy) throw new Error("Expected install command and copy button");
+        expect(code.textContent).not.toBe("");
+        copy.dispatch("click");
+        await vi.waitFor(() =>
+          expect(document.clipboardWriteText).toHaveBeenLastCalledWith(code.textContent),
+        );
+        document.clipboardWriteText.mockRejectedValueOnce(new Error("denied"));
+        copy.dispatch("click");
+        await vi.waitFor(() => expect(visibleNotesText(copy)).toContain("复制失败"));
+      }
+      const check = descendants(panel).find(
+        ({ dataset }) => dataset.connectionAction === "check-install",
+      );
+      if (!check) throw new Error("Expected installation check button");
+      check.dispatch("click");
+      expect(check.disabled).toBe(true);
+      await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+      await vi.waitFor(() =>
+        expect(
+          descendants(content).find(({ dataset }) => dataset.connectionAction === "check-install")
+            ?.disabled,
+        ).toBe(false),
+      );
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it.each([
+    {
+      locale: "zh-CN",
+      agent: "qoder-cn",
+      nativeMessage: "Please run qoderclicn login to authenticate.",
+    },
+    {
+      locale: "en",
+      agent: "qoder-cn",
+      nativeMessage: "Please run qoderclicn login to authenticate.",
+    },
+    {
+      locale: "zh-CN",
+      agent: "antigravity",
+      nativeMessage:
+        "Fetching available models... Error: Please sign in to view available models. Launch the CLI without arguments to sign in.",
+    },
+    {
+      locale: "en",
+      agent: "antigravity",
+      nativeMessage:
+        "Fetching available models... Error: Please sign in to view available models. Launch the CLI without arguments to sign in.",
+    },
+  ] as const)(
+    "localizes authentication summaries and preserves native diagnostics ($agent, $locale)",
+    ({ locale, agent, nativeMessage }) => {
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: [
+                {
+                  agent,
+                  availability: "unavailable",
+                  error: {
+                    code: "authenticationRequired",
+                    message: nativeMessage,
+                    retryable: false,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const messages = rendererSettingsMessages(locale);
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections");
+      assert(page);
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+      assert(row);
+      expect(visibleText(row)).toContain(messages.connectionLoginRequired);
+      row.dispatch("click", { target: null });
+      expect(
+        visibleText(elementWithClass(content, "settings-connection-inspector__header")),
+      ).toContain(messages.connectionLoginRequired);
+      const summary = elementWithClass(content, "settings-connection-error-summary");
+      expect(visibleText(summary)).toContain(messages.connectionLoginDescription);
+      expect(visibleText(summary)).not.toContain(nativeMessage);
+      expect(visibleText(elementWithClass(content, "settings-connection-stderr"))).toContain(
+        nativeMessage,
+      );
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it.each(["zh-CN", "en"] as const)(
+    "shows missing Hermes configuration separately from login (%s)",
+    (locale) => {
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: [
+                {
+                  agent: "hermes",
+                  availability: "unavailable",
+                  error: {
+                    code: "configurationRequired",
+                    message: "Run `hermes setup`.",
+                    retryable: false,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const messages = rendererSettingsMessages(locale);
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections");
+      if (!page) throw new Error("Expected connections page");
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === "hermes");
+      if (!row) throw new Error("Expected Hermes row");
+      expect(visibleText(row)).toContain(messages.connectionConfigurationRequired);
+      row.dispatch("click", { target: null });
+      expect(
+        visibleText(elementWithClass(content, "settings-connection-inspector__header")),
+      ).toContain(messages.connectionConfigurationRequired);
+      const summary = elementWithClass(content, "settings-connection-error-summary");
+      expect(visibleText(summary)).toContain(messages.connectionConfigurationDescription);
+      expect(visibleText(summary)).not.toContain("Run `hermes setup`.");
+      expect(visibleText(elementWithClass(content, "settings-connection-stderr"))).toContain(
+        "Run `hermes setup`.",
+      );
+      expect(visibleText(summary)).not.toContain(messages.connectionLoginRequired);
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it.each(["zh-CN", "en"] as const)(
+    "shows OMP model setup errors without a login status (%s)",
+    (locale) => {
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: [
+                {
+                  agent: "omp",
+                  availability: "error",
+                  error: {
+                    code: "configurationRequired",
+                    message: "Configure a Provider API key and select a model with /model.",
+                    retryable: false,
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const messages = rendererSettingsMessages(locale);
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections");
+      assert(page);
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === "omp");
+      assert(row);
+      expect(visibleText(row)).toContain(messages.connectionConfigurationRequired);
+      expect(visibleText(row)).not.toContain(messages.connectionLoginRequired);
+      row.dispatch("click", { target: null });
+      const header = elementWithClass(content, "settings-connection-inspector__header");
+      expect(visibleText(header)).toContain(messages.connectionConfigurationRequired);
+      expect(visibleText(header)).not.toContain(messages.connectionLoginRequired);
+      const summary = elementWithClass(content, "settings-connection-error-summary");
+      expect(visibleText(summary)).toContain(messages.connectionConfigurationDescription);
+      expect(visibleText(summary)).not.toContain("Configure a Provider API key");
+      expect(visibleText(elementWithClass(content, "settings-connection-stderr"))).toContain(
+        "Configure a Provider API key and select a model with /model.",
+      );
+      expect(visibleText(summary)).not.toContain(messages.connectionLoginRequired);
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it.each(["workbuddy", "zcode"] as const)(
+    "edits %s launch settings in the local right-side inspector",
+    async (agent) => {
+      const messages = rendererSettingsMessages("zh-CN");
+      let changed: () => void = () => undefined;
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: ["local", "remote-test"].map((hostId) => ({
+            hostId,
+            active: hostId === "local",
+            agents: [
+              { agent, plugin: pluginDescriptor(agent), availability: "notInstalled", error: null },
+            ],
+          })),
+        }),
+        refresh: vi.fn(async () => undefined),
+        getLaunchSettings: vi.fn(async () => ({ path: null, restartRequired: false })),
+        setLaunchSettings: vi.fn(async (_hostId, _agent, path) => ({
+          path,
+          restartRequired: true,
+        })),
+        subscribe: (listener) => {
+          changed = listener;
+          return () => undefined;
+        },
+      };
+      const page = createDefaultRendererSettingsPages(
+        messages,
+        () => null,
+        () => diagnostics,
+      ).find(({ id }) => id === "connections");
+      if (!page) throw new Error("Expected connections page");
+      const document = new FakeDocument("Win32");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+      if (!row) throw new Error("Expected Harness row");
+      row.dispatch("click", { target: null });
+      const panel = elementWithClass(content, "settings-connection-inspector__body");
+      const input = descendants(panel).find(({ tagName }) => tagName === "input");
+      if (!input) throw new Error("Expected launch path input");
+      expect(visibleText(panel)).toContain("安装目录");
+      await vi.waitFor(() => expect(input.disabled).toBe(false));
+      expect(diagnostics.getLaunchSettings).toHaveBeenCalledWith("local", agent);
+      const save = descendants(panel).find(
+        ({ textContent }) => textContent === messages.launchPathSave,
+      );
+      if (!save) throw new Error("Expected save button");
+      expect(save.disabled).toBe(true);
+      input.value = "D:\\Custom Apps";
+      input.dispatch("input");
+      changed();
+      expect(descendants(content).find(({ tagName }) => tagName === "input")).toBe(input);
+      expect(input.value).toBe("D:\\Custom Apps");
+      save.dispatch("click");
+      save.dispatch("click");
+      await vi.waitFor(() => expect(visibleText(panel)).toContain(messages.launchPathRestart));
+      expect(diagnostics.setLaunchSettings).toHaveBeenCalledExactlyOnceWith(
+        "local",
+        agent,
+        input.value,
+      );
+      const reset = descendants(panel).find(
+        ({ textContent }) => textContent === messages.launchPathReset,
+      );
+      if (!reset) throw new Error("Expected reset button");
+      reset.dispatch("click");
+      await vi.waitFor(() => expect(input.value).toBe(""));
+      expect(diagnostics.setLaunchSettings).toHaveBeenLastCalledWith("local", agent, null);
+      if (!diagnostics.setLaunchSettings) throw new Error("Expected settings writer");
+      vi.mocked(diagnostics.setLaunchSettings).mockRejectedValueOnce(new Error("no access"));
+      input.value = "missing";
+      input.dispatch("input");
+      save.dispatch("click");
+      await vi.waitFor(() => expect(visibleText(panel)).toContain(messages.launchPathSaveError));
+      expect(input.value).toBe("missing");
+      const remote = descendants(content).find(
+        ({ dataset }) => dataset.connectionHostTab === "remote-test",
+      );
+      if (!remote) throw new Error("Expected remote tab");
+      remote.dispatch("click");
+      expect(descendants(content).some(({ dataset }) => dataset.harnessLaunch)).toBe(false);
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+  it("keeps launch settings replaceable after they fail to load", async () => {
+    const agent = "zcode";
+    const messages = rendererSettingsMessages("en");
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: [
+              { agent, plugin: pluginDescriptor(agent), availability: "notInstalled", error: null },
+            ],
+          },
+        ],
+      }),
+      refresh: vi.fn(async () => undefined),
+      getLaunchSettings: vi.fn(async () => {
+        throw new Error("unreadable");
+      }),
+      setLaunchSettings: vi.fn(async () => ({ path: null, restartRequired: true })),
+      subscribe: () => () => undefined,
+    };
+    const page = createDefaultRendererSettingsPages(
+      messages,
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Expected connections page");
+    const document = new FakeDocument("Win32");
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+    if (!row) throw new Error("Expected Harness row");
+    row.dispatch("click", { target: null });
+    const panel = elementWithClass(content, "settings-connection-inspector__body");
+    await vi.waitFor(() => expect(visibleText(panel)).toContain(messages.launchPathLoadError));
+    const reset = descendants(panel).find(
+      ({ textContent }) => textContent === messages.launchPathReset,
+    );
+    if (!reset) throw new Error("Expected reset button");
+    expect(reset.disabled).toBe(false);
+    reset.dispatch("click");
+    await vi.waitFor(() => expect(visibleText(panel)).toContain(messages.launchPathRestart));
+    expect(diagnostics.setLaunchSettings).toHaveBeenCalledExactlyOnceWith("local", agent, null);
+    cleanup?.();
+    scope.dispose();
+  });
+  it("offers automatic installation only for Harnesses with an install command", () => {
+    const installation = vi.fn(async () => {
+      throw new Error("not expected");
+    });
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: (["kiro-cli", "workbuddy", "zcode"] as const).map((agent) => ({
+              agent,
+              plugin: pluginDescriptor(agent),
+              availability: "notInstalled" as const,
+              error: null,
+            })),
+          },
+        ],
+      }),
+      refresh: vi.fn(async () => undefined),
+      installation,
+      subscribe: () => () => undefined,
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => null,
+      () => diagnostics,
+    ).find(({ id }) => id === "connections");
+    if (!page) throw new Error("Expected connections page");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const offersInstall = (agent: string): boolean => {
+      const row = descendants(content).find(({ dataset }) => dataset.connectionItem === agent);
+      if (!row) throw new Error("Expected Harness row");
+      return descendants(row).some(
+        ({ className }) => className === "settings-connection-install-link",
+      );
+    };
+    expect(offersInstall("kiro-cli")).toBe(true);
+    // Desktop apps are downloaded by the user; their plugins expose no installer.
+    expect(offersInstall("workbuddy")).toBe(false);
+    expect(offersInstall("zcode")).toBe(false);
+    expect(installation).not.toHaveBeenCalled();
+    cleanup?.();
+    scope.dispose();
+  });
   it("opens managed DSH Web only for the local Host and coalesces repeated clicks", async () => {
     const opened = deferred<undefined>();
     const diagnostics: RendererConnectionDiagnostics = {
@@ -271,6 +2228,7 @@ describe("Renderer Connections page", () => {
             agents: [
               {
                 agent: "deepseek-harness",
+                plugin: pluginDescriptor("deepseek-harness"),
                 availability: "ready",
                 error: null,
                 webUiAvailable: true,
@@ -283,6 +2241,7 @@ describe("Renderer Connections page", () => {
             agents: [
               {
                 agent: "deepseek-harness",
+                plugin: pluginDescriptor("deepseek-harness"),
                 availability: "ready",
                 error: null,
                 webUiAvailable: true,
@@ -315,6 +2274,10 @@ describe("Renderer Connections page", () => {
     );
     if (!dshRow) throw new Error("DeepSeek Harness row is not rendered");
     dshRow.dispatch("click", { target: null });
+    expect(visibleText(content)).toContain("0.2.2-rc.2");
+    expect(visibleText(content)).toContain(
+      pluginDescriptor("deepseek-harness").notice?.["zh-CN"] ?? "missing plugin notice",
+    );
     const open = descendants(content).find(
       ({ dataset }) => dataset.connectionAction === "open-web-ui",
     );
@@ -343,6 +2306,91 @@ describe("Renderer Connections page", () => {
     scope.dispose();
   });
 
+  it.each(["loaded", "failed", "unmounted"] as const)(
+    "uses configured remote Host names without changing IDs (%s)",
+    async (result) => {
+      const hostId = "remote-ssh-codex-managed:8185b421-eeec-4f3b-bca7-21ea95341381";
+      const request = Promise.withResolvers<CodexSshConnection[]>();
+      const control: RemoteConnectionsControl = {
+        ssh: {
+          list: vi.fn(() => request.promise),
+          save: vi.fn(),
+          remove: vi.fn(),
+          connect: vi.fn(),
+          state: vi.fn(),
+        },
+        setup: vi.fn(),
+        runtime: vi.fn(),
+        update: vi.fn(),
+      };
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: ["local", hostId, "remote-ssh-discovered:legacy"].map((id) => ({
+            hostId: id,
+            active: id === hostId,
+            agents: [],
+          })),
+        }),
+        refresh: vi.fn(),
+        subscribe: () => () => undefined,
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("zh-CN"),
+        undefined,
+        () => diagnostics,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        () => control,
+      ).find(({ id }) => id === "connections");
+      assert(page);
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      expect(control.ssh.list).toHaveBeenCalledWith(scope.signal);
+      if (result === "unmounted") {
+        scope.dispose();
+        cleanup?.();
+      }
+      if (result === "failed") request.reject(new Error("Native connection list unavailable"));
+      else
+        request.resolve([
+          {
+            hostId,
+            displayName: "公司电脑",
+            source: "codex-managed",
+            sshHost: "user@office",
+            sshAlias: null,
+            sshPort: null,
+            identity: null,
+            autoConnect: true,
+          },
+        ]);
+      await request.promise.catch(() => undefined);
+      const tabs = descendants(content).filter(({ dataset }) => dataset.connectionHostTab);
+      expect(tabs.map(({ textContent }) => textContent)).toEqual([
+        "本地",
+        result === "loaded" ? "公司电脑" : hostId.split(":")[1],
+        "legacy",
+      ]);
+      const remoteTab = tabs.find(({ dataset }) => dataset.connectionHostTab === hostId);
+      assert(remoteTab);
+      expect(remoteTab.getAttribute("aria-selected")).toBe("true");
+      expect(remoteTab.title).toContain(remoteTab.textContent);
+      if (result !== "unmounted") {
+        cleanup?.();
+        scope.dispose();
+      }
+    },
+  );
+
   it("renders Host tabs, install actions, and error details", async () => {
     const refreshRequest = deferred<undefined>();
     const diagnostics: RendererConnectionDiagnostics = {
@@ -360,6 +2408,7 @@ describe("Renderer Connections page", () => {
             agents: [
               {
                 agent: "pi",
+                plugin: pluginDescriptor("pi"),
                 availability: "error",
                 error: {
                   code: "processExited",
@@ -367,11 +2416,13 @@ describe("Renderer Connections page", () => {
                   retryable: true,
                   stage: "startup",
                   durationMs: 120,
+                  diagnostic: "Native process stopped during startup",
                   stderrTail: "check ~/.pi/agent/settings.json",
                 },
               },
               {
                 agent: "deepseek-harness",
+                plugin: pluginDescriptor("deepseek-harness"),
                 availability: "notInstalled",
                 error: {
                   code: "notInstalled",
@@ -417,7 +2468,18 @@ describe("Renderer Connections page", () => {
     expect(visibleText(content)).toContain("公司");
     expect(visibleText(content)).toContain("pi exited with code 1");
     expect(visibleText(content)).toContain("~/.pi/agent/settings.json");
-    expect(visibleText(content)).toContain("startup");
+    expect(
+      descendants(content).some(
+        ({ className }) => className === "settings-connection-error-metadata",
+      ),
+    ).toBe(false);
+    const report = visibleText(elementWithClass(content, "settings-connection-stderr"));
+    expect(report).toContain("error.code: processExited");
+    expect(report).toContain("retryable: true");
+    expect(report).toContain("stage: startup");
+    expect(report).toContain("durationMs: 120");
+    expect(report).toContain("diagnostic: Native process stopped during startup");
+    expect(report).toContain("stderr:\ncheck ~/.pi/agent/settings.json");
     const issueLink = descendants(content).find(
       ({ tagName, href }) =>
         tagName === "a" && href === "https://github.com/BytePioneer-AI/codex-host/issues/new",
@@ -429,9 +2491,7 @@ describe("Renderer Connections page", () => {
     if (!copyButton) throw new Error("Copy error log button is not rendered");
     copyButton.dispatch("click");
     await vi.waitFor(() => expect(document.clipboardWriteText).toHaveBeenCalledOnce());
-    expect(document.clipboardWriteText).toHaveBeenCalledWith(
-      expect.stringContaining("host: local"),
-    );
+    expect(document.clipboardWriteText).toHaveBeenCalledWith(report);
     await vi.waitFor(() => expect(visibleNotesText(content)).toContain("已复制"));
     const refresh = descendants(content).find(
       ({ tagName, dataset }) => tagName === "button" && dataset.connectionAction === "refresh",
@@ -440,19 +2500,19 @@ describe("Renderer Connections page", () => {
     refresh.dispatch("click");
     expect(refresh.disabled).toBe(true);
     expect(visibleNotesText(refresh)).toContain("正在诊断...");
-    expect(diagnostics.refresh).toHaveBeenCalledWith();
+    expect(diagnostics.refresh).toHaveBeenCalledWith(undefined, "retry");
     refreshRequest.resolve(undefined);
     await vi.waitFor(() => expect(refresh.disabled).toBe(false));
     expect(visibleNotesText(refresh)).toContain("重新诊断连接");
 
-    const installLink = descendants(content).find(
-      ({ tagName, href }) =>
-        tagName === "a" && href === "https://deepseek-harness.github.io/deepseek-harness/",
-    );
-    expect(installLink).toMatchObject({
-      target: "_blank",
-      rel: "noopener noreferrer",
-    });
+    const website = elementWithClass(content, "settings-connection-website");
+    expect(website.tagName).toBe("a");
+    expect(website.title).toBe("访问官网");
+    expect(
+      descendants(content).some(
+        ({ className }) => className === "settings-connection-install-link",
+      ),
+    ).toBe(false);
 
     expect(visibleText(content)).toContain("查看错误");
     const remoteTab = descendants(content).find(
@@ -467,12 +2527,20 @@ describe("Renderer Connections page", () => {
     );
     expect(selectedPanel).toBeDefined();
     expect(visibleText(content)).not.toContain("pi exited with code 1");
+    const header = elementWithClass(content, "settings-connection-inspector__header");
+    expect(visibleText(header)).toContain("已连接");
+    const body = elementWithClass(content, "settings-connection-inspector__body");
+    expect(
+      descendants(body).some(({ className }) => className === "settings-connection-state-summary"),
+    ).toBe(false);
+    expect(visibleText(body)).not.toContain("该组件在当前 Host 上可用。");
     const selectedRemoteTab = descendants(content).find(
       ({ dataset, attributes }) =>
         dataset.connectionHostTab === "remote-ssh-codex-managed:%E5%85%AC%E5%8F%B8" &&
         attributes.get("aria-selected") === "true",
     );
     expect(selectedRemoteTab).toBeDefined();
+    expect(selectedRemoteTab?.scrollIntoView).not.toHaveBeenCalled();
 
     const hostTabs = elementWithClass(content, "settings-connection-host-tabs");
     hostTabs.clientWidth = 240;
@@ -488,35 +2556,295 @@ describe("Renderer Connections page", () => {
 
     cleanup?.();
   });
+
+  it("updates rows in place, preserves unselected inspector DOM, and keeps uninstalled Harnesses in More across refreshes", async () => {
+    let piAvailability: "checking" | "ready" = "checking";
+    let dshAvailability: "notInstalled" | "checking" = "notInstalled";
+    let notify: () => void = () => undefined;
+    const piCheck = deferred<{
+      currentVersion: string;
+      latestVersion: string;
+      updateAvailable: boolean;
+      canUpdate: boolean;
+    }>();
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: [
+              {
+                agent: "claude-code",
+                plugin: pluginDescriptor("claude-code"),
+                availability: "ready",
+                error: null,
+              },
+              {
+                agent: "pi",
+                plugin: pluginDescriptor("pi"),
+                availability: piAvailability,
+                error: null,
+              },
+              {
+                agent: "deepseek-harness",
+                plugin: pluginDescriptor("deepseek-harness"),
+                availability: dshAvailability,
+                error: null,
+              },
+            ],
+          },
+        ],
+      }),
+      installation: vi.fn(async (_hostId, agent) => {
+        if (agent === "pi") return piCheck.promise;
+        return {
+          currentVersion: "1.0.0",
+          latestVersion: "1.0.0",
+          updateAvailable: false,
+          canUpdate: true,
+        };
+      }),
+      refresh: vi.fn(async () => undefined),
+      subscribe: (listener) => {
+        notify = listener;
+        return () => undefined;
+      },
+    };
+    const store = createAgentGroupPreferenceStore(null);
+    store.setSyncStatus("ready");
+    const page = createConnectionsSettingsPage(
+      rendererSettingsMessages("zh-CN"),
+      () => diagnostics,
+      store,
+    );
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const row = (key: string): FakeElement => {
+      const found = descendants(content).find(({ dataset }) => dataset.connectionItem === key);
+      if (!found) throw new Error(`Missing row ${key}`);
+      return found;
+    };
+
+    const initialLayout = elementWithClass(content, "settings-connections-layout");
+    const initialRows = elementWithClass(content, "settings-connection-rows");
+    const initialMoreZone = elementWithClass(content, "settings-connection-group-more");
+    const initialInspector = elementWithClass(content, "settings-connection-inspector");
+    const claudeRow = row("claude-code");
+    const piRow = row("pi");
+    const dshRow = row("deepseek-harness");
+
+    claudeRow.dispatch("click", { target: null });
+    const inspectorHeader = elementWithClass(
+      initialInspector,
+      "settings-connection-inspector__header",
+    );
+    const inspectorBody = elementWithClass(initialInspector, "settings-connection-inspector__body");
+
+    expect(descendants(initialMoreZone)).toContain(dshRow);
+    expect(dshRow.dataset.connectionGroupSection).toBe("more");
+
+    // Unselected row finishes inspection and version check without replacing rows or rebuilding the selected inspector.
+    piAvailability = "ready";
+    notify();
+    await vi.waitFor(() => expect(visibleText(piRow)).toContain("正常"));
+    piCheck.resolve({
+      currentVersion: "1.0.0",
+      latestVersion: "1.2.0",
+      updateAvailable: true,
+      canUpdate: true,
+    });
+    await vi.waitFor(() => expect(visibleText(piRow)).toContain("有更新"));
+
+    expect(elementWithClass(content, "settings-connections-layout")).toBe(initialLayout);
+    expect(elementWithClass(content, "settings-connection-rows")).toBe(initialRows);
+    expect(elementWithClass(content, "settings-connection-inspector")).toBe(initialInspector);
+    expect(elementWithClass(initialInspector, "settings-connection-inspector__header")).toBe(
+      inspectorHeader,
+    );
+    expect(elementWithClass(initialInspector, "settings-connection-inspector__body")).toBe(
+      inspectorBody,
+    );
+    expect(row("claude-code")).toBe(claudeRow);
+    expect(row("pi")).toBe(piRow);
+    expect(row("deepseek-harness")).toBe(dshRow);
+
+    // During a refresh where all Harnesses temporarily report "checking", previously uninstalled
+    // Harnesses stay in More rather than jumping into Main and shifting scroll height.
+    piAvailability = "checking";
+    dshAvailability = "checking";
+    notify();
+    await vi.waitFor(() => expect(visibleText(dshRow)).toContain("检查中"));
+    expect(row("deepseek-harness")).toBe(dshRow);
+    expect(descendants(initialMoreZone)).toContain(dshRow);
+    expect(dshRow.dataset.connectionGroupSection).toBe("more");
+
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it("preserves in-flight Harness update status and batch progress when closing and reopening Settings", async () => {
+    const ompUpdate = deferred<{
+      currentVersion: string;
+      latestVersion: string;
+      updateAvailable: boolean;
+      canUpdate: boolean;
+    }>();
+    const installation = vi.fn(async (_hostId: string, agent: string, action: string) => {
+      if (action === "update" && agent === "omp") return ompUpdate.promise;
+      if (action === "update") {
+        return {
+          currentVersion: "1.2.0",
+          latestVersion: "1.2.0",
+          updateAvailable: false,
+          canUpdate: true,
+        };
+      }
+      return {
+        currentVersion: "0.85.1",
+        latestVersion: "0.85.2",
+        updateAvailable: agent === "omp" || agent === "pi",
+        canUpdate: true,
+      };
+    });
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: [
+              {
+                agent: "omp",
+                plugin: pluginDescriptor("omp"),
+                availability: "ready",
+                error: null,
+              },
+              {
+                agent: "pi",
+                plugin: pluginDescriptor("pi"),
+                availability: "ready",
+                error: null,
+              },
+            ],
+          },
+        ],
+      }),
+      installation,
+      refresh: vi.fn(async () => undefined),
+      subscribe: () => () => undefined,
+    };
+    const store = createAgentGroupPreferenceStore(null);
+    store.setSyncStatus("ready");
+    const page = createConnectionsSettingsPage(
+      rendererSettingsMessages("zh-CN"),
+      () => diagnostics,
+      store,
+    );
+
+    // Mount #1: start batch update, wait until Pi finishes (1/2) while Oh My Pi is still updating, then close Settings.
+    const firstContent = new FakeDocument().createElement("main");
+    const firstScope = new RendererSettingsPageScope();
+    const firstCleanup = page.mount({
+      content: firstContent as unknown as HTMLElement,
+      signal: firstScope.signal,
+      runLatest: (operation, handlers) => firstScope.runLatest(operation, handlers),
+    });
+    const bulkOf = (root: FakeElement) => {
+      const button = descendants(root).find(
+        ({ dataset }) => dataset.connectionAction === "update-all",
+      );
+      if (!button) throw new Error("Missing update-all button");
+      return button;
+    };
+    await vi.waitFor(() =>
+      expect(visibleNotesText(bulkOf(firstContent))).toContain("全部更新 (2)"),
+    );
+    bulkOf(firstContent).dispatch("click");
+    await vi.waitFor(() => expect(visibleNotesText(bulkOf(firstContent))).toContain("更新中 1/2"));
+    firstCleanup?.();
+    firstScope.dispose();
+
+    // Mount #2: reopen Settings while Oh My Pi is still updating.
+    const secondContent = new FakeDocument().createElement("main");
+    const secondScope = new RendererSettingsPageScope();
+    const secondCleanup = page.mount({
+      content: secondContent as unknown as HTMLElement,
+      signal: secondScope.signal,
+      runLatest: (operation, handlers) => secondScope.runLatest(operation, handlers),
+    });
+
+    const ompRow = descendants(secondContent).find(
+      ({ dataset }) => dataset.connectionItem === "omp",
+    );
+    if (!ompRow) throw new Error("Missing Oh My Pi row on reopened page");
+    expect(visibleText(ompRow)).toContain("更新中");
+    expect(visibleNotesText(bulkOf(secondContent))).toContain("更新中 1/2");
+    expect(bulkOf(secondContent).disabled).toBe(true);
+
+    ompRow.dispatch("click", { target: null });
+    expect(
+      visibleText(elementWithClass(secondContent, "settings-connection-inspector__header")),
+    ).toContain("更新中");
+    const versionPanel = descendants(secondContent).find(
+      ({ dataset }) => dataset.harnessVersion === "omp",
+    );
+    if (!versionPanel) throw new Error("Missing Oh My Pi version panel on reopened page");
+    expect(visibleText(versionPanel)).toContain("当前版本: 0.85.1");
+    expect(visibleText(versionPanel)).toContain("最新版本: 0.85.2");
+    expect(visibleText(versionPanel)).toContain("正在更新…");
+    expect(visibleText(versionPanel)).not.toContain("正在检查版本");
+    expect(
+      installation.mock.calls.filter(([, agent, action]) => agent === "omp" && action === "check"),
+    ).toHaveLength(1);
+
+    // Finish the pending Oh My Pi update while the reopened page is open.
+    ompUpdate.resolve({
+      currentVersion: "0.85.2",
+      latestVersion: "0.85.2",
+      updateAvailable: false,
+      canUpdate: true,
+    });
+    await vi.waitFor(() => expect(visibleText(ompRow)).toContain("正常"));
+    expect(visibleText(versionPanel)).toContain("当前版本: 0.85.2");
+    expect(visibleText(versionPanel)).toContain("已确认更新成功");
+    expect(visibleText(versionPanel)).toContain("可能要等该进程重启后才能使用新版本");
+    expect(visibleText(secondContent)).toContain("已更新 2 项，0 项失败。");
+
+    secondCleanup?.();
+    secondScope.dispose();
+  });
 });
 
 describe("Renderer Codex Accounts page", () => {
+  const accountSnapshot = (
+    accounts: { accountId: string; label: string; email?: string }[],
+    currentAccountId: string | null = accounts[0]?.accountId ?? null,
+    revision = 1,
+  ) => ({
+    version: 2 as const,
+    currentAccountId,
+    phase: "ready" as const,
+    revision,
+    instanceId: "settings-host",
+    accounts: [...accounts],
+  });
+
   it("renders cached Accounts before live metadata refresh completes", async () => {
-    const refresh = Promise.withResolvers<{
-      accounts: Array<{
-        accountId: string;
-        label: string;
-        email: string;
-        codexHome: string;
-        active: boolean;
-        isDefault: boolean;
-      }>;
-    }>();
-    const cachedAccount = {
-      accountId: "default",
-      label: "Default",
-      codexHome: "/tmp/default",
-      active: true,
-      isDefault: true,
-    };
+    const refresh = Promise.withResolvers<CodexAccountListResult>();
+    const cachedAccount = { accountId: "default", label: "Default" };
     const client = {
-      listCodexAccounts: vi.fn(async () => ({ accounts: [cachedAccount] })),
+      listCodexAccounts: vi.fn(async () => accountSnapshot([cachedAccount])),
       refreshCodexAccounts: vi.fn(() => refresh.promise),
-      createCodexAccount: vi.fn(),
-      deleteCodexAccount: vi.fn(),
-      activateCodexAccount: vi.fn(),
-      startCodexAccountLogin: vi.fn(),
-      cancelCodexAccountLogin: vi.fn(),
     };
     const page = createDefaultRendererSettingsPages(
       rendererSettingsMessages("en"),
@@ -525,7 +2853,6 @@ describe("Renderer Codex Accounts page", () => {
       () => client,
     ).find(({ id }) => id === "accounts");
     if (!page) throw new Error("Accounts page is not registered");
-
     const document = new FakeDocument();
     const content = document.createElement("main");
     const scope = new RendererSettingsPageScope();
@@ -534,192 +2861,44 @@ describe("Renderer Codex Accounts page", () => {
       signal: scope.signal,
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
-
     await vi.waitFor(() => expect(visibleText(content)).toContain("Default"));
     expect(client.refreshCodexAccounts).toHaveBeenCalledOnce();
-
-    refresh.resolve({ accounts: [{ ...cachedAccount, email: "cached@example.com" }] });
+    expect(
+      descendants(content).some(
+        ({ tagName, children }) => tagName === "button" && children.includes("Add Codex account"),
+      ),
+    ).toBe(false);
+    refresh.resolve(
+      accountSnapshot([{ ...cachedAccount, email: "cached@example.com" }], "default", 2),
+    );
     await vi.waitFor(() =>
       expect(descendants(content).some((element) => element.title === "cached@example.com")).toBe(
         true,
       ),
     );
     expect(visibleText(content)).toContain("cached");
-    expect(visibleText(content)).toContain("example.com");
-    expect(visibleText(content)).not.toContain("/tmp/default");
-
+    expect(visibleText(content)).not.toContain("CODEX_HOME");
     scope.dispose();
   });
 
-  it("creates an isolated Account and starts sign-in without asking for a name", async () => {
-    const createdAccount = {
-      accountId: "work",
-      label: "Codex Account",
-      codexHome: "/tmp/work",
-      active: false,
-      isDefault: false,
-    };
-    const client = {
-      listCodexAccounts: vi.fn(async () => ({ accounts: [] })),
-      createCodexAccount: vi.fn(async () => ({ account: createdAccount })),
-      deleteCodexAccount: vi.fn(),
-      activateCodexAccount: vi.fn(),
-      startCodexAccountLogin: vi.fn(async ({ accountId }: { accountId: string }) => ({
-        accountId,
-        loginId: "login-1",
-        verificationUrl: "https://example.com/device",
-        userCode: "ABCD-EFGH",
-      })),
-      cancelCodexAccountLogin: vi.fn(async () => ({ cancelled: true })),
-    };
-    const page = createDefaultRendererSettingsPages(
-      rendererSettingsMessages("en"),
-      () => null,
-      () => null,
-      () => client,
-    ).find(({ id }) => id === "accounts");
-    if (!page) throw new Error("Accounts page is not registered");
-
-    const document = new FakeDocument();
-    const content = document.createElement("main");
-    const scope = new RendererSettingsPageScope();
-    page.mount({
-      content: content as unknown as HTMLElement,
-      signal: scope.signal,
-      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
-    });
-    await vi.waitFor(() => expect(client.listCodexAccounts).toHaveBeenCalledTimes(1));
-
-    expect(
-      descendants(content)
-        .filter(({ tagName }) => tagName === "input")
-        .map(({ type }) => type),
-    ).toEqual(["search"]);
-    const add = descendants(content).find(
-      ({ tagName, children }) => tagName === "button" && children.includes("Add Codex account"),
-    );
-    add?.dispatch("click");
-
-    await vi.waitFor(() => expect(client.createCodexAccount).toHaveBeenCalledWith({}));
-    await vi.waitFor(() =>
-      expect(client.startCodexAccountLogin).toHaveBeenCalledWith({ accountId: "work" }),
-    );
-    await vi.waitFor(() => expect(visibleText(content)).toContain("ABCD-EFGH"));
-
-    scope.dispose();
-  });
-
-  it("allows deleting only non-default Accounts", async () => {
-    const deleteCodexAccount = vi.fn(async ({ accountId }: { accountId: string }) => ({
-      deletedAccountId: accountId,
+  it("renders current Account quota and reset-credit count without consume or login actions", async () => {
+    const inspectCodexAccountUsage = vi.fn(async ({ accountId }: { accountId: string }) => ({
+      accountId,
+      usage: null,
+      accountCredits: {
+        usedPercent: 27,
+        periodType: "weekly" as const,
+        resetsAt: "2026-09-10T03:32:00.000Z",
+        resetCredits: { availableCount: 2 },
+      },
+      freshness: "cached" as const,
+      observedAt: "2026-09-10T03:32:00.000Z",
     }));
     const client = {
-      listCodexAccounts: vi.fn(async () => ({
-        accounts: [
-          {
-            accountId: "default",
-            label: "Default",
-            codexHome: "/tmp/default",
-            active: true,
-            isDefault: true,
-          },
-          {
-            accountId: "work",
-            label: "Work",
-            codexHome: "/tmp/work",
-            active: false,
-            isDefault: false,
-          },
-        ],
-      })),
-      createCodexAccount: vi.fn(),
-      deleteCodexAccount,
-      activateCodexAccount: vi.fn(),
-      startCodexAccountLogin: vi.fn(),
-      cancelCodexAccountLogin: vi.fn(),
-    };
-    const page = createDefaultRendererSettingsPages(
-      rendererSettingsMessages("en"),
-      () => null,
-      () => null,
-      () => client,
-    ).find(({ id }) => id === "accounts");
-    if (!page) throw new Error("Accounts page is not registered");
-
-    const document = new FakeDocument();
-    document.defaultView.confirm = vi.fn(() => true);
-    const content = document.createElement("main");
-    const scope = new RendererSettingsPageScope();
-    page.mount({
-      content: content as unknown as HTMLElement,
-      signal: scope.signal,
-      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
-    });
-    await vi.waitFor(() => expect(visibleText(content)).toContain("Work"));
-
-    const deleteButtons = descendants(content).filter(
-      (element) =>
-        element.tagName === "button" && element.getAttribute("aria-label")?.startsWith("Delete:"),
-    );
-    expect(deleteButtons).toHaveLength(1);
-    deleteButtons[0]?.dispatch("click");
-    expect(document.defaultView.confirm).toHaveBeenCalledWith(
-      "Delete this Account and its local data? This cannot be undone.",
-    );
-    await vi.waitFor(() => expect(deleteCodexAccount).toHaveBeenCalledWith({ accountId: "work" }));
-    await vi.waitFor(() => expect(visibleText(content)).not.toContain("Work"));
-    expect(visibleText(content)).toContain("Default");
-    expect(visibleText(content)).not.toContain("/tmp/work");
-
-    scope.dispose();
-  });
-
-  it("renders usage cards for signed-in Accounts and omits unsigned quota and CODEX_HOME", async () => {
-    const inspectCodexAccountUsage = vi.fn(async ({ accountId }: { accountId: string }) => {
-      if (accountId !== "work") throw new Error(`unexpected account ${accountId}`);
-      return {
-        accountId,
-        usage: null,
-        accountCredits: {
-          usedPercent: 27,
-          periodType: "weekly" as const,
-          resetsAt: "2026-09-10T03:32:00.000Z",
-          productUsage: [
-            {
-              product: "GrokBuild",
-              usagePercent: 27,
-              resetsAt: "2026-09-10T03:32:00.000Z",
-            },
-          ],
-        },
-      };
-    });
-    const client = {
-      listCodexAccounts: vi.fn(async () => ({
-        accounts: [
-          {
-            accountId: "work",
-            label: "Work",
-            email: "work@example.com",
-            codexHome: "/tmp/secret-home",
-            active: true,
-            isDefault: true,
-          },
-          {
-            accountId: "pending",
-            label: "Pending",
-            codexHome: "/tmp/pending-home",
-            active: false,
-            isDefault: false,
-          },
-        ],
-      })),
+      listCodexAccounts: vi.fn(async () =>
+        accountSnapshot([{ accountId: "work", label: "Work", email: "work@example.com" }], "work"),
+      ),
       inspectCodexAccountUsage,
-      createCodexAccount: vi.fn(),
-      deleteCodexAccount: vi.fn(),
-      activateCodexAccount: vi.fn(),
-      startCodexAccountLogin: vi.fn(),
-      cancelCodexAccountLogin: vi.fn(),
     };
     const page = createDefaultRendererSettingsPages(
       rendererSettingsMessages("zh-CN"),
@@ -728,7 +2907,6 @@ describe("Renderer Codex Accounts page", () => {
       () => client,
     ).find(({ id }) => id === "accounts");
     if (!page) throw new Error("Accounts page is not registered");
-
     const document = new FakeDocument();
     const content = document.createElement("main");
     const scope = new RendererSettingsPageScope();
@@ -737,188 +2915,87 @@ describe("Renderer Codex Accounts page", () => {
       signal: scope.signal,
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
-
     await vi.waitFor(() =>
       expect(inspectCodexAccountUsage).toHaveBeenCalledWith({ accountId: "work" }),
     );
-    expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => expect(visibleText(content)).toContain("7 天"));
-    expect(visibleText(content)).toContain("Build");
-    expect(visibleText(content)).toContain("已用");
-    expect(visibleText(content)).toContain("work");
-    expect(visibleText(content)).toContain("example.com");
-    expect(visibleText(content)).toContain("Pending");
     expect(visibleText(content)).toContain("work@example.com");
-    expect(visibleText(content)).not.toContain("/tmp/secret-home");
-    expect(visibleText(content)).not.toContain("/tmp/pending-home");
+    expect(visibleText(content)).toContain("2 张");
     expect(
-      descendants(content).filter((element) => element.getAttribute("role") === "meter"),
-    ).toHaveLength(2);
-
-    scope.dispose();
-  });
-
-  it("hides login for valid Accounts and exposes device-code login for others", async () => {
-    let active = "personal";
-    const personal = { email: undefined as string | undefined };
-    let loginCompleted:
-      | ((result: {
-          accountId: string;
-          loginId: string;
-          success: boolean;
-          error: string | null;
-        }) => void)
-      | undefined;
-    const listCodexAccounts = vi.fn(async () => ({
-      accounts: [
-        {
-          accountId: "personal",
-          label: "Personal",
-          ...(personal.email ? { email: personal.email } : {}),
-          codexHome: "/tmp/personal",
-          active: active === "personal",
-          isDefault: true,
-        },
-        {
-          accountId: "work",
-          label: "Work",
-          email: "work@example.com",
-          codexHome: "/tmp/work",
-          active: active === "work",
-          isDefault: false,
-        },
-      ],
-    }));
-    const loginStart = Promise.withResolvers<{
-      accountId: string;
-      loginId: string;
-      verificationUrl: string;
-      userCode: string;
-    }>();
-    const client = {
-      listCodexAccounts,
-      refreshCodexAccounts: listCodexAccounts,
-      createCodexAccount: vi.fn(),
-      deleteCodexAccount: vi.fn(async ({ accountId }: { accountId: string }) => ({
-        deletedAccountId: accountId,
-      })),
-      activateCodexAccount: vi.fn(async ({ accountId }: { accountId: string }) => {
-        active = accountId;
-        return {
-          account: {
-            accountId,
-            label: "Work",
-            codexHome: "/tmp/work",
-            active: true,
-            isDefault: false,
-          },
-        };
-      }),
-      startCodexAccountLogin: vi.fn(() => loginStart.promise),
-      cancelCodexAccountLogin: vi.fn(async () => ({ cancelled: true })),
-      subscribeCodexAccountLogin: vi.fn((listener: typeof loginCompleted) => {
-        loginCompleted = listener;
-        return () => undefined;
-      }),
-    };
-    const page = createDefaultRendererSettingsPages(
-      rendererSettingsMessages("en"),
-      () => null,
-      () => null,
-      () => client,
-    ).find(({ id }) => id === "accounts");
-    if (!page) throw new Error("Accounts page is not registered");
-
-    const document = new FakeDocument();
-    const openInBrowser = vi.fn(async () => undefined);
-    (
-      document.defaultView as Window & {
-        electronBridge: { sendMessageFromView: typeof openInBrowser };
-      }
-    ).electronBridge = { sendMessageFromView: openInBrowser };
-    const content = document.createElement("main");
-    const scope = new RendererSettingsPageScope();
-    const cleanup = page.mount({
-      content: content as unknown as HTMLElement,
-      signal: scope.signal,
-      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
-    });
-    await vi.waitFor(() => expect(visibleText(content)).toContain("Personal"));
-    expect(visibleText(content)).not.toContain("token");
-    expect(
-      descendants(content).filter(
-        ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
-      ),
-    ).toHaveLength(1);
-
-    const useWork = descendants(content).find(
-      ({ tagName, textContent }) => tagName === "button" && textContent === "Set as default",
-    );
-    useWork?.dispatch("click");
-    await vi.waitFor(() =>
-      expect(client.activateCodexAccount).toHaveBeenCalledWith({ accountId: "work" }),
-    );
-    await vi.waitFor(() => expect(visibleText(content)).toContain("Codex default"));
-
-    const signIn = descendants(content).find(
-      ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
-    );
-    signIn?.dispatch("click");
-    const signInButtons = descendants(content).filter(
-      ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
-    );
-    expect(signInButtons.every(({ disabled }) => disabled)).toBe(true);
-    signInButtons.at(-1)?.dispatch("click");
-    expect(client.startCodexAccountLogin).toHaveBeenCalledTimes(1);
-    loginStart.resolve({
-      accountId: "personal",
-      loginId: "login-1",
-      verificationUrl: "https://example.com/device",
-      userCode: "ABCD-EFGH",
-    });
-    await vi.waitFor(() => expect(visibleText(content)).toContain("ABCD-EFGH"));
-    expect(visibleText(content)).toContain("https://example.com/device");
-    const verificationLink = descendants(content).find(
-      ({ tagName, href }) => tagName === "a" && href === "https://example.com/device",
-    );
-    const preventDefault = vi.fn();
-    verificationLink?.dispatch("click", { preventDefault });
-    expect(preventDefault).toHaveBeenCalledOnce();
-    expect(openInBrowser).toHaveBeenCalledWith({
-      type: "open-in-browser",
-      url: "https://example.com/device",
-      initiator: "open_in_browser_bridge",
-      openTarget: "external-browser",
-      source: "manual",
-    });
-    expect(
-      descendants(content).find(
-        ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
-      )?.disabled,
-    ).toBe(true);
-    personal.email = "personal@example.com";
-    const refreshAfterLogin = vi.mocked(document.defaultView.setTimeout).mock.calls.at(-1)?.[0];
-    if (typeof refreshAfterLogin !== "function") {
-      throw new Error("Account login refresh was not scheduled");
-    }
-    refreshAfterLogin();
-    await vi.waitFor(() =>
-      expect(
-        descendants(content).some(
-          ({ tagName, textContent }) => tagName === "button" && textContent === "Sign in",
-        ),
-      ).toBe(false),
-    );
-    expect(visibleText(content)).toContain("Sign-in completed");
-    expect(visibleText(content)).not.toContain("ABCD-EFGH");
-    expect(loginCompleted).toBeTypeOf("function");
-
-    cleanup?.();
+      descendants(content)
+        .filter((element) => element.tagName === "button")
+        .map((element) => element.textContent),
+    ).not.toContain("登录");
+    expect(visibleText(content)).not.toContain("添加 Codex 账号");
+    expect(descendants(content).some(({ textContent }) => textContent === "使用重置")).toBe(false);
     scope.dispose();
   });
 });
 
 describe("Renderer Updates page", () => {
+  it.each(["succeeded", "failed"] as const)(
+    "keeps polling after start/status timeouts until the Host reports %s",
+    async (terminalPhase) => {
+      vi.useFakeTimers();
+      const request = deferred<{ status: UpdateStatus }>();
+      const client = {
+        checkUpdate: vi.fn(async () => updateCheck()),
+        startUpdate: vi.fn(() => request.promise),
+        readUpdateStatus: vi
+          .fn<() => Promise<{ status: UpdateStatus | null }>>()
+          .mockRejectedValueOnce(new RendererUpdateRequestTimeoutError())
+          .mockResolvedValueOnce({ status: null })
+          .mockResolvedValueOnce({ status: updateStatus("prepared") })
+          .mockResolvedValueOnce({ status: updateStatus("downloading") })
+          .mockResolvedValueOnce({ status: updateStatus(terminalPhase) }),
+      };
+      const page = createDefaultRendererSettingsPages(undefined, () => client).find(
+        ({ id }) => id === "updates",
+      );
+      if (!page) throw new Error("Updates page is not registered");
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        const panel = elementWithClass(content, "settings-update-panel");
+        const button = descendants(panel).find(({ tagName }) => tagName === "button");
+        if (!button) throw new Error("Update button is not rendered");
+        button.dispatch("click");
+        await vi.advanceTimersByTimeAsync(RENDERER_UPDATE_REQUEST_TIMEOUT_MS);
+        expect(panel.dataset.updateState).toBe("pending");
+        for (const [index, phase] of [
+          "pending",
+          "pending",
+          "prepared",
+          "downloading",
+          terminalPhase,
+        ].entries()) {
+          expect(document.defaultView.setTimeout).toHaveBeenCalledTimes(index + 1);
+          const poll = vi.mocked(document.defaultView.setTimeout).mock.calls.at(-1)?.[0];
+          if (typeof poll !== "function") throw new Error("Missing status poll callback");
+          poll();
+          await vi.advanceTimersByTimeAsync(0);
+          expect(panel.dataset.updateState).toBe(phase);
+        }
+        expect(client.startUpdate).toHaveBeenCalledOnce();
+        expect(client.readUpdateStatus).toHaveBeenCalledTimes(5);
+        expect(document.defaultView.setTimeout).toHaveBeenCalledTimes(5);
+        request.resolve({ status: updateStatus("prepared") });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(panel.dataset.updateState).toBe(terminalPhase);
+      } finally {
+        cleanup?.();
+        scope.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it.each([
     [updateStatus("prepared"), "正在准备更新..."],
     [updateStatus("waiting-for-exit"), "正在等待应用退出..."],
@@ -954,6 +3031,119 @@ describe("Renderer Updates page", () => {
     cleanup?.();
     scope.dispose();
   });
+
+  it("shows updates as unavailable when the Host has no update capability", async () => {
+    const client = {
+      checkUpdate: vi.fn(async () => null),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("unavailable"));
+    expect(visibleText(panel)).toContain("运行时尚未安装该项能力");
+    expect(visibleText(panel)).not.toContain("当前已是最新版本");
+    expect(descendants(panel).some(({ tagName }) => tagName === "button")).toBe(false);
+
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it("clears the previous check when Retry finds updates unavailable", async () => {
+    const client = {
+      checkUpdate: vi
+        .fn<() => Promise<UpdateCheckResult | null>>()
+        .mockResolvedValueOnce({ ...updateCheck(), error: "network down" })
+        .mockResolvedValueOnce(null),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    const metadata = elementWithClass(content, "settings-update-metadata");
+    const manualNpm = descendants(content).find(
+      ({ className }) => className === "settings-update-manual",
+    );
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("error"));
+    expect(visibleText(metadata)).toContain("v1.2.3");
+    expect(manualNpm?.hidden).toBe(false);
+
+    const retry = descendants(panel).find(
+      ({ tagName, children }) => tagName === "button" && children.includes("重试"),
+    );
+    if (!retry) throw new Error("Missing Retry button");
+    retry.dispatch("click");
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("unavailable"));
+    expect(visibleText(metadata)).not.toMatch(/v1\.2\.[23]/);
+    expect(manualNpm?.hidden).toBe(true);
+    expect(elementWithClass(content, "settings-update-controls").className).toBe(
+      "settings-update-controls",
+    );
+
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it.each(["succeeded", "failed"] as const)(
+    "shows opaque Host stop output after %s, as text",
+    async (phase) => {
+      const serviceStopOutput =
+        "Host stopped; interrupted 7 running task(s)\n<script>not markup</script>\n";
+      const client = {
+        checkUpdate: vi.fn(async () => updateCheck({ ...updateStatus(phase), serviceStopOutput })),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(async () => ({ status: null })),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("zh-CN"),
+        () => client,
+      ).find(({ id }) => id === "updates");
+      if (!page) throw new Error("Updates page is not registered");
+      const document = new FakeDocument();
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      await vi.waitFor(() =>
+        expect(elementWithClass(content, "settings-update-service-stop-output").textContent).toBe(
+          serviceStopOutput,
+        ),
+      );
+      cleanup?.();
+      scope.dispose();
+    },
+  );
 
   it("shows only the Update action before an update starts and ignores stale success state", async () => {
     const client = {
@@ -1043,15 +3233,12 @@ describe("Renderer Updates page", () => {
     scope.dispose();
   });
 
-  it.each([
-    ["npm" as const, "Windows 暂不支持自动更新。请退出 codexhost，在终端运行以下命令完成更新。"],
-    [
-      "windows-installer" as const,
-      "Windows 暂不支持自动更新。请下载并运行适用于当前系统的安装包。",
-    ],
-  ])("renders manual Windows updates for %s installations", async (installation, expected) => {
+  it("points to GitHub Releases without a retry or internal detail when the update request fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const client = {
-      checkUpdate: vi.fn(async () => ({ ...updateCheck(), installation })),
+      checkUpdate: vi.fn(async () => {
+        throw new Error("Renderer Model request manager is unavailable");
+      }),
       startUpdate: vi.fn(),
       readUpdateStatus: vi.fn(async () => ({ status: null })),
     };
@@ -1061,7 +3248,7 @@ describe("Renderer Updates page", () => {
     ).find(({ id }) => id === "updates");
     if (!page) throw new Error("Updates page is not registered");
 
-    const document = new FakeDocument("Win32");
+    const document = new FakeDocument();
     const content = document.createElement("main");
     const scope = new RendererSettingsPageScope();
     const cleanup = page.mount({
@@ -1070,29 +3257,102 @@ describe("Renderer Updates page", () => {
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
 
-    await vi.waitFor(() => {
-      expect(visibleText(content)).toContain(expected);
-      expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
-        "Windows 暂不支持自动更新",
-      );
-    });
+    const panel = elementWithClass(content, "settings-update-panel");
+    await vi.waitFor(() => expect(panel.dataset.updateState).toBe("failed"));
+    expect(visibleText(panel)).toContain("暂时无法自动更新");
+    expect(visibleText(content)).not.toContain("request manager");
+    expect(descendants(panel).find(({ tagName }) => tagName === "button")).toBeUndefined();
     expect(
-      descendants(elementWithClass(content, "settings-update-panel")).find(
-        ({ tagName }) => tagName === "button",
+      descendants(content).find(
+        (candidate) =>
+          candidate.tagName === "a" && visibleNotesText(candidate).includes("GitHub Releases"),
       ),
-    ).toBeUndefined();
-    expect(client.startUpdate).not.toHaveBeenCalled();
-    if (installation === "npm") {
-      expect(visibleText(content)).toContain("npm install -g @codexhost/cli@latest");
-    } else {
-      const link = descendants(content).find(
-        ({ tagName, href }) =>
-          tagName === "a" &&
-          href ===
-            "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+    ).toBeDefined();
+    expect(client.checkUpdate).toHaveBeenCalledOnce();
+    expect(consoleError).toHaveBeenCalled();
+
+    consoleError.mockRestore();
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it.each([
+    ["npm" as const, "如需手动更新，请在终端运行以下命令。"],
+    ["windows-installer" as const, "如需手动更新，请下载并运行适用于当前系统的安装包。"],
+  ])(
+    "offers one-click and manual Windows updates for %s installations",
+    async (installation, expected) => {
+      const client = {
+        checkUpdate: vi.fn(async () => ({ ...updateCheck(), installation })),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(async () => ({ status: null })),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("zh-CN"),
+        () => client,
+      ).find(({ id }) => id === "updates");
+      if (!page) throw new Error("Updates page is not registered");
+
+      const document = new FakeDocument("Win32");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+
+      await vi.waitFor(() => {
+        expect(visibleText(content)).toContain(expected);
+        expect(visibleText(elementWithClass(content, "settings-update-panel"))).toContain(
+          "有新版本可用",
+        );
+      });
+      expect(visibleText(content)).not.toContain("暂不支持自动更新");
+      const update = descendants(elementWithClass(content, "settings-update-panel")).find(
+        ({ tagName }) => tagName === "button",
       );
-      expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
-    }
+      expect(update).toBeDefined();
+      if (installation === "npm") {
+        expect(visibleText(content)).toContain("npm install -g @codexhost/cli@latest");
+      } else {
+        const link = descendants(content).find(
+          ({ tagName, href }) =>
+            tagName === "a" &&
+            href ===
+              "https://github.com/BytePioneer-AI/codex-host/releases/download/v1.2.3/codexhost-1.2.3-windows-x64.exe",
+        );
+        expect(link).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
+      }
+
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it("offers no update until the npm registry has synced the release", async () => {
+    const client = {
+      checkUpdate: vi.fn(async () => ({ ...updateCheck(), installationAvailable: false })),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(async () => ({ status: null })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    ).find(({ id }) => id === "updates");
+    if (!page) throw new Error("Updates page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const panel = elementWithClass(content, "settings-update-panel");
+    await vi.waitFor(() => expect(visibleText(panel)).toContain("npm 源还没有同步"));
+    expect(descendants(panel).some(({ tagName }) => tagName === "button")).toBe(false);
 
     cleanup?.();
     scope.dispose();
@@ -1133,6 +3393,154 @@ describe("Renderer Updates page", () => {
     scope.dispose();
   });
 
+  it.each([
+    {
+      locale: "zh-CN",
+      title: "手机与浏览器",
+      description:
+        "在手机或其他设备的浏览器上使用这台电脑的 CodexHost，这台电脑需要保持开机和联网。",
+      open: "在浏览器中打开连接设置",
+      failed: "Web 打开失败",
+    },
+    {
+      locale: "en",
+      title: "Phone & browser",
+      description:
+        "Use this computer's CodexHost from a browser on your phone or another device. This computer must stay on and connected to the network.",
+      open: "Open connection settings in browser",
+      failed: "Web could not be opened",
+    },
+  ] as const)("opens Web connection settings from Phone & browser ($locale)", async (copy) => {
+    const openWeb = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("The local Host is unavailable"))
+      .mockResolvedValueOnce({});
+    const pages = createDefaultRendererSettingsPages(rendererSettingsMessages(copy.locale), () => ({
+      checkUpdate: vi.fn(),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+      openWeb,
+    }));
+    const page = pages.find(({ id }) => id === "mobile-web");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page?.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    const button = descendants(content).find(
+      (element) => element.tagName === "button" && element.textContent === copy.open,
+    );
+    if (!button) throw new Error("Web button is missing");
+    expect(page?.label).toBe(copy.title);
+    expect(visibleText(content)).toContain(copy.description);
+    button.dispatch("click");
+    expect(button.disabled).toBe(true);
+    await vi.waitFor(() => {
+      expect(visibleText(content)).toContain(`${copy.failed}: The local Host is unavailable`);
+      expect(button.disabled).toBe(false);
+    });
+    button.dispatch("click");
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    expect(openWeb).toHaveBeenCalledTimes(2);
+    scope.dispose();
+  });
+
+  it.each([
+    [
+      "zh-CN",
+      "这台电脑通过 SSH 连接另一台 Mac 或 Linux 电脑。连接配置与 Codex 共用。",
+      "此窗口无法管理 SSH 连接",
+    ],
+    [
+      "en",
+      "This computer connects to another Mac or Linux computer over SSH. Connection settings are shared with Codex.",
+      "SSH connections are unavailable in this window",
+    ],
+  ] as const)(
+    "keeps the SSH page free of Web controls (%s)",
+    (locale, description, unavailable) => {
+      const page = createDefaultRendererSettingsPages(rendererSettingsMessages(locale), () => ({
+        checkUpdate: vi.fn(),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(),
+        openWeb: vi.fn(),
+      })).find(({ id }) => id === "remote-connections");
+      const content = new FakeDocument().createElement("main");
+      const scope = new RendererSettingsPageScope();
+      page?.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      expect(visibleText(content)).toContain(description);
+      expect(visibleText(content)).toContain(unavailable);
+      expect(visibleText(content)).not.toContain("Web");
+      expect(descendants(content).filter((element) => element.tagName === "button")).toEqual([]);
+      scope.dispose();
+    },
+  );
+
+  it("offers the codexhost console on the About page when the Host can open it", async () => {
+    const openConsole = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("port 4399 is used by another program"))
+      .mockResolvedValueOnce({ url: "http://127.0.0.1:4399/" });
+    const client = {
+      checkUpdate: vi.fn(),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+      openConsole,
+    };
+    const pages = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("zh-CN"),
+      () => client,
+    );
+    const page = pages.find(({ id }) => id === "about");
+    if (!page) throw new Error("About page is not registered");
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    expect(visibleText(content)).toContain("codexhost 控制台独立于 Codex Desktop 运行");
+    const button = descendants(content).find(
+      (element) => element.tagName === "button" && element.textContent === "打开控制台",
+    );
+    if (!button) throw new Error("console button is missing");
+    button.dispatch("click");
+    await vi.waitFor(() =>
+      expect(visibleText(content)).toContain("port 4399 is used by another program"),
+    );
+    button.dispatch("click");
+    await vi.waitFor(() => expect(openConsole).toHaveBeenCalledTimes(2));
+    scope.dispose();
+
+    const withoutConsole = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => ({
+        checkUpdate: vi.fn(),
+        startUpdate: vi.fn(),
+        readUpdateStatus: vi.fn(),
+      }),
+    ).find(({ id }) => id === "about");
+    const plain = new FakeDocument().createElement("main");
+    const plainScope = new RendererSettingsPageScope();
+    withoutConsole?.mount({
+      content: plain as unknown as HTMLElement,
+      signal: plainScope.signal,
+      runLatest: (operation, handlers) => plainScope.runLatest(operation, handlers),
+    });
+    expect(visibleText(plain)).not.toContain("Open console");
+    expect(visibleText(plain)).not.toContain("Open connection settings in browser");
+    plainScope.dispose();
+  });
+
   it("renders GitHub Release notes as structured Markdown", async () => {
     const client = {
       checkUpdate: vi.fn(async () => ({
@@ -1170,9 +3578,18 @@ describe("Renderer Updates page", () => {
     // Status and the update action come first; the manual fallback stays visible
     // right below it, and release notes render last.
     expect(content.children.indexOf(panel)).toBeLessThan(content.children.indexOf(controls));
-    expect(content.children.indexOf(controls)).toBeLessThan(
+    const starBanner = elementWithClass(content, "settings-update-star");
+    expect(content.children.indexOf(controls)).toBeLessThan(content.children.indexOf(starBanner));
+    expect(content.children.indexOf(starBanner)).toBeLessThan(
       content.children.indexOf(elementWithClass(content, "settings-update-notes-section")),
     );
+    expect(visibleText(starBanner)).toContain("如果 CodexHost 帮到了你，请在 GitHub 点个 Star");
+    const starLink = descendants(starBanner).find(({ tagName }) => tagName === "a");
+    expect(starLink).toMatchObject({
+      href: "https://github.com/BytePioneer-AI/codex-host",
+      target: "_blank",
+      rel: "noopener noreferrer",
+    });
     expect(descendants(panel)).toContain(updateButton);
     expect(descendants(panel)).not.toContain(notes);
     expect(notes.children.map((child) => (child as FakeElement).tagName)).toEqual(["h2", "ul"]);
@@ -1187,6 +3604,105 @@ describe("Renderer Updates page", () => {
 });
 
 describe("Renderer Session Import page", () => {
+  it("selects an explicit Host when tabs are ambiguous and invalidates disconnected Host switches", async () => {
+    const rows = [
+      {
+        nativeSessionId: "remote-session",
+        title: "Remote session",
+        cwd: "/remote",
+        updatedAt: 1,
+        running: false,
+      },
+    ];
+    const slow = deferred<{ candidates: typeof rows; total: number }>();
+    const imported = deferred<{ threadId: ReturnType<typeof hostThreadIdSchema.parse> }>();
+    const remote = {
+      hostId: "remote-1",
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [{ harnessId: harnessIdSchema.parse("pi"), name: "Pi" }],
+      })),
+      listHarnessSessions: vi
+        .fn(async () => ({ candidates: rows, total: 1 }))
+        .mockImplementationOnce(() => slow.promise),
+      importHarnessSession: vi.fn(() => imported.promise),
+    };
+    const getClient = vi.fn((hostId?: string) => (hostId === "remote-1" ? remote : null));
+    const diagnostics = {
+      snapshot: () => ({
+        adapter: {},
+        hosts: ["local", "remote-1"].map((hostId) => ({
+          hostId,
+          active: false,
+          agents: [{ agent: "pi", availability: "ready", error: null }],
+        })),
+      }),
+      refresh: vi.fn(async () => undefined),
+    };
+    const open = vi.fn(async () => undefined);
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => diagnostics as never,
+      () => null,
+      getClient,
+      open,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    const action = (name: string) => {
+      const control = descendants(content).find(
+        ({ dataset }) => dataset.sessionImportAction === name,
+      );
+      if (!control) throw new Error(`Missing ${name}`);
+      return control;
+    };
+    const visibleRows = () =>
+      descendants(content).filter(({ dataset }) => dataset.sessionImportId !== undefined);
+    const hostButton = (hostId: string) => {
+      const button = descendants(content).find(
+        ({ dataset }) => dataset.sessionImportHost === hostId,
+      );
+      if (!button) throw new Error(`Missing Host ${hostId}`);
+      return button;
+    };
+    expect(visibleText(content)).toContain("Select the Host to import sessions from");
+    expect(remote.listSessionImportSources).not.toHaveBeenCalled();
+    hostButton("remote-1").dispatch("click");
+    await vi.waitFor(() => expect(remote.listHarnessSessions).toHaveBeenCalledOnce());
+    hostButton("local").dispatch("click");
+    slow.resolve({ candidates: rows, total: 1 });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Session import is unavailable"));
+    expect(visibleRows()).toHaveLength(0);
+    expect(
+      descendants(content).filter(({ dataset }) => dataset.sessionImportHarnessOption),
+    ).toHaveLength(0);
+    hostButton("remote-1").dispatch("click");
+    await vi.waitFor(() => expect(visibleRows()).toHaveLength(1));
+    expect(hostButton("remote-1").getAttribute("aria-pressed")).toBe("true");
+    action("import").dispatch("click");
+    expect(hostButton("remote-1").disabled).toBe(true);
+    expect(hostButton("local").disabled).toBe(true);
+    getClient.mockClear();
+    hostButton("local").dispatch("click");
+    expect(getClient).not.toHaveBeenCalled();
+    imported.resolve({ threadId: hostThreadIdSchema.parse("imported-remote") });
+    await vi.waitFor(() =>
+      expect(open).toHaveBeenCalledWith("imported-remote", expect.any(AbortSignal), "remote-1"),
+    );
+    action("refresh").dispatch("click");
+    expect(getClient).toHaveBeenLastCalledWith("remote-1");
+    await vi.waitFor(() =>
+      expect(hostButton("remote-1").getAttribute("aria-pressed")).toBe("true"),
+    );
+    scope.dispose();
+  });
+
   it("configures page size, searches all metadata, rejects stale searches and locks controls during import", async () => {
     const rows = Array.from({ length: 45 }, (_, index) => ({
       nativeSessionId: `session-${index}`,
@@ -1244,6 +3760,7 @@ describe("Renderer Session Import page", () => {
         ?.dispatch("submit", { preventDefault: vi.fn() });
     };
     await vi.waitFor(() => expect(visibleRows()).toHaveLength(20));
+    expect(visibleText(content)).not.toContain("Activity unknown");
     expect(action("previous").disabled).toBe(true);
     expect(action("page-summary").textContent).toBe("Page 1 of 3 · 45 sessions");
     action("next").dispatch("click");
@@ -1359,6 +3876,339 @@ describe("Renderer Session Import page", () => {
     scope.dispose();
   });
 
+  it("reports a successful Web import without navigation or a retry-open action", async () => {
+    const client = {
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: [{ harnessId: harnessIdSchema.parse("pi"), name: "Pi" }],
+      })),
+      listHarnessSessions: vi.fn(async () => ({
+        total: 1,
+        candidates: [
+          {
+            nativeSessionId: "web-session",
+            title: "Web import",
+            cwd: "/work",
+            running: false,
+            updatedAt: 1000,
+          },
+        ],
+      })),
+      importHarnessSession: vi.fn(async () => ({
+        threadId: hostThreadIdSchema.parse("web-imported"),
+      })),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => null,
+      () => client,
+      null,
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(visibleText(content)).toContain("Web import"));
+    const button = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportAction === "import",
+    );
+    button?.dispatch("click");
+    await vi.waitFor(() =>
+      expect(visibleText(content)).toContain("Session imported. View it in Codex."),
+    );
+    expect(client.importHarnessSession).toHaveBeenCalledWith({
+      harnessId: "pi",
+      nativeSessionId: "web-session",
+    });
+    expect(
+      descendants(content).some(({ dataset }) => dataset.sessionImportAction === "retry-open"),
+    ).toBe(false);
+    scope.dispose();
+  });
+
+  it.each([
+    { initialHostId: "local", localAvailable: true },
+    { initialHostId: "durable", localAvailable: true },
+    { initialHostId: "durable", localAvailable: false },
+  ])(
+    "excludes the reserved durable import Host with $initialHostId active and local available=$localAvailable",
+    async ({ initialHostId, localAvailable }) => {
+      const remoteHostId = "remote-ssh-discovered:durable";
+      const makeClient = (hostId: string) => ({
+        hostId,
+        listSessionImportSources: vi.fn(async () => ({
+          harnesses: [{ harnessId: harnessIdSchema.parse("pi"), name: "Pi" }],
+        })),
+        listHarnessSessions: vi.fn(async () => ({ candidates: [], total: 0 })),
+        importHarnessSession: vi.fn(),
+      });
+      const local = makeClient("local");
+      const durable = makeClient("durable");
+      const remote = makeClient(remoteHostId);
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+          hosts: ["local", "durable", remoteHostId].map((hostId) => ({
+            hostId,
+            active: hostId === initialHostId,
+            agents: [{ agent: "pi", availability: "ready", error: null }],
+          })),
+        }),
+        subscribe: () => () => undefined,
+        refresh: async () => undefined,
+      };
+      const getClient = vi.fn((hostId = initialHostId) => {
+        if (hostId === "local") return localAvailable ? local : null;
+        return hostId === "durable" ? durable : remote;
+      });
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("en"),
+        () => null,
+        () => diagnostics,
+        () => null,
+        getClient,
+      ).find(({ id }) => id === "session-import");
+      if (!page) throw new Error("Session import page missing");
+      const content = new FakeDocument().createElement("main");
+      const scope = new RendererSettingsPageScope();
+      page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      const hosts = () =>
+        descendants(content).filter(({ dataset }) => dataset.sessionImportHost !== undefined);
+      expect(hosts().map(({ dataset }) => dataset.sessionImportHost)).toEqual([
+        "local",
+        remoteHostId,
+      ]);
+      expect(hosts()[0]?.attributes.get("aria-pressed")).toBe("true");
+      if (localAvailable) {
+        await vi.waitFor(() => expect(local.listHarnessSessions).toHaveBeenCalledOnce());
+      } else {
+        await vi.waitFor(() =>
+          expect(visibleText(content)).toContain("Session import is unavailable"),
+        );
+        expect(local.listSessionImportSources).not.toHaveBeenCalled();
+      }
+      descendants(content)
+        .find(({ dataset }) => dataset.sessionImportAction === "refresh")
+        ?.dispatch("click");
+      expect(hosts().map(({ dataset }) => dataset.sessionImportHost)).not.toContain("durable");
+      hosts()[1]?.dispatch("click");
+      await vi.waitFor(() => expect(remote.listHarnessSessions).toHaveBeenCalledOnce());
+      expect(hosts()[1]?.attributes.get("aria-pressed")).toBe("true");
+      expect(durable.listSessionImportSources).not.toHaveBeenCalled();
+      scope.dispose();
+    },
+  );
+
+  it.each(["local", "remote-1"])(
+    "filters installed Harnesses using only %s diagnostics",
+    async (hostId) => {
+      const client = {
+        hostId,
+        listSessionImportSources: vi.fn(async () => ({
+          harnesses: ["pi", "kimi-code", "grok", "omp", "third-party"].map((id) => ({
+            harnessId: harnessIdSchema.parse(id),
+            name: id,
+          })),
+        })),
+        listHarnessSessions: vi.fn(async () => ({ total: 0, candidates: [] })),
+        importHarnessSession: vi.fn(),
+      };
+      const agent = (name: string, availability: string) => ({
+        agent: name,
+        availability,
+        error: null,
+      });
+      const diagnostics = {
+        snapshot: vi.fn(() => ({
+          adapter: {},
+          hosts: [
+            {
+              hostId: "local",
+              active: false,
+              agents: [
+                agent("pi", "notInstalled"),
+                agent("kimi-code", "notInstalled"),
+                agent("grok", "ready"),
+                agent("omp", "error"),
+                agent("third-party", "unavailable"),
+              ],
+            },
+            // The non-selected Host must not affect this page's sources.
+            {
+              hostId: "remote-1",
+              active: true,
+              agents: [
+                agent("pi", "ready"),
+                agent("kimi-code", "ready"),
+                agent("grok", "notInstalled"),
+                agent("omp", "error"),
+                agent("third-party", "unavailable"),
+              ],
+            },
+          ],
+        })),
+        refresh: vi.fn(),
+        subscribe: vi.fn(),
+      };
+      const page = createDefaultRendererSettingsPages(
+        rendererSettingsMessages("en"),
+        () => null,
+        () => diagnostics as never,
+        () => null,
+        () => client,
+        vi.fn(async () => undefined),
+      ).find(({ id }) => id === "session-import");
+      if (!page) throw new Error("Session import page missing");
+      const content = new FakeDocument().createElement("main");
+      const scope = new RendererSettingsPageScope();
+      page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+      });
+      // The first Harness that is not missing is selected, not the hidden one.
+      await vi.waitFor(() =>
+        expect(client.listHarnessSessions).toHaveBeenCalledWith(
+          expect.objectContaining({ harnessId: hostId === "local" ? "grok" : "pi" }),
+        ),
+      );
+      expect(
+        descendants(content)
+          .filter(({ dataset }) => dataset.sessionImportHarnessOption !== undefined)
+          .map(({ textContent }) => textContent),
+      ).toEqual(
+        hostId === "local"
+          ? ["grok", "omp", "third-party"]
+          : ["pi", "kimi-code", "omp", "third-party"],
+      );
+      expect(diagnostics.refresh).not.toHaveBeenCalled();
+      scope.dispose();
+    },
+  );
+
+  it("shows a scroll hint only while the Harness options overflow and scrolls them with the wheel", async () => {
+    const client = {
+      listSessionImportSources: vi.fn(async () => ({
+        harnesses: ["pi", "omp", "grok"].map((id) => ({
+          harnessId: harnessIdSchema.parse(id),
+          name: id,
+        })),
+      })),
+      listHarnessSessions: vi.fn(async () => ({ total: 0, candidates: [] })),
+      importHarnessSession: vi.fn(),
+    };
+    const page = createDefaultRendererSettingsPages(
+      rendererSettingsMessages("en"),
+      () => null,
+      () => null,
+      () => null,
+      () => client,
+      vi.fn(async () => undefined),
+    ).find(({ id }) => id === "session-import");
+    if (!page) throw new Error("Session import page missing");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    await vi.waitFor(() => expect(client.listHarnessSessions).toHaveBeenCalledTimes(1));
+    const selector = descendants(content).find(
+      ({ dataset }) => dataset.sessionImportHarness === "selector",
+    );
+    const indicator = descendants(content).find(
+      ({ className }) => className === "settings-session-import-harness__indicator",
+    );
+    const thumb = indicator?.children[0] as FakeElement | undefined;
+    if (!selector || !indicator || !thumb) throw new Error("Harness selector missing");
+    // Everything fits: no hint, and the wheel is left to the page.
+    expect(indicator.dataset.overflowing).toBe("false");
+    const wheel = (deltaY: number, deltaX = 0) => {
+      const event = { deltaX, deltaY, ctrlKey: false, preventDefault: vi.fn() };
+      selector.dispatch("wheel", event);
+      return event.preventDefault.mock.calls.length > 0;
+    };
+    expect(wheel(100)).toBe(false);
+
+    selector.scrollWidth = 1_200;
+    selector.clientWidth = 600;
+    selector.dispatch("scroll");
+    expect(indicator.dataset.overflowing).toBe("true");
+    expect(thumb.style).toMatchObject({ width: "50%", left: "0%" });
+
+    expect(wheel(300)).toBe(true);
+    selector.dispatch("scroll");
+    expect(selector.scrollLeft).toBe(300);
+    expect(thumb.style.left).toBe("25%");
+    // Horizontal gestures already scroll natively and must not be handled twice.
+    expect(wheel(100, 40)).toBe(false);
+    expect(wheel(900)).toBe(true);
+    expect(selector.scrollLeft).toBe(600);
+    // At either end the page keeps scrolling.
+    expect(wheel(100)).toBe(false);
+
+    // The hint is draggable with a mouse: 600px of line stand for 1200px of options.
+    const capture = vi.fn();
+    Object.assign(indicator, {
+      getBoundingClientRect: () => ({ left: 100, width: 600 }),
+      setPointerCapture: capture,
+    });
+    const pointer = (clientX: number, target: FakeElement, overrides = {}) => ({
+      button: 0,
+      pointerId: 7,
+      clientX,
+      target,
+      preventDefault: vi.fn(),
+      ...overrides,
+    });
+    // Pressing the bare line first centres the visible part on the pointer...
+    indicator.dispatch("pointerdown", pointer(250, indicator));
+    expect(selector.scrollLeft).toBe(0);
+    expect(capture).toHaveBeenCalledWith(7);
+    expect(indicator.dataset.dragging).toBe("true");
+    // ...and moving then follows the pointer one to one along the line, within the ends.
+    indicator.dispatch("pointermove", pointer(400, indicator));
+    expect(selector.scrollLeft).toBe(300);
+    expect(thumb.style.left).toBe("25%");
+    indicator.dispatch("pointermove", pointer(400, indicator, { pointerId: 8 }));
+    indicator.dispatch("pointermove", pointer(5_000, indicator));
+    expect(selector.scrollLeft).toBe(600);
+    indicator.dispatch("pointerup", pointer(5_000, indicator));
+    expect(indicator.dataset.dragging).toBeUndefined();
+    indicator.dispatch("pointermove", pointer(100, indicator));
+    expect(selector.scrollLeft).toBe(600);
+    // Pressing the thumb itself keeps the position; other buttons do nothing.
+    indicator.dispatch("pointerdown", pointer(650, thumb, { button: 2 }));
+    expect(indicator.dataset.dragging).toBeUndefined();
+    indicator.dispatch("pointerdown", pointer(650, thumb));
+    expect(selector.scrollLeft).toBe(600);
+    indicator.dispatch("pointermove", pointer(600, thumb));
+    expect(selector.scrollLeft).toBe(500);
+    indicator.dispatch("pointercancel", pointer(600, thumb));
+    indicator.dispatch("pointerdown", pointer(700, thumb));
+    indicator.dispatch("pointermove", pointer(5_000, thumb));
+    indicator.dispatch("pointerup", pointer(5_000, thumb));
+    expect(selector.scrollLeft).toBe(600);
+
+    // Choosing another Harness rebuilds the options without jumping back to the start.
+    descendants(content)
+      .find(({ dataset }) => dataset.sessionImportHarnessOption === "grok")
+      ?.dispatch("click");
+    expect(selector.scrollLeft).toBe(600);
+    expect(thumb.style.left).toBe("50%");
+    scope.dispose();
+  });
+
   it("discovers Harness options, ignores stale Harness results, and imports Pi with an activity warning", async () => {
     const oldList = deferred<{ candidates: []; total: number }>();
     const client = {
@@ -1423,7 +4273,7 @@ describe("Renderer Session Import page", () => {
     await oldList.promise;
     await Promise.resolve();
     expect(visibleText(content)).toContain("Pi original");
-    expect(visibleText(content)).toContain("Activity unknown");
+    expect(visibleText(content)).not.toContain("Activity unknown");
     expect(visibleText(content)).toContain("close the session in its native client");
     const button = descendants(content).find(
       ({ dataset }) => dataset.sessionImportAction === "import",
@@ -1437,7 +4287,7 @@ describe("Renderer Session Import page", () => {
       }),
     );
     await vi.waitFor(() =>
-      expect(open).toHaveBeenCalledWith("pi-imported", expect.any(AbortSignal)),
+      expect(open).toHaveBeenCalledWith("pi-imported", expect.any(AbortSignal), undefined),
     );
     scope.dispose();
   });
@@ -1488,15 +4338,17 @@ describe("Renderer Session Import page", () => {
     if (!refresh) throw new Error("Session Import Refresh is not rendered");
 
     expect(refresh.disabled).toBe(true);
-    expect(visibleNotesText(refresh)).toContain("Loading local sessions");
-    expect(visibleText(content)).toContain("Loading local sessions");
+    expect(visibleNotesText(refresh)).toContain("Loading sessions from the selected Host");
+    expect(visibleText(content)).toContain("Loading sessions from the selected Host");
 
     await vi.waitFor(() => expect(client.listHarnessSessions).toHaveBeenCalledOnce());
     // A synthetic second activation proves runLatest still rejects stale results even if
     // browser-level disabled handling is bypassed.
     refresh.dispatch("click");
     second.resolve({ candidates: [], total: 0 });
-    await vi.waitFor(() => expect(visibleText(content)).toContain("No local sessions"));
+    await vi.waitFor(() =>
+      expect(visibleText(content)).toContain("No sessions are available to import"),
+    );
     expect(refresh.disabled).toBe(false);
 
     first.resolve({
@@ -1505,7 +4357,7 @@ describe("Renderer Session Import page", () => {
     });
     await first.promise;
     await Promise.resolve();
-    expect(visibleText(content)).toContain("No local sessions");
+    expect(visibleText(content)).toContain("No sessions are available to import");
     expect(visibleText(content)).not.toContain("Ignored stale");
 
     refresh.dispatch("click");
@@ -1518,8 +4370,9 @@ describe("Renderer Session Import page", () => {
     scope.dispose();
   });
 
-  it("lists local DSH Modern sessions and imports only an idle row", async () => {
+  it("lists Host-scoped sessions and opens the imported Thread on the same Host", async () => {
     const client = {
+      hostId: "remote-1",
       listSessionImportSources: vi.fn(async () => ({
         harnesses: [
           { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
@@ -1548,13 +4401,15 @@ describe("Renderer Session Import page", () => {
         threadId: hostThreadIdSchema.parse("imported-thread"),
       })),
     };
+    const otherClient = { ...client, hostId: "remote-2", importHarnessSession: vi.fn() };
+    let selectedClient = client;
     const openImportedThread = vi.fn(async () => undefined);
     const page = createDefaultRendererSettingsPages(
       rendererSettingsMessages("zh-CN"),
       () => null,
       () => null,
       () => null,
-      () => client,
+      () => selectedClient,
       openImportedThread,
     ).find(({ id }) => id === "session-import");
     if (!page) throw new Error("Session Import page is not registered");
@@ -1588,7 +4443,7 @@ describe("Renderer Session Import page", () => {
       "会话导入",
     );
     expect(visibleText(content)).toContain(
-      "可选 Harness 来自本地 Host。运行状态未知时，请先在原生客户端关闭该会话再导入，避免同时写入。",
+      "可选 Harness 来自当前 Host。运行状态未知时，请先在原生客户端关闭该会话再导入，避免同时写入。",
     );
     const harnessSelector = descendants(content).find(
       ({ dataset }) => dataset.sessionImportHarness === "selector",
@@ -1630,6 +4485,7 @@ describe("Renderer Session Import page", () => {
     expect(actions[1]?.disabled).toBe(true);
     actions[1]?.dispatch("click");
     expect(client.importHarnessSession).not.toHaveBeenCalled();
+    selectedClient = otherClient;
     actions[0]?.dispatch("click");
     expect(descendants(content)).toContain(actions[0]);
     expect(actions[0]?.getAttribute("aria-disabled")).toBe("true");
@@ -1640,8 +4496,13 @@ describe("Renderer Session Import page", () => {
       harnessId: "deepseek-harness",
       nativeSessionId: "idle-session-identifier-that-is-long",
     });
+    expect(otherClient.importHarnessSession).not.toHaveBeenCalled();
     await vi.waitFor(() =>
-      expect(openImportedThread).toHaveBeenCalledWith("imported-thread", expect.any(AbortSignal)),
+      expect(openImportedThread).toHaveBeenCalledWith(
+        "imported-thread",
+        expect.any(AbortSignal),
+        "remote-1",
+      ),
     );
     scope.dispose();
   });
@@ -1826,8 +4687,9 @@ describe("Renderer Session Import page", () => {
     }
   });
 
-  it("keeps project recovery actions after committed import navigation fails", async () => {
+  it("keeps project recovery and the original Host after committed import navigation fails", async () => {
     const client = {
+      hostId: "remote-original",
       listSessionImportSources: vi.fn(async () => ({
         harnesses: [
           { harnessId: harnessIdSchema.parse("deepseek-harness"), name: "DeepSeek Harness" },
@@ -1849,6 +4711,7 @@ describe("Renderer Session Import page", () => {
         threadId: hostThreadIdSchema.parse("imported-thread"),
       })),
     };
+    let selectedClient = client;
     const openImportedThread = vi
       .fn()
       .mockRejectedValueOnce(new Error("private navigation detail"))
@@ -1858,7 +4721,7 @@ describe("Renderer Session Import page", () => {
       () => null,
       () => null,
       () => null,
-      () => client,
+      () => selectedClient,
       openImportedThread,
     ).find(({ id }) => id === "session-import");
     if (!page) throw new Error("Session Import page is not registered");
@@ -1895,6 +4758,7 @@ describe("Renderer Session Import page", () => {
       ({ dataset }) => dataset.sessionImportAction === "retry-open",
     );
     if (!retry) throw new Error("Retry open action is not rendered");
+    selectedClient = { ...client, hostId: "remote-other" };
     retry.dispatch("click");
     expect(retry.disabled).toBe(true);
     expect(retry.getAttribute("aria-busy")).toBe("true");
@@ -1903,6 +4767,11 @@ describe("Renderer Session Import page", () => {
         ?.disabled,
     ).toBe(true);
     await vi.waitFor(() => expect(openImportedThread).toHaveBeenCalledTimes(2));
+    expect(openImportedThread).toHaveBeenLastCalledWith(
+      "imported-thread",
+      expect.any(AbortSignal),
+      "remote-original",
+    );
     expect(client.importHarnessSession).toHaveBeenCalledOnce();
     scope.dispose();
   });
@@ -1921,7 +4790,7 @@ describe("Renderer Session Import page", () => {
       runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
     });
 
-    expect(visibleText(content)).toContain("Session import is unavailable for this local Harness");
+    expect(visibleText(content)).toContain("Session import is unavailable for this Harness");
     expect(
       descendants(content).filter(({ dataset }) => dataset.sessionImportAction === "import"),
     ).toHaveLength(0);

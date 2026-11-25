@@ -7,7 +7,11 @@ import { StringDecoder } from "node:string_decoder";
 
 import WebSocket from "ws";
 
-import { deepSeekProcessInvocation, killDeepSeekProcessTree } from "../executable.js";
+import {
+  deepSeekEnvironment,
+  deepSeekProcessInvocation,
+  killDeepSeekProcessTree,
+} from "../executable.js";
 
 import {
   MODERN_REMOTE_MUX_PATH,
@@ -117,7 +121,9 @@ export interface ModernRemoteConnectionDependencies {
   ) => void;
 }
 
-const DEFAULT_STARTUP_TIMEOUT_MS = 20_000;
+// `dsh web` takes about 17 s to print its address when idle and over 50 s on a cold start after a
+// plugin upgrade; while Codex Desktop and other Harnesses start together it often passed 20 s.
+const DEFAULT_STARTUP_TIMEOUT_MS = 90_000;
 const DEFAULT_UNARY_TIMEOUT_MS = 10_000;
 const DEFAULT_STREAM_OPEN_TIMEOUT_MS = 10_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 3_000;
@@ -844,7 +850,7 @@ export class ModernRemoteConnection {
     let child: ChildProcess;
     try {
       child = this.#dependencies.spawn(invocation.command, invocation.arguments, {
-        env: this.#environment,
+        env: deepSeekEnvironment(this.#options.command, this.#environment),
         stdio: "pipe",
         windowsHide: true,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
@@ -1023,7 +1029,8 @@ export class ModernRemoteConnection {
     } catch (error) {
       throw this.#transportFailure("DeepSeek Harness Web authentication failed", error);
     }
-    if (response.status !== 303 || response.headers.get("location") !== "/") {
+    const location = response.headers.get("location");
+    if (response.status !== 303 || (location !== "/" && location !== "./")) {
       await cancelResponse(response);
       throw new ModernRemoteConnectionError(
         response.status === 401 || response.status === 403

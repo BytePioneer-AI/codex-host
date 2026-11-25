@@ -31,6 +31,7 @@ import {
   type HostUsage,
   type InspectHarnessInput,
   type OpenSessionInput,
+  type ReadThreadSnapshotInput,
   type TurnOutcome,
   type TurnStartCommand,
   type TurnStartAccepted,
@@ -2160,6 +2161,30 @@ export class AntigravityAdapter implements HarnessAdapter {
       return { ok: false, error: normalizeAntigravityError(error) };
     }
   }
+  async readSnapshot(input: ReadThreadSnapshotInput): Promise<HarnessResult<HostThreadSnapshot>> {
+    if (this.#closed) return err("invalidState", "Adapter is closed");
+    if (!validNativeSessionRef(input.nativeRef, harnessId)) {
+      return err("invalidRequest", "Invalid Antigravity Native Session");
+    }
+    try {
+      const { events } = await readNativeHistory(
+        input.nativeRef.nativeSessionId,
+        antigravityHome({ ...this.#environment, ...input.environment }),
+      );
+      const turns = projectReplayedEventsToTurns({
+        nativeSessionId: input.nativeRef.nativeSessionId,
+        cwd: input.cwd,
+        events,
+        ...(this.options.toolOutputLimit !== undefined
+          ? { outputLimit: this.options.toolOutputLimit }
+          : {}),
+      });
+      return ok({ turns });
+    } catch {
+      return err("nativeFailure", "Antigravity history unavailable");
+    }
+  }
+
   readonly subagents = {
     readSnapshot: async (input: {
       parent: NativeSessionRef;

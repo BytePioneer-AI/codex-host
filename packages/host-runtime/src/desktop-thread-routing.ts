@@ -37,6 +37,7 @@ import {
 import { externalThreadEmptyOfficialResult } from "./external-thread-official-defaults.js";
 import type {
   ExternalThread,
+  ExternalThreadColdRead,
   ExternalThreadLocation,
   ExternalThreadResolution,
 } from "./external-thread-runtime.js";
@@ -90,10 +91,11 @@ export interface DesktopThreadRoutingHost {
   >;
   locateExternalThread(threadId: string): Promise<ExternalThreadLocation>;
   resolveExternalThread(threadId: string): Promise<ExternalThreadResolution>;
+  readColdExternalThread(threadId: string): Promise<ExternalThreadColdRead>;
   /** Answers the request when the Thread could not be resolved; returns whether it did. */
   writeResolutionError(
     request: JsonRpcRequest,
-    resolution: ExternalThreadLocation | ExternalThreadResolution,
+    resolution: ExternalThreadLocation | ExternalThreadResolution | ExternalThreadColdRead,
   ): Promise<boolean>;
   forwardOfficialRequest(request: JsonRpcRequest, frame: Buffer<ArrayBufferLike>): Promise<void>;
   startExternalThread(request: JsonRpcRequest, harnessId: ExternalHarnessId): Promise<void>;
@@ -161,6 +163,11 @@ export interface DesktopThreadRoutingHost {
     params: JsonObject,
     historyFresh: boolean,
   ): Promise<void>;
+  listColdExternalHistory(
+    request: JsonRpcRequest,
+    cold: Extract<ExternalThreadColdRead, { kind: "cold" }>,
+    params: JsonObject,
+  ): Promise<void>;
   startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void>;
   steerExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void>;
   interruptExternalTurn(
@@ -174,6 +181,10 @@ export interface DesktopThreadRoutingHost {
     thread: ExternalThread,
     includeTurns: boolean,
     historyFresh: boolean,
+  ): Promise<void>;
+  readColdExternalThreadReply(
+    request: JsonRpcRequest,
+    cold: Extract<ExternalThreadColdRead, { kind: "cold" }>,
   ): Promise<void>;
   resumeExternalThread(
     request: JsonRpcRequest,
@@ -535,6 +546,19 @@ export class DesktopThreadRouting {
     }
     if (request.method === "thread/turns/list" || request.method === "thread/items/list") {
       const params = routingParams(request);
+      if (typeof params.threadId === "string") {
+        const cold = await this.#host.readColdExternalThread(params.threadId);
+        if (await this.#host.writeResolutionError(request, cold)) return true;
+        if (cold.kind === "cold") {
+          await this.#host.listColdExternalHistory(request, cold, params);
+          return true;
+        }
+        if (cold.kind === "loaded") {
+          await this.#host.listExternalHistory(request, cold.thread, params, false);
+          return true;
+        }
+        if (cold.kind === "official") return false;
+      }
       const resolution =
         typeof params.threadId === "string"
           ? await this.#host.resolveExternalThread(params.threadId)
@@ -632,6 +656,22 @@ export class DesktopThreadRouting {
           rpcError(request, -32602, "Paginated External Threads require thread/turns/list"),
         );
         return true;
+      }
+      if (typeof params.threadId === "string") {
+        const cold = await this.#host.readColdExternalThread(params.threadId);
+        if (await this.#host.writeResolutionError(request, cold)) return true;
+        if (cold.kind === "cold") {
+          await this.#host.readColdExternalThreadReply(request, cold);
+          return true;
+        }
+        if (cold.kind === "loaded") {
+          await this.#host.readExternalThread(request, cold.thread, true, false);
+          return true;
+        }
+        if (cold.kind === "official") {
+          await this.#host.forwardOfficialRequest(request, frame);
+          return true;
+        }
       }
     }
     if (request.method === "thread/read" || request.method === "thread/resume") {

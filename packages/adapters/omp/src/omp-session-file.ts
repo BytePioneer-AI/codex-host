@@ -89,7 +89,7 @@ export async function readOmpSessionHistory(
   return { entries, leafId, ...(incomplete ? { incomplete: true } : {}) };
 }
 
-async function readOmpSessionHeader(sessionFile: string): Promise<OmpSessionHeader> {
+export async function readOmpSessionHeader(sessionFile: string): Promise<OmpSessionHeader> {
   const handle = await open(sessionFile, "r");
   try {
     const buffer = Buffer.allocUnsafe(MAX_SESSION_HEADER_BYTES);

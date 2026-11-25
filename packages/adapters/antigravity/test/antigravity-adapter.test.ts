@@ -3472,4 +3472,27 @@ describe("Antigravity idle wake Turns", () => {
       nativeTurnRef: { nativeTurnKey: "turn-0" },
     });
   });
+
+  it("reads native SQLite history cold via adapter.readSnapshot without creating a transport", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-cold-read-"));
+    directories.push(home);
+    const nativeRef = ref();
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    try {
+      userStep(db, 0, "cold agy prompt", "run-1");
+      answerStep(db, 1, "cold agy answer", "run-1");
+    } finally {
+      db.close();
+    }
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const result = await adapter.readSnapshot({ nativeRef, cwd: home });
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        turns: [{ nativeTurnRef: { nativeTurnKey: "turn-0" } }],
+      },
+    });
+    expect(JSON.stringify(result)).toContain("cold agy answer");
+    expect(transports).toHaveLength(0);
+  });
 });

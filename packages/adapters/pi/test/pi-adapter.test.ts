@@ -4352,4 +4352,60 @@ describe("Pi HarnessAdapter Session", () => {
       undefined,
     ]);
   });
+
+  it("reads a persisted Pi Session snapshot cold from disk without creating a transport", async () => {
+    const cwd = await realpath(await mkdtemp(path.join(os.tmpdir(), "codexhost-pi-cold-read-")));
+    const sessionFile = path.join(cwd, "cold.jsonl");
+    const history = sourceHistory();
+    const { adapter, dependencies } = fixture();
+    try {
+      await writeFile(
+        sessionFile,
+        [{ type: "session", version: 3, id: "cold-session", cwd }, ...history.entries]
+          .map((entry) => JSON.stringify(entry))
+          .join("\n") + "\n",
+      );
+      const nativeRef = nativeSessionRefSchema.parse({
+        harnessId: "pi",
+        nativeSessionId: "cold-session",
+        locator: { sessionFile },
+        formatVersion: 1,
+      });
+      await expect(adapter.readSnapshot({ nativeRef, cwd })).resolves.toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            { nativeTurnRef: { nativeTurnKey: "source-user-1" } },
+            { nativeTurnRef: { nativeTurnKey: "source-user-2" } },
+          ],
+        },
+      });
+      await expect(
+        adapter.readSnapshot({
+          nativeRef: nativeSessionRefSchema.parse({
+            harnessId: "pi",
+            nativeSessionId: "wrong-session",
+            locator: { sessionFile },
+            formatVersion: 1,
+          }),
+          cwd,
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "sessionNotFound" } });
+      await expect(
+        adapter.readSnapshot({
+          nativeRef: nativeSessionRefSchema.parse({
+            harnessId: "pi",
+            nativeSessionId: "missing",
+            locator: { sessionFile: path.join(cwd, "missing.jsonl") },
+            formatVersion: 1,
+          }),
+          cwd,
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "sessionNotFound" } });
+      expect(dependencies.createTransport).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

@@ -49,6 +49,7 @@ import {
   type OpenSessionInput,
   type PermissionModeSelectCommand,
   type PermissionModeSelectCompleted,
+  type ReadThreadSnapshotInput,
   type HostThreadSnapshot,
   type HostUsage,
   type HostUsageRequest,
@@ -88,6 +89,7 @@ import {
 import { piMessageItemId, type PiMessageIdentity } from "./pi-message-item-id.js";
 import { resolvePiInspectCwd } from "./command.js";
 import { mapPiSnapshot, resolvePiForkBoundary, type PiSessionHistory } from "./pi-history.js";
+import { readPiSessionHeader, readPiSessionHistory } from "./pi-session-file.js";
 import { piToolFileChanges } from "./pi-file-change.js";
 import { piToolCommand } from "./pi-tool-command.js";
 import {
@@ -2715,6 +2717,65 @@ export class PiAdapter implements HarnessAdapter {
       return { ok: true, value: session };
     } catch (error) {
       await transport?.close().catch(() => undefined);
+      return { ok: false, error: normalizedError(error, "nativeFailure") };
+    }
+  }
+
+  async readSnapshot(input: ReadThreadSnapshotInput): Promise<HarnessResult<HostThreadSnapshot>> {
+    if (this.#closePromise) {
+      return { ok: false, error: invalidState("Pi Adapter is closed") };
+    }
+    const sourceRef = nativeSessionRefSchema.parse(input.nativeRef) as NativeSessionRef;
+    if (sourceRef.harnessId !== this.harnessId) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Pi Adapter cannot read another Harness's Native Session",
+          retryable: false,
+        },
+      };
+    }
+    try {
+      const sessionFile = sessionFileFromRef(sourceRef);
+      const header = await readPiSessionHeader(sessionFile);
+      if (header.id !== sourceRef.nativeSessionId) {
+        throw new PiAdapterFaultError({
+          code: "sessionNotFound",
+          message: "Pi Session header identity does not match the persisted Native Session Ref",
+          retryable: false,
+        });
+      }
+      const history = await readPiSessionHistory(sessionFile);
+      const subagents = new PiSubagents(() => undefined);
+      await restorePiSubagents(
+        history,
+        new Set([sourceRef.nativeSessionId, sessionFile]),
+        subagents,
+      );
+      return {
+        ok: true,
+        value: mapPiSnapshot(
+          history,
+          {
+            sessionId: sourceRef.nativeSessionId,
+            model: null,
+            cwd: input.cwd,
+          },
+          subagents,
+        ),
+      };
+    } catch (error) {
+      if (isRecord(error) && error.code === "ENOENT") {
+        return {
+          ok: false,
+          error: {
+            code: "sessionNotFound",
+            message: errorMessage(error),
+            retryable: false,
+          },
+        };
+      }
       return { ok: false, error: normalizedError(error, "nativeFailure") };
     }
   }

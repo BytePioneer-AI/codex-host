@@ -413,6 +413,84 @@ describe("AppServerHost idle resource release", () => {
     }
   });
 
+  it("reads an idle-released Thread cold without resuming or resetting idle release", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await completePiTurn(fixture, threadId, 2);
+      const source = fixture.adapter.sessions[0];
+      if (!source) throw new Error("Missing source Session");
+      const snapshot = await source.readSnapshot();
+      if (!snapshot.ok) throw new Error(snapshot.error.message);
+      const close = vi.spyOn(source, "close");
+      const open = vi.spyOn(fixture.adapter, "open");
+      const readSnapshot = vi.fn(async () => snapshot);
+      fixture.adapter.readSnapshot = readSnapshot;
+
+      writeRequest(fixture.desktopInput, {
+        id: 920,
+        method: "codexhost/settings/idle-release/set",
+        params: { enabled: true, timeoutMinutes: 10 },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 920));
+      await vi.advanceTimersByTimeAsync(9 * 60_000);
+
+      writeRequest(fixture.desktopInput, {
+        id: 921,
+        method: "thread/read",
+        params: { threadId, includeTurns: true },
+      });
+      const warmHistory = await fixture.collector.waitFor((message) => requestId(message, 921));
+      expect(warmHistory).not.toHaveProperty("error");
+      expect(JSON.stringify(warmHistory)).toContain(turnId);
+
+      writeRequest(fixture.desktopInput, {
+        id: 922,
+        method: "codexhost/sessions/loaded/list",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 922))).toMatchObject({
+        result: [{ threadId, state: "idle", reason: "timeout", inactiveMs: 9 * 60_000 }],
+      });
+
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      expect(close).toHaveBeenCalledTimes(1);
+
+      writeRequest(fixture.desktopInput, {
+        id: 923,
+        method: "thread/read",
+        params: { threadId, includeTurns: true },
+      });
+      const coldHistory = await fixture.collector.waitFor((message) => requestId(message, 923));
+      expect(coldHistory).not.toHaveProperty("error");
+      expect(JSON.stringify(coldHistory)).toContain(turnId);
+
+      writeRequest(fixture.desktopInput, {
+        id: 924,
+        method: "thread/turns/list",
+        params: { threadId },
+      });
+      const coldTurns = await fixture.collector.waitFor((message) => requestId(message, 924));
+      expect(coldTurns).not.toHaveProperty("error");
+      expect(JSON.stringify(coldTurns)).toContain(turnId);
+
+      writeRequest(fixture.desktopInput, {
+        id: 925,
+        method: "codexhost/sessions/loaded/list",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 925))).toMatchObject({
+        result: [],
+      });
+      expect(open).not.toHaveBeenCalled();
+      expect(readSnapshot).toHaveBeenCalledTimes(2);
+    } finally {
+      await stopFixture(fixture);
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps an active Turn loaded even beyond the configured timeout", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     const fixture = createFixture();

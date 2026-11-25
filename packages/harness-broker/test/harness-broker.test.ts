@@ -1072,4 +1072,42 @@ describe("macOS Aqua Harness broker", () => {
       await server.close();
     }
   });
+
+  it("forwards adapter.readSnapshot when supported and returns unsupported when absent", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-harness-broker-"));
+    roots.push(root);
+    const descriptorPath = path.join(root, "broker-v1.json");
+    const socketPath =
+      process.platform === "win32"
+        ? `\\\\.\\pipe\\codexhost-harness-broker-${process.pid}-${randomUUID()}`
+        : path.join(root, "broker.sock");
+    const harnessId = harnessIdSchema.parse("claude-code");
+    const native = new FakeHarnessAdapter(harnessId);
+    const open = vi.spyOn(native, "open");
+    const nativeRef = {
+      harnessId,
+      nativeSessionId: "cold-session-1",
+      formatVersion: 1 as const,
+    };
+    const server = await startHarnessBrokerServer({ descriptorPath, socketPath, adapter: native });
+    const adapter = new BrokeredHarnessAdapter({ descriptorPath });
+    try {
+      await expect(adapter.readSnapshot({ nativeRef, cwd: root })).resolves.toMatchObject({
+        ok: false,
+        error: { code: "unsupported" },
+      });
+      const snapshot = { turns: [] };
+      const readSnapshot = vi.fn(async () => ({ ok: true as const, value: snapshot }));
+      native.readSnapshot = readSnapshot;
+      await expect(adapter.readSnapshot({ nativeRef, cwd: root })).resolves.toEqual({
+        ok: true,
+        value: snapshot,
+      });
+      expect(readSnapshot).toHaveBeenCalledWith({ nativeRef, cwd: root });
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      await adapter.close();
+      await server.close();
+    }
+  });
 });

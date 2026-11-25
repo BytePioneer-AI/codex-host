@@ -715,10 +715,6 @@
     visibility: hidden;
   }
 
-  .remoteHostRow:is(:hover, :focus-visible) .remoteHostStatusDot {
-    visibility: visible;
-  }
-
   .projectRow > .rowActions,
   .sessionRow .rowActions {
     position: absolute;

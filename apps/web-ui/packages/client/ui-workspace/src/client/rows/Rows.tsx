@@ -169,59 +169,6 @@ function RemoteFolderGlobe({
 }
 
 /**
- * Collapsible remote host folder row in the Workspaces section:
- * folder icon with host-colored globe badge, host display name, inline
- * workspace count, and fixed connection-state dot on the right.
- */
-export function RemoteHostFolderRow({
-  hostId,
-  remote,
-  workspaceCount,
-  expanded,
-  onToggle,
-  t,
-}: {
-  hostId: string;
-  remote: NonNullable<GroupNode["remote"]>;
-  workspaceCount: number;
-  expanded: boolean;
-  onToggle: () => void;
-  t: RowTranslate;
-}) {
-  const remoteColor = resolveRemotePeerColor(hostId, remote.color);
-  const statusLabel =
-    remote.state === "connected"
-      ? t("host.connected")
-      : remote.state === "connecting"
-        ? t("host.connecting")
-        : t("host.disconnected");
-  const description = `${remote.displayName} · ${statusLabel}`;
-
-  return (
-    <div
-      className={clsx(css.projectRow, css.remoteHostRow)}
-      data-row-key={`remote-host:${hostId}`}
-      role="treeitem"
-      aria-expanded={expanded}
-      aria-label={`${description} (${workspaceCount})`}
-      title={description}
-      tabIndex={-1}
-      onClick={onToggle}
-    >
-      <span className={clsx(css.slot, expanded && css.folderExpanded)}>
-        {expanded ? <IconFolderOpenRegular /> : <IconFolderCloseRegular />}
-        <RemoteFolderGlobe color={remoteColor} state={remote.state} />
-      </span>
-      <span className={css.remoteHostText}>
-        <span className={css.title}>{remote.displayName}</span>
-        <span className={css.remoteHostMeta}>{workspaceCount}</span>
-      </span>
-      <span className={css.remoteHostStatusDot} data-state={remote.state} aria-hidden="true" />
-    </div>
-  );
-}
-
-/**
  * Project (workspace) header row: folder + title;
  * expanded folders stay blue and open even while hovered or keyboard-focused.
  * Dwelling on a real Workspace shows its hover card (the ungrouped bucket has none).

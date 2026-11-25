@@ -1931,8 +1931,14 @@ mod environment_removal_tests {
             "CODEXHOST_NPM_PACKAGE_ROOT",
         ] {
             assert!(
-                envs.iter()
-                    .any(|(name, value)| *name == key && value.is_none()),
+                envs.iter().any(|(name, value)| {
+                    value.is_none()
+                        && if cfg!(windows) {
+                            name.to_string_lossy().eq_ignore_ascii_case(key)
+                        } else {
+                            *name == key
+                        }
+                }),
                 "expected {key} to be removed"
             );
         }

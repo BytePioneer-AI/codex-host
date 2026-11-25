@@ -448,6 +448,56 @@ describe("External Thread metadata updates", () => {
     }
   });
 
+  it.each(["prewarm", "deferred identity"] as const)(
+    "returns the cleared project when it is deleted during %s startup",
+    async (mode) => {
+      const adapter =
+        mode === "deferred identity"
+          ? new DeferredNativeSessionAdapter(harnessIdSchema.parse("pi"))
+          : new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+      const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+      const opening = Promise.withResolvers<undefined>();
+      const resume = Promise.withResolvers<undefined>();
+      const open = adapter.open.bind(adapter);
+      vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+        opening.resolve(undefined);
+        await resume.promise;
+        return open(input);
+      });
+      const projects = new Set(["project-a"]);
+      answerOfficial(fixture, projects);
+      try {
+        await fixture.ready;
+        writeRequest(fixture.desktopInput, {
+          id: 1,
+          method: "thread/start",
+          params: {
+            model: "codexhost/pi-native",
+            cwd: "/worktree",
+            projectId: "project-a",
+            ...(mode === "prewarm" ? { codexhostPrewarm: true } : {}),
+          },
+        });
+        await opening.promise;
+        projects.delete("project-a");
+        writeRequest(fixture.official.stdout, {
+          method: "project/changed",
+          params: { projectId: "project-a", changeType: "deleted" },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => method(message, "thread/project/updated")),
+        ).resolves.toMatchObject({ params: { projectId: null } });
+        resume.resolve(undefined);
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, 1)),
+        ).resolves.toMatchObject({ result: { thread: { projectId: null, cwd: "/worktree" } } });
+      } finally {
+        resume.resolve(undefined);
+        await stopFixture(fixture);
+      }
+    },
+  );
+
   it.each([
     { projectId: "missing" },
     { projectId: "mismatched" },

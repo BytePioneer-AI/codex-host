@@ -5183,6 +5183,11 @@ export class AppServerHost {
             record.hostThreadId,
             session.initialState.nativeRef,
           );
+        } else {
+          // Project membership may have changed while the Harness was opening.
+          const current = await this.#repository.find(record.hostThreadId);
+          if (!current) throw new Error("Missing provisional External Thread");
+          record = current;
         }
         const thread = externalThreadValue({
           record,

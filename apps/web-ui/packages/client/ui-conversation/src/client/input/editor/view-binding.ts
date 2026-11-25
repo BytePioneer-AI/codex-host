@@ -202,6 +202,28 @@ export function installDraftKeymap(
 }
 
 /**
+ * Blur an active inline annotation note editor before a primary send press so
+ * its existing blur handler commits the edited comment synchronously before
+ * click-time submission, including on mobile where {@link keepDraftFocus}
+ * cancels mousedown without focusing the draft editor.
+ * @param doc - the button's owning document.
+ * @returns whether an active annotation textarea was blurred.
+ */
+export function blurActiveAnnotationEditor(doc: Document): boolean {
+  const active = doc.activeElement;
+  const TextArea = doc.defaultView?.HTMLTextAreaElement ?? globalThis.HTMLTextAreaElement;
+  if (
+    TextArea !== undefined &&
+    active instanceof TextArea &&
+    active.closest("[data-composer-annotations]") !== null
+  ) {
+    active.blur();
+    return true;
+  }
+  return false;
+}
+
+/**
  * Keep a toolbar press from moving focus away from the draft. The press never
  * summons focus on phones and tablets: focusing the editor there raises the
  * on-screen keyboard, so a draft that already has focus keeps it (mousedown is

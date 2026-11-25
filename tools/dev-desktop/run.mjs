@@ -558,6 +558,9 @@ export async function runDevelopmentDesktop({
     "CODEXHOST_NPM_CLI_PATH",
     "CODEXHOST_NPM_LAUNCHER_PATH",
     "CODEXHOST_NPM_PACKAGE_ROOT",
+    "CODEXHOST_HOST_RUNTIME_PATH",
+    "CODEXHOST_HOST_NODE_PATH",
+    "CODEXHOST_DESKTOP_SHELL_PATH",
   ]) {
     delete launchEnvironment[name];
   }

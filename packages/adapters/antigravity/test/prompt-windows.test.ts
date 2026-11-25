@@ -1,10 +1,29 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import * as fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { promptWindowsPath, readPromptWindows, savePromptWindows } from "../src/prompt-windows.js";
+
+function currentProcessStartToken(): string {
+  if (process.platform === "linux") {
+    const statText = readFileSync(`/proc/${process.pid}/stat`, "utf8");
+    const fields = statText
+      .slice(statText.lastIndexOf(")") + 1)
+      .trim()
+      .split(/\s+/u);
+    if (fields[19] && /^\d+$/u.test(fields[19])) return `ticks${fields[19]}`;
+  }
+  return String(Math.round(performance.timeOrigin));
+}
+
+function staleProcessStartToken(): string {
+  if (process.platform === "linux") return "ticks1";
+  return String(Math.round(performance.timeOrigin) - 60_000);
+}
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof fsPromises>();
@@ -230,12 +249,12 @@ describe("prompt-windows cross-process lock safety", () => {
     await rm(liveLock);
     await rm(`${liveLock}.publish-999999999-orphan`);
 
-    // 2. Dead lock aged > STALE_LOCK_MS currently pinned by a fresh live concurrent reclaimer's
-    // .claim-<livePid>-t<now> link must not be unlinked despite the old shared inode mtime.
+    // 2. Dead lock aged > STALE_LOCK_MS currently pinned by a live concurrent reclaimer's
+    // .claim-<livePid>-<liveStart> link must NEVER be unlinked even when aged past STALE_LOCK_MS.
     const racingSessionId = "dead-with-live-claim";
     const racingFile = promptWindowsPath(racingSessionId, env);
     const racingLock = `${racingFile}.lock`;
-    const activeClaim = `${racingLock}.claim-${process.pid}-t${Date.now()}-active`;
+    const activeClaim = `${racingLock}.claim-${process.pid}-${currentProcessStartToken()}-active`;
     await writeFile(
       racingLock,
       JSON.stringify({ pid: 999_999_999, token: "dead-owner", createdAtMs: 1 }),
@@ -253,15 +272,15 @@ describe("prompt-windows cross-process lock safety", () => {
     await rm(activeClaim);
     await rm(racingLock);
 
-    // 3. Aged .claim-<livePid>-t<stale> link (e.g. PID reuse) IS reclaimed past STALE_LOCK_MS.
-    const reusedSessionId = "dead-with-aged-reused-pid-claim";
+    // 3. Reused-PID orphan .claim-<livePid>-<staleStart> link IS reclaimed cleanly without deadlock.
+    const reusedSessionId = "dead-with-reused-pid-claim";
     const reusedFile = promptWindowsPath(reusedSessionId, env);
     const reusedLock = `${reusedFile}.lock`;
     await writeFile(
       reusedLock,
       JSON.stringify({ pid: 999_999_999, token: "dead-owner", createdAtMs: 1 }),
     );
-    await link(reusedLock, `${reusedLock}.claim-${process.pid}-t${Date.now() - 60_000}-stale`);
+    await link(reusedLock, `${reusedLock}.claim-${process.pid}-${staleProcessStartToken()}-stale`);
     await utimes(reusedLock, oldDate, oldDate);
 
     await savePromptWindows(reusedSessionId, [{ submittedAtMs: 30, returnedAtMs: 40 }], env, {

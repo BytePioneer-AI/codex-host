@@ -1,5 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import type { BigIntStats } from "node:fs";
+import { readFileSync, type BigIntStats } from "node:fs";
 import {
   access,
   link,
@@ -14,10 +15,11 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { antigravityHome } from "./usage-statistics.js";
 
-/** Interval during which an ACP `session/prompt` was in flight for an Antigravity Session. */
+/** Interval during which an ACP `session/prompt` (or steered chain) was in flight. */
 export interface AntigravityPromptWindow {
   readonly submittedAtMs: number;
   readonly returnedAtMs: number;
@@ -27,6 +29,9 @@ const VALID_SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/u;
 const STORE_VERSION = 1;
 const LOCK_TIMEOUT_MS = 5_000;
 const STALE_LOCK_MS = 10_000;
+const PROCESS_START_TOLERANCE_MS = 5_000;
+const WINDOWS_RETRY_DELAYS_MS = [10, 30, 70, 150, 300] as const;
+const PROCESS_STARTED_AT_MS = Math.round(performance.timeOrigin);
 const pendingWrites = new Map<string, Promise<void>>();
 
 export function promptWindowsDirectory(environment: NodeJS.ProcessEnv): string {
@@ -144,19 +149,127 @@ function enqueueFileWrite(file: string, task: () => Promise<void>): Promise<void
   return tracked;
 }
 
+function errnoCode(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException | null)?.code;
+}
+
+function isWindowsTransientError(error: unknown): boolean {
+  if (process.platform !== "win32") return false;
+  const code = errnoCode(error);
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
+async function retryOnWindows<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      const wait = WINDOWS_RETRY_DELAYS_MS[attempt];
+      if (wait === undefined || !isWindowsTransientError(error)) throw error;
+      await delay(wait);
+    }
+  }
+}
+
 function isPidAlive(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException | null)?.code === "EPERM";
+    return errnoCode(error) === "EPERM";
   }
+}
+
+function readLinuxStartTicks(pid: number): { alive: boolean; startTicks: string | null } {
+  try {
+    const text = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const end = text.lastIndexOf(")");
+    const fields =
+      end < 0
+        ? []
+        : text
+            .slice(end + 1)
+            .trim()
+            .split(/\s+/u);
+    if (fields[0] === "Z") return { alive: false, startTicks: null };
+    return {
+      alive: true,
+      startTicks: fields[19] && /^\d+$/u.test(fields[19]) ? fields[19] : null,
+    };
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT" && !isPidAlive(pid)) {
+      return { alive: false, startTicks: null };
+    }
+    return { alive: true, startTicks: null };
+  }
+}
+
+function currentContenderStart(): string {
+  const ticks = process.platform === "linux" ? readLinuxStartTicks(process.pid).startTicks : null;
+  return ticks ? `ticks${ticks}` : String(PROCESS_STARTED_AT_MS);
+}
+
+function queryProcessStartedAtMs(pid: number): number | null {
+  if (pid === process.pid) return PROCESS_STARTED_AT_MS;
+  try {
+    if (process.platform === "darwin") {
+      const result = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        env: { ...process.env, LC_ALL: "C" },
+        timeout: 1_000,
+      }).trim();
+      const startedAt = Date.parse(result);
+      return Number.isFinite(startedAt) ? startedAt : null;
+    }
+    if (process.platform === "win32") {
+      const query = [
+        "$ErrorActionPreference = 'Stop'",
+        `$process = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}'`,
+        "if ($null -ne $process -and $null -ne $process.CreationDate) { " +
+          "$process.CreationDate.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) }",
+      ].join("; ");
+      const result = execFileSync(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", query],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          windowsHide: true,
+          timeout: 5_000,
+        },
+      ).trim();
+      const startedAt = Date.parse(result);
+      return Number.isFinite(startedAt) ? startedAt : null;
+    }
+  } catch {
+    // Unreadable metadata must not disprove a live process.
+  }
+  return null;
+}
+
+/** Process liveness with PID-reuse disambiguation; never evicts a live process by wall-clock age. */
+function contenderIsLive(pid: number, startId?: string): boolean {
+  if (!isPidAlive(pid)) return false;
+  if (process.platform === "linux") {
+    const info = readLinuxStartTicks(pid);
+    if (!info.alive) return false;
+    const expectedTicks = startId ? /^ticks(\d+)$/u.exec(startId)?.[1] : undefined;
+    return !expectedTicks || !info.startTicks || expectedTicks === info.startTicks;
+  }
+  if (!startId || !/^\d+$/u.test(startId)) return true;
+  const expected = Number(startId);
+  if (!Number.isSafeInteger(expected)) return true;
+  const actualStartedAt = queryProcessStartedAtMs(pid);
+  return (
+    actualStartedAt === null || Math.abs(actualStartedAt - expected) <= PROCESS_START_TOLERANCE_MS
+  );
 }
 
 /** Publish a complete lock payload atomically without creating an empty `.lock` on write error. */
 async function publishLockFile(lockFile: string, content: string): Promise<void> {
-  const temporary = `${lockFile}.publish-${process.pid}-t${Date.now()}-${randomUUID()}`;
+  const temporary = `${lockFile}.publish-${process.pid}-${currentContenderStart()}-${randomUUID()}`;
   const handle = await open(temporary, "wx", 0o600);
   try {
     try {
@@ -166,11 +279,11 @@ async function publishLockFile(lockFile: string, content: string): Promise<void>
     }
     await link(temporary, lockFile);
   } finally {
-    await rm(temporary, { force: true }).catch(() => undefined);
+    await retryOnWindows(() => rm(temporary, { force: true })).catch(() => undefined);
   }
 }
 
-async function removeStaleSiblingLinks(
+async function removeDeadSiblingLinks(
   lockFile: string,
   snapshot: string,
   pinned: BigIntStats,
@@ -180,24 +293,26 @@ async function removeStaleSiblingLinks(
   const snapshotName = path.basename(snapshot);
   for (const entry of await readdir(dir)) {
     if (entry === base || entry === snapshotName || !entry.startsWith(`${base}.`)) continue;
-    const match = /^(?:publish|claim)-(\d+)-(?:t(\d+)-)?/u.exec(entry.slice(base.length + 1));
+    const match = /^(?:publish|claim)-(\d+)-(?:(ticks\d+|\d+)-)?/u.exec(
+      entry.slice(base.length + 1),
+    );
     if (!match) continue;
     const siblingPid = Number(match[1]);
-    const siblingCreatedAtMs = match[2] === undefined ? undefined : Number(match[2]);
+    const siblingStart = match[2];
     const siblingPath = path.join(dir, entry);
     let sibling: BigIntStats;
     try {
       sibling = await lstat(siblingPath, { bigint: true });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") continue;
+      if (errnoCode(error) === "ENOENT" || isWindowsTransientError(error)) continue;
       throw error;
     }
     if (sibling.dev !== pinned.dev || sibling.ino !== pinned.ino) continue;
-    if (
-      !isPidAlive(siblingPid) ||
-      (siblingCreatedAtMs !== undefined && Date.now() - siblingCreatedAtMs >= STALE_LOCK_MS)
-    ) {
-      await rm(siblingPath, { force: true });
+    // Never unlink a live reclaimer's claim based on age; only dead or reused-PID links are stale.
+    if (!contenderIsLive(siblingPid, siblingStart)) {
+      await retryOnWindows(() => rm(siblingPath, { force: true })).catch((error) => {
+        if (!isWindowsTransientError(error)) throw error;
+      });
     }
   }
 }
@@ -208,32 +323,36 @@ async function tryReclaimStaleLock(lockFile: string): Promise<boolean> {
   try {
     [info, inspected] = await Promise.all([stat(lockFile), readFile(lockFile, "utf8")]);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return true;
+    if (errnoCode(error) === "ENOENT") return true;
+    if (isWindowsTransientError(error)) return false;
     throw error;
   }
   let parsedPid: number | undefined;
+  let parsedStartId: string | undefined;
   try {
-    const parsed = JSON.parse(inspected) as { pid?: unknown } | null;
+    const parsed = JSON.parse(inspected) as { pid?: unknown; startId?: unknown } | null;
     if (typeof parsed?.pid === "number" && Number.isSafeInteger(parsed.pid) && parsed.pid > 0)
       parsedPid = parsed.pid;
+    if (typeof parsed?.startId === "string" && parsed.startId.length > 0)
+      parsedStartId = parsed.startId;
   } catch {
     // Ownerless or corrupt lock files are only reclaimed once they age past STALE_LOCK_MS.
   }
   if (parsedPid !== undefined) {
-    // Never evict a live lock owner based on wall-clock age.
-    if (isPidAlive(parsedPid)) return false;
+    if (contenderIsLive(parsedPid, parsedStartId)) return false;
   } else if (Date.now() - info.mtimeMs < STALE_LOCK_MS) {
     return false;
   }
-  // Pin the inspected inode via a hard link so concurrent reclaimers cannot unlink a newer lock.
-  const snapshot = `${lockFile}.claim-${process.pid}-t${Date.now()}-${randomUUID()}`;
+  // Pin the inspected inode via a hard link. Because live reclaimers' claims are never evicted,
+  // nlink === 2n proves exclusive reclaim ownership of this exact inode.
+  const snapshot = `${lockFile}.claim-${process.pid}-${currentContenderStart()}-${randomUUID()}`;
   try {
     await link(lockFile, snapshot);
     try {
       if ((await readFile(snapshot, "utf8")) !== inspected) return false;
       let pinned = await stat(snapshot, { bigint: true });
       if (pinned.nlink > 2n) {
-        await removeStaleSiblingLinks(lockFile, snapshot, pinned);
+        await removeDeadSiblingLinks(lockFile, snapshot, pinned);
         pinned = await stat(snapshot, { bigint: true });
       }
       if (pinned.nlink !== 2n) return false;
@@ -242,12 +361,12 @@ async function tryReclaimStaleLock(lockFile: string): Promise<boolean> {
       await rm(lockFile);
       return true;
     } finally {
-      await rm(snapshot, { force: true }).catch(() => undefined);
+      await retryOnWindows(() => rm(snapshot, { force: true })).catch(() => undefined);
     }
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException | null)?.code;
+    const code = errnoCode(error);
     if (code === "ENOENT") return true;
-    if (code === "EEXIST") return false;
+    if (code === "EEXIST" || isWindowsTransientError(error)) return false;
     throw error;
   }
 }
@@ -255,16 +374,16 @@ async function tryReclaimStaleLock(lockFile: string): Promise<boolean> {
 async function releaseLockFile(lockFile: string, expectedPayload: string): Promise<void> {
   let current: string;
   try {
-    current = await readFile(lockFile, "utf8");
+    current = await retryOnWindows(() => readFile(lockFile, "utf8"));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return;
+    if (errnoCode(error) === "ENOENT") return;
     throw error;
   }
   if (current !== expectedPayload) return;
   try {
-    await rm(lockFile);
+    await retryOnWindows(() => rm(lockFile));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return;
+    if (errnoCode(error) === "ENOENT") return;
     throw error;
   }
 }
@@ -276,15 +395,21 @@ async function withFileLock<T>(
 ): Promise<T> {
   const lockFile = `${file}.lock`;
   const token = randomUUID();
-  const payload = JSON.stringify({ pid: process.pid, token, createdAtMs: Date.now() });
+  const payload = JSON.stringify({
+    pid: process.pid,
+    startId: currentContenderStart(),
+    token,
+    createdAtMs: Date.now(),
+  });
   const deadline = Date.now() + timeoutMs;
   while (true) {
     try {
       await publishLockFile(lockFile, payload);
       break;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException | null)?.code !== "EEXIST") throw error;
-      if (await tryReclaimStaleLock(lockFile)) continue;
+      const code = errnoCode(error);
+      if (code !== "EEXIST" && !isWindowsTransientError(error)) throw error;
+      if (code === "EEXIST" && (await tryReclaimStaleLock(lockFile))) continue;
       if (Date.now() >= deadline) throw new Error("Timed out acquiring prompt windows lock");
       await delay(5 + Math.floor(Math.random() * 20));
     }
@@ -309,9 +434,9 @@ async function withFileLock<T>(
 
 async function readExistingWindowsForWrite(file: string): Promise<AntigravityPromptWindow[]> {
   try {
-    return parsePromptWindowsJson(await readFile(file, "utf8"));
+    return parsePromptWindowsJson(await retryOnWindows(() => readFile(file, "utf8")));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return [];
+    if (errnoCode(error) === "ENOENT") return [];
     throw error;
   }
 }
@@ -338,9 +463,9 @@ export async function savePromptWindows(
         const payload = JSON.stringify({ version: STORE_VERSION, windows: merged });
         try {
           await writeFile(temporary, payload, { mode: 0o600 });
-          await rename(temporary, file);
+          await retryOnWindows(() => rename(temporary, file));
         } finally {
-          await rm(temporary, { force: true }).catch(() => undefined);
+          await retryOnWindows(() => rm(temporary, { force: true })).catch(() => undefined);
         }
       },
       options?.lockTimeoutMs,
@@ -358,12 +483,12 @@ export async function removePromptWindows(
     try {
       await access(file);
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException | null)?.code;
+      const code = errnoCode(error);
       if (code === "ENOENT" || code === "ENOTDIR") return;
       throw error;
     }
     await withFileLock(file, async () => {
-      await rm(file, { force: true });
+      await retryOnWindows(() => rm(file, { force: true }));
     });
   });
 }

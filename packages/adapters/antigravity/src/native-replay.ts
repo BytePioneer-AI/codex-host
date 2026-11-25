@@ -170,16 +170,16 @@ export async function readNativeTurnCompactions(
       if (row.step_type === SYSTEM_MESSAGE) {
         if (!stepRun) continue;
         if (!foregroundRuns.has(stepRun)) {
-          // A Plan switch stays with the run that initiated it; an in-prompt wake also streams
-          // into the active foreground Turn.
-          if (
-            row.status === DONE &&
-            latestRun &&
-            foregroundRuns.has(latestRun) &&
-            !wakeRuns.has(stepRun) &&
-            isPlanContinuation(step)
-          ) {
-            foregroundRuns.add(stepRun);
+          if (isPlanContinuation(step)) {
+            // A Plan switch stays with the run that initiated it; never fall through to in-prompt wakes.
+            if (
+              row.status === DONE &&
+              latestRun &&
+              foregroundRuns.has(latestRun) &&
+              !wakeRuns.has(stepRun)
+            ) {
+              foregroundRuns.add(stepRun);
+            } else wakeRuns.add(stepRun);
           } else if (
             row.status === DONE &&
             seenUserInput &&
@@ -211,8 +211,10 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
   const interleavedPromptSteps = new Map<number, number>();
   let userToolCalls: ToolCalls = new Map();
   let toolCalls: ToolCalls = userToolCalls;
+  let inPromptRuns = new Set<string>();
   let turnCount = 0;
   let run = "";
+  let lastOwner: "user" | "in-prompt" | "candidate" | "wake" = "user";
   let candidate:
     | {
         stepIndex: number;
@@ -222,7 +224,15 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
         createdAtMs?: number;
       }
     | undefined;
-  let wake: { eventIndex: number; settled: boolean } | undefined;
+  let wake:
+    | {
+        eventIndex: number;
+        stepIndex: number;
+        run: string;
+        calls: ToolCalls;
+        settled: boolean;
+      }
+    | undefined;
   let userInsertIndex: number | undefined;
   let routingToUser = false;
   let finalPlanner = false;
@@ -238,7 +248,10 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
     }
   };
   const endWake = () => {
-    if (wake && !wake.settled) events.length = wake.eventIndex;
+    if (wake && !wake.settled) {
+      events.length = wake.eventIndex;
+      interleavedPromptSteps.delete(wake.stepIndex);
+    }
     if (userInsertIndex !== undefined && userInsertIndex >= events.length) {
       userInsertIndex = undefined;
       routingToUser = false;
@@ -246,11 +259,20 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
     wake = undefined;
     candidate = undefined;
   };
-  const pushEvent = (event: NativeReplayEvent) => {
-    if (routingToUser && userInsertIndex !== undefined) {
+  const pushUserEvent = (event: NativeReplayEvent) => {
+    if (userInsertIndex !== undefined) {
       events.splice(userInsertIndex, 0, event);
+      if (wake && userInsertIndex <= wake.eventIndex) wake.eventIndex++;
       userInsertIndex++;
       recordInterleavedStep(currentStepIndex);
+    } else {
+      events.push(event);
+      if (turnCount > 0) lastUserStepIndex = Math.max(lastUserStepIndex, currentStepIndex);
+    }
+  };
+  const pushEvent = (event: NativeReplayEvent, toUser: boolean) => {
+    if (toUser) {
+      pushUserEvent(event);
     } else {
       events.push(event);
       if (!wake && userInsertIndex === undefined && turnCount > 0) {
@@ -258,11 +280,11 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
       }
     }
   };
-  const append = (type: "agent.text" | "agent.thought", text: string) => {
+  const append = (type: "agent.text" | "agent.thought", text: string, toUser: boolean) => {
     if (!text) return;
     const previous =
-      routingToUser && userInsertIndex !== undefined ? events[userInsertIndex - 1] : events.at(-1);
-    pushEvent({ type, text: previous?.type === type ? `\n\n${text}` : text });
+      toUser && userInsertIndex !== undefined ? events[userInsertIndex - 1] : events.at(-1);
+    pushEvent({ type, text: previous?.type === type ? `\n\n${text}` : text }, toUser);
   };
   if (db.prepare("PRAGMA user_version").get()?.user_version !== 1)
     throw new Error("Unsupported Antigravity history database version");
@@ -286,6 +308,8 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
     if (nativeTurnIndex !== undefined) {
       endWake();
       run = "";
+      inPromptRuns = new Set();
+      lastOwner = "user";
       finalPlanner = false;
       userInsertIndex = undefined;
       routingToUser = false;
@@ -294,7 +318,11 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
       toolCalls = userToolCalls;
     }
     if (IN_FLIGHT.has(Number(row.status))) {
-      if (wake && row.step_type === PLANNER_RESPONSE) wake.settled = false;
+      if (wake && row.step_type === PLANNER_RESPONSE) {
+        const inFlightStep = message(row.step_payload);
+        const inFlightRun = textField(nested(inFlightStep, 5), 12);
+        if (!inFlightRun || inFlightRun === wake.run) wake.settled = false;
+      }
       continue;
     }
     const step = message(row.step_payload);
@@ -304,10 +332,22 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
     if (row.step_type === SYSTEM_MESSAGE) {
       if (row.status !== DONE) continue;
       if (isPlanContinuation(step)) {
-        // Keep the owner (including an existing wake) across the Plan execution boundary.
+        // Keep the owner (including an existing wake or in-prompt run) across the Plan boundary.
         if (stepRun) {
-          if (candidate) candidate.run = stepRun;
-          else run = stepRun;
+          if (candidate && lastOwner === "candidate") candidate.run = stepRun;
+          else if (wake && lastOwner === "wake") {
+            wake.run = stepRun;
+            run = stepRun;
+          } else if (lastOwner === "in-prompt") {
+            inPromptRuns.add(stepRun);
+            if (!wake) run = stepRun;
+            if (userInsertIndex !== undefined) recordInterleavedStep(idx);
+            else if (turnCount > 0) lastUserStepIndex = Math.max(lastUserStepIndex, idx);
+          } else {
+            run = stepRun;
+            if (userInsertIndex === undefined && turnCount > 0)
+              lastUserStepIndex = Math.max(lastUserStepIndex, idx);
+          }
         }
         continue;
       }
@@ -315,20 +355,26 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
       // A wake that started inside an active user prompt streamed into that Turn; keep it merged
       // even if an independent late-committed wake or unsettled candidate appeared in between.
       if (turnCount > 0 && isTimestampInPromptWindows(createdAtMs, promptWindows)) {
-        endWake();
+        if (stepRun) inPromptRuns.add(stepRun);
+        else endWake();
         routingToUser = userInsertIndex !== undefined;
-        if (routingToUser) recordInterleavedStep(idx);
-        else if (userInsertIndex === undefined)
-          lastUserStepIndex = Math.max(lastUserStepIndex, idx);
-        toolCalls = userToolCalls;
-        if (stepRun) run = stepRun;
-        finalPlanner = false;
+        lastOwner = "in-prompt";
+        if (userInsertIndex !== undefined) recordInterleavedStep(idx);
+        else lastUserStepIndex = Math.max(lastUserStepIndex, idx);
+        if (!wake) {
+          toolCalls = userToolCalls;
+          if (stepRun) run = stepRun;
+          finalPlanner = false;
+        }
         continue;
       }
-      if (stepRun ? stepRun !== run : finalPlanner) {
+      const activeRun = wake ? wake.run : run;
+      const knownInPromptRun = !!stepRun && inPromptRuns.has(stepRun);
+      if (!knownInPromptRun && (stepRun ? stepRun !== activeRun : finalPlanner)) {
         if (candidate?.run !== stepRun) {
           // A new run's in-flight planner must not unsettle the previous wake.
           endWake();
+          lastOwner = "candidate";
           candidate = {
             stepIndex: idx,
             run: stepRun,
@@ -340,13 +386,19 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
       }
       continue;
     }
+    const isInPromptRun = turnCount > 0 && (stepRun ? inPromptRuns.has(stepRun) : routingToUser);
     if (row.step_type === CHECKPOINT) {
       const event = decodeCheckpointEvent(idx, row.status, step);
       if (!event) continue;
+      if (isInPromptRun) {
+        pushUserEvent(event);
+        continue;
+      }
       const pendingWake = candidate?.run === stepRun ? candidate : undefined;
-      if (!pendingWake && (candidate || (stepRun && run && stepRun !== run))) continue;
+      const activeRun = wake ? wake.run : run;
+      if (!pendingWake && (candidate || (stepRun && activeRun && stepRun !== activeRun))) continue;
       if (pendingWake) pendingWake.events.push(event);
-      else pushEvent(event);
+      else pushEvent(event, false);
       continue;
     }
     if (row.step_type === USER_INPUT) run = stepRun;
@@ -367,12 +419,43 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
         const thought = textField(body, 3);
         const text = textField(body, 1);
         const calls = body.filter((field) => field.number === 7 && field.wire === 2);
+        const isFinal = row.status === DONE && !!text.trim() && calls.length === 0;
+        if (isInPromptRun) {
+          lastOwner = "in-prompt";
+          if (!wake && !candidate) {
+            if (stepRun) run = stepRun;
+            finalPlanner = isFinal;
+          }
+          append("agent.thought", thought, true);
+          append("agent.text", text, true);
+          for (const field of body) {
+            if (field.number !== 7 || field.wire !== 2) continue;
+            const call = message(field.value);
+            const toolCallId = textField(call, 1);
+            const name = textField(call, 2);
+            if (!toolCallId || !name || userToolCalls.get(toolCallId) === "settled") continue;
+            userToolCalls.set(toolCallId, "pending");
+            pushUserEvent({
+              type: "tool.call",
+              toolCallId,
+              name,
+              args: argsValue(textField(call, 3)),
+            });
+          }
+          break;
+        }
         if (candidate && candidate.run === stepRun) {
           const { stepIndex, events: earlierTools, calls: earlierCalls, createdAtMs } = candidate;
           endWake();
           routingToUser = false;
           if (turnCount > 0 && userInsertIndex === undefined) userInsertIndex = events.length;
-          wake = { eventIndex: events.length, settled: false };
+          wake = {
+            eventIndex: events.length,
+            stepIndex,
+            run: stepRun,
+            calls: earlierCalls,
+            settled: false,
+          };
           events.push({
             type: "history.autonomous",
             stepIndex,
@@ -384,32 +467,40 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
           for (const event of earlierTools) events.push(event);
           toolCalls = earlierCalls;
         }
-        if (stepRun) run = stepRun;
-        finalPlanner = row.status === DONE && !!text.trim() && calls.length === 0;
+        if (stepRun) {
+          run = stepRun;
+          if (wake) wake.run = stepRun;
+        }
+        lastOwner = wake ? "wake" : "user";
+        finalPlanner = isFinal;
         if (wake) wake.settled = finalPlanner;
-        append("agent.thought", thought);
-        append("agent.text", text);
+        append("agent.thought", thought, false);
+        append("agent.text", text, false);
+        const activeCalls = wake ? wake.calls : toolCalls;
         for (const field of body) {
           if (field.number !== 7 || field.wire !== 2) continue;
           const call = message(field.value);
           const toolCallId = textField(call, 1);
           const name = textField(call, 2);
-          if (!toolCallId || !name || toolCalls.get(toolCallId) === "settled") continue;
-          toolCalls.set(toolCallId, "pending");
-          pushEvent({
-            type: "tool.call",
-            toolCallId,
-            name,
-            args: argsValue(textField(call, 3)),
-          });
+          if (!toolCallId || !name || activeCalls.get(toolCallId) === "settled") continue;
+          activeCalls.set(toolCallId, "pending");
+          pushEvent(
+            {
+              type: "tool.call",
+              toolCallId,
+              name,
+              args: argsValue(textField(call, 3)),
+            },
+            false,
+          );
         }
         break;
       }
       case ERROR_MESSAGE: {
         // A wake without a final planner reply is not part of the previous Turn.
-        if (candidate?.run === stepRun) break;
+        if (!isInPromptRun && candidate?.run === stepRun) break;
         const warning = textField(nested(body, 3), 2);
-        if (warning) append("agent.text", `⚠ ${warning}`);
+        if (warning) append("agent.text", `⚠ ${warning}`, isInPromptRun);
         break;
       }
       case GENERIC_TOOL: {
@@ -417,15 +508,23 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
         const toolCallId = textField(call, 1);
         if (!toolCallId) break;
         // Tools in a wake candidate belong to that run, but cannot confirm the wake.
-        const pendingWake = candidate?.run === stepRun ? candidate : undefined;
-        const calls = pendingWake?.calls ?? toolCalls;
+        const pendingWake = !isInPromptRun && candidate?.run === stepRun ? candidate : undefined;
+        const calls = isInPromptRun
+          ? userToolCalls
+          : (pendingWake?.calls ?? wake?.calls ?? toolCalls);
         const state = calls.get(toolCallId);
         if (state === "settled") break;
+        const activeRun = wake ? wake.run : run;
         if (state === undefined) {
           const name = textField(call, 2);
           if (row.status !== DONE || !name) break;
           // A standalone tool must not extend the previous Turn past a possible fork boundary.
-          if (!pendingWake && (candidate || (stepRun && run && stepRun !== run))) break;
+          if (
+            !isInPromptRun &&
+            !pendingWake &&
+            (candidate || (stepRun && activeRun && stepRun !== activeRun))
+          )
+            break;
           const callEvent: NativeReplayEvent = {
             type: "tool.call",
             toolCallId,
@@ -433,7 +532,7 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
             args: argsValue(textField(call, 3)),
           };
           if (pendingWake) pendingWake.events.push(callEvent);
-          else pushEvent(callEvent);
+          else pushEvent(callEvent, isInPromptRun);
         }
         calls.set(toolCallId, "settled");
         const error = nested(step, 31);
@@ -451,7 +550,7 @@ export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHist
           ...(output ? { rawOutput: output } : {}),
         };
         if (pendingWake) pendingWake.events.push(updateEvent);
-        else pushEvent(updateEvent);
+        else pushEvent(updateEvent, isInPromptRun);
         break;
       }
     }

@@ -3719,6 +3719,137 @@ describe("Antigravity idle wake Turns", () => {
       db.close();
     }
   });
+
+  it("evaluates active prompt windows after opening SQLite in AntigravityWakeObserver", async () => {
+    let now = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      stampStep(db, 0, 1_000);
+      stampStep(db, 1, 1_050);
+      const handler = required(transport.handler);
+
+      // End Turn 1 and start wake observation while idle so its poll timer overlaps Turn 2.
+      now = 2_000;
+      handler.onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t1");
+      transport.eventHandler?.({ type: "agent.text", text: "wake ping" });
+
+      // Start Turn 2; while Turn 2 is submitted, an active wake-observer poll runs and Turn 2
+      // responds right before the observer opens its SQLite snapshot.
+      let turn2Submitted = false;
+      const actualExec = DatabaseSync.prototype.exec;
+      let injected = false;
+      vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (
+        this: DatabaseSync,
+        sql: string,
+      ) {
+        if (turn2Submitted && !injected && sql === "BEGIN") {
+          injected = true;
+          now = 4_000;
+          required(transport.handler).onResponse?.();
+          transport.result.resolve({ stopReason: "end_turn" });
+          now = 5_000;
+          systemStep(db, 4, "post-turn2-idle", "task_notification");
+          stampStep(db, 4, 5_000);
+          answerStep(db, 5, "POST_TURN2_WAKE", "post-turn2-idle");
+          stampStep(db, 5, 5_100);
+        }
+        return actualExec.call(this, sql);
+      });
+
+      now = 3_000;
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      userStep(db, 2, "second", "p2");
+      stampStep(db, 2, 3_000);
+      answerStep(db, 3, "second reply", "p2");
+      stampStep(db, 3, 3_050);
+      turn2Submitted = true;
+
+      await completed(outputs, "t2");
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      expect(wakes(outputs)[0]?.snapshot.nativeTurnRef.nativeTurnKey).toBe("wake-4");
+      expect(wakes(outputs)[0]?.snapshot.items).toMatchObject([
+        { item: { type: "agentMessage", text: "POST_TURN2_WAKE" } },
+      ]);
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("persists a prompt-chain window spanning turn.steer so an in-prompt wake after steer stays merged on cold reopen", async () => {
+    let now = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      const handler = required(transport.handler);
+      const nativeRef = required(session.initialState.nativeRef);
+      stampStep(db, 0, 1_000);
+      stampStep(db, 1, 1_050);
+
+      now = 2_000;
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "steered follow-up" }],
+        }),
+      ).toEqual({ ok: true, value: { accepted: true } });
+      // Initial prompt settles early; the prompt chain stays open while the steered prompt runs.
+      now = 2_100;
+      transport.result.resolve({ stopReason: "end_turn" });
+      await setImmediate();
+
+      userStep(db, 2, "steered follow-up", "run-b");
+      stampStep(db, 2, 2_050);
+      answerStep(db, 3, "steered reply", "run-b");
+      stampStep(db, 3, 2_200);
+      // In-prompt wake begins after the initial prompt returned, while the steered prompt is still open.
+      systemStep(db, 4, "in-prompt-after-steer", "task_notification");
+      stampStep(db, 4, 2_500);
+      answerStep(db, 5, "TIMER_DONE_AFTER_STEER", "in-prompt-after-steer");
+      stampStep(db, 5, 2_600);
+
+      now = 3_000;
+      handler.onResponse?.();
+      required(transport.steerResults[0]).resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t1");
+      await session.close();
+
+      const env = { HOME: home, USERPROFILE: home };
+      expect(await readPromptWindows(nativeRef.nativeSessionId, env)).toEqual([
+        { submittedAtMs: 1_000, returnedAtMs: 3_000 },
+      ]);
+
+      const restarted = fixture({ environment: env }).adapter;
+      try {
+        const reopened = await restarted.open({ kind: "resume", cwd: home, nativeRef });
+        assert(reopened.ok);
+        const coldSnapshot = await reopened.value.readSnapshot();
+        assert(coldSnapshot.ok);
+        expect(
+          coldSnapshot.value.turns.map(({ nativeTurnRef, items }) => ({
+            key: nativeTurnRef.nativeTurnKey,
+            texts: items.map(({ item }) => (item.type === "agentMessage" ? item.text : item.type)),
+          })),
+        ).toEqual([
+          { key: "turn-0", texts: ["hello there"] },
+          { key: "turn-1", texts: ["steered reply\n\nTIMER_DONE_AFTER_STEER"] },
+        ]);
+      } finally {
+        await restarted.close();
+      }
+      await adapter.close();
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe("native session titles", () => {

@@ -67,7 +67,7 @@
 
 - 最低 CLI 版本要求 `agy >= 1.5.8`：早期 `1.1.x–1.4.x` 无 `agy acp`，`1.5.0–1.5.7` 缺少 `usage_update` 或存在权限二次弹窗/关闭保存缺陷；低于 `1.5.8` 时 `inspect` 返回明确升级提示，连接页可直接一键更新。
 - Fork 与回滚：原生 `agy acp` 1.5.9 未实现 `session/fork` RPC（返回 `-32601 Method not found`），因此克隆 SQLite，按用户输入（`step_type = 14`）或已结算唤醒边界裁剪后调用 `session/resume`。回滚在活动 Turn 期间返回 `sessionBusy`；运行中 Fork 仅当目标是当前会话已确认完成、严格早于活动 Turn 的用户检查点、没有运行中的子代理、源库为 WAL 时放行。边界定位和克隆使用同一只读快照，不占用源会话，也不复制 `brain` 目录。裁剪时 `gen_metadata`、`executor_metadata`、`parent_references`、`battle_mode_infos` 按各自 protobuf 中的原生步骤索引保留前缀（行号不是步骤号），派生摘要由保留前缀重算。
-- 自主唤醒与后台等待：`agy 1.5.15+` 在存在非 daemon 后台任务（如一次性 `schedule` 定时器、后台命令、子代理）时保持 `session/prompt` 打开直至任务完成，运行中可直接通过 `turn.steer`（并发 `session/prompt`）插话而不取消后台任务；仅常驻 daemon 任务（`IsDaemon: true`）或旧版 CLI 的空闲态唤醒通过 SQLite 确认最终回答后独立发布为无输入 Turn。原生 SQLite 历史按原生运行边界回放（包含 `wake-*` 节点），Fork、回滚与委派读取均以原生边界为准。
+- 自主唤醒与后台等待：`agy 1.5.15+` 在存在非 daemon 后台任务（如一次性 `schedule` 定时器、后台命令、子代理）时保持 `session/prompt` 打开直至任务完成，运行中可直接通过 `turn.steer`（并发 `session/prompt`）插话而不取消后台任务；仅常驻 daemon 任务（`IsDaemon: true`）或旧版 CLI 的空闲态唤醒通过 SQLite 确认最终回答后独立发布为无输入 Turn。Adapter 按会话持久化每轮 prompt（含同轮插话链）的提交至最终响应时间窗口并在 Fork/Rollback 时继承保留前缀，使 prompt 在途唤醒在历史回放、实时观察与派生中保持归属原用户 Turn，且拒绝会截断交错用户 Turn 续段的切点。
 - 权限模式中的 `dangerously-skip-permissions` 对应 CLI 启动参数 `--dangerously-skip-permissions`；在会话空闲态与普通 ACP 模式互切时，Adapter 在保持同一 `nativeSessionId` 的前提下重建进程并通过 `session/resume` 无缝恢复。
 - 历史由原生 SQLite 读取，包含工具调用名称、参数与配对结果文本；读取不依赖 ACP 进程，耗时为毫秒级，由 Host 分页。连续的用户输入沿用既有分组规则合并为一轮，以保持已存 Turn 身份稳定。
 

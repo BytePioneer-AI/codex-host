@@ -24,7 +24,9 @@ export class AntigravityWakeObserver {
       outputLimit: number | undefined;
       canPublish(): boolean;
       promptWindows?():
-        Promise<readonly AntigravityPromptWindow[]> | readonly AntigravityPromptWindow[];
+        | Promise<readonly AntigravityPromptWindow[] | (() => readonly AntigravityPromptWindow[])>
+        | readonly AntigravityPromptWindow[]
+        | (() => readonly AntigravityPromptWindow[]);
       /** Whether output that started at this native time was streamed into a live prompt's Turn. */
       streamedIntoPrompt(startedAtMs: number | undefined): boolean;
       publish(snapshot: HostTurnSnapshot): void;

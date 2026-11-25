@@ -11,7 +11,11 @@ import { AntigravityAdapter } from "../src/antigravity-adapter.js";
 import { readDerivationBoundaries } from "../src/fork.js";
 import { readNativeTurnCompactions } from "../src/native-replay.js";
 import { nativeConversationDbPath } from "../src/native-turn-boundaries.js";
-import { readPromptWindows, savePromptWindows } from "../src/prompt-windows.js";
+import {
+  isTimestampInPromptWindows,
+  readPromptWindows,
+  savePromptWindows,
+} from "../src/prompt-windows.js";
 import {
   answerStep,
   checkpointStep,
@@ -637,7 +641,11 @@ describe("native session history", () => {
         { idx: 3, checkpointId: "wake-3" },
         { idx: 14, checkpointId: "turn-2" },
       ]);
-      expect(await readNativeTurnCompactions(dbPath, 1, promptWindows[1])).toEqual([
+      expect(
+        await readNativeTurnCompactions(dbPath, 1, (createdAtMs) =>
+          isTimestampInPromptWindows(createdAtMs, promptWindows.slice(1, 2)),
+        ),
+      ).toEqual([
         { type: "history.compaction", stepIndex: 6, status: "succeeded" },
         {
           type: "history.compaction",
@@ -646,9 +654,11 @@ describe("native session history", () => {
           error: "Compaction failed",
         },
       ]);
-      expect(await readNativeTurnCompactions(dbPath, 13, promptWindows[2])).toEqual([
-        { type: "history.compaction", stepIndex: 17, status: "succeeded" },
-      ]);
+      expect(
+        await readNativeTurnCompactions(dbPath, 13, (createdAtMs) =>
+          isTimestampInPromptWindows(createdAtMs, promptWindows.slice(2, 3)),
+        ),
+      ).toEqual([{ type: "history.compaction", stepIndex: 17, status: "succeeded" }]);
     } finally {
       db.close();
     }
@@ -678,7 +688,11 @@ describe("native session history", () => {
 
       const promptWindow = { submittedAtMs: 1_000, returnedAtMs: 2_000 };
       const dbPath = nativeConversationDbPath(nativeRef.nativeSessionId, home);
-      expect(await readNativeTurnCompactions(dbPath, -1, promptWindow)).toEqual([]);
+      expect(
+        await readNativeTurnCompactions(dbPath, -1, (createdAtMs) =>
+          isTimestampInPromptWindows(createdAtMs, [promptWindow]),
+        ),
+      ).toEqual([]);
 
       await savePromptWindows(nativeRef.nativeSessionId, [promptWindow], {
         HOME: home,

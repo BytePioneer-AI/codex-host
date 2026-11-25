@@ -72,7 +72,7 @@ export async function cloneNativeConversationDb(
   homeOption = os.homedir(),
   fork?: {
     activeTurnIndex?: number;
-    promptWindows?: readonly AntigravityPromptWindow[];
+    promptWindows?: readonly AntigravityPromptWindow[] | (() => readonly AntigravityPromptWindow[]);
     onRetainedBounds?: (bounds: {
       cutoff: number | undefined;
       maxRetainedStepCreatedAtMs: number | undefined;
@@ -378,7 +378,8 @@ export interface NativeDerivationOptions {
   harnessId: HarnessId;
   adapterEnvironment: NodeJS.ProcessEnv;
   sourceSession?: { isActive: boolean } | undefined;
-  sourcePromptWindows?: readonly AntigravityPromptWindow[] | undefined;
+  sourcePromptWindows?:
+    readonly AntigravityPromptWindow[] | (() => readonly AntigravityPromptWindow[]) | undefined;
   openSession(input: ResumeSessionInput): Promise<HarnessResult<HarnessSession>>;
 }
 export interface ForkAntigravitySessionOptions extends NativeDerivationOptions {
@@ -401,24 +402,28 @@ export async function openDerivedAntigravitySession(
   const derivedId = randomUUID();
   let cloned = false;
   try {
-    const sourcePromptWindows = mergePromptWindows(
-      await readPromptWindows(sourceRef.nativeSessionId, environment),
-      options.sourcePromptWindows,
-    );
+    const persistedPromptWindows = await readPromptWindows(sourceRef.nativeSessionId, environment);
+    const resolveSourcePromptWindows = () =>
+      mergePromptWindows(
+        persistedPromptWindows,
+        typeof options.sourcePromptWindows === "function"
+          ? options.sourcePromptWindows()
+          : options.sourcePromptWindows,
+      );
     let retainedBounds: {
       cutoff: number | undefined;
       maxRetainedStepCreatedAtMs: number | undefined;
     } = { cutoff: undefined, maxRetainedStepCreatedAtMs: undefined };
     await cloneNativeConversationDb(sourceRef.nativeSessionId, derivedId, retained, home, {
       ...fork,
-      ...(sourcePromptWindows.length ? { promptWindows: sourcePromptWindows } : {}),
+      promptWindows: resolveSourcePromptWindows,
       onRetainedBounds: (bounds) => {
         retainedBounds = bounds;
       },
     });
     cloned = true;
     const inheritedWindows = filterRetainedPromptWindows(
-      sourcePromptWindows,
+      resolveSourcePromptWindows(),
       retainedBounds.cutoff,
       retainedBounds.maxRetainedStepCreatedAtMs,
     );

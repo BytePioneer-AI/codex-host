@@ -587,6 +587,107 @@ describe("native SQLite Fork", () => {
     ]);
   });
 
+  it("keeps in-prompt tool and answer steps in the user Turn and rejects unsafe cuts when an independent wake settles in between", async () => {
+    const f = await fixture();
+    const db = new DatabaseSync(f.file);
+    const stamp = (idx: number, ms: number) => {
+      db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
+        bytes(1, nanoseconds(BigInt(ms) * 1_000_000n)),
+        idx,
+      );
+    };
+    try {
+      db.exec(
+        "PRAGMA user_version = 1; DROP TABLE steps; CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB, metadata BLOB)",
+      );
+      userStep(db, 0, "first", "p0");
+      systemStep(db, 1, "in-prompt", "task_notification");
+      systemStep(db, 2, "wake-b", "task_notification");
+      answerStep(db, 3, "WAKE_B", "wake-b");
+      const call = Buffer.concat([
+        textField(1, "c-interleaved"),
+        textField(2, "view_file"),
+        textField(3, JSON.stringify({ path: "notes.md" })),
+      ]);
+      db.prepare(
+        "INSERT INTO steps (idx, step_type, status, step_payload) VALUES (4, 15, 3, ?)",
+      ).run(Buffer.concat([runField("in-prompt"), bytes(20, bytes(7, call))]));
+      db.prepare(
+        "INSERT INTO steps (idx, step_type, status, step_payload) VALUES (5, 132, 3, ?)",
+      ).run(
+        Buffer.concat([
+          bytes(
+            5,
+            Buffer.concat([bytes(4, textField(1, "c-interleaved")), textField(12, "in-prompt")]),
+          ),
+          bytes(140, bytes(2, textField(1, "tool output"))),
+        ]),
+      );
+      answerStep(db, 6, "IN_PROMPT_LATE_ANSWER", "in-prompt");
+      stamp(1, 1_200);
+      stamp(2, 2_500);
+    } finally {
+      db.close();
+    }
+    await savePromptWindows(
+      f.sourceRef.nativeSessionId,
+      [{ submittedAtMs: 1_000, returnedAtMs: 2_000 }],
+      f.options.adapterEnvironment,
+    );
+    const before = await readFile(f.file);
+
+    expect
+      .soft(
+        await forkAntigravitySession({
+          ...f.options,
+          input: {
+            kind: "fork",
+            cwd: f.home,
+            sourceRef: f.sourceRef,
+            checkpoint: { ...f.sourceRef, checkpointId: "turn-0" },
+          },
+        }),
+      )
+      .toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
+    expect
+      .soft(
+        await rollbackAntigravityLastTurn({
+          ...f.options,
+          input: { kind: "rollbackLastTurn", cwd: f.home, sourceRef: f.sourceRef },
+        }),
+      )
+      .toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
+    expect(f.openSession).not.toHaveBeenCalled();
+    expect(await readFile(f.file)).toEqual(before);
+
+    const forked = await forkAntigravitySession({
+      ...f.options,
+      input: {
+        kind: "fork",
+        cwd: f.home,
+        sourceRef: f.sourceRef,
+        checkpoint: { ...f.sourceRef, checkpointId: "wake-2" },
+      },
+    });
+    assert(forked.ok && forked.value.initialState.nativeRef);
+    const forkedId = forked.value.initialState.nativeRef.nativeSessionId;
+    const inheritedWindows = await readPromptWindows(forkedId, f.options.adapterEnvironment);
+    const history = await readNativeHistory(forkedId, f.home, { promptWindows: inheritedWindows });
+    expect(history.events).toMatchObject([
+      { type: "user.text", text: "first", nativeTurnIndex: 0 },
+      { type: "tool.call", toolCallId: "c-interleaved", name: "view_file" },
+      {
+        type: "tool.update",
+        toolCallId: "c-interleaved",
+        status: "completed",
+        rawOutput: "tool output",
+      },
+      { type: "agent.text", text: "IN_PROMPT_LATE_ANSWER" },
+      { type: "history.autonomous", stepIndex: 2, createdAtMs: 2_500 },
+      { type: "agent.text", text: "WAKE_B" },
+    ]);
+  });
+
   it("rejects another Harness, foreign checkpoint and active source", async () => {
     const f = await fixture();
     const input = {

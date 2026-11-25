@@ -56,6 +56,30 @@
   -webkit-app-region: drag;
 }
 
+/* When the sidebar column is absent (collapsed desktop or phone layout), the
+   Windows caption bar spans the full width directly above the flush content
+   surface and paints its own bottom hairline consistently across drawer state. */
+:global([data-windows-titlebar])
+  .frame:is([data-sidebar-collapsed], [data-sidebar-hidden], [data-phone])::before {
+  background:
+    linear-gradient(to top, var(--dsh-main-seam-border) 0 1px, transparent 1px),
+    var(--dsw-specific-sidebar-fill);
+}
+
+@media (min-resolution: 2dppx) {
+  :global([data-windows-titlebar])
+    .frame:is([data-sidebar-collapsed], [data-sidebar-hidden], [data-phone])::before {
+    background:
+      linear-gradient(to top, var(--dsh-main-seam-border) 0 0.5px, transparent 0.5px),
+      var(--dsw-specific-sidebar-fill);
+  }
+}
+
+:global([data-windows-titlebar] body[data-codexhost-wallpaper])
+  .frame:is([data-sidebar-collapsed], [data-sidebar-hidden], [data-phone])::before {
+  background: var(--dsw-specific-sidebar-fill);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .frame[data-animating] {
     transition: none;
@@ -116,16 +140,6 @@
 
 .frame:is([data-sidebar-collapsed], [data-sidebar-hidden], [data-phone]) .centerCol::after {
   display: none;
-}
-
-/* Windows still keeps its top caption bar above the content when the sidebar
-   collapses, so preserve only the top separator without a left stroke. */
-:global([data-windows-titlebar])
-  .frame:is([data-sidebar-collapsed], [data-sidebar-hidden])
-  .centerCol::after {
-  display: block;
-  border-left: none;
-  border-bottom: none;
 }
 
 /* macOS Electron desktop: paint the translucent vibrancy wash on the frame so
@@ -421,8 +435,8 @@
 }
 
 .frame:not([data-sidebar-collapsed]):not([data-sidebar-hidden]):not([data-phone]):not(
-    [data-rightbar-collapsed]
-  ):not([data-rightbar-fullscreen])
+    [data-rightbar-fullscreen]
+  )
   .rightbarCol::after {
   content: "";
   position: absolute;
@@ -436,8 +450,8 @@
 
 @media (min-resolution: 2dppx) {
   .frame:not([data-sidebar-collapsed]):not([data-sidebar-hidden]):not([data-phone]):not(
-      [data-rightbar-collapsed]
-    ):not([data-rightbar-fullscreen])
+      [data-rightbar-fullscreen]
+    )
     .rightbarCol::after {
     inset: 0 auto auto 0;
     width: 200%;
@@ -497,6 +511,8 @@
   overflow: hidden;
   background: var(--dsw-specific-sidebar-fill, var(--dsw-alias-bg-base));
   border-radius: 0 28px 28px 0;
+  /* Round corners keep WebKit's backdrop blur aligned with the drawer despite its outer shadow. */
+  corner-shape: round;
   --phone-drawer-highlight: color-mix(in srgb, var(--dsw-alias-bg-base) 80%, transparent);
   box-shadow:
     8px 12px 36px -12px rgb(0 0 0 / 0.24),
@@ -509,6 +525,19 @@
   padding-right: 12px;
   will-change: transform;
   box-sizing: border-box;
+}
+
+/* Keep the Windows caption bar and its bottom hairline clear above the phone
+   drawer and backdrop so the top separator stays continuous when toggled. */
+:global([data-windows-titlebar]) .phoneBackdrop,
+:global([data-windows-titlebar]) .phoneDrawer {
+  top: var(--dsh-windows-titlebar-height);
+}
+
+/* Clip upward shadow bleed at the caption bar boundary without changing z-index
+   or window drag layering. */
+:global([data-windows-titlebar]) .phoneDrawer {
+  clip-path: inset(0 -64px -64px 0);
 }
 
 :global([data-ds-dark-theme]) .phoneDrawer {

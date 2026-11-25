@@ -77,8 +77,7 @@ function mergeDisplayOrder(
   }
   const visibleById = new Map(visible.map((workspace) => [workspace.workspaceId, workspace]));
   const lastHostIndex = new Map<string, number>();
-  for (let i = 0; i < knownOrder.length; i += 1) {
-    const id = knownOrder[i]!;
+  for (const [i, id] of knownOrder.entries()) {
     const hostId = visibleById.get(id)?.remote?.hostId ?? remoteWorkspaceHostId(id);
     if (hostId !== undefined) lastHostIndex.set(hostId, i);
   }
@@ -102,8 +101,8 @@ function mergeDisplayOrder(
     }
   }
   const merged: string[] = [];
-  for (let i = 0; i < knownOrder.length; i += 1) {
-    merged.push(knownOrder[i]!);
+  for (const [i, id] of knownOrder.entries()) {
+    merged.push(id);
     const after = insertAfter.get(i);
     if (after) merged.push(...after);
   }
@@ -292,9 +291,9 @@ export class Workspaces {
     const current = this.state.displayOrder;
     if (!current || current.length === 0) return;
     const remoteHostIds = new Map(
-      this.remoteGroups
-        .filter((group) => group.remote !== undefined)
-        .map((group) => [group.workspaceId, group.remote!.hostId]),
+      this.remoteGroups.flatMap((group) =>
+        group.remote ? [[group.workspaceId, group.remote.hostId] as const] : [],
+      ),
     );
     const encodedPrefix = `remote-workspace:${encodeURIComponent(hostId)}:`;
     const next = current.filter(
@@ -304,7 +303,8 @@ export class Workspaces {
         !id.startsWith(encodedPrefix),
     );
     if (next.length === current.length) return;
-    const { displayOrder: _dropped, ...rest } = this.state;
+    const { displayOrder, ...rest } = this.state;
+    void displayOrder;
     const state: WorkspaceState = next.length > 0 ? { ...rest, displayOrder: next } : rest;
     this.data.writeJson(FILE, state);
     this.state = state;

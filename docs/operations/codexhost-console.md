@@ -196,5 +196,5 @@ codexhost 未运行时，“连接”页列出已安装的插件（读取 `manif
 ## 其他命令
 
 - `codexhost inspect --json` 输出 Codex Desktop 安装信息与 Launcher 运行状态；未找到 Codex Desktop 时在 `desktopError` 中说明，不以失败退出。
-- `codexhost app [--onboarding]` 启动独立 Tauri v2 原生桌面壳（可选强制展示首次选择界面）；无图形会话且未指定 `--onboarding` 时回退到后台 Web，写入 `$CODEXHOST_DATA_DIR/desktop-shell-ready.json`（`0600`）。
+- `codexhost app [--onboarding]` 启动独立 Tauri v2 原生桌面壳（可选强制展示首次选择界面）；无图形会话且未指定 `--onboarding` 时回退到后台 Web，写入 `$CODEXHOST_DATA_DIR/desktop-shell-ready.json`（`0600`）。桌面壳按规范化数据目录单实例：同一目录再次启动只激活已有窗口，不同数据目录可同时运行。
 - `codexhost launch-prefs get --json` 与 `codexhost launch-prefs set --surface <native-shell|codex-desktop> [--onboarding-completed true|false]` 读取或保存桌面默认启动方式（`$CODEXHOST_DATA_DIR/launch-preferences-v1.json`，`0600`）。

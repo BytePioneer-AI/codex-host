@@ -220,6 +220,68 @@ describe("external Thread idle release", () => {
     f.idle.stop();
   });
 
+  it("protects touch:false operations without extending lastActivity or losing overlapping activity", async () => {
+    const f = await fixture();
+    f.idle.configure({ enabled: true, timeoutMinutes: 10 });
+    const passiveGate = deferred();
+    const passive = f.idle.runOperation(f.id, () => passiveGate.promise, { touch: false });
+    await vi.advanceTimersByTimeAsync(11 * MINUTE);
+    expect(f.close).not.toHaveBeenCalled();
+    expect(f.idle.list()[0]).toMatchObject({ state: "busy", reason: "operation" });
+    passiveGate.resolve();
+    await passive;
+    await vi.advanceTimersByTimeAsync(MINUTE);
+    expect(f.close).toHaveBeenCalledTimes(1);
+    f.idle.stop();
+
+    const overlap = await fixture();
+    overlap.idle.configure({ enabled: true, timeoutMinutes: 10 });
+    const activeGate = deferred();
+    const passiveOverlapGate = deferred();
+    await vi.advanceTimersByTimeAsync(5 * MINUTE);
+    const activeOp = overlap.idle.runOperation(overlap.id, () => activeGate.promise);
+    const passiveOp = overlap.idle.runOperation(overlap.id, () => passiveOverlapGate.promise, {
+      touch: false,
+    });
+    await vi.advanceTimersByTimeAsync(MINUTE);
+    activeGate.resolve();
+    await activeOp;
+    await vi.advanceTimersByTimeAsync(2 * MINUTE);
+    passiveOverlapGate.resolve();
+    await passiveOp;
+    await vi.advanceTimersByTimeAsync(7 * MINUTE);
+    expect(overlap.close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(MINUTE);
+    expect(overlap.close).toHaveBeenCalledTimes(1);
+    overlap.idle.stop();
+  });
+
+  it("holds occupancy for touch:false consumeOutput without extending lastActivity, while default consumeOutput touches", async () => {
+    const f = await fixture();
+    f.idle.configure({ enabled: true, timeoutMinutes: 10 });
+    await vi.advanceTimersByTimeAsync(9 * MINUTE);
+    const gate = deferred();
+    const passive = f.idle.consumeOutput(f.thread, () => gate.promise, { touch: false });
+    await vi.advanceTimersByTimeAsync(2 * MINUTE);
+    expect(f.close).not.toHaveBeenCalled();
+    expect(f.idle.list()[0]).toMatchObject({ state: "busy", reason: "operation" });
+    gate.resolve();
+    await passive;
+    await vi.advanceTimersByTimeAsync(MINUTE);
+    expect(f.close).toHaveBeenCalledTimes(1);
+    f.idle.stop();
+
+    const active = await fixture();
+    active.idle.configure({ enabled: true, timeoutMinutes: 10 });
+    await vi.advanceTimersByTimeAsync(9 * MINUTE);
+    await active.idle.consumeOutput(active.thread, async () => undefined);
+    await vi.advanceTimersByTimeAsync(9 * MINUTE);
+    expect(active.close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(MINUTE);
+    expect(active.close).toHaveBeenCalledTimes(1);
+    active.idle.stop();
+  });
+
   it("releases occupancy in finally after a failed operation", async () => {
     const f = await fixture();
     f.idle.configure({ enabled: true, timeoutMinutes: 10 });
@@ -297,6 +359,66 @@ describe("external Thread idle release", () => {
       expect(f.close).toHaveBeenCalledTimes(1);
       expect(f.runtime.get(f.id)).toBe(f.thread);
       f.idle.stop();
+    },
+  );
+
+  it.each(["confirmed", "persistence failure"] as const)(
+    "rechecks the original idle release on a later request after timeout (%s)",
+    async (outcome) => {
+      const f = await fixture();
+      const late = deferred();
+      const cleanup = deferred();
+      const blocked = { kind: "error", error: { code: -32075 } };
+      f.close.mockImplementation(async () => {
+        await late.promise;
+        if (outcome === "persistence failure")
+          f.thread.persistenceError = new Error("Store failed");
+        await FakeHarnessSession.prototype.close.call(f.thread.session);
+      });
+      f.onClosed.mockImplementation(async () => {
+        await cleanup.promise;
+        return undefined;
+      });
+      f.idle.configure({ enabled: true, timeoutMinutes: 10 });
+      try {
+        await vi.advanceTimersByTimeAsync(11 * MINUTE);
+        expect(await f.runtime.resolve(f.id)).toMatchObject(blocked);
+
+        late.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(f.onClosed).toHaveBeenCalledWith(f.thread);
+        expect(await f.runtime.locate(f.id)).toMatchObject(blocked);
+        expect(f.open).not.toHaveBeenCalled();
+
+        cleanup.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        // A late close may record its result, but only a new request can retire its owner.
+        expect(f.runtime.get(f.id)).toBe(f.thread);
+        const [first, second] = await Promise.all([
+          f.runtime.resolve(f.id),
+          f.runtime.resolve(f.id),
+        ]);
+        if (outcome === "persistence failure") {
+          expect(first).toMatchObject(blocked);
+          expect(second).toMatchObject(blocked);
+          expect(f.open).not.toHaveBeenCalled();
+          return;
+        }
+        if (first.kind !== "external" || second.kind !== "external") {
+          throw new Error(
+            `Expected recovery after confirmed shutdown, got ${first.kind} and ${second.kind}`,
+          );
+        }
+        expect(first.thread).toBe(second.thread);
+        expect(first.thread).not.toBe(f.thread);
+        expect(f.open).toHaveBeenCalledTimes(1);
+        expect(f.open).toHaveBeenCalledWith(
+          expect.objectContaining({ kind: "resume", nativeRef: f.thread.record.nativeSessionRef }),
+        );
+        await first.thread.session.close();
+      } finally {
+        f.idle.stop();
+      }
     },
   );
 

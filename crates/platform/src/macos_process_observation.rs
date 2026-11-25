@@ -23,7 +23,14 @@ pub(super) fn tree_snapshots(
     known: &[ProcessSnapshot],
     process_group: Option<(u32, u64)>,
 ) -> Result<Vec<ProcessSnapshot>, PlatformError> {
-    let identities = pids_by_type(ProcFilter::All)?
+    // Without root, BSDInfo is readable only for the caller's own processes.
+    let user = nix::unistd::geteuid();
+    let readable = if user.is_root() {
+        ProcFilter::All
+    } else {
+        ProcFilter::ByUID { uid: user.as_raw() }
+    };
+    let identities = pids_by_type(readable)?
         .into_iter()
         .filter_map(|id| {
             let native_id = i32::try_from(id).ok()?;

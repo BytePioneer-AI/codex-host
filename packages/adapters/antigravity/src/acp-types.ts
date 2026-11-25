@@ -152,7 +152,7 @@ export type AntigravityPromptInputPart =
   { type: "text"; text: string } | { type: "image"; mimeType: string; data: string };
 
 export interface AntigravityActivePromptHandler {
-  /** Called at the wire response boundary, before any subsequent Session events. */
+  /** Called at the last in-flight prompt's wire response, before subsequent idle events. */
   onResponse?(): void;
   onEvent(event: AntigravityAcpEvent): void;
   onPermission(request: RequestPermissionRequest): Promise<RequestPermissionResponse>;
@@ -200,6 +200,7 @@ export interface AntigravityAcpTransportLike {
     parts: readonly AntigravityPromptInputPart[],
     handler: AntigravityActivePromptHandler,
   ): Promise<AntigravityPromptResult>;
+  steer(parts: readonly AntigravityPromptInputPart[]): Promise<AntigravityPromptResult>;
   cancel(): Promise<void>;
   closeSession(): Promise<void>;
   close(): Promise<void>;

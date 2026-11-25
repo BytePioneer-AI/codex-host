@@ -1,7 +1,7 @@
 import { appendFile, cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { USAGE_STATISTICS_METHOD } from "@codexhost/shared-contracts";
 import { loadHarnessPlugins } from "../src/harness-plugin-loader.js";
 import { ModelPriceCatalog } from "../src/model-prices.js";
@@ -391,18 +391,23 @@ it("meters a native thread created through the shared Host client channel", asyn
     await new Promise((resolve) => setTimeout(resolve, 20));
     emit("rawResponse/completed", { turnId: "t", responseId: "r", usage: { outputTokens: 46 } });
     emit("turn/completed", { turn: { id: "t" } });
-    expect(
-      await fixture.host.handleClientRequest("codexhost/thread/usage/inspect", {
-        threadId: thread,
-      }),
-    ).toMatchObject({
-      result: {
-        usage: {
-          outputTokensPerSecond: expect.any(Number),
-          sessionOutputTokensPerSecond: expect.any(Number),
-        },
+    await vi.waitFor(
+      async () => {
+        expect(
+          await fixture.host.handleClientRequest("codexhost/thread/usage/inspect", {
+            threadId: thread,
+          }),
+        ).toMatchObject({
+          result: {
+            usage: {
+              outputTokensPerSecond: expect.any(Number),
+              sessionOutputTokensPerSecond: expect.any(Number),
+            },
+          },
+        });
       },
-    });
+      { timeout: 5_000 },
+    );
   } finally {
     fixture.host.close();
     await stopFixture(fixture);

@@ -423,9 +423,23 @@ describe("development Desktop start", () => {
       help: true,
     });
     expect(usage()).toContain("npm start");
+    expect(usage()).toContain("npm start app");
     expect(usage()).not.toContain("npm start host");
     expect(() => parseArguments(["host"])).toThrow("semantic version");
     expect(usage()).toContain("Stop any running Codex Desktop");
+  });
+
+  it("routes app --help to the desktop shell usage without spawning processes", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const spawnImplementation = vi.fn();
+    await expect(
+      runDevelopmentDesktop({
+        arguments_: ["app", "--help"],
+        spawnImplementation,
+      }),
+    ).resolves.toBe(0);
+    expect(spawnImplementation).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("npm start app"));
   });
 
   it("rejects unknown, duplicate, and malformed options", () => {
@@ -485,7 +499,7 @@ describe("development Desktop start", () => {
     },
   );
 
-  it("does not let inherited npm routing replace the source Host Runtime", async () => {
+  it("does not let inherited installation paths replace source launch artifacts", async () => {
     const root = temporaryDirectory();
     const nodePath = path.join(root, "node");
     const artifacts = materializeArtifacts(root, "linux", nodePath);
@@ -500,6 +514,9 @@ describe("development Desktop start", () => {
       CODEXHOST_NPM_CLI_PATH: "/installed/npm-cli.js",
       CODEXHOST_NPM_LAUNCHER_PATH: "/installed/codexhost.js",
       CODEXHOST_NPM_PACKAGE_ROOT: "/installed/package",
+      CODEXHOST_HOST_RUNTIME_PATH: "/installed/host-runtime.mjs",
+      CODEXHOST_HOST_NODE_PATH: "/installed/host-node",
+      CODEXHOST_DESKTOP_SHELL_PATH: "/installed/shell",
       CODEXHOST_DATA_DIR: path.join(root, "explicit-data"),
       HTTPS_PROXY: "http://127.0.0.1:1234",
     };
@@ -515,8 +532,10 @@ describe("development Desktop start", () => {
     const [command, arguments_, options] = spawnImplementation.mock.calls.at(-1);
     expect(command).toBe(artifacts.launcher);
     expect(arguments_).toEqual(expect.arrayContaining(["--host-runtime", artifacts.hostRuntime]));
-    for (const key of Object.keys(environment).filter((key) => key.startsWith("CODEXHOST_NPM_"))) {
-      expect(options.env).not.toHaveProperty(key);
+    for (const key of Object.keys(environment).filter(
+      (key) => key.startsWith("CODEXHOST_") && key !== "CODEXHOST_DATA_DIR",
+    )) {
+      expect(Object.keys(options.env)).not.toContain(key);
     }
     expect(options.env.CODEXHOST_DATA_DIR).toBe(environment.CODEXHOST_DATA_DIR);
     expect(options.env.HTTPS_PROXY).toBe(environment.HTTPS_PROXY);

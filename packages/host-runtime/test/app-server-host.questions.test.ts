@@ -3,6 +3,8 @@ import type { HostChoiceQuestion } from "@codexhost/harness-adapter";
 import {
   THREAD_QUESTIONS_LIST_METHOD,
   THREAD_QUESTION_RESPOND_METHOD,
+  hostItemIdSchema,
+  hostTurnIdSchema,
   threadQuestionsResultSchema,
   type JsonObject,
 } from "@codexhost/shared-contracts";
@@ -13,6 +15,7 @@ import {
   startPiThread,
   startPiTurn,
   stopFixture,
+  turnEvent,
   writeRequest,
 } from "./app-server-host-fixture.js";
 
@@ -32,13 +35,38 @@ const fixtures: ReturnType<typeof createFixture>[] = [];
 afterEach(async () => {
   for (const fixture of fixtures.splice(0)) await stopFixture(fixture);
 });
-async function setup(options: { expiresInMs?: number } = {}) {
+async function setup(
+  options: { detachedOwner?: boolean; expiresInMs?: number; native?: boolean } = {},
+) {
   const fixture = createFixture();
   fixtures.push(fixture);
   const threadId = await startPiThread(fixture);
-  const turnId = await startPiTurn(fixture, threadId);
+  const turnId = hostTurnIdSchema.parse(await startPiTurn(fixture, threadId));
   const session = fixture.adapter.sessions[0];
   if (!session) throw new Error("Expected fake Session");
+  const detachedOwner = options.detachedOwner
+    ? hostItemIdSchema.parse("detached-question-owner")
+    : undefined;
+  if (detachedOwner) {
+    session.emitEvent({
+      type: "item.started",
+      turnId,
+      item: {
+        type: "toolExecution",
+        itemId: detachedOwner,
+        namespace: "codexhost",
+        toolName: "ask_question",
+        arguments: {},
+      },
+    });
+    session.emitEvent({ type: "item.detached", turnId, itemId: detachedOwner });
+    await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/started") &&
+        ((message.params as JsonObject).item as JsonObject | undefined)?.id === detachedOwner,
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
   let id = 100;
   const rpc = async (method: string, params: JsonObject) => {
     const request = id++;
@@ -46,18 +74,22 @@ async function setup(options: { expiresInMs?: number } = {}) {
     return fixture.collector.waitFor((message) => requestId(message, request));
   };
   const interactionId = session.askQuestion(
-    choice,
-    options.expiresInMs === undefined
-      ? {}
-      : {
-          expiresAt: new Date(Date.now() + options.expiresInMs).toISOString(),
-        },
+    { ...choice, multiple: !options.native },
+    {
+      ...(detachedOwner ? { itemId: detachedOwner } : {}),
+      ...(options.expiresInMs === undefined
+        ? {}
+        : { expiresAt: new Date(Date.now() + options.expiresInMs).toISOString() }),
+    },
   );
   const list = async () =>
     threadQuestionsResultSchema.parse(
       (await rpc(THREAD_QUESTIONS_LIST_METHOD, { threadId })).result,
     ).questions;
-  await vi.waitFor(async () => expect(await list()).toHaveLength(1));
+  const nativeRequest = options.native
+    ? await fixture.collector.waitFor((message) => method(message, "item/tool/requestUserInput"))
+    : undefined;
+  if (!nativeRequest) await vi.waitFor(async () => expect(await list()).toHaveLength(1));
   const respond = (overrides: JsonObject = {}) =>
     rpc(THREAD_QUESTION_RESPOND_METHOD, {
       threadId,
@@ -66,10 +98,116 @@ async function setup(options: { expiresInMs?: number } = {}) {
       answers: { platform: ["mac", "win"] },
       ...overrides,
     });
-  return { fixture, session, threadId, turnId, interactionId, rpc, list, respond };
+  const completeTurn = async (status: "succeeded" | "failed" | "cancelled" = "succeeded") => {
+    const nativeRef = session.state.nativeRef;
+    if (!nativeRef) throw new Error("Expected fake native Session identity");
+    session.appendText("foreground complete");
+    const foregroundDelta = await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/agentMessage/delta") &&
+        turnEvent(message, "item/agentMessage/delta", turnId),
+    );
+    const foregroundItemId = hostItemIdSchema.parse(
+      ((foregroundDelta.params as JsonObject).itemId ?? "") as string,
+    );
+    session.emitEvent({
+      type: "item.completed",
+      turnId,
+      snapshot: {
+        item: {
+          type: "agentMessage",
+          itemId: foregroundItemId,
+          text: "foreground complete",
+        },
+        outcome: { status: "succeeded" },
+      },
+    });
+    await fixture.collector.waitFor(
+      (message) =>
+        method(message, "item/completed") &&
+        ((message.params as JsonObject).item as JsonObject | undefined)?.id === foregroundItemId,
+    );
+    session.emitEvent({
+      type: "turn.completed",
+      turnId,
+      nativeTurnRef: { ...nativeRef, nativeTurnKey: `question-${status}` },
+      outcome:
+        status === "succeeded"
+          ? { status }
+          : status === "failed"
+            ? { status, error: { code: "nativeFailure", message: "failed", retryable: false } }
+            : { status, reason: "cancelled" },
+    });
+    await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+  };
+  return {
+    fixture,
+    session,
+    threadId,
+    turnId,
+    interactionId,
+    detachedOwner,
+    nativeRequest,
+    rpc,
+    list,
+    respond,
+    completeTurn,
+  };
 }
 
 describe("shared multi-select Questions", () => {
+  it("keeps a detached-owner Question answerable after its Turn succeeds", async () => {
+    const question = await setup({ detachedOwner: true });
+    await question.completeTurn();
+    expect(await question.list()).toHaveLength(1);
+    expect(await question.respond()).toMatchObject({ result: { accepted: true } });
+    await vi.waitFor(async () => expect(await question.list()).toEqual([]));
+    expect(question.session.interactionResponses).toHaveLength(1);
+  });
+
+  it("keeps a detached-owner native Question answerable after its Turn succeeds", async () => {
+    const question = await setup({ detachedOwner: true, native: true });
+    const requestId = question.nativeRequest?.id;
+    if (typeof requestId !== "number") throw new Error("Expected native Question request");
+    await question.completeTurn();
+    writeRequest(question.fixture.desktopInput, {
+      id: requestId,
+      result: { answers: { platform: { answers: ["macOS"] } } },
+    });
+    await vi.waitFor(() => expect(question.session.interactionResponses).toHaveLength(1));
+    expect(question.session.interactionResponses[0]?.response).toMatchObject({
+      answers: { platform: ["mac"] },
+    });
+  });
+
+  it("retires a detached-owner Question when the Turn identity cannot be persisted", async () => {
+    const question = await setup({ detachedOwner: true });
+    vi.spyOn(question.fixture.mappingStore, "upsertTurnMappings").mockRejectedValueOnce(
+      new Error("Disk write failed"),
+    );
+    await question.completeTurn();
+    // The Harness reported success; the Host must not project the Turn as succeeded.
+    expect(
+      question.fixture.collector.messages.find((message) =>
+        turnEvent(message, "turn/completed", question.turnId),
+      ),
+    ).toMatchObject({ params: { turn: { status: "failed" } } });
+    await vi.waitFor(async () => expect(await question.list()).toEqual([]));
+    expect(await question.respond()).toHaveProperty("error");
+    expect(question.session.interactionResponses).toHaveLength(0);
+  });
+
+  it.each(["failed", "cancelled"] as const)(
+    "retires an unowned Question after a %s Turn",
+    async (status) => {
+      const question = await setup();
+      await question.completeTurn(status);
+      await vi.waitFor(async () => expect(await question.list()).toEqual([]));
+      expect(await question.respond()).toHaveProperty("error");
+      expect(question.session.interactionResponses).toHaveLength(0);
+    },
+  );
+
   it("returns Host values, avoids a duplicate native card, and rejects replay", async () => {
     const { fixture, session, list, respond, rpc, threadId } = await setup();
     expect(fixture.collector.messages.some((m) => method(m, "item/tool/requestUserInput"))).toBe(

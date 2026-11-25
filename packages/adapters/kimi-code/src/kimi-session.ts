@@ -169,6 +169,8 @@ export class KimiSession implements HarnessSession {
   #readNativeSnapshot: () => Promise<HostThreadSnapshot>;
   #nativeTurnFlushTimeoutMs: number;
   #closed = false;
+  #closing = false;
+  #closePromise: Promise<void> | null = null;
   #faulted = false;
   #transportFault: KimiTransportError | null = null;
   #activeTurn: {
@@ -317,7 +319,7 @@ export class KimiSession implements HarnessSession {
       | PermissionModeSelectCompleted
     >
   > {
-    if (this.#closed || this.#faulted) {
+    if (this.#closed || this.#closing || this.#faulted) {
       return err("invalidState", "Kimi session is closed");
     }
 
@@ -342,30 +344,49 @@ export class KimiSession implements HarnessSession {
     }
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#transport.setSessionEventHandler(null);
+  close(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    if (this.#closePromise) return this.#closePromise;
+    const first = !this.#closing;
+    this.#closing = true;
+    const attempt = this.#close(first);
+    this.#closePromise = attempt;
+    void attempt.catch(() => {
+      if (this.#closePromise === attempt) this.#closePromise = null;
+    });
+    return attempt;
+  }
 
-    this.#closeActiveInteractions("cancelled");
+  async #close(first: boolean): Promise<void> {
+    if (first) {
+      this.#transport.setSessionEventHandler(null);
+      this.#closeActiveInteractions("cancelled");
 
-    if (this.#activeTurn) {
-      this.#activeTurn.cancellationRequested = true;
-      await this.#transport.cancel().catch(() => undefined);
+      if (this.#activeTurn) {
+        this.#activeTurn.cancellationRequested = true;
+        await this.#transport.cancel().catch(() => undefined);
+      }
     }
 
-    await this.#transport.close().catch(() => undefined);
+    try {
+      await this.#transport.close();
+    } catch (error) {
+      this.#channel.end();
+      throw error;
+    }
 
     if (this.#activeTurnPromise) {
       await this.#activeTurnPromise.catch(() => undefined);
       this.#activeTurnPromise = null;
     }
 
+    this.#closed = true;
+    this.#closing = false;
     this.#channel.end();
   }
 
   handleTransportFault(error: KimiTransportError): void {
-    if (this.#closed || this.#faulted) return;
+    if (this.#closed || this.#closing || this.#faulted) return;
     this.#faulted = true;
     this.#transportFault = error;
     this.#closeActiveInteractions("cancelled");
@@ -643,7 +664,8 @@ export class KimiSession implements HarnessSession {
 
     const handler: ActivePromptHandler = {
       onEvent: (event: KimiTransportEvent) => {
-        if (this.#closed || this.#faulted || this.#activeTurn?.turnId !== turnId) return;
+        if (this.#closed || this.#closing || this.#faulted || this.#activeTurn?.turnId !== turnId)
+          return;
 
         switch (event.type) {
           case "agent.text": {
@@ -818,7 +840,7 @@ export class KimiSession implements HarnessSession {
     let promptError: Error | null = null;
 
     try {
-      if (this.#closed || this.#activeTurn?.cancellationRequested) {
+      if (this.#closed || this.#closing || this.#activeTurn?.cancellationRequested) {
         promptResponse = { stopReason: "cancelled" };
       } else if (this.#transportFault) {
         throw this.#transportFault;

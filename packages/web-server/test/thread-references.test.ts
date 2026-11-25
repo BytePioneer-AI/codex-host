@@ -8,6 +8,7 @@ import {
   threadReferenceOf,
   threadReferenceUri,
 } from "@deepseek-ai/dsh-client-ui-conversation/thread-reference";
+import { remoteSessionId } from "../src/remote-sessions.ts";
 
 const shared = (id: string, title = "Same title") => {
   const reference = threadReferenceOf({
@@ -109,18 +110,53 @@ it("rejects ambiguous, malformed and unrelated message destinations", () => {
 });
 
 it("round trips native remote references without using the encoded Web ID as a native ID", () => {
-  const threadId = "线程/one",
-    hostId = "remote-control:机器";
-  const reference = threadReferenceOf({
-    id: "web-remote:opaque",
-    blank: false,
-    projectionValues: { threadReference: { hostId, threadId } },
-  });
-  assert.ok(reference);
-  assert.equal(reference.threadId, threadId);
-  assert.equal(
-    localThreadId(threadReferenceUri(reference)),
-    "web-remote:" + Buffer.from(JSON.stringify([hostId, threadId])).toString("base64url"),
-  );
-  assert.deepEqual(parseThreadReferenceDrag(JSON.stringify(reference)), reference);
+  for (const [hostId, threadId] of [
+    ["remote-control:机器", "线程/one"],
+    ["remote-peer:11111111-2222-4333-8444-555555555555", "peer-thread-1"],
+    ["remote-peer:peer-中文", "线程/peer?#()"],
+  ] as const) {
+    const reference = threadReferenceOf({
+      id: "web-remote:opaque",
+      blank: false,
+      title: "Peer Title",
+      projectionValues: { threadReference: { hostId, threadId } },
+    });
+    assert.ok(reference, hostId);
+    assert.equal(reference.threadId, threadId);
+    assert.equal(reference.hostId, hostId);
+    const expectedSessionId = remoteSessionId(hostId, threadId);
+    assert.equal(localThreadId(threadReferenceUri(reference)), expectedSessionId);
+    assert.deepEqual(parseThreadReferenceDrag(JSON.stringify(reference)), reference);
+  }
+  for (const invalidHostId of [
+    "remote-peer",
+    "remote-peer:",
+    "remote-control:",
+    "remote-ssh:",
+    "remote-other:id",
+    "remote",
+    "durable",
+  ]) {
+    assert.equal(
+      threadReferenceOf({
+        id: "web-remote:opaque",
+        blank: false,
+        projectionValues: { threadReference: { hostId: invalidHostId, threadId: "t-1" } },
+      }),
+      undefined,
+      invalidHostId,
+    );
+    assert.equal(
+      localThreadId(`thread://t-1?hostId=${encodeURIComponent(invalidHostId)}`),
+      undefined,
+      invalidHostId,
+    );
+    assert.equal(
+      parseThreadReferenceDrag(
+        JSON.stringify({ hostId: invalidHostId, threadId: "t-1", title: "Bad" }),
+      ),
+      undefined,
+      invalidHostId,
+    );
+  }
 });

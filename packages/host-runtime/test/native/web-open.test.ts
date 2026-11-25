@@ -118,7 +118,7 @@ it("Desktop web/open starts Web independently of Host restart", { timeout: 180_0
       data,
     ]);
     await run(["host", "stop", ...args]);
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   await run(["host", "ensure", ...args]);
   await assert.rejects(readFile(path.join(data, "web-service-ready.json")), { code: "ENOENT" });

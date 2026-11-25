@@ -600,6 +600,7 @@ export function createExternalThreadRecordInput(input: {
   transportModelId: string;
   ephemeral: boolean;
   historyMode: "legacy" | "paginated";
+  projectId?: CreateProvisionalThreadInput["projectId"];
   projectlessWorkspace?: CreateProvisionalThreadInput["projectlessWorkspace"];
   forkSource?: CreateProvisionalThreadInput["forkSource"];
   attachedToThreadId?: CreateProvisionalThreadInput["attachedToThreadId"];
@@ -616,6 +617,7 @@ export function createExternalThreadRecordInput(input: {
     transportModelId: input.transportModelId,
     ephemeral: input.ephemeral,
     historyMode: input.historyMode,
+    ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
     ...(input.projectlessWorkspace ? { projectlessWorkspace: input.projectlessWorkspace } : {}),
     ...(input.forkSource ? { forkSource: input.forkSource } : {}),
     ...(input.attachedToThreadId ? { attachedToThreadId: input.attachedToThreadId } : {}),

@@ -11,6 +11,7 @@ import {
   deriveFlat,
   deriveGroups,
   deriveSearchResults,
+  deriveThreadForest,
   orderByRecency,
   reconcileManualOrder,
   threadTreeParentOf,
@@ -523,5 +524,28 @@ it("captures all unarchived local descendants when the tree is collapsed or sear
   assert.deepEqual(
     selection.map(({ id, title }) => [id, title]).sort(),
     ["fold", "fork", "fork-child", "hidden"].map((key) => [id(key), key]),
+  );
+});
+
+it("matches full derivation when reusing precomputed forest and order sources, and short-circuits empty deriveFlat", () => {
+  const list = catalog(row("root", null, 5), row("child", "root", 10), row("solo", null, 3));
+  const workspaces = [workspace("ws", "root", "child", "solo")];
+  const forest = deriveThreadForest(list, state, new Map());
+  const roots = new Map(forest.map((node) => [node.id, node]));
+
+  assert.deepEqual(deriveFlat(list, [], state, new Map()), []);
+  assert.deepEqual(
+    deriveFlat(list, list.ids, state, new Map(), roots),
+    deriveFlat(list, list.ids, state, new Map()),
+  );
+  assert.deepEqual(
+    deriveGroups(list, workspaces, state, new Map(), { expandedGroups: ["ws"] }, roots),
+    deriveGroups(list, workspaces, state, new Map(), { expandedGroups: ["ws"] }),
+  );
+  const precomputedOrder = threadTreeOrderSource(list, state, forest);
+  assert.deepEqual(precomputedOrder, threadTreeOrderSource(list, state));
+  assert.deepEqual(
+    pinOrderSource(workspaces, list, state, precomputedOrder),
+    pinOrderSource(workspaces, list, state),
   );
 });

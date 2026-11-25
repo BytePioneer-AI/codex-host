@@ -25,7 +25,7 @@ function syncSpinner(element: SVGSVGElement | null): void {
 }
 
 /**
- * Set the SVG's spin and the arc's breathing animation to start at document time zero.
+ * Set the SVG's spin animation to start at document time zero.
  * @param element - the mounted loader.
  */
 function pinSpinner(element: SVGSVGElement): void {

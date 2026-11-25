@@ -267,3 +267,93 @@ it("keeps each browser's choice through reconnect and ignores a previous generat
   expect(ids(b.manager)).toEqual([ordinary]);
   await Promise.all([a.manager.dispose(), b.manager.dispose()]);
 });
+
+it("filters chat-only projections, drops no-op updates, and coalesces live stream updates per animation frame", async () => {
+  const { manager } = fixture();
+  await manager.refreshList();
+  const notifications = vi.fn();
+  const unsubscribe = manager.subscribe(notifications);
+
+  const flushMicrotasks = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  // Chat-only projections update the store without notifying list subscribers.
+  manager.handleControlFrame({
+    type: "projection",
+    sessionId: ordinary,
+    key: "codexhostToolOutput",
+    value: { lines: ["hello"] },
+    seq: 1,
+  });
+  manager.handleControlFrame({
+    type: "projection",
+    sessionId: ordinary,
+    key: "codexhostUsage",
+    value: { total: 10 },
+    seq: 1,
+  });
+  await flushMicrotasks();
+  expect(notifications).not.toHaveBeenCalled();
+  expect(manager.projectionValues(ordinary)?.codexhostToolOutput).toEqual({ lines: ["hello"] });
+
+  // No-op upsert and status updates do not notify list subscribers.
+  manager.handleSessionAdded(row(ordinary));
+  manager.handleSessionStatus(ordinary, false);
+  await flushMicrotasks();
+  expect(notifications).not.toHaveBeenCalled();
+
+  // Identical control projection values do not notify a second time.
+  manager.handleControlFrame({
+    type: "projection",
+    sessionId: ordinary,
+    key: "title",
+    value: "Stable Title",
+    seq: 2,
+  });
+  await flushMicrotasks();
+  expect(notifications).toHaveBeenCalledTimes(1);
+  manager.handleControlFrame({
+    type: "projection",
+    sessionId: ordinary,
+    key: "title",
+    value: "Stable Title",
+    seq: 3,
+  });
+  await flushMicrotasks();
+  expect(notifications).toHaveBeenCalledTimes(1);
+
+  // When requestAnimationFrame exists, burst live stream updates coalesce into one flush.
+  const frames: FrameRequestCallback[] = [];
+  const originalRaf = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+    frames.push(callback);
+    return frames.length;
+  }) as typeof globalThis.requestAnimationFrame;
+  try {
+    notifications.mockClear();
+    manager.handleSessionStatus(ordinary, true);
+    manager.handleSessionActivity(ordinary, 999);
+    manager.handleControlFrame({
+      type: "projection",
+      sessionId: ordinary,
+      key: "title",
+      value: "Next Title",
+      seq: 4,
+    });
+    await flushMicrotasks();
+    expect(notifications).not.toHaveBeenCalled();
+    expect(frames).toHaveLength(1);
+    frames[0]!(16);
+    expect(notifications).toHaveBeenCalledTimes(1);
+    const snapshot = manager.getListSnapshot();
+    expect(snapshot.items[0]?.title).toBe("Next Title");
+    expect(snapshot.items[0]?.running).toBe(true);
+    expect(snapshot.items[0]?.updatedAt).toBe(999);
+  } finally {
+    globalThis.requestAnimationFrame = originalRaf;
+    unsubscribe();
+    await manager.dispose();
+  }
+});

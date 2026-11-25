@@ -31,13 +31,14 @@
   color: var(--dsw-alias-state-idle-primary);
 }
 
-/* Ongoing is the sole non-dot state: a quiet full ring sits behind a centered
- * breathing arc while the complete glyph rotates continuously. Both animations
- * share one 1.5s period so pinning their start times aligns them together. */
+/* Ongoing is the sole non-dot state: a quiet full ring sits behind a fixed-length
+ * arc while the complete glyph rotates continuously on the compositor thread. */
 .spinner {
   flex: none;
   color: var(--dsw-alias-label-tertiary);
   transform-origin: center;
+  will-change: transform;
+  contain: layout style paint;
   animation: dsh-state-dot-spin 1.5s linear infinite;
 }
 
@@ -54,8 +55,8 @@
 }
 
 .spinnerArc {
-  stroke-dasharray: 12 150;
-  animation: dsh-state-dot-dash 1.5s ease-in-out infinite;
+  stroke-dasharray: 18 150;
+  stroke-dashoffset: -3;
 }
 
 @keyframes dsh-state-dot-spin {
@@ -64,32 +65,10 @@
   }
 }
 
-@keyframes dsh-state-dot-dash {
-  0% {
-    stroke-dasharray: 12 150;
-    stroke-dashoffset: 0;
-  }
-
-  50% {
-    stroke-dasharray: 24 150;
-    stroke-dashoffset: -6;
-  }
-
-  100% {
-    stroke-dasharray: 12 150;
-    stroke-dashoffset: 0;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .spinner,
-  .spinnerArc {
+  .spinner {
     animation: none;
-  }
-
-  .spinnerArc {
-    stroke-dasharray: 18 150;
-    stroke-dashoffset: -3;
+    will-change: auto;
   }
 }
 

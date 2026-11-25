@@ -522,14 +522,15 @@ export function deriveGroups(
   rowState: SessionRowState,
   statuses: SessionStatuses,
   view: TreeView,
+  precomputedRoots?: ReadonlyMap<SessionId, SessionNode>,
 ): GroupNode[] {
   const archived = new Set(rowState.archivedSessionIds);
   const pinned = new Set(rowState.pinnedSessionIds);
   const expandedGroups = new Set(view.expandedGroups);
   const current = mainSessionId(list);
-  const roots = new Map(
-    deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]),
-  );
+  const roots =
+    precomputedRoots ??
+    new Map(deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]));
   const groups: GroupNode[] = [];
   for (const g of groupByWorkspace(list, workspaces, archived, rowState.archivedFilter)) {
     const expanded = expandedGroups.has(g.key);
@@ -615,12 +616,14 @@ export function deriveFlat(
   sessionIds: readonly SessionId[],
   rowState: SessionRowState,
   statuses: SessionStatuses,
+  precomputedRoots?: ReadonlyMap<SessionId, SessionNode>,
 ): SessionNode[] {
+  if (sessionIds.length === 0) return [];
   const archived = new Set(rowState.archivedSessionIds);
   const pinned = new Set(rowState.pinnedSessionIds);
-  const roots = new Map(
-    deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]),
-  );
+  const roots =
+    precomputedRoots ??
+    new Map(deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]));
   const members = sessionIds.flatMap((id) => {
     const node = roots.get(id);
     return node === undefined ? [] : [node];

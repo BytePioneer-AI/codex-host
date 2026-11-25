@@ -16,8 +16,10 @@ import { visibleThreadRows } from "../thread-tree.ts";
 import { hasExplicitTreeStyle, type ThreadTreeCollapseStyle } from "../workspace-preferences.ts";
 
 const EMPTY_EXPANSION: Readonly<Record<string, boolean>> = {};
+const EMPTY_FOREST: readonly SessionNode[] = [];
 const ThreadTreeContext = createContext<{
   t: WorkspaceBrowserProps["t"];
+  forest: readonly SessionNode[];
   expansion: Readonly<Record<string, boolean>>;
   rows: (roots: readonly SessionNode[]) => SessionNode[];
   toggle: (id: string, expanded: boolean, occurrence?: string) => void;
@@ -32,6 +34,7 @@ const ThreadTreeContext = createContext<{
   isSidebarSelection: (id: SessionId) => boolean;
 }>({
   t: (key) => key,
+  forest: EMPTY_FOREST,
   expansion: EMPTY_EXPANSION,
   rows: (roots) => visibleThreadRows(roots, EMPTY_EXPANSION),
   toggle: () => {},
@@ -72,7 +75,9 @@ export function ThreadTreeViewProvider({
   const [promptOccurrence, setPromptOccurrence] = useState<string>();
   const dismissStylePrompt = useCallback(() => setPromptOccurrence(undefined), []);
   const list = useSessions((state) => state);
-  const workspaceState = useWorkspaces((state) => state);
+  const pinnedSessionIds = useWorkspaces((state) => state.pinnedSessionIds);
+  const archivedSessionIds = useWorkspaces((state) => state.archivedSessionIds);
+  const threadSections = useWorkspaces((state) => state.threadSections);
   const expansion = useStore((state) => state.threadExpansion ?? EMPTY_EXPANSION);
   const archivedFilter = useStore((state) => state.archivedFilter ?? "default");
   const forest = useMemo(
@@ -80,20 +85,20 @@ export function ThreadTreeViewProvider({
       deriveThreadForest(
         list,
         {
-          pinnedSessionIds: workspaceState.pinnedSessionIds,
-          archivedSessionIds: workspaceState.archivedSessionIds,
+          pinnedSessionIds,
+          archivedSessionIds,
           archivedFilter,
-          ...(archivedFilter === "only" || !workspaceState.threadSections?.length
+          ...(archivedFilter === "only" || !threadSections?.length
             ? {}
             : {
                 sectionedSessionIds: new Set(
-                  workspaceState.threadSections.flatMap((section) => section.threadIds),
+                  threadSections.flatMap((section) => section.threadIds),
                 ),
               }),
         },
         new Map(),
       ),
-    [list, workspaceState, archivedFilter],
+    [list, pinnedSessionIds, archivedSessionIds, archivedFilter, threadSections],
   );
   const targets = useMemo(() => {
     const result = new Map<SessionId, { root: SessionNode; ancestors: string[] }>();
@@ -145,6 +150,7 @@ export function ThreadTreeViewProvider({
   const value = useMemo(
     () => ({
       t: browser.t,
+      forest,
       expansion,
       rows: (roots: readonly SessionNode[]) => visibleThreadRows(roots, expansion),
       toggle: (id: string, expanded: boolean, occurrence?: string) => {
@@ -166,6 +172,7 @@ export function ThreadTreeViewProvider({
       browser.t,
       browser.markCompletionsRead,
       actions,
+      forest,
       expansion,
       targets,
       reveal,

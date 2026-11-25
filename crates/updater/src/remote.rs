@@ -175,37 +175,19 @@ fn apply_locked(request: &Request) -> Result<(), Box<dyn Error>> {
             return Err("The remote installation changed before the update acquired its lock; refresh and retry".into());
         }
         if !request.restart_only {
-            // Check that npm belongs to the installation being replaced, not another Node prefix.
-            let output = Command::new(&request.node)
-                .arg(&request.npm)
-                .args(["root", "--global"])
-                .output()?;
-            if !output.status.success() {
-                return Err("Could not identify the global npm installation".into());
-            }
-            let prefix = PathBuf::from(String::from_utf8(output.stdout)?.trim());
-            let global_platform =
-                request.package_root.parent().and_then(Path::parent) == Some(prefix.as_path());
-            let launcher_root = request
-                .launcher
-                .parent()
-                .and_then(Path::parent)
-                .ok_or("Invalid npm launcher path")?;
-            if !global_platform
-                && !(launcher_root.parent().and_then(Path::parent) == Some(prefix.as_path())
-                    && request
-                        .package_root
-                        .starts_with(launcher_root.join("node_modules")))
-            {
-                return Err(
-                    "npm uses a different global installation; update this remote manually".into(),
-                );
-            }
-            let package = format!("@codexhost/cli@{}", request.version);
+            let specs = crate::npm::install_specs(
+                &request.node,
+                &request.npm,
+                &request.launcher,
+                &request.package_root,
+                &request.version,
+            )?
+            .ok_or("npm uses a different global installation; update this remote manually")?;
+            let package = &specs[0];
             // Unpublished local builds fail here, before touching the installation or service.
             run(Command::new(&request.node).arg(&request.npm).args([
                 "view",
-                &package,
+                package,
                 "version",
                 "--fetch-retries=0",
                 "--fetch-timeout=30000",
@@ -217,31 +199,10 @@ fn apply_locked(request: &Request) -> Result<(), Box<dyn Error>> {
             })?;
             status(request, "installing", None)?;
             let mut command = Command::new(&request.node);
-            command.arg(&request.npm).args([
-                "install",
-                "--global",
-                "--no-audit",
-                "--no-fund",
-                &package,
-            ]);
-            if global_platform {
-                let name = request
-                    .package_root
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .ok_or("Invalid platform package path")?;
-                if ![
-                    "cli-darwin-arm64",
-                    "cli-darwin-x64",
-                    "cli-linux-arm64",
-                    "cli-linux-x64",
-                ]
-                .contains(&name)
-                {
-                    return Err("Unknown remote platform package".into());
-                }
-                command.arg(format!("@codexhost/{name}@{}", request.version));
-            }
+            command
+                .arg(&request.npm)
+                .args(["install", "--global", "--no-audit", "--no-fund"])
+                .args(&specs);
             run(&mut command).map_err(|error| format!("npm installation failed; check remote network access and write permissions: {error}"))?;
         }
         let metadata: serde_json::Value = serde_json::from_slice(&fs::read(

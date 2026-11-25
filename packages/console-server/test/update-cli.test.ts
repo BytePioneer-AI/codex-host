@@ -65,6 +65,16 @@ describe("update command", () => {
     expect(write).toHaveBeenLastCalledWith("codexhost 1.0.0 is up to date.");
   });
 
+  it("does not start an update the npm registry cannot install yet", async () => {
+    const updates = fixture();
+    const checked = await updates.check(target);
+    updates.check.mockResolvedValue({ ...checked, installationAvailable: false });
+    await expect(runUpdateCommand(target, updates, vi.fn())).rejects.toThrow(
+      "your npm registry does not have it yet",
+    );
+    expect(updates.start).not.toHaveBeenCalled();
+  });
+
   it("propagates check and preparation errors", async () => {
     const updates = fixture();
     const checked = await updates.check(target);

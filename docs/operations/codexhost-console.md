@@ -174,7 +174,8 @@ npm 的 Launcher 和 Node 分别来自更新请求的平台包根目录与 `node
 没有可用 Host 时，Console/CLI 使用独立更新流程，下载、准备后等待 Updater 校验进程身份并确认就绪，转移更新锁，再退出；Updater 等发起进程退出后安装。没有安装 Desktop 时恢复 Web，否则沿用 Desktop 启动方式。创建子进程或获得 PID 不代表交接成功；启动报错、提前退出或交接超时都会报告失败。源码构建不支持自更新。
 
 - Windows 安装包更新以 `/DIR` 固定当前安装目录，启动安装器前由 Updater 关闭仍从该安装目录运行的 Launcher、内置 Node（包括独立控制台）、Shim 和 node_repl 包装器，规则与下文的覆盖安装相同；npm 更新前关闭仍从该平台包运行的 codexhost 可执行文件，不关闭共享的系统 Node。安装器和 npm 的输出分别写入本次更新目录的 `installer.log`、`npm-install.log`。失败时保留手动更新入口。
-- npm 安装保留 Node、npm CLI、wrapper 和平台包根目录的绝对路径，后台 Host 不依赖后来连接的 Desktop 提供安装信息。路径必须属于当前 Host 安装。
+- npm 安装保留 Node、npm CLI、wrapper 和平台包根目录的绝对路径，后台 Host 不依赖后来连接的 Desktop 提供安装信息。路径必须属于当前 Host 安装。重启运行的是请求中的平台包根目录，因此 Updater 在确认交接、停止任何服务之前，先用 `npm root --global` 确认这份 npm 能原地替换它：平台包位于该全局目录下 `@codexhost/cli/node_modules` 内时随 CLI 一起替换；是该全局目录下的独立全局包时（启动时版本不一致提示的重装命令会这样安装），在同一条 npm 命令中显式安装同版本平台包；其他布局（例如 npm 的全局目录不是当初安装 codexhost 的那个）直接拒绝更新，原服务保持运行。安装后校验平台包根目录的 `codexhost-distribution.json` 已是目标版本，否则报告该路径未被替换，而不是等待服务就绪超时。远程 SSH Host 的 npm 更新使用同一规则。
+- npm 安装的更新以 GitHub Release 决定提供哪个版本，再用这份安装自己的 npm（含镜像与代理配置）执行 `npm view`，确认 CLI 和本机平台包的该版本都已可装，才显示更新按钮和“有新版本”提示；镜像尚未同步时设置页说明需等待同步，查询失败时报告错误。确认可装的结果在 Host 内保留，未同步的结果 5 分钟后重新查询。点击更新后，更新管理器在交接前用 `npm cache add` 把两个包下载并校验到 npm 缓存，失败则不停止任何服务；Updater 停止服务后以 `--prefer-offline` 从缓存安装。
 - 检查、准备或交接失败时 CLI 返回非零退出码；安装后的最终结果保留在本地状态文件中。
 
 ### Windows 安装包覆盖安装

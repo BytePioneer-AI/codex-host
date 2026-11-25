@@ -336,7 +336,10 @@ export function installRendererSettingsLifecycle(
     void checkUpdateWithTimeout(client)
       .then((result) => {
         if (disposed || generation !== updateCheckGeneration) return;
-        updateAvailable = result?.updateAvailable ?? false;
+        // A release the npm registry has not synced yet is offered once it can be installed.
+        updateAvailable =
+          (result?.updateAvailable ?? false) &&
+          (result?.installationAvailable === true || result?.error != null);
         trigger?.setUpdateAvailable(updateAvailable);
         if (result === null || result.error === null) {
           updateRetryAttempt = 0;

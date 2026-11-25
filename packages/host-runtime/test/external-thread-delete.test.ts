@@ -435,7 +435,7 @@ describe("external Thread local deletion", () => {
           ok: false,
           error: { code: "nativeFailure", message: "native setup failed", retryable: false },
           ...(failure === "invalid" ? { nativeCleanup: "invalid" } : {}),
-        } as BillingSourceOpenResult);
+        } as unknown as BillingSourceOpenResult);
       }
       const fixture = createFixture({
         additionalAdapters: new Map([["omp", Object.assign(adapter, { openBillingSource })]]),

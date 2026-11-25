@@ -212,20 +212,26 @@ describe("background update manager", () => {
         await writeFile(filePath, "fixture\n");
       }
       renameFixture.remainingFailures = 2;
+      let attemptsBeforePrefetch = 0;
       const manager = createBackgroundUpdateManager({
         platform: "darwin",
         randomId: () => "retry-fixture",
-        prefetchNpm: async () => {},
+        prefetchNpm: async () => {
+          attemptsBeforePrefetch = renameFixture.attempts;
+        },
       });
 
-      await expect(
-        manager.prepareNpm({
-          ...common,
-          ...npmFiles,
-          packageRoot: path.join(root, "npm", "platform-package"),
-        }),
-      ).resolves.toMatchObject({ installation: "npm" });
-      expect(renameFixture.attempts).toBe(3);
+      const prepared = await manager.prepareNpm({
+        ...common,
+        ...npmFiles,
+        packageRoot: path.join(root, "npm", "platform-package"),
+      });
+      // The downloading snapshot fails twice before it can be published ahead of prefetch.
+      expect(attemptsBeforePrefetch).toBe(3);
+      await expect(manager.readStatus(prepared.statusPath)).resolves.toMatchObject({
+        installation: "npm",
+        phase: "prepared",
+      });
     },
   );
 

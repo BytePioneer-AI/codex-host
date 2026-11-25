@@ -107,7 +107,7 @@ describe("Updates service reconnection", () => {
       await vi.advanceTimersByTimeAsync(750);
       expect(view.panel.dataset.updateState).toBe(terminalPhase);
       expect(view.panel.textContent).toContain(
-        terminalPhase === "succeeded" ? messages.updateSucceeded : "Installation did not complete",
+        terminalPhase === "succeeded" ? messages.updateSucceeded : messages.updateFailed,
       );
       if (terminalPhase === "succeeded") {
         const version = view.content.querySelector(".settings-update-metadata__item strong");
@@ -232,7 +232,7 @@ describe("Updates service reconnection", () => {
     const view = await mount(client);
     await view.start();
     expect(view.panel.dataset.updateState).toBe("failed");
-    expect(view.panel.textContent).toContain(previous.error);
+    expect(view.panel.textContent).toContain(messages.updateFailed);
     expect(client.startUpdate).toHaveBeenCalledOnce();
     expect(client.readUpdateStatus).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);

@@ -406,15 +406,16 @@ export async function listSectionThreads(input: {
 }
 
 export type SectionMoveOutcome =
-  | { kind: "forward" }
+  | { kind: "forward"; confirm(): Promise<boolean> }
   | { kind: "unchanged" }
   /** Legacy native moves report native success even if External anchors could not be saved. */
   | { kind: "moved"; persistError?: unknown }
   | {
-      kind: "partial";
-      persistError: unknown;
-      /** Under the owner's section lock, use fresh placements. False means recovery is unsafe. */
-      recover(placements: readonly StoredSectionPlacementV1[]): Promise<boolean>;
+      kind: "needs-readback";
+      nativeConfirmed: boolean;
+      cause: unknown;
+      /** Under the owner's section lock, verify native order before saving any anchors. */
+      recover(loadPlacements: () => Promise<readonly StoredSectionPlacementV1[]>): Promise<boolean>;
     }
   | { kind: "error"; error: JsonObject };
 
@@ -442,6 +443,18 @@ function sameSectionAnchors(
   );
 }
 
+async function officialThreadIsUnsectioned(
+  requestOfficial: OfficialRequest,
+  threadId: string,
+): Promise<boolean> {
+  const response = await requestOfficial("thread/read", { threadId, includeTurns: false });
+  const thread = object(response.result) ? response.result.thread : undefined;
+  if (officialError(response) || !object(thread) || thread.id !== threadId) {
+    throw new ThreadSectionError("Could not confirm the moved Thread's section");
+  }
+  return thread.section === null;
+}
+
 function sectionAnchorRecovery(input: {
   expectedNativeOrders: ReadonlyMap<string, readonly string[]>;
   unsectionedThreadId: string | null;
@@ -449,16 +462,13 @@ function sectionAnchorRecovery(input: {
   planned: readonly StoredSectionPlacementV1[];
   requestOfficial: OfficialRequest;
   savePlacements(placements: StoredSectionPlacementV1[]): Promise<unknown>;
-}): (placements: readonly StoredSectionPlacementV1[]) => Promise<boolean> {
+}): (loadPlacements: () => Promise<readonly StoredSectionPlacementV1[]>) => Promise<boolean> {
   const { expectedNativeOrders, unsectionedThreadId, requestOfficial, savePlacements } = input;
   const affected = (placement: StoredSectionPlacementV1) =>
     expectedNativeOrders.has(placement.section.id);
   const previous = input.previous.filter(affected);
   const planned = input.planned.filter(affected);
-  return async (placements) => {
-    const current = placements.filter(affected);
-    const alreadyApplied = sameSectionAnchors(current, planned);
-    if (!alreadyApplied && !sameSectionAnchors(current, previous)) return false;
+  return async (loadPlacements) => {
     for (const [sectionId, expected] of expectedNativeOrders) {
       const actual = await officialSectionOrder({
         sectionId,
@@ -469,17 +479,15 @@ function sectionAnchorRecovery(input: {
         return false;
       }
     }
-    if (unsectionedThreadId !== null) {
-      const response = await requestOfficial("thread/read", {
-        threadId: unsectionedThreadId,
-        includeTurns: false,
-      });
-      const thread = object(response.result) ? response.result.thread : undefined;
-      if (officialError(response) || !object(thread) || thread.id !== unsectionedThreadId) {
-        throw new ThreadSectionError("Could not confirm the moved Thread's section");
-      }
-      if (thread.section !== null) return false;
-    }
+    if (
+      unsectionedThreadId !== null &&
+      !(await officialThreadIsUnsectioned(requestOfficial, unsectionedThreadId))
+    )
+      return false;
+    const placements = await loadPlacements();
+    const current = placements.filter(affected);
+    const alreadyApplied = sameSectionAnchors(current, planned);
+    if (!alreadyApplied && !sameSectionAnchors(current, previous)) return false;
     if (alreadyApplied) return true;
     const anchors = new Map(
       planned.map((placement) => [placement.hostThreadId, placement.beforeThreadId]),
@@ -520,7 +528,21 @@ export async function moveThreadSection(input: {
     input.placements.length === 0 &&
     !(move.beforeThreadId !== null && isExternal(move.beforeThreadId))
   ) {
-    return { kind: "forward" };
+    return {
+      kind: "forward",
+      async confirm() {
+        const { threadId, sectionId, beforeThreadId } = move;
+        if (sectionId === null)
+          return beforeThreadId === null && officialThreadIsUnsectioned(requestOfficial, threadId);
+        const order = await officialSectionOrder({
+          sectionId,
+          requestOfficial,
+          requireComplete: true,
+        });
+        const index = order.indexOf(threadId);
+        return index >= 0 && (order[index + 1] ?? null) === beforeThreadId;
+      },
+    };
   }
   try {
     let currentSectionId: string | null;
@@ -548,13 +570,13 @@ export async function moveThreadSection(input: {
       if (move.sectionId !== null) destination = { id: move.sectionId, name: "", appearance: null };
     }
     const orders = new Map<string, string[]>();
-    const nativeOrders = custom && !input.movingExternal ? new Map<string, string[]>() : undefined;
+    const nativeOrders = input.movingExternal ? null : new Map<string, string[]>();
     for (const sectionId of new Set([currentSectionId, move.sectionId])) {
       if (sectionId === null) continue;
       const native = await officialSectionOrder({
         sectionId,
         requestOfficial,
-        requireComplete: custom !== undefined,
+        requireComplete: custom !== undefined || nativeOrders !== null,
       });
       nativeOrders?.set(sectionId, native);
       orders.set(
@@ -588,38 +610,20 @@ export async function moveThreadSection(input: {
       isExternal,
       now: input.now,
     });
-    if (input.movingExternal) {
+    if (!nativeOrders) {
       await input.savePlacements(plan.placements);
       return { kind: "moved" };
     }
     const currentNativeOrder =
-      currentSectionId === null ? undefined : nativeOrders?.get(currentSectionId);
+      currentSectionId === null ? undefined : nativeOrders.get(currentSectionId);
     const currentIndex = currentNativeOrder?.indexOf(move.threadId) ?? -1;
     const nativeMove =
-      !nativeOrders ||
+      !custom ||
       currentSectionId !== move.sectionId ||
       (currentSectionId !== null &&
         (currentIndex < 0 ||
           (currentNativeOrder?.[currentIndex + 1] ?? null) !== plan.officialBeforeThreadId));
-    if (nativeMove) {
-      const response = await requestOfficial("thread/section/move", {
-        threadId: move.threadId,
-        sectionId: move.sectionId,
-        beforeThreadId: plan.officialBeforeThreadId,
-      });
-      const error = officialError(response);
-      if (error) return { kind: "error", error };
-    }
-    if (nativeOrders && sameSectionAnchors(input.placements, plan.placements)) {
-      return { kind: nativeMove ? "moved" : "unchanged" };
-    }
-    try {
-      await input.savePlacements(plan.placements);
-    } catch (persistError) {
-      if (!nativeMove) throw persistError;
-      if (!nativeOrders) return { kind: "moved", persistError };
-
-      // Recovery is valid only while both owners still reflect this move's inputs and native result.
+    const readBack = (nativeConfirmed: boolean, cause: unknown): SectionMoveOutcome => {
       for (const [sectionId, order] of nativeOrders) {
         const current = order.indexOf(move.threadId);
         if (current >= 0) order.splice(current, 1);
@@ -629,8 +633,9 @@ export async function moveThreadSection(input: {
         }
       }
       return {
-        kind: "partial",
-        persistError,
+        kind: "needs-readback",
+        nativeConfirmed,
+        cause,
         recover: sectionAnchorRecovery({
           expectedNativeOrders: nativeOrders,
           unsectionedThreadId: move.sectionId === null ? move.threadId : null,
@@ -640,6 +645,29 @@ export async function moveThreadSection(input: {
           savePlacements: input.savePlacements,
         }),
       };
+    };
+    if (nativeMove) {
+      try {
+        const response = await requestOfficial("thread/section/move", {
+          threadId: move.threadId,
+          sectionId: move.sectionId,
+          beforeThreadId: plan.officialBeforeThreadId,
+        });
+        const error = officialError(response);
+        if (error) return { kind: "error", error };
+      } catch (error) {
+        return readBack(false, error);
+      }
+    }
+    if (custom && sameSectionAnchors(input.placements, plan.placements)) {
+      return { kind: nativeMove ? "moved" : "unchanged" };
+    }
+    try {
+      await input.savePlacements(plan.placements);
+    } catch (persistError) {
+      if (!nativeMove) throw persistError;
+      if (!custom) return { kind: "moved", persistError };
+      return readBack(true, persistError);
     }
     return { kind: "moved" };
   } catch (error) {

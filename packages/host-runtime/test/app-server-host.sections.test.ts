@@ -24,6 +24,7 @@ function serveOfficialSections(
     reject?: (method: string) => boolean;
     loseCreateReply?: (section: JsonObject) => void;
     deleteReply?: () => JsonObject;
+    loseMoveReply?: () => boolean;
     incompleteList?: () => boolean;
     listIncludes?: (id: string) => boolean;
   } = {},
@@ -131,6 +132,7 @@ function serveOfficialSections(
         };
       } else if (request.method === "thread/section/move") {
         moves.push(params);
+        if (options.loseMoveReply?.() === false) continue;
         const threadId = String(params.threadId);
         const index = pinned.indexOf(threadId);
         if (index >= 0) pinned.splice(index, 1);
@@ -150,6 +152,7 @@ function serveOfficialSections(
             typeof before === "string" ? destination.indexOf(before) : destination.length;
           destination.splice(index, 0, threadId);
         }
+        if (options.loseMoveReply) continue;
         result = {};
       }
       if (result === undefined) continue;
@@ -958,6 +961,92 @@ describe("External Thread sections through AppServerHost", () => {
     }
   });
 
+  it("reads back an unacknowledged native-only move without resending it", async () => {
+    const fixture = createFixture();
+    const submitted = Promise.withResolvers<void>();
+    const native = serveOfficialSections(
+      fixture,
+      [],
+      { Research: ["N1"], Review: ["N2"] },
+      {
+        loseMoveReply: () => {
+          submitted.resolve();
+          return true;
+        },
+      },
+    );
+    try {
+      await fixture.ready;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const move = { threadId: "N1", sectionId: "Review", beforeThreadId: "N2" };
+      writeRequest(fixture.desktopInput, { id: 229, method: "thread/section/move", params: move });
+      await submitted.promise;
+      await vi.advanceTimersByTimeAsync(30_000);
+      vi.useRealTimers();
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 229)),
+      ).resolves.toEqual({
+        id: 229,
+        result: {},
+      });
+      expect(native.moves).toEqual([move]);
+      expect(native.sectionReads).toContainEqual(expect.objectContaining({ sectionId: "Review" }));
+    } finally {
+      vi.useRealTimers();
+      await stopFixture(fixture);
+    }
+  });
+
+  it.each([true, false])(
+    "reads back a timed-out native removal without replaying it (committed: %s)",
+    async (committed) => {
+      const fixture = createFixture();
+      const submitted = Promise.withResolvers<void>();
+      const native = serveOfficialSections(
+        fixture,
+        [],
+        { Research: ["N1", "N2", "N3"] },
+        {
+          loseMoveReply: () => {
+            submitted.resolve();
+            return committed;
+          },
+        },
+      );
+      try {
+        const external = await startPiThread(fixture);
+        await expect(
+          sectionRpc(fixture, "move", {
+            threadId: external,
+            sectionId: "Research",
+            beforeThreadId: "N2",
+          }),
+        ).resolves.toEqual({ result: {} });
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const result = sectionRpc(fixture, "move", { threadId: "N2", sectionId: null });
+        await submitted.promise;
+        await vi.advanceTimersByTimeAsync(30_000);
+        if (committed) {
+          await expect(result).resolves.toEqual({ result: {} });
+        } else {
+          await expect(result).resolves.toMatchObject({
+            error: { code: -32081, message: expect.stringContaining("outcome is unknown") },
+          });
+        }
+        expect(
+          native.sectionReads.filter(({ sectionId }) => sectionId === "Research"),
+        ).toHaveLength(3);
+        expect(native.moves).toEqual([{ threadId: "N2", sectionId: null, beforeThreadId: null }]);
+        expect(await fixture.mappingStore.listSectionPlacements()).toMatchObject([
+          { hostThreadId: external, beforeThreadId: committed ? "N3" : "N2" },
+        ]);
+      } finally {
+        vi.useRealTimers();
+        await stopFixture(fixture);
+      }
+    },
+  );
+
   it("reports a native move with unsaved external anchors as partial without replaying it", async () => {
     const fixture = createFixture();
     const native = serveOfficialSections(fixture, [], { Research: ["N1", "N2"] });
@@ -1044,6 +1133,86 @@ describe("External Thread sections through AppServerHost", () => {
       await stopFixture(local);
       owner.close();
       await stopFixture(ownerFixture);
+    }
+  });
+
+  it.each([true, false])(
+    "uses Desktop's native Owner for section moves and pins when the peer is separate or offline (offline: %s)",
+    async (offline) => {
+      const ended = Promise.withResolvers<void>();
+      const peerRequest = vi.fn(async (method: string): Promise<JsonObject> => {
+        if (method === "codexhost/shared-threads/sections/watch") return { result: {} };
+        if (method === "codexhost/thread/ownership/list") return { result: { threads: [] } };
+        return { error: { code: -32601, message: "Not owned by the shared Host" } };
+      });
+      const fixture = createFixture({
+        sharedThreads: new SharedThreadBridge({
+          connect: async () =>
+            offline
+              ? null
+              : {
+                  request: peerRequest,
+                  respond: async () => undefined,
+                  subscribe: () => () => undefined,
+                  closed: ended.promise,
+                  close: () => ended.resolve(),
+                },
+          delegateCreates: true,
+          diagnose: () => undefined,
+        }),
+      });
+      const native = serveOfficialSections(fixture, [], { Research: ["local"], Review: [] });
+      try {
+        const move = { threadId: "local", sectionId: "Review" };
+        await expect(call(fixture, 230, "thread/section/move", move)).resolves.toEqual({
+          id: 230,
+          result: {},
+        });
+        await expect(
+          call(fixture, 231, "codexhost/thread/pins/set", { threadId: "local", pinned: true }),
+        ).resolves.toEqual({ id: 231, result: { threadIds: ["local"] } });
+        expect(native.moves).toEqual([
+          move,
+          { threadId: "local", sectionId: PINNED, beforeThreadId: null },
+        ]);
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it("preserves a shared Owner rejection and never replays a lost shared write locally", async () => {
+    const ended = Promise.withResolvers<void>();
+    const rejection = { code: -32602, message: "Owner rejected the move" };
+    const fixture = createFixture({
+      sharedThreads: new SharedThreadBridge({
+        connect: async () => ({
+          request: async (method) => {
+            if (method === "thread/section/move") return { error: rejection };
+            if (method === "codexhost/thread/pins/set") throw new Error("Owner disconnected");
+            return { result: {} };
+          },
+          respond: async () => undefined,
+          subscribe: () => () => undefined,
+          closed: ended.promise,
+          close: () => ended.resolve(),
+        }),
+        delegateCreates: true,
+        ownsNativeSections: true,
+        diagnose: () => undefined,
+      }),
+    });
+    const native = serveOfficialSections(fixture, [], { Research: ["local"], Review: [] });
+    try {
+      await expect(
+        call(fixture, 232, "thread/section/move", { threadId: "local", sectionId: "Review" }),
+      ).resolves.toEqual({ id: 232, error: rejection });
+      await expect(
+        call(fixture, 233, "codexhost/thread/pins/set", { threadId: "local", pinned: true }),
+      ).resolves.toEqual({ id: 233, error: { code: -32090, message: "Owner disconnected" } });
+      expect(native.moves).toEqual([]);
+    } finally {
+      await stopFixture(fixture);
     }
   });
 

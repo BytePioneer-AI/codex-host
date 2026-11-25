@@ -2,6 +2,10 @@ import { expect, it, vi } from "vitest";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { SharedThreadBridge } from "../src/shared-thread-bridge.js";
 import type { SharedThreadPeer } from "../src/shared-thread-peer.js";
+import {
+  SHARED_SECTIONS_CHANGED_METHOD,
+  SHARED_SECTIONS_WATCH_METHOD,
+} from "../src/external-thread-sections.js";
 
 const PAGE = 200;
 
@@ -126,7 +130,11 @@ it("refreshes history on reconnection and forwards new events once", async () =>
     await first.peer.closed;
     available = second.peer;
     expect(await bridge.list(query)).toHaveLength(1_001);
-    expect(publish).not.toHaveBeenCalled();
+    expect(publish).toHaveBeenCalledExactlyOnceWith({
+      method: SHARED_SECTIONS_CHANGED_METHOD,
+      params: {},
+    });
+    publish.mockClear();
 
     const renamed = { method: "thread/name/updated", params: { threadId: "shared-0" } };
     first.notify(renamed);
@@ -134,6 +142,78 @@ it("refreshes history on reconnection and forwards new events once", async () =>
     expect(publish).toHaveBeenCalledExactlyOnceWith(renamed);
   } finally {
     bridge.close();
+  }
+});
+
+it.each(["transport", "RPC"] as const)(
+  "recovers section updates after a %s watch failure without overlapping requests",
+  async (failure) => {
+    const shared = fakePeer(1);
+    const request = shared.peer.request;
+    const retry = Promise.withResolvers<JsonObject>();
+    let attempts = 0;
+    let section = "Research";
+    let watching = false;
+    shared.peer.request = async (method, params) => {
+      if (method === "thread/list")
+        return { result: { data: [{ id: "shared-0", section }], nextCursor: null } };
+      if (method !== SHARED_SECTIONS_WATCH_METHOD) return request(method, params);
+      if (++attempts === 1) {
+        if (failure === "transport") throw new Error("Watch timed out");
+        return { error: { code: -32000, message: "Owner is busy" } };
+      }
+      const reply = await retry.promise;
+      watching = true;
+      return reply;
+    };
+    const bridge = bridgeFor(shared.peer);
+    const publish = vi.fn();
+    const changed = { method: SHARED_SECTIONS_CHANGED_METHOD, params: {} };
+    vi.useFakeTimers();
+    bridge.start(publish);
+    try {
+      expect(await bridge.list(query)).toEqual([{ id: "shared-0", section: "Research" }]);
+      section = "Review";
+      expect(await bridge.list(query)).toEqual([{ id: "shared-0", section: "Research" }]);
+      expect(attempts).toBe(1);
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(attempts).toBe(2);
+      retry.resolve({ result: {} });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(publish).toHaveBeenCalledExactlyOnceWith(changed);
+      expect(await bridge.list(query)).toEqual([{ id: "shared-0", section: "Review" }]);
+      section = "Done";
+      if (watching) shared.notify(changed);
+      expect(await bridge.list(query)).toEqual([{ id: "shared-0", section: "Done" }]);
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(attempts).toBe(2);
+    } finally {
+      bridge.close();
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("does not retry an unsupported section watch on the same peer", async () => {
+  const shared = fakePeer(1);
+  const request = shared.peer.request;
+  const requests = vi.spyOn(shared.peer, "request").mockImplementation(async (method, params) => {
+    if (method === SHARED_SECTIONS_WATCH_METHOD)
+      return { error: { code: -32601, message: "Method not found" } };
+    return request(method, params);
+  });
+  const bridge = bridgeFor(shared.peer);
+  vi.useFakeTimers();
+  bridge.start(() => undefined);
+  try {
+    expect(await bridge.list(query)).toEqual([{ id: "shared-0" }]);
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(
+      requests.mock.calls.filter(([method]) => method === SHARED_SECTIONS_WATCH_METHOD),
+    ).toHaveLength(1);
+  } finally {
+    bridge.close();
+    vi.useRealTimers();
   }
 });
 

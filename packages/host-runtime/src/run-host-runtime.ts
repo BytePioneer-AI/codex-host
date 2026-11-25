@@ -631,6 +631,7 @@ export async function runHostRuntime(input: {
             sharedThreads: new SharedThreadBridge({
               connect: async () => sharedOwner.connect(),
               delegateCreates: true,
+              ownsNativeSections: true,
               diagnose: (error) =>
                 diagnosticOutput.write(`codexhost shared Threads: ${String(error)}\n`),
             }),

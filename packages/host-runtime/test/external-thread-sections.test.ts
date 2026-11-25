@@ -209,7 +209,7 @@ describe("External Thread sections", () => {
       savePlacements: async () => undefined,
       now: new Date(),
     });
-    expect(outcome).toEqual({ kind: "forward" });
+    expect(outcome).toMatchObject({ kind: "forward" });
     expect(harness.official.requests).toEqual([]);
   });
 
@@ -311,8 +311,12 @@ describe("External Thread sections", () => {
       { threadId: "off-2", sectionId: null, beforeThreadId: null },
       savePlacements,
     );
-    expect(outcome).toMatchObject({ kind: "partial", persistError: failure });
-    if (outcome.kind !== "partial") throw new Error("Expected a partial exact move");
+    expect(outcome).toMatchObject({
+      kind: "needs-readback",
+      nativeConfirmed: true,
+      cause: failure,
+    });
+    if (outcome.kind !== "needs-readback") throw new Error("Expected a partial exact move");
     expect(harness.official.sections.get(CUSTOM)).toEqual(["off-1", "off-3"]);
     expect(harness.merged(CUSTOM)).toEqual(["off-1", "off-3", "ext-a"]);
 
@@ -320,18 +324,51 @@ describe("External Thread sections", () => {
       ...placement,
       beforeThreadId: "off-1",
     }));
-    await expect(outcome.recover(superseding)).resolves.toBe(false);
+    await expect(outcome.recover(async () => superseding)).resolves.toBe(false);
     expect(savePlacements).toHaveBeenCalledTimes(1);
 
     await harness.move("ext-b", PINNED);
-    await expect(outcome.recover(harness.placements)).resolves.toBe(true);
+    await expect(outcome.recover(async () => harness.placements)).resolves.toBe(true);
     expect(harness.merged(CUSTOM)).toEqual(["off-1", "ext-a", "off-3"]);
     expect(harness.merged(PINNED)).toEqual(["ext-b"]);
-    await expect(outcome.recover(harness.placements)).resolves.toBe(true);
+    await expect(outcome.recover(async () => harness.placements)).resolves.toBe(true);
 
     harness.official.sections.set(PINNED, ["off-2"]);
-    await expect(outcome.recover(harness.placements)).resolves.toBe(false);
+    await expect(outcome.recover(async () => harness.placements)).resolves.toBe(false);
     expect(savePlacements).toHaveBeenCalledTimes(2);
+    expect(
+      harness.official.requests.filter(({ method }) => method === "thread/section/move"),
+    ).toHaveLength(1);
+  });
+
+  it("reconciles both section orders when the native connection drops after committing", async () => {
+    const harness = new Harness(new Set(["ext-a", "ext-b"]));
+    harness.official.sections.set(CUSTOM, ["off-1", "off-2"]);
+    harness.official.sections.set(PINNED, ["off-3"]);
+    await harness.move("ext-a", CUSTOM, "off-1");
+    await harness.move("ext-b", PINNED, "off-3");
+    const request = harness.official.request;
+    const move = { threadId: "off-1", sectionId: PINNED, beforeThreadId: "ext-b" };
+    const outcome = await moveThreadSection({
+      move,
+      movingExternal: false,
+      externalThreadIds: harness.externalIds,
+      placements: harness.placements,
+      requestOfficial: async (method, params) => {
+        const reply = await request(method, params);
+        if (method === "thread/section/move") throw new Error("Official connection disconnected");
+        return reply;
+      },
+      savePlacements: async (next) => {
+        harness.placements = next;
+      },
+      now: new Date(),
+    });
+    expect(outcome).toMatchObject({ kind: "needs-readback", nativeConfirmed: false });
+    if (outcome.kind !== "needs-readback") throw new Error("Expected a native readback");
+    await expect(outcome.recover(async () => harness.placements)).resolves.toBe(true);
+    expect(harness.merged(CUSTOM)).toEqual(["ext-a", "off-2"]);
+    expect(harness.merged(PINNED)).toEqual(["off-1", "ext-b", "off-3"]);
     expect(
       harness.official.requests.filter(({ method }) => method === "thread/section/move"),
     ).toHaveLength(1);

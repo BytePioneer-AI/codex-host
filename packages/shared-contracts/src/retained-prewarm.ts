@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { billingSourceRefSchema } from "./harness-accounts.js";
+import { harnessThinkingOptionIdSchema } from "./harness-models.js";
 import { harnessIdSchema } from "./ids.js";
 
 export const RETAINED_PREWARM_RUN_METHOD = "codexhost/harness/retained-prewarm/run";
@@ -15,7 +16,7 @@ export const retainedPrewarmResultSchema = retainedPrewarmParamsSchema
   .extend({
     harnessId: harnessIdSchema,
     model: z.string().min(1).max(256),
-    thinkingOptionId: z.literal("low"),
+    thinkingOptionId: harnessThinkingOptionIdSchema,
     nativeSessionRef: z
       .object({
         harnessId: harnessIdSchema,

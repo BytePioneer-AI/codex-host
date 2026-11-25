@@ -156,6 +156,7 @@ export interface AntigravityAdapterOptions {
   toolOutputLimit?: number;
   subagentObservationTimeoutMs?: number;
   turnCleanupWaitMs?: number;
+  retainedPrewarmDirectory?: string;
   createTransport?: (options: AntigravityAcpTransportOptions) => AntigravityAcpTransportLike;
 }
 function ok<T>(value: T): HarnessResult<T> {
@@ -296,10 +297,9 @@ interface SessionOptions extends RequestedConfiguration {
   quota: SessionQuota;
   onClosed(session: AntigravitySession): void;
 }
-/** The Adapter's account-wide quota cache, projected for one Session's Model. */
+/** The Adapter's Profile quota cache, projected for one Session's Model. */
 interface SessionQuota {
-  read(modelId: string | undefined): AntigravityQuotaSnapshot | null;
-  refresh(): void;
+  read(modelId: string | undefined): Promise<AntigravityQuotaSnapshot | null>;
 }
 interface ActiveTurn {
   turnId: HostTurnId;
@@ -475,8 +475,7 @@ export class AntigravitySession implements HarnessSession {
   /** Leads with the quota group that bills this Session's current Model. */
   readAccountCredits(): Promise<AntigravityQuotaSnapshot | null> {
     if (this.#closed) return Promise.resolve(null);
-    this.#options.quota.refresh();
-    return Promise.resolve(this.#options.quota.read(this.#creditsModelId));
+    return this.#options.quota.read(this.#creditsModelId);
   }
 
   #delegationPrompt(): { systemPromptAppend?: string } {
@@ -1946,10 +1945,14 @@ export class AntigravityAdapter implements HarnessAdapter {
   readonly #inflight = new Map<string, Promise<HarnessInspection>>();
   readonly #abort = new AbortController();
   #closed = false;
-  #quota: AntigravityQuotaReading | null = null;
-  #quotaFetchedAt = Number.NEGATIVE_INFINITY;
-  #quotaRefresh:
-    { profileId: string | undefined; promise: Promise<AntigravityQuotaReading | null> } | undefined;
+  readonly #quotaByProfile = new Map<
+    string,
+    {
+      reading: AntigravityQuotaReading | null;
+      fetchedAt: number;
+      pending?: Promise<AntigravityQuotaReading | null>;
+    }
+  >();
   #quotaCwd = process.cwd();
   constructor(readonly options: AntigravityAdapterOptions = {}) {
     this.#environment = options.environment ?? process.env;
@@ -2145,8 +2148,13 @@ export class AntigravityAdapter implements HarnessAdapter {
       unattended,
       adapter: this.options,
       quota: {
-        read: (modelId) => (this.#quota ? projectAntigravityQuota(this.#quota, modelId) : null),
-        refresh: () => void this.#refreshQuota().catch(() => undefined),
+        read: async (modelId) => {
+          const profile = await this.#currentProfile();
+          if (!profile) return null;
+          const quota = this.#quotaByProfile.get(profile.id)?.reading;
+          void this.#refreshQuota(profile.id).catch(() => undefined);
+          return quota ? projectAntigravityQuota(quota, modelId) : null;
+        },
       },
       onClosed: (closed) => this.#sessions.delete(closed),
     });
@@ -2189,11 +2197,13 @@ export class AntigravityAdapter implements HarnessAdapter {
       });
     },
   };
-  credits(): AntigravityQuotaSnapshot | null {
-    return this.#quota ? projectAntigravityQuota(this.#quota) : null;
+  #currentProfile() {
+    if (this.#closed) return Promise.resolve(undefined);
+    return antigravityProfileRef(this.#environment).catch(() => undefined);
   }
   async refreshCredits(): Promise<AntigravityQuotaSnapshot | null> {
-    const quota = await this.#refreshQuota();
+    const profile = await this.#currentProfile();
+    const quota = profile ? await this.#refreshQuota(profile.id) : null;
     return quota ? projectAntigravityQuota(quota) : null;
   }
   async #fetchQuota(
@@ -2216,44 +2226,40 @@ export class AntigravityAdapter implements HarnessAdapter {
       ),
     );
   }
-  #refreshQuota(force = false, profileId?: string): Promise<AntigravityQuotaReading | null> {
+  #refreshQuota(profileId: string, force = false): Promise<AntigravityQuotaReading | null> {
     if (this.#closed) return Promise.resolve(null);
-    if (
-      !force &&
-      !this.#quotaRefresh &&
-      Date.now() - this.#quotaFetchedAt < QUOTA_REFRESH_COOLDOWN_MS
-    ) {
-      return Promise.resolve(this.#quota);
+    let cached = this.#quotaByProfile.get(profileId);
+    if (!cached) {
+      cached = { reading: null, fetchedAt: Number.NEGATIVE_INFINITY };
+      this.#quotaByProfile.set(profileId, cached);
     }
-    const active = this.#quotaRefresh;
-    if (active && (!force || active.profileId === profileId)) return active.promise;
+    if (cached.pending) return cached.pending;
+    if (!force && Date.now() - cached.fetchedAt < QUOTA_REFRESH_COOLDOWN_MS)
+      return Promise.resolve(cached.reading);
 
-    const promise = this.#fetchQuota(this.#abort.signal)
+    const entry = cached;
+    entry.pending = this.#fetchQuota(this.#abort.signal)
       .then(async (quota) => {
-        if (profileId) {
-          const current = await antigravityProfileRef(this.#environment).catch(() => undefined);
-          if (current?.id !== profileId) return null;
-        }
-        if (this.#closed) return null;
-        if (this.#quotaRefresh?.promise === promise) {
-          this.#quota = quota;
-          this.#quotaFetchedAt = Date.now();
-        }
+        const current = await this.#currentProfile();
+        if (this.#closed || current?.id !== profileId) return null;
+        entry.reading = quota;
+        entry.fetchedAt = Date.now();
         return quota;
       })
       .finally(() => {
-        if (this.#quotaRefresh?.promise === promise) this.#quotaRefresh = undefined;
+        delete entry.pending;
       });
-    this.#quotaRefresh = { profileId, promise };
-    return promise;
+    return entry.pending;
   }
-  async inspectAccount(retainedPrewarmDirectory?: string) {
-    const profile = await antigravityProfileRef(this.#environment).catch(() => undefined);
-    const quota = await this.#refreshQuota(true, profile?.id);
+  async inspectAccount() {
+    const profile = await this.#currentProfile();
+    if (!profile) return null;
+    const quota = await this.#refreshQuota(profile.id, true);
     if (!quota) return null;
     const credits = projectAntigravityQuota(quota);
     if (!credits) return null;
-    const retained = profile
+    const retainedPrewarmDirectory = this.options.retainedPrewarmDirectory;
+    const retained = retainedPrewarmDirectory
       ? await inspectAntigravityPrewarmSource(
           this.#environment,
           profile,
@@ -2276,11 +2282,12 @@ export class AntigravityAdapter implements HarnessAdapter {
   }
   async runRetainedPrewarm(
     input: RetainedPrewarmParams,
-    storageDirectory: string,
   ): Promise<HarnessResult<RetainedPrewarmResult>> {
     if (this.#closed) return err("invalidState", "Adapter is closed");
-    const { command, commandTimeoutMs, closeTimeoutMs, createTransport } = this.options;
-    const pending = runAntigravityRetainedPrewarm(input, storageDirectory, {
+    const { command, commandTimeoutMs, closeTimeoutMs, createTransport, retainedPrewarmDirectory } =
+      this.options;
+    if (!retainedPrewarmDirectory) return err("invalidState", "Retained prewarm is not configured");
+    const pending = runAntigravityRetainedPrewarm(input, retainedPrewarmDirectory, {
       ...(command ? { command } : {}),
       ...(commandTimeoutMs !== undefined ? { commandTimeoutMs } : {}),
       ...(closeTimeoutMs !== undefined ? { closeTimeoutMs } : {}),
@@ -2301,8 +2308,7 @@ export class AntigravityAdapter implements HarnessAdapter {
     this.#abort.abort();
     this.#cache.clear();
     this.#inflight.clear();
-    this.#quota = null;
-    this.#quotaFetchedAt = Number.NEGATIVE_INFINITY;
+    this.#quotaByProfile.clear();
     const settled = await Promise.allSettled([
       ...Array.from(this.#sessions, (session) => session.close()),
       ...this.#retainedPrewarms,

@@ -2302,7 +2302,6 @@ describe("inspection and errors", () => {
     const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
     const { adapter, transports } = fixture({ command });
     try {
-      expect(adapter.credits()).toBeNull();
       expect(await adapter.refreshCredits()).toMatchObject({
         usedPercent: 25,
         periodType: "five_hour",
@@ -2364,7 +2363,7 @@ describe("inspection and errors", () => {
         periodType: "five_hour",
       });
       expect(await adapter.inspectAccount()).toBeNull();
-      expect(adapter.credits()).toBeNull();
+      expect(await adapter.refreshCredits()).toBeNull();
       await writeFile(script, quotaScript, "utf8");
       now = 140_000;
       expect(await adapter.refreshCredits()).toBeNull();
@@ -2475,7 +2474,7 @@ describe("inspection and errors", () => {
       expect(account).toMatchObject({
         credits: { usedPercent: 25, periodType: "five_hour" },
       });
-      expect(adapter.credits()?.usedPercent).toBe(25);
+      expect((await adapter.refreshCredits())?.usedPercent).toBe(25);
       await adapter.close();
     },
   );

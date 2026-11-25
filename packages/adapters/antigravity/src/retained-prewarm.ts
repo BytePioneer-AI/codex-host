@@ -8,6 +8,7 @@ import { sanitizeDiagnosticTail, type HarnessResult } from "@codexhost/harness-a
 import { jsonlRecords } from "@codexhost/harness-adapter/usage-statistics";
 import {
   harnessIdSchema,
+  harnessThinkingOptionIdSchema,
   type BillingSourceRef,
   type RetainedPrewarmParams,
   type RetainedPrewarmResult,
@@ -21,7 +22,7 @@ import type {
   AntigravityAcpTransportLike,
 } from "./acp-types.js";
 import { normalizeAntigravityUsageModel } from "./acp-usage.js";
-import { nativeBrainDirPath, nativeConversationDbPath, validNativeSessionRef } from "./fork.js";
+import { nativeBrainDirPath, validNativeSessionRef } from "./fork.js";
 import { findAntigravityAcpConfigOption } from "./model-catalog.js";
 import type { AntigravityQuotaReading } from "./quota.js";
 import { antigravityHome } from "./usage-statistics.js";
@@ -31,7 +32,7 @@ const MODELS_BY_SCOPE: Readonly<Record<string, string | undefined>> = {
   "gemini models": "gemini-3.8-flash",
   "claude and gpt models": "claude-sonnet-5-5",
 };
-const THINKING_OPTION = "low";
+const THINKING_OPTION = harnessThinkingOptionIdSchema.parse("low");
 const PERMISSION_MODE = "default";
 const PROMPT =
   "[codexhost-quota-prewarm]\nReply only with OK. Do not use tools or make any changes.";
@@ -39,7 +40,7 @@ const RUN_TIMEOUT_MS = 90_000;
 const CLOSE_TIMEOUT_MS = 3_000;
 const TRANSPORT_NOT_CLOSED = "Antigravity retained prewarm transport did not close";
 const STALE_ACCOUNT = "The requested Antigravity Profile or login is no longer active";
-const LEGACY_LOGIN_CHANGED = "The login for this Antigravity Profile changed";
+const STALE_PROFILE = "The requested Antigravity Profile is no longer active";
 
 /** Resolve only agy's current data directory (or its existing ancestor on a fresh Profile). */
 export async function antigravityProfileRef(
@@ -81,11 +82,9 @@ type SessionRef = NonNullable<RetainedPrewarmResult["nativeSessionRef"]>;
 type StoredRun = {
   native_session_id: string | null;
   verification: ModelVerification;
-  state: "creating" | "running" | "succeeded" | "failed" | "unresolved";
-  model: string | null;
-  login_identity: string | null;
+  state: "creating" | "ready" | "running" | "succeeded" | "failed" | "unresolved";
+  model: string;
   last_source_id: string | null;
-  workspace_source: string | null;
   error: string | null;
 };
 
@@ -109,11 +108,13 @@ function openState(directory: string): DatabaseSync {
         source_id TEXT NOT NULL,
         scope_id TEXT NOT NULL,
         native_session_id TEXT UNIQUE,
-        state TEXT NOT NULL CHECK (state IN ('creating', 'running', 'succeeded', 'failed', 'unresolved')),
+        model TEXT NOT NULL,
+        last_source_id TEXT,
+        state TEXT NOT NULL CHECK (state IN ('creating', 'ready', 'running', 'succeeded', 'failed', 'unresolved')),
         verification TEXT NOT NULL CHECK (verification IN ('not-run', 'matched', 'mismatch', 'unavailable')),
         observed_models TEXT NOT NULL DEFAULT '[]',
         error TEXT,
-        CHECK (state NOT IN ('running', 'succeeded') OR native_session_id IS NOT NULL),
+        CHECK (state NOT IN ('ready', 'running', 'succeeded') OR native_session_id IS NOT NULL),
         PRIMARY KEY (source_id, scope_id)
       ) STRICT;
       CREATE TABLE IF NOT EXISTS retained_profiles (
@@ -123,34 +124,6 @@ function openState(directory: string): DatabaseSync {
         switched INTEGER NOT NULL DEFAULT 0 CHECK (switched IN (0, 1))
       ) STRICT;
     `);
-    if (db.prepare("PRAGMA user_version").get()?.user_version !== 2) {
-      db.exec("BEGIN IMMEDIATE");
-      const version = db.prepare("PRAGMA user_version").get()?.user_version;
-      if (version === 0) {
-        db.exec(`
-          ALTER TABLE retained_sessions ADD COLUMN model TEXT;
-          ALTER TABLE retained_sessions ADD COLUMN login_identity TEXT;
-          ALTER TABLE retained_sessions ADD COLUMN workspace_source TEXT;
-        `);
-      }
-      if (version === 0 || version === 1) {
-        db.exec(`
-          ALTER TABLE retained_sessions ADD COLUMN last_source_id TEXT;
-          UPDATE retained_sessions SET last_source_id = source_id WHERE model IS NOT NULL;
-          PRAGMA user_version = 2;
-        `);
-        db.prepare(
-          `
-          UPDATE retained_sessions SET state = 'succeeded', error = NULL
-          WHERE state = 'failed' AND model IS NOT NULL AND native_session_id IS NOT NULL
-            AND verification != 'mismatch' AND error = ?
-        `,
-        ).run(LEGACY_LOGIN_CHANGED);
-      } else if (version !== 2) {
-        throw new Error("Unsupported Antigravity retained Session store version");
-      }
-      db.exec("COMMIT");
-    }
     return db;
   } catch (error) {
     db.close();
@@ -180,18 +153,7 @@ function bindProfile(db: DatabaseSync, profileId: string, observed?: string): st
     let first = profile?.first_login ?? null;
     let active = profile?.active_login ?? null;
     if (!profile) {
-      // Recover the login already attached to a Profile-keyed Session by the previous schema.
-      const previous = db
-        .prepare(
-          `
-        SELECT DISTINCT login_identity FROM retained_sessions
-        WHERE source_id = ? AND login_identity IS NOT NULL LIMIT 2
-      `,
-        )
-        .all(profileId);
-      if (previous.length > 1)
-        throw new Error("Conflicting logins for the retained Antigravity Profile");
-      first = active = (previous[0]?.login_identity as string | undefined) ?? observed ?? null;
+      first = active = observed ?? null;
       db.prepare(
         "INSERT INTO retained_profiles (profile_id, first_login, active_login) VALUES (?, ?, ?)",
       ).run(profileId, first, active);
@@ -217,12 +179,11 @@ export async function inspectAntigravityPrewarmSource(
   environment: NodeJS.ProcessEnv,
   profile: BillingSourceRef,
   quota: AntigravityQuotaReading,
-  directory?: string,
+  directory: string,
 ): Promise<{ ref: BillingSourceRef; scopes: string[] } | undefined> {
-  if (directory) await mkdir(directory, { recursive: true, mode: 0o700 });
+  await mkdir(directory, { recursive: true, mode: 0o700 });
   if ((await antigravityProfileRef(environment)).id !== profile.id) return undefined;
   const scopes = antigravityRetainedPrewarmScopes(quota);
-  if (!directory) return { ref: profile, scopes };
   const db = openState(directory);
   try {
     const id = bindProfile(db, profile.id, quota.loginIdentity);
@@ -397,8 +358,7 @@ export async function runAntigravityRetainedPrewarm(
     profileId = profile.id;
     await withAbort(signal, () => mkdir(storageDirectory, { recursive: true, mode: 0o700 }));
     quota = await withAbort(signal, () => options.readActiveQuota(signal, storageDirectory));
-    if (!(await matchesProfile()))
-      return outcome("blocked", "The requested Antigravity Profile is no longer active");
+    if (!(await matchesProfile())) return outcome("blocked", STALE_PROFILE);
   } catch (error) {
     return outcome("blocked", errorMessage(error));
   }
@@ -423,81 +383,6 @@ export async function runAntigravityRetainedPrewarm(
     const select = db.prepare(
       "SELECT * FROM retained_sessions WHERE source_id = ? AND scope_id = ?",
     );
-    // Preserve the original Profile Session, or adopt the only attributable
-    // Session from a version that keyed the ledger by confirmed login.
-    if (!select.get(profileId, scope)) {
-      const first = db
-        .prepare("SELECT first_login FROM retained_profiles WHERE profile_id = ?")
-        .get(profileId)?.first_login as string | null;
-      if (first) {
-        const previousRows = db
-          .prepare(
-            `
-          SELECT source_id, login_identity FROM retained_sessions
-          WHERE scope_id = ? AND model IS NOT NULL AND login_identity IS NOT NULL
-        `,
-          )
-          .all(scope) as { source_id: string; login_identity: string }[];
-        const candidates = previousRows.filter(
-          (row) => row.source_id === loginSource(profileId, first, row.login_identity),
-        );
-        if (candidates.length > 1)
-          return outcome(
-            "blocked",
-            "Several older retained Sessions match this Antigravity Profile and scope",
-          );
-        if (candidates[0]) {
-          const previous = candidates[0].source_id;
-          db.prepare(
-            `
-            UPDATE retained_sessions SET source_id = ?, workspace_source = COALESCE(workspace_source, source_id)
-            WHERE source_id = ? AND scope_id = ?
-              AND NOT EXISTS (SELECT 1 FROM retained_sessions WHERE source_id = ? AND scope_id = ?)
-          `,
-          ).run(profileId, previous, scope, profileId, scope);
-        }
-      }
-    }
-    // Older versions keyed by an observed Google subject. Adopt only an exact match;
-    // an unattributable legacy row must not cause a second native Session to be created.
-    if (loginIdentity && !select.get(profileId, scope)) {
-      const legacy = select.get(loginIdentity, scope) as StoredRun | undefined;
-      const nativeId = legacy?.model === null && legacy.native_session_id;
-      const existing =
-        nativeId &&
-        (await stat(
-          nativeConversationDbPath(
-            sessionRef(nativeId).nativeSessionId,
-            antigravityHome(options.environment),
-          ),
-        ).catch(() => null));
-      if (existing && existing.isFile() && (await matchesProfile())) {
-        db.prepare(
-          `
-          UPDATE retained_sessions SET source_id = ?, model = ?, login_identity = ?, workspace_source = ?, last_source_id = ?
-          WHERE source_id = ? AND scope_id = ? AND model IS NULL
-            AND NOT EXISTS (SELECT 1 FROM retained_sessions WHERE source_id = ? AND scope_id = ?)
-        `,
-        ).run(
-          profileId,
-          model,
-          loginIdentity,
-          loginIdentity,
-          sourceId,
-          loginIdentity,
-          scope,
-          profileId,
-          scope,
-        );
-      }
-    }
-    if (
-      !select.get(profileId, scope) &&
-      db
-        .prepare("SELECT 1 FROM retained_sessions WHERE scope_id = ? AND model IS NULL LIMIT 1")
-        .get(scope)
-    )
-      return outcome("blocked", "An older retained Session cannot be attributed to this Profile");
 
     // Claim across processes; a lost caller leaves creating/running behind and cannot replay.
     const claim = db
@@ -507,20 +392,23 @@ export async function runAntigravityRetainedPrewarm(
       VALUES (?, ?, ?, 'creating', 'not-run')
       ON CONFLICT (source_id, scope_id) DO UPDATE SET
         state = 'running', verification = 'not-run', observed_models = '[]', error = NULL
-      WHERE retained_sessions.state = 'succeeded' AND retained_sessions.model = excluded.model
-      RETURNING native_session_id, workspace_source, last_source_id
+      WHERE retained_sessions.state IN ('ready', 'succeeded') AND retained_sessions.model = excluded.model
+      RETURNING native_session_id, last_source_id
     `,
       )
       .get(profileId, scope, model) as
-      Pick<StoredRun, "native_session_id" | "workspace_source" | "last_source_id"> | undefined;
+      Pick<StoredRun, "native_session_id" | "last_source_id"> | undefined;
     if (!claim) {
       const previous = select.get(profileId, scope) as StoredRun | undefined;
-      if (previous?.state === "succeeded" && previous.model !== model) {
+      if (
+        (previous?.state === "succeeded" || previous?.state === "ready") &&
+        previous.model !== model
+      ) {
         const failure = "The retained Antigravity Model changed";
         db.prepare(
           `
           UPDATE retained_sessions SET state = 'failed', error = ?
-          WHERE source_id = ? AND scope_id = ? AND state = 'succeeded'
+          WHERE source_id = ? AND scope_id = ? AND state IN ('ready', 'succeeded')
         `,
         ).run(failure, profileId, scope);
         if (previous.native_session_id) ref = sessionRef(previous.native_session_id);
@@ -537,7 +425,7 @@ export async function runAntigravityRetainedPrewarm(
       accountChanged = claim.last_source_id !== null && claim.last_source_id !== sourceId;
     }
     const key = createHash("sha256")
-      .update(JSON.stringify([claim.workspace_source ?? profileId, scope]))
+      .update(JSON.stringify([profileId, scope]))
       .digest("hex");
     cwd = path.join(storageDirectory, "workspaces", key);
 
@@ -548,11 +436,13 @@ export async function runAntigravityRetainedPrewarm(
     let disposition = claim.native_session_id ? "running" : "creating";
     let createDispatched = false;
     let staleAccount = false;
+    let retryableBeforePrompt = false;
     let closeUnconfirmed = false;
     try {
+      if (claim.native_session_id) ref = sessionRef(claim.native_session_id);
+      retryableBeforePrompt = true;
       await withAbort(signal, () => mkdir(cwd, { recursive: true, mode: 0o700 }));
-      if (!(await matchesProfile()))
-        throw new Error("The requested Antigravity Profile is no longer active");
+      if (!(await matchesProfile())) throw new Error(STALE_PROFILE);
       const transportOptions: AntigravityAcpTransportOptions = {
         cwd,
         environment: options.environment,
@@ -563,16 +453,17 @@ export async function runAntigravityRetainedPrewarm(
           : {}),
         closeTimeoutMs: Math.min(options.closeTimeoutMs ?? 2000, CLOSE_TIMEOUT_MS - 500),
       };
-      if (claim.native_session_id) ref = sessionRef(claim.native_session_id);
+      retryableBeforePrompt = false;
       const native =
         options.createTransport?.(transportOptions) ??
         new AntigravityAcpTransport(transportOptions);
       transport = native;
       if (native.skipPermissions)
         throw new Error("Retained prewarm cannot bypass Antigravity permissions");
+      retryableBeforePrompt = true;
       await withAbort(signal, () => native.initialize());
-      if (!(await matchesProfile()))
-        throw new Error("The requested Antigravity Profile is no longer active");
+      if (!(await matchesProfile())) throw new Error(STALE_PROFILE);
+      retryableBeforePrompt = false;
       const { opened } = await withAbort(signal, () => {
         createDispatched = ref === null;
         return native.openSession(
@@ -625,33 +516,35 @@ export async function runAntigravityRetainedPrewarm(
       const before = await withAbort(promptSignal, () =>
         transcriptModels(file, undefined, promptSignal),
       );
+      retryableBeforePrompt = true;
       quota = await withAbort(promptSignal, () => options.readActiveQuota(promptSignal, cwd));
-      if (!(await matchesProfile()))
-        throw new Error("The requested Antigravity Profile is no longer active");
+      if (!(await matchesProfile())) throw new Error(STALE_PROFILE);
       if (!quota?.loginIdentity && accountChanged === false) accountChanged = undefined;
       if (quota) {
+        retryableBeforePrompt = false;
         const confirmed = bindProfile(db, profileId, quota.loginIdentity);
         if (confirmed !== sourceId) {
           staleAccount = true;
           if (quota.loginIdentity && confirmed !== undefined) accountChanged = true;
           throw new Error(STALE_ACCOUNT);
         }
+        retryableBeforePrompt = true;
       }
       if (
         !quota ||
         !antigravityRetainedPrewarmScopes(quota).some((id) => id.toLowerCase() === scope)
       )
         throw new Error("The requested Antigravity prewarm scope is no longer advertised");
+      retryableBeforePrompt = false;
       const currentQuota = quota;
       const recordAccount = db.prepare(`
-        UPDATE retained_sessions SET last_source_id = ?, login_identity = ?
+        UPDATE retained_sessions SET last_source_id = ?
         WHERE source_id = ? AND scope_id = ? AND state = 'running'
       `);
       const prompt = await withAbort(promptSignal, () => {
         if (
           recordAccount.run(
             currentQuota.loginIdentity ? sourceId : claim.last_source_id,
-            currentQuota.loginIdentity ?? null,
             profileId,
             scope,
           ).changes !== 1
@@ -684,7 +577,6 @@ export async function runAntigravityRetainedPrewarm(
           await withAbort(AbortSignal.timeout(CLOSE_TIMEOUT_MS), () => native.close());
         } catch {
           closeUnconfirmed = true;
-          failure ??= TRANSPORT_NOT_CLOSED;
         }
       }
     }
@@ -709,26 +601,30 @@ export async function runAntigravityRetainedPrewarm(
         verification = "matched";
       }
     }
-    if (staleAccount && ref) {
-      if (closeUnconfirmed) return outcome("blocked", TRANSPORT_NOT_CLOSED);
-      const released = db
-        .prepare(
-          `
-        UPDATE retained_sessions SET state = 'succeeded'
-        WHERE source_id = ? AND scope_id = ? AND state = 'running'
-      `,
-        )
-        .run(profileId, scope);
-      return outcome(
-        "blocked",
-        released.changes === 1
-          ? STALE_ACCOUNT
-          : "Could not release the retained Antigravity Session",
-      );
+    if (
+      !closeUnconfirmed &&
+      failure &&
+      (staleAccount || retryableBeforePrompt) &&
+      (!createDispatched || ref)
+    ) {
+      const release = ref
+        ? db.prepare(
+            "UPDATE retained_sessions SET state = 'ready' WHERE source_id = ? AND scope_id = ? AND state = ?",
+          )
+        : db.prepare(
+            "DELETE FROM retained_sessions WHERE source_id = ? AND scope_id = ? AND state = ?",
+          );
+      if (release.run(profileId, scope, disposition).changes !== 1)
+        return outcome("blocked", "Could not release the retained Antigravity Session");
+      return outcome(staleAccount ? "blocked" : "failed", failure);
     }
     if (signal.aborted) failure ??= errorMessage(signal.reason);
+    if (closeUnconfirmed) failure = TRANSPORT_NOT_CLOSED;
     const status = failure ? "failed" : "succeeded";
-    const state = status === "failed" && createDispatched && ref === null ? "unresolved" : status;
+    const state =
+      closeUnconfirmed || (status === "failed" && createDispatched && ref === null)
+        ? "unresolved"
+        : status;
     const saved = db
       .prepare(
         `
@@ -747,7 +643,7 @@ export async function runAntigravityRetainedPrewarm(
       );
     if (saved.changes !== 1)
       return outcome("blocked", "Could not commit the Antigravity prewarm outcome");
-    return outcome(status, failure);
+    return outcome(staleAccount ? "blocked" : status, failure);
   } catch {
     return outcome("blocked", "Antigravity retained prewarm state is unavailable or unresolved");
   } finally {

@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import type { HarnessPluginContext } from "@codexhost/harness-adapter/plugin";
 
@@ -51,6 +53,15 @@ export function createHarnessAdapter(context: HarnessPluginContext): Antigravity
         ? { command: environment[ANTIGRAVITY_COMMAND_ENV] }
         : {}),
       environment: antigravityProcessEnvironment(environment, context.platform),
+      ...(context.dataDirectory
+        ? {
+            retainedPrewarmDirectory: path.join(
+              context.dataDirectory,
+              "retained-prewarm",
+              "antigravity",
+            ),
+          }
+        : {}),
     }),
     {
       install: createHarnessInstaller(environment, {

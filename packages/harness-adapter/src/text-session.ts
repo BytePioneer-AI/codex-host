@@ -805,16 +805,15 @@ export interface HarnessAdapter {
   /** Fresh read-only quota for current native authentication. Return null when unavailable;
    * never return session spend, old authentication caches, or start a model Turn.
    * Implementations must bound requests and release inspection resources on close.
-   * When supplied, retainedPrewarmDirectory is private Host storage for binding metadata, not native credentials.
    */
-  inspectAccount?(retainedPrewarmDirectory?: string): Promise<HarnessAccountSnapshot | null>;
+  inspectAccount?(): Promise<HarnessAccountSnapshot | null>;
   /** Optional account-wide telemetry cache, not historical Thread billing attribution.
    * Read synchronously without I/O; null means no reliable cached quota. Native
    * authentication, freshness and invalidation remain Adapter-owned.
    */
   credits?(): AccountCreditsSnapshot | null;
-  /** Best-effort refresh of the same cache. Must not start a model Turn. Host
-   * observes a later read, does not await this call, and isolates rejection.
+  /** Optional async account-wide credit read; must not start a model Turn. When credits()
+   * is present, Host invokes this as a background refresh of that cache instead.
    */
   refreshCredits?(): Promise<AccountCreditsSnapshot | null>;
   /** Optional cached prepaid balance for Harnesses whose Billing Source reports funds, not a
@@ -837,10 +836,7 @@ export interface HarnessAdapter {
   ): Promise<BillingSourceOpenResult>;
 
   /** Run a dedicated native Session owned by the Adapter, without creating a Host Thread. */
-  runRetainedPrewarm?(
-    input: RetainedPrewarmParams,
-    storageDirectory: string,
-  ): Promise<HarnessResult<RetainedPrewarmResult>>;
+  runRetainedPrewarm?(input: RetainedPrewarmParams): Promise<HarnessResult<RetainedPrewarmResult>>;
 
   inspect(input?: InspectHarnessInput): Promise<HarnessInspection>;
   /**

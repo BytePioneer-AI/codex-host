@@ -322,3 +322,104 @@ for (const [label, expected] of [
     for (let i = 0; i < 100 && !host.answers.length; i++) await delay(10);
     assert.deepEqual(host.answers[0]?.result, expected);
   });
+
+it("decouples sessionId from native threadId, isolates same requestId across sessions, and guards failed reconciliation after clearSession", async (t) => {
+  const host = new FakeChChannel();
+  host.add("native-1", "/synthetic");
+  const snapshot1 = await host.snapshot("native-1");
+  const questionInteraction = {
+    requestId: "req-shared",
+    threadId: "native-1",
+    kind: "question" as const,
+    interaction: {
+      type: "question" as const,
+      title: "Pick one",
+      questions: [
+        {
+          id: "q1",
+          prompt: "Choose A or B",
+          type: "choice" as const,
+          multiple: false,
+          allowOther: false,
+          options: [
+            { value: "a", label: "Option A" },
+            { value: "b", label: "Option B" },
+          ],
+        },
+      ],
+    },
+    request: { method: "item/tool/requestUserInput", params: {} },
+  };
+  host.pending = [questionInteraction];
+  const events = new EventHub("/synthetic");
+  const frames: Array<Record<string, unknown>> = [];
+  events.handler(
+    {},
+    {
+      id: "viewer",
+      closed: false,
+      push: (frame) => frames.push(frame as Record<string, unknown>),
+      end() {},
+      fail() {},
+      onClose() {},
+    },
+  );
+  const errors: Array<{ sessionId: string; message: string | null }> = [];
+  let failRespond = false;
+  const snapshotGate = Promise.withResolvers<typeof snapshot1>();
+  const realtime = {
+    ...host.realtime,
+    respond: async (input: Parameters<typeof host.realtime.respond>[0]) => {
+      if (failRespond) throw new Error("peer offline during respond");
+      return host.realtime.respond(input);
+    },
+    snapshot: async () => snapshotGate.promise,
+  };
+  const interactions = new ChInteractions(realtime, events, (sessionId, message) => {
+    errors.push({ sessionId, message });
+  });
+  t.after(() => interactions.clear());
+
+  const sessionA = "web-remote:peer-a-session";
+  const sessionB = "web-remote:peer-b-session";
+  const snapWithQuestion = { ...snapshot1, interactions: [questionInteraction] };
+  interactions.update(snapWithQuestion, sessionA);
+  interactions.update(snapWithQuestion, sessionB);
+
+  const waterfalls = frames.filter((frame) => frame.type === "waterfall");
+  assert.equal(waterfalls.length, 2);
+  assert.deepEqual(
+    waterfalls.map((frame) => frame.agentId),
+    [sessionA, sessionB],
+  );
+
+  // Answer sessionA: responds with native threadId ("native-1").
+  events.settle({
+    clientId: String(frames[0]?.clientId),
+    eventId: String(waterfalls[0]?.eventId),
+    outcome: { kind: "returned", value: { answers: [{ id: "q1", selected: ["Option A"] }] } },
+  });
+  for (let i = 0; i < 100 && !host.answers.length; i++) await delay(10);
+  assert.equal(host.answers[0]?.threadId, "native-1");
+  assert.deepEqual(host.answers[0]?.result, { answers: { q1: { answers: ["Option A"] } } });
+
+  // Fail respond on sessionB, then clearSession before reconciliation snapshot returns:
+  // stale snapshot must NOT re-open a zombie card.
+  failRespond = true;
+  const beforeCount = frames.filter((frame) => frame.type === "waterfall").length;
+  events.settle({
+    clientId: String(frames[0]?.clientId),
+    eventId: String(waterfalls[1]?.eventId),
+    outcome: { kind: "returned", value: { answers: [{ id: "q1", selected: ["Option B"] }] } },
+  });
+  for (let i = 0; i < 100 && !errors.some((e) => e.sessionId === sessionB && e.message); i++)
+    await delay(10);
+  interactions.clearSession(sessionB);
+  snapshotGate.resolve(snapWithQuestion);
+  await delay(20);
+  assert.equal(
+    frames.filter((frame) => frame.type === "waterfall").length,
+    beforeCount,
+    "stale reconciliation snapshot after clearSession must not emit a zombie question card",
+  );
+});

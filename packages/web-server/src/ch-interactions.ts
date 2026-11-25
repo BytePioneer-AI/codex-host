@@ -218,63 +218,96 @@ function presentation(
 }
 
 export class ChInteractions {
-  private pending = new Map<string, { threadId: string; cancel: () => void }>();
+  private pending = new Map<string, { sessionId: string; threadId: string; cancel: () => void }>();
+  private sessionVersions = new Map<string, number>();
+  private sessionEpochs = new Map<string, string>();
+  private clearVersion = 0;
   constructor(
     private readonly host: NonNullable<ChHostClient["realtime"]>,
     private readonly events: EventHub,
-    private readonly error: (id: string, message: string | null) => void,
+    private readonly error: (sessionId: string, message: string | null) => void,
   ) {}
-  update(snapshot: ClientThreadSnapshot): void {
+  update(snapshot: ClientThreadSnapshot, sessionId = String(snapshot.thread.id)): void {
     const threadId = String(snapshot.thread.id);
+    const epoch = snapshot.cursor.epoch;
+    const previousEpoch = this.sessionEpochs.get(sessionId);
+    if (previousEpoch !== undefined && previousEpoch !== epoch) {
+      this.bumpSessionVersion(sessionId);
+    }
+    this.sessionEpochs.set(sessionId, epoch);
     const message = snapshot.thread.nativeInteractionError ?? snapshot.thread.nativeSendError;
-    if (typeof message === "string") this.error(threadId, message);
-    else if (!snapshot.interactions.length) this.error(threadId, null);
-    const keys = new Set(
-      snapshot.interactions.map((value) => `${snapshot.cursor.epoch}:${value.requestId}`),
-    );
+    if (typeof message === "string") this.error(sessionId, message);
+    else if (!snapshot.interactions.length) this.error(sessionId, null);
+    const keyOf = (requestId: string | number) => JSON.stringify([sessionId, epoch, requestId]);
+    const keys = new Set(snapshot.interactions.map((value) => keyOf(value.requestId)));
     for (const [key, pending] of this.pending)
-      if (pending.threadId === threadId && !keys.has(key)) {
+      if (pending.sessionId === sessionId && !keys.has(key)) {
         this.pending.delete(key);
         pending.cancel();
       }
     for (const request of snapshot.interactions) {
-      const key = `${snapshot.cursor.epoch}:${request.requestId}`;
+      const key = keyOf(request.requestId);
       if (this.pending.has(key)) continue;
       const view = presentation(request, snapshot);
-      const invocation = this.events.invoke("user-questions/request", threadId, {
+      const invocation = this.events.invoke("user-questions/request", sessionId, {
         questions: view.questions,
       });
-      const pending = { threadId, cancel: invocation.cancel };
+      const pending = { sessionId, threadId, cancel: invocation.cancel };
+      const clearVersion = this.clearVersion;
+      const sessionVersion = this.sessionVersions.get(sessionId) ?? 0;
+      const isCurrent = () =>
+        this.clearVersion === clearVersion &&
+        (this.sessionVersions.get(sessionId) ?? 0) === sessionVersion &&
+        this.sessionEpochs.get(sessionId) === epoch;
       this.pending.set(key, pending);
       void invocation.result.then(
         async (answer) => {
-          if (this.pending.get(key) !== pending) return;
+          if (this.pending.get(key) !== pending || !isCurrent()) return;
           try {
             await this.host.respond({
-              epoch: snapshot.cursor.epoch,
+              epoch,
               requestId: request.requestId,
               threadId,
               result: view.result(answer),
             });
-            this.error(threadId, null);
+            if (isCurrent()) this.error(sessionId, null);
           } catch (error) {
+            if (this.pending.get(key) === pending) this.pending.delete(key);
+            if (!isCurrent()) return;
             this.error(
-              threadId,
+              sessionId,
               error instanceof Error ? error.message : "Interaction response failed",
             );
             // Read-only reconciliation, never resend an answer after an unknown outcome.
-            this.pending.delete(key);
             const current = await this.host.snapshot(threadId).catch(() => undefined);
-            if (current) this.update(current);
+            if (current && isCurrent() && current.cursor.epoch === epoch) {
+              this.update(current, sessionId);
+            }
           }
         },
         () => {},
       );
     }
   }
+  clearSession(sessionId: string): void {
+    this.bumpSessionVersion(sessionId);
+    this.sessionEpochs.delete(sessionId);
+    for (const [key, value] of this.pending) {
+      if (value.sessionId === sessionId) {
+        this.pending.delete(key);
+        value.cancel();
+      }
+    }
+  }
   clear(): void {
+    this.clearVersion++;
+    this.sessionVersions.clear();
+    this.sessionEpochs.clear();
     const pending = [...this.pending.values()];
     this.pending.clear();
     for (const value of pending) value.cancel();
+  }
+  private bumpSessionVersion(sessionId: string): void {
+    this.sessionVersions.set(sessionId, (this.sessionVersions.get(sessionId) ?? 0) + 1);
   }
 }

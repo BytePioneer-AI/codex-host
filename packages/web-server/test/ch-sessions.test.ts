@@ -1181,12 +1181,27 @@ it("moves sessions between native projects only after Codex confirms, keeping We
   const sessions = new ChSessions(host, workspaces, new EventHub(data.root));
   t.after(() => sessions.close());
   let rejectUpdate = false;
+  let staleRefresh: Promise<void> | undefined;
+  let holdCatalog = false;
+  const catalogCaptured = Promise.withResolvers<undefined>();
+  const releaseCatalog = Promise.withResolvers<undefined>();
+  t.after(() => releaseCatalog.resolve(undefined));
   const request = host.request.bind(host);
   host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/thread/catalog/read" && holdCatalog) {
+      holdCatalog = false;
+      const snapshot = await request<T>(method, params);
+      catalogCaptured.resolve(undefined);
+      await releaseCatalog.promise;
+      return snapshot;
+    }
     if (method === "thread/metadata/update") {
       host.requests.push({ method, params: structuredClone(params) });
       if (rejectUpdate) throw new Error("Project assignment failed");
       assert.equal(params.threadId, first.id);
+      holdCatalog = true;
+      staleRefresh = sessions.refreshProjects();
+      await catalogCaptured.promise;
       first.projectId = String(params.projectId);
       return { thread: structuredClone(first) } as T;
     }
@@ -1250,6 +1265,15 @@ it("moves sessions between native projects only after Codex confirms, keeping We
   );
   const betaIds = workspaces.get(beta.workspaceId)?.sessionIds ?? [];
   assert.ok(betaIds.indexOf("first") < betaIds.indexOf("other"));
+  assert.ok(staleRefresh);
+  releaseCatalog.resolve(undefined);
+  await staleRefresh;
+  assert.deepEqual(
+    placed().map((item) => item.workspaceId),
+    [beta.workspaceId],
+    "A catalog snapshot read before confirmation cannot undo the move",
+  );
+  assert.deepEqual(workspaces.get(beta.workspaceId)?.sessionIds, betaIds);
   await sessions.refreshProjects();
   assert.deepEqual(
     placed().map((item) => item.workspaceId),

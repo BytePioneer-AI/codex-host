@@ -109,6 +109,7 @@ export class ChSessions {
   private refreshingCatalog = false;
   private refreshingArchives = false;
   private refreshingArchiveChanges: Map<string, boolean> | undefined;
+  private refreshingProjectAssignments: Map<string, string> | undefined;
   private readonly archiveOperations = new Map<string, symbol>();
   private readonly queueOperations = new Map<string, Promise<void>>();
   private refreshingTiming: SessionListTiming | undefined;
@@ -270,6 +271,7 @@ export class ChSessions {
         "workspace/assignment-unconfirmed",
         "Codex did not confirm the conversation's project.",
       );
+    this.refreshingProjectAssignments?.set(threadId, projectId);
     const row = this.rows.get(threadId);
     if (row) row.projectId = projectId;
   }
@@ -299,6 +301,7 @@ export class ChSessions {
       this.refreshingTiming = new SessionListTiming();
       const archiveChanges = new Map<string, boolean>();
       this.refreshingArchiveChanges = archiveChanges;
+      this.refreshingProjectAssignments = new Map();
       this.refreshing = this.listAll(
         this.refreshingTiming,
         includeArchived,
@@ -310,6 +313,7 @@ export class ChSessions {
         this.refreshingCatalog = false;
         this.refreshingArchives = false;
         this.refreshingArchiveChanges = undefined;
+        this.refreshingProjectAssignments = undefined;
         this.refreshingTiming = undefined;
       });
     }
@@ -424,6 +428,11 @@ export class ChSessions {
     );
     const projects = { ...assignments, projects: definitions.projects };
     if (this.closed) return;
+    // A Host-confirmed move supersedes project metadata from this in-flight read.
+    for (const [id, projectId] of this.refreshingProjectAssignments ?? []) {
+      const row = rows.get(id);
+      if (row) row.projectId = projectId;
+    }
     this.threads.replaceHarnesses(ownership);
     this.rows = rows;
     timing.count("visibleRows", rows.size);

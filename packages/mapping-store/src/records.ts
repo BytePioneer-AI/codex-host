@@ -159,6 +159,15 @@ export const storedThreadMetadataV1Schema = z
   .object({
     formatVersion: z.literal(1),
     hostThreadId: storedHostThreadIdSchema,
+    /** Revision and recency committed atomically with a guarded metadata update. */
+    metadataCommit: z
+      .object({
+        revision: storedThreadCoreV1Shape.revision,
+        updatedAt: storedThreadCoreV1Shape.updatedAt,
+      })
+      .passthrough()
+      .optional()
+      .catch(undefined),
     ...storedThreadMetadataFieldsShape,
   })
   .passthrough();

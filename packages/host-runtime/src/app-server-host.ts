@@ -108,6 +108,7 @@ import type {
   HarnessUsageStatisticsAdapter,
 } from "@codexhost/harness-adapter/plugin";
 import {
+  MappingStoreError,
   storedThreadMetadataV1Schema,
   type StoredSectionPlacementV1,
   type StoredThreadSection,
@@ -1049,6 +1050,7 @@ export class AppServerHost {
   #sectionOperations: Promise<unknown> = Promise.resolve();
   #nativeProjectGeneration = 0;
   #nativeProjectIds = new Map<string, Promise<string | null | undefined>>();
+  #projectMoveTarget: { nativeId: string; invalidated: boolean } | undefined;
   #sectionReconcileTimer: NodeJS.Timeout | undefined;
   #sectionReconcileDelay = SECTION_RECONCILE_RETRY_MS;
   readonly #sectionDefinitions = new SectionDefinitions(PINNED_THREAD_SECTION_ID);
@@ -3047,8 +3049,19 @@ export class AppServerHost {
       const checkOwner = () => {
         if (!this.#isProjectOwner(generation)) throw new OfficialAdmissionError("unavailable");
       };
-      const beforeWrite = () => {
+      const checkTarget = () => {
         checkOwner();
+        if (this.#projectMoveTarget?.invalidated)
+          throw new Error("Project move target was deleted");
+      };
+      const confirmTarget = async (nativeId: string) => {
+        const exists = await this.#projectExists(nativeId, checkTarget);
+        if (exists && this.#isProjectOwner(generation) && !this.#projectMoveTarget?.invalidated)
+          return confirmed;
+        return attemptedWrite ? unknown : unavailable;
+      };
+      const beforeWrite = () => {
+        checkTarget();
         attemptedWrite = true;
       };
       try {
@@ -3068,10 +3081,11 @@ export class AppServerHost {
           nativeProjects?.some(({ id }) => id === projectId) ? nativeProjects : undefined,
         );
         const nativeId = nativeByGui.get(projectId);
-        if (!nativeId || !(await this.#projectExists(nativeId, checkOwner))) {
+        if (nativeId) this.#projectMoveTarget = { nativeId, invalidated: false };
+        if (!nativeId || !(await this.#projectExists(nativeId, checkTarget))) {
           return { error: { code: -32602, message: "Local project is unavailable" } };
         }
-        checkOwner();
+        checkTarget();
         const location = await this.#locateExternalThread(threadId);
         if (location.kind === "error") return { error: location.error };
         if (await this.#repository.getDelegationByChild(hostThreadIdSchema.parse(threadId)))
@@ -3095,8 +3109,8 @@ export class AppServerHost {
             )
           )
             return unavailable;
-          checkOwner();
-          if (record.projectId === nativeId) return confirmed;
+          checkTarget();
+          if (record.projectId === nativeId) return await confirmTarget(nativeId);
           try {
             await this.#repository.updateMetadata(id, { projectId: nativeId }, { beforeWrite });
           } catch (error) {
@@ -3104,7 +3118,7 @@ export class AppServerHost {
             this.#diagnose(error);
           }
           const actual = await this.#repository.find(id);
-          checkOwner();
+          checkTarget();
           if (actual) {
             const loaded = this.#externalRuntime.get(id);
             if (loaded) this.#syncLoadedExternalThread(loaded, actual);
@@ -3113,16 +3127,14 @@ export class AppServerHost {
                 method: "thread/project/updated",
                 params: { threadId, projectId: actual.projectId ?? null },
               });
-              return this.#isProjectOwner(generation) && actual.projectId === nativeId
-                ? confirmed
-                : unknown;
+              return actual.projectId === nativeId ? await confirmTarget(nativeId) : unknown;
             }
           }
           this.clientEvents.changed(threadId, "thread/project/updated");
           return unknown;
         }
 
-        const thread = await this.#readNativeProjectThread(threadId, checkOwner);
+        const thread = await this.#readNativeProjectThread(threadId, checkTarget);
         if (
           (thread.projectId !== null &&
             (typeof thread.projectId !== "string" || !guiByNative.has(thread.projectId))) ||
@@ -3135,11 +3147,11 @@ export class AppServerHost {
           (isRecord(thread.source) && "subAgent" in thread.source) ||
           (typeof thread.threadSource === "string" && thread.threadSource.startsWith("subAgent")) ||
           (isRecord(thread.section) && thread.section.id === PINNED_THREAD_SECTION_ID) ||
-          !(await this.#isActiveProjectMoveThread(threadId, thread, checkOwner))
+          !(await this.#isActiveProjectMoveThread(threadId, thread, checkTarget))
         )
           return unavailable;
-        checkOwner();
-        if (thread.projectId === nativeId) return confirmed;
+        checkTarget();
+        if (thread.projectId === nativeId) return await confirmTarget(nativeId);
         let write: JsonObject | undefined;
         try {
           write = await this.#officialRuntime.request(
@@ -3151,7 +3163,7 @@ export class AppServerHost {
           if (!attemptedWrite) throw error;
           this.#diagnose(error);
         }
-        checkOwner();
+        checkTarget();
         if (
           isRecord(write?.error) &&
           typeof write.error.code === "number" &&
@@ -3159,18 +3171,18 @@ export class AppServerHost {
           ![-32090, -32093, -32094, -32603].includes(write.error.code)
         )
           return { error: { code: write.error.code, message: write.error.message } };
-        const actual = await this.#readNativeProjectThread(threadId, checkOwner);
+        const actual = await this.#readNativeProjectThread(threadId, checkTarget);
         this.#nativeProjectIds.delete(threadId);
         this.clientEvents.changed(threadId, "thread/project/updated");
-        return this.#isProjectOwner(generation) && actual.projectId === nativeId
-          ? confirmed
-          : unknown;
+        return actual.projectId === nativeId ? await confirmTarget(nativeId) : unknown;
       } catch (error) {
         this.#diagnose(error);
         if (!attemptedWrite) return unavailable;
         this.#nativeProjectIds.delete(threadId);
         this.clientEvents.changed(threadId, "thread/project/updated");
         return unknown;
+      } finally {
+        this.#projectMoveTarget = undefined;
       }
     });
   }
@@ -4871,17 +4883,24 @@ export class AppServerHost {
 
   /** Clear External assignments to a project official Codex reported as deleted. */
   clearDeletedProjectAssignments(projectId: string): Promise<void> {
+    if (this.#projectMoveTarget?.nativeId === projectId) this.#projectMoveTarget.invalidated = true;
     this.#nativeProjectIds.clear();
     return this.#runSectionOperation(async () => {
       const records = await this.#repository.list();
       for (const record of records) {
         if (record.projectId !== projectId) continue;
         // A concurrent Desktop update may have reassigned the Thread since the listing.
-        const updated = await this.#repository.updateMetadata(
-          record.hostThreadId,
-          { projectId: null },
-          { ifProjectId: projectId },
-        );
+        let updated: StoredThreadRecordV1;
+        try {
+          updated = await this.#repository.updateMetadata(
+            record.hostThreadId,
+            { projectId: null },
+            { ifProjectId: projectId },
+          );
+        } catch (error) {
+          if (error instanceof MappingStoreError && error.code === "THREAD_NOT_FOUND") continue;
+          throw error;
+        }
         if (updated.projectId !== undefined) continue;
         const loaded = this.#externalRuntime.get(updated.hostThreadId);
         if (loaded) this.#syncLoadedExternalThread(loaded, updated);

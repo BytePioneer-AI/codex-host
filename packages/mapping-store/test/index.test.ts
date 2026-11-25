@@ -801,14 +801,27 @@ describe("mapping-store package", () => {
     await second.close();
   });
 
-  it("rolls back a project reassignment when retirement is detected at metadata commit", async () => {
+  it("does not need a primary rollback when retirement is detected at metadata commit", async () => {
     const directory = await temporaryStoreDirectory();
-    const first = new MappingStore({ directory });
+    let now = new Date("2026-08-01T00:00:00.000Z");
+    let rejectPrimaryRollback = false;
+    const first = new MappingStore({
+      directory,
+      now: () => now,
+      beforeReplace(record) {
+        if (rejectPrimaryRollback && record.projectId === "project-a") {
+          throw new Error("synthetic primary rollback failure");
+        }
+      },
+    });
     await first.initialize();
     await createReady(first);
     const original = await first.updateMetadata(threadId, { projectId: "project-a" });
+    const primary = path.join(directory, "threads", `${threadId}.json`);
+    const before = await readFile(primary, "utf8");
+    now = new Date("2026-08-02T00:00:00.000Z");
     const retired = new Error("Target project retired");
-    let targetRetired = false;
+    let guardChecks = 0;
     try {
       await expect(
         first.updateMetadata(
@@ -817,8 +830,10 @@ describe("mapping-store package", () => {
           {
             ifProjectId: "project-a",
             beforeWrite() {
-              if (targetRetired) throw retired;
-              targetRetired = true;
+              if (++guardChecks === 2) {
+                rejectPrimaryRollback = true;
+                throw retired;
+              }
             },
           },
         ),
@@ -832,9 +847,73 @@ describe("mapping-store package", () => {
     await reopened.initialize();
     try {
       await expect(reopened.getThread(threadId)).resolves.toEqual(original);
+      await expect(readFile(primary, "utf8")).resolves.toBe(before);
     } finally {
       await reopened.close();
     }
+  });
+
+  it("recovers a guarded metadata clear until a newer core revision takes precedence", async () => {
+    const directory = await temporaryStoreDirectory();
+    let now = new Date("2026-08-01T00:00:00.000Z");
+    const first = new MappingStore({ directory, now: () => now });
+    await first.initialize();
+    await createReady(first);
+    const assigned = await first.updateMetadata(threadId, { projectId: "project-a" });
+    const primary = path.join(directory, "threads", `${threadId}.json`);
+    const before = await readFile(primary, "utf8");
+
+    now = new Date("2026-08-02T00:00:00.000Z");
+    let guardChecks = 0;
+    const cleared = await first.updateMetadata(
+      threadId,
+      { projectId: null },
+      {
+        ifProjectId: "project-a",
+        beforeWrite() {
+          guardChecks += 1;
+        },
+      },
+    );
+    expect(guardChecks).toBe(2);
+    expect(cleared).not.toHaveProperty("projectId");
+    expect(cleared).toMatchObject({
+      revision: assigned.revision + 1,
+      updatedAt: now.toISOString(),
+    });
+    await expect(readFile(primary, "utf8")).resolves.toBe(before);
+    await first.close();
+
+    const second = new MappingStore({ directory, now: () => now });
+    await second.initialize();
+    await expect(second.getThread(threadId)).resolves.toEqual(cleared);
+    const values = { timeToFirstOutputMs: { value: 50, turnId: "turn-1", at: 90 } };
+    const measured = await second.saveUsageMeasurements(threadId, nativeRef, values);
+    expect(measured).toMatchObject({
+      revision: cleared.revision,
+      updatedAt: cleared.updatedAt,
+      usageMeasurements: { values },
+    });
+    await second.close();
+
+    const third = new MappingStore({ directory, now: () => now });
+    await third.initialize();
+    await expect(third.getThread(threadId)).resolves.toEqual(measured);
+
+    now = new Date("2026-08-03T00:00:00.000Z");
+    const archived = await third.setArchived(threadId, true);
+    expect(archived).toEqual({
+      ...measured,
+      archived: true,
+      revision: cleared.revision + 1,
+      updatedAt: now.toISOString(),
+    });
+    await third.close();
+
+    const fourth = new MappingStore({ directory });
+    await fourth.initialize();
+    await expect(fourth.getThread(threadId)).resolves.toEqual(archived);
+    await fourth.close();
   });
 
   it("applies a native title without changing recency and preserves a concurrent rename", async () => {

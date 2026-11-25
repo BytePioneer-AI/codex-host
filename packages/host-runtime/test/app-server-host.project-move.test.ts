@@ -584,6 +584,73 @@ describe("Host client project move", () => {
     expect((await context.mappingStore.getThread(id))?.projectId).toBeUndefined();
   });
 
+  it("clears remaining project assignments when one listed Thread is deleted", async () => {
+    const context = await setup();
+    const { fixture, mappingStore, cwd } = context;
+    const ids = [];
+    for (const requestId of [1, 2, 3]) {
+      const id = hostThreadIdSchema.parse(
+        await startExternalThread(fixture, "codexhost/pi-native", requestId, { cwd }),
+      );
+      await mappingStore.updateMetadata(id, { projectId: OLD_NATIVE_PROJECT });
+      ids.push(id);
+    }
+    const [removedId, reassignedId, remainingId] = ids;
+    if (!removedId || !reassignedId || !remainingId) throw new Error("Missing external Threads");
+    const list = mappingStore.listThreads.bind(mappingStore);
+    vi.spyOn(mappingStore, "listThreads").mockImplementationOnce(async () => {
+      const snapshot = await list();
+      await mappingStore.removeThread(removedId);
+      await mappingStore.updateMetadata(reassignedId, { projectId: NATIVE_PROJECT });
+      return ids.flatMap((id) => snapshot.filter((row) => row.hostThreadId === id));
+    });
+
+    await fixture.host.clearDeletedProjectAssignments(OLD_NATIVE_PROJECT);
+    expect(await mappingStore.getThread(removedId)).toBeNull();
+    expect((await mappingStore.getThread(reassignedId))?.projectId).toBe(NATIVE_PROJECT);
+    expect((await mappingStore.getThread(remainingId))?.projectId).toBeUndefined();
+  });
+
+  it.each([
+    { at: "source read", method: "thread/read", attempted: false },
+    { at: "write response", method: "thread/metadata/update", attempted: true },
+  ])("does not confirm deletion of the target during $at", async ({ method, attempted }) => {
+    const context = await setup();
+    const observed = Promise.withResolvers<undefined>();
+    const unsubscribe = context.fixture.host.clientEvents.subscribe((event) => {
+      if (event.type === "projects-changed") observed.resolve(undefined);
+    });
+    const paused = context.pauseNext(method);
+    const moving = move(context, NATIVE_THREAD);
+    const reply = await paused;
+    try {
+      context.notify("project/changed", { projectId: NATIVE_PROJECT, changeType: "deleted" });
+      await observed.promise;
+    } finally {
+      unsubscribe();
+      reply();
+    }
+    if (attempted) {
+      await expect(moving).resolves.toEqual({ result: { status: "unknown" } });
+      expect(nativeWrites(context)).toHaveLength(1);
+    } else {
+      await expect(moving).resolves.toHaveProperty("error");
+      expect(nativeWrites(context)).toEqual([]);
+    }
+  });
+
+  it("returns unknown when the target no longer reads back without a deletion notification", async () => {
+    const options: { projectId?: string } = {};
+    const context = await setup(options);
+    const paused = context.pauseNext("thread/metadata/update");
+    const moving = move(context, NATIVE_THREAD);
+    const reply = await paused;
+    options.projectId = OLD_NATIVE_PROJECT;
+    reply();
+    await expect(moving).resolves.toEqual({ result: { status: "unknown" } });
+    expect(nativeWrites(context)).toHaveLength(1);
+  });
+
   it("persists only external project metadata, projects the GUI ID, and skips same-value writes", async () => {
     const context = await setup();
     const { fixture, cwd } = context;

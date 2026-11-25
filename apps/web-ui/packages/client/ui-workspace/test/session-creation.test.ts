@@ -341,6 +341,38 @@ it("cancels in-flight creation when navigating to another session or starting ag
   assert.deepEqual(h.adopted.at(-1), { sessionId: wsSession, options: { prompt: "ws prompt" } });
 });
 
+it("returns to the same projectless draft until it has been submitted", async () => {
+  const h = createHarness();
+  const first = deferred<SessionId>();
+  const draftId = SessionId("draft-unsent");
+  h.createQueue.push(first);
+  h.service.startSession();
+  first.resolve(draftId);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(h.retainedMain.at(-1), draftId);
+
+  h.ctx.layout.selectPanel("settings");
+  h.service.startSession();
+  assert.equal(h.retainedMain.at(-1), draftId);
+  assert.equal(h.panelSelections.at(-1), null);
+  assert.equal(h.service.creating.getSnapshot().state, "idle");
+
+  h.service.openSession(h.sessionB);
+  h.service.startSession();
+  assert.equal(h.retainedMain.at(-1), draftId);
+
+  h.listStore.update((list) => {
+    list.byId[draftId].blank = false;
+  });
+  const second = deferred<SessionId>();
+  const nextDraftId = SessionId("draft-next");
+  h.createQueue.push(second);
+  h.service.startSession();
+  second.resolve(nextDraftId);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(h.retainedMain.at(-1), nextDraftId);
+});
+
 it("preserves failure detail for unknown creation errors without code prefixes", async () => {
   const h = createHarness();
 

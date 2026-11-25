@@ -188,6 +188,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     { persist: { name: "dsh.sessions.current" } },
   );
   private mainReference: SessionReference | undefined;
+  private lastProjectlessDraft: SessionId | undefined;
   private mainIsRemote = false;
   private disposeMainSessionWatch: (() => void) | undefined;
   readonly opening = createSnapshotStore<SessionOpeningState>({ state: "idle" });
@@ -441,6 +442,17 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         : undefined;
     const target =
       workspaceId ?? (workspace.canStartProjectless ? null : (currentWorkspaceId ?? recent));
+    const previousDraft = this.lastProjectlessDraft;
+    if (
+      target === null &&
+      !initializeDraft &&
+      previousDraft !== undefined &&
+      sessions.byId[previousDraft]?.blank === true &&
+      !workspace.archivedSessionIds.includes(previousDraft)
+    ) {
+      this.openSession(previousDraft);
+      return;
+    }
     if (target === undefined) {
       // An explicit New Session supersedes an ID lookup even when no project can be chosen yet.
       this.ctx.layout.beginNavigation();
@@ -879,6 +891,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     this.disposeMainSessionWatch = undefined;
     this.mainReference = reference;
     this.mainIsRemote = this.isRemoteSession(reference.sessionId);
+    const summary = this.sessions.list.getSnapshot().byId[reference.sessionId];
+    if (!this.mainIsRemote && summary?.blank === true && summary.cwd === undefined) {
+      this.lastProjectlessDraft = reference.sessionId;
+    }
     this.disposeMainSessionWatch =
       typeof reference.binding.session.subscribe === "function"
         ? reference.binding.session.subscribe(() => {

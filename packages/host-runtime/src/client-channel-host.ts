@@ -8,6 +8,8 @@ import {
 } from "@codexhost/protocol-core";
 import {
   CLIENT_CHANNEL_METHODS,
+  CLIENT_THREAD_PROJECT_MOVE_METHOD,
+  clientThreadProjectMoveParamsSchema,
   THREAD_ARCHIVE_CONFIRM_METHOD,
   threadArchiveConfirmParamsSchema,
   clientThreadSnapshotSchema,
@@ -120,6 +122,8 @@ export interface ClientChannelHostDependencies {
   readThreadHandoff?(threadId: string): Promise<ThreadHandoffMetadata | null>;
   /** Native Codex calls use the shared service's already-attached official client. */
   readonly native?: NativeClientChannelDependencies;
+  moveThreadToProject?(threadId: string, projectId: string): Promise<ConsoleHostReply>;
+  readNativeProjectId?(threadId: string): Promise<string | null | undefined>;
   diagnoseNativeTitle?(event: NativeTitleDiagnostic): void;
   /** Runs one client request through the shared Desktop request handling. */
   submit(
@@ -254,9 +258,19 @@ export class ClientChannelHost {
             await this.#host.listSectionPlacements(),
             nativeThreadIds,
             projects,
+            this.#host.readNativeProjectId,
           ),
         ),
       };
+    }
+    if (method === CLIENT_THREAD_PROJECT_MOVE_METHOD) {
+      const move = clientThreadProjectMoveParamsSchema.safeParse(params);
+      if (!move.success) return { error: { code: -32602, message: "Invalid Thread project move" } };
+      return (
+        this.#host.moveThreadToProject?.(move.data.threadId, move.data.projectId) ?? {
+          error: { code: -32078, message: "Thread project moves require the local shared Host" },
+        }
+      );
     }
     let native = method.startsWith("project/");
     if (method === "thread/start") {

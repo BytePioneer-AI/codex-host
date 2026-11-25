@@ -29,6 +29,7 @@ import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { readThreadCatalog } from "./thread-catalog.js";
 import { readOfficialImportTimes, type OfficialImportTimes } from "./official-import-duplicates.js";
 import { confirmNativeThreadArchived } from "./native-thread-archive-confirm.js";
+import { readWorkspaceProjects } from "./native-workspace-snapshot.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { SkillLibrary } from "@codexhost/skill-library";
 import { SKILLS_LIST_METHOD, SKILLS_CHANGED_METHOD } from "@codexhost/shared-contracts";
@@ -1160,6 +1161,22 @@ export class AppServerHost {
       readThreadHandoff: (threadId) => this.#repository.getThreadHandoff(threadId),
       ...(this.#options.externalOnly
         ? {
+            ...((this.#options.environment ?? process.env).CODEXHOST_REMOTE_SSH_MANAGED === "1"
+              ? {}
+              : {
+                  moveThreadToProject: (threadId: string, projectId: string) =>
+                    this.#desktopRequests.run(threadId, () =>
+                      this.#externalRuntime.idleRelease.runOperation(threadId, () =>
+                        this.#moveClientThreadToProject(threadId, projectId),
+                      ),
+                    ),
+                }),
+            readNativeProjectId: async (threadId: string) => {
+              const thread = await this.#readNativeProjectThread(threadId);
+              return typeof thread?.projectId === "string" || thread?.projectId === null
+                ? thread.projectId
+                : undefined;
+            },
             native: {
               events: this.clientEvents,
               asyncQuestions: this.#asyncQuestions,
@@ -2933,6 +2950,131 @@ export class AppServerHost {
         },
       };
     }
+  }
+
+  async #readNativeProjectThread(threadId: string): Promise<JsonObject | undefined> {
+    const reply = await this.#requestClientNative("thread/read", { threadId, includeTurns: false });
+    if ("error" in reply) {
+      if ([-32090, -32093, -32094].includes(reply.error.code)) throw new Error(reply.error.message);
+      return undefined;
+    }
+    const thread = isRecord(reply.result) ? reply.result.thread : undefined;
+    return isRecord(thread) && thread.id === threadId ? thread : undefined;
+  }
+
+  #moveClientThreadToProject(threadId: string, projectId: string): Promise<ConsoleHostReply> {
+    return this.#runSectionOperation(async () => {
+      const unavailable = {
+        error: { code: -32078, message: "A local, active, unpinned top-level Thread is required" },
+      };
+      const confirmed = { result: { status: "confirmed", projectId } };
+      const unknown = { result: { status: "unknown" } };
+      let attemptedWrite = false;
+      try {
+        await this.#waitForPlugins();
+        const { nativeByGui } = await readWorkspaceProjects(
+          this.#options.environment ?? process.env,
+        );
+        const nativeId = nativeByGui.get(projectId);
+        if (!nativeId || !(await this.#projectExists(nativeId))) {
+          return { error: { code: -32602, message: "Local project is unavailable" } };
+        }
+        const owner = this.#officialRuntimeScope.owner;
+        const generation = owner.generation;
+        const location = await this.#locateExternalThread(threadId);
+        if (location.kind === "error") return { error: location.error };
+        if (await this.#repository.getDelegationByChild(hostThreadIdSchema.parse(threadId)))
+          return unavailable;
+        if (location.kind === "external") {
+          const id = location.record.hostThreadId;
+          const record = await this.#repository.find(id);
+          if (
+            !record ||
+            record.archived ||
+            record.subagent ||
+            record.attachedToThreadId ||
+            location.thread?.unsubmittedPrewarm ||
+            (await this.#repository.listSectionPlacements()).some(
+              (entry) => entry.hostThreadId === id && entry.section.id === PINNED_THREAD_SECTION_ID,
+            ) ||
+            owner.generation !== generation
+          )
+            return unavailable;
+          if (record.projectId === nativeId) return confirmed;
+          attemptedWrite = true;
+          await this.#repository
+            .updateMetadata(id, { projectId: nativeId })
+            .catch((error: unknown) => this.#diagnose(error));
+          const actual = await this.#repository.find(id);
+          if (actual) {
+            const loaded = this.#externalRuntime.get(id);
+            if (loaded) this.#syncLoadedExternalThread(loaded, actual);
+            if (actual.projectId !== record.projectId) {
+              await this.#writer.json({
+                method: "thread/project/updated",
+                params: { threadId, projectId: actual.projectId ?? null },
+              });
+              return actual.projectId === nativeId ? confirmed : unknown;
+            }
+          }
+          this.clientEvents.changed(threadId, "thread/project/updated");
+          return unknown;
+        }
+
+        const thread = await this.#readNativeProjectThread(threadId);
+        if (
+          !thread ||
+          (typeof thread.projectId !== "string" && thread.projectId !== null) ||
+          thread.ephemeral === true ||
+          typeof thread.parentThreadId === "string" ||
+          typeof thread.attachedToThreadId === "string" ||
+          (isRecord(thread.source) && "subAgent" in thread.source) ||
+          (typeof thread.threadSource === "string" && thread.threadSource.startsWith("subAgent")) ||
+          (isRecord(thread.section) && thread.section.id === PINNED_THREAD_SECTION_ID) ||
+          !(await this.#isActiveProjectMoveThread(thread)) ||
+          owner.generation !== generation
+        )
+          return unavailable;
+        if (thread.projectId === nativeId) return confirmed;
+        attemptedWrite = true;
+        const write = await this.#requestClientNative("thread/metadata/update", {
+          threadId,
+          projectId: nativeId,
+        });
+        if ("error" in write && ![-32093, -32094].includes(write.error.code)) return write;
+        const actual = await this.#readNativeProjectThread(threadId);
+        this.clientEvents.changed(threadId, "thread/project/updated");
+        return owner.generation === generation && actual?.projectId === nativeId
+          ? confirmed
+          : unknown;
+      } catch (error) {
+        this.#diagnose(error);
+        if (!attemptedWrite) return unavailable;
+        this.clientEvents.changed(threadId, "thread/project/updated");
+        return unknown;
+      }
+    });
+  }
+
+  async #isActiveProjectMoveThread(thread: JsonObject): Promise<boolean> {
+    if (typeof thread.archived === "boolean") return !thread.archived;
+    // Some native versions expose archive membership only via thread/list.
+    const generation = this.#officialRuntimeScope.owner.generation;
+    let cursor: string | null = null;
+    for (let page = 0; page < 10; page += 1) {
+      const result = officialThreadListPageFromResponse(
+        await this.#requestOfficial("thread/list", { archived: true, limit: 100, cursor }, false),
+      );
+      if (
+        generation !== this.#officialRuntimeScope.owner.generation ||
+        result.data.some(({ id }) => id === thread.id)
+      )
+        return false;
+      if (result.nextCursor === null) return true;
+      if (result.nextCursor === cursor) return false;
+      cursor = result.nextCursor;
+    }
+    return false;
   }
 
   #respondClientNative(

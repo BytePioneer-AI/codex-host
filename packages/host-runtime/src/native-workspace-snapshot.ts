@@ -10,11 +10,55 @@ import {
 
 import { externalPinIds } from "./external-thread-pins.js";
 
-/** Read Desktop's persisted projects, never infer them from execution cwd or write its file. */
+interface WorkspaceProjects {
+  snapshot: ClientWorkspaceSnapshot;
+  nativeByGui: Map<string, string>;
+  guiByNative: Map<string, string>;
+}
+
 export async function readNativeWorkspaceSnapshot(
   environment: NodeJS.ProcessEnv,
   nativeProjects?: ClientWorkspaceSnapshot["projects"],
 ): Promise<ClientWorkspaceSnapshot> {
+  return (await readWorkspaceProjects(environment, nativeProjects)).snapshot;
+}
+
+function localProjectIds(state: Record<string, unknown>, scope: string) {
+  const mappings = state["app-server-project-id-by-legacy-project-id-by-host"];
+  const scoped =
+    mappings && typeof mappings === "object" && !Array.isArray(mappings)
+      ? (mappings as Record<string, unknown>)[scope]
+      : undefined;
+  return scoped && typeof scoped === "object" && !Array.isArray(scoped)
+    ? (scoped as Record<string, unknown>)
+    : {};
+}
+
+function workspaceProjects(
+  snapshot: ClientWorkspaceSnapshot,
+  mappings: Record<string, unknown> = {},
+): WorkspaceProjects {
+  const nativeByGui = new Map<string, string>();
+  const guiByNative = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const { id } of snapshot.projects) {
+    const mapped = Object.hasOwn(mappings, id) ? mappings[id] : undefined;
+    const nativeId = typeof mapped === "string" && mapped ? mapped : id;
+    if (guiByNative.has(nativeId)) ambiguous.add(nativeId);
+    nativeByGui.set(id, nativeId);
+    guiByNative.set(nativeId, id);
+  }
+  for (const id of ambiguous) guiByNative.delete(id);
+  for (const [guiId, nativeId] of nativeByGui)
+    if (!guiByNative.has(nativeId)) nativeByGui.delete(guiId);
+  return { snapshot, nativeByGui, guiByNative };
+}
+
+/** Read Desktop's persisted projects, never infer them from execution cwd or write its file. */
+export async function readWorkspaceProjects(
+  environment: NodeJS.ProcessEnv,
+  nativeProjects?: ClientWorkspaceSnapshot["projects"],
+): Promise<WorkspaceProjects> {
   const codexHome = environment.CODEX_HOME ?? path.join(homedir(), ".codex");
   const parsed = await readDesktopGlobalState(codexHome);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
@@ -65,7 +109,7 @@ export async function readNativeWorkspaceSnapshot(
         ),
       ]
     : undefined;
-  return clientWorkspaceSnapshotSchema.parse({
+  const snapshot = clientWorkspaceSnapshotSchema.parse({
     projects: nativeProjects ?? desktopProjectDefinitions(state, scope),
     ...(nativeProjects ? { nativeProjects: true } : {}),
     assignments: Object.fromEntries(
@@ -81,6 +125,7 @@ export async function readNativeWorkspaceSnapshot(
     ...(Object.keys(sectionProjects).length > 0 ? { sectionProjects } : {}),
     ...(pinnedProjects !== undefined ? { pinnedProjects } : {}),
   });
+  return workspaceProjects(snapshot, nativeProjects ? {} : localProjectIds(state, scope));
 }
 
 const PROJECT_ITEM_PREFIX = "codex:project:";
@@ -130,29 +175,43 @@ function desktopSectionProjects(state: Record<string, unknown>): Record<string, 
   return sections;
 }
 
-/** Combine requested native GUI facts with this owner's canonical no-project records. */
+/** Project authoritative assignments into the same ID space as the GUI definitions. */
 export async function readExternalWorkspaceSnapshot(
   environment: NodeJS.ProcessEnv,
   threads: readonly StoredThreadRecordV1[],
   placements: readonly StoredSectionPlacementV1[],
   nativeThreadIds: readonly string[] = [],
   nativeProjects?: ClientWorkspaceSnapshot["projects"],
+  readProjectId?: (threadId: string) => Promise<string | null | undefined>,
 ): Promise<ClientWorkspaceSnapshot> {
-  const snapshot = await readNativeWorkspaceSnapshot(environment, nativeProjects);
-  const owned = new Set([
-    ...threads.map((thread) => String(thread.hostThreadId)),
-    ...nativeThreadIds,
-  ]);
+  const { snapshot, guiByNative } = await readWorkspaceProjects(environment, nativeProjects);
+  const externalIds = new Set(threads.map((thread) => String(thread.hostThreadId)));
+  const owned = new Set([...externalIds, ...nativeThreadIds]);
   const assignments = Object.fromEntries(
     Object.entries(snapshot.assignments).filter(([id]) => nativeProjects || owned.has(id)),
   );
+  if (readProjectId && guiByNative.size) {
+    const official = [...owned].filter((id) => !externalIds.has(id));
+    for (let i = 0; i < official.length; i += 16) {
+      await Promise.all(
+        official.slice(i, i + 16).map(async (id) => {
+          const nativeId = await readProjectId(id);
+          if (nativeId === undefined) return; // Legacy servers omit projectId.
+          const guiId = nativeId === null ? undefined : guiByNative.get(nativeId);
+          if (guiId === undefined) delete assignments[id];
+          else assignments[id] = guiId;
+        }),
+      );
+    }
+  }
   const projectless = new Set(
     snapshot.projectless.filter((id) => owned.has(id) && !assignments[id]),
   );
-  const nativeIds = new Set(nativeProjects?.map((project) => project.id));
   for (const thread of threads) {
-    if (thread.projectId && (!nativeProjects || nativeIds.has(thread.projectId))) {
-      assignments[thread.hostThreadId] = thread.projectId;
+    if (thread.projectId) {
+      const guiId = guiByNative.get(thread.projectId);
+      if (guiId !== undefined) assignments[thread.hostThreadId] = guiId;
+      else delete assignments[thread.hostThreadId];
       projectless.delete(thread.hostThreadId);
     } else if (thread.projectlessWorkspace && !assignments[thread.hostThreadId]) {
       projectless.add(thread.hostThreadId);

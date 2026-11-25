@@ -66,6 +66,19 @@ export type ClientThreadSectionMutationResult = z.infer<
   typeof clientThreadSectionMutationResultSchema
 >;
 
+export const CLIENT_THREAD_PROJECT_MOVE_METHOD = "codexhost/workspace/moveThreadToProject";
+const projectMoveId = z.string().max(1_024).regex(/\S/u);
+export const clientSessionProjectMoveParamsSchema = z
+  .object({ sessionId: projectMoveId, projectId: projectMoveId })
+  .strict();
+export const clientThreadProjectMoveParamsSchema = z
+  .object({ threadId: projectMoveId, projectId: projectMoveId })
+  .strict();
+export const clientThreadProjectMoveResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("confirmed"), projectId: projectMoveId }).strict(),
+  z.object({ status: z.literal("unknown") }).strict(),
+]);
+
 export const CLIENT_CHANNEL_METHODS = [
   "codexhost/skills/list",
   "codexhost/voice/status",
@@ -105,6 +118,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "project/update",
   "project/delete",
   "project/move",
+  CLIENT_THREAD_PROJECT_MOVE_METHOD,
   "codexhost/thread/tree/read",
   "codexhost/thread/pins/list",
   "codexhost/thread/sections/list",

@@ -16,6 +16,7 @@ import {
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  CLIENT_THREAD_PROJECT_MOVE_METHOD,
   CLIENT_THREAD_SECTION_MUTATIONS,
   THREAD_ARCHIVE_CONFIRM_METHOD,
   THREAD_HANDOFF_METHOD,
@@ -325,13 +326,18 @@ export async function createChHostClient(
       );
     }
   }
-  const request: ChHostClient["request"] = (method, params) =>
-    hostOperation(channel.request(method, params));
   const realtimeRequest = <T = unknown>(
     method: string,
     params: Record<string, unknown>,
     timeoutMs?: number,
   ): Promise<T> => hostOperation(channel.request<T>(method, params, timeoutMs));
+  const request: ChHostClient["request"] = (method, params) => {
+    if (method === CLIENT_THREAD_PROJECT_MOVE_METHOD && channel.owner !== "service")
+      return Promise.reject(
+        new RpcError("host/method-unavailable", "Project moves require the shared local Host."),
+      );
+    return hostOperation(channel.request(method, params));
+  };
   return {
     realtime: {
       subscribe: (listener, after) => channel.subscribe(listener, after),
@@ -342,7 +348,7 @@ export async function createChHostClient(
     },
     request,
     projects: (ids) =>
-      endpoint?.owner === "service"
+      channel.owner === "service"
         ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", {
             threadIds: ids,
             nativeProjects: true,

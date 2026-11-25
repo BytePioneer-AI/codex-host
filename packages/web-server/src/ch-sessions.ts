@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
+  CLIENT_THREAD_PROJECT_MOVE_METHOD,
   CLIENT_THREAD_SECTION_MUTATIONS,
   THREAD_ARCHIVE_CONFIRM_METHOD,
   THREAD_SECTION_CAPABILITY,
@@ -12,6 +13,8 @@ import {
   WEB_ACTIVE_TURN_PROJECTION,
   WEB_FOLLOW_PROJECTION_KEYS,
   WEB_HANDOFF_PROJECTION,
+  clientSessionProjectMoveParamsSchema,
+  clientThreadProjectMoveResultSchema,
   clientThreadSectionsSchema,
   clientThreadSectionMoveSchema,
   desktopProjectPathKey,
@@ -65,6 +68,7 @@ import { ChRealtime } from "./ch-realtime.ts";
 import { ChInteractions } from "./ch-interactions.ts";
 import type { WebHarnessPreferences } from "./harness-preferences.ts";
 import { requestOf } from "./store.ts";
+import { remoteSessionIdentity } from "./remote-sessions.ts";
 import {
   type EventHub,
   RpcError,
@@ -1620,6 +1624,57 @@ export class ChSessions {
       await this.host.request("codexhost/thread/sections/move", { threadId: id, sectionId });
       await this.refreshAfterCurrent().catch(() => undefined);
       return { sectionId };
+    });
+    rpc.register("workspace/moveSessionToProject", async (args) => {
+      const params = clientSessionProjectMoveParamsSchema.safeParse(requestOf(args));
+      if (!params.success)
+        throw new RpcError("workspace/project-invalid", "Invalid Thread project move.");
+      const { sessionId, projectId } = params.data;
+      const draft = this.drafts.get(sessionId);
+      const threadId = draft?.canonicalId ?? sessionId;
+      if (remoteSessionIdentity(sessionId) || remoteSessionIdentity(threadId))
+        throw new RpcError(
+          "workspace/project-unavailable",
+          "Only local Threads can move projects.",
+        );
+      const row = this.rows.get(threadId);
+      if (
+        (draft && !draft.canonicalId) ||
+        !row ||
+        !this.threads.hasHarness(threadId) ||
+        row.parentThreadId ||
+        row.canAcceptDirectInput === false ||
+        this.tree.parent(threadId) ||
+        ("archived" in row && row.archived === true) ||
+        this.workspaces.isArchived(threadId) ||
+        this.workspaces.pinnedSessionIds().includes(threadId)
+      )
+        throw new RpcError("workspace/project-unavailable", "This Thread cannot move projects.");
+      const value = await this.host
+        .request(CLIENT_THREAD_PROJECT_MOVE_METHOD, { threadId, projectId })
+        .catch((error: unknown) => {
+          if (error instanceof RpcError) {
+            const { code, details } = error;
+            const hostCode = "hostCode" in details ? details.hostCode : undefined;
+            // The client channel also uses internal error for an invalid error envelope.
+            if (
+              code === "host/method-unavailable" ||
+              (code === "host/rejected" &&
+                typeof hostCode === "number" &&
+                ![-32093, -32094, -32603].includes(hostCode))
+            )
+              throw error;
+          }
+          return { status: "unknown" };
+        });
+      const result = clientThreadProjectMoveResultSchema.safeParse(value);
+      // Read back navigation only; a matching GUI snapshot cannot confirm this write.
+      await this.refreshAfterCurrent().catch(() => undefined);
+      return result.success &&
+        result.data.status === "confirmed" &&
+        result.data.projectId === projectId
+        ? result.data
+        : { status: "unknown" };
     });
     rpc.register("session/list", async (args, context) => {
       const {

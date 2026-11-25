@@ -41,6 +41,8 @@ Web / App → Web 网关 → 客户端通道 ───────────�
 
 后台以只读方式从 `CODEX_HOME/.codex-global-state.sqlite` 读取 GUI 项目归属，仅在 SQLite 文件不存在或尚未迁移（`user_version` 为 0）时读取同目录的 `.codex-global-state.json`。若此时 JSON 文件也不存在，GUI 归属为空。文件损坏或数据库版本不受支持（如高于 1）时，查询报错。`codexhost/workspace/read` 投影 canonical external IDs 及请求中指定的原生 Thread IDs，并合并唯一 Mapping Store 中明确记录的项目/无项目事实；生成的执行目录不凭 cwd 匹配变成项目。置顶统一通过 `codexhost/thread/pins/list` / `codexhost/thread/pins/set` 访问原生分区协议与同一 Mapping Store 的外部 Thread 分区记录，支持无 Desktop 窗口读写；查询与 Desktop 分区移动共用串行边界。官方 Thread 的置顶通过官方 `thread/section/move` 持久化，不要求外部 Mapping Store 记录；`pins/list` 始终查询官方 Pinned 分区，再合并未归档外部成员，返回与 Desktop 一致的混合顺序（包含没有外部置顶的情况）。`workspace/read` 的置顶字段仅从 Mapping Store 投影外部成员，不读取 GUI 全局文件中的置顶副本，也不是 Web 置顶列表的事实源；完整成员与顺序通过 `pins/list` 查询。不建立预置顶、补写队列或 Renderer 回退；原生能力不可用时明确失败，未知写入结果不自动重发。远程 SSH 的原有执行所有权保持原样，公开客户端通道支持本机原生与 external Threads，但不聚合远程连接；移动后台推送不是此改造的能力。
 
+更改项目归属的本机服务入口为 `codexhost/workspace/moveThreadToProject {threadId, projectId}`。`projectId` 使用 `workspace/read` 的 GUI 项目 ID；Host 按当前本机 scope 转成原生 ID，并通过同一个 app-server 的 `project/read` 校验目标。普通 Codex 只发送 `thread/metadata/update {threadId, projectId}`，随后用独立 `thread/read` 确认；外部 Harness 由 Mapping Store 保存并回读项目 metadata。`workspace/read` 将两种所有者的权威归属投影为 GUI ID；旧协议缺少原生归属字段时，GUI 归属仅用于只读兼容。客户端通道不开放通用 metadata 写入。
+
 ## 官方 Codex 的统一入口
 
 Web 在插件列表之外调用 `codexhost/harness/inspect {harnessId: "codex"}`，就绪时显示一个“Codex”；不可用时不影响其他 Harness。`codex` 是保留 ID，不是插件描述符。新建传官方 Model Ref，由 Host 转为官方 `thread/start` 参数，直接返回官方 Thread ID，不创建 Mapping Store 记录。无项目时由 Host 分配默认生成目录再传 `cwd`，Web 不分配目录。

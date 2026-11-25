@@ -247,6 +247,9 @@ export class HostClientChannel {
   get epoch(): string {
     return this.descriptor.epoch;
   }
+  get owner(): ClientChannelDescriptor["owner"] {
+    return this.descriptor.owner;
+  }
   /** Options are opt-in; an older Host ignores them and returns full Turns. */
   async snapshot(
     threadId: string,

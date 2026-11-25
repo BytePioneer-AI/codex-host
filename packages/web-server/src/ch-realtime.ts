@@ -92,6 +92,11 @@ export class ChRealtime {
       this.sectionsDirty = true;
       this.schedule("", DEFAULT_DEBOUNCE_MS);
     } else if (event.type === "changed") {
+      if (event.method === "thread/project/updated") {
+        this.catalogReason = "changed";
+        this.schedule("", DEFAULT_DEBOUNCE_MS);
+        return;
+      }
       if (
         event.method === "codexhost/thread/usage/updated" ||
         event.method === "thread/tokenUsage/updated"

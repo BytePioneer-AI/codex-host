@@ -50,17 +50,34 @@ impl ChildProcessGuard {
     #[cfg(target_os = "macos")]
     fn retain_descendants(&mut self) -> Result<(), PlatformError> {
         let now = Instant::now();
-        let events = match &mut self.events {
-            Some(events) => events,
-            unset => unset.insert(ProcessEvents::new()?),
+        let scan_due = {
+            let events = match &mut self.events {
+                Some(events) => Some(events),
+                unset => match ProcessEvents::new() {
+                    Ok(events) => Some(unset.insert(events)),
+                    Err(_) => None,
+                },
+            };
+            match events {
+                Some(events) => match events.scan_due(now) {
+                    Ok(due) => due,
+                    Err(_) => {
+                        self.events = None;
+                        true
+                    }
+                },
+                None => true,
+            }
         };
-        if events.scan_due(now)? {
+        if scan_due {
             let owned = self
                 .tree
                 .get_mut()
                 .map_err(|_| poisoned_tree_lock())?
                 .observe()?;
-            events.record_scan(&owned, now);
+            if let Some(events) = &mut self.events {
+                events.record_scan(&owned, now);
+            }
         }
         Ok(())
     }

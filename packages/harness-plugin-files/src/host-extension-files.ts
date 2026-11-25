@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   DESKTOP_EXTENSION_ASSET_MAX_BYTES,
@@ -31,6 +31,7 @@ import {
   hostExtensionsRoot,
   ifMissing,
   readHostFile,
+  renamePrivateExtensionPath,
   storeChild,
   storeRoot,
   utf8,
@@ -257,12 +258,15 @@ export async function stageHostExtension({
   files,
   expected,
   source,
+  signal,
 }: {
   dataDir: string;
   files: Map<string, Buffer>;
   expected?: { id: string; version?: string | undefined } | undefined;
   source?: HostExtensionProvenance | undefined;
+  signal?: AbortSignal | undefined;
 }): Promise<PreparedHostExtension> {
+  if (signal?.aborted) throw new Error("Extension staging aborted", { cause: signal.reason });
   const index = indexHostPackage(files);
   const read = (filename: string, max: number) => {
     const bytes = files.get(filename);
@@ -278,15 +282,18 @@ export async function stageHostExtension({
   )
     throw new Error("Manifest id or version does not match the expected package");
   await validateHostPackageEntries(manifest, read);
+  if (signal?.aborted) throw new Error("Extension staging aborted", { cause: signal.reason });
   const root = await storeRoot(hostExtensionsRoot(dataDir), true);
   const staging = await mkdtemp(path.join(root, ".staging-"));
   try {
     for (const [resource, bytes] of files) {
+      if (signal?.aborted) throw new Error("Extension staging aborted", { cause: signal.reason });
       const target = path.join(staging, resource);
       await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
       await writeFile(target, bytes, { flag: "wx", mode: 0o600 });
     }
     await writeFile(path.join(staging, PACKAGE_INDEX), index.bytes, { flag: "wx", mode: 0o600 });
+    if (signal?.aborted) throw new Error("Extension staging aborted", { cause: signal.reason });
   } catch (error) {
     await discard(staging);
     throw error;
@@ -322,7 +329,7 @@ export async function stageHostExtension({
           });
           const destination = path.join(parent, active.generation);
           assertLocked();
-          await rename(staging, destination);
+          await renamePrivateExtensionPath(staging, destination);
           try {
             await writePrivateExtensionFile(parent, ACTIVE, JSON.stringify(active), assertLocked);
           } catch (error) {
@@ -404,7 +411,7 @@ export async function uninstallHostExtension({
     if (parent) {
       const tombstone = path.join(root, `.removed-${randomUUID()}`);
       assertLocked();
-      await rename(parent, tombstone);
+      await renamePrivateExtensionPath(parent, tombstone);
       await discard(tombstone);
     }
     if (data) await rm(data, { recursive: true, force: true });

@@ -1045,10 +1045,15 @@ export class AppServerHost {
   #sectionReconcileTimer: NodeJS.Timeout | undefined;
   #sectionReconcileDelay = SECTION_RECONCILE_RETRY_MS;
   readonly #sectionDefinitions = new SectionDefinitions(PINNED_THREAD_SECTION_ID);
-  /** A native removal may have committed before its external anchors reached disk. */
-  readonly #pendingSectionRemovals = new Map<
+  /** A native move may have committed before its external anchors reached disk. */
+  readonly #pendingSectionMoves = new Map<
     string,
-    (loadPlacements: () => Promise<readonly StoredSectionPlacementV1[]>) => Promise<boolean>
+    {
+      sectionId: string | null;
+      beforeThreadId: string | null;
+      nativeConfirmed: boolean;
+      recover(loadPlacements: () => Promise<readonly StoredSectionPlacementV1[]>): Promise<boolean>;
+    }
   >();
   readonly #turnProjection: ExternalTurnProjection;
   /** Console requests share Desktop handling; their replies return to the console. */
@@ -4465,14 +4470,25 @@ export class AppServerHost {
             ? thread.section.id
             : null;
       }
-      if (currentSectionId === sectionId && (beforeThreadId === undefined || sectionId === null)) {
-        const recover = !remote && sectionId === null && this.#pendingSectionRemovals.get(threadId);
-        if (recover) {
-          await this.#finishPartialSectionMove(request, threadId, recover);
+      if (currentSectionId === sectionId) {
+        const pending =
+          !remote && !movingExternal ? this.#pendingSectionMoves.get(threadId) : undefined;
+        if (
+          pending?.sectionId === sectionId &&
+          (beforeThreadId === undefined || pending.beforeThreadId === beforeThreadId)
+        ) {
+          await this.#finishPartialSectionMove(
+            request,
+            threadId,
+            pending.recover,
+            pending.nativeConfirmed,
+          );
           return;
         }
-        await this.#writer.json(rpcEnvelope(request, { result: {} }));
-        return;
+        if (beforeThreadId === undefined || sectionId === null) {
+          await this.#writer.json(rpcEnvelope(request, { result: {} }));
+          return;
+        }
       }
       if (remote) {
         await this.#writer.json(ownerError);
@@ -4562,6 +4578,7 @@ export class AppServerHost {
         }
         await this.#writer.json(rpcEnvelope(request, { ...response, id: request.id }));
         if (response.error) return;
+        this.#pendingSectionMoves.delete(move.threadId);
       } else if (outcome.kind === "error") {
         await this.#writer.json(rpcEnvelope(request, { error: outcome.error }));
         return;
@@ -4570,8 +4587,12 @@ export class AppServerHost {
         return;
       } else if (outcome.kind === "needs-readback") {
         this.#diagnose(outcome.cause);
-        if (move.sectionId === null)
-          this.#pendingSectionRemovals.set(move.threadId, outcome.recover);
+        this.#pendingSectionMoves.set(move.threadId, {
+          sectionId: move.sectionId,
+          beforeThreadId: move.beforeThreadId,
+          recover: outcome.recover,
+          nativeConfirmed: outcome.nativeConfirmed,
+        });
         await this.#finishPartialSectionMove(
           request,
           move.threadId,
@@ -4580,7 +4601,7 @@ export class AppServerHost {
         );
         return;
       } else {
-        this.#pendingSectionRemovals.delete(move.threadId);
+        this.#pendingSectionMoves.delete(move.threadId);
         if (custom) await this.#publishSectionsChanged();
         await this.#writer.json(rpcEnvelope(request, { result: {} }));
       }
@@ -4600,7 +4621,7 @@ export class AppServerHost {
     recover: (
       loadPlacements: () => Promise<readonly StoredSectionPlacementV1[]>,
     ) => Promise<boolean>,
-    nativeConfirmed = true,
+    nativeConfirmed: boolean,
   ): Promise<void> {
     const recovered = await recover(() => this.#repository.listSectionPlacements()).catch(
       (error: unknown) => {
@@ -4608,7 +4629,7 @@ export class AppServerHost {
         return false;
       },
     );
-    if (recovered) this.#pendingSectionRemovals.delete(threadId);
+    if (recovered) this.#pendingSectionMoves.delete(threadId);
     await this.#publishSectionsChanged();
     await this.#writer.json(
       recovered

@@ -85,6 +85,8 @@ Desktop 的原生分区移动和置顶写入由实际 Owner 串行处理。共�
 
 原生写入丢失回执时，Host 先读回官方分区顺序（解除归属时确认 Thread 已无分区）。混合排序时，只有受影响的官方顺序与计划一致且外部锚点未被其他写入改动，才补齐外部顺序。不能确认时返回结果未知，不重放原生写入。
 
+原生 Thread 移入或移出分区后，若外部锚点未能保存，Host 在当前进程保留恢复计划。重试同一目标且未指定不同锚点时，即使 Thread 已到达目标，也先校验官方顺序和外部锚点；补写确认后才返回成功，不再次提交原生移动。
+
 ## 官方自动导入的镜像 Thread
 
 官方 Codex 开启 `external-agent-import-sync-enabled` 时，会把 `~/.claude/projects` 等位置的 Harness 原生会话导入为一个新的官方 Thread，登记在 `$CODEX_HOME/external_agent_session_imports.json`。这个 Thread 与 codexhost 已列出的外部 Thread 指向同一份原生会话，却是不同的 ID，没有父子关系，会作为多余的顶层会话出现，委派产生的子 Thread 尤其明显。

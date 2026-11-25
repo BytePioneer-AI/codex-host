@@ -934,28 +934,75 @@ describe("External Thread sections through AppServerHost", () => {
     }
   });
 
-  it("finishes a retried removal without replaying the native move", async () => {
+  it.each([
+    { name: "removal", sectionId: null },
+    { name: "move into another section", sectionId: "Review" },
+    { name: "move before an anchor", sectionId: "Review", beforeThreadId: "N4" },
+    { name: "move superseded by native order", sectionId: "Review", changed: "native" },
+    { name: "move superseded by external anchors", sectionId: "Review", changed: "external" },
+  ])("checks a retried $name without replaying the native move", async (scenario) => {
+    const { sectionId, beforeThreadId, changed } = scenario;
     const fixture = createFixture();
-    const native = serveOfficialSections(fixture, [], { Research: ["N1", "N2", "N3"] });
+    const native = serveOfficialSections(fixture, [], {
+      Research: ["N1", "N2", "N3"],
+      Review: ["N4"],
+    });
     try {
       const external = await startPiThread(fixture);
-      expect(
-        await sectionRpc(fixture, "move", {
+      await expect(
+        sectionRpc(fixture, "move", {
           threadId: external,
           sectionId: "Research",
           beforeThreadId: "N2",
         }),
-      ).toHaveProperty("result");
-      vi.spyOn(fixture.mappingStore, "replaceSectionPlacements")
+      ).resolves.toEqual({ result: {} });
+      const readPlacements = () => fixture.mappingStore.listSectionPlacements();
+      const original = await readPlacements();
+      const save = vi
+        .spyOn(fixture.mappingStore, "replaceSectionPlacements")
         .mockRejectedValueOnce(new Error("Storage offline"))
         .mockRejectedValueOnce(new Error("Storage still offline"));
-      const remove = () => sectionRpc(fixture, "move", { threadId: "N2", sectionId: null });
-      await expect(remove()).resolves.toHaveProperty("error");
-      await expect(remove()).resolves.toEqual({ result: {} });
-      expect(native.moves).toEqual([{ threadId: "N2", sectionId: null, beforeThreadId: null }]);
-      await expect(sectionRpc(fixture, "list", {})).resolves.toMatchObject({
-        result: { sections: [{ threads: [{ id: "N1" }, { id: external }, { id: "N3" }] }] },
-      });
+      const retry = () =>
+        sectionRpc(fixture, "move", {
+          threadId: "N2",
+          sectionId,
+          ...(beforeThreadId === undefined ? {} : { beforeThreadId }),
+        });
+      const partial = {
+        error: { code: -32081, message: expect.stringContaining("Native Thread moved") },
+      };
+      await expect(retry()).resolves.toMatchObject(partial);
+      expect(await readPlacements()).toEqual(original);
+
+      if (changed === "native") {
+        await expect(
+          call(fixture, 228, "thread/section/move", {
+            threadId: "N4",
+            sectionId: "Review",
+            beforeThreadId: null,
+          }),
+        ).resolves.toHaveProperty("result");
+      } else if (changed === "external") {
+        await fixture.mappingStore.replaceSectionPlacements(
+          original.map((placement) => ({ ...placement, beforeThreadId: "N1" })),
+        );
+      }
+
+      if (changed) {
+        const superseding = await readPlacements();
+        await expect(retry()).resolves.toMatchObject(partial);
+        expect(await readPlacements()).toEqual(superseding);
+      } else {
+        await expect(retry()).resolves.toEqual({ result: {} });
+        expect(await readPlacements()).toMatchObject([
+          { hostThreadId: external, section: { id: "Research" }, beforeThreadId: "N3" },
+        ]);
+        save.mockRejectedValue(new Error("Storage offline again"));
+        await expect(retry()).resolves.toEqual({ result: {} });
+      }
+      expect(native.moves.filter(({ threadId }) => threadId === "N2")).toEqual([
+        { threadId: "N2", sectionId, beforeThreadId: beforeThreadId ?? null },
+      ]);
     } finally {
       await stopFixture(fixture);
     }

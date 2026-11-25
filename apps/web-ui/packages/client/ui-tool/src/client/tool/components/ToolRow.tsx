@@ -327,7 +327,17 @@ export const ToolRow = memo(function ToolRow({
                 <ul className={css.fileStats}>
                   {fileStats.map((file) => (
                     <li key={file.path} className={css.fileStat}>
-                      <span className={css.fileStatPath}>{file.path}</span>
+                      {onOpenFile !== undefined && !settledWithCue ? (
+                        <button
+                          type="button"
+                          className={clsx(css.fileLink, css.fileStatPath)}
+                          onClick={() => onOpenFile(file.path)}
+                        >
+                          {file.path}
+                        </button>
+                      ) : (
+                        <span className={css.fileStatPath}>{file.path}</span>
+                      )}
                       <span className={css.diffStat}>
                         <span className={css.diffAdded}>{`+${file.added}`}</span>{" "}
                         <span className={css.diffRemoved}>{`-${file.removed}`}</span>
@@ -469,6 +479,7 @@ export const ToolRow = memo(function ToolRow({
       inspect,
       t,
       onOpenFile,
+      settledWithCue,
       variant,
       bodyText,
       cardBody,

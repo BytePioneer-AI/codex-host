@@ -35,6 +35,7 @@ import { createTwoFilesPatch } from "diff";
 import path from "node:path";
 import { summarizeFileChanges } from "./file-change-summary.js";
 import { isFileMutatingTool, projectFileOperations } from "./file-operation-projection.js";
+import { reasoningSummaryParts } from "./reasoning-summary-parts.js";
 
 import {
   projectCodexApprovalRequest,
@@ -85,7 +86,8 @@ interface ProjectedItem {
   item: HostItem;
   media?: ReturnType<typeof createAgentMedia>;
   outcome: HostItemOutcome | null;
-  reasoningPartStarted: boolean;
+  /** Codex summary part text already streamed, by summaryIndex. */
+  reasoningSummary: string[];
   streamedCommandOutput: boolean;
   wireStarted: boolean;
   /** Holds its place in the Turn's Item order before its wire Item starts. */
@@ -575,6 +577,10 @@ function projectUserMessage(
   };
 }
 
+function projectReasoningPreview(itemId: HostItemId, summary: string[]): JsonObject {
+  return { id: reasoningPreviewItemId(itemId), type: "reasoning", summary, content: [] };
+}
+
 function projectItem(
   item: HostItem,
   outcome: HostItemOutcome | null,
@@ -593,15 +599,11 @@ function projectItem(
         phase: item.phase ?? null,
         memoryCitation: null,
       };
-    case "reasoning": {
-      const text = reasoningDisplayText(item.text);
-      return {
-        id: reasoningPreviewItemId(item.itemId),
-        type: "reasoning",
-        summary: text ? [text] : [],
-        content: [],
-      };
-    }
+    case "reasoning":
+      return projectReasoningPreview(
+        item.itemId,
+        reasoningSummaryParts(reasoningDisplayText(item.text), true),
+      );
     case "contextCompaction":
       return { id: item.itemId, type: "contextCompaction" };
     case "commandExecution":
@@ -1022,12 +1024,24 @@ export class CodexTurnProjector {
     return items;
   }
 
+  /** Displayable Harness text before preview titles are applied. */
+  reasoningText(itemId: HostItemId): string | null {
+    const item = this.#items.get(itemId)?.item;
+    return item?.type === "reasoning" ? reasoningDisplayText(item.text) : null;
+  }
+
   backgroundWireItems(): ReadonlyMap<HostItemId, JsonObject> {
     const items = new Map<HostItemId, JsonObject>();
     for (const itemId of this.#wireItemOrder) {
       if (!this.#background.has(itemId)) continue;
       const projected = this.#items.get(itemId);
-      if (projected) items.set(itemId, this.#projectItem(projected.item, projected.outcome));
+      if (projected) {
+        items.set(
+          itemId,
+          this.#openReasoningPreview(projected) ??
+            this.#projectItem(projected.item, projected.outcome),
+        );
+      }
     }
     return items;
   }
@@ -1083,7 +1097,7 @@ export class CodexTurnProjector {
   /** Complete materialized state for snapshot clients. pendingTurn() remains
    * the Desktop-specific wire shape; it deliberately omits several live Items.
    */
-  snapshotTurn(base: JsonObject = this.pendingTurn()): JsonObject {
+  snapshotTurn(base: JsonObject = this.pendingTurn(this.#startedAt)): JsonObject {
     const turn = {
       ...base,
       items: [
@@ -1091,6 +1105,8 @@ export class CodexTurnProjector {
         ...this.#wireItemOrder.flatMap((itemId) => {
           const projected = this.#items.get(itemId);
           if (!projected?.wireStarted) return [];
+          const openPreview = this.#openReasoningPreview(projected);
+          if (openPreview) return [openPreview];
           const item = this.#projectItem(
             itemId === this.#fileItemId ? this.#fileSummary() : projected.item,
             projected.outcome,
@@ -1331,7 +1347,7 @@ export class CodexTurnProjector {
         ? { media: createAgentMedia(event.item.text, this.#cwd) }
         : {}),
       outcome: null,
-      reasoningPartStarted: false,
+      reasoningSummary: [],
       streamedCommandOutput: false,
       wireStarted: false,
       startedAtMs,
@@ -1375,7 +1391,7 @@ export class CodexTurnProjector {
       messages.push(
         this.#startReasoningTranscript(event.item, startedAtMs),
         this.#reasoningOutputDelta(event.item.itemId, text, startedAtMs),
-        ...this.#reasoningDelta(projected, text, startedAtMs),
+        ...this.#reasoningSummaryDeltas(projected, startedAtMs, false),
       );
     }
     return { messages };
@@ -1412,7 +1428,7 @@ export class CodexTurnProjector {
         }
         messages.push(
           this.#reasoningOutputDelta(event.itemId, delta, emittedAtMs),
-          ...this.#reasoningDelta(projected, delta, emittedAtMs),
+          ...this.#reasoningSummaryDeltas(projected, emittedAtMs, false),
         );
       }
     } else if (event.update.type === "output.append") {
@@ -1568,6 +1584,10 @@ export class CodexTurnProjector {
     }
     const messages = [
       ...mediaMessages,
+      // Flush the tail held back while the paragraph could still change.
+      ...(projected.item.type === "reasoning"
+        ? this.#reasoningSummaryDeltas(projected, emittedAtMs, true)
+        : []),
       completedItem(
         this.#projectItem(projected.item, projected.outcome, !projected.streamedCommandOutput),
       ),
@@ -1827,35 +1847,46 @@ export class CodexTurnProjector {
     };
   }
 
-  #reasoningDelta(projected: ProjectedItem, delta: string, emittedAtMs: number): JsonObject[] {
+  #openReasoningPreview(projected: ProjectedItem): JsonObject | null {
+    // Reads must agree with the already streamed preview, not settle its title early.
+    return projected.item.type === "reasoning" && projected.outcome === null
+      ? projectReasoningPreview(projected.item.itemId, [...projected.reasoningSummary])
+      : null;
+  }
+
+  #reasoningSummaryDeltas(
+    projected: ProjectedItem,
+    emittedAtMs: number,
+    complete: boolean,
+  ): JsonObject[] {
     if (projected.item.type !== "reasoning" || !projected.wireStarted) {
       throw new Error("Host Reasoning update precedes its Item start");
     }
+    const itemId = reasoningPreviewItemId(projected.item.itemId);
+    const parts = reasoningSummaryParts(reasoningDisplayText(projected.item.text), complete);
+    const streamed = projected.reasoningSummary;
     const messages: JsonObject[] = [];
-    if (!projected.reasoningPartStarted) {
-      projected.reasoningPartStarted = true;
-      messages.push({
-        method: "item/reasoning/summaryPartAdded",
-        emittedAtMs,
-        params: {
-          threadId: this.#threadId,
-          turnId: this.#turnId,
-          itemId: reasoningPreviewItemId(projected.item.itemId),
-          summaryIndex: 0,
-        },
-      });
+    for (const [summaryIndex, part] of parts.entries()) {
+      const previous = streamed[summaryIndex];
+      if (previous === undefined) {
+        messages.push({
+          method: "item/reasoning/summaryPartAdded",
+          emittedAtMs,
+          params: { threadId: this.#threadId, turnId: this.#turnId, itemId, summaryIndex },
+        });
+      } else if (!part.startsWith(previous)) {
+        throw new Error("Reasoning summary part changed after it was streamed");
+      }
+      const delta = part.slice(previous?.length ?? 0);
+      if (delta) {
+        messages.push({
+          method: "item/reasoning/summaryTextDelta",
+          emittedAtMs,
+          params: { threadId: this.#threadId, turnId: this.#turnId, itemId, delta, summaryIndex },
+        });
+      }
     }
-    messages.push({
-      method: "item/reasoning/summaryTextDelta",
-      emittedAtMs,
-      params: {
-        threadId: this.#threadId,
-        turnId: this.#turnId,
-        itemId: reasoningPreviewItemId(projected.item.itemId),
-        delta,
-        summaryIndex: 0,
-      },
-    });
+    projected.reasoningSummary = parts;
     return messages;
   }
 

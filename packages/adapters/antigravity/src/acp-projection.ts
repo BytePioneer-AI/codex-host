@@ -38,6 +38,10 @@ import { createTwoFilesPatch } from "diff";
 
 import type { AntigravityAcpConfigOption, AntigravityAcpEvent } from "./acp-types.js";
 import type { NativeCompactionEvent, NativeReplayEvent } from "./native-replay.js";
+import {
+  isDiscoveredAntigravitySkill,
+  type DiscoveredAntigravitySkills,
+} from "./skill-discovery.js";
 import { ANTIGRAVITY_COMMAND_CATALOG } from "./slash-commands.js";
 import {
   compactToolName,
@@ -324,6 +328,7 @@ interface ToolState {
   event: ToolEvent;
   item: HostItem | null;
   snapshot?: HostItemSnapshot;
+  detached?: boolean;
   diffItem?: Extract<HostItem, { type: "fileChange" }>;
   diffSnapshot?: HostItemSnapshot;
 }
@@ -560,7 +565,7 @@ export class AntigravityToolTracker {
 
   finishPending(outcome: HostItemOutcome): void {
     for (const state of this.#tools.values()) {
-      if (state.snapshot) continue;
+      if (state.snapshot || state.detached) continue;
       if (state.item?.type === "subagentDelegation")
         state.item = {
           ...state.item,
@@ -577,6 +582,42 @@ export class AntigravityToolTracker {
       this.#complete(state, outcome);
     }
   }
+
+  detachPending(pendingToolCallIds: ReadonlySet<string> = new Set()): Set<string> {
+    const detached = new Set<string>();
+    for (const state of this.#tools.values()) {
+      if (
+        state.snapshot ||
+        state.detached ||
+        (state.item?.type !== "commandExecution" &&
+          !(
+            state.item?.type === "toolExecution" &&
+            (state.item.toolName === "ask_question" ||
+              pendingToolCallIds.has(state.event.toolCallId))
+          ))
+      )
+        continue;
+      state.detached = true;
+      detached.add(state.event.toolCallId);
+      this.#emit({ type: "item.detached", turnId: this.options.turnId, itemId: state.item.itemId });
+      if (state.diffItem && !state.diffSnapshot)
+        this.#emit({
+          type: "item.detached",
+          turnId: this.options.turnId,
+          itemId: state.diffItem.itemId,
+        });
+    }
+    return detached;
+  }
+
+  finishDetached(outcome: HostItemOutcome): void {
+    for (const state of this.#tools.values()) {
+      if (!state.detached || state.snapshot) continue;
+      this.#complete(state, outcome);
+      state.detached = false;
+    }
+  }
+
   completedSnapshots(): HostItemSnapshot[] {
     return [...this.#tools.values()].flatMap((state) => [
       ...(state.snapshot ? [state.snapshot] : []),
@@ -724,6 +765,11 @@ export function projectReplayedEventsToTurns(params: {
 
 export function buildLiveCommandCatalog(
   commands: readonly AvailableCommand[],
+  options?: { discoveredSkills?: DiscoveredAntigravitySkills },
 ): HarnessCommandCatalog {
-  return mergeLiveHarnessCommands(ANTIGRAVITY_COMMAND_CATALOG, "antigravity.", commands);
+  const discoveredSkills = options?.discoveredSkills;
+  const filtered = discoveredSkills
+    ? commands.filter((command) => !isDiscoveredAntigravitySkill(command, discoveredSkills))
+    : commands;
+  return mergeLiveHarnessCommands(ANTIGRAVITY_COMMAND_CATALOG, "antigravity.", filtered);
 }

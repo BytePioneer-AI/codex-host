@@ -8,7 +8,7 @@ Claude Code SDK 原生支持 `permissionMode: "plan"` 和运行中的 `setPermis
 
 Claude 调用 `ExitPlanMode` 时，codexhost 展示独立的 **Review plan** 选择式确认，而不是普通工具的“允许一次”审批：
 
-- 展示 SDK 回调提供的完整计划正文，不套用普通工具审批的 500 字符描述截断。
+- SDK 回调提供的完整计划正文作为独立消息进入对话区，使用正文 Markdown 渲染和对话滚动，不截断。审批面板仅显示简短说明和选择，避免长计划撑满固定输入区域。
 - **Stay in plan mode（保持规划）** 位于第一个选项，拒绝本次退出规划请求。
 - **Approve plan and exit plan mode（批准计划并退出规划）** 明确批准计划并允许原生退出操作。Claude Code 随后恢复进入规划前的权限模式，并可能继续执行计划。
 - 取消确认等同于拒绝退出。任意文本、未声明选项、多选和缺失答案都不能批准退出。

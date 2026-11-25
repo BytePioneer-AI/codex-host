@@ -13,6 +13,7 @@ import { externalPinIds } from "./external-thread-pins.js";
 /** Read Desktop's persisted projects, never infer them from execution cwd or write its file. */
 export async function readNativeWorkspaceSnapshot(
   environment: NodeJS.ProcessEnv,
+  nativeProjects?: ClientWorkspaceSnapshot["projects"],
 ): Promise<ClientWorkspaceSnapshot> {
   const codexHome = environment.CODEX_HOME ?? path.join(homedir(), ".codex");
   const file = path.join(codexHome, ".codex-global-state.json");
@@ -29,7 +30,13 @@ export async function readNativeWorkspaceSnapshot(
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT")
-      return { projects: [], assignments: {}, projectless: [], pinned: [] };
+      return {
+        projects: nativeProjects ?? [],
+        ...(nativeProjects ? { nativeProjects: true } : {}),
+        assignments: {},
+        projectless: [],
+        pinned: [],
+      };
     throw error;
   }
   if (Buffer.byteLength(text) > 32 * 1024 * 1024)
@@ -52,14 +59,34 @@ export async function readNativeWorkspaceSnapshot(
     Array.isArray(assigned)
   )
     throw new Error("Invalid native project metadata");
-  const sectionProjects = desktopSectionProjects(state);
+  const scope = `local:${path.resolve(codexHome)}`;
+  const ids = new Set(nativeProjects?.map((project) => project.id));
+  const migration = state["app-server-project-id-by-legacy-project-id-by-host"];
+  const aliases =
+    migration && typeof migration === "object"
+      ? (migration as Record<string, Record<string, unknown>>)[scope]
+      : undefined;
+  const projectId = (id: unknown): string | undefined => {
+    if (typeof id !== "string") return undefined;
+    if (!nativeProjects || ids.has(id)) return id;
+    const mapped = aliases?.[id];
+    return typeof mapped === "string" && ids.has(mapped) ? mapped : undefined;
+  };
+  const sectionProjects = Object.fromEntries(
+    Object.entries(desktopSectionProjects(state)).map(([sectionId, projects]) => [
+      sectionId,
+      projects.flatMap((id) => projectId(id) ?? []),
+    ]),
+  );
   return clientWorkspaceSnapshotSchema.parse({
-    projects: desktopProjectDefinitions(state, `local:${path.resolve(codexHome)}`),
+    projects: nativeProjects ?? desktopProjectDefinitions(state, scope),
+    ...(nativeProjects ? { nativeProjects: true } : {}),
     assignments: Object.fromEntries(
       Object.entries(assigned).flatMap(([id, value]) => {
         if (!value || typeof value !== "object") return [];
         const entry = value as Record<string, unknown>;
-        return entry.projectKind === "local" ? [[id, entry.projectId]] : [];
+        const project = projectId(entry.projectId);
+        return entry.projectKind === "local" && project ? [[id, project]] : [];
       }),
     ),
     projectless: state["projectless-thread-ids"] ?? [],
@@ -113,20 +140,22 @@ export async function readExternalWorkspaceSnapshot(
   threads: readonly StoredThreadRecordV1[],
   placements: readonly StoredSectionPlacementV1[],
   nativeThreadIds: readonly string[] = [],
+  nativeProjects?: ClientWorkspaceSnapshot["projects"],
 ): Promise<ClientWorkspaceSnapshot> {
-  const snapshot = await readNativeWorkspaceSnapshot(environment);
+  const snapshot = await readNativeWorkspaceSnapshot(environment, nativeProjects);
   const owned = new Set([
     ...threads.map((thread) => String(thread.hostThreadId)),
     ...nativeThreadIds,
   ]);
   const assignments = Object.fromEntries(
-    Object.entries(snapshot.assignments).filter(([id]) => owned.has(id)),
+    Object.entries(snapshot.assignments).filter(([id]) => nativeProjects || owned.has(id)),
   );
   const projectless = new Set(
     snapshot.projectless.filter((id) => owned.has(id) && !assignments[id]),
   );
+  const nativeIds = new Set(nativeProjects?.map((project) => project.id));
   for (const thread of threads) {
-    if (thread.projectId) {
+    if (thread.projectId && (!nativeProjects || nativeIds.has(thread.projectId))) {
       assignments[thread.hostThreadId] = thread.projectId;
       projectless.delete(thread.hostThreadId);
     } else if (thread.projectlessWorkspace && !assignments[thread.hostThreadId]) {

@@ -523,3 +523,472 @@ it("marks awaited presentation response as stale when a new-epoch hello arrives 
   assert.ok(asset);
   assert.equal(asset.stale, true, "response from superseded generation must be marked stale");
 });
+
+it("isolates tree cache by epoch, discards stale pages/responses, preserves supplemented ancestors on transient failure, and omits parents from pending onPage", async (t) => {
+  let epoch = randomUUID();
+  let failTree = false;
+  let treeReadCalls = 0;
+  let includeParentInCatalog = false;
+  let currentParents: Record<string, string> = { child: "parent" };
+  let holdTree: PromiseWithResolvers<{ parents: Record<string, string> }> | undefined;
+  let holdCatalog: PromiseWithResolvers<unknown> | undefined;
+  const fake = makeFakeTransport((_r, body) => {
+    if (body.method === "codexhost/thread/tree/read") {
+      treeReadCalls++;
+      if (holdTree) return holdTree.promise;
+      if (failTree) {
+        throw new RpcError("remote/request-failed", "Temporary timeout");
+      }
+      return { parents: { ...currentParents } };
+    }
+    if (body.method === "codexhost/thread/catalog/read") {
+      if (holdCatalog) return holdCatalog.promise;
+      const rows = includeParentInCatalog
+        ? [makeRow("parent", "codexhost"), makeRow("child", "codexhost")]
+        : [makeRow("child", "codexhost")];
+      return {
+        threads: rows,
+        ownership: rows.map((row) => ({
+          threadId: row.id,
+          owner: "external",
+          harnessId: "claude-code",
+        })),
+        officialCursor: { live: null },
+        archivedThreadIds: [],
+      };
+    }
+    if (
+      body.method === "thread/read" &&
+      (body.params as { threadId?: string }).threadId === "parent"
+    ) {
+      return { thread: makeRow("parent", "codexhost") };
+    }
+    if (body.method === "codexhost/thread/ownership/list") {
+      return {
+        threads: [{ threadId: "parent", owner: "external", harnessId: "claude-code" }],
+      };
+    }
+    throw new Error(`Unexpected method: ${String(body.method)}`);
+  }, epoch);
+
+  const source = new PeerThreadSource({
+    hostId: "remote-peer:peer-tree-resilient",
+    host: new PeerChHostClient(fake.transport),
+    onCatalogChanged: () => {},
+    onThreadChanged: () => {},
+    onConnection: () => {},
+  });
+  t.after(() => source.close());
+
+  fake.emit({ type: "connection", online: true });
+  fake.emit({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+
+  // First refresh supplements the unlisted parent ancestor.
+  const first = await source.listThreads();
+  assert.deepEqual(first.rows.map((row) => row.id).sort(), ["child", "parent"]);
+  assert.equal(first.harnessIds.get("parent"), "claude-code");
+  assert.deepEqual(first.parents, { child: "parent" });
+  assert.equal(first.treeStale, undefined);
+  assert.equal(treeReadCalls, 1);
+
+  // P1-2 & P2-1: Same-epoch transient tree/read failure retains BOTH the confirmed parent link
+  // AND the supplemented ancestor row, while onPage omits parents and marks treeStale=true.
+  failTree = true;
+  const sameEpochPageParents: Array<Readonly<Record<string, string>>> = [];
+  const second = await source.listThreads({
+    onPage: (partial) => {
+      sameEpochPageParents.push(partial.parents);
+    },
+  });
+  assert.equal(treeReadCalls, 2);
+  assert.deepEqual(sameEpochPageParents, [{}]);
+  assert.deepEqual(
+    second.rows.map((row) => row.id).sort(),
+    ["child", "parent"],
+    "transient tree/read failure must preserve previously supplemented ancestor rows",
+  );
+  assert.equal(second.harnessIds.get("parent"), "claude-code");
+  assert.deepEqual(second.parents, { child: "parent" });
+  assert.equal(second.treeStale, true);
+
+  // P2-1: When unparenting with a slow tree/read, onPage must NOT publish the previous refresh's
+  // stale parent before the current tree/read resolves.
+  failTree = false;
+  currentParents = {};
+  holdTree = Promise.withResolvers();
+  const unparentPageParents: Array<Readonly<Record<string, string>>> = [];
+  const unparentPromise = source.listThreads({
+    onPage: (partial) => {
+      unparentPageParents.push(partial.parents);
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(unparentPageParents, [{}]);
+  holdTree.resolve({ parents: {} });
+  holdTree = undefined;
+  const unparented = await unparentPromise;
+  assert.deepEqual(unparented.parents, {});
+  assert.deepEqual(
+    unparented.rows.map((row) => row.id),
+    ["child"],
+    "confirmed unparenting drops the previously supplemented ancestor row",
+  );
+
+  // Re-establish parent before testing epoch roll.
+  includeParentInCatalog = true;
+  currentParents = { child: "parent" };
+  const reparented = await source.listThreads();
+  assert.deepEqual(reparented.parents, { child: "parent" });
+
+  // P1-1: An in-flight catalog page from an old epoch must never invoke onPage or commit after
+  // a new-epoch hello arrives.
+  holdCatalog = Promise.withResolvers();
+  const stalePageCalls: string[][] = [];
+  const staleCatalogPromise = source.listThreads({
+    onPage: (partial) => {
+      stalePageCalls.push(partial.rows.map((row) => row.id));
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  epoch = randomUUID();
+  fake.emit({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true });
+  holdCatalog.resolve({
+    threads: [makeRow("stale-old-row", "codexhost")],
+    ownership: [{ threadId: "stale-old-row", owner: "external", harnessId: "claude-code" }],
+    officialCursor: { live: null },
+    archivedThreadIds: [],
+  });
+  holdCatalog = undefined;
+  const staleCatalogResult = await staleCatalogPromise;
+  assert.deepEqual(stalePageCalls, []);
+  assert.equal(staleCatalogResult.stale, true);
+  assert.deepEqual(staleCatalogResult.rows, []);
+  assert.deepEqual(staleCatalogResult.parents, {});
+
+  // A late tree/read from the old epoch must also be discarded once a new epoch hello arrives.
+  holdTree = Promise.withResolvers();
+  const lateListPromise = source.listThreads();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  epoch = randomUUID();
+  fake.emit({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true });
+  holdTree.resolve({ parents: { child: "stale-old-epoch-parent" } });
+  holdTree = undefined;
+  const lateResult = await lateListPromise;
+  assert.equal(lateResult.stale, true);
+  assert.deepEqual(lateResult.parents, {});
+  assert.equal(lateResult.treeStale, true);
+
+  // On the new epoch, a failing first tree/read must NOT reuse the old epoch's parents in onPage or final output.
+  failTree = true;
+  const newEpochPageParents: Array<Readonly<Record<string, string>>> = [];
+  const afterRoll = await source.listThreads({
+    onPage: (partial) => {
+      newEpochPageParents.push(partial.parents);
+    },
+  });
+  assert.deepEqual(newEpochPageParents, [{}]);
+  assert.deepEqual(afterRoll.parents, {});
+  assert.equal(afterRoll.treeStale, true);
+
+  // P1-1: Same-epoch full reset must also invalidate in-flight tree/read responses so a late
+  // pre-reset tree response cannot pollute the cache for a subsequent failing read.
+  failTree = false;
+  holdTree = Promise.withResolvers();
+  const preResetList = source.listThreads();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  fake.emit({ type: "hello", version: 1, cursor: { epoch, sequence: 2 }, reset: true });
+  holdTree.resolve({ parents: { child: "stale-pre-reset-parent" } });
+  holdTree = undefined;
+  const preResetResult = await preResetList;
+  assert.equal(preResetResult.stale, true);
+  assert.deepEqual(preResetResult.parents, {});
+
+  failTree = true;
+  const afterFullResetFailure = await source.listThreads();
+  assert.deepEqual(
+    afterFullResetFailure.parents,
+    {},
+    "late pre-reset tree/read must not pollute cache after same-epoch full reset",
+  );
+  assert.equal(afterFullResetFailure.treeStale, true);
+});
+
+it("preserves realtime thread/archived received while an older active catalog page is in flight", async (t) => {
+  const epoch = randomUUID();
+  let holdCatalog: PromiseWithResolvers<unknown> | undefined;
+  let parentArchived = false;
+  const fake = makeFakeTransport((_r, body) => {
+    if (body.method === "codexhost/thread/catalog/read") {
+      if (holdCatalog) {
+        const gate = holdCatalog;
+        holdCatalog = undefined;
+        return gate.promise;
+      }
+      const rows = parentArchived
+        ? [makeRow("child", "codexhost")]
+        : [makeRow("parent", "openai"), makeRow("child", "codexhost")];
+      return {
+        threads: rows,
+        ownership: rows.map((row) =>
+          row.id === "parent"
+            ? { threadId: row.id, owner: "codex" }
+            : { threadId: row.id, owner: "external", harnessId: "claude-code" },
+        ),
+        officialCursor: { live: null },
+        archivedThreadIds: [],
+      };
+    }
+    if (body.method === "codexhost/thread/tree/read") {
+      return { parents: { child: "parent" } };
+    }
+    if (
+      body.method === "thread/read" &&
+      (body.params as { threadId?: string }).threadId === "parent"
+    ) {
+      // Simulate thread/read omitting the optional `archived` boolean.
+      return { thread: makeRow("parent", "openai") };
+    }
+    if (body.method === "codexhost/thread/ownership/list") {
+      return { threads: [{ threadId: "parent", owner: "codex" }] };
+    }
+    throw new Error(`Unexpected method: ${String(body.method)}`);
+  }, epoch);
+
+  const source = new PeerThreadSource({
+    hostId: "remote-peer:peer-archive-race",
+    host: new PeerChHostClient(fake.transport),
+    onCatalogChanged: () => {},
+    onThreadChanged: () => {},
+    onConnection: () => {},
+  });
+  t.after(() => source.close());
+
+  fake.emit({ type: "connection", online: true });
+  fake.emit({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+
+  // 1. Start a catalog list whose active page still contains `parent`, and hold it in flight.
+  const catalogGate = Promise.withResolvers<unknown>();
+  holdCatalog = catalogGate;
+  const pageArchivedStates: boolean[] = [];
+  const inFlightList = source.listThreads({
+    onPage: (partial) => {
+      pageArchivedStates.push(partial.archivedIds.has("parent"));
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  // 2. While that older active page is still in flight, receive a realtime `thread/archived` event.
+  parentArchived = true;
+  fake.emit({
+    type: "changed",
+    cursor: { epoch, sequence: 2 },
+    method: "thread/archived",
+    threadId: "parent",
+  });
+
+  // 3. Release the older active catalog page (which lists `parent` as active, archivedThreadIds: []).
+  catalogGate.resolve({
+    threads: [makeRow("parent", "openai"), makeRow("child", "codexhost")],
+    ownership: [
+      { threadId: "parent", owner: "codex" },
+      { threadId: "child", owner: "external", harnessId: "claude-code" },
+    ],
+    officialCursor: { live: null },
+    archivedThreadIds: [],
+  });
+  const firstResult = await inFlightList;
+  assert.deepEqual(
+    pageArchivedStates,
+    [true],
+    "in-flight older active onPage must not override a newer realtime thread/archived event",
+  );
+  assert.equal(
+    firstResult.archivedIds.has("parent"),
+    true,
+    "older active catalog page must keep parent archived when thread/archived arrived mid-flight",
+  );
+
+  // 4. Subsequent refresh supplements `parent` by ID (thread/read omits `archived`): must remain archived.
+  const nextResult = await source.listThreads();
+  assert.equal(
+    nextResult.archivedIds.has("parent"),
+    true,
+    "supplementing parent after mid-flight thread/archived must keep it archived",
+  );
+});
+
+it("removes a child-only archivedThreadId when thread/unarchived arrives during ancestor supplement", async (t) => {
+  const epoch = randomUUID();
+  let holdAncestorRead: PromiseWithResolvers<unknown> | undefined;
+  const fake = makeFakeTransport((_r, body) => {
+    if (body.method === "codexhost/thread/catalog/read") {
+      // Only active sibling is in rows; `unarchived-child` is only in archivedThreadIds (not in rows).
+      return {
+        threads: [makeRow("sibling", "codexhost")],
+        ownership: [{ threadId: "sibling", owner: "external", harnessId: "claude-code" }],
+        officialCursor: { live: null },
+        archivedThreadIds: ["unarchived-child"],
+      };
+    }
+    if (body.method === "codexhost/thread/tree/read") {
+      return { parents: { sibling: "ancestor", "unarchived-child": "ancestor" } };
+    }
+    if (
+      body.method === "thread/read" &&
+      (body.params as { threadId?: string }).threadId === "ancestor"
+    ) {
+      if (holdAncestorRead) {
+        const gate = holdAncestorRead;
+        holdAncestorRead = undefined;
+        return gate.promise;
+      }
+      return { thread: makeRow("ancestor", "openai") };
+    }
+    if (body.method === "codexhost/thread/ownership/list") {
+      return { threads: [{ threadId: "ancestor", owner: "codex" }] };
+    }
+    throw new Error(`Unexpected method: ${String(body.method)}`);
+  }, epoch);
+
+  const source = new PeerThreadSource({
+    hostId: "remote-peer:peer-unarchive-mid-supplement",
+    host: new PeerChHostClient(fake.transport),
+    onCatalogChanged: () => {},
+    onThreadChanged: () => {},
+    onConnection: () => {},
+  });
+  t.after(() => source.close());
+
+  fake.emit({ type: "connection", online: true });
+  fake.emit({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+
+  const ancestorGate = Promise.withResolvers<unknown>();
+  holdAncestorRead = ancestorGate;
+  const listing = source.listThreads();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  // While supplementing `ancestor`, `unarchived-child` (present only in archivedThreadIds) is restored.
+  fake.emit({
+    type: "changed",
+    cursor: { epoch, sequence: 2 },
+    method: "thread/unarchived",
+    threadId: "unarchived-child",
+  });
+
+  ancestorGate.resolve({ thread: makeRow("ancestor", "openai") });
+  const listed = await listing;
+  assert.equal(
+    listed.archivedIds.has("unarchived-child"),
+    false,
+    "thread/unarchived arriving during supplement must clear non-row ID from archivedIds",
+  );
+  assert.equal(listed.unarchivedIds?.has("unarchived-child"), true);
+});
+
+it("keeps a previously unarchived supplemented ancestor unarchived across consecutive refreshes when thread/read omits archived", async (t) => {
+  const epoch = randomUUID();
+  const fake = makeFakeTransport((_r, body) => {
+    if (body.method === "codexhost/thread/catalog/read") {
+      return {
+        threads: [makeRow("child", "codexhost")],
+        ownership: [{ threadId: "child", owner: "external", harnessId: "claude-code" }],
+        officialCursor: { live: null },
+        archivedThreadIds: [],
+      };
+    }
+    if (body.method === "codexhost/thread/tree/read") {
+      return { parents: { child: "parent" } };
+    }
+    if (
+      body.method === "thread/read" &&
+      (body.params as { threadId?: string }).threadId === "parent"
+    ) {
+      // Omit `archived` field to verify knownArchived===false is not treated as unknown.
+      return { thread: makeRow("parent", "openai") };
+    }
+    if (body.method === "codexhost/thread/ownership/list") {
+      return { threads: [{ threadId: "parent", owner: "codex" }] };
+    }
+    throw new Error(`Unexpected method: ${String(body.method)}`);
+  }, epoch);
+
+  const source = new PeerThreadSource({
+    hostId: "remote-peer:peer-unarchived-supplement",
+    host: new PeerChHostClient(fake.transport),
+    onCatalogChanged: () => {},
+    onThreadChanged: () => {},
+    onConnection: () => {},
+  });
+  t.after(() => source.close());
+
+  fake.emit({ type: "connection", online: true });
+  fake.emit({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+
+  // Deliver thread/unarchived BEFORE refresh starts (so seq === listStartArchiveSeq).
+  fake.emit({
+    type: "changed",
+    cursor: { epoch, sequence: 2 },
+    method: "thread/unarchived",
+    threadId: "parent",
+  });
+
+  // Two consecutive refreshes supplementing `parent` without `archived` must keep it explicitly unarchived.
+  for (let i = 0; i < 2; i++) {
+    const res = await source.listThreads();
+    assert.equal(res.archivedIds.has("parent"), false);
+    assert.equal(
+      res.retainedAncestorIds?.has("parent") ?? false,
+      false,
+      "knownArchived===false ancestor must not be placed in retainedAncestorIds",
+    );
+    assert.equal(res.unarchivedIds?.has("parent"), true);
+  }
+});
+
+it("clears archivedIds when ancestor supplement thread/read explicitly returns archived: false despite catalog archivedThreadIds", async (t) => {
+  const epoch = randomUUID();
+  const fake = makeFakeTransport((_r, body) => {
+    if (body.method === "codexhost/thread/catalog/read") {
+      return {
+        threads: [makeRow("child", "codexhost")],
+        ownership: [{ threadId: "child", owner: "external", harnessId: "claude-code" }],
+        officialCursor: { live: null },
+        archivedThreadIds: ["parent"],
+      };
+    }
+    if (body.method === "codexhost/thread/tree/read") {
+      return { parents: { child: "parent" } };
+    }
+    if (
+      body.method === "thread/read" &&
+      (body.params as { threadId?: string }).threadId === "parent"
+    ) {
+      return { thread: { ...makeRow("parent", "openai"), archived: false } };
+    }
+    if (body.method === "codexhost/thread/ownership/list") {
+      return { threads: [{ threadId: "parent", owner: "codex" }] };
+    }
+    throw new Error(`Unexpected method: ${String(body.method)}`);
+  }, epoch);
+
+  const source = new PeerThreadSource({
+    hostId: "remote-peer:peer-supplement-explicit-unarchived",
+    host: new PeerChHostClient(fake.transport),
+    onCatalogChanged: () => {},
+    onThreadChanged: () => {},
+    onConnection: () => {},
+  });
+  t.after(() => source.close());
+
+  fake.emit({ type: "connection", online: true });
+  fake.emit({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+
+  const listed = await source.listThreads();
+  assert.equal(
+    listed.archivedIds.has("parent"),
+    false,
+    "explicit archived: false on supplement must remove parent from archivedIds",
+  );
+  assert.equal(listed.unarchivedIds?.has("parent"), true);
+  assert.equal(listed.retainedAncestorIds?.has("parent") ?? false, false);
+});

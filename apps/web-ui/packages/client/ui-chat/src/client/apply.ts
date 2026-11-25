@@ -238,6 +238,24 @@ export function apply(ctx: Context): void {
           const conversation = ctx.uiConversation.binding(binding);
           const messageEditing = ctx.get("chatMessageEditing");
           const turnDiffs = ctx.get("chatTurnDiffs");
+          const chatHandoff = ctx.get("chatHandoff");
+          const canHandoff =
+            chatHandoff !== undefined &&
+            !String(sessionId).startsWith("web-remote:") &&
+            ctx.sessions.subagentAddress(sessionId) === undefined;
+          const openSessionById = (targetSessionId: string): void => {
+            const id = targetSessionId as SessionId;
+            if (ctx.sessions.list.getSnapshot().byId[id] !== undefined) {
+              ctx.uiWorkspace.openSession(id);
+              return;
+            }
+            void ctx.sessions
+              .loadSummary(id)
+              .catch(() => undefined)
+              .finally(() => {
+                ctx.uiWorkspace.openSession(id);
+              });
+          };
           return {
             connection: ctx.get("connection") as ConnectionHandle,
             hooks: { presentation, browserAvailable },
@@ -348,6 +366,30 @@ export function apply(ctx: Context): void {
                   ctx.uiWorkspace.openSession(childId);
                 });
             },
+            openSession: openSessionById,
+            loadModelCatalog: canHandoff
+              ? async () => {
+                  const response = await ctx.remote.session.modelCatalog(undefined);
+                  if (!response.ok) throw new Error(response.error.message);
+                  return response.value;
+                }
+              : undefined,
+            handoff: canHandoff
+              ? async ({ atSeq, targetHarnessId, targetModel, targetThinkingOptionId }) => {
+                  const result = await chatHandoff.handoff({
+                    sessionId,
+                    ...(atSeq === undefined ? {} : { atSeq }),
+                    targetHarnessId,
+                    ...(targetModel === undefined ? {} : { targetModel }),
+                    ...(targetThinkingOptionId === undefined ? {} : { targetThinkingOptionId }),
+                  });
+                  const targetId = result.sessionId as SessionId;
+                  if (ctx.sessions.list.getSnapshot().byId[targetId] === undefined) {
+                    await ctx.sessions.loadSummary(targetId).catch(() => undefined);
+                  }
+                  ctx.uiWorkspace.openSession(targetId);
+                }
+              : undefined,
           };
         },
       },

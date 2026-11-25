@@ -138,7 +138,8 @@ function isOwnedRendererControl(element: Element): boolean {
     element.hasAttribute("data-codexhost-usage-control") ||
     element.hasAttribute("data-codexhost-credits-control") ||
     element.hasAttribute("data-codexhost-composer-indicators") ||
-    element.hasAttribute("data-codexhost-harness-command-control")
+    element.hasAttribute("data-codexhost-harness-command-control") ||
+    element.hasAttribute("data-codexhost-handoff-control")
   );
 }
 
@@ -242,6 +243,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const NATIVE_CONTROL_FIBER_WALK_DEPTH = 120;
+
 export function isNativeModelControlCandidate(element: Element): boolean {
   if (
     element.hasAttribute(CONTROL_ATTRIBUTE) ||
@@ -265,7 +268,7 @@ export function isNativeModelControlCandidate(element: Element): boolean {
         memoizedProps?: unknown;
       } | null)
     : null;
-  for (let depth = 0; fiber && depth < 60; depth += 1) {
+  for (let depth = 0; fiber && depth < NATIVE_CONTROL_FIBER_WALK_DEPTH; depth += 1) {
     const props = fiber.memoizedProps;
     if (
       isRecord(props) &&
@@ -307,7 +310,7 @@ export function isNativePermissionModeControlCandidate(element: Element): boolea
     : null;
   let ownsTrigger = false;
   let ownsComposerPermissionState = false;
-  for (let depth = 0; fiber && depth < 60; depth += 1) {
+  for (let depth = 0; fiber && depth < NATIVE_CONTROL_FIBER_WALK_DEPTH; depth += 1) {
     const props = fiber.memoizedProps;
     if (isRecord(props)) {
       if (

@@ -15,7 +15,10 @@ export function createHarnessAdapter(context: HarnessPluginContext): OpenCodeAda
     }),
     {
       installation: createOpenCodeInstallation(environment, environment[OPENCODE_COMMAND_ENV]),
-      install: createHarnessInstaller(environment, { npm: "opencode-ai" }),
+      install: createHarnessInstaller(environment, {
+        npm: "@opencode/cli",
+        allowScripts: "@opencode/cli",
+      }),
     },
   );
 }

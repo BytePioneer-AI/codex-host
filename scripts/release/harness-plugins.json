@@ -44,6 +44,7 @@
     "smol-toml",
     "vscode-jsonrpc",
     "ws",
+    "yaml",
     "zod",
     "zod-to-json-schema"
   ]

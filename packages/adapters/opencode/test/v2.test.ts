@@ -16,7 +16,7 @@ import {
 import { CodexTurnProjector } from "@codexhost/protocol-core";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { encodeOpenCodeVariant } from "../src/model-catalog.js";
-import { openCodeMajor } from "../src/version.js";
+import { openCodeMajor, openCodeVersion } from "../src/version.js";
 import { assistantItems, projectHistory, readMessages } from "../src/v2/history.js";
 import { v2Catalog, v2Locator, v2Permissions, v2Ref, v2State } from "../src/v2/state.js";
 import { V2Session } from "../src/v2/session.js";
@@ -139,14 +139,23 @@ function fixture() {
 }
 
 describe("OpenCode protocol versions", () => {
+  it("keeps the reported version when the CLI prefixes it", () => {
+    expect(openCodeVersion("opencode v2.4.1")).toBe("2.4.1");
+    expect(openCodeVersion("CLI 2.4.1")).toBe("2.4.1");
+    expect(openCodeVersion("1.19.6")).toBe("1.19.6");
+    expect(openCodeVersion("0.15.0")).toBe("0.15.0");
+    expect(openCodeVersion("3.0.0")).toBe("3.0.0");
+  });
   it.each([
     ["1.18.25\n", 1],
     ["opencode v2.0.16\n", 2],
     ["2.0.0-beta.1", 2],
+    ["CLI 2.4.1", 2],
+    ["cli 2.4.1\n", 2],
   ])("identifies %s", (text, major) => {
     expect(openCodeMajor(String(text))).toBe(major);
   });
-  it.each(["3.0.0", "0.9.0", "opencode v2", "warning\n2.0.16"])(
+  it.each(["3.0.0", "0.9.0", "opencode v2", "warning\n2.0.16", "CLI 3.0.0"])(
     "rejects unknown version %s",
     (text) => {
       expect(() => openCodeMajor(text)).toThrow("Unsupported");

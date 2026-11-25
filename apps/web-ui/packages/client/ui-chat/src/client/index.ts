@@ -68,6 +68,9 @@ export type { ChatPresentationPolicy } from "./presentation-policy.ts";
 export type {
   AssistantActionOwnerProps,
   ChatFileMentions,
+  ChatHandoffInput,
+  ChatHandoffRequest,
+  ChatHandoffResult,
   ChatNodeHookContext,
   ChatNodeInjected,
   ChatNodeOwnerProps,

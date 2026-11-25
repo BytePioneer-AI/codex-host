@@ -4,6 +4,7 @@ import {
   DiffBlock,
   IconChevronDownOutlineRegular,
   IconFileDiffOutlineRegular,
+  IconRightUpOutlineRegular,
   PathLabel,
   type DiffBlockLabels,
 } from "@deepseek-ai/dsh-client-ui-primitives";
@@ -21,6 +22,8 @@ interface TurnChangesCardProps {
   readonly t: ChatViewSlotProps["t"];
   readonly useProjection: ChatViewSlotProps["useProjection"];
   readonly loadTurnDiffs?: ChatViewSlotProps["loadTurnDiffs"];
+  /** Open a changed file's current content; absent = paths are not openable. */
+  readonly openFile?: ((path: string) => void) | undefined;
 }
 
 /**
@@ -33,6 +36,7 @@ export const TurnChangesCard = memo(function TurnChangesCard({
   t,
   useProjection,
   loadTurnDiffs,
+  openFile,
 }: TurnChangesCardProps) {
   const files = useTurnFileChanges(nodeStore, turn, useProjection);
   const nameCounts = useMemo(() => {
@@ -77,9 +81,20 @@ export const TurnChangesCard = memo(function TurnChangesCard({
           <IconFileDiffOutlineRegular size={24} />
         </span>
         <span className={css.text}>
-          <span className={css.title} title={title}>
-            {title}
-          </span>
+          {files.length === 1 && only !== undefined && openFile !== undefined ? (
+            <button
+              type="button"
+              className={`${css.title} ${css.titleLink}`}
+              title={t("chat.openFile", { path: only.path })}
+              onClick={() => openFile(only.path)}
+            >
+              {title}
+            </button>
+          ) : (
+            <span className={css.title} title={title}>
+              {title}
+            </span>
+          )}
           <ChangeStat added={added} removed={removed} />
         </span>
         <button
@@ -106,39 +121,52 @@ export const TurnChangesCard = memo(function TurnChangesCard({
             return (
               <li key={file.path} className={css.file}>
                 {files.length > 1 && (
-                  <button
-                    type="button"
-                    className={css.fileHead}
-                    aria-expanded={expandedPaths.has(file.path)}
-                    onClick={() => {
-                      setExpandedPaths((paths) => {
-                        const next = new Set(paths);
-                        if (next.has(file.path)) next.delete(file.path);
-                        else next.add(file.path);
-                        return next;
-                      });
-                    }}
-                  >
-                    <IconFileDiffOutlineRegular size={16} className={css.mobileFileIcon} />
-                    <PathLabel path={file.path} className={css.path} />
-                    <span className={css.mobilePath}>
-                      <span className={css.fileName} aria-hidden="true">
-                        {name}
-                      </span>
-                      {(nameCounts.get(name) ?? 0) > 1 && (
-                        <span className={css.directory} aria-hidden="true">
-                          {file.path.slice(0, file.path.length - name.length)}
+                  <div className={css.fileRow}>
+                    <button
+                      type="button"
+                      className={css.fileHead}
+                      aria-expanded={expandedPaths.has(file.path)}
+                      onClick={() => {
+                        setExpandedPaths((paths) => {
+                          const next = new Set(paths);
+                          if (next.has(file.path)) next.delete(file.path);
+                          else next.add(file.path);
+                          return next;
+                        });
+                      }}
+                    >
+                      <IconFileDiffOutlineRegular size={16} className={css.mobileFileIcon} />
+                      <PathLabel path={file.path} className={css.path} />
+                      <span className={css.mobilePath}>
+                        <span className={css.fileName} aria-hidden="true">
+                          {name}
                         </span>
-                      )}
-                      <span className={a11yCss.visuallyHidden}>{file.path}</span>
-                    </span>
-                    <ChangeStat added={file.added} removed={file.removed} />
-                    <IconChevronDownOutlineRegular
-                      size={16}
-                      className={css.mobileChevron}
-                      data-open={expandedPaths.has(file.path)}
-                    />
-                  </button>
+                        {(nameCounts.get(name) ?? 0) > 1 && (
+                          <span className={css.directory} aria-hidden="true">
+                            {file.path.slice(0, file.path.length - name.length)}
+                          </span>
+                        )}
+                        <span className={a11yCss.visuallyHidden}>{file.path}</span>
+                      </span>
+                      <ChangeStat added={file.added} removed={file.removed} />
+                      <IconChevronDownOutlineRegular
+                        size={16}
+                        className={css.mobileChevron}
+                        data-open={expandedPaths.has(file.path)}
+                      />
+                    </button>
+                    {openFile !== undefined && (
+                      <button
+                        type="button"
+                        className={css.openFile}
+                        aria-label={t("chat.openFile", { path: file.path })}
+                        title={t("chat.openFile", { path: file.path })}
+                        onClick={() => openFile(file.path)}
+                      >
+                        <IconRightUpOutlineRegular size={16} />
+                      </button>
+                    )}
+                  </div>
                 )}
                 {expandedPaths.has(file.path) && (
                   <div className={css.diff}>

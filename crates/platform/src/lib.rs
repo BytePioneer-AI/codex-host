@@ -32,6 +32,8 @@ pub use macos_aqua_process::{
     AQUA_SPAWN_ARGUMENT, run_aqua_spawn_helper, spawn_in_desktop_session,
 };
 #[cfg(target_os = "macos")]
+mod macos_process_events;
+#[cfg(target_os = "macos")]
 mod macos_process_observation;
 mod process;
 mod process_chain;
@@ -63,11 +65,13 @@ mod windows_ui;
 
 pub use background::{configure_detached_service_command, detach_from_terminal};
 pub use desktop_launch::{
-    DesktopProcess, launch_desktop, launch_stock_desktop, open_external_url,
-    open_latest_codexhost_release, reveal_file,
+    DesktopProcess, launch_desktop, launch_desktop_with_removed_environment, launch_stock_desktop,
+    open_external_url, open_latest_codexhost_release, reveal_file,
 };
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use desktop_launch::{DesktopSession, launch_desktop_session};
+pub use desktop_launch::{
+    DesktopSession, launch_desktop_session, launch_desktop_session_with_removed_environment,
+};
 #[cfg(not(target_os = "linux"))]
 pub use installation::discover_codex_desktop;
 #[cfg(any(target_os = "windows", target_os = "macos"))]

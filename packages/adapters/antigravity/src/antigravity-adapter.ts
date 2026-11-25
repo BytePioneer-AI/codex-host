@@ -11,7 +11,6 @@ import type {
 import {
   HarnessOutputChannel,
   sanitizeDiagnosticTail,
-  unsupportedSteer,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
   type HarnessAdapter,
@@ -73,6 +72,7 @@ import {
   type AntigravityAcpTransportLike,
   type AntigravityAcpTransportOptions,
   type AntigravityPromptInputPart,
+  type AntigravityPromptResult,
   type AntigravityPromptUsage,
 } from "./acp-types.js";
 import {
@@ -298,6 +298,11 @@ interface ActiveTurn {
   promptPhase: "notSubmitted" | "submitted" | "returned";
   readonly accounting: AbortController;
   submittedAtMs?: number;
+  lastSubmittedAtMs?: number;
+  expectedInputs?: number;
+  returnedAtMs?: number;
+  steered?: boolean;
+  promptChain?: Promise<AntigravityPromptResult>[];
   firstOutputAtMs?: number;
   hasToolCalls?: boolean;
   dbPath?: string;
@@ -322,7 +327,14 @@ interface PendingInteraction {
 }
 export class AntigravitySession implements HarnessSession {
   readonly harnessId = harnessId;
-  readonly capabilities = antigravitySessionCapabilities;
+  readonly capabilities: HarnessSessionCapabilities = ((session: AntigravitySession) => ({
+    ...antigravitySessionCapabilities,
+    // Read live: agy acp (>= 1.5.0) accepts concurrent session/prompt steering only while
+    // a prompt is submitted and not yet cancelled or responded.
+    get steer(): boolean {
+      return session.#canSteer();
+    },
+  }))(this);
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly outputs = this.#channel.outputs;
   readonly #options: SessionOptions;
@@ -834,7 +846,7 @@ export class AntigravitySession implements HarnessSession {
         signal: this.#abort.signal,
         ...(final && {
           completedAtMs: final.completedAtMs,
-          ...(final.turn.firstOutputAtMs === undefined
+          ...(final.turn.firstOutputAtMs === undefined || final.turn.steered
             ? {}
             : { firstOutputAtMs: final.turn.firstOutputAtMs }),
           ...(final.turn.hasToolCalls && { hasToolCalls: true }),
@@ -943,7 +955,7 @@ export class AntigravitySession implements HarnessSession {
     try {
       switch (command.type) {
         case "turn.steer":
-          return unsupportedSteer("Antigravity ACP");
+          return this.#steerTurn(command);
         case "turn.cancel": {
           const turn = this.#active;
           if (!turn || turn.turnId !== command.turnId)
@@ -1023,6 +1035,55 @@ export class AntigravitySession implements HarnessSession {
       return ok({ turnId: command.turnId });
     } catch (error) {
       return { ok: false, error: normalizeAntigravityError(error) };
+    }
+  }
+  #canSteer(): boolean {
+    const turn = this.#active;
+    return (
+      !this.#closed &&
+      !this.#faulted &&
+      !!this.#transport &&
+      !this.#transport.isClosed &&
+      !!turn &&
+      !turn.ended &&
+      !turn.cancelled &&
+      turn.promptPhase === "submitted" &&
+      !!turn.promptChain
+    );
+  }
+  #steerTurn(command: TurnSteerCommand): HarnessResult<TurnSteerAccepted> {
+    if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
+    if (
+      !command.turnId ||
+      !command.input.length ||
+      !command.input.some((part) => typeof part.text === "string" && part.text.trim())
+    )
+      return err("invalidRequest", "Prompt and Turn ID must not be empty");
+    const turn = this.#active;
+    const transport = this.#transport;
+    if (
+      !this.#canSteer() ||
+      !turn ||
+      !transport ||
+      !turn.promptChain ||
+      turn.turnId !== command.turnId
+    )
+      return err("invalidState", "Antigravity steer target is not accepting input");
+    try {
+      const steerSubmittedAtMs = Date.now();
+      const parts = promptParts(command);
+      const steered = transport.steer(parts);
+      // Absorb eager rejections until #runTurn drains the chain in order.
+      void steered.catch(() => undefined);
+      this.#closeInteractions("cancelled");
+      this.#completeText(turn, { status: "succeeded" });
+      turn.steered = true;
+      turn.lastSubmittedAtMs = steerSubmittedAtMs;
+      turn.expectedInputs = (turn.expectedInputs ?? 0) + 1;
+      turn.promptChain.push(steered);
+      return ok({ accepted: true });
+    } catch (error) {
+      return err("invalidState", normalizeAntigravityError(error).message);
     }
   }
   async #select(
@@ -1213,6 +1274,8 @@ export class AntigravitySession implements HarnessSession {
       turn.compactionAfterStep = await readNativeStepWatermark(file);
       if (!this.#isCurrent(turn)) return;
       turn.submittedAtMs = Date.now();
+      turn.lastSubmittedAtMs = turn.submittedAtMs;
+      turn.expectedInputs = mayWriteInput ? 1 : 0;
       const submittedAtMs = turn.submittedAtMs;
       this.#usage?.beginTurn(submittedAtMs, turn.turnId);
       this.#usageTurnId = turn.turnId;
@@ -1221,7 +1284,9 @@ export class AntigravitySession implements HarnessSession {
       const recordPromptWindow = () => {
         if (windowRecorded) return;
         windowRecorded = true;
-        this.#promptWindows.push({ submittedAtMs, returnedAtMs: Date.now() });
+        const returnedAtMs = Date.now();
+        turn.returnedAtMs = returnedAtMs;
+        this.#promptWindows.push({ submittedAtMs, returnedAtMs });
       };
       // Keep the wire response time: later output is idle, not part of this Turn.
       const responded = () => {
@@ -1229,35 +1294,56 @@ export class AntigravitySession implements HarnessSession {
         turn.promptPhase = "returned";
         recordPromptWindow();
       };
-      const result = await transport
-        .prompt(parts, {
-          onResponse: responded,
-          onEvent: (event) => {
-            if (!this.#isCurrent(turn) || turn.cancelled) return;
-            if (event.type === "agent.text" || event.type === "agent.thought") {
-              turn.firstOutputAtMs ??= Date.now();
-              this.#appendText(
-                turn,
-                event.type === "agent.text" ? "agentMessage" : "reasoning",
-                event.text,
-              );
-            } else if (event.type === "tool.call" || event.type === "tool.update") {
-              turn.hasToolCalls = true;
-              turn.firstOutputAtMs ??= Date.now();
-              this.#completeText(turn, { status: "succeeded" });
-              turn.tracker?.handleToolEvent(event);
-            } else this.#sessionEvent(event);
-          },
-          onPermission: (request) => {
+      const initialPrompt = transport.prompt(parts, {
+        onResponse: responded,
+        onEvent: (event) => {
+          if (!this.#isCurrent(turn) || turn.cancelled) return;
+          if (event.type === "agent.text" || event.type === "agent.thought") {
+            turn.firstOutputAtMs ??= Date.now();
+            this.#appendText(
+              turn,
+              event.type === "agent.text" ? "agentMessage" : "reasoning",
+              event.text,
+            );
+          } else if (event.type === "tool.call" || event.type === "tool.update") {
             turn.hasToolCalls = true;
-            return this.#permission(turn, request);
-          },
-          onElicitation: (request) => {
-            turn.hasToolCalls = true;
-            return this.#question(turn, request);
-          },
-        })
-        .finally(recordPromptWindow);
+            turn.firstOutputAtMs ??= Date.now();
+            this.#completeText(turn, { status: "succeeded" });
+            turn.tracker?.handleToolEvent(event);
+          } else this.#sessionEvent(event);
+        },
+        onPermission: (request) => {
+          turn.hasToolCalls = true;
+          return this.#permission(turn, request);
+        },
+        onElicitation: (request) => {
+          turn.hasToolCalls = true;
+          return this.#question(turn, request);
+        },
+      });
+      void initialPrompt.catch(() => undefined);
+      turn.promptChain = [initialPrompt];
+      let result: AntigravityPromptResult | undefined;
+      let combinedUsage: AntigravityPromptUsage | undefined;
+      let latestError: unknown;
+      let hasLatestError = false;
+      try {
+        for (let index = 0; index < turn.promptChain.length; index++) {
+          try {
+            const settled = await turn.promptChain[index]!;
+            result = settled;
+            combinedUsage = mergePromptUsage(combinedUsage, settled.usage);
+            hasLatestError = false;
+          } catch (error) {
+            latestError = error;
+            hasLatestError = true;
+          }
+        }
+      } finally {
+        recordPromptWindow();
+      }
+      if (hasLatestError || !result) throw latestError;
+      if (turn.steered) mayWriteInput = true;
       responded();
       const completedAtMs = Date.now();
       if (!this.#isCurrent(turn)) return;
@@ -1282,6 +1368,10 @@ export class AntigravitySession implements HarnessSession {
             completedAtMs,
             outcome.status === "succeeded",
             AbortSignal.any([turn.accounting.signal, this.#abort.signal]),
+            {
+              expectedInputs: turn.expectedInputs ?? 1,
+              latestSubmittedAtMs: turn.lastSubmittedAtMs ?? submittedAtMs,
+            },
           )
         : null;
       if (!this.#isCurrent(turn)) return;
@@ -1299,7 +1389,11 @@ export class AntigravitySession implements HarnessSession {
       }
       await this.#trackUsageWork(
         Promise.resolve(this.#usageWork).then(() =>
-          this.#collectUsage({ turn, completedAtMs, ...(result.usage && { usage: result.usage }) }),
+          this.#collectUsage({
+            turn,
+            completedAtMs,
+            ...(combinedUsage && { usage: combinedUsage }),
+          }),
         ),
       );
       await this.#syncTurnCompactions(turn);
@@ -1367,7 +1461,15 @@ export class AntigravitySession implements HarnessSession {
       turn.compactionAfterStep === undefined
     )
       return;
-    const compactions = await readNativeTurnCompactions(turn.dbPath, turn.compactionAfterStep);
+    const compactions = await readNativeTurnCompactions(
+      turn.dbPath,
+      turn.compactionAfterStep,
+      (createdAtMs) =>
+        createdAtMs !== undefined &&
+        turn.submittedAtMs !== undefined &&
+        createdAtMs >= turn.submittedAtMs &&
+        (turn.returnedAtMs === undefined || createdAtMs <= turn.returnedAtMs),
+    );
     if (!this.#isCurrent(turn) || turn.cancelled) return;
     for (const compaction of compactions) {
       if (turn.emittedCompactions.has(compaction.stepIndex)) continue;
@@ -1564,7 +1666,7 @@ export class AntigravitySession implements HarnessSession {
 }
 
 /** Host text input can carry inline image data URIs without changing the public text contract. */
-function promptParts(command: TurnStartCommand): AntigravityPromptInputPart[] {
+function promptParts(command: Pick<TurnStartCommand, "input">): AntigravityPromptInputPart[] {
   return command.input.flatMap((part): AntigravityPromptInputPart[] => {
     const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([a-zA-Z0-9+/=\r\n]+)$/u.exec(
       part.text.trim(),
@@ -1579,6 +1681,30 @@ function promptParts(command: TurnStartCommand): AntigravityPromptInputPart[] {
         ]
       : [{ type: "text", text: part.text }];
   });
+}
+
+function mergePromptUsage(
+  left: AntigravityPromptUsage | undefined,
+  right: AntigravityPromptUsage | undefined,
+): AntigravityPromptUsage | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  const sum = (a: number | undefined, b: number | undefined): number | undefined =>
+    a !== undefined && b !== undefined ? a + b : undefined;
+  const inputTokens = sum(left.inputTokens, right.inputTokens);
+  const outputTokens = sum(left.outputTokens, right.outputTokens);
+  const cachedReadTokens = sum(left.cachedReadTokens, right.cachedReadTokens);
+  const cachedWriteTokens = sum(left.cachedWriteTokens, right.cachedWriteTokens);
+  const thoughtTokens = sum(left.thoughtTokens, right.thoughtTokens);
+  const totalTokens = sum(left.totalTokens, right.totalTokens);
+  return {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(cachedReadTokens !== undefined ? { cachedReadTokens } : {}),
+    ...(cachedWriteTokens !== undefined ? { cachedWriteTokens } : {}),
+    ...(thoughtTokens !== undefined ? { thoughtTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+  };
 }
 
 export class AntigravityAdapter implements HarnessAdapter {

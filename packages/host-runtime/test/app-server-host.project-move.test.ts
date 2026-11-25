@@ -4,7 +4,11 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { MappingStore } from "@codexhost/mapping-store";
 import type { JsonObject } from "@codexhost/protocol-core";
-import { clientWorkspaceSnapshotSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
+import {
+  clientWorkspaceSnapshotSchema,
+  type HostThreadId,
+  hostThreadIdSchema,
+} from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createOwnedConnectionBackend,
@@ -587,7 +591,7 @@ describe("Host client project move", () => {
   it("clears remaining project assignments when one listed Thread is deleted", async () => {
     const context = await setup();
     const { fixture, mappingStore, cwd } = context;
-    const ids = [];
+    const ids: HostThreadId[] = [];
     for (const requestId of [1, 2, 3]) {
       const id = hostThreadIdSchema.parse(
         await startExternalThread(fixture, "codexhost/pi-native", requestId, { cwd }),

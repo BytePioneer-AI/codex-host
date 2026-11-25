@@ -575,12 +575,13 @@ describe("ExternalThreadRuntime register", () => {
         open,
         close: () => adapter.close(),
       };
+      const baseToken = "runtime-root-token";
       const runtime = new ExternalThreadRuntime({
         adapters: new Map([["grok", restoringAdapter]]),
         environment: {
           CODEXHOST_CLI_PATH: "/opt/codexhost",
           CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
-          CODEXHOST_RUNTIME_TOKEN: "token",
+          CODEXHOST_RUNTIME_TOKEN: baseToken,
         },
         repository,
         consumeOutputs: async () => undefined,
@@ -599,15 +600,17 @@ describe("ExternalThreadRuntime register", () => {
       );
       expect(open).toHaveBeenCalledWith(
         expect.objectContaining({
+          kind: "resume",
           permissionModeId: storedMode,
           environment: expect.objectContaining({
             CODEXHOST_CLI_PATH: "/opt/codexhost",
             CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
-            CODEXHOST_RUNTIME_TOKEN: boundDelegationToken("token", hostThreadId),
+            CODEXHOST_RUNTIME_TOKEN: boundDelegationToken(baseToken, hostThreadId),
             CODEXHOST_THREAD_ID: hostThreadId,
           }),
         }),
       );
+      expect(Object.values(open.mock.calls[0]?.[0].environment ?? {})).not.toContain(baseToken);
 
       await adapter.close();
     },

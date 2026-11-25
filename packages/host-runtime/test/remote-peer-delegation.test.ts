@@ -49,7 +49,7 @@ import {
   type DelegationThreadSnapshot,
   type PersistedDelegationLookup,
 } from "../src/delegation-types.js";
-import { JsonLineCollector } from "./app-server-host-fixture.js";
+import { JsonLineCollector, messageParams } from "./app-server-host-fixture.js";
 
 function initGitRepo(dir: string): void {
   mkdirSync(dir, { recursive: true });
@@ -1026,7 +1026,7 @@ describe("Peer remote delegation routing & security boundaries", () => {
             harnessId: input.harnessId,
             deepLink: "codex://threads/child-launder-attempt",
             status: "running" as const,
-            parentThreadId: input.parentThreadId,
+            ...(input.parentThreadId !== undefined ? { parentThreadId: input.parentThreadId } : {}),
             next: { read: "read", wait: "wait" },
           };
         }),
@@ -1119,7 +1119,7 @@ describe("Peer remote delegation routing & security boundaries", () => {
             harnessId: input.harnessId,
             deepLink: "codex://threads/child-via-cli",
             status: "running" as const,
-            parentThreadId: input.parentThreadId,
+            ...(input.parentThreadId !== undefined ? { parentThreadId: input.parentThreadId } : {}),
             next: { read: "read", wait: "wait" },
           };
         }),
@@ -2182,7 +2182,7 @@ describe("Peer remote delegation routing & security boundaries", () => {
             } else if (request.method === "thread/start") {
               const threadId = `native-remote-${seq++}`;
               threadStarts.push(request.params);
-              const cwd = (request.params as JsonObject).cwd;
+              const { cwd } = messageParams(request);
               response = {
                 result: { thread: { id: threadId, ...(cwd !== undefined ? { cwd } : {}) } },
               };

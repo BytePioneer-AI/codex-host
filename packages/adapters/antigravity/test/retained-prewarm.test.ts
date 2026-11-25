@@ -85,6 +85,9 @@ class FakeTransport implements AntigravityAcpTransportLike {
   overrideSessionId?: string;
   handler: AntigravitySessionEventHandler | null = null;
   prompt = vi.fn<AntigravityAcpTransportLike["prompt"]>(async () => endTurn);
+  steer = vi.fn<AntigravityAcpTransportLike["steer"]>(async () => {
+    throw new Error("Retained prewarm must not steer");
+  });
   initialize = vi.fn(async (): Promise<InitializeResponse> => ({ protocolVersion: 1 }));
   openSession = vi.fn(async (input: AntigravityOpenAcpSessionInput) => {
     await this.onOpen?.();

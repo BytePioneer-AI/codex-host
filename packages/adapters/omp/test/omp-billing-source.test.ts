@@ -14,7 +14,12 @@ process.on('uncaughtException', error => {
   process.exitCode = 1;
 });
 import { createInterface } from 'node:readline';
-const models = [{ provider: 'fake-oauth', id: 'short', reasoning: false }, { provider: 'other', id: 'short', reasoning: false }];
+const models = [
+  { provider: 'fake-oauth', id: 'series/short', reasoning: false },
+  { provider: 'fake-oauth/series', id: 'short', reasoning: false },
+  { provider: 'fake-oauth', id: 'short', reasoning: false },
+  { provider: 'other', id: 'short', reasoning: false },
+];
 const identityFile = process.env.FAKE_OMP_IDENTITIES;
 const saved = identityFile ? JSON.parse(readFileSync(identityFile, 'utf8')) : {};
 const rows = [11, 22].map(id => ({ id, provider: 'fake-oauth', identityKey: saved[id] || 'native-' + id, credential: { type: 'oauth' } }));
@@ -22,7 +27,7 @@ const saveIdentities = () => {
   if (identityFile) writeFileSync(identityFile, JSON.stringify(Object.fromEntries(rows.map(row => [row.id, row.identityKey]))));
 };
 if (process.argv[2] === 'usage') {
-  process.stdout.write(JSON.stringify({ reports: rows.map(row => ({ provider: row.provider, metadata: { credentialId: row.id }, limits: [{ amount: { usedFraction: row.id / 100 } }] })) }));
+  process.stdout.write(JSON.stringify({ reports: rows.map(row => ({ provider: row.provider, metadata: { credentialId: row.id, identityKey: row.identityKey }, limits: [{ amount: { usedFraction: row.id / 100 } }] })) }));
 } else if (process.argv[2] === 'models') {
   process.stdout.write(JSON.stringify({ models }));
 } else {
@@ -57,7 +62,7 @@ if (process.argv[2] === 'usage') {
   };
   const registry = {
     authStorage: { credentials: { async revalidate() {}, snapshot: () => ({ credentials: rows }) } },
-    getAvailable: () => models,
+    getAvailable: () => process.env.FAKE_OMP_BLANK_MODEL ? [{ ...models[0], id: ' ' }] : models,
     find: (provider, id) => models.find(model => model.provider === provider && model.id === id),
   };
   let handler;
@@ -68,7 +73,13 @@ if (process.argv[2] === 'usage') {
   const input = createInterface({ input: process.stdin });
   for await (const line of input) {
     const prompt = JSON.parse(line);
-    await handler(prompt.message.split(' ')[1], { cwd: process.cwd(), modelRegistry: registry });
+    const args = prompt.message.split(' ')[1];
+    const request = JSON.parse(Buffer.from(args, 'base64url').toString('utf8'));
+    if (request.type === 'turn' && request.text === 'reject before dispatch') {
+      process.stdout.write(JSON.stringify({ id: prompt.id, type: 'response', success: false }) + '\n');
+      continue;
+    }
+    await handler(args, { cwd: process.cwd(), modelRegistry: registry });
     process.stdout.write(JSON.stringify({ id: prompt.id, type: 'prompt_result', agentInvoked: false, status: 'completed' }) + '\n');
   }
 }
@@ -81,11 +92,15 @@ it("runs distinct OMP Billing Sources without fallback and requires native clean
   const identities = path.join(directory, "identities.json");
   const windows = process.platform === "win32";
   const command = path.join(directory, windows ? "omp.cmd" : "omp");
+  const environment = { FAKE_OMP_ATTEMPTS: launches, FAKE_OMP_IDENTITIES: identities };
   const adapter = new OmpAdapter({
     command,
-    environment: { FAKE_OMP_ATTEMPTS: launches, FAKE_OMP_IDENTITIES: identities },
+    environment: { ...environment, PI_CODING_AGENT_DIR: path.join(directory, "primary") },
   });
-  const otherProfile = new OmpAdapter({ command, environment: { PI_CODING_AGENT_DIR: directory } });
+  const otherProfile = new OmpAdapter({
+    command,
+    environment: { ...environment, PI_CODING_AGENT_DIR: path.join(directory, "other") },
+  });
   try {
     await writeFile(script, executable, "utf8");
     await writeFile(identities, "{}", "utf8");
@@ -101,6 +116,19 @@ it("runs distinct OMP Billing Sources without fallback and requires native clean
     if (!a || !b) throw new Error("Fake quotas did not carry Billing Source references");
     expect(a).not.toEqual(b);
     const create = { kind: "create" as const, cwd: directory };
+    const collisionRef = harnessModelRefSchema.parse({
+      id: `omp-model-v1.${Buffer.from(JSON.stringify(["fake-oauth", "series/short"])).toString("base64url")}`,
+    });
+    const readableRef = harnessModelRefSchema.parse({ id: "fake-oauth/short" });
+    for (const model of [collisionRef, readableRef]) {
+      const opened = await adapter.openBillingSource({ ...create, billingSourceRef: a, model });
+      if (!opened.ok) throw new Error(opened.error.message);
+      try {
+        expect(opened.value.initialState.effectiveModel).toEqual(model);
+      } finally {
+        await opened.value.close();
+      }
+    }
     expect(
       await adapter.openBillingSource({
         ...create,
@@ -108,27 +136,39 @@ it("runs distinct OMP Billing Sources without fallback and requires native clean
         model: harnessModelRefSchema.parse({ id: "other/short" }),
       }),
     ).toMatchObject({ ok: false });
-    expect(
-      (await otherProfile.inspectAccounts()).map((account) => account.billingSourceRef),
-    ).not.toContainEqual(a);
+    const otherRefs = (await otherProfile.inspectAccounts()).map(
+      (account) => account.billingSourceRef,
+    );
+    const otherA = otherRefs[0];
+    if (!otherA) throw new Error("Second Profile did not discover its Billing Source");
+    const otherOpen = await otherProfile.openBillingSource({ ...create, billingSourceRef: otherA });
+    if (!otherOpen.ok) throw new Error(otherOpen.error.message);
+    expect(otherOpen.value.initialState.effectiveModel).toEqual(collisionRef);
+    await otherOpen.value.close();
+    expect(otherRefs).not.toContainEqual(a);
     expect(await otherProfile.openBillingSource({ ...create, billingSourceRef: a })).toMatchObject({
       ok: false,
     });
     expect(
       await adapter.openBillingSource({ ...create, billingSourceRef: { ...b, id: "stale" } }),
     ).toMatchObject({ ok: false });
+    const directOpen = {
+      ...create,
+      command,
+      environment,
+      billingSourceRef: a,
+      target: { provider: "fake-oauth", credentialId: 11, identityKey: "native-11" },
+    };
     expect(
       await openOmpBillingSource({
-        ...create,
-        command,
-        environment: { FAKE_OMP_ATTEMPTS: launches, FAKE_OMP_IDENTITIES: identities },
-        billingSourceRef: a,
-        target: {
-          provider: "fake-oauth",
-          credentialId: 11,
-          identityKey: "native-11",
-          modelId: "missing",
-        },
+        ...directOpen,
+        target: { ...directOpen.target, modelId: "missing" },
+      }),
+    ).toMatchObject({ ok: false, nativeCleanup: "not-persisted" });
+    expect(
+      await openOmpBillingSource({
+        ...directOpen,
+        environment: { ...environment, FAKE_OMP_BLANK_MODEL: "1" },
       }),
     ).toMatchObject({ ok: false, nativeCleanup: "not-persisted" });
     const run = async (billingSourceRef: typeof a, text: string) => {
@@ -160,6 +200,10 @@ it("runs distinct OMP Billing Sources without fallback and requires native clean
       cleanup: { ok: true, value: "not-persisted" },
     });
     expect(await run(a, "deny A")).toMatchObject({
+      terminal: { event: { outcome: { status: "failed" } } },
+      cleanup: { ok: true, value: "not-persisted" },
+    });
+    expect(await run(a, "reject before dispatch")).toMatchObject({
       terminal: { event: { outcome: { status: "failed" } } },
       cleanup: { ok: true, value: "not-persisted" },
     });

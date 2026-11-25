@@ -39,8 +39,9 @@ export default function(pi) {
           const registry = ctx.modelRegistry;
           const row = await selectedCredential(registry, provider, credentialId, identityKey);
           if (!row) return reply(id, { code: 'account' });
+          const available = registry.getAvailable();
           const model = modelId ? registry.find(provider, modelId) :
-            registry.getAvailable().find(candidate => candidate.provider === provider);
+            available.find(candidate => candidate.provider === provider);
           if (!model || model.provider !== provider) return reply(id, { code: 'model' });
           const assertModel = candidate => {
             if (candidate?.provider !== provider || candidate.id !== model.id) {
@@ -63,7 +64,15 @@ export default function(pi) {
           assertModel(session.model);
           if (manager.getSessionFile() !== undefined) throw new Error('Expected an in-memory Session');
           selected = { provider, credentialId, identityKey, modelId: model.id };
-          return reply(id, { code: 'ready', ...selected });
+          const readableId = provider + '/' + model.id;
+          const modelCollisions = [];
+          for (const candidate of available) {
+            if ((candidate.provider !== provider || candidate.id !== model.id) &&
+                candidate.provider + '/' + candidate.id === readableId) {
+              modelCollisions.push([candidate.provider, candidate.id]);
+            }
+          }
+          return reply(id, { code: 'ready', ...selected, modelCollisions });
         }
         if (command.type === 'turn' && selected && !started) {
           started = true;

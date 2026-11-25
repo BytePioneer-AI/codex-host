@@ -1320,6 +1320,49 @@ console.log(JSON.stringify({ reports }));`,
     }
   });
 
+  it("publishes a quota reference only when the report matches a unique native identity", async () => {
+    const identity = { provider: "synthetic", credentialId: 1, identityKey: "shared" };
+    const metadata: { credentialId: number; identityKey?: string } = {
+      credentialId: identity.credentialId,
+      identityKey: identity.identityKey,
+    };
+    const report = {
+      provider: identity.provider,
+      metadata,
+      limits: [{ amount: { usedFraction: 0.25 } }],
+    };
+    const rows = Promise.withResolvers<(typeof identity)[]>();
+    let identities = Promise.resolve([identity, { ...identity, credentialId: 2 }]);
+    const credits = new OmpAccountCredits(
+      async () => JSON.stringify({ reports: [report] }),
+      "profile",
+      () => identities,
+    );
+    const quotaOnly = [{ label: "synthetic", credits: { usedPercent: 25, periodType: "unknown" } }];
+    expect(await credits.inspectAccounts()).toEqual(quotaOnly);
+
+    vi.useFakeTimers();
+    try {
+      identities = rows.promise;
+      const pending = credits.inspectAccounts();
+      await vi.advanceTimersByTimeAsync(11_000);
+      rows.resolve([identity]);
+      expect(await pending).toEqual(quotaOnly);
+    } finally {
+      rows.resolve([]);
+      vi.useRealTimers();
+    }
+
+    expect(await credits.inspectAccounts()).toMatchObject([
+      {
+        credits: { usedPercent: 25 },
+        billingSourceRef: { harnessId: "omp", id: expect.any(String) },
+      },
+    ]);
+    delete metadata.identityKey;
+    expect(await credits.inspectAccounts()).toEqual(quotaOnly);
+  });
+
   it("refreshes account credits during an older probe without letting it overwrite the cache", async () => {
     const stale = Promise.withResolvers<string>();
     const report = (usedFraction: number) =>

@@ -3033,13 +3033,22 @@ export class OmpAdapter implements HarnessAdapter {
   close(): Promise<void> {
     if (!this.#closePromise) {
       for (const listing of this.#availabilityListings) listing.abort();
+      const billing = [
+        ...[...this.#billingSessions].map((session) => session.close()),
+        ...this.#billingOpens,
+      ];
       this.#closePromise = Promise.all([
         this.sessionImport.close(),
         ...[...this.#inspections].map((transport) => transport.close()),
         ...[...this.#sessions].map((session) => session.close()),
-        ...[...this.#billingSessions].map((session) => session.close()),
-        ...this.#billingOpens.values(),
-      ]).then(() => undefined);
+        ...billing,
+      ]).then(
+        () => undefined,
+        async (error: unknown) => {
+          await Promise.allSettled(billing);
+          throw error;
+        },
+      );
     }
     return this.#closePromise;
   }

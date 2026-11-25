@@ -18,10 +18,10 @@ import {
   type TurnStartAccepted,
   type TurnStartCommand,
 } from "@codexhost/harness-adapter";
-import type { BillingSourceRef } from "@codexhost/shared-contracts";
+import type { BillingSourceRef, HarnessModelRef } from "@codexhost/shared-contracts";
 import { resolveOmpExecutable, withNodeRuntimeOnPath } from "./command.js";
 import { billingSourceExtension } from "./omp-billing-source-extension.js";
-import { encodeOmpModelRef } from "./omp-model-catalog.js";
+import { createOmpModelIndex } from "./omp-model-catalog.js";
 import { signalProcessTree } from "./omp-rpc-session.js";
 import type { OmpNativeBillingIdentity } from "./omp-account-credits.js";
 
@@ -287,31 +287,46 @@ export async function openOmpBillingSource(
     .request({ type: "prepare", ...input.target }, setupTimeoutMs)
     .catch(() => null);
   if (
-    !ready ||
-    ready.code !== "ready" ||
-    typeof ready.modelId !== "string" ||
-    !matches(ready, input.target)
+    ready?.code === "ready" &&
+    typeof ready.modelId === "string" &&
+    matches(ready, input.target) &&
+    Array.isArray(ready.modelCollisions)
   ) {
-    const cleanup = await disposeBridge(bridge);
-    return {
-      ok: false,
-      error: {
-        code: cleanup === "unknown" ? "nativeFailure" : "invalidRequest",
-        message:
-          cleanup === "unknown"
-            ? "OMP Billing Source setup and native cleanup could not be confirmed"
-            : "OMP Billing Source or its native Model could not be bound",
-        retryable: false,
-      },
-      nativeCleanup: cleanup,
-    };
+    try {
+      const model = { provider: input.target.provider, id: ready.modelId };
+      const models = [model];
+      for (const pair of ready.modelCollisions) {
+        if (!Array.isArray(pair) || typeof pair[0] !== "string" || typeof pair[1] !== "string") {
+          throw new Error("Invalid OMP Model collision entry");
+        }
+        models.push({ provider: pair[0], id: pair[1] });
+      }
+      const effectiveModel = createOmpModelIndex(models).ref(model);
+      return {
+        ok: true,
+        value: new OmpBillingSourceSession(
+          bridge,
+          input.billingSourceRef,
+          { ...input.target, modelId: model.id },
+          effectiveModel,
+        ),
+      };
+    } catch {
+      // The bridge still belongs to this open until a Session can represent its Model.
+    }
   }
+  const cleanup = await disposeBridge(bridge);
   return {
-    ok: true,
-    value: new OmpBillingSourceSession(bridge, input.billingSourceRef, {
-      ...input.target,
-      modelId: ready.modelId,
-    }),
+    ok: false,
+    error: {
+      code: cleanup === "unknown" ? "nativeFailure" : "invalidRequest",
+      message:
+        cleanup === "unknown"
+          ? "OMP Billing Source setup and native cleanup could not be confirmed"
+          : "OMP Billing Source or its native Model could not be bound",
+      retryable: false,
+    },
+    nativeCleanup: cleanup,
   };
 }
 
@@ -338,11 +353,10 @@ class OmpBillingSourceSession implements BillingSourceSession {
     private readonly bridge: Bridge,
     readonly billingSourceRef: BillingSourceRef,
     private readonly target: Required<Target>,
+    effectiveModel: HarnessModelRef,
   ) {
     this.harnessId = billingSourceRef.harnessId;
-    this.initialState = {
-      effectiveModel: encodeOmpModelRef({ provider: target.provider, id: target.modelId }),
-    };
+    this.initialState = { effectiveModel };
   }
 
   async readSnapshot() {
@@ -407,7 +421,7 @@ class OmpBillingSourceSession implements BillingSourceSession {
     return (this.#closing ??= (async () => {
       try {
         if (this.#turn) await this.#turn;
-        else {
+        if (!this.#nativeCleanup) {
           const receipt = await this.bridge.request({ type: "dispose" }, setupTimeoutMs);
           const cleanup = nativeCleanup(receipt);
           this.#nativeCleanup = cleanup === "unknown" ? undefined : cleanup;

@@ -13,6 +13,8 @@ import { activeOmpEntries, type OmpSessionHistory } from "./omp-history.js";
 import { listOmpBillingIdentities } from "./omp-billing-source-session.js";
 
 const CACHE_MS = 30_000;
+// The Host allows 12 s for inspection; the quota command already has its own 5 s budget.
+const IDENTITY_BUDGET_MS = 5_000;
 const ompHarnessId = harnessIdSchema.parse("omp");
 
 type Window = Omit<AccountCreditsSnapshot, "productUsage" | "resetCredits">;
@@ -183,6 +185,18 @@ export class OmpAccountCredits {
     return null;
   }
 
+  async #readIdentities(): Promise<readonly OmpNativeBillingIdentity[]> {
+    const deadline = Promise.withResolvers<never[]>();
+    const timer = setTimeout(() => deadline.resolve([]), IDENTITY_BUDGET_MS);
+    try {
+      return await Promise.race([this.loadIdentities(), deadline.promise]);
+    } catch {
+      return [];
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   #read(refresh = false, identified = false): Promise<AccountRead> {
     if (!refresh) {
       if (this.#pending && (this.#pending.identified || !identified)) return this.#pending.value;
@@ -199,21 +213,20 @@ export class OmpAccountCredits {
       const identities = new Map<string, string>();
       try {
         const data = object(JSON.parse(await this.load()));
-        const nativeIdentities = new Map<string, Set<string>>();
+        const nativeIdentities = new Map<string, string | null>();
+        const uniqueIdentities = new Map<string, boolean>();
         if (identified) {
-          for (const row of await this.loadIdentities().catch(() => [])) {
+          for (const row of await this.#readIdentities()) {
             const key = accountKey(row.provider, row.credentialId);
             const identityKey = text(row.identityKey);
             if (!key || !identityKey) continue;
-            const values = nativeIdentities.get(key) ?? new Set<string>();
-            values.add(identityKey);
-            nativeIdentities.set(key, values);
+            nativeIdentities.set(key, nativeIdentities.has(key) ? null : identityKey);
+            const identity = JSON.stringify([row.provider, identityKey]);
+            uniqueIdentities.set(identity, !uniqueIdentities.has(identity));
           }
         }
         if (Array.isArray(data?.reports)) {
           const ambiguous = new Set<string>();
-          const ambiguousRefs = new Set<string>();
-          const refOwners = new Map<string, string>();
           for (const value of data.reports) {
             const report = object(value);
             const metadata = object(report?.metadata);
@@ -226,39 +239,25 @@ export class OmpAccountCredits {
             }
             const account = reportAccount(value);
             if (!account) continue;
-            const identityValues = new Set(nativeIdentities.get(key));
-            const reportedIdentity = identified ? text(metadata?.identityKey) : undefined;
-            if (reportedIdentity) identityValues.add(reportedIdentity);
+            const identityKey = nativeIdentities.get(key);
+            const reportedIdentity = text(metadata?.identityKey);
+            const provider = report?.provider;
             let billingSourceRef: BillingSourceRef | undefined;
-            if (identityValues.size === 1) {
-              const [identityKey] = identityValues;
-              if (!identityKey) continue;
+            if (
+              identityKey &&
+              typeof provider === "string" &&
+              reportedIdentity === identityKey &&
+              uniqueIdentities.get(JSON.stringify([provider, identityKey]))
+            ) {
               identities.set(key, identityKey);
-              const provider = report?.provider;
-              if (typeof provider === "string") {
-                const id = createHash("sha256")
-                  .update(this.profile)
-                  .update("\0")
-                  .update(provider)
-                  .update("\0")
-                  .update(identityKey)
-                  .digest("base64url");
-                billingSourceRef = { harnessId: ompHarnessId, id };
-                const previous = refOwners.get(id);
-                if (previous || ambiguousRefs.has(id)) {
-                  ambiguousRefs.add(id);
-                  if (previous) {
-                    const retained = accounts.get(previous);
-                    if (retained)
-                      accounts.set(previous, { ...retained, billingSourceRef: undefined });
-                    identities.delete(previous);
-                  }
-                  billingSourceRef = undefined;
-                  identities.delete(key);
-                } else {
-                  refOwners.set(id, key);
-                }
-              }
+              const id = createHash("sha256")
+                .update(this.profile)
+                .update("\0")
+                .update(provider)
+                .update("\0")
+                .update(identityKey)
+                .digest("base64url");
+              billingSourceRef = { harnessId: ompHarnessId, id };
             }
             accounts.set(key, { ...account, ...(billingSourceRef ? { billingSourceRef } : {}) });
           }

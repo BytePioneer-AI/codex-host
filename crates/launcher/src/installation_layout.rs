@@ -1,9 +1,7 @@
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-const HOST_NODE_PATH_ENV: &str = "CODEXHOST_HOST_NODE_PATH";
-const HOST_RUNTIME_PATH_ENV: &str = "CODEXHOST_HOST_RUNTIME_PATH";
 const DESKTOP_SHELL_PATH_ENV: &str = "CODEXHOST_DESKTOP_SHELL_PATH";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -43,13 +41,7 @@ impl InstalledResources {
             ));
         }
 
-        let node_override = env::var_os(HOST_NODE_PATH_ENV);
-        let host_runtime_override = env::var_os(HOST_RUNTIME_PATH_ENV);
-        let mut resources = match Self::from_source_checkout(
-            executable,
-            node_override.as_deref(),
-            host_runtime_override.as_deref(),
-        ) {
+        let mut resources = match Self::from_source_checkout(executable) {
             Some(resources) => resources,
             None => Self::from_installed_layout(executable)?,
         };
@@ -114,19 +106,9 @@ impl InstalledResources {
         })
     }
 
-    fn from_source_checkout(
-        executable: &Path,
-        node_override: Option<&OsStr>,
-        host_runtime_override: Option<&OsStr>,
-    ) -> Option<Self> {
+    fn from_source_checkout(executable: &Path) -> Option<Self> {
         let (repository_root, build_directory) = source_checkout_layout(executable)?;
         let executable_suffix = env::consts::EXE_SUFFIX;
-        let node = node_override
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(format!("node{executable_suffix}")));
-        let host_runtime = host_runtime_override
-            .map(PathBuf::from)
-            .unwrap_or_else(|| repository_root.join("packages/host-runtime/dist/main.js"));
 
         let shell_name = format!("codexhost-shell{executable_suffix}");
         let profile = build_directory.file_name()?;
@@ -148,8 +130,8 @@ impl InstalledResources {
         };
         Some(Self {
             shim: build_directory.join(format!("codexhost-shim{executable_suffix}")),
-            node,
-            host_runtime,
+            node: PathBuf::from(format!("node{executable_suffix}")),
+            host_runtime: repository_root.join("packages/host-runtime/dist/main.js"),
             web_runtime,
             desktop_controller: repository_root
                 .join("packages/desktop-control/dist/release-main.js"),
@@ -163,6 +145,18 @@ impl InstalledResources {
 
 pub fn is_source_checkout_build(executable: &Path) -> bool {
     source_checkout_layout(executable).is_some()
+}
+
+pub fn current_executable_is_source_checkout_build() -> bool {
+    env::current_exe().is_ok_and(|executable| is_source_checkout_build(&executable))
+}
+
+pub fn inherited_npm_node() -> Option<OsString> {
+    if current_executable_is_source_checkout_build() {
+        None
+    } else {
+        env::var_os(crate::NPM_NODE_PATH_ENV)
+    }
 }
 
 fn source_checkout_layout(executable: &Path) -> Option<(PathBuf, PathBuf)> {
@@ -183,8 +177,10 @@ fn source_checkout_layout(executable: &Path) -> Option<(PathBuf, PathBuf)> {
 mod tests {
     use std::env;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
 
     use super::InstalledResources;
+    use crate::{HOST_NODE_PATH_ENV, HOST_RUNTIME_PATH_ENV};
 
     #[test]
     fn resolves_resources_from_a_release_bin_directory() {
@@ -235,8 +231,7 @@ mod tests {
             .join(format!("codexhost{}", env::consts::EXE_SUFFIX));
 
         assert_eq!(
-            InstalledResources::from_source_checkout(&executable, None, None)
-                .expect("source checkout"),
+            InstalledResources::from_source_checkout(&executable).expect("source checkout"),
             InstalledResources {
                 shim: root
                     .join("target/debug")
@@ -253,23 +248,36 @@ mod tests {
     }
 
     #[test]
-    fn source_checkout_prefers_runtime_overrides() {
+    fn source_checkout_ignores_inherited_host_paths() {
+        const CHILD: &str = "CODEXHOST_TEST_SOURCE_HOST_PATHS";
         let root = env::temp_dir().join("codexhost source overrides");
-        let executable = root
-            .join("target/release")
-            .join(format!("codexhost{}", env::consts::EXE_SUFFIX));
-        let node = root.join("custom/node");
-        let host_runtime = root.join("custom/host-runtime.mjs");
+        if env::var_os(CHILD).is_none() {
+            let status = Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "installation_layout::tests::source_checkout_ignores_inherited_host_paths",
+                ])
+                .env(CHILD, "1")
+                .env(HOST_NODE_PATH_ENV, root.join("custom/node"))
+                .env(HOST_RUNTIME_PATH_ENV, root.join("custom/host-runtime.mjs"))
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
 
-        let resources = InstalledResources::from_source_checkout(
-            &executable,
-            Some(node.as_os_str()),
-            Some(host_runtime.as_os_str()),
-        )
-        .expect("source checkout");
-
-        assert_eq!(resources.node, node);
-        assert_eq!(resources.host_runtime, host_runtime);
+        for profile in ["debug", "release"] {
+            let executable = root.join("target").join(profile).join("codexhost");
+            let resources = InstalledResources::from_executable(&executable).unwrap();
+            assert!(
+                resources.host_runtime == root.join("packages/host-runtime/dist/main.js"),
+                "source Host Runtime must come from the checkout"
+            );
+            assert!(
+                resources.node == Path::new(&format!("node{}", env::consts::EXE_SUFFIX)),
+                "source Node must not use the inherited Host Node"
+            );
+        }
     }
 
     #[test]
@@ -338,7 +346,7 @@ mod tests {
             fs::create_dir_all(tauri_shell.parent().unwrap()).unwrap();
             fs::write(&tauri_shell, "fixture").unwrap();
             let locate = || {
-                InstalledResources::from_source_checkout(&launcher, None, None)
+                InstalledResources::from_source_checkout(&launcher)
                     .unwrap()
                     .desktop_shell
             };
@@ -366,7 +374,7 @@ mod tests {
         let packed = root.join("packages/web-server/dist/codexhost-web/app/server.mjs");
 
         assert_eq!(
-            InstalledResources::from_source_checkout(&executable, None, None)
+            InstalledResources::from_source_checkout(&executable)
                 .unwrap()
                 .web_runtime,
             fallback
@@ -375,7 +383,7 @@ mod tests {
         fs::create_dir_all(packed.parent().unwrap()).unwrap();
         fs::write(&packed, "fixture").unwrap();
         assert_eq!(
-            InstalledResources::from_source_checkout(&executable, None, None)
+            InstalledResources::from_source_checkout(&executable)
                 .unwrap()
                 .web_runtime,
             packed

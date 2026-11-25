@@ -46,6 +46,9 @@ async function fixture() {
     environment: {
       CODEXHOST_DATA_DIR: data,
       CODEXHOST_NPM_PACKAGE_ROOT: "/old",
+      CODEXHOST_HOST_RUNTIME_PATH: "/installed/host-runtime.mjs",
+      CODEXHOST_HOST_NODE_PATH: "/installed/host-node",
+      CODEXHOST_DESKTOP_SHELL_PATH: "/installed/shell",
       HTTPS_PROXY: "http://proxy",
     },
   };
@@ -68,7 +71,9 @@ describe("development Host restart", () => {
           f.data,
         ],
       });
-      expect(env).toEqual({ CODEXHOST_DATA_DIR: f.data, HTTPS_PROXY: "http://proxy" });
+      expect(Object.keys(env).sort()).toEqual(["CODEXHOST_DATA_DIR", "HTTPS_PROXY"]);
+      expect(env.CODEXHOST_DATA_DIR).toBe(f.data);
+      expect(env.HTTPS_PROXY).toBe("http://proxy");
       await expect(readFile(f.record)).rejects.toThrow();
       return { code: 0 };
     });

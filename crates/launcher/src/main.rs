@@ -72,7 +72,7 @@ use desktop_attachment::{
 };
 #[cfg(unix)]
 use desktop_lifecycle::Lifecycle;
-use installation_layout::InstalledResources;
+use installation_layout::{InstalledResources, inherited_npm_node, is_source_checkout_build};
 use launch_preferences::{Preferences, Surface};
 use native_harness_broker::run_native_harness_broker_cli;
 use runtime_instance::default_descriptor_path;
@@ -562,11 +562,11 @@ fn select_host_node(
     bundled: PathBuf,
 ) -> PathBuf {
     #[cfg(target_os = "macos")]
-    let bundled = macos_default_node(desktop_root, bundled, env::var_os(NPM_NODE_PATH_ENV));
+    let bundled = macos_default_node(desktop_root, bundled, inherited_npm_node());
     #[cfg(not(target_os = "macos"))]
     let bundled = {
         let _ = desktop_root;
-        default_node_with_npm(bundled, env::var_os(NPM_NODE_PATH_ENV))
+        default_node_with_npm(bundled, inherited_npm_node())
     };
     explicit.unwrap_or(bundled)
 }
@@ -1199,7 +1199,9 @@ fn desktop_environment(
     if let Some(version) = env::var_os("CODEXHOST_DEV_VERSION") {
         environment.push((OsString::from("CODEXHOST_DEV_VERSION"), version));
     }
-    environment.extend(npm_update_runtime_environment(env::vars_os()));
+    if !is_source_checkout_build(launcher_executable) {
+        environment.extend(npm_update_runtime_environment(env::vars_os()));
+    }
     if let Ok(value) = env::var("CODEXHOST_WEB_SERVICE")
         && matches!(value.as_str(), "0" | "1")
     {
@@ -1618,10 +1620,7 @@ fn start_launch_console(options: &LaunchOptions) {
     // Recovery needs only Node and the console entrypoint, not a complete
     // Desktop resource set. Resolve those paths before validating the rest.
     if let Ok(installed) = InstalledResources::from_current_executable() {
-        #[cfg(target_os = "macos")]
-        let default_node = macos_default_node(None, installed.node, env::var_os(NPM_NODE_PATH_ENV));
-        #[cfg(not(target_os = "macos"))]
-        let default_node = default_node_with_npm(installed.node, env::var_os(NPM_NODE_PATH_ENV));
+        let default_node = select_host_node(None, None, installed.node);
         console::start_for_launch(console::console_command_for(
             options.node.as_deref().unwrap_or(&default_node),
             options
@@ -1643,7 +1642,7 @@ fn run_console_command(action: &str) -> Result<(), Box<dyn Error>> {
         .into());
     }
     let command = console::ConsoleCommand {
-        node: default_node_with_npm(installed.node, env::var_os(NPM_NODE_PATH_ENV)),
+        node: default_node_with_npm(installed.node, inherited_npm_node()),
         console_server: installed.console_server,
     };
     if console::run(&command, action)? {
@@ -2455,6 +2454,62 @@ mod tests {
             OsString::from("CODEXHOST_DATA_DIR"),
             OsString::from("/home/codex/.codexhost"),
         )));
+    }
+
+    #[test]
+    fn desktop_environment_omits_npm_update_runtime_for_source_checkout() {
+        const MARKER: &str = "CODEXHOST_TEST_SOURCE_DESKTOP_NPM_ENV";
+        let root = std::env::temp_dir().join("codexhost-source-desktop-npm-env");
+        if std::env::var_os(MARKER).is_none() {
+            let output = Command::new(std::env::current_exe().expect("test executable"))
+                .args([
+                    "--exact",
+                    "tests::desktop_environment_omits_npm_update_runtime_for_source_checkout",
+                ])
+                .env(MARKER, "1")
+                .env(NPM_NODE_PATH_ENV, root.join("node"))
+                .env(NPM_CLI_PATH_ENV, root.join("npm-cli.js"))
+                .env(NPM_LAUNCHER_PATH_ENV, root.join("codexhost.js"))
+                .env(NPM_PACKAGE_ROOT_ENV, root.join("package"))
+                .output()
+                .expect("run isolated desktop environment test");
+            assert!(output.status.success());
+            return;
+        }
+
+        let source_launcher = root
+            .join("target/debug")
+            .join(format!("codexhost{}", std::env::consts::EXE_SUFFIX));
+        let source_env = desktop_environment(
+            &resolved_options(),
+            &runtime_control(),
+            &source_launcher,
+            &root.join("desktop-runtime-v1.json"),
+            None,
+        );
+        for key in super::NPM_UPDATE_RUNTIME_ENV {
+            assert!(
+                !source_env.iter().any(|(name, _)| name == key),
+                "source checkout desktop environment must not forward {key}"
+            );
+        }
+
+        let installed_launcher = root
+            .join("bin")
+            .join(format!("codexhost{}", std::env::consts::EXE_SUFFIX));
+        let installed_env = desktop_environment(
+            &resolved_options(),
+            &runtime_control(),
+            &installed_launcher,
+            &root.join("desktop-runtime-v1.json"),
+            None,
+        );
+        for key in super::NPM_UPDATE_RUNTIME_ENV {
+            assert!(
+                installed_env.iter().any(|(name, _)| name == key),
+                "installed desktop environment must keep forwarding {key}"
+            );
+        }
     }
 
     #[cfg(target_os = "windows")]

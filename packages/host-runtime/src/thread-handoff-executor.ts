@@ -48,6 +48,10 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+function nonBlankRawString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
 function parseTodoPlan(value: unknown): TodoPlan | null {
   if (!isRecord(value) || !Array.isArray(value.plan)) return null;
   const plan: TodoPlan["plan"] = [];
@@ -71,10 +75,10 @@ function resolveExternalPlan(
   let boundaryIndex = -1;
   if (lastTurnId !== undefined) {
     boundaryIndex = turns.findIndex((turn) => turn.id === lastTurnId);
+    if (boundaryIndex >= 0 && turns[boundaryIndex]?.status !== "completed") return null;
   } else {
     for (let index = turns.length - 1; index >= 0; index -= 1) {
-      const status = turns[index]?.status;
-      if (status !== "inProgress" && status !== "running") {
+      if (turns[index]?.status === "completed") {
         boundaryIndex = index;
         break;
       }
@@ -90,7 +94,7 @@ function resolveExternalPlan(
   if (source.livePlan) {
     const liveTurnId =
       typeof source.livePlan.turnId === "string" ? source.livePlan.turnId : undefined;
-    if (lastTurnId === undefined || (liveTurnId !== undefined && eligibleIds.has(liveTurnId))) {
+    if (liveTurnId !== undefined && eligibleIds.has(liveTurnId)) {
       const parsed = parseTodoPlan(source.livePlan);
       if (parsed) return parsed;
     }
@@ -142,6 +146,7 @@ export interface ExecuteThreadHandoffInput {
   externalHistoryTurns(thread: ExternalThread): JsonObject[];
   registerExternalThread(input: Parameters<ExternalThreadRuntime["register"]>[0]): ExternalThread;
   requestOfficial(method: string, params: JsonObject): Promise<JsonObject>;
+  diagnose?(error: unknown): void;
 }
 
 export async function executeThreadHandoff(
@@ -218,7 +223,7 @@ export async function executeThreadHandoff(
     if (!thread) {
       return { ok: false, error: { code: -32080, message: "Source Thread was not found" } };
     }
-    const sourceCwd = nonEmptyString(thread.cwd);
+    const sourceCwd = nonBlankRawString(thread.cwd);
     if (!sourceCwd) {
       return {
         ok: false,
@@ -283,6 +288,7 @@ export async function executeThreadHandoff(
       sourceThreadId: params.sourceThreadId,
       repository,
       requestOfficial: input.requestOfficial,
+      ...(input.diagnose ? { diagnose: input.diagnose } : {}),
     });
   }
 
@@ -319,6 +325,7 @@ async function createOfficialHandoffTarget(input: {
   sourceThreadId: string;
   repository: ExternalThreadRepository;
   requestOfficial(method: string, params: JsonObject): Promise<JsonObject>;
+  diagnose?(error: unknown): void;
 }): Promise<ThreadHandoffExecutionResult> {
   const nativeSelection = input.targetModelRef
     ? officialCodexModelSelection(input.targetModelRef)
@@ -405,8 +412,23 @@ async function createOfficialHandoffTarget(input: {
       officialStartedThread,
     };
   } catch (error) {
-    await input.repository.removeThreadHandoff(newThreadId).catch(() => undefined);
-    await input.requestOfficial("thread/delete", { threadId: newThreadId }).catch(() => undefined);
+    await input.repository.removeThreadHandoff(newThreadId).catch((cleanupError) => {
+      input.diagnose?.(cleanupError);
+    });
+    try {
+      const deleted = await input.requestOfficial("thread/delete", { threadId: newThreadId });
+      if (isRecord(deleted.error)) {
+        const message =
+          typeof deleted.error.message === "string"
+            ? deleted.error.message
+            : "thread/delete failed";
+        input.diagnose?.(
+          new Error(`Failed to roll back official handoff Thread ${newThreadId}: ${message}`),
+        );
+      }
+    } catch (cleanupError) {
+      input.diagnose?.(cleanupError);
+    }
     return {
       ok: false,
       error: {

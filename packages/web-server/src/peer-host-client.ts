@@ -525,6 +525,7 @@ export class PeerHostClient {
           turnId: s.activeTurnId ?? null,
           epoch,
           supportsDelivery: true,
+          supportsQueuedSteer: true,
           ...(s.thread.canAcceptDirectInput === false ? { readOnly: true } : {}),
         };
       }
@@ -586,6 +587,75 @@ export class PeerHostClient {
         const external = thread.modelProvider === "codexhost" && thread.cliVersion === "codexhost";
         if (thread.canAcceptDirectInput === false)
           return { accepted: false, code: "remote/send-rejected", message: "Thread is read-only" };
+        if (a.kind === "sendNow") {
+          try {
+            const result = (await rpc("codexhost/thread/queue/send-now", {
+              threadId,
+              itemId: a.itemId,
+            })) as {
+              sent?: boolean;
+              turnId?: string;
+              turn?: { id?: string };
+            };
+            const confirmed =
+              (typeof result.turnId === "string" && result.turnId.length > 0) ||
+              (typeof result.turn?.id === "string" && result.turn.id.length > 0);
+            if (!confirmed) throw Error("Queued send-now not confirmed");
+            return { accepted: true };
+          } catch (error) {
+            if (error instanceof RpcError && error.code === "remote/request-failed") {
+              const hostCode =
+                "hostCode" in error.details && typeof error.details.hostCode === "number"
+                  ? error.details.hostCode
+                  : undefined;
+              const message = error.message;
+              if (
+                hostCode === -32601 ||
+                /unsupported client channel method|method not found/iu.test(message)
+              ) {
+                if (thread.status.type === "idle" || thread.status.type === "notLoaded") {
+                  const started = (await rpc("thread/queue/start", {
+                    threadId,
+                    queuedSubmissionId: a.itemId,
+                  })) as { turn?: { id?: string } };
+                  if (!started.turn?.id) throw Error("Queued turn not confirmed");
+                  return { accepted: true };
+                }
+                return {
+                  accepted: false,
+                  code: "remote/steer-unavailable",
+                  message: "Remote peer does not support steering queued messages.",
+                };
+              }
+              if (
+                (hostCode === -32072 && message === "Queued message not found") ||
+                (hostCode === -32602 && message === "Queued message is no longer available") ||
+                (hostCode === -32600 && message === `queued submission not found: ${a.itemId}`)
+              ) {
+                return {
+                  accepted: false,
+                  code: "session/queue-item-not-found",
+                  message: "Queued message no longer pending",
+                };
+              }
+              if (
+                hostCode === -32072 &&
+                (message === "Queued message is already starting" ||
+                  message === "Another queued message is already starting")
+              ) {
+                return {
+                  accepted: false,
+                  code: "session/queue-item-starting",
+                  message,
+                };
+              }
+              if (hostCode === -32090 || hostCode === -32095) {
+                throw new RpcError("remote/outcome-unknown", message);
+              }
+            }
+            throw error;
+          }
+        }
         if (a.kind === "steer" && external && !thread.codexhostSupportsStrictSteer)
           return {
             accepted: false,

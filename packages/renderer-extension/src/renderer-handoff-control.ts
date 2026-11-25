@@ -249,6 +249,7 @@ export function installRendererHandoffControl(
     selectedThinkingOptionId: string;
     submitting: boolean;
     errorMessage: string | null;
+    createdThreadId: HostThreadId | null;
   }
   let popoverState: OpenPopoverState | null = null;
 
@@ -261,8 +262,10 @@ export function installRendererHandoffControl(
   const clientForHost = (hostId: string | null): RendererModelClient | null => {
     const base = options.getClient();
     if (!base) return null;
-    if (!hostId || !base.clientForHost) return base;
-    return base.clientForHost(hostId) ?? base;
+    if (hostId === null) return base;
+    if (base.clientForHost) return base.clientForHost(hostId);
+    if (!base.currentHostId) return hostId === "local" ? base : null;
+    return base.currentHostId() === hostId ? base : null;
   };
 
   const pluginsForHost = (hostId: string | null): HarnessPluginDescriptor[] =>
@@ -367,7 +370,31 @@ export function installRendererHandoffControl(
   const submitHandoff = (): void => {
     const state = popoverState;
     if (!state || state.submitting) return;
-    const client = clientForHost(state.hostId);
+    const targetHostId = state.hostId;
+    const openCreatedTarget = async (createdThreadId: HostThreadId): Promise<void> => {
+      await openThread(createdThreadId, targetHostId ? { hostId: targetHostId } : undefined);
+      if (disposed) return;
+      if (popoverState === state) closePopover();
+    };
+    if (state.createdThreadId) {
+      state.submitting = true;
+      state.errorMessage = null;
+      renderPopover();
+      void openCreatedTarget(state.createdThreadId).catch((error: unknown) => {
+        if (disposed) return;
+        options.reportError?.(error);
+        if (popoverState === state) {
+          state.submitting = false;
+          state.errorMessage = errorDetail(
+            error,
+            rendererHarnessMessages(currentLocale()).handoffFailed,
+          );
+          renderPopover();
+        }
+      });
+      return;
+    }
+    const client = clientForHost(targetHostId);
     if (!client) {
       state.errorMessage = rendererHarnessMessages(currentLocale()).handoffFailed;
       renderPopover();
@@ -393,14 +420,13 @@ export function installRendererHandoffControl(
       })
       .then(async (result) => {
         if (disposed) return;
-        const targetHostId = state.hostId;
         handoffCache.set(cacheKeyFor(targetHostId, result.threadId), result.handoff);
         threadOwnerHarness.set(
           cacheKeyFor(targetHostId, result.threadId),
           result.handoff.targetHarnessId,
         );
-        closePopover();
-        await openThread(result.threadId, targetHostId ? { hostId: targetHostId } : undefined);
+        state.createdThreadId = result.threadId;
+        await openCreatedTarget(result.threadId);
       })
       .catch((error: unknown) => {
         if (disposed) return;
@@ -443,16 +469,19 @@ export function installRendererHandoffControl(
         state.selectedModelId = "";
         state.selectedThinkingOptionId = "";
         state.errorMessage = null;
+        state.createdThreadId = null;
         loadHarnessCatalog(state.hostId, harnessId);
         renderPopover();
       },
       onSelectModel: (modelId) => {
         state.selectedModelId = modelId;
         state.selectedThinkingOptionId = "";
+        state.createdThreadId = null;
         renderPopover();
       },
       onSelectThinking: (thinkingId) => {
         state.selectedThinkingOptionId = thinkingId;
+        state.createdThreadId = null;
         renderPopover();
       },
       onConfirm: submitHandoff,
@@ -490,6 +519,7 @@ export function installRendererHandoffControl(
       selectedThinkingOptionId: "",
       submitting: false,
       errorMessage: null,
+      createdThreadId: null,
     };
     triggerButton.setAttribute("aria-expanded", "true");
     triggerButton.setAttribute("data-state", "open");

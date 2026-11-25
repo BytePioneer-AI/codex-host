@@ -375,7 +375,13 @@ export class MappingStore {
             continue;
           }
         }
-        if (record.state === "creating" && !record.nativeSessionRef && !record.importSourceRef) {
+        const hasPendingInjection = (record.pendingInjectedText?.length ?? 0) > 0;
+        if (
+          record.state === "creating" &&
+          !record.nativeSessionRef &&
+          !record.importSourceRef &&
+          !hasPendingInjection
+        ) {
           await rm(primary, { force: true });
           await rm(backup, { force: true });
           await rm(this.#metadataPath(record.hostThreadId), { force: true });
@@ -644,6 +650,7 @@ export class MappingStore {
         transportModelId: input.transportModelId,
         ephemeral: input.ephemeral,
         historyMode: input.historyMode,
+        ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
         ...(input.projectlessWorkspace ? { projectlessWorkspace: input.projectlessWorkspace } : {}),
         ...(input.forkSource ? { forkSource: input.forkSource } : {}),
         ...(input.attachedToThreadId ? { attachedToThreadId: input.attachedToThreadId } : {}),
@@ -1247,9 +1254,11 @@ export class MappingStore {
     if (this.#threadHandoffs.has(hostThreadId)) {
       const next = new Map(this.#threadHandoffs);
       next.delete(hostThreadId);
-      this.#threadHandoffs = await writeThreadHandoffsFile(this.#threadHandoffsPath, next).catch(
-        () => next,
-      );
+      try {
+        this.#threadHandoffs = await writeThreadHandoffsFile(this.#threadHandoffsPath, next);
+      } catch {
+        // Retain the in-memory entry when disk persistence fails so removal can be retried.
+      }
     }
   }
 
@@ -1355,7 +1364,7 @@ export class MappingStore {
   async #writeNew(record: StoredThreadRecordV1): Promise<void> {
     this.#validateGlobal(record, null);
     // Publish placement metadata first. A crash may leave an orphan sidecar
-    // (initialize removes it), never an admitted Thread missing its no-project fact.
+    // (initialize removes it), never an admitted Thread missing its project metadata.
     const metadata = threadMetadataOf(record);
     if (metadata) await this.#writeMetadataFile(record.hostThreadId, metadata);
     try {

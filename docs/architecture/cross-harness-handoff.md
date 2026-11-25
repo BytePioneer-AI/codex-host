@@ -25,10 +25,10 @@
 
 ## 双通道注入与边界
 
-由 `packages/host-runtime/src/thread-handoff-executor.ts` 统一执行四向交接（`Codex ↔ 外部 Harness`、`外部 A ↔ 外部 B`、`Codex → Codex`）：
+由 `packages/host-runtime/src/thread-handoff-executor.ts` 统一执行四向交接（`Codex ↔ 外部 Harness`、`外部 A ↔ 外部 B`、`Codex → Codex`），仅以 `status === "completed"` 的 Turn 作为有效交接边界，且仅当 `livePlan.turnId` 落在边界内才附带实时 Plan：
 
 - **目标为官方 Codex**：通过官方 `thread/start` 创建新会话（如指定思考档位则写入 `config.model_reasoning_effort`），再调用原生 `thread/inject_items` 写入 `<handoff_context>`；注入失败时回滚清理新建 Thread 与交接记录。
-- **目标为外部 Harness**：创建新外部 Thread 并将 `<handoff_context>` 写入 `pendingInjectedText`，首轮发送时由 `withInjectedText` 自动置前、回放时由 `withoutInjectedText` 按 SHA-256 剥离前缀以保持气泡干净。若用户首轮发送斜杠命令（匹配 `^\s*\/[^\s/]+(?:\s|$)`，排除绝对路径），则延后至下一条普通用户消息再注入。
+- **目标为外部 Harness**：创建新外部 Thread 并将 `<handoff_context>` 写入 `pendingInjectedText`，首轮发送时由 `withInjectedText` 自动置前、回放时由 `withoutInjectedText` 按 SHA-256 剥离前缀以保持气泡干净。对于延迟生成 `nativeRef` 的外部 Harness（如 Claude Code、Antigravity、Pi），带有待注入上下文的 `creating` 记录会立即进入 `thread/list` 并在重启后保留，冷态打开或首轮发送时懒创建底层会话、注入上下文并绑定 `nativeRef`。已注册的原生 Harness 斜杠命令在 `#beginExternalInputTurn` 中走 `#beginExternalCommand` 而不经过普通 Turn 注入路径，因此自然延后至下一条普通用户消息再注入，而 `/tmp ...` 等普通路径文本则正常注入上下文。
 
 ## Web 与 Desktop 入口
 

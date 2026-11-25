@@ -14,13 +14,25 @@ import {
   type HostExtensionProvenance,
   type HostExtensionsCatalogResult,
 } from "@codexhost/shared-contracts";
-import { downloadExtensionBytes, ExtensionHttpError } from "./desktop-extension-download.js";
+import {
+  downloadExtensionBytes,
+  ExtensionDownloadError,
+  ExtensionHttpError,
+} from "./desktop-extension-download.js";
 import { readExtensionZip } from "./extension-zip.js";
 import { stageHostExtension, type HostExtensionCommitExpectation } from "./host-extension-files.js";
 import { privateExtensionDirectory, readHostFile, utf8 } from "./host-extension-io.js";
 import { readLocalHostPackage, sha256 } from "./host-extension-package.js";
 
 const TTL = 5 * 60 * 1000;
+const STALE_FALLBACK_MAX_AGE_MS = 30 * 60 * 1000;
+const CATALOG_TIMEOUT_MS = 12_000;
+const CATALOG_RETRIES = 1;
+const GITHUB_RELEASE_TIMEOUT_MS = 15_000;
+const GITHUB_RELEASE_RETRIES = 1;
+const ZIP_TIMEOUT_MS = 60_000;
+const ZIP_IDLE_TIMEOUT_MS = 15_000;
+const ZIP_RETRIES = 2;
 const httpsDownload = (url: URL) => url.protocol === "https:" && !url.username && !url.password;
 const githubDownload = (url: URL) =>
   httpsDownload(url) &&
@@ -31,13 +43,36 @@ const githubDownload = (url: URL) =>
     "https://objects.githubusercontent.com",
     "https://release-assets.githubusercontent.com",
   ].includes(url.origin);
-let cache: { result: HostExtensionsCatalogResult; expires: number } | undefined;
-let pending: Promise<HostExtensionsCatalogResult> | undefined;
+let cache: { result: HostExtensionsCatalogResult; expires: number; staleUntil: number } | undefined;
+let pending: { forceRefresh: boolean; promise: Promise<HostExtensionsCatalogResult> } | undefined;
+let catalogGeneration = 0;
+let cacheWrittenGeneration = 0;
 
 const PRIMARY_GRACE_MS = 1_500;
 const PRIMARY_FORCE_REFRESH_GRACE_MS = 3_000;
 const STATS_MAX_BYTES = 256 * 1024;
 const STATS_TIMEOUT_MS = 2_000;
+
+function raceWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted)
+    return Promise.reject(new ExtensionDownloadError("Download aborted", { cause: signal.reason }));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () =>
+      reject(new ExtensionDownloadError("Download aborted", { cause: signal.reason }));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
 
 function catalogGeneratedAtMs(result: HostExtensionsCatalogResult): number {
   const parsed = Date.parse(result.generatedAt);
@@ -66,6 +101,8 @@ async function fetchCatalogFrom(
     {
       signal,
       allowUrl: (url) => url.origin === new URL(catalogUrl).origin && httpsDownload(url),
+      timeoutMs: CATALOG_TIMEOUT_MS,
+      retries: CATALOG_RETRIES,
     },
   );
   return {
@@ -181,26 +218,60 @@ function mergeLiveDownloadStats(
 
 export async function fetchHostExtensionCatalog({
   forceRefresh = false,
-}: { forceRefresh?: boolean | undefined } = {}): Promise<HostExtensionsCatalogResult> {
+  fallbackToCache = false,
+  signal,
+}: {
+  forceRefresh?: boolean | undefined;
+  fallbackToCache?: boolean | undefined;
+  signal?: AbortSignal | undefined;
+} = {}): Promise<HostExtensionsCatalogResult> {
   if (!forceRefresh && cache && Date.now() < cache.expires)
     return { ...structuredClone(cache.result), cached: true };
-  if (pending) return structuredClone(await pending);
-  const request = Promise.all([
-    raceCatalog(forceRefresh),
-    fetchLiveDownloadStats(resolveHostExtensionStatsUrl(), forceRefresh),
-  ]).then(([catalog, liveDownloads]) => mergeLiveDownloadStats(catalog, liveDownloads));
-  pending = request;
+  if (signal?.aborted)
+    throw new ExtensionDownloadError("Download aborted", { cause: signal.reason });
+  let request: Promise<HostExtensionsCatalogResult>;
+  if (pending && (!forceRefresh || pending.forceRefresh)) {
+    request = pending.promise;
+  } else {
+    const generation = ++catalogGeneration;
+    const created = Promise.all([
+      raceCatalog(forceRefresh),
+      fetchLiveDownloadStats(resolveHostExtensionStatsUrl(), forceRefresh),
+    ])
+      .then(([catalog, liveDownloads]) => {
+        const merged = mergeLiveDownloadStats(catalog, liveDownloads);
+        if (generation >= cacheWrittenGeneration) {
+          cacheWrittenGeneration = generation;
+          const now = Date.now();
+          cache = {
+            result: merged,
+            expires: now + TTL,
+            staleUntil: now + STALE_FALLBACK_MAX_AGE_MS,
+          };
+        }
+        return merged;
+      })
+      .finally(() => {
+        if (pending?.promise === created) pending = undefined;
+      });
+    // Prevent unhandled rejections if every waiter aborts before the shared fetch settles.
+    created.catch(() => undefined);
+    pending = { forceRefresh, promise: created };
+    request = created;
+  }
   try {
-    const result = await request;
-    cache = { result, expires: Date.now() + TTL };
+    const result = await raceWithSignal(request, signal);
     return structuredClone(result);
-  } finally {
-    pending = undefined;
+  } catch (error) {
+    if (fallbackToCache && !signal?.aborted && cache && Date.now() <= cache.staleUntil)
+      return { ...structuredClone(cache.result), cached: true };
+    throw error;
   }
 }
 
 async function resolveGitHubSource(
   source: Extract<HostExtensionInstallSource, { type: "github" }>,
+  signal?: AbortSignal,
 ) {
   const { repository, ref, tag, asset } = source;
   const api = `https://api.github.com/repos/${repository}`;
@@ -217,7 +288,12 @@ async function resolveGitHubSource(
           releaseUrl,
           1024 * 1024,
           { accept: "application/vnd.github+json" },
-          { allowUrl: githubDownload },
+          {
+            signal,
+            allowUrl: githubDownload,
+            timeoutMs: GITHUB_RELEASE_TIMEOUT_MS,
+            retries: GITHUB_RELEASE_RETRIES,
+          },
         ),
       ),
     );
@@ -288,6 +364,8 @@ export interface HostExtensionPrepareOptions {
   localZipRoot?: string | undefined;
   expected?: { id: string; version?: string | undefined; sha256?: string | undefined } | undefined;
   forceRefreshCatalog?: boolean | undefined;
+  fallbackToCacheOnCatalogError?: boolean | undefined;
+  signal?: AbortSignal | undefined;
 }
 
 export async function prepareHostExtension({
@@ -296,7 +374,11 @@ export async function prepareHostExtension({
   expected,
   localZipRoot,
   forceRefreshCatalog,
+  fallbackToCacheOnCatalogError,
+  signal,
 }: HostExtensionPrepareOptions) {
+  if (signal?.aborted)
+    throw new ExtensionDownloadError("Download aborted", { cause: signal.reason });
   let zip: Buffer;
   let subpath: string | undefined;
   let source: HostExtensionProvenance;
@@ -317,6 +399,7 @@ export async function prepareHostExtension({
           expected,
           files: await readLocalHostPackage(directory),
           source: { type: "localDir" },
+          signal,
         });
       }
       case "zip": {
@@ -341,19 +424,32 @@ export async function prepareHostExtension({
       case "github": {
         source = checked;
         zip = await downloadExtensionBytes(
-          await resolveGitHubSource(checked),
+          await resolveGitHubSource(checked, signal),
           HOST_EXTENSION_ZIP_MAX_BYTES,
           undefined,
-          { allowUrl: githubDownload },
+          {
+            signal,
+            allowUrl: githubDownload,
+            timeoutMs: ZIP_TIMEOUT_MS,
+            idleTimeoutMs: ZIP_IDLE_TIMEOUT_MS,
+            retries: ZIP_RETRIES,
+          },
         );
         subpath = checked.subpath;
         break;
       }
       case "catalog": {
         source = checked;
-        const entry = (
-          await fetchHostExtensionCatalog({ forceRefresh: forceRefreshCatalog })
-        ).extensions.find(({ id }) => id === checked.id);
+        let catalog = await fetchHostExtensionCatalog({
+          forceRefresh: forceRefreshCatalog,
+          fallbackToCache: fallbackToCacheOnCatalogError,
+          signal,
+        });
+        let entry = catalog.extensions.find(({ id }) => id === checked.id);
+        if (!entry && catalog.cached && !forceRefreshCatalog) {
+          catalog = await fetchHostExtensionCatalog({ forceRefresh: true, signal });
+          entry = catalog.extensions.find(({ id }) => id === checked.id);
+        }
         if (!entry) throw new Error("Extension is not in the catalog");
         if (
           expected &&
@@ -367,12 +463,20 @@ export async function prepareHostExtension({
           entry.downloadUrl,
           HOST_EXTENSION_ZIP_MAX_BYTES,
           undefined,
-          { allowUrl: httpsDownload },
+          {
+            signal,
+            allowUrl: httpsDownload,
+            timeoutMs: ZIP_TIMEOUT_MS,
+            idleTimeoutMs: ZIP_IDLE_TIMEOUT_MS,
+            retries: ZIP_RETRIES,
+          },
         );
         break;
       }
     }
   }
+  if (signal?.aborted)
+    throw new ExtensionDownloadError("Download aborted", { cause: signal.reason });
   if (expected?.sha256 && sha256(zip) !== expected.sha256)
     throw new Error("Extension ZIP SHA-256 mismatch");
   return stageHostExtension({
@@ -380,6 +484,7 @@ export async function prepareHostExtension({
     expected,
     source,
     files: await readExtensionZip(zip, subpath, DESKTOP_EXTENSION_ASSET_MAX_BYTES),
+    signal,
   });
 }
 

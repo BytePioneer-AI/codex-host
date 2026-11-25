@@ -380,3 +380,116 @@ it("keeps Codex non-ready results uncached", async (t) => {
   await catalog.inspect("codex");
   assert.equal(calls, 2);
 });
+
+it("isolates a hanging Harness within the wait budget, fast-fails repeat reads, and recovers on late completion", async (t) => {
+  const host = new FakeChChannel();
+  nativeCodex(host);
+  const events = new EventHub("/unused");
+  const emitted: string[] = [];
+  events.emit = (event) => {
+    emitted.push(event);
+  };
+  const catalog = new ChHarnessCatalog(
+    host,
+    events,
+    async () => [],
+    undefined,
+    undefined,
+    undefined,
+    40,
+  );
+  t.after(() => catalog.close());
+  emitted.length = 0;
+
+  const slowFake = Promise.withResolvers<HarnessInspection>();
+  const request = host.request.bind(host);
+  let fakeCalls = 0;
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/harness/inspect" && params.harnessId === "fake") {
+      fakeCalls++;
+      return slowFake.promise as Promise<T>;
+    }
+    return request<T>(method, params);
+  };
+
+  const first = await catalog.models();
+  assert.deepEqual(first.routableProviders, ["codex"]);
+  assert.equal(first.failures.length, 1);
+  assert.equal(first.failures[0]?.id, "fake");
+  assert.match(first.failures[0]?.message ?? "", /timed out/u);
+  assert.equal(fakeCalls, 1);
+
+  const repeatStarted = Date.now();
+  const second = await catalog.models();
+  assert.ok(
+    Date.now() - repeatStarted < 35,
+    "repeat reads while still timed out must not wait another budget",
+  );
+  assert.deepEqual(second.routableProviders, ["codex"]);
+  assert.equal(fakeCalls, 1, "in-flight probe must stay deduplicated");
+  assert.deepEqual(emitted, []);
+
+  slowFake.resolve(harnessInspectionSchema.parse(host.inspection));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(emitted, ["codexhost/harness-inspection-changed"]);
+
+  const recovered = await catalog.models();
+  assert.deepEqual(recovered.routableProviders, ["codex", "fake"]);
+  assert.deepEqual(recovered.failures, []);
+  assert.equal(fakeCalls, 1);
+});
+
+it("emits harness-inspection-changed when a timed-out Codex inspection later settles non-ready", async (t) => {
+  const host = new FakeChChannel();
+  const events = new EventHub("/unused");
+  const emitted: string[] = [];
+  events.emit = (event) => {
+    emitted.push(event);
+  };
+  const catalog = new ChHarnessCatalog(
+    host,
+    events,
+    async () => [],
+    undefined,
+    undefined,
+    undefined,
+    30,
+  );
+  t.after(() => catalog.close());
+  emitted.length = 0;
+
+  const slowCodex = Promise.withResolvers<HarnessInspection>();
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/harness/inspect" && params.harnessId === "codex") {
+      return slowCodex.promise as Promise<T>;
+    }
+    return request<T>(method, params);
+  };
+
+  const first = await catalog.models();
+  assert.deepEqual(first.routableProviders, ["fake"]);
+  assert.deepEqual(emitted, []);
+
+  slowCodex.resolve(failed);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(emitted, ["codexhost/harness-inspection-changed"]);
+});
+
+it("does not fail healthy Harnesses when one plugin inspection throws", async (t) => {
+  const { host, catalog } = fixture();
+  t.after(() => catalog.close());
+  nativeCodex(host);
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/harness/inspect" && params.harnessId === "fake") {
+      throw new RpcError("host/rejected", "Simulated inspect failure");
+    }
+    return request<T>(method, params);
+  };
+  const models = await catalog.models();
+  assert.deepEqual(models.routableProviders, ["codex"]);
+  assert.deepEqual(models.failures, [
+    { id: "fake", name: "CH Harness", message: "Simulated inspect failure" },
+  ]);
+});

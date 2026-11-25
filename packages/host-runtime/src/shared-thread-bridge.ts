@@ -299,10 +299,16 @@ export class SharedThreadBridge {
       (create !== null && create.selectedHarness !== "codex") ||
       (this.options.delegateCreates && request.method.startsWith("codexhost/harness/")) ||
       this.handlesControl(request.method);
-    if (!shared && typeof params.threadId === "string") {
+    const routedThreadId =
+      typeof params.threadId === "string"
+        ? params.threadId
+        : request.method === THREAD_HANDOFF_METHOD && typeof params.sourceThreadId === "string"
+          ? params.sourceThreadId
+          : null;
+    if (!shared && routedThreadId !== null) {
       shared =
-        this.#known.has(params.threadId) ||
-        (await this.ownership([params.threadId])).has(params.threadId);
+        this.#known.has(routedThreadId) ||
+        (await this.ownership([routedThreadId])).has(routedThreadId);
     }
     if (!shared) return null;
     const peer = await this.#connect();

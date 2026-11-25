@@ -11,10 +11,10 @@ import { REMOTE_PEERS_METHODS as methods } from "@codexhost/shared-contracts";
 import { parseConnectionLink, PeerHostStore } from "../src/peer-host-store.ts";
 import { PeerHostManager, createCompositeRemoteCall } from "../src/peer-host-manager.ts";
 import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "../src/peer-manifest.ts";
-import { readRemoteThreadStatus } from "../src/remote-session-delivery.ts";
+import { deliverRemoteInput, readRemoteThreadStatus } from "../src/remote-session-delivery.ts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
-import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
+import { EventHub, RpcError, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 it("normalizes credential links, enforces SSRF host policy, and classifies LAN/Tailscale/Relay", () => {
   for (const [host, kind] of [
     ["100.64.0.1", "tailscale"],
@@ -1399,4 +1399,269 @@ it("skips origin check on same-origin update, keeps connection on rename, filter
   );
   const allPeers = await invoke<{ peers: Array<{ peerId: string; enabled: boolean }> }>("list");
   assert.equal(allPeers.peers.find((p) => p.peerId === peerId)?.enabled, false);
+});
+
+it("forwards queued steer on remote peers via codexhost/thread/queue/send-now and maps errors cleanly", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "peer-queued-steer-"));
+  const token = "steer-secret";
+  const epoch = randomUUID();
+  let threadStatus: "active" | "idle" = "active";
+  let rpcCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  let rpcHandler: (
+    method: string,
+    params: Record<string, unknown>,
+  ) => { status: number; body: Record<string, unknown> } = () => ({
+    status: 200,
+    body: { result: { sent: true, turnId: "turn-steered-1" } },
+  });
+  const openStreams: ServerResponse[] = [];
+  const server = createServer(async (req, res) => {
+    if (req.headers.authorization !== "Bearer " + token) {
+      res.writeHead(401).end();
+      return;
+    }
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname === "/api/peer/v1/manifest") {
+      res.end(
+        JSON.stringify({
+          version: "1",
+          epoch,
+          platform: process.platform,
+          hostname: "steer-peer",
+          homeDir: root,
+          projects: [{ id: "ws-1", name: "Repo", path: root, threadIds: [] }],
+        }),
+      );
+      return;
+    }
+    if (url.pathname === "/api/ch/v1/events") {
+      openStreams.push(res);
+      res.writeHead(200);
+      res.write(
+        JSON.stringify({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: true }) +
+          "\n",
+      );
+      return;
+    }
+    if (url.pathname === "/api/ch/v1/snapshot") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk as Uint8Array));
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as Record<
+        string,
+        unknown
+      >;
+      res.end(
+        JSON.stringify({
+          result: {
+            cursor: { epoch, sequence: 1 },
+            activeTurnId: threadStatus === "active" ? "turn-active" : null,
+            thread: {
+              id: String(body.threadId ?? "t-1"),
+              cwd: root,
+              modelProvider: "codexhost",
+              cliVersion: "codexhost",
+              createdAt: 1,
+              updatedAt: 2,
+              status: { type: threadStatus },
+              turns: [],
+            },
+            turnsPage: { data: [], nextCursor: null },
+            configuration: {},
+            interactions: [],
+          },
+        }),
+      );
+      return;
+    }
+    if (url.pathname === "/api/ch/v1/rpc") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk as Uint8Array));
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as {
+        method: string;
+        params: Record<string, unknown>;
+      };
+      rpcCalls.push(body);
+      const reply = rpcHandler(body.method, body.params);
+      res.writeHead(reply.status, { "content-type": "application/json" });
+      res.end(JSON.stringify(reply.body));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+
+  const store = new PeerHostStore(new DataDir(root));
+  const manager = new PeerHostManager(store, async () => [], new EventHub(root), {
+    allowLoopback: true,
+  });
+  t.after(() => {
+    manager.close();
+    for (const stream of openStreams) stream.destroy();
+    server.closeAllConnections();
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const rpc = new RpcRegistry();
+  manager.register(rpc);
+  const added = await rpc.dispatch(
+    methods.add,
+    { args: { connectionUrl: `${origin}/#token=${token}` } },
+    { local: true, credential: "local", release() {} },
+  );
+  assert.equal(added.ok, true);
+  const { hostId } = (added.value as { peer: { hostId: string } }).peer;
+  for (let i = 0; i < 40 && openStreams.length < 1; i++) await sleep(20);
+
+  const invoke = createCompositeRemoteCall(manager, async () => {
+    throw Error("No Desktop");
+  });
+  const identity = { hostId, threadId: "t-steer" };
+  const readLegacyStatus = async () => {
+    throw Error("Legacy status should not be used");
+  };
+
+  // Status advertises queued-steer support on Peer Hosts.
+  const status = await readRemoteThreadStatus(invoke, identity);
+  assert.equal(status.supportsDelivery, true);
+  assert.equal(status.supportsQueuedSteer, true);
+
+  // Active external thread steers queued message via codexhost/thread/queue/send-now.
+  assert.deepEqual(
+    await deliverRemoteInput(
+      invoke,
+      identity,
+      "session/updateQueue",
+      { itemId: "q-1", action: { kind: "steer" } },
+      readLegacyStatus,
+    ),
+    { accepted: true },
+  );
+  assert.deepEqual(rpcCalls, [
+    { method: "codexhost/thread/queue/send-now", params: { threadId: "t-steer", itemId: "q-1" } },
+  ]);
+
+  // Native Codex send-now confirmation shapes ({ turnId } and { turn: { id } }) also succeed.
+  rpcCalls = [];
+  rpcHandler = () => ({ status: 200, body: { result: { turnId: "turn-native-active" } } });
+  assert.deepEqual(
+    await deliverRemoteInput(
+      invoke,
+      identity,
+      "session/updateQueue",
+      { itemId: "q-2", action: { kind: "steer" } },
+      readLegacyStatus,
+    ),
+    { accepted: true },
+  );
+
+  rpcHandler = () => ({ status: 200, body: { result: { turn: { id: "turn-native-idle" } } } });
+  assert.deepEqual(
+    await deliverRemoteInput(
+      invoke,
+      identity,
+      "session/updateQueue",
+      { itemId: "q-3", action: { kind: "steer" } },
+      readLegacyStatus,
+    ),
+    { accepted: true },
+  );
+
+  // Missing queued item maps to session/queue-item-not-found.
+  rpcHandler = () => ({
+    status: 400,
+    body: { error: { code: -32072, message: "Queued message not found" } },
+  });
+  await assert.rejects(
+    deliverRemoteInput(
+      invoke,
+      identity,
+      "session/updateQueue",
+      { itemId: "q-missing", action: { kind: "steer" } },
+      readLegacyStatus,
+    ),
+    (error: unknown) => error instanceof RpcError && error.code === "session/queue-item-not-found",
+  );
+
+  // Already-starting queued item maps to session/queue-item-starting.
+  rpcHandler = () => ({
+    status: 400,
+    body: { error: { code: -32072, message: "Queued message is already starting" } },
+  });
+  await assert.rejects(
+    deliverRemoteInput(
+      invoke,
+      identity,
+      "session/updateQueue",
+      { itemId: "q-starting", action: { kind: "steer" } },
+      readLegacyStatus,
+    ),
+    (error: unknown) => error instanceof RpcError && error.code === "session/queue-item-starting",
+  );
+
+  // Unconfirmed native queue deletion maps to remote/outcome-unknown.
+  rpcHandler = () => ({
+    status: 400,
+    body: {
+      error: {
+        code: -32095,
+        message: "Codex accepted the steer, but queue removal was not confirmed. Do not resend.",
+      },
+    },
+  });
+  await assert.rejects(
+    deliverRemoteInput(
+      invoke,
+      identity,
+      "session/updateQueue",
+      { itemId: "q-unknown", action: { kind: "steer" } },
+      readLegacyStatus,
+    ),
+    (error: unknown) => error instanceof RpcError && error.code === "remote/outcome-unknown",
+  );
+
+  // Older peers lacking send-now return remote/steer-unavailable while active and fall back to thread/queue/start while idle.
+  rpcCalls = [];
+  rpcHandler = (method) =>
+    method === "codexhost/thread/queue/send-now"
+      ? {
+          status: 400,
+          body: { error: { code: -32601, message: "Unsupported client channel method" } },
+        }
+      : { status: 200, body: { result: { turn: { id: "turn-fallback" } } } };
+  await assert.rejects(
+    deliverRemoteInput(
+      invoke,
+      identity,
+      "session/updateQueue",
+      { itemId: "q-old-active", action: { kind: "steer" } },
+      readLegacyStatus,
+    ),
+    (error: unknown) => error instanceof RpcError && error.code === "remote/steer-unavailable",
+  );
+
+  threadStatus = "idle";
+  rpcCalls = [];
+  assert.deepEqual(
+    await deliverRemoteInput(
+      invoke,
+      identity,
+      "session/updateQueue",
+      { itemId: "q-old-idle", action: { kind: "steer" } },
+      readLegacyStatus,
+    ),
+    { accepted: true },
+  );
+  assert.deepEqual(rpcCalls, [
+    {
+      method: "codexhost/thread/queue/send-now",
+      params: { threadId: "t-steer", itemId: "q-old-idle" },
+    },
+    {
+      method: "thread/queue/start",
+      params: { threadId: "t-steer", queuedSubmissionId: "q-old-idle" },
+    },
+  ]);
 });

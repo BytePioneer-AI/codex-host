@@ -455,6 +455,91 @@ describe("installRendererHandoffControl", () => {
     expect(document.querySelector(`[${HANDOFF_POPOVER_ATTRIBUTE}]`)).toBeNull();
   });
 
+  it("fails closed when an explicit hostId is missing from clientForHost instead of falling back to base", async () => {
+    createConversationDom("remote-thread-1", { withTurns: true });
+    const inspectThread = vi.fn(async (): Promise<ThreadInspection> => ({
+      owner: "codex",
+      locked: true,
+    }));
+    const handoffThread = vi.fn();
+    const clientForHost = vi.fn(() => null);
+    const client = createMockClient({
+      inspectThread,
+      handoffThread,
+      clientForHost,
+    });
+
+    const control = installRendererHandoffControl({
+      getClient: () => client,
+      getHostId: () => "ssh-remote-offline",
+      getLocale: () => "en",
+    });
+    await flush();
+
+    // Must not fall back to base client for inspectThread when clientForHost returns null.
+    expect(clientForHost).toHaveBeenCalledWith("ssh-remote-offline");
+    expect(inspectThread).not.toHaveBeenCalled();
+
+    // Opening the popover and confirming must also fail closed without invoking base.handoffThread.
+    document.querySelector<HTMLButtonElement>("[data-codexhost-handoff-trigger]")?.click();
+    await flush();
+    document.querySelector<HTMLButtonElement>("[data-codexhost-handoff-confirm]")?.click();
+    await flush();
+
+    expect(handoffThread).not.toHaveBeenCalled();
+    const alert = document.querySelector<HTMLElement>(
+      `[${HANDOFF_POPOVER_ATTRIBUTE}] [role="alert"]`,
+    );
+    expect(alert).not.toBeNull();
+
+    control.dispose();
+  });
+
+  it("keeps the popover open with an inline error when openThread fails and retries opening without duplicating handoff", async () => {
+    createConversationDom("source-open-fail", { withTurns: true });
+    let shouldFailOpen = true;
+    const openThread = vi.fn(async () => {
+      if (shouldFailOpen) throw new Error("Sidebar row not ready");
+    });
+    const handoffThread = vi.fn(async (): Promise<ThreadHandoffResult> => ({
+      threadId: hostThreadIdSchema.parse("created-once-thread"),
+      handoff: sampleHandoff,
+    }));
+    const client = createMockClient({ handoffThread });
+
+    const control = installRendererHandoffControl({
+      getClient: () => client,
+      getLocale: () => "en",
+      openThread,
+    });
+    await flush();
+
+    document.querySelector<HTMLButtonElement>("[data-codexhost-handoff-trigger]")?.click();
+    await flush();
+    document.querySelector<HTMLButtonElement>("[data-codexhost-handoff-confirm]")?.click();
+    await flush();
+
+    // Popover stays open with inline error so user can retry opening the already-created thread.
+    const popover = document.querySelector<HTMLElement>(`[${HANDOFF_POPOVER_ATTRIBUTE}]`);
+    expect(popover).not.toBeNull();
+    expect(popover?.querySelector('[role="alert"]')?.textContent).toContain(
+      "Sidebar row not ready",
+    );
+    expect(handoffThread).toHaveBeenCalledTimes(1);
+    expect(openThread).toHaveBeenCalledTimes(1);
+
+    // Retrying confirm calls openThread again without creating a second handoff thread.
+    shouldFailOpen = false;
+    popover?.querySelector<HTMLButtonElement>("[data-codexhost-handoff-confirm]")?.click();
+    await flush();
+
+    expect(handoffThread).toHaveBeenCalledTimes(1);
+    expect(openThread).toHaveBeenCalledTimes(2);
+    expect(document.querySelector(`[${HANDOFF_POPOVER_ATTRIBUTE}]`)).toBeNull();
+
+    control.dispose();
+  });
+
   it("formats full, prefix-boundary, and omitted turn summaries accurately in zh-CN and en", () => {
     expect(
       formatRendererHandoffTurnsSummary("zh-CN", {

@@ -39,9 +39,36 @@ type Instance = {
   error?: string;
 };
 
+function formatDiagnosticError(error: unknown, depth = 0): string {
+  const base = errorMessage(error)
+    .replace(/[\r\n]+/gu, " ")
+    .trim();
+  const code =
+    error instanceof Error && "code" in error && typeof error.code === "string"
+      ? ` [${error.code}]`
+      : "";
+  if (!(error instanceof Error) || depth >= 2) return `${base}${code}`;
+  const details: string[] = [];
+  if (error instanceof AggregateError && error.errors.length > 0) {
+    details.push(
+      error.errors
+        .slice(0, 4)
+        .map((item) => formatDiagnosticError(item, depth + 1))
+        .join("; "),
+    );
+  }
+  if ("cause" in error && error.cause !== undefined) {
+    details.push(`cause: ${formatDiagnosticError(error.cause, depth + 1)}`);
+  }
+  const full = details.length > 0 ? `${base}${code} (${details.join("; ")})` : `${base}${code}`;
+  return full.length > 600 ? `${full.slice(0, 597)}...` : full;
+}
+
 /** One owner for every unified install, regardless of attached frontend sessions. */
 export class HostExtensionManager {
   readonly #instances = new Map<string, Instance>();
+  readonly #closeController = new AbortController();
+  readonly #inFlightOperations = new Set<Promise<unknown>>();
   #queue = Promise.resolve();
   // Backend activation/disposal can wait for settings IPC. Do not make IPC wait
   // on the lifecycle queue (or hold the lifecycle queue while invoking handlers).
@@ -55,6 +82,10 @@ export class HostExtensionManager {
     private readonly changed: (revision: number) => void,
     private readonly diagnose: (message: string) => void = () => undefined,
   ) {}
+
+  diagnoseOperationError(method: string, error: unknown): void {
+    this.diagnose(`Host extension ${method} failed: ${formatDiagnosticError(error)}`);
+  }
 
   start(): Promise<void> {
     if (this.#closing) return this.#closing;
@@ -73,7 +104,13 @@ export class HostExtensionManager {
   }
 
   close(): Promise<void> {
-    return (this.#closing ??= this.#serialize(() => this.#stopAll()));
+    if (!this.#closing) {
+      this.#closeController.abort();
+      this.#closing = this.#serialize(() => this.#stopAll()).finally(async () => {
+        await Promise.allSettled([...this.#inFlightOperations]);
+      });
+    }
+    return this.#closing;
   }
 
   list(): Promise<HostExtensionsRpcResult<typeof RPC.list>> {
@@ -146,73 +183,102 @@ export class HostExtensionManager {
   }
 
   install({ source }: HostExtensionsRpcParams<typeof RPC.install>) {
-    return this.#run(async () => {
-      const installed = await (
-        await prepareHostExtension({ dataDir: this.dataDir, source })
-      ).commit({ expectedDigest: null });
-      // An enabled ID can survive a damaged/missing install; honor the selection.
+    return this.#trackInFlight(async () => {
+      await this.start();
+      this.#assertOpen();
+      const staged = await prepareHostExtension({
+        dataDir: this.dataDir,
+        source,
+        signal: this.#closeController.signal,
+      });
       try {
-        if ((await readHostExtensionConfiguration(this.dataDir)).enabled.includes(installed.id))
-          await this.#startBackend(installed);
+        const installed = await this.#run(async () => {
+          const committed = await staged.commit({ expectedDigest: null });
+          // An enabled ID can survive a damaged/missing install; honor the selection.
+          try {
+            if ((await readHostExtensionConfiguration(this.dataDir)).enabled.includes(committed.id))
+              await this.#startBackend(committed);
+          } finally {
+            this.#publish();
+          }
+          return committed;
+        });
+        if (source.type === "catalog")
+          void reportHostExtensionInstall(installed.id, resolveHostExtensionStatsUrl());
+        return installed;
       } finally {
-        this.#publish();
+        await staged.dispose();
       }
-      if (source.type === "catalog")
-        void reportHostExtensionInstall(installed.id, resolveHostExtensionStatsUrl());
-      return installed;
     });
   }
 
   update(input: HostExtensionsRpcParams<typeof RPC.update>) {
-    return this.#run(async () => {
+    return this.#trackInFlight(async () => {
+      await this.start();
+      this.#assertOpen();
       const { id, expectedDigest, expectedActivationId } = input;
       const location = { dataDir: this.dataDir, id };
-      const previous = await readHostExtension(location);
-      if (
-        previous?.digest !== expectedDigest ||
-        (expectedActivationId !== undefined && previous.activationId !== expectedActivationId)
-      )
-        throw new HostExtensionInstallConflict("Extension activation changed");
-      const provenance = previous.source;
-      const source =
-        input.source ??
-        (provenance?.type === "catalog" || provenance?.type === "github" ? provenance : undefined);
-      if (!source) throw new Error("An update source is required for this installation");
+      const { previous, source } = await this.#run(async () => {
+        const current = await readHostExtension(location);
+        if (
+          current?.digest !== expectedDigest ||
+          (expectedActivationId !== undefined && current.activationId !== expectedActivationId)
+        )
+          throw new HostExtensionInstallConflict("Extension activation changed");
+        const provenance = current.source;
+        const resolvedSource =
+          input.source ??
+          (provenance?.type === "catalog" || provenance?.type === "github"
+            ? provenance
+            : undefined);
+        if (!resolvedSource) throw new Error("An update source is required for this installation");
+        return { previous: current, source: resolvedSource };
+      });
       const staged = await prepareHostExtension({
         ...location,
         source,
         expected: { id },
         forceRefreshCatalog: true,
+        fallbackToCacheOnCatalogError: true,
+        signal: this.#closeController.signal,
       });
       try {
-        const enabled = (await readHostExtensionConfiguration(this.dataDir)).enabled.includes(id);
-        this.#assertOpen();
-        await this.#stop(id);
-        let installed: Awaited<ReturnType<typeof staged.commit>> | undefined;
-        try {
-          installed = await staged.commit({
-            expectedDigest,
-            expectedActivationId: previous.activationId,
-          });
-          if (enabled && !(await this.#startBackend(installed)))
-            throw new Error("Updated extension backend could not start");
-        } catch (error) {
+        const installed = await this.#run(async () => {
+          const latest = await readHostExtension(location);
+          if (latest?.digest !== expectedDigest || latest.activationId !== previous.activationId)
+            throw new HostExtensionInstallConflict("Extension activation changed");
+          const enabled = (await readHostExtensionConfiguration(this.dataDir)).enabled.includes(id);
+          this.#assertOpen();
           await this.#stop(id);
+          let committed: Awaited<ReturnType<typeof staged.commit>> | undefined;
           try {
-            const restored = installed
-              ? await rollbackHostExtension({
-                  ...location,
-                  previous,
-                  expectedActivationId: installed.activationId,
-                })
-              : await readHostExtension(location);
-            if (enabled && restored) await this.#startBackend(restored);
-          } finally {
-            if (installed) this.#publish();
+            committed = await staged.commit({
+              expectedDigest,
+              expectedActivationId: previous.activationId,
+            });
+            if (enabled && !(await this.#startBackend(committed)))
+              throw new Error("Updated extension backend could not start");
+          } catch (error) {
+            await this.#stop(id);
+            let backendRestartFailed = false;
+            try {
+              const restored = committed
+                ? await rollbackHostExtension({
+                    ...location,
+                    previous: latest,
+                    expectedActivationId: committed.activationId,
+                  })
+                : await readHostExtension(location);
+              if (enabled && restored && !(await this.#startBackend(restored)))
+                backendRestartFailed = true;
+            } finally {
+              if (committed || backendRestartFailed) this.#publish();
+            }
+            throw error;
           }
-          throw error;
-        }
-        this.#publish();
+          this.#publish();
+          return committed;
+        });
         if (source.type === "catalog")
           void reportHostExtensionInstall(installed.id, resolveHostExtensionStatsUrl());
         return installed;
@@ -436,6 +502,17 @@ export class HostExtensionManager {
 
   #publish() {
     this.changed(++this.#revision);
+  }
+
+  #trackInFlight<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.#closing) return Promise.reject(new Error("Host extensions are closing"));
+    const task = operation();
+    this.#inFlightOperations.add(task);
+    const cleanup = () => {
+      this.#inFlightOperations.delete(task);
+    };
+    task.then(cleanup, cleanup);
+    return task;
   }
 
   #assertOpen() {

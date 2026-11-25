@@ -46,6 +46,8 @@ import { WebExtensionMarkdown } from "./WebExtensionMarkdown.tsx";
 import { WebExtensionSettingsForm } from "./WebExtensionSettingsForm.tsx";
 import css from "./WebExtensionDetailModal.module.css";
 
+export type ExtensionPendingAction = "install" | "update" | "toggle" | "uninstall";
+
 export interface DetailModalTarget {
   readonly item?: HostExtensionListItem | undefined;
   readonly catalog?: HostExtensionCatalogEntry | undefined;
@@ -54,8 +56,8 @@ export interface DetailModalTarget {
 export interface WebExtensionDetailModalProps {
   readonly open: boolean;
   readonly target: DetailModalTarget | null;
-  readonly busy: boolean;
-  readonly activeAction: string | null;
+  readonly pendingAction: ExtensionPendingAction | null;
+  readonly globalBusy: boolean;
   readonly feedback: {
     readonly tone: "success" | "warning" | "danger";
     readonly text: string;
@@ -190,8 +192,8 @@ function ScreenshotLightbox({
 export function WebExtensionDetailModal({
   open,
   target,
-  busy,
-  activeAction,
+  pendingAction,
+  globalBusy,
   feedback,
   locale,
   t,
@@ -207,9 +209,13 @@ export function WebExtensionDetailModal({
 
   const targetSignature =
     target === null ? "" : `host:${target.item?.id ?? target.catalog?.id ?? ""}`;
+  const isInstalledTarget = target?.item !== undefined;
 
   useEffect(() => {
     setConfirmingUninstall(false);
+  }, [targetSignature, open, isInstalledTarget]);
+
+  useEffect(() => {
     setActiveScreenshot(null);
   }, [targetSignature, open]);
 
@@ -301,21 +307,15 @@ export function WebExtensionDetailModal({
   const isInstalled = item !== undefined;
   const toggleBlocked = item ? isHostToggleBlocked(item) : false;
   const canOpenPage = Boolean(validItem && validItem.enabled && validItem.manifest.page);
+  const targetBusy = pendingAction !== null;
+  const controlsDisabled = targetBusy || globalBusy;
 
   return (
-    <Modal
-      open={open}
-      onClose={() => {
-        if (!busy) onClose();
-      }}
-      title={displayName}
-      headless
-      className={css.dialog}
-    >
+    <Modal open={open} onClose={onClose} title={displayName} headless className={css.dialog}>
       <div
         className={css.surface}
         data-web-extension-detail={targetSignature}
-        data-busy={busy ? "true" : undefined}
+        data-busy={targetBusy ? "true" : undefined}
       >
         <header className={css.header}>
           <div className={css.headerTop}>
@@ -433,7 +433,6 @@ export function WebExtensionDetailModal({
               className={css.closeButton}
               aria-label={t("extensions.close")}
               title={t("extensions.close")}
-              disabled={busy}
               onClick={onClose}
             >
               <IconCloseOutlineRegular size={15} />
@@ -446,15 +445,11 @@ export function WebExtensionDetailModal({
                 <Button
                   variant="primary"
                   size="sm"
-                  disabled={busy}
-                  aria-busy={activeAction === `install:${catalogEntry.id}`}
+                  disabled={controlsDisabled}
+                  aria-busy={pendingAction === "install"}
                   onClick={() => onInstallMarket(catalogEntry)}
                 >
-                  {t(
-                    activeAction === `install:${catalogEntry.id}`
-                      ? "extensions.installing"
-                      : "extensions.install",
-                  )}
+                  {t(pendingAction === "install" ? "extensions.installing" : "extensions.install")}
                 </Button>
                 {catalogEntry.trustTier === "community" && (
                   <span className={css.communityNote}>{t("extensions.communityNotice")}</span>
@@ -468,11 +463,11 @@ export function WebExtensionDetailModal({
                   <Button
                     variant="primary"
                     size="sm"
-                    disabled={busy}
-                    aria-busy={activeAction === `update:${validItem.id}`}
+                    disabled={controlsDisabled}
+                    aria-busy={pendingAction === "update"}
                     onClick={() => onUpdate(validItem, catalogEntry)}
                   >
-                    {activeAction === `update:${validItem.id}`
+                    {pendingAction === "update"
                       ? t("extensions.updating")
                       : t("extensions.updateToVersion", {
                           version: catalogEntry.version.replace(/^v/u, ""),
@@ -484,7 +479,7 @@ export function WebExtensionDetailModal({
                   <Button
                     variant="primary"
                     size="sm"
-                    disabled={busy}
+                    disabled={controlsDisabled}
                     onClick={() => {
                       onClose();
                       onOpenPage(validItem);
@@ -497,7 +492,7 @@ export function WebExtensionDetailModal({
                 <Switch
                   label={displayName}
                   checked={item.enabled}
-                  disabled={busy || toggleBlocked}
+                  disabled={controlsDisabled || toggleBlocked}
                   title={toggleBlocked ? t("extensions.toggleBlockedInvalid") : undefined}
                   onChange={(next) => onToggle(item, next)}
                 />
@@ -513,11 +508,12 @@ export function WebExtensionDetailModal({
                     variant="outline"
                     size="sm"
                     className={css.dangerButton}
-                    disabled={busy}
+                    disabled={controlsDisabled}
+                    aria-busy={pendingAction === "uninstall"}
                     onClick={() => onUninstall(item)}
                   >
                     {t(
-                      activeAction?.startsWith("uninstall:")
+                      pendingAction === "uninstall"
                         ? "extensions.uninstalling"
                         : "extensions.uninstallConfirm",
                     )}
@@ -525,7 +521,7 @@ export function WebExtensionDetailModal({
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={busy}
+                    disabled={controlsDisabled}
                     onClick={() => setConfirmingUninstall(false)}
                   >
                     {t("extensions.cancel")}
@@ -537,7 +533,7 @@ export function WebExtensionDetailModal({
                   size="sm"
                   className={css.dangerButton}
                   icon={<IconTrashOutlineRegular size={13} />}
-                  disabled={busy}
+                  disabled={controlsDisabled}
                   onClick={() => setConfirmingUninstall(true)}
                 >
                   {t("extensions.remove")}

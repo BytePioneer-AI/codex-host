@@ -420,6 +420,7 @@ export class ClientChannelHost {
       throw new ClientChannelRequestError(location.error.code, location.error.message);
     if (location.kind === "official") {
       if (!this.#native) throw new Error("Thread is not owned by this local Host");
+      const handoff = (await this.#host.readThreadHandoff?.(threadId)) ?? undefined;
       const snapshot = await this.#native.snapshot(threadId, {});
       const queue = snapshot.thread.nativeSendError
         ? { result: { data: [] } }
@@ -446,7 +447,6 @@ export class ClientChannelHost {
         (latestStatus === "interrupted" || latestStatus === "failed")
           ? latestStatus
           : null;
-      const handoff = (await this.#host.readThreadHandoff?.(threadId)) ?? undefined;
       return compactClientSnapshot(
         clientThreadSnapshotSchema.parse({
           ...snapshot,
@@ -469,6 +469,7 @@ export class ClientChannelHost {
       thread = this.#host.loadedThread(threadId);
     }
     if (!thread) throw new Error("Thread is not owned by this local Host");
+    const handoff = (await this.#host.readThreadHandoff?.(threadId)) ?? undefined;
     const interactions = [
       ...[...this.#host.interactions.approvals]
         .filter(([, pending]) => pending.thread === thread)
@@ -490,7 +491,6 @@ export class ClientChannelHost {
         })),
     ];
     const state = thread.stateObserver.state;
-    const handoff = (await this.#host.readThreadHandoff?.(threadId)) ?? undefined;
     const snapshot = clientThreadSnapshotSchema.parse(
       copyAsJson({
         cursor: this.clientEvents.cursor,

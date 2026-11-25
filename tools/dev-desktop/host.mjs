@@ -48,11 +48,19 @@ export async function restartDevelopmentHost({
   readHost = readRunningHost,
   fingerprint = developmentHostFingerprint,
   webRunning = isWebRunning,
+  otherInterface = "Web",
   decide = shouldRestartHost,
 }) {
   const env = { ...environment };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("CODEXHOST_NPM_") || key === "CODEXHOST_DEV_VERSION") delete env[key];
+    if (
+      key.startsWith("CODEXHOST_NPM_") ||
+      key === "CODEXHOST_DEV_VERSION" ||
+      key === "CODEXHOST_HOST_RUNTIME_PATH" ||
+      key === "CODEXHOST_HOST_NODE_PATH" ||
+      key === "CODEXHOST_DESKTOP_SHELL_PATH"
+    )
+      delete env[key];
   }
   const data = path.resolve(env.CODEXHOST_DATA_DIR || path.join(homedir(), ".codexhost"));
   const owner = await readHost(data);
@@ -86,7 +94,7 @@ export async function restartDevelopmentHost({
       changed,
       mode,
       otherInterfaceRunning: webRunning,
-      otherInterface: "Web",
+      otherInterface,
     }))
   )
     return;

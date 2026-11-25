@@ -155,4 +155,48 @@ describe("Mapping Store thread handoffs", () => {
     ).toBe(true);
     await second.close();
   });
+
+  it("retains creating Threads with pendingInjectedText across restart while still cleaning abandoned creating records", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-handoffs-"));
+    temporaryDirectories.push(directory);
+    const first = await openStore(directory, "first");
+
+    const handoffTargetId = hostThreadIdSchema.parse("deferred-handoff-target");
+    await first.createProvisional({
+      hostThreadId: handoffTargetId,
+      createRequestId: "create-deferred-handoff",
+      harnessId: piHarness,
+      cwd: "/synthetic",
+      transportModelId: "codexhost/pi-native",
+      ephemeral: false,
+      historyMode: "paginated",
+    });
+    await first.appendPendingInjectedText(handoffTargetId, [
+      "<handoff_context>\ncontext\n</handoff_context>",
+    ]);
+    await first.saveThreadHandoff(handoffTargetId, sampleHandoff());
+
+    const abandonedId = hostThreadIdSchema.parse("abandoned-creating-draft");
+    await first.createProvisional({
+      hostThreadId: abandonedId,
+      createRequestId: "create-abandoned",
+      harnessId: piHarness,
+      cwd: "/synthetic",
+      transportModelId: "codexhost/pi-native",
+      ephemeral: false,
+      historyMode: "paginated",
+    });
+    await first.close();
+
+    const second = await openStore(directory, "second");
+    const survived = await second.getThread(handoffTargetId);
+    expect(survived).toMatchObject({
+      hostThreadId: handoffTargetId,
+      state: "creating",
+      pendingInjectedText: ["<handoff_context>\ncontext\n</handoff_context>"],
+    });
+    await expect(second.getThreadHandoff(handoffTargetId)).resolves.toEqual(sampleHandoff());
+    await expect(second.getThread(abandonedId)).resolves.toBeNull();
+    await second.close();
+  });
 });

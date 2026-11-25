@@ -13,6 +13,8 @@ import {
 export const MAX_HANDOFF_BYTES = 16_000;
 
 const PER_MESSAGE_MAX_BYTES = 5_000;
+const MAX_ACTIVITIES_BYTES = 1_500;
+const MAX_ACTIVITY_ENTRY_BYTES = 240;
 const MAX_PLAN_BYTES = 2_000;
 const MAX_TOC_LINES = 25;
 const MAX_TOC_BYTES = 2_000;
@@ -231,11 +233,10 @@ function extractTurn(turn: JsonObject, turnNumber: number, cwd: string): Extract
   const items = Array.isArray(turn.items)
     ? turn.items.filter((item): item is JsonObject => isRecord(item))
     : [];
-  const status = typeof turn.status === "string" ? turn.status : "completed";
   return {
     id: typeof turn.id === "string" && turn.id.length > 0 ? turn.id : undefined,
     turnNumber,
-    completed: status !== "inProgress" && status !== "running",
+    completed: turn.status === "completed",
     userText: extractUserText(items),
     assistantText: extractAssistantText(items),
     activities: extractTurnActivities(items, cwd),
@@ -312,14 +313,65 @@ function formatHeader(
 
 function formatTurnAnchor(turn: ExtractedTurn, maxBytes: number): string {
   const heading = "## Initial Request (Turn 1)\n";
-  const bodyBudget = Math.max(0, maxBytes - utf8ByteLength(heading));
+  const bodyBudget = maxBytes - utf8ByteLength(heading);
+  if (bodyBudget <= 0) return "";
   const raw = turn.userText || "(no user text)";
   const body = truncateHead(
     raw,
     bodyBudget,
     "\n[...truncated; read full turn with --from 1 --to 1]",
   );
-  return `${heading}${body}`;
+  return body.trim().length > 0 ? `${heading}${body}` : "";
+}
+
+function formatActivitiesSection(activities: readonly string[], maxBytes: number): string {
+  if (activities.length === 0 || maxBytes <= 0) return "";
+  const heading = "Activity:\n";
+  const bodyBudget = maxBytes - utf8ByteLength(heading);
+  if (bodyBudget <= 0) return "";
+
+  const omissionLine = "[...more activities omitted]";
+  const omissionBytes = utf8ByteLength(omissionLine);
+  const lines: string[] = [];
+  let usedBytes = 0;
+
+  for (let index = 0; index < activities.length; index += 1) {
+    const raw = activities[index];
+    if (!raw) continue;
+    const entry = truncateHead(raw, Math.min(MAX_ACTIVITY_ENTRY_BYTES, bodyBudget), "…");
+    const entryBytes = utf8ByteLength(entry);
+    const separatorBytes = lines.length > 0 ? 1 : 0;
+    const hasRemaining = index < activities.length - 1;
+    const reserveOmission = hasRemaining ? 1 + omissionBytes : 0;
+
+    if (usedBytes + separatorBytes + entryBytes + reserveOmission <= bodyBudget) {
+      lines.push(entry);
+      usedBytes += separatorBytes + entryBytes;
+      continue;
+    }
+    if (!hasRemaining && usedBytes + separatorBytes + entryBytes <= bodyBudget) {
+      lines.push(entry);
+      usedBytes += separatorBytes + entryBytes;
+      continue;
+    }
+    if (lines.length > 0) {
+      if (usedBytes + 1 + omissionBytes <= bodyBudget) {
+        lines.push(omissionLine);
+      }
+      break;
+    }
+    const availableFirst = hasRemaining ? bodyBudget - (1 + omissionBytes) : bodyBudget;
+    if (availableFirst >= 16) {
+      const clipped = truncateHead(raw, availableFirst, "…");
+      if (clipped.trim().length > 0) {
+        lines.push(clipped);
+        if (hasRemaining) lines.push(omissionLine);
+      }
+    }
+    break;
+  }
+
+  return lines.length > 0 ? `${heading}${lines.join("\n")}` : "";
 }
 
 function formatFullTurn(
@@ -327,30 +379,40 @@ function formatFullTurn(
   includeActivities: boolean,
   userMaxBytes: number,
   assistantMaxBytes: number,
+  activityMaxBytes = MAX_ACTIVITIES_BYTES,
 ): string {
   const sections: string[] = [`### Turn ${turn.turnNumber}`];
-  if (turn.userText) {
-    sections.push(
-      `User:\n${truncateHead(
-        turn.userText,
-        userMaxBytes,
-        `\n[...truncated; read full turn with --from ${turn.turnNumber} --to ${turn.turnNumber}]`,
-      )}`,
+  if (turn.userText && userMaxBytes > 0) {
+    const text = truncateHead(
+      turn.userText,
+      userMaxBytes,
+      `\n[...truncated; read full turn with --from ${turn.turnNumber} --to ${turn.turnNumber}]`,
     );
+    if (text.length > 0) sections.push(`User:\n${text}`);
   }
-  if (includeActivities && turn.activities.length > 0) {
-    sections.push(`Activity:\n${turn.activities.join("\n")}`);
+  if (includeActivities && turn.activities.length > 0 && activityMaxBytes > 0) {
+    const activitySection = formatActivitiesSection(turn.activities, activityMaxBytes);
+    if (activitySection) sections.push(activitySection);
   }
-  if (turn.assistantText) {
-    sections.push(
-      `Assistant:\n${truncateTail(
-        turn.assistantText,
-        assistantMaxBytes,
-        `[...earlier output truncated; read full turn with --from ${turn.turnNumber} --to ${turn.turnNumber}]\n`,
-      )}`,
+  if (turn.assistantText && assistantMaxBytes > 0) {
+    const text = truncateTail(
+      turn.assistantText,
+      assistantMaxBytes,
+      `[...earlier output truncated; read full turn with --from ${turn.turnNumber} --to ${turn.turnNumber}]\n`,
     );
+    if (text.length > 0) sections.push(`Assistant:\n${text}`);
   }
-  if (sections.length === 1) sections.push("(no message text)");
+  if (sections.length === 1) {
+    if (
+      !turn.userText &&
+      !turn.assistantText &&
+      !(includeActivities && turn.activities.length > 0)
+    ) {
+      sections.push("(no message text)");
+    } else {
+      return "";
+    }
+  }
   return sections.join("\n");
 }
 
@@ -359,40 +421,107 @@ function fitTurnToBudget(
   includeActivities: boolean,
   maxBytes: number,
 ): string {
+  const heading = `### Turn ${turn.turnNumber}\n`;
+  if (maxBytes <= utf8ByteLength(heading)) return "";
+
   const standard = formatFullTurn(
     turn,
     includeActivities,
     PER_MESSAGE_MAX_BYTES,
     PER_MESSAGE_MAX_BYTES,
+    MAX_ACTIVITIES_BYTES,
   );
-  if (utf8ByteLength(standard) <= maxBytes) return standard;
+  if (standard && utf8ByteLength(standard) <= maxBytes) return standard;
 
-  const heading = `### Turn ${turn.turnNumber}\n`;
-  const activityText =
-    includeActivities && turn.activities.length > 0
-      ? `Activity:\n${turn.activities.join("\n")}\n`
-      : "";
-  const overhead =
-    utf8ByteLength(heading) +
-    utf8ByteLength(activityText) +
-    (turn.userText ? utf8ByteLength("User:\n\n") : 0) +
-    (turn.assistantText ? utf8ByteLength("Assistant:\n") : 0);
-  const contentBudget = Math.max(0, maxBytes - overhead);
+  const hasUser = turn.userText.length > 0;
+  const hasAssistant = turn.assistantText.length > 0;
+  const hasActivities = includeActivities && turn.activities.length > 0;
 
-  if (turn.userText && turn.assistantText) {
-    const userNeed = Math.min(utf8ByteLength(turn.userText), PER_MESSAGE_MAX_BYTES);
-    const assistantNeed = Math.min(utf8ByteLength(turn.assistantText), PER_MESSAGE_MAX_BYTES);
-    let userBudget = Math.min(userNeed, Math.floor(contentBudget * 0.45));
-    const assistantBudget = Math.min(assistantNeed, contentBudget - userBudget);
-    userBudget = Math.min(userNeed, contentBudget - assistantBudget);
-    const fitted = formatFullTurn(turn, includeActivities, userBudget, assistantBudget);
-    if (utf8ByteLength(fitted) <= maxBytes) return fitted;
-  } else {
-    const fitted = formatFullTurn(turn, includeActivities, contentBudget, contentBudget);
-    if (utf8ByteLength(fitted) <= maxBytes) return fitted;
+  if (!hasUser && !hasAssistant) {
+    const activityBudget = Math.min(MAX_ACTIVITIES_BYTES, maxBytes - utf8ByteLength(heading));
+    const fitted = formatFullTurn(turn, hasActivities, 0, 0, activityBudget);
+    return fitted && utf8ByteLength(fitted) <= maxBytes ? fitted : "";
   }
 
-  return cutStartUtf8(standard, maxBytes).text;
+  const baseOverhead =
+    utf8ByteLength(heading) +
+    (hasUser ? utf8ByteLength("User:\n") : 0) +
+    (hasAssistant ? utf8ByteLength("Assistant:\n") : 0) +
+    (hasUser && hasAssistant ? 1 : 0);
+  const textOnlyBudget = maxBytes - baseOverhead;
+
+  if (textOnlyBudget <= 0) {
+    if (hasAssistant) {
+      const assistantOnlyBudget =
+        maxBytes - utf8ByteLength(heading) - utf8ByteLength("Assistant:\n");
+      if (assistantOnlyBudget > 0) {
+        const fitted = formatFullTurn(turn, false, 0, assistantOnlyBudget, 0);
+        if (fitted && utf8ByteLength(fitted) <= maxBytes) return fitted;
+      }
+    }
+    if (hasUser) {
+      const userOnlyBudget = maxBytes - utf8ByteLength(heading) - utf8ByteLength("User:\n");
+      if (userOnlyBudget > 0) {
+        const fitted = formatFullTurn(turn, false, userOnlyBudget, 0, 0);
+        if (fitted && utf8ByteLength(fitted) <= maxBytes) return fitted;
+      }
+    }
+    return "";
+  }
+
+  const userNeed = hasUser ? Math.min(utf8ByteLength(turn.userText), PER_MESSAGE_MAX_BYTES) : 0;
+  const assistantNeed = hasAssistant
+    ? Math.min(utf8ByteLength(turn.assistantText), PER_MESSAGE_MAX_BYTES)
+    : 0;
+
+  const tryFit = (activityBudget: number): string => {
+    const activitySection =
+      hasActivities && activityBudget > 0
+        ? formatActivitiesSection(turn.activities, activityBudget)
+        : "";
+    const activityBytes = activitySection ? utf8ByteLength(activitySection) + 1 : 0;
+    const contentBudget = Math.max(0, textOnlyBudget - activityBytes);
+    if (contentBudget <= 0) return "";
+    if (hasUser && hasAssistant) {
+      let userBudget = Math.min(userNeed, Math.floor(contentBudget * 0.4));
+      const assistantBudget = Math.min(assistantNeed, contentBudget - userBudget);
+      userBudget = Math.min(userNeed, contentBudget - assistantBudget);
+      if (assistantBudget <= 0) return "";
+      const fitted = formatFullTurn(
+        turn,
+        activitySection.length > 0,
+        userBudget,
+        assistantBudget,
+        activityBudget,
+      );
+      return fitted && utf8ByteLength(fitted) <= maxBytes ? fitted : "";
+    }
+    const fitted = formatFullTurn(
+      turn,
+      activitySection.length > 0,
+      hasUser ? contentBudget : 0,
+      hasAssistant ? contentBudget : 0,
+      activityBudget,
+    );
+    return fitted && utf8ByteLength(fitted) <= maxBytes ? fitted : "";
+  };
+
+  if (hasActivities) {
+    const preferredActivityBudget =
+      userNeed + assistantNeed < textOnlyBudget
+        ? Math.min(MAX_ACTIVITIES_BYTES, Math.max(0, textOnlyBudget - userNeed - assistantNeed - 1))
+        : textOnlyBudget >= 512
+          ? Math.min(MAX_ACTIVITIES_BYTES, Math.floor(textOnlyBudget * 0.15))
+          : 0;
+    if (preferredActivityBudget > 0) {
+      const withActivities = tryFit(preferredActivityBudget);
+      if (withActivities) return withActivities;
+    }
+  }
+
+  const textOnly = tryFit(0);
+  if (textOnly) return textOnly;
+  return "";
 }
 
 function formatMiddleToc(omittedTurns: readonly ExtractedTurn[], maxBytes: number): string {
@@ -496,13 +625,15 @@ export function buildThreadHandoffPackage(
 
   if (boundaryTurnNumber === 1) {
     const block = fitTurnToBudget(turn1, true, Math.max(0, available - recentHeadingBytes));
-    trailingTurns.push(turn1);
-    trailingBlocks.push(block);
+    if (block) {
+      trailingTurns.push(turn1);
+      trailingBlocks.push(block);
+    }
   } else {
     anchorBlock = formatTurnAnchor(turn1, PER_MESSAGE_MAX_BYTES);
     let turnKBlock = formatFullTurn(turnK, true, PER_MESSAGE_MAX_BYTES, PER_MESSAGE_MAX_BYTES);
-    const minimumNeeded =
-      2 + utf8ByteLength(anchorBlock) + recentHeadingBytes + utf8ByteLength(turnKBlock);
+    const anchorPartBytes = anchorBlock ? 2 + utf8ByteLength(anchorBlock) : 0;
+    const minimumNeeded = anchorPartBytes + recentHeadingBytes + utf8ByteLength(turnKBlock);
 
     if (minimumNeeded > available) {
       const pairBudget = Math.max(0, available - 2 - recentHeadingBytes);
@@ -510,47 +641,55 @@ export function buildThreadHandoffPackage(
         utf8ByteLength(anchorBlock),
         Math.max(256, Math.floor(pairBudget * 0.3)),
       );
-      anchorBlock = formatTurnAnchor(turn1, anchorBudget);
-      const turnKBudget = Math.max(0, pairBudget - utf8ByteLength(anchorBlock));
+      anchorBlock = formatTurnAnchor(turn1, Math.min(anchorBudget, pairBudget));
+      const usedAnchor = anchorBlock ? 2 + utf8ByteLength(anchorBlock) : 0;
+      const turnKBudget = Math.max(0, available - usedAnchor - recentHeadingBytes);
       turnKBlock = fitTurnToBudget(turnK, true, turnKBudget);
     }
 
-    trailingTurns.push(turnK);
-    trailingBlocks.push(turnKBlock);
+    if (turnKBlock) {
+      trailingTurns.push(turnK);
+      trailingBlocks.push(turnKBlock);
+    }
     let trailingBytes = utf8ByteLength(turnKBlock);
-    let anchorUsed = true;
+    let anchorUsed = anchorBlock.length > 0;
 
-    for (let index = boundaryIndex - 1; index >= 0; index -= 1) {
-      const turn = upToBoundary[index];
-      if (!turn) continue;
-      const includeActivities = turn.turnNumber >= boundaryTurnNumber - 1;
-      const candidate = formatFullTurn(
-        turn,
-        includeActivities,
-        PER_MESSAGE_MAX_BYTES,
-        PER_MESSAGE_MAX_BYTES,
-      );
-      const candidateBytes = utf8ByteLength(candidate) + 2; // "\n\n" separator
-      if (index === 0) {
-        const totalWithoutAnchor = recentHeadingBytes + trailingBytes + candidateBytes;
-        if (totalWithoutAnchor <= available) {
-          trailingTurns.unshift(turn);
-          trailingBlocks.unshift(candidate);
-          trailingBytes += candidateBytes;
-          anchorUsed = false;
-          anchorBlock = "";
+    if (turnKBlock) {
+      for (let index = boundaryIndex - 1; index >= 0; index -= 1) {
+        const turn = upToBoundary[index];
+        if (!turn) continue;
+        const includeActivities = turn.turnNumber >= boundaryTurnNumber - 1;
+        const candidate = formatFullTurn(
+          turn,
+          includeActivities,
+          PER_MESSAGE_MAX_BYTES,
+          PER_MESSAGE_MAX_BYTES,
+        );
+        const candidateBytes = utf8ByteLength(candidate) + 2; // "\n\n" separator
+        if (index === 0) {
+          const totalWithoutAnchor = recentHeadingBytes + trailingBytes + candidateBytes;
+          if (totalWithoutAnchor <= available) {
+            trailingTurns.unshift(turn);
+            trailingBlocks.unshift(candidate);
+            trailingBytes += candidateBytes;
+            anchorUsed = false;
+            anchorBlock = "";
+          }
+          break;
         }
-        break;
+        const totalWithAnchor =
+          (anchorUsed ? 2 + utf8ByteLength(anchorBlock) : 0) +
+          recentHeadingBytes +
+          trailingBytes +
+          candidateBytes;
+        if (totalWithAnchor > available) break;
+        trailingTurns.unshift(turn);
+        trailingBlocks.unshift(candidate);
+        trailingBytes += candidateBytes;
       }
-      const totalWithAnchor =
-        2 + utf8ByteLength(anchorBlock) + recentHeadingBytes + trailingBytes + candidateBytes;
-      if (totalWithAnchor > available) break;
-      trailingTurns.unshift(turn);
-      trailingBlocks.unshift(candidate);
-      trailingBytes += candidateBytes;
     }
 
-    if (anchorUsed) {
+    if (anchorUsed && trailingTurns.length > 0) {
       const firstTrailingTurn = trailingTurns[0];
       const omittedMiddle = firstTrailingTurn
         ? upToBoundary.slice(1, firstTrailingTurn.turnNumber - 1)
@@ -563,20 +702,49 @@ export function buildThreadHandoffPackage(
     }
   }
 
-  const bodyParts = [headerBlock];
-  if (anchorBlock) bodyParts.push(anchorBlock);
-  if (tocBlock) bodyParts.push(tocBlock);
-  bodyParts.push(`## Recent Completed Turns\n\n${trailingBlocks.join("\n\n")}`);
+  const turnSpans: Array<{ turnNumber: number; contentStart: number; end: number }> = [];
+  let body = headerBlock;
+  if (anchorBlock) {
+    const start = body.length + 2;
+    body += `\n\n${anchorBlock}`;
+    turnSpans.push({
+      turnNumber: 1,
+      contentStart: start + "## Initial Request (Turn 1)\n".length,
+      end: body.length,
+    });
+  }
+  if (tocBlock) {
+    body += `\n\n${tocBlock}`;
+  }
+  if (trailingBlocks.length > 0) {
+    body += "\n\n## Recent Completed Turns\n\n";
+    for (let index = 0; index < trailingBlocks.length; index += 1) {
+      const turn = trailingTurns[index];
+      const block = trailingBlocks[index];
+      if (!turn || !block) continue;
+      if (index > 0) body += "\n\n";
+      const start = body.length;
+      body += block;
+      turnSpans.push({
+        turnNumber: turn.turnNumber,
+        contentStart: start + `### Turn ${turn.turnNumber}\n`.length,
+        end: body.length,
+      });
+    }
+  }
 
-  let body = bodyParts.join("\n\n");
   const maxBodyBytes = MAX_HANDOFF_BYTES - wrapperBytes;
   if (utf8ByteLength(body) > maxBodyBytes) {
     body = cutStartUtf8(body, maxBodyBytes).text;
   }
   const contextText = `${OPEN_TAG}${body}${CLOSE_TAG}`;
 
-  const includedSet = new Set<number>(trailingTurns.map((turn) => turn.turnNumber));
-  if (anchorBlock) includedSet.add(1);
+  const includedSet = new Set<number>();
+  for (const span of turnSpans) {
+    if (span.contentStart >= body.length) continue;
+    const retained = body.slice(span.contentStart, Math.min(span.end, body.length));
+    if (retained.trim().length > 0) includedSet.add(span.turnNumber);
+  }
   const includedTurnNumbers = [...includedSet].sort((left, right) => left - right);
   const omittedTurns = Math.max(0, boundaryTurnNumber - includedTurnNumbers.length);
 

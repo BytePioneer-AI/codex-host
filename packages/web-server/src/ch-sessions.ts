@@ -483,9 +483,8 @@ export class ChSessions {
     const known = new Set(this.rows.keys());
     let sectionFailure: CatalogRefresh["sectionFailure"];
     let sectionsUnsupported = false;
-    const [{ page: snapshot }, definitions, , sections] = await Promise.all([
+    const [{ page: snapshot }, , sections] = await Promise.all([
       readSessionPage(this.host, timing, includeArchived, cursor, () => this.refreshPins()),
-      timing.measure("project_definitions", () => this.host.projects([])),
       timing.measure("thread_tree", () => this.tree.refresh()),
       timing.measure("thread_sections", async () => {
         try {
@@ -572,15 +571,7 @@ export class ChSessions {
       if (thread.archived === true) archivedIds.add(id);
       return thread;
     });
-    const assignments = await timing.measure("projects", () =>
-      this.host.projects([...rows.keys()]),
-    );
-    const pinnedProjects = assignments.pinnedProjects ?? definitions.pinnedProjects;
-    const projects = {
-      ...assignments,
-      projects: definitions.projects,
-      ...(pinnedProjects !== undefined ? { pinnedProjects } : {}),
-    };
+    const projects = await timing.measure("projects", () => this.host.projects([...rows.keys()]));
     if (this.closed) return;
     // A Host-confirmed move supersedes project metadata from this in-flight read.
     for (const [id, projectId] of this.refreshingProjectAssignments ?? []) {
@@ -608,8 +599,8 @@ export class ChSessions {
           ...section,
           threadIds: section.threadIds.filter((id) => !archivedIds.has(id)),
         })),
-        definitions.projects,
-        definitions.sectionProjects,
+        projects.projects,
+        projects.sectionProjects,
         threadSectionsV1,
       );
     } else if (sectionsUnsupported || (threadSections && !threadSectionsV1)) {
@@ -644,7 +635,17 @@ export class ChSessions {
       const references: Array<{ sessionId: string; cwd: string; title?: string }> = [];
       const rootTitles = projectRootTitles(projects.projects);
       const projectless = new Set(projects.projectless.filter((id) => !projects.assignments[id]));
+      const localProjects = projects.projects.map(({ id, name }) => ({
+        id,
+        name,
+        sessionIds: [] as string[],
+      }));
+      const localById = new Map(localProjects.map((project) => [project.id, project]));
       for (const row of this.rows.values()) {
+        const assignment = Object.hasOwn(projects.assignments, row.id)
+          ? projects.assignments[row.id]
+          : undefined;
+        if (assignment !== undefined) localById.get(assignment)?.sessionIds.push(row.id);
         if (row.workspaceKind === "projectless" && !row.projectId && !projects.assignments[row.id])
           projectless.add(row.id);
         const root =
@@ -671,7 +672,15 @@ export class ChSessions {
         if (!draft.cwd) projectless.add(draft.id);
       }
       timing.count("workspaceReferences", references.length);
-      this.workspaces.syncReferencedSessions(references, groups, projectless, projects.projects);
+      // Membership is a set; catalog ordering changes must not invalidate it.
+      for (const project of localProjects) project.sessionIds.sort();
+      this.workspaces.syncReferencedSessions(
+        references,
+        groups,
+        projectless,
+        projects.projects,
+        localProjects,
+      );
       this.workspaces.setReferencePinnedProjects(projects.projects, projects.pinnedProjects);
     });
   }

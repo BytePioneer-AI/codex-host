@@ -644,6 +644,10 @@ Web 侧栏同步本机 Codex Desktop 的自定义分区。未置顶、未归档�
 
 同一归属不会再次写入。RPC 返回 `{status:"confirmed", projectId}` 或 `{status:"unknown"}`；明确拒绝返回 RPC 错误。Web 通过权威读侧刷新 `workspace/follow`，未知结果只读对账、不重发写入，不保存第二份项目归属。
 
+`workspace/follow` 在基线的 `value.localProjects` 中返回已知的本机原生项目 `{id, name, sessionIds}`，包括暂时没有已加载成员的项目；尚未读到项目快照时省略该字段。`{type:"localProjects", localProjects}` 增量替换整个列表，与同次刷新产生的工作区 `upsert` 一并发布。成员仅取 Host 返回的显式归属，不从 cwd、工作区路径或共用根目录推断；共用根目录的两个项目之间移动时，即使没有工作区 `upsert`，也会发布项目归属增量。
+
+每个项目还可携带 `workspaceIds`。Host 明确登记的根目录在 Web 生成或复用 Workspace 行时，后端把当前行的 ID 绑定到该原生项目；同名、改名和会话数量不影响绑定。多根项目按原生根目录顺序返回绑定，隐藏或删除的行、多个项目共用的行不作为拖放目标。工作区行新增或移除时，项目绑定在同一轮流更新中同步。
+
 支持 `threadSectionsV1` 的 Host 提供新建、重命名和删除分区；重命名保留原外观，删除仅移除分区和成员归属，不删除或归档 Thread。Web 客户端在 `workspace/follow` 显式声明 `threadSectionsV1: true` 后才接收外观字段和 Host 能力标记。未协商该能力的客户端沿用原分区投影；未声明该能力的 Host 不显示管理入口，只有官方 Codex Thread 保留移动到分区的入口。
 
 Desktop 也能把项目放进自定义分区。官方 app-server 只保存分区本身和其中的会话，项目成员保存在 Desktop 当前登录身份的 `electron-owner-atoms:<owner>` → `sidebar-custom-sections-v3` 中，以 `hostSectionIds.local` 对应官方分区。Host 从 `.codex-global-state.sqlite` 读取这份状态，仅在 SQLite 文件不存在或尚未迁移（版本 0）时读取旧版 `.codex-global-state.json`。共享 Host 在 `codexhost/workspace/read` 的 `sectionProjects` 中只读返回各分区的项目 ID；这份状态是 Desktop 私有、带版本号的格式，缺失或结构变化时不返回项目分区，项目列表照常读取。Web 把这些项目的根目录工作区放进对应分区，在分组与树形模式下显示在分区自身的会话之后，顺序跟随 Desktop 分区内的项目顺序，不再出现在“工作区”段；以某项目命名的目录（该项目的第一个根目录）跟随该项目，其余目录归入第一个列出它的分区项目。树形嵌套限于同一分区，平铺模式只显示分区自身的会话。

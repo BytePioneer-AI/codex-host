@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
@@ -88,10 +88,20 @@ function memberships(frames: unknown[], sessionId: string) {
   );
 }
 
+function baselineProjects(frame: unknown): unknown {
+  assert.ok(frame && typeof frame === "object" && "value" in frame);
+  const { value } = frame;
+  assert.ok(value && typeof value === "object" && "localProjects" in value);
+  return value.localProjects;
+}
+
 it("drains old catalog reads before broadcasting a project move", { timeout: 5000 }, async (t) => {
   const host = new FakeChHost();
   const { row, root, workspaces, list, move, subscribe } = setup(t, host);
   host.projectSnapshot.sectionProjects = { research: ["target"] };
+  const target = host.projectSnapshot.projects.find(({ id }) => id === "target");
+  assert.ok(target);
+  target.name = "source";
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const written = Promise.withResolvers<void>();
@@ -141,8 +151,37 @@ it("drains old catalog reads before broadcasting a project move", { timeout: 500
   assert.equal(row.cwd, join(root, "source"));
   assert.deepEqual(memberships(capable, row.id), [join(root, "target")]);
   assert.deepEqual(memberships(legacy, row.id), [join(root, "target")]);
-  assert.equal(capable.length, 3);
-  assert.equal(legacy.length, 3);
+  const source = workspaces.byPath(row.cwd);
+  const primary = workspaces.byPath(join(root, "target"));
+  const secondary = workspaces.byPath(join(root, "second-root"));
+  assert.ok(source && primary && secondary);
+  const owner = {
+    id: "project-moving",
+    name: "source",
+    workspaceIds: [source.workspaceId],
+  };
+  const destination = {
+    id: "target",
+    name: "source",
+    workspaceIds: [primary.workspaceId, secondary.workspaceId],
+  };
+  const before = [
+    { ...owner, sessionIds: [row.id] },
+    { ...destination, sessionIds: [] },
+  ];
+  const after = [
+    { ...owner, sessionIds: [] },
+    { ...destination, sessionIds: [row.id] },
+  ];
+  for (const frames of [capable, legacy]) {
+    assert.deepEqual(baselineProjects(frames[0]), before);
+    const typed = frames as Array<{ type: string }>;
+    assert.deepEqual(
+      typed.map(({ type }) => type),
+      ["baseline", "upsert", "upsert", "localProjects"],
+    );
+    assert.deepEqual(frames.at(-1), { type: "localProjects", localProjects: after });
+  }
   const baseline = capable[0] as { value: { threadSections: unknown } };
   assert.deepEqual(baseline.value.threadSections, [
     {
@@ -156,6 +195,86 @@ it("drains old catalog reads before broadcasting a project move", { timeout: 500
       ],
     },
   ]);
+});
+
+it("publishes empty and shared-root projects with only explicit local membership", async (t) => {
+  const host = new FakeChHost();
+  const { row, root, call, list, move, subscribe, workspaces } = setup(t, host);
+  const target = host.projectSnapshot.projects.find(({ id }) => id === "target");
+  assert.ok(target);
+  target.rootPaths = [row.cwd];
+  host.add("cwd-match", row.cwd, "Unassigned", false);
+  // Keep the existing cwd-based navigation fallback active for this row.
+  host.projectSnapshot.projectless = [];
+  host.projectSnapshot.assignments["not-loaded"] = "target";
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method !== CLIENT_THREAD_PROJECT_MOVE_METHOD) return request<T>(method, params);
+    host.projectSnapshot.assignments[row.id] = "target";
+    return { status: "confirmed", projectId: "target" } as T;
+  };
+  assert.ok((await call("session/create", { sessionId: "draft-new", cwd: root })).ok);
+  assert.ok((await list()).ok);
+  assert.equal(workspaces.ownerOf("cwd-match")?.path, row.cwd);
+  const frames = await subscribe("workspace/follow", {});
+  assert.deepEqual(baselineProjects(frames[0]), [
+    { id: "project-moving", name: "source", sessionIds: [row.id], workspaceIds: [] },
+    { id: "target", name: "Target", sessionIds: [], workspaceIds: [] },
+  ]);
+  assert.deepEqual(await move(), { ok: true, value: { status: "confirmed", projectId: "target" } });
+  assert.deepEqual(frames.slice(1), [
+    {
+      type: "localProjects",
+      localProjects: [
+        { id: "project-moving", name: "source", sessionIds: [], workspaceIds: [] },
+        { id: "target", name: "Target", sessionIds: [row.id], workspaceIds: [] },
+      ],
+    },
+  ]);
+  assert.ok((await list()).ok);
+  assert.equal(frames.length, 2);
+  host.projectSnapshot.projects.length = 0;
+  assert.ok((await list()).ok);
+  assert.deepEqual(frames.at(-1), { type: "localProjects", localProjects: [] });
+});
+
+it("updates project bindings when a local root Workspace row is removed or recreated", async (t) => {
+  const { root, workspaces, list, call, subscribe } = setup(t, new FakeChHost());
+  assert.ok((await list()).ok);
+  const targetPath = join(root, "target");
+  const source = workspaces.byPath(join(root, "source"));
+  const primary = workspaces.byPath(targetPath);
+  const secondary = workspaces.byPath(join(root, "second-root"));
+  assert.ok(source && primary && secondary);
+  const frames = await subscribe("workspace/follow", {});
+  const targetFrame = (workspaceIds: string[]) => ({
+    type: "localProjects",
+    localProjects: [
+      {
+        id: "project-moving",
+        name: "source",
+        sessionIds: ["moving"],
+        workspaceIds: [source.workspaceId],
+      },
+      { id: "target", name: "Target", sessionIds: [], workspaceIds },
+    ],
+  });
+  assert.ok((await call("workspace/delete", { workspaceId: primary.workspaceId })).ok);
+  assert.deepEqual(frames.slice(1), [
+    { type: "remove", workspaceId: primary.workspaceId },
+    targetFrame([secondary.workspaceId]),
+  ]);
+  mkdirSync(targetPath);
+  assert.ok((await call("workspace/create", { path: targetPath })).ok);
+  const current = workspaces.byPath(targetPath);
+  assert.ok(current);
+  assert.notEqual(current.workspaceId, primary.workspaceId);
+  const expected = targetFrame([current.workspaceId, secondary.workspaceId]);
+  assert.deepEqual(frames.at(-1), expected);
+  assert.deepEqual(
+    baselineProjects((await subscribe("workspace/follow", {}))[0]),
+    expected.localProjects,
+  );
 });
 
 it("validates the local Thread and request before sending any Host move or remote call", async (t) => {
@@ -260,7 +379,7 @@ it("reconciles unknown outcomes without retries or inferring success", async (t)
     assert.deepEqual(await move(), { ok: true, value: { status: "unknown" } });
     assert.equal(workspaces.ownerOf(row.id)?.path, join(root, "target"));
   }
-  assert.equal(reads, baseline + 2 * ambiguous.length);
+  assert.equal(reads, baseline + ambiguous.length);
   assert.equal(writes, 1 + ambiguous.length);
   error = undefined;
   reply = { status: "confirmed", projectId: "target" };

@@ -62,6 +62,13 @@ interface PinnedWorkspaceOverride {
   pinnedAt?: number;
 }
 
+interface LocalProjectView {
+  id: string;
+  name: string;
+  sessionIds: string[];
+  workspaceIds?: string[];
+}
+
 interface WorkspaceState {
   /** Web sidebar placement, tied to the official placement it supersedes. */
   projectSectionOverrides?: Record<string, ProjectSectionOverride>;
@@ -167,6 +174,7 @@ function workspacePath(path: string): string {
 }
 
 interface NativeProject {
+  id?: string;
   name: string;
   rootPaths: string[];
 }
@@ -317,6 +325,8 @@ export class Workspaces {
   private referencePins: string[] | undefined;
   private remotePins: readonly string[] = [];
   private referenceProjectRoots: ReadonlySet<string> = new Set();
+  private localProjectRootOwners = new Map<string, string>();
+  private localProjects: readonly LocalProjectView[] | undefined;
   private referenceArchives: string[] | undefined;
   private remoteArchives: readonly string[] = [];
   private remoteGroups: WorkspaceView[] = [];
@@ -411,6 +421,30 @@ export class Workspaces {
   private broadcast(frame: unknown, sectionCapability?: boolean): void {
     for (const [sink, capable] of this.followers)
       if (sectionCapability === undefined || capable === sectionCapability) sink.push(frame);
+  }
+
+  private updateLocalProjectRows(
+    projects = this.localProjects,
+    rows = new Map(this.state.items.map((workspace) => [workspace.path, workspace])),
+  ): readonly LocalProjectView[] | undefined {
+    if (projects === undefined) return;
+    const idsByProject = new Map<string, string[]>();
+    for (const [root, projectId] of this.localProjectRootOwners) {
+      const workspace = rows.get(root);
+      if (!workspace || workspace.remote) continue;
+      const ids = idsByProject.get(projectId);
+      if (ids) ids.push(workspace.workspaceId);
+      else idsByProject.set(projectId, [workspace.workspaceId]);
+    }
+    const next = projects.map(({ id, name, sessionIds }) => ({
+      id,
+      name,
+      sessionIds,
+      workspaceIds: idsByProject.get(id) ?? [],
+    }));
+    if (JSON.stringify(next) === JSON.stringify(this.localProjects)) return;
+    this.localProjects = next;
+    return next;
   }
 
   private touch(workspace: WorkspaceView): void {
@@ -1207,11 +1241,15 @@ export class Workspaces {
     };
     this.data.writeJson(FILE, state);
     this.state = state;
+    const localProjects = this.localProjectRootOwners.has(absolute)
+      ? this.updateLocalProjectRows()
+      : undefined;
     this.broadcast({ type: "upsert", workspace });
     this.broadcast({
       type: "order",
       workspaceIds: this.list().map((item) => item.workspaceId),
     });
+    if (localProjects) this.broadcast({ type: "localProjects", localProjects });
     return { workspace, created: true };
   }
 
@@ -1260,6 +1298,7 @@ export class Workspaces {
     groups: Map<string, string | undefined>,
     projectless: ReadonlySet<string> = new Set(),
     projects: readonly NativeProject[] = [],
+    localProjects?: readonly LocalProjectView[],
   ): void {
     const before = new Map(
       this.list().map((workspace) => [workspace.workspaceId, JSON.stringify(workspace)]),
@@ -1376,6 +1415,17 @@ export class Workspaces {
     this.referenceProjectRoots = rootPaths;
     this.referenceGroups = groups;
     this.referenceProjectless = projectless;
+    let projectUpdate: readonly LocalProjectView[] | undefined;
+    if (localProjects !== undefined) {
+      this.localProjectRootOwners = new Map();
+      for (const { path, listings } of roots) {
+        const id = listings[0]?.project.id;
+        // The sidebar deduplicates roots. A row shared by distinct projects is not a drop target.
+        if (id !== undefined && listings.every(({ project }) => project.id === id))
+          this.localProjectRootOwners.set(path, id);
+      }
+      projectUpdate = this.updateLocalProjectRows(localProjects, byPath);
+    }
     const after = this.list();
     const ids = new Set(after.map((workspace) => workspace.workspaceId));
     for (const workspaceId of before.keys())
@@ -1387,6 +1437,7 @@ export class Workspaces {
     if (JSON.stringify([...before.keys()]) !== JSON.stringify(workspaceIds))
       this.broadcast({ type: "order", workspaceIds });
     this.publishPinnedWorkspaces();
+    if (projectUpdate) this.broadcast({ type: "localProjects", localProjects: projectUpdate });
   }
 
   /** An actual Web submission makes its selected folder an explicit Web workspace. */
@@ -1477,8 +1528,21 @@ export class Workspaces {
       };
       this.data.writeJson(FILE, state);
       this.state = state;
+      const localProjects = this.localProjectRootOwners.has(workspace.path)
+        ? this.updateLocalProjectRows()
+        : undefined;
       this.broadcast({ type: "remove", workspaceId: request.workspaceId });
       this.publishPinnedWorkspaces();
+      if (this.officialThreadSections) {
+        this.officialThreadSections = this.officialThreadSections.map((section) => {
+          if (!section.workspaceIds?.includes(workspace.workspaceId)) return section;
+          const { workspaceIds, ...rest } = section;
+          const remaining = workspaceIds.filter((id) => id !== workspace.workspaceId);
+          return remaining.length ? { ...rest, workspaceIds: remaining } : rest;
+        });
+        this.publishProjectSections();
+      }
+      if (localProjects) this.broadcast({ type: "localProjects", localProjects });
       return { deleted: true };
     });
     rpc.register("workspace/moveWorkspaceToSection", async (args) => {
@@ -1557,6 +1621,7 @@ export class Workspaces {
           items: this.list(),
           pinnedSessionIds: this.pinnedSessionIds(),
           pinnedWorkspaceIds: this.pinnedWorkspaceIds(),
+          ...(this.localProjects === undefined ? {} : { localProjects: this.localProjects }),
           threadSections: capable ? this.referenceThreadSections : this.legacyThreadSections,
           ...(capable && this.referenceThreadSectionsV1
             ? { [THREAD_SECTION_CAPABILITY]: true }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readdirSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { it, type TestContext } from "node:test";
 import { setImmediate as immediate } from "node:timers/promises";
 import {
@@ -1287,6 +1287,15 @@ it("workspace mirror: saves complete multi-member groups once and repeats withou
   assert.deepEqual(frames, [
     ...items.map((workspace) => ({ type: "upsert", workspace })),
     { type: "order", workspaceIds: items.map((workspace) => workspace.workspaceId) },
+    {
+      type: "localProjects",
+      localProjects: Array.from({ length: 12 }, (_, i) => ({
+        id: `project-thread-${i}`,
+        name: `project-${i % 2}`,
+        sessionIds: [`thread-${i}`],
+        workspaceIds: [],
+      })),
+    },
   ]);
   writes.mock.resetCalls();
   frames.length = 0;
@@ -1390,6 +1399,23 @@ it("workspace mirror: preserves Web information and identities across native tit
   assert.deepEqual(frames, [
     { type: "upsert", workspace: firstProject },
     { type: "upsert", workspace: updated },
+    {
+      type: "localProjects",
+      localProjects: [
+        {
+          id: "project-web-session",
+          name: basename(root),
+          sessionIds: ["web-session"],
+          workspaceIds: [explicit.workspaceId],
+        },
+        {
+          id: project.id,
+          name: project.name,
+          sessionIds: ["moving", "second-root"],
+          workspaceIds: [first.workspaceId, second.workspaceId],
+        },
+      ],
+    },
   ]);
   writes.mock.resetCalls();
   frames.length = 0;

@@ -207,23 +207,74 @@ function createHarness(options: {
   };
 }
 
-it("clears an expired saved draft on startup and falls back to normal initial restoration", async () => {
-  const expiredDraft = SessionId("draft-1b699a94-b559-44b6-8c4a-4b1604d01d4b");
-  const freshDraft = SessionId("draft-fresh-1");
+const recoveryCases = [
+  ["session/not-found", "draft-expired", "Draft Session is no longer available."],
+  ["remote/not-found", "web-remote:missing", "Remote Thread not found"],
+  ["remote/identity-invalid", "web-remote:invalid", "Invalid remote Thread identity"],
+  ["remote/offline", "web-remote:offline", "Remote peer is not connected"],
+] as const;
+
+for (const [code, sessionId, message] of recoveryCases) {
+  it(`falls back to a local draft when startup receives ${code}`, async () => {
+    const savedSession = SessionId(sessionId);
+    const freshDraft = SessionId("draft-fresh-1");
+    const h = createHarness({
+      savedSessionId: savedSession,
+      createdIds: [freshDraft],
+      loadSummary: async () => {
+        throw remoteError(code, message);
+      },
+    });
+
+    await flushMicrotasks();
+
+    assert.deepEqual(h.loadSummaryCalls, [savedSession]);
+    assert.deepEqual(h.service.opening.getSnapshot(), { state: "idle" });
+    assert.deepEqual(h.retainedMain, [freshDraft]);
+    assert.equal(
+      h.storage.get("dsh.sessions.current"),
+      JSON.stringify({ sessionId: code === "remote/offline" ? savedSession : freshDraft }),
+    );
+  });
+}
+
+it("replaces the saved offline selection when the temporary draft binds or the user navigates", async () => {
+  const offline = SessionId("web-remote:offline");
+  const draft = SessionId("draft-temporary");
+  const canonical = SessionId("canonical-thread");
+  const other = SessionId("another-thread");
   const h = createHarness({
-    savedSessionId: expiredDraft,
-    createdIds: [freshDraft],
-    loadSummary: async () => {
-      throw remoteError("session/not-found", "Draft Session is no longer available.");
+    savedSessionId: offline,
+    createdIds: [draft],
+    loadSummary: async (id, listStore) => {
+      if (id === offline) throw remoteError("remote/offline", "Remote peer is not connected");
+      listStore.update((state) => {
+        state.ids.push(id);
+        state.byId[id] = {
+          id,
+          displayTitle: id,
+          running: false,
+          blank: false,
+          updatedAt: 1,
+          retainedBy: {},
+        };
+      });
     },
   });
 
   await flushMicrotasks();
+  assert.deepEqual(h.retainedMain, [draft]);
+  assert.equal(h.storage.get("dsh.sessions.current"), JSON.stringify({ sessionId: offline }));
 
-  assert.deepEqual(h.loadSummaryCalls, [expiredDraft]);
-  assert.deepEqual(h.service.opening.getSnapshot(), { state: "idle" });
-  assert.deepEqual(h.retainedMain, [freshDraft]);
-  assert.equal(h.storage.get("dsh.sessions.current"), JSON.stringify({ sessionId: freshDraft }));
+  // The session-bound notification opens the canonical Thread through this entry point.
+  h.service.openSession(canonical);
+  await flushMicrotasks();
+  assert.equal(h.storage.get("dsh.sessions.current"), JSON.stringify({ sessionId: canonical }));
+
+  h.service.openSession(other);
+  await flushMicrotasks();
+  assert.equal(h.storage.get("dsh.sessions.current"), JSON.stringify({ sessionId: other }));
+  assert.deepEqual(h.retainedMain, [draft, canonical, other]);
 });
 
 it("still restores a live persisted draft across page reload without creating a duplicate", async () => {
@@ -291,23 +342,32 @@ it("keeps saved selection and retryable error state on transient startup failure
   assert.deepEqual(h.retainedMain, [realSession]);
 });
 
-it("still surfaces session/not-found for explicit openSession calls", async () => {
-  const missing = SessionId("draft-explicit-missing");
-  const initialBlank = SessionId("draft-initial");
-  const h = createHarness({
-    createdIds: [initialBlank],
-    loadSummary: async () => {
-      throw remoteError("session/not-found", "Draft Session is no longer available.");
-    },
-  });
+for (const [code, sessionId, message] of recoveryCases) {
+  it(`keeps ${code} visible and retryable when explicitly opening a session`, async () => {
+    const target = SessionId(sessionId);
+    const initialBlank = SessionId("draft-initial");
+    const h = createHarness({
+      createdIds: [initialBlank],
+      loadSummary: async () => {
+        throw remoteError(code, message);
+      },
+    });
 
-  await flushMicrotasks();
-  h.service.openSession(missing);
-  await flushMicrotasks();
+    await flushMicrotasks();
+    h.service.openSession(target);
+    await flushMicrotasks();
 
-  assert.deepEqual(h.service.opening.getSnapshot(), {
-    state: "error",
-    sessionId: missing,
-    message: "Draft Session is no longer available.",
+    const errorState = { state: "error", sessionId: target, message };
+    assert.deepEqual(h.service.opening.getSnapshot(), errorState);
+    h.service.retryOpening();
+    await flushMicrotasks();
+
+    assert.deepEqual(h.loadSummaryCalls, [target, target]);
+    assert.deepEqual(h.service.opening.getSnapshot(), errorState);
+    assert.deepEqual(h.retainedMain, [initialBlank]);
+    assert.equal(
+      h.storage.get("dsh.sessions.current"),
+      JSON.stringify({ sessionId: initialBlank }),
+    );
   });
-});
+}

@@ -93,6 +93,10 @@ export class PeerHostManager {
     return peerId === undefined ? undefined : this.clients.get(peerId);
   }
 
+  async waitForInitialConnection(hostId: string): Promise<void> {
+    await this.client(hostId)?.waitForInitialConnection();
+  }
+
   source(hostId: string): PeerThreadSource | undefined {
     const peerId = c.peerIdFromRemoteHostId(hostId);
     return peerId === undefined ? undefined : this.sources.get(peerId);

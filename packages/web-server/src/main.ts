@@ -475,6 +475,9 @@ const remoteSessions = new RemoteSessions(
 peerManager.onChange = (hostId) => {
   remoteSessions.hostsChanged(hostId);
 };
+peerManager.onPeerRemoved = (hostId) => {
+  workspaces.removeRemoteHostOrder(hostId);
+};
 remoteSessions.install(rpc, streams);
 const remoteWorkspaceFiles = new RemotePeerWorkspaceFiles(remoteSessions);
 const peerWorkspaceSearchCache = new WorkspaceFileSearchCache();

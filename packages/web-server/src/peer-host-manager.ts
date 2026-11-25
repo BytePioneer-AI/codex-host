@@ -24,6 +24,7 @@ export class PeerHostManager {
   private readonly streamIdleTimeoutMs: number | undefined;
   private readonly projector: ((threadId: string) => PeerThreadProjector) | undefined;
   onChange?: (hostId?: string) => void;
+  onPeerRemoved?: (hostId: string) => void;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
   onUsageChanged?: (hostId: string, threadId: string) => void;
   onCatalogInspectionChanged?: (hostId: string) => void;
@@ -233,6 +234,7 @@ export class PeerHostManager {
             this.sources.delete(peerId);
             client.close();
             this.clients.delete(peerId);
+            this.onPeerRemoved?.(client.hostId);
             this.changed(client.hostId);
             return { removed: true };
           case "update": {

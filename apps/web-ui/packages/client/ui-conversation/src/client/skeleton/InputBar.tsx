@@ -40,6 +40,7 @@ import type { DraftAttachmentId, DraftResponseAnnotation } from "../contract/inp
 import { DraftEditor } from "../input/editor/DraftEditor.tsx";
 import { registerComposerKeymap } from "../input/editor/keymap.ts";
 import {
+  blurActiveAnnotationEditor,
   focusDraftEditor,
   installDraftFilePicker,
   installDraftKeymap,
@@ -545,6 +546,13 @@ export const InputBar = memo(function InputBar({
     keepDraftFocus(e, editor);
   };
 
+  const keepPrimaryFocus = (e: MouseEvent<HTMLButtonElement>): void => {
+    if (!primaryStops && e.button === 0) {
+      blurActiveAnnotationEditor(e.currentTarget.ownerDocument);
+    }
+    keepDraftFocus(e, editor);
+  };
+
   const onToggleCommandMenu = (): void => {
     if (keyboard === undefined) return;
     // Keyboard activation must restore editor focus before opening its menu.
@@ -928,7 +936,7 @@ export const InputBar = memo(function InputBar({
                       className={css.primary}
                       aria-label={primaryLabel}
                       disabled={primaryDisabled}
-                      onMouseDown={keepFocus}
+                      onMouseDown={keepPrimaryFocus}
                       onClick={onPrimary}
                     >
                       {primaryStops ? (

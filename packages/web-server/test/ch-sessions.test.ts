@@ -767,6 +767,11 @@ it("propagates native section membership and summaries to browsers that did not 
         .sort();
     const duringContinuation = addedB();
     eventsB.length = 0;
+    pageOrdinary.updatedAt += 1;
+    const continuedAgain = await list({ cursor: firstA.cursor });
+    assert.ok(continuedAgain.ids.includes(pageOrdinary.id));
+    assert.deepEqual(addedB(), [], "updates to a request-local row must also stay request-local");
+    eventsB.length = 0;
     // Another first-page read includes the section members in its RPC response, but B does not call it.
     const refreshedA = await list();
     assert.deepEqual(

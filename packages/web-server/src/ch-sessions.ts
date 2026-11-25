@@ -673,8 +673,10 @@ export class ChSessions {
       this.workspaces.setReferenceArchives([...archivedIds].sort()),
     );
     for (const id of found.keys()) this.workspacePageRows.delete(id);
+    const headIds =
+      cursor === undefined ? this.tree.withAncestors(snapshot.threads.map((row) => row.id)) : null;
     await timing.measure("catalog_publish", () =>
-      this.publishCatalogChanges(cursor !== undefined, newSectionMembers),
+      this.publishCatalogChanges(headIds, newSectionMembers),
     );
     // Project members resolve to Workspaces, which exist once their roots are synced.
     if (threadSections && (!this.workspaces.usesNativeProjects || projects.nativeProjects)) {
@@ -802,31 +804,22 @@ export class ChSessions {
     };
   }
   private async publishCatalogChanges(
-    continuation: boolean,
+    headIds: ReadonlySet<string> | null,
     newSectionMembers: ReadonlySet<string>,
   ): Promise<void> {
     const before = this.publishedCatalog;
-    const next = new Map(
-      [...this.rows]
-        .filter(([id]) => !this.workspacePageRows.has(id))
-        .map(([id, row]) => [id, this.catalogKey(row)]),
-    );
-    // First load is already delivered by session/list. Subsequent refreshes,
-    // including ones requested by a second browser, publish actual deltas only.
-    // New continuation rows stay request-local unless a shared section references them.
-    const changed =
-      before === undefined
-        ? []
-        : await Promise.all(
-            [...this.rows.values()]
-              .filter(
-                (row) =>
-                  newSectionMembers.has(row.id) ||
-                  (before.get(row.id) !== next.get(row.id) &&
-                    (!continuation || before.has(row.id))),
-              )
-              .map((row) => this.summary(row)),
-          );
+    const next = new Map<string, string>();
+    const changed: ChThread[] = [];
+    for (const row of this.rows.values()) {
+      const newlyReferenced = newSectionMembers.has(row.id);
+      if (!before?.has(row.id) && !headIds?.has(row.id) && !newlyReferenced) continue;
+      const key = this.catalogKey(row);
+      next.set(row.id, key);
+      // The first head is already delivered by session/list. A private continuation
+      // row only enters the shared catalog when a head page or a section exposes it.
+      if (newlyReferenced || (before && before.get(row.id) !== key)) changed.push(row);
+    }
+    const summaries = await Promise.all(changed.map((row) => this.summary(row)));
     this.publishedCatalog = next;
     // Previously opened Threads retain sequenced browser projections even after
     // unfollow. Cached catalog hints cannot replace them. Push the authoritative
@@ -840,7 +833,7 @@ export class ChSessions {
     // A Thread whose view was dropped has no journal to publish through, yet browsers
     // keep its sequenced values. Advance the reserved sequence below its next view.
     if (this.controls.size > 0) {
-      for (const { sessionId } of changed) {
+      for (const { sessionId } of summaries) {
         const row = this.rows.get(sessionId);
         const seq = row ? this.threads.reserveDroppedProjectionSeq(sessionId) : undefined;
         if (!row || seq === undefined) continue;
@@ -849,7 +842,7 @@ export class ChSessions {
             sink.push({ type: "projection", sessionId, key, value, seq });
       }
     }
-    for (const row of changed) this.events.emit("api-session/added", row);
+    for (const row of summaries) this.events.emit("api-session/added", row);
     if (before)
       for (const id of before.keys())
         if (!next.has(id)) {

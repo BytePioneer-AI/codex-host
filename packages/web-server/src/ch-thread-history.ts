@@ -1,6 +1,6 @@
 /** Native CH pagination feeding a disposable, backwards-extensible Web journal. */
 import type { ChHostClient } from "./ch-host-client.ts";
-import type { ClientThreadSnapshot } from "@codexhost/shared-contracts";
+import { WEB_HANDOFF_PROJECTION, type ClientThreadSnapshot } from "@codexhost/shared-contracts";
 import { ChThreadView, type ChThread, type ChTurn } from "./ch-thread-view.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { ChCommandPresentation } from "./ch-command-presentation.ts";
@@ -151,6 +151,7 @@ export class ChThreadHistory extends ChThreadView {
       this.ensureCurrent();
       this.ownerSnapshot = snapshot;
       if (snapshot) {
+        this.log.setProjection(WEB_HANDOFF_PROJECTION, snapshot.handoff ?? null);
         const readOnly = thread.canAcceptDirectInput === false;
         const allowsAttachments =
           !readOnly && !(thread.parentThreadId ?? this.thread.parentThreadId);

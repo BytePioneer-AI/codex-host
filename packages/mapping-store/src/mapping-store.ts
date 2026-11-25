@@ -23,6 +23,7 @@ import type {
   HostThreadId,
   HostTurnId,
   NativeSessionRef,
+  ThreadHandoffMetadata,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -57,6 +58,7 @@ import {
   writeSectionPlacementsFile,
   type StoredSectionPlacementV1,
 } from "./section-placements.js";
+import { readThreadHandoffsFile, writeThreadHandoffsFile } from "./thread-handoffs.js";
 import {
   readSupersededSessionsFile,
   writeSupersededSessionsFile,
@@ -275,6 +277,7 @@ async function exists(file: string): Promise<boolean> {
 export class MappingStore {
   readonly #backupsDirectory: string;
   readonly #delegationsDirectory: string;
+  readonly #handoffsDirectory: string;
   readonly #beforeReplace: MappingStoreOptions["beforeReplace"];
   readonly #directory: string;
   readonly #instanceId: string;
@@ -293,6 +296,7 @@ export class MappingStore {
   readonly #hostTurns = new Map<HostTurnId, HostThreadId>();
   readonly #nativeTurns = new Map<string, HostTurnId>();
   #sectionPlacements: StoredSectionPlacementV1[] = [];
+  #threadHandoffs = new Map<HostThreadId, ThreadHandoffMetadata>();
   #supersededSessions: StoredSupersededSessionV1[] = [];
   // ponytail: A Store-wide queue caps write concurrency at one; shard only if measured throughput requires it.
   #writeTail: Promise<void> = Promise.resolve();
@@ -302,6 +306,7 @@ export class MappingStore {
     this.#directory = path.resolve(options.directory);
     this.#threadsDirectory = path.join(this.#directory, "threads");
     this.#delegationsDirectory = path.join(this.#directory, "delegations");
+    this.#handoffsDirectory = path.join(this.#directory, "handoffs");
     this.#backupsDirectory = path.join(this.#directory, "backups");
     this.#quarantineDirectory = path.join(this.#directory, "quarantine");
     this.#sectionsDirectory = path.join(this.#directory, "sections");
@@ -317,6 +322,7 @@ export class MappingStore {
     await Promise.all([
       mkdir(this.#threadsDirectory, { recursive: true }),
       mkdir(this.#delegationsDirectory, { recursive: true }),
+      mkdir(this.#handoffsDirectory, { recursive: true }),
       mkdir(this.#backupsDirectory, { recursive: true }),
       mkdir(this.#quarantineDirectory, { recursive: true }),
       mkdir(this.#sectionsDirectory, { recursive: true }),
@@ -369,7 +375,13 @@ export class MappingStore {
             continue;
           }
         }
-        if (record.state === "creating" && !record.nativeSessionRef && !record.importSourceRef) {
+        const hasPendingInjection = (record.pendingInjectedText?.length ?? 0) > 0;
+        if (
+          record.state === "creating" &&
+          !record.nativeSessionRef &&
+          !record.importSourceRef &&
+          !hasPendingInjection
+        ) {
           await rm(primary, { force: true });
           await rm(backup, { force: true });
           await rm(this.#metadataPath(record.hostThreadId), { force: true });
@@ -432,6 +444,19 @@ export class MappingStore {
         this.#sectionPlacements = [];
       }
       try {
+        this.#threadHandoffs = await readThreadHandoffsFile(this.#threadHandoffsPath);
+      } catch {
+        // Handoff provenance is presentation metadata; losing it must not block Thread access.
+        await rename(
+          this.#threadHandoffsPath,
+          path.join(
+            this.#quarantineDirectory,
+            `thread-handoffs.json.${this.#now().getTime()}.invalid`,
+          ),
+        ).catch(() => undefined);
+        this.#threadHandoffs = new Map();
+      }
+      try {
         this.#supersededSessions = await readSupersededSessionsFile(this.#supersededSessionsPath);
       } catch {
         // Only import suggestions depend on this; losing it must not block Thread access.
@@ -451,6 +476,7 @@ export class MappingStore {
       this.#records.clear();
       this.#delegations.clear();
       this.#sectionPlacements = [];
+      this.#threadHandoffs.clear();
       this.#supersededSessions = [];
       this.#rebuildIndexes();
       await this.close().catch(() => undefined);
@@ -1108,6 +1134,53 @@ export class MappingStore {
     return result;
   }
 
+  /** Persisted handoff metadata for a target Thread (official Codex or External Harness). */
+  async getThreadHandoff(targetThreadId: HostThreadId): Promise<ThreadHandoffMetadata | null> {
+    this.#requireInitialized();
+    const handoff = this.#threadHandoffs.get(targetThreadId);
+    return handoff ? cloneRecord(handoff) : null;
+  }
+
+  /** Atomically persists handoff metadata for a target Thread without mutating Thread records. */
+  async saveThreadHandoff(
+    targetThreadId: HostThreadId,
+    handoff: ThreadHandoffMetadata,
+  ): Promise<ThreadHandoffMetadata> {
+    this.#requireInitialized();
+    let result: ThreadHandoffMetadata | undefined;
+    await this.#enqueue(async () => {
+      const next = new Map(this.#threadHandoffs);
+      next.set(targetThreadId, cloneRecord(handoff));
+      try {
+        this.#threadHandoffs = await writeThreadHandoffsFile(this.#threadHandoffsPath, next);
+      } catch (error) {
+        throw new MappingStoreError("IO_ERROR", "Thread handoff metadata could not be persisted", {
+          cause: error,
+        });
+      }
+      result = this.#threadHandoffs.get(targetThreadId);
+    });
+    if (!result) throw new MappingStoreError("IO_ERROR", "Thread handoff write produced no result");
+    return cloneRecord(result);
+  }
+
+  /** Removes persisted handoff metadata for a target Thread, if present. */
+  async removeThreadHandoff(targetThreadId: HostThreadId): Promise<void> {
+    this.#requireInitialized();
+    await this.#enqueue(async () => {
+      if (!this.#threadHandoffs.has(targetThreadId)) return;
+      const next = new Map(this.#threadHandoffs);
+      next.delete(targetThreadId);
+      try {
+        this.#threadHandoffs = await writeThreadHandoffsFile(this.#threadHandoffsPath, next);
+      } catch (error) {
+        throw new MappingStoreError("IO_ERROR", "Thread handoff metadata could not be persisted", {
+          cause: error,
+        });
+      }
+    });
+  }
+
   async removeProvisional(hostThreadId: HostThreadId): Promise<void> {
     this.#requireInitialized();
     await this.#enqueue(async () => {
@@ -1178,6 +1251,15 @@ export class MappingStore {
     }
     this.#records.delete(hostThreadId);
     this.#rebuildIndexes();
+    if (this.#threadHandoffs.has(hostThreadId)) {
+      const next = new Map(this.#threadHandoffs);
+      next.delete(hostThreadId);
+      try {
+        this.#threadHandoffs = await writeThreadHandoffsFile(this.#threadHandoffsPath, next);
+      } catch {
+        // Retain the in-memory entry when disk persistence fails so removal can be retried.
+      }
+    }
   }
 
   async close(): Promise<void> {
@@ -1422,10 +1504,11 @@ export class MappingStore {
   }
 
   async #cleanupResidue(): Promise<void> {
-    const [threadNames, delegationNames, sectionNames, rootNames, metadataNames] =
+    const [threadNames, delegationNames, handoffNames, sectionNames, rootNames, metadataNames] =
       await Promise.all([
         readdir(this.#threadsDirectory),
         readdir(this.#delegationsDirectory),
+        readdir(this.#handoffsDirectory),
         readdir(this.#sectionsDirectory),
         readdir(this.#directory),
         readdir(this.#metadataDirectory),
@@ -1437,6 +1520,9 @@ export class MappingStore {
       ...delegationNames
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#delegationsDirectory, name), { force: true })),
+      ...handoffNames
+        .filter((name) => name.includes(".tmp-"))
+        .map((name) => rm(path.join(this.#handoffsDirectory, name), { force: true })),
       ...sectionNames
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#sectionsDirectory, name), { force: true })),
@@ -1571,6 +1657,10 @@ export class MappingStore {
 
   get #sectionPlacementsPath(): string {
     return path.join(this.#sectionsDirectory, "placements.json");
+  }
+
+  get #threadHandoffsPath(): string {
+    return path.join(this.#handoffsDirectory, "handoffs.json");
   }
 
   get #supersededSessionsPath(): string {

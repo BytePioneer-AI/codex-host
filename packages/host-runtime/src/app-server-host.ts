@@ -78,7 +78,7 @@ import { NativeAccountObserver } from "./native-account-observer.js";
 import { nativeThreadSupportsReferences } from "./native-thread-reference-capability.js";
 import { normalizeDesktopTitleMcp } from "./native-title-mcp.js";
 import { THREAD_REFERENCE_SOURCE_HOST_PARAM } from "@codexhost/shared-contracts";
-import { HarnessAccountInspectionCache, retainedPrewarmDirectory } from "./harness-accounts.js";
+import { HarnessAccountInspectionCache } from "./harness-accounts.js";
 import type { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
@@ -94,7 +94,6 @@ import type {
   HarnessResult,
   HarnessSession,
   HarnessSessionCapabilities,
-  NativeCleanupReceipt,
   HostApprovalInteraction,
   HostSubagentState,
   HostApprovalResponse,
@@ -216,7 +215,10 @@ import {
   type ExternalThreadLocation,
   type ExternalThreadResolution,
 } from "./external-thread-runtime.js";
-import { ExternalSessionReleaseError } from "./external-thread-lifecycle.js";
+import {
+  ExternalSessionReleaseError,
+  withSessionReleaseTimeout,
+} from "./external-thread-lifecycle.js";
 import {
   ExternalSteerError,
   ExternalSteerOutcomeUnknownError,
@@ -354,25 +356,6 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function closeBillingSourceAfterSetup(
-  session: HarnessSession,
-): Promise<NativeCleanupReceipt | "unknown"> {
-  try {
-    await session.close();
-  } catch {
-    // Cleanup proof is independent of transport shutdown; still request the Adapter receipt.
-  }
-  try {
-    const confirm = (session as Partial<BillingSourceSession>).confirmNativeCleanup;
-    if (typeof confirm !== "function") return "unknown";
-    const confirmed = await confirm.call(session);
-    return confirmed.ok && (confirmed.value === "deleted" || confirmed.value === "not-persisted")
-      ? confirmed.value
-      : "unknown";
-  } catch {
-    return "unknown";
-  }
-}
 import {
   classifyCreateRequestRoute,
   RequestRouteObservationTracker,
@@ -1656,6 +1639,12 @@ export class AppServerHost {
 
   async #loadInstalledPlugins(usageReady: () => void): Promise<void> {
     if (!this.#options.pluginRoots || this.#pluginLoadAbort.signal.aborted) return;
+    const environment = this.#options.environment ?? process.env;
+    const context: HarnessPluginContext = this.#options.pluginContext ?? {
+      environment,
+      platform: process.platform,
+      managedRemoteHost: false,
+    };
     const plugins = await loadHarnessPlugins({
       roots: this.#options.pluginRoots,
       scope: "external",
@@ -1667,10 +1656,14 @@ export class AppServerHost {
         usageReady();
       },
       launchCommandForPlugin: (id) => this.#launchSettings.initialCommand(id),
-      context: this.#options.pluginContext ?? {
-        environment: this.#options.environment ?? process.env,
-        platform: process.platform,
-        managedRemoteHost: false,
+      context: {
+        ...context,
+        dataDirectory:
+          context.dataDirectory ??
+          path.resolve(
+            environment.CODEXHOST_DATA_DIR ??
+              path.join(environment.HOME ?? os.homedir(), ".codexhost"),
+          ),
       },
       reservedIds: new Set(this.#externalAdapters.keys()),
       signal: this.#pluginLoadAbort.signal,
@@ -1802,19 +1795,25 @@ export class AppServerHost {
       this.#externalRuntime.idleRelease.stop();
       await this.#externalRuntime.idleRelease.drain();
       await this.#pluginLoading;
-      const threads = this.#externalRuntime.values();
-      const disposable = threads.filter((thread) => thread.record.billingSourceRef);
-      const retained = threads.filter((thread) => !thread.record.billingSourceRef);
-      const cleaned = await Promise.allSettled(
-        disposable.map((thread) => this.#externalRuntime.deleteThread(thread.id)),
+      const closed = await Promise.allSettled(
+        this.#externalRuntime.values().map((thread) =>
+          thread.record.billingSourceRef
+            ? this.#externalRuntime.deleteThread(thread.id)
+            : withSessionReleaseTimeout(
+                Promise.resolve()
+                  .then(() => thread.session.close())
+                  .then(() => thread.outputTask),
+                "Session shutdown timed out",
+              ),
+        ),
       );
-      for (const result of cleaned) {
+      for (const result of closed) {
         if (result.status === "rejected") this.#diagnose(result.reason);
       }
-      await Promise.allSettled(retained.map(({ session }) => session.close()));
-      await Promise.allSettled(threads.map(({ outputTask }) => outputTask));
       await Promise.allSettled(
-        threads.map((thread) => this.#externalRuntime.persistUsageMeasurements(thread)),
+        this.#externalRuntime
+          .values()
+          .map((thread) => this.#externalRuntime.persistUsageMeasurements(thread)),
       );
       await this.#closeAdapters();
       await this.#externalRuntime.drain();
@@ -2804,10 +2803,7 @@ export class AppServerHost {
     adapter: HarnessAdapter,
     refresh = false,
   ): Promise<HarnessAccountInspectResult> {
-    const directory = adapter.runRetainedPrewarm
-      ? retainedPrewarmDirectory(this.#options.environment ?? process.env, adapter.harnessId)
-      : undefined;
-    return this.#accountInspections.inspect(adapter, this.#pluginDescriptors, refresh, directory);
+    return this.#accountInspections.inspect(adapter, this.#pluginDescriptors, refresh);
   }
 
   async #currentCodexAccountId(): Promise<string | null> {
@@ -4498,7 +4494,11 @@ export class AppServerHost {
     let balance: AccountBalanceSnapshot | null = null;
     try {
       credits = parseHarnessAccountCredits(
-        session?.readAccountCredits ? await session.readAccountCredits() : adapter?.credits?.(),
+        session?.readAccountCredits
+          ? await session.readAccountCredits()
+          : adapter?.credits
+            ? adapter.credits()
+            : await adapter?.refreshCredits?.(),
       );
     } catch {
       // Optional account telemetry cannot fail the Thread's usage inspection.
@@ -4517,6 +4517,7 @@ export class AppServerHost {
       accountCreditsSupported:
         typeof session?.readAccountCredits === "function" ||
         typeof adapter?.credits === "function" ||
+        typeof adapter?.refreshCredits === "function" ||
         typeof adapter?.balance === "function",
       ...(credits ? { accountCredits: credits } : {}),
       ...(balance ? { accountBalance: balance } : {}),
@@ -5510,22 +5511,24 @@ export class AppServerHost {
     }
     if (!sessionResult.ok) {
       this.#routeObservationTracker.rejectCreate(request.id);
-      const cleanupConfirmed =
-        !billingSourceRef ||
-        ("nativeCleanup" in sessionResult &&
-          (sessionResult.nativeCleanup === "deleted" ||
-            sessionResult.nativeCleanup === "not-persisted"));
-      if (cleanupConfirmed) {
+      const nativeCleanup = "nativeCleanup" in sessionResult ? sessionResult.nativeCleanup : null;
+      let mappingRemoved = true;
+      if (billingSourceRef) {
+        mappingRemoved = await this.#externalRuntime.rollbackBillingSource(
+          record.hostThreadId,
+          nativeCleanup === "deleted" || nativeCleanup === "not-persisted" ? nativeCleanup : null,
+        );
+      } else {
         await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
       }
       const mapped = mapExternalThreadHarnessError(sessionResult.error, "create");
       await this.#writer.json(
         rpcError(
           request,
-          cleanupConfirmed ? mapped.code : -32075,
-          cleanupConfirmed
+          mappingRemoved ? mapped.code : -32075,
+          mappingRemoved
             ? mapped.message
-            : `${mapped.message}; Thread ${record.hostThreadId} retained with unknown native cleanup`,
+            : `${mapped.message}; Thread ${record.hostThreadId} retained for cleanup`,
         ),
       );
       return;
@@ -5537,28 +5540,27 @@ export class AppServerHost {
         : undefined;
     if (
       billingSourceRef &&
-      (bound?.billingSourceRef.harnessId !== billingSourceRef.harnessId ||
+      (bound?.billingSourceRef?.harnessId !== billingSourceRef.harnessId ||
         bound.billingSourceRef.id !== billingSourceRef.id ||
         typeof bound.confirmNativeCleanup !== "function")
     ) {
       this.#routeObservationTracker.rejectCreate(request.id);
-      const nativeCleanup = await closeBillingSourceAfterSetup(session);
-      if (nativeCleanup !== "unknown") {
-        await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
-      }
+      const mappingRemoved = await this.#externalRuntime.rollbackBillingSource(
+        record.hostThreadId,
+        session,
+      );
       await this.#writer.json(
         rpcError(
           request,
           -32075,
-          nativeCleanup === "unknown"
-            ? `Adapter did not confirm the Billing Source or native cleanup for Thread ${record.hostThreadId}; the Host mapping was retained`
-            : `Adapter did not confirm the Billing Source for Thread ${record.hostThreadId}; native cleanup was confirmed`,
+          mappingRemoved
+            ? "Adapter did not confirm the Billing Source; native cleanup was confirmed"
+            : `Adapter did not confirm the Billing Source for Thread ${record.hostThreadId}; the Host mapping was retained for cleanup`,
         ),
       );
       return;
     }
     await this.#externalRuntime.idleRelease.runOperation(record.hostThreadId, async () => {
-      let externalThread: ExternalThread | undefined;
       try {
         if (session.initialState.nativeRef && !prewarm) {
           record = await this.#repository.commitNative(
@@ -5576,7 +5578,7 @@ export class AppServerHost {
           turns: [],
           sessionId: record.hostThreadId,
         });
-        externalThread = this.#registerExternalThread({
+        const externalThread = this.#registerExternalThread({
           record,
           session,
           unsubmittedPrewarm: prewarm,
@@ -5619,25 +5621,24 @@ export class AppServerHost {
         if (record.state === "ready") await this.#notifyExternalThreadStarted(thread);
       } catch {
         this.#routeObservationTracker.forgetThread(record.hostThreadId);
-        const nativeCleanup = bound ? await closeBillingSourceAfterSetup(session) : undefined;
-        if (nativeCleanup !== "unknown") {
+        let mappingRemoved = true;
+        if (bound) {
+          mappingRemoved = await this.#externalRuntime.rollbackBillingSource(
+            record.hostThreadId,
+            session,
+          );
+        } else {
           this.#externalRuntime.remove(record.hostThreadId);
-          if (bound) {
-            await this.#repository.removeThread(record.hostThreadId).catch(() => undefined);
-          } else {
-            await session.close().catch(() => undefined);
-            await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
-          }
-        } else if (externalThread) {
-          this.#externalRuntime.markSessionUnavailable(externalThread);
+          await session.close().catch(() => undefined);
+          await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
         }
         await this.#writer.json(
           rpcError(
             request,
             -32081,
-            nativeCleanup !== "unknown"
+            mappingRemoved
               ? "External Thread could not be persisted"
-              : `External Thread ${record.hostThreadId} setup failed and native cleanup is unconfirmed`,
+              : `External Thread ${record.hostThreadId} setup failed; the Host mapping was retained for cleanup`,
           ),
         );
       }

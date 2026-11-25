@@ -1,5 +1,3 @@
-import { homedir } from "node:os";
-import path from "node:path";
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import {
   harnessAccountInspectResultSchema,
@@ -15,14 +13,6 @@ import {
 
 const DEFAULT_ACCOUNT_INSPECTION_TIMEOUT_MS = 12_000;
 const DEFAULT_ACCOUNT_CACHE_TTL_MS = 15_000;
-
-export function retainedPrewarmDirectory(env: NodeJS.ProcessEnv, harnessId: HarnessId): string {
-  return path.resolve(
-    env.CODEXHOST_DATA_DIR ?? path.join(env.HOME ?? homedir(), ".codexhost"),
-    "retained-prewarm",
-    harnessId,
-  );
-}
 
 function harnessName(
   harnessId: HarnessId,
@@ -55,7 +45,6 @@ export async function inspectHarnessAccount(
   adapter: HarnessAdapter,
   descriptors: readonly HarnessPluginDescriptor[],
   timeoutMs = DEFAULT_ACCOUNT_INSPECTION_TIMEOUT_MS,
-  retainedDirectory?: string,
 ): Promise<HarnessAccountInspectResult> {
   const identity = {
     harnessId: adapter.harnessId,
@@ -68,9 +57,7 @@ export async function inspectHarnessAccount(
   try {
     const value = await Promise.race([
       Promise.resolve().then(async (): Promise<unknown> =>
-        adapter.inspectAccounts
-          ? adapter.inspectAccounts()
-          : adapter.inspectAccount?.(retainedDirectory),
+        adapter.inspectAccounts ? adapter.inspectAccounts() : adapter.inspectAccount?.(),
       ),
       new Promise<null>((resolve) => {
         timer = setTimeout(() => resolve(null), timeoutMs);
@@ -133,7 +120,6 @@ export class HarnessAccountInspectionCache {
     adapter: HarnessAdapter,
     descriptors: readonly HarnessPluginDescriptor[],
     refresh = false,
-    retainedDirectory?: string,
   ): Promise<HarnessAccountInspectResult> {
     const cached = this.#results.get(adapter.harnessId);
     if (!refresh && cached && this.now() < cached.freshUntil) {
@@ -141,7 +127,7 @@ export class HarnessAccountInspectionCache {
     }
     const active = this.#flights.get(adapter.harnessId);
     if (!refresh && active) return active;
-    const flight = inspectHarnessAccount(adapter, descriptors, undefined, retainedDirectory)
+    const flight = inspectHarnessAccount(adapter, descriptors)
       .then((result) => {
         if (this.#flights.get(adapter.harnessId) === flight) {
           this.#results.set(adapter.harnessId, {

@@ -53,6 +53,7 @@ import { reconcileExternalTurnItemIds } from "./external-turn-item-ids.js";
 import {
   ExternalSessionReleaseError,
   ExternalThreadLifecycle,
+  withSessionReleaseTimeout,
 } from "./external-thread-lifecycle.js";
 import { UsageMeter } from "@codexhost/session-runtime/usage-metering";
 
@@ -280,7 +281,8 @@ export class ExternalThreadRuntime {
   readonly #steeredTurnIds = new Map<string, Set<HostTurnId>>();
   readonly #subagentRunning: (threadId: string) => boolean;
   readonly #threads = new Map<string, ExternalThread>();
-  readonly #nativeCleanupReceipts = new Map<string, NativeCleanupReceipt>();
+  // A null owner means this process knows cleanup is unresolved, but has no Session to retry.
+  readonly #nativeCleanups = new Map<string, NativeCleanupReceipt | HarnessSession | null>();
   readonly #liveFailures = new Map<string, Map<string, LiveFailedTurn>>();
   // Only completed snapshots mutate this ledger; never hold this gate while
   // closing a Session (close drains its outputs).
@@ -362,6 +364,61 @@ export class ExternalThreadRuntime {
     this.#steeredTurnIds.delete(threadId);
   }
 
+  async #confirmNativeCleanup(session: HarnessSession): Promise<NativeCleanupReceipt> {
+    const confirm = (session as Partial<BillingSourceSession>).confirmNativeCleanup;
+    const confirmed = await withSessionReleaseTimeout(
+      Promise.resolve().then(() => confirm?.call(session)),
+      "Native cleanup timed out",
+    );
+    if (!confirmed?.ok || (confirmed.value !== "deleted" && confirmed.value !== "not-persisted")) {
+      throw new Error("Adapter did not confirm native cleanup");
+    }
+    return confirmed.value;
+  }
+
+  async #closeBillingSourceAfterSetup(session: HarnessSession): Promise<NativeCleanupReceipt> {
+    try {
+      await withSessionReleaseTimeout(
+        this.#lifecycle.closeSession(session),
+        "Session shutdown timed out",
+      );
+    } catch {
+      // Cleanup proof is independent of transport shutdown.
+    }
+    return this.#confirmNativeCleanup(session);
+  }
+
+  async #removeMapping(
+    hostThreadId: StoredThreadRecordV1["hostThreadId"],
+    receipt: NativeCleanupReceipt | "unknown" | undefined,
+  ): Promise<void> {
+    if (receipt === "deleted" || receipt === "not-persisted") {
+      this.#nativeCleanups.set(hostThreadId, receipt);
+    }
+    this.remove(hostThreadId);
+    await this.#repository.removeThread(hostThreadId);
+    this.#nativeCleanups.delete(hostThreadId);
+  }
+
+  /** Keep recovery evidence even when setup fails before the Session can be registered. */
+  async rollbackBillingSource(
+    hostThreadId: StoredThreadRecordV1["hostThreadId"],
+    cleanup: NativeCleanupReceipt | HarnessSession | null,
+  ): Promise<boolean> {
+    this.#nativeCleanups.set(hostThreadId, cleanup);
+    const thread = this.#threads.get(hostThreadId);
+    if (thread) this.markSessionUnavailable(thread);
+    try {
+      if (cleanup === null) return false;
+      const receipt =
+        typeof cleanup === "string" ? cleanup : await this.#closeBillingSourceAfterSetup(cleanup);
+      await this.#removeMapping(hostThreadId, receipt);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Confirm release before forgetting either the Session owner or its persisted mapping. */
   async deleteThread(
     hostThreadId: StoredThreadRecordV1["hostThreadId"],
@@ -376,10 +433,18 @@ export class ExternalThreadRuntime {
           cause,
           "Billing Source native cleanup is unconfirmed; the Host mapping was retained",
         );
-      // Without a cleanup owner, explicit deletion only forgets the mapping. A receipt
-      // from an earlier attempt survives a mapping write failure in this process.
-      if (billingSourceRef && !thread) {
-        nativeSession = this.#nativeCleanupReceipts.get(hostThreadId) ?? "unknown";
+      const cleanup = this.#nativeCleanups.get(hostThreadId);
+      if (billingSourceRef) {
+        try {
+          if (cleanup === null) throw new Error("No native cleanup owner was returned");
+          if (typeof cleanup === "string") nativeSession = cleanup;
+          else if (!thread) {
+            // Without an owner from this process, explicit deletion only forgets the mapping.
+            nativeSession = cleanup ? await this.#closeBillingSourceAfterSetup(cleanup) : "unknown";
+          }
+        } catch (error) {
+          throw cleanupUnconfirmed(error);
+        }
       }
       let releaseError: unknown;
       if (thread) {
@@ -392,43 +457,23 @@ export class ExternalThreadRuntime {
           releaseError = error;
         }
       }
-      if (billingSourceRef && thread) {
-        const session = thread.session as BillingSourceSession;
-        const expired = Promise.withResolvers<never>();
-        const timer = setTimeout(
-          () => expired.reject(new Error("Native cleanup timed out")),
-          60_000,
-        );
-        timer.unref();
+      if (billingSourceRef && thread && nativeSession === undefined) {
         try {
-          const confirmed = await Promise.race([session.confirmNativeCleanup(), expired.promise]);
-          if (
-            !confirmed?.ok ||
-            (confirmed.value !== "deleted" && confirmed.value !== "not-persisted")
-          ) {
-            throw new Error("Adapter did not confirm native cleanup");
-          }
-          nativeSession = confirmed.value;
+          nativeSession = await this.#confirmNativeCleanup(thread.session);
+          this.#nativeCleanups.set(hostThreadId, nativeSession);
         } catch (error) {
           throw cleanupUnconfirmed(releaseError ?? error);
-        } finally {
-          clearTimeout(timer);
         }
       }
       if (releaseError) throw releaseError;
-      if (nativeSession === "deleted" || nativeSession === "not-persisted") {
-        this.#nativeCleanupReceipts.set(hostThreadId, nativeSession);
-      }
-      this.remove(hostThreadId);
-      await this.#repository.removeThread(hostThreadId);
-      this.#nativeCleanupReceipts.delete(hostThreadId);
+      await this.#removeMapping(hostThreadId, nativeSession);
       return nativeSession;
     });
   }
 
   clear(): void {
     this.#liveFailures.clear();
-    this.#nativeCleanupReceipts.clear();
+    this.#nativeCleanups.clear();
     this.#threads.clear();
     this.#steeredTurnIds.clear();
   }

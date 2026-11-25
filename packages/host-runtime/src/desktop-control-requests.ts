@@ -57,11 +57,7 @@ import { handleCredentialImports } from "./credential-imports.js";
 import type { HostExtensionManager } from "./host-extension-manager.js";
 import { handleHostExtensionRequest } from "./host-extension-requests.js";
 import { errorMessage, rpcEnvelope, rpcError } from "./desktop-rpc.js";
-import {
-  listedHarnessAccounts,
-  listHarnessAccountSources,
-  retainedPrewarmDirectory,
-} from "./harness-accounts.js";
+import { listedHarnessAccounts, listHarnessAccountSources } from "./harness-accounts.js";
 import type { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
 import { handleHarnessInstallation, HarnessInstallationError } from "./harness-installation.js";
 import { HarnessInstallationTasks } from "./harness-installation-tasks.js";
@@ -411,8 +407,7 @@ export class DesktopControlRequests {
           );
           return;
         }
-        const directory = retainedPrewarmDirectory(this.#host.environment, adapter.harnessId);
-        const result = await adapter.runRetainedPrewarm(target, directory);
+        const result = await adapter.runRetainedPrewarm(target);
         if (!result.ok) {
           const code =
             result.error.code === "invalidRequest"

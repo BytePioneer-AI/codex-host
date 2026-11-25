@@ -14,6 +14,7 @@ import {
 import {
   RETAINED_PREWARM_RUN_METHOD,
   harnessIdSchema,
+  harnessThinkingOptionIdSchema,
   type RetainedPrewarmParams,
   type RetainedPrewarmResult,
   THREAD_STEER_STRICT_TARGET_PARAM,
@@ -97,21 +98,17 @@ describe("public authenticated owner channel", () => {
     };
     const adapter = new FakeHarnessAdapter(harnessId);
     const storageDirectory = path.join(dir, "retained-prewarm", harnessId);
-    const inspectAccount = async (storage?: string) =>
-      storage === storageDirectory
-        ? {
-            billingSourceRef: target.billingSourceRef,
-            retainedPrewarmScopes: [target.scopeId],
-            credits: { usedPercent: 40, periodType: "weekly" as const },
-          }
-        : null;
-    const run = vi.fn(async (input: RetainedPrewarmParams, storage: string) => {
-      expect(storage).toBe(storageDirectory);
+    const inspectAccount = vi.fn(async () => ({
+      billingSourceRef: target.billingSourceRef,
+      retainedPrewarmScopes: [target.scopeId],
+      credits: { usedPercent: 40, periodType: "weekly" as const },
+    }));
+    const run = vi.fn(async (input: RetainedPrewarmParams) => {
       const value: RetainedPrewarmResult = {
         ...input,
         harnessId,
         model: "gemini-3.8-flash",
-        thinkingOptionId: "low",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("medium"),
         nativeSessionRef,
         status: "succeeded",
         modelVerification: "unavailable",
@@ -137,6 +134,7 @@ describe("public authenticated owner channel", () => {
         retainedPrewarmScopes: [target.scopeId],
       },
     });
+    expect(inspectAccount).toHaveBeenCalledWith();
     expect(JSON.stringify(listed)).not.toContain(storageDirectory);
     await expect(
       a.request(RETAINED_PREWARM_RUN_METHOD, { ...target, nativeSessionRef }),
@@ -151,10 +149,12 @@ describe("public authenticated owner channel", () => {
       ...target,
       nativeSessionRef,
       status: "succeeded",
+      thinkingOptionId: "medium",
       modelVerification: "unavailable",
       accountVerification: "verified",
       accountChanged: true,
     });
+    expect(run).toHaveBeenCalledWith(target);
     run.mockResolvedValueOnce({
       ok: true,
       value: {
@@ -163,7 +163,7 @@ describe("public authenticated owner channel", () => {
         harnessId,
         nativeSessionRef,
         model: "gemini-3.8-flash",
-        thinkingOptionId: "low",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
         status: "succeeded",
         modelVerification: "matched",
         accountVerification: "verified",

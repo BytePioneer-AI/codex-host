@@ -2,6 +2,17 @@ import type { HarnessSession } from "@codexhost/harness-adapter";
 
 const RELEASE_TIMEOUT_MS = 60_000;
 
+export async function withSessionReleaseTimeout<T>(work: Promise<T>, message: string): Promise<T> {
+  const expired = Promise.withResolvers<never>();
+  const timeout = setTimeout(() => expired.reject(new Error(message)), RELEASE_TIMEOUT_MS);
+  timeout.unref();
+  try {
+    return await Promise.race([work, expired.promise]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export class ExternalSessionReleaseError extends Error {
   constructor(
     cause: unknown,
@@ -46,10 +57,7 @@ export class ExternalThreadLifecycle {
     return task;
   }
 
-  /** Call inside the Thread's lifecycle operation. A timeout never cancels the owned close. */
-  async release(id: string, session: HarnessSession, output: Promise<void>): Promise<void> {
-    // Serialized operations stop at the first failed release: only one blocker per Thread.
-    this.#releasing.set(id, { session, output });
+  closeSession(session: HarnessSession): Promise<void> {
     let closing = this.#closing.get(session);
     if (!closing) {
       closing = Promise.resolve().then(() => session.close());
@@ -61,25 +69,22 @@ export class ExternalThreadLifecycle {
         if (this.#closing.get(session) === attempt) this.#closing.delete(session);
       });
     }
-    let timeout: NodeJS.Timeout | undefined;
+    return closing;
+  }
+
+  /** Call inside the Thread's lifecycle operation. A timeout never cancels the owned close. */
+  async release(id: string, session: HarnessSession, output: Promise<void>): Promise<void> {
+    this.#releasing.set(id, { session, output });
     try {
-      await Promise.race([
-        closing.then(() => output),
-        new Promise<never>((_, reject) => {
-          timeout = setTimeout(
-            () => reject(new Error("Session shutdown timed out")),
-            RELEASE_TIMEOUT_MS,
-          );
-          timeout.unref();
-        }),
-      ]);
+      await withSessionReleaseTimeout(
+        this.closeSession(session).then(() => output),
+        "Session shutdown timed out",
+      );
       // Only this bounded waiter clears the blocker. Late close completion does not mutate
       // the Runtime or publish a replacement; a later request must recheck the current owner.
       this.#releasing.delete(id);
     } catch (error) {
       throw new ExternalSessionReleaseError(error);
-    } finally {
-      if (timeout) clearTimeout(timeout);
     }
   }
 

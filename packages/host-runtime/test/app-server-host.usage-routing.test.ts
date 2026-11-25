@@ -476,6 +476,26 @@ describe("Usage inspection request routing", () => {
     }
   });
 
+  it("reports asynchronous account credits without a synchronous Adapter cache", async () => {
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const credits: AccountCreditsSnapshot = { usedPercent: 25, periodType: "five_hour" };
+    const fixture = createFixture({
+      externalAdapters: new Map([
+        ["pi", Object.assign(adapter, { refreshCredits: async () => credits })],
+      ]),
+    });
+    try {
+      const threadId = await startPiThread(fixture);
+      await expect(
+        fixture.host.handleClientRequest(usageMethod, { threadId }),
+      ).resolves.toMatchObject({
+        result: { threadId, accountCreditsSupported: true, accountCredits: credits },
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it.each(["resolve", "reject"] as const)(
     "protects background refreshUsage() from idle release without extending lastActivity (%s)",
     async (outcome) => {

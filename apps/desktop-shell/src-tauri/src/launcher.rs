@@ -605,7 +605,9 @@ mod tests {
             &executable,
             r#"#!/bin/sh
 case "$1" in
-    launch-prefs) printf '%s\n' '{"codexDesktopInstalled":true}' ;;
+    launch-prefs)
+        printf '%s\n' '{"defaultDesktopSurface":null,"onboardingCompleted":false,"rememberDefault":false,"codexDesktopInstalled":true,"desktopShellAvailable":true}'
+        ;;
     launch)
         printf 'ready\n'
         sleep 5

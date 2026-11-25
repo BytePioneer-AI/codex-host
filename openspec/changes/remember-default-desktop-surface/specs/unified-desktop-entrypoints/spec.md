@@ -6,12 +6,12 @@
 
 系统 SHALL 持久化最近桌面入口、首次引导状态与独立的 `rememberDefault`（Unix 0600）。旧配置缺少该字段时 SHALL 按 `false` 处理；`onboardingCompleted` MUST NOT 作为记忆授权。macOS 与 Windows SHALL 共用配置和路由，只允许一个默认入口。
 
-`rememberDefault=false` 且桌面壳可用时，普通启动 SHALL 显示选择页；为 `true` 时 SHALL 进入保存的可用入口。未安装官方客户端时 SHALL 直接打开原生窗口；已记忆官方入口但客户端缺失且壳可用时 SHALL 返回选择页。无壳时 SHALL 沿用官方或 Web 回退。显式 `codexhost app [--onboarding]` 与托盘打开原生窗口 SHALL 不受官方默认值影响。
+`rememberDefault=false` 且桌面壳可用时，普通启动 SHALL 显示选择页；为 `true` 时 SHALL 进入保存的可用入口。未安装官方客户端且壳可用时，未记忆启动 SHALL 仍显示选择页；已记忆官方入口但客户端缺失且壳可用时 SHALL 返回选择页。无壳时 SHALL 沿用官方或 Web 回退。显式 `codexhost app [--onboarding]` 与托盘打开原生窗口 SHALL 不受官方默认值影响。
 
 #### Scenario: 未安装官方 Codex Desktop
 
-- **WHEN** 本机不存在可用的官方 Codex Desktop，用户启动 `codexhost`
-- **THEN** 不显示模式选择引导，直接启动后台服务并打开自有桌面窗口；无桌面壳二进制时回落本机 Web
+- **WHEN** 本机不存在可用的官方 Codex Desktop 且 `rememberDefault=false`，用户启动 `codexhost`
+- **THEN** 桌面壳可用时显示模式选择页；无桌面壳二进制时自动记忆原生入口并回落本机 Web
 
 #### Scenario: 仅本次打开
 

@@ -926,7 +926,7 @@
     if (!state.localeLockedByUser && result.state.locale) {
       state.locale = result.state.locale;
     }
-    if (!state.rememberTouchedByUser) {
+    if (!state.rememberTouchedByUser && state.submittingSurface === null) {
       state.rememberDefault = result.state.rememberDefault;
     }
     state.version = result.state.version;

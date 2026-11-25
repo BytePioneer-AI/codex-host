@@ -149,7 +149,7 @@ describe("Claude Code prompt cache TTL", () => {
       undefined,
     ],
     ["absent cache_creation", undefined, undefined],
-  ])("resolves TTL for %s", (_label, cacheCreation, expectedTtl) => {
+  ] as const)("resolves TTL for %s", (_label, cacheCreation, expectedTtl) => {
     const usage = cacheCreation
       ? { cache_creation: cacheCreation }
       : { cache_read_input_tokens: 100 };

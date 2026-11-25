@@ -16,6 +16,7 @@ const RECORD_FILE: &str = "desktop-shell-instance.json";
 const MAX_RECORD_BYTES: u64 = 16 * 1024;
 const MAX_REQUEST_BYTES: u64 = 4 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_millis(500);
+const READ_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -414,7 +415,7 @@ fn serve(
         if stop.load(Ordering::Acquire) {
             return;
         }
-        let _ = handle_activation(stream, &nonce, &activations);
+        let _ = handle_activation(stream, &nonce, &activations, &stop);
     }
 }
 
@@ -422,17 +423,15 @@ fn handle_activation(
     mut stream: TcpStream,
     nonce: &str,
     activations: &mpsc::Sender<Activation>,
+    stop: &AtomicBool,
 ) -> Result<(), String> {
     stream
-        .set_read_timeout(Some(IO_TIMEOUT))
-        .and_then(|()| stream.set_write_timeout(Some(IO_TIMEOUT)))
+        .set_write_timeout(Some(IO_TIMEOUT))
         .map_err(|error| format!("Cannot configure the activation connection: {error}"))?;
-    let mut request = String::new();
-    let read = BufReader::new(&stream)
-        .take(MAX_REQUEST_BYTES + 1)
-        .read_line(&mut request)
-        .map_err(|error| format!("Cannot read the activation request: {error}"))?;
-    let accepted = read as u64 <= MAX_REQUEST_BYTES
+    let Some(request) = read_activation_request(&mut stream, stop)? else {
+        return Ok(());
+    };
+    let accepted = request.len() as u64 <= MAX_REQUEST_BYTES
         && serde_json::from_str::<ActivationRequest>(&request)
             .ok()
             .filter(|request| request.nonce == nonce)
@@ -440,6 +439,65 @@ fn handle_activation(
     stream
         .write_all(if accepted { b"ok\n" } else { b"denied\n" })
         .map_err(|error| format!("Cannot write the activation response: {error}"))
+}
+
+fn read_activation_request(
+    stream: &mut TcpStream,
+    stop: &AtomicBool,
+) -> Result<Option<String>, String> {
+    let deadline = Instant::now() + IO_TIMEOUT;
+    let max_bytes = (MAX_REQUEST_BYTES as usize).saturating_add(1);
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 1024];
+
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return Ok(None);
+        };
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+
+        // Slice read timeouts so shutdown and total request deadline cannot be stalled by slow-drip writes.
+        let slice_timeout = remaining
+            .min(READ_POLL_INTERVAL)
+            .max(Duration::from_millis(1));
+        stream
+            .set_read_timeout(Some(slice_timeout))
+            .map_err(|error| format!("Cannot configure the activation connection: {error}"))?;
+
+        let to_read = chunk.len().min(max_bytes - bytes.len());
+        match stream.read(&mut chunk[..to_read]) {
+            Ok(0) => break,
+            Ok(read) => {
+                let data = &chunk[..read];
+                if let Some(newline) = data.iter().position(|&byte| byte == b'\n') {
+                    bytes.extend_from_slice(&data[..=newline]);
+                    break;
+                }
+                bytes.extend_from_slice(data);
+                if bytes.len() >= max_bytes {
+                    break;
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(format!("Cannot read the activation request: {error}")),
+        }
+    }
+
+    let request = String::from_utf8(bytes)
+        .map_err(|error| format!("Cannot read the activation request: {error}"))?;
+    Ok(Some(request))
 }
 
 fn remove_record_if_owned(path: &Path, owner: ProcessOwner) {
@@ -735,6 +793,109 @@ mod tests {
             },
         );
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn slow_drip_client_does_not_block_subsequent_activations() {
+        let temp = aliased_temp_dir();
+        let data_dir = temp.canonical.join("data");
+        let Claim::Primary {
+            instance,
+            activations,
+        } = claim_with(&data_dir, Activation::Show, test_retry(), || {}).unwrap()
+        else {
+            panic!("the first claim must own the data directory");
+        };
+
+        let mut drip_stream = TcpStream::connect(instance.address()).unwrap();
+        drip_stream.write_all(b"{").unwrap();
+        let stop_drip = Arc::new(AtomicBool::new(false));
+        let stop_drip_thread = Arc::clone(&stop_drip);
+        let drip = thread::spawn(move || {
+            for _ in 0..50 {
+                if stop_drip_thread.load(Ordering::Acquire) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(40));
+                if drip_stream.write_all(b" ").is_err() {
+                    break;
+                }
+            }
+        });
+
+        thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        let forwarded = claim_with(
+            &data_dir,
+            Activation::Onboarding,
+            RetryPolicy {
+                timeout: Duration::from_millis(1500),
+                interval: Duration::from_millis(10),
+            },
+            || {},
+        );
+        let elapsed = started.elapsed();
+
+        stop_drip.store(true, Ordering::Release);
+        let _ = drip.join();
+
+        assert!(
+            matches!(forwarded, Ok(Claim::Forwarded)),
+            "subsequent activation should succeed despite slow-drip client: {}",
+            match forwarded {
+                Ok(_) => "unexpected primary claim".into(),
+                Err(error) => error,
+            }
+        );
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "slow-drip client blocked subsequent activation for {elapsed:?}"
+        );
+        assert_eq!(
+            activations.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Activation::Onboarding
+        );
+        instance.shutdown();
+    }
+
+    #[test]
+    fn shutdown_is_not_blocked_by_incomplete_client_connection() {
+        let temp = aliased_temp_dir();
+        let data_dir = temp.canonical.join("data");
+        let Claim::Primary { instance, .. } =
+            claim_with(&data_dir, Activation::Show, test_retry(), || {}).unwrap()
+        else {
+            panic!("the first claim must own the data directory");
+        };
+
+        let mut open_stream = TcpStream::connect(instance.address()).unwrap();
+        open_stream.write_all(b"{").unwrap();
+        let stop_client = Arc::new(AtomicBool::new(false));
+        let stop_client_thread = Arc::clone(&stop_client);
+        let client = thread::spawn(move || {
+            for _ in 0..10 {
+                if stop_client_thread.load(Ordering::Acquire) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(150));
+                if open_stream.write_all(b" ").is_err() {
+                    break;
+                }
+            }
+        });
+
+        thread::sleep(Duration::from_millis(50));
+        let started = Instant::now();
+        instance.shutdown();
+        let elapsed = started.elapsed();
+
+        stop_client.store(true, Ordering::Release);
+        let _ = client.join();
+
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "shutdown blocked for {elapsed:?} while a client held an incomplete connection"
+        );
     }
 
     #[cfg(unix)]

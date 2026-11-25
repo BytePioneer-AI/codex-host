@@ -3,6 +3,12 @@ import type { AntigravityAcpEvent } from "./acp-types.js";
 import { readProtoFields, type ProtoField } from "./native-protobuf.js";
 import { nativeStepCreatedAtMs } from "./native-request-timing.js";
 import { nativeConversationDbPath } from "./native-turn-boundaries.js";
+import { isTimestampInPromptWindows, type AntigravityPromptWindow } from "./prompt-windows.js";
+
+export interface DecodeNativeHistoryOptions {
+  readonly promptWindows?:
+    readonly AntigravityPromptWindow[] | (() => readonly AntigravityPromptWindow[]);
+}
 
 export interface NativeCompactionEvent {
   type: "history.compaction";
@@ -68,13 +74,14 @@ function argsValue(raw: string): unknown {
 export async function readNativeHistory(
   sessionId: string,
   home: string,
+  options?: DecodeNativeHistoryOptions,
 ): Promise<ReturnType<typeof decodeNativeHistory>> {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/u.test(sessionId)) throw new Error("Invalid native Session ID");
   const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(nativeConversationDbPath(sessionId, home), { readOnly: true });
   try {
     db.exec("BEGIN");
-    return decodeNativeHistory(db);
+    return decodeNativeHistory(db, options);
   } finally {
     db.close();
   }
@@ -174,6 +181,7 @@ export async function readNativeTurnCompactions(
           ) {
             foregroundRuns.add(stepRun);
           } else if (
+            row.status === DONE &&
             seenUserInput &&
             !wakeRuns.has(stepRun) &&
             inPromptWindow?.(nativeStepCreatedAtMs(row.metadata))
@@ -198,9 +206,11 @@ export async function readNativeTurnCompactions(
   }
 }
 
-export function decodeNativeHistory(db: DatabaseSync) {
+export function decodeNativeHistory(db: DatabaseSync, options?: DecodeNativeHistoryOptions) {
   const events: NativeReplayEvent[] = [];
-  let toolCalls: ToolCalls = new Map();
+  const interleavedPromptSteps = new Map<number, number>();
+  let userToolCalls: ToolCalls = new Map();
+  let toolCalls: ToolCalls = userToolCalls;
   let turnCount = 0;
   let run = "";
   let candidate:
@@ -213,17 +223,51 @@ export function decodeNativeHistory(db: DatabaseSync) {
       }
     | undefined;
   let wake: { eventIndex: number; settled: boolean } | undefined;
+  let userInsertIndex: number | undefined;
+  let routingToUser = false;
   let finalPlanner = false;
+  let currentStepIndex = -1;
+  let lastUserStepIndex = -1;
+  const recordInterleavedStep = (stepIndex: number) => {
+    const firstWake = userInsertIndex === undefined ? undefined : events[userInsertIndex];
+    if (firstWake?.type === "history.autonomous") {
+      const previous = interleavedPromptSteps.get(firstWake.stepIndex);
+      if (previous === undefined || stepIndex > previous) {
+        interleavedPromptSteps.set(firstWake.stepIndex, stepIndex);
+      }
+    }
+  };
   const endWake = () => {
     if (wake && !wake.settled) events.length = wake.eventIndex;
+    if (userInsertIndex !== undefined && userInsertIndex >= events.length) {
+      userInsertIndex = undefined;
+      routingToUser = false;
+    }
     wake = undefined;
     candidate = undefined;
   };
+  const pushEvent = (event: NativeReplayEvent) => {
+    if (routingToUser && userInsertIndex !== undefined) {
+      events.splice(userInsertIndex, 0, event);
+      userInsertIndex++;
+      recordInterleavedStep(currentStepIndex);
+    } else {
+      events.push(event);
+      if (!wake && userInsertIndex === undefined && turnCount > 0) {
+        lastUserStepIndex = Math.max(lastUserStepIndex, currentStepIndex);
+      }
+    }
+  };
   const append = (type: "agent.text" | "agent.thought", text: string) => {
-    if (text) events.push({ type, text: events.at(-1)?.type === type ? `\n\n${text}` : text });
+    if (!text) return;
+    const previous =
+      routingToUser && userInsertIndex !== undefined ? events[userInsertIndex - 1] : events.at(-1);
+    pushEvent({ type, text: previous?.type === type ? `\n\n${text}` : text });
   };
   if (db.prepare("PRAGMA user_version").get()?.user_version !== 1)
     throw new Error("Unsupported Antigravity history database version");
+  const promptWindows =
+    typeof options?.promptWindows === "function" ? options.promptWindows() : options?.promptWindows;
   const hasMetadata = (db.prepare("PRAGMA table_info(steps)").all() as { name?: unknown }[]).some(
     (column) => column.name === "metadata",
   );
@@ -237,12 +281,17 @@ export function decodeNativeHistory(db: DatabaseSync) {
     )
     .iterate()) {
     const idx = Number(row.idx);
+    currentStepIndex = idx;
     const nativeTurnIndex = row.step_type === USER_INPUT ? turnCount++ : undefined;
     if (nativeTurnIndex !== undefined) {
       endWake();
       run = "";
       finalPlanner = false;
-      toolCalls.clear();
+      userInsertIndex = undefined;
+      routingToUser = false;
+      lastUserStepIndex = -1;
+      userToolCalls = new Map();
+      toolCalls = userToolCalls;
     }
     if (IN_FLIGHT.has(Number(row.status))) {
       if (wake && row.step_type === PLANNER_RESPONSE) wake.settled = false;
@@ -262,11 +311,24 @@ export function decodeNativeHistory(db: DatabaseSync) {
         }
         continue;
       }
+      const createdAtMs = nativeStepCreatedAtMs(row.metadata);
+      // A wake that started inside an active user prompt streamed into that Turn; keep it merged
+      // even if an independent late-committed wake or unsettled candidate appeared in between.
+      if (turnCount > 0 && isTimestampInPromptWindows(createdAtMs, promptWindows)) {
+        endWake();
+        routingToUser = userInsertIndex !== undefined;
+        if (routingToUser) recordInterleavedStep(idx);
+        else if (userInsertIndex === undefined)
+          lastUserStepIndex = Math.max(lastUserStepIndex, idx);
+        toolCalls = userToolCalls;
+        if (stepRun) run = stepRun;
+        finalPlanner = false;
+        continue;
+      }
       if (stepRun ? stepRun !== run : finalPlanner) {
         if (candidate?.run !== stepRun) {
           // A new run's in-flight planner must not unsettle the previous wake.
           endWake();
-          const createdAtMs = nativeStepCreatedAtMs(row.metadata);
           candidate = {
             stepIndex: idx,
             run: stepRun,
@@ -283,7 +345,8 @@ export function decodeNativeHistory(db: DatabaseSync) {
       if (!event) continue;
       const pendingWake = candidate?.run === stepRun ? candidate : undefined;
       if (!pendingWake && (candidate || (stepRun && run && stepRun !== run))) continue;
-      (pendingWake?.events ?? events).push(event);
+      if (pendingWake) pendingWake.events.push(event);
+      else pushEvent(event);
       continue;
     }
     if (row.step_type === USER_INPUT) run = stepRun;
@@ -307,12 +370,17 @@ export function decodeNativeHistory(db: DatabaseSync) {
         if (candidate && candidate.run === stepRun) {
           const { stepIndex, events: earlierTools, calls: earlierCalls, createdAtMs } = candidate;
           endWake();
+          routingToUser = false;
+          if (turnCount > 0 && userInsertIndex === undefined) userInsertIndex = events.length;
           wake = { eventIndex: events.length, settled: false };
           events.push({
             type: "history.autonomous",
             stepIndex,
             ...(createdAtMs !== undefined ? { createdAtMs } : {}),
           });
+          if (turnCount > 0 && lastUserStepIndex >= stepIndex) {
+            recordInterleavedStep(lastUserStepIndex);
+          }
           for (const event of earlierTools) events.push(event);
           toolCalls = earlierCalls;
         }
@@ -328,7 +396,7 @@ export function decodeNativeHistory(db: DatabaseSync) {
           const name = textField(call, 2);
           if (!toolCallId || !name || toolCalls.get(toolCallId) === "settled") continue;
           toolCalls.set(toolCallId, "pending");
-          events.push({
+          pushEvent({
             type: "tool.call",
             toolCallId,
             name,
@@ -351,7 +419,6 @@ export function decodeNativeHistory(db: DatabaseSync) {
         // Tools in a wake candidate belong to that run, but cannot confirm the wake.
         const pendingWake = candidate?.run === stepRun ? candidate : undefined;
         const calls = pendingWake?.calls ?? toolCalls;
-        const target = pendingWake?.events ?? events;
         const state = calls.get(toolCallId);
         if (state === "settled") break;
         if (state === undefined) {
@@ -359,12 +426,14 @@ export function decodeNativeHistory(db: DatabaseSync) {
           if (row.status !== DONE || !name) break;
           // A standalone tool must not extend the previous Turn past a possible fork boundary.
           if (!pendingWake && (candidate || (stepRun && run && stepRun !== run))) break;
-          target.push({
+          const callEvent: NativeReplayEvent = {
             type: "tool.call",
             toolCallId,
             name,
             args: argsValue(textField(call, 3)),
-          });
+          };
+          if (pendingWake) pendingWake.events.push(callEvent);
+          else pushEvent(callEvent);
         }
         calls.set(toolCallId, "settled");
         const error = nested(step, 31);
@@ -375,12 +444,14 @@ export function decodeNativeHistory(db: DatabaseSync) {
           textField(error, 1);
         const status =
           row.status === DONE ? "completed" : row.status === ERROR ? "failed" : "cancelled";
-        target.push({
+        const updateEvent: NativeReplayEvent = {
           type: "tool.update",
           toolCallId,
           status,
           ...(output ? { rawOutput: output } : {}),
-        });
+        };
+        if (pendingWake) pendingWake.events.push(updateEvent);
+        else pushEvent(updateEvent);
         break;
       }
     }
@@ -388,5 +459,5 @@ export function decodeNativeHistory(db: DatabaseSync) {
   endWake();
   const wakeWatermark =
     events.findLast((event) => event.type === "history.autonomous")?.stepIndex ?? -1;
-  return { events, turnCount, wakeWatermark };
+  return { events, turnCount, wakeWatermark, interleavedPromptSteps };
 }

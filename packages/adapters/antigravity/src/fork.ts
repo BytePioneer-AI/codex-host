@@ -22,8 +22,16 @@ import {
   minimalTrajectoryMetadataBlob,
   rewriteTrajectoryMetadataCascadeId,
 } from "./native-trajectory-metadata.js";
-import { decodeNativeHistory } from "./native-replay.js";
+import { decodeNativeHistory, type DecodeNativeHistoryOptions } from "./native-replay.js";
 import { nativeConversationDbPath, nativeHistoryError } from "./native-turn-boundaries.js";
+import {
+  filterRetainedPromptWindows,
+  mergePromptWindows,
+  readPromptWindows,
+  removePromptWindows,
+  savePromptWindows,
+  type AntigravityPromptWindow,
+} from "./prompt-windows.js";
 import { antigravityHome } from "./usage-statistics.js";
 
 export {
@@ -52,15 +60,24 @@ export function validNativeSessionRef(ref: NativeSessionRef, harnessId: HarnessI
 
 class ForkBoundaryError extends Error {}
 class ActiveForkUnavailable extends Error {}
+class NoRollbackTurn extends Error {}
+
+type DerivationBoundary = { checkpointId: string } | { rollbackLastTurn: true };
 
 /** SQLite backup includes committed WAL pages; byte-copying the main file does not. */
 export async function cloneNativeConversationDb(
   sourceId: string,
   derivedId: string,
-  retainedTurnsCountOrHome?:
-    number | string | { cutoff: number | undefined } | { checkpointId: string },
+  retainedTurnsCountOrHome?: number | string | DerivationBoundary,
   homeOption = os.homedir(),
-  fork?: { activeTurnIndex?: number },
+  fork?: {
+    activeTurnIndex?: number;
+    promptWindows?: readonly AntigravityPromptWindow[];
+    onRetainedBounds?: (bounds: {
+      cutoff: number | undefined;
+      maxRetainedStepCreatedAtMs: number | undefined;
+    }) => void;
+  },
 ): Promise<boolean> {
   if (![sourceId, derivedId].every((id) => /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/u.test(id)))
     throw new Error("Invalid native conversation ID");
@@ -101,19 +118,49 @@ export async function cloneNativeConversationDb(
         throw new Error("Invalid retained native Turn count");
       }
       if (typeof retainedTurnsCountOrHome === "object") {
+        const { boundaries, interleavedPromptSteps } = readDerivationSnapshot(
+          source,
+          fork?.promptWindows ? { promptWindows: fork.promptWindows } : undefined,
+        );
         if ("checkpointId" in retainedTurnsCountOrHome) {
-          const boundaries = derivationBoundaries(source);
           const index = boundaries.findIndex(
             ({ checkpointId }) => checkpointId === retainedTurnsCountOrHome.checkpointId,
           );
           if (index < 0) throw new ForkBoundaryError();
           cutoff = boundaries[index + 1]?.idx;
-        } else cutoff = retainedTurnsCountOrHome.cutoff;
+        } else {
+          const last = boundaries.at(-1);
+          if (!last) throw new NoRollbackTurn();
+          cutoff = boundaries.length === 1 ? 0 : last.idx;
+        }
+        requireContinuousPrefix(cutoff, interleavedPromptSteps);
       } else if (retained !== undefined && retained < count) {
         const boundary = source
           .prepare("SELECT idx FROM steps WHERE step_type = 14 ORDER BY idx LIMIT 1 OFFSET ?")
           .get(retained);
         cutoff = retained === 0 ? 0 : Number(boundary?.idx);
+      }
+      if (fork?.onRetainedBounds) {
+        let maxRetainedStepCreatedAtMs: number | undefined;
+        if (cutoff !== undefined && cutoff > 0) {
+          const hasMetadata = (
+            source.prepare("PRAGMA table_info(steps)").all() as { name?: unknown }[]
+          ).some((column) => column.name === "metadata");
+          if (hasMetadata) {
+            for (const row of source
+              .prepare("SELECT metadata FROM steps WHERE idx < ? AND metadata IS NOT NULL")
+              .iterate(cutoff)) {
+              const createdAtMs = nativeStepCreatedAtMs(row.metadata);
+              if (
+                createdAtMs !== undefined &&
+                (maxRetainedStepCreatedAtMs === undefined ||
+                  createdAtMs > maxRetainedStepCreatedAtMs)
+              )
+                maxRetainedStepCreatedAtMs = createdAtMs;
+            }
+          }
+        }
+        fork.onRetainedBounds({ cutoff, maxRetainedStepCreatedAtMs });
       }
       await mkdir(path.dirname(targetPath), { recursive: true });
       const reservation = await open(targetPath, "wx");
@@ -331,6 +378,7 @@ export interface NativeDerivationOptions {
   harnessId: HarnessId;
   adapterEnvironment: NodeJS.ProcessEnv;
   sourceSession?: { isActive: boolean } | undefined;
+  sourcePromptWindows?: readonly AntigravityPromptWindow[] | undefined;
   openSession(input: ResumeSessionInput): Promise<HarnessResult<HarnessSession>>;
 }
 export interface ForkAntigravitySessionOptions extends NativeDerivationOptions {
@@ -345,7 +393,7 @@ export async function openDerivedAntigravitySession(
   options: NativeDerivationOptions,
   input: ResumeSessionInput,
   sourceRef: NativeSessionRef,
-  retained: { cutoff: number | undefined } | { checkpointId: string },
+  retained: DerivationBoundary,
   fork?: { activeTurnIndex?: number },
 ): Promise<HarnessResult<HarnessSession>> {
   const environment = { ...options.adapterEnvironment, ...input.environment };
@@ -353,8 +401,28 @@ export async function openDerivedAntigravitySession(
   const derivedId = randomUUID();
   let cloned = false;
   try {
-    await cloneNativeConversationDb(sourceRef.nativeSessionId, derivedId, retained, home, fork);
+    const sourcePromptWindows = mergePromptWindows(
+      await readPromptWindows(sourceRef.nativeSessionId, environment),
+      options.sourcePromptWindows,
+    );
+    let retainedBounds: {
+      cutoff: number | undefined;
+      maxRetainedStepCreatedAtMs: number | undefined;
+    } = { cutoff: undefined, maxRetainedStepCreatedAtMs: undefined };
+    await cloneNativeConversationDb(sourceRef.nativeSessionId, derivedId, retained, home, {
+      ...fork,
+      ...(sourcePromptWindows.length ? { promptWindows: sourcePromptWindows } : {}),
+      onRetainedBounds: (bounds) => {
+        retainedBounds = bounds;
+      },
+    });
     cloned = true;
+    const inheritedWindows = filterRetainedPromptWindows(
+      sourcePromptWindows,
+      retainedBounds.cutoff,
+      retainedBounds.maxRetainedStepCreatedAtMs,
+    );
+    if (inheritedWindows.length) await savePromptWindows(derivedId, inheritedWindows, environment);
     // Brain files have neither a snapshot nor a Turn boundary. Resume can load the SQLite prefix alone.
     if (fork?.activeTurnIndex === undefined)
       await copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedId, home);
@@ -372,8 +440,17 @@ export async function openDerivedAntigravitySession(
       ? { ok: false, error: { ...result.error, diagnostic: cleanupFailure } }
       : result;
   } catch (error) {
-    if (error instanceof ForkBoundaryError) return checkpointError();
+    if (error instanceof ForkBoundaryError) return checkpointError(error.message || undefined);
     if (error instanceof ActiveForkUnavailable) return activeForkError(error.message);
+    if (error instanceof NoRollbackTurn)
+      return {
+        ok: false,
+        error: {
+          code: "invalidState",
+          message: "Antigravity Native Session has no Turn to roll back",
+          retryable: false,
+        },
+      };
     const cleanupFailure = await cleanup().then(
       () => undefined,
       () => "Derived native history cleanup failed",
@@ -392,6 +469,7 @@ export async function openDerivedAntigravitySession(
       removeDerivedDb(derivedId, home),
       rm(nativeBrainDirPath(derivedId, home), { recursive: true, force: true }),
       removeDerivedSummary(derivedId, home),
+      removePromptWindows(derivedId, environment),
     ]);
   }
 }
@@ -448,40 +526,58 @@ export async function forkAntigravitySession(
 function activeForkError(message: string): HarnessResult<never> {
   return { ok: false, error: { code: "sessionBusy", message, retryable: true } };
 }
-export async function readDerivationBoundaries(dbPath: string) {
+export async function readDerivationBoundaries(
+  dbPath: string,
+  options?: DecodeNativeHistoryOptions,
+) {
   await access(dbPath);
   const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
     db.exec("BEGIN");
-    return derivationBoundaries(db);
+    return readDerivationSnapshot(db, options).boundaries;
   } finally {
     db.close();
   }
 }
 
-function derivationBoundaries(db: DatabaseSync): { idx: number; checkpointId: string }[] {
+function readDerivationSnapshot(db: DatabaseSync, options?: DecodeNativeHistoryOptions) {
   const users = db.prepare("SELECT idx FROM steps WHERE step_type = 14 ORDER BY idx").all();
   const boundaries = users.map((row, index) => ({
     idx: Number(row.idx),
     checkpointId: `turn-${index}`,
   }));
-  if (db.prepare("SELECT 1 FROM steps WHERE step_type = 101 LIMIT 1").get()) {
-    for (const event of decodeNativeHistory(db).events) {
-      if (event.type === "history.autonomous")
-        boundaries.push({ idx: event.stepIndex, checkpointId: `wake-${event.stepIndex}` });
-    }
-    boundaries.sort((a, b) => a.idx - b.idx);
+  if (!db.prepare("SELECT 1 FROM steps WHERE step_type = 101 LIMIT 1").get()) {
+    return { boundaries, interleavedPromptSteps: undefined };
   }
-  return boundaries;
+  const { events, interleavedPromptSteps } = decodeNativeHistory(db, options);
+  for (const event of events) {
+    if (event.type === "history.autonomous")
+      boundaries.push({ idx: event.stepIndex, checkpointId: `wake-${event.stepIndex}` });
+  }
+  boundaries.sort((a, b) => a.idx - b.idx);
+  return { boundaries, interleavedPromptSteps };
 }
 
-function checkpointError(): HarnessResult<never> {
+function requireContinuousPrefix(
+  cutoff: number | undefined,
+  interleavedPromptSteps: ReadonlyMap<number, number> | undefined,
+) {
+  if (cutoff === undefined || !interleavedPromptSteps) return;
+  for (const [wakeStart, promptContinuation] of interleavedPromptSteps) {
+    if (wakeStart <= cutoff && cutoff <= promptContinuation)
+      throw new ForkBoundaryError("Antigravity checkpoint cuts through an interleaved user Turn");
+  }
+}
+
+function checkpointError(
+  message = "Antigravity native Turn checkpoint not found",
+): HarnessResult<never> {
   return {
     ok: false,
     error: {
       code: "checkpointNotFound",
-      message: "Antigravity native Turn checkpoint not found",
+      message,
       retryable: false,
     },
   };

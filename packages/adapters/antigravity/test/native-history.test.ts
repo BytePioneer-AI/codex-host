@@ -1,12 +1,17 @@
+import { execFile } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { nativeSessionRefSchema, nativeTurnRefSchema } from "@codexhost/shared-contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AntigravityAdapter } from "../src/antigravity-adapter.js";
 import { readDerivationBoundaries } from "../src/fork.js";
+import { readNativeTurnCompactions } from "../src/native-replay.js";
 import { nativeConversationDbPath } from "../src/native-turn-boundaries.js";
+import { readPromptWindows, savePromptWindows } from "../src/prompt-windows.js";
 import {
   answerStep,
   checkpointStep,
@@ -17,7 +22,10 @@ import {
   textField,
   userStep,
 } from "../../../../tests/fixtures/antigravity/native-history-fixture.js";
-import { bytes } from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
+import {
+  bytes,
+  nanoseconds,
+} from "../../../../tests/fixtures/antigravity/native-timing-fixture.js";
 
 const nativeRef = nativeSessionRefSchema.parse({
   harnessId: "antigravity",
@@ -473,6 +481,252 @@ describe("native session history", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("keeps in-prompt wakes inside their user Turn while still splitting out-of-prompt wakes", async () => {
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    const stamp = (idx: number, ms: number) => {
+      db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
+        bytes(1, nanoseconds(BigInt(ms) * 1_000_000n)),
+        idx,
+      );
+    };
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      userStep(db, 0, "run background task", "prompt-1");
+      stamp(0, 1_000_050);
+      answerStep(db, 1, "WAITING_IN_BG", "prompt-1");
+      stamp(1, 1_005_000);
+      systemStep(db, 2, "in-prompt-wake", "task_notification");
+      stamp(2, 1_015_000);
+      checkpointStep(db, 3, { status: 3, run: "in-prompt-wake", summary: "Compacted" });
+      db.prepare(
+        "INSERT INTO steps (idx, step_type, status, step_payload) VALUES (4, 132, 3, ?)",
+      ).run(commandResult("wake-cmd", "echo ok", "ok", "in-prompt-wake"));
+      answerStep(db, 5, "WAKE_RESULT: AGY_WAKE_DONE", "in-prompt-wake");
+      stamp(5, 1_015_500);
+      systemStep(db, 6, "idle-daemon-wake", "task_notification");
+      stamp(6, 1_030_000);
+      answerStep(db, 7, "DAEMON_DONE", "idle-daemon-wake");
+      stamp(7, 1_030_100);
+
+      const promptWindows = [{ submittedAtMs: 1_000_000, returnedAtMs: 1_016_000 }];
+      await savePromptWindows(nativeRef.nativeSessionId, promptWindows, {
+        HOME: home,
+        USERPROFILE: home,
+      });
+
+      const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
+      assert(opened.ok);
+      const snapshot = await opened.value.readSnapshot();
+      assert(snapshot.ok);
+      expect(
+        snapshot.value.turns.map(({ nativeTurnRef, checkpoint, input, items }) => ({
+          key: nativeTurnRef.nativeTurnKey,
+          checkpoint: checkpoint?.checkpointId,
+          input: input.map(({ text }) => text),
+          items: items.map(({ item }) => (item.type === "agentMessage" ? item.text : item.type)),
+        })),
+      ).toEqual([
+        {
+          key: "turn-0",
+          checkpoint: "turn-0",
+          input: ["run background task"],
+          items: [
+            "WAITING_IN_BG",
+            "contextCompaction",
+            "commandExecution",
+            "WAKE_RESULT: AGY_WAKE_DONE",
+          ],
+        },
+        {
+          key: "wake-6",
+          checkpoint: "wake-6",
+          input: [],
+          items: ["DAEMON_DONE"],
+        },
+      ]);
+      expect(
+        await readDerivationBoundaries(nativeConversationDbPath(nativeRef.nativeSessionId, home), {
+          promptWindows,
+        }),
+      ).toEqual([
+        { idx: 0, checkpointId: "turn-0" },
+        { idx: 6, checkpointId: "wake-6" },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("routes in-prompt wakes and live compactions back to their user Turn across late wakes, candidates, and empty user runs", async () => {
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    const stamp = (idx: number, ms: number) => {
+      db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
+        bytes(1, nanoseconds(BigInt(ms) * 1_000_000n)),
+        idx,
+      );
+    };
+    try {
+      userStep(db, 0, "first", "p0");
+      answerStep(db, 1, "first reply", "p0");
+      userStep(db, 2, "second", "p1");
+      // Independent wake started between prompts (900) but committed after turn-1's USER_INPUT.
+      systemStep(db, 3, "idle", "task_notification");
+      answerStep(db, 4, "IDLE_REPLY", "idle");
+      // First in-prompt wake (1200) + succeeded compaction + Plan switch + second in-prompt wake (1400) + failed compaction.
+      systemStep(db, 5, "w1", "task_notification");
+      checkpointStep(db, 6, { status: 3, run: "w1", summary: "Compacted 1" });
+      answerStep(db, 7, "WAKE_RESULT", "w1");
+      planModeSwitch(db, 8, "w1", "plan");
+      systemStep(db, 11, "w2", "task_notification");
+      checkpointStep(db, 12, { status: 7, run: "w2", error: "Compaction failed" });
+      answerStep(db, 13, "SECOND_WAKE", "w2");
+      // Turn 2: empty user run + unsettled candidate before an in-prompt wake with compaction.
+      userStep(db, 14, "third", "");
+      systemStep(db, 15, "unsettled-orphan", "task_notification");
+      systemStep(db, 16, "w3", "task_notification");
+      checkpointStep(db, 17, { status: 3, run: "w3", summary: "Compacted 3" });
+      answerStep(db, 18, "THIRD_WAKE", "w3");
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      stamp(3, 900);
+      stamp(5, 1_200);
+      stamp(11, 1_400);
+      stamp(16, 2_500);
+
+      const promptWindows = [
+        { submittedAtMs: 100, returnedAtMs: 500 },
+        { submittedAtMs: 1_000, returnedAtMs: 2_000 },
+        { submittedAtMs: 2_100, returnedAtMs: 3_000 },
+      ];
+      await savePromptWindows(nativeRef.nativeSessionId, promptWindows, {
+        HOME: home,
+        USERPROFILE: home,
+      });
+
+      const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
+      assert(opened.ok);
+      const snapshot = await opened.value.readSnapshot();
+      assert(snapshot.ok);
+      expect(
+        snapshot.value.turns.map(({ nativeTurnRef, input, items }) => ({
+          key: nativeTurnRef.nativeTurnKey,
+          input: input.map(({ text }) => text),
+          items: items.map(({ item }) => (item.type === "agentMessage" ? item.text : item.type)),
+        })),
+      ).toEqual([
+        { key: "turn-0", input: ["first"], items: ["first reply"] },
+        {
+          key: "turn-1",
+          input: ["second"],
+          items: [
+            "contextCompaction",
+            "WAKE_RESULT",
+            "toolExecution",
+            "contextCompaction",
+            "SECOND_WAKE",
+          ],
+        },
+        { key: "wake-3", input: [], items: ["IDLE_REPLY"] },
+        { key: "turn-2", input: ["third"], items: ["contextCompaction", "THIRD_WAKE"] },
+      ]);
+      const dbPath = nativeConversationDbPath(nativeRef.nativeSessionId, home);
+      expect(await readDerivationBoundaries(dbPath, { promptWindows })).toEqual([
+        { idx: 0, checkpointId: "turn-0" },
+        { idx: 2, checkpointId: "turn-1" },
+        { idx: 3, checkpointId: "wake-3" },
+        { idx: 14, checkpointId: "turn-2" },
+      ]);
+      expect(await readNativeTurnCompactions(dbPath, 1, promptWindows[1])).toEqual([
+        { type: "history.compaction", stepIndex: 6, status: "succeeded" },
+        {
+          type: "history.compaction",
+          stepIndex: 12,
+          status: "failed",
+          error: "Compaction failed",
+        },
+      ]);
+      expect(await readNativeTurnCompactions(dbPath, 13, promptWindows[2])).toEqual([
+        { type: "history.compaction", stepIndex: 17, status: "succeeded" },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps background Plan continuation compactions out of the foreground Turn even when stamped inside the prompt window", async () => {
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    const stamp = (idx: number, ms: number) => {
+      db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
+        bytes(1, nanoseconds(BigInt(ms) * 1_000_000n)),
+        idx,
+      );
+    };
+    try {
+      userStep(db, 0, "foreground", "p");
+      systemStep(db, 1, "idle", "task_notification");
+      answerStep(db, 2, "idle reply", "idle");
+      planModeSwitch(db, 3, "idle", "idle-plan");
+      checkpointStep(db, 6, { status: 3, run: "idle-plan", summary: "Background compact" });
+      checkpointStep(db, 7, { status: 7, run: "idle-plan", error: "Background failure" });
+      answerStep(db, 8, "idle plan reply", "idle-plan");
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      stamp(1, 900);
+      // Plan handoff timestamp falls inside the foreground prompt window [1000, 2000],
+      // but it continues the background `idle` run and must not steal foreground ownership.
+      stamp(5, 1_200);
+
+      const promptWindow = { submittedAtMs: 1_000, returnedAtMs: 2_000 };
+      const dbPath = nativeConversationDbPath(nativeRef.nativeSessionId, home);
+      expect(await readNativeTurnCompactions(dbPath, -1, promptWindow)).toEqual([]);
+
+      await savePromptWindows(nativeRef.nativeSessionId, [promptWindow], {
+        HOME: home,
+        USERPROFILE: home,
+      });
+      const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
+      assert(opened.ok);
+      const snapshot = await opened.value.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns[0]?.items).toEqual([]);
+      expect(snapshot.value.turns[1]?.nativeTurnRef.nativeTurnKey).toBe("wake-1");
+      expect(
+        snapshot.value.turns[1]?.items.filter(({ item }) => item.type === "contextCompaction"),
+      ).toHaveLength(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("preserves all prompt windows across concurrent multi-process writers", async () => {
+    const execFileAsync = promisify(execFile);
+    const moduleUrl = pathToFileURL(
+      path.resolve(import.meta.dirname, "../src/prompt-windows.ts"),
+    ).href;
+    const sessionId = "concurrent-writers";
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CODEXHOST_DATA_DIR: home };
+    await Promise.all(
+      Array.from({ length: 6 }, (_, index) =>
+        execFileAsync(
+          process.execPath,
+          [
+            "--import",
+            "tsx",
+            "--input-type=module",
+            "-e",
+            `import { savePromptWindows } from ${JSON.stringify(moduleUrl)};
+             await savePromptWindows(${JSON.stringify(sessionId)}, [{ submittedAtMs: ${1_000 + index * 100}, returnedAtMs: ${1_050 + index * 100} }], process.env);`,
+          ],
+          { env },
+        ),
+      ),
+    );
+    expect(await readPromptWindows(sessionId, env)).toEqual(
+      Array.from({ length: 6 }, (_, index) => ({
+        submittedAtMs: 1_000 + index * 100,
+        returnedAtMs: 1_050 + index * 100,
+      })),
+    );
   });
 
   it("reads committed WAL steps but not an uncommitted or still-generating reply", async () => {

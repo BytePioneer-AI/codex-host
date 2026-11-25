@@ -700,4 +700,289 @@ describe("Unified Host extensions marketplace and 3-source import modal", () => 
 
     mounted.dispose();
   });
+
+  it("runs install and update independently per extension without disabling other cards", async () => {
+    const pendingUpdate = Promise.withResolvers<{
+      id: string;
+      activationId: string;
+      digest: string;
+      installedAt: string;
+      manifest: HostExtensionsListResult["extensions"][number] extends infer Item
+        ? Item extends { state: "valid"; manifest: infer M }
+          ? M
+          : never
+        : never;
+      replaced: boolean;
+    }>();
+    const pendingInstall = Promise.withResolvers<{
+      id: string;
+      activationId: string;
+      digest: string;
+      installedAt: string;
+      manifest: HostExtensionsListResult["extensions"][number] extends infer Item
+        ? Item extends { state: "valid"; manifest: infer M }
+          ? M
+          : never
+        : never;
+      replaced: boolean;
+    }>();
+
+    const updateHostExtension = vi.fn(() => pendingUpdate.promise);
+    const installHostExtension = vi.fn(() => pendingInstall.promise);
+    const listHostExtensions = vi.fn(async () => sampleInstalledList());
+
+    const mounted = mountPage("zh-CN", () => ({
+      listHostExtensions,
+      listHostExtensionCatalog: vi.fn(async () => sampleCatalog()),
+      updateHostExtension,
+      installHostExtension,
+    }));
+
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (2)"));
+    must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
+      ),
+    ).dispatch("click");
+
+    const findButton = (action: string, id: string) =>
+      must(
+        descendants(mounted.content).find(
+          (el) =>
+            el.tagName === "button" &&
+            el.dataset.action === action &&
+            el.dataset.extensionId === id,
+        ),
+      );
+
+    // Start updating sidebar-thread-tree; nord-palette's Install button stays enabled.
+    findButton("update", "sidebar-thread-tree").dispatchBubbling("click");
+    expect(findButton("update", "sidebar-thread-tree").disabled).toBe(true);
+    expect(textOf(findButton("update", "sidebar-thread-tree"))).toBe("更新中…");
+    expect(findButton("install", "nord-palette").disabled).toBe(false);
+
+    // Simultaneously start installing nord-palette while sidebar-thread-tree is still updating.
+    findButton("install", "nord-palette").dispatchBubbling("click");
+    expect(findButton("install", "nord-palette").disabled).toBe(true);
+    expect(textOf(findButton("install", "nord-palette"))).toBe("安装中…");
+    expect(updateHostExtension).toHaveBeenCalledTimes(1);
+    expect(installHostExtension).toHaveBeenCalledTimes(1);
+
+    pendingInstall.resolve({
+      id: "nord-palette",
+      activationId: "act-nord-1",
+      digest: HASH_C,
+      installedAt: "2026-07-02T00:00:00.000Z",
+      manifest: {
+        manifestVersion: 2,
+        id: "nord-palette",
+        name: CATALOG_THEME.name,
+        version: "1.0.0",
+        description: CATALOG_THEME.description,
+        web: { apiVersion: 1, entry: "web.mjs" },
+      },
+      replaced: false,
+    });
+    await vi.waitFor(() => expect(listHostExtensions).toHaveBeenCalledTimes(2));
+    // sidebar-thread-tree is still updating while nord-palette has finished.
+    expect(findButton("update", "sidebar-thread-tree").disabled).toBe(true);
+
+    pendingUpdate.resolve({
+      id: "sidebar-thread-tree",
+      activationId: "act-tree-2",
+      digest: HASH_B,
+      installedAt: "2026-07-02T00:00:00.000Z",
+      manifest: {
+        manifestVersion: 2,
+        id: "sidebar-thread-tree",
+        name: CATALOG_TREE.name,
+        version: "0.2.0",
+        description: CATALOG_TREE.description,
+        desktop: { apiVersion: 1, script: "desktop.js" },
+      },
+      replaced: true,
+    });
+    await vi.waitFor(() => expect(listHostExtensions).toHaveBeenCalledTimes(3));
+    mounted.dispose();
+  });
+
+  it("serializes concurrent toggles without stale list rewind and isolates modal feedback from background updates", async () => {
+    const initialList: HostExtensionsListResult = {
+      revision: 3,
+      configuration: { revision: 3, enabled: ["sidebar-thread-tree"] },
+      diagnostics: [],
+      extensions: [
+        ...sampleInstalledList().extensions,
+        {
+          state: "valid",
+          id: "nord-palette",
+          activationId: "act-nord-1",
+          digest: HASH_C,
+          installedAt: "2026-07-02T00:00:00.000Z",
+          enabled: false,
+          manifest: {
+            manifestVersion: 2,
+            id: "nord-palette",
+            name: CATALOG_THEME.name,
+            version: "1.0.0",
+            description: CATALOG_THEME.description,
+            author: CATALOG_THEME.author,
+            repository: CATALOG_THEME.repository,
+            categories: ["appearance"],
+            web: { apiVersion: 1, entry: "web.mjs" },
+          },
+        },
+      ],
+    };
+
+    const staleReload = Promise.withResolvers<HostExtensionsListResult>();
+    const pendingDisableTree = Promise.withResolvers<{
+      state: "saved";
+      configuration: { revision: number; enabled: string[] };
+    }>();
+    const pendingEnableNord = Promise.withResolvers<{
+      state: "saved";
+      configuration: { revision: number; enabled: string[] };
+    }>();
+    const pendingBackgroundUpdate = Promise.withResolvers<{
+      id: string;
+      activationId: string;
+      digest: string;
+      installedAt: string;
+      manifest: HostExtensionsListResult["extensions"][number] extends infer Item
+        ? Item extends { state: "valid"; manifest: infer M }
+          ? M
+          : never
+        : never;
+      replaced: boolean;
+    }>();
+
+    let listCalls = 0;
+    const listHostExtensions = vi.fn(async () => {
+      listCalls += 1;
+      if (listCalls === 1) return initialList;
+      if (listCalls === 2) return staleReload.promise;
+      return {
+        ...initialList,
+        revision: 5,
+        configuration: { revision: 5, enabled: ["nord-palette"] },
+      };
+    });
+    const disableHostExtension = vi.fn(() => pendingDisableTree.promise);
+    const enableHostExtension = vi
+      .fn()
+      .mockImplementationOnce(() => pendingEnableNord.promise)
+      .mockRejectedValueOnce(new Error("Toggle denied"));
+    const updateHostExtension = vi.fn(() => pendingBackgroundUpdate.promise);
+
+    const mounted = mountPage("zh-CN", () => ({
+      listHostExtensions,
+      listHostExtensionCatalog: vi.fn(async () => sampleCatalog()),
+      disableHostExtension,
+      enableHostExtension,
+      updateHostExtension,
+    }));
+
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("已安装 (2)"));
+
+    const findSwitch = (id: string) => {
+      const card = must(
+        descendants(mounted.content).find(
+          (el) => el.tagName === "article" && el.dataset.extensionId === id,
+        ),
+      );
+      return must(descendants(card).find((el) => el.tagName === "input" && el.type === "checkbox"));
+    };
+
+    // Rapidly toggle sidebar-thread-tree OFF and nord-palette ON concurrently.
+    const treeSwitch = findSwitch("sidebar-thread-tree");
+    treeSwitch.checked = false;
+    treeSwitch.dispatch("change");
+    // nord-palette's switch stays enabled while sidebar-thread-tree is toggling.
+    const nordSwitch = findSwitch("nord-palette");
+    expect(nordSwitch.disabled).toBe(false);
+    nordSwitch.checked = true;
+    nordSwitch.dispatch("change");
+
+    await vi.waitFor(() =>
+      expect(disableHostExtension).toHaveBeenCalledWith({
+        id: "sidebar-thread-tree",
+        expectedRevision: 3,
+      }),
+    );
+    expect(enableHostExtension).not.toHaveBeenCalled();
+
+    // First toggle saves rev 4 and starts a slow reload (listCalls === 2).
+    pendingDisableTree.resolve({ state: "saved", configuration: { revision: 4, enabled: [] } });
+    await vi.waitFor(() => expect(enableHostExtension).toHaveBeenCalledTimes(1));
+    expect(enableHostExtension).toHaveBeenCalledWith({
+      id: "nord-palette",
+      expectedRevision: 4,
+    });
+
+    // Second toggle saves rev 5 before the first toggle's reload settles.
+    pendingEnableNord.resolve({
+      state: "saved",
+      configuration: { revision: 5, enabled: ["nord-palette"] },
+    });
+    await vi.waitFor(() => expect(listCalls).toBeGreaterThanOrEqual(3));
+
+    // Resolve the stale rev-4 reload AFTER rev 5 was already applied; rev must not rewind.
+    staleReload.resolve({
+      ...initialList,
+      revision: 4,
+      configuration: { revision: 4, enabled: [] },
+    });
+    await Promise.resolve();
+
+    // Start background update on sidebar-thread-tree, then open nord-palette modal and trigger an error.
+    const updateBtn = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.action === "update",
+      ),
+    );
+    updateBtn.dispatchBubbling("click");
+
+    const nordCard = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "article" && el.dataset.extensionId === "nord-palette",
+      ),
+    );
+    nordCard.dispatch("click");
+    const dialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    );
+    const modalToggle = must(
+      descendants(dialog).find((el) => el.tagName === "input" && el.type === "checkbox"),
+    );
+    // Toggle nord-palette OFF inside its modal -> hits second mock (rejects "Toggle denied").
+    disableHostExtension.mockRejectedValueOnce(new Error("Toggle denied"));
+    modalToggle.checked = false;
+    modalToggle.dispatch("change");
+    await vi.waitFor(() => expect(textOf(dialog)).toContain("Toggle denied"));
+
+    // Now finish background update on sidebar-thread-tree: nord-palette's modal error must stay intact!
+    pendingBackgroundUpdate.resolve({
+      id: "sidebar-thread-tree",
+      activationId: "act-tree-2",
+      digest: HASH_B,
+      installedAt: "2026-07-02T00:00:00.000Z",
+      manifest: {
+        manifestVersion: 2,
+        id: "sidebar-thread-tree",
+        name: CATALOG_TREE.name,
+        version: "0.2.0",
+        description: CATALOG_TREE.description,
+        desktop: { apiVersion: 1, script: "desktop.js" },
+      },
+      replaced: true,
+    });
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("0.2.0"));
+    expect(textOf(dialog)).toContain("Toggle denied");
+
+    mounted.dispose();
+  });
 });

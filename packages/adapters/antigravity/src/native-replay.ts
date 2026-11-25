@@ -120,6 +120,7 @@ function decodeCheckpointEvent(
 export async function readNativeTurnCompactions(
   dbPath: string,
   afterStepIndex: number,
+  inPromptWindow?: (createdAtMs: number | undefined) => boolean,
 ): Promise<NativeCompactionEvent[]> {
   const { DatabaseSync } = await import("node:sqlite");
   let db: DatabaseSync;
@@ -132,13 +133,20 @@ export async function readNativeTurnCompactions(
     db.exec("BEGIN");
     if (db.prepare("PRAGMA user_version").get()?.user_version !== 1) return [];
     const compactions: NativeCompactionEvent[] = [];
-    let turnRun: string | undefined;
+    const foregroundRuns = new Set<string>();
     let latestRun: string | undefined;
     let seenUserInput = false;
     const wakeRuns = new Set<string>();
+    const hasMetadata = (db.prepare("PRAGMA table_info(steps)").all() as { name?: unknown }[]).some(
+      (column) => column.name === "metadata",
+    );
     for (const row of db
       .prepare(
-        `SELECT idx, step_type, status, step_payload FROM steps
+        `SELECT idx, step_type, status, step_payload${
+          hasMetadata
+            ? `, CASE WHEN step_type = ${SYSTEM_MESSAGE} THEN metadata END AS metadata`
+            : ""
+        } FROM steps
          WHERE idx > ? AND step_type IN (${USER_INPUT}, ${SYSTEM_MESSAGE}, ${CHECKPOINT})
          ORDER BY idx`,
       )
@@ -148,21 +156,29 @@ export async function readNativeTurnCompactions(
       const stepRun = textField(nested(step, 5), 12);
       if (row.step_type === USER_INPUT) {
         seenUserInput = true;
-        turnRun = latestRun = stepRun;
+        if (stepRun) foregroundRuns.add(stepRun);
+        latestRun = stepRun || undefined;
         continue;
       }
       if (row.step_type === SYSTEM_MESSAGE) {
         if (!stepRun) continue;
-        if (stepRun !== turnRun) {
-          // A Plan switch in a background execution does not return ownership to the prompt.
+        if (!foregroundRuns.has(stepRun)) {
+          // A Plan switch stays with the run that initiated it; an in-prompt wake also streams
+          // into the active foreground Turn.
           if (
             row.status === DONE &&
-            turnRun &&
-            latestRun === turnRun &&
+            latestRun &&
+            foregroundRuns.has(latestRun) &&
             !wakeRuns.has(stepRun) &&
             isPlanContinuation(step)
           ) {
-            turnRun = stepRun;
+            foregroundRuns.add(stepRun);
+          } else if (
+            seenUserInput &&
+            !wakeRuns.has(stepRun) &&
+            inPromptWindow?.(nativeStepCreatedAtMs(row.metadata))
+          ) {
+            foregroundRuns.add(stepRun);
           } else wakeRuns.add(stepRun);
         }
         latestRun = stepRun;
@@ -170,7 +186,7 @@ export async function readNativeTurnCompactions(
       }
       if (!seenUserInput) continue;
       if (stepRun && wakeRuns.has(stepRun)) continue;
-      if (stepRun && turnRun && stepRun !== turnRun) continue;
+      if (stepRun && foregroundRuns.size > 0 && !foregroundRuns.has(stepRun)) continue;
       const event = decodeCheckpointEvent(idx, row.status, step);
       if (event) compactions.push(event);
     }

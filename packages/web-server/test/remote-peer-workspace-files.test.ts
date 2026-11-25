@@ -216,13 +216,17 @@ test("Hub proxies Typert RPCs, multipart binaries (readBytes & officeToPdf/rende
     const bytesForm = await readBytesRes.formData();
     const bytesMeta = JSON.parse(String(bytesForm.get("metadata"))) as {
       rpcId: string;
-      result: { ok: boolean };
-      attachments: Array<{ part: string }>;
+      result: { ok: boolean; value: Record<string, unknown> };
+      attachments: Array<{ path: string[]; codec: string; part: string }>;
     };
     assert.equal(bytesMeta.rpcId, "hub-rpc-bytes");
     assert.equal(bytesMeta.result.ok, true);
+    assert.equal(Object.hasOwn(bytesMeta.result.value, "data"), true);
+    assert.equal(bytesMeta.result.value.data, null);
     const bytesAttachment = bytesMeta.attachments[0];
     assert.ok(bytesAttachment);
+    assert.deepEqual(bytesAttachment.path, ["data"]);
+    assert.equal(bytesAttachment.codec, "bytes");
     const blob = bytesForm.get(bytesAttachment.part);
     assert.ok(blob instanceof Blob);
     assert.equal(await blob.text(), "# Hello remote\n");
@@ -245,14 +249,21 @@ test("Hub proxies Typert RPCs, multipart binaries (readBytes & officeToPdf/rende
     const officeForm = await officeRes.formData();
     const officeMeta = JSON.parse(String(officeForm.get("metadata"))) as {
       rpcId: string;
-      result: { ok: boolean; value: { generation: string; missingFonts: string[] } };
-      attachments: Array<{ part: string }>;
+      result: {
+        ok: boolean;
+        value: { data: unknown; generation: string; missingFonts: string[] };
+      };
+      attachments: Array<{ path: string[]; codec: string; part: string }>;
     };
     assert.equal(officeMeta.rpcId, "hub-office-1");
+    assert.equal(Object.hasOwn(officeMeta.result.value, "data"), true);
+    assert.equal(officeMeta.result.value.data, null);
     assert.equal(officeMeta.result.value.generation, "peer-gen-1");
     assert.deepEqual(officeMeta.result.value.missingFonts, ["Noto Sans SC"]);
     const officeAttachment = officeMeta.attachments[0];
     assert.ok(officeAttachment);
+    assert.deepEqual(officeAttachment.path, ["data"]);
+    assert.equal(officeAttachment.codec, "bytes");
     const pdfPart = officeForm.get(officeAttachment.part);
     assert.ok(pdfPart instanceof Blob);
     assert.deepEqual(Buffer.from(await pdfPart.arrayBuffer()), fakePdfBytes);

@@ -1,4 +1,17 @@
 /**
+ * True when the primary input is a coarse pointer (touch), i.e. the Enter key
+ * most likely comes from a mobile soft keyboard. Those keyboards cannot send
+ * Shift+Enter, so Enter must insert a line break rather than submit.
+ */
+function isSoftKeyboardEnter(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(pointer: coarse)").matches
+  );
+}
+
+/**
  * Composer keymap over the Lexical command layer: menu arbitration
  * (arrows/escape/enter), space adjudication, the Enter submit gesture, and
  * paste routing. Registered at CRITICAL priority so it decides before
@@ -179,6 +192,12 @@ export function registerComposerKeymap(
           event?.preventDefault();
           return true;
         }
+        // Mobile soft keyboards have no Shift key, so their Enter (换行) key
+        // must insert a line break instead of submitting; the send button
+        // stays the submit gesture. Falls through to Lexical's line break,
+        // the same path Shift+Enter takes. Hardware modifiers keep submitting.
+        if (isSoftKeyboardEnter() && event?.ctrlKey !== true && event?.metaKey !== true)
+          return false;
         event?.preventDefault();
         if (event?.repeat === true) return true; // held-down Enter must not machine-gun sends
         if (!handlers.canSubmit()) return true;

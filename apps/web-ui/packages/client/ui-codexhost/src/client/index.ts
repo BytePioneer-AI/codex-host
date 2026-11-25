@@ -19,6 +19,7 @@ import { registerThreadReferenceDiscovery } from "./thread-reference-discovery.t
 import { registerThreadReferenceAction } from "./thread-reference-action.ts";
 import {
   desktopScreenshotApi,
+  handoffApi,
   queueMessageEditApi,
   sentMessageEditApi,
   turnDiffsApi,
@@ -220,6 +221,7 @@ export function apply(ctx: ClientContext): void {
   ctx.provide("chatMessageEditing", sentMessageEditApi);
   ctx.provide("queueMessageEditing", queueMessageEditApi);
   ctx.provide("chatTurnDiffs", turnDiffsApi);
+  ctx.provide("chatHandoff", handoffApi);
   ctx.inject(["conversation", "uiSession"], registerThreadReferenceAction);
   ctx.inject(["conversation"], (scope) => {
     const screenshot = new DesktopScreenshot(desktopScreenshotApi.capture);

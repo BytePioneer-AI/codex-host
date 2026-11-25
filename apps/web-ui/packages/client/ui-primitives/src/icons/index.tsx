@@ -24,10 +24,10 @@ export const SHIELD_OUTLINE_PATH =
   "M6.80132 2.14853C7.70663 1.80917 8.70422 1.80919 9.60952 2.14859L14.1296 3.84317V7.11961C14.1296 11.6089 10.7615 13.5975 8.20543 14.5779C5.64931 13.5975 2.28052 11.6089 2.28052 7.11961V3.84317L6.80132 2.14853Z";
 
 /** Regular stroke width used by the product icon set. */
-export const ICON_REGULAR_STROKE = 1;
+export const ICON_REGULAR_STROKE = 1.2;
 
 /** Medium stroke width used by emphasized product icons. */
-export const ICON_MEDIUM_STROKE = 1.3;
+export const ICON_MEDIUM_STROKE = 1.4;
 
 /** Native compose artwork for New Session controls. */
 export const IconNewChatOutlineRegular = (props: IconProps) => <NewChatOutlineArtwork {...props} />;
@@ -45,12 +45,11 @@ const IconSearchOutlineArtwork = ({ size = 16, className, strokeWidth }: Weighte
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
-    <path
-      d="M6.58727 11.8586C9.55061 11.8586 11.9529 9.45637 11.9529 6.49304C11.9529 3.5297 9.55061 1.12744 6.58727 1.12744C3.62394 1.12744 1.22168 3.5297 1.22168 6.49304C1.22168 9.45637 3.62394 11.8586 6.58727 11.8586Z"
-      stroke="currentColor"
-    />
-    <path d="M10.2991 10.3933L14.7783 14.8725" stroke="currentColor" />
+    <circle cx="7.25" cy="7.25" r="4.75" stroke="currentColor" />
+    <path d="M10.75 10.75L13.75 13.75" stroke="currentColor" />
   </svg>
 );
 
@@ -84,6 +83,9 @@ const IconSettingsOutlineArtwork = ({ size = 16, className, strokeWidth }: Weigh
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M8 9.75012C8.9665 9.75012 9.75 8.96662 9.75 8.00012C9.75 7.03362 8.9665 6.25012 8 6.25012C7.0335 6.25012 6.25 7.03362 6.25 8.00012C6.25 8.96662 7.0335 9.75012 8 9.75012Z"
@@ -117,12 +119,11 @@ const IconPanelLeftOutlineArtwork = ({ size = 16, className, strokeWidth }: Weig
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
-    <path
-      d="M13.5 1.5H2.5C1.94772 1.5 1.5 1.94772 1.5 2.5V13.5C1.5 14.0523 1.94772 14.5 2.5 14.5H13.5C14.0523 14.5 14.5 14.0523 14.5 13.5V2.5C14.5 1.94772 14.0523 1.5 13.5 1.5Z"
-      stroke="currentColor"
-    />
-    <path d="M5.5 1.5V14.5" stroke="currentColor" />
+    <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="3" stroke="currentColor" />
+    <path d="M5.75 5.65V10.35" stroke="currentColor" />
   </svg>
 );
 
@@ -146,6 +147,9 @@ const IconEllipsisOutlineArtwork = ({ size = 16, className, strokeWidth }: Weigh
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M3 9C3.55228 9 4 8.55228 4 8C4 7.44772 3.55228 7 3 7C2.44772 7 2 7.44772 2 8C2 8.55228 2.44772 9 3 9Z"
@@ -182,6 +186,9 @@ const IconPlusOutlineArtwork = ({ size = 16, className, strokeWidth }: WeightedI
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M8 2V14" stroke="currentColor" />
     <path d="M2 8H14" stroke="currentColor" />
@@ -208,6 +215,9 @@ const IconCheckOutlineArtwork = ({ size = 16, className, strokeWidth }: Weighted
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M2.25 8.5L5.49732 11.7473C5.90519 12.1552 6.57263 12.1344 6.95426 11.7018L13.75 4"
@@ -236,6 +246,9 @@ const IconBranchOutlineArtwork = ({ size = 16, className, strokeWidth }: Weighte
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M1.01503 8.0001L5.6964 8.0001C6.41913 8.0001 6.78049 8.0001 7.12115 7.91951C7.4232 7.84804 7.71233 7.73014 7.97821 7.57C8.27809 7.38939 8.5364 7.13669 9.05303 6.63129L11.3281 4.40564"
@@ -274,6 +287,9 @@ const IconChevronDownOutlineArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M4 6L7.29289 9.29289C7.68342 9.68342 8.31658 9.68342 8.70711 9.29289L12 6"
@@ -306,6 +322,9 @@ const IconChevronLeftOutlineArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M10 4L6.70711 7.29289C6.31658 7.68342 6.31658 8.31658 6.70711 8.70711L10 12"
@@ -338,6 +357,9 @@ const IconChevronRightOutlineArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M6 12L9.29289 8.70711C9.68342 8.31658 9.68342 7.68342 9.29289 7.29289L6 4"
@@ -366,6 +388,9 @@ const IconTriangleRightFillArtwork = ({ size = 14, className, strokeWidth }: Wei
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M5.5 4.5C5.5 4.40714 5.52586 4.31612 5.57467 4.23713C5.62349 4.15815 5.69334 4.09431 5.77639 4.05279C5.85945 4.01126 5.95242 3.99368 6.0449 4.00202C6.13738 4.01036 6.22572 4.04429 6.3 4.1L10.967 7.6C11.0291 7.64657 11.0795 7.70697 11.1142 7.77639C11.1489 7.84582 11.167 7.92238 11.167 8C11.167 8.07762 11.1489 8.15418 11.1142 8.22361C11.0795 8.29303 11.0291 8.35343 10.967 8.4L6.3 11.9C6.22572 11.9557 6.13738 11.9896 6.0449 11.998C5.95242 12.0063 5.85945 11.9887 5.77639 11.9472C5.69334 11.9057 5.62349 11.8419 5.57467 11.7629C5.52586 11.6839 5.5 11.5929 5.5 11.5V4.5Z"
@@ -394,6 +419,9 @@ const IconChevronUpOutlineArtwork = ({ size = 14, className, strokeWidth }: Weig
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M12 10L8.70711 6.70711C8.31658 6.31658 7.68342 6.31658 7.29289 6.70711L4 10"
@@ -422,6 +450,9 @@ const IconCloseOutlineArtwork = ({ size = 16, className, strokeWidth }: Weighted
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M2.5 2.5L13.5 13.5" stroke="currentColor" />
     <path d="M13.5 2.5L2.5 13.5" stroke="currentColor" />
@@ -448,6 +479,9 @@ const IconCloseFillArtwork = ({ size = 14, className, strokeWidth }: WeightedIco
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M3.5 3.5L12.5 12.5" stroke="currentColor" />
     <path d="M12.5 3.5L3.5 12.5" stroke="currentColor" />
@@ -476,6 +510,9 @@ const IconCloseCircleFillArtwork = ({ size = 16, className, strokeWidth }: Weigh
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       fillRule="evenodd"
@@ -506,6 +543,9 @@ const IconCopyOutlineArtwork = ({ size = 16, className, strokeWidth }: WeightedI
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <rect x="1.52075" y="4.07373" width="10.3932" height="10.3932" rx="2" stroke="currentColor" />
     <path
@@ -535,6 +575,9 @@ const IconRefreshOutlineArtwork = ({ size = 16, className, strokeWidth }: Weight
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M14.5001 8C14.5 9.28552 14.1188 10.5422 13.4045 11.611C12.6903 12.6799 11.6752 13.5129 10.4875 14.0049C9.29982 14.4968 7.99295 14.6255 6.73212 14.3747C5.4713 14.124 4.31314 13.505 3.4041 12.596C2.49514 11.687 1.87614 10.5288 1.62537 9.26798C1.37459 8.00716 1.50331 6.70028 1.99525 5.51261C2.48719 4.32494 3.32025 3.30981 4.3891 2.59557C5.45795 1.88134 6.71458 1.50008 8.0001 1.5C9.9001 1.5 11.7001 2.3 13.0001 3.6L14.5001 5.1"
@@ -564,6 +607,9 @@ const IconLikeOutlineArtwork = ({ size = 16, className, strokeWidth }: WeightedI
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M13.537 8.12098L12.3983 12.8455C12.1818 13.7438 11.378 14.3769 10.454 14.3769L9.35595 14.3769H7.43799H5.16577C3.50892 14.3769 2.16577 13.0337 2.16577 11.3769V7.88668C2.16577 7.33439 2.61349 6.88668 3.16577 6.88668H4.02665C5.84943 6.88668 7.38083 3.28711 7.67689 2.54578C7.71259 2.45639 7.73501 2.36373 7.77922 2.27824C7.86506 2.11221 8.08228 1.87578 8.59039 2.07775C10.3291 2.76886 9.23144 6.04071 8.96955 6.75058C8.94502 6.81707 8.99495 6.88668 9.06581 6.88668H12.5648C13.2119 6.88668 13.6886 7.49192 13.537 8.12098Z"
@@ -592,6 +638,9 @@ const IconLikeFillArtwork = ({ size = 16, className, strokeWidth }: WeightedIcon
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M13.537 8.12098L12.3983 12.8455C12.1818 13.7438 11.378 14.3769 10.454 14.3769L9.35595 14.3769H7.43799H5.16577C3.50892 14.3769 2.16577 13.0337 2.16577 11.3769V7.88668C2.16577 7.33439 2.61349 6.88668 3.16577 6.88668H4.02665C5.84943 6.88668 7.38083 3.28711 7.67689 2.54578C7.71259 2.45639 7.73501 2.36373 7.77922 2.27824C7.86506 2.11221 8.08228 1.87578 8.59039 2.07775C10.3291 2.76886 9.23144 6.04071 8.96955 6.75058C8.94502 6.81707 8.99495 6.88668 9.06581 6.88668H12.5648C13.2119 6.88668 13.6886 7.49192 13.537 8.12098Z"
@@ -621,6 +670,9 @@ const IconDislikeOutlineArtwork = ({ size = 16, className, strokeWidth }: Weight
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M2.46302 8.06749L3.60171 3.34299C3.81822 2.44467 4.62196 1.81162 5.546 1.8116L6.64406 1.81158L8.56202 1.81158L10.8342 1.81158C12.4911 1.81158 13.8342 3.15473 13.8342 4.81158L13.8342 8.3018C13.8342 8.85408 13.3865 9.3018 12.8342 9.3018L11.9734 9.3018C10.1506 9.3018 8.61918 12.9014 8.32311 13.6427C8.28741 13.7321 8.26499 13.8247 8.22078 13.9102C8.13494 14.0763 7.91772 14.3127 7.40961 14.1107C5.67089 13.4196 6.76856 10.1478 7.03045 9.43789C7.05498 9.37141 7.00505 9.3018 6.93419 9.3018L3.43519 9.3018C2.78811 9.3018 2.31141 8.69656 2.46302 8.06749Z"
@@ -649,6 +701,9 @@ const IconDislikeFillArtwork = ({ size = 16, className, strokeWidth }: WeightedI
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M2.46302 8.06749L3.60171 3.34299C3.81822 2.44467 4.62196 1.81162 5.546 1.8116L6.64406 1.81158L8.56202 1.81158L10.8342 1.81158C12.4911 1.81158 13.8342 3.15473 13.8342 4.81158L13.8342 8.3018C13.8342 8.85408 13.3865 9.3018 12.8342 9.3018L11.9734 9.3018C10.1506 9.3018 8.61918 12.9014 8.32311 13.6427C8.28741 13.7321 8.26499 13.8247 8.22078 13.9102C8.13494 14.0763 7.91772 14.3127 7.40961 14.1107C5.67089 13.4196 6.76856 10.1478 7.03045 9.43789C7.05498 9.37141 7.00505 9.3018 6.93419 9.3018L3.43519 9.3018C2.78811 9.3018 2.31141 8.69656 2.46302 8.06749Z"
@@ -678,6 +733,9 @@ const IconShareOutlineArtwork = ({ size = 16, className, strokeWidth }: Weighted
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M14.1256 7.58723C14.3483 7.81942 14.3482 8.18589 14.1254 8.41799L8.6646 14.1077C8.53985 14.2377 8.32031 14.1494 8.32031 13.9692L8.32035 10.2039C8.32035 10.1943 8.31534 10.1864 8.30592 10.1849C8.08306 10.148 5.30067 9.7729 1.50993 13.2904C1.49711 13.3023 1.47561 13.2943 1.4757 13.2768C1.49273 9.87168 3.42001 5.07166 8.29999 5.05835C8.31103 5.05832 8.32035 5.04937 8.32035 5.03832L8.32031 2.03109C8.32031 1.85088 8.53993 1.76259 8.66466 1.89266L14.1256 7.58723Z"
@@ -706,6 +764,9 @@ const IconDeliverDocArtwork = ({ size = 16, className, strokeWidth }: WeightedIc
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M6.15479 4.91687H9.84543" stroke="currentColor" />
     <path
@@ -744,6 +805,9 @@ const IconEditOutlineArtwork = ({ size = 16, className, strokeWidth }: WeightedI
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M8.85596 2.69971H4.19971C3.37141 2.69971 2.69992 3.37146 2.69971 4.19971V11.8003C2.69992 12.6285 3.37141 13.3003 4.19971 13.3003H11.8003C12.6283 13.2999 13.3001 12.6283 13.3003 11.8003V7.89893H14.3003V11.8003C14.3001 13.1806 13.1806 14.2999 11.8003 14.3003H4.19971C2.81913 14.3003 1.69992 13.1808 1.69971 11.8003V4.19971C1.69992 2.81918 2.81913 1.69971 4.19971 1.69971H8.85596V2.69971Z"
@@ -773,6 +837,9 @@ const IconThinkOutlineArtwork = ({ size = 16, className, strokeWidth }: Weighted
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M10.2854 5.71481C12.9673 8.39663 14.1182 11.5938 12.8562 12.8559C11.5942 14.1179 8.39706 12.9669 5.71518 10.2851C3.03333 7.60323 1.88236 4.40608 3.14441 3.14403C4.40644 1.882 7.6036 3.03297 10.2854 5.71481Z"
@@ -813,6 +880,9 @@ const IconAgentPresetOutlineArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M6.51867 12.3282C7.29816 12.6011 8.16475 12.6514 9.02269 12.4216C9.57879 12.2726 10.0784 12.0185 10.5087 11.6888C10.7819 12.0555 11.1606 12.3304 11.5913 12.4805C10.9688 13.029 10.2149 13.4478 9.35911 13.6771C8.13946 14.0038 6.90632 13.8971 5.82126 13.4533C6.15821 13.1562 6.4021 12.7652 6.51867 12.3282ZM9.17629 2.89409C11.1101 3.34433 12.739 4.81872 13.2889 6.87043C13.4219 7.3665 13.4811 7.8649 13.4774 8.35466C13.0924 8.13213 12.6422 8.01837 12.1741 8.05276L12.1711 8.05257C12.1539 7.77199 12.109 7.48889 12.0334 7.20684C11.6363 5.72533 10.5048 4.6372 9.13549 4.22844C9.25559 3.87667 9.29214 3.49087 9.22309 3.09892C9.2108 3.02922 9.19451 2.96108 9.17629 2.89409ZM4.7311 3.89107L4.78302 4.11879C4.87648 4.4488 5.04146 4.74263 5.25579 4.98896C3.98078 6.01355 3.35848 7.72904 3.8089 9.41059C3.81828 9.44559 3.82866 9.48025 3.83885 9.51479C3.38217 9.61268 2.98548 9.84137 2.68107 10.1556C2.63414 10.022 2.5897 9.88632 2.55244 9.74726C1.93301 7.43489 2.86717 5.07173 4.71504 3.76697L4.7311 3.89107Z"
@@ -867,6 +937,9 @@ const IconContextInjectionOutlineArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M5 2.5H3.5C3.23478 2.5 2.98043 2.60536 2.79289 2.79289C2.60536 2.98043 2.5 3.23478 2.5 3.5V13.5C2.5 13.7652 2.60536 14.0196 2.79289 14.2071C2.98043 14.3946 3.23478 14.5 3.5 14.5H12.5C12.7652 14.5 13.0196 14.3946 13.2071 14.2071C13.3946 14.0196 13.5 13.7652 13.5 13.5V3.5C13.5 3.23478 13.3946 2.98043 13.2071 2.79289C13.0196 2.60536 12.7652 2.5 12.5 2.5H11"
@@ -898,6 +971,9 @@ const IconLinkOutlineArtwork = ({ size = 16, className, strokeWidth }: WeightedI
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M6.59961 9.40051C6.82779 9.6334 7.10015 9.81842 7.40074 9.94472C7.70132 10.071 8.02409 10.1361 8.35013 10.1361C8.67618 10.1361 8.99894 10.071 9.29953 9.94472C9.60011 9.81842 9.87247 9.6334 10.1007 9.40051L12.9015 6.59967C13.3658 6.13541 13.6266 5.50572 13.6266 4.84915C13.6266 4.19258 13.3658 3.56289 12.9015 3.09863C12.4372 2.63436 11.8075 2.37354 11.151 2.37354C10.4944 2.37354 9.86472 2.63436 9.40045 3.09863L9.05034 3.44873"
@@ -930,6 +1006,9 @@ const IconRightUpOutlineArtwork = ({ size = 16, className, strokeWidth }: Weight
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M11.7256 2.77441C12.5538 2.77469 13.2256 3.44616 13.2256 4.27441V10.1416H12.2256V4.27441C12.2256 3.99844 12.0015 3.77469 11.7256 3.77441H5.7207V2.77441H11.7256Z"
@@ -959,6 +1038,9 @@ const IconEnhanceOutlineArtwork = ({ size = 16, className, strokeWidth }: Weight
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M1.98486 2.95374H14.0151" stroke="currentColor" />
     <path d="M1.98486 6.31787H14.0151" stroke="currentColor" />
@@ -987,6 +1069,9 @@ const IconTrashOutlineArtwork = ({ size = 16, className, strokeWidth }: Weighted
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M1.28149 3.88831H14.7187" stroke="currentColor" />
     <path
@@ -1022,6 +1107,9 @@ const IconWarningOutlineArtwork = ({ size = 16, className, strokeWidth }: Weight
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M8 14.5C11.5899 14.5 14.5 11.5899 14.5 8C14.5 4.41015 11.5899 1.5 8 1.5C4.41015 1.5 1.5 4.41015 1.5 8C1.5 11.5899 4.41015 14.5 8 14.5Z"
@@ -1052,6 +1140,9 @@ const IconCheckCircleFillArtwork = ({ size = 16, className, strokeWidth }: Weigh
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M28.1936 14.6936L19.8066 23.0806C19.2373 23.65 18.7159 24.1742 18.24 24.5571C17.7389 24.9602 17.1365 25.3359 16.3657 25.458C15.9581 25.5225 15.5428 25.5225 15.1353 25.458C14.3645 25.3359 13.7621 24.9602 13.261 24.5571C12.7851 24.1742 12.2637 23.65 11.6943 23.0806L7.80737 19.1936L10.1936 16.8074L14.0806 20.6943C14.7033 21.317 15.0763 21.6873 15.377 21.9292C15.6523 22.1507 15.7109 22.1325 15.6626 22.1248C15.7208 22.1339 15.7802 22.1339 15.8384 22.1248C15.7901 22.1325 15.8486 22.1507 16.124 21.9292C16.4247 21.6873 16.7977 21.317 17.4204 20.6943L25.8074 12.3074L28.1936 14.6936Z"
@@ -1119,6 +1210,9 @@ const IconUserOutlineArtwork = ({ size = 16, className, strokeWidth }: WeightedI
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M8 8.25C9.51878 8.25 10.75 7.01878 10.75 5.5C10.75 3.98122 9.51878 2.75 8 2.75C6.48122 2.75 5.25 3.98122 5.25 5.5C5.25 7.01878 6.48122 8.25 8 8.25Z"
@@ -1151,6 +1245,9 @@ const IconUsersOutlineArtwork = ({ size = 16, className, strokeWidth }: Weighted
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M6 8.25C7.51878 8.25 8.75 7.01878 8.75 5.5C8.75 3.98122 7.51878 2.75 6 2.75C4.48122 2.75 3.25 3.98122 3.25 5.5C3.25 7.01878 4.48122 8.25 6 8.25Z"
@@ -1185,6 +1282,9 @@ const IconPaperPlaneOutlineArtwork = ({ size = 14, className, strokeWidth }: Wei
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M4.74024 9.11029L1.82882 7.79865C1.75022 7.76323 1.75026 7.65161 1.82889 7.61626L12.9665 2.60943C13.0354 2.57846 13.1125 2.63213 13.1073 2.70749L12.3914 13.1388C12.3864 13.2117 12.3073 13.2548 12.2433 13.2194L6.12677 9.83657"
@@ -1217,6 +1317,9 @@ const IconStopFillArtwork = ({ size = 16, className, strokeWidth }: WeightedIcon
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M12.5 2.5H3.5C2.94772 2.5 2.5 2.94772 2.5 3.5V12.5C2.5 13.0523 2.94772 13.5 3.5 13.5H12.5C13.0523 13.5 13.5 13.0523 13.5 12.5V3.5C13.5 2.94772 13.0523 2.5 12.5 2.5Z"
@@ -1245,6 +1348,9 @@ const IconPaperclipOutlineArtwork = ({ size = 16, className, strokeWidth }: Weig
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M12.75 4.5V9.5C12.75 10.7598 12.2496 11.968 11.3588 12.8588C10.468 13.7496 9.25978 14.25 8 14.25C6.74022 14.25 5.53204 13.7496 4.64124 12.8588C3.75045 11.968 3.25 10.7598 3.25 9.5V5C3.25 4.13805 3.59241 3.3114 4.2019 2.7019C4.8114 2.09241 5.63805 1.75 6.5 1.75C7.36195 1.75 8.1886 2.09241 8.7981 2.7019C9.40759 3.3114 9.75 4.13805 9.75 5V9.5C9.75 9.96413 9.56563 10.4092 9.23744 10.7374C8.90925 11.0656 8.46413 11.25 8 11.25C7.53587 11.25 7.09075 11.0656 6.76256 10.7374C6.43437 10.4092 6.25 9.96413 6.25 9.5V5.5"
@@ -1273,6 +1379,9 @@ const IconLoadingOutlineArtwork = ({ size = 16, className, strokeWidth }: Weight
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M12.596 12.596C11.687 13.5049 10.5288 14.1239 9.26798 14.3747C8.00716 14.6255 6.70028 14.4968 5.51261 14.0048C4.32494 13.5129 3.30981 12.6798 2.59557 11.611C1.88134 10.5421 1.50008 9.2855 1.5 7.99998C1.50008 6.71446 1.88134 5.45783 2.59557 4.38898C3.30981 3.32013 4.32494 2.48707 5.51261 1.99513C6.70028 1.50319 8.00716 1.37447 9.26798 1.62524C10.5288 1.87602 11.687 2.49502 12.596 3.40398"
@@ -1301,11 +1410,13 @@ const IconDownloadOutlineArtwork = ({ size = 16, className, strokeWidth }: Weigh
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
-    <path d="M8 1.95317V10.0469" stroke="currentColor" />
-    <path d="M4.25 6.29688L8 10.0469L11.75 6.29688" stroke="currentColor" />
+    <path d="M8 2.25V9.85" stroke="currentColor" />
+    <path d="M4.9 6.95L8 10.05L11.1 6.95" stroke="currentColor" />
     <path
-      d="M1.5 10.0469V13.158C1.5 13.3937 1.60536 13.6198 1.79289 13.7865C1.98043 13.9532 2.23478 14.0469 2.5 14.0469H13.5C13.7652 14.0469 14.0196 13.9532 14.2071 13.7865C14.3946 13.6198 14.5 13.3937 14.5 13.158V10.0469"
+      d="M2.25 10.25V11.5C2.25 12.7426 3.25736 13.75 4.5 13.75H11.5C12.7426 13.75 13.75 12.7426 13.75 11.5V10.25"
       stroke="currentColor"
     />
   </svg>
@@ -1331,6 +1442,9 @@ const IconPlayOutlineArtwork = ({ size = 16, className, strokeWidth }: WeightedI
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M8 14.5C11.5899 14.5 14.5 11.5899 14.5 8C14.5 4.41015 11.5899 1.5 8 1.5C4.41015 1.5 1.5 4.41015 1.5 8C1.5 11.5899 4.41015 14.5 8 14.5Z"
@@ -1363,6 +1477,9 @@ const IconPauseOutlineArtwork = ({ size = 16, className, strokeWidth }: Weighted
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M8 14.5C11.5899 14.5 14.5 11.5899 14.5 8C14.5 4.41015 11.5899 1.5 8 1.5C4.41015 1.5 1.5 4.41015 1.5 8C1.5 11.5899 4.41015 14.5 8 14.5Z"
@@ -1393,6 +1510,9 @@ const IconFullscreenOutlineArtwork = ({ size = 16, className, strokeWidth }: Wei
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M2.33154 9.40576V13.1685C2.3318 13.4444 2.55556 13.6685 2.83154 13.6685H6.49463V14.6685H2.83154C2.00328 14.6685 1.3318 13.9967 1.33154 13.1685V9.40576H2.33154ZM13.1685 1.33154C13.9964 1.33199 14.6683 2.00352 14.6685 2.83154V6.40576H13.6685V2.83154C13.6683 2.5558 13.4441 2.33199 13.1685 2.33154H9.49463V1.33154H13.1685Z"
@@ -1423,6 +1543,9 @@ const IconCodeOutlineArtwork = ({ size = 16, className, strokeWidth }: WeightedI
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M6.27612 1.5L4.52612 14.5" stroke="currentColor" />
     <path d="M11.4739 1.5L9.72388 14.5" stroke="currentColor" />
@@ -1455,6 +1578,9 @@ const IconCordisPluginOutlineArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M3.16143 6.59068L1.75205 8.00006L3.10619 9.35419L2.39908 10.0613L0.832948 8.49517C0.559581 8.2218 0.559582 7.77831 0.832948 7.50494L2.45432 5.88357L3.16143 6.59068ZM8.49511 15.1671C8.22176 15.4405 7.77826 15.4404 7.50489 15.1671L5.93461 13.5968L6.64172 12.8897L8 14.248L9.40938 12.8386L10.1165 13.5457L8.49511 15.1671ZM15.1671 7.50494C15.4403 7.7782 15.4401 8.22179 15.1671 8.49517L13.652 10.0102L12.9449 9.30309L14.248 8.00006L12.8897 6.64178L13.5968 5.93467L15.1671 7.50494ZM9.35414 3.10624L8 1.7521L6.69696 3.05514L5.98986 2.34803L7.50489 0.833003C7.77828 0.559981 8.22186 0.559752 8.49511 0.833003L10.0612 2.39913L9.35414 3.10624Z"
@@ -1484,6 +1610,9 @@ const IconApiOutlineArtwork = ({ size = 14, className, strokeWidth }: WeightedIc
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M3 4L7 8L3 12" stroke="currentColor" />
     <path d="M9 12H13" stroke="currentColor" />
@@ -1514,6 +1643,9 @@ const IconPersonalizationOutlineArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M3.25 7.16357C3.20417 7.32247 3.17778 7.48993 3.17773 7.66357C3.17773 7.83698 3.20336 8.00486 3.24902 8.16357H1.85742V7.16357H3.25ZM14.1426 8.16357H6.71484C6.76052 8.00485 6.78613 7.837 6.78613 7.66357C6.78609 7.48991 6.75971 7.32249 6.71387 7.16357H14.1426V8.16357Z"
@@ -1553,22 +1685,24 @@ const IconProjectAddOutlineArtwork = ({ size = 16, className, strokeWidth }: Wei
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
-      d="M5.54492 2.06738C5.91034 2.06754 6.26318 2.20149 6.53711 2.44336L7.94043 3.68164V4.7998C7.71462 4.74105 7.50367 4.63139 7.32617 4.47461L5.87598 3.19238C5.78477 3.11185 5.66658 3.06754 5.54492 3.06738H2.94922C2.67322 3.06738 2.44946 3.29145 2.44922 3.56738V12.4326C2.44927 12.7087 2.67311 12.9326 2.94922 12.9326H12.9326C13.2086 12.9325 13.4326 12.7086 13.4326 12.4326V8.53613H14.4326V12.4326C14.4326 13.2609 13.7609 13.9325 12.9326 13.9326H2.94922C2.12083 13.9326 1.44927 13.261 1.44922 12.4326V3.56738C1.44946 2.73916 2.12094 2.06738 2.94922 2.06738H5.54492Z"
-      fill="currentColor"
+      d="M8.2 3.95H7.95C6.85 3.95 6.35 2.55 5.45 2.55H3.6A2.15 2.15 0 0 0 1.45 4.7V11.3A2.15 2.15 0 0 0 3.6 13.45H12.4A2.15 2.15 0 0 0 14.55 11.3V8.6"
+      stroke="currentColor"
     />
-    <path d="M9.75977 4.50208H14.5509" stroke="currentColor" />
-    <path d="M12.1492 6.89758L12.1492 2.10642" stroke="currentColor" />
+    <path d="M10 4.5H14" stroke="currentColor" />
+    <path d="M12 2.5V6.5" stroke="currentColor" />
   </svg>
 );
 
-/** Regular one-pixel IconProjectAddOutline artwork. */
+/** Regular IconProjectAddOutline artwork. */
 export const IconProjectAddOutlineRegular = (props: IconProps) => (
   <IconProjectAddOutlineArtwork {...props} strokeWidth={ICON_REGULAR_STROKE} />
 );
 
-/** Medium IconProjectAddOutline artwork with a 1.3px stroke. */
+/** Medium IconProjectAddOutline artwork. */
 export const IconProjectAddOutlineMedium = (props: IconProps) => (
   <IconProjectAddOutlineArtwork {...props} strokeWidth={ICON_MEDIUM_STROKE} />
 );
@@ -1583,24 +1717,26 @@ const IconFolderOpenOutlineArtwork = ({ size = 16, className, strokeWidth }: Wei
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
-      d="M12.3994 13.5986H2.04956C1.49728 13.5986 1.04956 13.1509 1.04956 12.5986V3.40137C1.04956 2.84908 1.49728 2.40137 2.04956 2.40137H4.76632C5.01016 2.40137 5.24561 2.49046 5.42836 2.6519L6.94088 3.98799C7.12364 4.14943 7.35908 4.23852 7.60293 4.23852H12.3994C12.9517 4.23852 13.3994 4.68624 13.3994 5.23852V7.16991"
+      d="M2.25 13.45A1.3 1.3 0 0 1 1.45 12.15V4.7A2.15 2.15 0 0 1 3.6 2.55H5.45C6.35 2.55 6.85 3.95 7.95 3.95H11.65A1.95 1.95 0 0 1 13.6 5.9V6.85"
       stroke="currentColor"
     />
     <path
-      d="M2.55911 7.93683C2.67584 7.49906 3.07229 7.19446 3.52536 7.19446H13.6491C14.3061 7.19446 14.7846 7.81725 14.6153 8.45209L13.4411 12.856C13.3244 13.2938 12.9279 13.5984 12.4748 13.5984H2.35113C1.69411 13.5984 1.21562 12.9756 1.38489 12.3407L2.55911 7.93683Z"
+      d="M2.65 8.12C2.86 7.37 3.54 6.85 4.32 6.85H13.38C14.3 6.85 14.96 7.72 14.72 8.61L13.76 12.18C13.56 12.93 12.88 13.45 12.1 13.45H2.8C1.9 13.45 1.26 12.59 1.5 11.72L2.65 8.12Z"
       stroke="currentColor"
     />
   </svg>
 );
 
-/** Regular one-pixel IconFolderOpenOutline artwork. */
+/** Regular IconFolderOpenOutline artwork. */
 export const IconFolderOpenOutlineRegular = (props: IconProps) => (
   <IconFolderOpenOutlineArtwork {...props} strokeWidth={ICON_REGULAR_STROKE} />
 );
 
-/** Medium IconFolderOpenOutline artwork with a 1.3px stroke. */
+/** Medium IconFolderOpenOutline artwork. */
 export const IconFolderOpenOutlineMedium = (props: IconProps) => (
   <IconFolderOpenOutlineArtwork {...props} strokeWidth={ICON_MEDIUM_STROKE} />
 );
@@ -1615,29 +1751,28 @@ const IconFolderOpenArtwork = ({ size = 16, className, strokeWidth }: WeightedIc
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
-      d="M2.55912 7.93683C2.67584 7.49906 3.0723 7.19446 3.52536 7.19446H13.6491C14.3061 7.19446 14.7846 7.81725 14.6153 8.45209L13.4411 12.856C13.3244 13.2938 12.9279 13.5984 12.4748 13.5984H2.35113C1.69411 13.5984 1.21562 12.9756 1.38489 12.3407L2.55912 7.93683Z"
-      fill="currentColor"
-      opacity="0.16"
+      d="M2.25 13.45A1.3 1.3 0 0 1 1.45 12.15V4.7A2.15 2.15 0 0 1 3.6 2.55H5.45C6.35 2.55 6.85 3.95 7.95 3.95H11.65A1.95 1.95 0 0 1 13.6 5.9V6.85"
+      stroke="currentColor"
     />
     <path
-      d="M13.6491 6.69446C14.6346 6.69453 15.3522 7.62895 15.0983 8.58118L13.9245 12.9845C13.7494 13.6412 13.1539 14.0988 12.4743 14.0988H2.35126C1.36574 14.0988 0.648153 13.1643 0.902044 12.212L2.07587 7.80774C2.25102 7.15128 2.84567 6.69455 3.52509 6.69446H13.6491ZM3.52509 7.69446C3.29865 7.69455 3.10004 7.84674 3.04169 8.06555L1.86786 12.4698C1.78345 12.7872 2.02285 13.0988 2.35126 13.0988H12.4743C12.7007 13.0988 12.8992 12.9463 12.9577 12.7277L14.1325 8.32336C14.2171 8.00598 13.9776 7.69453 13.6491 7.69446H3.52509Z"
+      d="M2.65 8.12C2.86 7.37 3.54 6.85 4.32 6.85H13.38C14.3 6.85 14.96 7.72 14.72 8.61L13.76 12.18C13.56 12.93 12.88 13.45 12.1 13.45H2.8C1.9 13.45 1.26 12.59 1.5 11.72L2.65 8.12Z"
       fill="currentColor"
-    />
-    <path
-      d="M4.7666 1.90137C5.13227 1.90144 5.48571 2.03525 5.75977 2.27734L7.27246 3.61328C7.36379 3.69382 7.48174 3.73828 7.60352 3.73828H12.3994C13.2276 3.73841 13.8993 4.41005 13.8994 5.23828V6.7168C13.8183 6.70327 13.735 6.69436 13.6494 6.69434H12.8994V5.23828C12.8993 4.96233 12.6754 4.73841 12.3994 4.73828H7.60352C7.23781 4.73828 6.88446 4.60438 6.61035 4.3623L5.09766 3.02637C5.00636 2.94576 4.88838 2.90144 4.7666 2.90137H2.0498C1.77366 2.90137 1.5498 3.12523 1.5498 3.40137V9.78223L0.902344 12.2119C0.648452 13.1642 1.36604 14.0986 2.35156 14.0986H2.0498C1.2214 14.0986 0.549838 13.427 0.549805 12.5986V3.40137C0.549805 2.57294 1.22138 1.90137 2.0498 1.90137H4.7666Z"
-      fill="currentColor"
+      fillOpacity="0.1"
+      stroke="currentColor"
     />
   </svg>
 );
 
-/** Regular IconFolderOpen artwork; its fill-only geometry is weight-independent. */
+/** Regular IconFolderOpen artwork with soft front-flap tint. */
 export const IconFolderOpenRegular = (props: IconProps) => (
   <IconFolderOpenArtwork {...props} strokeWidth={ICON_REGULAR_STROKE} />
 );
 
-/** Medium IconFolderOpen artwork; it matches Regular because the geometry is fill-only. */
+/** Medium IconFolderOpen artwork with soft front-flap tint. */
 export const IconFolderOpenMedium = (props: IconProps) => (
   <IconFolderOpenArtwork {...props} strokeWidth={ICON_MEDIUM_STROKE} />
 );
@@ -1662,6 +1797,9 @@ const IconTreeCornerArtwork = ({ size = 10, className, strokeWidth }: WeightedIc
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M0.5 0V7C0.5 7.79565 0.81607 8.55871 1.37868 9.12132C1.94129 9.68393 2.70435 10 3.5 10H8.5"
@@ -1690,6 +1828,9 @@ const IconLightOutlineArtwork = ({ size = 16, className, strokeWidth }: Weighted
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M8.00007 11.8117C10.1052 11.8117 11.8117 10.1052 11.8117 8.00007C11.8117 5.89499 10.1052 4.18848 8.00007 4.18848C5.89499 4.18848 4.18848 5.89499 4.18848 8.00007C4.18848 10.1052 5.89499 11.8117 8.00007 11.8117Z"
@@ -1726,6 +1867,9 @@ const IconDarkOutlineArtwork = ({ size = 16, className, strokeWidth }: WeightedI
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M14.1127 8.70663C14.2576 8.60602 14.4627 8.71355 14.4386 8.88834C14.2901 9.96567 13.8731 10.9912 13.2229 11.8692C12.479 12.8735 11.4613 13.6421 10.2917 14.0829C9.1222 14.5236 7.85038 14.6179 6.62865 14.3543C5.40692 14.0907 4.28709 13.4805 3.40332 12.5967C2.51955 11.7129 1.90931 10.5931 1.64572 9.37135C1.38212 8.14962 1.47635 6.87779 1.91711 5.70825C2.35787 4.5387 3.12647 3.52103 4.13083 2.77714C5.00878 2.12689 6.03433 1.70994 7.11166 1.5614C7.28645 1.5373 7.39397 1.74238 7.29337 1.88734C6.68703 2.76099 6.37885 3.81241 6.42313 4.88345C6.47392 6.11194 6.98471 7.27645 7.85413 8.14587C8.72355 9.01529 9.88805 9.52608 11.1166 9.57687C12.1876 9.62114 13.239 9.31296 14.1127 8.70663Z"
@@ -1758,6 +1902,9 @@ const IconFollowsystemOutlineArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M13.5 2.5H2.5C1.94772 2.5 1.5 2.94772 1.5 3.5V11.5C1.5 12.0523 1.94772 12.5 2.5 12.5H13.5C14.0523 12.5 14.5 12.0523 14.5 11.5V3.5C14.5 2.94772 14.0523 2.5 13.5 2.5Z"
@@ -1787,6 +1934,9 @@ const IconDataOutlineArtwork = ({ size = 16, className, strokeWidth }: WeightedI
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M7.8667 0.349609C8.96906 0.349634 10.0601 0.481272 11.0317 0.735352C11.9973 0.987845 12.8453 1.362 13.4644 1.84766C14.0744 2.32629 14.507 2.95539 14.5161 3.69336H14.5171V8.53516C14.0843 8.32076 13.6108 8.17679 13.1108 8.11816C13.1831 7.96848 13.2162 7.82856 13.2163 7.70312V5.76758C12.6269 6.16618 11.8739 6.47995 11.0317 6.7002C10.0602 6.95423 8.96896 7.08494 7.8667 7.08496C6.76461 7.08493 5.67411 6.95415 4.70264 6.7002C3.85994 6.48006 3.10694 6.1662 2.51709 5.76758V7.70312L2.521 7.78418C2.56374 8.19554 2.93361 8.74414 3.91357 9.23145C4.9281 9.73585 6.35004 10.0371 7.8667 10.0371C8.26373 10.0371 8.6543 10.0141 9.03271 9.97461C8.75596 10.3799 8.54664 10.8349 8.42041 11.3232C8.23666 11.3313 8.0518 11.3369 7.8667 11.3369C6.20108 11.3369 4.57025 11.01 3.33447 10.3955C3.04163 10.2499 2.76658 10.0836 2.51709 9.90039V11.6738C2.51728 12.1379 2.88589 12.7556 3.92236 13.292C4.93457 13.8157 6.35342 14.1289 7.8667 14.1289C8.12318 14.1289 8.37694 14.1161 8.62646 14.0986C8.82021 14.5535 9.08999 14.9682 9.41943 15.3271C8.91285 15.3934 8.39149 15.4287 7.8667 15.4287C6.19761 15.4287 4.56379 15.0869 3.32568 14.4463C2.11244 13.8185 1.21649 12.8562 1.21631 11.6738V3.76367C1.21595 3.74853 1.21438 3.733 1.21436 3.71777C1.21436 2.96917 1.65103 2.33053 2.26807 1.84668C2.88747 1.36112 3.73675 0.987685 4.70264 0.735352C5.67413 0.481376 6.76457 0.349636 7.8667 0.349609ZM7.8667 1.65039C6.86269 1.65042 5.88326 1.77028 5.03076 1.99316C4.17183 2.2176 3.50421 2.52956 3.06982 2.87012C2.65043 3.19909 2.52622 3.48898 2.51709 3.69336V3.74414C2.52719 3.94845 2.65185 4.23772 3.06982 4.56543C3.50425 4.90601 4.17172 5.21795 5.03076 5.44238C5.88326 5.66527 6.8627 5.78513 7.8667 5.78516C8.8707 5.78513 9.85015 5.66525 10.7026 5.44238C11.5611 5.21787 12.2286 4.9049 12.6626 4.56445C13.0982 4.22252 13.2163 3.9231 13.2163 3.71777L13.2104 3.63574C13.1818 3.43623 13.044 3.16941 12.6626 2.87012C12.2286 2.52957 11.5614 2.21773 10.7026 1.99316C9.85009 1.77025 8.8708 1.65041 7.8667 1.65039Z"
@@ -1820,6 +1970,9 @@ const IconDatabaseOutlineArtwork = ({ size = 16, className, strokeWidth }: Weigh
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M13.1967 5.1869C13.7232 4.77378 14.0003 4.30517 14.0001 3.82819C14.0003 3.3512 13.7232 2.88259 13.1967 2.46947C12.6702 2.05635 11.9128 1.71328 11.0006 1.47475C10.0885 1.23621 9.05371 1.11062 8.00039 1.1106C6.94707 1.11057 5.9123 1.23612 5.00009 1.47461C4.08742 1.71301 3.32948 2.05604 2.80249 2.46919C2.2755 2.88235 1.99805 3.35106 1.99805 3.82819C1.99805 4.30531 2.2755 4.77402 2.80249 5.18718C3.32948 5.60033 4.08742 5.94336 5.00009 6.18176C5.9123 6.42025 6.94707 6.5458 8.00039 6.54578C9.05371 6.54575 10.0885 6.42016 11.0006 6.18163C11.9128 5.94309 12.6702 5.60002 13.1967 5.1869Z"
@@ -1858,6 +2011,9 @@ const IconClockOutlineArtwork = ({ size = 16, className, strokeWidth }: Weighted
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M8 14C11.3137 14 14 11.3137 14 8C14 4.68629 11.3137 2 8 2C4.68629 2 2 4.68629 2 8C2 11.3137 4.68629 14 8 14Z"
@@ -1887,6 +2043,9 @@ const IconGaugeOutlineArtwork = ({ size = 16, className, strokeWidth }: Weighted
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M3.4041 13.096C2.49514 12.187 1.87614 11.0288 1.62537 9.76798C1.37459 8.50716 1.50331 7.20028 1.99525 6.01261C2.48719 4.82494 3.32025 3.80981 4.3891 3.09557C5.45795 2.38134 6.71458 2.00008 8.0001 2C9.28563 2.00008 10.5423 2.38134 11.6111 3.09557C12.68 3.80981 13.513 4.82494 14.005 6.01261C14.4969 7.20028 14.6256 8.50716 14.3748 9.76798C14.1241 11.0288 13.5051 12.187 12.5961 13.096"
@@ -1920,6 +2079,9 @@ const IconSendOutlineArtwork = ({ size = 14, className, strokeWidth }: WeightedI
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M6.97211 1.94476C7.55785 1.35914 8.50767 1.35919 9.09343 1.94476L13.921 6.77228L13.2138 7.47939L8.38632 2.65187C8.19108 2.45682 7.87443 2.45677 7.67922 2.65187L2.74397 7.58711L2.03687 6.88L6.97211 1.94476Z"
@@ -1963,6 +2125,9 @@ const IconChecklistOutlineArtwork = ({ size = 14, className, strokeWidth }: Weig
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M3.75 6.25C4.7165 6.25 5.5 5.4665 5.5 4.5C5.5 3.5335 4.7165 2.75 3.75 2.75C2.7835 2.75 2 3.5335 2 4.5C2 5.4665 2.7835 6.25 3.75 6.25Z"
@@ -1997,6 +2162,9 @@ const IconListPenOutlineArtwork = ({ size = 16, className, strokeWidth }: Weight
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M4.9375 5.90295H11.0625" stroke="currentColor" />
     <path d="M4.9375 9.02991H8.27841" stroke="currentColor" />
@@ -2035,6 +2203,9 @@ const IconGoalOutlineArtwork = ({ size = 16, className, strokeWidth }: WeightedI
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M14.5001 8C14.5 9.28552 14.1188 10.5422 13.4045 11.611C12.6903 12.6799 11.6752 13.5129 10.4875 14.0049C9.29982 14.4968 7.99295 14.6255 6.73212 14.3747C5.4713 14.124 4.31314 13.505 3.4041 12.596C2.49514 11.687 1.87614 10.5288 1.62537 9.26798C1.37459 8.00716 1.50331 6.70028 1.99525 5.51261C2.48719 4.32494 3.32025 3.30981 4.3891 2.59557C5.45795 1.88134 6.71458 1.50008 8.0001 1.5"
@@ -2072,6 +2243,9 @@ const IconSparkleArtwork = ({ size = 16, className, strokeWidth }: WeightedIconP
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M5.875 3C5.875 6.33333 7.54167 8 10.875 8C7.54167 8 5.875 9.66667 5.875 13C5.875 9.66667 4.20833 8 0.875 8C4.20833 8 5.875 6.33333 5.875 3Z"
@@ -2118,6 +2292,9 @@ const IconSkillOutlineArtwork = ({ size = 16, className, strokeWidth }: Weighted
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M4.57788 5.77124H10.7029" stroke="currentColor" />
     <path d="M4.57788 8.89819H7.91879" stroke="currentColor" />
@@ -2152,6 +2329,9 @@ const IconQuestionOutlineArtwork = ({ size = 14, className, strokeWidth }: Weigh
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M8 14.5C11.5899 14.5 14.5 11.5899 14.5 8C14.5 4.41015 11.5899 1.5 8 1.5C4.41015 1.5 1.5 4.41015 1.5 8C1.5 11.5899 4.41015 14.5 8 14.5Z"
@@ -2185,6 +2365,9 @@ const IconInfoOutlineArtwork = ({ size = 14, className, strokeWidth }: WeightedI
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M12.5757 7.00012C12.5757 3.92085 10.0794 1.42463 7.00012 1.42456C3.9208 1.42456 1.42456 3.9208 1.42456 7.00012C1.42463 10.0794 3.92085 12.5757 7.00012 12.5757C10.0793 12.5756 12.5756 10.0793 12.5757 7.00012ZM13.8002 7.00012C13.8001 10.7559 10.7559 13.8001 7.00012 13.8002C3.2443 13.8002 0.199291 10.7559 0.199219 7.00012C0.199219 3.24426 3.24426 0.199219 7.00012 0.199219C10.7559 0.199291 13.8002 3.2443 13.8002 7.00012Z"
@@ -2219,6 +2402,9 @@ const IconPluginPinwheelOutlineArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M7.84457 5.06199C11.6605 4.93876 14.7962 6.14848 14.8484 7.76397C14.8875 8.97461 13.1838 10.0696 10.7215 10.5942"
@@ -2259,6 +2445,9 @@ const IconAlarmClockOutlineArtwork = ({ size = 16, className, strokeWidth }: Wei
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M4.09372 11.9895L3.11865 14.0387" stroke="currentColor" />
     <path d="M12.1392 11.9895L13.1143 14.0387" stroke="currentColor" />
@@ -2298,16 +2487,15 @@ const IconArchiveOutlineArtwork = ({ size = 20, className, strokeWidth }: Weight
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
+    <rect x="1.75" y="2.5" width="12.5" height="3.25" rx="1.5" stroke="currentColor" />
     <path
-      d="M13.5 2.5H2.5C1.94772 2.5 1.5 2.94772 1.5 3.5V4.5C1.5 5.05228 1.94772 5.5 2.5 5.5H13.5C14.0523 5.5 14.5 5.05228 14.5 4.5V3.5C14.5 2.94772 14.0523 2.5 13.5 2.5Z"
+      d="M2.75 5.75V11.75C2.75 12.8546 3.64543 13.75 4.75 13.75H11.25C12.3546 13.75 13.25 12.8546 13.25 11.75V5.75"
       stroke="currentColor"
     />
-    <path
-      d="M2.5 5.5V13.5C2.5 13.7652 2.60536 14.0196 2.79289 14.2071C2.98043 14.3946 3.23478 14.5 3.5 14.5H12.5C12.7652 14.5 13.0196 14.3946 13.2071 14.2071C13.3946 14.0196 13.5 13.7652 13.5 13.5V5.5"
-      stroke="currentColor"
-    />
-    <path d="M6.5 9.5H9.5" stroke="currentColor" />
+    <path d="M6.35 9.25H9.65" stroke="currentColor" />
   </svg>
 );
 
@@ -2331,6 +2519,9 @@ const IconWrapLinesOutlineArtwork = ({ size = 16, className, strokeWidth }: Weig
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M2.3457 3.19299H13.6541" stroke="currentColor" />
     <path d="M2.3457 7.46497H9.19332" stroke="currentColor" />
@@ -2420,6 +2611,9 @@ const IconCompareSplitOutlineArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M6 1.5H2.5C1.94772 1.5 1.5 1.94772 1.5 2.5V13.5C1.5 14.0523 1.94772 14.5 2.5 14.5H6C6.55228 14.5 7 14.0523 7 13.5V2.5C7 1.94772 6.55228 1.5 6 1.5Z"
@@ -2466,6 +2660,9 @@ const IconCompactOutlineArtwork = ({ size = 16, className, strokeWidth }: Weight
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       opacity="0.35"
@@ -2499,6 +2696,9 @@ const IconShieldOutlineArtwork = ({ size = 16, className, strokeWidth }: Weighte
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d={SHIELD_OUTLINE_PATH} stroke="currentColor" strokeLinejoin="round" />
   </svg>
@@ -2528,6 +2728,9 @@ const IconCheckCircleOutlineArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M12.5303 6.53027L8.80273 10.2578C8.54967 10.5109 8.31796 10.7439 8.10645 10.9141C7.88375 11.0932 7.616 11.2602 7.27344 11.3145C7.09229 11.3431 6.90771 11.3431 6.72656 11.3145C6.384 11.2602 6.11625 11.0932 5.89355 10.9141C5.68204 10.7439 5.45033 10.5109 5.19727 10.2578L3.46973 8.53027L4.53027 7.46973L6.25781 9.19727C6.53457 9.47402 6.70036 9.63859 6.83398 9.74609C6.95637 9.84453 6.98241 9.83644 6.96094 9.83301C6.98679 9.83709 7.01321 9.83709 7.03906 9.83301C7.01759 9.83644 7.04363 9.84453 7.16602 9.74609C7.29964 9.63859 7.46543 9.47402 7.74219 9.19727L11.4697 5.46973L12.5303 6.53027Z"
@@ -2560,6 +2763,9 @@ const IconUnarchiveOutlineArtwork = ({ size = 20, className, strokeWidth }: Weig
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       fillRule="evenodd"
@@ -2596,6 +2802,9 @@ const IconPinOutlineArtwork = ({ size = 16, className, strokeWidth }: WeightedIc
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M9.96976 1.70572L13.1554 3.93629L10.9019 8.12317L11.5158 11.605L10.7192 12.7427L2.52767 7.00693L3.3243 5.86922L6.80612 5.25528L9.96976 1.70572Z"
@@ -2629,6 +2838,9 @@ const IconPinFillArtwork = ({ size = 16, className, strokeWidth }: WeightedIconP
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M9.96976 1.70572L13.1554 3.93629L10.9019 8.12317L11.5158 11.605L10.7192 12.7427L2.52767 7.00693L3.3243 5.86922L6.80612 5.25528L9.96976 1.70572Z"
@@ -2664,6 +2876,8 @@ const IconFlatListOutlineArtwork = ({ size = 16, className, strokeWidth }: Weigh
     strokeLinecap="round"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinejoin="round"
   >
     <path d="M6 3.5h7.5M6 8h7.5M6 12.5h7.5" />
     <path d="M2.6 3.5h.01M2.6 8h.01M2.6 12.5h.01" />
@@ -2828,6 +3042,8 @@ const IconSlidersTwoOutlineArtwork = ({ size = 16, className, strokeWidth }: Wei
     strokeLinecap="round"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+
+    strokeLinejoin="round"
   >
     <path d="M2.3 5h5.85M12.05 5h1.65" />
     <circle cx="9.95" cy="5" r="1.45" />
@@ -2856,6 +3072,9 @@ const IconMicrophoneOutlineArtwork = ({ size = 16, className, strokeWidth }: Wei
     stroke="currentColor"
     strokeWidth={strokeWidth}
     aria-hidden="true"
+
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <rect
       x={4.5 + strokeWidth / 2}

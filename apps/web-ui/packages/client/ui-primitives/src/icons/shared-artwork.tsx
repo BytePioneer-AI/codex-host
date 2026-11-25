@@ -49,6 +49,8 @@ export const ChatLinesOutlineArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M5 6.75H11" stroke="currentColor" />
     <path d="M5 9H8" stroke="currentColor" />
@@ -78,12 +80,14 @@ export const GlobeOutlineArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M7.99986 14.0887C11.3626 14.0887 14.0886 11.3627 14.0886 7.99998C14.0886 4.63727 11.3626 1.91125 7.99986 1.91125C4.63715 1.91125 1.91113 4.63727 1.91113 7.99998C1.91113 11.3627 4.63715 14.0887 7.99986 14.0887Z"
       stroke="currentColor"
     />
-    <path d="M2.34619 8H13.6538" stroke="currentColor" strokeLinecap="square" />
+    <path d="M2.34619 8H13.6538" stroke="currentColor" />
     <path
       d="M7.99976 14.0889C9.23509 14.0889 10.1743 11.3629 10.1743 8.00006C10.1743 4.63739 9.23509 1.91138 7.99976 1.91138"
       stroke="currentColor"
@@ -114,6 +118,8 @@ export const CodeBracketsArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
       d="M4.67398 4.25061L1.36094 7.86484C1.29085 7.9413 1.29085 8.05866 1.36094 8.13513L4.67398 11.7494"
@@ -146,6 +152,8 @@ export const BrowseOutlineArtwork = ({
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path d="M4.9375 5.90295H11.0625" stroke="currentColor" />
     <path d="M4.9375 9.02991H8.27841" stroke="currentColor" />
@@ -171,13 +179,15 @@ export const FolderCloseArtwork = ({ size = 16, className, strokeWidth }: Weight
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
   >
     <path
-      d="M1.50439 3.11059C1.50439 2.55831 1.95211 2.1106 2.50439 2.1106H5.43389C5.67773 2.1106 5.91318 2.19969 6.09593 2.36113L7.71649 3.79265C7.89924 3.95409 8.1347 4.04319 8.3785 4.04319H13.4958C14.0481 4.04319 14.4958 4.4909 14.4958 5.04319V12.8894C14.4958 13.4417 14.0481 13.8894 13.4958 13.8894H2.50439C1.95211 13.8894 1.50439 13.4417 1.50439 12.8894V4.04319V3.11059Z"
+      d="M1.45 4.7A2.15 2.15 0 0 1 3.6 2.55H5.45C6.35 2.55 6.85 3.95 7.95 3.95H12.4A2.15 2.15 0 0 1 14.55 6.1V11.3A2.15 2.15 0 0 1 12.4 13.45H3.6A2.15 2.15 0 0 1 1.45 11.3Z"
       stroke="currentColor"
     />
     {/* The shelf line runs edge to edge, as the Codex sidebar folder does;
        an inset stroke reads as a stray pill at 16px. */}
-    <path d="M1.50439 7.5H14.4958" stroke="currentColor" />
+    <path d="M1.55 6.95H14.45" stroke="currentColor" />
   </svg>
 );

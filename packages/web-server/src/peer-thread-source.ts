@@ -69,6 +69,14 @@ export interface PeerThreadListResult {
   archivedIds: ReadonlySet<string>;
   parents: Readonly<Record<string, string>>;
   ownershipAvailable: boolean;
+  /** Ancestor thread IDs whose archived/unarchived state was not confirmed by this read. */
+  retainedAncestorIds?: ReadonlySet<string>;
+  /** Thread IDs explicitly confirmed unarchived during or before this read. */
+  unarchivedIds?: ReadonlySet<string>;
+  /** True when this list was superseded by an epoch roll, reset, or close and must be discarded. */
+  stale?: boolean;
+  /** True when tree/read could not be confirmed for the current epoch (transient error or epoch roll). */
+  treeStale?: boolean;
 }
 
 export interface PeerHistoryMeta {
@@ -95,6 +103,39 @@ export class PeerThreadSource {
   private skillsListUnavailable = false;
   private threadCommandsUnavailable = false;
   private harnessCommandsUnavailable = false;
+  private treeUnavailable = false;
+  private treeEpoch: string | undefined;
+  private treeGeneration = 0;
+  private treeConfirmedGeneration: number | undefined;
+  private listGeneration = 0;
+  private confirmedAncestors = new Map<
+    string,
+    { row: ChThread; harnessId?: string; archived: boolean }
+  >();
+  private archiveSeq = 0;
+  private readonly knownArchived = new Map<string, { archived: boolean; seq: number }>();
+  private closed = false;
+
+  get generation(): number {
+    return this.listGeneration;
+  }
+
+  setArchived(threadId: string, archived: boolean): void {
+    this.knownArchived.set(threadId, { archived, seq: ++this.archiveSeq });
+    const cached = this.confirmedAncestors.get(threadId);
+    if (cached) cached.archived = archived;
+  }
+
+  private invalidateTree(nextEpoch: string | undefined, clearKnownArchived = false): void {
+    this.treeGeneration++;
+    this.listGeneration++;
+    this.treeConfirmedGeneration = undefined;
+    this.treeUnavailable = false;
+    this.treeEpoch = nextEpoch;
+    this.tree.clear();
+    this.confirmedAncestors.clear();
+    if (clearKnownArchived) this.knownArchived.clear();
+  }
 
   constructor(private readonly options: PeerThreadSourceOptions) {
     this.hostId = options.hostId;
@@ -116,6 +157,12 @@ export class PeerThreadSource {
         this.skillsListUnavailable = false;
         this.threadCommandsUnavailable = false;
         this.harnessCommandsUnavailable = false;
+        if (this.treeEpoch !== undefined && this.treeEpoch !== event.cursor.epoch) {
+          this.invalidateTree(event.cursor.epoch, true);
+        } else {
+          this.treeEpoch = event.cursor.epoch;
+          this.treeUnavailable = false;
+        }
         options.onSkillsChanged?.();
       } else if (event.type === "skills-changed") {
         options.onSkillsChanged?.();
@@ -141,6 +188,9 @@ export class PeerThreadSource {
           }
           await options.onCatalogChanged();
         },
+        archived: (threadId, archived) => {
+          this.setArchived(threadId, archived);
+        },
         connection: (online) => {
           if (!online) {
             this.listedForEpoch = undefined;
@@ -152,16 +202,20 @@ export class PeerThreadSource {
           if (full && this.epoch === epoch) {
             this.listedForEpoch = undefined;
             this.inFlightListEpoch = undefined;
+            this.invalidateTree(epoch, false);
             for (const view of this.histories.values()) view.forgetKnownTurns();
           }
           if (this.epoch && this.epoch !== epoch) {
             this.listedForEpoch = undefined;
             this.inFlightListEpoch = undefined;
+            this.invalidateTree(epoch, true);
             for (const view of this.histories.values()) {
               view.retire();
               view.log.reconnectFollowers();
             }
             this.histories.clear();
+          } else if (this.treeEpoch === undefined) {
+            this.treeEpoch = epoch;
           }
           this.epoch = epoch;
           options.onReset?.(epoch, full);
@@ -194,10 +248,53 @@ export class PeerThreadSource {
     const harnessIds = new Map<string, string>();
     const archivedIds = new Set<string>();
     const timing = new SessionListTiming();
-    const treePromise = this.tree.refresh().then(
-      () => true,
-      () => false,
-    );
+    if (startEpoch !== undefined && this.treeEpoch !== undefined && startEpoch !== this.treeEpoch) {
+      this.invalidateTree(startEpoch, true);
+    } else if (this.treeEpoch === undefined && startEpoch !== undefined) {
+      this.treeEpoch = startEpoch;
+    }
+    const generation = this.treeGeneration;
+    const listGeneration = this.listGeneration;
+    const listStartArchiveSeq = this.archiveSeq;
+    const newerArchiveUpdate = (id: string): boolean | undefined => {
+      const known = this.knownArchived.get(id);
+      return known && known.seq > listStartArchiveSeq ? known.archived : undefined;
+    };
+    const isCurrentTree = () => !this.closed && this.treeGeneration === generation;
+    const isCurrentList = () =>
+      !this.closed &&
+      this.listGeneration === listGeneration &&
+      (startEpoch === undefined || this.epoch === undefined || this.epoch === startEpoch);
+    const isCurrent = () => isCurrentTree() && isCurrentList();
+    const staleResult = (): PeerThreadListResult => ({
+      rows: [],
+      harnessIds: new Map(),
+      archivedIds: new Set(),
+      parents: {},
+      ownershipAvailable: false,
+      stale: true,
+      treeStale: true,
+    });
+    const treePromise = this.treeUnavailable
+      ? Promise.resolve("unavailable" as const)
+      : this.tree.refresh(isCurrent).then(
+          (applied) => {
+            if (!applied || !isCurrent()) return "stale" as const;
+            this.treeConfirmedGeneration = generation;
+            return "ok" as const;
+          },
+          (error: unknown) => {
+            if (!isCurrent()) return "stale" as const;
+            if (isMethodUnavailableError(error)) {
+              this.treeUnavailable = true;
+              this.treeConfirmedGeneration = undefined;
+              this.tree.clear();
+              this.confirmedAncestors.clear();
+              return "unavailable" as const;
+            }
+            return "error" as const;
+          },
+        );
 
     let ownershipAvailable = true;
     const seenCursors = new Set<string>();
@@ -211,6 +308,10 @@ export class PeerThreadSource {
         }
         pages++;
         const { page } = await readSessionPage(this.host, timing, false, cursor, async () => []);
+        if (!isCurrentList()) {
+          await treePromise;
+          return staleResult();
+        }
         const pageById = new Map<string, ChThread>();
         const pageRows: ChThread[] = [];
         for (const rawRow of page.threads) {
@@ -232,16 +333,20 @@ export class PeerThreadSource {
           }
         }
         const next = nextCatalogCursor(page, false);
-        if (onPage && pageRows.length > 0) {
+        if (onPage && pageRows.length > 0 && isCurrentList()) {
           const pageHarnessIds = new Map<string, string>();
+          const pageArchivedIds = new Set(archivedIds);
           for (const row of pageRows) {
             const hid = harnessIds.get(row.id);
             if (hid) pageHarnessIds.set(row.id, hid);
+            const newer = newerArchiveUpdate(row.id);
+            if (newer === true) pageArchivedIds.add(row.id);
+            else if (newer === false) pageArchivedIds.delete(row.id);
           }
           onPage({
             rows: pageRows,
             harnessIds: pageHarnessIds,
-            archivedIds: new Set(archivedIds),
+            archivedIds: pageArchivedIds,
             parents: {},
             ownershipAvailable,
           });
@@ -256,59 +361,184 @@ export class PeerThreadSource {
     } catch (error) {
       if (pages !== 1 || !isMethodUnavailableError(error)) {
         await treePromise;
+        if (!isCurrentList()) return staleResult();
         throw error;
       }
       ownershipAvailable = false;
+      this.confirmedAncestors.clear();
       await this.listThreadsFallback(rows);
-    }
-
-    const treeOk = await treePromise;
-    const parents: Record<string, string> = {};
-    if (ownershipAvailable && treeOk) {
-      await this.tree.supplement(rows, async (id) => {
-        const [result, owner] = await Promise.all([
-          this.host.request<{ thread: ChThread }>("thread/read", {
-            threadId: id,
-            includeTurns: false,
-          }),
-          this.host
-            .request<{ threads: unknown[] }>("codexhost/thread/ownership/list", {
-              threadIds: [id],
-            })
-            .then((value) => threadOwnershipSchema.parse(value.threads[0]))
-            .catch(() => undefined),
-        ]);
-        if (result.thread.id !== id) throw new Error("Ancestor Thread identity mismatch");
-        if (owner) {
-          if (
-            owner.owner === "external" &&
-            owner.harnessId &&
-            result.thread.modelProvider === "codexhost"
-          ) {
-            harnessIds.set(id, owner.harnessId);
-          } else if (owner.owner === "codex" && !harnessIds.has(id)) {
-            harnessIds.set(id, "codex");
-          }
-        } else if (result.thread.modelProvider !== "codexhost" && !harnessIds.has(id)) {
-          harnessIds.set(id, "codex");
-        }
-        if ((result.thread as { archived?: unknown }).archived === true) {
-          archivedIds.add(id);
-        }
-        return { ...result.thread, turns: [] };
-      });
-      for (const id of rows.keys()) {
-        const parent = this.tree.parent(id);
-        if (parent !== null) parents[id] = parent;
+      if (!isCurrentList()) {
+        await treePromise;
+        return staleResult();
       }
     }
 
+    const finalTreeState = await treePromise;
+    if (!isCurrentList()) {
+      return staleResult();
+    }
+    for (const id of [...archivedIds]) {
+      const newer = newerArchiveUpdate(id);
+      if (newer === false) {
+        archivedIds.delete(id);
+      } else if (newer === undefined) {
+        this.knownArchived.set(id, { archived: true, seq: listStartArchiveSeq });
+      }
+    }
+    for (const id of rows.keys()) {
+      const newer = newerArchiveUpdate(id);
+      if (newer === true) {
+        archivedIds.add(id);
+      } else if (newer === undefined && !archivedIds.has(id)) {
+        this.knownArchived.delete(id);
+      }
+    }
+    const parents: Record<string, string> = {};
+    const retainedAncestorIds = new Set<string>();
+    const unarchivedIds = new Set<string>();
+    const markArchived = (id: string) => {
+      archivedIds.add(id);
+      unarchivedIds.delete(id);
+      retainedAncestorIds.delete(id);
+    };
+    const markUnarchived = (id: string) => {
+      archivedIds.delete(id);
+      retainedAncestorIds.delete(id);
+      unarchivedIds.add(id);
+    };
+    const applyNewerArchiveUpdates = () => {
+      for (const [id, state] of this.knownArchived) {
+        if (state.seq <= listStartArchiveSeq) continue;
+        if (state.archived) markArchived(id);
+        else markUnarchived(id);
+      }
+    };
+    const sameGeneration = isCurrentTree();
+    const treeStale =
+      ownershipAvailable &&
+      (finalTreeState === "error" || finalTreeState === "stale" || !sameGeneration);
+    const canUseTree =
+      ownershipAvailable &&
+      sameGeneration &&
+      (finalTreeState === "ok" ||
+        (finalTreeState === "error" && this.treeConfirmedGeneration === generation));
+    if (canUseTree) {
+      if (finalTreeState === "ok") {
+        await this.tree.supplement(rows, async (id) => {
+          if (!isCurrent()) throw new Error("Stale peer catalog list");
+          const [result, owner] = await Promise.all([
+            this.host.request<{ thread: ChThread }>("thread/read", {
+              threadId: id,
+              includeTurns: false,
+            }),
+            this.host
+              .request<{ threads: unknown[] }>("codexhost/thread/ownership/list", {
+                threadIds: [id],
+              })
+              .then((value) => threadOwnershipSchema.parse(value.threads[0]))
+              .catch(() => undefined),
+          ]);
+          if (!isCurrent()) throw new Error("Stale peer catalog list");
+          if (result.thread.id !== id) throw new Error("Ancestor Thread identity mismatch");
+          if (owner) {
+            if (
+              owner.owner === "external" &&
+              owner.harnessId &&
+              result.thread.modelProvider === "codexhost"
+            ) {
+              harnessIds.set(id, owner.harnessId);
+            } else if (owner.owner === "codex" && !harnessIds.has(id)) {
+              harnessIds.set(id, "codex");
+            }
+          } else if (result.thread.modelProvider !== "codexhost" && !harnessIds.has(id)) {
+            harnessIds.set(id, "codex");
+          }
+          const newer = newerArchiveUpdate(id);
+          const threadArchived = (result.thread as { archived?: unknown }).archived;
+          if (newer === true) {
+            markArchived(id);
+          } else if (newer === false) {
+            markUnarchived(id);
+          } else if (threadArchived === true) {
+            markArchived(id);
+            this.knownArchived.set(id, { archived: true, seq: listStartArchiveSeq });
+          } else if (threadArchived === false) {
+            markUnarchived(id);
+            this.knownArchived.delete(id);
+          } else {
+            const known = this.knownArchived.get(id)?.archived;
+            if (known === true) {
+              markArchived(id);
+            } else if (known === false) {
+              markUnarchived(id);
+            } else {
+              retainedAncestorIds.add(id);
+            }
+          }
+          return { ...result.thread, turns: [] };
+        });
+        if (!isCurrent()) {
+          return staleResult();
+        }
+        applyNewerArchiveUpdates();
+        const nextAncestors = new Map<
+          string,
+          { row: ChThread; harnessId?: string; archived: boolean }
+        >();
+        for (const id of rows.keys()) {
+          const parent = this.tree.parent(id);
+          if (!parent || nextAncestors.has(parent)) continue;
+          const parentRow = rows.get(parent);
+          if (!parentRow) continue;
+          const parentHarnessId = harnessIds.get(parent);
+          nextAncestors.set(parent, {
+            row: parentRow,
+            ...(parentHarnessId ? { harnessId: parentHarnessId } : {}),
+            archived: archivedIds.has(parent),
+          });
+        }
+        this.confirmedAncestors = nextAncestors;
+      } else {
+        for (const ancestorId of this.tree.withAncestors(rows.keys())) {
+          if (rows.has(ancestorId)) continue;
+          const cached = this.confirmedAncestors.get(ancestorId);
+          if (!cached) continue;
+          rows.set(ancestorId, cached.row);
+          if (cached.harnessId && !harnessIds.has(ancestorId)) {
+            harnessIds.set(ancestorId, cached.harnessId);
+          }
+          const known = this.knownArchived.get(ancestorId)?.archived;
+          if (known === true) {
+            markArchived(ancestorId);
+          } else if (known === false) {
+            markUnarchived(ancestorId);
+          } else if (cached.archived) {
+            markArchived(ancestorId);
+          } else {
+            archivedIds.delete(ancestorId);
+            unarchivedIds.delete(ancestorId);
+            retainedAncestorIds.add(ancestorId);
+          }
+        }
+      }
+      if (isCurrent()) {
+        for (const id of rows.keys()) {
+          const parent = this.tree.parent(id);
+          if (parent !== null) parents[id] = parent;
+        }
+      }
+    }
+
+    if (!isCurrentList()) {
+      return staleResult();
+    }
+    applyNewerArchiveUpdates();
     this.knownRows.clear();
     for (const [id, row] of rows) this.knownRows.set(id, row);
     this.knownHarnesses.clear();
     for (const [id, harnessId] of harnessIds) this.knownHarnesses.set(id, harnessId);
     const finishedEpoch = this.epoch ?? this.host.manifestEpoch();
-    if (startEpoch !== undefined && startEpoch === finishedEpoch) {
+    if (startEpoch !== undefined && startEpoch === finishedEpoch && !treeStale) {
       this.listedForEpoch = finishedEpoch;
     }
 
@@ -318,6 +548,9 @@ export class PeerThreadSource {
       archivedIds,
       parents,
       ownershipAvailable,
+      ...(retainedAncestorIds.size > 0 ? { retainedAncestorIds } : {}),
+      ...(unarchivedIds.size > 0 ? { unarchivedIds } : {}),
+      ...(treeStale ? { treeStale: true } : {}),
     };
   }
 
@@ -450,6 +683,7 @@ export class PeerThreadSource {
   }
 
   close(): void {
+    this.closed = true;
     this.stopCatalogInvalidation();
     this.realtime.close();
     this.catalog.close();
@@ -460,6 +694,7 @@ export class PeerThreadSource {
     this.histories.clear();
     this.knownRows.clear();
     this.knownHarnesses.clear();
+    this.invalidateTree(undefined, true);
     this.host.close();
   }
 }

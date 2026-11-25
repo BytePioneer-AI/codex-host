@@ -123,6 +123,8 @@ export const zh = {
   "delete.workspace": "删除工作区",
   "delete.desc":
     "将把“{name}”从工作区列表中移除。文件夹与会话记录会保留，其会话将显示在“未分组”下。",
+  "delete.nativeProject":
+    "将从 Codex 和 Web 的项目列表移除“{name}”。文件夹和会话记录会保留，会话将显示在“未分组”下。",
   "delete.pending": "正在删除工作区…",
   "menu.copySessionLink": "复制会话链接",
   "menu.referenceSession": "引用会话",
@@ -354,6 +356,8 @@ export const en = {
   "delete.workspace": "Delete workspace",
   "delete.desc":
     "This removes “{name}” from the workspace list. The folder and session logs will be kept. Its sessions will appear under Ungrouped.",
+  "delete.nativeProject":
+    "This removes “{name}” from the project list in Codex and Web. Its folders and conversations are kept. The conversations appear under Ungrouped.",
   "delete.pending": "Deleting workspace…",
   "menu.copySessionLink": "Copy session link",
   "menu.referenceSession": "Reference session",

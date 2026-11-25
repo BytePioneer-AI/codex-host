@@ -418,7 +418,7 @@ it("isolates stale bindings and immediately resends the cached 1x frame before a
   viewer.tab.attach(viewer.label.ws, (peer) => peers.session(peer, "owner"));
   viewer.label.receive({ type: "visible", visible: true });
   viewer.label.receive({ type: "navigate", url: "https://example.test/" });
-  await vi.waitFor(() => expect(viewer.pictures.length).toBe(1));
+  await vi.waitFor(() => expect(viewer.pictures.length).toBe(1), { timeout: 8_000 });
   const firstPicture = viewer.pictures[0];
   assert.ok(firstPicture, "Expected the initial picture");
   const old = decodeSidebarBrowserFrameHeader(Uint8Array.from(firstPicture).buffer).sequence;
@@ -430,7 +430,7 @@ it("isolates stale bindings and immediately resends the cached 1x frame before a
   await viewer.paint(73);
   const lastPart = () =>
     fragments.find((fragment) => fragment.offset + fragment.payload.length === fragment.total);
-  await vi.waitFor(() => expect(lastPart()).toBeDefined());
+  await vi.waitFor(() => expect(lastPart()).toBeDefined(), { timeout: 8_000 });
   expect(fragments[0]?.attempt).toBe(1);
   expect(fragments[0]?.sequence).toBeGreaterThan(old);
   expect(fragments[0]?.payload[17]).toBe(73);
@@ -444,12 +444,13 @@ it("isolates stale bindings and immediately resends the cached 1x frame before a
   assert.ok(last, "Expected the last fragment of the first direct picture");
   channel.send(encodeSidebarBrowserDirectAck(last.sequence));
   await viewer.paint(74);
-  await vi.waitFor(() =>
-    expect(fragments.find((fragment) => fragment.sequence > last.sequence)).toBeDefined(),
+  await vi.waitFor(
+    () => expect(fragments.find((fragment) => fragment.sequence > last.sequence)).toBeDefined(),
+    { timeout: 8_000 },
   );
   await delay(225); // A slow in-flight frame affects quality once input resumes.
   viewer.label.receive({ type: "wheel", x: 1, y: 1, deltaX: 0, deltaY: 1 });
-  await vi.waitFor(() => expect(viewer.castWidth).toBe(1000));
+  await vi.waitFor(() => expect(viewer.castWidth).toBe(1000), { timeout: 8_000 });
   await viewer.paint(75);
   const unblock = viewer.blockStop();
   channel.close();

@@ -134,7 +134,7 @@ async function sendTypertMultipart(
     JSON.stringify({
       type: "server-response",
       rpcId,
-      result: { ok: true, value },
+      result: { ok: true, value: { ...value, data: null } },
       attachments: [{ path: ["data"], codec: "bytes", part: "bytes-0" }],
     }),
   );

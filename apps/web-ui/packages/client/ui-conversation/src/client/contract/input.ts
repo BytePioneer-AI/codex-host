@@ -213,8 +213,14 @@ export interface SessionInput extends InputTarget {
   pruneAttachments(ids: readonly DraftAttachmentId[]): void;
   /** Attach one selected passage to the next message; busy admission phases refuse. */
   addResponseAnnotation(annotation: DraftResponseAnnotationInput): DraftAttachmentId | undefined;
+  /** Update the optional comment on one attached annotation; busy admission phases refuse. */
+  updateResponseAnnotation(id: DraftAttachmentId, annotation: string | undefined): boolean;
   /** Remove one attached annotation; busy admission phases refuse. @returns whether the id was removed. */
   removeResponseAnnotation(id: DraftAttachmentId): boolean;
+  /** Remove every attached annotation; busy admission phases refuse. */
+  clearResponseAnnotations(): boolean;
+  /** Mark one attached annotation as hovered so transcript and tray stay linked. */
+  hoverResponseAnnotation(id: DraftAttachmentId | null): void;
   /**
    * THE complexity sink: enter adjudication, submit transaction, and the default sink live inside.
    * @param mode - delivery intent retained through asynchronous adjudication and serialization.
@@ -332,8 +338,14 @@ export interface InputActions {
     annotation: DraftResponseAnnotationInput,
     options?: { readonly focus: "end" },
   ): DraftAttachmentId | undefined;
+  /** Update the optional comment on one attached annotation; busy admission phases refuse. */
+  updateResponseAnnotation(id: DraftAttachmentId, annotation: string | undefined): void;
   /** Remove one attached annotation by draft identity; busy admission phases refuse. */
   removeResponseAnnotation(id: DraftAttachmentId): void;
+  /** Remove every attached annotation; busy admission phases refuse. */
+  clearResponseAnnotations(): void;
+  /** Highlight one attached annotation across tray and transcript while hovered. */
+  hoverResponseAnnotation(id: DraftAttachmentId | null): void;
   /** Enter submission (adjudication / claim transaction / default sink inside). */
   submit(): void;
 }
@@ -356,6 +368,8 @@ export interface InputState {
   readonly attachmentIds: readonly DraftAttachmentId[];
   /** Selected passages attached to the next message, in attachment order. */
   readonly responseAnnotations: readonly DraftResponseAnnotation[];
+  /** Attached annotation currently hovered in the tray or transcript margin. */
+  readonly hoveredResponseAnnotationId?: DraftAttachmentId;
   /** Monotonic editor revision (span CAS compares against this). */
   readonly draftRev: number;
   /** Mounted input extension's primary-send action; absent restores the default button. */

@@ -3,12 +3,21 @@
   flex: none;
   width: 28px;
   padding: 0;
-  color: var(--dsw-alias-label-secondary);
+  border-radius: 50%;
+  corner-shape: round;
+  color: color-mix(in srgb, var(--dsw-alias-label-secondary) 82%, transparent);
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.button:hover:not(:disabled) {
+  color: var(--dsw-alias-label-primary);
 }
 
 .button svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
 }
 
 .expanded {

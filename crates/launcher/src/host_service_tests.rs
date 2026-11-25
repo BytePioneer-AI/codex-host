@@ -105,6 +105,45 @@ fn service_environment_preserves_opt_in_settings() {
 }
 
 #[test]
+fn source_checkout_clean_strips_all_npm_update_runtime_variables() {
+    const CHILD: &str = "CODEXHOST_TEST_SOURCE_CLEAN_NPM_ENV";
+    let executable = env::current_exe().unwrap();
+    if env::var_os(CHILD).is_some() {
+        let mut command = Command::new("unused");
+        super::clean(&mut command);
+        for key in crate::NPM_UPDATE_RUNTIME_ENV {
+            assert!(
+                command
+                    .get_envs()
+                    .any(|(name, value)| name == key && value.is_none()),
+                "source checkout clean must strip {key}"
+            );
+        }
+        return;
+    }
+
+    let root = env::temp_dir().join(format!("codexhost-source-clean-{}", std::process::id()));
+    let child = root
+        .join("target/debug")
+        .join(executable.file_name().unwrap());
+    fs::create_dir_all(child.parent().unwrap()).unwrap();
+    fs::copy(&executable, &child).unwrap();
+    let status = Command::new(&child)
+        .args([
+            "--exact",
+            "host_service::tests::source_checkout_clean_strips_all_npm_update_runtime_variables",
+        ])
+        .env(CHILD, "1")
+        .env(crate::NPM_NODE_PATH_ENV, root.join("node"))
+        .env(crate::NPM_CLI_PATH_ENV, root.join("npm-cli.js"))
+        .env(crate::NPM_LAUNCHER_PATH_ENV, root.join("codexhost.js"))
+        .env(crate::NPM_PACKAGE_ROOT_ENV, root.join("package"))
+        .status();
+    fs::remove_dir_all(root).unwrap();
+    assert!(status.unwrap().success());
+}
+
+#[test]
 fn shutdown_without_a_running_owner_returns_immediately() {
     wait_for_shutdown(None, None, Duration::from_millis(1)).unwrap();
 }

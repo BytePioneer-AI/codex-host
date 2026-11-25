@@ -392,6 +392,8 @@ import {
   projectCodexThreadUsage,
   readLfFrames,
   jsonRpcRequestSchema,
+  reasoningPreviewItemId,
+  reasoningSummaryParts,
   threadForkResult,
   threadRevertResult,
   threadRollbackResult,
@@ -497,10 +499,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function backgroundItemText(item: JsonObject): string | null {
+function isReasoningTranscript(
+  preview: JsonObject,
+  transcript: JsonObject | undefined,
+): transcript is JsonObject & { aggregatedOutput: string } {
+  return (
+    transcript?.type === "commandExecution" &&
+    transcript.command === REASONING_TRANSCRIPT_COMMAND &&
+    typeof transcript.id === "string" &&
+    preview.id === reasoningPreviewItemId(transcript.id as HostItemId) &&
+    typeof transcript.aggregatedOutput === "string"
+  );
+}
+
+function backgroundItemText(item: JsonObject, transcript?: JsonObject): string | null {
   if (item.type === "agentMessage" && typeof item.text === "string") return item.text;
-  if (item.type === "reasoning" && Array.isArray(item.summary)) {
-    return item.summary.every((part) => typeof part === "string") ? item.summary.join("") : null;
+  // Generated preview titles are not Harness text and cannot prove replay overlap.
+  if (item.type === "reasoning" && isReasoningTranscript(item, transcript)) {
+    return transcript.aggregatedOutput;
   }
   return null;
 }
@@ -518,30 +534,76 @@ interface BackgroundTextRunItem {
   start: number;
 }
 
+/**
+ * Keeps a published Reasoning preview append-only. A part published from history
+ * can carry a title derived from text that later grows, so recomputing that text
+ * retitles the part, or drops it while its paragraph is still undecided. Reads
+ * that shrink or retitle what the Web view already rendered fail with
+ * `host/history-changed`, so keep the published parts and append the new text.
+ */
+function extendPublishedSummary(
+  published: readonly string[],
+  merged: string,
+  appended: string,
+  complete: boolean,
+  previouslyPublished?: readonly string[],
+): string[] {
+  const next = reasoningSummaryParts(merged, complete);
+  const baseline = previouslyPublished?.length ? previouslyPublished : published;
+  let summary: string[];
+  if (published.length === 0) summary = next;
+  else if (next.join("\n\n").startsWith(baseline.join("\n\n"))) summary = next;
+  else if (!appended) summary = [...published];
+  else summary = [...published.slice(0, -1), `${published.at(-1)}\n\n${appended}`];
+  // A read may have published parts the cached Turn does not carry (a live
+  // overlay is not written back to it). Keep those parts rather than drop or
+  // retitle what the Web view already rendered.
+  if (
+    previouslyPublished?.length &&
+    !summary.join("\n\n").startsWith(previouslyPublished.join("\n\n"))
+  ) {
+    return [...previouslyPublished];
+  }
+  return summary;
+}
+
+/**
+ * Reasoning summary parts the last read published for an Item. The cached Turn
+ * keeps the native history, and a live overlay is not written back to it, so a
+ * later read has to know what the Web view already rendered.
+ */
+type PublishedSummaryStore = Map<string, readonly string[]>;
+
 function appendBackgroundText(
   items: JsonObject[],
   { index, text }: BackgroundTextRunItem,
   suffix: string,
+  complete: boolean,
+  publishedSummaries?: PublishedSummaryStore,
 ): void {
   const item = items[index];
   if (!item) return;
+  const merged = text + suffix;
   if (item.type !== "reasoning") {
-    items[index] = { ...item, text: text + suffix };
+    items[index] = { ...item, text: merged };
     return;
   }
-  const summary = Array.isArray(item.summary) ? item.summary : [];
-  const last = summary.at(-1);
-  items[index] = {
-    ...item,
-    summary:
-      typeof last === "string" ? [...summary.slice(0, -1), last + suffix] : [...summary, suffix],
-  };
   const transcript = items[index + 1];
-  if (transcript?.command === REASONING_TRANSCRIPT_COMMAND) {
-    const output =
-      typeof transcript.aggregatedOutput === "string" ? transcript.aggregatedOutput : text;
-    items[index + 1] = { ...transcript, aggregatedOutput: output + suffix };
-  }
+  if (!isReasoningTranscript(item, transcript)) return;
+  const cached = Array.isArray(item.summary)
+    ? item.summary.filter((part): part is string => typeof part === "string")
+    : [];
+  const published = typeof item.id === "string" ? publishedSummaries?.get(item.id) : undefined;
+  const summary = extendPublishedSummary(
+    cached.length > 0 ? cached : (published ?? []),
+    merged,
+    suffix,
+    complete,
+    published,
+  );
+  if (typeof item.id === "string") publishedSummaries?.set(item.id, summary);
+  items[index] = { ...item, summary };
+  items[index + 1] = { ...transcript, aggregatedOutput: merged };
 }
 
 interface BackgroundTextRun {
@@ -559,7 +621,7 @@ function backgroundTextCandidates(
     const item = items[index];
     if (item?.type === "commandExecution" && item.command === REASONING_TRANSCRIPT_COMMAND)
       continue;
-    const itemText = item && item.type === type ? backgroundItemText(item) : null;
+    const itemText = item && item.type === type ? backgroundItemText(item, items[index + 1]) : null;
     if (itemText !== null) run.push({ index, text: itemText, start: 0 });
   }
   if (run.length === 0) return null;
@@ -581,13 +643,19 @@ function alignBackgroundTextRun(
   type: string,
   liveText: string,
   consumedEnd: number,
-  foregroundItems: readonly JsonObject[],
-  allowPartialTail: boolean,
+  foregroundText: string,
+  {
+    allowPartialTail,
+    complete,
+    publishedSummaries,
+  }: {
+    allowPartialTail: boolean;
+    complete: boolean;
+    publishedSummaries?: PublishedSummaryStore;
+  },
 ): number | null {
   const run = backgroundTextCandidates(items, historicalCount, type);
   if (!run) return null;
-  const foregroundRun = backgroundTextCandidates(foregroundItems, foregroundItems.length, type);
-  const foregroundText = foregroundRun?.text ?? "";
   if (!run.text.startsWith(foregroundText)) return null;
   const searchStart = Math.max(consumedEnd, foregroundText.length);
   const exactStart = run.text.indexOf(liveText, searchStart);
@@ -602,7 +670,13 @@ function alignBackgroundTextRun(
     );
     const prefix = run.text.slice(searchStart);
     if (tail.index === lastIndex && prefix && liveText.startsWith(prefix)) {
-      appendBackgroundText(items, tail, liveText.slice(prefix.length));
+      appendBackgroundText(
+        items,
+        tail,
+        liveText.slice(prefix.length),
+        complete,
+        publishedSummaries,
+      );
       return searchStart + liveText.length;
     }
   }
@@ -613,7 +687,7 @@ function alignBackgroundTextRun(
     const unread = item.text.slice(Math.max(0, searchStart - item.start));
     const overlap = longestSuffixPrefixOverlap(unread, liveText);
     if (overlap < 2) continue;
-    appendBackgroundText(items, item, liveText.slice(overlap));
+    appendBackgroundText(items, item, liveText.slice(overlap), complete, publishedSummaries);
     return itemEnd + liveText.length - overlap;
   }
   return null;
@@ -882,6 +956,12 @@ export class AppServerHost {
   >();
   #externalRuntime!: ExternalThreadRuntime;
   readonly #executionHosts = new WeakMap<ExternalThread, string>();
+  /**
+   * Summary parts the last read published for each Reasoning Item of a Thread.
+   * The cached Turn keeps native history and a live overlay is not written back
+   * to it, so later reads continue from here to stay append-only.
+   */
+  readonly #publishedReasoningSummaries = new WeakMap<ExternalThread, PublishedSummaryStore>();
   readonly #externalPrewarms = new ExternalThreadPrewarms();
   readonly #externalSteering: ExternalTurnSteering;
   readonly #liveCommandCache = new LiveCommandCatalogCache();
@@ -1346,8 +1426,8 @@ export class AppServerHost {
       steering: this.#externalSteering,
       queue: this.#externalQueue,
       manualCompactionTurns: this.#manualCompactionTurns,
-      foldSettledItem: (turn, projector, wireItemId) =>
-        this.#withBackgroundItems(turn, projector, wireItemId),
+      foldSettledItem: (thread, turn, projector, wireItemId) =>
+        this.#withBackgroundItems(turn, projector, wireItemId, this.#publishedSummariesFor(thread)),
       outputFailed: (thread) => this.#externalRuntime.idleRelease.outputFailed(thread),
       submitPrewarm: (thread) => this.#externalRuntime.submitPrewarm(thread),
       notifyExternalThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),
@@ -5869,9 +5949,13 @@ export class AppServerHost {
   }
 
   #externalHistoryTurns(thread: ExternalThread, forClient = false): JsonObject[] {
+    const publishedSummaries = this.#publishedSummariesFor(thread);
     const turns = ownTurns(thread.record, thread.turns).map((turn) => {
       const projector = thread.projectedTurns.get((turn as { id: HostTurnId }).id)?.projector;
-      return projector ? this.#withBackgroundItems(turn, projector) : turn;
+      const projected = projector
+        ? this.#withBackgroundItems(turn, projector, undefined, publishedSummaries)
+        : turn;
+      return this.#keepPublishedReasoningSummariesIn(projected, publishedSummaries);
     });
     if (!thread.activeTurnId || (forClient && thread.ephemeralTurnIds.has(thread.activeTurnId)))
       return turns;
@@ -5886,6 +5970,7 @@ export class AppServerHost {
     turn: JsonObject,
     projector: CodexTurnProjector,
     settledWireItemId?: HostItemId,
+    publishedSummaries?: PublishedSummaryStore,
   ): JsonObject {
     const foreground = projector.foregroundWireItems();
     const background = projector.backgroundWireItems();
@@ -5898,11 +5983,15 @@ export class AppServerHost {
       const settled = foreground.get(settledWireItemId);
       if (settled) remaining.set(settledWireItemId, settled);
     }
+    const projectionText = (id: HostItemId, item: JsonObject): string | null =>
+      item.type === "reasoning" ? projector.reasoningText(id) : backgroundItemText(item);
     // Reads can overlay open text, but only cache it once all detached Items settle.
     const liveItems =
       settledWireItemId !== undefined && projector.hasOpenDetachedItems
         ? []
-        : [...background.values()].filter((item) => backgroundItemText(item) !== "");
+        : [...background]
+            .map(([id, item]) => ({ id, item, text: projectionText(id, item) }))
+            .filter(({ text }) => text !== "");
     if (remaining.size === 0 && liveItems.length === 0) return turn;
 
     const items = (turn as { items: JsonObject[] }).items.map((item) => {
@@ -5914,9 +6003,14 @@ export class AppServerHost {
     });
     const historicalCount = items.length;
     const consumedEnd = new Map<string, number>();
-    const foregroundItems = [...foreground.values()];
-    for (const [index, live] of liveItems.entries()) {
-      const liveText = backgroundItemText(live);
+    const foregroundText = new Map<string, string>();
+    for (const [id, item] of foreground) {
+      const text = projectionText(id, item);
+      if (typeof item.type === "string" && text !== null) {
+        foregroundText.set(item.type, (foregroundText.get(item.type) ?? "") + text);
+      }
+    }
+    for (const [index, { id, item: live, text: liveText }] of liveItems.entries()) {
       if (liveText === null || typeof live.type !== "string") {
         items.push(live);
         continue;
@@ -5927,8 +6021,12 @@ export class AppServerHost {
         live.type,
         liveText,
         consumedEnd.get(live.type) ?? 0,
-        foregroundItems,
-        index === liveItems.length - 1 && items.length === historicalCount,
+        foregroundText.get(live.type) ?? "",
+        {
+          allowPartialTail: index === liveItems.length - 1 && items.length === historicalCount,
+          complete: !projector.hasOpenDetachedItem(id),
+          ...(publishedSummaries ? { publishedSummaries } : {}),
+        },
       );
       if (aligned === null) {
         // A retained projector may revisit an Item already folded into the cache.
@@ -5937,7 +6035,9 @@ export class AppServerHost {
       }
       consumedEnd.set(live.type, aligned);
     }
-    const merged = [...items, ...remaining.values()];
+    const merged = publishedSummaries
+      ? this.#keepPublishedReasoningSummaries([...items, ...remaining.values()], publishedSummaries)
+      : [...items, ...remaining.values()];
     if (turn.status === "completed") {
       const last = merged.at(-1);
       if (
@@ -5960,6 +6060,50 @@ export class AppServerHost {
       }
     }
     return { ...turn, items: merged };
+  }
+
+  #publishedSummariesFor(thread: ExternalThread): PublishedSummaryStore {
+    let published = this.#publishedReasoningSummaries.get(thread);
+    if (!published) {
+      published = new Map<string, readonly string[]>();
+      this.#publishedReasoningSummaries.set(thread, published);
+    }
+    return published;
+  }
+
+  #keepPublishedReasoningSummariesIn(
+    turn: JsonObject,
+    publishedSummaries: PublishedSummaryStore,
+  ): JsonObject {
+    const items = Array.isArray(turn.items) ? (turn.items as JsonObject[]) : [];
+    return { ...turn, items: this.#keepPublishedReasoningSummaries(items, publishedSummaries) };
+  }
+
+  /**
+   * Keeps every Reasoning summary append-only across reads. A live overlay is
+   * not written back to the cached Turn, and a settled Item replaces it with the
+   * projection recomputed from its full text, which can be shorter than what a
+   * read already showed. Publish the recorded parts in that case and record what
+   * this read publishes for the next one.
+   */
+  #keepPublishedReasoningSummaries(
+    items: JsonObject[],
+    publishedSummaries: PublishedSummaryStore,
+  ): JsonObject[] {
+    return items.map((item) => {
+      if (item.type !== "reasoning" || typeof item.id !== "string") return item;
+      const summary = Array.isArray(item.summary)
+        ? item.summary.filter((part): part is string => typeof part === "string")
+        : [];
+      const published = publishedSummaries.get(item.id);
+      const kept =
+        published?.length && !summary.join("\n\n").startsWith(published.join("\n\n"))
+          ? [...published]
+          : summary;
+      if (kept.length > 0) publishedSummaries.set(item.id, kept);
+      if (kept === summary) return item;
+      return { ...item, summary: kept };
+    });
   }
 
   #externalThreadBusy(thread: ExternalThread): boolean {

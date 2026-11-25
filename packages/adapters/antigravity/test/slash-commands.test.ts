@@ -229,6 +229,7 @@ describe("Antigravity live command skill filtering and readiness", () => {
           handler = next;
           if (handler) for (const event of queued.splice(0)) handler(event);
         },
+        setSessionInteractionHandler: vi.fn(),
         setMode: vi.fn(async () => undefined),
         setConfigOption: vi.fn(async () => []),
         prompt: vi.fn(async () => ({ stopReason: "end_turn" as const })),

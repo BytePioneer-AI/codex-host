@@ -69,6 +69,7 @@ describe("unattended native policy", () => {
             skipPermissions: options.skipPermissions === true,
             initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
             setSessionEventHandler: () => {},
+            setSessionInteractionHandler: () => {},
             openSession: async (input) => {
               opens.push(input);
               return { opened: { sessionId: input.sessionId ?? randomUUID() } };

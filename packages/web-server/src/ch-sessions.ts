@@ -540,7 +540,7 @@ export class ChSessions {
     for (const id of snapshotArchives) archivedIds.add(id);
     for (const id of found.keys()) if (!snapshotArchives.has(id)) archivedIds.delete(id);
     const ownership = catalogOwnership(snapshot, found);
-    const pageSectionAdditions = cursor === undefined ? undefined : new Set<string>();
+    const newSectionMembers = new Set<string>();
     const threadSectionsV1 = sections?.[THREAD_SECTION_CAPABILITY];
     const threadSections = sections?.sections.map(({ id, name, appearance, threads }) => {
       const threadIds: string[] = [];
@@ -563,7 +563,7 @@ export class ChSessions {
         if (thread.archived === false && !snapshotArchives.has(threadId))
           archivedIds.delete(threadId);
         threadIds.push(threadId);
-        if (!this.publishedCatalog?.has(threadId)) pageSectionAdditions?.add(threadId);
+        if (!this.publishedCatalog?.has(threadId)) newSectionMembers.add(threadId);
       }
       return threadSectionsV1 && appearance !== undefined
         ? { id, name, threadIds, appearance }
@@ -604,10 +604,17 @@ export class ChSessions {
     const projects = await timing.measure("projects", () => this.host.projects([...rows.keys()]));
     if (this.closed) return;
     if (revision !== this.projectRevision) return SUPERSEDED;
+    const headIds =
+      cursor === undefined ? this.tree.withAncestors(snapshot.threads.map((row) => row.id)) : null;
+    const { before, next, changed } = await timing.measure("catalog_publish", () =>
+      this.prepareCatalogChanges(rows, ownership, headIds, newSectionMembers),
+    );
+    if (this.closed) return;
+    if (revision !== this.projectRevision) return SUPERSEDED;
     // A Host-confirmed move supersedes project metadata from this in-flight read.
     for (const [id, projectId] of this.refreshingProjectAssignments ?? []) {
       const row = rows.get(id);
-      if (row) row.projectId = projectId;
+      if (row) rows.set(id, { ...row, projectId });
     }
     this.threads.replaceHarnesses(ownership);
     this.rows = rows;
@@ -622,6 +629,15 @@ export class ChSessions {
       this.workspaces.setReferenceArchives([...archivedIds].sort()),
     );
     for (const id of found.keys()) this.workspacePageRows.delete(id);
+    this.publishedCatalog = next;
+    this.publishCatalogProjections(changed);
+    for (const row of changed) this.events.emit("api-session/added", row);
+    if (before)
+      for (const id of before.keys())
+        if (!next.has(id)) {
+          this.handoffs.delete(id);
+          this.events.emit("api-session/removed", id);
+        }
     // Project members resolve to Workspaces, which exist once their roots are synced.
     if (threadSections && (!this.workspaces.usesNativeProjects || projects.nativeProjects)) {
       this.workspaces.setReferenceThreadSections(
@@ -636,9 +652,6 @@ export class ChSessions {
     } else if (sectionsUnsupported || (threadSections && !threadSectionsV1)) {
       this.workspaces.setReferenceThreadSections(undefined);
     }
-    await timing.measure("catalog_publish", () => this.publishCatalogChanges(pageSectionAdditions));
-    if (this.closed) return;
-    if (revision !== this.projectRevision) return SUPERSEDED;
     this.catalogReadAt = Date.now();
     return { ...snapshot, sectionFailure };
   }
@@ -646,20 +659,6 @@ export class ChSessions {
     timing.count("projects", projects.projects.length);
     timing.measureSync("workspace_sync", () => {
       const groups = new Map<string, string | undefined>();
-      if (projects.nativeProjects) {
-        const roots = nativeProjectRootOwners(projects.projects);
-        const projectFor = this.nativeProjectResolver(projects, roots);
-        for (const row of this.rows.values()) groups.set(row.id, projectFor(row));
-        for (const draft of this.drafts.values())
-          if (!draft.canonicalId) groups.set(draft.id, draft.projectId);
-        this.workspaces.syncNativeProjects(projects.projects, groups, projects.assignments, roots);
-        this.workspaces.setReferencePinnedProjects(projects.projects, projects.pinnedProjects);
-        return;
-      }
-      if (this.workspaces.usesNativeProjects) return;
-      const references: Array<{ sessionId: string; cwd: string; title?: string }> = [];
-      const rootTitles = projectRootTitles(projects.projects);
-      const projectless = new Set(projects.projectless.filter((id) => !projects.assignments[id]));
       const bindings = projects.projectMoveBindings;
       const targets = new Set(bindings?.projectIds);
       const localProjects = projects.projects
@@ -667,12 +666,45 @@ export class ChSessions {
         .map(({ id, name }) => ({ id, name, sessionIds: [] as string[] }));
       const localById = new Map(localProjects.map((project) => [project.id, project]));
       const projectlessSessionIds: string[] = [];
+      for (const id of this.rows.keys()) {
+        if (!bindings || !Object.hasOwn(bindings.assignments, id)) continue;
+        const assignment = this.refreshingProjectAssignments?.get(id) ?? bindings.assignments[id];
+        if (assignment === null) projectlessSessionIds.push(id);
+        else if (assignment !== undefined) localById.get(assignment)?.sessionIds.push(id);
+      }
+      // Membership is a set; catalog ordering changes must not invalidate it.
+      for (const project of localProjects) project.sessionIds.sort();
+      const projectState = {
+        localProjects,
+        ...(projectlessSessionIds.length
+          ? { projectlessSessionIds: projectlessSessionIds.sort() }
+          : {}),
+      };
+      if (projects.nativeProjects) {
+        const roots = nativeProjectRootOwners(projects.projects);
+        const projectFor = this.nativeProjectResolver(projects, roots);
+        for (const row of this.rows.values()) groups.set(row.id, projectFor(row));
+        for (const draft of this.drafts.values())
+          if (!draft.canonicalId) groups.set(draft.id, draft.projectId);
+        this.workspaces.syncNativeProjects(
+          projects.projects,
+          groups,
+          projects.assignments,
+          roots,
+          projectState,
+        );
+        this.boundProjectRevision = this.projectRevision;
+        this.workspaces.setReferencePinnedProjects(projects.projects, projects.pinnedProjects);
+        return;
+      }
+      if (this.workspaces.usesNativeProjects) {
+        this.workspaces.clearProjectMoveBindings();
+        return;
+      }
+      const references: Array<{ sessionId: string; cwd: string; title?: string }> = [];
+      const rootTitles = projectRootTitles(projects.projects);
+      const projectless = new Set(projects.projectless.filter((id) => !projects.assignments[id]));
       for (const row of this.rows.values()) {
-        if (bindings && Object.hasOwn(bindings.assignments, row.id)) {
-          const assignment = bindings.assignments[row.id];
-          if (assignment === null) projectlessSessionIds.push(row.id);
-          else if (assignment !== undefined) localById.get(assignment)?.sessionIds.push(row.id);
-        }
         if (row.workspaceKind === "projectless" && !row.projectId && !projects.assignments[row.id])
           projectless.add(row.id);
         const root =
@@ -699,14 +731,13 @@ export class ChSessions {
         if (!draft.cwd) projectless.add(draft.id);
       }
       timing.count("workspaceReferences", references.length);
-      // Membership is a set; catalog ordering changes must not invalidate it.
-      for (const project of localProjects) project.sessionIds.sort();
-      this.workspaces.syncReferencedSessions(references, groups, projectless, projects.projects, {
-        localProjects,
-        ...(projectlessSessionIds.length
-          ? { projectlessSessionIds: projectlessSessionIds.sort() }
-          : {}),
-      });
+      this.workspaces.syncReferencedSessions(
+        references,
+        groups,
+        projectless,
+        projects.projects,
+        projectState,
+      );
       this.boundProjectRevision = this.projectRevision;
       this.workspaces.setReferencePinnedProjects(projects.projects, projects.pinnedProjects);
     });
@@ -718,11 +749,15 @@ export class ChSessions {
     const known = new Set(projects.projects.map((project) => project.id));
     const projectless = new Set(projects.projectless);
     return (row) => {
+      const confirmed = this.refreshingProjectAssignments?.get(row.id);
+      if (confirmed !== undefined) return known.has(confirmed) ? confirmed : undefined;
+      const bindings = projects.projectMoveBindings?.assignments;
+      if (bindings && Object.hasOwn(bindings, row.id)) return bindings[row.id] ?? undefined;
+      if (projectless.has(row.id)) return undefined;
       const explicit = [row.projectId, projects.assignments[row.id]].find(
         (id): id is string => typeof id === "string" && known.has(id),
       );
-      if (explicit || !row.cwd || row.workspaceKind === "projectless" || projectless.has(row.id))
-        return explicit;
+      if (explicit || !row.cwd || row.workspaceKind === "projectless") return explicit;
       return roots.get(desktopProjectPathKey(row.cwd))?.projectId;
     };
   }
@@ -741,7 +776,7 @@ export class ChSessions {
    * streams. Re-emitting every row makes each browser rebuild its entire
    * catalog thousands of times and starves interactive history frames.
    */
-  private catalogKey(row: ChThread): string {
+  private catalogKey(row: ChThread, harnessId: string | undefined): string {
     return JSON.stringify([
       threadListTitle(row),
       row.cwd,
@@ -749,10 +784,10 @@ export class ChSessions {
       row.status.type,
       row.parentThreadId ?? null,
       this.tree.parent(row.id),
-      this.archiveForkParent(row),
+      this.archiveForkParent(row, harnessId),
       row.canAcceptDirectInput !== false,
       row.codexhostImportSource ?? null,
-      this.threads.harnessId(row.id),
+      harnessId,
     ]);
   }
   private catalogProjections(row: ChThread) {
@@ -763,30 +798,30 @@ export class ChSessions {
       codexhostImportSource: row.codexhostImportSource ?? null,
     };
   }
-  private async publishCatalogChanges(pageSectionAdditions?: ReadonlySet<string>): Promise<void> {
+  private async prepareCatalogChanges(
+    rows: ReadonlyMap<string, ChThread>,
+    ownership: ReadonlyMap<string, string>,
+    headIds: ReadonlySet<string> | null,
+    newSectionMembers: ReadonlySet<string>,
+  ) {
     const before = this.publishedCatalog;
-    const next = new Map(
-      [...this.rows]
-        .filter(([id]) => !this.workspacePageRows.has(id))
-        .map(([id, row]) => [id, this.catalogKey(row)]),
-    );
-    // First load is already delivered by session/list. Subsequent refreshes,
-    // including ones requested by a second browser, publish actual deltas only.
-    // New continuation rows stay request-local unless a shared section references them.
-    const changed =
-      before === undefined
-        ? []
-        : await Promise.all(
-            [...this.rows.values()]
-              .filter(
-                (row) =>
-                  next.has(row.id) &&
-                  before.get(row.id) !== next.get(row.id) &&
-                  (!pageSectionAdditions || before.has(row.id) || pageSectionAdditions.has(row.id)),
-              )
-              .map((row) => this.summary(row)),
-          );
-    this.publishedCatalog = next;
+    const next = new Map<string, string>();
+    const summaries = [];
+    for (const [id, row] of rows) {
+      const newlyReferenced = newSectionMembers.has(id);
+      if (this.workspacePageRows.has(id) && !headIds?.has(id) && !newlyReferenced) continue;
+      if (!before?.has(id) && !headIds?.has(id) && !newlyReferenced) continue;
+      const harnessId = ownership.get(id);
+      const key = this.catalogKey(row, harnessId);
+      next.set(id, key);
+      // The first head is already delivered by session/list. A private continuation
+      // row only enters the shared catalog when a head page or a section exposes it.
+      if (newlyReferenced || (before && before.get(id) !== key))
+        summaries.push(this.summary(row, harnessId));
+    }
+    return { before, next, changed: await Promise.all(summaries) };
+  }
+  private publishCatalogProjections(changed: readonly { sessionId: string }[]): void {
     // Previously opened Threads retain sequenced browser projections even after
     // unfollow. Cached catalog hints cannot replace them. Push the authoritative
     // metadata through the existing control stream without rereading any history.
@@ -808,13 +843,6 @@ export class ChSessions {
             sink.push({ type: "projection", sessionId, key, value, seq });
       }
     }
-    for (const row of changed) this.events.emit("api-session/added", row);
-    if (before)
-      for (const id of before.keys())
-        if (!next.has(id)) {
-          this.handoffs.delete(id);
-          this.events.emit("api-session/removed", id);
-        }
   }
   private async owner(id: string) {
     const resolved = this.id(id);
@@ -1351,7 +1379,7 @@ export class ChSessions {
       this.workspaces.addDraftReference(thread.id, undefined);
     }
     this.events.emit("api-session/added", await this.summary(thread));
-    this.publishedCatalog?.set(thread.id, this.catalogKey(thread));
+    this.publishedCatalog?.set(thread.id, this.catalogKey(thread, harnessId));
     this.events.emit("codexhost/session-bound", draft.id, thread.id);
     // Navigation reads the retained draft during binding; remove its row only afterward.
     // Keep the alias for in-flight requests, without deleting the native Thread.

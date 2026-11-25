@@ -1589,6 +1589,7 @@ it("shares native project changes and keeps removed projects' sessions in the We
   ];
   const selected = host.add("selected", join(root, "worktree"), "Selected", false);
   selected.projectId = "owned";
+  host.projectSnapshot.assignments.selected = "owned";
   host.add("migrated", cwd, "Migrated", false);
   host.projectSnapshot.assignments.migrated = "owned";
   host.add("unassigned", cwd, "Unassigned", false);
@@ -1622,6 +1623,7 @@ it("shares native project changes and keeps removed projects' sessions in the We
         (item) => item.id !== params.projectId,
       );
       selected.projectId = null;
+      delete host.projectSnapshot.assignments.selected;
       return {} as T;
     }
     return request<T>(method, params);

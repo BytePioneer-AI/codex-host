@@ -603,6 +603,7 @@ export class Workspaces {
     groups: ReadonlyMap<string, string | undefined>,
     legacyAssignments: Readonly<Record<string, string>>,
     roots: ReadonlyMap<string, { path: string; projectId: string }>,
+    projectState?: LocalProjectState,
   ): void {
     const before = this.list();
     const previous = new Map(this.nativeWorkspaces?.map((item) => [item.projectId, item]));
@@ -636,6 +637,20 @@ export class Workspaces {
     });
     this.publishWorkspaceChanges(before);
     this.publishPinnedWorkspaces();
+    if (projectState) {
+      this.localProjectRootOwners.clear();
+      const next: LocalProjectState = {
+        ...projectState,
+        localProjects: projectState.localProjects.map((project) => ({
+          ...project,
+          workspaceIds: [nativeProjectWorkspaceId(project.id)],
+        })),
+      };
+      if (JSON.stringify(next) !== JSON.stringify(this.localProjectState)) {
+        this.localProjectState = next;
+        this.broadcast({ type: "localProjects", ...next });
+      }
+    }
   }
 
   updateNativeProjectMember(sessionId: string, projectId: string | undefined): void {

@@ -197,6 +197,30 @@ it("drains old catalog reads before broadcasting a project move", { timeout: 500
   ]);
 });
 
+it("uses the native project's ID and binding even when the catalog row still names the old project", async (t) => {
+  const host = new FakeChHost();
+  const { row, workspaces, list, move, subscribe } = setup(t, host);
+  host.projectSnapshot.nativeProjects = true;
+  row.projectId = "project-moving";
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method !== CLIENT_THREAD_PROJECT_MOVE_METHOD) return request<T>(method, params);
+    host.projectSnapshot.assignments[row.id] = "target";
+    return { status: "confirmed", projectId: "target" } as T;
+  };
+
+  assert.ok((await list()).ok);
+  assert.equal(workspaces.ownerOf(row.id)?.projectId, "project-moving");
+  assert.deepEqual(await move(), { ok: true, value: { status: "confirmed", projectId: "target" } });
+  const target = workspaces.ownerOf(row.id);
+  const source = workspaces.list().find(({ projectId }) => projectId === "project-moving");
+  assert.equal(target?.projectId, "target");
+  assert.deepEqual(baselineProjects((await subscribe("workspace/follow", {}))[0]), [
+    { id: "project-moving", name: "source", sessionIds: [], workspaceIds: [source?.workspaceId] },
+    { id: "target", name: "Target", sessionIds: [row.id], workspaceIds: [target?.workspaceId] },
+  ]);
+});
+
 it("publishes empty and shared-root projects with only explicit local membership", async (t) => {
   const host = new FakeChHost();
   const { row, root, call, list, move, subscribe, workspaces } = setup(t, host);
@@ -525,6 +549,45 @@ it("coalesces project and section changes, rejecting late reads", { timeout: 500
   });
   assert.ok(!JSON.stringify(workspace).includes("Obsolete"));
 });
+
+it(
+  "discards a catalog batch superseded while loading its summaries",
+  { timeout: 5000 },
+  async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const host = new FakeChChannel();
+    const { root, row, events, list, subscribe, workspaces } = setup(t, host);
+    host.threads.delete(row.id);
+    assert.ok((await list()).ok);
+    const workspace = await subscribe("workspace/follow", {});
+    const addedAt: Array<string | undefined> = [];
+    events.emit = (event) => {
+      if (event === "api-session/added") addedAt.push(workspaces.ownerOf(row.id)?.path);
+    };
+
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const request = host.request.bind(host);
+    host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+      if (method === "codexhost/harness/plugins/list") {
+        entered.resolve(undefined);
+        await release.promise;
+      }
+      return request<T>(method, params);
+    };
+    host.threads.set(row.id, row);
+    const older = list();
+    await entered.promise;
+    host.projectSnapshot.assignments[row.id] = "target";
+    host.changed(row.id, "thread/project/updated");
+    release.resolve(undefined);
+
+    assert.ok((await older).ok);
+    const target = join(root, "target");
+    assert.deepEqual(addedAt, [target]);
+    assert.deepEqual(memberships(workspace, row.id), [target]);
+  },
+);
 
 it("only sends a shared Host project move to service owner descriptors", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-project-move-owner-"));

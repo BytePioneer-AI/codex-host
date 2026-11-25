@@ -616,7 +616,7 @@ export class ChSessions {
     );
     if (this.closed) return;
     if (revision !== this.projectRevision) return SUPERSEDED;
-    // A direct-link read can confirm a new row while workspace metadata or summaries load.
+    // A direct-link read or draft binding can add a row while metadata or summaries load.
     // Never restore rows already known at the start: a complete page can remove them.
     for (const [id, row] of this.rows) {
       if (known.has(id) || rows.has(id) || found.has(id)) continue;
@@ -624,6 +624,8 @@ export class ChSessions {
       if (!harnessId) continue;
       rows.set(id, row);
       ownership.set(id, harnessId);
+      const published = before?.get(id);
+      if (published !== undefined) next.set(id, published);
     }
     // A Host-confirmed move supersedes project metadata from this in-flight read.
     for (const [id, projectId] of this.refreshingProjectAssignments ?? []) {

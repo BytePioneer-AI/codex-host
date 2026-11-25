@@ -620,6 +620,43 @@ it("keeps a concurrent direct-link Thread without restoring a removed catalog ro
   assert.equal(workspaces.ownerOf(row.id), undefined);
 });
 
+it("does not remove a draft's canonical Thread when an older catalog publishes", async (t) => {
+  const host = new FakeChHost();
+  const { events, call, list } = setup(t, host);
+  assert.ok((await list()).ok);
+  const emitted = t.mock.method(events, "emit");
+  const draft = await call("session/create");
+  assert.ok(draft.ok);
+  const { sessionId } = draft.value as { sessionId: string };
+  const entered = Promise.withResolvers<undefined>();
+  const release = Promise.withResolvers<undefined>();
+  const projects = host.projects.bind(host);
+  t.mock.method(host, "projects", async () => {
+    const snapshot = await projects();
+    entered.resolve(undefined);
+    await release.promise;
+    return snapshot;
+  });
+  const refreshing = list();
+  try {
+    await entered.promise;
+    const sent = await call("session/prompt", {
+      sessionId,
+      content: [{ type: "text", text: "Start a Thread" }],
+    });
+    assert.ok(sent.ok, sent.ok ? undefined : sent.error.message);
+  } finally {
+    release.resolve(undefined);
+  }
+  assert.ok((await refreshing).ok);
+  const lifecycle = emitted.mock.calls.map(({ arguments: args }) => args);
+  const bound = lifecycle.find(
+    ([event, id]) => event === "codexhost/session-bound" && id === sessionId,
+  );
+  assert.ok(bound);
+  assert.ok(!lifecycle.some(([event, id]) => event === "api-session/removed" && id === bound[2]));
+});
+
 it("does not keep an official Thread deleted while its catalog batch was in flight", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const host = new FakeChChannel();

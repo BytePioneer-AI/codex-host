@@ -36,6 +36,7 @@ const result = (id, value) => send({id, result:value});
 const sessionId = '00000000-0000-4000-8000-000000000001';
 const update = (value) => send({method:'session/update',params:{sessionId,update:value}});
 const replies = {};
+let deferPermissionTail = false;
 const permission = (name='run_command', kind='execute') => send({id:'permission',method:'session/request_permission',params:{sessionId,toolCall:{toolCallId:'old',name,kind},options:[{optionId:'allow',name:'Allow',kind:'allow_once'}]}});
 const question = () => send({id:'question',method:'elicitation/create',params:{sessionId,toolCallId:'old',mode:'form',message:'Continue?',requestedSchema:{type:'object',properties:{answer:{type:'string'}}}}});
 process.stdin.on('end', () => process.exit(0));
@@ -44,7 +45,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   const request = JSON.parse(line);
   if (!request.method) {
     replies[request.id] = request.result;
-    if (request.id === 'permission' || request.id === 'question')
+    if ((request.id === 'permission' && !deferPermissionTail) || request.id === 'question')
       setTimeout(() => update({sessionUpdate:'tool_call_update',toolCallId:'old',status:'completed',rawOutput:'done'}), 5);
     return;
   }
@@ -54,6 +55,8 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   if (request.method === 'session/set_config_option') {
     if (request.params.value === 'exit') return process.exit(12);
     if (request.params.value === 'late-question') question();
+    if (request.params.value === 'ordinary-tool-tail')
+      update({sessionUpdate:'tool_call_update',toolCallId:'old',status:'completed',rawOutput:'done'});
     return result(request.id, {configOptions:[{id:'probe',name:'Probe',currentValue:JSON.stringify(replies),options:[]}]});
   }
   if (request.method === 'session/prompt') {
@@ -68,7 +71,10 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     if (['first','pending','pending-edit','ask'].includes(text)) {
       update({sessionUpdate:'tool_call',toolCallId:'old',name:text === 'ask' ? 'ask_question' : text === 'pending-edit' ? 'edit_file' : 'run_command',kind:text === 'ask' || text === 'pending-edit' ? 'other' : 'execute',rawInput:{command:'sleep 10'},status:'in_progress'});
       if (text === 'pending') permission();
-      if (text === 'pending-edit') permission('edit_file', 'other');
+      if (text === 'pending-edit') {
+        deferPermissionTail = true;
+        permission('edit_file', 'other');
+      }
       return setTimeout(() => result(request.id, {stopReason:'end_turn'}), 30);
     }
     if (text === 'second') {
@@ -279,6 +285,10 @@ describe("real ACP background owner lifecycle", () => {
         response: { type: "approval", actionId: "allow" },
       }),
     ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+    const config = await fixture.transport.setConfigOption("probe", "ordinary-tool-tail");
+    expect(JSON.parse(config[0]?.currentValue ?? "{}").permission?.outcome?.outcome).toBe(
+      "cancelled",
+    );
     await waitFor(() => fixture.session.hasBackgroundWork?.() === false, "ordinary tool completed");
     expect(events(fixture.outputs)).toContainEqual(
       expect.objectContaining({

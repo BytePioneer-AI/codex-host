@@ -373,6 +373,8 @@ export class AntigravitySession implements HarnessSession {
   // any window streamed into that user Turn and must not be republished.
   readonly #promptWindows: Array<{ submittedAtMs: number; returnedAtMs: number }> = [];
   #toolOwners = new Map<string, ActiveTurn>();
+  // Late updates for tools settled by the last Turn are not background wakes.
+  readonly #finishedToolCallIds = new Set<string>();
   #pending = new Map<string, PendingInteraction>();
   #usage: AntigravitySessionUsageTracker | undefined;
   #usageWork: Promise<void> | undefined;
@@ -792,6 +794,7 @@ export class AntigravitySession implements HarnessSession {
         this.#handleToolEvent(owner, event);
         return;
       }
+      if (event.type === "tool.update" && this.#finishedToolCallIds.has(event.toolCallId)) return;
     }
     if (
       ((event.type === "agent.text" || event.type === "agent.thought") && event.text.trim()) ||
@@ -1429,6 +1432,8 @@ export class AntigravitySession implements HarnessSession {
               // A repeated tool.call cannot claim an existing owner's ID.
               return;
             }
+            if (event.type === "tool.update" && this.#finishedToolCallIds.has(event.toolCallId))
+              return;
             if (!this.#isCurrent(turn) || turn.cancelled) return;
             turn.hasToolCalls = true;
             turn.firstOutputAtMs ??= Date.now();
@@ -1577,6 +1582,7 @@ export class AntigravitySession implements HarnessSession {
       (turn.ended && !turn.detachedToolCallIds.has(event.toolCallId))
     )
       return;
+    this.#finishedToolCallIds.delete(event.toolCallId);
     this.#toolOwners.set(event.toolCallId, turn);
     turn.hasToolCalls = true;
     if (event.status === "completed" || event.status === "failed")
@@ -1664,9 +1670,11 @@ export class AntigravitySession implements HarnessSession {
         : new Set();
     this.#closeInteractions("cancelled", turn, outcome.status === "succeeded");
     turn.tracker?.finishPending(outcome);
+    this.#finishedToolCallIds.clear();
     for (const [toolCallId, owner] of this.#toolOwners) {
-      if (owner === turn && !turn.detachedToolCallIds.has(toolCallId))
-        this.#toolOwners.delete(toolCallId);
+      if (owner !== turn || turn.detachedToolCallIds.has(toolCallId)) continue;
+      this.#finishedToolCallIds.add(toolCallId);
+      this.#toolOwners.delete(toolCallId);
     }
     turn.ended = true;
     this.#active = undefined;

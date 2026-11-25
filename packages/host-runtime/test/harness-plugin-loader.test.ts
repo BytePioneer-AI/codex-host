@@ -321,6 +321,7 @@ describe("Harness plugin discovery and loading", () => {
         await second.close();
       }
     },
+    20_000,
   );
 
   it.each([

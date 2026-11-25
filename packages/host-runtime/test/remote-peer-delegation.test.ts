@@ -1916,7 +1916,11 @@ describe("Peer remote delegation routing & security boundaries", () => {
       const symTargetDir = path.join(root, "real-sym-worktrees");
       initGitRepo(symRepo);
       mkdirSync(symTargetDir, { recursive: true });
-      symlinkSync(symTargetDir, `${symRepo}.worktrees`);
+      symlinkSync(
+        symTargetDir,
+        `${symRepo}.worktrees`,
+        process.platform === "win32" ? "junction" : "dir",
+      );
       const symReq = {
         operation: "start" as const,
         hopCount: 1,

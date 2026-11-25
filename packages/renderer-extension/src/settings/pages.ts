@@ -562,6 +562,12 @@ function updatesPage(
         panel.replaceChildren();
         panel.append(createPanelHead(document, viewPhase, message));
         appendServiceStopOutput(status);
+        if (status?.phase === "failed" && status.error) {
+          const error = document.createElement("p");
+          error.className = "settings-update-error";
+          error.textContent = status.error;
+          panel.append(error);
+        }
         setManualFallback(viewPhase === "failed");
         if (
           status?.phase === "downloading" &&

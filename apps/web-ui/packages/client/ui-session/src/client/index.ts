@@ -60,7 +60,7 @@ export interface SessionStatus {
   readonly running: boolean | undefined;
   /** Highest-precedence domain request currently awaiting user interaction. */
   readonly pendingInteraction: SessionPendingInteraction | undefined;
-  /** Whether an observed stop outside the main view still needs acknowledgement. */
+  /** Whether a background completion or manual unread mark still needs acknowledgement. */
   readonly completionUnread: boolean;
 }
 
@@ -412,6 +412,13 @@ export class UiSession extends Service {
       };
     }, "uiSession.registerPendingInteraction()");
     return (interaction, delegate) => domain.publish(interaction, delegate);
+  }
+
+  /** Mark a background Session unread without opening it. */
+  markCompletionUnread(sessionId: SessionId): void {
+    if (this.isMain(sessionId) || this.completionUnread.has(sessionId)) return;
+    this.completionUnread.add(sessionId);
+    this.publishStatus();
   }
 
   /**

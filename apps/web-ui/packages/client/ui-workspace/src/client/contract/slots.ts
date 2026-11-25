@@ -475,6 +475,12 @@ export interface ReferenceSessionInjected {
   prepareDraftReference(sessionId: SessionId): SessionDraftReference | undefined;
 }
 
+/** Manual unread action for an unarchived Session outside the main view. */
+export interface MarkSessionUnreadInjected {
+  hooks: { archived: HostObservable<ReadonlySet<SessionId>> };
+  markCompletionUnread: (sessionId: SessionId) => void;
+}
+
 /** Fork action share. */
 export interface ForkSessionInjected {
   /** Fork a Session at its last completed turn; the child arrives through the Host list. */

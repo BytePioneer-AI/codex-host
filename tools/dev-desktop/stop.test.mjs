@@ -65,11 +65,32 @@ describe("development stop", () => {
       expect(await identify(candidate(200, command))).toBeNull();
   });
 
-  it("stops the Web supervisor and child before Host and waits for native Host cleanup", async () => {
+  it("recognizes desktop shell executables across source, Windows, and macOS bundle layouts", async () => {
+    for (const command of [
+      "/repo/apps/desktop-shell/src-tauri/target/debug/codexhost-shell --onboarding",
+      '"C:\\repo\\apps\\desktop-shell\\src-tauri\\target\\debug\\codexhost-shell.exe"',
+      "/Applications/codexhost.app/Contents/Helpers/CodexHost.app/Contents/MacOS/CodexHost --onboarding",
+      '"/Users/dev/Library/Application Support/CodexHost.app/Contents/MacOS/CodexHost"',
+    ]) {
+      expect(await identify(candidate(90, command))).toMatchObject({ kind: "shell" });
+    }
+    for (const command of [
+      "/usr/bin/node script.js --shell /repo/codexhost-shell",
+      "/usr/bin/open /Applications/CodexHost.app/Contents/MacOS/CodexHost",
+    ]) {
+      expect(await identify(candidate(91, command))).toBeNull();
+    }
+  });
+
+  it("stops the desktop shell, Web supervisor and child before Host and waits for native Host cleanup", async () => {
+    const shell = candidate(
+      90,
+      "/repo/apps/desktop-shell/src-tauri/target/debug/codexhost-shell --onboarding",
+    );
     const hostSupervisor = candidate(200, "/release/bin/codexhost host serve --data /data");
     const host = candidate(201, "/node /release/app/host-runtime.mjs --codexhost-shared-host", 200);
     const console = candidate(300, "/node /release/app/console-server.mjs serve");
-    let processes = [console, host, web, hostSupervisor, supervisor];
+    let processes = [console, host, web, hostSupervisor, supervisor, shell];
     const calls = [];
     const list = async () => processes;
     await stopDevelopment({
@@ -95,6 +116,7 @@ describe("development stop", () => {
       },
     });
     expect(calls).toEqual([
+      "shell",
       "web-supervisor",
       "web",
       "shared-host",
@@ -181,6 +203,7 @@ describe("development stop", () => {
     ]);
     expect(enumerate.mock.calls[0][1].at(-1)).toContain("GetOwnerSid");
     expect(enumerate.mock.calls[0][1].at(-1)).toContain("Name = 'codexhost.exe'");
+    expect(enumerate.mock.calls[0][1].at(-1)).toContain("Name = 'codexhost-shell.exe'");
   });
 
   it("reports services that remain rather than claiming completion", async () => {

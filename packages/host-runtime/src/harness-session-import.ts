@@ -27,7 +27,7 @@ import {
   externalThreadValue,
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
-import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
+import { threadDelegationEnvironment } from "./bearer-token.js";
 
 export type HarnessSessionListOutcome =
   | { ok: true; candidates: HarnessSessionImportCandidate[]; total: number }
@@ -307,10 +307,10 @@ export class HarnessSessionImporter {
     try {
       prepared = await prepare({
         source,
-        environment: {
-          ...this.#preparedOptions.environment,
-          [DELEGATION_THREAD_ID_ENV]: provisional.hostThreadId,
-        },
+        environment: threadDelegationEnvironment(
+          this.#preparedOptions.environment ?? {},
+          provisional.hostThreadId,
+        ),
       });
     } catch (error) {
       this.#diagnose(error);

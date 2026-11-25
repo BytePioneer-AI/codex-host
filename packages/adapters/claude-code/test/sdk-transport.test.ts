@@ -12,6 +12,7 @@ import type {
   SDKMessage,
   SessionCronSummary,
   StopHookInput,
+  query,
 } from "@anthropic-ai/claude-agent-sdk";
 import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 
@@ -1499,6 +1500,50 @@ describe("ClaudeSdkTransport Model control", () => {
     } finally {
       await rm(configDirectory, { recursive: true, force: true });
     }
+  });
+
+  it("times out a hanging Model inspection and terminates its spawned child process even when query.close throws", async () => {
+    let spawnedChild:
+      | ReturnType<
+          NonNullable<Parameters<typeof query>[0]["options"]>["spawnClaudeCodeProcess"] &
+            ((...args: never[]) => unknown)
+        >
+      | undefined;
+    let exited = false;
+    const hangingQueryFactory: typeof query = (params) => {
+      const spawnChild = params.options?.spawnClaudeCodeProcess;
+      if (spawnChild) {
+        const child = spawnChild({
+          command: process.execPath,
+          args: ["-e", "setTimeout(() => {}, 60_000)"],
+          cwd: process.cwd(),
+          env: process.env,
+          signal: new AbortController().signal,
+        });
+        spawnedChild = child;
+        child.once("exit", () => {
+          exited = true;
+        });
+      }
+      return {
+        initializationResult: () => new Promise(() => undefined),
+        close: () => {
+          throw new Error("query.close failed");
+        },
+      } as unknown as ReturnType<typeof query>;
+    };
+    const inspector = new ClaudeSdkModelInspector({
+      command: process.execPath,
+      environment: process.env,
+      cwd: process.cwd(),
+      closeTimeoutMs: 100,
+      inspectTimeoutMs: 50,
+      queryFactory: hangingQueryFactory,
+    });
+
+    await expect(inspector.inspect()).rejects.toThrow("Claude SDK Model inspection timed out");
+    expect(spawnedChild).toBeDefined();
+    expect(exited).toBe(true);
   });
 });
 

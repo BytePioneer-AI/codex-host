@@ -65,11 +65,16 @@ function retainedError(error: unknown, worktree: DelegationWorktree): Delegation
   );
 }
 
-async function createWorktree(input: {
-  cwd: string;
-  branch: string;
-  base?: string | undefined;
-}): Promise<DelegationWorktree> {
+async function createWorktree(
+  input: {
+    cwd: string;
+    branch: string;
+    base?: string | undefined;
+  },
+  options: {
+    onWorktreePlanned?: (worktree: DelegationWorktree) => Promise<void> | void;
+  } = {},
+): Promise<DelegationWorktree> {
   const root = await checkRepository(input.cwd);
   // Validate the literal ref: --branch would expand checkout shorthand such as @{-1}.
   if (input.branch.startsWith("-") || input.branch === "HEAD")
@@ -103,6 +108,8 @@ async function createWorktree(input: {
   const worktree = { path: path.join(parent, directory), branch: input.branch, base };
   if (await exists(worktree.path))
     throw invalid(`Worktree directory already exists: ${worktree.path}`);
+  // Persist/record the resolved plan BEFORE mutating the filesystem or Git refs.
+  await options.onWorktreePlanned?.(worktree);
   await mkdir(parent, { recursive: true });
   // Reserve the path exclusively before touching refs; never reuse an existing directory.
   try {
@@ -152,6 +159,10 @@ async function createWorktree(input: {
 export async function startWithDelegationWorktree(
   input: { cwd?: string | undefined; branch?: string | undefined; base?: string | undefined },
   start: (cwd: string | undefined) => Promise<unknown>,
+  options: {
+    onWorktreePlanned?: (worktree: DelegationWorktree) => Promise<void> | void;
+    onWorktreeCreated?: (worktree: DelegationWorktree) => Promise<void> | void;
+  } = {},
 ): Promise<unknown> {
   if (input.branch === undefined) {
     if (input.base !== undefined) throw invalid("--base requires --worktree");
@@ -163,12 +174,16 @@ export async function startWithDelegationWorktree(
     throw invalid("base must be a non-empty ref");
   if (typeof input.cwd !== "string" || !path.isAbsolute(input.cwd))
     throw invalid("--worktree requires an absolute cwd");
-  const worktree = await createWorktree({
-    cwd: path.resolve(input.cwd),
-    branch: input.branch,
-    base: input.base,
-  });
+  const worktree = await createWorktree(
+    {
+      cwd: path.resolve(input.cwd),
+      branch: input.branch,
+      base: input.base,
+    },
+    options.onWorktreePlanned ? { onWorktreePlanned: options.onWorktreePlanned } : {},
+  );
   try {
+    await options.onWorktreeCreated?.(worktree);
     const result = await start(worktree.path);
     if (!result || typeof result !== "object" || Array.isArray(result))
       throw new DelegationControlError("INTERNAL_ERROR", "Invalid delegation start response");

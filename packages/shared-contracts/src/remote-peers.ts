@@ -192,6 +192,8 @@ export const remotePeerCapabilitiesSchema = z.object({
   workspaceFiles: z.literal(1).optional(),
   /** Peer supports officeToPdf/render over /api/peer/v1/workspace-files/rpc. */
   officePreview: z.literal(1).optional(),
+  /** /api/peer/v1/delegation is available for fixed-whitelist cross-host delegation. */
+  delegation: z.literal(1).optional(),
 });
 export type RemotePeerCapabilities = z.infer<typeof remotePeerCapabilitiesSchema>;
 

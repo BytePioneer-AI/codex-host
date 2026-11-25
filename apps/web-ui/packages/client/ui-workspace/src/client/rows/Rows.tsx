@@ -207,7 +207,7 @@ export function ProjectRowItem({
 }) {
   const row = group;
   const actions = group.remote ? undefined : suppliedActions;
-  const drag = group.remote ? undefined : suppliedDrag;
+  const drag = suppliedDrag;
   // The ungrouped bucket has no workspace title: its label is dictionary copy.
   const label = row.workspaceId === undefined ? t("group.ungrouped") : row.label;
   const remoteColor =
@@ -275,7 +275,9 @@ export function ProjectRowItem({
         </>
       ) : (
         <span className={css.projectText}>
-          <span className={css.title}>{label}</span>
+          <span className={css.title}>
+            <span className={css.titleText}>{label}</span>
+          </span>
         </span>
       )}
       <span className={css.rowActions}>
@@ -476,7 +478,9 @@ export function SearchResultItem({
     >
       <span className={css.searchResultHeading}>
         <span className={css.slot} />
-        <span className={css.searchResultTitle}>{result.title || t("session.untitled")}</span>
+        <span className={css.searchResultTitle}>
+          <span className={css.titleText}>{result.title || t("session.untitled")}</span>
+        </span>
         {result.remote && <HostBadge host={result.remote} variant="session" t={t} />}
         {!result.archived && primaryStatus.state !== "idle" && (
           <span className={css.timeStatus} data-session-status={primaryStatus.state}>

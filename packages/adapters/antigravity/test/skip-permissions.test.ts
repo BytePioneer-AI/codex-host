@@ -76,6 +76,7 @@ describe("unattended native policy", () => {
             setMode: async () => {},
             setConfigOption: async () => [],
             prompt: async () => ({ stopReason: "end_turn" }),
+            steer: async () => ({ stopReason: "end_turn" }),
             cancel: async () => {},
             closeSession: async () => {},
             close: async () => {},

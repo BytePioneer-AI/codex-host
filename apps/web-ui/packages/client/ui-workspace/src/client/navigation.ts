@@ -197,6 +197,8 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   private retryCreate: (() => void) | undefined;
   private creatingLoad: { readonly stop: () => void } | undefined;
   private creationToken = 0;
+  /** The projectless blank last opened in the main view; abandoned creations never set it. */
+  private openedProjectlessBlank: SessionId | undefined;
   private readonly keepalive: SessionKeepalive;
   /** Stable browser tab order; does not own Session references. */
   readonly recentVisits: RecentVisits;
@@ -283,12 +285,57 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     return this.sessions.create({ workspaceId: workspace.workspaceId });
   }
 
-  private async reuseBlank(workspaceId: WorkspaceId, sessionId: SessionId): Promise<SessionId> {
+  /**
+   * Resolve the blank Session for a New Session without a project. Reusing the
+   * existing projectless blank keeps its unsent composer draft, which is
+   * persisted per Session and unreachable once a fresh blank replaces it.
+   */
+  private reuseOrCreateProjectlessBlank(): Promise<SessionId> {
+    const workspaces = this.workspaces.list.getSnapshot();
+    const sessions = this.sessions.list.getSnapshot();
+    const reusable = (id: SessionId): boolean => {
+      const summary = sessions.byId[id];
+      return (
+        summary !== undefined &&
+        summary.blank &&
+        summary.cwd === undefined &&
+        summary.parentId === undefined &&
+        summary.origin === undefined &&
+        !workspaces.archivedSessionIds.includes(id) &&
+        !workspaces.items.some((workspace) => workspace.sessionIds.includes(id))
+      );
+    };
+    // An abandoned concurrent creation can leave an earlier-listed blank; the opened one holds the draft.
+    const opened = this.openedProjectlessBlank;
+    const id = opened !== undefined && reusable(opened) ? opened : sessions.ids.find(reusable);
+    return id === undefined ? this.sessions.create() : this.reuseBlank(undefined, id);
+  }
+
+  /** Open a projectless blank in the main view and remember it for the next New Session. */
+  private openProjectlessBlank(
+    sessionId: SessionId,
+    navigation: AbortSignal,
+    panel: "reveal" | "preserve",
+    beforeOpen?: (sessionId: SessionId) => void,
+  ): void {
+    this.replaceMain(sessionId, navigation, panel, beforeOpen);
+    if (this.mainReference?.sessionId === sessionId) this.openedProjectlessBlank = sessionId;
+  }
+
+  private async reuseBlank(
+    workspaceId: WorkspaceId | undefined,
+    sessionId: SessionId,
+  ): Promise<SessionId> {
+    const scope = workspaceId === undefined ? {} : { workspaceId };
     try {
-      return await this.sessions.create({ workspaceId, sessionId });
+      return await this.sessions.create({ ...scope, sessionId });
     } catch (error: unknown) {
-      if (sessionCreateErrorOf(error)?.rpcError.code !== "session/writer-held") throw error;
-      return this.sessions.create({ workspaceId });
+      // The CH Host's `session/busy` is not in the client's declared error map; compare as text.
+      const code: string | undefined = sessionCreateErrorOf(error)?.rpcError.code;
+      // A projectless blank that began submitting reports busy; start a fresh one instead.
+      if (code !== "session/writer-held" && !(workspaceId === undefined && code === "session/busy"))
+        throw error;
+      return this.sessions.create(scope);
     }
   }
 
@@ -399,7 +446,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         throw new WorkspaceRequiredError();
       sessionId =
         workspaceId === null
-          ? await this.sessions.create()
+          ? await this.reuseOrCreateProjectlessBlank()
           : await this.connectWorkspace(workspaceId);
     } catch (error: unknown) {
       // Reported here, not in connectWorkspace: startup restoration calls that
@@ -409,7 +456,9 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       throw error;
     }
     if (navigation.aborted) return;
-    this.replaceMain(sessionId, navigation, "reveal", beforeOpen);
+    if (workspaceId === null)
+      this.openProjectlessBlank(sessionId, navigation, "reveal", beforeOpen);
+    else this.replaceMain(sessionId, navigation, "reveal", beforeOpen);
   }
 
   async forkSession(
@@ -511,13 +560,16 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       }
       const sessionId =
         request.workspaceId === null
-          ? await this.sessions.create()
+          ? await this.reuseOrCreateProjectlessBlank()
           : await this.connectWorkspace(request.workspaceId);
       if (navigation.aborted || this.creatingLoad !== load) return;
-      this.replaceMain(sessionId, navigation, "preserve", (id) => {
+      const beforeOpen = (id: SessionId): void => {
         request.beforeOpen?.(id);
         this.handoffPendingDraft(id, request.draftOptions);
-      });
+      };
+      if (request.workspaceId === null)
+        this.openProjectlessBlank(sessionId, navigation, "preserve", beforeOpen);
+      else this.replaceMain(sessionId, navigation, "preserve", beforeOpen);
       clear();
     } catch (error: unknown) {
       if (navigation.aborted || this.creatingLoad !== load) return;
@@ -715,7 +767,8 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         ? undefined
         : workspaces.items.find((item) => item.sessionIds.includes(summary.id));
     if (summary !== undefined && (!summary.blank || workspace === undefined)) {
-      this.replaceMain(summary.id, navigation, "preserve");
+      if (summary.blank) this.openProjectlessBlank(summary.id, navigation, "preserve");
+      else this.replaceMain(summary.id, navigation, "preserve");
       return;
     }
     let sessionId: SessionId | undefined;
@@ -728,8 +781,8 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       sessionId = await this.reuseBlank(workspace.workspaceId, summary.id);
     }
     if (sessionId === undefined && workspaces.canStartProjectless && summary === undefined) {
-      sessionId = await this.sessions.create();
-      if (!navigation.aborted) this.replaceMain(sessionId, navigation, "preserve");
+      sessionId = await this.reuseOrCreateProjectlessBlank();
+      if (!navigation.aborted) this.openProjectlessBlank(sessionId, navigation, "preserve");
       return;
     }
     let target = workspace?.workspaceId ?? recentWorkspace(workspaces.items, sessions.byId);

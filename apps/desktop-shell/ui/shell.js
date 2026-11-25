@@ -142,6 +142,13 @@
           ? base.codexDesktopInstalled
           : true;
 
+    var rememberDefault =
+      typeof source.rememberDefault === "boolean"
+        ? source.rememberDefault
+        : typeof base.rememberDefault === "boolean"
+          ? base.rememberDefault
+          : false;
+
     var locale =
       typeof source.locale === "string" && source.locale.trim()
         ? normalizeLocale(source.locale)
@@ -198,6 +205,7 @@
 
     return {
       codexDesktopInstalled: codexDesktopInstalled,
+      rememberDefault: rememberDefault,
       locale: locale,
       version: version,
       platform: platform,

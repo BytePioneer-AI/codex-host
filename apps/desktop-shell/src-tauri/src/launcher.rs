@@ -131,7 +131,7 @@ fn find_launcher(shell: &Path, override_path: Option<PathBuf>) -> Option<PathBuf
         .find(|path| path.is_absolute() && path.is_file() && !is_same_executable(path, shell))
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Surface {
     NativeShell,
@@ -140,8 +140,25 @@ pub(crate) enum Surface {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct LaunchPreferences {
-    codex_desktop_installed: bool,
+pub(crate) struct LaunchPreferences {
+    default_desktop_surface: Option<Surface>,
+    onboarding_completed: bool,
+    #[serde(default)]
+    pub remember_default: bool,
+    pub codex_desktop_installed: bool,
+    desktop_shell_available: bool,
+}
+
+impl LaunchPreferences {
+    pub fn remembered_surface(&self) -> Option<Surface> {
+        self.default_desktop_surface.filter(|surface| {
+            self.remember_default
+                && match surface {
+                    Surface::NativeShell => self.desktop_shell_available,
+                    Surface::CodexDesktop => self.codex_desktop_installed,
+                }
+        })
+    }
 }
 
 pub(crate) struct Launcher {
@@ -294,15 +311,14 @@ impl Launcher {
             .map(|output| String::from_utf8_lossy(&output).trim().to_owned())
     }
 
-    pub fn codex_installed(&self) -> Result<bool, String> {
+    pub fn launch_preferences(&self) -> Result<LaunchPreferences, String> {
         let output = self.execute(&["launch-prefs", "get", "--json"], true)?;
-        serde_json::from_slice::<LaunchPreferences>(&output)
-            .map(|prefs| prefs.codex_desktop_installed)
+        serde_json::from_slice(&output)
             .map_err(|error| format!("Cannot read CodexHost launch preferences: {error}"))
     }
 
     pub fn open_codex(&self) -> Result<(), String> {
-        if !self.codex_installed()? {
+        if !self.launch_preferences()?.codex_desktop_installed {
             return Err("Codex Desktop is not installed / 未安装官方 Codex Desktop".into());
         }
         self.launch_codex_desktop()
@@ -399,20 +415,51 @@ impl Launcher {
         result
     }
 
-    pub fn set_surface(&self, surface: Surface, remember: bool) -> Result<(), String> {
+    pub fn set_surface(&self, surface: Surface, remember_default: bool) -> Result<(), String> {
+        let _guard = self.command_lock.lock().unwrap();
+        self.write_launch_preferences(surface, true, remember_default)
+    }
+
+    pub fn ask_every_time(&self) -> Result<(), String> {
+        let _guard = self.command_lock.lock().unwrap();
+        let prefs = self.launch_preferences()?;
+        self.write_launch_preferences(
+            prefs
+                .default_desktop_surface
+                .unwrap_or(Surface::NativeShell),
+            prefs.onboarding_completed,
+            false,
+        )
+    }
+
+    fn write_launch_preferences(
+        &self,
+        surface: Surface,
+        onboarding_completed: bool,
+        remember_default: bool,
+    ) -> Result<(), String> {
         let surface = match surface {
             Surface::NativeShell => "native-shell",
             Surface::CodexDesktop => "codex-desktop",
         };
-        let onboarding_completed = if remember { "true" } else { "false" };
-        self.run(&[
-            "launch-prefs",
-            "set",
-            "--surface",
-            surface,
-            "--onboarding-completed",
-            onboarding_completed,
-        ])
+        self.execute(
+            &[
+                "launch-prefs",
+                "set",
+                "--surface",
+                surface,
+                "--onboarding-completed",
+                if onboarding_completed {
+                    "true"
+                } else {
+                    "false"
+                },
+                "--remember-default",
+                if remember_default { "true" } else { "false" },
+            ],
+            false,
+        )
+        .map(|_| ())
     }
 }
 
@@ -446,6 +493,47 @@ mod tests {
                 .get_envs()
                 .any(|(key, _)| key == std::ffi::OsStr::new("CODEXHOST_DATA_DIR"))
         );
+    }
+
+    #[test]
+    fn legacy_launch_choice_is_not_remembered() {
+        let preferences: LaunchPreferences = serde_json::from_value(serde_json::json!({
+            "defaultDesktopSurface": "native-shell",
+            "onboardingCompleted": true,
+            "codexDesktopInstalled": true,
+            "desktopShellAvailable": true,
+        }))
+        .unwrap();
+        assert!(!preferences.remember_default);
+        assert_eq!(preferences.remembered_surface(), None);
+        assert_eq!(
+            preferences.default_desktop_surface,
+            Some(Surface::NativeShell)
+        );
+    }
+
+    #[test]
+    fn remembered_available_choices_do_not_require_completed_onboarding() {
+        let mut prefs: LaunchPreferences = serde_json::from_value(serde_json::json!({
+            "defaultDesktopSurface": "codex-desktop",
+            "onboardingCompleted": false,
+            "rememberDefault": true,
+            "codexDesktopInstalled": true,
+            "desktopShellAvailable": true,
+        }))
+        .unwrap();
+        assert_eq!(prefs.remembered_surface(), Some(Surface::CodexDesktop));
+
+        prefs.codex_desktop_installed = false;
+        assert_eq!(prefs.remembered_surface(), None);
+        prefs.default_desktop_surface = Some(Surface::NativeShell);
+        assert_eq!(prefs.remembered_surface(), Some(Surface::NativeShell));
+
+        prefs.desktop_shell_available = false;
+        assert_eq!(prefs.remembered_surface(), None);
+        prefs.desktop_shell_available = true;
+        prefs.remember_default = false;
+        assert_eq!(prefs.remembered_surface(), None);
     }
 
     #[test]

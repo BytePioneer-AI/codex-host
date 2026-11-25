@@ -29,7 +29,7 @@
       webErrorFallback: "请稍后重试，或从系统托盘打开诊断控制台。",
       hubLabel: "Host",
       hubSub: "三端会话实时同步",
-      rememberLabel: "记住本次选择",
+      rememberDefault: "记住此选择，下次直接打开",
       footnote: "系统托盘可随时切换窗口或完全退出",
       footnoteRemembered: "下次将直接打开，随时可在系统托盘切换",
       chooseErrorPrefix: "无法打开所选方式：",
@@ -69,7 +69,7 @@
       webErrorFallback: "Please try again or open diagnostics from the system tray.",
       hubLabel: "Host",
       hubSub: "Live 3-client session sync",
-      rememberLabel: "Remember this choice",
+      rememberDefault: "Remember this choice and open it directly next time",
       footnote: "Switch windows or quit anytime from the system tray",
       footnoteRemembered: "Opens directly next time; switch anytime from the system tray",
       chooseErrorPrefix: "Could not open selection: ",
@@ -113,7 +113,8 @@
     version: "",
     platform: "",
     codexDesktopInstalled: params.get("installed") !== "false",
-    rememberChoice: params.get("remember") === "1" || params.get("remember") === "true",
+    rememberDefault: params.get("remember") === "1" || params.get("remember") === "true",
+    rememberTouchedByUser: false,
     submittingSurface: null,
     lastAttemptedSurface: "",
     webRunning: false,
@@ -167,8 +168,9 @@
     feedbackText: document.getElementById("feedback-text"),
     feedbackIssueLink: document.getElementById("feedback-issue-link"),
     feedbackIssueLabel: document.getElementById("feedback-issue-label"),
-    rememberToggle: document.getElementById("remember-choice-toggle"),
-    rememberLabel: document.getElementById("remember-choice-label"),
+    rememberChoice: document.getElementById("remember-choice"),
+    rememberCheckbox: document.getElementById("remember-default-checkbox"),
+    rememberLabel: document.getElementById("remember-default-label"),
     footnoteText: document.getElementById("onboarding-footnote-text"),
     previewBar: document.getElementById("preview-bar"),
   };
@@ -488,13 +490,17 @@
 
     setText(els.hubLabel, t.hubLabel);
     setText(els.hubSub, t.hubSub);
-    setText(els.rememberLabel, t.rememberLabel);
-    if (els.rememberToggle) {
-      els.rememberToggle.setAttribute("aria-checked", state.rememberChoice ? "true" : "false");
-    }
-    setText(els.footnoteText, state.rememberChoice ? t.footnoteRemembered : t.footnote);
+    setText(els.rememberLabel, t.rememberDefault);
+    setText(els.footnoteText, state.rememberDefault ? t.footnoteRemembered : t.footnote);
 
     var isBusy = state.submittingSurface !== null;
+    if (els.rememberCheckbox) {
+      els.rememberCheckbox.checked = Boolean(state.rememberDefault);
+      els.rememberCheckbox.disabled = isBusy;
+    }
+    if (els.rememberChoice) {
+      els.rememberChoice.setAttribute("data-disabled", isBusy ? "true" : "false");
+    }
     var nativePending = state.submittingSurface === "native-shell";
     var desktopPending = state.submittingSurface === "codex-desktop";
     var desktopUnavailable = !state.codexDesktopInstalled;
@@ -535,9 +541,6 @@
     ui.setHidden(els.webOpenSpinner, !opening);
     ui.setHidden(els.webOpenArrow, opening);
 
-    if (els.rememberToggle) {
-      els.rememberToggle.disabled = isBusy;
-    }
 
     if (els.webCopyBtn) {
       els.webCopyBtn.disabled = webDisabled;
@@ -587,6 +590,10 @@
       return;
     }
 
+    var rememberDefault = els.rememberCheckbox
+      ? Boolean(els.rememberCheckbox.checked)
+      : Boolean(state.rememberDefault);
+    state.rememberDefault = rememberDefault;
     state.submittingSurface = surface;
     state.lastAttemptedSurface = surface;
     state.feedbackKind = null;
@@ -598,7 +605,7 @@
     if (bridge && typeof bridge.chooseSurface === "function") {
       Promise.resolve()
         .then(function () {
-          return bridge.chooseSurface(surface, state.rememberChoice);
+          return bridge.chooseSurface(surface, rememberDefault);
         })
         .catch(function (err) {
           var t = getCopy();
@@ -890,13 +897,10 @@
   if (els.webCopyBtn) {
     els.webCopyBtn.addEventListener("click", handleCopyWebUrl);
   }
-  if (els.rememberToggle) {
-    els.rememberToggle.addEventListener("click", function () {
-      if (state.submittingSurface !== null) {
-        return;
-      }
-      state.rememberChoice = !state.rememberChoice;
-      render();
+  if (els.rememberCheckbox) {
+    els.rememberCheckbox.addEventListener("change", function () {
+      state.rememberDefault = Boolean(els.rememberCheckbox.checked);
+      state.rememberTouchedByUser = true;
     });
   }
 
@@ -908,6 +912,7 @@
 
   ui.readShellState({
     codexDesktopInstalled: state.codexDesktopInstalled,
+    rememberDefault: state.rememberDefault,
     locale: state.locale,
     status: "starting",
     message: "",
@@ -920,6 +925,9 @@
     }
     if (!state.localeLockedByUser && result.state.locale) {
       state.locale = result.state.locale;
+    }
+    if (!state.rememberTouchedByUser) {
+      state.rememberDefault = result.state.rememberDefault;
     }
     state.version = result.state.version;
     state.platform = result.state.platform;

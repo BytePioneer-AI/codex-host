@@ -110,8 +110,8 @@ function __codexhostDesktopShellInit(config) {
 
   if (isEmbeddedPage) {
     window.__codexhostShell = Object.freeze({
-      chooseSurface: (surface, remember) =>
-        invoke("choose_surface", { surface, remember: Boolean(remember) }),
+      chooseSurface: (surface, rememberDefault) =>
+        invoke("choose_surface", { surface, rememberDefault }),
       retry: () => invoke("retry"),
       openConsole: () => invoke("open_console"),
       getState: () => invoke("get_state"),

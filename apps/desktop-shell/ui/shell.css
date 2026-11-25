@@ -19,6 +19,7 @@
 
   --line-subtle: rgba(15, 23, 42, 0.08);
   --line-strong: rgba(15, 23, 42, 0.14);
+  --checkbox-border: rgba(15, 23, 42, 0.24);
 
   --accent: #1e6b61;
   --accent-bright: #2a9284;
@@ -74,6 +75,7 @@
 
     --line-subtle: rgba(255, 255, 255, 0.075);
     --line-strong: rgba(255, 255, 255, 0.14);
+    --checkbox-border: rgba(255, 255, 255, 0.26);
 
     --accent: #30b09e;
     --accent-bright: #5ce0cb;
@@ -121,6 +123,7 @@
 
   --line-subtle: rgba(255, 255, 255, 0.075);
   --line-strong: rgba(255, 255, 255, 0.14);
+  --checkbox-border: rgba(255, 255, 255, 0.26);
 
   --accent: #30b09e;
   --accent-bright: #5ce0cb;
@@ -800,6 +803,95 @@ html[data-windows-titlebar] .page-onboarding .top-bar {
   color: var(--text-muted);
 }
 
+.remember-choice {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 5px 11px;
+  border-radius: 9px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.4;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background 150ms ease,
+    color 150ms ease,
+    opacity 150ms ease;
+}
+
+.remember-choice:hover:not([data-disabled="true"]) {
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+}
+
+.remember-choice[data-disabled="true"] {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
+.remember-checkbox {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.remember-box {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  border: 1.35px solid var(--checkbox-border);
+  background: var(--bg-panel);
+  color: #ffffff;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.remember-box svg {
+  width: 11px;
+  height: 11px;
+  display: block;
+  opacity: 0;
+  transform: scale(0.82);
+  transition:
+    opacity 130ms ease,
+    transform 130ms ease;
+}
+
+.remember-choice:hover:not([data-disabled="true"]) .remember-box {
+  border-color: var(--accent);
+}
+
+.remember-checkbox:checked + .remember-box {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.remember-checkbox:checked + .remember-box svg {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.remember-checkbox:focus-visible + .remember-box {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.remember-label {
+  text-align: left;
+}
+
+
 .remember-toggle {
   display: inline-flex;
   align-items: center;
@@ -1276,6 +1368,10 @@ html[data-windows-titlebar] .page-onboarding .top-bar {
   }
   .hub-row {
     margin-top: 14px;
+  }
+  .remember-choice {
+    min-height: 38px;
+    padding: 7px 12px;
   }
 }
 

@@ -26,14 +26,17 @@ pub struct Preferences {
     version: u8,
     pub default_desktop_surface: Surface,
     pub onboarding_completed: bool,
+    #[serde(default)]
+    pub remember_default: bool,
 }
 
 impl Preferences {
-    pub fn new(surface: Surface, onboarding_completed: bool) -> Self {
+    pub fn new(surface: Surface, onboarding_completed: bool, remember_default: bool) -> Self {
         Self {
             version: VERSION,
             default_desktop_surface: surface,
             onboarding_completed,
+            remember_default,
         }
     }
 
@@ -66,6 +69,7 @@ fn status(
         "version": VERSION,
         "defaultDesktopSurface": preferences.map(|prefs| prefs.default_desktop_surface),
         "onboardingCompleted": preferences.is_some_and(|prefs| prefs.onboarding_completed),
+        "rememberDefault": preferences.is_some_and(|prefs| prefs.remember_default),
         "codexDesktopInstalled": codex_desktop_installed,
         "desktopShellAvailable": desktop_shell_available,
     })
@@ -89,6 +93,7 @@ fn parse(arguments: &[String]) -> Result<Action, Box<dyn Error>> {
     }
     let mut surface = None;
     let mut onboarding_completed = None;
+    let mut remember_default = None;
     for option in options.chunks(2) {
         let [flag, value] = option else {
             return Err(format!("{} requires a value", option[0]).into());
@@ -108,12 +113,20 @@ fn parse(arguments: &[String]) -> Result<Action, Box<dyn Error>> {
                         .map_err(|_| "--onboarding-completed must be true or false")?,
                 );
             }
+            "--remember-default" if remember_default.is_none() => {
+                remember_default = Some(
+                    value
+                        .parse::<bool>()
+                        .map_err(|_| "--remember-default must be true or false")?,
+                );
+            }
             _ => return Err(format!("Unknown or repeated launch-prefs option: {flag}").into()),
         }
     }
     Ok(Action::Set(Preferences::new(
         surface.ok_or("--surface is required")?,
         onboarding_completed.unwrap_or(true),
+        remember_default.unwrap_or(true),
     )))
 }
 
@@ -152,8 +165,28 @@ mod tests {
                 "version": 1,
                 "defaultDesktopSurface": null,
                 "onboardingCompleted": false,
+                "rememberDefault": false,
                 "codexDesktopInstalled": true,
                 "desktopShellAvailable": false,
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_preferences_keep_choice_history_without_remembering_it() {
+        let preferences = serde_json::from_str(
+            r#"{"version":1,"defaultDesktopSurface":"native-shell","onboardingCompleted":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            status(Some(preferences), true, true),
+            json!({
+                "version": 1,
+                "defaultDesktopSurface": "native-shell",
+                "onboardingCompleted": true,
+                "rememberDefault": false,
+                "codexDesktopInstalled": true,
+                "desktopShellAvailable": true,
             })
         );
     }
@@ -162,50 +195,69 @@ mod tests {
     fn save_replaces_preferences_with_private_versioned_json() {
         let data =
             std::env::temp_dir().join(format!("codexhost-prefs-save-{}", std::process::id()));
-        Preferences::new(Surface::NativeShell, true)
+        Preferences::new(Surface::NativeShell, true, false)
             .save(&data)
             .unwrap();
         // An open Unix reader still sees the old file after atomic replacement.
         #[cfg(unix)]
         let old = fs::File::open(data.join(FILE)).unwrap();
-        let new = Preferences::new(Surface::CodexDesktop, false);
+        let new = Preferences::new(Surface::CodexDesktop, false, true);
         new.save(&data).unwrap();
         assert_eq!(Preferences::read(&data).unwrap(), Some(new));
         assert_eq!(
             serde_json::from_slice::<Value>(&fs::read(data.join(FILE)).unwrap()).unwrap(),
-            json!({"version": 1, "defaultDesktopSurface": "codex-desktop", "onboardingCompleted": false})
+            json!({
+                "version": 1,
+                "defaultDesktopSurface": "codex-desktop",
+                "onboardingCompleted": false,
+                "rememberDefault": true,
+            })
         );
+        assert_eq!(status(Some(new), true, true)["rememberDefault"], true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(data.join(FILE)).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
             let old: Preferences = serde_json::from_reader(old).unwrap();
-            assert_eq!(old, Preferences::new(Surface::NativeShell, true));
+            assert_eq!(old, Preferences::new(Surface::NativeShell, true, false));
         }
         assert_eq!(fs::read_dir(&data).unwrap().count(), 1);
         fs::remove_dir_all(&data).unwrap();
     }
 
     #[test]
-    fn cli_accepts_only_valid_options_and_defaults_to_completed_onboarding() {
+    fn cli_validates_options_and_remembers_by_default() {
         let action =
             |args: &[&str]| parse(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>());
         assert_eq!(action(&["get", "--json"]).unwrap(), Action::Get);
         assert_eq!(
             action(&["set", "--surface", "native-shell"]).unwrap(),
-            Action::Set(Preferences::new(Surface::NativeShell, true))
+            Action::Set(Preferences::new(Surface::NativeShell, true, true))
         );
         assert_eq!(
             action(&[
                 "set",
                 "--onboarding-completed",
                 "false",
+                "--remember-default",
+                "true",
                 "--surface",
                 "codex-desktop"
             ])
             .unwrap(),
-            Action::Set(Preferences::new(Surface::CodexDesktop, false))
+            Action::Set(Preferences::new(Surface::CodexDesktop, false, true))
+        );
+        assert_eq!(
+            action(&[
+                "set",
+                "--surface",
+                "native-shell",
+                "--remember-default",
+                "false"
+            ])
+            .unwrap(),
+            Action::Set(Preferences::new(Surface::NativeShell, true, false))
         );
         for args in [
             &["get"][..],
@@ -215,6 +267,13 @@ mod tests {
                 "--surface",
                 "native-shell",
                 "--onboarding-completed",
+                "1",
+            ],
+            &[
+                "set",
+                "--surface",
+                "native-shell",
+                "--remember-default",
                 "1",
             ],
             &[

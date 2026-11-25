@@ -170,7 +170,7 @@ const USAGE: &str = "usage:
   codexhost inspect [--json] [--custom-install <absolute-directory>]
   codexhost app [--onboarding]
   codexhost launch-prefs get --json
-  codexhost launch-prefs set --surface <native-shell|codex-desktop> [--onboarding-completed true|false]
+  codexhost launch-prefs set --surface <native-shell|codex-desktop> [--onboarding-completed true|false] [--remember-default true|false]
   codexhost web [--background] [--connect-devices] [--host <address>] [--port <port>] [--public-url <url>] [--trusted-proxy <addresses>] [--relay <control-host>]
   codexhost stop
   codexhost status
@@ -1773,10 +1773,11 @@ fn desktop_route(
     codex_installed: bool,
     shell_available: bool,
 ) -> DesktopRoute {
-    match preferences.filter(|prefs| prefs.onboarding_completed) {
+    match preferences.filter(|prefs| prefs.remember_default) {
         Some(prefs) => match prefs.default_desktop_surface {
             Surface::NativeShell => DesktopRoute::App,
             Surface::CodexDesktop if codex_installed => DesktopRoute::CodexDesktop,
+            Surface::CodexDesktop if shell_available => DesktopRoute::Onboarding,
             Surface::CodexDesktop => DesktopRoute::CodexUnavailable,
         },
         None if shell_available => DesktopRoute::Onboarding,
@@ -1811,20 +1812,13 @@ fn launch_default(interactive: bool) -> Result<(), Box<dyn Error>> {
         DesktopRoute::App => launch_app(shell, false),
         DesktopRoute::Onboarding => launch_app(shell, true),
         DesktopRoute::RememberNative => {
-            Preferences::new(Surface::NativeShell, true).save(&data)?;
-            if shell.is_none() {
-                eprintln!("Codex Desktop is not installed; opening Web instead");
-            }
-            launch_app(shell, false)
+            Preferences::new(Surface::NativeShell, true, true).save(&data)?;
+            eprintln!("Codex Desktop is not installed; opening Web instead");
+            launch_app(None, false)
         }
         DesktopRoute::CodexUnavailable => {
-            let fallback = if shell.is_some() {
-                "the codexhost desktop shell"
-            } else {
-                "Web"
-            };
-            eprintln!("Your default Codex Desktop could not be found; opening {fallback} instead");
-            launch_app(shell, false)
+            eprintln!("Your default Codex Desktop could not be found; opening Web instead");
+            launch_app(None, false)
         }
     }
 }
@@ -2155,27 +2149,43 @@ mod tests {
         use super::DesktopRoute::*;
         use super::{Preferences, Surface, desktop_route};
 
-        let native = Some(Preferences::new(Surface::NativeShell, true));
-        let codex = Some(Preferences::new(Surface::CodexDesktop, true));
-        let incomplete = Some(Preferences::new(Surface::CodexDesktop, false));
+        let native = Some(Preferences::new(Surface::NativeShell, true, true));
+        let codex = Some(Preferences::new(Surface::CodexDesktop, true, true));
+        let unremembered_native = Some(Preferences::new(Surface::NativeShell, true, false));
+        let unremembered_codex = Some(Preferences::new(Surface::CodexDesktop, true, false));
+        let incomplete = Some(Preferences::new(Surface::CodexDesktop, false, false));
+        let remembered_incomplete = Some(Preferences::new(Surface::CodexDesktop, false, true));
+        let legacy = serde_json::from_str(
+            r#"{"version":1,"defaultDesktopSurface":"native-shell","onboardingCompleted":true}"#,
+        )
+        .unwrap();
         for (prefs, installed, shell, expected) in [
             (None, false, true, Onboarding),
             (None, false, false, RememberNative),
             (None, true, true, Onboarding),
             (None, true, false, CodexDesktop),
+            (legacy, true, true, Onboarding),
             (incomplete, false, true, Onboarding),
             (incomplete, false, false, RememberNative),
-            (incomplete, true, true, Onboarding),
             (incomplete, true, false, CodexDesktop),
+            (unremembered_native, true, true, Onboarding),
+            (unremembered_native, true, false, CodexDesktop),
+            (unremembered_codex, true, true, Onboarding),
+            (unremembered_codex, false, false, RememberNative),
             (native, false, true, App),
             (native, true, true, App),
             (native, true, false, App),
             (codex, true, true, CodexDesktop),
             (codex, true, false, CodexDesktop),
-            (codex, false, true, CodexUnavailable),
+            (remembered_incomplete, true, true, CodexDesktop),
+            (codex, false, true, Onboarding),
             (codex, false, false, CodexUnavailable),
         ] {
-            assert_eq!(desktop_route(prefs, installed, shell), expected);
+            assert_eq!(
+                desktop_route(prefs, installed, shell),
+                expected,
+                "{prefs:?}, codex_installed={installed}, shell_available={shell}"
+            );
         }
     }
 

@@ -358,27 +358,24 @@
           </div>
 
           <div class="card-foot">
-            <button
-              type="button"
-              id="remember-choice-toggle"
-              class="remember-toggle"
-              role="checkbox"
-              aria-checked="false"
-            >
-              <span class="remember-check" aria-hidden="true">
+            <label class="remember-choice" id="remember-choice" for="remember-default-checkbox">
+              <input type="checkbox" id="remember-default-checkbox" class="remember-checkbox" />
+              <span class="remember-box" aria-hidden="true">
                 <svg
                   viewBox="0 0 12 12"
                   fill="none"
                   stroke="currentColor"
-                  stroke-width="1.65"
+                  stroke-width="1.9"
                   stroke-linecap="round"
                   stroke-linejoin="round"
                 >
-                  <path d="M2.8 6.2 5 8.4 9.2 3.8" />
+                  <path d="M2.5 6.3 5 8.8 9.6 3.6" />
                 </svg>
               </span>
-              <span id="remember-choice-label" class="remember-label">记住本次选择</span>
-            </button>
+              <span id="remember-default-label" class="remember-label"
+                >记住此选择，下次直接打开</span
+              >
+            </label>
             <span class="foot-dot" aria-hidden="true">·</span>
             <span id="onboarding-footnote-text" class="foot-hint">
               系统托盘可随时切换窗口或完全退出

@@ -50,6 +50,14 @@ Web「设置 → 通用设置」顶部的「应用与通知」分组提供「安
 
 iOS/iPadOS 主屏幕模式通过 `display-mode: standalone` 与 `-webkit-touch-callout` 支持检测启用透明顶边兼容层：固定在视口顶边，高 6px、全宽，使用 `backdrop-filter: blur(0px)`（含 Safari 前缀），不绘制实色底、不改变下方像素、不占布局空间、不接收触摸，也不进入可访问性树。该尝试依据 WebKit `LocalFrameView::fixedContainerEdges` 对背景滤镜容器的识别路径，用于规避 [WebKit 329103](https://bugs.webkit.org/show_bug.cgi?id=329103) 所报告的系统顶部虚化侵入页面内容；零半径滤镜不能替换为 `none`，否则不再提供该识别条件。不改状态栏样式 meta、安全区留白或侧栏毛玻璃，也不隐藏系统时钟和电池区域。普通浏览器、Android 和桌面不启用。该模式的根画布固定为深色 `#151517`，为系统状态栏提供稳定的深色背景，不尝试随应用主题动态切换系统顶部。应用内部仍由 `body` 上的主题正常切换亮色、暗色或跟随系统；固定深色画布不向页面顶部增加实色覆盖条，也不触发刷新或重启。主题呈现器写入的 `theme-color` 插在页面静态默认值之前，浏览器取第一个匹配项，系统状态栏和浏览器外围随应用实际背景色变化，而不是只跟随系统深浅色；移除后回落到静态默认值。WebKit 主干的识别逻辑不保证已发布 iOS 的系统显示效果；固定深色顶部在亮／暗主题冷启动、运行中切换和横竖屏下的表现仍需 iOS 真机验收。
 
+## 桌面入口与默认启动方式
+
+无参运行 `codexhost` 在图形桌面环境下按 `$CODEXHOST_DATA_DIR/launch-preferences-v1.json` 路由入口。版本 1 配置保留 `defaultDesktopSurface` 与 `onboardingCompleted`，并用独立的 `rememberDefault` 表示用户是否明确选择记住默认入口；旧配置缺少该字段时按 `false` 处理，完成过选择不等于授权跳过选择页。`codexhost launch-prefs get --json` 返回最近选择、引导状态、记忆状态以及本机官方 Desktop 和桌面壳可用性；`launch-prefs set --surface <native-shell|codex-desktop> [--onboarding-completed true|false] [--remember-default true|false]` 原子更新同一文件，省略 `--remember-default` 时为 `true`。
+
+macOS 与 Windows 使用相同的选择页与路由合同。未记忆且桌面壳可用时，普通启动显示选择页；用户不勾选“记住此选择，下次直接打开”时仅打开本次所选客户端，勾选后普通启动直接进入保存的单一入口。未安装官方 Codex Desktop 时不显示选择页，优先打开自有桌面窗口；已记忆官方入口但客户端已卸载且桌面壳可用时返回选择页。无桌面壳时按官方安装情况进入官方 Desktop 或回落本机 Web。默认入口不提供同时启动多个客户端的模式，用户仍可分别打开自有窗口与官方 Desktop，两者共用同一 Host。
+
+选择页和系统托盘都可以修改记忆状态；托盘提供自有桌面窗口、官方 Codex Desktop 与每次询问三项，并显示当前有效状态。显式 `codexhost app --onboarding` 始终打开选择页，`codexhost app`、托盘“打开 CodexHost 窗口”及 macOS Reopen 始终打开自有窗口，不被官方默认入口改写。已记忆自有窗口且现有壳停留在选择页时，普通重开会使该壳进入主窗口并恢复可见。
+
 ## 桌面壳缩放
 
 独立原生桌面壳（`apps/desktop-shell`）为 macOS（WKWebView `setPageZoom`）与 Windows（WebView2 `SetZoomFactor`）提供统一的窗口整体缩放，沿用底层 WebView 默认关闭的框架内置缩放热键（`zoom_hotkeys_enabled(false)`），由壳层集中维护单一缩放档位（`50% / 67% / 75% / 80% / 90% / 100% / 110% / 125% / 150% / 175% / 200%`，默认 `100%`）。当前档位通过原子写入在后台串行合并持久化到数据目录下的 `desktop-shell-zoom-v1.json`（Unix 权限 `0600`，数值未变化时跳过落盘，退出时同步冲刷在途写入），读取损坏或越界内容时自动回退至 `100%` 并在主窗口显示前应用；内置引导／加载页通过导航 URL 参数（`zoom=<percent>`）直接获取当前倍率，实时 Web 页按本次进程启动编号（`bootId`）校验同源本地缓存并在缺失时回退至启动倍率，随后再与壳层按单调版本号对齐，避免冷启动、重连加载与同源刷新时的首帧避让跳动（同一进程内切换 Web 端口到新源时回落到异步同步）。窗口缩放不支持鼠标滚轮与触控板捏合触发（保留页面内图片与文档预览各自的滚轮／捏合行为）。
@@ -79,7 +87,7 @@ codexhost web --host 0.0.0.0 --port 4500
 codexhost stop
 ```
 
-`codexhost web` 确保 Host 和 Web 在后台运行，输出本机登录链接并打开浏览器；SSH 或无图形界面时只输出链接。无参运行 `codexhost` 按 `$CODEXHOST_DATA_DIR/launch-preferences-v1.json` 路由桌面入口：未记住默认桌面入口且桌面壳可用时弹出原生模式选择页（默认不勾选「记住本次选择」，勾选后仅对两个桌面端生效，点击「Web 浏览器」不跳过选择页，后续可在系统托盘「默认启动方式」切换或恢复「每次启动时询问」）；已记住自有桌面窗口时直接打开原生桌面壳，已记住官方 Codex Desktop 时拉起官方界面并在后台准备 Web（官方缺失时自动回退原生桌面壳或 Web）；无可用桌面壳时启动官方 Desktop 或回退打开会话 Web。`CODEXHOST_WEB_SERVICE=0` 禁用随官方 Desktop 自动拉起 Web 的行为。Windows 的后台监管进程和 Node 服务均不创建控制台窗口。启动命令成功返回后，关闭原始终端、GUI 或浏览器不停止或重启后台服务；电脑休眠时手机仍无法连接。
+`codexhost web` 确保 Host 和 Web 在后台运行，输出本机登录链接并打开浏览器；SSH 或无图形界面时只输出链接。无参运行 `codexhost` 的桌面入口、可选记忆与无壳回退见[桌面入口与默认启动方式](#桌面入口与默认启动方式)。`CODEXHOST_WEB_SERVICE=0` 禁用随官方 Desktop 自动拉起 Web 的行为。Windows 的后台监管进程和 Node 服务均不创建控制台窗口。启动命令成功返回后，关闭原始终端、GUI 或浏览器不停止或重启后台服务；电脑休眠时手机仍无法连接。
 
 首次后台启动默认监听 `127.0.0.1:4400`。`codexhost web` 的 `--host`、`--port`、`--public-url`、`--trusted-proxy`、`--relay` 经 Web 处理后保存在 `<web-data>/service.json`，后续启动沿用；传空字符串清除对应选项，无效值不覆盖保存内容。选项变化只重启 Web，Host 任务不受影响，Web 终端会断开。`--relay` 仅作为自建中转地址的开发覆盖，不改变官方中转卡片。本机连接设备页提供中转配置（无需重启）、首次启用设备访问和启动设置，见[远程访问](web-remote-access.md)。
 

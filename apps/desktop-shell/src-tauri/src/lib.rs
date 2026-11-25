@@ -42,6 +42,7 @@ enum Status {
 #[serde(rename_all = "camelCase")]
 struct PageState {
     codex_desktop_installed: bool,
+    remember_default: bool,
     locale: String,
     version: &'static str,
     platform: &'static str,
@@ -327,8 +328,7 @@ pub(crate) fn show_main(app: &AppHandle, route: Option<&str>) {
         return;
     }
     let mut view = shell.view.lock().unwrap();
-    let begin = matches!(view.page, Page::Dormant)
-        || (matches!(view.page, Page::Onboarding) && route.is_some());
+    let begin = matches!(view.page, Page::Dormant | Page::Onboarding);
     let mut target = None;
     if let Some(route) = route {
         if matches!(view.page, Page::Web) {
@@ -379,19 +379,21 @@ async fn launcher_action<T: Send + 'static>(
 #[tauri::command]
 async fn get_state(shell: State<'_, Shell>) -> Result<PageState, String> {
     let onboarding = matches!(shell.view.lock().unwrap().page, Page::Onboarding);
-    let (codex_desktop_installed, web_ready) = if onboarding {
-        let installed = launcher_action(shell.launcher.clone(), Launcher::codex_installed)
-            .await
-            .unwrap_or(false);
+    let (codex_desktop_installed, remember_default, web_ready) = if onboarding {
+        let (installed, remember) =
+            launcher_action(shell.launcher.clone(), Launcher::launch_preferences)
+                .await
+                .map(|prefs| (prefs.codex_desktop_installed, prefs.remember_default))
+                .unwrap_or_default();
         let data_dir = shell.launcher.data_dir.clone();
         let web =
             tauri::async_runtime::spawn_blocking(move || WebReady::read_live_optional(&data_dir))
                 .await
                 .ok()
                 .flatten();
-        (installed, web)
+        (installed, remember, web)
     } else {
-        (false, None)
+        (false, false, None)
     };
     let (status, message) = match &shell.view.lock().unwrap().page {
         Page::Loading(status, message) => (*status, message.clone()),
@@ -399,6 +401,7 @@ async fn get_state(shell: State<'_, Shell>) -> Result<PageState, String> {
     };
     Ok(PageState {
         codex_desktop_installed,
+        remember_default,
         locale: shell.locale.clone(),
         version: env!("CARGO_PKG_VERSION"),
         platform: std::env::consts::OS,
@@ -459,23 +462,24 @@ async fn choose_surface(
     app: AppHandle,
     shell: State<'_, Shell>,
     surface: Surface,
-    remember: Option<bool>,
+    remember_default: bool,
 ) -> Result<(), String> {
     if !matches!(shell.view.lock().unwrap().page, Page::Onboarding) {
         return Err("Launch surface can only be chosen on the onboarding page".into());
     }
-    let remember = remember.unwrap_or(false);
     launcher_action(shell.launcher.clone(), move |launcher| {
-        if matches!(surface, Surface::CodexDesktop) && !launcher.codex_installed()? {
+        if matches!(surface, Surface::CodexDesktop)
+            && !launcher.launch_preferences()?.codex_desktop_installed
+        {
             return Err("Codex Desktop is not installed / 未安装官方 Codex Desktop".into());
         }
-        launcher.set_surface(surface, remember)?;
-        if matches!(surface, Surface::CodexDesktop) {
-            launcher.launch_codex_desktop()?;
-        }
-        Ok(())
+        launcher.set_surface(surface, remember_default)
     })
     .await?;
+    tray::sync(&app);
+    if matches!(surface, Surface::CodexDesktop) {
+        launcher_action(shell.launcher.clone(), Launcher::launch_codex_desktop).await?;
+    }
     let on_main = app.clone();
     app.run_on_main_thread(move || {
         let shell = on_main.state::<Shell>();
@@ -1015,7 +1019,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = worker_app.run_on_main_thread(move || web_event(&app, event));
                     });
                 })?;
-            show_main(&app_handle, None);
+            set_visible(&app_handle, true);
             if !onboarding {
                 begin_web(&app_handle, false);
             }

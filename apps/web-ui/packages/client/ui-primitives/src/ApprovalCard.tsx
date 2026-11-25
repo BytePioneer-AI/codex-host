@@ -140,17 +140,19 @@ function parseUnifiedDiffRows(files: readonly ApprovalCardFileDiff[]): {
   return { rows, added, removed, hasDiffText };
 }
 
-function partitionActions(actions: readonly ApprovalCardAction[]): {
-  deny: ApprovalCardAction | undefined;
-  primary: ApprovalCardAction | undefined;
+export function partitionApprovalCardActions(actions: readonly ApprovalCardAction[]): {
+  primaryDeny: ApprovalCardAction | undefined;
+  secondaryDenies: ApprovalCardAction[];
+  primaryAllow: ApprovalCardAction | undefined;
   secondaryAllows: ApprovalCardAction[];
 } {
-  const deny = actions.find((action) => action.effect === "deny");
-  const primary =
-    actions.find((action) => action.effect === "allowOnce") ??
-    actions.find((action) => action.effect !== "deny");
-  const secondaryAllows = actions.filter((action) => action !== deny && action !== primary);
-  return { deny, primary, secondaryAllows };
+  const denies = actions.filter((action) => action.effect === "deny");
+  const allows = actions.filter((action) => action.effect !== "deny");
+  const primaryDeny = denies[0];
+  const secondaryDenies = denies.slice(1);
+  const primaryAllow = allows.find((action) => action.effect === "allowOnce") ?? allows[0];
+  const secondaryAllows = allows.filter((action) => action !== primaryAllow);
+  return { primaryDeny, secondaryDenies, primaryAllow, secondaryAllows };
 }
 
 function TerminalGlyph() {
@@ -192,12 +194,16 @@ export function ApprovalCard({
   cardKey,
 }: ApprovalCardProps) {
   const [expanded, setExpanded] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [allowMenuOpen, setAllowMenuOpen] = useState(false);
+  const [denyMenuOpen, setDenyMenuOpen] = useState(false);
   const composing = useRef(false);
   const compositionEnded = useRef(false);
 
   const parsedDiff = useMemo(() => parseUnifiedDiffRows(files ?? []), [files]);
-  const { deny, primary, secondaryAllows } = useMemo(() => partitionActions(actions), [actions]);
+  const { primaryDeny, secondaryDenies, primaryAllow, secondaryAllows } = useMemo(
+    () => partitionApprovalCardActions(actions),
+    [actions],
+  );
 
   const trimmedCommand = command?.trim();
   const commandLines = trimmedCommand ? trimmedCommand.split(/\r?\n/u).length : 0;
@@ -211,29 +217,45 @@ export function ApprovalCard({
   // Reset local disclosure/menu state when a new approval takes over the seat.
   useEffect(() => {
     setExpanded(false);
-    setMenuOpen(false);
+    setAllowMenuOpen(false);
+    setDenyMenuOpen(false);
   }, [cardKey, headline]);
 
   useEffect(() => {
-    if (busy) setMenuOpen(false);
+    if (busy) {
+      setAllowMenuOpen(false);
+      setDenyMenuOpen(false);
+    }
   }, [busy]);
 
-  const menuItems = useMemo<MenuItem[]>(() => {
-    if (primary === undefined || secondaryAllows.length === 0) return [];
-    return [primary, ...secondaryAllows].map((action) => ({
+  const allowMenuItems = useMemo<MenuItem[]>(() => {
+    if (primaryAllow === undefined || secondaryAllows.length === 0) return [];
+    return [primaryAllow, ...secondaryAllows].map((action) => ({
       id: action.id,
       label: action.label,
       disabled: busy,
     }));
-  }, [primary, secondaryAllows, busy]);
+  }, [primaryAllow, secondaryAllows, busy]);
+
+  const denyMenuItems = useMemo<MenuItem[]>(() => {
+    if (primaryDeny === undefined || secondaryDenies.length === 0) return [];
+    return [primaryDeny, ...secondaryDenies].map((action) => ({
+      id: action.id,
+      label: action.label,
+      disabled: busy,
+    }));
+  }, [primaryDeny, secondaryDenies, busy]);
 
   const actionById = useMemo(
     () => new Map(actions.map((action) => [action.id, action])),
     [actions],
   );
 
+  const allowMenuActive = allowMenuOpen && secondaryAllows.length > 0;
+  const denyMenuActive = denyMenuOpen && secondaryDenies.length > 0;
+
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    if (busy || menuOpen) return;
+    if (busy || allowMenuActive || denyMenuActive) return;
     const element = event.target as Element;
     if (
       event.defaultPrevented ||
@@ -246,7 +268,7 @@ export function ApprovalCard({
     if (event.key === "Enter" && element.closest('button, a[href], [role="button"]') !== null)
       return;
     if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
-    const target = event.key === "Enter" ? primary : deny;
+    const target = event.key === "Enter" ? primaryAllow : primaryDeny;
     if (target === undefined) return;
     event.preventDefault();
     event.stopPropagation();
@@ -288,50 +310,58 @@ export function ApprovalCard({
     parsedDiff.hasDiffText || Boolean(trimmedCommand) || pathList.length > 0 || hasCommandSlot;
   const hasBody = hasPrimarySurface || hasDetail;
 
-  const renderPrimaryAllow = () => {
-    if (primary === undefined) return null;
-    if (secondaryAllows.length === 0) {
+  const renderDenyAction = () => {
+    if (primaryDeny === undefined) return null;
+    if (secondaryDenies.length === 0) {
       return (
         <button
           type="button"
-          className={clsx(css.pill, css.pillPrimary)}
-          title={primary.tooltip}
+          className={clsx(css.pill, css.pillOutline)}
+          title={primaryDeny.tooltip}
           disabled={busy}
           onClick={() => {
-            onAction(primary);
+            setAllowMenuOpen(false);
+            setDenyMenuOpen(false);
+            onAction(primaryDeny);
           }}
         >
-          <span className={css.btnLabel}>{primary.label}</span>
-          <kbd className={css.kbd}>↵</kbd>
+          <span className={css.btnLabel}>{primaryDeny.label}</span>
+          <kbd className={css.kbd} aria-hidden="true">
+            Esc
+          </kbd>
         </button>
       );
     }
 
-    const splitTrigger = (
-      <div className={clsx(css.splitGroup, busy && css.splitDisabled)}>
+    const denySplitTrigger = (
+      <div className={clsx(css.splitGroup, css.splitOutline, busy && css.splitDisabled)}>
         <button
           type="button"
           className={css.splitPrimary}
-          title={primary.tooltip}
+          title={primaryDeny.tooltip}
           disabled={busy}
           onClick={() => {
-            setMenuOpen(false);
-            onAction(primary);
+            setAllowMenuOpen(false);
+            setDenyMenuOpen(false);
+            onAction(primaryDeny);
           }}
         >
-          <span className={css.btnLabel}>{primary.label}</span>
-          <kbd className={css.kbd}>↵</kbd>
+          <span className={css.btnLabel}>{primaryDeny.label}</span>
+          <kbd className={css.kbd} aria-hidden="true">
+            Esc
+          </kbd>
         </button>
         <span className={css.splitDivider} aria-hidden="true" />
         <button
           type="button"
           className={css.splitCaret}
-          aria-label={labels.moreOptions}
+          aria-label={`${primaryDeny.label} · ${labels.moreOptions}`}
           aria-haspopup="menu"
-          aria-expanded={menuOpen}
+          aria-expanded={denyMenuOpen}
           disabled={busy}
           onClick={() => {
-            setMenuOpen((open) => !open);
+            setAllowMenuOpen(false);
+            setDenyMenuOpen((open) => !open);
           }}
         >
           <IconChevronDownOutlineRegular size={13} />
@@ -341,17 +371,99 @@ export function ApprovalCard({
 
     return (
       <Menu
-        open={menuOpen}
+        open={denyMenuOpen}
         onClose={() => {
-          setMenuOpen(false);
+          setDenyMenuOpen(false);
         }}
         side="top"
         align="end"
         portal
         compact
-        items={menuItems}
+        items={denyMenuItems}
         onSelect={(id) => {
-          setMenuOpen(false);
+          setDenyMenuOpen(false);
+          const chosen = actionById.get(id);
+          if (chosen !== undefined) onAction(chosen);
+        }}
+        anchor={denySplitTrigger}
+        className={css.splitMenuAnchor}
+        listClassName={css.splitMenuList}
+      />
+    );
+  };
+
+  const renderPrimaryAllow = () => {
+    if (primaryAllow === undefined) return null;
+    if (secondaryAllows.length === 0) {
+      return (
+        <button
+          type="button"
+          className={clsx(css.pill, css.pillPrimary)}
+          title={primaryAllow.tooltip}
+          disabled={busy}
+          onClick={() => {
+            setAllowMenuOpen(false);
+            setDenyMenuOpen(false);
+            onAction(primaryAllow);
+          }}
+        >
+          <span className={css.btnLabel}>{primaryAllow.label}</span>
+          <kbd className={css.kbd} aria-hidden="true">
+            ↵
+          </kbd>
+        </button>
+      );
+    }
+
+    const splitTrigger = (
+      <div className={clsx(css.splitGroup, busy && css.splitDisabled)}>
+        <button
+          type="button"
+          className={css.splitPrimary}
+          title={primaryAllow.tooltip}
+          disabled={busy}
+          onClick={() => {
+            setAllowMenuOpen(false);
+            setDenyMenuOpen(false);
+            onAction(primaryAllow);
+          }}
+        >
+          <span className={css.btnLabel}>{primaryAllow.label}</span>
+          <kbd className={css.kbd} aria-hidden="true">
+            ↵
+          </kbd>
+        </button>
+        <span className={css.splitDivider} aria-hidden="true" />
+        <button
+          type="button"
+          className={css.splitCaret}
+          aria-label={`${primaryAllow.label} · ${labels.moreOptions}`}
+          aria-haspopup="menu"
+          aria-expanded={allowMenuOpen}
+          disabled={busy}
+          onClick={() => {
+            setDenyMenuOpen(false);
+            setAllowMenuOpen((open) => !open);
+          }}
+        >
+          <IconChevronDownOutlineRegular size={13} />
+        </button>
+      </div>
+    );
+
+    return (
+      <Menu
+        open={allowMenuOpen}
+        onClose={() => {
+          setAllowMenuOpen(false);
+        }}
+        side="top"
+        align="end"
+        portal
+        compact
+        items={allowMenuItems}
+        onSelect={(id) => {
+          setAllowMenuOpen(false);
           const chosen = actionById.get(id);
           if (chosen !== undefined) onAction(chosen);
         }}
@@ -540,22 +652,11 @@ export function ApprovalCard({
           </div>
         )}
 
-        <div className={css.footer} data-action-count={(deny ? 1 : 0) + (primary ? 1 : 0)}>
-          {deny !== undefined && (
-            <button
-              type="button"
-              className={clsx(css.pill, css.pillOutline)}
-              title={deny.tooltip}
-              disabled={busy}
-              onClick={() => {
-                setMenuOpen(false);
-                onAction(deny);
-              }}
-            >
-              <span className={css.btnLabel}>{deny.label}</span>
-              <kbd className={css.kbd}>Esc</kbd>
-            </button>
-          )}
+        <div
+          className={css.footer}
+          data-action-count={(primaryDeny ? 1 : 0) + (primaryAllow ? 1 : 0)}
+        >
+          {renderDenyAction()}
           {renderPrimaryAllow()}
         </div>
       </section>

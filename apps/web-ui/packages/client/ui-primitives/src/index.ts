@@ -15,7 +15,7 @@ export { DisclosureRow } from "./DisclosureRow.tsx";
 export type { DisclosureRowProps } from "./DisclosureRow.tsx";
 export { TextShimmer } from "./TextShimmer.tsx";
 export type { TextShimmerProps } from "./TextShimmer.tsx";
-export { ApprovalCard } from "./ApprovalCard.tsx";
+export { ApprovalCard, partitionApprovalCardActions } from "./ApprovalCard.tsx";
 export type {
   ApprovalCardAction,
   ApprovalCardActionEffect,
@@ -59,8 +59,14 @@ export {
   ResponseAnnotationChip,
   ResponseAnnotationLabel,
   ResponseAnnotationPopover,
+  ResponseAnnotationTray,
 } from "./ResponseAnnotation.tsx";
-export type { ResponseAnnotationLabels, ResponseAnnotationView } from "./ResponseAnnotation.tsx";
+export type {
+  ResponseAnnotationLabels,
+  ResponseAnnotationTrayItem,
+  ResponseAnnotationTrayLabels,
+  ResponseAnnotationView,
+} from "./ResponseAnnotation.tsx";
 export { ShortcutKeys } from "./ShortcutKeys.tsx";
 export { observeComposition } from "./keyboard-composition.ts";
 export { focusWithoutRing, isMobileDevice, shouldAutoFocusTextInput } from "./focus.ts";

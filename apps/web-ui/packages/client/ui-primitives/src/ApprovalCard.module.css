@@ -390,11 +390,15 @@
   opacity: 0.4;
 }
 
-.pill:focus-visible,
+.pill:focus-visible {
+  outline: 2px solid var(--dsw-alias-label-primary);
+  outline-offset: 2px;
+}
+
 .splitPrimary:focus-visible,
 .splitCaret:focus-visible {
   outline: 2px solid var(--dsw-alias-label-primary);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 .pillOutline {
@@ -450,6 +454,12 @@
   color: var(--dsw-alias-label-primary-foreground);
   overflow: hidden;
   transition: opacity 120ms ease;
+}
+
+.splitOutline {
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent);
+  color: var(--dsw-alias-label-primary);
 }
 
 .splitDisabled {

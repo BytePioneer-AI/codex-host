@@ -32,6 +32,8 @@ pub use macos_aqua_process::{
     AQUA_SPAWN_ARGUMENT, run_aqua_spawn_helper, spawn_in_desktop_session,
 };
 #[cfg(target_os = "macos")]
+mod macos_process_events;
+#[cfg(target_os = "macos")]
 mod macos_process_observation;
 mod process;
 mod process_chain;

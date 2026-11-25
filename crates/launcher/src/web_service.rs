@@ -290,7 +290,7 @@ fn serve(options: &Options) -> Result<(), Box<dyn Error>> {
                 if child.try_wait()?.is_some() {
                     break;
                 }
-                child.has_live_processes()?;
+                child.retain_descendants()?;
                 thread::sleep(Duration::from_millis(100));
             }
             if child.has_live_processes()? {

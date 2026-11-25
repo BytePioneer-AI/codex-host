@@ -1361,7 +1361,10 @@ export class AppServerHost {
         this.#resolveDesktopApproval(interactionId, thread),
       resolveDesktopQuestion: (interactionId, thread) =>
         this.#resolveDesktopQuestion(interactionId, thread),
-      retireSharedQuestions: (thread, turnId) => this.#retireSharedQuestions(thread, turnId),
+      retireSharedQuestions: (thread, turnId, preserveDetached) =>
+        this.#retireSharedQuestions(thread, turnId, preserveDetached),
+      closeTurnQuestions: (thread, turnId, preserveDetached) =>
+        this.#closeTurnQuestions(thread, turnId, preserveDetached),
       setThreadStatus: (thread, status) => this.#setThreadStatus(thread, status),
       signalActiveWorkChanged: () => this.#signalActiveWorkChanged(),
       hasRunningSubagents: (parentThreadId) => this.#hasRunningSubagents(parentThreadId),
@@ -6978,6 +6981,13 @@ export class AppServerHost {
       if (
         projector.completed &&
         event.type !== "item.background.started" &&
+        event.type !== "interaction.closed" &&
+        !(
+          event.type === "item.started" &&
+          event.item.type === "fileChange" &&
+          (event.item.sourceItemIds?.some((itemId) => projector.hasOpenDetachedItem(itemId)) ??
+            false)
+        ) &&
         !(event.type === "item.updated" && projector.hasOpenDetachedItem(event.itemId)) &&
         !(
           event.type === "item.completed" &&
@@ -7193,11 +7203,6 @@ export class AppServerHost {
       return;
     }
 
-    if (event.type === "turn.completed") {
-      await this.#questions.closeWhere(
-        (request) => request.threadId === thread.id && request.turnId === event.turnId,
-      );
-    }
     if (event.type === "interaction.closed") {
       await this.#questions.closeWhere(
         (request) =>
@@ -7538,15 +7543,54 @@ export class AppServerHost {
     return requestId;
   }
 
-  #retireSharedQuestions(thread: ExternalThread, turnId?: HostTurnId): void {
+  #retireSharedQuestions(
+    thread: ExternalThread,
+    turnId?: HostTurnId,
+    preserveDetached = false,
+  ): void {
     for (const pending of [...this.#pendingDesktopQuestions.values()]) {
       if (
         pending.shared &&
         pending.thread === thread &&
         (turnId === undefined || pending.interaction.turnId === turnId)
-      )
+      ) {
+        if (
+          preserveDetached &&
+          turnId !== undefined &&
+          this.#hasOpenDetachedQuestionOwner(thread, pending.interaction)
+        )
+          continue;
         this.#retireDesktopQuestion(pending.interaction.interactionId, thread);
+      }
     }
+  }
+
+  async #closeTurnQuestions(
+    thread: ExternalThread,
+    turnId: HostTurnId,
+    preserveDetached: boolean,
+  ): Promise<void> {
+    await this.#questions.closeWhere((request) => {
+      if (request.threadId !== thread.id || request.turnId !== turnId) return false;
+      const interaction = request.client?.interaction;
+      return !(
+        preserveDetached &&
+        interaction &&
+        this.#hasOpenDetachedQuestionOwner(thread, interaction)
+      );
+    });
+  }
+
+  #hasOpenDetachedQuestionOwner(
+    thread: ExternalThread,
+    interaction: Pick<HostQuestionInteraction, "turnId" | "itemId">,
+  ): boolean {
+    if (!interaction.itemId) return false;
+    return (
+      thread.projectedTurns
+        .get(interaction.turnId)
+        ?.projector.hasOpenDetachedTool(interaction.itemId) ?? false
+    );
   }
 
   async #handleSharedQuestionRequest(request: JsonRpcRequest): Promise<void> {
@@ -7565,7 +7609,8 @@ export class AppServerHost {
         (pending) =>
           pending.shared &&
           pending.thread === thread &&
-          pending.interaction.turnId === thread?.activeTurnId &&
+          (pending.interaction.turnId === thread?.activeTurnId ||
+            this.#hasOpenDetachedQuestionOwner(thread, pending.interaction)) &&
           (!Number.isFinite(Date.parse(pending.interaction.expiresAt ?? "")) ||
             Date.parse(pending.interaction.expiresAt ?? "") > Date.now()),
       );

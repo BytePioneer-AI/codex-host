@@ -449,6 +449,53 @@ export class PeerHostClient {
     return result;
   }
 
+  async delegate(
+    request: c.PeerDelegationRequest,
+    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<c.PeerDelegationResponse> {
+    if (!this.record.enabled) {
+      throw new RpcError("remote/offline", "Remote peer is disabled");
+    }
+    if (this.state !== "connected") {
+      throw new RpcError("remote/offline", "Remote peer is not connected");
+    }
+    if (this.manifest?.capabilities?.delegation !== 1) {
+      throw new RpcError(
+        "remote/unsupported",
+        "Remote peer does not support cross-host delegation",
+      );
+    }
+    const defaultTimeoutMs =
+      request.operation === "read" ||
+      request.operation === "list" ||
+      request.operation === "listHarnesses"
+        ? 45_000
+        : 60_000;
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, this.life.signal])
+      : this.life.signal;
+    const res = await peerFetch(this.record, "/api/peer/v1/delegation", {
+      method: "POST",
+      body: {
+        ...request,
+        sourceId: request.sourceId ?? this.record.peerId,
+      },
+      signal,
+      timeoutMs: options.timeoutMs ?? defaultTimeoutMs,
+    });
+    let payload: unknown;
+    try {
+      payload = await res.json();
+    } catch {
+      throw new RpcError("remote/read-failed", "Remote peer returned invalid JSON");
+    }
+    const parsed = c.peerDelegationResponseSchema.safeParse(payload);
+    if (!parsed.success) {
+      throw new RpcError("remote/read-failed", "Remote peer returned an invalid delegation reply");
+    }
+    return parsed.data;
+  }
+
   async call(op: c.RemoteSessionOperation): Promise<unknown> {
     const epoch = this.manifest?.epoch;
     if (this.state !== "connected")

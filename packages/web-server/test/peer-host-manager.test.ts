@@ -402,19 +402,39 @@ it("pairs authenticated mobile callers with independent peers and recovers event
   });
   assert.equal(unauthenticated.ok, false);
   assert.equal(unauthenticated.error.code, "auth/required");
+  // Non-local authenticated callers cannot mutate peer topology or trigger outbound probes.
+  for (const [action, input] of [
+    ["test", { connectionUrl: `${a.origin}/#token=${token}` }],
+    ["add", { connectionUrl: `${a.origin}/#token=${token}` }],
+    ["update", { peerId: "bad", name: "Hijacked" }],
+    ["remove", { peerId: "bad" }],
+  ] as const) {
+    const denied = await rpc.dispatch(
+      methods[action],
+      { args: input },
+      { local: false, credential: "mobile", release() {} },
+    );
+    assert.equal(denied.ok, false, `non-local ${action} should be rejected`);
+    assert.equal(denied.error.code, "auth/local-required");
+  }
   assert.equal(
-    (await invoke<{ ok: boolean }>("test", { connectionUrl: `${a.origin}/#token=${token}` }, false))
+    (await invoke<{ ok: boolean }>("test", { connectionUrl: `${a.origin}/#token=${token}` }, true))
       .ok,
     true,
   );
   await assert.rejects(add("http://localhost:100"), /itself/);
   await assert.rejects(add(a.origin, "bad"), /token/);
-  const [one] = await Promise.all([add(a.origin, token, false), add(b.origin)]);
+  const [one] = await Promise.all([add(a.origin, token, true), add(b.origin, token, true)]);
   if (process.platform !== "win32") {
     assert.equal(statSync(join(root, "remote-peers-v1.json")).mode & 0o777, 0o600);
   }
   const peerId = one.peer.peerId,
     hostId = one.peer.hostId;
+  // Non-local callers still retain reconnect/list/dir/workspace operations.
+  assert.equal(
+    (await invoke<{ peer: { peerId: string } }>("reconnect", { peerId }, false)).peer.peerId,
+    peerId,
+  );
   const call = createCompositeRemoteCall(manager, async () => {
     throw Error("No Desktop");
   });

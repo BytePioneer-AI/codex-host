@@ -6,6 +6,7 @@ import type { JsonObject, RoutedHarnessId } from "@codexhost/protocol-core";
 
 import { defaultDelegationWatchDirectory } from "./delegation-watch-store.js";
 import { DelegationControlError } from "./delegation-types.js";
+import { isRemotePeerHostId } from "./remote-peer-delegation.js";
 
 export interface ThreadExportInput {
   threadId: string;
@@ -41,6 +42,8 @@ export function validateThreadExportInput(input: ThreadExportInput): void {
     input.threadId === ".."
   )
     throw new DelegationControlError("INVALID_ARGUMENT", "Thread identifier is invalid");
+  if (isRemotePeerHostId(input.hostId))
+    throw new DelegationControlError("UNSUPPORTED", "Cross-host thread export is not supported");
   if (input.hostId !== undefined && input.hostId !== "local")
     throw new DelegationControlError("INVALID_ARGUMENT", "Remote Hosts support thread read only");
   if (input.out !== undefined && (typeof input.out !== "string" || !input.out.trim()))

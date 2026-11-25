@@ -13,17 +13,20 @@ import {
   type ThreadWatchListResult,
   type ThreadWatchResult,
 } from "./delegation-types.js";
-import { originClientName } from "./external-client-origin.js";
+import { isSyntheticOrigin } from "./external-client-origin.js";
+import { remoteThreadLink } from "./remote-peer-delegation.js";
 
-/** A Thread as a link; a client origin is no Thread, so it is shown as is. */
+/** A Thread as a link; a synthetic origin (external client or remote peer) is shown as is. */
 function targetLink(identifier: string): string {
-  return originClientName(identifier) !== undefined ? identifier : threadLink(identifier);
+  return isSyntheticOrigin(identifier) ? identifier : threadLink(identifier);
 }
 
 export type DelegationCliFormat = "json" | "compact" | "text";
 
-function threadLink(threadId: string): string {
-  return `codex://threads/${threadId}`;
+function threadLink(threadId: string, hostId?: string): string {
+  return hostId && hostId !== "local"
+    ? remoteThreadLink(threadId, hostId)
+    : `codex://threads/${threadId}`;
 }
 
 function watchOutput(watch: DelegationStartResult["watch"]): { watch?: unknown } {
@@ -140,6 +143,7 @@ export function compactDelegationOutput(
   view: "result" | "messages" = "result",
 ): unknown {
   switch (command) {
+    case "host list":
     case "host info":
     case "project list":
     case "thread file":
@@ -175,7 +179,7 @@ export function compactDelegationOutput(
     case "thread send": {
       const result = body as ThreadSendResult;
       return {
-        thread: threadLink(result.threadId),
+        thread: threadLink(result.threadId, result.hostId),
         harnessId: result.harnessId,
         status: result.status,
         ...watchOutput(result.watch),
@@ -184,7 +188,7 @@ export function compactDelegationOutput(
     case "thread cancel": {
       const result = body as ThreadCancelResult;
       return {
-        thread: threadLink(result.threadId),
+        thread: threadLink(result.threadId, result.hostId),
         harnessId: result.harnessId,
         cancelRequested: result.cancelled,
       };
@@ -195,7 +199,7 @@ export function compactDelegationOutput(
     case "thread answer": {
       const result = body as ThreadAnswerResult;
       return {
-        thread: threadLink(result.threadId),
+        thread: threadLink(result.threadId, result.hostId),
         interaction: result.interactionId,
         turn: result.turnId,
         harnessId: result.harnessId,

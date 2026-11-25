@@ -8,6 +8,7 @@ import {
   DelegationControlError,
   type DelegationControlApi,
   type DelegationControlRegistration,
+  type PersistedDelegationLookup,
 } from "./delegation-types.js";
 
 export const SHARED_DELEGATION_METHOD = "codexhost/shared-threads/delegation";
@@ -22,9 +23,15 @@ const operations = [
   "wait",
   "answer",
   "list",
+  "delegationParent",
+  "findDelegationByRequest",
 ] as const;
 type Operation = (typeof operations)[number];
-type OperationApi = Required<DelegationControlApi>;
+type SharedDelegationLookupApi = {
+  delegationParent(input: { threadId: string }): Promise<string | null>;
+  findDelegationByRequest(input: { requestId: string }): Promise<PersistedDelegationLookup | null>;
+};
+type OperationApi = Required<DelegationControlApi> & SharedDelegationLookupApi;
 
 /** The SSH catalog is a proxy; legacy records still use its local coordinator. */
 export function sharedDelegationRegistration(
@@ -154,11 +161,26 @@ export function sharedDelegationRegistration(
     },
     send: (input) => thread("send", input),
     cancel: (input) => thread("cancel", input),
+    delegationParent: async (threadId) => {
+      const localParent = await local.delegationParent?.(threadId);
+      if (localParent !== undefined) return localParent;
+      const sharedParent = await call("delegationParent", { threadId });
+      return typeof sharedParent === "string" ? sharedParent : undefined;
+    },
+    findDelegationByRequest: async (requestId) => {
+      const localMatch = await local.findDelegationByRequest?.(requestId);
+      if (localMatch) return localMatch;
+      return await call("findDelegationByRequest", { requestId });
+    },
   };
 }
 
 /** Private, authenticated owner transport; coordinator methods validate their inputs. */
-export async function dispatchSharedDelegation(api: DelegationControlApi, params: JsonObject) {
+export async function dispatchSharedDelegation(
+  api: DelegationControlApi &
+    Partial<Pick<DelegationControlRegistration, "delegationParent" | "findDelegationByRequest">>,
+  params: JsonObject,
+) {
   if (
     !operations.includes(params.operation as Operation) ||
     !params.input ||
@@ -169,6 +191,20 @@ export async function dispatchSharedDelegation(api: DelegationControlApi, params
   }
   try {
     const operation = params.operation as Operation;
+    if (operation === "delegationParent") {
+      const threadId = (params.input as { threadId?: unknown }).threadId;
+      if (typeof threadId !== "string" || !threadId)
+        throw new DelegationControlError("INVALID_ARGUMENT", "threadId is required");
+      const parent = (await api.delegationParent?.(threadId)) ?? null;
+      return { value: jsonValueSchema.parse(parent) };
+    }
+    if (operation === "findDelegationByRequest") {
+      const requestId = (params.input as { requestId?: unknown }).requestId;
+      if (typeof requestId !== "string" || !requestId)
+        throw new DelegationControlError("INVALID_ARGUMENT", "requestId is required");
+      const found = (await api.findDelegationByRequest?.(requestId)) ?? null;
+      return { value: jsonValueSchema.parse(found) };
+    }
     const handler = api[operation] as ((input: unknown) => Promise<unknown>) | undefined;
     if (!handler) throw new DelegationControlError("UNSUPPORTED", "Thread export is unavailable");
     return { value: jsonValueSchema.parse(await handler(params.input)) };

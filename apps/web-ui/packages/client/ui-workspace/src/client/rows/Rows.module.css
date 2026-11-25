@@ -596,14 +596,56 @@
 }
 
 /* Soft right-edge fade on full-width sidebar project, session, and search
-   titles so long labels taper cleanly without masking trailing badges, dots,
-   actions, or shrink-to-fit remote host labels (.remoteHostText .title). */
+   titles only when text actually overflows its available box, so fitting
+   labels stay crisp without masking trailing badges, dots, actions, or
+   shrink-to-fit remote host labels (.remoteHostText .title). Symmetric ink
+   bleed padding keeps overhanging glyphs (italics, combining marks) unclipped
+   inside the mask box without altering layout width. */
 .projectRow .projectText > .title,
 .sessionRow .title,
 .searchResultTitle {
+  --dsh-title-ink-bleed: 4px;
+  container-type: inline-size;
+  display: flex;
+  align-items: center;
+  padding-inline-end: var(--dsh-title-ink-bleed);
+  margin-inline-end: calc(-1 * var(--dsh-title-ink-bleed));
+  overflow-x: clip;
+  overflow-y: visible;
   text-overflow: clip;
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
-  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+}
+
+.sessionRow .title {
+  margin-inline-end: calc(6px - var(--dsh-title-ink-bleed));
+}
+
+.projectRow .projectText > .title > .titleText,
+.sessionRow .title > .titleText,
+.searchResultTitle > .titleText {
+  flex: none;
+  box-sizing: content-box;
+  padding: var(--dsh-title-ink-bleed);
+  margin: calc(-1 * var(--dsh-title-ink-bleed));
+  white-space: nowrap;
+  --dsh-title-fade: clamp(
+    0px,
+    (
+        min(100%, 100cqw + 20px + var(--dsh-title-ink-bleed) * 2) - 100cqw -
+          var(--dsh-title-ink-bleed) * 2 - 0.5px
+      ) *
+      48,
+    20px + var(--dsh-title-ink-bleed)
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100cqw + var(--dsh-title-ink-bleed) * 2 - var(--dsh-title-fade)),
+    transparent calc(100cqw + var(--dsh-title-ink-bleed) * 2 + 20px - var(--dsh-title-fade))
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 calc(100cqw + var(--dsh-title-ink-bleed) * 2 - var(--dsh-title-fade)),
+    transparent calc(100cqw + var(--dsh-title-ink-bleed) * 2 + 20px - var(--dsh-title-fade))
+  );
 }
 
 .renameInput {
@@ -791,7 +833,7 @@
   grid-column: 2;
   grid-row: 1;
   align-self: center;
-  margin: 0;
+  margin: 0 calc(-1 * var(--dsh-title-ink-bleed)) 0 0;
 }
 
 :global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .trailing {

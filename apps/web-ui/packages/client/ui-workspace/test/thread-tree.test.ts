@@ -177,6 +177,31 @@ it("pins a whole subtree once, outside ordinary workspace and flat roots", () =>
   );
 });
 
+it("reports a folded Workspace's activity at every Thread depth, without archived Threads", () => {
+  const running = (key: string, parent: string | null = null) => ({
+    ...row(key, parent),
+    running: true,
+  });
+  const list = catalog(row("a"), running("b", "a"), running("c"), running("gone"), row("idle"));
+  const rowState = { ...state, archivedSessionIds: [id("gone")], archivedFilter: "show" as const };
+  const groups = deriveGroups(
+    list,
+    [workspace("busy", "a", "b", "c", "gone"), workspace("quiet", "idle")],
+    rowState,
+    new Map(),
+    { expandedGroups: [] },
+  );
+  assert.deepEqual(
+    groups.map((group) => [group.key, group.sessions.length, group.activity]),
+    [
+      ["busy", 0, { running: 2, pendingInteraction: 0, completed: 0 }],
+      ["quiet", 0, { running: 0, pendingInteraction: 0, completed: 0 }],
+      // Recents lists every Thread again.
+      ["", 0, { running: 2, pendingInteraction: 0, completed: 0 }],
+    ],
+  );
+});
+
 it("also shows a tree, once, in the Workspace of a child whose root lives elsewhere", () => {
   const list = catalog(
     row("root", null, 1),

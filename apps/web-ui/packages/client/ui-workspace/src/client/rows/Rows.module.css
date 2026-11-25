@@ -525,8 +525,19 @@
 }
 
 /* Completion unread is an informational reminder, not a Harness success badge. */
-.timeStatus [data-state="done"] {
+.timeStatus [data-state="done"],
+.projectActivity [data-state="done"] {
   color: var(--dsw-alias-state-business-primary);
+}
+
+/* What a folded project hides, in the place the row actions take on hover. */
+.projectActivity {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 20px;
 }
 
 /* Keep accessible status text available when hover actions cover the glyph. */
@@ -585,7 +596,8 @@
     visibility: hidden;
   }
 
-  .projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .hostBadge {
+  .projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen)
+    :is(.hostBadge, .projectActivity) {
     visibility: hidden;
   }
 

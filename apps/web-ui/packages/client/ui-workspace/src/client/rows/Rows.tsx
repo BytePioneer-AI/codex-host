@@ -43,7 +43,11 @@ import { HostBadge } from "./HostBadge.tsx";
 import { useThreadTreeView } from "./ThreadTreeView.tsx";
 import { ThreadTreeSummary, useThreadChildGroup } from "./ThreadTreeControls.tsx";
 import { ThreadTreeRing } from "./ThreadTreeRing.tsx";
-import { threadTreeSummary } from "./thread-tree-presentation.ts";
+import {
+  threadActivityPriority,
+  threadActivitySegments,
+  threadTreeSummary,
+} from "./thread-tree-presentation.ts";
 
 /** The standard locale seat, prop-passed from the browser root. */
 type RowTranslate = WorkspaceBrowserProps["t"];
@@ -146,6 +150,7 @@ function rowHalf(e: { clientY: number; currentTarget: HTMLElement }): "before" |
  * expanded folders stay blue and open even while hovered or keyboard-focused.
  * Dwelling on a real Workspace shows its hover card (the ungrouped bucket has none).
  * @param props.group - derived group node; expansion owns the folder appearance.
+ * @param props.foldedActivity - activity of the Threads a folded group hides; absent while expanded.
  * @param props.onToggle - expand/collapse the group.
  * @param props.onCreate - start a frontend Session inside this Workspace.
  * @param props.drag - optional workspace-row drag wiring.
@@ -155,6 +160,7 @@ function rowHalf(e: { clientY: number; currentTarget: HTMLElement }): "before" |
  */
 export function ProjectRowItem({
   group,
+  foldedActivity,
   onToggle,
   onCreate,
   actions: suppliedActions,
@@ -164,6 +170,8 @@ export function ProjectRowItem({
   t,
 }: {
   group: GroupNode;
+  /** What the folded group hides: its own Threads and those of nested Workspaces. */
+  foldedActivity?: GroupNode["activity"] | undefined;
   newShortcut?: ShortcutCatalogEntry | undefined;
   onToggle: () => void;
   onCreate: () => void;
@@ -176,6 +184,13 @@ export function ProjectRowItem({
   t: RowTranslate;
 }) {
   const row = group;
+  // Same priority as a folded Thread tree: a pending interaction, then running, then unread.
+  const activityState =
+    foldedActivity === undefined
+      ? undefined
+      : ({ pending: "warning", running: "ongoing", completed: "done", idle: undefined } as const)[
+          threadActivityPriority(foldedActivity)
+        ];
   const actions = group.remote ? undefined : suppliedActions;
   const drag = group.remote ? undefined : suppliedDrag;
   // The ungrouped bucket has no workspace title: its label is dictionary copy.
@@ -228,6 +243,17 @@ export function ProjectRowItem({
       </span>
       {row.workspaceId !== undefined && row.remote && (
         <HostBadge host={row.remote} variant="workspace" t={t} />
+      )}
+      {activityState !== undefined && foldedActivity !== undefined && (
+        <span className={css.projectActivity} data-project-activity={activityState}>
+          <StateDot state={activityState} size={activityState === "ongoing" ? 16 : undefined} />
+          <span className={css.visuallyHidden}>
+            {threadActivitySegments(foldedActivity)
+              .filter((segment) => segment.count > 0)
+              .map((segment) => t(`threadTree.${segment.state}`, { n: segment.count }))
+              .join(" · ")}
+          </span>
+        </span>
       )}
       <span className={css.rowActions}>
         {actions !== undefined && (

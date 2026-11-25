@@ -15,6 +15,7 @@ import {
   applyComposerModelWrite,
   draftPermissionMode,
   draftThinkingOptionForModel,
+  retainedThinkingOptionIdForModel,
   isLateConversationTarget,
   isComposerModelWriteAllowed,
   isOwnershipSubmissionBlocked,
@@ -1509,6 +1510,56 @@ describe("Renderer Composer DOM behavior", () => {
       draftThinkingOptionForModel(catalog, plainModel, harnessThinkingOptionIdSchema.parse("max")),
     ).toBe("off");
     expect(draftThinkingOptionForModel(catalog, reasoningModel, undefined)).toBe("high");
+  });
+
+  it("retains the previous Thinking option only for Models without thinking selection", () => {
+    const reasoningModel = harnessModelRefSchema.parse({ id: "pi-model-v1.reasoning" });
+    const plainModel = harnessModelRefSchema.parse({ id: "pi-model-v1.plain" });
+    const orchestratorModel = harnessModelRefSchema.parse({
+      id: "pi-model-v1.orchestrator",
+    });
+    const catalog = harnessModelCatalogSchema.parse({
+      models: [
+        {
+          ref: reasoningModel,
+          label: "Reasoning",
+          supportedThinkingOptionIds: ["off", "high", "max"],
+        },
+        {
+          ref: plainModel,
+          label: "Plain",
+          supportedThinkingOptionIds: ["off"],
+        },
+        { ref: orchestratorModel, label: "Orchestrator" },
+      ],
+      defaultModel: reasoningModel,
+      thinkingOptions: [
+        { id: "off", label: "Off" },
+        { id: "high", label: "High" },
+        { id: "max", label: "Max" },
+      ],
+      defaultThinkingOptionId: "max",
+    });
+    const high = harnessThinkingOptionIdSchema.parse("high");
+
+    expect(retainedThinkingOptionIdForModel(catalog, orchestratorModel, undefined, high)).toBe(
+      high,
+    );
+    expect(retainedThinkingOptionIdForModel(catalog, plainModel, undefined, high)).toBeUndefined();
+    expect(
+      retainedThinkingOptionIdForModel(catalog, reasoningModel, undefined, high),
+    ).toBeUndefined();
+    expect(
+      retainedThinkingOptionIdForModel(catalog, orchestratorModel, undefined, undefined),
+    ).toBeUndefined();
+    expect(
+      retainedThinkingOptionIdForModel(
+        catalog,
+        plainModel,
+        harnessThinkingOptionIdSchema.parse("off"),
+        high,
+      ),
+    ).toBe("off");
   });
 
   it("falls back draft Permission Mode but fails closed for a stale locked carrier", () => {

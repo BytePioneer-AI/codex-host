@@ -16,23 +16,18 @@
         reconnecting: "CodexHost — 正在重连",
         error: "CodexHost — 连接失败",
       },
-      badge: {
-        starting: "正在启动",
-        reconnecting: "正在重新连接",
-        error: "启动或连接异常",
-      },
       title: {
         starting: "正在启动 CodexHost",
-        reconnecting: "正在重新连接本地服务",
-        error: "无法连接到本地服务",
+        reconnecting: "正在重新连接 Host",
+        error: "无法连接到 Host",
       },
       description: {
-        starting: "正在启动本地服务并准备窗口，请稍候…",
-        reconnecting: "本地服务正在重启（例如刚刚修改了访问设置），正在等待恢复，请稍候…",
-        error: "启动或连接过程中遇到问题。你可以尝试重试，或打开诊断控制台查看详情与修复。",
+        starting: "正在连接 Host 服务并准备窗口，请稍候…",
+        reconnecting: "Host 服务正在重启，正在等待恢复，请稍候…",
+        error: "启动或连接过程中遇到问题。你可以尝试重试，或打开诊断控制台查看详情。",
       },
       errorLabel: "错误摘要",
-      errorFallback: "本地服务未能在预期时间内就绪，请检查日志或重试。",
+      errorFallback: "Host 服务未能在预期时间内就绪，请检查日志或重试。",
       retryBtn: "重试",
       retryingBtn: "正在重试…",
       consoleBtn: "打开诊断控制台",
@@ -42,7 +37,7 @@
       consoleErrorPrefix: "无法打开诊断控制台：",
       actionErrorFallback: "桌面壳未能响应请求。",
       previewConsoleNotice: "离线预览模式：已模拟触发打开诊断控制台（未连接桌面壳）。",
-      previewErrorSample: "本地服务在 15 秒内未就绪：端口 4400 已被其他进程占用 (EADDRINUSE)。",
+      previewErrorSample: "Host 服务在 15 秒内未就绪：端口 4400 已被其他进程占用 (EADDRINUSE)。",
       previewLabel: "预览",
       previewStarting: "启动中",
       previewReconnecting: "重连中",
@@ -57,25 +52,19 @@
         reconnecting: "CodexHost — Reconnecting",
         error: "CodexHost — Connection Error",
       },
-      badge: {
-        starting: "Starting",
-        reconnecting: "Reconnecting",
-        error: "Connection error",
-      },
       title: {
         starting: "Starting CodexHost",
-        reconnecting: "Reconnecting to local service",
-        error: "Unable to connect to local service",
+        reconnecting: "Reconnecting to Host",
+        error: "Unable to connect to Host",
       },
       description: {
-        starting: "Starting local services and preparing your window…",
-        reconnecting:
-          "The local service is restarting (for example, after an access settings change). Waiting for recovery…",
+        starting: "Connecting to Host and preparing your window…",
+        reconnecting: "Host is restarting. Waiting for recovery…",
         error:
-          "Something went wrong while starting or reconnecting. You can retry, or open the diagnostic console for details and recovery.",
+          "Something went wrong while starting or reconnecting. Retry or open the diagnostic console for details.",
       },
       errorLabel: "Error summary",
-      errorFallback: "The local service did not become ready in time. Check logs or try again.",
+      errorFallback: "Host did not become ready in time. Check logs or try again.",
       retryBtn: "Retry",
       retryingBtn: "Retrying…",
       consoleBtn: "Open Diagnostic Console",
@@ -87,7 +76,7 @@
       previewConsoleNotice:
         "Offline preview: simulated opening the diagnostic console (desktop shell bridge not connected).",
       previewErrorSample:
-        "Local service failed to become ready within 15s: port 4400 is already in use (EADDRINUSE).",
+        "Host failed to become ready within 15s: port 4400 is already in use (EADDRINUSE).",
       previewLabel: "Preview",
       previewStarting: "Starting",
       previewReconnecting: "Reconnecting",
@@ -125,11 +114,6 @@
   var els = {
     langToggle: document.getElementById("lang-toggle"),
     container: document.getElementById("loading-container"),
-    statusBadge: document.getElementById("status-badge"),
-    statusDot: document.getElementById("status-dot"),
-    statusSyncIcon: document.getElementById("status-sync-icon"),
-    statusErrorIcon: document.getElementById("status-error-icon"),
-    statusBadgeText: document.getElementById("status-badge-text"),
     title: document.getElementById("loading-title"),
     description: document.getElementById("loading-description"),
     hint: document.getElementById("loading-hint"),
@@ -162,21 +146,11 @@
     var t = getCopy();
     var currentStatus = state.status;
     var isError = currentStatus === "error";
-    var isReconnecting = currentStatus === "reconnecting";
 
     document.title = t.pageTitle[currentStatus] || "CodexHost";
     ui.updateLocaleToggle(els.langToggle, state.locale);
 
     els.container.setAttribute("data-status", currentStatus);
-    els.statusBadge.className =
-      "badge status-pill " +
-      (isError ? "badge--error" : isReconnecting ? "badge--warn" : "badge--brand");
-
-    ui.setHidden(els.statusDot, isReconnecting || isError);
-    ui.setHidden(els.statusSyncIcon, !isReconnecting);
-    ui.setHidden(els.statusErrorIcon, !isError);
-    els.statusBadgeText.textContent = t.badge[currentStatus];
-
     els.title.textContent = t.title[currentStatus];
     els.description.textContent = t.description[currentStatus];
 
@@ -326,13 +300,12 @@
       return;
     }
 
-    // Offline preview simulation
     window.setTimeout(function () {
       state.retrying = false;
       state.status = "starting";
       state.message = "";
       render();
-    }, 520);
+    }, 420);
   }
 
   function handleOpenConsole() {
@@ -367,7 +340,6 @@
       return;
     }
 
-    // Offline preview simulation
     window.setTimeout(function () {
       var t = getCopy();
       state.openingConsole = false;
@@ -471,15 +443,4 @@
 
   render();
   pollState();
-
-  var loadingDitherCv = document.getElementById("loading-dither-orbit");
-  if (
-    loadingDitherCv &&
-    window.CodexHostDitherFX &&
-    typeof window.CodexHostDitherFX.startLoadingOrbitalDither === "function"
-  ) {
-    window.CodexHostDitherFX.startLoadingOrbitalDither(loadingDitherCv, function () {
-      return state.status;
-    });
-  }
 })();

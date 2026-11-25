@@ -37,6 +37,7 @@ const PROMPT =
   "[codexhost-quota-prewarm]\nReply only with OK. Do not use tools or make any changes.";
 const RUN_TIMEOUT_MS = 90_000;
 const CLOSE_TIMEOUT_MS = 3_000;
+const TRANSPORT_NOT_CLOSED = "Antigravity retained prewarm transport did not close";
 const STALE_ACCOUNT = "The requested Antigravity Profile or login is no longer active";
 const LEGACY_LOGIN_CHANGED = "The login for this Antigravity Profile changed";
 
@@ -414,7 +415,7 @@ export async function runAntigravityRetainedPrewarm(
       if (active !== undefined && loginIdentity) accountChanged = true;
       return outcome("blocked", STALE_ACCOUNT);
     }
-    if (!antigravityRetainedPrewarmScopes(quota).includes(input.scopeId))
+    if (!antigravityRetainedPrewarmScopes(quota).some((id) => id.toLowerCase() === scope))
       return outcome(
         "blocked",
         "The requested Antigravity prewarm scope is not advertised by the native account",
@@ -547,6 +548,7 @@ export async function runAntigravityRetainedPrewarm(
     let disposition = claim.native_session_id ? "running" : "creating";
     let createDispatched = false;
     let staleAccount = false;
+    let closeUnconfirmed = false;
     try {
       await withAbort(signal, () => mkdir(cwd, { recursive: true, mode: 0o700 }));
       if (!(await matchesProfile()))
@@ -635,7 +637,10 @@ export async function runAntigravityRetainedPrewarm(
           throw new Error(STALE_ACCOUNT);
         }
       }
-      if (!quota || !antigravityRetainedPrewarmScopes(quota).includes(input.scopeId))
+      if (
+        !quota ||
+        !antigravityRetainedPrewarmScopes(quota).some((id) => id.toLowerCase() === scope)
+      )
         throw new Error("The requested Antigravity prewarm scope is no longer advertised");
       const currentQuota = quota;
       const recordAccount = db.prepare(`
@@ -678,7 +683,8 @@ export async function runAntigravityRetainedPrewarm(
         try {
           await withAbort(AbortSignal.timeout(CLOSE_TIMEOUT_MS), () => native.close());
         } catch {
-          failure ??= "Antigravity retained prewarm transport did not close";
+          closeUnconfirmed = true;
+          failure ??= TRANSPORT_NOT_CLOSED;
         }
       }
     }
@@ -704,6 +710,7 @@ export async function runAntigravityRetainedPrewarm(
       }
     }
     if (staleAccount && ref) {
+      if (closeUnconfirmed) return outcome("blocked", TRANSPORT_NOT_CLOSED);
       const released = db
         .prepare(
           `

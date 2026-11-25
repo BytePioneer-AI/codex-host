@@ -1948,7 +1948,8 @@ export class AntigravityAdapter implements HarnessAdapter {
   #closed = false;
   #quota: AntigravityQuotaReading | null = null;
   #quotaFetchedAt = Number.NEGATIVE_INFINITY;
-  #quotaRefresh: Promise<AntigravityQuotaReading | null> | undefined;
+  #quotaRefresh:
+    { profileId: string | undefined; promise: Promise<AntigravityQuotaReading | null> } | undefined;
   #quotaCwd = process.cwd();
   constructor(readonly options: AntigravityAdapterOptions = {}) {
     this.#environment = options.environment ?? process.env;
@@ -2215,7 +2216,7 @@ export class AntigravityAdapter implements HarnessAdapter {
       ),
     );
   }
-  #refreshQuota(force = false): Promise<AntigravityQuotaReading | null> {
+  #refreshQuota(force = false, profileId?: string): Promise<AntigravityQuotaReading | null> {
     if (this.#closed) return Promise.resolve(null);
     if (
       !force &&
@@ -2224,18 +2225,31 @@ export class AntigravityAdapter implements HarnessAdapter {
     ) {
       return Promise.resolve(this.#quota);
     }
-    return (this.#quotaRefresh ??= (async () => {
-      const quota = await this.#fetchQuota(this.#abort.signal);
-      if (!this.#closed) this.#quota = quota;
-      return this.#closed ? null : quota;
-    })().finally(() => {
-      if (!this.#closed) this.#quotaFetchedAt = Date.now();
-      this.#quotaRefresh = undefined;
-    }));
+    const active = this.#quotaRefresh;
+    if (active && (!force || active.profileId === profileId)) return active.promise;
+
+    const promise = this.#fetchQuota(this.#abort.signal)
+      .then(async (quota) => {
+        if (profileId) {
+          const current = await antigravityProfileRef(this.#environment).catch(() => undefined);
+          if (current?.id !== profileId) return null;
+        }
+        if (this.#closed) return null;
+        if (this.#quotaRefresh?.promise === promise) {
+          this.#quota = quota;
+          this.#quotaFetchedAt = Date.now();
+        }
+        return quota;
+      })
+      .finally(() => {
+        if (this.#quotaRefresh?.promise === promise) this.#quotaRefresh = undefined;
+      });
+    this.#quotaRefresh = { profileId, promise };
+    return promise;
   }
   async inspectAccount(retainedPrewarmDirectory?: string) {
     const profile = await antigravityProfileRef(this.#environment).catch(() => undefined);
-    const quota = await this.#refreshQuota(true);
+    const quota = await this.#refreshQuota(true, profile?.id);
     if (!quota) return null;
     const credits = projectAntigravityQuota(quota);
     if (!credits) return null;
@@ -2289,10 +2303,13 @@ export class AntigravityAdapter implements HarnessAdapter {
     this.#inflight.clear();
     this.#quota = null;
     this.#quotaFetchedAt = Number.NEGATIVE_INFINITY;
-    await Promise.all([
+    const settled = await Promise.allSettled([
       ...Array.from(this.#sessions, (session) => session.close()),
       ...this.#retainedPrewarms,
     ]);
+    for (const result of settled) {
+      if (result.status === "rejected") throw result.reason;
+    }
     this.#sessions.clear();
   }
 }

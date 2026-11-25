@@ -13,10 +13,12 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { setImmediate } from "node:timers/promises";
 
 import type { InitializeResponse, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import {
   billingSourceRefSchema,
+  hostTurnIdSchema,
   retainedPrewarmResultSchema,
   type BillingSourceRef,
   type RetainedPrewarmParams,
@@ -213,7 +215,7 @@ async function fixture() {
       db.close();
     }
   }
-  return { home, storage, useAccount, start, transports, log, rows };
+  return { home, storage, script, wire, useAccount, start, transports, log, rows };
 }
 
 async function sourceOf(adapter: AntigravityAdapter): Promise<BillingSourceRef> {
@@ -309,13 +311,14 @@ describe("Antigravity retained quota prewarm", () => {
     expect(initial).toMatchObject({ status: "succeeded", accountVerification: "unverified" });
     expect(initial).not.toHaveProperty("accountChanged");
     await first.close();
-    const scopeId = "Claude and GPT Models";
-    await f.useAccount(nativeAccount, [scopeId]);
-    const next = f.start();
-    const resumed = await run(next, { billingSourceRef, scopeId }, f.storage);
+    await f.useAccount(nativeAccount, ["Claude and GPT Models"]);
+    const next = f.start((transport) => {
+      transport.onOpen = () => f.useAccount(nativeAccount, ["CLAUDE AND GPT MODELS"]);
+    });
+    const resumed = await run(next, { billingSourceRef, scopeId: CLAUDE }, f.storage);
     expect(resumed).toMatchObject({
       status: "succeeded",
-      scopeId,
+      scopeId: CLAUDE,
       nativeSessionRef: initial.nativeSessionRef,
       modelVerification: "unavailable",
       accountVerification: "verified",
@@ -391,9 +394,11 @@ describe("Antigravity retained quota prewarm", () => {
     expect(
       await first.runRetainedPrewarm({ billingSourceRef, scopeId: "Unknown" }, f.storage),
     ).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
-    expect(
-      await run(first, { billingSourceRef, scopeId: "gemini models" }, f.storage),
-    ).toMatchObject({ status: "blocked" });
+    await f.useAccount(nativeAccount, [GEMINI, GEMINI.toLowerCase(), CLAUDE]);
+    expect(await first.inspectAccount()).toMatchObject({ retainedPrewarmScopes: [CLAUDE] });
+    expect(await run(first, { billingSourceRef, scopeId: GEMINI }, f.storage)).toMatchObject({
+      status: "blocked",
+    });
     for (const account of [
       undefined,
       { provider: "google", email: "example@example.test", token: "redacted" },
@@ -408,30 +413,48 @@ describe("Antigravity retained quota prewarm", () => {
     expect(f.transports).toHaveLength(0);
   });
 
-  it("does not send under a stale schedule if the login changes while opening the Session", async () => {
-    const f = await fixture();
-    const a = f.start((transport) => {
-      transport.onOpen = () => f.useAccount(otherNativeAccount);
-    });
-    const billingSourceRef = await sourceOf(a);
-    const stale = await run(a, { billingSourceRef, scopeId: GEMINI }, f.storage);
-    expect(stale).toMatchObject({ status: "blocked", accountChanged: true });
-    expect(f.transports[0]?.prompt).not.toHaveBeenCalled();
-    const b = f.start();
-    const current = billingSourceRefSchema.parse(
-      (await b.inspectAccount(f.storage))?.billingSourceRef,
-    );
-    expect(await run(b, { billingSourceRef: current, scopeId: GEMINI }, f.storage)).toMatchObject({
-      status: "succeeded",
-      nativeSessionRef: stale.nativeSessionRef,
-      billingSourceRef: current,
-    });
-    expect(f.transports[1]?.openSession).toHaveBeenCalledExactlyOnceWith({
-      kind: "resume",
-      sessionId: stale.nativeSessionRef?.nativeSessionId,
-      cwd: f.transports[0]?.options.cwd,
-    });
-  });
+  it.each(["closed", "close rejected"] as const)(
+    "does not send under a stale schedule and only releases its claim once %s",
+    async (close) => {
+      const f = await fixture();
+      const a = f.start((transport) => {
+        transport.onOpen = () => f.useAccount(otherNativeAccount);
+        if (close === "close rejected")
+          transport.close.mockRejectedValueOnce(new Error("native close failed"));
+      });
+      const billingSourceRef = await sourceOf(a);
+      const stale = await run(a, { billingSourceRef, scopeId: GEMINI }, f.storage);
+      expect(stale).toMatchObject({ status: "blocked", accountChanged: true });
+      expect(f.transports[0]?.prompt).not.toHaveBeenCalled();
+      const b = f.start();
+      const current = billingSourceRefSchema.parse(
+        (await b.inspectAccount(f.storage))?.billingSourceRef,
+      );
+      if (close === "close rejected") {
+        expect(stale).toMatchObject({
+          error: "Antigravity retained prewarm transport did not close",
+          nativeSessionRef: expect.any(Object),
+        });
+        expect(
+          await run(b, { billingSourceRef: current, scopeId: GEMINI }, f.storage),
+        ).toMatchObject({ status: "blocked", nativeSessionRef: stale.nativeSessionRef });
+        expect(f.transports).toHaveLength(1);
+        return;
+      }
+      expect(await run(b, { billingSourceRef: current, scopeId: GEMINI }, f.storage)).toMatchObject(
+        {
+          status: "succeeded",
+          nativeSessionRef: stale.nativeSessionRef,
+          billingSourceRef: current,
+        },
+      );
+      expect(f.transports[1]?.openSession).toHaveBeenCalledExactlyOnceWith({
+        kind: "resume",
+        sessionId: stale.nativeSessionRef?.nativeSessionId,
+        cwd: f.transports[0]?.options.cwd,
+      });
+    },
+  );
 
   it("does not dispatch when the same account loses the requested native scope", async () => {
     const f = await fixture();
@@ -621,6 +644,55 @@ describe("Antigravity retained quota prewarm", () => {
     expect(f.rows()).toHaveLength(2);
   });
 
+  it("does not use an old Profile's in-flight quota after the Profile moves", async () => {
+    const f = await fixture();
+    const alias = path.join(f.home, "profile");
+    const other = path.join(f.home, "other");
+    const read = path.join(f.home, "quota-read");
+    const release = path.join(f.home, "quota-release");
+    const kind = process.platform === "win32" ? "junction" : "dir";
+    await mkdir(other);
+    await symlink(f.home, alias, kind);
+    await writeFile(
+      f.script,
+      `
+      import { existsSync, readFileSync, watch, writeFileSync } from "node:fs";
+      const quota = readFileSync(${JSON.stringify(f.wire)}, "utf8");
+      if (!existsSync(${JSON.stringify(read)})) {
+        const { promise, resolve } = Promise.withResolvers();
+        const watcher = watch(${JSON.stringify(f.home)}, () => {
+          if (!existsSync(${JSON.stringify(release)})) return;
+          watcher.close();
+          resolve();
+        });
+        writeFileSync(${JSON.stringify(read)}, "");
+        await promise;
+      }
+      process.stdout.write(quota);
+      `,
+      "utf8",
+    );
+    const adapter = f.start(undefined, {
+      environment: { HOME: alias, USERPROFILE: alias },
+      inspectTimeoutMs: 3000,
+    });
+    const old = adapter.inspectAccount(f.storage);
+    try {
+      await vi.waitFor(() => readFile(read), { timeout: 2000 });
+      await rename(alias, `${alias}-old`);
+      await symlink(other, alias, kind);
+      await f.useAccount(otherNativeAccount, [CLAUDE]);
+      expect(await adapter.inspectAccount(f.storage)).toMatchObject({
+        billingSourceRef: expect.any(Object),
+        retainedPrewarmScopes: [CLAUDE],
+      });
+    } finally {
+      await writeFile(release, "", "utf8");
+      await expect(old).resolves.toBeNull();
+    }
+    expect(adapter.credits()?.scope?.id).toBe(CLAUDE);
+  }, 10_000);
+
   it("does not open a native Session if the Profile moves during ACP initialization", async () => {
     const f = await fixture();
     const alias = path.join(f.home, "profile");
@@ -740,6 +812,43 @@ describe("Antigravity retained quota prewarm", () => {
     expect(f.transports[0]?.closeSession).not.toHaveBeenCalled();
     expect(await run(f.start(), input, f.storage)).toMatchObject({ status: "blocked" });
     expect(f.transports).toHaveLength(1);
+  });
+
+  it("waits for retained prewarm cleanup even when an ordinary Session close fails", async () => {
+    const f = await fixture();
+    const prompting = Promise.withResolvers<undefined>();
+    const prompt = Promise.withResolvers<AntigravityPromptResult>();
+    const release = Promise.withResolvers<undefined>();
+    const adapter = f.start((transport) => {
+      if (f.transports.length === 0) return;
+      transport.prompt.mockImplementation(() => {
+        prompting.resolve(undefined);
+        return prompt.promise;
+      });
+      transport.close.mockReturnValueOnce(release.promise);
+    });
+    const opened = await adapter.open({ kind: "create", cwd: f.home });
+    assert(opened.ok);
+    await opened.value.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse("ordinary"),
+      input: [{ type: "text", text: "hello" }],
+    });
+    await vi.waitFor(() => expect(f.transports[0]?.prompt).toHaveBeenCalled());
+    const ordinary = f.transports[0];
+    assert(ordinary);
+    ordinary.close.mockRejectedValueOnce(new Error("ordinary close failed"));
+    const input = { billingSourceRef: await sourceOf(adapter), scopeId: GEMINI };
+    const pending = run(adapter, input, f.storage);
+    await prompting.promise;
+    const closed = adapter.close().catch((error: unknown) => ({ error, rows: f.rows() }));
+    await setImmediate();
+    release.resolve(undefined);
+    expect(await closed).toMatchObject({
+      error: new Error("ordinary close failed"),
+      rows: [{ state: "failed" }],
+    });
+    expect(await pending).toMatchObject({ status: "failed" });
   });
 
   it("atomically blocks a second adapter during create and retains an unresolved create across restarts", async () => {

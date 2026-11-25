@@ -1438,6 +1438,12 @@ export class ChSessions {
       // A Workspace's page reads on until it reaches one of that Workspace's Threads.
       const scope =
         workspaceId === undefined ? undefined : this.workspaces.catalogScope(workspaceId);
+      if (workspaceId !== undefined && scope === undefined)
+        return {
+          items: [],
+          archivedSessionIds: this.workspaces.archivedSessionIds(),
+          nextCursor: null,
+        };
       const page = await this.refresh(timing, includeArchived, cursor, scope);
       const pageIds = this.tree.withAncestors(page?.threads.map((row) => row.id) ?? []);
       const archivedSessionIds = this.workspaces.archivedSessionIds();

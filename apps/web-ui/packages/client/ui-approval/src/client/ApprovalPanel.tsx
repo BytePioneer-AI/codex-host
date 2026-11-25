@@ -1,8 +1,74 @@
 /** Composer takeover for one pending approval waterfall. */
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Button, StateDot } from "@deepseek-ai/dsh-client-ui-primitives";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  ApprovalCard,
+  type ApprovalCardAction,
+  type ApprovalCardFileDiff,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ApprovalComposerProps, PendingApproval } from "./contract/slots.ts";
-import css from "./ApprovalPanel.module.css";
+
+const META_LINE_RE = /^(?:工作目录|Working directory|原因|Reason)\s*[:：]/i;
+
+interface ParsedApprovalReason {
+  readonly headline: string;
+  readonly command?: string | undefined;
+  readonly files?: readonly ApprovalCardFileDiff[] | undefined;
+  readonly detail?: string | undefined;
+}
+
+function looksLikePathList(block: string): boolean {
+  if (META_LINE_RE.test(block)) return false;
+  if (/[。！？]$/.test(block)) return false;
+  const lines = block
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return false;
+  return lines.every(
+    (line) => !/\s{1,}[a-z]+.*\.$/.test(line) && (/[\\/.]/.test(line) || lines.length === 1),
+  );
+}
+
+function parseReason(
+  toolName: string,
+  reason: string | undefined,
+  fallbackHeadline: string,
+): ParsedApprovalReason {
+  const trimmed = reason?.trim();
+  if (!trimmed) return { headline: fallbackHeadline };
+  const parts = trimmed
+    .split(/\n{2,}/u)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length <= 1) return { headline: parts[0] ?? fallbackHeadline };
+
+  const [headline = fallbackHeadline, second = "", ...rest] = parts;
+  if (toolName === "shell" && !META_LINE_RE.test(second)) {
+    const detail = rest.join("\n").trim();
+    return {
+      headline,
+      command: second,
+      ...(detail ? { detail } : {}),
+    };
+  }
+  if (toolName === "files" && looksLikePathList(second)) {
+    const files = second
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((path) => ({ path }));
+    const detail = rest.join("\n").trim();
+    return {
+      headline,
+      ...(files.length > 0 ? { files } : {}),
+      ...(detail ? { detail } : {}),
+    };
+  }
+  return {
+    headline,
+    detail: parts.slice(1).join("\n"),
+  };
+}
 
 /**
  * Render one pending approval and its optional Tool-owned detail.
@@ -44,14 +110,14 @@ function ApprovalFlow({
   const [answered, setAnswered] = useState(false);
   const waiting = useRef(false);
   const active = useRef(true);
-  const composing = useRef(false);
-  const compositionEnded = useRef(false);
+
   useEffect(() => {
     active.current = true;
     return () => {
       active.current = false;
     };
   }, []);
+
   const answer = (outcome: "allowed-once" | "rejected"): void => {
     if (waiting.current || !pending.answerable) return;
     waiting.current = true;
@@ -62,88 +128,43 @@ function ApprovalFlow({
       setAnswered(false);
     });
   };
-  const keydown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    const element = event.target as Element;
-    if (
-      event.defaultPrevented ||
-      !event.currentTarget.contains(document.activeElement) ||
-      element.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]') !==
-        null
-    )
-      return;
-    if (event.key !== "Enter" && event.key !== "Escape") return;
-    if (event.key === "Enter" && element.closest('button, a[href], [role="button"]') !== null)
-      return;
-    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
-    event.preventDefault();
-    event.stopPropagation();
-    // oxlint-disable-next-line typescript/no-deprecated -- IME 229 covers engines without isComposing.
-    if (
-      event.repeat ||
-      composing.current ||
-      compositionEnded.current ||
-      event.nativeEvent.isComposing ||
-      event.keyCode === 229
-    )
-      return;
-    answer(event.key === "Enter" ? "allowed-once" : "rejected");
-  };
+
+  const parsed = useMemo(
+    () => parseReason(pending.toolName, reason, t("escalation", { toolName: pending.toolName })),
+    [pending.toolName, reason, t],
+  );
+
+  const actions = useMemo<ApprovalCardAction[]>(
+    () => [
+      { id: "rejected", label: t("reject"), effect: "deny" },
+      { id: "allowed-once", label: t("allowOnce"), effect: "allowOnce" },
+    ],
+    [t],
+  );
+
   return (
-    <div
-      className={css.root}
-      data-approval-key={pending.key}
-      aria-busy={answered}
-      onKeyDown={keydown}
-      onKeyUpCapture={() => {
-        compositionEnded.current = false;
+    <ApprovalCard
+      cardKey={pending.key}
+      headline={parsed.headline}
+      meta={pending.toolName === "shell" ? "bash" : pending.toolName}
+      command={parsed.command}
+      commandSlot={detail}
+      files={parsed.files}
+      detail={parsed.detail}
+      actions={actions}
+      busy={answered}
+      onAction={(action) => {
+        answer(action.id === "allowed-once" ? "allowed-once" : "rejected");
       }}
-      onCompositionStartCapture={() => {
-        composing.current = true;
+      labels={{
+        detailAria: t("detail.aria"),
+        expand: t("expand"),
+        collapse: t("collapse"),
+        moreOptions: t("moreOptions"),
+        categoryTerminal: t("categoryTerminal"),
+        categoryFiles: t("categoryFiles"),
+        categoryPermission: t("categoryPermission"),
       }}
-      onCompositionEndCapture={() => {
-        composing.current = false;
-        compositionEnded.current = true;
-      }}
-    >
-      <div className={css.card}>
-        <div className={css.strip}>
-          <StateDot state={answered ? "ongoing" : "warning"} />
-          {t("waiting")}
-        </div>
-        <div
-          className={css.body}
-          data-approval-scroll=""
-          tabIndex={0}
-          role="group"
-          aria-label={t("detail.aria")}
-        >
-          <div className={css.headline}>
-            {reason ?? t("escalation", { toolName: pending.toolName })}
-          </div>
-          {detail !== null && <div className={css.command}>{detail}</div>}
-        </div>
-        <div className={css.actionRow}>
-          <Button
-            variant="outline"
-            className={css.reject}
-            disabled={answered}
-            onClick={() => {
-              answer("rejected");
-            }}
-          >
-            {t("reject")}
-          </Button>
-          <Button
-            variant="primary"
-            disabled={answered}
-            onClick={() => {
-              answer("allowed-once");
-            }}
-          >
-            {t("allowOnce")}
-          </Button>
-        </div>
-      </div>
-    </div>
+    />
   );
 }

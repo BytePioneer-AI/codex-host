@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
+import { createMacosShellInfoPlist } from "../../scripts/release/macos-shell-bundle.mjs";
 
 const root = path.resolve(import.meta.dirname, "../..");
 
@@ -19,6 +20,8 @@ describe("platform packagers", () => {
     expect(source).toContain("iconutil -c icns");
     expect(source).toContain("CFBundleIconFile");
     expect(source).toContain("codexhost.icns");
+    expect(source).toContain("NSMicrophoneUsageDescription");
+    expect(createMacosShellInfoPlist("0.26.1")).toContain("NSMicrophoneUsageDescription");
     expect(source).toContain("create-dmg");
     expect(source).toContain("--window-size 800 400");
     expect(source).toContain("--window-pos 200 120");

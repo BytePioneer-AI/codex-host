@@ -34,17 +34,21 @@ pub fn finish_launch(print: bool) {
     }
 }
 
-use crate::installation_layout::InstalledResources;
-use crate::startup_record::data_directory;
-use crate::{
-    LaunchOptions, NPM_NODE_PATH_ENV, console, desktop_attachment, desktop_shell, host_service,
-    web_service,
+use crate::installation_layout::{
+    InstalledResources, inherited_npm_node, resolve_executable_on_path,
 };
+use crate::startup_record::data_directory;
+use crate::{LaunchOptions, console, desktop_attachment, desktop_shell, host_service, web_service};
 use codexhost_platform::node_entrypoint_path;
 use web_service::Options;
 
 pub fn web_enabled() -> bool {
     env::var_os("CODEXHOST_WEB_SERVICE").as_deref() != Some(std::ffi::OsStr::new("0"))
+}
+
+fn source_web_node(node: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    const MISSING_NODE: &str = "Source Web requires Node on PATH or an absolute --node path";
+    resolve_executable_on_path(node).ok_or_else(|| MISSING_NODE.into())
 }
 
 fn resolve_options(
@@ -56,10 +60,13 @@ fn resolve_options(
 ) -> Result<Options, Box<dyn Error>> {
     let installed = InstalledResources::from_current_executable()?;
     let explicit_node = node;
-    let node = explicit_node
-        .clone()
-        .or_else(|| env::var_os(NPM_NODE_PATH_ENV).map(PathBuf::from))
-        .unwrap_or(installed.node);
+    let node = match explicit_node.clone() {
+        Some(node) => node,
+        None if installed.node.is_relative() => source_web_node(&installed.node)?,
+        None => inherited_npm_node()
+            .map(PathBuf::from)
+            .unwrap_or(installed.node),
+    };
     let host_node = match host_node {
         Some(host_node) => host_node,
         None if !cfg!(target_os = "macos") && explicit_node.is_some() => node.clone(),
@@ -581,6 +588,7 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NPM_NODE_PATH_ENV;
     #[cfg(target_os = "windows")]
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -659,6 +667,70 @@ mod tests {
             web_browser_url(login, true),
             "http://127.0.0.1:4478/?token=fixture-secret#connect-devices"
         );
+    }
+
+    #[test]
+    fn source_web_ignores_inherited_npm_node_but_accepts_explicit_paths() {
+        const CHILD: &str = "CODEXHOST_TEST_SOURCE_WEB_PATHS";
+        let executable = env::current_exe().unwrap();
+        if let Some(root) = env::var_os(CHILD).map(PathBuf::from) {
+            let options = resolve_options(None, None, None, None, None).unwrap();
+            let node = root.join(format!("node{}", env::consts::EXE_SUFFIX));
+            assert!(
+                options.node == node,
+                "Web must not use the inherited npm Node"
+            );
+            assert!(
+                options.host_node == node,
+                "Host must not use the inherited npm Node"
+            );
+
+            let node = root.join("explicit-node");
+            let host = root.join("explicit-host.mjs");
+            let web = root.join("explicit-web.mjs");
+            let options = resolve_options(
+                Some(node.clone()),
+                Some(host.clone()),
+                Some(web.clone()),
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(options.node, node);
+            assert!(
+                options.host_node == node,
+                "explicit Node must not be replaced by npm Node"
+            );
+            assert_eq!(options.host_runtime, host);
+            assert_eq!(options.runtime, web);
+            return;
+        }
+
+        let root = env::temp_dir().join(format!("codexhost-source-web-{}", std::process::id()));
+        let child = root
+            .join("target/debug")
+            .join(executable.file_name().unwrap());
+        fs::create_dir_all(child.parent().unwrap()).unwrap();
+        fs::copy(&executable, &child).unwrap();
+        let node = root.join(format!("node{}", env::consts::EXE_SUFFIX));
+        fs::write(&node, "fixture").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let status = Command::new(&child)
+            .args([
+                "--exact",
+                "services::tests::source_web_ignores_inherited_npm_node_but_accepts_explicit_paths",
+            ])
+            .env(CHILD, &root)
+            .env(crate::DATA_DIRECTORY_ENV, &root)
+            .env(NPM_NODE_PATH_ENV, root.join("inherited-npm-node"))
+            .env("PATH", &root)
+            .status();
+        fs::remove_dir_all(root).unwrap();
+        assert!(status.unwrap().success());
     }
 
     #[cfg(target_os = "windows")]

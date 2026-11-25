@@ -214,7 +214,7 @@ A reply contains non-blank text, an image, or another visible block; reasoning a
 | `run_code` with nested `read` and `bash` calls | One group member for the `run_code` tool Node; its nested calls do not create separate roots. |
 | A tool receives a failed result | Update that member without splitting its group; a separate `turn-error` Node does split the sequence. |
 
-Replies and independent separators close preceding groups immediately, even while the Turn is running. The final group also closes when another Turn or unscoped Node follows it, or when its Turn has status `closed`. Any other or unavailable Turn status alone does not close that trailing group. Regrouping after a separator disappears may reopen it.
+Within an `open` Turn, replies and independent separators close preceding groups once none of their member tools are still running; a preceding group with an active running tool stays open until its running tools settle or the Turn is no longer `open`. When the Turn status is `closed`, `unknown`, or unavailable, replies and independent separators close preceding groups immediately. The final group closes when another Turn or unscoped Node follows it, or when its Turn has status `closed`. Any other or unavailable Turn status alone does not close that trailing group. Regrouping after a separator disappears may reopen a closed group.
 
 -----
 
@@ -294,7 +294,7 @@ Live selection uses call start `time`, not the latest output/progress time. A ca
 | Running parent and child share the same start time | The child wins because it is visited later; later siblings win equal-time ties. |
 | All tools settled; the group is not closed; a running Assistant has reasoning | No live tool category; use the latest nonempty reasoning paragraph as detail. |
 | No running tool or usable running reasoning; the group is not closed | No live tool category and empty detail, even when category counts are nonzero. |
-| A reply or another group boundary closes the group while a tool still lacks a result | Published live category and detail are cleared. Group closure takes precedence over the unfinished call. |
+| A Turn-closing or cross-Turn boundary (or a same-Turn separator when the Turn is not `open`) closes the group while a tool still lacks a result | Published live category and detail are cleared. Group closure takes precedence over the unfinished call. |
 
 Tool detail uses the first nonempty supported argument field in this priority order: `title`, `description`, `objective`, `task`, `task_name`, `name`, `question`, `questions`, `prompt`, `message`, `command`, `cmd`, `queries`, `query`, `pattern`, `url`, `uri`, `file_path`, `path`, `target`, `action`, `status`. Strings may still be streaming; arrays become available when complete and must contain only strings, joined with `, `. The `questions` field instead selects the first nonempty `question` in its object array. Without usable detail, every category stays empty while fields can still arrive and falls back to the tool name only once the view is closed, invalid, or sealed after dispatch.
 

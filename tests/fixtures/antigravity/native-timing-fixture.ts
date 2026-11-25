@@ -42,6 +42,7 @@ export interface NativeTimingFixture {
   ttft?: number;
   retries?: number;
   attempts?: number;
+  maxContextTokens?: number;
   sourceSession?: string;
 }
 export async function writeNativeTimingDatabase(
@@ -93,6 +94,9 @@ export async function writeNativeTimingDatabase(
         ),
         bytes(11, time(fixture.ttft ?? started - created)),
         bytes(12, time(fixture.streamDuration ?? completed - started)),
+        ...(fixture.maxContextTokens !== undefined
+          ? [bytes(9, bytes(10, integer(4, fixture.maxContextTokens)))]
+          : []),
         integer(14, fixture.retries ?? 0),
         ...Array.from({ length: fixture.attempts ?? 1 }, () => bytes(17, Buffer.alloc(0))),
       ]);

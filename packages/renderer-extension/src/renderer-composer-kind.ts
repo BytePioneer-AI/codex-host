@@ -10,7 +10,9 @@ export type OrbitComposerKind = "orbit" | "codex" | "unknown";
 
 export function orbitComposerKind(composer: Element): OrbitComposerKind {
   let element: Element | null =
-    composer.querySelector('[contenteditable="true"], textarea, [role="textbox"]') ?? composer;
+    (typeof composer.querySelector === "function"
+      ? composer.querySelector('[contenteditable="true"], textarea, [role="textbox"]')
+      : null) ?? composer;
   for (let depth = 0; element && depth < 12; depth += 1) {
     const key = Object.getOwnPropertyNames(element).find((name) =>
       name.startsWith("__reactFiber$"),

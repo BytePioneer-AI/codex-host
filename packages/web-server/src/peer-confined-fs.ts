@@ -248,8 +248,11 @@ function outsideError(displayPath: string): PeerWorkspaceError {
 }
 
 /**
- * Validate and resolve one requested path strictly within a Peer thread's workspace root.
- * Shared by workspace file preview RPCs, Office rendering, and original-file downloads.
+ * Validate and resolve one requested Peer path:
+ * - Directories (`workspaceFiles/list`) remain strictly confined to the thread's workspace root.
+ * - Regular files (`read`, `readBytes`, `stat`, `officeToPdf/render`, downloads) allow paths
+ *   outside the workspace root to match local workspace preview semantics, while still rejecting
+ *   UNC paths, control characters, and non-regular / final-symlink targets.
  */
 export async function validatePeerWorkspacePath(input: {
   workspaceRoot: string;
@@ -303,13 +306,76 @@ export async function validatePeerWorkspacePath(input: {
     };
   }
 
-  const resolveWithinRoot = async (
+  const resolveRegularFile = async (
     normalized: string,
-    expectedKind: "file" | "directory",
     displayPath: string,
   ): Promise<PeerWorkspacePathValidation> => {
     if (input.signal?.aborted) return cancelledError();
-    const allowEqual = expectedKind === "directory";
+    const candidate = pathOps.isAbsolute(normalized)
+      ? pathOps.resolve(normalized)
+      : pathOps.resolve(realRoot, normalized);
+
+    let entryStat: Stats;
+    try {
+      entryStat = await fsOps.lstat(candidate);
+    } catch (error) {
+      if (isErrnoCode(error, "ENOENT", "ENOTDIR")) {
+        return {
+          ok: false,
+          code: "workspace-file/not-found",
+          message: `no entry at "${displayPath}"`,
+          details: { path: displayPath },
+        };
+      }
+      throw error;
+    }
+
+    const entryKind = statKind(entryStat);
+    if (entryKind !== "file") {
+      return {
+        ok: false,
+        code: "workspace-file/not-regular-file",
+        message: `"${displayPath}" is a ${entryKind}`,
+        details: { path: displayPath, kind: entryKind },
+      };
+    }
+
+    let realPath: string;
+    let finalStat: Stats;
+    try {
+      realPath = await fsOps.realpath(candidate);
+      finalStat = await fsOps.lstat(realPath);
+    } catch (error) {
+      if (isErrnoCode(error, "ENOENT", "ENOTDIR")) {
+        return {
+          ok: false,
+          code: "workspace-file/not-found",
+          message: `no entry at "${displayPath}"`,
+          details: { path: displayPath },
+        };
+      }
+      throw error;
+    }
+
+    const finalKind = statKind(finalStat);
+    if (finalKind !== "file") {
+      return {
+        ok: false,
+        code: "workspace-file/not-regular-file",
+        message: `"${displayPath}" is a ${finalKind}`,
+        details: { path: displayPath, kind: finalKind },
+      };
+    }
+
+    return { ok: true, realRoot, pinnedRootStat, realPath };
+  };
+
+  const resolveDirectoryWithinRoot = async (
+    normalized: string,
+    displayPath: string,
+  ): Promise<PeerWorkspacePathValidation> => {
+    if (input.signal?.aborted) return cancelledError();
+    const allowEqual = true;
     let mappedCandidate: string;
     if (pathOps.isAbsolute(normalized)) {
       const candidate = pathOps.resolve(normalized);
@@ -361,15 +427,6 @@ export async function validatePeerWorkspacePath(input: {
         ) {
           return outsideError(displayPath);
         }
-        const isFinal = index === segments.length - 1;
-        if (isFinal && expectedKind === "file") {
-          return {
-            ok: false,
-            code: "workspace-file/not-regular-file",
-            message: `"${displayPath}" is a symlink`,
-            details: { path: displayPath, kind: "symlink" },
-          };
-        }
       }
     }
 
@@ -397,15 +454,7 @@ export async function validatePeerWorkspacePath(input: {
     }
 
     const kind = statKind(finalStat);
-    if (expectedKind === "file" && kind !== "file") {
-      return {
-        ok: false,
-        code: "workspace-file/not-regular-file",
-        message: `"${displayPath}" is a ${kind}`,
-        details: { path: displayPath, kind },
-      };
-    }
-    if (expectedKind === "directory" && kind !== "directory") {
+    if (kind !== "directory") {
       return {
         ok: false,
         code: "workspace-file/not-directory",
@@ -420,11 +469,7 @@ export async function validatePeerWorkspacePath(input: {
   if (input.baseFile !== undefined) {
     const sanitizedBase = sanitizeInputPath(input.baseFile, fsOps.platform);
     if (!sanitizedBase.ok) return sanitizedBase;
-    const baseResult = await resolveWithinRoot(
-      sanitizedBase.normalized,
-      "file",
-      String(input.baseFile),
-    );
+    const baseResult = await resolveRegularFile(sanitizedBase.normalized, String(input.baseFile));
     if (!baseResult.ok) return baseResult;
 
     if (
@@ -454,17 +499,20 @@ export async function validatePeerWorkspacePath(input: {
       };
     }
     const joined = pathOps.resolve(pathOps.dirname(baseResult.realPath), relativePosix);
-    return resolveWithinRoot(joined, input.kind, input.path);
+    return input.kind === "directory"
+      ? resolveDirectoryWithinRoot(joined, input.path)
+      : resolveRegularFile(joined, input.path);
   }
 
   const sanitizedPath = sanitizeInputPath(input.path, fsOps.platform);
   if (!sanitizedPath.ok) return sanitizedPath;
-  return resolveWithinRoot(sanitizedPath.normalized, input.kind, String(input.path));
+  return input.kind === "directory"
+    ? resolveDirectoryWithinRoot(sanitizedPath.normalized, String(input.path))
+    : resolveRegularFile(sanitizedPath.normalized, String(input.path));
 }
 
 /**
- * Open a workspace regular file using `O_NOFOLLOW` and re-verify file-descriptor ownership
- * against the pinned workspace root while holding the open handle (eliminating TOCTOU races).
+ * Open a regular file using `O_NOFOLLOW` and verify file-descriptor identity against pre-open stat.
  */
 export async function openConfinedWorkspaceFile(input: {
   workspaceRoot: string;
@@ -475,7 +523,6 @@ export async function openConfinedWorkspaceFile(input: {
 }): Promise<{ readonly ok: true; readonly file: ConfinedOpenFile } | PeerWorkspaceError> {
   if (input.signal?.aborted) return cancelledError();
   const fsOps = input.fsOps ?? DEFAULT_FS_OPS;
-  const pathOps = pathOpsFor(fsOps.platform);
   const displayPath = typeof input.path === "string" ? input.path : "";
 
   const validated = await validatePeerWorkspacePath({
@@ -509,40 +556,12 @@ export async function openConfinedWorkspaceFile(input: {
     handle = await fsOps.open(validated.realPath, OPEN_READONLY_FLAGS);
     const openedStat = await handle.stat({ bigint: true });
     if (!openedStat.isFile() || !sameFileIdentity(openedStat, preStat)) {
-      return outsideError(displayPath);
-    }
-
-    // Re-verify real path ownership against the pinned root while holding the open file descriptor.
-    if (fsOps.platform === "linux") {
-      const fdReal = await fsOps.realpath(`/proc/self/fd/${handle.fd}`);
-      const currentRootStat = await fsOps.lstat(validated.realRoot, { bigint: true });
-      const fdAllowed =
-        !currentRootStat.isSymbolicLink() &&
-        currentRootStat.isDirectory() &&
-        sameFileIdentity(currentRootStat, validated.pinnedRootStat) &&
-        isPathWithinRoot(fdReal, validated.realRoot, fsOps.platform, pathOps, false) &&
-        (await hasNoSymlinkComponentsFromRoot(fdReal, pathOps, fsOps));
-      if (!fdAllowed || !sameFileIdentity(await fsOps.stat(fdReal, { bigint: true }), openedStat)) {
-        return outsideError(displayPath);
-      }
-    } else {
-      const postRoot = await fsOps.realpath(input.workspaceRoot);
-      const postReal = await fsOps.realpath(validated.realPath);
-      const currentRootStat = await fsOps.lstat(validated.realRoot, { bigint: true });
-      const postAllowed =
-        postRoot === validated.realRoot &&
-        postReal === validated.realPath &&
-        !currentRootStat.isSymbolicLink() &&
-        currentRootStat.isDirectory() &&
-        sameFileIdentity(currentRootStat, validated.pinnedRootStat) &&
-        isPathWithinRoot(postReal, validated.realRoot, fsOps.platform, pathOps, false) &&
-        (await hasNoSymlinkComponentsFromRoot(postReal, pathOps, fsOps));
-      if (
-        !postAllowed ||
-        !sameFileIdentity(await fsOps.stat(postReal, { bigint: true }), openedStat)
-      ) {
-        return outsideError(displayPath);
-      }
+      return {
+        ok: false,
+        code: "workspace-file/not-regular-file",
+        message: `"${displayPath}" changed while opening`,
+        details: { path: displayPath },
+      };
     }
 
     keepOpen = true;
@@ -557,7 +576,14 @@ export async function openConfinedWorkspaceFile(input: {
       },
     };
   } catch (error) {
-    if (isErrnoCode(error, "ELOOP")) return outsideError(displayPath);
+    if (isErrnoCode(error, "ELOOP")) {
+      return {
+        ok: false,
+        code: "workspace-file/not-regular-file",
+        message: `"${displayPath}" is a symlink`,
+        details: { path: displayPath, kind: "symlink" },
+      };
+    }
     if (isErrnoCode(error, "ENOENT", "ENOTDIR")) {
       return {
         ok: false,
@@ -566,7 +592,12 @@ export async function openConfinedWorkspaceFile(input: {
         details: { path: displayPath },
       };
     }
-    return outsideError(displayPath);
+    return {
+      ok: false,
+      code: "workspace-file/not-found",
+      message: `unable to read "${displayPath}"`,
+      details: { path: displayPath },
+    };
   } finally {
     if (!keepOpen) await handle?.close();
   }

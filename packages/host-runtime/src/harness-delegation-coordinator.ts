@@ -50,10 +50,11 @@ import {
   type ThreadExportInput,
   type ThreadExportResult,
 } from "./delegation-thread-export.js";
+import { threadDelegationEnvironment } from "./bearer-token.js";
 import { resolveDelegationConfiguration } from "./delegation-configuration.js";
 import { resolveDelegationModelArgument } from "./delegation-model-argument.js";
 import { normalizeStoredModelRef } from "./stored-model-ref.js";
-import { originClientName } from "./external-client-origin.js";
+import { isPeerOrigin, isSyntheticOrigin, originClientName } from "./external-client-origin.js";
 import { delegationTitle } from "./delegation-title.js";
 import { projectDelegationThreadSnapshot, validateReadOptions } from "./delegation-snapshot.js";
 import {
@@ -269,11 +270,13 @@ export class HarnessDelegationCoordinator {
 
   async start(input: DelegationStartInput): Promise<DelegationStartResult> {
     validateStart(input);
-    // An external client has no workspace of its own for the child to inherit.
-    if (originClientName(input.parentThreadId) && !input.cwd)
+    // An external client or remote peer has no local workspace of its own for the child to inherit.
+    if (isSyntheticOrigin(input.parentThreadId) && !input.cwd)
       throw new DelegationControlError(
         "INVALID_ARGUMENT",
-        "--cwd is required when an external client starts work without a parent Thread",
+        isPeerOrigin(input.parentThreadId)
+          ? "--cwd is required for remote peer delegation"
+          : "--cwd is required when an external client starts work without a parent Thread",
       );
     const parentThreadId = await this.#resolveParent(input.parentThreadId);
     const parent = await this.#parentMetadata(parentThreadId);
@@ -375,7 +378,7 @@ export class HarnessDelegationCoordinator {
         const opened = await adapter.open({
           kind: "create",
           cwd: record.cwd,
-          environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: childThreadId },
+          environment: threadDelegationEnvironment(this.#environment, childThreadId),
           executionPolicy: "unattended-full-access",
           ...selection,
         });
@@ -788,9 +791,10 @@ export class HarnessDelegationCoordinator {
   async #parentMetadata(
     parentThreadId: string,
   ): Promise<ParentMetadata & { harnessId: RoutedHarnessId }> {
-    // A client origin is no Thread; its stored source Harness keeps the native default.
-    const client = originClientName(parentThreadId);
-    if (client) return { harnessId: "codex", title: client };
+    // A synthetic origin (external client or remote peer) is no Thread; keep the native default.
+    if (isSyntheticOrigin(parentThreadId)) {
+      return { harnessId: "codex", title: originClientName(parentThreadId) ?? "remote-peer" };
+    }
     const record = await this.#repository.find(parentThreadId);
     if (record)
       return {

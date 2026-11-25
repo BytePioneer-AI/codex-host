@@ -3,15 +3,15 @@
   display: none;
 }
 
-/* Variant B: borderless ambient chip inside `conversation.input.left` */
+/* Minimal borderless remote indicator inside `conversation.input.left` */
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4.5px;
   min-width: 0;
-  max-width: 240px;
-  height: 28px;
-  padding: 0 7px;
+  max-width: 150px;
+  height: 24px;
+  padding: 0 4px;
   border: 0;
   border-radius: var(--dsw-radius-sm);
   background: transparent;
@@ -22,13 +22,10 @@
   white-space: nowrap;
   user-select: none;
   cursor: default;
-  transition:
-    background-color 120ms ease,
-    color 120ms ease;
+  transition: color 120ms ease;
 }
 
 .chip:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
 }
 
@@ -37,36 +34,63 @@
   outline-offset: -1px;
 }
 
+.chipGlobe {
+  --ch-peer-dot-color: #3b76cc;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ch-peer-dot-color);
+}
+
+.chipGlobe[data-color="blue"] {
+  --ch-peer-dot-color: #3b76cc;
+}
+.chipGlobe[data-color="purple"] {
+  --ch-peer-dot-color: #7460cc;
+}
+.chipGlobe[data-color="cyan"] {
+  --ch-peer-dot-color: #0e8fa8;
+}
+.chipGlobe[data-color="green"] {
+  --ch-peer-dot-color: #2f8c70;
+}
+.chipGlobe[data-color="amber"] {
+  --ch-peer-dot-color: #c27803;
+}
+.chipGlobe[data-color="rose"] {
+  --ch-peer-dot-color: #c94a6a;
+}
+.chipGlobe[data-color="slate"] {
+  --ch-peer-dot-color: #64748b;
+}
+
+:global(body[data-ds-dark-theme]) .chipGlobe[data-color="blue"] {
+  --ch-peer-dot-color: #7bb0f8;
+}
+:global(body[data-ds-dark-theme]) .chipGlobe[data-color="purple"] {
+  --ch-peer-dot-color: #a899f2;
+}
+:global(body[data-ds-dark-theme]) .chipGlobe[data-color="cyan"] {
+  --ch-peer-dot-color: #63c5da;
+}
+:global(body[data-ds-dark-theme]) .chipGlobe[data-color="green"] {
+  --ch-peer-dot-color: #6ec4a7;
+}
+:global(body[data-ds-dark-theme]) .chipGlobe[data-color="amber"] {
+  --ch-peer-dot-color: #e0ae58;
+}
+:global(body[data-ds-dark-theme]) .chipGlobe[data-color="rose"] {
+  --ch-peer-dot-color: #e08298;
+}
+:global(body[data-ds-dark-theme]) .chipGlobe[data-color="slate"] {
+  --ch-peer-dot-color: #94a3b8;
+}
+
 .chipHost {
-  flex: none;
-  max-width: 110px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.chipSep {
-  flex: none;
-  color: var(--dsw-alias-label-tertiary);
-  opacity: 0.7;
-}
-
-.chipWorkspace {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--dsw-alias-label-tertiary);
-  font-weight: 450;
-}
-
-.chip:hover .chipWorkspace {
-  color: var(--dsw-alias-label-secondary);
-}
-
-@container (max-width: 460px) {
-  .chipSep,
-  .chipWorkspace {
-    display: none;
-  }
 }
 
 /* Slim subtle reconnect strip shown only when remote host is disconnected */
@@ -103,11 +127,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--dsw-alias-label-primary);
-}
-
-.hostIcon {
-  flex: none;
-  color: var(--dsw-alias-label-tertiary);
 }
 
 .dot {

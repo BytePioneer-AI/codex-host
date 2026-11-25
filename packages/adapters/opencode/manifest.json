@@ -14,7 +14,7 @@
     "commands": [
       {
         "terminal": "macOS / Linux / Windows · Terminal / PowerShell",
-        "command": "npm install -g opencode-ai"
+        "command": "npm install -g @opencode/cli"
       }
     ],
     "before": {

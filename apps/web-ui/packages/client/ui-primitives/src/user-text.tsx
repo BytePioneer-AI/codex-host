@@ -6,7 +6,9 @@
  * DSH `@[label](dsh-session:...)` forms fold to session labels; exact session labels
  * supplied by an adjacent recall decorate their bare `@label` mention; plain
  * `@name` word-boundary tokens decorate by shape alone; explicit Harness
- * delegation carriers fold to their name and plugin icon; and a plain `/name`
+ * delegation carriers fold to their name and plugin icon; explicit Harness
+ * command carriers `[@/cmd](subagent://codexhost-command.*)` fold to `/cmd`
+ * command chips; and a plain `/name`
  * token decorates only when the caller names it — a skill the host actually
  * loaded for that message (ui-chat reads the step's `skill-invocation`
  * injections) or the command a command-input bubble echoes — so `/123` or a
@@ -16,34 +18,11 @@
  * tokens (`/plan。`) stay plain even for a loaded name.
  */
 import type { ReactNode } from "react";
-import { skillReferences } from "@codexhost/shared-contracts";
 import clsx from "clsx";
 import { ReferenceIconRegular } from "./ReferenceIcon.tsx";
+import { planUserTextRanges } from "./user-text-ranges.ts";
 import css from "./user-text.module.css";
 import markdownCss from "./markdown/MarkdownText.module.css";
-
-/** The wire form a session chip serializes to; label is the display text. */
-const SESSION_WIRE_RE = /@\[([^\]\n]+)\]\(dsh-session:[^)\s]+\)/gu;
-
-/** Explicit CH mention: keep manual bare IDs/URIs and ordinary Markdown as plain text. */
-const THREAD_WIRE_RE =
-  /\[@((?:\\.|[^\\\]\r\n])+)\]\((thread:\/\/[^/?#()\s<>]+\?hostId=[^&#()\s<>]+)\)/gu;
-
-/** Explicit Harness identity; ordinary subagent links are not delegation mentions. */
-const HARNESS_WIRE_RE = /\[@([^\]\n]+)\]\(<?subagent:\/\/codexhost\.([a-z0-9][a-z0-9-]*)>?\)/gu;
-
-/** Sentence punctuation a bare `@name` token may carry without being part of the reference. */
-const TRAILING_PUNCTUATION_RE = /[.,;:!?，。；：！？]+$/u;
-
-interface DecorationRange {
-  readonly start: number;
-  readonly end: number;
-  /** Matched source text (hover title). */
-  readonly label: string;
-  readonly kind: "session" | "harness" | "plain" | "skill";
-  /** Pre-resolved display text (wire folds); derived from label when absent. */
-  readonly display?: string;
-}
 
 /** Optional navigation supplied by consumers that can preview references. */
 export interface UserTextReferences {
@@ -71,66 +50,7 @@ export function projectUserText(
   slashKind: "skill" | "command" = "skill",
   references?: UserTextReferences,
 ): ReactNode {
-  const ranges: DecorationRange[] = skillReferences(text).map((ref) => ({
-    start: ref.start,
-    end: ref.end,
-    label: ref.text,
-    kind: "skill",
-    display: ref.name,
-  }));
-  for (const mention of text.matchAll(HARNESS_WIRE_RE)) {
-    ranges.push({
-      start: mention.index,
-      end: mention.index + mention[0].length,
-      label: mention[0],
-      kind: "harness",
-      display: (mention[1] as string).trim(),
-    });
-  }
-  for (const mention of text.matchAll(THREAD_WIRE_RE)) {
-    ranges.push({
-      start: mention.index,
-      end: mention.index + mention[0].length,
-      label: mention[0],
-      kind: "session",
-      display: (mention[1] as string).replace(/\\([\\`*{}[\]()#+.!_<>|~-])/gu, "$1"),
-    });
-  }
-  SESSION_WIRE_RE.lastIndex = 0;
-  let wire: RegExpExecArray | null;
-  while ((wire = SESSION_WIRE_RE.exec(text)) !== null) {
-    ranges.push({
-      start: wire.index,
-      end: wire.index + wire[0].length,
-      label: wire[0],
-      kind: "session",
-      display: wire[1] as string, // non-optional capture in SESSION_WIRE_RE
-    });
-  }
-  for (const rawLabel of [...new Set(sessionLabels)].sort((a, b) => b.length - a.length)) {
-    const label = `@${rawLabel}`;
-    let start = text.indexOf(label);
-    while (start >= 0) {
-      ranges.push({ start, end: start + label.length, label, kind: "session" });
-      start = text.indexOf(label, start + label.length);
-    }
-  }
-  // A `/` token ends at whitespace or the text end like the host skill
-  // gesture; only `@` tokens shed sentence punctuation below.
-  const re = /(^|\s)(\/[\w-]+(?=\s|$)|@"[^"\n]+"|@[^\s]+)/gu;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const tokenStart = m.index + (m[1] as string).length; // (^|\s) captures '' at line start
-    const rawLabel = m[2] as string; // non-optional alternation capture
-    const label = rawLabel.startsWith('@"')
-      ? rawLabel
-      : rawLabel.replace(TRAILING_PUNCTUATION_RE, "");
-    if (label.length <= 1) continue;
-    if (label.startsWith("/") && !slashNames.includes(label.slice(1))) continue;
-    ranges.push({ start: tokenStart, end: tokenStart + label.length, label, kind: "plain" });
-  }
-  const rankOf = (range: DecorationRange): number => (range.kind === "plain" ? 1 : 0);
-  ranges.sort((a, b) => a.start - b.start || rankOf(a) - rankOf(b) || b.end - a.end);
+  const ranges = planUserTextRanges(text, sessionLabels, slashNames);
   const parts: ReactNode[] = [];
   let cursor = 0;
   const pushPlain = (from: number, to: number): void => {
@@ -151,11 +71,14 @@ export function projectUserText(
           ? "harness"
           : kind === "session"
             ? "session"
-            : label.startsWith("@")
-              ? label.replace(/^@"|"$/gu, "").endsWith("/")
-                ? "folder"
-                : "file"
-              : undefined;
+            : kind === "command"
+              ? undefined
+              : label.startsWith("@")
+                ? label.replace(/^@"|"$/gu, "").endsWith("/")
+                  ? "folder"
+                  : "file"
+                : undefined;
+    const chipKind = kind === "command" ? "command" : (referenceKind ?? slashKind);
     const displayLabel =
       range.display ??
       (referenceKind === undefined
@@ -178,7 +101,7 @@ export function projectUserText(
       </>
     );
     const open =
-      references === undefined
+      references === undefined || kind === "command"
         ? undefined
         : referenceKind === "file"
           ? () => {
@@ -192,12 +115,7 @@ export function projectUserText(
     const className = clsx(css.refChip, referenceKind === undefined && css.slashChip);
     parts.push(
       open === undefined ? (
-        <span
-          key={tokenStart}
-          className={className}
-          data-ref-chip={referenceKind ?? slashKind}
-          title={label}
-        >
+        <span key={tokenStart} className={className} data-ref-chip={chipKind} title={label}>
           {contents}
         </span>
       ) : (
@@ -205,7 +123,7 @@ export function projectUserText(
           key={tokenStart}
           type="button"
           className={clsx(className, markdownCss.fileMention)}
-          data-ref-chip={referenceKind ?? slashKind}
+          data-ref-chip={chipKind}
           title={label}
           onClick={(event) => {
             if (

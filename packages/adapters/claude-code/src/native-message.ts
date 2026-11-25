@@ -1,4 +1,8 @@
 import { subagentConfiguration } from "@codexhost/harness-adapter";
+import {
+  claudePromptCacheTtlSeconds,
+  type ClaudePromptCacheTtlSeconds,
+} from "./claude-prompt-cache.js";
 import { claudeUsageRecord, isClaudeModelRequest } from "./claude-usage.js";
 import { jsonValueSchema } from "@codexhost/shared-contracts";
 
@@ -233,6 +237,7 @@ function parseLastRequestUsage(
       outputTokens: number;
       cacheCreationInputTokens: number;
       cacheReadInputTokens: number;
+      promptCacheTtlSeconds?: ClaudePromptCacheTtlSeconds;
     }
   | undefined {
   if (!isRecord(value)) return undefined;
@@ -251,6 +256,7 @@ function parseLastRequestUsage(
   const requestId = boundedString(attribution.requestId, 500);
   const model = boundedString(attribution.model, 500);
   const provider = boundedString(attribution.provider, 100);
+  const promptCacheTtlSeconds = claudePromptCacheTtlSeconds(value);
   return {
     ...(requestId ? { requestId } : {}),
     ...(model ? { model } : {}),
@@ -259,6 +265,7 @@ function parseLastRequestUsage(
     outputTokens,
     cacheCreationInputTokens,
     cacheReadInputTokens,
+    ...(promptCacheTtlSeconds !== undefined ? { promptCacheTtlSeconds } : {}),
   };
 }
 
@@ -804,12 +811,14 @@ export class ClaudeNativeTurnAccumulator {
       request.usage = { ...(isRecord(request.usage) ? request.usage : {}), ...event.usage };
     } else if (event.type === "message_stop") {
       this.#usageRequest = null;
+      const promptCacheTtlSeconds = claudePromptCacheTtlSeconds(request.usage);
       events.push({
         type: "usage.request",
         record: claudeUsageRecord(request.id, request.model, request.usage, {
           startedAtMs: request.startedAtMs,
           completedAtMs: Date.now(),
         }),
+        ...(promptCacheTtlSeconds !== undefined ? { promptCacheTtlSeconds } : {}),
       });
     }
   }

@@ -325,7 +325,7 @@ it("routes a busy Web follow-up to the owning remote queue with the browser rece
   await observeProjection(view, "inbox", inbox);
   assert.equal(
     errorCode(await f.update("steer", "queued-follow-up-receipt")),
-    "session/steer-unavailable",
+    "remote/steer-unavailable",
   );
   assert.deepEqual(await f.update("remove", "queued-follow-up-receipt"), applied);
   assert.equal(

@@ -18,14 +18,19 @@
   height: 28px;
   padding: 0;
   border: none;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: 50%;
+  corner-shape: round;
   background: transparent;
-  color: var(--dsw-alias-label-secondary);
+  color: color-mix(in srgb, var(--dsw-alias-label-secondary) 82%, transparent);
   cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
 }
 
 .iconButton:hover {
   background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
 }
 
 .indicator {

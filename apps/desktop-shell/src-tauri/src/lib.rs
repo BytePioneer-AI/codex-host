@@ -1,3 +1,4 @@
+mod instance;
 mod launcher;
 mod navigation;
 mod readiness;
@@ -7,10 +8,11 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::webview::NewWindowResponse;
+use tauri::webview::{NewWindowResponse, PermissionKind, PermissionResponse};
 use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use url::Url;
 
+use instance::{Activation, Claim, PrimaryInstance};
 use launcher::{Launcher, Options, Surface};
 use navigation::{LOADING, Navigation, ONBOARDING, classify, embedded, open_browser};
 use readiness::{ShellReady, WebEvent, WebReady};
@@ -83,6 +85,14 @@ fn navigation_for(app: &AppHandle, url: &Url) -> Navigation {
         // while the window is switching back to the embedded loading page.
         Navigation::Web if !matches!(view.page, Page::Web) => Navigation::Block,
         decision => decision,
+    }
+}
+
+fn permission_response(page: &Page, kind: PermissionKind) -> PermissionResponse {
+    if matches!(page, Page::Web) && kind == PermissionKind::Microphone {
+        PermissionResponse::Allow
+    } else {
+        PermissionResponse::Default
     }
 }
 
@@ -405,23 +415,25 @@ fn window_chrome_state(window: tauri::WebviewWindow) -> WindowChromeState {
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let options = Options::from_env()?;
+    let activation = if options.onboarding {
+        Activation::Onboarding
+    } else {
+        Activation::Show
+    };
+    let (instance, activations) = match instance::claim(&options.data_dir, activation)? {
+        Claim::Primary {
+            instance,
+            activations,
+        } => (instance, activations),
+        Claim::Forwarded => return Ok(()),
+    };
     let launcher = Arc::new(Launcher::new(&std::env::current_exe()?, options.data_dir));
     let locale = sys_locale::get_locale().unwrap_or_else(|| "en".into());
     let (ensure_web, requests) = mpsc::channel();
     let onboarding = options.onboarding;
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
-            let handle = app.clone();
-            let wants_onboarding = args.iter().any(|arg| arg == "--onboarding");
-            let _ = app.run_on_main_thread(move || {
-                if wants_onboarding {
-                    show_onboarding(&handle);
-                } else {
-                    show_main(&handle, None);
-                }
-            });
-        }))
         .plugin(tauri_plugin_dialog::init())
+        .manage(instance)
         .manage(Shell {
             launcher: launcher.clone(),
             view: Mutex::new(View {
@@ -466,6 +478,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let app_handle = app.handle().clone();
             let popup_app = app_handle.clone();
             let navigation_app = app_handle.clone();
+            let permission_app = app_handle.clone();
             let path = if onboarding { ONBOARDING } else { LOADING };
             let builder = WebviewWindowBuilder::new(
                 app,
@@ -476,6 +489,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             .inner_size(1140.0, 800.0)
             .min_inner_size(400.0, 320.0)
             .visible(false)
+            // Keep HTML5 drag-and-drop active in WKWebView/WebView2 (thread references, row reorder, file drops).
+            .disable_drag_drop_handler()
             .initialization_script(navigation::initialization_script());
             #[cfg(target_os = "windows")]
             let builder = builder.decorations(false).shadow(true);
@@ -484,6 +499,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true);
             builder
+                .on_permission_request(move |_, kind| {
+                    let shell = permission_app.state::<Shell>();
+                    let view = shell.view.lock().unwrap();
+                    permission_response(&view.page, kind)
+                })
                 .on_navigation(move |url| match navigation_for(&navigation_app, url) {
                     Navigation::Embedded | Navigation::Web => true,
                     Navigation::Browser => {
@@ -527,10 +547,29 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         })
         .build(tauri::generate_context!())?;
+    let activation_app = app.handle().clone();
+    std::thread::Builder::new()
+        .name("instance-activations".into())
+        .spawn(move || {
+            while let Ok(activation) = activations.recv() {
+                let handle = activation_app.clone();
+                let delivered = activation_app.run_on_main_thread(move || match activation {
+                    Activation::Onboarding => show_onboarding(&handle),
+                    Activation::Show => show_main(&handle, None),
+                });
+                if delivered.is_err() {
+                    eprintln!("CodexHost: could not deliver a desktop window activation");
+                    break;
+                }
+            }
+        })?;
     app.run(|app, event| match event {
         RunEvent::Exit => {
             if let Some(ready) = app.try_state::<ShellReady>() {
                 ready.remove_if_owned();
+            }
+            if let Some(instance) = app.try_state::<PrimaryInstance>() {
+                instance.shutdown();
             }
         }
         #[cfg(target_os = "macos")]
@@ -542,7 +581,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Page, Status};
+    use tauri::webview::{PermissionKind, PermissionResponse};
+
+    use super::{Page, Status, permission_response};
 
     #[test]
     fn onboarding_and_dormant_ignore_background_web_events() {
@@ -552,5 +593,28 @@ mod tests {
         assert!(Page::Loading(Status::Reconnecting, None).accepts_web_events());
         assert!(Page::Loading(Status::Error, Some("err".into())).accepts_web_events());
         assert!(Page::Web.accepts_web_events());
+    }
+
+    #[test]
+    fn grants_microphone_permission_only_for_live_web_page() {
+        assert_eq!(
+            permission_response(&Page::Web, PermissionKind::Microphone),
+            PermissionResponse::Allow
+        );
+        assert_eq!(
+            permission_response(&Page::Onboarding, PermissionKind::Microphone),
+            PermissionResponse::Default
+        );
+        assert_eq!(
+            permission_response(
+                &Page::Loading(Status::Starting, None),
+                PermissionKind::Microphone
+            ),
+            PermissionResponse::Default
+        );
+        assert_eq!(
+            permission_response(&Page::Web, PermissionKind::Camera),
+            PermissionResponse::Default
+        );
     }
 }

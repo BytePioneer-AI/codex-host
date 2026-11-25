@@ -34,6 +34,7 @@ class FakeForkDom implements RendererForkDom {
 function clientWith(inspection: ThreadInspection): RendererModelClient {
   return {
     forkThread: vi.fn(async () => ({ threadId: hostThreadIdSchema.parse("derived-thread") })),
+    handoffThread: vi.fn(),
     inspectHarness: vi.fn(),
     inspectThread: vi.fn(async () => inspection),
     inspectHarnessCommands: vi.fn(),

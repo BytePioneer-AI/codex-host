@@ -8,6 +8,8 @@ use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitSta
 use std::time::{Duration, Instant};
 
 use super::PlatformError;
+#[cfg(target_os = "macos")]
+use super::macos_process_events::ProcessEvents;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use super::process::{ObservedProcessTree, ProcessSnapshot, unix_process_snapshot};
 #[cfg(target_os = "windows")]
@@ -21,7 +23,14 @@ pub struct ChildProcessGuard {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub struct ChildProcessGuard {
     tree: std::sync::Mutex<ObservedProcessTree>,
+    #[cfg(target_os = "macos")]
+    events: Option<ProcessEvents>,
     armed: bool,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn poisoned_tree_lock() -> PlatformError {
+    PlatformError::Invalid("supervised process identity lock was poisoned".into())
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -30,14 +39,47 @@ impl ChildProcessGuard {
         &self,
         operation: impl FnOnce(&mut ObservedProcessTree) -> Result<T, PlatformError>,
     ) -> Result<T, PlatformError> {
-        let mut tree = self.tree.lock().map_err(|_| {
-            PlatformError::Invalid("supervised process identity lock was poisoned".into())
-        })?;
+        let mut tree = self.tree.lock().map_err(|_| poisoned_tree_lock())?;
         operation(&mut tree)
     }
 
     fn has_live_members(&self) -> Result<bool, PlatformError> {
         self.with_tree(|tree| Ok(!tree.observe()?.is_empty()))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn retain_descendants(&mut self) -> Result<(), PlatformError> {
+        let now = Instant::now();
+        let scan_due = {
+            let events = match &mut self.events {
+                Some(events) => Some(events),
+                unset => match ProcessEvents::new() {
+                    Ok(events) => Some(unset.insert(events)),
+                    Err(_) => None,
+                },
+            };
+            match events {
+                Some(events) => match events.scan_due(now) {
+                    Ok(due) => due,
+                    Err(_) => {
+                        self.events = None;
+                        true
+                    }
+                },
+                None => true,
+            }
+        };
+        if scan_due {
+            let owned = self
+                .tree
+                .get_mut()
+                .map_err(|_| poisoned_tree_lock())?
+                .observe()?;
+            if let Some(events) = &mut self.events {
+                events.record_scan(&owned, now);
+            }
+        }
+        Ok(())
     }
 
     fn process_group_id(&self) -> Result<u32, PlatformError> {
@@ -215,6 +257,22 @@ impl SupervisedChild {
             .map_err(PlatformError::Io)
     }
 
+    /// Keeps the ownership ledger current between lifecycle ticks, so a descendant
+    /// stays attributable after its parent exits. On macOS the tree is rescanned
+    /// only after an owned process forks, exits or execs, or at a fallback
+    /// interval; signals and tree-exit waits always rescan.
+    #[cfg(target_os = "macos")]
+    pub fn retain_descendants(&mut self) -> Result<(), PlatformError> {
+        self.guard
+            .as_mut()
+            .map_or(Ok(()), ChildProcessGuard::retain_descendants)
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    pub fn retain_descendants(&mut self) -> Result<(), PlatformError> {
+        self.has_live_processes().map(drop)
+    }
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[must_use]
     pub fn process_group_id(&self) -> u32 {
@@ -341,6 +399,8 @@ pub fn spawn_supervised(command: &mut Command) -> Result<SupervisedChild, Platfo
         child,
         guard: Some(ChildProcessGuard {
             tree: std::sync::Mutex::new(ObservedProcessTree::new_following_root_exec(root)),
+            #[cfg(target_os = "macos")]
+            events: None,
             armed: true,
         }),
     })

@@ -286,6 +286,9 @@ export interface RendererSettingsMessages {
   readonly updateRestarting: string;
   readonly updateSucceeded: string;
   readonly updateFailed: string;
+  readonly updateRecoverySucceeded: string;
+  readonly updateRecoveryFailed: string;
+  readonly updateWaitingForRegistry: string;
   readonly updateRetry: string;
   readonly updateManualNpmDescription: string;
   readonly updateWindowsInstallerDescription: string;
@@ -607,6 +610,11 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateRestarting: "Restarting to finish the update...",
   updateSucceeded: "Update installed successfully.",
   updateFailed: "Update failed.",
+  updateRecoverySucceeded: "The previous version was restarted and is still available.",
+  updateRecoveryFailed:
+    "The previous version could not be restarted either; update manually as described below.",
+  updateWaitingForRegistry:
+    "This version is released, but your npm registry does not have it yet. Try again later.",
   updateRetry: "Retry",
   updateManualNpmDescription: "To update manually, quit codexhost and run this command:",
   updateWindowsInstallerDescription:
@@ -929,6 +937,9 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   updateRestarting: "正在重启以完成更新...",
   updateSucceeded: "更新安装成功。",
   updateFailed: "更新失败。",
+  updateRecoverySucceeded: "已恢复为更新前的版本，可继续使用。",
+  updateRecoveryFailed: "更新前的版本也未能重新启动，请按下方说明手动更新。",
+  updateWaitingForRegistry: "新版本已发布，你使用的 npm 源还没有同步，同步后即可更新，请稍后再试。",
   updateRetry: "重试",
   updateManualNpmDescription:
     "如需手动更新，请在终端运行以下命令。更新完成后，请退出 Codex 并通过 codexhost 重新启动。",

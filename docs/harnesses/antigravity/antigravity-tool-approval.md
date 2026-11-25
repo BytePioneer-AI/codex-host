@@ -24,6 +24,16 @@ When `agy acp` sends `session/request_permission`, the Adapter projects `HostApp
 
 Actual permission evaluation belongs entirely to `agy acp`; `codexhost` does not maintain a parallel allow/ask/deny ruleset or workspace path filter.
 
+## Interactions after a successful prompt
+
+Prompt completion does not by itself withdraw a request owned by a known, unfinished background tool. The Adapter retains the original Session callback and tool-to-Turn association, marks eligible tools as detached before completing the Turn, and routes later updates and answers to that owner. An `ask_question` tool can remain detached while waiting for its native question; it is not reported as successful merely because the prompt returned.
+
+An answer is delivered at most once to the original callback. A successor prompt does not move an old request to the new Turn. Failed or cancelled work, transport faults and Session closure settle the affected interactions and detached tools with their actual outcome. Idle requests without an established tool owner are cancelled instead of being assigned to the latest Turn.
+
+File-change items derived from a registered detached tool follow that tool's lifetime, including diffs first reported after prompt completion. This does not admit unrelated tools or file changes after a Turn ends. Ordinary single-choice/text questions and shared multi-select cards both retain their registered owner.
+
+These rules cover registered tool and interaction lifetimes. They do not establish a complete planner end signal or a native background-stop API. #1006 provides the protocol projection needed for detached Items; #1095 supplies the minimal Host Runtime support for detached-owner Questions and merges before #1007. Approval remains scoped to the foreground Turn and is cancelled when that Turn ends; only an explicitly owned Question can remain answerable after the owning Turn ends. The local stdio and Host tests use a fake ACP process; installed Desktop approval and question cards still require separate UI acceptance.
+
 ## Native Question Elicitation
 
 The Adapter declares `clientCapabilities.elicitation: { form: {} }` during ACP initialization. When the model invokes `ask_question`, `agy acp` sends `elicitation/create` (`mode: "form"`):

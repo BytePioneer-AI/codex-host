@@ -19,6 +19,8 @@ OpenCode 保留一个 Harness ID 和一个预装插件。`versioned-adapter.ts` 
 
 默认使用已有发现规则选择 `opencode`。两版同时安装时可通过 `CODEXHOST_OPENCODE_COMMAND` 指向所需可执行文件；它是执行环境的选择，不是在同一个 Thread 中切换协议。Host 需要重新建立连接才能应用其环境变化。
 
+`--version` 输出带前缀时同样识别：协议选择（`openCodeMajor`）将 `opencode v2.4.1`、`CLI 2.4.1` 归入对应主版本（1/2），其他主版本或多余行仍拒绝；安装状态检测（`openCodeVersion`）保留任意合法 SemVer 以便旧版提示升级。安装来源跟随官方包名：一键安装与清单使用 `@opencode/cli` 并放行其 `postinstall` 脚本（负责放置平台二进制）；旧包 `opencode-ai` 停在 1.19.6，其安装仍能读到 `@opencode/cli` 的最新版，更新时在同一个全局 prefix 先卸载旧包、再安装新包（避免同名 `opencode` 命令冲突及卸载旧包误删新命令）。最新版本取 npm registry 的 `@opencode/cli` latest，不读 GitHub `releases/latest`（该指针停在 1.19.6）。从 1.x 升到 2.x 后旧会话不能跨大版本恢复，安装面板给出提示。
+
 v1 的已有 Native Ref 不变。v2 的 Session locator 额外记录 `protocol: 2`，公共 `formatVersion` 仍为 `1`。Resume/Fork/Rollback 必须匹配 CLI 主版本；匹配失败保留原记录并提示选择对应安装。codexhost 不迁移 OpenCode 数据库，也不承诺 v1/v2 会话可互换。
 
 ### v2 的原生语义与限制

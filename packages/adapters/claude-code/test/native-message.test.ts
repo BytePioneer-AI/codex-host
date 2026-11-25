@@ -1297,6 +1297,32 @@ describe("Claude native Turn interpretation", () => {
     });
   });
 
+  it.each([
+    [{ ephemeral_5m_input_tokens: 20, ephemeral_1h_input_tokens: 0 }, 300],
+    [{ ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 20 }, 3600],
+    [{ ephemeral_5m_input_tokens: 5, ephemeral_1h_input_tokens: 15 }, 300],
+  ])(
+    "extracts promptCacheTtlSeconds from cache_creation split (%o -> %i)",
+    (cache_creation, expectedTtl) => {
+      const turn = new ClaudeNativeTurnAccumulator();
+      const consumed = turn.consume(
+        assistantBlocks([{ type: "text", text: "answer" }], "assistant-ttl", undefined, null, {
+          input_tokens: 10,
+          cache_creation_input_tokens: 20,
+          cache_read_input_tokens: 70,
+          output_tokens: 5,
+          cache_creation,
+        }),
+      );
+      expect(consumed.events).toContainEqual(
+        expect.objectContaining({
+          type: "message.completed",
+          lastRequestUsage: expect.objectContaining({ promptCacheTtlSeconds: expectedTtl }),
+        }),
+      );
+    },
+  );
+
   it("omits modelUsage entirely when any per-model entry is malformed", () => {
     const turn = new ClaudeNativeTurnAccumulator();
     const consumed = turn.consume(

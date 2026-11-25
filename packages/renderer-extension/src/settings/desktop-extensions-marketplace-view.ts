@@ -26,9 +26,8 @@ export interface DesktopExtensionsMarketplaceViewOptions {
   readonly visibleEntries: readonly HostExtensionCatalogEntry[];
   readonly installedById: ReadonlyMap<string, HostExtensionListItem>;
   readonly canInstall: boolean;
-  readonly mutating: boolean;
-  readonly activeMutationId: string | null;
-  readonly activeMutationAction: DesktopExtensionMutationAction | null;
+  readonly pendingMutations: ReadonlyMap<string, DesktopExtensionMutationAction>;
+  readonly globalBusy: boolean;
   readonly onOpenDetails: (extensionId: string) => void;
   readonly onInstall: (entry: HostExtensionCatalogEntry, isUpdate: boolean) => void;
   readonly onViewInstalled: (extensionId: string) => void;
@@ -81,9 +80,8 @@ export function renderDesktopExtensionsMarketplaceGrid(
     visibleEntries,
     installedById,
     canInstall,
-    mutating,
-    activeMutationId,
-    activeMutationAction,
+    pendingMutations,
+    globalBusy,
     onOpenDetails,
     onInstall,
     onViewInstalled,
@@ -98,7 +96,9 @@ export function renderDesktopExtensionsMarketplaceGrid(
     const installed = installedById.get(entry.id);
     const updateAvailable = hasCatalogUpdate(installed, entry);
     const installState = installed ? (updateAvailable ? "update" : "installed") : "available";
-    const isBusyCard = activeMutationId === entry.id;
+    const entryAction = pendingMutations.get(entry.id) ?? null;
+    const isBusyCard = entryAction !== null;
+    const controlsDisabled = isBusyCard || globalBusy;
 
     const actionButton = createEl(document, "button");
     actionButton.type = "button";
@@ -107,16 +107,18 @@ export function renderDesktopExtensionsMarketplaceGrid(
     if (installState === "available") {
       actionButton.className = "settings-command-button settings-extensions-card__button";
       actionButton.dataset.action = "install";
-      const installingThis = isBusyCard && activeMutationAction === "install";
+      const installingThis = entryAction === "install";
       actionButton.textContent = installingThis ? copy.installing : copy.install;
-      actionButton.disabled = mutating || !canInstall;
+      actionButton.setAttribute("aria-busy", String(installingThis));
+      actionButton.disabled = controlsDisabled || !canInstall;
     } else if (installState === "update") {
       actionButton.className =
         "settings-command-button settings-extensions-card__button settings-extensions-card__button--update";
       actionButton.dataset.action = "update";
-      const updatingThis = isBusyCard && activeMutationAction === "update";
+      const updatingThis = entryAction === "update";
       actionButton.textContent = updatingThis ? copy.updating : copy.update;
-      actionButton.disabled = mutating || !canInstall;
+      actionButton.setAttribute("aria-busy", String(updatingThis));
+      actionButton.disabled = controlsDisabled || !canInstall;
     } else {
       actionButton.className =
         "settings-command-button settings-command-button--secondary settings-extensions-card__button settings-extensions-card__button--installed";
@@ -125,7 +127,7 @@ export function renderDesktopExtensionsMarketplaceGrid(
         createRendererSettingsIcon("check", 12),
         createEl(document, "span", "", copy.installedBadge),
       );
-      actionButton.disabled = mutating;
+      actionButton.disabled = controlsDisabled;
     }
 
     actionButton.addEventListener("click", (event) => {

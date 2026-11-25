@@ -3,6 +3,7 @@ export interface ThreadTreeRow {
   id: string;
   updatedAt: number;
   running: boolean;
+  runningSubagentCount?: number;
   pendingInteraction?: string;
   completed: boolean;
 }
@@ -91,7 +92,9 @@ export function buildThreadTree<T extends ThreadTreeRow>(
     for (const child of node.tree.children) {
       ids.push(child.id, ...child.tree.descendantIds);
       node.tree.updatedAt = Math.max(node.tree.updatedAt, child.tree.updatedAt);
-      node.tree.activity.running += Number(child.running) + child.tree.activity.running;
+      node.tree.activity.running +=
+        Number(child.running || (child.runningSubagentCount ?? 0) > 0) +
+        child.tree.activity.running;
       node.tree.activity.pendingInteraction +=
         Number(child.pendingInteraction !== undefined) + child.tree.activity.pendingInteraction;
       node.tree.activity.completed += Number(child.completed) + child.tree.activity.completed;

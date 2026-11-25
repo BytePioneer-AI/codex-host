@@ -39,6 +39,8 @@ import {
 import { installDelegationSkills } from "./delegation-skill.js";
 import type { DelegationControlRegistration } from "./delegation-types.js";
 import { readRemoteDelegationThread } from "./remote-delegation-read.js";
+import { createRemotePeerDelegationClient } from "./remote-peer-delegation.js";
+import { FilePeerStartIdempotencyStore } from "./peer-start-idempotency-store.js";
 import {
   DELEGATION_CLI_NODE_PATH_ENV,
   DELEGATION_CLI_PATH_ENV,
@@ -211,6 +213,10 @@ export async function prepareDelegationRuntime(input: {
   });
   const registry = new DelegationControlRegistry({
     remoteRead: (request) => readRemoteDelegationThread(input.environment, request),
+    remotePeer: createRemotePeerDelegationClient(input.environment),
+    peerStartStore: new FilePeerStartIdempotencyStore(
+      path.join(codexhostDataDirectory(input.environment), "peer-delegation-requests"),
+    ),
     diagnose: diagnoseWatch,
     watchStore: new FileDelegationWatchStore(
       defaultDelegationWatchDirectory(input.environment),
@@ -311,6 +317,7 @@ async function runWithConsoleControl(
   host: AppServerHost,
   enabled: boolean,
   environment: NodeJS.ProcessEnv,
+  registry: DelegationControlRegistry,
 ): Promise<number> {
   const control = enabled
     ? await startConsoleControlServer({ target: host, environment }).catch((error: unknown) => {
@@ -321,7 +328,11 @@ async function runWithConsoleControl(
       })
     : undefined;
   const clients = enabled
-    ? await startClientChannelServer({ target: host, environment }).catch((error: unknown) => {
+    ? await startClientChannelServer({
+        target: host,
+        peerDelegation: (params) => registry.handlePeerDelegationChannelRequest(params),
+        environment,
+      }).catch((error: unknown) => {
         process.stderr.write(
           `codexhost Host Runtime: client channel unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
         );
@@ -455,6 +466,7 @@ export async function runHostRuntime(input: {
               host,
               consoleOpener !== undefined,
               delegationEnvironment,
+              registry,
             );
           } finally {
             await official.close();
@@ -509,6 +521,7 @@ export async function runHostRuntime(input: {
             host,
             consoleOpener !== undefined,
             delegationEnvironment,
+            registry,
           );
         } finally {
           try {

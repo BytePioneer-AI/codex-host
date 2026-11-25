@@ -25,8 +25,21 @@ import {
   type AntigravityOpenAcpSessionInput,
   type AntigravityPromptInputPart,
   type AntigravityPromptResult,
+  type AntigravitySessionInteractionHandler,
   type AntigravitySessionEventHandler,
 } from "./acp-types.js";
+
+interface PromptChain {
+  handler: AntigravityActivePromptHandler;
+  interrupted: AbortController;
+  requestIds: Set<JsonRpcId>;
+  pendingWireIds: Array<(id: JsonRpcId) => void>;
+  awaitingResponses: number;
+  pending: number;
+  started: boolean;
+  acceptCallbacks: boolean;
+  responded: boolean;
+}
 
 export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
   readonly skipPermissions: boolean;
@@ -35,12 +48,10 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
   #initializing: Promise<InitializeResponse> | null = null;
   #sessionId: string | null = null;
   #sessionHandler: AntigravitySessionEventHandler | null = null;
-  #active: AntigravityActivePromptHandler | null = null;
-  #promptRequestId: JsonRpcId | undefined;
-  #callbacks = new Set<() => void>();
+  #sessionInteractionHandler: AntigravitySessionInteractionHandler | null = null;
+  #active: PromptChain | null = null;
+  #callbacks = new Map<() => void, "prompt" | "session">();
   #acceptedCallbacks = new WeakSet<object>();
-  #acceptCallbacks = false;
-  #promptInterrupted: AbortController | null = null;
   #opening: Array<{ sessionId: string; event: AntigravityAcpEvent }> | null = null;
   #pendingEvents: AntigravityAcpEvent[] = [];
   #closed = false;
@@ -65,6 +76,10 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
   setSessionEventHandler(handler: AntigravitySessionEventHandler | null): void {
     this.#sessionHandler = handler;
     if (handler) for (const event of this.#pendingEvents.splice(0)) handler(event);
+  }
+
+  setSessionInteractionHandler(handler: AntigravitySessionInteractionHandler | null): void {
+    this.#sessionInteractionHandler = handler;
   }
 
   initialize(): Promise<InitializeResponse> {
@@ -125,8 +140,16 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
       const writer = stream.writable.getWriter();
       stream.writable = new WritableStream<AnyMessage>({
         write: (message) => {
-          if ("method" in message && message.method === "session/prompt" && "id" in message)
-            this.#promptRequestId = message.id;
+          if (
+            this.#active &&
+            "method" in message &&
+            message.method === "session/prompt" &&
+            "id" in message
+          ) {
+            this.#active.requestIds.add(message.id);
+            this.#active.started = true;
+            this.#active.pendingWireIds.shift()?.(message.id);
+          }
           return writer.write(message);
         },
         close: () => writer.close(),
@@ -158,7 +181,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
                 message.method = extensionPrefix + method;
                 // Admit callbacks in wire order even if the SDK dispatches them later.
                 if (
-                  this.#acceptCallbacks &&
+                  this.#active?.acceptCallbacks &&
                   "id" in message &&
                   typeof message.params === "object" &&
                   message.params !== null
@@ -166,16 +189,21 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
                   this.#acceptedCallbacks.add(message.params);
               }
             }
+            const active = this.#active;
             if (
+              active &&
               !("method" in message) &&
               "id" in message &&
-              message.id === this.#promptRequestId &&
-              ("result" in message || "error" in message)
+              ("result" in message || "error" in message) &&
+              active.requestIds.delete(message.id) &&
+              --active.awaitingResponses === 0
             ) {
               // The next update is idle output, even if the SDK has not settled prompt().
-              this.#promptRequestId = undefined;
-              this.#acceptCallbacks = false;
-              this.#active?.onResponse?.();
+              active.acceptCallbacks = false;
+              if (!active.responded) {
+                active.responded = true;
+                active.handler.onResponse?.();
+              }
             }
             controller.enqueue(message);
           },
@@ -316,47 +344,94 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
     parts: readonly AntigravityPromptInputPart[],
     handler: AntigravityActivePromptHandler,
   ): Promise<AntigravityPromptResult> {
-    const { connection, sessionId } = this.#session();
+    const session = this.#session();
     if (this.#active)
       throw new AntigravityTransportError("unavailable", "An ACP prompt is already active");
-    this.#active = handler;
-    this.#acceptCallbacks = true;
-    const interrupted = new AbortController();
-    this.#promptInterrupted = interrupted;
+    const active = (this.#active = {
+      handler,
+      interrupted: new AbortController(),
+      requestIds: new Set<JsonRpcId>(),
+      pendingWireIds: [],
+      awaitingResponses: 0,
+      pending: 0,
+      started: false,
+      acceptCallbacks: true,
+      responded: false,
+    });
+    return this.#sendPrompt(session, active, parts);
+  }
+
+  steer(parts: readonly AntigravityPromptInputPart[]): Promise<AntigravityPromptResult> {
+    const active = this.#active;
+    if (!active?.acceptCallbacks)
+      throw new AntigravityTransportError("unavailable", "No steerable ACP prompt is active");
+    return this.#sendPrompt(this.#session(), active, parts);
+  }
+
+  async #sendPrompt(
+    { connection, sessionId }: { connection: ClientSideConnection; sessionId: string },
+    active: PromptChain,
+    parts: readonly AntigravityPromptInputPart[],
+  ): Promise<AntigravityPromptResult> {
+    // Count queued writes as well as requests that already have a wire ID.
+    active.awaitingResponses++;
+    active.pending++;
+    let wireId: JsonRpcId | undefined;
+    const assignWireId = (id: JsonRpcId) => {
+      wireId = id;
+    };
+    active.pendingWireIds.push(assignWireId);
     try {
       return await this.#request(
         connection.prompt({ sessionId, prompt: [...parts] }) as Promise<AntigravityPromptResult>,
         "session/prompt",
         null,
-        interrupted.signal,
+        active.interrupted.signal,
       );
     } finally {
-      this.#clearCallbacks();
-      this.#acceptCallbacks = false;
-      this.#active = null;
-      this.#promptRequestId = undefined;
-      this.#promptInterrupted = null;
+      active.pending--;
+      let unresponded = false;
+      if (wireId !== undefined) {
+        unresponded = active.requestIds.delete(wireId);
+      } else {
+        const index = active.pendingWireIds.indexOf(assignWireId);
+        if (index !== -1) active.pendingWireIds.splice(index, 1);
+        unresponded = true;
+      }
+      if (unresponded && active.awaitingResponses > 0) {
+        active.awaitingResponses--;
+        if (active.awaitingResponses === 0) {
+          active.acceptCallbacks = false;
+          if (!active.responded) {
+            active.responded = true;
+            active.handler.onResponse?.();
+          }
+        }
+      }
+      if (active.pending === 0 && this.#active === active) {
+        this.#clearCallbacks("prompt");
+        this.#active = null;
+      }
     }
   }
 
   async cancel(): Promise<void> {
     const { connection, sessionId } = this.#session();
-    this.#acceptCallbacks = false;
-    this.#clearCallbacks();
+    if (this.#active) this.#active.acceptCallbacks = false;
+    this.#clearCallbacks("prompt");
     await this.#request(connection.cancel({ sessionId }), "session/cancel");
   }
 
   #clearSessionState(): string | null {
     const sessionId = this.#sessionId;
     this.#sessionId = null;
-    this.#acceptCallbacks = false;
-    this.#promptInterrupted?.abort(
+    this.#active?.interrupted.abort(
       new AntigravityTransportError("unavailable", "ACP session closed"),
     );
     this.#active = null;
-    this.#promptRequestId = undefined;
     this.#pendingEvents = [];
     this.#clearCallbacks();
+    this.#sessionInteractionHandler = null;
     return sessionId;
   }
 
@@ -425,22 +500,26 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
       ) ||
       // The wire request bounds foreground updates; the handler may still
       // be present to let the SDK finish processing earlier callbacks.
-      (this.#promptRequestId === undefined && !this.#opening)
+      (!(this.#active?.started && this.#active.awaitingResponses > 0) && !this.#opening)
     ) {
       if (this.#sessionHandler) this.#sessionHandler(event);
       else this.#pendingEvents.push(event);
-    } else this.#active?.onEvent(event);
+    } else this.#active?.handler.onEvent(event);
   }
 
   async #callback<T>(
     request: object,
-    invoke: (handler: AntigravityActivePromptHandler) => Promise<T>,
+    invoke: (handler: AntigravitySessionInteractionHandler) => Promise<T>,
     cancelled: T,
   ): Promise<T> {
     const active = this.#active;
+    const accepted = this.#acceptedCallbacks.delete(request);
+    const session = this.#sessionInteractionHandler;
+    const callbackHandler = active && accepted ? active.handler : session;
+    // Session handlers own cancellation by tool owner, including older Turns.
+    const scope = session ? "session" : "prompt";
     if (
-      !active ||
-      !this.#acceptedCallbacks.delete(request) ||
+      !callbackHandler ||
       !("sessionId" in request) ||
       request.sessionId !== this.#sessionId ||
       this.#closed
@@ -450,18 +529,22 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
     const cancellation = new Promise<T>((resolve) => {
       cancel = () => resolve(cancelled);
     });
-    this.#callbacks.add(cancel);
+    this.#callbacks.set(cancel, scope);
     try {
-      return await Promise.race([invoke(active), cancellation]);
+      return await Promise.race([invoke(callbackHandler), cancellation]);
     } finally {
       this.#callbacks.delete(cancel);
     }
   }
 
-  #clearCallbacks(): void {
+  #clearCallbacks(scope?: "prompt" | "session"): void {
     this.#acceptedCallbacks = new WeakSet();
-    for (const cancel of this.#callbacks) cancel();
-    this.#callbacks.clear();
+    for (const [cancel, callbackScope] of this.#callbacks) {
+      if (scope === undefined || scope === callbackScope) {
+        cancel();
+        this.#callbacks.delete(cancel);
+      }
+    }
   }
 
   async #request<T>(

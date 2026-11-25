@@ -25,46 +25,60 @@
   margin-left: 2px;
   font-size: 10.5px;
 }
-.hostBadge[data-color="blue"] {
-  --ch-peer-dot-color: #3b82f6;
+.hostBadge[data-color="blue"],
+.hostRail[data-color="blue"],
+.hoverHostDot[data-color="blue"] {
+  --ch-peer-dot-color: #3b76cc;
 }
-.hostBadge[data-color="purple"] {
-  --ch-peer-dot-color: #8b5cf6;
+.hostBadge[data-color="purple"],
+.hostRail[data-color="purple"],
+.hoverHostDot[data-color="purple"] {
+  --ch-peer-dot-color: #7460cc;
 }
-.hostBadge[data-color="cyan"] {
-  --ch-peer-dot-color: #06b6d4;
+.hostBadge[data-color="cyan"],
+.hostRail[data-color="cyan"],
+.hoverHostDot[data-color="cyan"] {
+  --ch-peer-dot-color: #0e8fa8;
 }
-.hostBadge[data-color="green"] {
-  --ch-peer-dot-color: #10b981;
+.hostBadge[data-color="green"],
+.hostRail[data-color="green"],
+.hoverHostDot[data-color="green"] {
+  --ch-peer-dot-color: #2f8c70;
 }
-.hostBadge[data-color="amber"] {
-  --ch-peer-dot-color: #f59e0b;
+.hostBadge[data-color="amber"],
+.hostRail[data-color="amber"],
+.hoverHostDot[data-color="amber"] {
+  --ch-peer-dot-color: #c27803;
 }
-.hostBadge[data-color="rose"] {
-  --ch-peer-dot-color: #f43f5e;
+.hostBadge[data-color="rose"],
+.hostRail[data-color="rose"],
+.hoverHostDot[data-color="rose"] {
+  --ch-peer-dot-color: #c94a6a;
 }
-.hostBadge[data-color="slate"] {
+.hostBadge[data-color="slate"],
+.hostRail[data-color="slate"],
+.hoverHostDot[data-color="slate"] {
   --ch-peer-dot-color: #64748b;
 }
-:global(body[data-ds-dark-theme]) .hostBadge[data-color="blue"] {
-  --ch-peer-dot-color: #60a5fa;
+:global(body[data-ds-dark-theme]) :is(.hostBadge, .hostRail, .hoverHostDot)[data-color="blue"] {
+  --ch-peer-dot-color: #7bb0f8;
 }
-:global(body[data-ds-dark-theme]) .hostBadge[data-color="purple"] {
-  --ch-peer-dot-color: #a78bfa;
+:global(body[data-ds-dark-theme]) :is(.hostBadge, .hostRail, .hoverHostDot)[data-color="purple"] {
+  --ch-peer-dot-color: #a899f2;
 }
-:global(body[data-ds-dark-theme]) .hostBadge[data-color="cyan"] {
-  --ch-peer-dot-color: #22d3ee;
+:global(body[data-ds-dark-theme]) :is(.hostBadge, .hostRail, .hoverHostDot)[data-color="cyan"] {
+  --ch-peer-dot-color: #63c5da;
 }
-:global(body[data-ds-dark-theme]) .hostBadge[data-color="green"] {
-  --ch-peer-dot-color: #34d399;
+:global(body[data-ds-dark-theme]) :is(.hostBadge, .hostRail, .hoverHostDot)[data-color="green"] {
+  --ch-peer-dot-color: #6ec4a7;
 }
-:global(body[data-ds-dark-theme]) .hostBadge[data-color="amber"] {
-  --ch-peer-dot-color: #fbbf24;
+:global(body[data-ds-dark-theme]) :is(.hostBadge, .hostRail, .hoverHostDot)[data-color="amber"] {
+  --ch-peer-dot-color: #e0ae58;
 }
-:global(body[data-ds-dark-theme]) .hostBadge[data-color="rose"] {
-  --ch-peer-dot-color: #fb7185;
+:global(body[data-ds-dark-theme]) :is(.hostBadge, .hostRail, .hoverHostDot)[data-color="rose"] {
+  --ch-peer-dot-color: #e08298;
 }
-:global(body[data-ds-dark-theme]) .hostBadge[data-color="slate"] {
+:global(body[data-ds-dark-theme]) :is(.hostBadge, .hostRail, .hoverHostDot)[data-color="slate"] {
   --ch-peer-dot-color: #94a3b8;
 }
 .hostBadge[data-state="connecting"] {
@@ -112,18 +126,68 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .hostBadge[data-state="connecting"] .hostDot {
+  .hostBadge[data-state="connecting"] .hostDot,
+  .hostRail[data-state="connecting"] {
     animation: none;
   }
 }
-.hostTimeSep {
-  flex: none;
-  margin: 0 5px;
-  font-size: 10px;
+
+.hostRail {
+  --ch-peer-dot-color: #3b76cc;
+  position: absolute;
+  inset-inline-start: 2px;
+  top: 8px;
+  width: 2px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--dsw-alias-label-tertiary);
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.hostRailWorkspace {
+  top: 8px;
+  height: 18px;
+}
+
+.hostRail[data-state="connected"] {
+  background: var(--ch-peer-dot-color);
+  opacity: 0.78;
+}
+
+.hostRail[data-state="connecting"] {
+  background: var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-warn-primary, #c27803));
+  opacity: 0.85;
+  animation: hostDotPulse 1.6s ease-in-out infinite;
+}
+
+.hoverHost {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
   line-height: 16px;
-  color: var(--dsw-alias-label-tertiary);
-  opacity: 0.45;
-  user-select: none;
+  color: #cfd3d6;
+}
+
+.hoverHostDot {
+  --ch-peer-dot-color: #7bb0f8;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+  opacity: 0.55;
+}
+
+.hoverHostDot[data-state="connected"] {
+  background: var(--ch-peer-dot-color);
+  opacity: 0.95;
+}
+
+.hoverHostDot[data-state="connecting"] {
+  background: #e0ae58;
+  opacity: 0.9;
 }
 
 .projectRow,
@@ -580,8 +644,7 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen)
-    :is(.time, .hostTimeSep, .hostBadge) {
+  .sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) :is(.time, .hostBadge) {
     visibility: hidden;
   }
 
@@ -621,6 +684,14 @@
   min-height: 44px;
 }
 
+:global([data-phone-drawer]) .sessionRow > .hostRail {
+  top: 14px;
+}
+
+:global([data-phone-drawer]) .projectRow > .hostRailWorkspace {
+  top: 13px;
+}
+
 /* Keep a collapsed Thread's title and summary inside one phone-height row. */
 :global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) {
   display: grid;
@@ -628,6 +699,10 @@
   grid-template-rows: 24px 24px;
   column-gap: 8px;
   padding-block: 2px;
+}
+
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) > .hostRail {
+  top: 7px;
 }
 
 :global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .sessionMain {
@@ -891,10 +966,6 @@
   }
 
   .sessionRow .time:not(.timeStatus) {
-    display: none;
-  }
-
-  .sessionRow:not(:has(.timeStatus)) .hostTimeSep {
     display: none;
   }
 

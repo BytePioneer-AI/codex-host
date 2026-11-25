@@ -13,6 +13,7 @@ const SOURCES = [
   "packages/desktop-control/src/remote-connections-control.ts",
   "crates/updater/src/ssh.rs",
   "crates/updater/src/remote.rs",
+  "crates/updater/src/npm.rs",
   "packages/host-runtime/src/runtime-maintenance.ts",
   "packages/host-runtime/src/remote-ssh-setup.ts",
   "packages/host-runtime/src/app-server-host.ts",

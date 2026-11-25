@@ -7582,119 +7582,123 @@ describe("Claude Code HarnessAdapter", () => {
     expect(adapter.credits()).toEqual({ usedPercent: 10, periodType: "five_hour" });
   });
 
-  it("reuses recent credits during refreshCredits cooldown, tracks native push freshness per window, and keeps inspectAccount fresh", async () => {
-    let now = 100_000;
-    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  it("seeds credits at most once via refreshCredits, relies on passive pushes afterward, and keeps inspectAccount fresh", async () => {
     const { adapter, dependencies, transports } = fixture({}, { accountCreditsSupported: true });
     const responses = [
       { credits: { usedPercent: 10, periodType: "five_hour" as const } },
       { credits: { usedPercent: 20, periodType: "five_hour" as const } },
-      {
-        credits: {
-          usedPercent: 30,
-          periodType: "five_hour" as const,
-          productUsage: [
-            { product: "7-day window", periodType: "seven_day" as const, usagePercent: 25 },
-          ],
-        },
-      },
     ];
-    let index = 0;
+    let inspectCalls = 0;
     const createInspector = dependencies.createInspector;
     dependencies.createInspector = (input) => ({
       ...createInspector(input),
-      inspectAccount: async () => responses[index++] ?? null,
+      inspectAccount: async () => responses[inspectCalls++] ?? null,
     });
     try {
       await expect(adapter.refreshCredits()).resolves.toEqual({
         usedPercent: 10,
         periodType: "five_hour",
       });
+      expect(inspectCalls).toBe(1);
 
-      now = 130_000;
+      // Subsequent runtime refreshCredits calls reuse cached credits without spawning a probe.
       await expect(adapter.refreshCredits()).resolves.toEqual({
         usedPercent: 10,
         periodType: "five_hour",
       });
+      expect(inspectCalls).toBe(1);
 
+      // Explicit Settings inspection still probes live account credits.
       await expect(adapter.inspectAccount()).resolves.toEqual({
         credits: { usedPercent: 20, periodType: "five_hour" },
       });
+      expect(inspectCalls).toBe(2);
       expect(adapter.credits()).toEqual({ usedPercent: 20, periodType: "five_hour" });
-
-      now = 170_000;
-      await expect(adapter.refreshCredits()).resolves.toEqual({
-        usedPercent: 20,
-        periodType: "five_hour",
-      });
 
       const session = await openSession(adapter);
       const iterator = session.outputs[Symbol.asyncIterator]();
-      await session.execute(textTurn("refresh-cooldown-push"));
+      await session.execute(textTurn("passive-plan-limit-push"));
       await nextEvent(iterator);
       await nextEvent(iterator);
       await nextEvent(iterator);
       const transport = transports[0];
       if (!transport) throw new Error("Fake Claude transport was not created");
 
-      now = 180_000;
-      transport.planLimit({
-        fiveHour: { utilizationPercent: 44 },
-        sevenDay: { utilizationPercent: 18 },
-      });
-      await nextEvent(iterator);
-
-      now = 220_000;
-      await expect(adapter.refreshCredits()).resolves.toEqual({
-        usedPercent: 44,
-        periodType: "five_hour",
-        productUsage: [{ product: "7-day window", periodType: "seven_day", usagePercent: 18 }],
-      });
-
-      now = 230_000;
+      // Single-window passive push updates credits without re-arming active probes.
       transport.planLimit({ fiveHour: { utilizationPercent: 46 } });
       await nextEvent(iterator);
 
-      now = 240_000;
       await expect(adapter.refreshCredits()).resolves.toEqual({
-        usedPercent: 30,
+        usedPercent: 46,
         periodType: "five_hour",
-        productUsage: [{ product: "7-day window", periodType: "seven_day", usagePercent: 25 }],
       });
+      expect(inspectCalls).toBe(2);
 
       transport.finish({ status: "succeeded" });
       await session.close();
     } finally {
-      clock.mockRestore();
       await adapter.close();
     }
   });
 
-  it("applies refreshCredits cooldown after an empty account inspection", async () => {
-    let now = 100_000;
-    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  it("does not re-probe via refreshCredits after an empty cold-start inspection or a prior passive push", async () => {
     const { adapter, dependencies } = fixture({}, { accountCreditsSupported: true });
-    const responses = [null, { credits: { usedPercent: 15, periodType: "five_hour" as const } }];
-    let index = 0;
+    let inspectCalls = 0;
     const createInspector = dependencies.createInspector;
     dependencies.createInspector = (input) => ({
       ...createInspector(input),
-      inspectAccount: async () => responses[index++] ?? null,
+      inspectAccount: async () => {
+        inspectCalls += 1;
+        return inspectCalls === 1
+          ? null
+          : { credits: { usedPercent: 15, periodType: "five_hour" as const } };
+      },
     });
     try {
       await expect(adapter.refreshCredits()).resolves.toBeNull();
-
-      now = 130_000;
       await expect(adapter.refreshCredits()).resolves.toBeNull();
+      expect(inspectCalls).toBe(1);
 
-      now = 160_000;
-      await expect(adapter.refreshCredits()).resolves.toEqual({
-        usedPercent: 15,
+      // Explicit inspection still refreshes and seeds cache.
+      await expect(adapter.inspectAccount()).resolves.toEqual({
+        credits: { usedPercent: 15, periodType: "five_hour" },
+      });
+      expect(inspectCalls).toBe(2);
+    } finally {
+      await adapter.close();
+    }
+
+    // If a live session already received a passive push, refreshCredits skips cold-start probing.
+    const passive = fixture({}, { accountCreditsSupported: true });
+    let passiveInspectCalls = 0;
+    const baseInspector = passive.dependencies.createInspector;
+    passive.dependencies.createInspector = (input) => ({
+      ...baseInspector(input),
+      inspectAccount: async () => {
+        passiveInspectCalls += 1;
+        return null;
+      },
+    });
+    try {
+      const session = await openSession(passive.adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute(textTurn("passive-before-refresh"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      passive.transports[0]?.planLimit({ fiveHour: { utilizationPercent: 33 } });
+      await nextEvent(iterator);
+
+      await expect(passive.adapter.refreshCredits()).resolves.toEqual({
+        usedPercent: 33,
         periodType: "five_hour",
       });
+      expect(passiveInspectCalls).toBe(0);
+
+      passive.transports[0]?.finish({ status: "succeeded" });
+      await session.close();
     } finally {
-      clock.mockRestore();
-      await adapter.close();
+      await passive.adapter.close();
     }
   });
 

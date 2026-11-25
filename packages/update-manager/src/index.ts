@@ -29,6 +29,13 @@ export {
 } from "./github-release.js";
 export { parseReleaseAnnouncementMarkdown } from "./release-announcement.js";
 export {
+  createNpmReleaseAvailability,
+  prefetchNpmRelease,
+  type NpmCommandRunner,
+  type NpmReleaseAvailability,
+  type NpmReleaseTarget,
+} from "./npm-registry.js";
+export {
   fetchLatestGitHubReleaseWithGitHubCli,
   type GitHubCliReleaseFetchOptions,
   type GitHubCliRunner,

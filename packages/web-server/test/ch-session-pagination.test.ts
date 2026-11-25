@@ -325,3 +325,26 @@ it("ends a deleted native project's continuation without reading the global cata
   assert.deepEqual(stale, { items: [], archivedSessionIds: ["native-0"], nextCursor: null });
   assert.equal(f.cursors.length, count);
 });
+
+it("rejects expired local draft direct-link reads as session/not-found without querying Host", async (t) => {
+  const f = fixture(t);
+  const expired = await f.rpc.dispatch("session/list", {
+    args: { request: { sessionId: "draft-1b699a94-b559-44b6-8c4a-4b1604d01d4b" } },
+  });
+  assert.equal(expired.ok, false);
+  assert.equal(expired.error.code, "session/not-found");
+  assert.deepEqual(
+    f.host.requests,
+    [],
+    "expired drafts must fail locally without inspecting or reading from the Host",
+  );
+
+  const created = await f.rpc.dispatch("session/create", { args: { request: {} } });
+  assert.ok(created.ok, created.ok ? undefined : created.error.message);
+  const draftId = (created.value as { sessionId: string }).sessionId;
+  const live = await f.list({ sessionId: draftId });
+  assert.deepEqual(
+    live.items.map((row) => row.sessionId),
+    [draftId],
+  );
+});

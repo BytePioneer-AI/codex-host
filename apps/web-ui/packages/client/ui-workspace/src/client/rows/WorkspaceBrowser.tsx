@@ -92,7 +92,7 @@ import { PinnedSection } from "./PinnedSection.tsx";
 import { SessionListError } from "./SessionListError.tsx";
 import { SessionListExpansion } from "./SessionListExpansion.tsx";
 import { SectionHeading } from "./SectionHeading.tsx";
-import { HostScopeFilter } from "./HostScopeFilter.tsx";
+import { HostScopeFilter, HostScopeTabBar } from "./HostScopeFilter.tsx";
 import {
   APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT,
   ensureWorkspaceVisibleInHostScope,
@@ -870,6 +870,7 @@ function SessionTree({
           <ProjectRowItem
             newShortcut={shortcuts.find((row) => row.id === "session.new")}
             group={group}
+            showHost={!singleRemoteHostScoped}
             home={home}
             t={t}
             onToggle={() => {
@@ -1093,6 +1094,7 @@ function SessionTree({
         <PinnedSection
           rows={pinnedRows}
           currentId={current}
+          showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
@@ -1108,6 +1110,7 @@ function SessionTree({
           sections={nativeLayout}
           groupRows={sectionGroupRows}
           currentId={current}
+          showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
@@ -1232,6 +1235,7 @@ function FlatList({
   loadMoreSessions,
   hostScopeFilterControl,
   hostScopeFiltered = false,
+  singleRemoteHostScoped = false,
   onResetHostScope,
   t,
 }: Pick<
@@ -1254,6 +1258,7 @@ function FlatList({
   | "loadMoreSessions"
   | "hostScopeFilterControl"
   | "hostScopeFiltered"
+  | "singleRemoteHostScoped"
   | "onResetHostScope"
   | "t"
 > & {
@@ -1322,6 +1327,7 @@ function FlatList({
         <PinnedSection
           rows={pinnedRows}
           currentId={currentId}
+          showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
@@ -1336,6 +1342,7 @@ function FlatList({
         <NativeSections
           sections={nativeLayout}
           currentId={currentId}
+          showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
@@ -1378,6 +1385,7 @@ function FlatList({
               <SessionNodeItem
                 key={node.id}
                 node={node}
+                showHost={!singleRemoteHostScoped}
                 currentId={currentId}
                 now={now}
                 onOpen={open}
@@ -2473,6 +2481,15 @@ function WorkspaceBrowserContent({
         </div>
       )}
 
+      {wide && hasRemote && normalizedQuery === "" && (
+        <HostScopeTabBar
+          workspaces={orderedWorkspaces}
+          state={effectiveHostScopeFilter}
+          onChange={updateHostScopeFilter}
+          t={t}
+        />
+      )}
+
       {/* Always-mounted seat keeps the region's flex slot while the list
           itself is wide-only. */}
       <div className={css.listArea}>
@@ -2519,6 +2536,7 @@ function WorkspaceBrowserContent({
               onSessionRevealed={acknowledgeSessionReveal}
               hostScopeFilterControl={hostScopeFilterControl}
               hostScopeFiltered={hostScopeFiltered}
+              singleRemoteHostScoped={singleRemoteHostScoped}
               onResetHostScope={resetHostScope}
               t={t}
             />

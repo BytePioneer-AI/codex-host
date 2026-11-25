@@ -83,6 +83,7 @@ it("routes cold remote summaries before the local owner and keeps local lookups 
   const localCalls = f.host.requests.length;
   for (const [request, code] of [
     [{ sessionId: remoteSessionId("remote-control:a", "missing") }, "remote/not-found"],
+    [{ sessionId: "web-remote:draft-expired" }, "session/not-found"],
     [{ sessionId: "web-remote:invalid" }, "remote/identity-invalid"],
     [{ sessionId: f.id, cursor: "unexpected" }, "session/list-invalid"],
   ] as const) {

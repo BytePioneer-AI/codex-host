@@ -25,6 +25,7 @@ function serveOfficialSections(
     loseCreateReply?: (section: JsonObject) => void;
     deleteReply?: () => JsonObject;
     incompleteList?: () => boolean;
+    listIncludes?: (id: string) => boolean;
   } = {},
 ) {
   const moves: JsonObject[] = [];
@@ -58,7 +59,11 @@ function serveOfficialSections(
         result = {
           data: [
             { id: PINNED, name: "Pinned", appearance: null },
-            ...(options.incompleteList?.() ? [] : definitions.values()),
+            ...(options.incompleteList?.()
+              ? []
+              : [...definitions]
+                  .filter(([id]) => options.listIncludes?.(id) !== false)
+                  .map(([, definition]) => definition)),
           ],
           nextCursor: options.incompleteList?.() ? "loop" : null,
         };
@@ -870,6 +875,84 @@ describe("External Thread sections through AppServerHost", () => {
       expect(native.moves).toEqual([
         { threadId: "official-2", sectionId: "Review", beforeThreadId: "other" },
       ]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("preserves a saved destination and serves external history without a native section list", async () => {
+    const fixture = createFixture();
+    let showReview = false;
+    let offline = false;
+    let offlineReads = 0;
+    serveOfficialSections(
+      fixture,
+      [],
+      { Research: [], Review: [] },
+      {
+        listIncludes: (id) => id !== "Review" || showReview,
+        incompleteList: () => {
+          if (offline) offlineReads++;
+          return offline;
+        },
+      },
+    );
+    try {
+      const external = await startPiThread(fixture);
+      const pinned = await startExternalThread(fixture, "codexhost/pi-native", 2);
+      expect(
+        await call(fixture, 301, "thread/section/move", { threadId: pinned, sectionId: PINNED }),
+      ).toHaveProperty("result");
+      expect(
+        await sectionRpc(fixture, "update", { sectionId: "Research", name: "Research" }),
+      ).toHaveProperty("result");
+      showReview = true;
+      expect(
+        await sectionRpc(fixture, "move", { threadId: external, sectionId: "Review" }),
+      ).toHaveProperty("result");
+      offline = true;
+      expect(
+        await call(fixture, 302, "thread/section/move", { threadId: pinned, sectionId: null }),
+      ).toHaveProperty("result");
+      expect(await fixture.mappingStore.listSectionPlacements()).toMatchObject([
+        { hostThreadId: external, section: { id: "Review" } },
+      ]);
+      const thread = { id: external, section: { id: "Review" } };
+      expect(await call(fixture, 303, "thread/read", { threadId: external })).toMatchObject({
+        result: { thread },
+      });
+      expect(await call(fixture, 304, "thread/resume", { threadId: external })).toMatchObject({
+        result: { thread },
+      });
+      expect((await fixture.host.clientSnapshot(external)).thread).toMatchObject(thread);
+      expect(offlineReads).toBe(0);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("finishes a retried removal without replaying the native move", async () => {
+    const fixture = createFixture();
+    const native = serveOfficialSections(fixture, [], { Research: ["N1", "N2", "N3"] });
+    try {
+      const external = await startPiThread(fixture);
+      expect(
+        await sectionRpc(fixture, "move", {
+          threadId: external,
+          sectionId: "Research",
+          beforeThreadId: "N2",
+        }),
+      ).toHaveProperty("result");
+      vi.spyOn(fixture.mappingStore, "replaceSectionPlacements")
+        .mockRejectedValueOnce(new Error("Storage offline"))
+        .mockRejectedValueOnce(new Error("Storage still offline"));
+      const remove = () => sectionRpc(fixture, "move", { threadId: "N2", sectionId: null });
+      await expect(remove()).resolves.toHaveProperty("error");
+      await expect(remove()).resolves.toEqual({ result: {} });
+      expect(native.moves).toEqual([{ threadId: "N2", sectionId: null, beforeThreadId: null }]);
+      await expect(sectionRpc(fixture, "list", {})).resolves.toMatchObject({
+        result: { sections: [{ threads: [{ id: "N1" }, { id: external }, { id: "N3" }] }] },
+      });
     } finally {
       await stopFixture(fixture);
     }

@@ -1045,6 +1045,11 @@ export class AppServerHost {
   #sectionReconcileTimer: NodeJS.Timeout | undefined;
   #sectionReconcileDelay = SECTION_RECONCILE_RETRY_MS;
   readonly #sectionDefinitions = new SectionDefinitions(PINNED_THREAD_SECTION_ID);
+  /** A native removal committed, but its external anchors have not reached disk. */
+  readonly #pendingSectionRemovals = new Map<
+    string,
+    (placements: readonly StoredSectionPlacementV1[]) => Promise<boolean>
+  >();
   readonly #turnProjection: ExternalTurnProjection;
   /** Console requests share Desktop handling; their replies return to the console. */
   readonly #consoleRequestPrefix = `codexhost-console:${randomUUID()}:`;
@@ -1147,7 +1152,8 @@ export class AppServerHost {
       environment: () => this.#options.environment ?? process.env,
       waitForPlugins: () => this.#waitForPlugins(),
       listRecords: () => this.#repository.list(),
-      listSectionPlacements: () => this.#projectSectionPlacements(),
+      listSectionPlacements: async () =>
+        this.#sectionDefinitions.project(await this.#repository.listSectionPlacements()),
       locateExternalThread: (threadId) => this.#locateExternalThread(threadId),
       loadedThread: (threadId) => this.#externalRuntime?.get(threadId),
       readColdExternalThread: (threadId) =>
@@ -4451,6 +4457,11 @@ export class AppServerHost {
             : null;
       }
       if (currentSectionId === sectionId && (beforeThreadId === undefined || sectionId === null)) {
+        const recover = !remote && sectionId === null && this.#pendingSectionRemovals.get(threadId);
+        if (recover) {
+          await this.#finishPartialSectionMove(request, threadId, recover);
+          return;
+        }
         await this.#writer.json(rpcEnvelope(request, { result: {} }));
         return;
       }
@@ -4510,7 +4521,7 @@ export class AppServerHost {
       }
       const [records, placements] = await Promise.all([
         this.#repository.listSummaries(),
-        custom?.placements ?? this.#projectSectionPlacements(),
+        custom?.placements ?? this.#repository.listSectionPlacements(),
       ]);
       const outcome = await moveThreadSection({
         move,
@@ -4519,7 +4530,13 @@ export class AppServerHost {
         externalThreadIds: new Set(records.map((record) => record.hostThreadId)),
         placements,
         requestOfficial: (method, params) => this.#requestOfficial(method, params),
-        savePlacements: (next) => this.#repository.replaceSectionPlacements(next),
+        savePlacements: async (next) => {
+          await this.#repository.replaceSectionPlacements(next);
+          if (movingExternal && move.sectionId !== null) {
+            const saved = next.find(({ hostThreadId }) => hostThreadId === move.threadId);
+            if (saved) this.#sectionDefinitions.confirm(saved.section.id, saved.section);
+          }
+        },
         now: new Date(),
       });
       if (outcome.kind === "moved" && outcome.persistError !== undefined)
@@ -4537,25 +4554,12 @@ export class AppServerHost {
         return;
       } else if (outcome.kind === "partial") {
         this.#diagnose(outcome.persistError);
-        const recovered = await this.#repository
-          .listSectionPlacements()
-          .then(outcome.recover)
-          .catch((error: unknown) => {
-            this.#diagnose(error);
-            return false;
-          });
-        await this.#publishSectionsChanged();
-        await this.#writer.json(
-          recovered
-            ? rpcEnvelope(request, { result: {} })
-            : rpcError(
-                request,
-                -32081,
-                "Native Thread moved, but external section order could not be saved; refresh before retrying",
-              ),
-        );
+        if (move.sectionId === null)
+          this.#pendingSectionRemovals.set(move.threadId, outcome.recover);
+        await this.#finishPartialSectionMove(request, move.threadId, outcome.recover);
         return;
       } else {
+        this.#pendingSectionRemovals.delete(move.threadId);
         if (custom) await this.#publishSectionsChanged();
         await this.#writer.json(rpcEnvelope(request, { result: {} }));
       }
@@ -4569,13 +4573,36 @@ export class AppServerHost {
     }
   }
 
+  async #finishPartialSectionMove(
+    request: JsonRpcRequest,
+    threadId: string,
+    recover: (placements: readonly StoredSectionPlacementV1[]) => Promise<boolean>,
+  ): Promise<void> {
+    const recovered = await this.#repository
+      .listSectionPlacements()
+      .then(recover)
+      .catch((error: unknown) => {
+        this.#diagnose(error);
+        return false;
+      });
+    if (recovered) this.#pendingSectionRemovals.delete(threadId);
+    await this.#publishSectionsChanged();
+    await this.#writer.json(
+      recovered
+        ? rpcEnvelope(request, { result: {} })
+        : rpcError(
+            request,
+            -32081,
+            "Native Thread moved, but external section order could not be saved; refresh before retrying",
+          ),
+    );
+  }
+
   async #externalSectionFields(threadId: string) {
     const placement = (await this.#repository.listSectionPlacements()).find(
       (entry) => entry.hostThreadId === threadId,
     );
-    return threadSectionFields(
-      placement ? (await this.#projectSectionPlacements([placement]))[0] : undefined,
-    );
+    return threadSectionFields(placement && this.#sectionDefinitions.project([placement])[0]);
   }
 
   /** Cached External Thread projections predate section moves; responses read the placement. */

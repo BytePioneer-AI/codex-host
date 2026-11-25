@@ -358,6 +358,8 @@ function groupByWorkspace(
   archived: ReadonlySet<SessionId>,
   archivedFilter: ArchivedFilter,
 ): Group[] {
+  const workspaceOnly = new Set(list.workspaceOnlyIds);
+  const workspaceHistoryMembers = new Set<SessionId>();
   const groups: Group[] = [];
   for (const workspace of workspaces) {
     const members: SessionSummary[] = [];
@@ -366,6 +368,7 @@ function groupByWorkspace(
       if (summary === undefined) continue; // account may lead the list pull; the row appears when the summary lands
       if (!sessionVisible(summary, archived, archivedFilter)) continue;
       members.push(summary);
+      if (workspaceOnly.has(id)) workspaceHistoryMembers.add(id);
     }
     // The archived-only view lists archives, not the Workspace inventory, so
     // a Workspace without archived Sessions contributes no group.
@@ -382,9 +385,8 @@ function groupByWorkspace(
       ),
     );
   }
-  const workspaceOnly = new Set(list.workspaceOnlyIds);
   const recent = orderByRecency(
-    list.ids.filter((id) => !workspaceOnly.has(id)),
+    list.ids.filter((id) => !workspaceHistoryMembers.has(id)),
     list.byId,
   )
     .map((id) => list.byId[id])

@@ -64,6 +64,29 @@ const state: SessionRowState = {
   archivedFilter: "default",
 };
 
+it("shows project history in Recents once its workspace is removed", () => {
+  const list = {
+    ...catalog(row("removed-project-history"), row("remaining-project-history"), row("recent")),
+    workspaceOnlyIds: [id("removed-project-history"), id("remaining-project-history")],
+  };
+  const removed = workspace("removed", "removed-project-history");
+  const remaining = workspace("remaining", "remaining-project-history");
+  const rowsByGroup = (workspaces: WorkspaceView[]) =>
+    deriveGroups(list, workspaces, state, new Map(), {
+      expandedGroups: ["removed", "remaining", ""],
+    }).map((group) => [group.key, group.sessions.map((session) => session.id)]);
+
+  assert.deepEqual(rowsByGroup([removed, remaining]), [
+    ["removed", ["removed-project-history"]],
+    ["remaining", ["remaining-project-history"]],
+    ["", ["recent"]],
+  ]);
+  assert.deepEqual(rowsByGroup([remaining]), [
+    ["remaining", ["remaining-project-history"]],
+    ["", ["recent", "removed-project-history"]],
+  ]);
+});
+
 it("builds a three-layer tree with descendant IDs, depth, recency and all activity kinds", () => {
   const source = [
     { id: "a", parent: null, updatedAt: 1, running: false, completed: false },

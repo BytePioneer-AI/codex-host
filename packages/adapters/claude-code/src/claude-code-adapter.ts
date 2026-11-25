@@ -6,8 +6,10 @@ import {
 import { claudeUsageHistory, type ClaudeUsageRecord } from "./claude-usage.js";
 import { createClaudeUsageStatistics } from "./claude-usage-statistics.js";
 import {
+  claudePromptCacheFromMessages,
   claudePromptCacheIndicators,
-  lastClaudeAssistantResponseUnix,
+  claudePromptCacheTtlSeconds,
+  type ClaudePromptCacheTtlSeconds,
 } from "./claude-prompt-cache.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -236,6 +238,7 @@ interface ActiveTurn {
   nativeTurnRef: NativeTurnRef | null;
   cancellationRequested: boolean;
   usageRequestIds: Set<string>;
+  promptCacheTtlObserved: boolean;
   estimatedInputTokens: number;
   estimatedOutputTokens: number;
   estimatedCostUsd: number;
@@ -386,6 +389,7 @@ function transcriptRequestUsage(
       safeNonNegativeInteger(cacheCreationInputTokens) &&
       safeNonNegativeInteger(cacheReadInputTokens)
     ) {
+      const promptCacheTtlSeconds = claudePromptCacheTtlSeconds(entry.message.usage);
       return {
         requestId:
           typeof entry.request_id === "string" && entry.request_id.length > 0
@@ -403,6 +407,7 @@ function transcriptRequestUsage(
         outputTokens,
         cacheCreationInputTokens,
         cacheReadInputTokens,
+        ...(promptCacheTtlSeconds !== undefined ? { promptCacheTtlSeconds } : {}),
       };
     }
   }
@@ -706,6 +711,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #usageGeneration = 0;
   #latestUsage: HostUsage | null = null;
   #lastAssistantResponseAtUnix: number | undefined;
+  #promptCacheTtlSeconds: ClaudePromptCacheTtlSeconds | undefined;
   #accountCreditsSupported: boolean;
   #minimumContextUsedTokens: number | null = null;
   #calibratedInputTokens = 0;
@@ -750,16 +756,19 @@ class ClaudeHarnessSession implements HarnessSession {
         requests: HostUsageRequest[];
         complete: boolean;
         lastResponseAtUnix?: number;
+        promptCacheTtlSeconds?: ClaudePromptCacheTtlSeconds;
       };
       accountCreditsSupported: boolean;
     },
   ) {
     this.#cwd = cwd;
     this.#lastAssistantResponseAtUnix = options.usageHistory.lastResponseAtUnix;
+    this.#promptCacheTtlSeconds = options.usageHistory.promptCacheTtlSeconds;
     this.#accountCreditsSupported = options.accountCreditsSupported;
     const composerIndicators = claudePromptCacheIndicators(
       this.#accountCreditsSupported,
       this.#lastAssistantResponseAtUnix,
+      this.#promptCacheTtlSeconds,
     );
     this.initialUsage = composerIndicators.length ? { composerIndicators } : null;
     this.#latestUsage = this.initialUsage;
@@ -1096,6 +1105,7 @@ class ClaudeHarnessSession implements HarnessSession {
       cancellationRequested: false,
       steersAwaitingNative: new Set(),
       usageRequestIds: new Set(),
+      promptCacheTtlObserved: false,
       estimatedInputTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
@@ -1304,6 +1314,7 @@ class ClaudeHarnessSession implements HarnessSession {
       cancellationRequested: false,
       steersAwaitingNative: new Set(),
       usageRequestIds: new Set(),
+      promptCacheTtlObserved: false,
       estimatedInputTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
@@ -2095,7 +2106,13 @@ class ClaudeHarnessSession implements HarnessSession {
   #handleTurnEvent(active: ActiveTurn, event: ClaudeTurnEvent): void {
     // Usage belongs to the Session, so a request settling after its Turn ended still counts.
     if (event.type === "usage.request") {
-      if (this.#phase !== "closed" && this.#phase !== "faulted") this.#meterUsage(event.record);
+      if (this.#phase !== "closed" && this.#phase !== "faulted") {
+        this.#meterUsage(event.record);
+        if (event.promptCacheTtlSeconds !== undefined) {
+          active.promptCacheTtlObserved = true;
+          this.#observePromptCacheTtl(event.promptCacheTtlSeconds);
+        }
+      }
       return;
     }
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
@@ -2138,6 +2155,10 @@ class ClaudeHarnessSession implements HarnessSession {
         return;
       case "message.completed": {
         if (!event.localCommand) {
+          if (event.lastRequestUsage?.promptCacheTtlSeconds !== undefined) {
+            active.promptCacheTtlObserved = true;
+            this.#promptCacheTtlSeconds = event.lastRequestUsage.promptCacheTtlSeconds;
+          }
           this.#lastAssistantResponseAtUnix = Math.floor(Date.now() / 1000);
           this.publishAccountCreditsSupport(this.#accountCreditsSupported);
         }
@@ -2369,6 +2390,21 @@ class ClaudeHarnessSession implements HarnessSession {
       };
       pending = { type: "approval", interaction, request };
     } else if (request.type === "planApproval") {
+      // Question prompts are plain text in a fixed composer panel. Keep the
+      // unabridged Markdown in the transcript so long plans remain readable.
+      if (request.plan) {
+        const item: HostAgentMessageItem = {
+          type: "agentMessage",
+          itemId: hostItemIdSchema.parse(this.#randomUUID()),
+          text: request.plan,
+        };
+        this.#event({ type: "item.started", turnId: active.command.turnId, item });
+        this.#event({
+          type: "item.completed",
+          turnId: active.command.turnId,
+          snapshot: { item, outcome: { status: "succeeded" } },
+        });
+      }
       pending = {
         type: "planApproval",
         interaction: createClaudePlanReview(request, interactionId, active.command.turnId),
@@ -2600,6 +2636,7 @@ class ClaudeHarnessSession implements HarnessSession {
       }),
       cancellationRequested: false,
       usageRequestIds: new Set(),
+      promptCacheTtlObserved: false,
       estimatedInputTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
@@ -2623,7 +2660,13 @@ class ClaudeHarnessSession implements HarnessSession {
   #deliverLiveEvent(target: ActiveTurn | null, event: ClaudeTurnEvent): void {
     // Requests belong to Session usage even when no foreground Turn owns the event.
     if (event.type === "usage.request") {
-      this.#meterUsage(event.record);
+      if (this.#phase !== "closed" && this.#phase !== "faulted") {
+        this.#meterUsage(event.record);
+        if (event.promptCacheTtlSeconds !== undefined) {
+          if (target && this.#active === target) target.promptCacheTtlObserved = true;
+          this.#observePromptCacheTtl(event.promptCacheTtlSeconds);
+        }
+      }
       return;
     }
     if (target && this.#active === target) {
@@ -2685,6 +2728,7 @@ class ClaudeHarnessSession implements HarnessSession {
     // A late native terminal cannot substitute for the process shutdown already in progress.
     if (this.#active !== active || this.#hardCancelTask) return;
     active.rootSegmentActive = false;
+    active.promptCacheTtlObserved = false;
     if (active.cancellation) {
       // The Turn ends only once its background work is confirmed stopped; later Segments
       // still reach it through the idle handler. An unproven interruption still fails it.
@@ -2867,10 +2911,23 @@ class ClaudeHarnessSession implements HarnessSession {
       usage.inputTokens + usage.cacheCreationInputTokens + usage.cacheReadInputTokens;
     if (promptTokens > 0) this.#minimumContextUsedTokens = promptTokens;
     const cacheHitRatePercent = claudeCacheHitRatePercent(usage);
+    if (usage.promptCacheTtlSeconds !== undefined) {
+      active.promptCacheTtlObserved = true;
+      this.#promptCacheTtlSeconds = usage.promptCacheTtlSeconds;
+    }
+    const composerIndicators = claudePromptCacheIndicators(
+      this.#accountCreditsSupported,
+      this.#lastAssistantResponseAtUnix,
+      this.#promptCacheTtlSeconds,
+    );
+    const indicatorChanged =
+      composerIndicators[0]?.expiresAtUnix !==
+      this.#latestUsage?.composerIndicators?.[0]?.expiresAtUnix;
     const contextWindowTokens = this.#latestUsage?.contextWindowTokens;
     this.#mergeAndPublishUsage(
       {
         ...(cacheHitRatePercent !== undefined ? { cacheHitRatePercent } : {}),
+        ...(indicatorChanged ? { composerIndicators } : {}),
         inputTokens: this.#calibratedInputTokens + active.estimatedInputTokens,
         outputTokens: this.#calibratedOutputTokens + active.estimatedOutputTokens,
         ...(active.estimatedCostAvailable
@@ -2916,6 +2973,23 @@ class ClaudeHarnessSession implements HarnessSession {
     if (event.lastRequestUsage) {
       const cacheHitRatePercent = claudeCacheHitRatePercent(event.lastRequestUsage);
       if (cacheHitRatePercent !== undefined) delta.cacheHitRatePercent = cacheHitRatePercent;
+      if (
+        !active.promptCacheTtlObserved &&
+        event.lastRequestUsage.promptCacheTtlSeconds !== undefined
+      ) {
+        this.#promptCacheTtlSeconds = event.lastRequestUsage.promptCacheTtlSeconds;
+        const composerIndicators = claudePromptCacheIndicators(
+          this.#accountCreditsSupported,
+          this.#lastAssistantResponseAtUnix,
+          this.#promptCacheTtlSeconds,
+        );
+        if (
+          composerIndicators[0]?.expiresAtUnix !==
+          this.#latestUsage?.composerIndicators?.[0]?.expiresAtUnix
+        ) {
+          delta.composerIndicators = composerIndicators;
+        }
+      }
     }
     // Result modelUsage describes Model capacity, not the Session's configured cap.
     // The native summary reads the effective window without count_tokens calls.
@@ -2941,12 +3015,18 @@ class ClaudeHarnessSession implements HarnessSession {
     if (effective) this.publishPlanLimit(effective);
   }
 
+  #observePromptCacheTtl(ttlSeconds: ClaudePromptCacheTtlSeconds): void {
+    this.#promptCacheTtlSeconds = ttlSeconds;
+    this.publishAccountCreditsSupport(this.#accountCreditsSupported);
+  }
+
   publishAccountCreditsSupport(supported: boolean): void {
     if (this.#phase !== "open") return;
     this.#accountCreditsSupported = supported;
     const composerIndicators = claudePromptCacheIndicators(
       supported,
       this.#lastAssistantResponseAtUnix,
+      this.#promptCacheTtlSeconds,
     );
     if (
       composerIndicators[0]?.expiresAtUnix ===
@@ -3811,15 +3891,25 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     cwd: string,
     sessionId: string,
     openMode: "create" | "resume",
-  ): Promise<{ requests: HostUsageRequest[]; complete: boolean; lastResponseAtUnix?: number }> {
+  ): Promise<{
+    requests: HostUsageRequest[];
+    complete: boolean;
+    lastResponseAtUnix?: number;
+    promptCacheTtlSeconds?: ClaudePromptCacheTtlSeconds;
+  }> {
     if (openMode === "create") return { requests: [], complete: true };
     try {
       const messages = await this.#dependencies.readSessionMessages({ cwd, sessionId });
       if (messages === null) return { requests: [], complete: false };
-      const lastResponseAtUnix = lastClaudeAssistantResponseUnix(messages);
+      const promptCache = claudePromptCacheFromMessages(messages);
       return {
         ...claudeUsageHistory(messages),
-        ...(lastResponseAtUnix !== undefined ? { lastResponseAtUnix } : {}),
+        ...(promptCache.lastResponseAtUnix !== undefined
+          ? { lastResponseAtUnix: promptCache.lastResponseAtUnix }
+          : {}),
+        ...(promptCache.ttlSeconds !== undefined
+          ? { promptCacheTtlSeconds: promptCache.ttlSeconds }
+          : {}),
       };
     } catch {
       return { requests: [], complete: false };

@@ -7,6 +7,7 @@ import {
   hostExtensionRevisionSchema,
 } from "./host-extension-management.js";
 import { THREAD_ARCHIVE_CONFIRM_METHOD } from "./thread-archive-confirm.js";
+import { THREAD_HANDOFF_METHOD, threadHandoffMetadataSchema } from "./thread-handoff.js";
 
 /** Authenticated local owner channel. Notifications invalidate state; they are
  * NOT appendable transcript deltas. Clients reconcile absolute snapshots. */
@@ -25,6 +26,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/harness/preferences/get",
   "codexhost/harness/preferences/patch",
   "thread/list",
+  "thread/metadata/update",
   "codexhost/thread/catalog/read",
   "thread/read",
   "thread/resume",
@@ -49,6 +51,10 @@ export const CLIENT_CHANNEL_METHODS = [
   "thread/queue/start",
   "codexhost/thread/queue/send-now",
   "codexhost/workspace/read",
+  "project/create",
+  "project/update",
+  "project/delete",
+  "project/move",
   "codexhost/thread/tree/read",
   "codexhost/thread/pins/list",
   "codexhost/thread/sections/list",
@@ -66,6 +72,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/harness/commands/inspect",
   "codexhost/thread/command/execute",
   "codexhost/thread/fork",
+  THREAD_HANDOFF_METHOD,
   "codexhost/harness/session-import/sources",
   "codexhost/harness/session-import/list",
   "codexhost/harness/session-import/import",
@@ -141,6 +148,7 @@ export const clientProjectlessWorkspaceSchema = z
 
 export const clientWorkspaceSnapshotSchema = z.object({
   projects: z.array(z.object({ id: z.string(), name: z.string(), rootPaths: z.array(z.string()) })),
+  nativeProjects: z.literal(true).optional(),
   assignments: z.record(z.string(), z.string()),
   projectless: z.array(z.string()),
   /** Canonical external pin membership; pins/list provides the native merged order. */
@@ -157,6 +165,7 @@ export const clientChannelCursorSchema = z.object({
 });
 export type ClientChannelCursor = z.infer<typeof clientChannelCursorSchema>;
 export const clientChannelEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("projects-changed"), cursor: clientChannelCursorSchema }),
   z.object({
     type: z.literal("skills-changed"),
     cursor: clientChannelCursorSchema,
@@ -355,6 +364,7 @@ export const clientThreadSnapshotSchema = z.object({
     })
     .optional(),
   interactions: z.array(clientInteractionSchema),
+  handoff: threadHandoffMetadataSchema.optional(),
 });
 export type ClientThreadSnapshot = z.infer<typeof clientThreadSnapshotSchema>;
 export type ClientFileOperation = NonNullable<

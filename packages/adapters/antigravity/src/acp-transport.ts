@@ -25,6 +25,7 @@ import {
   type AntigravityOpenAcpSessionInput,
   type AntigravityPromptInputPart,
   type AntigravityPromptResult,
+  type AntigravitySessionInteractionHandler,
   type AntigravitySessionEventHandler,
 } from "./acp-types.js";
 
@@ -47,8 +48,9 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
   #initializing: Promise<InitializeResponse> | null = null;
   #sessionId: string | null = null;
   #sessionHandler: AntigravitySessionEventHandler | null = null;
+  #sessionInteractionHandler: AntigravitySessionInteractionHandler | null = null;
   #active: PromptChain | null = null;
-  #callbacks = new Set<() => void>();
+  #callbacks = new Map<() => void, "prompt" | "session">();
   #acceptedCallbacks = new WeakSet<object>();
   #opening: Array<{ sessionId: string; event: AntigravityAcpEvent }> | null = null;
   #pendingEvents: AntigravityAcpEvent[] = [];
@@ -74,6 +76,10 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
   setSessionEventHandler(handler: AntigravitySessionEventHandler | null): void {
     this.#sessionHandler = handler;
     if (handler) for (const event of this.#pendingEvents.splice(0)) handler(event);
+  }
+
+  setSessionInteractionHandler(handler: AntigravitySessionInteractionHandler | null): void {
+    this.#sessionInteractionHandler = handler;
   }
 
   initialize(): Promise<InitializeResponse> {
@@ -403,7 +409,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
         }
       }
       if (active.pending === 0 && this.#active === active) {
-        this.#clearCallbacks();
+        this.#clearCallbacks("prompt");
         this.#active = null;
       }
     }
@@ -412,7 +418,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
   async cancel(): Promise<void> {
     const { connection, sessionId } = this.#session();
     if (this.#active) this.#active.acceptCallbacks = false;
-    this.#clearCallbacks();
+    this.#clearCallbacks("prompt");
     await this.#request(connection.cancel({ sessionId }), "session/cancel");
   }
 
@@ -425,6 +431,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
     this.#active = null;
     this.#pendingEvents = [];
     this.#clearCallbacks();
+    this.#sessionInteractionHandler = null;
     return sessionId;
   }
 
@@ -502,13 +509,17 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
 
   async #callback<T>(
     request: object,
-    invoke: (handler: AntigravityActivePromptHandler) => Promise<T>,
+    invoke: (handler: AntigravitySessionInteractionHandler) => Promise<T>,
     cancelled: T,
   ): Promise<T> {
     const active = this.#active;
+    const accepted = this.#acceptedCallbacks.delete(request);
+    const session = this.#sessionInteractionHandler;
+    const callbackHandler = active && accepted ? active.handler : session;
+    // Session handlers own cancellation by tool owner, including older Turns.
+    const scope = session ? "session" : "prompt";
     if (
-      !active ||
-      !this.#acceptedCallbacks.delete(request) ||
+      !callbackHandler ||
       !("sessionId" in request) ||
       request.sessionId !== this.#sessionId ||
       this.#closed
@@ -518,18 +529,22 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
     const cancellation = new Promise<T>((resolve) => {
       cancel = () => resolve(cancelled);
     });
-    this.#callbacks.add(cancel);
+    this.#callbacks.set(cancel, scope);
     try {
-      return await Promise.race([invoke(active.handler), cancellation]);
+      return await Promise.race([invoke(callbackHandler), cancellation]);
     } finally {
       this.#callbacks.delete(cancel);
     }
   }
 
-  #clearCallbacks(): void {
+  #clearCallbacks(scope?: "prompt" | "session"): void {
     this.#acceptedCallbacks = new WeakSet();
-    for (const cancel of this.#callbacks) cancel();
-    this.#callbacks.clear();
+    for (const [cancel, callbackScope] of this.#callbacks) {
+      if (scope === undefined || scope === callbackScope) {
+        cancel();
+        this.#callbacks.delete(cancel);
+      }
+    }
   }
 
   async #request<T>(

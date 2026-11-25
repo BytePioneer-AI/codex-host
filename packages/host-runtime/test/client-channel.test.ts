@@ -475,7 +475,8 @@ describe("public authenticated owner channel", () => {
     const { fixture, a } = await setup();
     const id = await startPiThread(fixture);
     await startPiTurn(fixture, id);
-    current(fixture).startReasoning("thinking snapshot");
+    // A settled first sentence titles the preview part, so the live read carries the text.
+    current(fixture).startReasoning("thinking snapshot. still streaming");
     const command = current(fixture).startCommandExecution("echo streamed");
     current(fixture).appendCommandOutput(command, "tool progress");
     await fixture.collector.waitFor(

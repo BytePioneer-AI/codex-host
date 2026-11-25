@@ -111,11 +111,13 @@ export async function peerFetch(
   }
 }
 
+const INITIAL_CONNECTION_WAIT_MS = 2_000;
 const MAX_TRACKED_SNAPSHOT_THREADS = 64;
 const MAX_TRACKED_KNOWN_TURNS = 16;
 
 export class PeerHostClient {
   private life = new AbortController();
+  private readonly initialProbe = Promise.withResolvers<undefined>();
   manifest?: c.RemotePeerManifest;
   latencyMs?: number;
   lastError?: string;
@@ -285,6 +287,19 @@ export class PeerHostClient {
     });
   }
 
+  async waitForInitialConnection(): Promise<void> {
+    if (this.state !== "connecting") return;
+    const timeout = new AbortController();
+    try {
+      await Promise.race([
+        this.initialProbe.promise,
+        sleep(INITIAL_CONNECTION_WAIT_MS, undefined, { signal: timeout.signal }),
+      ]);
+    } finally {
+      timeout.abort();
+    }
+  }
+
   async probe() {
     const start = Date.now();
     try {
@@ -304,6 +319,8 @@ export class PeerHostClient {
       this.lastError = message;
       this.setStreamOffline();
       throw Error(message);
+    } finally {
+      this.initialProbe.resolve(undefined);
     }
   }
 
@@ -402,6 +419,7 @@ export class PeerHostClient {
 
   close() {
     this.life.abort();
+    this.initialProbe.resolve(undefined);
     this.setStreamOffline();
     this.listeners.clear();
     this.fullKnownTurns.clear();

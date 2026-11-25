@@ -1,4 +1,9 @@
-import { reasoningPreviewItemId, type JsonObject, type JsonValue } from "@codexhost/protocol-core";
+import {
+  reasoningPreviewItemId,
+  reasoningSummaryParts,
+  type JsonObject,
+  type JsonValue,
+} from "@codexhost/protocol-core";
 import { REASONING_TRANSCRIPT_COMMAND, type HostItemId } from "@codexhost/shared-contracts";
 
 type Item = JsonObject & { id: string };
@@ -34,7 +39,14 @@ function reasoningUnit(base: string, summary?: Item, transcript?: Item): Unit {
       ? reasoningText(blocks.join("\n"))
       : null;
   const output = reasoningText(transcript?.aggregatedOutput);
-  const text = preview && output && preview !== output ? null : (output ?? preview);
+  let text = output ?? preview;
+  if (preview && output && preview !== output) {
+    // A generated title is presentation, not new text or evidence of a mismatched twin:
+    // both sides agree on the titled projection of the transcript when the preview is
+    // exactly that projection, and a preview that is neither is a mismatched twin.
+    const titled = reasoningSummaryParts(output, true).join("\n");
+    text = preview === titled ? titled : null;
+  }
   return {
     items: [summary, transcript].filter((item) => item !== undefined),
     evidence: text === null ? null : JSON.stringify(["reasoning", text]),

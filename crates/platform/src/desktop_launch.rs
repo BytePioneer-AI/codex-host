@@ -1888,7 +1888,7 @@ mod tests {
 
 #[cfg(test)]
 mod environment_removal_tests {
-    use std::ffi::{OsStr, OsString};
+    use std::ffi::OsString;
     use std::process::Command;
 
     use super::configure_managed_desktop_environment_with_removals;
@@ -1930,14 +1930,16 @@ mod environment_removal_tests {
             "CODEXHOST_NPM_LAUNCHER_PATH",
             "CODEXHOST_NPM_PACKAGE_ROOT",
         ] {
-            let key = OsStr::new(key);
             assert!(
                 envs.iter().any(|(name, value)| {
                     value.is_none()
-                        && (*name == key
-                            || (cfg!(target_os = "windows") && name.eq_ignore_ascii_case(key)))
+                        && if cfg!(windows) {
+                            name.to_string_lossy().eq_ignore_ascii_case(key)
+                        } else {
+                            *name == key
+                        }
                 }),
-                "expected {key:?} to be removed"
+                "expected {key} to be removed"
             );
         }
         assert!(envs.iter().any(|(name, value)| {

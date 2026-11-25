@@ -454,6 +454,53 @@ describe("tool lifecycle and file changes", () => {
     tools.handleToolEvent({ type: "tool.update", toolCallId: "send", status: "completed" });
     expect(spawned).toHaveBeenCalledTimes(2);
   });
+  it("keeps an unfinished diff with its detached tool until the native result", () => {
+    const { tools, events } = tracker();
+    tools.handleToolEvent({
+      type: "tool.call",
+      toolCallId: "edit",
+      name: "edit_file",
+      status: "in_progress",
+      content: [{ type: "diff", path: "/repo/a.ts", oldText: "before", newText: "after" }],
+    });
+    const started = events.flatMap((event) => (event.type === "item.started" ? [event.item] : []));
+    expect(started.map((item) => item.type)).toEqual(["toolExecution", "fileChange"]);
+    expect(tools.detachPending(new Set(["edit"]))).toEqual(new Set(["edit"]));
+    expect(
+      events.filter((event) => event.type === "item.detached").map((event) => event.itemId),
+    ).toEqual(started.map((item) => item.itemId));
+    tools.finishPending({ status: "succeeded" });
+    expect(tools.completedSnapshots()).toEqual([]);
+    tools.handleToolEvent({ type: "tool.update", toolCallId: "edit", status: "completed" });
+    expect(
+      tools.completedSnapshots().map(({ item, outcome }) => [item.type, outcome.status]),
+    ).toEqual([
+      ["toolExecution", "succeeded"],
+      ["fileChange", "succeeded"],
+    ]);
+  });
+  it("detaches a diff that first arrives after its tool", () => {
+    const { tools, events } = tracker();
+    tools.handleToolEvent({
+      type: "tool.call",
+      toolCallId: "edit",
+      name: "edit_file",
+      status: "in_progress",
+    });
+    expect(tools.detachPending(new Set(["edit"]))).toEqual(new Set(["edit"]));
+    tools.handleToolEvent({
+      type: "tool.update",
+      toolCallId: "edit",
+      status: "in_progress",
+      content: [{ type: "diff", path: "/repo/a.ts", oldText: "before", newText: "after" }],
+    });
+    expect(events.map((event) => event.type)).toEqual([
+      "item.started",
+      "item.detached",
+      "item.started",
+    ]);
+    expect(tools.completedSnapshots()).toEqual([]);
+  });
   it("emits generic tool output and closes pending items on cancellation", () => {
     const { tools, events } = tracker();
     tools.handleToolEvent({

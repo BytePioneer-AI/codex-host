@@ -33,13 +33,15 @@ export class WorkBuddyAdapter extends CodeBuddyAdapter {
   constructor(options: WorkBuddyAdapterOptions = {}) {
     const { productModels, platform = process.platform, ...codeBuddyOptions } = options;
     const environment = { ...(codeBuddyOptions.environment ?? process.env) };
-    const windowsProfile = {
-      ...WORKBUDDY_RUNTIME_PROFILE,
-      allowUnlistedModelSelection: true,
-    };
+    const profile =
+      platform === "win32"
+        ? { ...WORKBUDDY_RUNTIME_PROFILE, allowUnlistedModelSelection: true }
+        : platform === "linux"
+          ? { ...WORKBUDDY_RUNTIME_PROFILE, defaultConfigDirectoryName: ".workbuddy" }
+          : WORKBUDDY_RUNTIME_PROFILE;
     super({
       ...codeBuddyOptions,
-      profile: platform === "win32" ? windowsProfile : WORKBUDDY_RUNTIME_PROFILE,
+      profile,
       invocationFactory: workBuddyInvocation,
       clientFactory:
         codeBuddyOptions.clientFactory ??

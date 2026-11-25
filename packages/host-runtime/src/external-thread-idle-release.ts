@@ -93,13 +93,17 @@ export class ExternalThreadIdleRelease {
   }
 
   /** Acquire before resolving a Session, not after an await has exposed its reference. */
-  async runOperation<T>(id: string | undefined, operation: () => Promise<T>): Promise<T> {
+  async runOperation<T>(
+    id: string | undefined,
+    operation: () => Promise<T>,
+    options?: { touch?: boolean },
+  ): Promise<T> {
     if (this.#stopped) throw new Error("Host is shutting down");
     if (id) {
       while (this.#closing.has(id)) await this.#closing.get(id);
     }
     if (this.#stopped) throw new Error("Host is shutting down");
-    return this.#track(id, operation);
+    return this.#track(id, operation, true, options?.touch ?? true);
   }
 
   /** Closing may emit outputs: consume them without waiting on the close being drained. */
@@ -108,19 +112,24 @@ export class ExternalThreadIdleRelease {
     return this.#track(thread.id, operation, false);
   }
 
-  #track<T>(id: string | undefined, operation: () => Promise<T>, drain = true): Promise<T> {
+  #track<T>(
+    id: string | undefined,
+    operation: () => Promise<T>,
+    drain = true,
+    touch = true,
+  ): Promise<T> {
     if (id) this.#operations.set(id, (this.#operations.get(id) ?? 0) + 1);
     const task = Promise.resolve()
       .then(operation)
       .finally(() => {
         if (id) {
-          const remaining = (this.#operations.get(id) ?? 1) - 1;
-          if (remaining) this.#operations.set(id, remaining);
-          else {
-            this.#operations.delete(id);
+          if (touch) {
             const thread = this.options.get(id);
             if (thread) this.touch(thread);
           }
+          const remaining = (this.#operations.get(id) ?? 1) - 1;
+          if (remaining) this.#operations.set(id, remaining);
+          else this.#operations.delete(id);
         }
         this.#pending.delete(task);
       });

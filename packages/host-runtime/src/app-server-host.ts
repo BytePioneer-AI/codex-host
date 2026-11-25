@@ -200,6 +200,7 @@ import {
 } from "./external-thread-repository.js";
 import {
   ExternalThreadRuntime,
+  persistedThreadUsage,
   type ExternalThread,
   type ExternalThreadLocation,
   type ExternalThreadResolution,
@@ -826,6 +827,16 @@ class OrderedWriter {
       else this.stream.once("close", closed);
     });
   }
+}
+
+const COLD_HISTORY_CAPABILITIES = {
+  fork: false,
+  forkAcrossCwd: false,
+  rollbackLastTurn: false,
+} as const;
+
+function isPassiveThreadInspectMethod(method: string): boolean {
+  return method === "codexhost/thread/inspect" || method === "codexhost/thread/usage/inspect";
 }
 
 export class AppServerHost {
@@ -1798,14 +1809,19 @@ export class AppServerHost {
         timeoutMs,
       );
     });
-    const configurationThreadId =
-      (method === "codexhost/thread/model/select" ||
-        method === "codexhost/thread/thinking/select" ||
-        method === "codexhost/thread/permission-mode/select") &&
-      isRecord(request.params) &&
-      typeof request.params.threadId === "string"
+    const requestThreadId =
+      isRecord(request.params) && typeof request.params.threadId === "string"
         ? request.params.threadId
         : undefined;
+    const configurationThreadId =
+      method === "codexhost/thread/model/select" ||
+      method === "codexhost/thread/thinking/select" ||
+      method === "codexhost/thread/permission-mode/select"
+        ? requestThreadId
+        : undefined;
+    const passiveInspectThreadId = isPassiveThreadInspectMethod(method)
+      ? requestThreadId
+      : undefined;
     const handle = () =>
       this.#guardReply(request, () =>
         this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request)), origin),
@@ -1816,7 +1832,11 @@ export class AppServerHost {
         ? this.#desktopRequests.run(configurationThreadId, () =>
             this.#externalRuntime.idleRelease.runOperation(configurationThreadId, handle),
           )
-        : handle(),
+        : passiveInspectThreadId
+          ? this.#externalRuntime.idleRelease.runOperation(passiveInspectThreadId, handle, {
+              touch: false,
+            })
+          : handle(),
     );
     try {
       const message = await reply;
@@ -1910,14 +1930,20 @@ export class AppServerHost {
         isRecord(request.params) && typeof request.params.threadId === "string"
           ? request.params.threadId
           : undefined;
+      const passiveInspect = isPassiveThreadInspectMethod(request.method);
       // Usage reads may wait on quota or history I/O. Track them for shutdown,
       // but do not let that optional inspection hold the Thread's routing queue.
       const queueThreadId =
         request.method === "codexhost/thread/usage/inspect" ? undefined : threadId;
       this.#dispatchDesktopRequest(() =>
         this.#desktopRequests.run(queueThreadId, () =>
-          this.#externalRuntime.idleRelease.runOperation(threadId, () =>
-            this.#guardReply(request, () => this.#handleDesktopRequest(request, frame, "desktop")),
+          this.#externalRuntime.idleRelease.runOperation(
+            threadId,
+            () =>
+              this.#guardReply(request, () =>
+                this.#handleDesktopRequest(request, frame, "desktop"),
+              ),
+            passiveInspect ? { touch: false } : undefined,
           ),
         ),
       );
@@ -4016,6 +4042,12 @@ export class AppServerHost {
       );
       return;
     }
+    if (validated.data.status === "ready") {
+      this.#externalRuntime.noteHistoryCapabilities(
+        adapter.harnessId as ExternalHarnessId,
+        validated.data.capabilities.history,
+      );
+    }
     await this.#writer.json(
       rpcEnvelope(request, { result: jsonValueSchema.parse(validated.data) }),
     );
@@ -4072,68 +4104,86 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32602, "Invalid Thread inspection params"));
       return;
     }
-    const resolution = await this.#resolveExternalThread(params.data.threadId);
-    if (resolution.kind === "error") {
-      await this.#writer.json(rpcError(request, resolution.error.code, resolution.error.message));
+    const location = await this.#locateExternalThread(params.data.threadId);
+    if (location.kind === "error") {
+      await this.#writer.json(rpcError(request, location.error.code, location.error.message));
       return;
     }
-    const supportsThreadReferences =
-      resolution.kind === "official" &&
-      params.data.includeReferenceCapability === true &&
-      (await nativeThreadSupportsReferences({
-        codexHome: this.#officialRuntimeScope.permanentHome,
-        threadId: params.data.threadId,
-        readThread: () =>
-          this.#officialRuntime.request("thread/read", {
-            threadId: params.data.threadId,
-            includeTurns: false,
-          }),
-      }));
-    const threadUsage =
-      resolution.kind === "official" ? null : await this.#threadUsage(resolution.thread);
-    const sessionCatalog =
-      resolution.kind === "external" ? resolution.thread.session.modelCatalog?.() : undefined;
-    const inspection = threadInspectionSchema.parse(
-      resolution.kind === "official"
-        ? {
-            owner: "codex",
-            locked: true,
-            ...(supportsThreadReferences ? { supportsThreadReferences: true } : {}),
-          }
-        : {
-            owner: "external",
-            harnessId: resolution.thread.harnessId,
-            transportModelId: resolution.thread.transportModelId,
-            ...(resolution.thread.stateObserver.state.effectiveModel
-              ? { effectiveModel: resolution.thread.stateObserver.state.effectiveModel }
-              : {}),
-            ...(resolution.thread.stateObserver.state.resolvedModelLabel
-              ? { resolvedModelLabel: resolution.thread.stateObserver.state.resolvedModelLabel }
-              : {}),
-            ...(resolution.thread.stateObserver.state.effectiveThinkingOptionId
-              ? {
-                  effectiveThinkingOptionId:
-                    resolution.thread.stateObserver.state.effectiveThinkingOptionId,
-                }
-              : {}),
-            ...(resolution.thread.stateObserver.state.availableThinkingOptions
-              ? {
-                  availableThinkingOptions:
-                    resolution.thread.stateObserver.state.availableThinkingOptions,
-                }
-              : {}),
-            ...(resolution.thread.stateObserver.state.effectivePermissionModeId
-              ? {
-                  effectivePermissionModeId:
-                    resolution.thread.stateObserver.state.effectivePermissionModeId,
-                }
-              : {}),
-            ...(sessionCatalog ? { catalog: sessionCatalog } : {}),
-            history: resolution.thread.session.capabilities.history,
-            ...(threadUsage ? { usage: threadUsage } : {}),
-            locked: true,
-          },
-    );
+    if (location.kind === "official") {
+      const supportsThreadReferences =
+        params.data.includeReferenceCapability === true &&
+        (await nativeThreadSupportsReferences({
+          codexHome: this.#officialRuntimeScope.permanentHome,
+          threadId: params.data.threadId,
+          readThread: () =>
+            this.#officialRuntime.request("thread/read", {
+              threadId: params.data.threadId,
+              includeTurns: false,
+            }),
+        }));
+      const inspection = threadInspectionSchema.parse({
+        owner: "codex",
+        locked: true,
+        ...(supportsThreadReferences ? { supportsThreadReferences: true } : {}),
+      });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(inspection) }));
+      return;
+    }
+    const thread = location.thread;
+    if (thread) {
+      const threadUsage = await this.#threadUsage(thread);
+      const sessionCatalog = thread.session.modelCatalog?.();
+      const inspection = threadInspectionSchema.parse({
+        owner: "external",
+        harnessId: thread.harnessId,
+        transportModelId: thread.transportModelId,
+        ...(thread.stateObserver.state.effectiveModel
+          ? { effectiveModel: thread.stateObserver.state.effectiveModel }
+          : {}),
+        ...(thread.stateObserver.state.resolvedModelLabel
+          ? { resolvedModelLabel: thread.stateObserver.state.resolvedModelLabel }
+          : {}),
+        ...(thread.stateObserver.state.effectiveThinkingOptionId
+          ? {
+              effectiveThinkingOptionId: thread.stateObserver.state.effectiveThinkingOptionId,
+            }
+          : {}),
+        ...(thread.stateObserver.state.availableThinkingOptions
+          ? {
+              availableThinkingOptions: thread.stateObserver.state.availableThinkingOptions,
+            }
+          : {}),
+        ...(thread.stateObserver.state.effectivePermissionModeId
+          ? {
+              effectivePermissionModeId: thread.stateObserver.state.effectivePermissionModeId,
+            }
+          : {}),
+        ...(sessionCatalog ? { catalog: sessionCatalog } : {}),
+        history: thread.session.capabilities.history,
+        ...(threadUsage ? { usage: threadUsage } : {}),
+        locked: true,
+      });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(inspection) }));
+      return;
+    }
+    // Cold Threads inspect persisted metadata without waking a released Native Session.
+    const harnessId = location.record.harnessId as ExternalHarnessId;
+    const saved = decodeExternalTransportSelection(harnessId, location.record.transportModelId);
+    const threadUsage = this.#persistedThreadUsage(location.record);
+    const history = location.record.subagent
+      ? COLD_HISTORY_CAPABILITIES
+      : (this.#externalRuntime.knownHistoryCapabilities(harnessId) ?? COLD_HISTORY_CAPABILITIES);
+    const inspection = threadInspectionSchema.parse({
+      owner: "external",
+      harnessId: location.record.harnessId,
+      transportModelId: location.record.transportModelId,
+      ...(saved?.model ? { effectiveModel: saved.model } : {}),
+      ...(saved?.thinkingOptionId ? { effectiveThinkingOptionId: saved.thinkingOptionId } : {}),
+      ...(saved?.permissionModeId ? { effectivePermissionModeId: saved.permissionModeId } : {}),
+      history,
+      ...(threadUsage ? { usage: threadUsage } : {}),
+      locked: true,
+    });
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(inspection) }));
   }
 
@@ -4143,12 +4193,12 @@ export class AppServerHost {
       await this.#writer.json(rpcError(request, -32602, "Invalid Thread Usage inspection params"));
       return;
     }
-    const resolution = await this.#resolveExternalThread(params.data.threadId);
-    if (resolution.kind === "error") {
-      await this.#writer.json(rpcError(request, resolution.error.code, resolution.error.message));
+    const location = await this.#locateExternalThread(params.data.threadId);
+    if (location.kind === "error") {
+      await this.#writer.json(rpcError(request, location.error.code, location.error.message));
       return;
     }
-    if (resolution.kind === "official") {
+    if (location.kind === "official") {
       if (params.data.refresh !== undefined) {
         await this.#writer.json(
           rpcError(request, -32602, "Exact Usage refresh is only available for External Threads"),
@@ -4168,10 +4218,16 @@ export class AppServerHost {
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;
     }
-    if (params.data.refresh === "exact") void resolution.thread.session.refreshUsage?.();
-    const session = resolution.thread.session;
-    const adapter = this.#externalAdapters.get(resolution.thread.harnessId);
-    if (!session.readAccountCredits && adapter?.credits && adapter.refreshCredits)
+    const thread = location.thread;
+    const session = thread?.session;
+    if (thread && params.data.refresh === "exact" && typeof session?.refreshUsage === "function") {
+      const refreshUsage = session.refreshUsage;
+      void this.#refreshExternalThreadUsage(thread, () => refreshUsage.call(session));
+    }
+    const harnessId = (thread?.harnessId ?? location.record.harnessId) as ExternalHarnessId;
+    if (!thread) await this.#waitForPlugins();
+    const adapter = this.#externalAdapters.get(harnessId);
+    if (!session?.readAccountCredits && adapter?.credits && adapter.refreshCredits)
       void Promise.resolve()
         .then(() => adapter.refreshCredits?.())
         .catch(() => undefined);
@@ -4183,7 +4239,7 @@ export class AppServerHost {
     let balance: AccountBalanceSnapshot | null = null;
     try {
       credits = parseHarnessAccountCredits(
-        session.readAccountCredits ? await session.readAccountCredits() : adapter?.credits?.(),
+        session?.readAccountCredits ? await session.readAccountCredits() : adapter?.credits?.(),
       );
     } catch {
       // Optional account telemetry cannot fail the Thread's usage inspection.
@@ -4193,17 +4249,42 @@ export class AppServerHost {
     } catch {
       // Same isolation as credits.
     }
+    const usage = thread
+      ? await this.#threadUsage(thread)
+      : this.#persistedThreadUsage(location.record);
     const result = threadUsageInspectionSchema.parse({
       threadId: params.data.threadId,
-      usage: await this.#threadUsage(resolution.thread),
+      usage,
       accountCreditsSupported:
-        typeof session.readAccountCredits === "function" ||
+        typeof session?.readAccountCredits === "function" ||
         typeof adapter?.credits === "function" ||
         typeof adapter?.balance === "function",
       ...(credits ? { accountCredits: credits } : {}),
       ...(balance ? { accountBalance: balance } : {}),
     });
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+  }
+
+  #refreshExternalThreadUsage(thread: ExternalThread, refresh: () => Promise<void>): Promise<void> {
+    return this.#externalRuntime.idleRelease
+      .runOperation(
+        thread.id,
+        async () => {
+          if (this.#externalRuntime.get(thread.id) !== thread) return;
+          await refresh();
+        },
+        { touch: false },
+      )
+      .catch((error: unknown) => this.#diagnose(error));
+  }
+
+  #persistedThreadUsage(record: StoredThreadRecordV1): HostUsage | null {
+    try {
+      return persistedThreadUsage(record);
+    } catch (error) {
+      this.#diagnose(error);
+      return null;
+    }
   }
 
   #refreshOfficialRateLimits(accountId: string, force = false) {

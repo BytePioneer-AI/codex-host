@@ -54,7 +54,7 @@ iOS/iPadOS 主屏幕模式通过 `display-mode: standalone` 与 `-webkit-touch-c
 
 无参运行 `codexhost` 在图形桌面环境下按 `$CODEXHOST_DATA_DIR/launch-preferences-v1.json` 路由入口。版本 1 配置保留 `defaultDesktopSurface` 与 `onboardingCompleted`，并用独立的 `rememberDefault` 表示用户是否明确选择记住默认入口；旧配置缺少该字段时按 `false` 处理，完成过选择不等于授权跳过选择页。`codexhost launch-prefs get --json` 返回最近选择、引导状态、记忆状态以及本机官方 Desktop 和桌面壳可用性；`launch-prefs set --surface <native-shell|codex-desktop> [--onboarding-completed true|false] [--remember-default true|false]` 原子更新同一文件，省略 `--remember-default` 时为 `true`。
 
-macOS 与 Windows 使用相同的选择页与路由合同。未记忆且桌面壳可用时，普通启动显示选择页；用户不勾选“记住此选择，下次直接打开”时仅打开本次所选客户端，勾选后普通启动直接进入保存的单一入口。未安装官方 Codex Desktop 且壳可用时，未记忆启动仍显示选择页；已记忆官方入口但客户端已卸载且桌面壳可用时也返回选择页。无桌面壳时按官方安装情况进入官方 Desktop，或在未安装官方时自动记忆原生入口并回落本机 Web。默认入口不提供同时启动多个客户端的模式，用户仍可分别打开自有窗口与官方 Desktop，两者共用同一 Host。
+macOS 与 Windows 使用相同的选择页与路由合同。未记忆且桌面壳可用时，普通启动显示选择页；用户不勾选“记住此选择，下次直接打开”时仅打开本次所选客户端，勾选后普通启动直接进入保存的单一入口。未安装官方 Codex Desktop 且壳可用时，未记忆启动仍显示选择页；已记忆官方入口但客户端已卸载且桌面壳可用时也返回选择页。无桌面壳时，未记忆入口按官方安装情况进入官方 Desktop，或在未安装官方时自动记忆原生入口并回落本机 Web；已记忆原生入口继续按原生/Web 回退，已记忆官方入口但客户端已卸载时仅回落 Web，不改写保存的记忆状态。默认入口不提供同时启动多个客户端的模式，用户仍可分别打开自有窗口与官方 Desktop，两者共用同一 Host。
 
 选择页和系统托盘都可以修改记忆状态；托盘提供自有桌面窗口、官方 Codex Desktop 与每次询问三项，并显示当前有效状态。显式 `codexhost app --onboarding` 始终打开选择页，`codexhost app`、托盘“打开 CodexHost 窗口”及 macOS Reopen 始终打开自有窗口，不被官方默认入口改写。已记忆自有窗口且现有壳停留在选择页时，普通重开会使该壳进入主窗口并恢复可见。
 

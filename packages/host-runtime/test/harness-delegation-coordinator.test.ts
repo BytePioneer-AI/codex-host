@@ -21,6 +21,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
+import { boundDelegationToken } from "../src/bearer-token.js";
 import { runDelegationCli } from "../src/delegation-cli.js";
 import { startDelegationControlServer } from "../src/delegation-control-server.js";
 import { HarnessDelegationCoordinator } from "../src/harness-delegation-coordinator.js";
@@ -439,6 +440,10 @@ describe("HarnessDelegationCoordinator", () => {
         executionPolicy: "unattended-full-access",
         environment: {
           ...environment,
+          CODEXHOST_RUNTIME_TOKEN: boundDelegationToken(
+            environment.CODEXHOST_RUNTIME_TOKEN,
+            started.threadId,
+          ),
           CODEXHOST_THREAD_ID: started.threadId,
         },
       });
@@ -468,6 +473,10 @@ describe("HarnessDelegationCoordinator", () => {
         kind: "resume",
         environment: {
           ...environment,
+          CODEXHOST_RUNTIME_TOKEN: boundDelegationToken(
+            environment.CODEXHOST_RUNTIME_TOKEN,
+            started.threadId,
+          ),
           CODEXHOST_THREAD_ID: started.threadId,
         },
         nativeRef: { harnessId: "workbuddy" },

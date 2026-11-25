@@ -18,7 +18,7 @@
 
 所有端点受 `web-server` 既有认证（Bearer Token / Session Cookie）与同源校验保护；异常统一映射为安全的客户端错误信息，不透传宿主绝对路径或内部错误栈：
 
-- `GET /api/peer/v1/manifest`：返回服务端版本、宿主实时通道真实 `epoch`（未就绪前返回 `503`）、平台、主机名、主目录、本机工作区清单，以及按实际可用性声明的 `capabilities`（如 `attachments: 1`、`workspaceFiles: 1`、`officePreview: 1`）。
+- `GET /api/peer/v1/manifest`：返回服务端版本、宿主实时通道真实 `epoch`（未就绪前返回 `503`）、平台、主机名、主目录、本机工作区清单，以及按实际可用性声明的 `capabilities`（如 `attachments: 1`、`workspaceFiles: 1`、`officePreview: 1`、`delegation: 1`；其中 `delegation: 1` 仅在底层 Host Runtime 支持且未设置 `CODEXHOST_DISABLE_PEER_DELEGATION=1` 时声明）。
 - `GET /api/peer/v1/dirs?path=...`：列出远端目录子文件夹（保留目录名中的空格；空参数回退到远端主目录）。
 - `POST /api/peer/v1/dirs`：在指定父目录下创建新子目录。
 - `POST | PATCH | DELETE /api/peer/v1/workspaces`：在远端节点新增、重命名或移除工作区注册，并返回最新 `manifest`。
@@ -27,6 +27,13 @@
 - `GET | HEAD /api/peer/v1/file?threadId=...&path=...`：校验路径位于该会话工作目录（固定根目录与无符号链接组件校验）或远端 Web 附件存储内，并校验图片字节与 50 MiB 上限后返回图片内容；拒绝越界或非图片请求且不回显宿主路径。
 - `POST /api/peer/v1/workspace-files/rpc`：只读白名单端点，仅放行 `workspaceFiles/read`、`workspaceFiles/readBytes`、`workspaceFiles/stat`、`workspaceFiles/list` 与 `officeToPdf/render`；所有文件访问均经统一受限文件访问层（`O_NOFOLLOW`、`realpath` 与 `dev/ino` 二次校验）直接执行实际 I/O，拒绝工作区外路径、控制字符/NUL、UNC、`..` 越界与符号链接 TOCTOU 逃逸；`officeToPdf/render` 通过同一受限句柄读取字节（50 MiB 上限）送入本地 `OfficeToPdf` 转换引擎，不向 DSH 回传裸路径字符串；入口即绑定连接取消信号并透传至工作区解析、文件读取与 Office 转换。
 - `GET | HEAD /api/peer/v1/workspace-files/download?threadId=...&path=...`：经同一受限文件描述符访问层流式传输原文件（不受 `readBytes` 32 MiB 限制），客户端断开时立即关闭文件句柄。
+- `POST /api/peer/v1/delegation`：跨机委派白名单端点，仅接受 `read`、`send`、`cancel`、`answer`、`start`、`threadList`、`harnessList`、`harnessInspect` 及 `hopCount === 1` 请求，支持在远端本地创建 `--worktree` / `--base` 并结合 `requestId` 持久幂等与 worktree 归属核验；可通过 `CODEXHOST_DISABLE_PEER_DELEGATION=1` 关闭；`/api/ch/v1/rpc` 拒绝直接调用内部 `codexhost/peer/delegation` 方法。
+
+### 跨机委派与本机私有桥接
+
+- **本机私有回环桥接**：运行 Peer Hub 的每个 `web-server` 实例在 Host 数据目录 `peer-delegation-bridges/` 下写入各自独立的 `0600` 描述文件，并在退出时仅清理自身文件，避免多实例并发覆盖或误删。桥接仅监听回环地址 `127.0.0.1`，强制 64 字符 Bearer Token 鉴权、拒绝任意 `Origin` 请求头并限制 2 MiB 请求体；转发失败时写操作不自动重试，且对远端错误信封执行独立二次脱敏与凭据擦除（日志仅输出白名单归一化错误码）。
+- **跨机发现与操作范围**：本机 CLI（`codexhost host list` 以及各委派与 Thread 命令的 `--host remote-peer:<peerId>` / `thread://<id>?hostId=...`）、控制 HTTP 路由与 MCP（`host_list` 与各 Thread 工具）支持对已声明 `capabilities.delegation: 1` 的 Peer 执行跨机发现、读取、发送（含 `steer`/`interrupt`）、取消、答题、发起委派（远端本地 worktree）与受总期限约束的分段轮询 `wait`。所有返回链接与提示均保留 `hostId`；远端失败绝不回退本机，且不向远端转发 `callerThreadId`。
+- **一跳防环路与边界**：在同 OS 用户（同 UID）信任边界内，远端 Peer 委派创建的 Thread 及其本机后代严格限制为 1 跳（外部 Harness 使用每 Thread HMAC 绑定令牌；原生 Codex 使用仅限活跃原生 Thread 的共享令牌并配合持久化祖先链，祖先查询异常或超深时 fail-closed 拒绝）。跨机 `watch`、`export`、`file` 与远端 `start`/`send` 的 `--watch true` 均明确拒绝；Codex Desktop 的 `remote-ssh*` / `remote-control:*` 主机保持原有只读 `thread read` 兼容。
 
 ### Hub 侧附件、工作区文件代理与安全边界
 

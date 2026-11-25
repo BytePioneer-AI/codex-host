@@ -5,7 +5,7 @@ import {
 } from "@codexhost/shared-contracts";
 import type { ExternalThreadRepository } from "./external-thread-repository.js";
 import { rpcEnvelope, errorMessage } from "./desktop-rpc.js";
-import { originClientName } from "./external-client-origin.js";
+import { isSyntheticOrigin } from "./external-client-origin.js";
 
 /** Sidebar parents are delegation parents, excluding pins and external client origins. */
 export class ThreadTree {
@@ -22,8 +22,7 @@ export class ThreadTree {
         delegations
           .filter(
             (entry) =>
-              !pinned.has(entry.childHostThreadId) &&
-              originClientName(entry.parentHostThreadId) === undefined,
+              !pinned.has(entry.childHostThreadId) && !isSyntheticOrigin(entry.parentHostThreadId),
           )
           .map((entry) => [entry.childHostThreadId, entry.parentHostThreadId]),
       ),

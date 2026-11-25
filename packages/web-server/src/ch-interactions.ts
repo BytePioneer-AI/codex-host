@@ -3,22 +3,127 @@ import type { ChHostClient } from "./ch-host-client.ts";
 import type { EventHub } from "./transport.ts";
 
 type Answer = { answers?: Array<{ id: string; selected?: string[]; custom?: string }> };
+type ApprovalEffect = "allowOnce" | "allowForSession" | "allowAlways" | "deny";
+type ApprovalFile = { path: string; diff?: string; kind?: "add" | "update" | "delete" };
+
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
 }
+
+function nonEmptyText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function commandText(value: unknown): string | undefined {
+  const direct = nonEmptyText(value);
+  if (direct !== undefined) return direct;
+  if (Array.isArray(value) && value.length > 0 && value.every((entry) => typeof entry === "string"))
+    return value.map((entry) => (/\s/u.test(entry) ? JSON.stringify(entry) : entry)).join(" ");
+  return undefined;
+}
+
+function fileChangeKind(value: unknown): ApprovalFile["kind"] {
+  const type = typeof value === "string" ? value : record(value).type;
+  if (type === "add" || type === "create") return "add";
+  if (type === "delete") return "delete";
+  if (type === "update" || type === "modify" || type === "edit") return "update";
+  return undefined;
+}
+
+function normalizeEffect(effect: string): ApprovalEffect {
+  if (effect === "deny" || effect === "allowForSession" || effect === "allowAlways") return effect;
+  return "allowOnce";
+}
+
+function findCorrelatedItem(
+  snapshot: ClientThreadSnapshot | undefined,
+  itemId: string | undefined,
+): Record<string, unknown> | undefined {
+  if (!itemId || !snapshot) return undefined;
+  const turnLists = [snapshot.turnsPage?.data, snapshot.thread?.turns];
+  for (const turns of turnLists) {
+    if (!Array.isArray(turns)) continue;
+    for (const turn of turns) {
+      if (!Array.isArray(turn.items)) continue;
+      for (const item of turn.items) {
+        if (item.id === itemId) return item as Record<string, unknown>;
+      }
+    }
+  }
+  return undefined;
+}
+
+function extractApprovalFiles(
+  params: Record<string, unknown>,
+  subject: Record<string, unknown>,
+  item: Record<string, unknown> | undefined,
+): ApprovalFile[] {
+  const rawChanges = params.changes ?? subject.changes ?? item?.changes;
+  const files: ApprovalFile[] = [];
+  const seen = new Set<string>();
+  const pushFile = (path: string | undefined, diff?: string, kind?: ApprovalFile["kind"]) => {
+    if (!path) return;
+    const key = `${path}\0${diff ?? ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    files.push({
+      path,
+      ...(diff ? { diff } : {}),
+      ...(kind ? { kind } : {}),
+    });
+  };
+  if (Array.isArray(rawChanges)) {
+    for (const entry of rawChanges) {
+      const candidate = record(entry);
+      const path = nonEmptyText(candidate.path) ?? nonEmptyText(candidate.file_path);
+      const diff = nonEmptyText(candidate.diff) ?? nonEmptyText(candidate.unifiedDiff);
+      pushFile(path, diff, fileChangeKind(candidate.kind));
+    }
+  } else if (rawChanges && typeof rawChanges === "object") {
+    for (const [path, entry] of Object.entries(record(rawChanges))) {
+      const candidate = record(entry);
+      const diff = nonEmptyText(candidate.diff) ?? nonEmptyText(candidate.unifiedDiff);
+      pushFile(nonEmptyText(path), diff, fileChangeKind(candidate.kind));
+    }
+  }
+  if (files.length === 0) {
+    const fallbackPaths = [
+      ...(Array.isArray(params.paths) ? params.paths.map(nonEmptyText) : []),
+      ...(Array.isArray(subject.paths) ? subject.paths.map(nonEmptyText) : []),
+      nonEmptyText(params.grantRoot),
+    ];
+    for (const path of fallbackPaths) pushFile(path);
+  }
+  return files;
+}
+
 /** Translate the public Host's existing Codex UI response shape, not Harness SDK
  * protocols. The Host validates native options again and arbitrates with GUI. */
-function presentation(pending: ClientInteraction): {
+function presentation(
+  pending: ClientInteraction,
+  snapshot?: ClientThreadSnapshot,
+): {
   questions: unknown[];
   result: (answer: unknown) => Record<string, unknown>;
 } {
   const interaction = pending.interaction;
   if (interaction.type === "approval") {
-    const nativeApproval =
-      pending.request.method === "item/commandExecution/requestApproval" ||
-      pending.request.method === "item/fileChange/requestApproval";
+    const isCommandApproval = pending.request.method === "item/commandExecution/requestApproval";
+    const isFileApproval = pending.request.method === "item/fileChange/requestApproval";
+    const nativeApproval = isCommandApproval || isFileApproval;
+    const params = record(pending.request.params);
+    const subject = record(interaction.subject);
+    const item = findCorrelatedItem(
+      snapshot,
+      nonEmptyText(params.itemId) ?? nonEmptyText(subject.itemId),
+    );
+    const command = isCommandApproval
+      ? (commandText(params.command) ?? commandText(subject.command) ?? commandText(item?.command))
+      : undefined;
+    const files = isFileApproval ? extractApprovalFiles(params, subject, item) : [];
+    const toolLabel = isCommandApproval ? "bash" : isFileApproval ? "files" : undefined;
     const labels = interaction.actions.map((action, index) =>
       interaction.actions.filter((other) => other.label === action.label).length > 1
         ? `${action.label} (${index + 1})`
@@ -35,6 +140,16 @@ function presentation(pending: ClientInteraction): {
           options: labels.map((label) => ({ label })),
           multiSelect: false,
           allowOther: false,
+          intent: {
+            kind: "approval",
+            ...(toolLabel ? { toolLabel } : {}),
+            ...(command ? { command } : {}),
+            ...(files.length > 0 ? { files } : {}),
+            actions: interaction.actions.map((action, index) => ({
+              label: labels[index] ?? action.label,
+              effect: normalizeEffect(action.effect),
+            })),
+          },
         },
       ],
       result(value) {
@@ -125,7 +240,7 @@ export class ChInteractions {
     for (const request of snapshot.interactions) {
       const key = `${snapshot.cursor.epoch}:${request.requestId}`;
       if (this.pending.has(key)) continue;
-      const view = presentation(request);
+      const view = presentation(request, snapshot);
       const invocation = this.events.invoke("user-questions/request", threadId, {
         questions: view.questions,
       });

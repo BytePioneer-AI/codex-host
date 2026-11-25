@@ -15,6 +15,14 @@ export { DisclosureRow } from "./DisclosureRow.tsx";
 export type { DisclosureRowProps } from "./DisclosureRow.tsx";
 export { TextShimmer } from "./TextShimmer.tsx";
 export type { TextShimmerProps } from "./TextShimmer.tsx";
+export { ApprovalCard } from "./ApprovalCard.tsx";
+export type {
+  ApprovalCardAction,
+  ApprovalCardActionEffect,
+  ApprovalCardFileDiff,
+  ApprovalCardLabels,
+  ApprovalCardProps,
+} from "./ApprovalCard.tsx";
 export { Button } from "./Button.tsx";
 export type { ButtonVariant } from "./Button.tsx";
 export { Pill } from "./Pill.tsx";

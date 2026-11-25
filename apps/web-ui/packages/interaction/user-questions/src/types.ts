@@ -14,6 +14,24 @@ export interface AskUserQuestionOption {
   description?: string;
 }
 
+/** One file entry shown in an approval presentation intent. */
+export interface AskUserQuestionApprovalFile {
+  /** Changed file path shown verbatim. */
+  path: string;
+  /** Unified diff text when supplied by the Host; absent renders the path list. */
+  diff?: string;
+  /** File operation kind when supplied by the Host. */
+  kind?: "add" | "update" | "delete";
+}
+
+/** Semantic button role aligned to one option label in an approval presentation intent. */
+export interface AskUserQuestionApprovalAction {
+  /** Option label echoed in the answer; must match one of the question's options. */
+  label: string;
+  /** Decision semantics controlling button styling and Enter/Esc shortcuts. */
+  effect: "allowOnce" | "allowForSession" | "allowAlways" | "deny";
+}
+
 /**
  * A caller-declared presentation intent: the question IS this kind of
  * decision, so a UI that recognises the tag may present it as such instead of as a
@@ -21,18 +39,31 @@ export interface AskUserQuestionOption {
  * not know a tag renders the generic flow, and the answer encoding is identical
  * either way — an intent changes presentation only, never the protocol.
  */
-export type AskUserQuestionIntent = {
-  /** A plan submitted for review: `detail` is the plan markdown `ask()` requires, and the decision approves or declines it. */
-  kind: "plan-review";
-  /**
-   * The option label that approves the plan; every other option declines it.
-   * Named rather than positional so no UI infers the verdict from option order.
-   * An `approve` naming no option of its own question is rejected at `ask()`.
-   */
-  approve: string;
-  /** Logged tool invocation whose arguments contain the reviewed plan. */
-  callId?: ToolCallId;
-};
+export type AskUserQuestionIntent =
+  | {
+      /** A plan submitted for review: `detail` is the plan markdown `ask()` requires, and the decision approves or declines it. */
+      kind: "plan-review";
+      /**
+       * The option label that approves the plan; every other option declines it.
+       * Named rather than positional so no UI infers the verdict from option order.
+       * An `approve` naming no option of its own question is rejected at `ask()`.
+       */
+      approve: string;
+      /** Logged tool invocation whose arguments contain the reviewed plan. */
+      callId?: ToolCallId;
+    }
+  | {
+      /** A Host/Harness approval presented as a one-click approval card with optional command/diff preview. */
+      kind: "approval";
+      /** Short muted category label shown in the card header (e.g., "bash", "files"). */
+      toolLabel?: string;
+      /** Shell command text to preview in a recessed code block. */
+      command?: string;
+      /** File changes or unified diffs to preview in the approval card. */
+      files?: AskUserQuestionApprovalFile[];
+      /** Native action semantics aligned to the question's option labels. */
+      actions: AskUserQuestionApprovalAction[];
+    };
 
 /** One question in a user-questions request. */
 export interface AskUserQuestionItem {

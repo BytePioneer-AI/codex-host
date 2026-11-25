@@ -1,10 +1,26 @@
 .frame {
+  --dsh-main-seam-radius: 14px;
+  --dsh-main-seam-border: color-mix(in srgb, var(--dsw-alias-border-l3) 44%, transparent);
   position: relative; /* anchors the drag handles, which straddle column borders */
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   height: 100%;
   overflow: hidden;
-  background: var(--dsw-alias-bg-base);
+  background: var(--dsw-specific-sidebar-fill);
+}
+
+:global(body[data-ds-dark-theme]) .frame {
+  --dsh-main-seam-border: color-mix(in srgb, var(--dsw-alias-border-l3) 42%, transparent);
+}
+
+@media (min-resolution: 2dppx) {
+  .frame {
+    --dsh-main-seam-border: color-mix(in srgb, var(--dsw-alias-border-l3) 60%, transparent);
+  }
+
+  :global(body[data-ds-dark-theme]) .frame {
+    --dsh-main-seam-border: color-mix(in srgb, var(--dsw-alias-border-l3) 56%, transparent);
+  }
 }
 
 /* Only a discrete collapse/expand toggle eases the tracks (the TSX holds
@@ -24,17 +40,11 @@
 
 /* The Windows caption row remains outside every conversation and file panel. */
 :global([data-windows-titlebar]) .frame {
-  --dsh-windows-content-radius: 12px;
+  --dsh-windows-content-radius: 14px;
+  --dsh-main-seam-radius: var(--dsh-windows-content-radius);
   box-sizing: border-box;
   padding-top: var(--dsh-windows-titlebar-height);
   background: var(--dsw-specific-sidebar-fill);
-}
-
-:global([data-windows-titlebar]) .centerCol {
-  background: var(--dsw-alias-bg-base);
-  border-radius: var(--dsh-windows-content-radius) 0 0 0;
-  corner-shape: round;
-  box-shadow: inset 1px 1px 0 color-mix(in srgb, var(--dsw-alias-border-l3) 55%, transparent);
 }
 
 :global([data-windows-titlebar]) .frame::before {
@@ -44,10 +54,6 @@
   height: var(--dsh-windows-titlebar-height);
   background: var(--dsw-specific-sidebar-fill);
   -webkit-app-region: drag;
-}
-
-:global([data-windows-titlebar]) .sidebarCol {
-  border-right: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -60,22 +66,110 @@
   min-width: 0;
   overflow: hidden;
   background: var(--dsw-specific-sidebar-fill);
-  border-right: 0.5px solid var(--dsw-alias-border-l3);
 }
 
 .centerCol {
+  position: relative;
   min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  background: var(--dsw-alias-bg-base);
+  border-radius: var(--dsh-main-seam-radius) 0 0 var(--dsh-main-seam-radius);
+  corner-shape: round;
 }
 
-/* macOS desktop: the frame goes transparent so window vibrancy reaches the
-   sidebar column, which keeps only a translucent tint; the centre paints the
-   base background itself to stay opaque. The sidebar/centre separator moves
-   to the opaque centre: on the translucent sidebar the alpha border mixes
-   with the wallpaper and reads as a dark seam. */
+/* Hairline border overlay on the main surface: wraps the top-left and
+   bottom-left circular curves without shifting child layout or being painted
+   over by opaque main-panel backgrounds. On 2x+ displays the 200%/scale(0.5)
+   layer guarantees a true 1-physical-pixel (0.5px CSS) hairline around arcs. */
+.centerCol::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  border-radius: var(--dsh-main-seam-radius) 0 0 var(--dsh-main-seam-radius);
+  corner-shape: round;
+  border-top: 1px solid var(--dsh-main-seam-border);
+  border-left: 1px solid var(--dsh-main-seam-border);
+  border-bottom: 1px solid var(--dsh-main-seam-border);
+  pointer-events: none;
+  z-index: 6;
+}
+
+@media (min-resolution: 2dppx) {
+  .centerCol::after {
+    inset: 0 auto auto 0;
+    width: 200%;
+    height: 200%;
+    border-radius: calc(var(--dsh-main-seam-radius) * 2) 0 0 calc(var(--dsh-main-seam-radius) * 2);
+    transform: scale(0.5);
+    transform-origin: 0 0;
+  }
+}
+
+/* Collapsed sidebar and phone layouts keep the main surface flush to the
+   viewport edge with no corner cutout or left seam. */
+.frame:is([data-sidebar-collapsed], [data-sidebar-hidden], [data-phone]) {
+  --dsh-main-seam-radius: 0px;
+}
+
+.frame:is([data-sidebar-collapsed], [data-sidebar-hidden], [data-phone]) .centerCol::after {
+  display: none;
+}
+
+/* Windows still keeps its top caption bar above the content when the sidebar
+   collapses, so preserve only the top separator without a left stroke. */
+:global([data-windows-titlebar])
+  .frame:is([data-sidebar-collapsed], [data-sidebar-hidden])
+  .centerCol::after {
+  display: block;
+  border-left: none;
+  border-bottom: none;
+}
+
+/* macOS Electron desktop: paint the translucent vibrancy wash on the frame so
+   the centre column's rounded left corners reveal the same tint as the sidebar
+   column without a corner contrast seam. */
 :global([data-platform="darwin"]) .frame {
+  background: transparent;
+}
+
+:global([data-platform="darwin"]:not([data-tauri-shell]))
+  :global(body:not([data-codexhost-wallpaper]))
+  .frame {
+  background:
+    linear-gradient(
+      to bottom,
+      rgb(122 155 240 / 0.1),
+      rgb(122 155 240 / 0) 35%,
+      rgb(143 137 184 / 0) 68%,
+      rgb(143 137 184 / 0.09)
+    ),
+    color-mix(
+      in srgb,
+      color-mix(in srgb, var(--dsw-specific-sidebar-fill) 97%, rgb(122 155 240)) 40%,
+      transparent
+    );
+}
+
+:global([data-platform="darwin"]:not([data-tauri-shell]))
+  :global(body[data-ds-dark-theme]:not([data-codexhost-wallpaper]))
+  .frame {
+  background:
+    linear-gradient(
+      to bottom,
+      rgb(122 155 240 / 0.08),
+      rgb(122 155 240 / 0) 35%,
+      rgb(143 137 184 / 0) 68%,
+      rgb(143 137 184 / 0.07)
+    ),
+    color-mix(in srgb, var(--dsw-specific-sidebar-fill) 50%, transparent);
+}
+
+:global([data-platform="darwin"]:not([data-tauri-shell]))
+  :global(body:not([data-codexhost-wallpaper]))
+  .sidebarCol {
   background: transparent;
 }
 
@@ -84,6 +178,18 @@
 :global(body[data-codexhost-wallpaper]) .rightbarCol,
 :global(body[data-codexhost-wallpaper]) .bottomRow {
   background: transparent;
+}
+
+/* Wallpaper mode keeps the main canvas transparent over the full-bleed
+   backdrop, so omit the opaque-card corner cutout and keep only a subtle left
+   divider next to the frosted sidebar. */
+:global(body[data-codexhost-wallpaper]) .frame {
+  --dsh-main-seam-radius: 0px;
+}
+
+:global(body[data-codexhost-wallpaper]) .centerCol::after {
+  border-top: none;
+  border-bottom: none;
 }
 
 :global(html:is(:not([data-platform="darwin"]), [data-tauri-shell]) body[data-codexhost-wallpaper])
@@ -141,11 +247,11 @@
   --dsh-frame-chrome-top: 0px;
 }
 
-:global([data-platform="darwin"]) .sidebarCol {
-  /* A blue wash over the top of the translucent tint, gone by a third of the
-     column; a faint blue-grey-violet rises through the bottom third; and a
-     faint blue cast is mixed into the tint itself. Every layer stays
-     transparent so vibrancy shows. */
+:global([data-platform="darwin"]:not([data-tauri-shell]))
+  :global(body[data-codexhost-wallpaper])
+  .sidebarCol {
+  /* Wallpaper mode on Electron macOS keeps the vibrancy tint scoped to the
+     sidebar column while the frame stays transparent for the wallpaper. */
   background:
     linear-gradient(
       to bottom,
@@ -159,12 +265,13 @@
       color-mix(in srgb, var(--dsw-specific-sidebar-fill) 97%, rgb(122 155 240)) 40%,
       transparent
     );
-  border-right: none;
 }
 
 /* Dark drops the blue cast (the light-mode wash reads purple over dark fills)
    and thins the fill so more wallpaper shows; the washes stay. */
-:global([data-platform="darwin"]) :global([data-ds-dark-theme]) .sidebarCol {
+:global([data-platform="darwin"]:not([data-tauri-shell]))
+  :global(body[data-ds-dark-theme][data-codexhost-wallpaper])
+  .sidebarCol {
   background:
     linear-gradient(
       to bottom,
@@ -181,30 +288,20 @@
    them with a 90%-opaque fill of the same token in both themes (the dark
    selector repeats so this outranks its thinner fill). */
 @media (prefers-reduced-transparency: reduce) {
-  :global([data-platform="darwin"]) .sidebarCol,
-  :global([data-platform="darwin"]) :global([data-ds-dark-theme]) .sidebarCol {
+  :global([data-platform="darwin"]:not([data-tauri-shell]))
+    :global(body:not([data-codexhost-wallpaper]))
+    .frame,
+  :global([data-platform="darwin"]:not([data-tauri-shell]))
+    :global(body[data-ds-dark-theme]:not([data-codexhost-wallpaper]))
+    .frame,
+  :global([data-platform="darwin"]:not([data-tauri-shell]))
+    :global(body[data-codexhost-wallpaper])
+    .sidebarCol,
+  :global([data-platform="darwin"]:not([data-tauri-shell]))
+    :global(body[data-ds-dark-theme][data-codexhost-wallpaper])
+    .sidebarCol {
     background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 90%, transparent);
   }
-}
-
-:global([data-platform="darwin"]) .centerCol {
-  background: var(--dsw-alias-bg-base);
-  border-left: 0.5px solid var(--dsw-alias-border-l3);
-}
-
-/* The right track paints the base ground on the transparent frame: while the
-   track and the occupant's translateX slide ride the same curve, the grid
-   eases in layout and the transform on the compositor, so frames where they
-   diverge would otherwise show vibrancy glass between the centre's right edge
-   and the incoming panel. The occupant's opaque panel covers this at rest. */
-:global([data-platform="darwin"]) .rightbarCol {
-  background: var(--dsw-alias-bg-base);
-}
-
-/* The darwin closed sidebar has no rail: the centre reaches the window edge,
-   where a separator would draw a seam against nothing. */
-:global([data-platform="darwin"]) [data-sidebar-hidden] .centerCol {
-  border-left: none;
 }
 
 /* Tauri macOS shell uses an opaque window rather than Electron vibrancy. */
@@ -218,15 +315,6 @@
   :global(body[data-ds-dark-theme]:not([data-codexhost-wallpaper]))
   .sidebarCol {
   background: var(--dsw-specific-sidebar-fill);
-}
-
-:global([data-platform="darwin"][data-tauri-shell]) .centerCol {
-  border-left: none;
-  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--dsw-alias-border-l3) 55%, transparent);
-}
-
-:global([data-platform="darwin"][data-tauri-shell]) [data-sidebar-hidden] .centerCol {
-  box-shadow: none;
 }
 
 /* Published while the shell.leading seat is mounted (same condition as the
@@ -322,12 +410,45 @@
  * column's right edge (the frame's edge, which never moves) and lets the track
  * decide whether the centre makes room. With no track the panel hangs over the
  * centre from a zero-width column, and while the track animates the panel stays
- * where it is. The occupant draws its own left border.
+ * where it is. The occupant draws its own left border, while the track itself
+ * paints the base surface so centre + rightbar read as one continuous plane.
  */
 .rightbarCol {
   position: relative;
   min-width: 0;
   overflow: visible;
+  background: var(--dsw-alias-bg-base);
+}
+
+.frame:not([data-sidebar-collapsed]):not([data-sidebar-hidden]):not([data-phone]):not(
+    [data-rightbar-collapsed]
+  ):not([data-rightbar-fullscreen])
+  .rightbarCol::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  border-top: 1px solid var(--dsh-main-seam-border);
+  border-bottom: 1px solid var(--dsh-main-seam-border);
+  pointer-events: none;
+  z-index: 10;
+}
+
+@media (min-resolution: 2dppx) {
+  .frame:not([data-sidebar-collapsed]):not([data-sidebar-hidden]):not([data-phone]):not(
+      [data-rightbar-collapsed]
+    ):not([data-rightbar-fullscreen])
+    .rightbarCol::after {
+    inset: 0 auto auto 0;
+    width: 200%;
+    height: 200%;
+    transform: scale(0.5);
+    transform-origin: 0 0;
+  }
+}
+
+:global(body[data-codexhost-wallpaper]) .rightbarCol::after {
+  display: none;
 }
 
 .bottomRow {

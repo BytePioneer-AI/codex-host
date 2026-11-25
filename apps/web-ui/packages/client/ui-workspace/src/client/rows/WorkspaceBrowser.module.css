@@ -78,6 +78,7 @@
 .root:not(.rail) .sectionHeader {
   margin-top: 2px;
   margin-right: -4px;
+  margin-bottom: 4px;
 }
 
 .sectionLabel {
@@ -309,6 +310,7 @@
 
 /* List seat: always mounted so the shell foot never moves. */
 .listArea {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -319,6 +321,45 @@
   /* The list remains the scroll clip. This seat stays visible so the
      absolutely positioned first-boundary marker can occupy the header gap. */
   overflow: visible;
+}
+
+/* When HostScopeTabBar sits between .sectionHeader and .listArea, its
+   underline tab bar already separates the fixed controls from the list. */
+.root:not(.rail) .sectionHeader + .listArea {
+  padding-top: 6px;
+}
+
+/* Hairline separator between the fixed sidebar controls and the scrolling list. */
+.root:not(.rail) .sectionHeader + .listArea::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: calc(4px - var(--dsh-sidebar-inline-padding));
+  right: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--dsw-alias-border-l3) 38%, transparent);
+  pointer-events: none;
+}
+
+:global(body[data-ds-dark-theme]) .root:not(.rail) .sectionHeader + .listArea::before {
+  background: color-mix(in srgb, var(--dsw-alias-border-l3) 34%, transparent);
+}
+
+@media (min-resolution: 2dppx) {
+  .root:not(.rail) .sectionHeader + .listArea::before {
+    background: color-mix(in srgb, var(--dsw-alias-border-l3) 56%, transparent);
+    transform: scaleY(0.5);
+    transform-origin: top;
+  }
+
+  :global(body[data-ds-dark-theme]) .root:not(.rail) .sectionHeader + .listArea::before {
+    background: color-mix(in srgb, var(--dsw-alias-border-l3) 48%, transparent);
+  }
+}
+
+:global([data-phone-drawer]) .root:not(.rail) .sectionHeader + .listArea::before {
+  left: 4px;
+  right: var(--dsh-session-list-edge-inset);
 }
 
 .rail .listArea {
@@ -376,6 +417,8 @@
   overflow-y: auto;
   overscroll-behavior-y: contain;
   scroll-padding-block: 8px;
+  --dsh-scrollbar-width: var(--dsh-session-list-scrollbar-width);
+  --dsh-scrollbar-track-margin: 6px;
   margin-left: -4px;
   margin-right: var(--dsh-session-list-scrollbar-offset);
   padding-left: 4px;

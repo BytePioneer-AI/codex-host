@@ -590,6 +590,17 @@
   line-height: 20px;
 }
 
+/* Soft right-edge fade on full-width sidebar project, session, and search
+   titles so long labels taper cleanly without masking trailing badges, dots,
+   actions, or shrink-to-fit remote host labels (.remoteHostText .title). */
+.projectRow .projectText > .title,
+.sessionRow .title,
+.searchResultTitle {
+  text-overflow: clip;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+}
+
 .renameInput {
   min-width: 0;
   font-size: 14px;

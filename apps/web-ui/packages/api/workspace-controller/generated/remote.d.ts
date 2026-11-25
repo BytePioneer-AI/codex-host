@@ -4,7 +4,7 @@ import type {
   RemoteStreamHandle,
   TypertRemoteContribution,
 } from '@deepseek-ai/dsh-typert-protocol'
-import type { WorkspaceArchiveSessionRequest, WorkspaceArchiveValue, WorkspaceCreateRequest, WorkspaceCreateThreadSectionRequest, WorkspaceCreateThreadSectionValue, WorkspaceCreateValue, WorkspaceDeleteRequest, WorkspaceDeleteThreadSectionRequest, WorkspaceDeleteThreadSectionValue, WorkspaceDeleteValue, WorkspaceFollowFrame, WorkspaceInsertBeforeRequest, WorkspaceInsertSessionBeforeRequest, WorkspaceMoveSessionToSectionRequest, WorkspaceMoveSessionToSectionValue, WorkspaceMoveToSectionValue, WorkspaceMoveWorkspaceToSectionRequest, WorkspaceOrderValue, WorkspacePinnedWorkspacesValue, WorkspacePinSessionRequest, WorkspacePinValue, WorkspaceRenameRequest, WorkspaceSetPinnedRequest, WorkspaceUnarchiveSessionRequest, WorkspaceUnpinSessionRequest, WorkspaceUpdateThreadSectionRequest, WorkspaceUpdateThreadSectionValue, WorkspaceValue } from '@deepseek-ai/dsh-api-workspace-controller/types'
+import type { WorkspaceArchiveSessionRequest, WorkspaceArchiveValue, WorkspaceCreateRequest, WorkspaceCreateThreadSectionRequest, WorkspaceCreateThreadSectionValue, WorkspaceCreateValue, WorkspaceDeleteRequest, WorkspaceDeleteThreadSectionRequest, WorkspaceDeleteThreadSectionValue, WorkspaceDeleteValue, WorkspaceFollowFrame, WorkspaceInsertBeforeRequest, WorkspaceInsertSessionBeforeRequest, WorkspaceMoveSessionToProjectRequest, WorkspaceMoveSessionToProjectValue, WorkspaceMoveSessionToSectionRequest, WorkspaceMoveSessionToSectionValue, WorkspaceMoveToSectionValue, WorkspaceMoveWorkspaceToSectionRequest, WorkspaceOrderValue, WorkspacePinnedWorkspacesValue, WorkspacePinSessionRequest, WorkspacePinValue, WorkspaceRenameRequest, WorkspaceSetPinnedRequest, WorkspaceUnarchiveSessionRequest, WorkspaceUnpinSessionRequest, WorkspaceUpdateThreadSectionRequest, WorkspaceUpdateThreadSectionValue, WorkspaceValue } from '@deepseek-ai/dsh-api-workspace-controller/types'
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface TypertRemoteNamespace$6469726563746f72795069636b6572 {
@@ -22,6 +22,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     initializeDefault: (signal?: AbortSignal) => Promise<RemoteResult<WorkspaceValue | undefined>>
     insertBefore: (request: WorkspaceInsertBeforeRequest) => Promise<RemoteResult<WorkspaceOrderValue>>
     insertSessionBefore: (request: WorkspaceInsertSessionBeforeRequest) => Promise<RemoteResult<WorkspaceValue>>
+    moveSessionToProject: (request: WorkspaceMoveSessionToProjectRequest) => Promise<RemoteResult<WorkspaceMoveSessionToProjectValue>>
     moveSessionToSection: (request: WorkspaceMoveSessionToSectionRequest) => Promise<RemoteResult<WorkspaceMoveSessionToSectionValue>>
     moveWorkspaceToSection: (request: WorkspaceMoveWorkspaceToSectionRequest) => Promise<RemoteResult<WorkspaceMoveToSectionValue>>
     pinSession: (request: WorkspacePinSessionRequest) => Promise<RemoteResult<WorkspacePinValue>>
@@ -44,6 +45,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'workspace/initializeDefault': (signal?: AbortSignal) => Promise<RemoteResult<WorkspaceValue | undefined>>
     'workspace/insertBefore': (request: WorkspaceInsertBeforeRequest) => Promise<RemoteResult<WorkspaceOrderValue>>
     'workspace/insertSessionBefore': (request: WorkspaceInsertSessionBeforeRequest) => Promise<RemoteResult<WorkspaceValue>>
+    'workspace/moveSessionToProject': (request: WorkspaceMoveSessionToProjectRequest) => Promise<RemoteResult<WorkspaceMoveSessionToProjectValue>>
     'workspace/moveSessionToSection': (request: WorkspaceMoveSessionToSectionRequest) => Promise<RemoteResult<WorkspaceMoveSessionToSectionValue>>
     'workspace/moveWorkspaceToSection': (request: WorkspaceMoveWorkspaceToSectionRequest) => Promise<RemoteResult<WorkspaceMoveToSectionValue>>
     'workspace/pinSession': (request: WorkspacePinSessionRequest) => Promise<RemoteResult<WorkspacePinValue>>

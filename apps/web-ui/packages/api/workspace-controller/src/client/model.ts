@@ -32,6 +32,9 @@ import type {
   WorkspaceValue,
   WorkspaceId,
   WorkspaceView,
+  WorkspaceLocalProject,
+  WorkspaceMoveSessionToProjectRequest,
+  WorkspaceMoveSessionToProjectValue,
   WorkspaceThreadSection,
   WorkspaceMoveSessionToSectionRequest,
   WorkspaceMoveSessionToSectionValue,
@@ -57,6 +60,7 @@ export interface WorkspaceSnapshot {
   readonly pinnedWorkspaceIds?: WorkspacePinnedWorkspacesValue["pinnedWorkspaceIds"];
   readonly threadSections?: readonly WorkspaceThreadSection[];
   readonly threadSectionsV1?: true;
+  readonly localProjects?: readonly WorkspaceLocalProject[];
   readonly state: "idle" | "loading" | "error";
   readonly phase: WorkspaceListPhase;
   readonly error: RemoteFailure | null;
@@ -81,6 +85,7 @@ export interface WorkspaceFollowSink {
     pinnedWorkspaceIds: WorkspacePinnedWorkspacesValue["pinnedWorkspaceIds"],
   ): void;
   replaceThreadSections(sections: readonly WorkspaceThreadSection[], capability?: true): void;
+  replaceLocalProjects(projects: readonly WorkspaceLocalProject[]): void;
 }
 
 /**
@@ -94,6 +99,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   private pinnedWorkspaceIds: WorkspacePinnedWorkspacesValue["pinnedWorkspaceIds"] = [];
   private threadSections: readonly WorkspaceThreadSection[] = [];
   private threadSectionsV1: true | undefined;
+  private localProjects: readonly WorkspaceLocalProject[] = [];
   private state: WorkspaceSnapshot["state"] = "loading";
   private phase: WorkspaceListPhase = "pending";
   private error: RemoteFailure | null = null;
@@ -332,6 +338,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     this.installPinnedWorkspaces(baseline.pinnedWorkspaceIds ?? []);
     this.threadSections = baseline.threadSections ?? [];
     this.threadSectionsV1 = baseline.threadSectionsV1;
+    this.localProjects = baseline.localProjects ?? [];
     this.state = "idle";
     this.phase = "ready";
     this.error = null;
@@ -351,6 +358,12 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
       this.installPinnedWorkspaces(result.value.pinnedWorkspaceIds);
     }
     return result;
+  }
+
+  moveSessionToProject(
+    request: WorkspaceMoveSessionToProjectRequest,
+  ): Promise<RemoteResult<WorkspaceMoveSessionToProjectValue>> {
+    return this.remote.moveSessionToProject(request);
   }
 
   moveSessionToSection(
@@ -430,6 +443,11 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     this.invalidate();
   }
 
+  replaceLocalProjects(projects: readonly WorkspaceLocalProject[]): void {
+    this.localProjects = projects;
+    this.invalidate();
+  }
+
   /** Keep the last complete projection visible while a lost carrier reconnects. */
   handleCarrierFailure(): void {
     this.state = "loading";
@@ -487,6 +505,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
       pinnedWorkspaceIds: this.pinnedWorkspaceIds,
       threadSections: this.threadSections,
       ...(this.threadSectionsV1 ? { threadSectionsV1: true } : {}),
+      localProjects: this.localProjects,
       state: this.state,
       phase: this.phase,
       error: this.error,

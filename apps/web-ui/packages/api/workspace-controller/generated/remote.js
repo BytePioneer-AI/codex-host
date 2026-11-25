@@ -111,6 +111,11 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_deleteThreadSection_re
 let _deepseek_ai_dsh_api_workspace_controller_workspace_follow_parameter_0$schema$value
 const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_parameter_0$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_follow_parameter_0$schema$value ??= z.union([z.undefined(), z.literal(false), z.literal(true)]))
 let _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema$value
+const localProjects = () => z.array(z.object({
+  'id': z.string().min(1).readonly(),
+  'name': z.string().readonly(),
+  'sessionIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
+}).readonly()).readonly()
 const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema$value ??= z.union([z.object({
   'type': z.literal("baseline").readonly(),
   'value': z.object({
@@ -144,6 +149,7 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema =
   'workspaceIds': z.union([z.undefined(), z.array(z.intersection(z.string(), z.unknown()))]).readonly().optional(),
 }))]).readonly().optional(),
   'threadSectionsV1': z.union([z.undefined(), z.literal(true)]).readonly().optional(),
+  'localProjects': localProjects().optional().readonly(),
 }).readonly(),
 }), z.object({
   'type': z.literal("upsert").readonly(),
@@ -190,6 +196,9 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema =
   'workspaceIds': z.union([z.undefined(), z.array(z.intersection(z.string(), z.unknown()))]).readonly().optional(),
 })).readonly(),
   'threadSectionsV1': z.union([z.undefined(), z.literal(true)]).readonly().optional(),
+}), z.object({
+  'type': z.literal("localProjects").readonly(),
+  'localProjects': localProjects(),
 })]))
 let _deepseek_ai_dsh_api_workspace_controller_workspace_initializeDefault_result$schema$value
 const _deepseek_ai_dsh_api_workspace_controller_workspace_initializeDefault_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_initializeDefault_result$schema$value ??= z.union([z.undefined(), z.object({
@@ -342,6 +351,19 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_updateThreadSection_re
 })]).readonly(),
   'syncPending': z.boolean().readonly(),
 })]))
+const workspaceMoveProjectRequest = () => z.object({
+  'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
+  'projectId': z.string().min(1).readonly(),
+}).strict()
+const workspaceMoveProjectResult = () => z.union([
+  z.object({
+    'status': z.literal("unknown").readonly(),
+  }).strict(),
+  z.object({
+    'status': z.literal("confirmed").readonly(),
+    'projectId': z.string().min(1).readonly(),
+  }).strict(),
+])
 
 export const TYPERT_REMOTE = {
   package: '@deepseek-ai/dsh-api-workspace-controller',
@@ -642,6 +664,28 @@ export const TYPERT_REMOTE = {
         create: _deepseek_ai_dsh_api_workspace_controller_workspace_insertSessionBefore_result$schema,
       },
       sourceLocation: {"file":"packages/api/workspace-controller/src/index.ts","line":148,"column":3},
+    },
+    {
+      id: '@deepseek-ai/dsh-api-workspace-controller#workspace/moveSessionToProject',
+      service: 'workspaceController',
+      namespace: 'workspace',
+      method: 'moveSessionToProject',
+      invocation: { kind: 'direct' },
+      parameters: [{
+        name: 'request',
+        wire: 'request',
+        source: 'json',
+        codec: {
+          mode: 'strict',
+          typeSymbol: '@deepseek-ai/dsh-api-workspace-controller/types#WorkspaceMoveSessionToProjectRequest',
+          create: workspaceMoveProjectRequest,
+        },
+      }],
+      result: {
+        mode: 'strict',
+        typeSymbol: '@deepseek-ai/dsh-api-workspace-controller/types#WorkspaceMoveSessionToProjectValue',
+        create: workspaceMoveProjectResult,
+      },
     },
     {
       id: '@deepseek-ai/dsh-api-workspace-controller#workspace/moveSessionToSection',

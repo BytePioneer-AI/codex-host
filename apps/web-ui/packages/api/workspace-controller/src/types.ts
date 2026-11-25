@@ -192,6 +192,28 @@ export interface WorkspaceMoveToSectionValue {
 
 export type WorkspaceMoveSessionToSectionValue = WorkspaceMoveToSectionValue;
 
+/** Existing local native project exposed by the Host/Web owner for explicit project moves. */
+export interface WorkspaceLocalProject {
+  readonly id: string;
+  readonly name: string;
+  /** Authoritative Sessions currently assigned to this local native project. */
+  readonly sessionIds: readonly SessionId[];
+}
+
+/** Narrow request moving a local native Session to an existing local native project. */
+export interface WorkspaceMoveSessionToProjectRequest {
+  readonly sessionId: SessionId;
+  readonly projectId: string;
+}
+
+/** Result of `workspace/moveSessionToProject`: confirmed destination or unknown outcome. */
+export type WorkspaceMoveSessionToProjectValue =
+  | { readonly status: "unknown" }
+  | {
+      readonly status: "confirmed";
+      readonly projectId: string;
+    };
+
 /** Native section appearance supplied by Codex Desktop / official app-server. */
 export interface WorkspaceThreadSectionAppearance {
   readonly icon: string | null;
@@ -258,6 +280,8 @@ export interface WorkspaceBaseline {
   readonly pinnedWorkspaceIds?: readonly WorkspaceId[];
   readonly threadSections?: readonly WorkspaceThreadSection[];
   readonly threadSectionsV1?: true;
+  /** Existing local native projects and their authoritative Session assignments. */
+  readonly localProjects?: readonly WorkspaceLocalProject[];
 }
 
 /** One ordered Workspace change after a generation's baseline. */
@@ -272,6 +296,10 @@ export type WorkspaceFollowIncrement =
       readonly type: "threadSections";
       readonly threadSections: readonly WorkspaceThreadSection[];
       readonly threadSectionsV1?: true;
+    }
+  | {
+      readonly type: "localProjects";
+      readonly localProjects: readonly WorkspaceLocalProject[];
     };
 
 /** Workspace state stream; every generation starts with exactly one baseline. */

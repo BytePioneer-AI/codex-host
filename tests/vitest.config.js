@@ -12,6 +12,7 @@ const include = [
   "tests/integration/**/*.test.ts",
   "apps/web-ui/packages/api/session-controller/test/archived-query.test.ts",
   "apps/web-ui/packages/api/session-controller/test/prompt-delivery.test.ts",
+  "apps/web-ui/packages/api/workspace-controller/test/project-move.test.ts",
   "apps/web-ui/packages/api/workspace-controller/test/thread-sections.test.ts",
   "apps/web-ui/packages/client/connection/test/*.test.ts",
   "apps/web-ui/packages/client/ui-chat/test/*.test.ts",

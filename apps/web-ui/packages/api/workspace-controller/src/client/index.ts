@@ -30,6 +30,9 @@ export type {
   WorkspaceDeleteThreadSectionRequest,
   WorkspaceDeleteThreadSectionValue,
   WorkspaceId,
+  WorkspaceLocalProject,
+  WorkspaceMoveSessionToProjectRequest,
+  WorkspaceMoveSessionToProjectValue,
   WorkspaceMoveSessionToSectionRequest,
   WorkspaceMoveSessionToSectionValue,
   WorkspaceThreadSection,
@@ -148,6 +151,9 @@ function acceptIncrement(accept: WorkspaceFollowSink, frame: WorkspaceFollowIncr
       return;
     case "threadSections":
       accept.replaceThreadSections(frame.threadSections, frame.threadSectionsV1);
+      return;
+    case "localProjects":
+      accept.replaceLocalProjects(frame.localProjects);
       return;
     /* v8 ignore next -- the generated Remote codec validates this closed union */
     default:

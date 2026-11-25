@@ -71,6 +71,14 @@ import {
 import { ArchiveChildrenDialog } from "./session-actions/ArchiveChildrenDialog.tsx";
 import { derive } from "./session-actions/derived.ts";
 import {
+  MoveThreadProjectDialog,
+  MoveThreadProjectMenuItem,
+  type ThreadProjectMenuInjected,
+  type ThreadProjectMoveInjected,
+  type ThreadProjectMoveRequest,
+} from "./session-actions/MoveThreadProject.tsx";
+import { createProjectMoveCoordinator } from "./session-actions/project-move.ts";
+import {
   MoveThreadSectionDialog,
   MoveThreadSectionMenuItem,
   type ThreadSectionMenuInjected,
@@ -281,6 +289,48 @@ export function apply(ctx: Context): void {
       }
     }
     return harnesses;
+  });
+  const nativeThreadIds = derive(
+    sessions.list,
+    (snapshot) =>
+      new Set(
+        Object.values(snapshot.byId)
+          .filter(
+            (row) =>
+              !row.blank &&
+              row.origin !== "subagent" &&
+              !row.projectionValues?.remoteHost &&
+              Boolean(row.projectionValues?.harnessIdentity?.id),
+          )
+          .map((row) => row.id),
+      ),
+  );
+  const threadProjectMove = createSnapshotStore<ThreadProjectMoveRequest | null>(null);
+  const projectMoveCoordinator = createProjectMoveCoordinator({
+    execute: (sessionId, projectId) => {
+      if (!workspaces.moveSessionToProject)
+        return Promise.reject(new Error("Project moves are unavailable"));
+      return workspaces.moveSessionToProject(sessionId, projectId);
+    },
+  });
+  const threadProjectMenu = (): ThreadProjectMenuInjected => ({
+    hooks: {
+      nativeThreads: nativeThreadIds,
+      projectWorkspace: workspaces.list,
+      projectSessions: sessions.list,
+      movingProjectSessions: projectMoveCoordinator.movingSessionIds,
+    },
+    canMove: workspaces.moveSessionToProject !== undefined,
+    requestMove: (request) => threadProjectMove.set(request),
+  });
+  const threadProjectDialog = (): ThreadProjectMoveInjected => ({
+    hooks: {
+      threadProjectMove,
+      projectWorkspace: workspaces.list,
+      movingProjectSessions: projectMoveCoordinator.movingSessionIds,
+    },
+    dismiss: () => threadProjectMove.set(null),
+    move: (payload) => projectMoveCoordinator.move(payload, { notifyOnError: false }),
   });
   const threadSectionMove = createSnapshotStore<SessionId | null>(null);
   const threadSectionMenu = (): ThreadSectionMenuInjected => ({
@@ -583,6 +633,16 @@ export function apply(ctx: Context): void {
     yield ctx.slots.register(
       {
         name: "sidebar.workspaces.session.menu.item",
+        id: "move-to-project",
+        order: 140,
+        locale: NS,
+        inject: threadProjectMenu,
+      },
+      MoveThreadProjectMenuItem,
+    );
+    yield ctx.slots.register(
+      {
+        name: "sidebar.workspaces.session.menu.item",
         id: "move-to-section",
         order: 150,
         locale: NS,
@@ -675,6 +735,15 @@ export function apply(ctx: Context): void {
   // The surfaces the actions raise live in the frame-wide layer: they must
   // outlive the row menu the action sat in.
   ctx.slots.inject("shell.overlay", function* () {
+    yield ctx.slots.register(
+      {
+        name: "shell.overlay",
+        id: "workspace.move-to-project",
+        locale: NS,
+        inject: threadProjectDialog,
+      },
+      MoveThreadProjectDialog,
+    );
     yield ctx.slots.register(
       {
         name: "shell.overlay",

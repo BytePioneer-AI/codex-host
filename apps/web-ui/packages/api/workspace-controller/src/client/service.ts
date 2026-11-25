@@ -7,6 +7,7 @@ import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
 import type {
   WorkspaceCreateThreadSectionValue,
   WorkspaceDeleteThreadSectionValue,
+  WorkspaceMoveSessionToProjectValue,
   WorkspaceUpdateThreadSectionValue,
   WorkspaceView,
 } from "../types.ts";
@@ -113,6 +114,12 @@ export interface IWorkspaces {
   /** Place a local project in a sidebar section, or return it to Workspaces. */
   moveWorkspaceToSection?(workspaceId: WorkspaceId, sectionId: string | null): Promise<void>;
   moveSessionToSection?(sessionId: SessionId, sectionId: string | null): Promise<void>;
+
+  /** Move a local native Session to an existing local native project without changing section, pin, or cwd. */
+  moveSessionToProject?(
+    sessionId: SessionId,
+    projectId: string,
+  ): Promise<WorkspaceMoveSessionToProjectValue>;
   /** Create a custom Thread section with a non-empty name. */
   createThreadSection?(name: string): Promise<WorkspaceCreateThreadSectionValue>;
   /** Rename a custom Thread section while omitting appearance to preserve existing styling. */
@@ -193,6 +200,17 @@ export class WorkspaceController extends Service implements IWorkspaces {
   async pinSession(sessionId: SessionId): Promise<void> {
     const result = await this.model.pinSession(sessionId);
     if (!result.ok) throw commandError("session pin", result.error);
+  }
+
+  async moveSessionToProject(
+    sessionId: SessionId,
+    projectId: string,
+  ): Promise<WorkspaceMoveSessionToProjectValue> {
+    const result = await this.model.moveSessionToProject({ sessionId, projectId });
+    if (!result.ok) throw commandError("move to project", result.error);
+    if (result.value.status === "confirmed" && result.value.projectId !== projectId)
+      throw new Error("The requested project change was not confirmed.");
+    return result.value;
   }
 
   async moveSessionToSection(sessionId: SessionId, sectionId: string | null): Promise<void> {

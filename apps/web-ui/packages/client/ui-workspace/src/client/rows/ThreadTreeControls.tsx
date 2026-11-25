@@ -43,7 +43,7 @@ function ThreadTreeBranch({
   const depth = node.tree?.depth ?? 0;
   const children = node.tree?.children ?? [];
   return (
-    <div className={css.branch} data-thread-branch>
+    <div className={css.branch} data-thread-branch={node.id}>
       <ChildGroupContext.Provider value={groupId}>{renderRow(node)}</ChildGroupContext.Provider>
       {expanded && stylePrompt === groupId && (
         <ThreadTreeStylePrompt

@@ -108,10 +108,9 @@ import { MoveSectionForm } from "./MoveSectionForm.tsx";
 import { HostScopeTabBar } from "./HostScopeFilter.tsx";
 import {
   canCommitSectionDrop,
-  collectLocalReorderRowBounds,
   FINE_POINTER_MEDIA_QUERY,
   isFinePointerDevice,
-  isLocalReorderRowGap,
+  localReorderGapTarget,
   isManageableCustomSection,
   isSectionMovableSession,
   resolveSectionDropMove,
@@ -307,6 +306,7 @@ function useSectionDrag({
   const commitDrop = (target: SectionDropTarget, dropEffect?: string | null): void => {
     const current = stateRef.current;
     if (
+      !enabled ||
       current === null ||
       !canCommitSectionDrop({
         committed: committedRef.current,
@@ -537,15 +537,6 @@ interface DragState {
   pinned: boolean;
   /** Row the marker sits on and which half (insert above/below it). */
   over: { id: SessionNode["id"]; half: "before" | "after" } | null;
-}
-
-/** Shared hit-test for container-level local reorder gap dragover/drop. */
-function isValidLocalReorderGap(
-  event: { target: EventTarget | null; currentTarget: HTMLDivElement; clientY: number },
-  pinned: boolean,
-): boolean {
-  if (event.target !== event.currentTarget) return false;
-  return isLocalReorderRowGap(event, collectLocalReorderRowBounds(event.currentTarget, pinned));
 }
 
 /** Apply a visible drop to the complete account without removing hidden members. */
@@ -1287,9 +1278,13 @@ function SessionTree({
               } as CSSProperties
             }
             onDragOver={
-              drag !== null && drag.accountKey === group.key && drag.over !== null
+              drag !== null && drag.accountKey === group.key
                 ? (event) => {
-                    if (!isValidLocalReorderGap(event, drag.pinned)) return;
+                    const over = localReorderGapTarget(event, drag.pinned);
+                    if (over === null) return;
+                    sectionDrag.clearHover();
+                    if (drag.over?.id !== over.id || drag.over.half !== over.half)
+                      setDrag({ ...drag, over });
                     event.preventDefault();
                     event.stopPropagation();
                     event.dataTransfer.dropEffect = "move";
@@ -1297,17 +1292,15 @@ function SessionTree({
                 : undefined
             }
             onDrop={
-              drag !== null && drag.accountKey === group.key && drag.over !== null
+              drag !== null && drag.accountKey === group.key
                 ? (event) => {
-                    if (
-                      event.dataTransfer.dropEffect === "copy" ||
-                      !isValidLocalReorderGap(event, drag.pinned)
-                    )
-                      return;
+                    if (event.dataTransfer.dropEffect === "copy") return;
+                    const over = localReorderGapTarget(event, drag.pinned);
+                    if (over === null) return;
                     event.preventDefault();
                     event.stopPropagation();
                     sectionDrag.end();
-                    commitSessionDrag(drag, drag.over);
+                    commitSessionDrag(drag, over);
                   }
                 : undefined
             }
@@ -2024,9 +2017,13 @@ function FlatList({
           <div
             className={css.flatRows}
             onDragOver={
-              !sectionDrag.canDropToUnsectioned && drag !== null && drag.over !== null
+              !sectionDrag.canDropToUnsectioned && drag !== null
                 ? (event) => {
-                    if (!isValidLocalReorderGap(event, drag.pinned)) return;
+                    const over = localReorderGapTarget(event, drag.pinned);
+                    if (over === null) return;
+                    sectionDrag.clearHover();
+                    if (drag.over?.id !== over.id || drag.over.half !== over.half)
+                      setDrag({ ...drag, over });
                     event.preventDefault();
                     event.stopPropagation();
                     event.dataTransfer.dropEffect = "move";
@@ -2034,17 +2031,15 @@ function FlatList({
                 : undefined
             }
             onDrop={
-              !sectionDrag.canDropToUnsectioned && drag !== null && drag.over !== null
+              !sectionDrag.canDropToUnsectioned && drag !== null
                 ? (event) => {
-                    if (
-                      event.dataTransfer.dropEffect === "copy" ||
-                      !isValidLocalReorderGap(event, drag.pinned)
-                    )
-                      return;
+                    if (event.dataTransfer.dropEffect === "copy") return;
+                    const over = localReorderGapTarget(event, drag.pinned);
+                    if (over === null) return;
                     event.preventDefault();
                     event.stopPropagation();
                     sectionDrag.end();
-                    commitDrag(drag, drag.over);
+                    commitDrag(drag, over);
                   }
                 : undefined
             }
@@ -3370,7 +3365,7 @@ function WorkspaceBrowserContent({
               nativeThreadIds={nativeThreadIds}
               useMovingSectionSessions={useMovingSectionSessions}
               moveSessionToSection={moveSessionToSection}
-              finePointer={finePointer}
+              finePointer={finePointer && canManageThreadSections}
               manageThreadSection={manageThreadSection}
               onLeaveArchivedOnly={leaveArchivedOnly}
               workspaceReady={workspaceReady}
@@ -3418,7 +3413,7 @@ function WorkspaceBrowserContent({
               nativeThreadIds={nativeThreadIds}
               useMovingSectionSessions={useMovingSectionSessions}
               moveSessionToSection={moveSessionToSection}
-              finePointer={finePointer}
+              finePointer={finePointer && canManageThreadSections}
               manageThreadSection={manageThreadSection}
               onLeaveArchivedOnly={leaveArchivedOnly}
               startSession={startSession}

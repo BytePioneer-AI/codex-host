@@ -869,15 +869,9 @@ export function SessionNodeItem({
                     {primaryStatus.trailingLabel !== undefined && (
                       <span aria-hidden="true">{primaryStatus.trailingLabel}</span>
                     )}
-                    {sectionMoving && (
-                      <span className={css.visuallyHidden}>{t("section.moving")}</span>
-                    )}
                   </>
                 ) : sectionMoving ? (
-                  <>
-                    <StateDot state="ongoing" size={14} className={css.sectionMovingSpinner} />
-                    <span className={css.visuallyHidden}>{t("section.moving")}</span>
-                  </>
+                  <StateDot state="ongoing" size={14} className={css.sectionMovingSpinner} />
                 ) : (
                   timeLabel(row.updatedAt, now, t)
                 )}
@@ -958,14 +952,19 @@ export function SessionNodeItem({
     </div>
   );
   return (
-    <HoverCard
-      anchor={ownRow}
-      content={<SessionHoverContent node={node} now={now} renderSlot={renderSlot} t={t} />}
-      openDelayMs={800}
-      disabled={menuOpen || drag?.active === true}
-      copyText={row.blank || row.title === "" ? undefined : row.title}
-      copyLabel={t("copy")}
-      copiedLabel={t("hover.copied")}
-    />
+    <>
+      <HoverCard
+        anchor={ownRow}
+        content={<SessionHoverContent node={node} now={now} renderSlot={renderSlot} t={t} />}
+        openDelayMs={800}
+        disabled={menuOpen || drag?.active === true}
+        copyText={row.blank || row.title === "" ? undefined : row.title}
+        copyLabel={t("copy")}
+        copiedLabel={t("hover.copied")}
+      />
+      <span className={css.visuallyHidden} role="status" aria-live="polite" aria-atomic="true">
+        {sectionMoving ? t("section.moving") : null}
+      </span>
+    </>
   );
 }

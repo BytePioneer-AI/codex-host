@@ -5,9 +5,8 @@ import type { WorkspaceThreadSection } from "@deepseek-ai/dsh-api-workspace-cont
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import {
   canCommitSectionDrop,
-  collectLocalReorderRowBounds,
   createSectionMoveCoordinator,
-  isLocalReorderRowGap,
+  localReorderGapTarget,
   isSectionMovableSession,
   isSectionRowMoving,
   PINNED_THREAD_SECTION_ID,
@@ -424,58 +423,12 @@ describe("resolveSectionStepMove & visibleCustomSectionThreadIds", () => {
   });
 });
 
-describe("isLocalReorderRowGap", () => {
-  it("accepts only inter-row gaps on the container itself and rejects controls like load-more", () => {
-    const container = {} as EventTarget;
-    const loadMoreButton = {} as EventTarget;
-    const rowBounds = [
-      { top: 100, bottom: 132 },
-      { top: 134, bottom: 166 },
-    ];
-    // Directly inside the 2px gap between row 0 and row 1
-    assert.equal(
-      isLocalReorderRowGap(
-        { target: container, currentTarget: container, clientY: 133 },
-        rowBounds,
-      ),
-      true,
-    );
-    // Hovering over a non-sortable child control (e.g. "Load more" button)
-    assert.equal(
-      isLocalReorderRowGap(
-        { target: loadMoreButton, currentTarget: container, clientY: 133 },
-        rowBounds,
-      ),
-      false,
-    );
-    // Below the last row (e.g. container padding near "Load more") or above the first row
-    assert.equal(
-      isLocalReorderRowGap(
-        { target: container, currentTarget: container, clientY: 170 },
-        rowBounds,
-      ),
-      false,
-    );
-    assert.equal(
-      isLocalReorderRowGap({ target: container, currentTarget: container, clientY: 96 }, rowBounds),
-      false,
-    );
-    // Single row has no inter-row gap
-    assert.equal(
-      isLocalReorderRowGap({ target: container, currentTarget: container, clientY: 133 }, [
-        { top: 100, bottom: 132 },
-      ]),
-      false,
-    );
-  });
-
-  it("reads data-thread-pinned from wrapped branch descendants and filters by pinned state", () => {
-    const branch = (pinned: boolean | null, top: number, bottom: number, isBranch = true) => ({
-      hasAttribute: (name: string) => isBranch && name === "data-thread-branch",
-      // Simulates HoverCard wrapping the row element so firstElementChild lacks data-thread-pinned.
-      firstElementChild: { dataset: {} },
+describe("localReorderGapTarget", () => {
+  it("resolves the release position, restricted to adjacent rows in the same pinned block", () => {
+    const branch = (id: string | null, pinned: boolean, top: number, bottom: number) => ({
+      getAttribute: (name: string) => (name === "data-thread-branch" ? id : null),
       querySelector: (selector: string) =>
-        selector === "[data-thread-pinned]" && pinned !== null
+        selector === "[data-thread-pinned]"
           ? {
               getAttribute: (name: string) =>
                 name === "data-thread-pinned" ? String(pinned) : null,
@@ -485,55 +438,22 @@ describe("isLocalReorderRowGap", () => {
     });
     const container = {
       children: [
-        branch(true, 60, 92),
-        branch(false, 100, 132),
-        branch(false, 134, 166),
-        branch(null, 168, 200, false), // e.g. Load more button
+        branch("pinned", true, 60, 92),
+        branch("a", false, 100, 132),
+        branch("b", false, 134, 166),
+        branch("c", false, 168, 200),
+        branch(null, false, 202, 234),
       ],
-    };
-
-    const unpinnedBounds = collectLocalReorderRowBounds(container, false);
-    assert.deepEqual(unpinnedBounds, [
-      { top: 100, bottom: 132 },
-      { top: 134, bottom: 166 },
-    ]);
-    assert.equal(
-      isLocalReorderRowGap(
-        {
-          target: container as unknown as EventTarget,
-          currentTarget: container as unknown as EventTarget,
-          clientY: 133,
-        },
-        unpinnedBounds,
-      ),
-      true,
-    );
-    // Gap above unpinned rows (between pinned row and first unpinned row) is rejected
-    assert.equal(
-      isLocalReorderRowGap(
-        {
-          target: container as unknown as EventTarget,
-          currentTarget: container as unknown as EventTarget,
-          clientY: 96,
-        },
-        unpinnedBounds,
-      ),
-      false,
-    );
-    // Single pinned branch produces no inter-row gap for pinned drags
-    const pinnedBounds = collectLocalReorderRowBounds(container, true);
-    assert.deepEqual(pinnedBounds, [{ top: 60, bottom: 92 }]);
-    assert.equal(
-      isLocalReorderRowGap(
-        {
-          target: container as unknown as EventTarget,
-          currentTarget: container as unknown as EventTarget,
-          clientY: 96,
-        },
-        pinnedBounds,
-      ),
-      false,
-    );
+    } as unknown as HTMLElement;
+    const gap = (clientY: number, pinned = false, target: EventTarget = container) =>
+      localReorderGapTarget({ target, currentTarget: container, clientY }, pinned);
+    assert.deepEqual(gap(133), { id: "a", half: "after" });
+    assert.deepEqual(gap(167), { id: "b", half: "after" });
+    assert.equal(gap(167, false, new EventTarget()), null);
+    assert.equal(gap(96), null);
+    assert.equal(gap(96, true), null);
+    assert.equal(gap(201), null);
+    assert.equal(gap(50), null);
   });
 });
 

@@ -94,22 +94,6 @@ export interface MoveSectionDialogState {
   readonly canSubmit: boolean;
 }
 
-export interface LocalReorderGapEvent {
-  readonly target: EventTarget | null;
-  readonly currentTarget: EventTarget | null;
-  readonly clientY: number;
-}
-
-export interface LocalReorderBranchElement {
-  hasAttribute(name: string): boolean;
-  querySelector(selector: string): { getAttribute(name: string): string | null } | null;
-  getBoundingClientRect(): { readonly top: number; readonly bottom: number };
-}
-
-export interface LocalReorderGapContainer {
-  readonly children: ArrayLike<unknown>;
-}
-
 export type SectionMoveOutcome =
   | { readonly status: "committed" }
   | { readonly status: "skipped-in-flight" }
@@ -232,54 +216,32 @@ export function resolveMoveSectionDialogState(input: {
   return { manageableSections, currentSectionId, effectiveTarget, targetDeleted, canSubmit };
 }
 
-/**
- * Collect bounds of direct `[data-thread-branch]` children whose first descendant
- * carrying `data-thread-pinned` matches `pinned` (handling wrapper elements such as
- * `HoverCard` around the row itself).
- */
-export function collectLocalReorderRowBounds(
-  container: LocalReorderGapContainer,
+/** Return the row immediately above the pointer's gap, within the same pinned block. */
+export function localReorderGapTarget(
+  event: { target: EventTarget | null; currentTarget: HTMLElement; clientY: number },
   pinned: boolean,
-): { readonly top: number; readonly bottom: number }[] {
+): { id: SessionId; half: "after" } | null {
+  if (event.target !== event.currentTarget) return null;
   const expected = String(pinned);
-  const rowBounds: { readonly top: number; readonly bottom: number }[] = [];
-  for (let index = 0; index < container.children.length; index++) {
-    const child = container.children[index] as
-      Partial<LocalReorderBranchElement> | null | undefined;
+  let previousId: string | null = null;
+  let previousBottom = 0;
+  for (const branch of event.currentTarget.children) {
+    const id = branch.getAttribute("data-thread-branch");
     if (
-      child == null ||
-      typeof child.hasAttribute !== "function" ||
-      typeof child.querySelector !== "function" ||
-      typeof child.getBoundingClientRect !== "function" ||
-      !child.hasAttribute("data-thread-branch")
+      id === null ||
+      branch.querySelector("[data-thread-pinned]")?.getAttribute("data-thread-pinned") !== expected
     ) {
+      previousId = null;
       continue;
     }
-    const row = child.querySelector("[data-thread-pinned]");
-    if (row?.getAttribute("data-thread-pinned") !== expected) continue;
-    const rect = child.getBoundingClientRect();
-    rowBounds.push({ top: rect.top, bottom: rect.bottom });
+    const { top, bottom } = branch.getBoundingClientRect();
+    if (previousId !== null && previousBottom <= event.clientY && event.clientY <= top) {
+      return { id: previousId as SessionId, half: "after" };
+    }
+    previousId = id;
+    previousBottom = bottom;
   }
-  return rowBounds;
-}
-
-/**
- * True only when the pointer is directly over the container's inter-row gap between
- * consecutive row branches (never over non-sortable controls such as "Load more" or
- * outside the row band). Shared by container `onDragOver` and `onDrop`.
- */
-export function isLocalReorderRowGap(
-  event: LocalReorderGapEvent,
-  rowBounds: readonly { readonly top: number; readonly bottom: number }[],
-): boolean {
-  if (event.target === null || event.target !== event.currentTarget) return false;
-  if (rowBounds.length < 2) return false;
-  for (let index = 0; index < rowBounds.length - 1; index++) {
-    const upper = rowBounds[index]!;
-    const lower = rowBounds[index + 1]!;
-    if (event.clientY >= upper.bottom && event.clientY <= lower.top) return true;
-  }
-  return false;
+  return null;
 }
 
 /**

@@ -137,10 +137,6 @@
   .remoteHostStatusDot[data-state="connecting"] {
     animation: none;
   }
-
-  .sessionRow.sectionMoving .sessionMain {
-    transition: none;
-  }
 }
 
 .remoteFolderGlobe {
@@ -759,7 +755,12 @@
 
 .sessionRow.sectionMoving .sessionMain {
   opacity: 0.62;
-  transition: opacity 120ms var(--ds-ease-in-out);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sessionRow.sectionMoving .sessionMain {
+    transition: opacity 120ms var(--ds-ease-in-out);
+  }
 }
 
 .sectionMovingSpinner {

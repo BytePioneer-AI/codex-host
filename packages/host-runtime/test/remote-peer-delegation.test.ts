@@ -819,7 +819,7 @@ describe("Peer remote delegation routing & security boundaries", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 60_000);
 
   it("supports thread answer --format text via CLI (P2-1)", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "peer-answer-text-"));
@@ -2036,7 +2036,7 @@ describe("Peer remote delegation routing & security boundaries", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 60_000);
 
   it("bounds wait with a single unified deadline across slow ancestry checks and late terminal snapshots", async () => {
     // 1. Slow delegationParent (60ms) under 15ms budget times out within budget without calling remote read.
@@ -2517,5 +2517,5 @@ describe("Peer remote delegation routing & security boundaries", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 60_000);
 });

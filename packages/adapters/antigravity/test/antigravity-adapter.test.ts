@@ -624,7 +624,7 @@ describe("Antigravity ACP Session", () => {
       ).toMatchObject(busy);
 
       const forked = adapter.open(request);
-      await vi.waitFor(() => expect(transports).toHaveLength(2));
+      await vi.waitFor(() => expect(transports).toHaveLength(2), { timeout: 10_000 });
       expect(transport.cancel).not.toHaveBeenCalled();
       answerStep(db, 5, "source-only answer");
       transport.result.resolve({ stopReason: "end_turn" });

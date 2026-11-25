@@ -1160,6 +1160,40 @@ describe("Claude native Turn interpretation", () => {
     ).toEqual([]);
   });
 
+  it("marks the fallback notice completion as a local command and prefers the wire uuid", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const events = turn.consume({
+      type: "system",
+      subtype: "model_refusal_fallback",
+      direction: "retry",
+      scope: "session",
+      original_model: "fable-5.2",
+      fallback_model: "claude-opus-5",
+      request_id: "req-fallback-uuid",
+      uuid: "fb-sys-uuid",
+    }).events;
+    expect(events[1]).toEqual({
+      type: "message.completed",
+      messageId: "fb-sys-uuid",
+      localCommand: true,
+    });
+  });
+
+  it("stays silent when the fallback direction is a revert to the configured model", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    expect(
+      turn.consume({
+        type: "system",
+        subtype: "model_refusal_fallback",
+        direction: "revert",
+        scope: "session",
+        original_model: "fable-5.2",
+        fallback_model: "claude-opus-5",
+        request_id: "req-fallback-revert",
+      }).events,
+    ).toEqual([]);
+  });
+
   it("synthesizes a complete Compaction lifecycle when only a boundary is available", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 

@@ -663,6 +663,16 @@ export class ClaudeNativeTurnAccumulator {
   #consumeModelFallback(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
     if (message.type !== "system" || message.subtype !== "model_refusal_fallback") return;
     if (message.scope === "local") return;
+    // SDKModelRefusalFallbackMessage.direction: "retry" | "revert" | "sticky".
+    // "revert" means the session switched BACK to the configured model, so the
+    // "original → fallback" notice would misreport it. Older CLIs omit the
+    // field (retry semantics); unknown values fail closed.
+    if (
+      message.direction !== undefined &&
+      message.direction !== "retry" &&
+      message.direction !== "sticky"
+    )
+      return;
     const original = typeof message.original_model === "string" ? message.original_model : "";
     const fallback = typeof message.fallback_model === "string" ? message.fallback_model : "";
     if (original.length === 0 || fallback.length === 0) return;
@@ -672,10 +682,15 @@ export class ClaudeNativeTurnAccumulator {
         : `${original}\u0000${fallback}`;
     if (this.#fallbackNoticeKeys.has(key)) return;
     this.#fallbackNoticeKeys.add(key);
-    const messageId = this.#nextMessageId();
+    // Mirror local command output: prefer the wire uuid as the message id so
+    // the notice maps onto the transcript instead of a synthetic id, and mark
+    // it localCommand so the Adapter neither moves #lastAssistantResponseAtUnix
+    // (prompt-cache countdown) nor refreshes usage from a transcript read.
+    const checkpointId = nativeUuid(message);
+    const messageId = checkpointId ?? this.#nextMessageId();
     const delta = `Model fallback: **${original} → ${fallback}**. The session continues on the fallback model; your configured model choice is unchanged.`;
     events.push({ type: "text.delta", messageId, delta });
-    events.push({ type: "message.completed", messageId });
+    events.push({ type: "message.completed", messageId, localCommand: true });
   }
 
   #consumeLocalCommandOutput(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {

@@ -675,7 +675,7 @@ it("PeerHostManager invokes onPeerRemoved only on permanent remove, not disable"
   };
   manager.register(rpc);
 
-  const auth = { credential: "local", local: true };
+  const auth = { credential: "local", local: true, release() {} };
   // Disabling a peer preserves displayOrder entries.
   const disabled = await rpc.dispatch(
     REMOTE_PEERS_METHODS.update,

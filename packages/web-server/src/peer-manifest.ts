@@ -249,7 +249,11 @@ export async function peerEndpoint(
           roots,
           "Workspace path is outside allowed roots",
         );
-        workspaceId = workspaces.create(canonicalPath).workspace.workspaceId;
+        const created = await rpc.dispatch("workspace/create", { args: { path: canonicalPath } });
+        if (!created.ok) throw new PeerEndpointError(400, "Workspace mutation failed");
+        const workspace = workspaces.byPath(canonicalPath);
+        if (!workspace) throw new PeerEndpointError(404, "Unknown workspace");
+        workspaceId = workspace.workspaceId;
         title = p.title;
       } else if (method === "PATCH") {
         ({ workspaceId, title } = c.remotePeerRenameWorkspaceParamsSchema

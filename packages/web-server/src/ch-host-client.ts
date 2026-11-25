@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  THREAD_HANDOFF_METHOD,
   clientThreadPinsSchema,
   type ClientThreadSnapshot,
   type ClientWorkspaceSnapshot,
@@ -53,6 +54,7 @@ export interface ChPinChange {
 
 export interface ChProjectSnapshot {
   projects: Array<{ id: string; name: string; rootPaths: string[] }>;
+  nativeProjects?: true | undefined;
   assignments: Record<string, string>;
   projectless: string[];
   /** Projects in each native custom section, keyed by official section ID; shared Host only. */
@@ -107,6 +109,7 @@ const METHODS = new Set([
   "codexhost/skills/list",
   "codexhost/thread/command/execute",
   "codexhost/thread/fork",
+  THREAD_HANDOFF_METHOD,
   "codexhost/harness/session-import/sources",
   "codexhost/harness/session-import/list",
   "codexhost/harness/session-import/import",
@@ -334,7 +337,10 @@ export async function createChHostClient(
     request,
     projects: (ids) =>
       endpoint?.owner === "service"
-        ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", { threadIds: ids })
+        ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", {
+            threadIds: ids,
+            nativeProjects: true,
+          })
         : desktop.projects(ids),
     pins: (change) => requestPins((method, params) => channel.request(method, params), change),
     close() {

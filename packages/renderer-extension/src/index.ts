@@ -25,6 +25,7 @@ export type {
 export {
   HARNESS_INSPECT_METHOD,
   THREAD_FORK_METHOD,
+  THREAD_HANDOFF_METHOD,
   THREAD_INSPECT_METHOD,
   HARNESS_COMMANDS_INSPECT_METHOD,
   THREAD_COMMANDS_INSPECT_METHOD,
@@ -54,6 +55,7 @@ export {
 } from "./renderer-composer-dom.js";
 export type { RendererComposerContractInspection } from "./renderer-composer-dom.js";
 export {
+  formatRendererHandoffTurnsSummary,
   rendererHarnessCommandPresentation,
   rendererHarnessMessages,
   rendererPermissionModePresentation,
@@ -83,6 +85,21 @@ export type {
   RendererForkDom,
   RendererForkTarget,
 } from "./renderer-fork-control.js";
+export {
+  HANDOFF_CONTROL_ATTRIBUTE,
+  HANDOFF_DIVIDER_ATTRIBUTE,
+  HANDOFF_POPOVER_ATTRIBUTE,
+  createHandoffDividerElement,
+  ensureRendererHandoffStyle,
+  installRendererHandoffControl,
+  renderHandoffPopoverContent,
+} from "./renderer-handoff-control.js";
+export type {
+  HandoffDividerRenderOptions,
+  HandoffPopoverViewOptions,
+  RendererHandoffControl,
+  RendererHandoffControlOptions,
+} from "./renderer-handoff-control.js";
 export {
   draftPermissionMode,
   installRendererBindingProbe,

@@ -48,8 +48,26 @@
   white-space: nowrap;
 }
 
+/* A single changed file: the title opens it, sized to its text. The reset
+   leaves font-weight alone so the title keeps its own weight. */
+.titleLink {
+  align-self: flex-start;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
 .review,
 .fileHead,
+.openFile,
 .more {
   border: 0;
   background: transparent;
@@ -75,22 +93,35 @@
 @media (hover: hover) {
   .review:hover,
   .fileHead:hover,
+  .openFile:hover,
   .more:hover {
     background: var(--dsw-alias-interactive-bg-hover);
+  }
+
+  .titleLink:hover {
+    text-decoration: underline;
+    text-underline-offset: 3px;
   }
 }
 
 .review:active,
 .fileHead:active,
+.openFile:active,
 .more:active {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
 .review:focus-visible,
 .fileHead:focus-visible,
+.openFile:focus-visible,
 .more:focus-visible {
   outline: 2px solid var(--dsw-alias-label-tertiary);
   outline-offset: -2px;
+}
+
+.titleLink:focus-visible {
+  outline: 2px solid var(--dsw-alias-label-tertiary);
+  outline-offset: 2px;
 }
 
 .files {
@@ -98,6 +129,30 @@
   padding: 0;
   border-top: 1px solid var(--dsw-alias-border-l2);
   list-style: none;
+}
+
+.fileRow {
+  display: flex;
+  align-items: center;
+}
+
+.fileRow .fileHead {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Opens the file beside the row; the row itself toggles its diff. */
+.openFile {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 8px;
+  padding: 0;
+  border-radius: 8px;
+  corner-shape: round;
+  color: var(--dsw-alias-label-secondary);
 }
 
 .fileHead {
@@ -251,6 +306,18 @@
   min-height: 44px;
   gap: 8px;
   padding: 0 12px;
+}
+
+:global([data-phone]) .titleLink {
+  align-self: center;
+  min-height: 44px;
+}
+
+:global([data-phone]) .openFile {
+  width: 44px;
+  height: 44px;
+  margin-right: 0;
+  border-radius: var(--dsw-radius-sm);
 }
 
 :global([data-phone]) .file + .file {

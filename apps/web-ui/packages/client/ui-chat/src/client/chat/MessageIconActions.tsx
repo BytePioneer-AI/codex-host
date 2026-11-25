@@ -11,6 +11,7 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ChatViewSlotProps } from "../contract/slots.ts";
 import { formatMessageClock } from "./message-chrome.ts";
+import { HandoffSwapIcon } from "./handoff-utils.tsx";
 import { useCalendarDay } from "./use-calendar-day.ts";
 import css from "./MessageIconActions.module.css";
 
@@ -25,6 +26,10 @@ export interface MessageIconActionsProps {
   onBranch?: (() => void) | undefined;
   /** The message is not a completed transcript tail, so branch stays visible but unavailable. */
   branchUnavailable?: boolean | undefined;
+  /** Hand off conversation context from this message; omission hides the handoff action. */
+  onHandoff?: (() => void) | undefined;
+  /** The message is not a completed transcript tail, so handoff stays visible but unavailable. */
+  handoffUnavailable?: boolean | undefined;
   /** Parent layout class composed onto the actions row. */
   className?: string | undefined;
   /**
@@ -47,12 +52,15 @@ export function MessageIconActions({
   clock,
   onBranch,
   branchUnavailable = false,
+  onHandoff,
+  handoffUnavailable = false,
   className,
   extraActions,
   t,
 }: MessageIconActionsProps) {
   const day = useCalendarDay();
   const reasonId = useId();
+  const handoffReasonId = useId();
   // Same success chrome as CodeBlock: a short check swap after the write,
   // gated so re-clicks during the window neither re-copy nor stack timers.
   const [copied, setCopied] = useState(false);
@@ -128,6 +136,31 @@ export function MessageIconActions({
       {onBranch !== undefined && branchUnavailable && (
         <span id={reasonId} className={css.visuallyHidden}>
           {t("message.branchUnavailable")}
+        </span>
+      )}
+      {onHandoff !== undefined && (
+        <Tooltip
+          label={handoffUnavailable ? t("message.handoffUnavailable") : t("message.handoff")}
+          side="bottom"
+          portal
+        >
+          <button
+            type="button"
+            className={css.action}
+            aria-label={t("message.handoff")}
+            aria-disabled={handoffUnavailable || undefined}
+            aria-describedby={handoffUnavailable ? handoffReasonId : undefined}
+            data-unavailable={handoffUnavailable || undefined}
+            data-action-handoff=""
+            onClick={handoffUnavailable ? undefined : onHandoff}
+          >
+            <HandoffSwapIcon />
+          </button>
+        </Tooltip>
+      )}
+      {onHandoff !== undefined && handoffUnavailable && (
+        <span id={handoffReasonId} className={css.visuallyHidden}>
+          {t("message.handoffUnavailable")}
         </span>
       )}
       {clock === "end" ? <span className={css.endInfo}>{clockEl}</span> : null}

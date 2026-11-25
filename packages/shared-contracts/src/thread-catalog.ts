@@ -19,11 +19,22 @@ export const threadCatalogReadParamsSchema = z
      * returned, so the native cursors stay contiguous.
      */
     scope: z
-      .object({
-        cwd: z.string().min(1).max(4_096),
-        excludeCwds: z.array(z.string().min(1).max(4_096)).max(1_024),
-      })
-      .strict()
+      .union([
+        z
+          .object({
+            cwd: z.string().min(1).max(4_096),
+            excludeCwds: z.array(z.string().min(1).max(4_096)).max(1_024),
+          })
+          .strict(),
+        z
+          .object({
+            projectId: z.string().min(1).max(1_024),
+            legacyThreadIds: z.array(z.string().min(1).max(1_024)).max(1_024),
+            /** Roots whose Threads without a project ID belong to this project, as on Desktop. */
+            rootPaths: z.array(z.string().min(1).max(4_096)).max(1_024).optional(),
+          })
+          .strict(),
+      ])
       .optional(),
   })
   .strict();

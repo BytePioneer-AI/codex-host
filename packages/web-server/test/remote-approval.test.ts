@@ -57,7 +57,7 @@ it("allows mixed local and remote workspace reordering while rejecting invalid t
     ["a", "mac"],
     ["mac", "a"],
     ["mac", "other"],
-  ]) {
+  ] as const) {
     assert.equal(canReorderWorkspaces(rows, source, target, context), true);
   }
   for (const [source, target] of [
@@ -68,7 +68,7 @@ it("allows mixed local and remote workspace reordering while rejecting invalid t
     ["a", "sectioned"],
     ["child", "mac"],
     ["a", "child"],
-  ]) {
+  ] as const) {
     assert.equal(canReorderWorkspaces(rows, source, target, context), false);
   }
 });

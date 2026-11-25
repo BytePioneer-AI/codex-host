@@ -52,6 +52,7 @@ describe("WorkBuddy command invocation", () => {
   it.each([
     ["darwin", WORKBUDDY_MACOS_ELECTRON],
     ["win32", "D:\\WorkBuddy\\WorkBuddyAI.exe"],
+    ["linux", "/opt/WorkBuddy/workbuddy"],
   ] as const)(
     "starts the %s lite-only bundle with authenticated loopback ACP",
     (platform, executable) => {
@@ -160,6 +161,23 @@ describe("WorkBuddy command invocation", () => {
         expect(candidate).toMatch(/^\/Users\/test\/\.workbuddy-ai(?:\/cache)?$/);
         return productConfigDirectoryMetadata();
       },
+      getuid: () => 501,
+    });
+
+    expect(invocation.environment.ACC_PRODUCT_CONFIG_PATH).toBe(productConfigPath);
+  });
+
+  it("forwards the Linux product snapshot from the app data root", () => {
+    const productConfigPath = "/home/test/.workbuddy/cache/acc-product-config-v3.json";
+    const executable = "/opt/WorkBuddy/workbuddy";
+    const cli = "/opt/WorkBuddy/resources/app.asar.unpacked/cli/bin/codebuddy";
+    const invocation = workBuddyInvocation({ HOME: "/home/test" }, true, {
+      platform: "linux",
+      isExecutable: (candidate) => [executable, cli].includes(candidate),
+      lstat: (candidate: string) =>
+        candidate === productConfigPath
+          ? productConfigMetadata()
+          : productConfigDirectoryMetadata(),
       getuid: () => 501,
     });
 
@@ -359,7 +377,7 @@ describe("WorkBuddy command invocation", () => {
   it("does not fall back to a PATH CodeBuddy on unsupported platforms", () => {
     expect(() =>
       workBuddyInvocation({ HOME: "/home/test", PATH: "/ordinary/codebuddy/bin" }, false, {
-        platform: "linux",
+        platform: "freebsd",
         isExecutable: () => true,
       }),
     ).toThrow("CODEXHOST_WORKBUDDY_COMMAND");
@@ -387,6 +405,19 @@ describe("WorkBuddy command invocation", () => {
     expect(workBuddyEnvironment({ USERPROFILE: "C:\\Users\\test" }, "win32")).toMatchObject({
       CODEBUDDY_CONFIG_DIR: "C:\\Users\\test\\.workbuddy-ai",
       WORKBUDDY_CONFIG_DIR: "C:\\Users\\test\\.workbuddy-ai",
+    });
+  });
+
+  it("uses the Linux app's own WorkBuddy data root", () => {
+    expect(workBuddyEnvironment({ HOME: "/home/test" }, "linux")).toMatchObject({
+      CODEBUDDY_CONFIG_DIR: "/home/test/.workbuddy",
+      WORKBUDDY_CONFIG_DIR: "/home/test/.workbuddy",
+    });
+    expect(
+      workBuddyEnvironment({ HOME: "/home/test", WORKBUDDY_CONFIG_DIR: "/srv/workbuddy" }, "linux"),
+    ).toMatchObject({
+      CODEBUDDY_CONFIG_DIR: "/srv/workbuddy",
+      WORKBUDDY_CONFIG_DIR: "/srv/workbuddy",
     });
   });
 

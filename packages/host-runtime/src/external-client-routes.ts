@@ -124,7 +124,8 @@ function forClient(
   rawBody: Record<string, unknown>,
 ): Record<string, unknown> {
   // Never trust a callerThreadId supplied by an external HTTP/MCP client; identity comes from client auth.
-  const { callerThreadId: _ignoredCallerThreadId, ...withoutCaller } = rawBody;
+  const { callerThreadId, ...withoutCaller } = rawBody;
+  void callerThreadId;
   let body = withHttpDefaults(route, withoutCaller);
   if (route === "/v1/delegate/start" || route === "/v1/thread/send") body = withWatch(body);
   if (route === "/v1/delegate/start")

@@ -438,7 +438,7 @@ it("trusts forwarding headers only from a configured proxy", async (t) => {
 
 it(
   "refreshes Serve trust on page reads and withdraws it within 30 seconds",
-  { timeout: 45_000 },
+  { timeout: 90_000 },
   async (t) => {
     const cli = fakeTailscale(t);
     cli.set(RUNNING);

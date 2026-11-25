@@ -192,6 +192,14 @@ server.listen(0, '127.0.0.1', () => console.log(server.address().port));
         self.public_command_at(Path::new(env!("CARGO_BIN_EXE_codexhost")), action)
     }
 
+    #[cfg(unix)]
+    fn installed_launcher(&self) -> PathBuf {
+        let launcher = self.root.join("bin/codexhost");
+        fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        fs::copy(env!("CARGO_BIN_EXE_codexhost"), &launcher).unwrap();
+        launcher
+    }
+
     fn launcher_command(&self, launcher: &Path) -> Command {
         let mut command = Command::new(launcher);
         command
@@ -345,6 +353,7 @@ fn background_web_records_ensure_failure_but_interactive_web_does_not() {
 #[test]
 fn background_web_refreshes_only_enabled_autostart_without_printing_login_link() {
     let fixture = Fixture::new();
+    let installed = fixture.installed_launcher();
     let path = fixture
         .root
         .join("Library/LaunchAgents/ai.bytepioneer.codexhost.autostart.plist");
@@ -375,7 +384,7 @@ fn background_web_refreshes_only_enabled_autostart_without_printing_login_link()
     fs::write(&wrapper, "fixture").unwrap();
     assert!(fixture.run("stop").status.success());
     let output = fixture
-        .public_command("web")
+        .public_command_at(&installed, "web")
         .arg("--background")
         .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
         .env("CODEXHOST_NPM_LAUNCHER_PATH", &wrapper)
@@ -398,6 +407,8 @@ fn background_web_refreshes_only_enabled_autostart_without_printing_login_link()
         fixture
             .public_command("web")
             .arg("--background")
+            .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
+            .env("CODEXHOST_NPM_LAUNCHER_PATH", &wrapper)
             .output()
             .unwrap()
             .status
@@ -410,7 +421,7 @@ fn background_web_refreshes_only_enabled_autostart_without_printing_login_link()
     assert_eq!(fs::read_to_string(&path).unwrap(), refreshed);
     // Missing npm entrypoint makes refresh fail, but must not prevent Web reuse.
     let output = fixture
-        .public_command("web")
+        .public_command_at(&installed, "web")
         .arg("--background")
         .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
         .env("CODEXHOST_NPM_LAUNCHER_PATH", &wrapper)
@@ -1090,8 +1101,13 @@ fn service_supervisor_hands_off_once_and_can_retry_without_desktop() {
         }
     }
     let fixture = Fixture::new();
+    let installed = fixture.installed_launcher();
     let started = fixture
-        .command("host", "ensure")
+        .launcher_command(&installed)
+        .args(["host", "ensure", "--node", &fixture.node, "--host-runtime"])
+        .arg(fixture.root.join("host-runtime.mjs"))
+        .arg("--data")
+        .arg(&fixture.root)
         .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
         .output()
         .unwrap();

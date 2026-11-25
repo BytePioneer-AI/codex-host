@@ -593,6 +593,7 @@ function SessionTree({
         sessionCount: 0,
         expanded: expandedGroups.includes(UNGROUPED_KEY),
         containsCurrent: false,
+        activity: { running: 0, pendingInteraction: 0, completed: 0 },
         sessions: [],
       });
     return result;
@@ -725,6 +726,16 @@ function SessionTree({
     if (pinnedSectionExpanded)
       for (const node of threadView.rows(pinnedRows)) rowKeys.push(`session:${node.id}`);
   }
+  const nestedActivity = (group: GroupNode): GroupNode["activity"] => {
+    const total = { ...group.activity };
+    for (const child of childrenByParent.get(group.key) ?? []) {
+      const nested = nestedActivity(child);
+      total.running += nested.running;
+      total.pendingInteraction += nested.pendingInteraction;
+      total.completed += nested.completed;
+    }
+    return total;
+  };
   const renderGroup = (group: GroupNode, depth: number): ReactNode => {
     const workspaceId = group.workspaceId;
     const children = childrenByParent.get(group.key) ?? [];
@@ -743,6 +754,8 @@ function SessionTree({
     );
     rowKeys.push(`workspace:${group.key}`);
     const childRows = group.expanded ? children.map((child) => renderGroup(child, depth + 1)) : [];
+    // A folded project hides its Threads and, in the tree view, its nested Workspaces.
+    const foldedActivity = group.expanded ? undefined : nestedActivity(group);
     const sessions = threadView.rows(visible.rows);
     // A tree shown through a descendant also renders in its root's group; keep its keys unique.
     const linked = linkedRoots.get(group.key);
@@ -870,6 +883,7 @@ function SessionTree({
           <ProjectRowItem
             newShortcut={shortcuts.find((row) => row.id === "session.new")}
             group={group}
+            foldedActivity={foldedActivity}
             showHost={!singleRemoteHostScoped}
             home={home}
             t={t}
@@ -2664,7 +2678,15 @@ function WorkspaceBrowserContent({
         title={t("delete.workspace")}
         {...(deleteTarget === null
           ? {}
-          : { description: t("delete.desc", { name: deleteTarget.title }) })}
+          : {
+              description: t(
+                workspaces.find((workspace) => workspace.workspaceId === deleteTarget.workspaceId)
+                  ?.projectId
+                  ? "delete.nativeProject"
+                  : "delete.desc",
+                { name: deleteTarget.title },
+              ),
+            })}
         footer={
           <>
             <Button variant="outline" disabled={deleting} onClick={closeDelete}>

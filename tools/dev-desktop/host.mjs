@@ -48,6 +48,7 @@ export async function restartDevelopmentHost({
   readHost = readRunningHost,
   fingerprint = developmentHostFingerprint,
   webRunning = isWebRunning,
+  otherInterface = "Web",
   decide = shouldRestartHost,
 }) {
   const env = { ...environment };
@@ -86,7 +87,7 @@ export async function restartDevelopmentHost({
       changed,
       mode,
       otherInterfaceRunning: webRunning,
-      otherInterface: "Web",
+      otherInterface,
     }))
   )
     return;

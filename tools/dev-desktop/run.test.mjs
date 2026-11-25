@@ -423,9 +423,23 @@ describe("development Desktop start", () => {
       help: true,
     });
     expect(usage()).toContain("npm start");
+    expect(usage()).toContain("npm start app");
     expect(usage()).not.toContain("npm start host");
     expect(() => parseArguments(["host"])).toThrow("semantic version");
     expect(usage()).toContain("Stop any running Codex Desktop");
+  });
+
+  it("routes app --help to the desktop shell usage without spawning processes", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const spawnImplementation = vi.fn();
+    await expect(
+      runDevelopmentDesktop({
+        arguments_: ["app", "--help"],
+        spawnImplementation,
+      }),
+    ).resolves.toBe(0);
+    expect(spawnImplementation).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("npm start app"));
   });
 
   it("rejects unknown, duplicate, and malformed options", () => {

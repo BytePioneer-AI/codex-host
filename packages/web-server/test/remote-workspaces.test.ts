@@ -6,10 +6,14 @@ import { RemoteProjectDraft } from "../src/remote-project-draft.ts";
 import { type RemoteSessionOperation } from "@codexhost/shared-contracts";
 import { Workspaces } from "../src/workspaces.ts";
 import { DataDir } from "../src/store.ts";
-import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
-import { mkdtempSync, rmSync } from "node:fs";
+import { EventHub, RpcRegistry, StreamRegistry, type StreamHandler } from "../src/transport.ts";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PeerHostManager } from "../src/peer-host-manager.ts";
+import { PeerHostStore } from "../src/peer-host-store.ts";
+import { REMOTE_PEERS_METHODS, remotePeerHostId } from "@codexhost/shared-contracts";
+import { remoteWorkspaceId } from "../src/remote-workspaces.ts";
 
 it("preserves default and explicitly selected native service tiers on the first remote turn", async () => {
   const target = { hostId: "host", cwd: "/project", epoch: "one" };
@@ -369,5 +373,336 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
       .filter((w) => w.sessionIds.includes(sessionId))
       .map((w) => w.workspaceId),
     [workspaceId],
+  );
+});
+
+it("persists mixed local and multi-remote displayOrder across reloads, offline reconnects, new items, and explicit removals", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "mixed-workspace-order-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const localDir1 = join(root, "local-1");
+  const localDir2 = join(root, "local-2");
+  const localDir3 = join(root, "local-3");
+  mkdirSync(localDir1);
+  mkdirSync(localDir2);
+  mkdirSync(localDir3);
+
+  const data = new DataDir(root);
+  const workspaces = new Workspaces(data, root);
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  const attachFollower = (registry: StreamRegistry, target: unknown[]) => {
+    let handler: StreamHandler | undefined;
+    const orig = registry.register.bind(registry);
+    registry.register = (endpoint, fn) => {
+      if (endpoint === "workspace/follow") handler = fn;
+      orig(endpoint, fn);
+    };
+    return () => {
+      assert.ok(handler, "workspace/follow handler should be registered");
+      void handler(
+        {},
+        {
+          id: "test-stream",
+          closed: false,
+          push: (frame) => target.push(frame),
+          end: () => {},
+          fail: () => {},
+          onClose: () => {},
+        },
+      );
+    };
+  };
+
+  const frames: unknown[] = [];
+  const openFollower = attachFollower(streams, frames);
+  workspaces.register(rpc, streams);
+  openFollower();
+
+  const local1 = workspaces.create(localDir1).workspace;
+  const local2 = workspaces.create(localDir2).workspace;
+
+  const hostA = "remote-peer:peer-a";
+  const hostB = "remote-peer:peer-b";
+  const hostC = "remote-peer:peer-c";
+  const makeRemote = (hostId: string, projectId: string, title: string) => ({
+    workspaceId: remoteWorkspaceId(hostId, projectId),
+    path: `/${title}`,
+    title,
+    sessionIds: [],
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+    remote: { hostId, displayName: hostId.slice("remote-peer:".length), state: "connected" },
+  });
+
+  const remA1 = makeRemote(hostA, "a1", "rem-a1");
+  const remA2 = makeRemote(hostA, "a2", "rem-a2");
+  const remA3 = makeRemote(hostA, "a3", "rem-a3");
+  const remB1 = makeRemote(hostB, "b1", "rem-b1");
+  const remC1 = makeRemote(hostC, "c1", "rem-c1");
+
+  // Backward compatible default order before any manual reorder: remotes first, then locals.
+  workspaces.setRemoteGroups([remA1, remB1]);
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [remA1.workspaceId, remB1.workspaceId, local1.workspaceId, local2.workspaceId],
+  );
+
+  // Unknown workspaceId is rejected with workspace/not-found.
+  const unknownReply = await rpc.dispatch("workspace/insertBefore", {
+    args: {
+      request: { workspaceId: "remote-workspace:missing", beforeWorkspaceId: local1.workspaceId },
+    },
+  });
+  assert.equal(unknownReply.ok, false);
+  assert.equal(unknownReply.error.code, "workspace/not-found");
+
+  // Interleave local1 before remA1, then remB1 between local2 and remA1 -> [local1, remA1, local2, remB1] -> wait:
+  // Start: [remA1, remB1, local1, local2]
+  // Move local1 before remA1 => [local1, remA1, remB1, local2]
+  const move1 = await rpc.dispatch("workspace/insertBefore", {
+    args: { request: { workspaceId: local1.workspaceId, beforeWorkspaceId: remA1.workspaceId } },
+  });
+  assert.ok(move1.ok);
+  assert.deepEqual((move1.value as { workspaceIds: string[] }).workspaceIds, [
+    local1.workspaceId,
+    remA1.workspaceId,
+    remB1.workspaceId,
+    local2.workspaceId,
+  ]);
+
+  // Move local2 before remB1 => [local1, remA1, local2, remB1]
+  const move2 = await rpc.dispatch("workspace/insertBefore", {
+    args: { request: { workspaceId: local2.workspaceId, beforeWorkspaceId: remB1.workspaceId } },
+  });
+  assert.ok(move2.ok);
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [local1.workspaceId, remA1.workspaceId, local2.workspaceId, remB1.workspaceId],
+  );
+
+  // Move local2 before local1 => also updates local state.items relative order to [local2, local1].
+  const move3 = await rpc.dispatch("workspace/insertBefore", {
+    args: { request: { workspaceId: local2.workspaceId, beforeWorkspaceId: local1.workspaceId } },
+  });
+  assert.ok(move3.ok);
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [local2.workspaceId, local1.workspaceId, remA1.workspaceId, remB1.workspaceId],
+  );
+
+  // Reopen from disk and verify pure local order and mixed order both persist.
+  const reopened = new Workspaces(data, root);
+  assert.deepEqual(
+    reopened.list().map((w) => w.workspaceId),
+    [local2.workspaceId, local1.workspaceId],
+    "pure local order stays consistent with displayOrder",
+  );
+  reopened.setRemoteGroups([remA1, remB1]);
+  assert.deepEqual(
+    reopened.list().map((w) => w.workspaceId),
+    [local2.workspaceId, local1.workspaceId, remA1.workspaceId, remB1.workspaceId],
+  );
+
+  // Move remB1 between local2 and local1 => [local2, remB1, local1, remA1]
+  const rpc2 = new RpcRegistry();
+  const streams2 = new StreamRegistry();
+  const frames2: unknown[] = [];
+  const openFollower2 = attachFollower(streams2, frames2);
+  reopened.register(rpc2, streams2);
+  openFollower2();
+
+  const move4 = await rpc2.dispatch("workspace/insertBefore", {
+    args: { request: { workspaceId: remB1.workspaceId, beforeWorkspaceId: local1.workspaceId } },
+  });
+  assert.ok(move4.ok);
+  assert.deepEqual(
+    reopened.list().map((w) => w.workspaceId),
+    [local2.workspaceId, remB1.workspaceId, local1.workspaceId, remA1.workspaceId],
+  );
+
+  // Peer B goes temporarily offline: remB1 disappears from visible list, NOT from displayOrder.
+  reopened.setRemoteGroups([remA1]);
+  assert.deepEqual(
+    reopened.list().map((w) => w.workspaceId),
+    [local2.workspaceId, local1.workspaceId, remA1.workspaceId],
+  );
+
+  // Reorder while Peer B is offline: move remA1 before local1 -> remB1 keeps its slot before local1.
+  const moveWhileOffline = await rpc2.dispatch("workspace/insertBefore", {
+    args: { request: { workspaceId: remA1.workspaceId, beforeWorkspaceId: local1.workspaceId } },
+  });
+  assert.ok(moveWhileOffline.ok);
+  assert.deepEqual(
+    reopened.list().map((w) => w.workspaceId),
+    [local2.workspaceId, remA1.workspaceId, local1.workspaceId],
+  );
+
+  // Peer B reconnects -> remB1 returns to its saved slot right after local2, and an order frame broadcasts.
+  frames2.length = 0;
+  reopened.setRemoteGroups([remA1, remB1]);
+  assert.deepEqual(
+    reopened.list().map((w) => w.workspaceId),
+    [local2.workspaceId, remB1.workspaceId, remA1.workspaceId, local1.workspaceId],
+  );
+  const lastOrderFrame = [...frames2]
+    .reverse()
+    .find(
+      (frame): frame is { type: "order"; workspaceIds: string[] } =>
+        (frame as { type?: string }).type === "order",
+    );
+  assert.deepEqual(lastOrderFrame?.workspaceIds, [
+    local2.workspaceId,
+    remB1.workspaceId,
+    remA1.workspaceId,
+    local1.workspaceId,
+  ]);
+
+  // New remote workspaces on existing host A slot right after remA1 in relative order;
+  // brand-new host C appends to the tail without displacing pinned local2.
+  reopened.setRemoteGroups([remA1, remA2, remA3, remB1, remC1]);
+  assert.deepEqual(
+    reopened.list().map((w) => w.workspaceId),
+    [
+      local2.workspaceId,
+      remB1.workspaceId,
+      remA1.workspaceId,
+      remA2.workspaceId,
+      remA3.workspaceId,
+      local1.workspaceId,
+      remC1.workspaceId,
+    ],
+  );
+
+  // Creating a new local workspace records it at the end of displayOrder, broadcasts the full
+  // mixed order, and matches the order after reloading from disk.
+  frames2.length = 0;
+  const local3 = reopened.create(localDir3).workspace;
+  const expectedAfterCreate = [
+    local2.workspaceId,
+    remB1.workspaceId,
+    remA1.workspaceId,
+    remA2.workspaceId,
+    remA3.workspaceId,
+    local1.workspaceId,
+    local3.workspaceId,
+    remC1.workspaceId,
+  ];
+  assert.deepEqual(
+    reopened.list().map((w) => w.workspaceId),
+    expectedAfterCreate,
+  );
+  const createOrderFrame = [...frames2]
+    .reverse()
+    .find(
+      (frame): frame is { type: "order"; workspaceIds: string[] } =>
+        (frame as { type?: string }).type === "order",
+    );
+  assert.deepEqual(createOrderFrame?.workspaceIds, expectedAfterCreate);
+  const reopenedAfterCreate = new Workspaces(data, root);
+  reopenedAfterCreate.setRemoteGroups([remA1, remA2, remA3, remB1, remC1]);
+  assert.deepEqual(
+    reopenedAfterCreate.list().map((w) => w.workspaceId),
+    expectedAfterCreate,
+  );
+
+  // Deleting a local workspace removes it from persisted displayOrder.
+  const delReply = await rpc2.dispatch("workspace/delete", {
+    args: { request: { workspaceId: local1.workspaceId } },
+  });
+  assert.ok(delReply.ok);
+  const savedAfterDelete = data.readJson<{ displayOrder?: string[] }>("workspaces.json", {});
+  assert.equal(savedAfterDelete.displayOrder?.includes(local1.workspaceId), false);
+
+  // Permanent peer removal cleans displayOrder for that host only.
+  reopened.removeRemoteHostOrder(hostB);
+  const savedAfterPeerRemove = data.readJson<{ displayOrder?: string[] }>("workspaces.json", {});
+  assert.equal(savedAfterPeerRemove.displayOrder?.includes(remB1.workspaceId), false);
+  assert.equal(savedAfterPeerRemove.displayOrder?.includes(remA1.workspaceId), true);
+  assert.equal(savedAfterPeerRemove.displayOrder?.includes(local2.workspaceId), true);
+});
+
+it("PeerHostManager invokes onPeerRemoved only on permanent remove, not disable", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "peer-remove-order-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const data = new DataDir(root);
+  const peerId = "peer-alpha";
+  const hostId = remotePeerHostId(peerId);
+  const store = new PeerHostStore(data);
+  store.save([
+    {
+      peerId,
+      name: "alpha",
+      origin: "http://127.0.0.1:49999",
+      token: "secret-token",
+      enabled: true,
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    },
+  ]);
+
+  const localDir = join(root, "local-dir");
+  mkdirSync(localDir);
+  const workspaces = new Workspaces(data, root);
+  const rpc = new RpcRegistry();
+  workspaces.register(rpc, new StreamRegistry());
+  const local = workspaces.create(localDir).workspace;
+  const rem = {
+    workspaceId: remoteWorkspaceId(hostId, "p1"),
+    path: "/p1",
+    title: "p1",
+    sessionIds: [],
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+    remote: { hostId, displayName: "alpha", state: "connected" },
+  };
+  workspaces.setRemoteGroups([rem]);
+  assert.ok(
+    (
+      await rpc.dispatch("workspace/insertBefore", {
+        args: { request: { workspaceId: local.workspaceId, beforeWorkspaceId: rem.workspaceId } },
+      })
+    ).ok,
+  );
+
+  const manager = new PeerHostManager(store, async () => [], new EventHub("peers"), {
+    allowLoopback: true,
+  });
+  t.after(() => manager.close());
+  const removedHosts: string[] = [];
+  manager.onPeerRemoved = (removedHostId) => {
+    removedHosts.push(removedHostId);
+    workspaces.removeRemoteHostOrder(removedHostId);
+  };
+  manager.register(rpc);
+
+  const auth = { credential: "local", local: true };
+  // Disabling a peer preserves displayOrder entries.
+  const disabled = await rpc.dispatch(
+    REMOTE_PEERS_METHODS.update,
+    { args: { request: { peerId, enabled: false } } },
+    auth,
+  );
+  assert.ok(disabled.ok);
+  assert.deepEqual(removedHosts, []);
+  assert.equal(
+    data
+      .readJson<{ displayOrder?: string[] }>("workspaces.json", {})
+      .displayOrder?.includes(rem.workspaceId),
+    true,
+  );
+
+  // Removing a peer triggers onPeerRemoved and strips its entries from displayOrder.
+  const removed = await rpc.dispatch(
+    REMOTE_PEERS_METHODS.remove,
+    { args: { request: { peerId } } },
+    auth,
+  );
+  assert.ok(removed.ok);
+  assert.deepEqual(removedHosts, [hostId]);
+  assert.equal(
+    data
+      .readJson<{ displayOrder?: string[] }>("workspaces.json", {})
+      .displayOrder?.includes(rem.workspaceId),
+    false,
   );
 });

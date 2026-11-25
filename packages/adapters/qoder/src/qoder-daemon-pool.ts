@@ -27,8 +27,7 @@ interface DaemonEntry {
   readonly ready: Promise<QoderSdkDaemon>;
   users: number;
   stderr: string;
-  stopping?: Promise<void> | undefined;
-  stopped: boolean;
+  stopped?: Promise<void>;
 }
 
 const STDERR_TAIL_LIMIT = 8192;
@@ -53,7 +52,6 @@ export function qoderDaemonConfigKey(config: QoderDaemonConfig): string {
 export class QoderDaemonPool {
   readonly #start: QoderStartDaemon;
   readonly #entries = new Map<string, DaemonEntry>();
-  readonly #live = new Set<DaemonEntry>();
   #closed = false;
 
   constructor(start: QoderStartDaemon) {
@@ -68,7 +66,6 @@ export class QoderDaemonPool {
       const created: DaemonEntry = {
         users: 0,
         stderr: "",
-        stopped: false,
         ready: Promise.resolve().then(() =>
           this.#start({
             ...config,
@@ -79,10 +76,8 @@ export class QoderDaemonPool {
           }),
         ),
       };
-      this.#live.add(created);
       created.ready.catch(() => {
         if (this.#entries.get(key) === created) this.#entries.delete(key);
-        this.#live.delete(created);
       });
       this.#entries.set(key, created);
       entry = created;
@@ -103,24 +98,17 @@ export class QoderDaemonPool {
       throw new Error("Qoder adapter is closed");
     }
 
-    let decremented = false;
     let released = false;
     return {
       daemon,
       stderr: () => leased.stderr,
       release: async () => {
         if (released) return;
-        if (!decremented) {
-          decremented = true;
-          leased.users -= 1;
-          if (leased.users > 0) {
-            released = true;
-            return;
-          }
-          if (this.#entries.get(key) === leased) this.#entries.delete(key);
-        }
-        await this.#stopEntry(leased);
         released = true;
+        leased.users -= 1;
+        if (leased.users > 0) return;
+        if (this.#entries.get(key) === leased) this.#entries.delete(key);
+        await stopQuietly(leased);
       },
     };
   }
@@ -128,33 +116,20 @@ export class QoderDaemonPool {
   /** Stops every daemon, waiting for starts that are still in flight. */
   async close(): Promise<void> {
     this.#closed = true;
-    const entries = [...this.#live];
+    const entries = [...this.#entries.values()];
     this.#entries.clear();
-    await Promise.all(entries.map((entry) => this.#stopEntry(entry).catch(() => undefined)));
+    await Promise.all(entries.map(stopQuietly));
   }
+}
 
-  async #stopEntry(entry: DaemonEntry): Promise<void> {
-    if (entry.stopped) return;
-    if (!entry.stopping) {
-      const attempt = (async () => {
-        let daemon: QoderSdkDaemon;
-        try {
-          daemon = await entry.ready;
-        } catch {
-          // A failed start has nothing to stop.
-          entry.stopped = true;
-          this.#live.delete(entry);
-          return;
-        }
-        await daemon.stop();
-        entry.stopped = true;
-        this.#live.delete(entry);
-      })();
-      entry.stopping = attempt;
-      void attempt.catch(() => {
-        if (entry.stopping === attempt) entry.stopping = undefined;
-      });
+function stopQuietly(entry: DaemonEntry): Promise<void> {
+  entry.stopped ??= (async () => {
+    try {
+      const daemon = await entry.ready;
+      await daemon.stop();
+    } catch {
+      // A failed start has nothing to stop; a stop failure must not block shutdown.
     }
-    await entry.stopping;
-  }
+  })();
+  return entry.stopped;
 }

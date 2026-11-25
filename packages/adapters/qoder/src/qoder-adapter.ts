@@ -222,7 +222,7 @@ export class QoderAdapter implements HarnessAdapter {
       } catch {
         // The quota probe must not leak a query process.
       }
-      await lease?.release().catch(() => undefined);
+      await lease?.release();
     }
   }
 
@@ -295,7 +295,7 @@ export class QoderAdapter implements HarnessAdapter {
               }
             } finally {
               // Stop an abandoned probe's daemon before waiting for its Session close handshake.
-              if (controller.signal.aborted) await lease?.release().catch(() => undefined);
+              if (controller.signal.aborted) await lease?.release();
               try {
                 await probeQuery.close();
               } catch {
@@ -321,7 +321,7 @@ export class QoderAdapter implements HarnessAdapter {
             };
             return result;
           } finally {
-            await lease?.release().catch(() => undefined);
+            await lease?.release();
           }
         }
 
@@ -631,13 +631,13 @@ export class QoderAdapter implements HarnessAdapter {
         getSessionMessages: this.#getSessionMessages,
         ...(pathToQoderCLIExecutable ? { pathToQoderCLIExecutable } : {}),
         ...(sessionLease ? { daemon: sessionLease.daemon } : {}),
-        onClosed: async () => {
-          await sessionLease?.release();
+        onClosed: () => {
           this.#sessions.delete(session);
+          void sessionLease?.release();
         },
       });
     } catch (error) {
-      await lease?.release().catch(() => undefined);
+      await lease?.release();
       return { ok: false, error: mapQoderException(error) };
     }
 
@@ -653,8 +653,8 @@ export class QoderAdapter implements HarnessAdapter {
     this.#sessions.clear();
     this.#inspections.clear();
     this.#inFlightInspections.clear();
-    await Promise.allSettled([this.sessionImport.close(), ...sessions.map((s) => s.close())]);
+    await Promise.all([this.sessionImport.close(), ...sessions.map((s) => s.close())]);
     await this.#daemons?.close();
-    await Promise.allSettled(inspections);
+    await Promise.all(inspections);
   }
 }

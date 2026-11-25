@@ -91,24 +91,6 @@ describe("Qoder failure and cancellation boundaries", () => {
     expect(query.close).toHaveBeenCalledTimes(1);
   });
 
-  it("propagates query.close failures on session.close while ending outputs and allowing retry", async () => {
-    const query = new ControlledQuery();
-    query.close
-      .mockRejectedValueOnce(new Error("query close failed"))
-      .mockImplementationOnce(async () => query.messages.end());
-    const { session, ended, start } = await open(query);
-
-    await expect(session.close()).rejects.toThrow("query close failed");
-    await expect(ended).resolves.toBeUndefined();
-    expect(await start("after-failed-close")).toMatchObject({
-      ok: false,
-      error: { code: "invalidState" },
-    });
-
-    await expect(session.close()).resolves.toBeUndefined();
-    expect(query.close).toHaveBeenCalledTimes(2);
-  });
-
   it("faults when the native iterator throws before the first Turn", async () => {
     const query = new ControlledQuery();
     query[Symbol.asyncIterator] = async function* () {

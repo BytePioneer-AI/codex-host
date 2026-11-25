@@ -187,7 +187,7 @@ export interface QoderSessionOptions {
   pathToQoderCLIExecutable?: string;
   /** Daemon that owns env, auth and the CLI path for this Session's launch config. */
   daemon?: NonNullable<QoderOptions["daemon"]>;
-  onClosed?: () => void | Promise<void>;
+  onClosed?: () => void;
 }
 
 /** Upper bound on how long a usage refresh waits for `get_settings`. */
@@ -214,15 +214,12 @@ export class QoderSession implements HarnessSession {
     sessionId: string,
     options?: GetSessionMessagesOptions,
   ) => Promise<SessionMessage[]>;
-  readonly #onClosed: (() => void | Promise<void>) | undefined;
+  readonly #onClosed: (() => void) | undefined;
 
   #commandCatalog: HarnessCommandCatalog = QODER_FALLBACK_COMMAND_CATALOG;
   #state: HarnessSessionState;
   #activeTurn: ActiveTurnState | null = null;
-  #phase: "open" | "closing" | "closed" = "open";
-  #closePromise: Promise<void> | null = null;
-  #queryClosed = false;
-  #onClosedCompleted = false;
+  #closed = false;
   #consumerLoopDone: Promise<void>;
   #configuredContextWindows: Promise<void> | undefined;
   /** Set when a usage refresh stopped waiting for `get_settings`. */
@@ -355,7 +352,7 @@ export class QoderSession implements HarnessSession {
     if (typeof this.#query.supportedCommands === "function") {
       try {
         const commands = await this.#query.supportedCommands();
-        if (Array.isArray(commands) && commands.length > 0 && this.#phase === "open") {
+        if (Array.isArray(commands) && commands.length > 0 && !this.#closed) {
           this.#commandCatalog = mapQoderSlashCommands(commands);
         }
       } catch {
@@ -384,18 +381,16 @@ export class QoderSession implements HarnessSession {
   async #consumeMessages(): Promise<void> {
     try {
       for await (const message of this.#query) {
-        if (this.#phase !== "open") break;
+        if (this.#closed) break;
         await this.#dispatchMessage(message);
       }
-      if (this.#phase !== "open") return;
       await this.#close({
         code: "processExited",
         message: "Qoder message stream ended unexpectedly",
         retryable: true,
-      }).catch(() => undefined);
+      });
     } catch (error) {
-      if (this.#phase !== "open") return;
-      await this.#close(mapQoderException(error)).catch(() => undefined);
+      await this.#close(mapQoderException(error));
     }
   }
 
@@ -851,9 +846,7 @@ export class QoderSession implements HarnessSession {
 
   #handleResultMessage(result: SDKResultMessage): void {
     if (!this.#activeTurn) {
-      if (result.subtype !== "success") {
-        void this.#close(mapQoderResultError(result)).catch(() => undefined);
-      }
+      if (result.subtype !== "success") void this.#close(mapQoderResultError(result));
       return;
     }
 
@@ -1003,7 +996,7 @@ export class QoderSession implements HarnessSession {
     input: unknown,
     context: CanUseToolContext,
   ): Promise<PermissionResult> {
-    if (this.#phase !== "open" || !this.#activeTurn || this.#activeTurn.cancellationRequested) {
+    if (this.#closed || !this.#activeTurn || this.#activeTurn.cancellationRequested) {
       return { behavior: "deny", message: "Session is not active", interrupt: true };
     }
 
@@ -1229,7 +1222,7 @@ export class QoderSession implements HarnessSession {
       try {
         const settings = await this.#query.request?.({ type: "get_settings" });
         const configured = parseQoderConfiguredContextWindows(settings);
-        if (configured && this.#phase === "open" && loading === this.#configuredContextWindows) {
+        if (configured && !this.#closed && loading === this.#configuredContextWindows) {
           this.#usageTracker.setConfiguredContextWindows(configured);
           // Publish the configured window even if a refresh already stopped waiting for it.
           if (this.#usageRefreshedWithoutSettings) {
@@ -1265,12 +1258,12 @@ export class QoderSession implements HarnessSession {
   async refreshUsage(forTurnId?: HostTurnId): Promise<void> {
     const revision = this.#usageModelRevision;
     await this.#awaitConfiguredContextWindows();
-    if (revision !== this.#usageModelRevision || this.#phase !== "open") return;
+    if (revision !== this.#usageModelRevision || this.#closed) return;
     let changed = false;
     if (this.#query.getContextUsage) {
       try {
         const usage = await this.#query.getContextUsage();
-        if (revision !== this.#usageModelRevision || this.#phase !== "open") return;
+        if (revision !== this.#usageModelRevision || this.#closed) return;
         if (usage) {
           this.#usageTracker.observeContextUsage(usage as QoderContextUsage);
           changed = true;
@@ -1282,7 +1275,7 @@ export class QoderSession implements HarnessSession {
     if (this.#query.getUsageInfo) {
       try {
         const info = await this.#query.getUsageInfo();
-        if (revision !== this.#usageModelRevision || this.#phase !== "open") return;
+        if (revision !== this.#usageModelRevision || this.#closed) return;
         if (info) {
           this.#usageTracker.observeUsageInfo(info);
           changed = true;
@@ -1291,7 +1284,7 @@ export class QoderSession implements HarnessSession {
         // Diagnostic failure only, never fails turn
       }
     }
-    if (changed && this.#phase === "open" && revision === this.#usageModelRevision) {
+    if (changed && !this.#closed && revision === this.#usageModelRevision) {
       const snapshot = this.#usageTracker.snapshot();
       if (snapshot) {
         const targetTurnId = forTurnId ?? this.#activeTurn?.turnId;
@@ -1316,7 +1309,7 @@ export class QoderSession implements HarnessSession {
     command: PermissionModeSelectCommand,
   ): Promise<HarnessResult<PermissionModeSelectCompleted>>;
   async execute(command: HostCommand): Promise<HarnessResult<unknown>> {
-    if (this.#phase !== "open") {
+    if (this.#closed) {
       return {
         ok: false,
         error: { code: "invalidState", message: "Session is closed", retryable: false },
@@ -1778,7 +1771,7 @@ export class QoderSession implements HarnessSession {
   async #executeHarnessCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
-    if (this.#phase !== "open") {
+    if (this.#closed) {
       return {
         ok: false,
         error: {
@@ -1870,163 +1863,128 @@ export class QoderSession implements HarnessSession {
     }
   }
 
-  close(): Promise<void> {
-    return this.#close();
+  async close(): Promise<void> {
+    await this.#close();
   }
 
-  #close(error?: HarnessError): Promise<void> {
-    if (this.#phase === "closed") return Promise.resolve();
-    if (this.#closePromise) return this.#closePromise;
-    const first = this.#phase === "open";
-    this.#phase = "closing";
-    const attempt = this.#runClose(first, error);
-    this.#closePromise = attempt;
-    void attempt.catch(() => {
-      if (this.#closePromise === attempt) this.#closePromise = null;
-    });
-    return attempt;
-  }
+  async #close(error?: HarnessError): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    const outcome: HostItemOutcome = error
+      ? { status: "failed", error }
+      : { status: "cancelled", reason: "Session closed" };
 
-  async #runClose(first: boolean, error?: HarnessError): Promise<void> {
-    if (first) {
-      const outcome: HostItemOutcome = error
-        ? { status: "failed", error }
-        : { status: "cancelled", reason: "Session closed" };
-
-      if (this.#activeTurn) {
-        this.#cancelPendingInteractions(this.#activeTurn.turnId, "Session closed");
-        for (const activeTool of this.#activeTools.values()) {
-          this.#emitEvent({
-            type: "item.completed",
-            turnId: this.#activeTurn.turnId,
-            snapshot: {
-              item: {
-                type: "toolExecution",
-                itemId: activeTool.itemId,
-                toolName: activeTool.toolName,
-                arguments: activeTool.arguments,
-                durationMs: Math.max(0, Date.now() - activeTool.startedAtMs),
-              },
-              outcome: {
-                status: "failed",
-                error: error ?? {
-                  code: "nativeFailure",
-                  message: "Session closed",
-                  retryable: false,
-                },
-              },
-            },
-          });
-        }
-        this.#activeTools.clear();
-
-        // Close any active streaming text message item
-        if (this.#activeTurn.activeStreamingMessageItemId) {
-          this.#emitEvent({
-            type: "item.completed",
-            turnId: this.#activeTurn.turnId,
-            snapshot: {
-              item: {
-                type: "agentMessage",
-                itemId: this.#activeTurn.activeStreamingMessageItemId,
-                text: this.#activeTurn.accumulatedStreamingText,
-              },
-              outcome,
-            },
-          });
-          this.#activeTurn.activeStreamingMessageItemId = undefined;
-          this.#activeTurn.accumulatedStreamingText = "";
-        }
-
-        // Close any active streaming reasoning item
-        if (this.#activeTurn.activeStreamingReasoningItemId) {
-          this.#emitEvent({
-            type: "item.completed",
-            turnId: this.#activeTurn.turnId,
-            snapshot: {
-              item: {
-                type: "reasoning",
-                itemId: this.#activeTurn.activeStreamingReasoningItemId,
-                text: this.#activeTurn.accumulatedStreamingReasoning,
-              },
-              outcome,
-            },
-          });
-          this.#activeTurn.activeStreamingReasoningItemId = undefined;
-          this.#activeTurn.accumulatedStreamingReasoning = "";
-        }
-
-        // Close any active compaction item
-        if (this.#activeTurn.compactionItemId) {
-          this.#emitEvent({
-            type: "item.completed",
-            turnId: this.#activeTurn.turnId,
-            snapshot: {
-              item: {
-                type: "contextCompaction",
-                itemId: this.#activeTurn.compactionItemId,
-              },
-              outcome,
-            },
-          });
-          this.#activeTurn.compactionItemId = undefined;
-        }
-
-        const turnId = this.#activeTurn.turnId;
-        const nativeTurnRef = this.#createNativeTurnRef(this.#activeTurn.userMessageUuid);
-        this.#activeTurn = null;
+    if (this.#activeTurn) {
+      this.#cancelPendingInteractions(this.#activeTurn.turnId, "Session closed");
+      for (const activeTool of this.#activeTools.values()) {
         this.#emitEvent({
-          type: "turn.completed",
-          turnId,
-          nativeTurnRef,
-          outcome,
+          type: "item.completed",
+          turnId: this.#activeTurn.turnId,
+          snapshot: {
+            item: {
+              type: "toolExecution",
+              itemId: activeTool.itemId,
+              toolName: activeTool.toolName,
+              arguments: activeTool.arguments,
+              durationMs: Math.max(0, Date.now() - activeTool.startedAtMs),
+            },
+            outcome: {
+              status: "failed",
+              error: error ?? {
+                code: "nativeFailure",
+                message: "Session closed",
+                retryable: false,
+              },
+            },
+          },
         });
-      } else {
-        for (const [id, pending] of this.#pendingInteractions) {
-          this.#emitEvent({
-            type: "interaction.closed",
-            interactionId: pending.id,
-            turnId: pending.interaction.turnId,
-            reason: "cancelled",
-          });
-          pending.resolve({ behavior: "deny", message: "Session closed" });
-          this.#pendingInteractions.delete(id);
-        }
+      }
+      this.#activeTools.clear();
+
+      // Close any active streaming text message item
+      if (this.#activeTurn.activeStreamingMessageItemId) {
+        this.#emitEvent({
+          type: "item.completed",
+          turnId: this.#activeTurn.turnId,
+          snapshot: {
+            item: {
+              type: "agentMessage",
+              itemId: this.#activeTurn.activeStreamingMessageItemId,
+              text: this.#activeTurn.accumulatedStreamingText,
+            },
+            outcome,
+          },
+        });
+        this.#activeTurn.activeStreamingMessageItemId = undefined;
+        this.#activeTurn.accumulatedStreamingText = "";
       }
 
-      if (error) this.#emitEvent({ type: "session.faulted", error });
-      this.#pushableInput.end();
+      // Close any active streaming reasoning item
+      if (this.#activeTurn.activeStreamingReasoningItemId) {
+        this.#emitEvent({
+          type: "item.completed",
+          turnId: this.#activeTurn.turnId,
+          snapshot: {
+            item: {
+              type: "reasoning",
+              itemId: this.#activeTurn.activeStreamingReasoningItemId,
+              text: this.#activeTurn.accumulatedStreamingReasoning,
+            },
+            outcome,
+          },
+        });
+        this.#activeTurn.activeStreamingReasoningItemId = undefined;
+        this.#activeTurn.accumulatedStreamingReasoning = "";
+      }
+
+      // Close any active compaction item
+      if (this.#activeTurn.compactionItemId) {
+        this.#emitEvent({
+          type: "item.completed",
+          turnId: this.#activeTurn.turnId,
+          snapshot: {
+            item: {
+              type: "contextCompaction",
+              itemId: this.#activeTurn.compactionItemId,
+            },
+            outcome,
+          },
+        });
+        this.#activeTurn.compactionItemId = undefined;
+      }
+
+      const turnId = this.#activeTurn.turnId;
+      const nativeTurnRef = this.#createNativeTurnRef(this.#activeTurn.userMessageUuid);
+      this.#activeTurn = null;
+      this.#emitEvent({
+        type: "turn.completed",
+        turnId,
+        nativeTurnRef,
+        outcome,
+      });
+    } else {
+      for (const [id, pending] of this.#pendingInteractions) {
+        this.#emitEvent({
+          type: "interaction.closed",
+          interactionId: pending.id,
+          turnId: pending.interaction.turnId,
+          reason: "cancelled",
+        });
+        pending.resolve({ behavior: "deny", message: "Session closed" });
+        this.#pendingInteractions.delete(id);
+      }
     }
 
-    const errors: unknown[] = [];
+    if (error) this.#emitEvent({ type: "session.faulted", error });
+    this.#pushableInput.end();
+
     try {
-      if (!this.#queryClosed) {
-        try {
-          await this.#query.close();
-          this.#queryClosed = true;
-        } catch (closeError) {
-          errors.push(closeError);
-        }
-      }
-
-      if (!this.#onClosedCompleted) {
-        try {
-          await this.#onClosed?.();
-          this.#onClosedCompleted = true;
-        } catch (releaseError) {
-          errors.push(releaseError);
-        }
-      }
-    } finally {
-      this.#channel.end();
+      await this.#query.close();
+    } catch {
+      // Ignored during shutdown
     }
 
-    if (errors.length > 0) {
-      throw errors.length === 1
-        ? errors[0]
-        : new AggregateError(errors, "Qoder Session failed to close");
-    }
-
-    this.#phase = "closed";
+    this.#channel.end();
+    this.#onClosed?.();
   }
 }

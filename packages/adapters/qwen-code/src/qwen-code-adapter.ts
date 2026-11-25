@@ -859,56 +859,44 @@ class QwenCodeHarnessSession implements HarnessSession {
   }
 
   close(): Promise<void> {
-    if (this.#phase === "closed") return Promise.resolve();
-    if (this.#closePromise) return this.#closePromise;
-    const first = this.#phase !== "closing";
-    this.#phase = "closing";
-    const attempt = this.#close(first);
-    this.#closePromise = attempt;
-    void attempt.catch(() => {
-      if (this.#closePromise === attempt) this.#closePromise = null;
-    });
-    return attempt;
+    if (!this.#closePromise) this.#closePromise = this.#close().finally(this.#onClosed);
+    return this.#closePromise;
   }
 
   handleTransportFault(error: QwenCodeTransportError): void {
     queueMicrotask(() => this.#fault(error));
   }
 
-  async #close(first: boolean): Promise<void> {
-    if (first) {
-      const active = this.#active;
-      if (active) {
-        active.cancellationRequested = true;
-        for (const approval of active.approvals.values()) approval.resolve({ behavior: "deny" });
-        const { promise: deadline, resolve } = Promise.withResolvers<undefined>();
-        const timeout = setTimeout(() => resolve(undefined), this.#closeTimeoutMs);
-        try {
-          await Promise.race([
-            (async () => {
-              await this.#transport.cancel().catch(() => undefined);
-              await active.completion;
-            })(),
-            deadline,
-          ]);
-        } finally {
-          clearTimeout(timeout);
-        }
+  async #close(): Promise<void> {
+    if (this.#phase === "closed") return;
+    this.#phase = "closing";
+    const active = this.#active;
+    if (active) {
+      active.cancellationRequested = true;
+      for (const approval of active.approvals.values()) approval.resolve({ behavior: "deny" });
+      const { promise: deadline, resolve } = Promise.withResolvers<undefined>();
+      const timeout = setTimeout(() => resolve(undefined), this.#closeTimeoutMs);
+      try {
+        await Promise.race([
+          (async () => {
+            await this.#transport.cancel().catch(() => undefined);
+            await active.completion;
+          })(),
+          deadline,
+        ]);
+      } finally {
+        clearTimeout(timeout);
       }
     }
-    try {
-      await this.#transport.close();
-    } finally {
-      if (this.#active) {
-        this.#finish(this.#active, {
-          status: "failed",
-          error: invalidState("Qwen Code Session closed during active Turn"),
-        });
-      }
-      this.#channel.end();
+    await this.#transport.close();
+    if (this.#active) {
+      this.#finish(this.#active, {
+        status: "failed",
+        error: invalidState("Qwen Code Session closed during active Turn"),
+      });
     }
     this.#phase = "closed";
-    this.#onClosed();
+    this.#channel.end();
   }
 
   #fault(error: QwenCodeTransportError): void {
@@ -1184,9 +1172,9 @@ export class QwenCodeAdapter implements HarnessAdapter {
   close(): Promise<void> {
     if (!this.#closePromise) {
       this.#inspectionCache.clear();
-      this.#closePromise = Promise.allSettled(
-        [...this.#sessions].map((session) => session.close()),
-      ).then(() => undefined);
+      this.#closePromise = Promise.all([...this.#sessions].map((session) => session.close())).then(
+        () => undefined,
+      );
     }
     return this.#closePromise;
   }

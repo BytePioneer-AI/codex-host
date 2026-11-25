@@ -198,8 +198,6 @@ export class QwenCodeSdkTransport {
   #abortController: AbortController | null = null;
   #active: ActiveTurn | null = null;
   #closed = false;
-  #closing = false;
-  #closePromise: Promise<void> | null = null;
   #failure: QwenCodeTransportError | null = null;
   #input: PushableInput | null = null;
   #modelId: string | undefined;
@@ -239,7 +237,7 @@ export class QwenCodeSdkTransport {
     onPermission: ActiveTurn["onPermission"],
   ): Promise<{ status: "succeeded" | "failed" | "cancelled" }> {
     if (this.#failure) throw this.#failure;
-    if (!this.#input || !this.#sessionId || this.#closed || this.#closing) {
+    if (!this.#input || !this.#sessionId || this.#closed) {
       throw new QwenCodeTransportError("unavailable", "Qwen Code SDK Session is unavailable");
     }
     if (this.#active) throw new Error("Qwen Code SDK Session already has an active Prompt");
@@ -261,7 +259,7 @@ export class QwenCodeSdkTransport {
 
   async setModel(nativeModelId: string): Promise<void> {
     if (this.#failure) throw this.#failure;
-    if (!this.#query || this.#closed || this.#closing) {
+    if (!this.#query || this.#closed) {
       throw new QwenCodeTransportError("unavailable", "Qwen Code SDK Session is unavailable");
     }
     await this.#query.setModel(nativeModelId);
@@ -270,7 +268,7 @@ export class QwenCodeSdkTransport {
 
   async setPermissionMode(permissionModeId: HarnessPermissionModeId): Promise<void> {
     if (this.#failure) throw this.#failure;
-    if (!this.#query || this.#closed || this.#closing) {
+    if (!this.#query || this.#closed) {
       throw new QwenCodeTransportError("unavailable", "Qwen Code SDK Session is unavailable");
     }
     await this.#query.setPermissionMode(decodeQwenCodePermissionModeId(permissionModeId));
@@ -284,20 +282,11 @@ export class QwenCodeSdkTransport {
     await this.#query.interrupt();
   }
 
-  close(): Promise<void> {
-    if (this.#closed) return Promise.resolve();
-    if (this.#closePromise) return this.#closePromise;
-    this.#closing = true;
-    const attempt = this.#close();
-    this.#closePromise = attempt;
-    void attempt.catch(() => {
-      if (this.#closePromise === attempt) this.#closePromise = null;
-    });
-    return attempt;
-  }
-
-  async #close(): Promise<void> {
+  async close(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
     const query = this.#query;
+    this.#query = null;
     const abortController = this.#abortController;
     this.#abortController = null;
     const input = this.#input;
@@ -305,19 +294,13 @@ export class QwenCodeSdkTransport {
     const active = this.#active;
     this.#active = null;
     active?.resolve({ status: "cancelled" });
-    try {
-      await query?.close();
-    } finally {
-      abortController?.abort();
-      input?.fail(new Error("Qwen Code SDK input closed"));
-    }
-    this.#query = null;
-    this.#closed = true;
-    this.#closing = false;
+    await query?.close().catch(() => undefined);
+    abortController?.abort();
+    input?.fail(new Error("Qwen Code SDK input closed"));
   }
 
   async #start(input: QwenCodeOpenInput): Promise<void> {
-    if (this.#query || this.#closed || this.#closing)
+    if (this.#query || this.#closed)
       throw new Error("Qwen Code SDK Transport cannot be opened twice");
     const resumeSessionId = input.kind === "resume" ? input.sessionId : undefined;
     if (input.kind === "resume" && !resumeSessionId) {
@@ -370,7 +353,7 @@ export class QwenCodeSdkTransport {
       }
       this.#sessionId = initializedSessionId;
     } catch (error) {
-      await this.close().catch(() => undefined);
+      await this.close();
       throw classifyError(error);
     }
   }
@@ -461,7 +444,7 @@ export class QwenCodeSdkTransport {
   async #consume(session: Query): Promise<void> {
     try {
       for await (const message of session) this.#message(message);
-      if (!this.#closed && !this.#closing) {
+      if (!this.#closed) {
         this.#fault(
           new QwenCodeTransportError("processExited", "Qwen Code SDK stream ended unexpectedly"),
         );
@@ -546,7 +529,7 @@ export class QwenCodeSdkTransport {
   }
 
   #fault(error: QwenCodeTransportError): void {
-    if (this.#closed || this.#closing || this.#failure) return;
+    if (this.#closed || this.#failure) return;
     this.#failure = error;
     const active = this.#active;
     this.#active = null;

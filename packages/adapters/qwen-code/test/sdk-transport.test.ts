@@ -643,45 +643,4 @@ describe("QwenCodeSdkTransport", () => {
     expect((options?.abortController as AbortController | undefined)?.signal.aborted).toBe(true);
     await expect(pendingInput).rejects.toThrow("Qwen Code SDK input closed");
   });
-
-  it("propagates query.close failures while cleaning up input/abort and allowing retry", async () => {
-    const query = new FakeQuery();
-    query.close
-      .mockRejectedValueOnce(new Error("qwen close failed"))
-      .mockResolvedValueOnce(undefined);
-    let input: AsyncIterable<SDKUserMessage> | undefined;
-    let options: Record<string, unknown> | undefined;
-    const transport = new QwenCodeSdkTransport({
-      cwd: process.cwd(),
-      command: process.execPath,
-      queryFactory: (({
-        prompt,
-        options: received,
-      }: {
-        prompt: AsyncIterable<SDKUserMessage>;
-        options: Record<string, unknown>;
-      }) => {
-        input = prompt;
-        options = received;
-        return query as unknown as Query;
-      }) as unknown as typeof sdkQuery,
-    });
-    await transport.open({ kind: "create", permissionMode: "default" as never });
-    const pendingInput = input?.[Symbol.asyncIterator]().next();
-    if (!pendingInput) throw new Error("Qwen SDK query did not receive an input stream");
-
-    await expect(transport.close()).rejects.toThrow("qwen close failed");
-    expect((options?.abortController as AbortController | undefined)?.signal.aborted).toBe(true);
-    await expect(pendingInput).rejects.toThrow("Qwen Code SDK input closed");
-    await expect(
-      transport.runTurn(
-        "after failed close",
-        vi.fn(),
-        vi.fn(async () => ({ behavior: "allow" as const })),
-      ),
-    ).rejects.toMatchObject({ kind: "unavailable" });
-
-    await expect(transport.close()).resolves.toBeUndefined();
-    expect(query.close).toHaveBeenCalledTimes(2);
-  });
 });

@@ -9,7 +9,7 @@ import {
 } from "../src/remote-sessions.ts";
 import { PeerChHostClient, type PeerChTransport } from "../src/peer-ch-host-client.ts";
 import { PeerThreadSource } from "../src/peer-thread-source.ts";
-import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
+import { EventHub, RpcError, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import type { RemoteSessionOperation } from "@codexhost/shared-contracts";
 import { RemoteSessionError, type HostClientUpdate } from "@codexhost/desktop-control";
 import { randomUUID } from "node:crypto";
@@ -2567,4 +2567,1570 @@ it("publishes peer manifest projects and connected state before slow catalog pag
 
   catalogGate.resolve(undefined);
   await refreshPromise;
+});
+
+it("handles peer tree retirement, control replay, snapshot-rebuild monotonicity, stale retry, legacy fallback clear, and minimal retired diffs", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "codexhost-peer-tree-live-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const hostId = "remote-peer:tree-live";
+  let epoch = "11111111-1111-4111-8111-111111111111";
+  let seq = 1;
+  const listeners = new Set<(u: HostClientUpdate) => void>();
+  const emit = (u: HostClientUpdate) => {
+    for (const l of [...listeners]) l(u);
+  };
+
+  const parentRow: ChThread = {
+    id: "p-root",
+    cwd: "/remote/repo",
+    modelProvider: "codexhost",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "idle" },
+    name: "Parent Thread",
+    turns: [
+      {
+        id: "turn-1",
+        status: "completed",
+        items: [{ id: "u-1", type: "userMessage", content: [{ type: "text", text: "hi" }] }],
+      },
+    ],
+  };
+  const childRow: ChThread = {
+    id: "p-child",
+    cwd: "/remote/repo",
+    modelProvider: "codexhost",
+    createdAt: 110,
+    updatedAt: 210,
+    status: { type: "active" },
+    name: "Delegated Child",
+    turns: [],
+  };
+
+  let includeChild = false;
+  let treeParents: Record<string, string> = {};
+  let failTreeRead = false;
+  let legacyFallback = false;
+  let holdSnapshot: PromiseWithResolvers<void> | undefined;
+  let treeReadCalls = 0;
+
+  const transport: PeerChTransport = {
+    async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const input = body as Record<string, unknown>;
+      if (route === "snapshot") {
+        if (holdSnapshot) {
+          const gate = holdSnapshot;
+          holdSnapshot = undefined;
+          await gate.promise;
+        }
+        const row = input.threadId === childRow.id ? childRow : parentRow;
+        return {
+          cursor: { epoch, sequence: seq },
+          activeTurnId: null,
+          thread: { ...row, turns: [] },
+          turnsPage: { data: row.turns, nextCursor: null },
+          configuration: {},
+          queue: { items: [], pausedReason: null },
+          interactions: [],
+        } as T;
+      }
+      if (route === "respond") return { resolved: true } as T;
+      const method = String(input.method);
+      if (method === "codexhost/thread/catalog/read") {
+        if (legacyFallback) {
+          throw new RpcError("remote/request-failed", "Method not found", { hostCode: -32601 });
+        }
+        const list = includeChild ? [parentRow, childRow] : [parentRow];
+        return {
+          threads: list.map((row) => ({ ...row, turns: [] })),
+          ownership: list.map((row) => ({
+            threadId: row.id,
+            owner: "external",
+            harnessId: "claude-code",
+          })),
+          officialCursor: { live: null },
+          archivedThreadIds: [],
+        } as T;
+      }
+      if (method === "thread/list") {
+        const list = includeChild ? [parentRow, childRow] : [parentRow];
+        return { data: list.map((row) => ({ ...row, turns: [] })), nextCursor: null } as T;
+      }
+      if (method === "codexhost/thread/tree/read") {
+        treeReadCalls++;
+        if (failTreeRead) throw new RpcError("remote/request-failed", "Temporary tree timeout");
+        return { parents: { ...treeParents } } as T;
+      }
+      if (method === "codexhost/harness/plugins/list") {
+        return {
+          plugins: [{ id: "claude-code", name: "Claude Code", version: "1.0.0" }],
+        } as T;
+      }
+      if (method === "codexhost/thread/inspect") {
+        return {
+          owner: "external",
+          harnessId: "claude-code",
+          locked: true,
+          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        } as T;
+      }
+      if (method === "codexhost/harness/inspect") {
+        return {
+          status: "ready",
+          models: [],
+          thinkingOptions: [],
+          permissionModes: [],
+        } as T;
+      }
+      throw new Error(`Unexpected peer RPC: ${method}`);
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: seq }, reset: false });
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    manifest: () => ({
+      version: "1.0.0",
+      platform: "darwin",
+      hostname: "peer-tree",
+      epoch,
+      projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+    }),
+  };
+
+  const events = new EventHub("peer-tree-live");
+  const addedSummaries: Array<{
+    sessionId: string;
+    running: boolean;
+    projections: { values: Record<string, unknown> };
+  }> = [];
+  const origEmit = events.emit.bind(events);
+  events.emit = ((name: string, ...args: unknown[]) => {
+    if (name === "api-session/added") {
+      addedSummaries.push(args[0] as (typeof addedSummaries)[number]);
+    }
+    return origEmit(name, ...args);
+  }) as typeof events.emit;
+
+  const peerProvider: RemotePeerProvider = { source: () => undefined };
+  const source = new PeerThreadSource({
+    hostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(hostId),
+    onThreadChanged: (tid) => peerProvider.onThreadChanged?.(hostId, tid),
+    onConnection: (online) => peerProvider.onConnection?.(hostId, online),
+    onReset: (e, full) => peerProvider.onReset?.(hostId, e, full),
+  });
+  peerProvider.source = (h) => (h === hostId ? source : undefined);
+
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const remote = new RemoteSessions(
+    events,
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          {
+            hostId,
+            online: true,
+            epoch,
+            displayName: "Peer Tree",
+            projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+          },
+        ];
+      }
+      if (op.kind === "usage") return { threadId: op.threadId, usage: {} };
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    peerProvider,
+  );
+  t.after(() => {
+    remote.close();
+    source.close();
+  });
+
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  rpc.register("session/list", () => ({ items: [] }));
+  let streamRouter: Parameters<StreamRegistry["routeSessions"]>[0] | undefined;
+  streams.routeSessions = (value) => {
+    streamRouter = value;
+  };
+  remote.install(rpc, streams);
+
+  // Mirror browser ProjectionValueStore.applyLive semantics: frames with seq < currentSeq drop.
+  const browserProjections = new Map<string, Map<string, { value: unknown; seq: number }>>();
+  const rawControlFrames: Array<{
+    type: string;
+    sessionId?: string;
+    key?: string;
+    value?: unknown;
+    seq?: number;
+  }> = [];
+  const acceptFrame = (frame: {
+    type: string;
+    sessionId?: string;
+    key?: string;
+    value?: unknown;
+    seq?: number;
+  }) => {
+    rawControlFrames.push(frame);
+    if (
+      frame.type !== "projection" ||
+      typeof frame.sessionId !== "string" ||
+      typeof frame.key !== "string" ||
+      typeof frame.seq !== "number"
+    ) {
+      return;
+    }
+    let sessionMap = browserProjections.get(frame.sessionId);
+    if (!sessionMap) {
+      sessionMap = new Map();
+      browserProjections.set(frame.sessionId, sessionMap);
+    }
+    const prev = sessionMap.get(frame.key);
+    if (prev !== undefined && frame.seq < prev.seq) return;
+    sessionMap.set(frame.key, { value: frame.value, seq: frame.seq });
+  };
+
+  let closeControl = () => {};
+  const openControl = async () => {
+    let closed = false;
+    const closeListeners: Array<() => void> = [];
+    closeControl = () => {
+      closed = true;
+      for (const fn of closeListeners) fn();
+    };
+    await defined(streamRouter)(
+      "session/control",
+      {},
+      {
+        id: `ctrl-${Math.random()}`,
+        get closed() {
+          return closed;
+        },
+        push: (frame) => acceptFrame(frame as Parameters<typeof acceptFrame>[0]),
+        end() {},
+        fail() {},
+        onClose: (fn) => closeListeners.push(fn),
+      },
+      async (wrappedSink) => {
+        wrappedSink.push({ type: "baseline", value: { projections: {} } });
+      },
+    );
+  };
+  await openControl();
+
+  const parentSessionId = remoteSessionId(hostId, parentRow.id);
+  const childSessionId = remoteSessionId(hostId, childRow.id);
+  const browserState = (key: string) => browserProjections.get(childSessionId)?.get(key);
+
+  // 1. Open child before delegation so browser holds sequenced threadTreeParent=null and detailed harnessIdentity.
+  await remote.refresh();
+  includeChild = true;
+  await remote.refresh();
+  await remote.read(childSessionId);
+  assert.equal(browserState("threadTreeParent")?.value, null);
+  assert.deepEqual(browserState("harnessIdentity")?.value, {
+    id: "claude-code",
+    name: "Claude Code",
+  });
+  const initialSeq = defined(browserState("threadTreeParent")).seq;
+
+  // 2. Peer restarts (view retired) and only running status toggles: retired path must NOT emit
+  //    unchanged catalog fields (title, attachmentInput, harnessIdentity, threadTreeParent).
+  epoch = "22222222-2222-4222-8222-222222222222";
+  emit({ type: "hello", version: 1, cursor: { epoch, sequence: ++seq }, reset: true });
+  rawControlFrames.length = 0;
+  childRow.status = { type: "idle" };
+  await remote.refresh(hostId);
+  assert.equal(
+    rawControlFrames.filter((f) => f.type === "projection" && f.sessionId === childSessionId)
+      .length,
+    0,
+    "unchanged catalog fields must not be re-emitted on retired path when only running changed",
+  );
+
+  // 3. Delegation parent appears while view is retired: only threadTreeParent is emitted with seq > initialSeq.
+  treeParents = { [childRow.id]: parentRow.id };
+  childRow.status = { type: "active" };
+  rawControlFrames.length = 0;
+  await remote.refresh(hostId);
+  const deltaFrames = rawControlFrames.filter(
+    (f) => f.type === "projection" && f.sessionId === childSessionId,
+  );
+  assert.deepEqual(
+    deltaFrames.map((f) => f.key),
+    ["threadTreeParent"],
+    "retired path must emit only the changed projection key without overwriting harnessIdentity/title",
+  );
+  assert.equal(browserState("threadTreeParent")?.value, parentSessionId);
+  const retiredParentSeq = defined(browserState("threadTreeParent")).seq;
+  assert.ok(retiredParentSeq > initialSeq);
+
+  // 4. P1-3: Control stream closes while retired child's parent changes; reopening replays updated
+  //    catalog projections with strictly higher seq so browser converges.
+  closeControl();
+  treeParents = {};
+  await remote.refresh(hostId);
+  assert.equal(browserState("threadTreeParent")?.value, parentSessionId);
+  await openControl();
+  assert.equal(browserState("threadTreeParent")?.value, null);
+  const replayedSeq = defined(browserState("threadTreeParent")).seq;
+  assert.ok(replayedSeq > retiredParentSeq);
+
+  // 5. P1-2: Rebuild view while snapshot is in flight; retired catalog update advances viewOrigin
+  //    mid-flight (setting parent), then rebuilt view finishes and later clears parent. Browser
+  //    must accept the rebuilt view's clear frame (strictly monotonic seq).
+  const snapshotGate = Promise.withResolvers<void>();
+  holdSnapshot = snapshotGate;
+  const readingChild = remote.read(childSessionId);
+  await sleep(15);
+  treeParents = { [childRow.id]: parentRow.id };
+  await remote.refresh(hostId);
+  assert.equal(browserState("threadTreeParent")?.value, parentSessionId);
+  const preRebuildRetiredSeq = defined(browserState("threadTreeParent")).seq;
+  assert.ok(preRebuildRetiredSeq > replayedSeq);
+  // Release snapshot -> readPeer detects viewOrigin advanced past its draft view's lastSeq,
+  // rebuilds above the new floor, and subsequent clear on the live view outranks the retired seq.
+  snapshotGate.resolve();
+  await readingChild;
+  treeParents = {};
+  await remote.refresh(hostId);
+  assert.equal(browserState("threadTreeParent")?.value, null);
+  assert.ok(defined(browserState("threadTreeParent")).seq > preRebuildRetiredSeq);
+
+  // 6. P1-1: Same-epoch transient tree/read failure retains current parent transiently, does NOT
+  //    mark peer cleanly synced, and schedules a retry that clears the parent once tree/read recovers.
+  treeParents = { [childRow.id]: parentRow.id };
+  await remote.refresh(hostId);
+  assert.equal(browserState("threadTreeParent")?.value, parentSessionId);
+  treeParents = {};
+  failTreeRead = true;
+  const callsBeforeTransient = treeReadCalls;
+  await remote.refresh(hostId);
+  assert.equal(treeReadCalls, callsBeforeTransient + 1);
+  assert.equal(
+    browserState("threadTreeParent")?.value,
+    parentSessionId,
+    "same-epoch transient failure temporarily keeps confirmed parent",
+  );
+  failTreeRead = false;
+  for (let i = 0; i < 40 && browserState("threadTreeParent")?.value !== null; i++) {
+    await sleep(50);
+  }
+  assert.equal(
+    browserState("threadTreeParent")?.value,
+    null,
+    "automatic retry after transient tree failure must clear stale parent",
+  );
+
+  // 7. P2-1 & P1-1 epoch-reset isolation:
+  //    (a) Live view: legacy catalog fallback (-32601 -> ownershipAvailable=false) explicitly clears
+  //        previously published threadTreeParent to null on both control stream and summary.
+  treeParents = { [childRow.id]: parentRow.id };
+  await remote.refresh(hostId);
+  assert.equal(browserState("threadTreeParent")?.value, parentSessionId);
+  const beforeLiveLegacySeq = defined(browserState("threadTreeParent")).seq;
+  legacyFallback = true;
+  addedSummaries.length = 0;
+  await remote.refresh(hostId);
+  assert.equal(browserState("threadTreeParent")?.value, null);
+  assert.ok(defined(browserState("threadTreeParent")).seq >= beforeLiveLegacySeq);
+  assert.equal(
+    addedSummaries.findLast((s) => s.sessionId === childSessionId)?.projections.values
+      .threadTreeParent,
+    null,
+  );
+
+  //    (b) Retired view: restore parent, retire on epoch roll (clearing old-epoch parent immediately),
+  //        re-establish parent while retired, then fall back to legacy catalog -> retired path emits
+  //        strictly higher sequenced threadTreeParent=null and summary clears it.
+  legacyFallback = false;
+  treeParents = { [childRow.id]: parentRow.id };
+  await remote.refresh(hostId);
+  assert.equal(browserState("threadTreeParent")?.value, parentSessionId);
+  epoch = "33333333-3333-4333-8333-333333333333";
+  emit({ type: "hello", version: 1, cursor: { epoch, sequence: ++seq }, reset: true });
+  assert.equal(
+    browserState("threadTreeParent")?.value,
+    null,
+    "epoch roll must clear previous epoch's parent before new epoch tree/read settles",
+  );
+  await remote.refresh(hostId);
+  assert.equal(browserState("threadTreeParent")?.value, parentSessionId);
+  const beforeRetiredLegacySeq = defined(browserState("threadTreeParent")).seq;
+  legacyFallback = true;
+  addedSummaries.length = 0;
+  await remote.refresh(hostId);
+  assert.equal(browserState("threadTreeParent")?.value, null);
+  assert.ok(defined(browserState("threadTreeParent")).seq > beforeRetiredLegacySeq);
+  assert.equal(
+    addedSummaries.findLast((s) => s.sessionId === childSessionId)?.projections.values
+      .threadTreeParent,
+    null,
+  );
+});
+
+it("guards stale cross-epoch catalog pages, preserves supplemented parents across transient tree failures, and avoids redundant snapshot rebuilds on control reconnect", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "codexhost-peer-edge-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const hostId = "remote-peer:tree-edge";
+  let epoch = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  let seq = 1;
+  const listeners = new Set<(update: HostClientUpdate) => void>();
+  const emit = (update: HostClientUpdate) => {
+    for (const listener of [...listeners]) listener(update);
+  };
+
+  const parentRow: ChThread = {
+    id: "p-ancestor",
+    cwd: "/remote/repo",
+    modelProvider: "codexhost",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "idle" },
+    name: "Epoch 1 Parent",
+    turns: [
+      {
+        id: "turn-1",
+        status: "completed",
+        items: [
+          { id: "u-1", type: "userMessage", content: [{ type: "text", text: "hello" }] },
+          { id: "a-1", type: "agentMessage", text: "world" },
+        ],
+      },
+    ],
+  };
+  const childRow: ChThread = {
+    id: "p-child",
+    cwd: "/remote/repo",
+    modelProvider: "codexhost",
+    createdAt: 110,
+    updatedAt: 210,
+    status: { type: "active" },
+    name: "Delegated Child",
+    turns: [],
+  };
+
+  let failTreeRead = false;
+  let treeParents: Record<string, string> = { [childRow.id]: parentRow.id };
+  let holdCatalog: PromiseWithResolvers<unknown> | undefined;
+  let holdSnapshot: PromiseWithResolvers<void> | undefined;
+  let onSnapshotStart: ((threadId: string) => void) | undefined;
+  let snapshotCalls = 0;
+
+  const transport: PeerChTransport = {
+    async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const input = body as Record<string, unknown>;
+      if (route === "snapshot") {
+        snapshotCalls++;
+        onSnapshotStart?.(String(input.threadId));
+        if (holdSnapshot) {
+          const gate = holdSnapshot;
+          holdSnapshot = undefined;
+          await gate.promise;
+        }
+        const row = input.threadId === childRow.id ? childRow : parentRow;
+        return {
+          cursor: { epoch, sequence: seq },
+          activeTurnId: null,
+          thread: { ...row, turns: [] },
+          turnsPage: { data: row.turns, nextCursor: null },
+          configuration: {},
+          queue: { items: [], pausedReason: null },
+          interactions: [],
+        } as T;
+      }
+      if (route === "respond") return { resolved: true } as T;
+      const method = String(input.method);
+      if (method === "codexhost/thread/catalog/read") {
+        if (holdCatalog) {
+          const gate = holdCatalog;
+          holdCatalog = undefined;
+          return (await gate.promise) as T;
+        }
+        // Only child is in regular catalog pages; parent is an unlisted supplemented ancestor.
+        return {
+          threads: [{ ...childRow, turns: [] }],
+          ownership: [{ threadId: childRow.id, owner: "external", harnessId: "claude-code" }],
+          officialCursor: { live: null },
+          archivedThreadIds: [],
+        } as T;
+      }
+      if (
+        method === "thread/read" &&
+        (input.params as { threadId?: string })?.threadId === parentRow.id
+      ) {
+        return { thread: { ...parentRow, turns: [] } } as T;
+      }
+      if (method === "codexhost/thread/ownership/list") {
+        return {
+          threads: [{ threadId: parentRow.id, owner: "external", harnessId: "claude-code" }],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") {
+        if (failTreeRead) throw new RpcError("remote/request-failed", "Temporary tree error");
+        return { parents: { ...treeParents } } as T;
+      }
+      if (method === "codexhost/harness/plugins/list") {
+        return {
+          plugins: [{ id: "claude-code", name: "Claude Code", version: "1.0.0" }],
+        } as T;
+      }
+      if (method === "codexhost/thread/inspect") {
+        return {
+          owner: "external",
+          harnessId: "claude-code",
+          locked: true,
+          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        } as T;
+      }
+      if (method === "codexhost/harness/inspect") {
+        return { status: "ready", models: [], thinkingOptions: [], permissionModes: [] } as T;
+      }
+      throw new Error(`Unexpected peer RPC: ${method}`);
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: seq }, reset: false });
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    manifest: () => ({
+      version: "1.0.0",
+      platform: "darwin",
+      hostname: "peer-edge",
+      epoch,
+      projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+    }),
+  };
+
+  const events = new EventHub("peer-edge");
+  const removedIds: string[] = [];
+  const origEmit = events.emit.bind(events);
+  events.emit = ((name: string, ...args: unknown[]) => {
+    if (name === "api-session/removed") removedIds.push(String(args[0]));
+    return origEmit(name, ...args);
+  }) as typeof events.emit;
+
+  const peerProvider: RemotePeerProvider = { source: () => undefined };
+  const source = new PeerThreadSource({
+    hostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(hostId),
+    onThreadChanged: (tid) => peerProvider.onThreadChanged?.(hostId, tid),
+    onConnection: (online) => peerProvider.onConnection?.(hostId, online),
+    onReset: (e, full) => peerProvider.onReset?.(hostId, e, full),
+  });
+  peerProvider.source = (h) => (h === hostId ? source : undefined);
+
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const remote = new RemoteSessions(
+    events,
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          {
+            hostId,
+            online: true,
+            epoch,
+            displayName: "Peer Edge",
+            projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+          },
+        ];
+      }
+      if (op.kind === "usage") return { threadId: op.threadId, usage: {} };
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    peerProvider,
+  );
+  t.after(() => {
+    remote.close();
+    source.close();
+  });
+
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  rpc.register("session/list", () => ({ items: [] }));
+  let streamRouter: Parameters<StreamRegistry["routeSessions"]>[0] | undefined;
+  streams.routeSessions = (value) => {
+    streamRouter = value;
+  };
+  remote.install(rpc, streams);
+
+  const browserProjections = new Map<string, Map<string, { value: unknown; seq: number }>>();
+  const acceptFrame = (frame: {
+    type: string;
+    sessionId?: string;
+    key?: string;
+    value?: unknown;
+    seq?: number;
+  }) => {
+    if (
+      frame.type !== "projection" ||
+      typeof frame.sessionId !== "string" ||
+      typeof frame.key !== "string" ||
+      typeof frame.seq !== "number"
+    ) {
+      return;
+    }
+    let sessionMap = browserProjections.get(frame.sessionId);
+    if (!sessionMap) {
+      sessionMap = new Map();
+      browserProjections.set(frame.sessionId, sessionMap);
+    }
+    const prev = sessionMap.get(frame.key);
+    if (prev !== undefined && frame.seq < prev.seq) return;
+    sessionMap.set(frame.key, { value: frame.value, seq: frame.seq });
+  };
+
+  let closeControl = () => {};
+  const openControl = async () => {
+    let closed = false;
+    const closeListeners: Array<() => void> = [];
+    closeControl = () => {
+      closed = true;
+      for (const fn of closeListeners) fn();
+    };
+    await defined(streamRouter)(
+      "session/control",
+      {},
+      {
+        id: `ctrl-${Math.random()}`,
+        get closed() {
+          return closed;
+        },
+        push: (frame) => acceptFrame(frame as Parameters<typeof acceptFrame>[0]),
+        end() {},
+        fail() {},
+        onClose: (fn) => closeListeners.push(fn),
+      },
+      async (wrappedSink) => {
+        wrappedSink.push({ type: "baseline", value: { projections: {} } });
+      },
+    );
+  };
+  await openControl();
+
+  const parentSessionId = remoteSessionId(hostId, parentRow.id);
+  const childSessionId = remoteSessionId(hostId, childRow.id);
+  const listItems = async () => {
+    const res = await rpc.dispatch("session/list", {});
+    assert.equal(res.ok, true);
+    return (
+      res.value as {
+        items: Array<{ sessionId: string; projections: { values: Record<string, unknown> } }>;
+      }
+    ).items;
+  };
+
+  // 1. P1-2: Supplemented parent (unlisted in regular catalog pages) stays alive across
+  //    same-epoch transient tree/read failure, keeping both catalog entry and open follower alive.
+  await remote.refresh(hostId);
+  assert.deepEqual(
+    (await listItems()).map((item) => item.sessionId).sort(),
+    [childSessionId, parentSessionId].sort(),
+  );
+  let parentFollowerFailed = false;
+  await defined(streamRouter)(
+    "session/follow",
+    { address: { sessionId: parentSessionId } },
+    {
+      id: "follow-parent",
+      closed: false,
+      push() {},
+      end() {},
+      fail() {
+        parentFollowerFailed = true;
+      },
+      onClose() {},
+    },
+    async () => {},
+  );
+  failTreeRead = true;
+  removedIds.length = 0;
+  await remote.refresh(hostId);
+  assert.deepEqual(
+    removedIds,
+    [],
+    "transient tree/read failure must not remove supplemented parent",
+  );
+  assert.equal(
+    parentFollowerFailed,
+    false,
+    "open supplemented parent follower must stay connected",
+  );
+  const afterTransientItems = await listItems();
+  assert.ok(afterTransientItems.some((item) => item.sessionId === parentSessionId));
+  assert.equal(
+    afterTransientItems.find((item) => item.sessionId === childSessionId)?.projections.values
+      .threadTreeParent,
+    parentSessionId,
+  );
+  failTreeRead = false;
+
+  // 2. P1-1: Hung old-epoch catalog page resolving AFTER new-epoch hello + opened new-epoch view
+  //    must be silently discarded without reverting title or terminating the new view's follower.
+  const catalogGate = Promise.withResolvers<unknown>();
+  holdCatalog = catalogGate;
+  const staleRefresh = remote.refresh(hostId);
+  await sleep(15);
+  epoch = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  parentRow.name = "Epoch 2 Parent";
+  childRow.name = "Epoch 2 Child";
+  emit({ type: "hello", version: 1, cursor: { epoch, sequence: ++seq }, reset: true });
+  // Open child view on epoch 2 and attach a follower while epoch 1's catalog/read is still hung.
+  let epoch2FollowerFailed = false;
+  await defined(streamRouter)(
+    "session/follow",
+    { address: { sessionId: childSessionId } },
+    {
+      id: "follow-epoch2-child",
+      closed: false,
+      push() {},
+      end() {},
+      fail() {
+        epoch2FollowerFailed = true;
+      },
+      onClose() {},
+    },
+    async () => {},
+  );
+  assert.equal(browserProjections.get(childSessionId)?.get("title")?.value, "Epoch 2 Child");
+  // Now resolve the hung epoch-1 catalog page with an outdated epoch-1 title.
+  catalogGate.resolve({
+    threads: [{ ...childRow, name: "Stale Epoch 1 Child", turns: [] }],
+    ownership: [{ threadId: childRow.id, owner: "external", harnessId: "claude-code" }],
+    officialCursor: { live: null },
+    archivedThreadIds: [],
+  });
+  await staleRefresh;
+  assert.equal(
+    epoch2FollowerFailed,
+    false,
+    "stale old-epoch catalog page must not retire or disconnect the new epoch's view",
+  );
+  assert.equal(
+    browserProjections.get(childSessionId)?.get("title")?.value,
+    "Epoch 2 Child",
+    "stale old-epoch catalog page must not overwrite the new epoch's title",
+  );
+
+  // 3. P2-2 (a): Reopening session/control while a retired view with turns is reading its snapshot
+  //    must NOT trigger a redundant snapshot rebuild when loaded turns already meet the seq floor.
+  epoch = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  parentRow.name = "Epoch 3 Parent";
+  emit({ type: "hello", version: 1, cursor: { epoch, sequence: ++seq }, reset: true });
+  await remote.refresh(hostId);
+  snapshotCalls = 0;
+  const parentGate = Promise.withResolvers<void>();
+  holdSnapshot = parentGate;
+  const readingParent = remote.read(parentSessionId);
+  await sleep(15);
+  closeControl();
+  await openControl();
+  parentGate.resolve();
+  await readingParent;
+  assert.equal(
+    snapshotCalls,
+    1,
+    "control reconnect during snapshot read must not re-fetch when loaded turns meet seq floor",
+  );
+  assert.equal(browserProjections.get(parentSessionId)?.get("title")?.value, "Epoch 3 Parent");
+
+  // 4. P2-2 (b): Repeated control reconnects on a zero-turn retired view must hit the bounded
+  //    rebuild cap and exit with remote/connection-changed instead of looping forever.
+  snapshotCalls = 0;
+  onSnapshotStart = (tid) => {
+    if (tid === childRow.id) {
+      closeControl();
+      void openControl();
+    }
+  };
+  await assert.rejects(remote.read(childSessionId), { code: "remote/connection-changed" });
+  onSnapshotStart = undefined;
+  assert.equal(
+    snapshotCalls,
+    5,
+    "zero-turn rebuild loop must stop after MAX_VIEW_REBUILDS (4 retries)",
+  );
+});
+
+it("keeps a single-archived official Codex parent archived when a subsequent tree/read fails transiently", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "codexhost-peer-archive-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const hostId = "remote-peer:archive-parent";
+  const epoch = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const listeners = new Set<(update: HostClientUpdate) => void>();
+
+  const codexParentRow: ChThread = {
+    id: "codex-parent",
+    cwd: "/remote/repo",
+    modelProvider: "openai",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "idle" },
+    name: "Codex Parent",
+    turns: [],
+  };
+  const childRow: ChThread = {
+    id: "ext-child",
+    cwd: "/remote/repo",
+    modelProvider: "codexhost",
+    createdAt: 110,
+    updatedAt: 210,
+    status: { type: "active" },
+    name: "Delegated Child",
+    turns: [],
+  };
+
+  let parentArchivedOnHost = false;
+  let failTreeRead = false;
+  let omitArchivedOnThreadRead = false;
+
+  const transport: PeerChTransport = {
+    async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const input = body as Record<string, unknown>;
+      if (route === "snapshot") {
+        const row = input.threadId === childRow.id ? childRow : codexParentRow;
+        return {
+          cursor: { epoch, sequence: 1 },
+          activeTurnId: null,
+          thread: { ...row, turns: [] },
+          turnsPage: { data: [], nextCursor: null },
+          configuration: {},
+          queue: { items: [], pausedReason: null },
+          interactions: [],
+        } as T;
+      }
+      if (route === "respond") return { resolved: true } as T;
+      const method = String(input.method);
+      if (method === "codexhost/thread/catalog/read") {
+        // Active catalog omits archived official Codex parent and returns empty archivedThreadIds.
+        const activeRows = parentArchivedOnHost ? [childRow] : [codexParentRow, childRow];
+        return {
+          threads: activeRows.map((row) => ({ ...row, turns: [] })),
+          ownership: activeRows.map((row) =>
+            row.id === codexParentRow.id
+              ? { threadId: row.id, owner: "codex" }
+              : { threadId: row.id, owner: "external", harnessId: "claude-code" },
+          ),
+          officialCursor: { live: null },
+          archivedThreadIds: [],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") {
+        if (failTreeRead) throw new RpcError("remote/request-failed", "Temporary tree timeout");
+        return { parents: { [childRow.id]: codexParentRow.id } } as T;
+      }
+      if (
+        method === "thread/read" &&
+        (input.params as { threadId?: string })?.threadId === codexParentRow.id
+      ) {
+        return {
+          thread: {
+            ...codexParentRow,
+            ...(omitArchivedOnThreadRead ? {} : { archived: parentArchivedOnHost }),
+            turns: [],
+          },
+        } as T;
+      }
+      if (method === "codexhost/thread/ownership/list") {
+        return { threads: [{ threadId: codexParentRow.id, owner: "codex" }] } as T;
+      }
+      if (method === "codexhost/harness/plugins/list") {
+        return { plugins: [{ id: "claude-code", name: "Claude Code", version: "1.0.0" }] } as T;
+      }
+      if (method === "codexhost/thread/inspect") {
+        return {
+          owner: "codex",
+          locked: true,
+          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        } as T;
+      }
+      if (method === "codexhost/harness/inspect") {
+        return { status: "ready", models: [], thinkingOptions: [], permissionModes: [] } as T;
+      }
+      throw new Error(`Unexpected peer RPC: ${method}`);
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    manifest: () => ({
+      version: "1.0.0",
+      platform: "darwin",
+      hostname: "peer-archive",
+      epoch,
+      projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+    }),
+  };
+
+  const events = new EventHub("peer-archive");
+  const peerProvider: RemotePeerProvider = { source: () => undefined };
+  const source = new PeerThreadSource({
+    hostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(hostId),
+    onThreadChanged: (tid) => peerProvider.onThreadChanged?.(hostId, tid),
+    onConnection: (online) => peerProvider.onConnection?.(hostId, online),
+    onReset: (e, full) => peerProvider.onReset?.(hostId, e, full),
+  });
+  peerProvider.source = (h) => (h === hostId ? source : undefined);
+
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const remote = new RemoteSessions(
+    events,
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          {
+            hostId,
+            online: true,
+            epoch,
+            displayName: "Peer Archive",
+            projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+          },
+        ];
+      }
+      if (op.kind === "archive") {
+        if (op.threadId === codexParentRow.id) parentArchivedOnHost = op.archived;
+        return { accepted: true };
+      }
+      if (op.kind === "usage") return { threadId: op.threadId, usage: {} };
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    peerProvider,
+  );
+  t.after(() => {
+    remote.close();
+    source.close();
+  });
+
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  rpc.register("session/list", () => ({ items: [] }));
+  rpc.register("workspace/archiveSession", () => ({ archivedSessionIds: [] }));
+  streams.routeSessions = () => {};
+  remote.install(rpc, streams);
+
+  const parentSessionId = remoteSessionId(hostId, codexParentRow.id);
+  const childSessionId = remoteSessionId(hostId, childRow.id);
+
+  // Initial refresh establishes confirmedAncestors with codexParentRow (archived=false).
+  await remote.refresh(hostId);
+  assert.deepEqual(workspaces.archivedSessionIds(), []);
+
+  // Single-session archive of official Codex parent returns parentSessionId as archived.
+  const archiveRes = await rpc.dispatch("workspace/archiveSession", {
+    args: { request: { sessionId: parentSessionId, scope: "single" } },
+  });
+  assert.equal(archiveRes.ok, true);
+  assert.deepEqual(archiveRes.value, { archivedSessionIds: [parentSessionId] });
+  assert.equal(parentArchivedOnHost, true);
+
+  // Immediately follow with a catalog refresh where tree/read fails transiently and the active
+  // catalog only lists the child without repeating codexParentRow in archivedThreadIds.
+  failTreeRead = true;
+  await remote.refresh(hostId);
+  assert.deepEqual(
+    workspaces.archivedSessionIds(),
+    [parentSessionId],
+    "ancestor cache backfill during transient tree failure must not unarchive a confirmed archived parent",
+  );
+  const listRes = await rpc.dispatch("session/list", {});
+  assert.equal(listRes.ok, true);
+  const items = (
+    listRes.value as {
+      items: Array<{ sessionId: string; projections: { values: Record<string, unknown> } }>;
+    }
+  ).items;
+  assert.equal(
+    items.find((item) => item.sessionId === childSessionId)?.projections.values.threadTreeParent,
+    parentSessionId,
+  );
+
+  // Once tree/read recovers, thread/read confirms archived=true and parent stays archived.
+  failTreeRead = false;
+  await remote.refresh(hostId);
+  assert.deepEqual(workspaces.archivedSessionIds(), [parentSessionId]);
+
+  // P1-1: Same-epoch full reset followed by a successful tree/read + ancestor supplement whose
+  // thread/read omits `archived` must STILL keep the confirmed archived parent archived.
+  omitArchivedOnThreadRead = true;
+  for (const listener of [...listeners]) {
+    listener({ type: "hello", version: 1, cursor: { epoch, sequence: 2 }, reset: true });
+  }
+  await remote.refresh(hostId);
+  assert.deepEqual(
+    workspaces.archivedSessionIds(),
+    [parentSessionId],
+    "same-epoch full reset + supplement omitting `archived` must not resurrect an archived parent",
+  );
+});
+
+it("keeps a backfilled parent unarchived when realtime thread/unarchived arrives before a transient tree/read failure", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "codexhost-peer-unarchive-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const hostId = "remote-peer:unarchive-parent";
+  const epoch = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const listeners = new Set<(update: HostClientUpdate) => void>();
+
+  const codexParentRow: ChThread = {
+    id: "codex-parent",
+    cwd: "/remote/repo",
+    modelProvider: "openai",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "idle" },
+    name: "Codex Parent",
+    turns: [],
+  };
+  const childRow: ChThread = {
+    id: "ext-child",
+    cwd: "/remote/repo",
+    modelProvider: "codexhost",
+    createdAt: 110,
+    updatedAt: 210,
+    status: { type: "active" },
+    name: "Delegated Child",
+    turns: [],
+  };
+
+  let parentArchivedOnHost = true;
+  let failTreeRead = false;
+  let holdCatalog: PromiseWithResolvers<unknown> | undefined;
+  let catalogEntered: PromiseWithResolvers<void> | undefined;
+
+  const transport: PeerChTransport = {
+    async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const input = body as Record<string, unknown>;
+      if (route === "respond") return { resolved: true } as T;
+      const method = String(input.method);
+      if (method === "codexhost/thread/catalog/read") {
+        if (holdCatalog) {
+          const gate = holdCatalog;
+          holdCatalog = undefined;
+          catalogEntered?.resolve();
+          return (await gate.promise) as T;
+        }
+        return {
+          threads: [{ ...childRow, turns: [] }],
+          ownership: [{ threadId: childRow.id, owner: "external", harnessId: "claude-code" }],
+          officialCursor: { live: null },
+          archivedThreadIds: [],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") {
+        if (failTreeRead) throw new RpcError("remote/request-failed", "Temporary tree timeout");
+        return { parents: { [childRow.id]: codexParentRow.id } } as T;
+      }
+      if (
+        method === "thread/read" &&
+        (input.params as { threadId?: string })?.threadId === codexParentRow.id
+      ) {
+        return {
+          thread: { ...codexParentRow, archived: parentArchivedOnHost, turns: [] },
+        } as T;
+      }
+      if (method === "codexhost/thread/ownership/list") {
+        return { threads: [{ threadId: codexParentRow.id, owner: "codex" }] } as T;
+      }
+      if (method === "codexhost/harness/plugins/list") {
+        return { plugins: [{ id: "claude-code", name: "Claude Code", version: "1.0.0" }] } as T;
+      }
+      throw new Error(`Unexpected peer RPC: ${method}`);
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    manifest: () => ({
+      version: "1.0.0",
+      platform: "darwin",
+      hostname: "peer-unarchive",
+      epoch,
+      projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+    }),
+  };
+
+  const events = new EventHub("peer-unarchive");
+  const peerProvider: RemotePeerProvider = { source: () => undefined };
+  const source = new PeerThreadSource({
+    hostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(hostId),
+    onThreadChanged: (tid) => peerProvider.onThreadChanged?.(hostId, tid),
+    onConnection: (online) => peerProvider.onConnection?.(hostId, online),
+    onReset: (e, full) => peerProvider.onReset?.(hostId, e, full),
+  });
+  peerProvider.source = (h) => (h === hostId ? source : undefined);
+
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const remote = new RemoteSessions(
+    events,
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          {
+            hostId,
+            online: true,
+            epoch,
+            displayName: "Peer Unarchive",
+            projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+          },
+        ];
+      }
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    peerProvider,
+  );
+  t.after(() => {
+    remote.close();
+    source.close();
+  });
+
+  const parentSessionId = remoteSessionId(hostId, codexParentRow.id);
+
+  // Initial refresh supplements the archived parent so both RemoteSessions and confirmedAncestors
+  // record it as archived.
+  await remote.refresh(hostId);
+  assert.deepEqual(workspaces.archivedSessionIds(), [parentSessionId]);
+
+  // Hold a catalog page without the parent while tree/read fails transiently, and deliver
+  // realtime `thread/unarchived` before the page resolves.
+  const catalogGate = Promise.withResolvers<unknown>();
+  const enteredGate = Promise.withResolvers<void>();
+  holdCatalog = catalogGate;
+  catalogEntered = enteredGate;
+  failTreeRead = true;
+  const unarchiveRefresh = remote.refresh(hostId);
+  await enteredGate.promise;
+  parentArchivedOnHost = false;
+  for (const listener of [...listeners]) {
+    listener({
+      type: "changed",
+      cursor: { epoch, sequence: 2 },
+      method: "thread/unarchived",
+      threadId: codexParentRow.id,
+    });
+  }
+  catalogGate.resolve({
+    threads: [{ ...childRow, turns: [] }],
+    ownership: [{ threadId: childRow.id, owner: "external", harnessId: "claude-code" }],
+    officialCursor: { live: null },
+    archivedThreadIds: [],
+  });
+  await unarchiveRefresh;
+  assert.deepEqual(
+    workspaces.archivedSessionIds(),
+    [],
+    "realtime thread/unarchived before transient tree failure must keep backfilled parent unarchived",
+  );
+});
+
+it("keeps a restored non-ancestor entry and its open follower alive when an older catalog page omits it", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "codexhost-peer-restore-missing-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const hostId = "remote-peer:restore-missing";
+  const epoch = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const listeners = new Set<(update: HostClientUpdate) => void>();
+
+  const standaloneRow: ChThread = {
+    id: "standalone-archived",
+    cwd: "/remote/repo",
+    modelProvider: "openai",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "idle" },
+    name: "Restored Thread",
+    turns: [],
+  };
+  const otherRow: ChThread = {
+    id: "other-active",
+    cwd: "/remote/repo",
+    modelProvider: "codexhost",
+    createdAt: 110,
+    updatedAt: 210,
+    status: { type: "idle" },
+    name: "Other Thread",
+    turns: [],
+  };
+
+  let standaloneArchivedOnHost = false;
+  let holdCatalog: PromiseWithResolvers<unknown> | undefined;
+  let catalogEntered: PromiseWithResolvers<void> | undefined;
+
+  const transport: PeerChTransport = {
+    async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const input = body as Record<string, unknown>;
+      if (route === "snapshot") {
+        const row = input.threadId === standaloneRow.id ? standaloneRow : otherRow;
+        return {
+          cursor: { epoch, sequence: 1 },
+          activeTurnId: null,
+          thread: { ...row, turns: [] },
+          turnsPage: { data: [], nextCursor: null },
+          configuration: {},
+          queue: { items: [], pausedReason: null },
+          interactions: [],
+        } as T;
+      }
+      if (route === "respond") return { resolved: true } as T;
+      const method = String(input.method);
+      if (method === "codexhost/thread/catalog/read") {
+        if (holdCatalog) {
+          const gate = holdCatalog;
+          holdCatalog = undefined;
+          catalogEntered?.resolve();
+          return (await gate.promise) as T;
+        }
+        const activeRows = standaloneArchivedOnHost ? [otherRow] : [standaloneRow, otherRow];
+        return {
+          threads: activeRows.map((row) => ({ ...row, turns: [] })),
+          ownership: activeRows.map((row) =>
+            row.id === standaloneRow.id
+              ? { threadId: row.id, owner: "codex" }
+              : { threadId: row.id, owner: "external", harnessId: "claude-code" },
+          ),
+          officialCursor: { live: null },
+          archivedThreadIds: [],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
+      if (method === "codexhost/harness/plugins/list") {
+        return { plugins: [{ id: "claude-code", name: "Claude Code", version: "1.0.0" }] } as T;
+      }
+      if (method === "codexhost/thread/inspect") {
+        return {
+          owner: "codex",
+          locked: true,
+          history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+        } as T;
+      }
+      if (method === "codexhost/harness/inspect") {
+        return { status: "ready", models: [], thinkingOptions: [], permissionModes: [] } as T;
+      }
+      throw new Error(`Unexpected peer RPC: ${method}`);
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    manifest: () => ({
+      version: "1.0.0",
+      platform: "darwin",
+      hostname: "peer-restore",
+      epoch,
+      projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+    }),
+  };
+
+  const events = new EventHub("peer-restore");
+  const removedIds: string[] = [];
+  const addedIds: string[] = [];
+  const origEmit = events.emit.bind(events);
+  events.emit = ((name: string, ...args: unknown[]) => {
+    if (name === "api-session/removed") removedIds.push(String(args[0]));
+    if (name === "api-session/added") {
+      addedIds.push(String((args[0] as { sessionId?: string }).sessionId));
+    }
+    return origEmit(name, ...args);
+  }) as typeof events.emit;
+
+  const peerProvider: RemotePeerProvider = { source: () => undefined };
+  const source = new PeerThreadSource({
+    hostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(hostId),
+    onThreadChanged: (tid) => peerProvider.onThreadChanged?.(hostId, tid),
+    onConnection: (online) => peerProvider.onConnection?.(hostId, online),
+    onReset: (e, full) => peerProvider.onReset?.(hostId, e, full),
+  });
+  peerProvider.source = (h) => (h === hostId ? source : undefined);
+
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const remote = new RemoteSessions(
+    events,
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          {
+            hostId,
+            online: true,
+            epoch,
+            displayName: "Peer Restore",
+            projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+          },
+        ];
+      }
+      if (op.kind === "archive") {
+        if (op.threadId === standaloneRow.id) standaloneArchivedOnHost = op.archived;
+        return { accepted: true };
+      }
+      if (op.kind === "usage") return { threadId: op.threadId, usage: {} };
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    peerProvider,
+  );
+  t.after(() => {
+    remote.close();
+    source.close();
+  });
+
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  rpc.register("session/list", () => ({ items: [] }));
+  rpc.register("workspace/archiveSession", () => ({ archivedSessionIds: [] }));
+  let streamRouter: Parameters<StreamRegistry["routeSessions"]>[0] | undefined;
+  streams.routeSessions = (value) => {
+    streamRouter = value;
+  };
+  remote.install(rpc, streams);
+
+  const standaloneSessionId = remoteSessionId(hostId, standaloneRow.id);
+
+  // 1. Load, open follower, and archive standaloneRow.
+  await remote.refresh(hostId);
+  let followerFailed = false;
+  await defined(streamRouter)(
+    "session/follow",
+    { address: { sessionId: standaloneSessionId } },
+    {
+      id: "follow-standalone",
+      closed: false,
+      push() {},
+      end() {},
+      fail() {
+        followerFailed = true;
+      },
+      onClose() {},
+    },
+    async () => {},
+  );
+  const archived = await rpc.dispatch("workspace/archiveSession", {
+    args: { request: { sessionId: standaloneSessionId, scope: "single" } },
+  });
+  assert.equal(archived.ok, true);
+  assert.deepEqual(workspaces.archivedSessionIds(), [standaloneSessionId]);
+
+  // 2. Hold an older catalog page that omits standaloneRow (still archived when page started),
+  //    then receive realtime `thread/unarchived` before that old page commits.
+  const catalogGate = Promise.withResolvers<unknown>();
+  const enteredGate = Promise.withResolvers<void>();
+  holdCatalog = catalogGate;
+  catalogEntered = enteredGate;
+  const staleRefresh = remote.refresh(hostId);
+  await enteredGate.promise;
+  removedIds.length = 0;
+  addedIds.length = 0;
+  standaloneArchivedOnHost = false;
+  for (const listener of [...listeners]) {
+    listener({
+      type: "changed",
+      cursor: { epoch, sequence: 2 },
+      method: "thread/unarchived",
+      threadId: standaloneRow.id,
+    });
+  }
+  catalogGate.resolve({
+    threads: [{ ...otherRow, turns: [] }],
+    ownership: [{ threadId: otherRow.id, owner: "external", harnessId: "claude-code" }],
+    officialCursor: { live: null },
+    archivedThreadIds: [],
+  });
+  await staleRefresh;
+
+  assert.deepEqual(
+    removedIds,
+    [],
+    "stale catalog page omitting a just-unarchived entry must not delete it",
+  );
+  assert.equal(followerFailed, false, "open follower of just-unarchived entry must stay connected");
+  assert.ok(
+    addedIds.includes(standaloneSessionId),
+    "restored missing entry must emit api-session/added summary",
+  );
+  assert.deepEqual(workspaces.archivedSessionIds(), []);
+  const listRes = await rpc.dispatch("session/list", {});
+  assert.equal(listRes.ok, true);
+  assert.ok(
+    (listRes.value as { items: Array<{ sessionId: string }> }).items.some(
+      (item) => item.sessionId === standaloneSessionId,
+    ),
+  );
+});
+
+it("unarchives a supplemented parent in Hub when catalog lists it in archivedThreadIds but thread/read confirms archived: false", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "codexhost-peer-explicit-unarchived-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const hostId = "remote-peer:explicit-unarchived";
+  const epoch = "12121212-1212-4121-8121-121212121212";
+
+  const parentRow: ChThread = {
+    id: "codex-parent",
+    cwd: "/remote/repo",
+    modelProvider: "openai",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "idle" },
+    name: "Restored Parent",
+    turns: [],
+  };
+  const childRow: ChThread = {
+    id: "ext-child",
+    cwd: "/remote/repo",
+    modelProvider: "codexhost",
+    createdAt: 110,
+    updatedAt: 210,
+    status: { type: "active" },
+    name: "Delegated Child",
+    turns: [],
+  };
+
+  let parentArchivedOnRead = true;
+
+  const transport: PeerChTransport = {
+    async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const input = body as Record<string, unknown>;
+      if (route === "respond") return { resolved: true } as T;
+      const method = String(input.method);
+      if (method === "codexhost/thread/catalog/read") {
+        // Catalog page still reports parent in archivedThreadIds while omitting it from active threads.
+        return {
+          threads: [{ ...childRow, turns: [] }],
+          ownership: [{ threadId: childRow.id, owner: "external", harnessId: "claude-code" }],
+          officialCursor: { live: null },
+          archivedThreadIds: [parentRow.id],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") {
+        return { parents: { [childRow.id]: parentRow.id } } as T;
+      }
+      if (
+        method === "thread/read" &&
+        (input.params as { threadId?: string })?.threadId === parentRow.id
+      ) {
+        return { thread: { ...parentRow, archived: parentArchivedOnRead, turns: [] } } as T;
+      }
+      if (method === "codexhost/thread/ownership/list") {
+        return { threads: [{ threadId: parentRow.id, owner: "codex" }] } as T;
+      }
+      if (method === "codexhost/harness/plugins/list") {
+        return { plugins: [{ id: "claude-code", name: "Claude Code", version: "1.0.0" }] } as T;
+      }
+      throw new Error(`Unexpected peer RPC: ${method}`);
+    },
+    subscribe(listener) {
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+      return () => {};
+    },
+    manifest: () => ({
+      version: "1.0.0",
+      platform: "darwin",
+      hostname: "peer-explicit-unarchived",
+      epoch,
+      projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+    }),
+  };
+
+  const events = new EventHub("peer-explicit-unarchived");
+  const peerProvider: RemotePeerProvider = { source: () => undefined };
+  const source = new PeerThreadSource({
+    hostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(hostId),
+    onThreadChanged: (tid) => peerProvider.onThreadChanged?.(hostId, tid),
+    onConnection: (online) => peerProvider.onConnection?.(hostId, online),
+    onReset: (e, full) => peerProvider.onReset?.(hostId, e, full),
+  });
+  peerProvider.source = (h) => (h === hostId ? source : undefined);
+
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const remote = new RemoteSessions(
+    events,
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          {
+            hostId,
+            online: true,
+            epoch,
+            displayName: "Peer Explicit Unarchived",
+            projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+          },
+        ];
+      }
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    peerProvider,
+  );
+  t.after(() => {
+    remote.close();
+    source.close();
+  });
+
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  rpc.register("session/list", () => ({ items: [] }));
+  streams.routeSessions = () => {};
+  remote.install(rpc, streams);
+
+  const parentSessionId = remoteSessionId(hostId, parentRow.id);
+  const childSessionId = remoteSessionId(hostId, childRow.id);
+
+  // 1. Initially archived on both catalog and thread/read.
+  await remote.refresh(hostId);
+  assert.deepEqual(workspaces.archivedSessionIds(), [parentSessionId]);
+
+  // 2. Catalog still includes parent in archivedThreadIds, but supplement thread/read returns archived: false.
+  parentArchivedOnRead = false;
+  await remote.refresh(hostId);
+  assert.deepEqual(
+    workspaces.archivedSessionIds(),
+    [],
+    "explicit archived: false on supplement must remove parent from Hub archivedSessionIds",
+  );
+  const listRes = await rpc.dispatch("session/list", {});
+  assert.equal(listRes.ok, true);
+  const items = (
+    listRes.value as {
+      items: Array<{ sessionId: string; projections: { values: Record<string, unknown> } }>;
+    }
+  ).items;
+  assert.ok(items.some((item) => item.sessionId === parentSessionId));
+  assert.equal(
+    items.find((item) => item.sessionId === childSessionId)?.projections.values.threadTreeParent,
+    parentSessionId,
+  );
 });

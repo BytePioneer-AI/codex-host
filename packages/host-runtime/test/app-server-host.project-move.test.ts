@@ -340,7 +340,8 @@ describe("Host client project move", () => {
     ["section", "isPinned"],
   ] as const)("checks native membership when thread/read omits %s", async (field, filter) => {
     const context = await setup({ listMembership: filter });
-    delete context.thread[field];
+    if (field === "archived") delete context.thread.archived;
+    else delete context.thread.section;
     await expect(move(context, NATIVE_THREAD)).resolves.toHaveProperty("error");
     expect(context.requests).toContainEqual(
       expect.objectContaining({
@@ -447,12 +448,12 @@ describe("Host client project move", () => {
   });
 
   it("cancels an external update at the store write boundary if its owner retired", async () => {
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
     const context = await setup({
       beforeReplace: (record) => {
         if (record.projectId !== NATIVE_PROJECT) return;
-        entered.resolve();
+        entered.resolve(undefined);
         return release.promise;
       },
     });
@@ -464,7 +465,7 @@ describe("Host client project move", () => {
       await context.scope.stop();
       await context.scope.start();
     } finally {
-      release.resolve();
+      release.resolve(undefined);
     }
     await expect(moving).resolves.toHaveProperty("error");
     expect(await context.mappingStore.getThread(id)).toEqual(before);
@@ -474,13 +475,13 @@ describe("Host client project move", () => {
   it("does not confirm a durable external write with a late mapping read after replacement", async () => {
     const context = await setup();
     const id = await startExternal(context);
-    const reading = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
+    const reading = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
     const read = context.mappingStore.getThread.bind(context.mappingStore);
     const held = vi.spyOn(context.mappingStore, "getThread").mockImplementation(async (key) => {
       const result = await read(key);
       if (result?.projectId === NATIVE_PROJECT) {
-        reading.resolve();
+        reading.resolve(undefined);
         await release.promise;
       }
       return result;
@@ -492,7 +493,7 @@ describe("Host client project move", () => {
       await context.scope.start();
     } finally {
       held.mockRestore();
-      release.resolve();
+      release.resolve(undefined);
     }
     await expect(moving).resolves.toEqual({ result: { status: "unknown" } });
     expect((await read(id))?.projectId).toBe(NATIVE_PROJECT);

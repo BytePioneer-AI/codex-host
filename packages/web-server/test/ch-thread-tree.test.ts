@@ -230,24 +230,15 @@ it("retains archive notifications received while ancestor project metadata is lo
   host.parents = { child: "parent" };
   host.pageIds = new Set(["child"]);
   host.archivedIds.add("parent");
-  const waiting = Promise.withResolvers<undefined>();
-  const release = Promise.withResolvers<undefined>();
-  t.after(() => release.resolve(undefined));
-  let reads = 0;
   const projects = host.projects.bind(host);
-  t.mock.method(host, "projects", async () => {
-    if (++reads === 2) {
-      waiting.resolve(undefined);
-      await release.promise;
+  t.mock.method(host, "projects", async (ids?: string[]) => {
+    const snapshot = await projects();
+    if (ids?.includes("parent") && host.archivedIds.delete("parent")) {
+      host.changed("parent", "thread/unarchived");
     }
-    return projects();
+    return snapshot;
   });
-  const pending = list();
-  await waiting.promise;
-  host.archivedIds.delete("parent");
-  host.changed("parent", "thread/unarchived");
-  release.resolve(undefined);
-  const page = await pending;
+  const page = await list();
   assert.ok(page.items.some((row) => row.sessionId === "parent"));
   assert.ok(!workspaces.archivedSessionIds().includes("parent"));
 });

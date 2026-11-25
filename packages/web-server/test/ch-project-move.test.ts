@@ -102,16 +102,16 @@ it("drains old catalog reads before broadcasting a project move", { timeout: 500
   const target = host.projectSnapshot.projects.find(({ id }) => id === "target");
   assert.ok(target);
   target.name = "source";
-  const entered = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  const written = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<undefined>();
+  const release = Promise.withResolvers<undefined>();
+  const written = Promise.withResolvers<undefined>();
   const projects = host.projects.bind(host);
   let block = false;
   host.projects = async (ids?: string[]) => {
     const snapshot = await projects();
     if (block && ids?.includes(row.id)) {
       block = false;
-      entered.resolve();
+      entered.resolve(undefined);
       await release.promise;
     }
     return snapshot;
@@ -129,7 +129,7 @@ it("drains old catalog reads before broadcasting a project move", { timeout: 500
     assert.deepEqual(params, { threadId: row.id, projectId: "target" });
     writes++;
     host.projectSnapshot.assignments[row.id] = "target";
-    written.resolve();
+    written.resolve(undefined);
     return confirmed as T;
   };
   assert.ok((await list()).ok);
@@ -143,7 +143,7 @@ it("drains old catalog reads before broadcasting a project move", { timeout: 500
   await written.promise;
   assert.equal(workspaces.ownerOf(row.id)?.path, row.cwd);
   assert.equal(capable.length, 1);
-  release.resolve();
+  release.resolve(undefined);
   assert.ok((await older).ok);
   assert.deepEqual(await moved, { ok: true, value: confirmed });
   assert.equal(writes, 1);
@@ -481,13 +481,13 @@ it("coalesces project and section changes, rejecting late reads", { timeout: 500
   await immediate();
   const snapshots = host.snapshots;
   const projects = host.projects.bind(host);
-  const entered = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<undefined>();
+  const release = Promise.withResolvers<undefined>();
   let projectReads = 0;
   host.projects = async (ids?: string[]) => {
     const snapshot = await projects();
     if (ids?.includes(row.id) && ++projectReads === 1) {
-      entered.resolve();
+      entered.resolve(undefined);
       await release.promise;
     }
     return snapshot;
@@ -512,7 +512,7 @@ it("coalesces project and section changes, rejecting late reads", { timeout: 500
     });
   assert.equal((await move()).ok, false, "A pending invalidation retires the source binding.");
   t.mock.timers.tick(100);
-  release.resolve();
+  release.resolve(undefined);
   assert.ok((await older).ok);
   await immediate();
   assert.equal(projectReads, 2);
@@ -574,8 +574,8 @@ it(
     const directory = mkdtempSync(join(tmpdir(), "ch-project-move-reconnect-"));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const serviceHost = new FakeChChannel();
-    const submitted = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
+    const submitted = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
     const params = { threadId: "moving", projectId: "target" };
     let writes = 0;
     const request = serviceHost.request.bind(serviceHost);
@@ -583,7 +583,7 @@ it(
       if (method !== CLIENT_THREAD_PROJECT_MOVE_METHOD) return request<T>(method, input);
       assert.deepEqual(input, params);
       writes++;
-      submitted.resolve();
+      submitted.resolve(undefined);
       await release.promise;
       return { status: "confirmed", projectId: "target" } as T;
     };
@@ -599,14 +599,15 @@ it(
     );
     await submitted.promise;
     await service.close();
-    release.resolve();
+    release.resolve(undefined);
     await lost;
     const desktopHost = new FakeChChannel();
     const desktop = await startFakeChChannel(desktopHost, directory);
     t.after(() => desktop.close());
-    const reconnected = Promise.withResolvers<void>();
+    const reconnected = Promise.withResolvers<undefined>();
     const stop = client.realtime?.subscribe((event) => {
-      if (event.type === "hello" && event.cursor.epoch === desktopHost.epoch) reconnected.resolve();
+      if (event.type === "hello" && event.cursor.epoch === desktopHost.epoch)
+        reconnected.resolve(undefined);
     });
     t.after(() => stop?.());
     await reconnected.promise;

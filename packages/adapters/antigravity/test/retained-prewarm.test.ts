@@ -110,6 +110,8 @@ class FakeTransport implements AntigravityAcpTransportLike {
   setSessionEventHandler(handler: AntigravitySessionEventHandler | null) {
     this.handler = handler;
   }
+  setSessionInteractionHandler =
+    vi.fn<AntigravityAcpTransportLike["setSessionInteractionHandler"]>();
   cancel = vi.fn(async () => {});
   closeSession = vi.fn(async () => {});
   close = vi.fn(async () => {

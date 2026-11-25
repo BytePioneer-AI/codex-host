@@ -1493,7 +1493,9 @@ describe("AppServerHost HarnessAdapter projection", () => {
       turnId: "native-turn",
       status: "completed",
     });
-    expect(fixture.collector.messages.some((message) => message.id === duplicateRead.id)).toBe(false);
+    expect(fixture.collector.messages.some((message) => message.id === duplicateRead.id)).toBe(
+      false,
+    );
     expect(fixture.official.stdin.readableLength).toBe(0);
 
     const implicitPending = delegationApi.start({

@@ -771,7 +771,10 @@ export class ExternalThreadRuntime {
     }
     if (!record) return { kind: "official" };
     if (record.billingSourceRef) return { kind: "external", record, thread: null };
-    if ((record.state !== "ready" || !record.nativeSessionRef) && !isDeferredPendingRecord(record)) {
+    if (
+      (record.state !== "ready" || !record.nativeSessionRef) &&
+      !isDeferredPendingRecord(record)
+    ) {
       return {
         kind: "error",
         error: { code: -32079, message: "External Native Session is unavailable" },

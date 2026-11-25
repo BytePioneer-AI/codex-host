@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import type {
+  AvailableCommand,
   CreateElicitationRequest,
   CreateElicitationResponse,
   RequestPermissionRequest,
@@ -116,6 +117,7 @@ import {
 } from "./quota.js";
 import { rollbackAntigravityLastTurn } from "./rollback.js";
 import { AntigravitySessionImport } from "./session-import.js";
+import * as skillDiscovery from "./skill-discovery.js";
 import { ANTIGRAVITY_COMMAND_CATALOG, parseAndFormatAntigravityCommand } from "./slash-commands.js";
 import { AntigravitySubagents, readNativeSubagentStatus } from "./subagents.js";
 import { readSubagentTranscript } from "./subagent-transcript.js";
@@ -335,6 +337,9 @@ export class AntigravitySession implements HarnessSession {
   #configOptions: AntigravityAcpConfigOption[] = [];
   #catalog: HarnessModelCatalog | undefined;
   #commands: HarnessCommandCatalog = ANTIGRAVITY_COMMAND_CATALOG;
+  #commandsGeneration = 0;
+  #commandsReadyGeneration = 0;
+  readonly #commandsStateWaiters = new Set<() => void>();
   // Null means a raw count increase alone cannot identify the next prompt.
   #confirmedCount: number | null = null;
   readonly #confirmedCheckpoints = new Set<string>();
@@ -579,7 +584,10 @@ export class AntigravitySession implements HarnessSession {
       if (!this.#configurationQueue) this.#publishState();
     } catch (error) {
       await transport.close().catch(() => undefined);
-      if (this.#transport === transport) this.#transport = undefined;
+      if (this.#transport === transport) {
+        this.#transport = undefined;
+        this.#resetCommandCatalog();
+      }
       throw error;
     }
   }
@@ -761,9 +769,13 @@ export class AntigravitySession implements HarnessSession {
           if (!this.#opening && !this.#configurationQueue) this.#publishState();
         }
         break;
-      case "commands.update":
-        this.#commands = buildLiveCommandCatalog(event.commands);
+      case "commands.update": {
+        const generation = ++this.#commandsGeneration;
+        const transport = this.#transport;
+        this.#notifyCommandsChanged();
+        void this.#buildLiveCommands(event.commands, generation, transport);
         break;
+      }
       case "usage.context": {
         const usage = this.#usage?.recordContextWindow(event.used, event.size);
         if (usage) this.#emit({ type: "session.usage.changed", usage });
@@ -856,19 +868,80 @@ export class AntigravitySession implements HarnessSession {
       if (!this.#closed && !this.#faulted) this.#emit({ type: "usage.history", complete: false });
     }
   }
+  #notifyCommandsChanged(): void {
+    for (const wake of this.#commandsStateWaiters) wake();
+    this.#commandsStateWaiters.clear();
+  }
+  #resetCommandCatalog(): void {
+    this.#commandsGeneration++;
+    this.#commandsReadyGeneration = this.#commandsGeneration;
+    this.#commands = ANTIGRAVITY_COMMAND_CATALOG;
+    this.#notifyCommandsChanged();
+  }
+  async #buildLiveCommands(
+    commands: readonly AvailableCommand[],
+    generation: number,
+    transport: AntigravityAcpTransportLike | undefined,
+  ): Promise<void> {
+    let discoveredSkills: skillDiscovery.DiscoveredAntigravitySkills = new Map();
+    try {
+      discoveredSkills = await skillDiscovery.discoverAntigravitySkills({
+        cwd: this.#options.cwd,
+        home: antigravityHome(this.#options.environment),
+      });
+    } catch {
+      discoveredSkills = new Map();
+    }
+    if (
+      this.#commandsGeneration !== generation ||
+      this.#transport !== transport ||
+      this.#closed ||
+      this.#faulted
+    ) {
+      return;
+    }
+    this.#commands = {
+      ...buildLiveCommandCatalog(commands, { discoveredSkills }),
+      source: "live",
+    };
+    this.#commandsReadyGeneration = generation;
+    this.#notifyCommandsChanged();
+  }
+  async #resolveCommandCatalog(): Promise<HarnessCommandCatalog> {
+    while (
+      this.#commandsReadyGeneration !== this.#commandsGeneration &&
+      !this.#closed &&
+      !this.#faulted
+    ) {
+      await new Promise<void>((resolve) => {
+        this.#commandsStateWaiters.add(resolve);
+      });
+    }
+    return this.#transport && !this.#closed && !this.#faulted
+      ? this.#commands
+      : ANTIGRAVITY_COMMAND_CATALOG;
+  }
   get commands(): HarnessCommandCapability {
     return {
-      list: async () => ok(this.#commands),
+      staticCatalog: ANTIGRAVITY_COMMAND_CATALOG,
+      list: async () => {
+        if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
+        const catalog = await this.#resolveCommandCatalog();
+        if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
+        return ok(catalog);
+      },
       execute: async (invocation) => {
         const formatted = parseAndFormatAntigravityCommand(invocation);
         let prompt: string;
         if (formatted.ok) prompt = formatted.value.prompt;
         else {
-          const descriptor = this.#commands.commands.find(
+          if (formatted.error.code !== "unsupported") return formatted;
+          const catalog = await this.#resolveCommandCatalog();
+          const descriptor = catalog.commands.find(
             (command) =>
               command.id === invocation.commandId || command.invocation === invocation.commandId,
           );
-          if (!descriptor || formatted.error.code !== "unsupported") return formatted;
+          if (!descriptor) return formatted;
           const args = invocation.arguments ?? {};
           if (
             Object.keys(args).some((key) => key !== "text") ||
@@ -1127,6 +1200,7 @@ export class AntigravitySession implements HarnessSession {
           old.setSessionEventHandler(null);
           await old.close();
           this.#transport = undefined;
+          this.#resetCommandCatalog();
           try {
             await this.initialize();
           } catch (error) {
@@ -1528,6 +1602,7 @@ export class AntigravitySession implements HarnessSession {
   handleTransportFault(error: AntigravityTransportError): void {
     if (this.#closed || this.#faulted) return;
     this.#faulted = true;
+    this.#resetCommandCatalog();
     clearTimeout(this.#usageRetry);
     this.#abort.abort();
     this.#wakes?.close();
@@ -1548,6 +1623,7 @@ export class AntigravitySession implements HarnessSession {
   }
   async #close(): Promise<void> {
     this.#closed = true;
+    this.#resetCommandCatalog();
     clearTimeout(this.#usageRetry);
     this.#abort.abort();
     this.#wakes?.close();

@@ -4358,7 +4358,11 @@ export class AppServerHost {
     const catalog = await inspectLiveCommandCatalog(thread.session.commands);
     if (!catalog) return null;
     const staticCatalog = this.#externalAdapters.get(thread.harnessId)?.commandCatalog;
-    if (staticCatalog && !isLiveCommandCatalog(catalog, staticCatalog)) return null;
+    if (
+      catalog.source === "static" ||
+      (staticCatalog && !isLiveCommandCatalog(catalog, staticCatalog))
+    )
+      return null;
     const live = { ...catalog, source: "live" as const };
     this.#liveCommandCache.remember(thread.harnessId, thread.cwd, live);
     return live;
@@ -4534,12 +4538,15 @@ export class AppServerHost {
         );
         return;
       }
-      const catalog = await commands.list();
-      if (!catalog.ok) {
-        await this.#writer.json(rpcError(request, -32078, catalog.error.message));
-        return;
+      let descriptor = commands.staticCatalog?.commands.find(params.select);
+      if (!descriptor) {
+        const catalog = await commands.list();
+        if (!catalog.ok) {
+          await this.#writer.json(rpcError(request, -32078, catalog.error.message));
+          return;
+        }
+        descriptor = catalog.value.commands.find(params.select);
       }
-      const descriptor = catalog.value.commands.find(params.select);
       if (!descriptor) {
         await this.#writer.json(rpcError(request, params.missing.code, params.missing.message));
         return;

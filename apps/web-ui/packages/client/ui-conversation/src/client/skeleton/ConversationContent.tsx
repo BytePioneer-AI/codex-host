@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import clsx from "clsx";
 import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
 import { workspaceDisplayTitle } from "@deepseek-ai/dsh-api-workspace-controller/default-workspace";
@@ -75,7 +75,7 @@ export function ConversationContent(props: ConversationContentProps) {
       : undefined;
 
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [pendingWorkspaceId, setPendingWorkspaceId] = useState<WorkspaceId | null | undefined>();
+  const [workspacePick, setWorkspacePick] = useState<{ id: WorkspaceId | null }>();
   const pickerAnchor = useRef<HTMLButtonElement>(null);
 
   // Publishes the two live measurements floating View chrome reads off the
@@ -106,31 +106,10 @@ export function ConversationContent(props: ConversationContentProps) {
     sessionId === undefined
       ? undefined
       : workspaces.items.find((workspace) => workspace.sessionIds.includes(sessionId));
-  const targetWorkspaceId =
-    pendingWorkspaceId !== undefined ? pendingWorkspaceId : creatingWorkspaceId;
+  const targetWorkspaceId = workspacePick ? workspacePick.id : creatingWorkspaceId;
   const targetWorkspace = workspaces.items.find(
     (workspace) => workspace.workspaceId === targetWorkspaceId,
   );
-
-  // Clear the pending pick once the session lands in it, or when the picked
-  // workspace disappears from a ready list (deleted from the sidebar).
-  useEffect(() => {
-    if (pendingWorkspaceId === undefined) return;
-    if (
-      (pendingWorkspaceId === null
-        ? sessionWorkspace === undefined && sessionId !== undefined
-        : sessionWorkspace?.workspaceId === pendingWorkspaceId) ||
-      (pendingWorkspaceId !== null && workspaces.phase === "ready" && targetWorkspace === undefined)
-    ) {
-      setPendingWorkspaceId(undefined);
-    }
-  }, [
-    pendingWorkspaceId,
-    sessionId,
-    sessionWorkspace?.workspaceId,
-    workspaces.phase,
-    targetWorkspace,
-  ]);
 
   // The chip is a selector; label resolution walks the flow top-down:
   //   1. a just-picked or creating workspace → its title;
@@ -170,10 +149,11 @@ export function ConversationContent(props: ConversationContentProps) {
           onOpenChange: setPickerOpen,
           onPick: (workspaceId) => {
             setPickerOpen(false);
-            setPendingWorkspaceId(workspaceId);
-            void selectWorkspace(workspaceId).catch(() => {
-              setPendingWorkspaceId((current) => (current === workspaceId ? undefined : current));
-            });
+            const pick = { id: workspaceId };
+            setWorkspacePick(pick);
+            const finish = () =>
+              setWorkspacePick((current) => (current === pick ? undefined : current));
+            void selectWorkspace(workspaceId).then(finish, finish);
           },
           onClose: () => {
             setPickerOpen(false);
@@ -210,10 +190,17 @@ export function ConversationContent(props: ConversationContentProps) {
   const pendingCreation = sessionId === undefined && sessionCreation.state !== "idle";
   const preparingBlankSession =
     sessionId !== undefined && hero && session?.openState === "loading" && !workspaceRequired;
+  // The workspace chip already shows the pending location while the old Session
+  // still owns the composer and its draft.
+  const switchingWorkspace = hero && workspacePick !== undefined;
   const preparingSession =
-    (sessionId === undefined || session?.openState !== "open") && !workspaceRequired;
+    switchingWorkspace ||
+    ((sessionId === undefined || session?.openState !== "open") && !workspaceRequired);
   const inert =
-    sessionId === undefined || session?.openState !== "open" || (hero && workspaceRequired);
+    switchingWorkspace ||
+    sessionId === undefined ||
+    session?.openState !== "open" ||
+    (hero && workspaceRequired);
   // A raised block is the same inert posture with the blocker's own reason:
   // one disabled textarea, never a second tree. The no-workspace state wins
   // when both hold — picking a workspace is the earlier prerequisite.

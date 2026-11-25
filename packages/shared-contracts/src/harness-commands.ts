@@ -40,9 +40,10 @@ export const harnessCommandCatalogSchema = z
     /** Partial discovery failures; valid commands remain available. */
     warnings: z.array(z.string().min(1)).optional(),
     /**
-     * `live` when the catalog includes what a native Session reports for its
-     * workspace (custom commands, skills); `static` for Adapter built-ins only.
-     * Omitted by Adapters; set by the Host on inspection results.
+     * `live` when a native Session has reported its live catalog for the
+     * workspace (even when filtering leaves only built-ins); `static` for
+     * Adapter built-ins only before live commands arrive. Adapters may set
+     * `live` once their Session's live catalog has loaded.
      */
     source: z.enum(["live", "static"]).optional(),
   })

@@ -63,6 +63,29 @@ export async function withTimeout<T>(
   }
 }
 
+function hasChildExited(child: ChildProcessWithoutNullStreams): boolean {
+  return child.exitCode !== null || child.signalCode != null;
+}
+
+function waitForChildExit(
+  child: ChildProcessWithoutNullStreams,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (hasChildExited(child)) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      child.off("exit", onExit);
+      resolve(hasChildExited(child));
+    }, timeoutMs);
+    timer.unref();
+    child.once("exit", onExit);
+  });
+}
+
 export type KimiTransportEvent =
   | { type: "agent.text"; text: string }
   | { type: "agent.thought"; text: string }
@@ -190,6 +213,7 @@ export class KimiAcpTransport {
   #stderrTail = "";
   #closed = false;
   #closing = false;
+  #closePromise: Promise<void> | null = null;
   #commandTimeoutMs: number;
   #closeTimeoutMs: number;
   #pendingConfigUpdates: Array<(configOptions: unknown[]) => void> = [];
@@ -353,7 +377,7 @@ export class KimiAcpTransport {
   async setConfigOption(configId: string, value: string): Promise<unknown[]> {
     const connection = this.#connection;
     const sessionId = this.#sessionId;
-    if (!connection || !sessionId || this.#closed) {
+    if (!connection || !sessionId || this.#closed || this.#closing) {
       throw new KimiTransportError("unavailable", "Kimi ACP session is not available");
     }
 
@@ -382,7 +406,7 @@ export class KimiAcpTransport {
   async prompt(text: string, handler: ActivePromptHandler): Promise<PromptResponse> {
     const connection = this.#connection;
     const sessionId = this.#sessionId;
-    if (!connection || !sessionId || this.#closed) {
+    if (!connection || !sessionId || this.#closed || this.#closing) {
       throw new KimiTransportError("unavailable", "Kimi ACP session is not available");
     }
 
@@ -405,19 +429,29 @@ export class KimiAcpTransport {
   async cancel(): Promise<void> {
     const connection = this.#connection;
     const sessionId = this.#sessionId;
-    if (!connection || !sessionId || this.#closed) {
+    if (!connection || !sessionId || this.#closed || this.#closing) {
       throw new KimiTransportError("unavailable", "Kimi ACP session is not available");
     }
     await connection.cancel({ sessionId });
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    if (this.#closePromise) return this.#closePromise;
     this.#closing = true;
+    const attempt = this.#close();
+    this.#closePromise = attempt;
+    void attempt.catch(() => {
+      if (this.#closePromise === attempt) this.#closePromise = null;
+    });
+    return attempt;
+  }
 
+  async #close(): Promise<void> {
     const child = this.#child;
     const connection = this.#connection;
     const sessionId = this.#sessionId;
+    this.#connection = null;
 
     if (connection && sessionId) {
       try {
@@ -431,52 +465,57 @@ export class KimiAcpTransport {
       }
     }
 
-    if (child && child.exitCode === null) {
-      const exited = new Promise<void>((resolve) => {
-        child.once("exit", () => resolve());
-      });
-
+    if (child && !hasChildExited(child)) {
       try {
         child.stdin.end();
       } catch {
         // Ignore
       }
 
-      const timer = setTimeout(
-        () => {
-          try {
-            child.kill("SIGTERM");
-          } catch {
-            // Ignore
-          }
-        },
-        Math.min(2500, this.#closeTimeoutMs),
-      );
+      const gracefulMs = Math.min(2500, Math.floor(this.#closeTimeoutMs / 2));
+      const exitedGracefully =
+        gracefulMs > 0 ? await waitForChildExit(child, gracefulMs) : hasChildExited(child);
 
-      await Promise.race([
-        exited,
-        new Promise((resolve) => setTimeout(resolve, this.#closeTimeoutMs)),
-      ]);
-      clearTimeout(timer);
-
-      if (child.exitCode === null) {
+      if (!exitedGracefully && !hasChildExited(child)) {
         try {
-          child.kill("SIGKILL");
+          child.kill("SIGTERM");
         } catch {
           // Ignore
+        }
+        const termMs = Math.max(1, this.#closeTimeoutMs - gracefulMs);
+        await waitForChildExit(child, termMs);
+      }
+
+      if (!hasChildExited(child)) {
+        let killError: unknown;
+        try {
+          child.kill("SIGKILL");
+        } catch (error) {
+          killError = error;
+        }
+        const killTimeoutMs = Math.min(2_000, this.#closeTimeoutMs);
+        const exitedAfterKill = await waitForChildExit(child, killTimeoutMs);
+        if (!exitedAfterKill && !hasChildExited(child)) {
+          throw new KimiTransportError(
+            "unavailable",
+            `Kimi process did not exit after SIGKILL (${killTimeoutMs}ms)`,
+            {
+              ...(killError !== undefined ? { cause: killError } : {}),
+              diagnostic: this.#stderrTail,
+            },
+          );
         }
       }
     }
 
     this.#closed = true;
     this.#closing = false;
-    this.#connection = null;
     this.#child = null;
   }
 
   async #ensureInitialized(): Promise<InitializeResponse> {
     if (this.#initializeResponse) return this.#initializeResponse;
-    if (this.#child || this.#closed) {
+    if (this.#child || this.#closed || this.#closing) {
       throw new KimiTransportError("unavailable", "Kimi ACP transport cannot be started twice");
     }
 
@@ -527,14 +566,21 @@ export class KimiAcpTransport {
       }
     });
 
-    await withTimeout(
-      new Promise<void>((resolve, reject) => {
-        child.once("spawn", resolve);
-        child.once("error", reject);
-      }),
-      this.#commandTimeoutMs,
-      "Kimi CLI spawn",
-    );
+    try {
+      await withTimeout(
+        new Promise<void>((resolve, reject) => {
+          child.once("spawn", resolve);
+          child.once("error", reject);
+        }),
+        this.#commandTimeoutMs,
+        "Kimi CLI spawn",
+      );
+    } catch (error) {
+      if (!(error instanceof KimiRequestTimeoutError) && child.pid === undefined) {
+        this.#child = null;
+      }
+      throw error;
+    }
 
     const stream = ndJsonStream(
       Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,

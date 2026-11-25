@@ -50,7 +50,7 @@ Catalog reads never open or resume a Session:
 - `codexhost/harness/commands/inspect { harnessId, cwd? }` serves a draft before its Thread exists. Without `cwd` it returns the static Adapter metadata. With `cwd` it returns, in order: the live catalog of a loaded Session of the same Harness and workspace (for example the draft's own prewarmed Session), the workspace's cached live catalog, then the static metadata.
 - `codexhost/thread/commands/inspect { threadId }` returns the loaded Session's `session.commands.list()` when that Session is already loaded and reports live entries, and otherwise falls back like the draft read for the Thread's workspace. A listing failure or a read past the Host's one-second inspection deadline also falls back. The Renderer uses it for existing Threads and refreshes it whenever the Composer `#` menu opens.
 
-For Harnesses whose Adapter sets `liveCommandCatalog: true`, inspection results carry `source`: `live` when they include what a native Session reported for the workspace, `static` when they are the Adapter built-ins only. Other Harnesses leave `source` unset.
+For Harnesses whose Adapter sets `liveCommandCatalog: true`, inspection results carry `source`: `live` once a native Session has reported its catalog for the workspace (even if filtering leaves only the Adapter's built-ins), and `static` before a live report arrives. Sessions whose built-ins are invariant may also expose `session.commands.staticCatalog` so built-in command admission does not wait for live catalog scanning. Other Harnesses leave `source` unset.
 
 Every live result is remembered in memory per Harness and workspace (at most 64 workspaces, least recently used first out), so a new draft in a workspace that already had a running Session shows its project commands. The cache never crosses workspaces and never survives a Host restart; the Host never starts a native process to fill it.
 
@@ -95,7 +95,7 @@ Live commands are filtered by a blocklist, never an allowlist. `COMMON_EXCLUDED_
 | CodeBuddy | ACP `available_commands_update` | `_meta.type: "skill"` | its own reviewed list |
 | Cursor CLI | ACP push | none (common list applies to every entry) | `update-cli-config` |
 | Qoder | SDK or ACP push | none (common list applies to every entry) | — |
-| Antigravity | ACP `available_commands_update` | none (common list applies to every entry) | — |
+| Antigravity | ACP `available_commands_update` | local `SKILL.md` frontmatter `(name, normalizedDescription)` match across workspace/user/built-in Antigravity roots (ACP entries carry no `_meta`; invalid/empty descriptions and non-local skills are kept conservatively, preserving same-name commands with distinct descriptions) | — |
 | Hermes | Gateway `slash.exec` / `session.compress` verified command set | none (common list applies to every entry) | — |
 
 WorkBuddy, DeepSeek Harness and OpenCode deliberately keep static catalogs. Qwen Code has no native command catalog; its Adapter omits the `commands` capability.

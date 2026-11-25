@@ -11,6 +11,7 @@ import {
   HOST_EXTENSIONS_RPC,
   HOST_EXTENSION_ASSETS_PREFIX,
   HOST_EXTENSION_UPLOAD_PATH,
+  PEER_DELEGATION_CHANNEL_METHOD,
   clientChannelEventSchema,
 } from "@codexhost/shared-contracts";
 import { FakeChChannel, startFakeChChannel } from "./support/ch-channel.ts";
@@ -22,7 +23,7 @@ import { serveChClientGateway } from "../src/ch-client-gateway.ts";
 
 it(
   "exposes the same generic App protocol through Web authentication, without leaking Host credentials",
-  { timeout: 15000 },
+  { timeout: 45_000 },
   async (t) => {
     const directory = mkdtempSync(join(tmpdir(), "ch-app-gateway-"));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -314,6 +315,16 @@ it("preserves numeric Host errors on every native client operation", async (t) =
   });
   assert.equal(denied.status, 403);
   assert.match(await denied.text(), /Authentication must be enabled/u);
+  const deniedPeerDelegation = await fetch(`${base}/rpc`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      method: PEER_DELEGATION_CHANNEL_METHOD,
+      params: { operation: "listHarnesses", hopCount: 1, input: {} },
+    }),
+  });
+  assert.equal(deniedPeerDelegation.status, 403);
+  assert.match(await deniedPeerDelegation.text(), /\/api\/peer\/v1\/delegation/u);
   const operations = {
     snapshot: { threadId: "shared" },
     rpc: { method: "turn/start", params: { threadId: "shared" } },

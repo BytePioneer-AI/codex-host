@@ -85,6 +85,7 @@ export interface PeerEndpointOptions {
   attachments?: boolean;
   workspaceFiles?: boolean;
   officePreview?: boolean;
+  delegation?: boolean;
 }
 
 export async function peerEndpoint(
@@ -135,6 +136,7 @@ export async function peerEndpoint(
       ...(options?.attachments ? { attachments: 1 } : {}),
       ...(options?.workspaceFiles ? { workspaceFiles: 1 } : {}),
       ...(options?.officePreview ? { officePreview: 1 } : {}),
+      ...(options?.delegation ? { delegation: 1 } : {}),
     };
     return c.remotePeerManifestSchema.parse({
       version,

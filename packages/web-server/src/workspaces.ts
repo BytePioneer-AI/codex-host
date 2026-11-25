@@ -58,9 +58,85 @@ interface WorkspaceState {
   /** Set once workspaces are reordered in Web; native project roots then stop following the
    * GUI project order. */
   manualOrder?: boolean;
+  /** Unified sidebar display order across local and remote workspaces (local Hub only). */
+  displayOrder?: string[];
 }
 
 const FILE = "workspaces.json";
+
+function remoteWorkspaceHostId(workspaceId: string): string | undefined {
+  if (!workspaceId.startsWith("remote-workspace:")) return undefined;
+  const payload = workspaceId.slice("remote-workspace:".length);
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (
+      Array.isArray(parsed) &&
+      parsed.length === 2 &&
+      typeof parsed[0] === "string" &&
+      parsed[0]
+    ) {
+      return parsed[0];
+    }
+  } catch {
+    /* Non-base64url remote workspace IDs have no encoded hostId. */
+  }
+  return undefined;
+}
+
+/**
+ * Merge persisted `displayOrder` (retaining offline remote slots) with currently visible workspaces.
+ * Unseen remote workspaces whose host already appears in `displayOrder` slot right after that
+ * host's last known entry; all other unseen workspaces append to the tail in incoming order.
+ */
+function mergeDisplayOrder(
+  displayOrder: readonly string[] | undefined,
+  visible: readonly WorkspaceView[],
+): string[] {
+  if (!displayOrder || displayOrder.length === 0) {
+    return [...new Set(visible.map((workspace) => workspace.workspaceId))];
+  }
+  const knownOrder: string[] = [];
+  const knownSet = new Set<string>();
+  for (const id of displayOrder) {
+    if (!knownSet.has(id)) {
+      knownSet.add(id);
+      knownOrder.push(id);
+    }
+  }
+  const visibleById = new Map(visible.map((workspace) => [workspace.workspaceId, workspace]));
+  const lastHostIndex = new Map<string, number>();
+  for (const [i, id] of knownOrder.entries()) {
+    const hostId = visibleById.get(id)?.remote?.hostId ?? remoteWorkspaceHostId(id);
+    if (hostId !== undefined) lastHostIndex.set(hostId, i);
+  }
+  const insertAfter = new Map<number, string[]>();
+  const tail: string[] = [];
+  for (const workspace of visible) {
+    const id = workspace.workspaceId;
+    if (knownSet.has(id)) continue;
+    knownSet.add(id);
+    const hostId = workspace.remote?.hostId ?? remoteWorkspaceHostId(id);
+    const hostSlot = hostId === undefined ? undefined : lastHostIndex.get(hostId);
+    if (hostSlot !== undefined) {
+      let bucket = insertAfter.get(hostSlot);
+      if (!bucket) {
+        bucket = [];
+        insertAfter.set(hostSlot, bucket);
+      }
+      bucket.push(id);
+    } else {
+      tail.push(id);
+    }
+  }
+  const merged: string[] = [];
+  for (const [i, id] of knownOrder.entries()) {
+    merged.push(id);
+    const after = insertAfter.get(i);
+    if (after) merged.push(...after);
+  }
+  merged.push(...tail);
+  return merged;
+}
 
 function workspacePath(path: string): string {
   const expanded = path.startsWith("~") ? join(homedir(), path.slice(1)) : path;
@@ -224,6 +300,7 @@ export class Workspaces {
   private remoteGroups: WorkspaceView[] = [];
 
   setRemoteGroups(groups: WorkspaceView[]): void {
+    const previousOrder = this.list().map((group) => group.workspaceId);
     const previous = new Map(this.remoteGroups.map((group) => [group.workspaceId, group]));
     this.remoteGroups = groups;
     const current = new Set(groups.map((group) => group.workspaceId));
@@ -232,14 +309,36 @@ export class Workspaces {
     for (const workspace of groups)
       if (JSON.stringify(previous.get(workspace.workspaceId)) !== JSON.stringify(workspace))
         this.broadcast({ type: "upsert", workspace });
-    if (
-      JSON.stringify([...previous.keys()]) !==
-      JSON.stringify(groups.map((group) => group.workspaceId))
-    )
+    const nextOrder = this.list().map((group) => group.workspaceId);
+    if (JSON.stringify(previousOrder) !== JSON.stringify(nextOrder))
       this.broadcast({
         type: "order",
-        workspaceIds: this.list().map((group) => group.workspaceId),
+        workspaceIds: nextOrder,
       });
+  }
+
+  /** Remove persisted sidebar order entries belonging to a permanently removed remote host. */
+  removeRemoteHostOrder(hostId: string): void {
+    const current = this.state.displayOrder;
+    if (!current || current.length === 0) return;
+    const remoteHostIds = new Map(
+      this.remoteGroups.flatMap((group) =>
+        group.remote ? [[group.workspaceId, group.remote.hostId] as const] : [],
+      ),
+    );
+    const encodedPrefix = `remote-workspace:${encodeURIComponent(hostId)}:`;
+    const next = current.filter(
+      (id) =>
+        remoteWorkspaceHostId(id) !== hostId &&
+        remoteHostIds.get(id) !== hostId &&
+        !id.startsWith(encodedPrefix),
+    );
+    if (next.length === current.length) return;
+    const { displayOrder, ...rest } = this.state;
+    void displayOrder;
+    const state: WorkspaceState = next.length > 0 ? { ...rest, displayOrder: next } : rest;
+    this.data.writeJson(FILE, state);
+    this.state = state;
   }
 
   constructor(
@@ -279,42 +378,116 @@ export class Workspaces {
   }
 
   list(): readonly WorkspaceView[] {
-    if (this.nativeWorkspaces) return [...this.remoteGroups, ...this.nativeWorkspaces];
     const references = this.referenceGroups;
     const items = this.state.items;
-    if (!references) return [...this.remoteGroups, ...items];
-    const allowedRoots = new Set(
-      [...references.values()].filter((path): path is string => path !== undefined),
+    let base: WorkspaceView[];
+    if (this.nativeWorkspaces) {
+      base = [...this.remoteGroups, ...this.nativeWorkspaces];
+    } else if (!references) {
+      base = [...this.remoteGroups, ...items];
+    } else {
+      const allowedRoots = new Set(
+        [...references.values()].filter((path): path is string => path !== undefined),
+      );
+      base = [
+        ...this.remoteGroups,
+        ...items
+          .filter((workspace) => {
+            // Legacy automatic rows from the previous build are hidden, not deleted.
+            const legacyReference =
+              workspace.origin === undefined &&
+              workspace.sessionIds.length > 0 &&
+              workspace.sessionIds.some((id) => references.has(id)) &&
+              workspace.sessionIds.every((id) => references.has(id) || id.startsWith("draft-"));
+            return (
+              workspace.origin === "web" ||
+              !(workspace.origin === "codexhost" || legacyReference) ||
+              allowedRoots.has(workspace.path) ||
+              this.referenceProjectRoots.has(workspace.path)
+            );
+          })
+          .map((workspace) => ({
+            ...workspace,
+            sessionIds: workspace.sessionIds.filter(
+              (id) =>
+                !references.has(id) ||
+                references.get(id) === workspace.path ||
+                (workspace.origin === "web" &&
+                  references.get(id) === undefined &&
+                  !this.referenceProjectless.has(id)),
+            ),
+          })),
+      ];
+    }
+    if (!this.state.displayOrder || this.state.displayOrder.length === 0) return base;
+    const visibleById = new Map(base.map((workspace) => [workspace.workspaceId, workspace]));
+    return mergeDisplayOrder(this.state.displayOrder, base).flatMap((id) => {
+      const workspace = visibleById.get(id);
+      return workspace ? [workspace] : [];
+    });
+  }
+
+  isRemote(workspaceId: string): boolean {
+    return this.remoteGroups.some((group) => group.workspaceId === workspaceId);
+  }
+
+  appendToDisplayOrderIfPresent(workspaceId: string): void {
+    const current = this.state.displayOrder;
+    if (!current || current.length === 0 || current.includes(workspaceId)) return;
+    const state: WorkspaceState = {
+      ...this.state,
+      displayOrder: [...current, workspaceId],
+    };
+    this.data.writeJson(FILE, state);
+    this.state = state;
+  }
+
+  removeFromDisplayOrder(workspaceId: string): void {
+    const current = this.state.displayOrder;
+    if (!current || !current.includes(workspaceId)) return;
+    const next = current.filter((id) => id !== workspaceId);
+    const { displayOrder, ...rest } = this.state;
+    void displayOrder;
+    const state: WorkspaceState = next.length > 0 ? { ...rest, displayOrder: next } : rest;
+    this.data.writeJson(FILE, state);
+    this.state = state;
+  }
+
+  reorderDisplayOrder(workspaceId: string, beforeWorkspaceId?: string): { workspaceIds: string[] } {
+    const visible = this.list();
+    if (!visible.some((item) => item.workspaceId === workspaceId))
+      throw new RpcError("workspace/not-found", `Unknown workspace ${workspaceId}`, {
+        workspaceId,
+      });
+    const currentVisibleIds = visible.map((item) => item.workspaceId);
+    if (beforeWorkspaceId === workspaceId) return { workspaceIds: currentVisibleIds };
+    const merged = mergeDisplayOrder(this.state.displayOrder, visible);
+    const rest = merged.filter((id) => id !== workspaceId);
+    const index = beforeWorkspaceId === undefined ? rest.length : rest.indexOf(beforeWorkspaceId);
+    rest.splice(index < 0 ? rest.length : index, 0, workspaceId);
+    if (rest.every((id, i) => id === merged[i])) return { workspaceIds: currentVisibleIds };
+    const rank = new Map(rest.map((id, i) => [id, i]));
+    const nextItems = [...this.state.items].sort(
+      (left, right) =>
+        (rank.get(left.workspaceId) ?? Number.MAX_SAFE_INTEGER) -
+        (rank.get(right.workspaceId) ?? Number.MAX_SAFE_INTEGER),
     );
-    return [
-      ...this.remoteGroups,
-      ...items
-        .filter((workspace) => {
-          // Legacy automatic rows from the previous build are hidden, not deleted.
-          const legacyReference =
-            workspace.origin === undefined &&
-            workspace.sessionIds.length > 0 &&
-            workspace.sessionIds.some((id) => references.has(id)) &&
-            workspace.sessionIds.every((id) => references.has(id) || id.startsWith("draft-"));
-          return (
-            workspace.origin === "web" ||
-            !(workspace.origin === "codexhost" || legacyReference) ||
-            allowedRoots.has(workspace.path) ||
-            this.referenceProjectRoots.has(workspace.path)
-          );
-        })
-        .map((workspace) => ({
-          ...workspace,
-          sessionIds: workspace.sessionIds.filter(
-            (id) =>
-              !references.has(id) ||
-              references.get(id) === workspace.path ||
-              (workspace.origin === "web" &&
-                references.get(id) === undefined &&
-                !this.referenceProjectless.has(id)),
-          ),
-        })),
-    ];
+    const state: WorkspaceState = {
+      ...this.state,
+      items: nextItems,
+      displayOrder: rest,
+      manualOrder: true,
+    };
+    this.data.writeJson(FILE, state);
+    this.state = state;
+    const workspaceIds = this.list().map((item) => item.workspaceId);
+    this.broadcast({ type: "order", workspaceIds });
+    return { workspaceIds };
+  }
+
+  reorderDisplayOrderIfPresent(workspaceId: string, beforeWorkspaceId?: string): void {
+    if (!this.state.displayOrder || this.state.displayOrder.length === 0) return;
+    this.reorderDisplayOrder(workspaceId, beforeWorkspaceId);
   }
 
   get usesNativeProjects(): boolean {
@@ -440,6 +613,10 @@ export class Workspaces {
       if (JSON.stringify(old) !== JSON.stringify(workspace))
         this.broadcast({ type: "upsert", workspace });
     }
+    const beforeIds = before.map((workspace) => workspace.workspaceId);
+    const afterIds = after.map((workspace) => workspace.workspaceId);
+    if (JSON.stringify(beforeIds) !== JSON.stringify(afterIds))
+      this.broadcast({ type: "order", workspaceIds: afterIds });
   }
 
   /** Ephemeral view of the native owner's pins. Never overwrite legacy local pin records. */
@@ -599,19 +776,27 @@ export class Workspaces {
       updatedAt: now,
       origin: referenceOnly ? "codexhost" : "web",
     };
-    const state = {
+    const displayOrder =
+      this.state.displayOrder && this.state.displayOrder.length > 0
+        ? [
+            ...this.state.displayOrder.filter((id) => id !== workspace.workspaceId),
+            workspace.workspaceId,
+          ]
+        : this.state.displayOrder;
+    const state: WorkspaceState = {
       ...this.state,
       items: [...this.state.items, workspace],
       deletedPaths: (this.state.deletedPaths ?? []).filter(
         (deletedPath) => deletedPath !== absolute,
       ),
+      ...(displayOrder !== undefined ? { displayOrder } : {}),
     };
     this.data.writeJson(FILE, state);
     this.state = state;
     this.broadcast({ type: "upsert", workspace });
     this.broadcast({
       type: "order",
-      workspaceIds: this.state.items.map((item) => item.workspaceId),
+      workspaceIds: this.list().map((item) => item.workspaceId),
     });
     return { workspace, created: true };
   }
@@ -753,7 +938,24 @@ export class Workspaces {
       }
     }
     if (changed) {
-      const state = { ...this.state, items: ordered };
+      const currentOrder = this.state.displayOrder;
+      const appendedIds =
+        currentOrder && currentOrder.length > 0
+          ? ordered
+              .filter(
+                (workspace) =>
+                  !originals.has(workspace.workspaceId) &&
+                  !currentOrder.includes(workspace.workspaceId),
+              )
+              .map((workspace) => workspace.workspaceId)
+          : [];
+      const state: WorkspaceState = {
+        ...this.state,
+        items: ordered,
+        ...(appendedIds.length > 0
+          ? { displayOrder: [...(currentOrder ?? []), ...appendedIds] }
+          : {}),
+      };
       this.data.writeJson(FILE, state);
       this.state = state;
     }
@@ -835,10 +1037,15 @@ export class Workspaces {
       const native = await commands?.delete(request.workspaceId);
       if (native) return native;
       const workspace = this.require(request.workspaceId);
-      const state = {
-        ...this.state,
+      const { displayOrder: currentDisplayOrder, ...stateWithoutDisplayOrder } = this.state;
+      const nextDisplayOrder = currentDisplayOrder?.filter((id) => id !== request.workspaceId);
+      const state: WorkspaceState = {
+        ...stateWithoutDisplayOrder,
         items: this.state.items.filter((item) => item.workspaceId !== request.workspaceId),
         deletedPaths: [...(this.state.deletedPaths ?? []), workspace.path],
+        ...(nextDisplayOrder && nextDisplayOrder.length > 0
+          ? { displayOrder: nextDisplayOrder }
+          : {}),
       };
       this.data.writeJson(FILE, state);
       this.state = state;
@@ -849,25 +1056,7 @@ export class Workspaces {
       const request = requestOf<{ workspaceId: string; beforeWorkspaceId?: string }>(args);
       const native = await commands?.insertBefore(request.workspaceId, request.beforeWorkspaceId);
       if (native) return native;
-      const workspace = this.require(request.workspaceId);
-      const items = this.state.items;
-      const rest = items.filter((item) => item !== workspace);
-      const index =
-        request.beforeWorkspaceId === undefined
-          ? rest.length
-          : rest.findIndex((item) => item.workspaceId === request.beforeWorkspaceId);
-      rest.splice(index < 0 ? rest.length : index, 0, workspace);
-      if (
-        request.beforeWorkspaceId === workspace.workspaceId ||
-        rest.every((item, i) => item === items[i])
-      )
-        return { workspaceIds: items.map((item) => item.workspaceId) };
-      const state = { ...this.state, items: rest, manualOrder: true };
-      this.data.writeJson(FILE, state);
-      this.state = state;
-      const workspaceIds = rest.map((item) => item.workspaceId);
-      this.broadcast({ type: "order", workspaceIds });
-      return { workspaceIds };
+      return this.reorderDisplayOrder(request.workspaceId, request.beforeWorkspaceId);
     });
     rpc.register("workspace/insertSessionBefore", async (args) => {
       const request = requestOf<{

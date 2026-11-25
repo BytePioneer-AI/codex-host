@@ -1360,6 +1360,158 @@ it("retries an unconfirmed project assignment on the started Thread without star
   );
 });
 
+it("preserves mixed remote and native project workspace ordering without remote-read-only errors", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-native-remote-order-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const alphaRoot = join(root, "alpha");
+  const betaRoot = join(root, "beta");
+  const host = new FakeChHost();
+  host.projectSnapshot.nativeProjects = true;
+  host.projectSnapshot.projects = [
+    { id: "alpha", name: "Alpha", rootPaths: [alphaRoot] },
+    { id: "beta", name: "Beta", rootPaths: [betaRoot] },
+  ];
+  host.projectSnapshot.projectless = [];
+  const moves: Array<{ projectId: string; beforeProjectId: string | null }> = [];
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "project/move") {
+      const projectId = String(params.projectId);
+      const beforeProjectId =
+        params.beforeProjectId === null ? null : String(params.beforeProjectId);
+      moves.push({ projectId, beforeProjectId });
+      const items = host.projectSnapshot.projects;
+      const moved = items.find((item) => item.id === projectId);
+      assert.ok(moved);
+      const rest = items.filter((item) => item.id !== projectId);
+      const idx =
+        beforeProjectId === null
+          ? rest.length
+          : rest.findIndex((item) => item.id === beforeProjectId);
+      rest.splice(idx < 0 ? rest.length : idx, 0, moved);
+      host.projectSnapshot.projects = rest;
+      return {} as T;
+    }
+    if (method === "project/delete") {
+      host.projectSnapshot.projects = host.projectSnapshot.projects.filter(
+        (item) => item.id !== params.projectId,
+      );
+      return {} as T;
+    }
+    return request<T>(method, params);
+  };
+  const data = new DataDir(join(root, "web"));
+  const workspaces = new Workspaces(data, alphaRoot, true);
+  const sessions = new ChSessions(host, workspaces, new EventHub(data.root));
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  workspaces.register(
+    rpc,
+    streams,
+    nativeProjectCommands(
+      host,
+      workspaces,
+      () => sessions.refreshProjects(),
+      (sessionId, projectId) => sessions.assignNativeProject(sessionId, projectId),
+    ),
+  );
+  sessions.register(rpc, streams);
+  const call = async (method: string, params = {}) => {
+    const reply = await rpc.dispatch(method, { args: { request: params } });
+    assert.ok(reply.ok, reply.ok ? undefined : reply.error.message);
+    return reply.value;
+  };
+  const remA = {
+    workspaceId: "remote-workspace:a",
+    path: "/remote/a",
+    title: "Remote A",
+    sessionIds: [],
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+    remote: { hostId: "remote-peer:a", displayName: "Peer A", state: "connected" },
+  };
+  const remB = {
+    workspaceId: "remote-workspace:b",
+    path: "/remote/b",
+    title: "Remote B",
+    sessionIds: [],
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+    remote: { hostId: "remote-peer:b", displayName: "Peer B", state: "connected" },
+  };
+  workspaces.setRemoteGroups([remA, remB]);
+  await call("session/list");
+  const alpha = workspaces.byPath(alphaRoot);
+  const beta = workspaces.byPath(betaRoot);
+  assert.ok(alpha && beta);
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [remA.workspaceId, remB.workspaceId, alpha.workspaceId, beta.workspaceId],
+  );
+
+  // Native-to-native reorder delegates to Codex project/move without locking displayOrder.
+  await call("workspace/insertBefore", {
+    workspaceId: beta.workspaceId,
+    beforeWorkspaceId: alpha.workspaceId,
+  });
+  assert.deepEqual(moves, [{ projectId: "beta", beforeProjectId: "alpha" }]);
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [remA.workspaceId, remB.workspaceId, beta.workspaceId, alpha.workspaceId],
+  );
+  assert.equal(
+    data.readJson<{ displayOrder?: string[] }>("workspaces.json", {}).displayOrder,
+    undefined,
+  );
+
+  // Dragging a native project before a remote workspace updates displayOrder without project/move.
+  await call("workspace/insertBefore", {
+    workspaceId: alpha.workspaceId,
+    beforeWorkspaceId: remA.workspaceId,
+  });
+  assert.equal(moves.length, 1);
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [alpha.workspaceId, remA.workspaceId, remB.workspaceId, beta.workspaceId],
+  );
+  await sessions.refreshProjects();
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [alpha.workspaceId, remA.workspaceId, remB.workspaceId, beta.workspaceId],
+  );
+
+  // Dragging a remote workspace before a native project succeeds without workspace/remote-read-only.
+  await call("workspace/insertBefore", {
+    workspaceId: remB.workspaceId,
+    beforeWorkspaceId: alpha.workspaceId,
+  });
+  assert.equal(moves.length, 1);
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [remB.workspaceId, alpha.workspaceId, remA.workspaceId, beta.workspaceId],
+  );
+
+  // Subsequent native-to-native drag syncs both Codex project/move and persisted displayOrder.
+  await call("workspace/insertBefore", {
+    workspaceId: beta.workspaceId,
+    beforeWorkspaceId: alpha.workspaceId,
+  });
+  assert.deepEqual(moves.at(-1), { projectId: "beta", beforeProjectId: "alpha" });
+  assert.deepEqual(
+    workspaces.list().map((w) => w.workspaceId),
+    [remB.workspaceId, beta.workspaceId, alpha.workspaceId, remA.workspaceId],
+  );
+
+  // Deleting a native project cleans its entry from displayOrder while keeping remote slots.
+  await call("workspace/delete", { workspaceId: alpha.workspaceId });
+  assert.deepEqual(data.readJson<{ displayOrder?: string[] }>("workspaces.json", {}).displayOrder, [
+    remB.workspaceId,
+    beta.workspaceId,
+    remA.workspaceId,
+  ]);
+});
+
 it("projectRootTitles: falls back to the full path when the basename is empty or conflicts", () => {
   const titles = projectRootTitles([
     { name: "app", rootPaths: ["/srv/app", "/"] },

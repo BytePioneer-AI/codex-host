@@ -96,6 +96,7 @@ it.each([
           handler.onEvent({ type: "agent.text", text: reply });
           return { stopReason: "end_turn" };
         },
+        steer: async () => ({ stopReason: "end_turn" }),
         cancel: async () => {},
         closeSession: async () => {},
         close: async () => {},
@@ -320,6 +321,9 @@ it("returns and saves each confirmed configuration for queued cold agy selection
       setMode: async () => {},
       prompt: async () => {
         throw new Error("Configuration selection must not send a prompt");
+      },
+      steer: async () => {
+        throw new Error("Configuration selection must not steer");
       },
       cancel: async () => {},
       closeSession: async () => {},

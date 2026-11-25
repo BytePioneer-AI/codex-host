@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import {
+  claudePromptCacheFromMessages,
+  claudePromptCacheIndicators,
+  claudePromptCacheTtlSeconds,
+} from "../src/claude-prompt-cache.js";
 import { claudeUsageHistory, claudeUsageRecord } from "../src/claude-usage.js";
 import { ClaudeNativeTurnAccumulator } from "../src/native-message.js";
 
@@ -61,7 +66,10 @@ describe("Claude Code usage records", () => {
     ].flatMap((value) => turn.consume(value).events);
     const records = events.filter((event) => event.type === "usage.request");
     expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ record: { kind: "request", request: metered } });
+    expect(records[0]).toMatchObject({
+      record: { kind: "request", request: metered },
+      promptCacheTtlSeconds: 3600,
+    });
     const request = records[0]?.type === "usage.request" ? records[0].record : null;
     expect(request?.kind === "request" && request.request.startedAtMs).toEqual(expect.any(Number));
   });
@@ -123,5 +131,112 @@ describe("Claude Code usage records", () => {
       ]),
     ).toEqual({ requests: [{ ...metered, historical: true }], complete: true });
     expect(claudeUsageHistory([entry("msg_2", "claude-opus-5-5", null)]).complete).toBe(false);
+  });
+});
+
+describe("Claude Code prompt cache TTL", () => {
+  it.each([
+    ["5m write", { ephemeral_5m_input_tokens: 500, ephemeral_1h_input_tokens: 0 }, 300],
+    ["1h write", { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 8643 }, 3600],
+    [
+      "mixed 5m + 1h write uses shorter 5m TTL",
+      { ephemeral_5m_input_tokens: 120, ephemeral_1h_input_tokens: 8643 },
+      300,
+    ],
+    [
+      "zero split tokens",
+      { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
+      undefined,
+    ],
+    ["absent cache_creation", undefined, undefined],
+  ] as const)("resolves TTL for %s", (_label, cacheCreation, expectedTtl) => {
+    const usage = cacheCreation
+      ? { cache_creation: cacheCreation }
+      : { cache_read_input_tokens: 100 };
+    expect(claudePromptCacheTtlSeconds(usage)).toBe(expectedTtl);
+    const indicators = claudePromptCacheIndicators(true, 1_800_000_000, expectedTtl);
+    if (expectedTtl === undefined) {
+      expect(indicators).toEqual([]);
+    } else {
+      expect(indicators).toEqual([
+        {
+          kind: "countdown",
+          id: "prompt-cache",
+          expiresAtUnix: 1_800_000_000 + expectedTtl,
+          label: { en: "Prompt cache", "zh-CN": "提示词缓存" },
+        },
+      ]);
+    }
+  });
+
+  it("inherits the latest main-session write TTL on cache-read-only replies and excludes sidechains", () => {
+    const history = claudePromptCacheFromMessages([
+      {
+        type: "assistant",
+        timestamp: "2026-08-01T10:00:00Z",
+        message: {
+          model: "claude-opus-4-6",
+          usage: {
+            cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 4000 },
+          },
+        },
+      },
+      {
+        type: "assistant",
+        isSidechain: true,
+        timestamp: "2026-08-01T10:05:00Z",
+        message: {
+          model: "claude-haiku-4-5",
+          usage: {
+            cache_creation: { ephemeral_5m_input_tokens: 900, ephemeral_1h_input_tokens: 0 },
+          },
+        },
+      },
+      {
+        type: "assistant",
+        parent_tool_use_id: "toolu_sub",
+        timestamp: "2026-08-01T10:06:00Z",
+        message: {
+          model: "claude-haiku-4-5",
+          usage: {
+            cache_creation: { ephemeral_5m_input_tokens: 900, ephemeral_1h_input_tokens: 0 },
+          },
+        },
+      },
+      {
+        type: "assistant",
+        timestamp: "2026-08-01T10:10:00Z",
+        message: {
+          model: "claude-opus-4-6",
+          usage: { cache_read_input_tokens: 21000, cache_creation_input_tokens: 0 },
+        },
+      },
+      {
+        type: "assistant",
+        timestamp: "2026-08-01T10:12:00Z",
+        message: { model: "<synthetic>", usage: { input_tokens: 0, output_tokens: 0 } },
+      },
+    ]);
+    expect(history).toEqual({
+      lastResponseAtUnix: Date.parse("2026-08-01T10:10:00Z") / 1000,
+      ttlSeconds: 3600,
+    });
+  });
+
+  it("omits TTL when history contains no explicit 5m or 1h cache write", () => {
+    expect(
+      claudePromptCacheFromMessages([
+        {
+          type: "assistant",
+          timestamp: "2026-08-01T10:00:00Z",
+          message: {
+            model: "claude-opus-4-6",
+            usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 2000 },
+          },
+        },
+      ]),
+    ).toEqual({
+      lastResponseAtUnix: Date.parse("2026-08-01T10:00:00Z") / 1000,
+    });
   });
 });

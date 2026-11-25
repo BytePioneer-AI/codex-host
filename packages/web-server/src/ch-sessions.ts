@@ -1103,6 +1103,7 @@ export class ChSessions {
           "Codex did not confirm the conversation's project.",
         );
       thread.projectId = updated.thread.projectId;
+      this.refreshingProjectAssignments?.set(thread.id, draft.projectId);
     }
     draft.canonicalId = thread.id;
     this.files?.bind(draft.id, thread.id);

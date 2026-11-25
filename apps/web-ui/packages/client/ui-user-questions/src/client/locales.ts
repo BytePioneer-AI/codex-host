@@ -35,6 +35,13 @@ export const zh = {
   "plan.approve": "同意执行",
   "plan.decline": "拒绝",
   "plan.discuss": "要求修改",
+  "approval.detailAria": "审批详情",
+  "approval.expand": "展开全部改动",
+  "approval.collapse": "收起",
+  "approval.moreOptions": "更多允许选项",
+  "approval.categoryTerminal": "终端",
+  "approval.categoryFiles": "编辑文件",
+  "approval.categoryPermission": "权限请求",
 } satisfies Record<string, string>;
 
 /** The question namespace key union. */
@@ -75,4 +82,11 @@ export const en = {
   "plan.approve": "Approve",
   "plan.decline": "Refuse",
   "plan.discuss": "Request changes",
+  "approval.detailAria": "Approval details",
+  "approval.expand": "Expand",
+  "approval.collapse": "Collapse",
+  "approval.moreOptions": "Approval options",
+  "approval.categoryTerminal": "Terminal",
+  "approval.categoryFiles": "Edit files",
+  "approval.categoryPermission": "Ask permission",
 } satisfies Record<QuestionKey, string>;

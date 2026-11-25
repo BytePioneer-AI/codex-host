@@ -5,7 +5,7 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
 - **原生同轮插入**：Session 此刻声明 `capabilities.steer` 时，Host 发送公共命令 `turn.steer`，由 Adapter 调用 Harness 自己的插入原语，在原生安全边界把输入送入**当前 Turn**，不取消、不另起 Turn。
 - **停止后重发（退路）**：其余情况下，Host **取消当前 Turn，等待它终结，再自动执行本次新输入**。写入前不能并入当前 Turn 或 Harness 明确未接纳时走这条路径；写入后交付结果不确定则报错，不自动重发。
 
-用户继续使用 Codex Desktop 原有按钮、跟进处理方式设置和单条消息反向操作，不需要手动停止后重发。官方 Codex Thread 仍透传原生 `turn/steer`，不改变同轮追加输入的语义。Claude Code、Pi 和 OMP 按各自原生执行窗口动态声明 `capabilities.steer`；具体条件见 [Claude](../harnesses/claude-code/claude-code-steer.md)、[Pi](../harnesses/pi/pi-steer.md)、[OMP](../harnesses/omp/omp-steer.md)。其余 Adapter 对 `turn.steer` 返回 `unsupported`，保持停止后重发。
+用户继续使用 Codex Desktop 原有按钮、跟进处理方式设置和单条消息反向操作，不需要手动停止后重发。官方 Codex Thread 仍透传原生 `turn/steer`，不改变同轮追加输入的语义。Claude Code、Pi、OMP 和 Antigravity 按各自原生执行窗口动态声明 `capabilities.steer`；具体条件见 [Claude](../harnesses/claude-code/claude-code-steer.md)、[Pi](../harnesses/pi/pi-steer.md)、[OMP](../harnesses/omp/omp-steer.md) 与 [能力边界（Antigravity）](../harnesses/capability-boundaries.md#antigravity-acp-审批派生压缩与空闲唤醒)。其余 Adapter 对 `turn.steer` 返回 `unsupported`，保持停止后重发。
 
 ## 原生同轮插入
 

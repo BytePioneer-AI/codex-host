@@ -63,6 +63,7 @@ export function nativeProjectCommands(
             "workspace/refresh-failed",
             "Codex confirmed the new project. Refresh the project list.",
           );
+        workspaces.appendToDisplayOrderIfPresent(workspace.workspaceId);
         return { workspace, created: true };
       }),
     rename: (workspaceId, title) =>
@@ -83,16 +84,24 @@ export function nativeProjectCommands(
             "workspace/refresh-failed",
             "Codex confirmed the removal. Refresh the project list.",
           );
+        workspaces.removeFromDisplayOrder(workspaceId);
         return { deleted: true };
       }),
     insertBefore: (workspaceId, beforeWorkspaceId) =>
       mutate(async () => {
+        if (
+          workspaces.isRemote(workspaceId) ||
+          (beforeWorkspaceId !== undefined && workspaces.isRemote(beforeWorkspaceId))
+        ) {
+          return undefined;
+        }
         if (workspaceId !== beforeWorkspaceId) {
           await host.request("project/move", {
             projectId: projectId(workspaceId),
             beforeProjectId: beforeWorkspaceId ? projectId(beforeWorkspaceId) : null,
           });
           await refreshCommitted();
+          workspaces.reorderDisplayOrderIfPresent(workspaceId, beforeWorkspaceId);
         }
         return { workspaceIds: workspaces.list().map((workspace) => workspace.workspaceId) };
       }),

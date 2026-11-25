@@ -9,13 +9,18 @@ use crate::installation_layout::is_source_checkout_build;
 use crate::{NPM_LAUNCHER_PATH_ENV, NPM_NODE_PATH_ENV};
 
 fn current_command() -> Result<AutostartCommand, Box<dyn Error>> {
-    let wrapper = env::var_os(NPM_LAUNCHER_PATH_ENV).map(PathBuf::from);
+    let executable = env::current_exe()?;
+    let wrapper = if is_source_checkout_build(&executable) {
+        None
+    } else {
+        env::var_os(NPM_LAUNCHER_PATH_ENV).map(PathBuf::from)
+    };
     let executable = if wrapper.is_some() {
         env::var_os(NPM_NODE_PATH_ENV)
             .map(PathBuf::from)
             .ok_or("npm autostart requires the current Node path")?
     } else {
-        env::current_exe()?
+        executable
     };
     Ok(AutostartCommand {
         executable,

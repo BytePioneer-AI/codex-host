@@ -11,6 +11,7 @@ import { afterEach, assert, describe, expect, it, vi } from "vitest";
 
 import type * as RendererComposerDom from "../src/renderer-composer-dom.js";
 import {
+  CODEX_ACCOUNT_LIST_METHOD,
   createRendererModelClient,
   HARNESS_PLUGIN_LIST_METHOD,
   THREAD_INSPECT_METHOD,
@@ -388,6 +389,59 @@ describe("Renderer binding native draft routing", () => {
     expect(submissions).toEqual([
       { composerId: selection.composerId, agent: "codex", trigger: "click" },
     ]);
+  });
+});
+
+describe("Renderer binding Codex Account loading", () => {
+  it("does not reload Codex Accounts on every scan for a Thread whose owner cannot be read", async () => {
+    installFakeBrowser();
+    const sendRequest = vi.fn(async (method: string) => {
+      if (method === HARNESS_PLUGIN_LIST_METHOD) return { plugins: [] };
+      if (method === CODEX_ACCOUNT_LIST_METHOD) {
+        return {
+          version: 2,
+          currentAccountId: "account-a",
+          phase: "ready",
+          revision: 1,
+          accounts: [{ accountId: "account-a", label: "Account A" }],
+        };
+      }
+      // The Thread's native Session is gone, so its owner stays unknown.
+      if (method === THREAD_INSPECT_METHOD) {
+        throw Object.assign(new Error("External Native Session is unavailable"), {
+          code: -32079,
+        });
+      }
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const client = createRendererModelClient([{ sendRequest }]);
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({ enabledAgents: ["codex"], defaultAgent: "codex" });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    await vi.waitFor(() =>
+      expect(sendRequest).toHaveBeenCalledWith(THREAD_INSPECT_METHOD, { threadId: "thread-a" }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const accountLists = () =>
+      sendRequest.mock.calls.filter(([method]) => method === CODEX_ACCOUNT_LIST_METHOD).length;
+    const listsBeforeScans = accountLists();
+
+    // Every render changes the DOM, and every DOM change schedules a scan.
+    const notify = testState.notifyMutations;
+    assert(notify);
+    for (let scan = 0; scan < 3; scan += 1) {
+      notify([{ type: "attributes", target: testState.editor } as unknown as MutationRecord]);
+      for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    expect(probe.status().selections).toMatchObject([{ agent: "codex", phase: "draft" }]);
+    expect(accountLists()).toBe(listsBeforeScans);
   });
 });
 

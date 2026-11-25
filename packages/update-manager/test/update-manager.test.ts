@@ -225,7 +225,7 @@ describe("background update manager", () => {
           packageRoot: path.join(root, "npm", "platform-package"),
         }),
       ).resolves.toMatchObject({ installation: "npm" });
-      expect(renameFixture.attempts).toBe(3);
+      expect(renameFixture.attempts).toBe(4);
     },
   );
 

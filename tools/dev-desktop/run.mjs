@@ -3,6 +3,7 @@ import { constants, accessSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { runQuietWebBuild } from "./build.mjs";
+import { runDevelopmentApp } from "./app.mjs";
 import { restartDevelopmentHost } from "./host.mjs";
 import { hostRestartMode } from "./host-restart.mjs";
 import {
@@ -139,12 +140,14 @@ echo 'codexhost dev: stopped the running Codex Desktop'
 
 export function usage() {
   return `usage: npm start [version] [-- --no-build]
+       npm start app [-- --no-build | --shell-only] [--no-onboarding]
        npm start web [-- --port 3181] [--no-watch]
 
 Stop any running Codex Desktop, then build and run the current codexhost worktree.
 After building, reuse an unchanged shared Host; restart a changed Host unless the other interface is open.
 If the other interface is open, ask whether to keep Host (default) or restart it, interrupting tasks.
 Non-interactive prompts keep Host and warn; an absent Host is started by the interface.
+The app subcommand builds and opens the native desktop shell launch page (CodexHost Desktop, Codex Desktop, and Web).
 The web subcommand replaces this worktree's Web preview on the selected port without stopping Desktop.
 
 arguments:
@@ -152,6 +155,8 @@ arguments:
 
 options:
   --no-build          reuse existing development artifacts
+  --shell-only        app only: rebuild only the native desktop shell (skip build:web)
+  --no-onboarding     app only: skip the launch-mode page and open CodexHost Desktop directly
   --restart-host      force restart of a running Host (mutually exclusive with --keep-host)
   --keep-host         keep the running Host without asking
   --watch             web only: enable Web UI hot reload (default)
@@ -431,6 +436,20 @@ export async function runDevelopmentDesktop({
   nodePath = process.execPath,
   spawnImplementation = spawn,
 } = {}) {
+  if (arguments_[0] === "app") {
+    return runDevelopmentApp({
+      arguments_: arguments_.slice(1),
+      root,
+      environment,
+      platform,
+      nodePath,
+      spawnImplementation,
+      npmBuildInvocation,
+      validateArtifacts: validateDevelopmentArtifacts,
+      nodeVersionSupported,
+      runChild,
+    });
+  }
   if (arguments_[0] === "web") {
     const webArguments = arguments_.slice(1);
     hostRestartMode({
@@ -539,6 +558,9 @@ export async function runDevelopmentDesktop({
     "CODEXHOST_NPM_CLI_PATH",
     "CODEXHOST_NPM_LAUNCHER_PATH",
     "CODEXHOST_NPM_PACKAGE_ROOT",
+    "CODEXHOST_HOST_RUNTIME_PATH",
+    "CODEXHOST_HOST_NODE_PATH",
+    "CODEXHOST_DESKTOP_SHELL_PATH",
   ]) {
     delete launchEnvironment[name];
   }

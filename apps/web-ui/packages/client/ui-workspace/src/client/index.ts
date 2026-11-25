@@ -267,24 +267,24 @@ export function apply(ctx: Context): void {
     );
     if (!result.ok) throw new Error(result.error.message);
   };
-  const nativeThreadIds = derive(
-    sessions.list,
-    (snapshot) =>
-      new Set(
-        Object.values(snapshot.byId)
-          .filter(
-            (row) =>
-              !row.blank &&
-              row.origin !== "subagent" &&
-              !row.projectionValues?.remoteHost &&
-              Boolean(row.projectionValues?.harnessIdentity?.id),
-          )
-          .map((row) => row.id),
-      ),
-  );
+  const sectionMoveHarnesses = derive(sessions.list, (snapshot) => {
+    const harnesses = new Map<SessionId, string>();
+    for (const row of Object.values(snapshot.byId)) {
+      const harnessId = row.projectionValues?.harnessIdentity?.id;
+      if (
+        harnessId &&
+        !row.blank &&
+        row.origin !== "subagent" &&
+        !row.projectionValues?.remoteHost
+      ) {
+        harnesses.set(row.id, harnessId);
+      }
+    }
+    return harnesses;
+  });
   const threadSectionMove = createSnapshotStore<SessionId | null>(null);
   const threadSectionMenu = (): ThreadSectionMenuInjected => ({
-    hooks: { nativeThreads: nativeThreadIds, sectionWorkspace: workspaces.list },
+    hooks: { sectionMoveHarnesses, sectionWorkspace: workspaces.list },
     requestMove: (sessionId) => threadSectionMove.set(sessionId),
   });
   const threadSectionDialog = (): ThreadSectionMoveInjected => ({

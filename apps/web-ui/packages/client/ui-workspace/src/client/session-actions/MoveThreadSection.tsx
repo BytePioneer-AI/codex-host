@@ -7,7 +7,7 @@ import { MoveSectionForm } from "../rows/MoveSectionForm.tsx";
 
 export interface ThreadSectionMenuInjected {
   hooks: {
-    nativeThreads: HostObservable<ReadonlySet<SessionId>>;
+    sectionMoveHarnesses: HostObservable<ReadonlyMap<SessionId, string>>;
     sectionWorkspace: HostObservable<WorkspaceSnapshot>;
   };
   requestMove: (sessionId: SessionId) => void;
@@ -15,18 +15,19 @@ export interface ThreadSectionMenuInjected {
 
 export function MoveThreadSectionMenuItem({
   sessionId,
-  useNativeThreads,
+  useSectionMoveHarnesses,
   useSectionWorkspace,
   useMenuOpenState,
   requestMove,
   t,
 }: SessionMenuItemProps<ThreadSectionMenuInjected>) {
   const [, setMenuOpen] = useMenuOpenState();
-  const nativeThread = useNativeThreads((threads) => threads.has(sessionId));
+  const harnessId = useSectionMoveHarnesses((harnesses) => harnesses.get(sessionId));
   const workspace = useSectionWorkspace((snapshot) => snapshot);
   const sections = workspace.threadSections;
   if (
-    !nativeThread ||
+    !harnessId ||
+    (harnessId !== "codex" && workspace.threadSectionsV1 !== true) ||
     !sections?.length ||
     workspace.pinnedSessionIds.includes(sessionId) ||
     workspace.archivedSessionIds.includes(sessionId)

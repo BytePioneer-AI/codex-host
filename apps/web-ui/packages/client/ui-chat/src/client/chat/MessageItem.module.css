@@ -65,6 +65,16 @@
   backdrop-filter: blur(12px);
 }
 
+/* Top-level rows away from the viewport drop the blur; see near-viewport.ts. */
+:global(
+    body[data-codexhost-wallpaper]
+      [data-chat-flow-key]:not([data-chat-flow-key] *, [data-chat-near-viewport])
+  )
+  .bubble {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
 /* Keep the blurred bubble in a stable layer on iOS WebKit. */
 @supports (-webkit-touch-callout: none) {
   :global(body[data-codexhost-wallpaper]) .userRow {
@@ -129,6 +139,16 @@
   background: color-mix(in srgb, var(--dsw-alias-bg-base) 78%, transparent);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
+}
+
+:global(
+    body[data-codexhost-wallpaper]
+      [data-chat-flow-key]:not([data-chat-flow-key] *, [data-chat-near-viewport])
+  )
+  .compactionRow:has(.compactionBody)
+  .compactionButton {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 /* A fenced code block in the summary pins its banner at the scrollport top,

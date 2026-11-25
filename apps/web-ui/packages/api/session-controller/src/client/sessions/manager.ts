@@ -106,6 +106,23 @@ const RECONNECT_DISPLAY_KEYS: ReadonlySet<string> = new Set([
   "contextBreakdown",
 ]);
 
+/**
+ * High-frequency conversation-only projection keys that are consumed per-key via
+ * `useProjection` and never affect sidebar/list snapshots.
+ */
+const LIST_IGNORED_PROJECTION_KEYS: ReadonlySet<string> = new Set([
+  ...WEB_FOLLOW_PROJECTION_KEYS,
+  "codexhostTurnTimes",
+  "codexhostUsage",
+  "contextPressure",
+  "contextBreakdown",
+  "inbox",
+  "queueState",
+  "turnOutline",
+  "sessionStats",
+  "compacting",
+]);
+
 /** Instance cluster + frame entry + the session list. */
 export class SessionManager {
   private readonly sessions = new Map<SessionId, Session>();
@@ -151,6 +168,8 @@ export class SessionManager {
    *  must be recovered by value or every SessionListItem memo misses on every refresh. */
   private entryCache = new Map<SessionId, SessionListEntry>();
   private itemsCache: readonly SessionListEntry[] = [];
+  private projectionSnapshotCache = new Map<SessionId, SessionProjectionSnapshot>();
+  private projectionsBySessionCache: Readonly<Record<SessionId, SessionProjectionSnapshot>> = {};
   private readonly notifier = new Notifier(() => {
     this.listSnapshotCache = this.buildListSnapshot();
   });
@@ -371,14 +390,14 @@ export class SessionManager {
   private projectionStore(sessionId: SessionId): ProjectionValueStore {
     let store = this.projectionStores.get(sessionId);
     if (store === undefined) {
-      store = new ProjectionValueStore();
+      store = new ProjectionValueStore(LIST_IGNORED_PROJECTION_KEYS);
       const projections = store;
       store.subscribeAny(() => {
         // Newer history or control metadata corrects a resident Session's stale list hint.
         if (projections.values().sessionListMetadata?.blank === false) {
           this.sessions.get(sessionId)?.handleBlank(false);
         }
-        this.notifier.markDirty();
+        this.notifier.markFrameDirty();
       });
       this.projectionStores.set(sessionId, store);
     }
@@ -396,7 +415,7 @@ export class SessionManager {
     if (this.projectionLoads.get(sessionId)?.state === "ready") return Promise.resolve();
     const controller = new AbortController();
     const store = this.projectionStore(sessionId);
-    const initialValues = store.values();
+    const initialRevision = store.revision;
     this.projectionLoads.set(sessionId, { state: "loading", error: null });
     this.notifier.markDirty();
     const operation = (async () => {
@@ -406,7 +425,7 @@ export class SessionManager {
         if (result.ok) {
           if (result.value !== null) {
             store.seed({ ...result.value, asOfSeq: sessionSeqCursor(result.value.asOfSeq) });
-          } else if (store.values() === initialValues) {
+          } else if (store.revision === initialRevision) {
             // A later frame proves existence independently of an earlier missing read.
             store.clear();
           }
@@ -707,11 +726,15 @@ export class SessionManager {
   async rename(sessionId: SessionId, title: string): Promise<RemoteResult<SessionRenameValue>> {
     const result = await this.remote.session.rename({ sessionId, title });
     if (result.ok) {
-      this.projectionStore(sessionId).apply(
-        "title",
-        result.value.title,
-        SessionSeq(result.value.seq),
-      );
+      if (
+        this.projectionStore(sessionId).apply(
+          "title",
+          result.value.title,
+          SessionSeq(result.value.seq),
+        )
+      ) {
+        this.notifier.markDirty();
+      }
     }
     return result;
   }
@@ -720,17 +743,25 @@ export class SessionManager {
    * Merge a Host summary, replacing live state and filling missing metadata.
    * Local create/fork placeholders only fill metadata on an existing row.
    */
-  private mergeSummary(summary: SessionSummary): void {
-    this.recordMutation({ kind: "upsert", summary });
+  private mergeSummary(summary: SessionSummary): boolean {
+    const updated = this.recordMutation({ kind: "upsert", summary }, "frame");
     this.updateParentAvailability();
+    return updated;
   }
 
   /** Apply immediately and retain for replay when a list response is in flight. */
-  private recordMutation(mutation: SessionListMutation): void {
-    if (this.disposed) return;
+  private recordMutation(
+    mutation: SessionListMutation,
+    delivery: "microtask" | "frame" = "microtask",
+  ): boolean {
+    if (this.disposed) return false;
     this.listMutations?.push(mutation);
-    this.summaries = applyMutation(this.summaries, mutation);
-    this.notifier.markDirty();
+    const next = applyMutation(this.summaries, mutation);
+    if (next === this.summaries) return false;
+    this.summaries = next;
+    if (delivery === "frame") this.notifier.markFrameDirty();
+    else this.notifier.markDirty();
+    return true;
   }
 
   // ---- Subscription API (for useSessionList) ----
@@ -773,8 +804,14 @@ export class SessionManager {
       this.replaceControlBaseline(frame.value);
       return;
     }
-    this.projectionStore(frame.sessionId).applyLive(frame.key, frame.value, SessionSeq(frame.seq));
-    this.notifier.markDirty();
+    const changed = this.projectionStore(frame.sessionId).applyLive(
+      frame.key,
+      frame.value,
+      SessionSeq(frame.seq),
+    );
+    if (changed && !LIST_IGNORED_PROJECTION_KEYS.has(frame.key)) {
+      this.notifier.markFrameDirty();
+    }
   }
 
   private replaceControlBaseline(baseline: SessionControlBaseline): void {
@@ -783,7 +820,7 @@ export class SessionManager {
       const asOfSeq = sessionSeqCursor(block.asOfSeq);
       store.seed({ ...block, asOfSeq }, undefined, WEB_FOLLOW_PROJECTION_KEYS);
     }
-    this.notifier.markDirty();
+    this.notifier.markFrameDirty();
   }
 
   /**
@@ -792,8 +829,9 @@ export class SessionManager {
    * @param catalogEntry - false for the direct metadata lookup path, not catalog discovery.
    */
   handleSessionAdded(summary: SessionSummary, catalogEntry = true): void {
-    if (catalogEntry) this.summaryOnlyIds.delete(summary.sessionId);
-    this.mergeSummary(summary);
+    const clearedSummaryOnly = catalogEntry && this.summaryOnlyIds.delete(summary.sessionId);
+    const updatedSummary = this.mergeSummary(summary);
+    if (clearedSummaryOnly && !updatedSummary) this.notifier.markFrameDirty();
     if (!this.disposed && summary.running) this.engagedSessions.add(summary.sessionId);
     const session = this.sessions.get(summary.sessionId);
     session?.handleRestored();
@@ -831,30 +869,42 @@ export class SessionManager {
    * @param sessionId - removed Session identity.
    */
   handleSessionRemoved(sessionId: SessionId): void {
-    this.summaryOnlyIds.delete(sessionId);
+    const clearedSummaryOnly = this.summaryOnlyIds.delete(sessionId);
     const durableSubagent =
       this.subagentAddress(sessionId) !== undefined ||
       this.summaries.some(
         (summary) => summary.sessionId === sessionId && summary.origin === "subagent",
       );
-    this.recordMutation(
+    const updatedSummary = this.recordMutation(
       durableSubagent
         ? { kind: "status", sessionId, running: false, agentAvailable: false }
         : { kind: "remove", sessionId },
+      "frame",
     );
-    if (durableSubagent) this.sessions.get(sessionId)?.handleRunning(false);
-    else {
+    let subagentStopped = false;
+    if (durableSubagent) {
+      const session = this.sessions.get(sessionId);
+      subagentStopped = session?.getSnapshot().running === true;
+      session?.handleRunning(false);
+    } else {
       this.recentViews.delete(sessionId);
       this.sessions.get(sessionId)?.handleRemoved();
     }
     const catalog = this.projectionStores.get(sessionId)?.values().subagentCatalog;
-    if (!durableSubagent && (catalog === undefined || catalog.length === 0)) {
-      this.projectionStores.delete(sessionId);
-    }
+    const deletedProjectionStore =
+      !durableSubagent && (catalog === undefined || catalog.length === 0)
+        ? this.projectionStores.delete(sessionId)
+        : false;
     this.pruneEngagement(sessionId, this.retainedIds(this.summaries));
     this.projectionInflight.get(sessionId)?.controller.abort();
     this.projectionInflight.delete(sessionId);
-    this.projectionLoads.delete(sessionId);
+    const deletedProjectionLoad = this.projectionLoads.delete(sessionId);
+    if (
+      !updatedSummary &&
+      (clearedSummaryOnly || deletedProjectionStore || deletedProjectionLoad || subagentStopped)
+    ) {
+      this.notifier.markFrameDirty();
+    }
     for (const [childId, address] of this.addresses) {
       if (address.parentSessionId === sessionId) {
         this.sessions.get(childId)?.handleSubagentParentAvailable(false);
@@ -869,9 +919,17 @@ export class SessionManager {
    */
   handleSessionStatus(sessionId: SessionId, running: boolean): void {
     if (!this.disposed && running) this.engagedSessions.add(sessionId);
-    this.recordMutation({ kind: "status", sessionId, running, agentAvailable: true });
+    const updatedSummary = this.recordMutation(
+      { kind: "status", sessionId, running, agentAvailable: true },
+      "frame",
+    );
     this.updateParentAvailability();
-    this.sessions.get(sessionId)?.handleRunning(running);
+    const session = this.sessions.get(sessionId);
+    const previousRunning = session?.getSnapshot().running;
+    session?.handleRunning(running);
+    if (!updatedSummary && session !== undefined && previousRunning !== running) {
+      this.notifier.markFrameDirty();
+    }
   }
 
   /**
@@ -880,7 +938,7 @@ export class SessionManager {
    * @param updatedAt - durable message timestamp.
    */
   handleSessionActivity(sessionId: SessionId, updatedAt: number): void {
-    this.recordMutation({ kind: "activity", sessionId, updatedAt });
+    this.recordMutation({ kind: "activity", sessionId, updatedAt }, "frame");
   }
 
   /**
@@ -961,6 +1019,30 @@ export class SessionManager {
     const sameOrder =
       items.length === this.itemsCache.length && items.every((e, i) => e === this.itemsCache[i]);
     if (!sameOrder) this.itemsCache = items;
+    let projectionsChanged = this.projectionSnapshotCache.size !== this.projectionStores.size;
+    for (const [sessionId, store] of this.projectionStores) {
+      const values = store.values();
+      const load = this.projectionLoads.get(sessionId);
+      const state = load?.state ?? "idle";
+      const error = load?.error ?? null;
+      const prev = this.projectionSnapshotCache.get(sessionId);
+      if (
+        prev !== undefined &&
+        prev.values === values &&
+        prev.state === state &&
+        prev.error === error
+      ) {
+        continue;
+      }
+      this.projectionSnapshotCache.set(sessionId, { values, state, error });
+      projectionsChanged = true;
+    }
+    if (projectionsChanged) {
+      for (const sessionId of this.projectionSnapshotCache.keys()) {
+        if (!this.projectionStores.has(sessionId)) this.projectionSnapshotCache.delete(sessionId);
+      }
+      this.projectionsBySessionCache = Object.fromEntries(this.projectionSnapshotCache);
+    }
     return {
       items: this.itemsCache,
       hasMore: !!this.nextCursor,
@@ -972,17 +1054,7 @@ export class SessionManager {
       errorPage: this.listError ? (this.listRequestIsMore ? "more" : "head") : null,
       errorWorkspaceId:
         this.listError && this.listRequestIsMore ? (this.listRequestWorkspaceId ?? null) : null,
-      projectionsBySession: Object.fromEntries(
-        [...this.projectionStores].map(([sessionId, store]) => [
-          sessionId,
-          {
-            values: store.values(),
-            state: "idle",
-            error: null,
-            ...this.projectionLoads.get(sessionId),
-          },
-        ]),
-      ),
+      projectionsBySession: this.projectionsBySessionCache,
     };
   }
 }
@@ -995,10 +1067,11 @@ function applyMutation(
   switch (mutation.kind) {
     case "upsert":
     case "placeholder": {
-      const existing = summaries.find(
+      const index = summaries.findIndex(
         (summary) => summary.sessionId === mutation.summary.sessionId,
       );
-      if (existing === undefined) return [mutation.summary, ...summaries];
+      if (index === -1) return [mutation.summary, ...summaries];
+      const existing = summaries[index]!;
       const filled: SessionSummary = {
         ...existing,
         // Blank only lowers: a stale true (session-added racing the local
@@ -1028,40 +1101,55 @@ function applyMutation(
         filled.agentAvailable === existing.agentAvailable &&
         filled.running === existing.running
       )
-        return [...summaries];
-      return summaries.map((summary) =>
-        summary.sessionId === mutation.summary.sessionId ? filled : summary,
-      );
+        return summaries as SessionSummary[];
+      const next = [...summaries];
+      next[index] = filled;
+      return next;
     }
-    case "remove":
+    case "remove": {
+      const index = summaries.findIndex((summary) => summary.sessionId === mutation.sessionId);
+      if (index === -1) return summaries as SessionSummary[];
       return summaries.filter((summary) => summary.sessionId !== mutation.sessionId);
-    case "status":
+    }
+    case "status": {
       // Running converts display state; it does not establish durable history.
-      return summaries.map((summary) =>
-        summary.sessionId === mutation.sessionId &&
-        (summary.running !== mutation.running ||
-          summary.agentAvailable !== mutation.agentAvailable ||
-          (mutation.running && summary.blank))
-          ? {
-              ...summary,
-              running: mutation.running,
-              agentAvailable: mutation.agentAvailable,
-              blank: summary.blank && !mutation.running,
-            }
-          : summary,
-      );
-    case "activity":
-      return summaries.map((summary) =>
-        summary.sessionId === mutation.sessionId && mutation.updatedAt > summary.updatedAt
-          ? { ...summary, updatedAt: mutation.updatedAt }
-          : summary,
-      );
-    case "engaged":
-      return summaries.map((summary) =>
-        summary.sessionId === mutation.sessionId && summary.blank
-          ? { ...summary, blank: false }
-          : summary,
-      );
+      const index = summaries.findIndex((summary) => summary.sessionId === mutation.sessionId);
+      if (index === -1) return summaries as SessionSummary[];
+      const existing = summaries[index]!;
+      if (
+        existing.running === mutation.running &&
+        existing.agentAvailable === mutation.agentAvailable &&
+        (!mutation.running || !existing.blank)
+      ) {
+        return summaries as SessionSummary[];
+      }
+      const next = [...summaries];
+      next[index] = {
+        ...existing,
+        running: mutation.running,
+        agentAvailable: mutation.agentAvailable,
+        blank: existing.blank && !mutation.running,
+      };
+      return next;
+    }
+    case "activity": {
+      const index = summaries.findIndex((summary) => summary.sessionId === mutation.sessionId);
+      if (index === -1) return summaries as SessionSummary[];
+      const existing = summaries[index]!;
+      if (!(mutation.updatedAt > existing.updatedAt)) return summaries as SessionSummary[];
+      const next = [...summaries];
+      next[index] = { ...existing, updatedAt: mutation.updatedAt };
+      return next;
+    }
+    case "engaged": {
+      const index = summaries.findIndex((summary) => summary.sessionId === mutation.sessionId);
+      if (index === -1) return summaries as SessionSummary[];
+      const existing = summaries[index]!;
+      if (!existing.blank) return summaries as SessionSummary[];
+      const next = [...summaries];
+      next[index] = { ...existing, blank: false };
+      return next;
+    }
   }
 }
 

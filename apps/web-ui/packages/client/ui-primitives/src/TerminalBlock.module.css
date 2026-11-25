@@ -92,7 +92,7 @@
   position: absolute;
   left: calc(-1 * var(--dsl-terminal-gutter) + 8px);
   top: 50%;
-  transform: translateY(-50%);
+  translate: 0 -50%;
 }
 
 /* The dot is aria-hidden; this is its text label for assistive technology. */

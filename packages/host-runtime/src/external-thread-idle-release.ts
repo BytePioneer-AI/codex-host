@@ -10,12 +10,13 @@ import type { DesktopRequestQueue } from "./desktop-request-queue.js";
 const CHECK_INTERVAL_MS = 60_000;
 const CLOSE_TIMEOUT_MS = 60_000;
 const CLOSE_FAILURE =
-  "External Session resource release failed. Further use is blocked to avoid duplicate writers. Restart Codex Desktop to retry recovery; residual processes may require manual cleanup.";
+  "External Session shutdown could not be confirmed. Retry after shutdown completes. If the Session stays blocked, stop any residual Harness processes and restart the codexhost Host.";
 
 interface Activity {
   lastActivity: number;
   outputFailed: boolean;
   closeFailed: boolean;
+  closeConfirmed: boolean;
 }
 
 /** Host-only coordination. Native background work is judged by `canRelease` (via `HarnessSession.hasBackgroundWork`). */
@@ -64,6 +65,7 @@ export class ExternalThreadIdleRelease {
         lastActivity: Date.now(),
         outputFailed: false,
         closeFailed: false,
+        closeConfirmed: false,
       });
   }
 
@@ -88,39 +90,77 @@ export class ExternalThreadIdleRelease {
     return this.#activity.get(thread)?.closeFailed ? CLOSE_FAILURE : undefined;
   }
 
+  /** Called from the Thread's serialized lifecycle after waiting for the bounded close. */
+  retireConfirmedRelease(thread: ExternalThread): boolean {
+    const state = this.#activity.get(thread);
+    if (
+      !state?.closeFailed ||
+      !state.closeConfirmed ||
+      !this.#hasPersistedIdentity(thread, state) ||
+      this.options.get(thread.id) !== thread
+    ) {
+      return false;
+    }
+    this.options.remove(thread.id);
+    return true;
+  }
+
+  #hasPersistedIdentity(thread: ExternalThread, state: Activity): boolean {
+    return (
+      !state.outputFailed &&
+      !thread.persistenceError &&
+      thread.record.state === "ready" &&
+      !!thread.record.nativeSessionRef
+    );
+  }
+
   async waitForClose(id: string): Promise<void> {
     await this.#closing.get(id);
   }
 
   /** Acquire before resolving a Session, not after an await has exposed its reference. */
-  async runOperation<T>(id: string | undefined, operation: () => Promise<T>): Promise<T> {
+  async runOperation<T>(
+    id: string | undefined,
+    operation: () => Promise<T>,
+    options?: { touch?: boolean },
+  ): Promise<T> {
     if (this.#stopped) throw new Error("Host is shutting down");
     if (id) {
       while (this.#closing.has(id)) await this.#closing.get(id);
     }
     if (this.#stopped) throw new Error("Host is shutting down");
-    return this.#track(id, operation);
+    return this.#track(id, operation, true, options?.touch ?? true);
   }
 
   /** Closing may emit outputs: consume them without waiting on the close being drained. */
-  consumeOutput<T>(thread: ExternalThread, operation: () => Promise<T>): Promise<T> {
-    this.touch(thread);
-    return this.#track(thread.id, operation, false);
+  consumeOutput<T>(
+    thread: ExternalThread,
+    operation: () => Promise<T>,
+    options?: { touch?: boolean },
+  ): Promise<T> {
+    const touch = options?.touch ?? true;
+    if (touch) this.touch(thread);
+    return this.#track(thread.id, operation, false, touch);
   }
 
-  #track<T>(id: string | undefined, operation: () => Promise<T>, drain = true): Promise<T> {
+  #track<T>(
+    id: string | undefined,
+    operation: () => Promise<T>,
+    drain = true,
+    touch = true,
+  ): Promise<T> {
     if (id) this.#operations.set(id, (this.#operations.get(id) ?? 0) + 1);
     const task = Promise.resolve()
       .then(operation)
       .finally(() => {
         if (id) {
-          const remaining = (this.#operations.get(id) ?? 1) - 1;
-          if (remaining) this.#operations.set(id, remaining);
-          else {
-            this.#operations.delete(id);
+          if (touch) {
             const thread = this.options.get(id);
             if (thread) this.touch(thread);
           }
+          const remaining = (this.#operations.get(id) ?? 1) - 1;
+          if (remaining) this.#operations.set(id, remaining);
+          else this.#operations.delete(id);
         }
         this.#pending.delete(task);
       });
@@ -225,11 +265,12 @@ export class ExternalThreadIdleRelease {
     const state = this.#activity.get(thread);
     if (!state) return;
     let timeout: NodeJS.Timeout | undefined;
-    // Only the bounded waiter may retire the instance. Late underlying completion cannot do so.
+    // Late completion records proof without changing which instance owns the Thread.
     const closed = Promise.resolve().then(async () => {
       await thread.session.close();
       await thread.outputTask;
       await this.options.onClosed?.(thread);
+      state.closeConfirmed = true;
     });
     try {
       await Promise.race([
@@ -242,12 +283,7 @@ export class ExternalThreadIdleRelease {
           timeout.unref();
         }),
       ]);
-      if (
-        state.outputFailed ||
-        thread.persistenceError ||
-        thread.record.state !== "ready" ||
-        !thread.record.nativeSessionRef
-      ) {
+      if (!this.#hasPersistedIdentity(thread, state)) {
         throw new Error("Session release could not confirm persisted history and identity");
       }
       if (this.options.get(thread.id) !== thread) throw new Error("Session changed during release");

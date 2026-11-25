@@ -2,7 +2,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 
 import {
+  attachCallerAuthContext,
   DelegationControlError,
+  type DelegationCallerAuthContext,
   type DelegationControlApi,
   type DelegationStartInput,
   type DelegationWatchApi,
@@ -16,12 +18,17 @@ import {
   type ThreadWaitInput,
   type ThreadWatchInput,
 } from "./delegation-types.js";
-import { matchesBearerToken } from "./bearer-token.js";
+import { verifyDelegationBearerToken } from "./bearer-token.js";
 import type { HostInventory } from "./host-inventory.js";
 import { validateThreadExportInput, type ThreadExportInput } from "./delegation-thread-export.js";
 import { readThreadResultFile } from "./thread-result-file.js";
 import { validateReadOptions } from "./delegation-snapshot.js";
 import { startWithDelegationWorktree } from "./delegation-worktree.js";
+import {
+  isRemoteHostId,
+  isRemotePeerHostId,
+  parseThreadReferenceInput,
+} from "./remote-peer-delegation.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
@@ -98,14 +105,40 @@ function watchStartedTurn(watches: DelegationWatchApi, input: ThreadWatchInput) 
   }));
 }
 
+function attachCallerAuth<T extends Record<string, unknown>>(
+  value: T,
+  callerAuth?: DelegationCallerAuthContext,
+): T {
+  return attachCallerAuthContext(value, callerAuth);
+}
+
+function normalizeOptionalHostId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.trim()) {
+    throw new DelegationControlError("INVALID_ARGUMENT", "hostId must be a non-empty string");
+  }
+  return value;
+}
+
+function normalizeThreadTargetBody(body: Record<string, unknown>): Record<string, unknown> {
+  const { threadId, hostId } = parseThreadReferenceInput(body.threadId, body.hostId);
+  const next: Record<string, unknown> = { ...body, threadId };
+  if (hostId !== undefined) next.hostId = hostId;
+  else delete next.hostId;
+  return next;
+}
+
 /** `delegate start --watch`: the Host-resolved parent is the notified Thread. */
 async function startWithWatch(
   api: DelegationControlApi,
   watches: DelegationWatchApi,
   body: Record<string, unknown>,
+  callerAuth?: DelegationCallerAuthContext,
 ): Promise<unknown> {
   const { watchTimeoutMs, ...start } = body;
-  const result = await api.start(start as unknown as DelegationStartInput);
+  const result = await api.start(
+    attachCallerAuth(start, callerAuth) as unknown as DelegationStartInput,
+  );
   const watch = await watchStartedTurn(watches, {
     threadId: result.threadId,
     notifyThreadId: result.parentThreadId ?? "",
@@ -119,9 +152,10 @@ async function sendWithWatch(
   api: DelegationControlApi,
   watches: DelegationWatchApi,
   body: Record<string, unknown>,
+  callerAuth?: DelegationCallerAuthContext,
 ): Promise<unknown> {
   const { watchTimeoutMs, notifyThreadId, ...send } = body;
-  const result = await api.send(send as unknown as ThreadSendInput);
+  const result = await api.send(attachCallerAuth(send, callerAuth) as unknown as ThreadSendInput);
   const watch = await watchStartedTurn(watches, {
     threadId: result.threadId,
     notifyThreadId: (notifyThreadId ?? "") as string,
@@ -135,8 +169,11 @@ export async function routeDelegationRequest(
   handlers: { api: DelegationControlApi; watchApi?: DelegationWatchApi; inventory?: HostInventory },
   route: string | undefined,
   body: Record<string, unknown>,
+  callerAuth?: DelegationCallerAuthContext,
 ): Promise<unknown> {
   switch (route) {
+    case "/v1/host/list":
+      return handlers.api.listHosts ? handlers.api.listHosts() : { hosts: [] };
     case "/v1/host/info":
     case "/v1/project/list":
       if (!handlers.inventory)
@@ -144,13 +181,39 @@ export async function routeDelegationRequest(
       return route === "/v1/host/info"
         ? handlers.inventory.info(body)
         : handlers.inventory.projects(body);
-    case "/v1/thread/file":
-      return readThreadResultFile(handlers.api, body);
-    case "/v1/harness/list":
-      return handlers.api.listHarnesses(body as HarnessListInput);
-    case "/v1/harness/inspect":
-      return handlers.api.inspect(body as unknown as HarnessInspectInput);
+    case "/v1/thread/file": {
+      const normalized = normalizeThreadTargetBody(body);
+      if (isRemoteHostId(normalized.hostId as string | undefined)) {
+        throw new DelegationControlError(
+          "UNSUPPORTED",
+          "Cross-host result file reading is not supported",
+        );
+      }
+      return readThreadResultFile(handlers.api, normalized);
+    }
+    case "/v1/harness/list": {
+      normalizeOptionalHostId(body.hostId);
+      return handlers.api.listHarnesses(attachCallerAuth(body, callerAuth) as HarnessListInput);
+    }
+    case "/v1/harness/inspect": {
+      normalizeOptionalHostId(body.hostId);
+      return handlers.api.inspect(
+        attachCallerAuth(body, callerAuth) as unknown as HarnessInspectInput,
+      );
+    }
     case "/v1/delegate/start": {
+      const hostId = normalizeOptionalHostId(body.hostId);
+      if (isRemoteHostId(hostId)) {
+        if (body.watchTimeoutMs !== undefined) {
+          throw new DelegationControlError(
+            "UNSUPPORTED",
+            "Cross-host thread watch is not supported yet",
+          );
+        }
+        return handlers.api.start(
+          attachCallerAuth(body, callerAuth) as unknown as DelegationStartInput,
+        );
+      }
       const { worktree, base, ...start } = body;
       return startWithDelegationWorktree(
         {
@@ -164,19 +227,43 @@ export async function routeDelegationRequest(
             ...(cwd !== undefined ? { cwd } : {}),
           };
           return input.watchTimeoutMs === undefined
-            ? handlers.api.start(input as unknown as DelegationStartInput)
-            : startWithWatch(handlers.api, watchApi(handlers.watchApi), input);
+            ? handlers.api.start(
+                attachCallerAuth(input, callerAuth) as unknown as DelegationStartInput,
+              )
+            : startWithWatch(handlers.api, watchApi(handlers.watchApi), input, callerAuth);
         },
       );
     }
-    case "/v1/thread/send":
-      return body.watchTimeoutMs === undefined
-        ? handlers.api.send(body as unknown as ThreadSendInput)
-        : sendWithWatch(handlers.api, watchApi(handlers.watchApi), body);
-    case "/v1/thread/cancel":
-      return handlers.api.cancel(body as unknown as ThreadCancelInput);
+    case "/v1/thread/send": {
+      const normalized = normalizeThreadTargetBody(body);
+      if (
+        isRemoteHostId(normalized.hostId as string | undefined) &&
+        normalized.watchTimeoutMs !== undefined
+      ) {
+        throw new DelegationControlError(
+          "UNSUPPORTED",
+          "Cross-host thread watch is not supported yet",
+        );
+      }
+      return normalized.watchTimeoutMs === undefined
+        ? handlers.api.send(attachCallerAuth(normalized, callerAuth) as unknown as ThreadSendInput)
+        : sendWithWatch(handlers.api, watchApi(handlers.watchApi), normalized, callerAuth);
+    }
+    case "/v1/thread/cancel": {
+      const normalized = normalizeThreadTargetBody(body);
+      return handlers.api.cancel(
+        attachCallerAuth(normalized, callerAuth) as unknown as ThreadCancelInput,
+      );
+    }
     case "/v1/thread/export": {
-      const input = body as unknown as ThreadExportInput;
+      const normalized = normalizeThreadTargetBody(body);
+      if (isRemotePeerHostId(normalized.hostId as string | undefined)) {
+        throw new DelegationControlError(
+          "UNSUPPORTED",
+          "Cross-host thread export is not supported",
+        );
+      }
+      const input = normalized as unknown as ThreadExportInput;
       validateThreadExportInput(input);
       if (!handlers.api.exportThread)
         throw new DelegationControlError("UNSUPPORTED", "Thread export is unavailable");
@@ -189,25 +276,42 @@ export async function routeDelegationRequest(
         "view",
         "from",
         "to",
-        ...(route === "/v1/thread/read" ? ["hostId", "callerThreadId"] : ["timeoutMs"]),
+        "hostId",
+        "callerThreadId",
+        ...(route === "/v1/thread/wait" ? ["timeoutMs"] : []),
       ]);
       for (const key of Object.keys(body)) {
         if (!allowed.has(key))
           throw new DelegationControlError("INVALID_ARGUMENT", `Unknown read option: ${key}`);
       }
-      validateReadOptions(body as unknown as ThreadReadInput);
+      const normalized = normalizeThreadTargetBody(body);
+      validateReadOptions(normalized as unknown as ThreadReadInput);
       return route === "/v1/thread/read"
-        ? handlers.api.read(body as unknown as ThreadReadInput)
-        : handlers.api.wait(body as unknown as ThreadWaitInput);
+        ? handlers.api.read(attachCallerAuth(normalized, callerAuth) as unknown as ThreadReadInput)
+        : handlers.api.wait(attachCallerAuth(normalized, callerAuth) as unknown as ThreadWaitInput);
     }
-    case "/v1/thread/answer":
-      return handlers.api.answer(body as unknown as ThreadAnswerInput);
-    case "/v1/thread/watch":
-      return watchApi(handlers.watchApi).watch(body as unknown as ThreadWatchInput);
+    case "/v1/thread/answer": {
+      const normalized = normalizeThreadTargetBody(body);
+      return handlers.api.answer(
+        attachCallerAuth(normalized, callerAuth) as unknown as ThreadAnswerInput,
+      );
+    }
+    case "/v1/thread/watch": {
+      const normalized = normalizeThreadTargetBody(body);
+      if (isRemoteHostId(normalized.hostId as string | undefined)) {
+        throw new DelegationControlError(
+          "UNSUPPORTED",
+          "Cross-host thread watch is not supported yet",
+        );
+      }
+      return watchApi(handlers.watchApi).watch(normalized as unknown as ThreadWatchInput);
+    }
     case "/v1/thread/watches":
       return watchApi(handlers.watchApi).watches();
-    case "/v1/thread/list":
-      return handlers.api.list(body as unknown as ThreadListInput);
+    case "/v1/thread/list": {
+      normalizeOptionalHostId(body.hostId);
+      return handlers.api.list(attachCallerAuth(body, callerAuth) as unknown as ThreadListInput);
+    }
     default:
       throw new DelegationControlError("INVALID_ARGUMENT", "Unknown Runtime control route");
   }
@@ -227,14 +331,19 @@ export async function startDelegationControlServer(input: {
         });
         return;
       }
-      if (!matchesBearerToken(request.headers.authorization, input.token)) {
+      const verified = verifyDelegationBearerToken(request.headers.authorization, input.token);
+      if (!verified) {
         writeJson(response, 401, {
           error: { code: "RUNTIME_UNREACHABLE", message: "Runtime token is invalid" },
         });
         return;
       }
+      const callerAuth: DelegationCallerAuthContext =
+        verified.kind === "thread"
+          ? { kind: "agent", boundThreadId: verified.threadId }
+          : { kind: "agent" };
       const body = await jsonBody(request);
-      writeJson(response, 200, await routeDelegationRequest(input, request.url, body));
+      writeJson(response, 200, await routeDelegationRequest(input, request.url, body, callerAuth));
     })().catch((error) => {
       writeJson(response, error instanceof DelegationControlError ? 400 : 500, errorBody(error));
     });

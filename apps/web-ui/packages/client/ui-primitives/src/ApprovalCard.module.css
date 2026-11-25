@@ -1,0 +1,619 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px calc(var(--dsh-composer-side-clearance) + 16px) 10px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: var(--dsh-chat-content-width);
+  min-width: 0;
+  border: 0;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l2-darkmode-thin);
+  border-radius: 24px;
+  background: var(--dsw-specific-input-major);
+  box-shadow: var(--dsw-elevation-panel);
+  color: var(--dsw-alias-label-primary);
+  overflow: hidden;
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+  transition: opacity 140ms ease;
+}
+
+.card,
+.card * {
+  box-sizing: border-box;
+}
+
+.cardBusy {
+  opacity: 0.72;
+}
+
+/* Codex Desktop two-tier header: quiet wireframe icon + category, headline below */
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 16px 12px;
+  min-width: 0;
+}
+
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 18px;
+  min-width: 0;
+}
+
+.categoryIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.categoryLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.headline {
+  color: var(--dsw-alias-label-primary);
+  font-size: 14.5px;
+  font-weight: 500;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  padding: 0 14px;
+  min-width: 0;
+  outline: none;
+}
+
+.body:focus-visible {
+  outline: 2px solid var(--dsw-alias-border-l4);
+  outline-offset: -2px;
+  border-radius: 12px;
+}
+
+.codeSurface,
+.diffSurface {
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-module-platform);
+  box-shadow: inset 0 0 0 0.5px var(--dsw-alias-border-l1);
+  overflow: hidden;
+}
+
+.diffTopBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+  font-size: 12.5px;
+  line-height: 18px;
+  min-width: 0;
+}
+
+.diffPath {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1 1 auto;
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+}
+
+.diffPathDir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.diffPathBase {
+  flex: none;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-primary);
+  font-weight: 500;
+}
+
+.diffStats {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+
+.diffAddStat {
+  color: var(--dsw-alias-file-diff-added-marker);
+}
+
+.diffDelStat {
+  color: var(--dsw-alias-file-diff-deleted-marker);
+}
+
+.diffBodyWrap,
+.codeBodyWrap {
+  position: relative;
+  min-height: 0;
+}
+
+.codeText {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 136px;
+  overflow: hidden;
+  font-family: var(--ds-font-family-code);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 19px;
+  color: var(--dsw-alias-label-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.codeSurface.expanded .codeText {
+  max-height: min(44vh, 360px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.pathList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  max-height: 164px;
+  overflow: hidden;
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.codeSurface.expanded .pathList {
+  max-height: min(44vh, 360px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.pathRow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* Generous default diff visibility (~14 lines) before collapsing */
+.diffLines {
+  padding: 6px 0;
+  max-height: 276px;
+  overflow: hidden;
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 19px;
+}
+
+.diffSurface.expanded .diffLines {
+  max-height: min(52vh, 480px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.faded::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 40px;
+  background: linear-gradient(to bottom, transparent, var(--dsw-alias-bg-module-platform) 92%);
+  pointer-events: none;
+}
+
+.diffFileHeader {
+  padding: 5px 12px 4px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11.5px;
+  font-weight: 500;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+.diffFileHeader:not(:first-child) {
+  margin-top: 4px;
+  border-top: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+.diffRow {
+  display: flex;
+  padding: 0 12px 0 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.lineNumber {
+  flex: none;
+  width: 28px;
+  padding-right: 8px;
+  text-align: right;
+  color: var(--dsw-alias-label-tertiary);
+  opacity: 0.6;
+  user-select: none;
+}
+
+.lineText {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.diffAdd {
+  background: var(--dsw-alias-code-diff-added);
+  box-shadow: inset 2px 0 0 var(--dsw-alias-file-diff-added-marker);
+  color: var(--dsw-alias-label-primary);
+}
+
+.diffDel {
+  background: var(--dsw-alias-code-diff-deleted);
+  box-shadow: inset 2px 0 0 var(--dsw-alias-file-diff-deleted-marker);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.diffCtx {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* Codex Desktop bottom-right ghost expand bar inside the recessed surface */
+.surfaceFooter {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 6px 6px;
+}
+
+.expandToggle {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .expandToggle:hover {
+    color: var(--dsw-alias-label-primary);
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.detailText {
+  padding: 2px 2px 4px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.detailAfterSurface {
+  margin-top: 8px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.slotSurface:has(.codeText:empty) {
+  display: none;
+}
+
+.slotSurface .codeText {
+  max-height: 136px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.error {
+  padding: 8px 16px 0;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* Codex Desktop monochrome pill footer (outline Deny + solid Primary / SplitButton) */
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px 16px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 13px;
+  border-radius: 9999px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    opacity 120ms ease;
+}
+
+.pill:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.pill:focus-visible {
+  outline: 2px solid var(--dsw-alias-label-primary);
+  outline-offset: 2px;
+}
+
+.splitPrimary:focus-visible,
+.splitCaret:focus-visible {
+  outline: 2px solid var(--dsw-alias-label-primary);
+  outline-offset: -2px;
+}
+
+.pillOutline {
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent);
+  color: var(--dsw-alias-label-primary);
+}
+
+.pillOutline:active:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-active);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pillOutline:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.pillPrimary {
+  border: 0;
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
+  padding: 0 14px;
+}
+
+.pillPrimary:active:not(:disabled) {
+  opacity: 0.86;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pillPrimary:hover:not(:disabled) {
+    background: var(--dsw-alias-button-primary-hover);
+  }
+}
+
+/* SplitButton: primary action + hairline divider + chevron menu trigger */
+.splitMenuAnchor {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.splitMenuList {
+  --dsw-menu-surface-fill: var(--dsw-specific-input-major);
+  min-width: 156px;
+}
+
+.splitGroup {
+  display: inline-flex;
+  align-items: stretch;
+  height: 32px;
+  border-radius: 9999px;
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
+  overflow: hidden;
+  transition: opacity 120ms ease;
+}
+
+.splitOutline {
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent);
+  color: var(--dsw-alias-label-primary);
+}
+
+.splitDisabled {
+  opacity: 0.4;
+}
+
+.splitPrimary,
+.splitCaret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 120ms ease;
+}
+
+.splitPrimary:disabled,
+.splitCaret:disabled {
+  cursor: default;
+}
+
+.splitPrimary {
+  gap: 6px;
+  padding: 0 10px 0 14px;
+  border-radius: 9999px 0 0 9999px;
+}
+
+.splitCaret {
+  padding: 0 10px 0 8px;
+  border-radius: 0 9999px 9999px 0;
+}
+
+.splitDivider {
+  width: 1px;
+  align-self: stretch;
+  margin: 7px 0;
+  background: color-mix(in srgb, currentColor 22%, transparent);
+  pointer-events: none;
+}
+
+.splitPrimary:active:not(:disabled),
+.splitCaret:active:not(:disabled) {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .splitPrimary:hover:not(:disabled),
+  .splitCaret:hover:not(:disabled) {
+    background: color-mix(in srgb, currentColor 10%, transparent);
+  }
+}
+
+.btnLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Borderless bg-current/10 kbd matching Codex Desktop WNfT.$ */
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, currentColor 11%, transparent);
+  color: currentColor;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+@media (max-width: 720px) {
+  .root {
+    padding: 4px 8px 8px;
+  }
+
+  .card {
+    max-width: 100%;
+    border-radius: 22px;
+  }
+
+  .header {
+    padding: 14px 14px 10px;
+  }
+
+  .body {
+    padding: 0 12px;
+  }
+
+  .diffLines {
+    max-height: 236px;
+  }
+
+  .footer {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .footer[data-action-count="1"] {
+    grid-template-columns: 1fr;
+  }
+
+  .pill,
+  .splitGroup {
+    width: 100%;
+    height: 40px;
+    font-size: 14px;
+  }
+
+  .splitMenuAnchor {
+    width: 100%;
+  }
+
+  .splitPrimary {
+    flex: 1 1 auto;
+    padding: 0 8px 0 14px;
+    font-size: 14px;
+  }
+
+  .splitCaret {
+    flex: none;
+    width: 38px;
+    padding: 0;
+  }
+
+  .kbd {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .pill,
+  .splitGroup,
+  .splitPrimary,
+  .splitCaret,
+  .expandToggle {
+    transition: none;
+  }
+}

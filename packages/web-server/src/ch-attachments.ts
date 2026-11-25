@@ -131,10 +131,14 @@ export class ChAttachments {
     });
   }
 
-  /** Match both the projected reference and canonical input in the loaded history.
+  /** Match both the projected reference and canonical input in the loaded history or active queue.
    * No browser path, label, metadata or guessed ID can extend that authority.
    */
-  read(view: ChThreadView, attachmentId: string): { attachment: ImageRef; data: string } {
+  read(
+    view: ChThreadView,
+    attachmentId: string,
+    queuedInputs?: readonly (readonly unknown[])[],
+  ): { attachment: ImageRef; data: string } {
     const imageView = this.imageView(view, attachmentId);
     if (imageView !== undefined) {
       const expected = this.assistantAttachment(view.log.events, attachmentId);
@@ -143,7 +147,7 @@ export class ChAttachments {
       if (!expected?.fingerprint) return unavailable();
       return this.readSource(imageView, expected, attachmentId);
     }
-    return this.readInputs(
+    const history = this.tryReadInputs(
       view.thread.id,
       view.thread.turns.map((turn) =>
         turn.items
@@ -153,6 +157,22 @@ export class ChAttachments {
       this.message(view.log.events, attachmentId),
       attachmentId,
     );
+    if (history) return history;
+    if (queuedInputs?.length) {
+      const inbox = view.log.projections.inbox as
+        { "next-turn"?: ReadonlyArray<{ content?: unknown[] }> } | undefined;
+      const queued = this.tryReadInputs(
+        view.thread.id,
+        queuedInputs,
+        this.messageFromContents(
+          (inbox?.["next-turn"] ?? []).map((row) => row.content),
+          attachmentId,
+        ),
+        attachmentId,
+      );
+      if (queued) return queued;
+    }
+    return unavailable();
   }
 
   private imageView(view: ChThreadView, attachmentId: string): NativeImageSource | undefined {
@@ -222,14 +242,14 @@ export class ChAttachments {
     return message ? this.readInputs(threadId, inputs, message, attachmentId) : undefined;
   }
 
-  private readInputs(
+  private tryReadInputs(
     threadId: string,
-    inputs: readonly unknown[][],
+    inputs: readonly (readonly unknown[])[],
     message: ImageRef[] | undefined,
     attachmentId: string,
-  ): { attachment: ImageRef; data: string } {
+  ): { attachment: ImageRef; data: string } | undefined {
     const expected = message?.find((ref) => ref.attachmentId === attachmentId);
-    if (!expected) return unavailable();
+    if (!expected) return undefined;
     let source: NativeImage | undefined;
     for (const input of inputs) {
       source = nativeUserInput(input).find(
@@ -238,22 +258,44 @@ export class ChAttachments {
       );
       if (source) break;
     }
-    if (!source) return unavailable();
+    if (!source) return undefined;
     return this.readSource(source.source, expected, attachmentId);
+  }
+
+  private readInputs(
+    threadId: string,
+    inputs: readonly unknown[][],
+    message: ImageRef[] | undefined,
+    attachmentId: string,
+  ): { attachment: ImageRef; data: string } {
+    return this.tryReadInputs(threadId, inputs, message, attachmentId) ?? unavailable();
+  }
+
+  private messageFromContents(
+    contents: ReadonlyArray<unknown[] | undefined>,
+    id: string,
+  ): ImageRef[] | undefined {
+    for (const content of contents) {
+      if (!Array.isArray(content)) continue;
+      const refs = content.flatMap((part) => {
+        if (!part || typeof part !== "object") return [];
+        const image = part as { type?: string; attachment?: ImageRef };
+        return image.type === "image" && image.attachment ? [image.attachment] : [];
+      });
+      if (refs.some((ref) => ref.attachmentId === id)) return refs;
+    }
+    return undefined;
   }
 
   private message(
     events: readonly Pick<WireEvent, "type" | "data">[],
     id: string,
   ): ImageRef[] | undefined {
-    for (const event of events) {
-      if (event.type !== "user/message") continue;
-      const data = event.data as { content?: Array<{ type?: string; attachment?: ImageRef }> };
-      const refs = data.content?.flatMap((part) =>
-        part.type === "image" && part.attachment ? [part.attachment] : [],
-      );
-      if (refs?.some((ref) => ref.attachmentId === id)) return refs;
-    }
-    return undefined;
+    return this.messageFromContents(
+      events
+        .filter((event) => event.type === "user/message")
+        .map((event) => (event.data as { content?: unknown[] }).content),
+      id,
+    );
   }
 }

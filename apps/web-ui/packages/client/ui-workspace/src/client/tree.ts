@@ -106,6 +106,8 @@ export interface GroupNode {
   expanded: boolean;
   /** The group contains the selected session (active folder tint; supplied here so the renderer never scans). */
   containsCurrent: boolean;
+  /** Activity of every unarchived Thread in the group, at any depth, also while it is folded. */
+  activity: ThreadTreeInfo<SessionNode>["activity"];
   /** Visible session rows (empty while the group is folded). */
   sessions: readonly SessionNode[];
 }
@@ -522,14 +524,15 @@ export function deriveGroups(
   rowState: SessionRowState,
   statuses: SessionStatuses,
   view: TreeView,
+  precomputedRoots?: ReadonlyMap<SessionId, SessionNode>,
 ): GroupNode[] {
   const archived = new Set(rowState.archivedSessionIds);
   const pinned = new Set(rowState.pinnedSessionIds);
   const expandedGroups = new Set(view.expandedGroups);
   const current = mainSessionId(list);
-  const roots = new Map(
-    deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]),
-  );
+  const roots =
+    precomputedRoots ??
+    new Map(deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]));
   const groups: GroupNode[] = [];
   for (const g of groupByWorkspace(list, workspaces, archived, rowState.archivedFilter)) {
     const expanded = expandedGroups.has(g.key);
@@ -546,6 +549,16 @@ export function deriveGroups(
           (b.tree?.updatedAt ?? b.updatedAt) - (a.tree?.updatedAt ?? a.updatedAt) ||
           a.id.localeCompare(b.id),
       );
+    const activity = { running: 0, pendingInteraction: 0, completed: 0 };
+    for (const node of members) {
+      if (node.archived) continue;
+      activity.running +=
+        Number(node.running || node.runningSubagentCount > 0) + (node.tree?.activity.running ?? 0);
+      activity.pendingInteraction +=
+        Number(node.pendingInteraction !== undefined) +
+        (node.tree?.activity.pendingInteraction ?? 0);
+      activity.completed += Number(node.completed) + (node.tree?.activity.completed ?? 0);
+    }
     groups.push({
       key: g.key,
       workspaceId: g.workspaceId,
@@ -555,6 +568,7 @@ export function deriveGroups(
       remote: g.remote,
       sessionCount: members.length,
       expanded,
+      activity,
       containsCurrent: members.some(
         (node) =>
           node.id === current ||
@@ -615,12 +629,14 @@ export function deriveFlat(
   sessionIds: readonly SessionId[],
   rowState: SessionRowState,
   statuses: SessionStatuses,
+  precomputedRoots?: ReadonlyMap<SessionId, SessionNode>,
 ): SessionNode[] {
+  if (sessionIds.length === 0) return [];
   const archived = new Set(rowState.archivedSessionIds);
   const pinned = new Set(rowState.pinnedSessionIds);
-  const roots = new Map(
-    deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]),
-  );
+  const roots =
+    precomputedRoots ??
+    new Map(deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]));
   const members = sessionIds.flatMap((id) => {
     const node = roots.get(id);
     return node === undefined ? [] : [node];

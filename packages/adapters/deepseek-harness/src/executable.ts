@@ -1,9 +1,10 @@
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import {
   installationVersion,
+  isExecutableFile,
   resolveHarnessExecutable,
   VERSION_MANAGER_ROOTS,
   withNodeRuntimeOnPath,
@@ -19,6 +20,18 @@ export interface DeepSeekCommandInvocation {
   kind: "configured" | "dsh" | "npx";
 }
 
+function linkedNodeDirectory(command: string, platform: NodeJS.Platform): string | undefined {
+  if (platform === "win32" || !path.posix.isAbsolute(command)) return undefined;
+  try {
+    const target = path.posix.resolve(path.posix.dirname(command), readlinkSync(command));
+    const directory = path.posix.dirname(target);
+    if (isExecutableFile(path.posix.join(directory, "node"), platform)) return directory;
+  } catch {
+    // Regular executables have no link target.
+  }
+  return undefined;
+}
+
 export function deepSeekEnvironment(
   command: string,
   environment: NodeJS.ProcessEnv,
@@ -27,7 +40,10 @@ export function deepSeekEnvironment(
   const pathFlavor = platform === "win32" ? path.win32 : path.posix;
   const key = Object.keys(environment).find((name) => name.toLowerCase() === "path") ?? "PATH";
   const directory = pathFlavor.dirname(command);
-  const directories = (environment[key] ?? "").split(pathFlavor.delimiter).filter(Boolean);
+  const linkedDirectory = linkedNodeDirectory(command, platform);
+  const directories = (environment[key] ?? "")
+    .split(pathFlavor.delimiter)
+    .filter((entry) => entry && entry !== linkedDirectory);
   const equal =
     platform === "win32" ? (value: string) => value.toLowerCase() : (value: string) => value;
   if (
@@ -36,6 +52,7 @@ export function deepSeekEnvironment(
   ) {
     directories.unshift(directory);
   }
+  if (linkedDirectory && linkedDirectory !== directory) directories.unshift(linkedDirectory);
   return withNodeRuntimeOnPath(
     { ...environment, [key]: directories.join(pathFlavor.delimiter) },
     process.execPath,
@@ -75,7 +92,16 @@ export function resolveDeepSeekCommand(
     {
       id: "deepseek-harness",
       command: "dsh",
-      installRoots: { posix: [VERSION_MANAGER_ROOTS], windows: [VERSION_MANAGER_ROOTS] },
+      installRoots: {
+        posix: [
+          VERSION_MANAGER_ROOTS,
+          "~/.local/bin",
+          "~/.npm-global/bin",
+          "/opt/homebrew/bin",
+          "/usr/local/bin",
+        ],
+        windows: [VERSION_MANAGER_ROOTS],
+      },
     },
     { environment },
   )?.executable;

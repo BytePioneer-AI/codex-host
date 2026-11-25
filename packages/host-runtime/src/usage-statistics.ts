@@ -34,7 +34,8 @@ import {
 /** Bump when a reader's output changes meaning, so cached parses are read again. */
 const CACHE_VERSION = 8;
 const STALE_AFTER_MS = 10_000;
-const WARM_DELAY_MS = 3_000;
+/** Without a request for this long, the parsed entries leave memory until the next request. */
+const IDLE_RELEASE_MS = 10 * 60_000;
 /** At most one rewrite of a Harness's cache file per interval while its sessions keep growing. */
 const PERSIST_INTERVAL_MS = 60_000;
 const TOKENS_PER_PRICE_UNIT = 1_000_000;
@@ -278,8 +279,8 @@ export class UsageStatistics {
   #refreshedAtMs = 0;
   #modelLabels = new Map<string, Readonly<Record<string, string>>>();
   #progress = { sources: 0, read: 0 };
-  #warm = false;
-  #warmTimer: NodeJS.Timeout | undefined;
+  #requestedAtMs = 0;
+  #releaseTimer: NodeJS.Timeout | undefined;
   /** Bumped whenever a cached parse is added, replaced or removed. */
   #generation = 0;
   #index: { generation: number; timeZone: string; entries: IndexedEntry[] } | null = null;
@@ -296,22 +297,20 @@ export class UsageStatistics {
   ): void {
     this.#sources = sources;
     this.#readThreadTitles = readThreadTitles;
-    this.#scheduleWarm();
-  }
-
-  /** Reads every source in the background soon after the sources are attached. */
-  warm(): void {
-    this.#warm = true;
-    this.#scheduleWarm();
   }
 
   close(): void {
-    clearTimeout(this.#warmTimer);
+    clearTimeout(this.#releaseTimer);
     this.#abort.abort();
   }
 
-  /** What is known now; a stale result starts a background refresh for the next request. */
+  /**
+   * What is known now; a stale result starts a background refresh for the next request. The
+   * first request, and the first after an idle release, waits for the disk cache to be read.
+   */
   async get(params: UsageStatisticsParams | UsageStatisticsRange): Promise<UsageStatisticsResult> {
+    this.#requestedAtMs = this.#now();
+    if (!this.#releaseTimer) this.#scheduleRelease(IDLE_RELEASE_MS);
     await this.#load();
     if (this.#sources) {
       const enabled = new Set(this.#sources().map(({ harness }) => harness));
@@ -349,14 +348,48 @@ export class UsageStatistics {
     return this.#options.now?.() ?? Date.now();
   }
 
-  #scheduleWarm(): void {
-    if (!this.#warm || !this.#sources || this.#warmTimer) return;
-    this.#warmTimer = setTimeout(() => {
-      void this.#load().then(() => {
-        if (!this.#refreshing && this.#refreshedAtMs === 0) this.#startRefresh();
+  #scheduleRelease(delayMs: number): void {
+    if (this.#abort.signal.aborted) return;
+    this.#releaseTimer = setTimeout(() => {
+      void this.#releaseWhenIdle().catch((error: unknown) => {
+        this.#options.diagnose?.(`Usage statistics release: ${message(error)}`);
+        this.#scheduleRelease(IDLE_RELEASE_MS);
       });
-    }, WARM_DELAY_MS);
-    this.#warmTimer.unref();
+    }, delayMs);
+    this.#releaseTimer.unref();
+  }
+
+  /**
+   * Returns to the state before the first request once no request has arrived for
+   * IDLE_RELEASE_MS. A running refresh or a cache that could not be written keeps everything
+   * for another period.
+   */
+  async #releaseWhenIdle(): Promise<void> {
+    if (this.#abort.signal.aborted) return;
+    const requestedAtMs = this.#requestedAtMs;
+    const idleMs = this.#now() - requestedAtMs;
+    if (idleMs < IDLE_RELEASE_MS) {
+      this.#scheduleRelease(IDLE_RELEASE_MS - idleMs);
+      return;
+    }
+    if (!this.#refreshing) {
+      for (const [harness, cache] of this.#caches) await this.#persist(harness, cache);
+      if (this.#abort.signal.aborted) return;
+      const unsaved = [...this.#caches.values()].some((cache) => cache.dirty);
+      // A request that arrived while the caches were being written keeps them.
+      if (!unsaved && this.#requestedAtMs === requestedAtMs) {
+        this.#releaseTimer = undefined;
+        this.#caches.clear();
+        this.#failures.clear();
+        this.#modelLabels.clear();
+        this.#index = null;
+        this.#progress = { sources: 0, read: 0 };
+        this.#refreshedAtMs = 0;
+        this.#loaded = null;
+        return;
+      }
+    }
+    this.#scheduleRelease(IDLE_RELEASE_MS);
   }
 
   #startRefresh(): void {
@@ -440,7 +473,8 @@ export class UsageStatistics {
         }
       }
       if (failed) this.#failures.set(harness, failed);
-      await this.#persist(harness, cache);
+      if (this.#now() - cache.persistedAtMs >= PERSIST_INTERVAL_MS)
+        await this.#persist(harness, cache);
     }
     this.#refreshedAtMs = this.#now();
   }
@@ -527,7 +561,7 @@ export class UsageStatistics {
   }
 
   async #persist(harness: string, cache: HarnessCache): Promise<void> {
-    if (!cache.dirty || this.#now() - cache.persistedAtMs < PERSIST_INTERVAL_MS) return;
+    if (!cache.dirty) return;
     const file = this.#file(harness);
     const temporary = `${file}.${randomUUID()}.tmp`;
     try {
@@ -537,14 +571,15 @@ export class UsageStatistics {
         source.fingerprint,
         source.entries.map(compact),
       ]);
+      cache.dirty = false;
       await writeFile(temporary, JSON.stringify({ version: CACHE_VERSION, sources }));
       await rename(temporary, file);
-      cache.dirty = false;
       cache.persistedAtMs = this.#now();
     } catch (error) {
+      cache.dirty = true;
       this.#options.diagnose?.(`Usage statistics cache for ${harness}: ${message(error)}`);
     } finally {
-      await rm(temporary, { force: true });
+      await rm(temporary, { force: true }).catch(() => undefined);
     }
   }
 

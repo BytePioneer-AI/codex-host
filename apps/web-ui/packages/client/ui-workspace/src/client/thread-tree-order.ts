@@ -5,6 +5,7 @@ import {
   deriveThreadForest,
   sessionMemberIds,
   visibleSessionIds,
+  type SessionNode,
   type SessionRowState,
 } from "./tree.ts";
 
@@ -18,8 +19,9 @@ export interface ThreadTreeOrder {
 export function threadTreeOrderSource(
   list: SessionListState,
   rowState: SessionRowState,
+  precomputedForest?: readonly SessionNode[],
 ): ThreadTreeOrder {
-  const roots = deriveThreadForest(list, rowState, new Map());
+  const roots = precomputedForest ?? deriveThreadForest(list, rowState, new Map());
   // Invisible members retain saved slots without parenting any visible row.
   const visible = new Set(
     visibleSessionIds(list, rowState.archivedSessionIds, rowState.archivedFilter),

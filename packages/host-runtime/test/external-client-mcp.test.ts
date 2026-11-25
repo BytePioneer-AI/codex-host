@@ -115,6 +115,7 @@ describe("external client MCP endpoint", () => {
     const client = await connect();
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name)).toEqual([
+      "host_list",
       "host_info",
       "project_list",
       "harness_list",

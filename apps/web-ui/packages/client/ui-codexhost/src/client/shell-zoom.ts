@@ -189,6 +189,7 @@ export function registerShellZoomShortcuts(
       bindings: [
         { code: "Equal", modifiers: ["primary"] },
         { code: "Equal", modifiers: ["primary", "shift"] },
+        { code: "NumpadAdd", modifiers: ["primary"] },
       ],
       group: "application",
     }),
@@ -196,14 +197,20 @@ export function registerShellZoomShortcuts(
       id: "shell.zoom.out" as ShortcutCommandId,
       label: labels.zoomOut,
       keys: shortcuts.describeBinding({ code: "Minus", modifiers: ["primary"] }).keys,
-      bindings: [{ code: "Minus", modifiers: ["primary"] }],
+      bindings: [
+        { code: "Minus", modifiers: ["primary"] },
+        { code: "NumpadSubtract", modifiers: ["primary"] },
+      ],
       group: "application",
     }),
     shortcuts.registerFixed({
       id: "shell.zoom.reset" as ShortcutCommandId,
       label: labels.reset,
       keys: shortcuts.describeBinding({ code: "Digit0", modifiers: ["primary"] }).keys,
-      bindings: [{ code: "Digit0", modifiers: ["primary"] }],
+      bindings: [
+        { code: "Digit0", modifiers: ["primary"] },
+        { code: "Numpad0", modifiers: ["primary"] },
+      ],
       group: "application",
     }),
   ];

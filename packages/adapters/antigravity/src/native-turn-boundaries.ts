@@ -51,7 +51,13 @@ export async function observeNativeTurnCount(
   completedAtMs: number,
   retry: boolean,
   signal: AbortSignal,
+  options?: {
+    expectedInputs?: number;
+    latestSubmittedAtMs?: number;
+  },
 ): Promise<number | null> {
+  const expectedInputs = Math.max(1, options?.expectedInputs ?? 1);
+  const latestSubmittedAtMs = options?.latestSubmittedAtMs ?? submittedAtMs;
   const started = performance.now();
   for (const at of retry ? COMMIT_RECHECK_MS : [0]) {
     if (at > 0) {
@@ -64,14 +70,20 @@ export async function observeNativeTurnCount(
     try {
       const confirmed = await withReadSnapshot(dbPath, (db) => {
         const count = countInputs(db);
-        if (count <= (before ?? 0)) return null;
+        const minCount = retry && before !== null ? before + expectedInputs : (before ?? 0) + 1;
+        if (count < minCount) return null;
         // Commit time and prompt text cannot distinguish an earlier late write.
         // Use the native input's creation time, not any reply or tool output.
         const createdAtMs = latestInputCreatedAtMs(db);
         if (createdAtMs !== undefined) {
+          if (retry && latestSubmittedAtMs > submittedAtMs) {
+            return createdAtMs >= latestSubmittedAtMs && createdAtMs <= completedAtMs
+              ? count
+              : null;
+          }
           return createdAtMs > submittedAtMs && createdAtMs <= completedAtMs ? count : null;
         }
-        return before !== null && count === before + 1 ? count : null;
+        return before !== null && count <= before + expectedInputs ? count : null;
       });
       if (confirmed !== null) return confirmed;
     } catch (error) {

@@ -1,6 +1,7 @@
 /** Native Thread references shared by messages, sidebar drag, menu, and Composer. */
 export const THREAD_REFERENCE_MIME = "application/x-codexhost-thread-reference";
 export const THREAD_REFERENCE_SOURCE = "codexhost-thread";
+const REMOTE_HOST_ID_PATTERN = /^remote-(?:peer:|ssh(?:-|:)|control:).+/u;
 
 /** Bare message links, excluding surrounding prose punctuation and embedded URL schemes. */
 export const THREAD_LINK_PATTERN =
@@ -22,7 +23,7 @@ export function threadReferenceOf(session: {
   if (session.blank || !reference?.hostId) return;
   if (
     reference.hostId !== "local" &&
-    (!/^remote-(?:ssh(?:-|:)|control:)/u.test(reference.hostId) || !reference.threadId)
+    (!REMOTE_HOST_ID_PATTERN.test(reference.hostId) || !reference.threadId)
   )
     return;
   return {
@@ -53,7 +54,7 @@ export function localThreadId(href: string): string | undefined {
     const hostId = decodeURIComponent(match[2] ?? "local");
     if (!id || !hostId || /[\u0000-\u001f\u007f]/u.test(id + hostId)) return;
     if (hostId === "local") return id;
-    if (!/^remote-(?:ssh(?:-|:)|control:)/u.test(hostId)) return;
+    if (!REMOTE_HOST_ID_PATTERN.test(hostId)) return;
     const bytes = new TextEncoder().encode(JSON.stringify([hostId, id]));
     return (
       "web-remote:" +
@@ -89,7 +90,7 @@ export function parseThreadReferenceDrag(text: string): ThreadReference | undefi
       !threadId ||
       typeof hostId !== "string" ||
       !hostId ||
-      (hostId !== "local" && !/^remote-(?:ssh(?:-|:)|control:)/u.test(hostId)) ||
+      (hostId !== "local" && !REMOTE_HOST_ID_PATTERN.test(hostId)) ||
       typeof title !== "string"
     )
       return;

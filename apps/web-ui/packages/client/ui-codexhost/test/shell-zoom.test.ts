@@ -227,6 +227,15 @@ describe("registerShellZoomShortcuts", () => {
     expect(
       service.describeBinding({ code: "Equal", modifiers: ["primary", "shift"] }).conflicts,
     ).toEqual(["shell.zoom.in" as ShortcutCommandId]);
+    expect(
+      service.describeBinding({ code: "NumpadAdd", modifiers: ["primary"] }).conflicts,
+    ).toEqual(["shell.zoom.in" as ShortcutCommandId]);
+    expect(
+      service.describeBinding({ code: "NumpadSubtract", modifiers: ["primary"] }).conflicts,
+    ).toEqual(["shell.zoom.out" as ShortcutCommandId]);
+    expect(service.describeBinding({ code: "Numpad0", modifiers: ["primary"] }).conflicts).toEqual([
+      "shell.zoom.reset" as ShortcutCommandId,
+    ]);
 
     const ctx: ShortcutContext = { region: "editable", modal: "settings", target: null };
     expect(emit(gesture({ code: "Equal", key: "+", shift: true, meta: true }), ctx)).toBe(true);

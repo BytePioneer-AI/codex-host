@@ -48,7 +48,7 @@ export function SessionRowContent({
         <span className={css.slot}>{content}</span>
       )}
       <span data-session-title className={css.title}>
-        {title}
+        <span className={css.titleText}>{title}</span>
       </span>
       {children}
     </>

@@ -300,3 +300,51 @@ it("continues a Workspace's page within its folder, outside nested Workspaces, o
   await f.list({ cursor: head.nextCursor });
   assert.equal(f.cursors.at(-1)?.scope, undefined, "Recents keeps the plain next page");
 });
+
+it("ends a deleted native project's continuation without reading the global catalog", async (t) => {
+  const f = fixture(t);
+  f.host.projectSnapshot.nativeProjects = true;
+  const { nextCursor } = await f.list();
+  assert.ok(nextCursor);
+  const project = f.workspaces.byPath(join(f.root, "empty"));
+  assert.ok(project);
+
+  await f.list({ cursor: nextCursor, workspaceId: project.workspaceId });
+  assert.deepEqual(f.cursors.at(-1)?.scope, {
+    projectId: "empty",
+    legacyThreadIds: [],
+    rootPaths: [join(f.root, "empty")],
+  });
+
+  f.host.projectSnapshot.projects = [];
+  await f.list();
+  assert.equal(f.workspaces.get(project.workspaceId), undefined);
+  f.workspaces.setReferenceArchives(["native-0"]);
+  const count = f.cursors.length;
+  const stale = await f.list({ cursor: nextCursor, workspaceId: project.workspaceId });
+  assert.deepEqual(stale, { items: [], archivedSessionIds: ["native-0"], nextCursor: null });
+  assert.equal(f.cursors.length, count);
+});
+
+it("rejects expired local draft direct-link reads as session/not-found without querying Host", async (t) => {
+  const f = fixture(t);
+  const expired = await f.rpc.dispatch("session/list", {
+    args: { request: { sessionId: "draft-1b699a94-b559-44b6-8c4a-4b1604d01d4b" } },
+  });
+  assert.equal(expired.ok, false);
+  assert.equal(expired.error.code, "session/not-found");
+  assert.deepEqual(
+    f.host.requests,
+    [],
+    "expired drafts must fail locally without inspecting or reading from the Host",
+  );
+
+  const created = await f.rpc.dispatch("session/create", { args: { request: {} } });
+  assert.ok(created.ok, created.ok ? undefined : created.error.message);
+  const draftId = (created.value as { sessionId: string }).sessionId;
+  const live = await f.list({ sessionId: draftId });
+  assert.deepEqual(
+    live.items.map((row) => row.sessionId),
+    [draftId],
+  );
+});

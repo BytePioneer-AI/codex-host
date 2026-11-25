@@ -105,6 +105,8 @@ function questionReplyIds(input: ProcessInput, keys: readonly NodeKey[]): Readon
 /** One group's members and cached summary, refreshed together when its content changes. */
 class ProcessGroup {
   private nodes: readonly ChatNode[] = [];
+  private forceClosed = false;
+  private sameTurnFollowed = false;
   snapshot: GroupSnapshot<ProcessGroupData>;
 
   constructor(
@@ -119,14 +121,32 @@ class ProcessGroup {
     };
   }
 
-  refresh(input: ProcessInput, closed: boolean): void {
+  get isForceClosed(): boolean {
+    return this.forceClosed;
+  }
+
+  get isSameTurnFollowed(): boolean {
+    return this.sameTurnFollowed;
+  }
+
+  refresh(
+    input: ProcessInput,
+    forceClosed: boolean,
+    sameTurnFollowed: boolean,
+    turnStatus: string | undefined,
+  ): void {
+    this.forceClosed = forceClosed;
+    this.sameTurnFollowed = sameTurnFollowed;
     const nodes = this.members.map((member) => readNode(input, member.key));
     const unchanged =
       nodes.length === this.nodes.length &&
       nodes.every((node, index) => node === this.nodes[index]);
     const previous = this.snapshot.data;
+    const mustClose =
+      turnStatus === "closed" || forceClosed || (sameTurnFollowed && turnStatus !== "open");
     const activity =
-      unchanged && previous.closed === closed ? previous.summary : processActivity(nodes);
+      unchanged && (!previous.closed || mustClose) ? previous.summary : processActivity(nodes);
+    const closed = mustClose || (sameTurnFollowed && activity.running === undefined);
     const summary = closed
       ? { counts: activity.counts, running: undefined, runningDetail: "" }
       : activity;
@@ -146,6 +166,7 @@ class TurnGroups {
   private groups = new Map<GroupKey, ProcessGroup>();
   private membership = new Map<NodeKey, GroupKey>();
   private roots = new Map<NodeKey, readonly RenderEntry[]>();
+  private lastTurnStatus: string | undefined;
 
   constructor(readonly turn: number) {}
 
@@ -163,17 +184,16 @@ class TurnGroups {
       const group = this.membership.get(node);
       if (group !== undefined) dirty.add(group);
     }
-    const ended = input.timeline.turns.get(this.turn)?.status === "closed";
-    if (ended) {
-      for (const group of this.groups.values()) {
-        if (!group.snapshot.data.closed) dirty.add(group.key);
-      }
+    const turnStatus = input.timeline.turns.get(this.turn)?.status;
+    if (turnStatus !== this.lastTurnStatus) {
+      for (const group of this.groups.values()) dirty.add(group.key);
+      this.lastTurnStatus = turnStatus;
     }
     const upserts: GroupSnapshot<ProcessGroupData>[] = [];
     for (const key of dirty) {
       const group = this.groups.get(key) as ProcessGroup;
       const previous = group.snapshot;
-      group.refresh(input, previous.data.closed || ended);
+      group.refresh(input, group.isForceClosed, group.isSameTurnFollowed, turnStatus);
       if (group.snapshot !== previous) upserts.push(group.snapshot);
     }
     return upserts;
@@ -188,10 +208,12 @@ class TurnGroups {
     const membership = new Map<NodeKey, GroupKey>();
     let pending: NodeReference[] = [];
     const upserts: GroupSnapshot<ProcessGroupData>[] = [];
+    const turnStatus = input.timeline.turns.get(this.turn)?.status;
+    this.lastTurnStatus = turnStatus;
     const emit = (key: NodeKey, entry: RenderEntry): void => {
       roots.set(key, [...(roots.get(key) ?? []), entry]);
     };
-    const flush = (closed: boolean): void => {
+    const flush = (forceClosed: boolean, sameTurnFollowed: boolean): void => {
       const first = pending[0];
       if (first === undefined) return;
       const retained = this.extendedGroup(pending, added);
@@ -204,7 +226,7 @@ class TurnGroups {
         previous !== undefined && sameMembers(previous.members, pending)
           ? previous
           : new ProcessGroup(key, this.turn, pending);
-      group.refresh(input, closed || input.timeline.turns.get(this.turn)?.status === "closed");
+      group.refresh(input, forceClosed, sameTurnFollowed, turnStatus);
       groups.set(group.key, group);
       emit(first.key, { kind: "group", key: group.key });
       for (const member of pending) membership.set(member.key, group.key);
@@ -217,14 +239,14 @@ class TurnGroups {
     const replies = questionReplyIds(input, keys);
     for (const key of keys) {
       const position = readPosition(input, key);
-      if (previous !== undefined && position.previous !== previous) flush(true);
+      if (previous !== undefined && position.previous !== previous) flush(true, false);
       previous = key;
       followed = position.next !== undefined;
       const node = readNode(input, key);
       // Both Definitions retain the same message id; only its question presentation renders.
       if (node.kind === "turn-trigger" && replies.has(node.id)) continue;
       if (independent(node)) {
-        flush(true);
+        flush(false, true);
         emit(key, { kind: "node", key });
       } else if (node.kind === "turn-process") {
         // A coalesced opening reply can sort before the control that folds its group.
@@ -232,12 +254,12 @@ class TurnGroups {
       } else if (node.kind === "assistant-step") {
         if (reasoning(node)) pending.push({ kind: "node", key, groupPart: "reasoning" });
         if (reply(node)) {
-          flush(true);
+          flush(false, true);
           emit(key, { kind: "node", key, groupPart: "response" });
         }
       } else pending.push({ kind: "node", key });
     }
-    flush(followed);
+    flush(followed, false);
     const removes = [...this.groups.keys()].filter((key) => !groups.has(key));
     this.groups = groups;
     this.membership = membership;

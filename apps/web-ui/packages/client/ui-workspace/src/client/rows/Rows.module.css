@@ -25,46 +25,67 @@
   margin-left: 2px;
   font-size: 10.5px;
 }
-.hostBadge[data-color="blue"] {
-  --ch-peer-dot-color: #3b82f6;
+.hostBadge[data-color="blue"],
+.hoverHostDot[data-color="blue"],
+.remoteFolderGlobe[data-color="blue"] {
+  --ch-peer-dot-color: #3b76cc;
 }
-.hostBadge[data-color="purple"] {
-  --ch-peer-dot-color: #8b5cf6;
+.hostBadge[data-color="purple"],
+.hoverHostDot[data-color="purple"],
+.remoteFolderGlobe[data-color="purple"] {
+  --ch-peer-dot-color: #7460cc;
 }
-.hostBadge[data-color="cyan"] {
-  --ch-peer-dot-color: #06b6d4;
+.hostBadge[data-color="cyan"],
+.hoverHostDot[data-color="cyan"],
+.remoteFolderGlobe[data-color="cyan"] {
+  --ch-peer-dot-color: #0e8fa8;
 }
-.hostBadge[data-color="green"] {
-  --ch-peer-dot-color: #10b981;
+.hostBadge[data-color="green"],
+.hoverHostDot[data-color="green"],
+.remoteFolderGlobe[data-color="green"] {
+  --ch-peer-dot-color: #2f8c70;
 }
-.hostBadge[data-color="amber"] {
-  --ch-peer-dot-color: #f59e0b;
+.hostBadge[data-color="amber"],
+.hoverHostDot[data-color="amber"],
+.remoteFolderGlobe[data-color="amber"] {
+  --ch-peer-dot-color: #c27803;
 }
-.hostBadge[data-color="rose"] {
-  --ch-peer-dot-color: #f43f5e;
+.hostBadge[data-color="rose"],
+.hoverHostDot[data-color="rose"],
+.remoteFolderGlobe[data-color="rose"] {
+  --ch-peer-dot-color: #c94a6a;
 }
-.hostBadge[data-color="slate"] {
+.hostBadge[data-color="slate"],
+.hoverHostDot[data-color="slate"],
+.remoteFolderGlobe[data-color="slate"] {
   --ch-peer-dot-color: #64748b;
 }
-:global(body[data-ds-dark-theme]) .hostBadge[data-color="blue"] {
-  --ch-peer-dot-color: #60a5fa;
+:global(body[data-ds-dark-theme])
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="blue"] {
+  --ch-peer-dot-color: #7bb0f8;
 }
-:global(body[data-ds-dark-theme]) .hostBadge[data-color="purple"] {
-  --ch-peer-dot-color: #a78bfa;
+:global(body[data-ds-dark-theme])
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="purple"] {
+  --ch-peer-dot-color: #a899f2;
 }
-:global(body[data-ds-dark-theme]) .hostBadge[data-color="cyan"] {
-  --ch-peer-dot-color: #22d3ee;
+:global(body[data-ds-dark-theme])
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="cyan"] {
+  --ch-peer-dot-color: #63c5da;
 }
-:global(body[data-ds-dark-theme]) .hostBadge[data-color="green"] {
-  --ch-peer-dot-color: #34d399;
+:global(body[data-ds-dark-theme])
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="green"] {
+  --ch-peer-dot-color: #6ec4a7;
 }
-:global(body[data-ds-dark-theme]) .hostBadge[data-color="amber"] {
-  --ch-peer-dot-color: #fbbf24;
+:global(body[data-ds-dark-theme])
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="amber"] {
+  --ch-peer-dot-color: #e0ae58;
 }
-:global(body[data-ds-dark-theme]) .hostBadge[data-color="rose"] {
-  --ch-peer-dot-color: #fb7185;
+:global(body[data-ds-dark-theme])
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="rose"] {
+  --ch-peer-dot-color: #e08298;
 }
-:global(body[data-ds-dark-theme]) .hostBadge[data-color="slate"] {
+:global(body[data-ds-dark-theme])
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="slate"] {
   --ch-peer-dot-color: #94a3b8;
 }
 .hostBadge[data-state="connecting"] {
@@ -112,18 +133,123 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .hostBadge[data-state="connecting"] .hostDot {
+  .hostBadge[data-state="connecting"] .hostDot,
+  .remoteHostStatusDot[data-state="connecting"] {
     animation: none;
   }
 }
-.hostTimeSep {
+
+.remoteFolderGlobe {
+  --ch-peer-dot-color: #3b76cc;
+  position: absolute;
+  right: -3px;
+  bottom: 0;
+  width: 11px;
+  height: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--dsh-row-surface);
+  color: var(--ch-peer-dot-color);
+  pointer-events: none;
+}
+
+.remoteSessionGlobe {
+  right: -4px;
+  bottom: 0;
+  width: 10px;
+  height: 10px;
+  z-index: 1;
+}
+
+.remoteSessionGlobe svg {
+  width: 9px;
+  height: 9px;
+}
+
+.remoteFolderGlobe:is(
+  [data-state="disconnected"],
+  [data-state="offline"],
+  [data-state="auth-error"]
+) {
+  opacity: 0.6;
+}
+
+.remoteHostText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.remoteHostText .title {
+  flex: 0 1 auto;
+}
+
+.remoteHostMeta {
   flex: none;
-  margin: 0 5px;
-  font-size: 10px;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
   line-height: 16px;
+  font-variant-numeric: tabular-nums;
   color: var(--dsw-alias-label-tertiary);
+}
+
+.remoteHostStatusDot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-inline-start: auto;
+  margin-inline-end: 4px;
+  background: var(--dsw-alias-label-tertiary);
   opacity: 0.45;
-  user-select: none;
+}
+
+.remoteHostStatusDot[data-state="connected"] {
+  background: var(--dsw-alias-state-success-primary, #22c55e);
+  opacity: 1;
+}
+
+.remoteHostStatusDot[data-state="connecting"] {
+  background: var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-warn-primary, #d97706));
+  opacity: 0.95;
+  animation: hostDotPulse 1.6s ease-in-out infinite;
+}
+
+.hoverHost {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 16px;
+  color: #cfd3d6;
+}
+
+.hoverHostDot {
+  --ch-peer-dot-color: #7bb0f8;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #94a3b8;
+  opacity: 0.55;
+}
+
+.hoverHostDot[data-state="connected"] {
+  background: var(--ch-peer-dot-color);
+  opacity: 0.95;
+}
+
+.hoverHostDot[data-state="connecting"] {
+  background: #e0ae58;
+  opacity: 0.9;
 }
 
 .projectRow,
@@ -437,9 +563,14 @@
 }
 
 /* Expansion is visible immediately after clicking, not only after pointer leave. */
-/* A resting Workspace folder reads at the row's own text weight, as in the
-   Codex sidebar; only the expanded state carries the blue open glyph. */
+/* Keep resting Workspace folders gently quieter than row labels while staying
+   crisp and substantial; hover and expansion restore full emphasis. */
 .projectRow > .slot:not(.folderExpanded) {
+  color: color-mix(in srgb, currentColor 86%, transparent);
+  transition: color 140ms ease;
+}
+
+.projectRow:hover > .slot:not(.folderExpanded) {
   color: inherit;
 }
 
@@ -462,6 +593,59 @@
   white-space: nowrap;
   font-size: 14px;
   line-height: 20px;
+}
+
+/* Soft right-edge fade on full-width sidebar project, session, and search
+   titles only when text actually overflows its available box, so fitting
+   labels stay crisp without masking trailing badges, dots, actions, or
+   shrink-to-fit remote host labels (.remoteHostText .title). Symmetric ink
+   bleed padding keeps overhanging glyphs (italics, combining marks) unclipped
+   inside the mask box without altering layout width. */
+.projectRow .projectText > .title,
+.sessionRow .title,
+.searchResultTitle {
+  --dsh-title-ink-bleed: 4px;
+  container-type: inline-size;
+  display: flex;
+  align-items: center;
+  padding-inline-end: var(--dsh-title-ink-bleed);
+  margin-inline-end: calc(-1 * var(--dsh-title-ink-bleed));
+  overflow-x: clip;
+  overflow-y: visible;
+  text-overflow: clip;
+}
+
+.sessionRow .title {
+  margin-inline-end: calc(6px - var(--dsh-title-ink-bleed));
+}
+
+.projectRow .projectText > .title > .titleText,
+.sessionRow .title > .titleText,
+.searchResultTitle > .titleText {
+  flex: none;
+  box-sizing: content-box;
+  padding: var(--dsh-title-ink-bleed);
+  margin: calc(-1 * var(--dsh-title-ink-bleed));
+  white-space: nowrap;
+  --dsh-title-fade: clamp(
+    0px,
+    (
+        min(100%, 100cqw + 20px + var(--dsh-title-ink-bleed) * 2) - 100cqw -
+          var(--dsh-title-ink-bleed) * 2 - 0.5px
+      ) *
+      48,
+    20px + var(--dsh-title-ink-bleed)
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100cqw + var(--dsh-title-ink-bleed) * 2 - var(--dsh-title-fade)),
+    transparent calc(100cqw + var(--dsh-title-ink-bleed) * 2 + 20px - var(--dsh-title-fade))
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 calc(100cqw + var(--dsh-title-ink-bleed) * 2 - var(--dsh-title-fade)),
+    transparent calc(100cqw + var(--dsh-title-ink-bleed) * 2 + 20px - var(--dsh-title-fade))
+  );
 }
 
 .renameInput {
@@ -525,12 +709,24 @@
 }
 
 /* Completion unread is an informational reminder, not a Harness success badge. */
-.timeStatus [data-state="done"] {
+.timeStatus [data-state="done"],
+.projectActivity [data-state="done"] {
   color: var(--dsw-alias-state-business-primary);
 }
 
+/* What a folded project hides, in the place the row actions take on hover. */
+.projectActivity {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 20px;
+}
+
 /* Keep accessible status text available when hover actions cover the glyph. */
-.timeStatus .visuallyHidden {
+.timeStatus .visuallyHidden,
+.projectActivity .visuallyHidden {
   visibility: visible;
 }
 
@@ -580,12 +776,12 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen)
-    :is(.time, .hostTimeSep, .hostBadge) {
+  .sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) :is(.time, .hostBadge) {
     visibility: hidden;
   }
 
-  .projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .hostBadge {
+  .projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen)
+    :is(.hostBadge, .remoteHostStatusDot, .projectActivity) {
     visibility: hidden;
   }
 
@@ -630,6 +826,10 @@
   padding-block: 2px;
 }
 
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) > .hostRail {
+  top: 7px;
+}
+
 :global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .sessionMain {
   display: contents;
   position: static;
@@ -645,7 +845,7 @@
   grid-column: 2;
   grid-row: 1;
   align-self: center;
-  margin: 0;
+  margin: 0 calc(-1 * var(--dsh-title-ink-bleed)) 0 0;
 }
 
 :global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .trailing {
@@ -806,6 +1006,11 @@
   background: transparent;
 }
 
+:global([data-phone-drawer]) .remoteFolderGlobe,
+:global(body[data-codexhost-wallpaper]) .remoteFolderGlobe {
+  background: var(--dsw-specific-sidebar-fill);
+}
+
 :global(body[data-codexhost-wallpaper]) :is(.projectRow, .sessionRow) {
   --dsh-row-surface: transparent;
 }
@@ -837,6 +1042,13 @@
 @media (hover: hover) and (pointer: fine) {
   :global(body[data-codexhost-wallpaper]) :is(.projectRow > .rowActions, .sessionRow .rowActions) {
     background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 82%, transparent);
+  }
+
+  :global(body[data-codexhost-wallpaper])
+    :is(
+      .projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) > .rowActions,
+      .sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .rowActions
+    ) {
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
   }
@@ -884,10 +1096,6 @@
   }
 
   .sessionRow .time:not(.timeStatus) {
-    display: none;
-  }
-
-  .sessionRow:not(:has(.timeStatus)) .hostTimeSep {
     display: none;
   }
 

@@ -472,6 +472,14 @@ async function nextInteraction(iterator: AsyncIterator<HarnessOutput>) {
 }
 
 describe("Claude Code Composer cache countdown", () => {
+  const usageWithTtl = (promptCacheTtlSeconds?: 300 | 3600) => ({
+    inputTokens: 10,
+    outputTokens: 5,
+    cacheCreationInputTokens: promptCacheTtlSeconds ? 20 : 0,
+    cacheReadInputTokens: 70,
+    ...(promptCacheTtlSeconds ? { promptCacheTtlSeconds } : {}),
+  });
+
   it.each([true, false])(
     "publishes only for native subscription quota (supported: %s)",
     async (accountCreditsSupported) => {
@@ -487,7 +495,11 @@ describe("Claude Code Composer cache countdown", () => {
         const transport = transports[0];
         if (!transport) throw new Error("Expected a Claude transport");
         const before = Math.floor(Date.now() / 1000);
-        transport.event({ type: "message.completed", messageId: "reply" });
+        transport.event({
+          type: "message.completed",
+          messageId: "reply",
+          lastRequestUsage: usageWithTtl(3600),
+        });
         transport.finish({ status: "succeeded" });
         await vi.waitFor(() =>
           expect(
@@ -528,6 +540,112 @@ describe("Claude Code Composer cache countdown", () => {
     },
   );
 
+  it.each([
+    ["5m write", 300 as const, 1_800_000_300],
+    ["1h write", 3600 as const, 1_800_003_600],
+    ["unknown TTL omits fake countdown", undefined, undefined],
+  ])("computes live countdown from observed TTL (%s)", async (_label, ttl, expectedExpiry) => {
+    const { adapter, transports } = fixture({}, { accountCreditsSupported: true });
+    await adapter.inspectAccount();
+    const session = await openSession(adapter);
+    const outputs: HarnessOutput[] = [];
+    const collecting = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    try {
+      await session.execute(textTurn("cache-ttl-live"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Expected a Claude transport");
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+      try {
+        transport.event({
+          type: "message.completed",
+          messageId: "reply-1",
+          lastRequestUsage: usageWithTtl(ttl),
+        });
+      } finally {
+        clock.mockRestore();
+      }
+      transport.finish({ status: "succeeded" });
+      await vi.waitFor(() =>
+        expect(
+          outputs.some(
+            (output) => output.kind === "event" && output.event.type === "turn.completed",
+          ),
+        ).toBe(true),
+      );
+      const indicator = outputs
+        .flatMap((output) =>
+          output.kind === "event" && output.event.type === "session.usage.changed"
+            ? (output.event.usage?.composerIndicators ?? [])
+            : [],
+        )
+        .at(-1);
+      expect(indicator?.expiresAtUnix).toBe(expectedExpiry);
+    } finally {
+      await adapter.close();
+      await collecting;
+    }
+  });
+
+  it("inherits the observed live TTL across cache-read-only continuation turns", async () => {
+    const { adapter, transports } = fixture({}, { accountCreditsSupported: true });
+    await adapter.inspectAccount();
+    const session = await openSession(adapter);
+    const outputs: HarnessOutput[] = [];
+    const collecting = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const latestExpiry = () =>
+      outputs
+        .flatMap((output) =>
+          output.kind === "event" && output.event.type === "session.usage.changed"
+            ? (output.event.usage?.composerIndicators ?? [])
+            : [],
+        )
+        .at(-1)?.expiresAtUnix;
+    try {
+      await session.execute(textTurn("cache-inherit"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Expected a Claude transport");
+      const clock = vi.spyOn(Date, "now").mockReturnValueOnce(1_800_000_000_000);
+      try {
+        transport.event({
+          type: "message.completed",
+          messageId: "reply-write",
+          lastRequestUsage: { ...usageWithTtl(3600), requestId: "req-write" },
+        });
+      } finally {
+        clock.mockRestore();
+      }
+      await vi.waitFor(() => expect(latestExpiry()).toBe(1_800_003_600));
+
+      const renewalClock = vi.spyOn(Date, "now").mockReturnValueOnce(1_800_000_120_000);
+      try {
+        transport.event({
+          type: "message.completed",
+          messageId: "reply-read",
+          lastRequestUsage: { ...usageWithTtl(undefined), requestId: "req-read" },
+        });
+      } finally {
+        renewalClock.mockRestore();
+      }
+      await vi.waitFor(() => expect(latestExpiry()).toBe(1_800_003_720));
+
+      transport.finish({ status: "succeeded" });
+      await vi.waitFor(() =>
+        expect(
+          outputs.some(
+            (output) => output.kind === "event" && output.event.type === "turn.completed",
+          ),
+        ).toBe(true),
+      );
+    } finally {
+      await adapter.close();
+      await collecting;
+    }
+  });
+
   it("uses the recorded response time when subscription quota arrives later, excluding local output", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -560,7 +678,11 @@ describe("Claude Code Composer cache countdown", () => {
       await adapter.inspectAccount();
       const clock = vi.spyOn(Date, "now").mockReturnValueOnce(1_800_000_000_000);
       try {
-        transport.event({ type: "message.completed", messageId: "reply" });
+        transport.event({
+          type: "message.completed",
+          messageId: "reply",
+          lastRequestUsage: usageWithTtl(3600),
+        });
       } finally {
         clock.mockRestore();
       }
@@ -602,7 +724,11 @@ describe("Claude Code Composer cache countdown", () => {
         await session.execute(textTurn("cache-account-race"));
         const transport = transports[0];
         if (!transport) throw new Error("Expected a Claude transport");
-        transport.event({ type: "message.completed", messageId: "reply" });
+        transport.event({
+          type: "message.completed",
+          messageId: "reply",
+          lastRequestUsage: usageWithTtl(3600),
+        });
         const planLimit = { fiveHour: { utilizationPercent: 10 } };
         if (!pushDuringInspection) transport.planLimit(planLimit);
         const inspection = adapter.inspectAccount();
@@ -634,34 +760,76 @@ describe("Claude Code Composer cache countdown", () => {
     },
   );
 
-  it("restores the last main assistant response from native history without restarting the clock", async () => {
-    const { adapter, history } = fixture({}, { accountCreditsSupported: true });
-    await adapter.inspectAccount();
-    history.push(
-      { type: "assistant", timestamp: "2026-08-01T10:00:00Z" },
-      { type: "user", timestamp: "2026-08-01T10:10:00Z" },
-      { type: "assistant", isSidechain: true, timestamp: "2026-08-01T10:20:00Z" },
-      { type: "assistant", parent_tool_use_id: "tool", timestamp: "2026-08-01T10:30:00Z" },
-      { type: "assistant", timestamp: "invalid" },
-    );
-    try {
-      const opened = await adapter.open({
-        kind: "resume",
-        cwd: "/synthetic",
-        nativeRef: nativeSessionRefSchema.parse({
-          harnessId: "claude-code",
-          nativeSessionId: "cache-history",
-          formatVersion: 1,
-        }),
-      });
-      if (!opened.ok) throw new Error(opened.error.message);
-      expect(opened.value.initialUsage?.composerIndicators?.[0]?.expiresAtUnix).toBe(
-        Date.parse("2026-08-01T11:00:00Z") / 1000,
+  it.each([
+    [
+      "1h write",
+      { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 8643 },
+      Date.parse("2026-08-01T11:00:00Z") / 1000,
+    ],
+    [
+      "5m write",
+      { ephemeral_5m_input_tokens: 1200, ephemeral_1h_input_tokens: 0 },
+      Date.parse("2026-08-01T10:05:00Z") / 1000,
+    ],
+    [
+      "mixed 5m + 1h write uses 5m",
+      { ephemeral_5m_input_tokens: 120, ephemeral_1h_input_tokens: 8643 },
+      Date.parse("2026-08-01T10:05:00Z") / 1000,
+    ],
+    ["missing TTL omits fake countdown", undefined, undefined],
+  ])(
+    "restores the last main assistant response from native history without restarting the clock (%s)",
+    async (_label, cacheCreation, expectedExpiry) => {
+      const { adapter, history } = fixture({}, { accountCreditsSupported: true });
+      await adapter.inspectAccount();
+      history.push(
+        {
+          type: "assistant",
+          timestamp: "2026-08-01T10:00:00Z",
+          message: cacheCreation ? { usage: { cache_creation: cacheCreation } } : {},
+        },
+        { type: "user", timestamp: "2026-08-01T10:10:00Z" },
+        {
+          type: "assistant",
+          isSidechain: true,
+          timestamp: "2026-08-01T10:20:00Z",
+          message: {
+            usage: {
+              cache_creation: { ephemeral_5m_input_tokens: 50, ephemeral_1h_input_tokens: 0 },
+            },
+          },
+        },
+        {
+          type: "assistant",
+          parent_tool_use_id: "tool",
+          timestamp: "2026-08-01T10:30:00Z",
+          message: {
+            usage: {
+              cache_creation: { ephemeral_5m_input_tokens: 50, ephemeral_1h_input_tokens: 0 },
+            },
+          },
+        },
+        { type: "assistant", timestamp: "invalid" },
       );
-    } finally {
-      await adapter.close();
-    }
-  });
+      try {
+        const opened = await adapter.open({
+          kind: "resume",
+          cwd: "/synthetic",
+          nativeRef: nativeSessionRefSchema.parse({
+            harnessId: "claude-code",
+            nativeSessionId: "cache-history",
+            formatVersion: 1,
+          }),
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        expect(opened.value.initialUsage?.composerIndicators?.[0]?.expiresAtUnix).toBe(
+          expectedExpiry,
+        );
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
 });
 
 describe("Claude Code usage metering", () => {

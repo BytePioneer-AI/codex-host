@@ -6,8 +6,10 @@ import {
 import { claudeUsageHistory, type ClaudeUsageRecord } from "./claude-usage.js";
 import { createClaudeUsageStatistics } from "./claude-usage-statistics.js";
 import {
+  claudePromptCacheFromMessages,
   claudePromptCacheIndicators,
-  lastClaudeAssistantResponseUnix,
+  claudePromptCacheTtlSeconds,
+  type ClaudePromptCacheTtlSeconds,
 } from "./claude-prompt-cache.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -386,6 +388,7 @@ function transcriptRequestUsage(
       safeNonNegativeInteger(cacheCreationInputTokens) &&
       safeNonNegativeInteger(cacheReadInputTokens)
     ) {
+      const promptCacheTtlSeconds = claudePromptCacheTtlSeconds(entry.message.usage);
       return {
         requestId:
           typeof entry.request_id === "string" && entry.request_id.length > 0
@@ -403,6 +406,7 @@ function transcriptRequestUsage(
         outputTokens,
         cacheCreationInputTokens,
         cacheReadInputTokens,
+        ...(promptCacheTtlSeconds !== undefined ? { promptCacheTtlSeconds } : {}),
       };
     }
   }
@@ -706,6 +710,7 @@ class ClaudeHarnessSession implements HarnessSession {
   #usageGeneration = 0;
   #latestUsage: HostUsage | null = null;
   #lastAssistantResponseAtUnix: number | undefined;
+  #promptCacheTtlSeconds: ClaudePromptCacheTtlSeconds | undefined;
   #accountCreditsSupported: boolean;
   #minimumContextUsedTokens: number | null = null;
   #calibratedInputTokens = 0;
@@ -750,16 +755,19 @@ class ClaudeHarnessSession implements HarnessSession {
         requests: HostUsageRequest[];
         complete: boolean;
         lastResponseAtUnix?: number;
+        promptCacheTtlSeconds?: ClaudePromptCacheTtlSeconds;
       };
       accountCreditsSupported: boolean;
     },
   ) {
     this.#cwd = cwd;
     this.#lastAssistantResponseAtUnix = options.usageHistory.lastResponseAtUnix;
+    this.#promptCacheTtlSeconds = options.usageHistory.promptCacheTtlSeconds;
     this.#accountCreditsSupported = options.accountCreditsSupported;
     const composerIndicators = claudePromptCacheIndicators(
       this.#accountCreditsSupported,
       this.#lastAssistantResponseAtUnix,
+      this.#promptCacheTtlSeconds,
     );
     this.initialUsage = composerIndicators.length ? { composerIndicators } : null;
     this.#latestUsage = this.initialUsage;
@@ -2095,7 +2103,12 @@ class ClaudeHarnessSession implements HarnessSession {
   #handleTurnEvent(active: ActiveTurn, event: ClaudeTurnEvent): void {
     // Usage belongs to the Session, so a request settling after its Turn ended still counts.
     if (event.type === "usage.request") {
-      if (this.#phase !== "closed" && this.#phase !== "faulted") this.#meterUsage(event.record);
+      if (this.#phase !== "closed" && this.#phase !== "faulted") {
+        this.#meterUsage(event.record);
+        if (event.promptCacheTtlSeconds !== undefined) {
+          this.#observePromptCacheTtl(event.promptCacheTtlSeconds);
+        }
+      }
       return;
     }
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
@@ -2138,6 +2151,9 @@ class ClaudeHarnessSession implements HarnessSession {
         return;
       case "message.completed": {
         if (!event.localCommand) {
+          if (event.lastRequestUsage?.promptCacheTtlSeconds !== undefined) {
+            this.#promptCacheTtlSeconds = event.lastRequestUsage.promptCacheTtlSeconds;
+          }
           this.#lastAssistantResponseAtUnix = Math.floor(Date.now() / 1000);
           this.publishAccountCreditsSupport(this.#accountCreditsSupported);
         }
@@ -2624,6 +2640,9 @@ class ClaudeHarnessSession implements HarnessSession {
     // Requests belong to Session usage even when no foreground Turn owns the event.
     if (event.type === "usage.request") {
       this.#meterUsage(event.record);
+      if (event.promptCacheTtlSeconds !== undefined) {
+        this.#observePromptCacheTtl(event.promptCacheTtlSeconds);
+      }
       return;
     }
     if (target && this.#active === target) {
@@ -2867,10 +2886,22 @@ class ClaudeHarnessSession implements HarnessSession {
       usage.inputTokens + usage.cacheCreationInputTokens + usage.cacheReadInputTokens;
     if (promptTokens > 0) this.#minimumContextUsedTokens = promptTokens;
     const cacheHitRatePercent = claudeCacheHitRatePercent(usage);
+    if (usage.promptCacheTtlSeconds !== undefined) {
+      this.#promptCacheTtlSeconds = usage.promptCacheTtlSeconds;
+    }
+    const composerIndicators = claudePromptCacheIndicators(
+      this.#accountCreditsSupported,
+      this.#lastAssistantResponseAtUnix,
+      this.#promptCacheTtlSeconds,
+    );
+    const indicatorChanged =
+      composerIndicators[0]?.expiresAtUnix !==
+      this.#latestUsage?.composerIndicators?.[0]?.expiresAtUnix;
     const contextWindowTokens = this.#latestUsage?.contextWindowTokens;
     this.#mergeAndPublishUsage(
       {
         ...(cacheHitRatePercent !== undefined ? { cacheHitRatePercent } : {}),
+        ...(indicatorChanged ? { composerIndicators } : {}),
         inputTokens: this.#calibratedInputTokens + active.estimatedInputTokens,
         outputTokens: this.#calibratedOutputTokens + active.estimatedOutputTokens,
         ...(active.estimatedCostAvailable
@@ -2916,6 +2947,20 @@ class ClaudeHarnessSession implements HarnessSession {
     if (event.lastRequestUsage) {
       const cacheHitRatePercent = claudeCacheHitRatePercent(event.lastRequestUsage);
       if (cacheHitRatePercent !== undefined) delta.cacheHitRatePercent = cacheHitRatePercent;
+      if (event.lastRequestUsage.promptCacheTtlSeconds !== undefined) {
+        this.#promptCacheTtlSeconds = event.lastRequestUsage.promptCacheTtlSeconds;
+        const composerIndicators = claudePromptCacheIndicators(
+          this.#accountCreditsSupported,
+          this.#lastAssistantResponseAtUnix,
+          this.#promptCacheTtlSeconds,
+        );
+        if (
+          composerIndicators[0]?.expiresAtUnix !==
+          this.#latestUsage?.composerIndicators?.[0]?.expiresAtUnix
+        ) {
+          delta.composerIndicators = composerIndicators;
+        }
+      }
     }
     // Result modelUsage describes Model capacity, not the Session's configured cap.
     // The native summary reads the effective window without count_tokens calls.
@@ -2941,12 +2986,18 @@ class ClaudeHarnessSession implements HarnessSession {
     if (effective) this.publishPlanLimit(effective);
   }
 
+  #observePromptCacheTtl(ttlSeconds: ClaudePromptCacheTtlSeconds): void {
+    this.#promptCacheTtlSeconds = ttlSeconds;
+    this.publishAccountCreditsSupport(this.#accountCreditsSupported);
+  }
+
   publishAccountCreditsSupport(supported: boolean): void {
     if (this.#phase !== "open") return;
     this.#accountCreditsSupported = supported;
     const composerIndicators = claudePromptCacheIndicators(
       supported,
       this.#lastAssistantResponseAtUnix,
+      this.#promptCacheTtlSeconds,
     );
     if (
       composerIndicators[0]?.expiresAtUnix ===
@@ -3811,15 +3862,25 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     cwd: string,
     sessionId: string,
     openMode: "create" | "resume",
-  ): Promise<{ requests: HostUsageRequest[]; complete: boolean; lastResponseAtUnix?: number }> {
+  ): Promise<{
+    requests: HostUsageRequest[];
+    complete: boolean;
+    lastResponseAtUnix?: number;
+    promptCacheTtlSeconds?: ClaudePromptCacheTtlSeconds;
+  }> {
     if (openMode === "create") return { requests: [], complete: true };
     try {
       const messages = await this.#dependencies.readSessionMessages({ cwd, sessionId });
       if (messages === null) return { requests: [], complete: false };
-      const lastResponseAtUnix = lastClaudeAssistantResponseUnix(messages);
+      const promptCache = claudePromptCacheFromMessages(messages);
       return {
         ...claudeUsageHistory(messages),
-        ...(lastResponseAtUnix !== undefined ? { lastResponseAtUnix } : {}),
+        ...(promptCache.lastResponseAtUnix !== undefined
+          ? { lastResponseAtUnix: promptCache.lastResponseAtUnix }
+          : {}),
+        ...(promptCache.ttlSeconds !== undefined
+          ? { promptCacheTtlSeconds: promptCache.ttlSeconds }
+          : {}),
       };
     } catch {
       return { requests: [], complete: false };

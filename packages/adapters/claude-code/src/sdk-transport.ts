@@ -3,6 +3,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   query,
   type CanUseTool,
+  type HookCallback,
   type PermissionResult,
   type PermissionUpdate,
   type Query,
@@ -71,6 +72,8 @@ const DEFAULT_STEER_QUEUED_TIMEOUT_MS = 5_000;
 /** Bounds the Workflow agent labels kept to name agent approvals. */
 const WORKFLOW_AGENT_LABEL_LIMIT = 1_000;
 const INTERRUPT_TIMEOUT_MESSAGE = "Claude SDK interrupt timed out";
+/** Tools that schedule or mutate process-local cron / wakeup timers. */
+const SESSION_CRON_TOOLS = new Set(["CronCreate", "CronDelete", "ScheduleWakeup"]);
 
 class PushableInput<T> implements AsyncIterable<T> {
   #closed = false;
@@ -523,6 +526,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #skillNames: ReadonlySet<string> = new Set();
   #started = false;
   #backgroundTasks = new Set<string>();
+  /** Tasks that left the live roster before their terminal `task_notification` arrived. */
+  #awaitingTaskNotifications = new Set<string>();
+  /** Authoritative count of process-local session crons/wakeups from the latest Stop hook. */
+  #sessionCronCount = 0;
+  /** True after a session cron tool call until a Stop hook reports `session_crons`. */
+  #sessionCronsUnknown = false;
 
   constructor(options: ClaudeSdkTransportOptions) {
     this.sessionId = options.sessionId;
@@ -597,6 +606,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         permissionMode: this.#permissionMode,
         ...(this.#allowDangerouslySkipPermissions ? { allowDangerouslySkipPermissions: true } : {}),
         canUseTool: (toolName, input, options) => this.#canUseTool(toolName, input, options),
+        hooks: { Stop: [{ hooks: [this.#observeStopHook] }] },
         persistSession: true,
         includePartialMessages: true,
         forwardSubagentText: true,
@@ -1284,10 +1294,18 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     if (failures.length > 0)
       throw new AggregateError(failures, "Claude SDK shutdown could not be confirmed");
     this.#backgroundTasks.clear();
+    this.#awaitingTaskNotifications.clear();
+    this.#sessionCronCount = 0;
+    this.#sessionCronsUnknown = false;
   }
 
   hasBackgroundTasks(): boolean {
-    return this.#backgroundTasks.size > 0;
+    return (
+      this.#backgroundTasks.size > 0 ||
+      this.#awaitingTaskNotifications.size > 0 ||
+      this.#sessionCronCount > 0 ||
+      this.#sessionCronsUnknown
+    );
   }
 
   /** The native `task_notification` that follows reports the stopped task. */
@@ -1378,22 +1396,85 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
   }
 
+  /** Observation-only Stop hook: reads authoritative process-local cron count without altering turn control. */
+  readonly #observeStopHook: HookCallback = async (input) => {
+    if (!this.#closing && input.hook_event_name === "Stop" && Array.isArray(input.session_crons)) {
+      this.#sessionCronCount = input.session_crons.length;
+      this.#sessionCronsUnknown = false;
+    }
+    return {};
+  };
+
+  #observeSessionCrons(message: unknown): void {
+    if (!isRecord(message)) return;
+    if (
+      message.type === "assistant" &&
+      isRecord(message.message) &&
+      Array.isArray(message.message.content)
+    ) {
+      for (const block of message.message.content) {
+        if (
+          isRecord(block) &&
+          block.type === "tool_use" &&
+          typeof block.name === "string" &&
+          SESSION_CRON_TOOLS.has(block.name)
+        ) {
+          this.#sessionCronsUnknown = true;
+          return;
+        }
+      }
+      return;
+    }
+    if (
+      message.type === "stream_event" &&
+      isRecord(message.event) &&
+      message.event.type === "content_block_start" &&
+      isRecord(message.event.content_block) &&
+      message.event.content_block.type === "tool_use" &&
+      typeof message.event.content_block.name === "string" &&
+      SESSION_CRON_TOOLS.has(message.event.content_block.name)
+    ) {
+      this.#sessionCronsUnknown = true;
+    }
+  }
+
   #observeBackgroundTasks(message: unknown): void {
     if (!isRecord(message) || message.type !== "system") return;
     if (message.subtype === "background_tasks_changed" && Array.isArray(message.tasks)) {
-      this.#backgroundTasks = new Set(
+      const next = new Set(
         message.tasks.flatMap((task) =>
           isRecord(task) && typeof task.task_id === "string" ? [task.task_id] : [],
         ),
       );
-    } else if (message.subtype === "task_started" && typeof message.task_id === "string") {
+      for (const id of this.#backgroundTasks) {
+        if (!next.has(id)) this.#awaitingTaskNotifications.add(id);
+      }
+      for (const id of next) {
+        this.#awaitingTaskNotifications.delete(id);
+      }
+      this.#backgroundTasks = next;
+    } else if (
+      message.subtype === "task_started" &&
+      typeof message.task_id === "string" &&
+      message.is_backgrounded !== false
+    ) {
       this.#backgroundTasks.add(message.task_id);
+      this.#awaitingTaskNotifications.delete(message.task_id);
+    } else if (
+      message.subtype === "task_updated" &&
+      typeof message.task_id === "string" &&
+      isRecord(message.patch) &&
+      message.patch.is_backgrounded === true
+    ) {
+      this.#backgroundTasks.add(message.task_id);
+      this.#awaitingTaskNotifications.delete(message.task_id);
     } else if (
       message.subtype === "task_notification" &&
       typeof message.task_id === "string" &&
       ["completed", "failed", "stopped"].includes(String(message.status))
     ) {
       this.#backgroundTasks.delete(message.task_id);
+      this.#awaitingTaskNotifications.delete(message.task_id);
     }
   }
 
@@ -1433,6 +1514,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     try {
       for await (const message of activeQuery) {
         this.#observeBackgroundTasks(message);
+        this.#observeSessionCrons(message);
         this.#observeWorkflowAgents(message);
         this.#observeSlashCommands(message);
         this.#observeNativeCapabilities(message);

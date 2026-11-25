@@ -159,6 +159,26 @@ pub fn inherited_npm_node() -> Option<OsString> {
     }
 }
 
+pub fn resolve_executable_on_path(executable: &Path) -> Option<PathBuf> {
+    resolve_executable_in_path(executable, env::var_os("PATH").as_deref())
+}
+
+fn resolve_executable_in_path(executable: &Path, path: Option<&OsStr>) -> Option<PathBuf> {
+    let path = path?;
+    env::split_paths(path).find_map(|directory| {
+        let candidate = std::path::absolute(directory.join(executable)).ok()?;
+        let metadata = candidate.metadata().ok()?;
+        if !metadata.is_file() {
+            return None;
+        }
+        #[cfg(unix)]
+        if rustix::fs::access(&candidate, rustix::fs::Access::EXEC_OK).is_err() {
+            return None;
+        }
+        Some(candidate)
+    })
+}
+
 fn source_checkout_layout(executable: &Path) -> Option<(PathBuf, PathBuf)> {
     let build_directory = executable.parent()?;
     let profile = build_directory.file_name()?;
@@ -397,5 +417,45 @@ mod tests {
         let error = InstalledResources::from_executable(Path::new("bin/codexhost"))
             .expect_err("relative executable must fail");
         assert!(error.contains("must be absolute"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_lookup_skips_candidates_without_effective_execute_permission() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        if rustix::process::getuid().as_raw() == 0 {
+            return;
+        }
+
+        let root = env::temp_dir().join(format!("codexhost-path-exec-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let unexecutable_dir = root.join("first");
+        let executable_dir = root.join("second");
+        fs::create_dir_all(&unexecutable_dir).unwrap();
+        fs::create_dir_all(&executable_dir).unwrap();
+
+        let bad_node = unexecutable_dir.join("node");
+        fs::write(&bad_node, "not executable by owner").unwrap();
+        fs::set_permissions(&bad_node, fs::Permissions::from_mode(0o641)).unwrap();
+
+        let good_node = executable_dir.join("node");
+        fs::write(&good_node, "executable by owner").unwrap();
+        fs::set_permissions(&good_node, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let path = env::join_paths([&unexecutable_dir, &executable_dir]).unwrap();
+        assert_eq!(
+            super::resolve_executable_in_path(Path::new("node"), Some(path.as_os_str())),
+            Some(good_node)
+        );
+
+        let only_bad = env::join_paths([&unexecutable_dir]).unwrap();
+        assert_eq!(
+            super::resolve_executable_in_path(Path::new("node"), Some(only_bad.as_os_str())),
+            None
+        );
+
+        fs::remove_dir_all(root).unwrap();
     }
 }

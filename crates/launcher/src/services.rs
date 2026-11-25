@@ -34,7 +34,9 @@ pub fn finish_launch(print: bool) {
     }
 }
 
-use crate::installation_layout::{InstalledResources, inherited_npm_node};
+use crate::installation_layout::{
+    InstalledResources, inherited_npm_node, resolve_executable_on_path,
+};
 use crate::startup_record::data_directory;
 use crate::{LaunchOptions, console, desktop_attachment, desktop_shell, host_service, web_service};
 use codexhost_platform::node_entrypoint_path;
@@ -46,21 +48,7 @@ pub fn web_enabled() -> bool {
 
 fn source_web_node(node: &Path) -> Result<PathBuf, Box<dyn Error>> {
     const MISSING_NODE: &str = "Source Web requires Node on PATH or an absolute --node path";
-    let path = env::var_os("PATH").ok_or(MISSING_NODE)?;
-    env::split_paths(&path)
-        .find_map(|directory| {
-            let candidate = std::path::absolute(directory.join(node)).ok()?;
-            let metadata = candidate.metadata().ok()?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if metadata.permissions().mode() & 0o111 == 0 {
-                    return None;
-                }
-            }
-            metadata.is_file().then_some(candidate)
-        })
-        .ok_or_else(|| MISSING_NODE.into())
+    resolve_executable_on_path(node).ok_or_else(|| MISSING_NODE.into())
 }
 
 fn resolve_options(

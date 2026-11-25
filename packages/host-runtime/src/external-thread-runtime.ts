@@ -773,7 +773,10 @@ export class ExternalThreadRuntime {
           snapshot.value,
           this.#failedTurns(record),
         );
-        const { selection: storedSelection } = await this.#storedSelection(adapter, aligned.record);
+        const storedSelection = decodeExternalTransportSelection(
+          aligned.record.harnessId,
+          aligned.record.transportModelId,
+        );
         const snapshotState = snapshot.value.state;
         const effectiveModel = snapshotState
           ? snapshotState.effectiveModel

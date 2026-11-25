@@ -1084,6 +1084,7 @@ describe("public authenticated owner channel", () => {
       });
 
       const open = vi.spyOn(fixture.adapter, "open");
+      const inspect = vi.spyOn(fixture.adapter, "inspect");
       const readSnapshot = vi.fn(async () => snapshot);
       fixture.adapter.readSnapshot = readSnapshot;
 
@@ -1091,7 +1092,9 @@ describe("public authenticated owner channel", () => {
       expect(coldSnapshot.thread.id).toBe(threadId);
       expect(coldSnapshot.turnsPage.data.map((turn) => turn.id)).toContain(turnId);
       expect(coldSnapshot.activeTurnId).toBeNull();
+      expect(coldSnapshot.configuration.effectiveModel).toBeDefined();
       expect(open).not.toHaveBeenCalled();
+      expect(inspect).not.toHaveBeenCalled();
       expect(readSnapshot).toHaveBeenCalledTimes(1);
       writeRequest(fixture.desktopInput, {
         id: 903,

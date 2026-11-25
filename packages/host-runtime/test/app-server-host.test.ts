@@ -425,6 +425,7 @@ describe("AppServerHost idle resource release", () => {
       if (!snapshot.ok) throw new Error(snapshot.error.message);
       const close = vi.spyOn(source, "close");
       const open = vi.spyOn(fixture.adapter, "open");
+      const inspect = vi.spyOn(fixture.adapter, "inspect");
       const readSnapshot = vi.fn(async () => ({
         ok: true as const,
         value: {
@@ -516,6 +517,7 @@ describe("AppServerHost idle resource release", () => {
         result: [],
       });
       expect(open).not.toHaveBeenCalled();
+      expect(inspect).not.toHaveBeenCalled();
       expect(readSnapshot).toHaveBeenCalledTimes(2);
     } finally {
       await stopFixture(fixture);

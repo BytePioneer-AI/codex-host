@@ -575,11 +575,22 @@ function SessionTree({
       (key) => groupExpansion[key] ?? (key === UNGROUPED_KEY || ancestorKeys.has(key)),
     );
   }, [groupExpansion, parents, workspaces]);
+  const forestRoots = useMemo(
+    () => new Map(deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node])),
+    [list, rowState, statuses],
+  );
   const groups = useMemo(() => {
-    const result = deriveGroups(list, workspaces, rowState, statuses, {
-      expandedGroups,
-      excludePinned: true,
-    });
+    const result = deriveGroups(
+      list,
+      workspaces,
+      rowState,
+      statuses,
+      {
+        expandedGroups,
+        excludePinned: true,
+      },
+      forestRoots,
+    );
     if (
       (canStartProjectless || (list.hasMore && result.length === 0)) &&
       !result.some((group) => group.key === UNGROUPED_KEY)
@@ -597,7 +608,7 @@ function SessionTree({
         sessions: [],
       });
     return result;
-  }, [list, workspaces, rowState, statuses, expandedGroups, canStartProjectless]);
+  }, [list, workspaces, rowState, statuses, expandedGroups, canStartProjectless, forestRoots]);
   const now = Date.now();
   const commitSessionDrag = (activeDrag: DragState, over: NonNullable<DragState["over"]>): void => {
     if (sessionDropCommitted.current) return;
@@ -699,12 +710,10 @@ function SessionTree({
   );
   const shownWorkspaceRoots = allWorkspacesShown ? workspaceRoots : collapsedWorkspaces.rows;
   const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
-  const nativeLayout = nativeSectionLayout(
-    nativeSections,
-    list,
-    rowState,
-    statuses,
-    sectionExpansion,
+  const nativeLayout = useMemo(
+    () =>
+      nativeSectionLayout(nativeSections, list, rowState, statuses, sectionExpansion, forestRoots),
+    [nativeSections, list, rowState, statuses, sectionExpansion, forestRoots],
   );
   const workspacesSectionExpanded = sectionExpanded(sectionExpansion, WORKSPACES_SECTION_KEY);
 
@@ -717,8 +726,12 @@ function SessionTree({
     setGroupExpanded(group.key, !group.expanded);
   };
 
-  const pinnedRows = deriveFlat(list, rowState.pinnedSessionIds, rowState, statuses).filter(
-    (node) => node.pinned,
+  const pinnedRows = useMemo(
+    () =>
+      deriveFlat(list, rowState.pinnedSessionIds, rowState, statuses, forestRoots).filter(
+        (node) => node.pinned,
+      ),
+    [list, rowState, statuses, forestRoots],
   );
   const rowKeys: string[] = [];
   if (pinnedRows.length > 0) {
@@ -1178,11 +1191,12 @@ function nativeSectionLayout(
   rowState: SessionRowState,
   statuses: SessionStatuses,
   expansion: SessionTreeProps["sectionExpansion"],
+  precomputedRoots?: ReadonlyMap<SessionId, SessionNode>,
 ) {
   if (!sections.length) return [];
-  const roots = new Map(
-    deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]),
-  );
+  const roots =
+    precomputedRoots ??
+    new Map(deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]));
   const placed = new Set<SessionId>();
   return sections.map(({ id, name, threadIds }) => {
     const key = `native-section:${id}`;
@@ -1286,15 +1300,23 @@ function FlatList({
   const panelActive = usePanelInfo((info) => info.activePanelId !== null);
   const statuses = useSessionStatus((s) => s);
   const threadView = useThreadTreeView();
+  const forestRoots = useMemo(
+    () => new Map(deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node])),
+    [list, rowState, statuses],
+  );
   const rows = useMemo(
     () =>
-      deriveFlat(list, sessionIds, rowState, statuses).filter(
+      deriveFlat(list, sessionIds, rowState, statuses, forestRoots).filter(
         (node) => !node.pinned && !rowState.sectionedSessionIds?.has(node.id),
       ),
-    [list, sessionIds, rowState, statuses],
+    [list, sessionIds, rowState, statuses, forestRoots],
   );
-  const pinnedRows = deriveFlat(list, rowState.pinnedSessionIds, rowState, statuses).filter(
-    (node) => node.pinned,
+  const pinnedRows = useMemo(
+    () =>
+      deriveFlat(list, rowState.pinnedSessionIds, rowState, statuses, forestRoots).filter(
+        (node) => node.pinned,
+      ),
+    [list, rowState, statuses, forestRoots],
   );
   const [drag, setDrag] = useState<DragState | null>(null);
   const dropCommitted = useRef(false);
@@ -1315,12 +1337,10 @@ function FlatList({
   };
   const now = Date.now();
   const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
-  const nativeLayout = nativeSectionLayout(
-    nativeSections,
-    list,
-    rowState,
-    statuses,
-    sectionExpansion,
+  const nativeLayout = useMemo(
+    () =>
+      nativeSectionLayout(nativeSections, list, rowState, statuses, sectionExpansion, forestRoots),
+    [nativeSections, list, rowState, statuses, sectionExpansion, forestRoots],
   );
   return (
     <div className={clsx(css.treeBody, css.wide)}>
@@ -1704,7 +1724,10 @@ function WorkspaceBrowserContent({
     () => sessionMemberIds(list, archivedSessionIds),
     [archivedSessionIds, list],
   );
-  const threadOrder = useMemo(() => threadTreeOrderSource(list, rowState), [list, rowState]);
+  const threadOrder = useMemo(
+    () => threadTreeOrderSource(list, rowState, threadView.forest),
+    [list, rowState, threadView.forest],
+  );
   const projectedWorkspaces = useMemo(
     () =>
       workspaces.map((workspace) => {
@@ -1775,8 +1798,8 @@ function WorkspaceBrowserContent({
     );
   }, [currentBlank, flatMemberIds, threadOrder, orderBy, orderState, sessionOrderByAccount]);
   const orderSource = useMemo(
-    () => pinOrderSource(workspaces, list, rowState),
-    [list, rowState, workspaces],
+    () => pinOrderSource(workspaces, list, rowState, threadOrder),
+    [list, rowState, threadOrder, workspaces],
   );
   const activeSessionOrders = useMemo<Readonly<Record<string, readonly SessionId[]>>>(
     () =>

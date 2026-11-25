@@ -267,3 +267,192 @@ it("keeps each browser's choice through reconnect and ignores a previous generat
   expect(ids(b.manager)).toEqual([ordinary]);
   await Promise.all([a.manager.dispose(), b.manager.dispose()]);
 });
+
+it("filters chat-only projections, drops no-op updates, and coalesces live stream updates per animation frame", async () => {
+  const { manager } = fixture();
+  await manager.refreshList();
+  const notifications = vi.fn();
+  const unsubscribe = manager.subscribe(notifications);
+
+  const flushMicrotasks = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  // Chat-only projections update the store without notifying list subscribers.
+  manager.handleControlFrame({
+    type: "projection",
+    sessionId: ordinary,
+    key: "codexhostToolOutput",
+    value: { lines: ["hello"] },
+    seq: 1,
+  });
+  manager.handleControlFrame({
+    type: "projection",
+    sessionId: ordinary,
+    key: "codexhostUsage",
+    value: { total: 10 },
+    seq: 1,
+  });
+  await flushMicrotasks();
+  expect(notifications).not.toHaveBeenCalled();
+  expect(manager.projectionValues(ordinary)?.codexhostToolOutput).toEqual({ lines: ["hello"] });
+
+  // No-op upsert and status updates do not notify list subscribers.
+  manager.handleSessionAdded(row(ordinary));
+  manager.handleSessionStatus(ordinary, false);
+  await flushMicrotasks();
+  expect(notifications).not.toHaveBeenCalled();
+
+  // Identical control projection values do not notify a second time.
+  manager.handleControlFrame({
+    type: "projection",
+    sessionId: ordinary,
+    key: "title",
+    value: "Stable Title",
+    seq: 2,
+  });
+  await flushMicrotasks();
+  expect(notifications).toHaveBeenCalledTimes(1);
+  manager.handleControlFrame({
+    type: "projection",
+    sessionId: ordinary,
+    key: "title",
+    value: "Stable Title",
+    seq: 3,
+  });
+  await flushMicrotasks();
+  expect(notifications).toHaveBeenCalledTimes(1);
+
+  // When requestAnimationFrame exists, burst live stream updates coalesce into one flush.
+  const frames: FrameRequestCallback[] = [];
+  const originalRaf = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+    frames.push(callback);
+    return frames.length;
+  }) as typeof globalThis.requestAnimationFrame;
+  try {
+    notifications.mockClear();
+    manager.handleSessionStatus(ordinary, true);
+    manager.handleSessionActivity(ordinary, 999);
+    manager.handleControlFrame({
+      type: "projection",
+      sessionId: ordinary,
+      key: "title",
+      value: "Next Title",
+      seq: 4,
+    });
+    await flushMicrotasks();
+    expect(notifications).not.toHaveBeenCalled();
+    expect(frames).toHaveLength(1);
+    frames[0]!(16);
+    expect(notifications).toHaveBeenCalledTimes(1);
+    const snapshot = manager.getListSnapshot();
+    expect(snapshot.items[0]?.title).toBe("Next Title");
+    expect(snapshot.items[0]?.running).toBe(true);
+    expect(snapshot.items[0]?.updatedAt).toBe(999);
+  } finally {
+    globalThis.requestAnimationFrame = originalRaf;
+    unsubscribe();
+    await manager.dispose();
+  }
+});
+
+it("notifies on summaryOnly clearance, projection-only removal, subagent status flips, and fences stale null projection reads across same-value frames", async () => {
+  const direct = SessionId("direct-only");
+  const projectionOnly = SessionId("projection-only");
+  const subagent = SessionId("subagent-only");
+  const projectionsGate = Promise.withResolvers<RemoteResult<null>>();
+  const list = vi.fn<(request: SessionListRequest) => Promise<RemoteResult<SessionListValue>>>(
+    async (request) => (request.sessionId === direct ? ok([row(direct)]) : ok([row(ordinary)])),
+  );
+  const projections = vi.fn(async () => projectionsGate.promise);
+  const manager = new SessionManager({
+    session: { list, projections },
+  } as unknown as SessionRemotes);
+
+  await manager.refreshList();
+  const notifications = vi.fn();
+  const unsubscribe = manager.subscribe(notifications);
+  const flushMicrotasks = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  try {
+    // 1. Direct loadSummary followed by identical catalog handleSessionAdded must clear summaryOnlyIds.
+    await manager.loadSummary(direct);
+    await flushMicrotasks();
+    expect(manager.getListSnapshot().summaryOnlyIds).toContain(direct);
+    notifications.mockClear();
+    manager.handleSessionAdded(row(direct));
+    await flushMicrotasks();
+    expect(notifications).toHaveBeenCalledTimes(1);
+    expect(manager.getListSnapshot().summaryOnlyIds).not.toContain(direct);
+
+    // 2. Removing a session that has only a control projection must invalidate projectionsBySession.
+    manager.handleControlFrame({
+      type: "projection",
+      sessionId: projectionOnly,
+      key: "title",
+      value: "Ghost",
+      seq: 1,
+    });
+    await flushMicrotasks();
+    expect(manager.getListSnapshot().projectionsBySession[projectionOnly]?.values.title).toBe(
+      "Ghost",
+    );
+    notifications.mockClear();
+    manager.handleSessionRemoved(projectionOnly);
+    await flushMicrotasks();
+    expect(notifications).toHaveBeenCalledTimes(1);
+    expect(manager.getListSnapshot().projectionsBySession[projectionOnly]).toBeUndefined();
+    // Repeated removal of an already-absent id remains a no-op.
+    notifications.mockClear();
+    manager.handleSessionRemoved(projectionOnly);
+    await flushMicrotasks();
+    expect(notifications).not.toHaveBeenCalled();
+
+    // 3. A resident subagent absent from summaries still notifies list consumers when running flips.
+    const residentChild = manager.get(subagent);
+    expect(residentChild.getSnapshot().running).toBe(false);
+    notifications.mockClear();
+    manager.handleSessionStatus(subagent, true);
+    await flushMicrotasks();
+    expect(residentChild.getSnapshot().running).toBe(true);
+    expect(notifications).toHaveBeenCalledTimes(1);
+    notifications.mockClear();
+    manager.handleSessionStatus(subagent, false);
+    await flushMicrotasks();
+    expect(residentChild.getSnapshot().running).toBe(false);
+    expect(notifications).toHaveBeenCalledTimes(1);
+    notifications.mockClear();
+    manager.handleSessionStatus(subagent, false);
+    await flushMicrotasks();
+    expect(notifications).not.toHaveBeenCalled();
+
+    // 4. Same-value live frame during in-flight refreshProjections prevents stale null from clearing the store.
+    manager.handleControlFrame({
+      type: "projection",
+      sessionId: ordinary,
+      key: "title",
+      value: "Confirmed",
+      seq: 1,
+    });
+    await flushMicrotasks();
+    const refresh = manager.refreshProjections(ordinary);
+    manager.handleControlFrame({
+      type: "projection",
+      sessionId: ordinary,
+      key: "title",
+      value: "Confirmed",
+      seq: 2,
+    });
+    projectionsGate.resolve({ ok: true, value: null });
+    await refresh;
+    expect(manager.projectionValues(ordinary)?.title).toBe("Confirmed");
+  } finally {
+    unsubscribe();
+    await manager.dispose();
+  }
+});

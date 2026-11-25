@@ -485,7 +485,8 @@ mod tests {
             .join(executable.file_name().unwrap());
         std::fs::create_dir_all(child.parent().unwrap()).unwrap();
         std::fs::copy(&executable, &child).unwrap();
-        let status = Command::new(&child)
+        let mut command = Command::new(&child);
+        command
             .args([
                 "--exact",
                 "console::tests::source_checkout_console_strips_all_npm_update_runtime_variables",
@@ -494,8 +495,8 @@ mod tests {
             .env(crate::NPM_NODE_PATH_ENV, root.join("node"))
             .env(crate::NPM_CLI_PATH_ENV, root.join("npm-cli.js"))
             .env(crate::NPM_LAUNCHER_PATH_ENV, root.join("codexhost.js"))
-            .env(crate::NPM_PACKAGE_ROOT_ENV, root.join("package"))
-            .status();
+            .env(crate::NPM_PACKAGE_ROOT_ENV, root.join("package"));
+        let status = crate::tests::status_retrying_busy(&mut command);
         std::fs::remove_dir_all(root).unwrap();
         assert!(status.unwrap().success());
     }

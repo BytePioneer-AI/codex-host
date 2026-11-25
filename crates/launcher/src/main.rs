@@ -1956,6 +1956,23 @@ mod tests {
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
     use std::process::Command;
+
+    pub(crate) fn status_retrying_busy(
+        command: &mut Command,
+    ) -> std::io::Result<std::process::ExitStatus> {
+        let mut attempts = 0;
+        loop {
+            match command.status() {
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 10 =>
+                {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                result => return result,
+            }
+        }
+    }
     #[cfg(target_os = "macos")]
     use std::process::Stdio;
     #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
@@ -2680,29 +2697,29 @@ mod tests {
         }
 
         let found_path = env::join_paths([&first, &second]).unwrap();
-        let found_status = Command::new(&child)
+        let mut found_command = Command::new(&child);
+        found_command
             .args([
                 "--exact",
                 "tests::source_checkout_launch_resolves_node_from_path_with_priority_and_exec_check",
             ])
             .env(CHILD, &root)
             .env("CODEXHOST_TEST_SOURCE_LAUNCH_MODE", MODE_FOUND)
-            .env("PATH", &found_path)
-            .status()
-            .unwrap();
+            .env("PATH", &found_path);
+        let found_status = status_retrying_busy(&mut found_command).unwrap();
         assert!(found_status.success());
 
         let missing_path = env::join_paths([&first]).unwrap();
-        let missing_status = Command::new(&child)
+        let mut missing_command = Command::new(&child);
+        missing_command
             .args([
                 "--exact",
                 "tests::source_checkout_launch_resolves_node_from_path_with_priority_and_exec_check",
             ])
             .env(CHILD, &root)
             .env("CODEXHOST_TEST_SOURCE_LAUNCH_MODE", MODE_MISSING)
-            .env("PATH", &missing_path)
-            .status()
-            .unwrap();
+            .env("PATH", &missing_path);
+        let missing_status = status_retrying_busy(&mut missing_command).unwrap();
         assert!(missing_status.success());
 
         std::fs::remove_dir_all(root).unwrap();

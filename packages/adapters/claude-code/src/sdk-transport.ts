@@ -160,8 +160,11 @@ export interface ClaudeSdkModelInspectorOptions {
   environment?: NodeJS.ProcessEnv;
   cwd: string;
   closeTimeoutMs: number;
+  inspectTimeoutMs?: number;
   queryFactory?: typeof query;
 }
+
+const DEFAULT_MODEL_INSPECT_TIMEOUT_MS = 60_000;
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -1550,6 +1553,7 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
   readonly #children: ChildProcessWithoutNullStreams[] = [];
   #stderrTail = "";
   readonly #closeTimeoutMs: number;
+  readonly #inspectTimeoutMs: number;
   readonly #command: string | undefined;
   readonly #cwd: string;
   readonly #environment: NodeJS.ProcessEnv;
@@ -1564,6 +1568,7 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
 
   constructor(options: ClaudeSdkModelInspectorOptions) {
     this.#closeTimeoutMs = options.closeTimeoutMs;
+    this.#inspectTimeoutMs = options.inspectTimeoutMs ?? DEFAULT_MODEL_INSPECT_TIMEOUT_MS;
     this.#command = options.command;
     this.#cwd = options.cwd;
     this.#environment = options.environment ?? process.env;
@@ -1620,20 +1625,27 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
   }
 
   async inspect(): Promise<ClaudeModelInspectionSnapshot> {
-    const activeQuery = this.#createQuery();
+    const timeout = rejectAfter(this.#inspectTimeoutMs, "Claude SDK Model inspection timed out");
     try {
-      const initialized = await activeQuery.initializationResult();
-      const candidate = activeQuery as unknown as Record<string, unknown>;
-      const canSelectModel =
-        Array.isArray(initialized.models) && typeof candidate.setModel === "function";
-      const canSelectPermissionMode = typeof candidate.setPermissionMode === "function";
-      const modelPicker = await readClaudeUserModelPicker(this.#environment);
-      return {
-        models: mergeClaudeModelPickerOptions(initialized.models, modelPicker),
-        canSelectModel,
-        canSelectPermissionMode,
-      };
+      const activeQuery = this.#createQuery();
+      return await Promise.race([
+        (async () => {
+          const initialized = await activeQuery.initializationResult();
+          const candidate = activeQuery as unknown as Record<string, unknown>;
+          const canSelectModel =
+            Array.isArray(initialized.models) && typeof candidate.setModel === "function";
+          const canSelectPermissionMode = typeof candidate.setPermissionMode === "function";
+          const modelPicker = await readClaudeUserModelPicker(this.#environment);
+          return {
+            models: mergeClaudeModelPickerOptions(initialized.models, modelPicker),
+            canSelectModel,
+            canSelectPermissionMode,
+          };
+        })(),
+        timeout.promise,
+      ]);
     } finally {
+      timeout.cancel();
       await this.close();
     }
   }
@@ -1645,17 +1657,37 @@ export class ClaudeSdkModelInspector implements ClaudeModelInspector {
 
   async #close(): Promise<void> {
     this.#input.end();
-    this.#query?.close();
+    try {
+      this.#query?.close();
+    } catch {
+      // Child process termination below must still run if the SDK query throws while closing.
+    }
     for (const child of this.#children) {
-      if (!processExited(child)) child.kill("SIGTERM");
+      if (!processExited(child)) {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // Ignore races where the child exited before SIGTERM was delivered.
+        }
+      }
     }
     await Promise.race([
       Promise.all(this.#children.map((child) => this.#waitForExit(child))),
       delay(this.#closeTimeoutMs),
     ]);
     for (const child of this.#children) {
-      if (!processExited(child)) child.kill("SIGKILL");
+      if (!processExited(child)) {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // Ignore races where the child exited before SIGKILL was delivered.
+        }
+      }
     }
+    await Promise.race([
+      Promise.all(this.#children.map((child) => this.#waitForExit(child))),
+      delay(Math.min(this.#closeTimeoutMs, 1_000)),
+    ]);
     this.#query = null;
   }
 

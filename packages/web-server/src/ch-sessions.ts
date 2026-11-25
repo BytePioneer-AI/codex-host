@@ -9,6 +9,7 @@ import {
   THREAD_STEER_STRICT_TARGET_PARAM,
   WEB_ACTIVE_TURN_PROJECTION,
   WEB_FOLLOW_PROJECTION_KEYS,
+  WEB_HANDOFF_PROJECTION,
   clientThreadSectionsSchema,
   clientThreadSectionMoveSchema,
   webTurnDiffsRequestSchema,
@@ -24,6 +25,7 @@ import {
   threadUsageInspectionSchema,
   type HarnessDisplayEntries,
   type ThreadCatalogReadParams,
+  type ThreadHandoffMetadata,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient, ChProjectSnapshot } from "./ch-host-client.ts";
 import { ChHarnessCatalog, type ModelSelection } from "./ch-harness-catalog.ts";
@@ -42,6 +44,7 @@ import { ChThreadEditing } from "./ch-thread-edit.ts";
 import { canEditQueuedInput, takeQueuedItemForEdit } from "./ch-queue-edit.ts";
 import { editedNativeInput } from "./native-user-input.ts";
 import { forkChThread, forkUnavailable } from "./ch-thread-fork.ts";
+import { handoffChThread, handoffUnavailable } from "./ch-thread-handoff.ts";
 import { ChPinnedThreads } from "./ch-pinned-threads.ts";
 import { ChThreadTree } from "./ch-thread-tree.ts";
 import { type WebImages, WEB_IMAGE_INPUT, WEB_IMAGE_LIMITS } from "./web-images.ts";
@@ -98,6 +101,7 @@ export class ChSessions {
   private readonly fileInputs: ChFileInputs | undefined;
   private rows = new Map<string, ChThread>();
   private publishedCatalog: Map<string, string> | undefined;
+  private readonly handoffs = new Map<string, ThreadHandoffMetadata | null>();
   /** Loaded rows accumulate across partial official pages; drafts are not Host Threads. */
   private readonly threads = new WebThreadStates();
   private drafts = new Map<string, Draft>();
@@ -537,7 +541,10 @@ export class ChSessions {
     for (const row of changed) this.events.emit("api-session/added", row);
     if (before)
       for (const id of before.keys())
-        if (!next.has(id)) this.events.emit("api-session/removed", id);
+        if (!next.has(id)) {
+          this.handoffs.delete(id);
+          this.events.emit("api-session/removed", id);
+        }
   }
   private async owner(id: string) {
     const resolved = this.id(id);
@@ -546,6 +553,7 @@ export class ChSessions {
     const inspection = threadInspectionSchema.parse(
       await this.host.request("codexhost/thread/inspect", { threadId: resolved }),
     );
+    this.handoffs.set(resolved, inspection.handoff ?? null);
     return {
       ...inspection,
       harnessId: inspection.owner === "codex" ? "codex" : inspection.harnessId,
@@ -677,6 +685,12 @@ export class ChSessions {
       "nativeDiscovery",
       !view.thread.parentThreadId && view.thread.canAcceptDirectInput !== false,
     );
+    if (view.ownerSnapshot) {
+      this.handoffs.set(id, view.ownerSnapshot.handoff ?? null);
+      view.log.setProjection(WEB_HANDOFF_PROJECTION, view.ownerSnapshot.handoff ?? null);
+    } else if (this.handoffs.has(id)) {
+      view.log.setProjection(WEB_HANDOFF_PROJECTION, this.handoffs.get(id) ?? null);
+    }
     if (view.ownerSnapshot && this.hostOnline && !this.closed)
       this.interactions?.update(view.ownerSnapshot);
     if (this.realtime)
@@ -775,6 +789,11 @@ export class ChSessions {
           "nativePermissions",
           nativePermissionView(harnessId, inspection as Inspection, true),
         );
+        if ("handoff" in owner) {
+          view.log.setProjection(WEB_HANDOFF_PROJECTION, owner.handoff ?? null);
+        } else if (!view.ownerSnapshot) {
+          view.log.setProjection(WEB_HANDOFF_PROJECTION, null);
+        }
         const selection = {
           provider: harnessId,
           model: owner.effectiveModel ? harnessModelRefKey(owner.effectiveModel) : "harness",
@@ -803,6 +822,7 @@ export class ChSessions {
       "nativeConnection",
       "nativeInteractionError",
       "subagentCatalog",
+      WEB_HANDOFF_PROJECTION,
       ...(row.parentThreadId ? ["subagent", "subagentTiming", "tokenUsage"] : []),
     ];
     const values = {
@@ -811,6 +831,9 @@ export class ChSessions {
           .filter((key) => Object.hasOwn(projections, key))
           .map((key) => [key, projections[key]]),
       ),
+      ...(this.handoffs.has(row.id) && !Object.hasOwn(projections, WEB_HANDOFF_PROJECTION)
+        ? { [WEB_HANDOFF_PROJECTION]: this.handoffs.get(row.id) ?? null }
+        : {}),
       threadTreeParent: this.tree.parent(row.id),
       archiveForkParent: this.archiveForkParent(row),
       nativeDiscovery: !row.parentThreadId && row.canAcceptDirectInput !== false,
@@ -1379,6 +1402,50 @@ export class ChSessions {
       const result = await forkChThread(this.host, view, request.atSeq);
       // A failed catalog read must not turn a confirmed fork into a rejected write.
       // The next list/notification refresh will reconcile the canonical child.
+      await this.refresh().catch(() => undefined);
+      return result;
+    });
+    rpc.register("session/handoff", async (args) => {
+      const request = requestOf<{
+        sessionId: string;
+        atSeq?: number;
+        targetHarnessId: string;
+        targetModel?: string;
+        targetThinkingOptionId?: string;
+      }>(args);
+      if (
+        typeof request.sessionId !== "string" ||
+        !request.sessionId ||
+        typeof request.targetHarnessId !== "string" ||
+        !request.targetHarnessId.trim() ||
+        (request.atSeq !== undefined &&
+          (!Number.isSafeInteger(request.atSeq) || request.atSeq < 0)) ||
+        (request.targetModel !== undefined &&
+          (typeof request.targetModel !== "string" || !request.targetModel.trim())) ||
+        (request.targetThinkingOptionId !== undefined &&
+          (typeof request.targetThinkingOptionId !== "string" ||
+            !request.targetThinkingOptionId.trim()))
+      )
+        throw new RpcError("session/handoff-invalid", "Invalid handoff request.");
+      const id = this.id(request.sessionId);
+      if (this.drafts.has(id))
+        return handoffUnavailable(id, "Send a message before handing off this session.");
+      const displayed = this.threads.view(id);
+      if (request.atSeq !== undefined && !displayed)
+        return handoffUnavailable(id, "Handoff history expired. Reopen the conversation.");
+      const view = await this.view(id);
+      if (request.atSeq !== undefined && view !== displayed)
+        return handoffUnavailable(id, "Handoff history changed. Reopen the conversation.");
+      const result = await handoffChThread(this.host, view, {
+        ...(request.atSeq !== undefined ? { atSeq: request.atSeq } : {}),
+        targetHarnessId: request.targetHarnessId,
+        ...(request.targetModel !== undefined ? { targetModel: request.targetModel } : {}),
+        ...(request.targetThinkingOptionId !== undefined
+          ? { targetThinkingOptionId: request.targetThinkingOptionId }
+          : {}),
+      });
+      this.handoffs.set(result.sessionId, result.handoff);
+      // A failed catalog read must not turn a confirmed handoff into a rejected write.
       await this.refresh().catch(() => undefined);
       return result;
     });

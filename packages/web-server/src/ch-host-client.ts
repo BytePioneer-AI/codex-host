@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  THREAD_HANDOFF_METHOD,
   clientThreadPinsSchema,
   type ClientThreadSnapshot,
   type ClientWorkspaceSnapshot,
@@ -107,6 +108,7 @@ const METHODS = new Set([
   "codexhost/skills/list",
   "codexhost/thread/command/execute",
   "codexhost/thread/fork",
+  THREAD_HANDOFF_METHOD,
   "codexhost/harness/session-import/sources",
   "codexhost/harness/session-import/list",
   "codexhost/harness/session-import/import",

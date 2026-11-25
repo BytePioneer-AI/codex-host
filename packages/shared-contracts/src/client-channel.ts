@@ -7,6 +7,7 @@ import {
   hostExtensionRevisionSchema,
 } from "./host-extension-management.js";
 import { THREAD_ARCHIVE_CONFIRM_METHOD } from "./thread-archive-confirm.js";
+import { THREAD_HANDOFF_METHOD, threadHandoffMetadataSchema } from "./thread-handoff.js";
 
 /** Authenticated local owner channel. Notifications invalidate state; they are
  * NOT appendable transcript deltas. Clients reconcile absolute snapshots. */
@@ -66,6 +67,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/harness/commands/inspect",
   "codexhost/thread/command/execute",
   "codexhost/thread/fork",
+  THREAD_HANDOFF_METHOD,
   "codexhost/harness/session-import/sources",
   "codexhost/harness/session-import/list",
   "codexhost/harness/session-import/import",
@@ -355,6 +357,7 @@ export const clientThreadSnapshotSchema = z.object({
     })
     .optional(),
   interactions: z.array(clientInteractionSchema),
+  handoff: threadHandoffMetadataSchema.optional(),
 });
 export type ClientThreadSnapshot = z.infer<typeof clientThreadSnapshotSchema>;
 export type ClientFileOperation = NonNullable<

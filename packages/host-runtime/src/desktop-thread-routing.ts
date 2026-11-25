@@ -20,6 +20,7 @@ import {
 } from "@codexhost/protocol-core";
 import {
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  THREAD_HANDOFF_METHOD,
   THREAD_QUESTIONS_LIST_METHOD,
   THREAD_QUESTION_RESPOND_METHOD,
   harnessCommandsInspectParamsSchema,
@@ -97,6 +98,7 @@ export interface DesktopThreadRoutingHost {
   forwardOfficialRequest(request: JsonRpcRequest, frame: Buffer<ArrayBufferLike>): Promise<void>;
   startExternalThread(request: JsonRpcRequest, harnessId: ExternalHarnessId): Promise<void>;
   forkExternalThreadFromRenderer(request: JsonRpcRequest): Promise<void>;
+  handoffThread(request: JsonRpcRequest): Promise<void>;
   inspectThread(request: JsonRpcRequest): Promise<void>;
   inspectThreadUsage(request: JsonRpcRequest): Promise<void>;
   listThreadOwnership(request: JsonRpcRequest): Promise<void>;
@@ -213,6 +215,10 @@ export class DesktopThreadRouting {
     }
     if (request.method === "codexhost/thread/fork") {
       await this.#host.forkExternalThreadFromRenderer(request);
+      return true;
+    }
+    if (request.method === THREAD_HANDOFF_METHOD) {
+      this.#host.dispatchReply(request, () => this.#host.handoffThread(request));
       return true;
     }
     if (request.method === "codexhost/thread/inspect") {

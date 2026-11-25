@@ -60,6 +60,13 @@ function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
+const SLASH_COMMAND_PATTERN = /^\s*\/[^\s/]+(?:\s|$)/u;
+
+/** Native slash commands (excluding file paths like `/foo/bar`) must not be prefixed. */
+export function isSlashCommandInput(text: string): boolean {
+  return SLASH_COMMAND_PATTERN.test(text);
+}
+
 /** Native Turn text that leads with held injected text, and how to recognize it on replay. */
 export function withInjectedText(
   held:
@@ -68,7 +75,7 @@ export function withInjectedText(
 ): InjectedTurnText {
   const pending = held?.pendingInjectedText;
   const released = held?.releasedInjectedTexts ?? 0;
-  if (!pending?.length) return { text, through: released };
+  if (!pending?.length || isSlashCommandInput(text)) return { text, through: released };
   const prefix = `${pending.join("\n\n")}\n\n`;
   return {
     text: `${prefix}${text}`,

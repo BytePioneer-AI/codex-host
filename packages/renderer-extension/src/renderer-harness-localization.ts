@@ -24,6 +24,20 @@ export interface RendererHarnessMessages {
   readonly refreshModels: string;
   readonly modelSelectionRejected: string;
   readonly thinkingSelectionRejected: string;
+  readonly handoffAction: string;
+  readonly handoffTitle: string;
+  readonly handoffTargetHarnessLabel: string;
+  readonly handoffTargetModelLabel: string;
+  readonly handoffDefaultModelOption: string;
+  readonly handoffTargetThinkingLabel: string;
+  readonly handoffDefaultThinkingOption: string;
+  readonly handoffLoadingModels: string;
+  readonly handoffConfirm: string;
+  readonly handoffSubmitting: string;
+  readonly handoffCancel: string;
+  readonly handoffOpenSourceThread: string;
+  readonly handoffPreviewLabel: string;
+  readonly handoffFailed: string;
 }
 
 const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
@@ -46,6 +60,20 @@ const ENGLISH_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   refreshModels: "Refresh models",
   modelSelectionRejected: "Couldn't switch Model",
   thinkingSelectionRejected: "Couldn't switch Thinking option",
+  handoffAction: "Handoff context",
+  handoffTitle: "Context handoff",
+  handoffTargetHarnessLabel: "Target Harness",
+  handoffTargetModelLabel: "Model (optional)",
+  handoffDefaultModelOption: "Default model",
+  handoffTargetThinkingLabel: "Thinking (optional)",
+  handoffDefaultThinkingOption: "Default thinking",
+  handoffLoadingModels: "Loading models…",
+  handoffConfirm: "Handoff",
+  handoffSubmitting: "Handing off…",
+  handoffCancel: "Cancel",
+  handoffOpenSourceThread: "Open source thread",
+  handoffPreviewLabel: "Context preview",
+  handoffFailed: "Context handoff failed",
 });
 
 const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
@@ -67,6 +95,20 @@ const CHINESE_HARNESS_MESSAGES: RendererHarnessMessages = Object.freeze({
   refreshModels: "刷新模型列表",
   modelSelectionRejected: "无法切换模型",
   thinkingSelectionRejected: "无法切换思考选项",
+  handoffAction: "上下文交接",
+  handoffTitle: "上下文交接",
+  handoffTargetHarnessLabel: "目标 Harness",
+  handoffTargetModelLabel: "模型（可选）",
+  handoffDefaultModelOption: "默认模型",
+  handoffTargetThinkingLabel: "思考档位（可选）",
+  handoffDefaultThinkingOption: "默认思考档位",
+  handoffLoadingModels: "正在加载模型…",
+  handoffConfirm: "确认交接",
+  handoffSubmitting: "正在交接…",
+  handoffCancel: "取消",
+  handoffOpenSourceThread: "跳回源会话",
+  handoffPreviewLabel: "交接上下文预览",
+  handoffFailed: "上下文交接失败",
 });
 
 export function rendererHarnessMessages(locale: RendererSettingsLocale): RendererHarnessMessages {
@@ -97,4 +139,25 @@ export function rendererLiveCommandsPendingNotice(
   return locale === "zh-CN"
     ? `发送一条消息后，会加载 ${harness} 在当前项目的全部命令`
     : `Send a message to load all ${harness} commands for this project`;
+}
+
+export function formatRendererHandoffTurnsSummary(
+  locale: RendererSettingsLocale,
+  input: {
+    includedCount: number;
+    totalTurns: number;
+    omittedTurns: number;
+    boundaryTurnNumber: number;
+  },
+): string {
+  if (locale === "zh-CN") {
+    if (input.omittedTurns > 0) {
+      return `已携带 ${input.includedCount} / ${input.totalTurns} 轮上下文（已省略 ${input.omittedTurns} 轮，截至第 ${input.boundaryTurnNumber} 轮）`;
+    }
+    return `已携带全部 ${input.includedCount} / ${input.totalTurns} 轮上下文`;
+  }
+  if (input.omittedTurns > 0) {
+    return `Carried ${input.includedCount} of ${input.totalTurns} turns (${input.omittedTurns} omitted, up to turn ${input.boundaryTurnNumber})`;
+  }
+  return `Carried all ${input.includedCount} of ${input.totalTurns} turns`;
 }

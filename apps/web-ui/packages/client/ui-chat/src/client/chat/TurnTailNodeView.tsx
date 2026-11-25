@@ -38,6 +38,7 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
   node,
   openFile,
   forkAt,
+  handoffAt,
   loadTurnDiffs,
   renderSlot,
   t,
@@ -126,6 +127,15 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
         branchUnavailable={
           !historyReady || forkPending || data.branchUnavailable || hasLaterChatNode
         }
+        onHandoff={
+          handoffAt === undefined
+            ? undefined
+            : () => {
+                if (!historyReady) return;
+                handoffAt(data.seq);
+              }
+        }
+        handoffUnavailable={!historyReady || data.branchUnavailable || hasLaterChatNode}
         className={css.actions}
         extraActions={assistantActions}
         t={t}

@@ -14,6 +14,7 @@ import {
   IDLE_RELEASE_SETTINGS_METHOD,
   USAGE_STATISTICS_METHOD,
   SKILLS_LIST_METHOD,
+  THREAD_HANDOFF_METHOD,
 } from "@codexhost/shared-contracts";
 import {
   storedSectionPlacementV1Schema,
@@ -66,6 +67,7 @@ const LIST_CHANGING_METHODS = new Set([
   "thread/section/move",
   "thread/start",
   "thread/unarchive",
+  THREAD_HANDOFF_METHOD,
 ]);
 
 /** A GUI keeps its native Codex connection and forwards only shared external Threads. */
@@ -279,6 +281,7 @@ export class SharedThreadBridge {
         IDLE_RELEASE_SETTINGS_METHOD,
         USAGE_STATISTICS_METHOD,
         SKILLS_LIST_METHOD,
+        THREAD_HANDOFF_METHOD,
       ].some((value) => value === method)
     );
   }

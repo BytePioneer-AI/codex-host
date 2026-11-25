@@ -15,6 +15,7 @@ import {
   type ClientChannelResponse,
   type ClientSnapshotOptions,
   type ClientThreadSnapshot,
+  type ThreadHandoffMetadata,
 } from "@codexhost/shared-contracts";
 import { NativeThreadTitles, type NativeTitleDiagnostic } from "./native-thread-title.js";
 
@@ -101,6 +102,8 @@ export interface ClientChannelHostDependencies {
   /** History served to clients, including the live snapshot of a non-ephemeral active Turn. */
   clientHistoryTurns(thread: ExternalThread): JsonObject[];
   queueSnapshot(threadId: string): ExternalThreadQueueSnapshot;
+  /** Reads persisted handoff provenance without waking a cold Thread. */
+  readThreadHandoff?(threadId: string): Promise<ThreadHandoffMetadata | null>;
   /** Native Codex calls use the shared service's already-attached official client. */
   readonly native?: NativeClientChannelDependencies;
   diagnoseNativeTitle?(event: NativeTitleDiagnostic): void;
@@ -443,10 +446,12 @@ export class ClientChannelHost {
         (latestStatus === "interrupted" || latestStatus === "failed")
           ? latestStatus
           : null;
+      const handoff = (await this.#host.readThreadHandoff?.(threadId)) ?? undefined;
       return compactClientSnapshot(
         clientThreadSnapshotSchema.parse({
           ...snapshot,
           queue: { items, pausedReason },
+          ...(handoff ? { handoff } : {}),
         }),
         options,
       );
@@ -485,6 +490,7 @@ export class ClientChannelHost {
         })),
     ];
     const state = thread.stateObserver.state;
+    const handoff = (await this.#host.readThreadHandoff?.(threadId)) ?? undefined;
     const snapshot = clientThreadSnapshotSchema.parse(
       copyAsJson({
         cursor: this.clientEvents.cursor,
@@ -512,6 +518,7 @@ export class ClientChannelHost {
         },
         queue: this.#host.queueSnapshot(threadId),
         interactions,
+        ...(handoff ? { handoff } : {}),
       }),
     );
     // Native history may be refreshed after terminal output. Preserve this

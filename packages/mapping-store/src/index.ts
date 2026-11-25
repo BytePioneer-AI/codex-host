@@ -29,9 +29,11 @@ export type {
   ThreadMetadataPatch,
 } from "./records.js";
 export { storedSectionPlacementV1Schema } from "./section-placements.js";
+export { storedThreadHandoffV1Schema } from "./thread-handoffs.js";
 export { SUPERSEDED_SESSIONS_MAX } from "./superseded-sessions.js";
 export type { StoredSupersededSessionV1 } from "./superseded-sessions.js";
 export type { StoredSectionPlacementV1, StoredThreadSection } from "./section-placements.js";
+export type { StoredThreadHandoffV1 } from "./thread-handoffs.js";
 
 export const packageMetadata = {
   name: "@codexhost/mapping-store",

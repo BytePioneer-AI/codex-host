@@ -139,6 +139,7 @@ import {
   jsonValueSchema,
   threadInspectionParamsSchema,
   threadInspectionSchema,
+  threadHandoffParamsSchema,
   threadModelSelectParamsSchema,
   threadUsageInspectionParamsSchema,
   threadUsageInspectionSchema,
@@ -171,6 +172,7 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import { executeExternalThreadFork } from "./external-thread-fork.js";
+import { executeThreadHandoff } from "./thread-handoff-executor.js";
 import {
   holdInjectedItems,
   ownTurns,
@@ -1011,6 +1013,7 @@ export class AppServerHost {
       loadedThread: (threadId) => this.#externalRuntime?.get(threadId),
       clientHistoryTurns: (thread) => this.#externalHistoryTurns(thread, true),
       queueSnapshot: (threadId) => this.#externalQueue.snapshot(threadId),
+      readThreadHandoff: (threadId) => this.#repository.getThreadHandoff(threadId),
       ...(this.#options.externalOnly
         ? {
             native: {
@@ -1025,6 +1028,7 @@ export class AppServerHost {
                 error?: { code: number; message: string },
               ) => this.#respondClientNative(requestId, result, error),
               desktopConnected: () => this.#options.desktopConnected?.() ?? false,
+              readThreadHandoff: (threadId: string) => this.#repository.getThreadHandoff(threadId),
             },
           }
         : {}),
@@ -1393,6 +1397,7 @@ export class AppServerHost {
       forwardOfficialRequest: (request, frame) => this.#forwardOfficialRequest(request, frame),
       startExternalThread: (request, harnessId) => this.#startExternalThread(request, harnessId),
       forkExternalThreadFromRenderer: (request) => this.#forkExternalThreadFromRenderer(request),
+      handoffThread: (request) => this.#handoffThread(request),
       inspectThread: (request) => this.#inspectThread(request),
       inspectThreadUsage: (request) => this.#inspectThreadUsage(request),
       listThreadOwnership: (request) => this.#listThreadOwnership(request),
@@ -1763,6 +1768,7 @@ export class AppServerHost {
       if (delegation.childHostThreadId === threadId || delegation.parentHostThreadId === threadId)
         await this.#repository.removeDelegation(delegation.delegationId);
     }
+    await this.#repository.removeThreadHandoff(threadId);
     this.#treeWatch.forget(threadId);
     this.clientEvents.changed(threadId, "codexhost/thread/tree/changed");
   }
@@ -4142,12 +4148,14 @@ export class AppServerHost {
       resolution.kind === "official" ? null : await this.#threadUsage(resolution.thread);
     const sessionCatalog =
       resolution.kind === "external" ? resolution.thread.session.modelCatalog?.() : undefined;
+    const handoff = (await this.#repository.getThreadHandoff(params.data.threadId)) ?? undefined;
     const inspection = threadInspectionSchema.parse(
       resolution.kind === "official"
         ? {
             owner: "codex",
             locked: true,
             ...(supportsThreadReferences ? { supportsThreadReferences: true } : {}),
+            ...(handoff ? { handoff } : {}),
           }
         : {
             owner: "external",
@@ -4180,6 +4188,7 @@ export class AppServerHost {
             ...(sessionCatalog ? { catalog: sessionCatalog } : {}),
             history: resolution.thread.session.capabilities.history,
             ...(threadUsage ? { usage: threadUsage } : {}),
+            ...(handoff ? { handoff } : {}),
             locked: true,
           },
     );
@@ -5318,6 +5327,48 @@ export class AppServerHost {
       }),
     );
     await this.#notifyExternalThreadStarted(result.thread);
+  }
+
+  #harnessDisplayLabel(harnessId: HarnessId): string {
+    if (harnessId === "codex") return "Codex";
+    return (
+      this.#pluginDescriptors.find((descriptor) => descriptor.id === harnessId)?.name ?? harnessId
+    );
+  }
+
+  async #handoffThread(request: JsonRpcRequest): Promise<void> {
+    const parsed = threadHandoffParamsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      await this.#writer.json(rpcError(request, -32602, "Thread handoff request is invalid"));
+      return;
+    }
+    await this.#waitForPlugins();
+    const execution = await executeThreadHandoff({
+      params: parsed.data,
+      adapters: this.#externalAdapters,
+      repository: this.#repository,
+      runtime: this.#externalRuntime,
+      environment: this.#options.environment ?? process.env,
+      harnessLabel: (harnessId) => this.#harnessDisplayLabel(harnessId),
+      locateExternalThread: (threadId) => this.#locateExternalThread(threadId),
+      resolveExternalThread: (threadId) => this.#resolveExternalThread(threadId),
+      refreshExternalThread: (thread) => this.#refreshExternalThread(thread),
+      externalHistoryTurns: (thread) => this.#externalHistoryTurns(thread),
+      registerExternalThread: (input) => this.#registerExternalThread(input),
+      requestOfficial: (method, params) => this.#requestOfficial(method, params),
+    });
+    if (!execution.ok) {
+      await this.#writer.json(rpcError(request, execution.error.code, execution.error.message));
+      return;
+    }
+    await this.#writer.json(
+      rpcEnvelope(request, { result: jsonValueSchema.parse(execution.result) }),
+    );
+    if (execution.externalStartedThread) {
+      await this.#notifyExternalThreadStarted(execution.externalStartedThread);
+    } else if (execution.officialStartedThreadId) {
+      this.clientEvents.changed(execution.officialStartedThreadId, "thread/start");
+    }
   }
 
   async #forkExternalThread(

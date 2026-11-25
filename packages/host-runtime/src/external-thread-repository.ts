@@ -1,4 +1,4 @@
-import type { UsageMeasurementsSnapshot } from "@codexhost/shared-contracts";
+import type { ThreadHandoffMetadata, UsageMeasurementsSnapshot } from "@codexhost/shared-contracts";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -112,6 +112,12 @@ export interface ExternalThreadStore {
   replaceSectionPlacements(
     placements: readonly StoredSectionPlacementV1[],
   ): Promise<StoredSectionPlacementV1[]>;
+  getThreadHandoff?(targetThreadId: HostThreadId): Promise<ThreadHandoffMetadata | null>;
+  saveThreadHandoff?(
+    targetThreadId: HostThreadId,
+    handoff: ThreadHandoffMetadata,
+  ): Promise<ThreadHandoffMetadata>;
+  removeThreadHandoff?(targetThreadId: HostThreadId): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -181,6 +187,26 @@ export class ExternalThreadRepository {
     placements: readonly StoredSectionPlacementV1[],
   ): Promise<StoredSectionPlacementV1[]> {
     return this.store.replaceSectionPlacements(placements);
+  }
+
+  async getThreadHandoff(targetThreadId: string): Promise<ThreadHandoffMetadata | null> {
+    if (!this.store.getThreadHandoff) return null;
+    const parsed = hostThreadIdSchema.safeParse(targetThreadId);
+    return parsed.success ? this.store.getThreadHandoff(parsed.data) : null;
+  }
+
+  async saveThreadHandoff(
+    targetThreadId: HostThreadId,
+    handoff: ThreadHandoffMetadata,
+  ): Promise<ThreadHandoffMetadata> {
+    if (!this.store.saveThreadHandoff) return handoff;
+    return this.store.saveThreadHandoff(targetThreadId, handoff);
+  }
+
+  async removeThreadHandoff(targetThreadId: string): Promise<void> {
+    if (!this.store.removeThreadHandoff) return;
+    const parsed = hostThreadIdSchema.safeParse(targetThreadId);
+    if (parsed.success) await this.store.removeThreadHandoff(parsed.data);
   }
 
   materializeSubagent(parent: StoredThreadRecordV1, child: HostSubagentState) {

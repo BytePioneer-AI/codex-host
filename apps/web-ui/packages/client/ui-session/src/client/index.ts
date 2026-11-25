@@ -515,8 +515,9 @@ export class UiSession extends Service {
     const previous = this.running.get(sessionId);
     const beforeBaseline = this.sessions.list.getSnapshot().phase === "pending";
     this.running.set(sessionId, running);
-    if (running) this.completionUnread.delete(sessionId);
-    else if (
+    if (running) {
+      if (previous !== true) this.completionUnread.delete(sessionId);
+    } else if (
       (previous === true || (previous === undefined && beforeBaseline)) &&
       !this.isMain(sessionId)
     )

@@ -109,9 +109,33 @@ pub fn configure_detached_service_command(
     Ok(())
 }
 
+/// Fallback when the caller's Windows job does not allow breakaway: the child
+/// stays inside the caller's job instead of failing to start.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn configure_detached_service_command_compat(
+    command: &mut std::process::Command,
+) -> Result<(), PlatformError> {
+    configure_detached_service_command(command)
+}
+
 #[cfg(target_os = "windows")]
 pub fn configure_detached_service_command(
     command: &mut std::process::Command,
+) -> Result<(), PlatformError> {
+    configure_detached_service_command_impl(command, true)
+}
+
+#[cfg(target_os = "windows")]
+pub fn configure_detached_service_command_compat(
+    command: &mut std::process::Command,
+) -> Result<(), PlatformError> {
+    configure_detached_service_command_impl(command, false)
+}
+
+#[cfg(target_os = "windows")]
+fn configure_detached_service_command_impl(
+    command: &mut std::process::Command,
+    breakaway_from_job: bool,
 ) -> Result<(), PlatformError> {
     use std::os::windows::process::CommandExt;
     use windows::Win32::Foundation::{HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation};
@@ -134,9 +158,11 @@ pub fn configure_detached_service_command(
                 .map_err(|error| PlatformError::Io(io::Error::other(error.to_string())))?;
         }
     }
-    command.creation_flags(
-        (CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS).0,
-    );
+    let mut flags = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS;
+    if breakaway_from_job {
+        flags |= CREATE_BREAKAWAY_FROM_JOB;
+    }
+    command.creation_flags(flags.0);
     Ok(())
 }
 

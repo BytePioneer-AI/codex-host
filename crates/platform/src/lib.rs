@@ -63,7 +63,10 @@ mod windows_proxy;
 #[allow(unsafe_code)]
 mod windows_ui;
 
-pub use background::{configure_detached_service_command, detach_from_terminal};
+pub use background::{
+    configure_detached_service_command, configure_detached_service_command_compat,
+    detach_from_terminal,
+};
 pub use desktop_launch::{
     DesktopProcess, launch_desktop, launch_desktop_with_removed_environment, launch_stock_desktop,
     open_external_url, open_latest_codexhost_release, reveal_file,

@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::webview::NewWindowResponse;
+use tauri::webview::{NewWindowResponse, PermissionKind, PermissionResponse};
 use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use url::Url;
 
@@ -85,6 +85,14 @@ fn navigation_for(app: &AppHandle, url: &Url) -> Navigation {
         // while the window is switching back to the embedded loading page.
         Navigation::Web if !matches!(view.page, Page::Web) => Navigation::Block,
         decision => decision,
+    }
+}
+
+fn permission_response(page: &Page, kind: PermissionKind) -> PermissionResponse {
+    if matches!(page, Page::Web) && kind == PermissionKind::Microphone {
+        PermissionResponse::Allow
+    } else {
+        PermissionResponse::Default
     }
 }
 
@@ -470,6 +478,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let app_handle = app.handle().clone();
             let popup_app = app_handle.clone();
             let navigation_app = app_handle.clone();
+            let permission_app = app_handle.clone();
             let path = if onboarding { ONBOARDING } else { LOADING };
             let builder = WebviewWindowBuilder::new(
                 app,
@@ -490,6 +499,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true);
             builder
+                .on_permission_request(move |_, kind| {
+                    let shell = permission_app.state::<Shell>();
+                    let view = shell.view.lock().unwrap();
+                    permission_response(&view.page, kind)
+                })
                 .on_navigation(move |url| match navigation_for(&navigation_app, url) {
                     Navigation::Embedded | Navigation::Web => true,
                     Navigation::Browser => {
@@ -567,7 +581,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Page, Status};
+    use tauri::webview::{PermissionKind, PermissionResponse};
+
+    use super::{Page, Status, permission_response};
 
     #[test]
     fn onboarding_and_dormant_ignore_background_web_events() {
@@ -577,5 +593,28 @@ mod tests {
         assert!(Page::Loading(Status::Reconnecting, None).accepts_web_events());
         assert!(Page::Loading(Status::Error, Some("err".into())).accepts_web_events());
         assert!(Page::Web.accepts_web_events());
+    }
+
+    #[test]
+    fn grants_microphone_permission_only_for_live_web_page() {
+        assert_eq!(
+            permission_response(&Page::Web, PermissionKind::Microphone),
+            PermissionResponse::Allow
+        );
+        assert_eq!(
+            permission_response(&Page::Onboarding, PermissionKind::Microphone),
+            PermissionResponse::Default
+        );
+        assert_eq!(
+            permission_response(
+                &Page::Loading(Status::Starting, None),
+                PermissionKind::Microphone
+            ),
+            PermissionResponse::Default
+        );
+        assert_eq!(
+            permission_response(&Page::Web, PermissionKind::Camera),
+            PermissionResponse::Default
+        );
     }
 }

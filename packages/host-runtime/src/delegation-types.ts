@@ -1,6 +1,7 @@
 import type { ThreadExportInput, ThreadExportResult } from "./delegation-thread-export.js";
 import type { DelegationWorktree } from "./delegation-worktree.js";
 import type { JsonObject, JsonValue, RoutedHarnessId } from "@codexhost/protocol-core";
+import type { PeerDelegationHostsResult } from "@codexhost/shared-contracts";
 import type {
   HarnessInspection,
   HarnessModelRef,
@@ -31,6 +32,41 @@ export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 /** Default `thread list` page size and ordering. */
 export const DEFAULT_LIST_LIMIT = 25;
 export const DEFAULT_LIST_SORT = "created-desc";
+
+export type DelegationCallerAuthContext =
+  | { readonly kind: "external-client"; readonly client: string }
+  | { readonly kind: "agent"; readonly boundThreadId?: string };
+
+/**
+ * Private side-table attaching Host-verified caller auth context to an input object without
+ * mutating its keys or shape. JSON HTTP payloads can never populate this WeakMap.
+ */
+const callerAuthContexts = new WeakMap<object, DelegationCallerAuthContext>();
+
+export function attachCallerAuthContext<T extends object>(
+  value: T,
+  context: DelegationCallerAuthContext | undefined,
+): T {
+  if (context) callerAuthContexts.set(value, context);
+  return value;
+}
+
+export function getCallerAuthContext(
+  value: object | undefined,
+): DelegationCallerAuthContext | undefined {
+  return value ? callerAuthContexts.get(value) : undefined;
+}
+
+export interface PersistedDelegationLookup {
+  delegationId: string;
+  parentHostThreadId: string;
+  childHostThreadId: string;
+  targetHarnessId: RoutedHarnessId;
+  status: DelegationThreadStatus;
+  taskDigest: string;
+  cwd?: string;
+  title?: string;
+}
 
 export type DelegationThreadStatus =
   "creating" | "running" | "completed" | "failed" | "interrupted";
@@ -99,11 +135,19 @@ export interface DelegationThreadSnapshot {
 }
 
 export interface DelegationStartInput {
+  /** Internal caller context for hop checks; not forwarded to remote Hosts. */
+  callerThreadId?: string;
+  /** Target Host identity (e.g. `remote-peer:<peerId>`); omit or `"local"` for this Host. */
+  hostId?: string;
   harnessId: RoutedHarnessId;
   task: string;
   /** Short display name; the full task remains the initial message. */
   taskName?: string;
   cwd?: string;
+  /** New Git branch prepared on the execution Host (forwarded to B for remote peer starts). */
+  worktree?: string;
+  /** Base Git ref for `worktree` (forwarded to B for remote peer starts). */
+  base?: string;
   parentThreadId?: string;
   requestId?: string;
   model?: HarnessModelRef | string;
@@ -114,6 +158,8 @@ export interface DelegationStartInput {
 }
 
 export interface HarnessInspectInput {
+  callerThreadId?: string;
+  hostId?: string;
   harnessId: RoutedHarnessId;
   cwd?: string;
   refresh?: boolean;
@@ -123,16 +169,20 @@ export interface HarnessInspectInput {
 }
 
 export interface HarnessListInput {
+  callerThreadId?: string;
+  hostId?: string;
   /** Calling Thread; an official parent cannot list a Harness Desktop must not present. */
   parentThreadId?: string;
 }
 
 export interface HarnessInspectResult {
+  hostId?: string;
   harnessId: RoutedHarnessId;
   inspection: HarnessInspection;
 }
 
 export interface HarnessListResult {
+  hostId?: string;
   harnesses: RoutedHarnessId[];
 }
 
@@ -145,6 +195,7 @@ export interface DelegationConfigurationResult {
 }
 
 export interface DelegationStartResult {
+  hostId?: string;
   delegationId: string;
   threadId: string;
   turnId: string;
@@ -165,6 +216,8 @@ export interface DelegationStartResult {
 }
 
 export interface ThreadSendInput {
+  callerThreadId?: string;
+  hostId?: string;
   threadId: string;
   message: string;
   /** Stop the current Turn and confirm idle before sending; preserve existing watches. */
@@ -174,6 +227,7 @@ export interface ThreadSendInput {
 }
 
 export interface ThreadSendResult {
+  hostId?: string;
   threadId: string;
   turnId: string;
   harnessId: RoutedHarnessId;
@@ -184,10 +238,13 @@ export interface ThreadSendResult {
 }
 
 export interface ThreadCancelInput {
+  callerThreadId?: string;
+  hostId?: string;
   threadId: string;
 }
 
 export interface ThreadCancelResult {
+  hostId?: string;
   threadId: string;
   turnId: string | null;
   harnessId: RoutedHarnessId;
@@ -210,6 +267,8 @@ export interface ThreadWaitInput extends ThreadReadInput {
 }
 
 export interface ThreadAnswerInput {
+  callerThreadId?: string;
+  hostId?: string;
   threadId: string;
   /** Interaction ID reported by `thread read` in `pendingQuestions`. */
   interactionId: string;
@@ -218,6 +277,7 @@ export interface ThreadAnswerInput {
 }
 
 export interface ThreadAnswerResult {
+  hostId?: string;
   threadId: string;
   interactionId: string;
   turnId: string;
@@ -228,6 +288,8 @@ export interface ThreadAnswerResult {
 }
 
 export interface ThreadListInput {
+  callerThreadId?: string;
+  hostId?: string;
   cwd?: string;
   parentThreadId?: string;
   /** Threads an external client started without a parent Thread. */
@@ -246,6 +308,7 @@ export interface ThreadListInput {
 }
 
 export interface DelegationThreadListItem {
+  hostId?: string;
   threadId: string;
   harnessId: RoutedHarnessId;
   deepLink: string;
@@ -260,11 +323,13 @@ export interface DelegationThreadListItem {
 }
 
 export interface DelegationThreadListResult {
+  hostId?: string;
   threads: DelegationThreadListItem[];
   nextCursor: string | null;
 }
 
 export interface ThreadWatchInput {
+  hostId?: string;
   /** Thread observed until it stops. */
   threadId: string;
   /** Thread that receives the single notification. */
@@ -333,6 +398,7 @@ export interface DelegationWatchApi {
 }
 
 export interface DelegationControlApi {
+  listHosts?(): Promise<PeerDelegationHostsResult>;
   listHarnesses(input?: HarnessListInput): Promise<HarnessListResult>;
   inspect(input: HarnessInspectInput): Promise<HarnessInspectResult>;
   start(input: DelegationStartInput): Promise<DelegationStartResult>;
@@ -348,6 +414,10 @@ export interface DelegationControlApi {
 
 export interface DelegationControlRegistration extends DelegationControlApi {
   executionHostId?(threadId: string): string | undefined;
+  delegationParent?(threadId: string): Promise<string | undefined>;
+  /** Active native Codex Thread IDs eligible to authenticate with the shared Runtime token. */
+  activeNativeThreadIds?(): string[] | Promise<string[]>;
+  findDelegationByRequest?(requestId: string): Promise<PersistedDelegationLookup | null>;
   onThreadIdle?(listener: (threadId: string) => void): () => void;
   canHandleStart(input: DelegationStartInput): boolean | Promise<boolean>;
   ownsThread(threadId: string): boolean | Promise<boolean>;

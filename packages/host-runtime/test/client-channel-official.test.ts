@@ -25,7 +25,7 @@ afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 
-it("routes official and external fork, queue, configuration, command, pin and usage methods by owner", async () => {
+it("routes official and external fork, metadata, queue, configuration, command, pin and usage methods by owner", async () => {
   const fixture = createFixture();
   cleanup.push(() => stopFixture(fixture));
   const external = await startPiThread(fixture);
@@ -73,6 +73,7 @@ it("routes official and external fork, queue, configuration, command, pin and us
   });
   for (const method of [
     "thread/fork",
+    "thread/metadata/update",
     "thread/queue/list",
     "thread/queue/add",
     "thread/queue/update",
@@ -86,7 +87,9 @@ it("routes official and external fork, queue, configuration, command, pin and us
       threadId: "official",
       ...(method === "thread/fork"
         ? { lastTurnId: "native-cut", excludeTurns: true }
-        : { queuedSubmissionId: "queued" }),
+        : method === "thread/metadata/update"
+          ? { projectId: "next-project" }
+          : { queuedSubmissionId: "queued" }),
     };
     await host.handleClientRequest(method, params);
     expect(request).toHaveBeenLastCalledWith(method, params);

@@ -24,6 +24,7 @@ export function PinnedSection({
   t,
   revealSessionId,
   onSessionRevealed,
+  showHost = true,
   expanded,
   onToggle,
   children,
@@ -32,6 +33,7 @@ export function PinnedSection({
   customSection?: { key: string; name: string };
   revealSessionId?: RowProps["currentId"];
   onSessionRevealed: (id: SessionNode["id"]) => void;
+  showHost?: boolean;
   /** Whether the pinned rows show. */
   expanded: boolean;
   /** Fold or unfold the section. */
@@ -61,6 +63,7 @@ export function PinnedSection({
             <SessionNodeItem
               key={node.id}
               node={node}
+              showHost={showHost}
               currentId={currentId}
               now={Date.now()}
               onOpen={onOpen}

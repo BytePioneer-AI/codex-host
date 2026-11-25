@@ -25,6 +25,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/harness/preferences/get",
   "codexhost/harness/preferences/patch",
   "thread/list",
+  "thread/metadata/update",
   "codexhost/thread/catalog/read",
   "thread/read",
   "thread/resume",
@@ -49,6 +50,10 @@ export const CLIENT_CHANNEL_METHODS = [
   "thread/queue/start",
   "codexhost/thread/queue/send-now",
   "codexhost/workspace/read",
+  "project/create",
+  "project/update",
+  "project/delete",
+  "project/move",
   "codexhost/thread/tree/read",
   "codexhost/thread/pins/list",
   "codexhost/thread/sections/list",
@@ -141,6 +146,7 @@ export const clientProjectlessWorkspaceSchema = z
 
 export const clientWorkspaceSnapshotSchema = z.object({
   projects: z.array(z.object({ id: z.string(), name: z.string(), rootPaths: z.array(z.string()) })),
+  nativeProjects: z.literal(true).optional(),
   assignments: z.record(z.string(), z.string()),
   projectless: z.array(z.string()),
   /** Canonical external pin membership; pins/list provides the native merged order. */
@@ -157,6 +163,7 @@ export const clientChannelCursorSchema = z.object({
 });
 export type ClientChannelCursor = z.infer<typeof clientChannelCursorSchema>;
 export const clientChannelEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("projects-changed"), cursor: clientChannelCursorSchema }),
   z.object({
     type: z.literal("skills-changed"),
     cursor: clientChannelCursorSchema,
@@ -368,6 +375,11 @@ export const clientChannelDescriptorSchema = z.object({
   token: z.string().regex(/^[0-9a-f]{64}$/u),
   startedAt: z.number(),
   epoch: z.string().uuid(),
+  capabilities: z
+    .object({
+      peerDelegation: z.literal(1).optional(),
+    })
+    .optional(),
 });
 export type ClientChannelDescriptor = z.infer<typeof clientChannelDescriptorSchema>;
 export const clientChannelResponseSchema = z.object({

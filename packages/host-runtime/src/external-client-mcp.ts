@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { jsonBody, writeJson } from "./delegation-control-server.js";
 import { DEFAULT_WATCH_TIMEOUT_MS, DelegationControlError } from "./delegation-types.js";
+import { parseThreadReferenceInput } from "./remote-peer-delegation.js";
 import type {
   ExternalClientCall,
   ExternalClientRouter,
@@ -23,7 +24,8 @@ interface Tool {
 
 const string = (description: string) => ({ type: "string", description });
 const integer = (description: string) => ({ type: "integer", minimum: 0, description });
-const thread = string("Thread id or codex://threads/<id> link");
+const thread = string("Thread id, codex://threads/<id>, or thread://<id>?hostId=<encoded-host-id>");
+const hostIdProp = string("Optional remote peer Host id (remote-peer:<id>) from host_list");
 
 function text(args: Arguments, name: string, required = false): string | undefined {
   const value = args[name];
@@ -33,9 +35,8 @@ function text(args: Arguments, name: string, required = false): string | undefin
   return value;
 }
 
-function threadId(args: Arguments): string {
-  const value = text(args, "thread", true) as string;
-  return value.startsWith("codex://threads/") ? value.slice("codex://threads/".length) : value;
+function threadTarget(args: Arguments): { threadId: string; hostId?: string } {
+  return parseThreadReferenceInput(text(args, "thread", true), text(args, "hostId"));
 }
 
 function bounded(args: Arguments, name: string, fallback: number, maximum: number): number {
@@ -53,6 +54,13 @@ function pick(args: Arguments, names: readonly string[]): Arguments {
 
 /** Each tool is one delegation route; parameters and results match the CLI's JSON. */
 const TOOLS: Tool[] = [
+  {
+    name: "host_list",
+    description:
+      "List paired remote Peer Hosts (remote-peer:<id>) with online status, delegation support, and known workspace paths. Peer tokens and URLs are never exposed.",
+    inputSchema: { type: "object", properties: {} },
+    call: () => ({ route: "/v1/host/list", body: {} }),
+  },
   {
     name: "host_info",
     description:
@@ -83,9 +91,10 @@ const TOOLS: Tool[] = [
   },
   {
     name: "harness_list",
-    description: "List the Harnesses this codexhost can delegate to.",
-    inputSchema: { type: "object", properties: {} },
-    call: () => ({ route: "/v1/harness/list", body: {} }),
+    description:
+      "List the Harnesses this codexhost (or a paired remote-peer:<id> Host) can delegate to.",
+    inputSchema: { type: "object", properties: { hostId: hostIdProp } },
+    call: (args) => ({ route: "/v1/harness/list", body: pick(args, ["hostId"]) }),
   },
   {
     name: "harness_inspect",
@@ -94,6 +103,7 @@ const TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
+        hostId: hostIdProp,
         harnessId: string("Harness id from harness_list"),
         cwd: string("Absolute workspace path"),
         refresh: { type: "boolean" },
@@ -102,21 +112,22 @@ const TOOLS: Tool[] = [
     },
     call: (args) => ({
       route: "/v1/harness/inspect",
-      body: pick(args, ["harnessId", "cwd", "refresh"]),
+      body: pick(args, ["hostId", "harnessId", "cwd", "refresh"]),
     }),
   },
   {
     name: "delegate_start",
     description:
-      "Start a task in a new Thread and return at once. Without parentThread the work belongs to this client and cwd is required. worktree creates a new branch and isolated Git checkout on this Host from the required absolute cwd; base defaults to its HEAD. Returns worktree {path, branch, base}; failures after creation retain it in error details.worktree. watch=true watches the Thread after starting and returns watch (including notRegistered if registration fails); without parentThread, notifications go to this client's event log (events_poll or SSE).",
+      "Start a task in a new Thread and return at once. Pass hostId (remote-peer:<id>) to delegate on a paired remote Peer (requires explicit cwd; worktree/base execute on the remote Host; watch is unsupported across hosts). Without parentThread the work belongs to this client and cwd is required. worktree creates a new branch and isolated Git checkout on the execution Host from the required absolute cwd; base defaults to its HEAD. Returns worktree {path, branch, base}; failures after creation retain it in error details.worktree. watch=true watches the Thread after starting and returns watch (including notRegistered if registration fails); without parentThread, notifications go to this client's event log (events_poll or SSE).",
     inputSchema: {
       type: "object",
       properties: {
+        hostId: hostIdProp,
         harnessId: string("Harness id from harness_list"),
         task: string("The full task text"),
         taskName: string("Short display name"),
-        cwd: string("Absolute workspace path; required with worktree"),
-        worktree: string("New Git branch; create an isolated checkout on this Host"),
+        cwd: string("Absolute workspace path; required with worktree or remote hostId"),
+        worktree: string("New Git branch; create an isolated checkout on the execution Host"),
         base: string("Git ref for worktree; requires worktree, defaults to source HEAD"),
         model: string("Model id from harness_inspect"),
         thinking: string("Thinking option id from harness_inspect"),
@@ -138,6 +149,7 @@ const TOOLS: Tool[] = [
         harnessId: text(args, "harnessId", true),
         task: text(args, "task", true),
         ...pick(args, [
+          "hostId",
           "taskName",
           "cwd",
           "requestId",
@@ -161,6 +173,7 @@ const TOOLS: Tool[] = [
       type: "object",
       properties: {
         thread,
+        hostId: hostIdProp,
         view: { type: "string", enum: ["result", "messages"] },
         from: {
           ...integer("First absolute Turn number, inclusive; requires view=messages"),
@@ -176,7 +189,7 @@ const TOOLS: Tool[] = [
     call: (args) => ({
       route: "/v1/thread/read",
       body: {
-        threadId: threadId(args),
+        ...threadTarget(args),
         view: args.view ?? "result",
         ...pick(args, ["from", "to"]),
       },
@@ -190,13 +203,14 @@ const TOOLS: Tool[] = [
       type: "object",
       properties: {
         thread,
+        hostId: hostIdProp,
         out: string("Output file on this Host; defaults to its data directory under exports/"),
       },
       required: ["thread"],
     },
     call: (args) => ({
       route: "/v1/thread/export",
-      body: { threadId: threadId(args), ...pick(args, ["out"]) },
+      body: { ...threadTarget(args), ...pick(args, ["out"]) },
     }),
   },
   {
@@ -207,6 +221,7 @@ const TOOLS: Tool[] = [
       type: "object",
       properties: {
         thread,
+        hostId: hostIdProp,
         path: string(
           "File path linked in the final report; absolute or relative to the Thread workspace",
         ),
@@ -219,7 +234,7 @@ const TOOLS: Tool[] = [
     call: (args) => ({
       route: "/v1/thread/file",
       body: {
-        threadId: threadId(args),
+        ...threadTarget(args),
         path: text(args, "path", true),
         ...pick(args, ["offset", "limit", "revision"]),
       },
@@ -233,6 +248,7 @@ const TOOLS: Tool[] = [
       type: "object",
       properties: {
         thread,
+        hostId: hostIdProp,
         timeoutMs: integer("At most 60000; default 30000"),
         view: { type: "string", enum: ["result", "messages"] },
         from: {
@@ -249,7 +265,7 @@ const TOOLS: Tool[] = [
     call: (args) => ({
       route: "/v1/thread/wait",
       body: {
-        threadId: threadId(args),
+        ...threadTarget(args),
         view: args.view ?? "result",
         timeoutMs: bounded(args, "timeoutMs", DEFAULT_TOOL_WAIT_MS, MAX_TOOL_WAIT_MS) || 1,
         ...pick(args, ["from", "to"]),
@@ -259,10 +275,11 @@ const TOOLS: Tool[] = [
   {
     name: "thread_list",
     description:
-      "List Threads: by workspace (cwd), by parent Thread, by the client that started them, or by reference.",
+      "List Threads: by workspace (cwd), by parent Thread, by the client that started them, or by reference. Pass hostId (remote-peer:<id>) to list on a paired remote Peer.",
     inputSchema: {
       type: "object",
       properties: {
+        hostId: hostIdProp,
         cwd: string("Absolute workspace path"),
         parent: string("Parent Thread"),
         client: string("Client name"),
@@ -285,7 +302,7 @@ const TOOLS: Tool[] = [
     call: (args) => ({
       route: "/v1/thread/list",
       body: {
-        ...pick(args, ["cwd", "client", "ref", "cursor"]),
+        ...pick(args, ["hostId", "cwd", "client", "ref", "cursor"]),
         ...(args.parent !== undefined ? { parentThreadId: text(args, "parent") } : {}),
         limit: bounded(args, "limit", 25, 100) || 25,
         sort: args.sort ?? "created-desc",
@@ -300,6 +317,7 @@ const TOOLS: Tool[] = [
       type: "object",
       properties: {
         thread,
+        hostId: hostIdProp,
         message: string("Message text"),
         interrupt: {
           type: "boolean",
@@ -317,7 +335,7 @@ const TOOLS: Tool[] = [
     call: (args) => ({
       route: "/v1/thread/send",
       body: {
-        threadId: threadId(args),
+        ...threadTarget(args),
         message: text(args, "message", true),
         ...pick(args, ["interrupt", "steer", "watch", "watchTimeoutMs"]),
       },
@@ -331,6 +349,7 @@ const TOOLS: Tool[] = [
       type: "object",
       properties: {
         thread,
+        hostId: hostIdProp,
         interactionId: string("Opaque interactionId from thread_read pendingQuestions"),
         result: { type: "object", description: "The Question's reply result" },
       },
@@ -339,7 +358,7 @@ const TOOLS: Tool[] = [
     call: (args) => ({
       route: "/v1/thread/answer",
       body: {
-        threadId: threadId(args),
+        ...threadTarget(args),
         interactionId: text(args, "interactionId", true),
         result: args.result,
       },
@@ -348,21 +367,25 @@ const TOOLS: Tool[] = [
   {
     name: "thread_cancel",
     description: "Cancel a Thread's active Turn, keeping the Thread and its history.",
-    inputSchema: { type: "object", properties: { thread }, required: ["thread"] },
-    call: (args) => ({ route: "/v1/thread/cancel", body: { threadId: threadId(args) } }),
+    inputSchema: {
+      type: "object",
+      properties: { thread, hostId: hostIdProp },
+      required: ["thread"],
+    },
+    call: (args) => ({ route: "/v1/thread/cancel", body: threadTarget(args) }),
   },
   {
     name: "thread_watch",
     description: "Record one event for this client when the Thread stops or the watch expires.",
     inputSchema: {
       type: "object",
-      properties: { thread, timeoutMs: integer("Default 29 minutes") },
+      properties: { thread, hostId: hostIdProp, timeoutMs: integer("Default 29 minutes") },
       required: ["thread"],
     },
     call: (args) => ({
       route: "/v1/thread/watch",
       body: {
-        threadId: threadId(args),
+        ...threadTarget(args),
         timeoutMs:
           bounded(args, "timeoutMs", DEFAULT_WATCH_TIMEOUT_MS, Number.MAX_SAFE_INTEGER) || 1,
       },

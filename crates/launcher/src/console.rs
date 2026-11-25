@@ -75,6 +75,14 @@ fn node_command(command: &ConsoleCommand) -> Result<Command, Box<dyn Error>> {
         // The console checks and downloads updates itself when no Host is running.
         .envs(codexhost_platform::proxy_environment())
         .stdin(Stdio::null());
+    if crate::installation_layout::is_source_checkout_build(&launcher) {
+        for (key, _) in env::vars_os() {
+            let upper = key.to_string_lossy().to_ascii_uppercase();
+            if crate::NPM_UPDATE_RUNTIME_ENV.contains(&upper.as_str()) {
+                process.env_remove(key);
+            }
+        }
+    }
     #[cfg(target_os = "windows")]
     codexhost_platform::configure_background_command(&mut process);
     Ok(process)
@@ -448,6 +456,48 @@ mod tests {
             command.get_args().collect::<Vec<_>>(),
             ["--disable-warning=UNDICI-EHPA", "console-server.mjs"]
         );
+    }
+
+    #[test]
+    fn source_checkout_console_strips_all_npm_update_runtime_variables() {
+        const CHILD: &str = "CODEXHOST_TEST_SOURCE_CONSOLE_NPM_ENV";
+        let executable = env::current_exe().unwrap();
+        if env::var_os(CHILD).is_some() {
+            let command = node_command(&ConsoleCommand {
+                node: PathBuf::from("node"),
+                console_server: PathBuf::from("console-server.mjs"),
+            })
+            .expect("console command");
+            for key in crate::NPM_UPDATE_RUNTIME_ENV {
+                assert!(
+                    command
+                        .get_envs()
+                        .any(|(name, value)| name == key && value.is_none()),
+                    "source checkout console must strip {key}"
+                );
+            }
+            return;
+        }
+
+        let root = env::temp_dir().join(format!("codexhost-source-console-{}", std::process::id()));
+        let child = root
+            .join("target/debug")
+            .join(executable.file_name().unwrap());
+        std::fs::create_dir_all(child.parent().unwrap()).unwrap();
+        std::fs::copy(&executable, &child).unwrap();
+        let status = Command::new(&child)
+            .args([
+                "--exact",
+                "console::tests::source_checkout_console_strips_all_npm_update_runtime_variables",
+            ])
+            .env(CHILD, "1")
+            .env(crate::NPM_NODE_PATH_ENV, root.join("node"))
+            .env(crate::NPM_CLI_PATH_ENV, root.join("npm-cli.js"))
+            .env(crate::NPM_LAUNCHER_PATH_ENV, root.join("codexhost.js"))
+            .env(crate::NPM_PACKAGE_ROOT_ENV, root.join("package"))
+            .status();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(status.unwrap().success());
     }
 
     #[cfg(unix)]

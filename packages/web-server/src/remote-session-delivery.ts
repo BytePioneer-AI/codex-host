@@ -22,6 +22,7 @@ const statusSchema = z.object({
   turnId: z.string().min(1).nullable(),
   epoch: z.string().min(1),
   supportsDelivery: z.literal(true).optional(),
+  supportsQueuedSteer: z.literal(true).optional(),
   readOnly: z.boolean().optional(),
 });
 const textParts = z.array(z.object({ type: z.literal("text"), text: z.string() })).min(1);
@@ -113,17 +114,23 @@ export async function deliverRemoteInput(
     if (!parsed.success)
       throw new RpcError("remote/unsupported", "This remote queue operation is unavailable.");
     const { action: update, itemId } = parsed.data;
-    if (update.kind === "steer" && !idle)
+    if (update.kind === "remove") {
+      action = { kind: "remove", itemId };
+    } else if (status.supportsQueuedSteer) {
+      action = { kind: "sendNow", itemId };
+    } else if (!idle) {
       throw new RpcError(
-        "session/steer-unavailable",
+        "remote/steer-unavailable",
         "Use Codex Desktop to steer an already queued remote message.",
       );
-    action = { kind: update.kind === "remove" ? "remove" : "start", itemId };
+    } else {
+      action = { kind: "start", itemId };
+    }
   }
 
   if (!status.supportsDelivery) {
     if (legacyPrompt) return sendLegacyPrompt(invoke, legacyPrompt);
-    if (action.kind === "steer")
+    if (action.kind === "steer" || action.kind === "sendNow")
       throw new RpcError(
         "remote/steer-unavailable",
         "This Desktop Controller cannot steer remote Turns.",

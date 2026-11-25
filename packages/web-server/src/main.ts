@@ -16,6 +16,8 @@ import { PeerHostManager, createCompositeRemoteCall } from "./peer-host-manager.
 import { PeerHostStore } from "./peer-host-store.ts";
 import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "./peer-manifest.ts";
 import { servePeerAttachments } from "./peer-attachments-http.ts";
+import { servePeerDelegation } from "./peer-delegation-http.ts";
+import { startPeerDelegationBridge } from "./peer-delegation-bridge.ts";
 import { servePeerWorkspaceFiles } from "./peer-workspace-files-http.ts";
 import { RemotePeerAttachments } from "./remote-peer-attachments.ts";
 import { RemotePeerWorkspaceFiles } from "./remote-peer-workspace-files.ts";
@@ -89,6 +91,7 @@ import type { SessionListTiming } from "./session-list-timing.ts";
 import { WebAssets, type WebAssetOptions } from "./web-assets.ts";
 import { SHELL_EVENTS_PATH, WebShellReload } from "./web-hmr.ts";
 import { Workspaces } from "./workspaces.ts";
+import { nativeProjectCommands } from "./ch-project-commands.ts";
 import { inspectImage, readImageFile, WebImages } from "./web-images.ts";
 import { WebFiles } from "./web-files.ts";
 import { serveFileUpload } from "./ch-file-upload-http.ts";
@@ -410,7 +413,16 @@ if (!values["safe-mode"]) {
 const shellReload = devWebUi === undefined ? undefined : new WebShellReload(assets);
 
 streams.register("$events", events.handler);
-workspaces.register(rpc, streams);
+workspaces.register(
+  rpc,
+  streams,
+  nativeProjectCommands(
+    chHost,
+    workspaces,
+    () => sessions.refreshProjects(),
+    (sessionId, projectId) => sessions.assignNativeProject(sessionId, projectId),
+  ),
+);
 sessions.register(rpc, streams);
 sessions.registerCommands(rpc);
 sessions.registerImport(rpc);
@@ -453,6 +465,16 @@ const peerManager = new PeerHostManager(
   },
 );
 peerManager.register(rpc);
+const peerDelegationBridge = await startPeerDelegationBridge({
+  peerManager,
+  dataDirectory: displayDirectory,
+}).catch((error: unknown) => {
+  console.warn(
+    "[remote-peers] delegation bridge unavailable:",
+    error instanceof Error ? error.message : String(error),
+  );
+  return undefined;
+});
 const remoteSessions = new RemoteSessions(
   events,
   createCompositeRemoteCall(peerManager, requestRemoteSession),
@@ -462,6 +484,9 @@ const remoteSessions = new RemoteSessions(
 );
 peerManager.onChange = (hostId) => {
   remoteSessions.hostsChanged(hostId);
+};
+peerManager.onPeerRemoved = (hostId) => {
+  workspaces.removeRemoteHostOrder(hostId);
 };
 remoteSessions.install(rpc, streams);
 const remoteWorkspaceFiles = new RemotePeerWorkspaceFiles(remoteSessions);
@@ -678,6 +703,17 @@ const server = createWebServer((request, response) => {
       const peerRoute = pathname.slice("/api/peer/v1/".length);
       const peerAttachmentsAvailable = Boolean(files && images);
       const peerWorkspaceFilesAvailable = Boolean(dsh);
+      const peerDelegationAvailable =
+        process.env.CODEXHOST_DISABLE_PEER_DELEGATION !== "1" &&
+        chHost.realtime?.peerDelegationSupported?.() === true;
+      if (peerRoute === "delegation") {
+        await servePeerDelegation(request, response, {
+          enabled: peerDelegationAvailable,
+          chHost,
+          credential: requestAuth.credential,
+        });
+        return;
+      }
       if (peerRoute === "uploads" || peerRoute === "prompt" || peerRoute === "file") {
         if (!peerAttachmentsAvailable) {
           await sendPeerJson(404, { error: "Peer attachments unavailable" });
@@ -732,6 +768,7 @@ const server = createWebServer((request, response) => {
             attachments: peerAttachmentsAvailable,
             workspaceFiles: peerWorkspaceFilesAvailable,
             officePreview: peerWorkspaceFilesAvailable,
+            delegation: peerDelegationAvailable,
           },
         );
         await sendPeerJson(200, result);
@@ -1069,6 +1106,7 @@ function shutdown(exitCode = 0): Promise<void> {
   return (shuttingDown ??= (async () => {
     try {
       stopEpoch?.();
+      await peerDelegationBridge?.close();
       peerManager.close();
       relay.close();
       shellReload?.close();

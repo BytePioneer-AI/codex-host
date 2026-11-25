@@ -254,12 +254,15 @@ function isRemoteSession(session: SessionFilterInput): boolean {
  * - Unfiltered: returns all sessions unchanged.
  * - Filtered: keeps sessions belonging to the visible workspaces, plus
  *   ungrouped local sessions only when `"local"` is included and in `mode: "all"`.
+ *   When `rootOf` is provided, non-root delegation descendants follow their top-level
+ *   root's host & workspace visibility so filtered trees stay intact.
  */
 export function filterSessionsByHostScope<T extends SessionFilterInput>(
   sessions: readonly T[],
   visibleWorkspaceIds: ReadonlySet<string> | readonly string[],
   workspaces: readonly WorkspaceView[],
   state: HostScopeFilterState,
+  rootOf?: ReadonlyMap<string, string>,
 ): T[] {
   const effective = reconcileHostScopeFilter(state, workspaces);
   if (!isHostScopeFiltered(effective, workspaces)) return [...sessions];
@@ -282,8 +285,9 @@ export function filterSessionsByHostScope<T extends SessionFilterInput>(
 
   return sessions.filter((session) => {
     const id = sessionIdOf(session);
-    if (visibleWorkspaceSessionIds.has(id)) return true;
-    if (!allWorkspaceSessionIds.has(id)) {
+    const targetId = rootOf?.get(id) ?? id;
+    if (visibleWorkspaceSessionIds.has(targetId)) return true;
+    if (!allWorkspaceSessionIds.has(targetId)) {
       return !isRemoteSession(session) && includeUngroupedLocal;
     }
     return false;

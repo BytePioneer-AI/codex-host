@@ -1,5 +1,6 @@
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 
+import type { ClaudePromptCacheTtlSeconds } from "./claude-prompt-cache.js";
 import type { ClaudeUsageRecord } from "./claude-usage.js";
 import type {
   HarnessAccountSnapshot,
@@ -93,6 +94,7 @@ export interface ClaudeLastRequestUsage {
   outputTokens: number;
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
+  promptCacheTtlSeconds?: ClaudePromptCacheTtlSeconds;
 }
 
 export type ClaudeTurnEvent =
@@ -213,7 +215,11 @@ export type ClaudeTurnEvent =
       reason: "responded" | "cancelled" | "superseded";
     }
   /** One finished native model request, for Host usage metering. */
-  | { type: "usage.request"; record: ClaudeUsageRecord }
+  | {
+      type: "usage.request";
+      record: ClaudeUsageRecord;
+      promptCacheTtlSeconds?: ClaudePromptCacheTtlSeconds;
+    }
   | {
       type: "usage.result";
       totalCostUsd?: number;

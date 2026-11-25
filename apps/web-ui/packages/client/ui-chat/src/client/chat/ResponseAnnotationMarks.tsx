@@ -1,6 +1,11 @@
-import { useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
-import type { DraftResponseAnnotation } from "@deepseek-ai/dsh-client-ui-conversation/client";
+import clsx from "clsx";
+import type {
+  DraftAttachmentId,
+  DraftResponseAnnotation,
+  InputActions,
+} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import {
   ResponseAnnotationPopover,
   type ResponseAnnotationLabels,
@@ -10,6 +15,8 @@ import { restoreResponseAnnotationRange } from "./response-selection.ts";
 import css from "./SelectionActions.module.css";
 
 const HIGHLIGHT_NAME = "codexhost-response-annotation";
+const HOVER_HIGHLIGHT_NAME = "codexhost-response-annotation-hover";
+const HOVER_HIGHLIGHT_PRIORITY = 1;
 const MARK_HEIGHT = 24;
 
 export function lastSelectionRect(range: Range): DOMRect | undefined {
@@ -23,16 +30,21 @@ export function lastSelectionRect(range: Range): DOMRect | undefined {
 }
 
 /** Paint ranges without changing the Markdown elements or native selection. */
-export function highlightResponseRanges(ranges: readonly Range[]): () => void {
+export function highlightResponseRanges(
+  ranges: readonly Range[],
+  name: string = HIGHLIGHT_NAME,
+  priority = 0,
+): () => void {
   const registry = globalThis.CSS?.highlights;
   if (ranges.length === 0 || registry === undefined || typeof Highlight === "undefined")
     return () => {};
-  const highlight = registry.get(HIGHLIGHT_NAME) ?? new Highlight();
+  const highlight = registry.get(name) ?? new Highlight();
+  highlight.priority = priority;
   for (const range of ranges) highlight.add(range);
-  registry.set(HIGHLIGHT_NAME, highlight);
+  registry.set(name, highlight);
   return () => {
     for (const range of ranges) highlight.delete(range);
-    if (highlight.size === 0) registry.delete(HIGHLIGHT_NAME);
+    if (highlight.size === 0 && registry.get(name) === highlight) registry.delete(name);
   };
 }
 
@@ -51,14 +63,26 @@ export function ResponseAnnotationMarks({
   answer,
   answerKey,
   useInput,
+  inputActions,
   labels,
 }: {
   answer: RefObject<HTMLDivElement>;
   answerKey: string;
   useInput: ChatViewSlotProps["useInput"];
+  inputActions?: InputActions | undefined;
   labels: ResponseAnnotationLabels;
 }) {
   const annotations = useInput((state) => state.responseAnnotations);
+  // Narrow subscription so hovering an annotation only re-renders its owning answer.
+  const hoveredId = useInput((state) => {
+    const id = state.hoveredResponseAnnotationId;
+    if (id === undefined) return undefined;
+    return state.responseAnnotations?.some(
+      (annotation) => annotation.id === id && annotation.anchor?.answerKey === answerKey,
+    )
+      ? id
+      : undefined;
+  });
   const attached = useMemo(
     () =>
       annotations?.flatMap((annotation, index) =>
@@ -67,19 +91,34 @@ export function ResponseAnnotationMarks({
     [annotations, answerKey],
   );
   const [marks, setMarks] = useState(NO_MARKS);
+  const rangesRef = useRef<Array<IndexedAnnotation & { range: Range }>>([]);
+  const [rangesVersion, setRangesVersion] = useState(0);
+  const ownedHoverRef = useRef<DraftAttachmentId | null>(null);
+  const inputActionsRef = useRef(inputActions);
+  inputActionsRef.current = inputActions;
+
+  useEffect(() => {
+    return () => {
+      if (ownedHoverRef.current !== null) {
+        ownedHoverRef.current = null;
+        inputActionsRef.current?.hoverResponseAnnotation(null);
+      }
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const host = answer.current;
     if (host === null || attached === undefined || attached.length === 0) {
+      rangesRef.current = [];
       setMarks(NO_MARKS);
+      setRangesVersion((version) => version + 1);
       return;
     }
-    let ranges: Array<IndexedAnnotation & { range: Range }> = [];
     let clearHighlight = () => {};
     const place = () => {
       if (!host.isConnected) return;
       const hostTop = host.getBoundingClientRect().top;
-      const located = ranges.flatMap(({ annotation, index, range }) => {
+      const located = rangesRef.current.flatMap(({ annotation, index, range }) => {
         const rect = lastSelectionRect(range);
         return rect === undefined
           ? []
@@ -101,7 +140,7 @@ export function ResponseAnnotationMarks({
           (item, index) =>
             item.annotation === placed[index]?.annotation &&
             item.index === placed[index]?.index &&
-            Math.abs(item.top - placed[index]!.top) < 0.5,
+            Math.abs(item.top - (placed[index]?.top ?? 0)) < 0.5,
         )
           ? previous
           : placed,
@@ -109,17 +148,23 @@ export function ResponseAnnotationMarks({
     };
     const restore = () => {
       clearHighlight();
+      clearHighlight = () => {};
       if (!host.isConnected) {
-        ranges = [];
+        rangesRef.current = [];
         setMarks(NO_MARKS);
+        setRangesVersion((version) => version + 1);
         return;
       }
-      ranges = attached.flatMap((entry) => {
+      rangesRef.current = attached.flatMap((entry) => {
         const { anchor, text } = entry.annotation;
         const range = anchor && restoreResponseAnnotationRange(host, anchor, text);
         return range === undefined ? [] : [{ ...entry, range }];
       });
-      clearHighlight = highlightResponseRanges(ranges.map(({ range }) => range));
+      clearHighlight = highlightResponseRanges(
+        rangesRef.current.map(({ range }) => range),
+        HIGHLIGHT_NAME,
+      );
+      setRangesVersion((version) => version + 1);
       place();
     };
     restore();
@@ -139,24 +184,71 @@ export function ResponseAnnotationMarks({
     host.addEventListener("scroll", place, true);
     return () => {
       clearHighlight();
+      clearHighlight = () => {};
+      rangesRef.current = [];
       resize?.disconnect();
       mutations?.disconnect();
       host.removeEventListener("scroll", place, true);
     };
   }, [answer, attached]);
 
-  return marks.map(({ annotation, index, top }) => (
-    <div key={annotation.id} className={css.annotationMark} style={{ top }} data-selection-actions>
-      <ResponseAnnotationPopover
-        annotation={annotation}
-        labels={labels}
-        title={labels.label(index)}
-        anchor={
-          <span className={css.annotationNumber} aria-label={labels.label(index)}>
-            {index}
-          </span>
-        }
-      />
-    </div>
-  ));
+  useLayoutEffect(() => {
+    if (hoveredId === undefined) return;
+    const hoveredRanges = rangesRef.current
+      .filter(({ annotation }) => annotation.id === hoveredId)
+      .map(({ range }) => range);
+    return highlightResponseRanges(hoveredRanges, HOVER_HIGHLIGHT_NAME, HOVER_HIGHLIGHT_PRIORITY);
+  }, [hoveredId, rangesVersion]);
+
+  return marks.map(({ annotation, index, top }) => {
+    const isHovered = hoveredId === annotation.id;
+    return (
+      <div
+        key={annotation.id}
+        className={css.annotationMark}
+        style={{ top }}
+        data-selection-actions
+        onPointerEnter={(event) => {
+          if (event.pointerType === "touch") return;
+          ownedHoverRef.current = annotation.id;
+          inputActions?.hoverResponseAnnotation(annotation.id);
+        }}
+        onPointerLeave={(event) => {
+          if (event.pointerType === "touch") return;
+          if (ownedHoverRef.current === annotation.id) ownedHoverRef.current = null;
+          inputActions?.hoverResponseAnnotation(null);
+        }}
+        onFocus={(event) => {
+          if (event.target instanceof Element && event.target.matches(":focus-visible")) {
+            ownedHoverRef.current = annotation.id;
+            inputActions?.hoverResponseAnnotation(annotation.id);
+          }
+        }}
+        onBlur={(event) => {
+          if (
+            !event.currentTarget.contains(event.relatedTarget as Node | null) &&
+            hoveredId === annotation.id
+          ) {
+            if (ownedHoverRef.current === annotation.id) ownedHoverRef.current = null;
+            inputActions?.hoverResponseAnnotation(null);
+          }
+        }}
+      >
+        <ResponseAnnotationPopover
+          annotation={annotation}
+          labels={labels}
+          title={labels.label(index)}
+          anchor={
+            <span
+              className={clsx(css.annotationNumber, isHovered && css.annotationNumberHovered)}
+              data-hovered={isHovered || undefined}
+              aria-label={labels.label(index)}
+            >
+              {index}
+            </span>
+          }
+        />
+      </div>
+    );
+  });
 }

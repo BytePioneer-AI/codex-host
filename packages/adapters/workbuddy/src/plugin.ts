@@ -34,7 +34,11 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
     ...context.environment,
     ...(context.launchCommand ? { CODEXHOST_WORKBUDDY_COMMAND: context.launchCommand } : {}),
   };
-  return Object.assign(new WorkBuddyAdapter({ environment }), {
-    installation: createWorkBuddyInstallation(environment),
+  const platform: NodeJS.Platform | undefined =
+    context.platform === "darwin" || context.platform === "win32" || context.platform === "linux"
+      ? context.platform
+      : undefined;
+  return Object.assign(new WorkBuddyAdapter({ environment, ...(platform ? { platform } : {}) }), {
+    installation: createWorkBuddyInstallation(environment, platform ? { platform } : {}),
   });
 }

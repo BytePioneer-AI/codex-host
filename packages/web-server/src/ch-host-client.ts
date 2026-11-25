@@ -34,9 +34,15 @@ export interface ChHostClient {
   close(): void;
   readonly realtime?: {
     subscribe(listener: (event: HostClientUpdate) => void, after?: ClientChannelCursor): () => void;
-    request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T>;
+    request<T = unknown>(
+      method: string,
+      params: Record<string, unknown>,
+      timeoutMs?: number,
+    ): Promise<T>;
     snapshot(threadId: string, options?: ClientSnapshotOptions): Promise<ClientThreadSnapshot>;
     respond(input: ClientChannelResponse): Promise<{ resolved: boolean }>;
+    /** True only when the connected Host Runtime descriptor advertises peer delegation support. */
+    peerDelegationSupported?: () => boolean;
   };
 }
 
@@ -47,6 +53,7 @@ export interface ChPinChange {
 
 export interface ChProjectSnapshot {
   projects: Array<{ id: string; name: string; rootPaths: string[] }>;
+  nativeProjects?: true | undefined;
   assignments: Record<string, string>;
   projectless: string[];
   /** Projects in each native custom section, keyed by official section ID; shared Host only. */
@@ -312,17 +319,26 @@ export async function createChHostClient(
   }
   const request: ChHostClient["request"] = (method, params) =>
     hostOperation(channel.request(method, params));
+  const realtimeRequest = <T = unknown>(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<T> => hostOperation(channel.request<T>(method, params, timeoutMs));
   return {
     realtime: {
       subscribe: (listener, after) => channel.subscribe(listener, after),
-      request,
+      request: realtimeRequest,
       snapshot: (threadId, options) => hostOperation(channel.snapshot(threadId, options)),
       respond: (input) => hostOperation(channel.respond(input)),
+      peerDelegationSupported: () => channel.peerDelegationSupported,
     },
     request,
     projects: (ids) =>
       endpoint?.owner === "service"
-        ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", { threadIds: ids })
+        ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", {
+            threadIds: ids,
+            nativeProjects: true,
+          })
         : desktop.projects(ids),
     pins: (change) => requestPins((method, params) => channel.request(method, params), change),
     close() {

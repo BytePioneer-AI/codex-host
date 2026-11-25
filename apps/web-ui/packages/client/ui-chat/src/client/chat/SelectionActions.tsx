@@ -170,6 +170,14 @@ export function SelectionActions({
   const composingRef = useRef(false);
   const frameRef = useRef<number | null>(null);
   const suppressRef = useRef(false);
+  // Selection dismissed with Escape stays suppressed until the user clears or changes selection.
+  const dismissedRef = useRef<{ host: Element; text: string } | null>(null);
+  const visibleSelectionRef = useRef<AnswerSelection | null>(null);
+
+  const updateSelection = useCallback((next: AnswerSelection | null) => {
+    visibleSelectionRef.current = next;
+    setSelection(next);
+  }, []);
 
   const closeComposing = useCallback(() => {
     composingRef.current = false;
@@ -181,8 +189,27 @@ export function SelectionActions({
     if (suppressRef.current || composingRef.current) return;
     // Keep the latest range endpoints even when the selected text and line
     // remain unchanged; repeated prose can otherwise retain an old anchor.
-    setSelection(readSelection(container.current));
-  }, [container]);
+    const next = readSelection(container.current);
+    const dismissed = dismissedRef.current;
+    if (
+      next !== null &&
+      dismissed !== null &&
+      next.host === dismissed.host &&
+      next.text === dismissed.text
+    ) {
+      updateSelection(null);
+      return;
+    }
+    if (
+      next === null ||
+      dismissed === null ||
+      next.host !== dismissed.host ||
+      next.text !== dismissed.text
+    ) {
+      dismissedRef.current = null;
+    }
+    updateSelection(next);
+  }, [container, updateSelection]);
 
   const schedule = useCallback(() => {
     if (frameRef.current !== null) return;
@@ -204,13 +231,15 @@ export function SelectionActions({
         target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
       if (origin?.closest("[data-selection-actions]") != null) return;
       suppressRef.current = true;
-      setSelection(null);
+      dismissedRef.current = null;
+      updateSelection(null);
       closeComposing();
     };
     const onSelectionChange = (): void => {
       const live = window.getSelection();
       if (live === null || live.rangeCount === 0 || live.isCollapsed) {
-        setSelection(null);
+        dismissedRef.current = null;
+        updateSelection(null);
         return;
       }
       schedule();
@@ -224,13 +253,28 @@ export function SelectionActions({
       // mounted while editing or when closing it would discard a draft.
       const field = commentFieldRef.current;
       if (field !== null && (field === document.activeElement || field.value !== "")) return;
-      setSelection(null);
+      updateSelection(null);
       closeComposing();
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const visible = visibleSelectionRef.current;
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        event.isComposing ||
+        composingRef.current ||
+        visible === null
+      )
+        return;
+      event.preventDefault();
+      dismissedRef.current = { host: visible.host, text: visible.text };
+      updateSelection(null);
     };
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("pointerup", onPointerUp, true);
     document.addEventListener("pointercancel", onPointerUp, true);
     document.addEventListener("selectionchange", onSelectionChange);
+    document.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", schedule);
     // Capture also observes non-bubbling scrolls in the containing chat scrollport.
     window.addEventListener("scroll", onScroll, true);
@@ -239,12 +283,13 @@ export function SelectionActions({
       document.removeEventListener("pointerup", onPointerUp, true);
       document.removeEventListener("pointercancel", onPointerUp, true);
       document.removeEventListener("selectionchange", onSelectionChange);
+      document.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", schedule);
       window.removeEventListener("scroll", onScroll, true);
       if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
       frameRef.current = null;
     };
-  }, [schedule, closeComposing]);
+  }, [schedule, closeComposing, updateSelection]);
 
   const composingRect = composing?.rect;
   const composingRange = composing?.range;
@@ -339,7 +384,7 @@ export function SelectionActions({
             anchor === undefined ? { text: selection.text } : { text: selection.text, anchor };
           if (!onAdd(annotation)) return;
           clearSelection(selection.host);
-          setSelection(null);
+          updateSelection(null);
         }}
       >
         <svg
@@ -376,7 +421,7 @@ export function SelectionActions({
             anchor,
             placement: placeSelection(selection.rect, COMMENT_CARD_HEIGHT),
           });
-          setSelection(null);
+          updateSelection(null);
         }}
       >
         <span>{labels.comment}</span>

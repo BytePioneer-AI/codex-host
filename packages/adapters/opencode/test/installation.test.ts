@@ -29,13 +29,89 @@ beforeEach(() => {
   mocks.resolve.mockReturnValue(executable);
   mocks.realpath.mockImplementation(async (value: string) => value);
   mocks.npm.mockResolvedValue(null);
-  mocks.fetch.mockResolvedValue(JSON.stringify({ tag_name: "v1.1.0" }));
+  mocks.fetch.mockResolvedValue(JSON.stringify({ version: "1.1.0" }));
   mocks.run.mockResolvedValue("1.0.0");
 });
 afterEach(() => vi.unstubAllGlobals());
 
 describe("OpenCode installation", () => {
-  it("uses a fixed non-interactive method only for the standard native install", async () => {
+  it("reads the current version from the CLI's prefixed output and non-1/2 versions", async () => {
+    mocks.run.mockResolvedValue("opencode v2.4.1");
+    mocks.npm.mockResolvedValue(null);
+    mocks.fetch.mockResolvedValue(JSON.stringify({ version: "2.4.1" }));
+    await expect(createOpenCodeInstallation({})("check")).resolves.toMatchObject({
+      currentVersion: "2.4.1",
+      latestVersion: "2.4.1",
+      updateAvailable: false,
+    });
+
+    mocks.run.mockResolvedValue("0.15.0");
+    await expect(createOpenCodeInstallation({})("check")).resolves.toMatchObject({
+      currentVersion: "0.15.0",
+      latestVersion: "2.4.1",
+      updateAvailable: true,
+    });
+  });
+
+  it("tracks the @opencode/cli release line for npm and blocks native 1.x to 2.x auto-upgrade", async () => {
+    mocks.run.mockResolvedValue("1.19.6");
+    mocks.npm.mockResolvedValue({
+      canUpdate: true,
+      latest: async () => "2.4.1",
+      update: mocks.update,
+    });
+    mocks.update.mockImplementation(async () => mocks.run.mockResolvedValue("opencode v2.4.1"));
+    const npmInstallationManager = createOpenCodeInstallation({});
+    await expect(npmInstallationManager("check")).resolves.toMatchObject({
+      currentVersion: "1.19.6",
+      latestVersion: "2.4.1",
+      updateAvailable: true,
+      canUpdate: true,
+      notice: {
+        en: expect.stringContaining("cannot be resumed"),
+        "zh-CN": expect.stringContaining("无法再恢复"),
+      },
+    });
+    expect(mocks.npm).toHaveBeenCalledWith(
+      executable,
+      ["@opencode/cli", "opencode-ai"],
+      {},
+      { successor: "@opencode/cli", allowScripts: "@opencode/cli" },
+    );
+    await expect(npmInstallationManager("update")).resolves.toMatchObject({
+      currentVersion: "2.4.1",
+    });
+    expect(mocks.update).toHaveBeenCalledWith("2.4.1");
+
+    mocks.run.mockReset();
+    mocks.run.mockResolvedValue("1.19.6");
+    mocks.npm.mockResolvedValue(null);
+    mocks.fetch.mockResolvedValue(JSON.stringify({ version: "2.4.1" }));
+    const nativeInstallationManager = createOpenCodeInstallation({ HOME: home });
+    const nativeState = await nativeInstallationManager("check");
+    expect(nativeState).toMatchObject({
+      currentVersion: "1.19.6",
+      latestVersion: "2.4.1",
+      updateAvailable: true,
+      canUpdate: false,
+      messageCode: "opencode-major-upgrade",
+      notice: {
+        en: expect.stringContaining("cannot be resumed"),
+        "zh-CN": expect.stringContaining("无法再恢复"),
+      },
+    });
+    expect(nativeState.notice?.en).toContain("opencode upgrade --major");
+    expect(nativeState.notice?.en).toContain("https://opencode.ai/v2/install");
+    expect(nativeState.notice?.["zh-CN"]).toContain("opencode upgrade --major");
+    expect(nativeState.notice?.["zh-CN"]).toContain("https://opencode.ai/v2/install");
+    expect(mocks.fetch).toHaveBeenCalledWith("https://registry.npmjs.org/%40opencode%2Fcli/latest");
+
+    mocks.run.mockClear();
+    await expect(nativeInstallationManager("update")).rejects.toThrow("opencode upgrade --major");
+    expect(mocks.run).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a fixed non-interactive method for standard native 1.x and 2.x updates", async () => {
     let version = "1.0.0";
     mocks.run.mockImplementation(async (_command, args) => {
       if (args[0] === "upgrade") version = "1.1.0";
@@ -48,6 +124,29 @@ describe("OpenCode installation", () => {
     expect(mocks.run).toHaveBeenCalledWith(
       path.join(environment.HOME, ".opencode/bin/opencode"),
       ["upgrade", "1.1.0", "--method", "curl"],
+      environment,
+      300_000,
+    );
+
+    let v2Version = "opencode v2.4.1";
+    mocks.fetch.mockResolvedValue(JSON.stringify({ version: "2.5.0" }));
+    mocks.run.mockImplementation(async (_command, args) => {
+      if (args[0] === "upgrade") v2Version = "opencode v2.5.0";
+      return v2Version;
+    });
+    const v2Manager = createOpenCodeInstallation(environment);
+    await expect(v2Manager("check")).resolves.toMatchObject({
+      currentVersion: "2.4.1",
+      latestVersion: "2.5.0",
+      updateAvailable: true,
+      canUpdate: true,
+    });
+    await expect(v2Manager("update")).resolves.toMatchObject({
+      currentVersion: "2.5.0",
+    });
+    expect(mocks.run).toHaveBeenCalledWith(
+      path.join(environment.HOME, ".opencode/bin/opencode"),
+      ["upgrade", "2.5.0", "--method", "curl"],
       environment,
       300_000,
     );
@@ -72,6 +171,16 @@ describe("OpenCode installation", () => {
       "original package manager",
     );
     expect(mocks.run).toHaveBeenCalledTimes(1);
+
+    mocks.run.mockResolvedValue("1.19.6");
+    mocks.fetch.mockResolvedValue(JSON.stringify({ version: "2.4.1" }));
+    await expect(createOpenCodeInstallation({ HOME: home })("check")).resolves.toMatchObject({
+      canUpdate: false,
+      messageCode: "original-installer",
+      notice: {
+        en: expect.stringContaining("cannot be resumed"),
+      },
+    });
   });
 
   it("does not report success when native upgrade leaves the selected version unchanged", async () => {

@@ -405,7 +405,10 @@ export function VoiceNotice({
           {t("voice.retry")}
         </button>
       ) : null}
-      {error === "permission-denied" || error === "no-microphone" || error === "record-failed" ? (
+      {error === "permission-denied" ||
+      error === "shell-permission-denied" ||
+      error === "no-microphone" ||
+      error === "record-failed" ? (
         <button type="button" className={css.secondary} onClick={() => voice.rerecord()}>
           {t("voice.tryAgain")}
         </button>

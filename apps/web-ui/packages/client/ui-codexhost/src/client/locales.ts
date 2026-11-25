@@ -792,8 +792,13 @@ export const en = {
   "voice.discard": "Discard",
   "voice.error.browser-unsupported":
     "This page cannot record audio. Open it over HTTPS or localhost.",
+  "voice.error.shell-unsupported":
+    "This desktop app version cannot record audio. Update and restart CodexHost.",
+  "voice.error.recording-unsupported": "This browser does not support audio recording.",
   "voice.error.permission-denied":
     "Microphone access is blocked. Allow the microphone in the site settings next to the address bar, then try again.",
+  "voice.error.shell-permission-denied":
+    "Microphone access is blocked. Allow microphone access for CodexHost in System Settings, then try again.",
   "voice.error.no-microphone": "No microphone found. Check the system input device.",
   "voice.error.record-failed":
     "Could not access the microphone. Check the browser and the input device.",
@@ -1442,8 +1447,12 @@ export const zh: Record<ImportLocaleKey, string> = {
   "voice.cancel": "取消录音",
   "voice.discard": "丢弃",
   "voice.error.browser-unsupported": "当前页面不允许录音，请用 HTTPS 或 localhost 打开。",
+  "voice.error.shell-unsupported": "当前桌面端版本不支持录音，请更新并重启 CodexHost。",
+  "voice.error.recording-unsupported": "当前浏览器不支持录音。",
   "voice.error.permission-denied":
     "麦克风访问被阻止。点击地址栏左侧的站点设置，允许使用麦克风后再试。",
+  "voice.error.shell-permission-denied":
+    "麦克风访问被阻止。请在系统隐私设置中允许 CodexHost 使用麦克风后再试。",
   "voice.error.no-microphone": "未找到麦克风，请检查系统输入设备。",
   "voice.error.record-failed": "暂时无法访问麦克风，请检查浏览器和输入设备。",
   "voice.error.credentials-unavailable": "Codex ChatGPT 登录凭证不可用。",

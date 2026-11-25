@@ -3,7 +3,21 @@ import type { VoiceErrorCode, VoiceTranscribeResult } from "@codexhost/shared-co
 
 /** Service codes plus browser-side recording failures; the view localizes them. */
 export type VoiceInputError =
-  VoiceErrorCode | "browser-unsupported" | "permission-denied" | "no-microphone" | "record-failed";
+  | VoiceErrorCode
+  | "browser-unsupported"
+  | "shell-unsupported"
+  | "recording-unsupported"
+  | "permission-denied"
+  | "shell-permission-denied"
+  | "no-microphone"
+  | "record-failed";
+
+function isDesktopShell(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    (window as { __CODEXHOST_DESKTOP_SHELL__?: boolean }).__CODEXHOST_DESKTOP_SHELL__ === true
+  );
+}
 
 /** Number of recent input levels kept for the recording waveform. */
 export const VOICE_LEVEL_BARS = 24;
@@ -91,10 +105,16 @@ export class VoiceInput {
     const generation = ++this.generation;
     this.update({ phase: "permission", seconds: 0 });
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      const error: VoiceInputError =
+        typeof window !== "undefined" && !window.isSecureContext
+          ? "browser-unsupported"
+          : isDesktopShell()
+            ? "shell-unsupported"
+            : "recording-unsupported";
       this.update({
         phase: "idle",
         seconds: 0,
-        error: "browser-unsupported",
+        error,
       });
       return;
     }
@@ -112,7 +132,7 @@ export class VoiceInput {
       this.recorder = recorder;
       const chunks: Blob[] = [];
       recorder.ondataavailable = (event) => {
-        if (generation === this.generation) chunks.push(event.data);
+        if (generation === this.generation && event.data.size > 0) chunks.push(event.data);
       };
       recorder.onerror = () => {
         if (generation !== this.generation) return;
@@ -152,7 +172,9 @@ export class VoiceInput {
         seconds: 0,
         error:
           name === "NotAllowedError"
-            ? "permission-denied"
+            ? isDesktopShell()
+              ? "shell-permission-denied"
+              : "permission-denied"
             : name === "NotFoundError"
               ? "no-microphone"
               : "record-failed",

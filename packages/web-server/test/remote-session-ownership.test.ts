@@ -125,22 +125,22 @@ async function peerFixture(
     enabled?: boolean;
     manifestStatus?: number;
     catalogStatus?: number;
-    probeGate?: Promise<void>;
-    listGate?: Promise<void>;
-    discoveryGate?: Promise<void>;
+    probeGate?: Promise<undefined>;
+    listGate?: Promise<undefined>;
+    discoveryGate?: Promise<undefined>;
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "remote-summary-"));
   const hostId = "remote-peer:target";
   const threadId = "peer-thread";
   const epoch = "peer-epoch";
-  const probed = Promise.withResolvers<void>();
-  const listing = Promise.withResolvers<void>();
-  const connecting = Promise.withResolvers<void>();
-  const discovered = Promise.withResolvers<void>();
+  const probed = Promise.withResolvers<undefined>();
+  const listing = Promise.withResolvers<undefined>();
+  const connecting = Promise.withResolvers<undefined>();
+  const discovered = Promise.withResolvers<undefined>();
   const server = createServer(async (request, response) => {
     if (request.url === "/api/peer/v1/manifest") {
-      probed.resolve();
+      probed.resolve(undefined);
       await options.probeGate;
       response.writeHead(options.manifestStatus ?? 200);
       response.end(
@@ -163,7 +163,7 @@ async function peerFixture(
     for await (const chunk of request) chunks.push(chunk);
     const { method } = JSON.parse(Buffer.concat(chunks).toString());
     if (method === "codexhost/thread/catalog/read") {
-      listing.resolve();
+      listing.resolve(undefined);
       await options.listGate;
       response.writeHead(options.catalogStatus ?? 200);
       response.end(
@@ -188,7 +188,11 @@ async function peerFixture(
       );
       return;
     }
-    response.end(JSON.stringify({ result: { parents: {}, plugins: [] } }));
+    if (method === "codexhost/thread/tree/read") {
+      response.end(JSON.stringify({ result: { parents: {} } }));
+      return;
+    }
+    response.end(JSON.stringify({ result: { plugins: [] } }));
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -214,7 +218,7 @@ async function peerFixture(
     createCompositeRemoteCall(manager, async () => {
       if (firstDiscovery) {
         firstDiscovery = false;
-        connecting.resolve();
+        connecting.resolve(undefined);
         await options.discoveryGate;
       }
       return [];
@@ -223,7 +227,8 @@ async function peerFixture(
     manager,
   );
   manager.onChange = (id) => {
-    if (id === hostId && manager.client(hostId)?.state === "connected") discovered.resolve();
+    if (id === hostId && manager.client(hostId)?.state === "connected")
+      discovered.resolve(undefined);
     remote.hostsChanged(id);
   };
   const rpc = new RpcRegistry();
@@ -255,13 +260,13 @@ it(
   "waits for the first Peer connection and a targeted catalog refresh during a cold sidebar load",
   { timeout: 5000 },
   async (t) => {
-    const probe = Promise.withResolvers<void>();
-    const discovery = Promise.withResolvers<void>();
-    const list = Promise.withResolvers<void>();
+    const probe = Promise.withResolvers<undefined>();
+    const discovery = Promise.withResolvers<undefined>();
+    const list = Promise.withResolvers<undefined>();
     t.after(() => {
-      probe.resolve();
-      discovery.resolve();
-      list.resolve();
+      probe.resolve(undefined);
+      discovery.resolve(undefined);
+      list.resolve(undefined);
     });
     const peer = await peerFixture(t, {
       probeGate: probe.promise,
@@ -276,11 +281,11 @@ it(
     await peer.discoveryStarted;
     const pending = peer.lookup(peer.hostId, peer.threadId);
 
-    probe.resolve();
+    probe.resolve(undefined);
     await peer.connected;
-    discovery.resolve();
+    discovery.resolve(undefined);
     await peer.listing;
-    list.resolve();
+    list.resolve(undefined);
 
     const result = await pending;
     assert.ok(result.ok, JSON.stringify(result));
@@ -323,8 +328,10 @@ it(
   "bounds the wait for a Peer whose first connection is still pending",
   { timeout: 6000 },
   async (t) => {
-    const probe = Promise.withResolvers<void>();
-    t.after(probe.resolve);
+    const probe = Promise.withResolvers<undefined>();
+    t.after(() => {
+      probe.resolve(undefined);
+    });
     const peer = await peerFixture(t, { probeGate: probe.promise });
     await peer.probed;
     const result = await peer.lookup(peer.hostId, peer.threadId);

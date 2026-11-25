@@ -117,7 +117,7 @@ const MAX_TRACKED_KNOWN_TURNS = 16;
 
 export class PeerHostClient {
   private life = new AbortController();
-  private readonly initialProbe = Promise.withResolvers<void>();
+  private readonly initialProbe = Promise.withResolvers<undefined>();
   manifest?: c.RemotePeerManifest;
   latencyMs?: number;
   lastError?: string;
@@ -320,7 +320,7 @@ export class PeerHostClient {
       this.setStreamOffline();
       throw Error(message);
     } finally {
-      this.initialProbe.resolve();
+      this.initialProbe.resolve(undefined);
     }
   }
 
@@ -419,7 +419,7 @@ export class PeerHostClient {
 
   close() {
     this.life.abort();
-    this.initialProbe.resolve();
+    this.initialProbe.resolve(undefined);
     this.setStreamOffline();
     this.listeners.clear();
     this.fullKnownTurns.clear();

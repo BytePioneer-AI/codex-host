@@ -333,7 +333,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     signal: AbortSignal,
     resolved: () => void,
     retry: () => void,
-    onMissing?: (offline?: boolean) => void,
+    onMissing?: (offline?: { readonly message: string }) => void,
   ): Promise<void> {
     if (signal.aborted) return;
     this.openingLoad?.stop();
@@ -369,7 +369,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       const offline = remoteFailureCode(error) === "remote/offline";
       if (onMissing !== undefined && (offline || isMissingSessionError(error))) {
         clear();
-        onMissing(offline);
+        onMissing(offline ? { message: creationFailureMessage(error) } : undefined);
         return;
       }
       this.retryOpen = retry;
@@ -614,7 +614,9 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
   private watchNavigation(): () => void {
     let initial: "waiting" | "connecting" | "done" = "waiting";
-    let savedRemoteOffline = false;
+    let savedRemoteOffline:
+      | { readonly sessionId: SessionId; readonly message: string; readonly retry: () => void }
+      | undefined;
     const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal]);
     // Explicit navigation supersedes startup, including an unresolved direct link.
     navigation.addEventListener(
@@ -624,6 +626,18 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       },
       { once: true },
     );
+    const showOfflineRecovery = (offline: {
+      readonly sessionId: SessionId;
+      readonly message: string;
+      readonly retry: () => void;
+    }): void => {
+      this.retryOpen = offline.retry;
+      this.opening.set({
+        state: "error",
+        sessionId: offline.sessionId,
+        message: offline.message,
+      });
+    };
     const reconcile = (): void => {
       if (this.lifetime.signal.aborted) return;
       const current = this.mainReference?.sessionId;
@@ -640,12 +654,28 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       }
       if (workspace.phase !== "ready" || sessions.phase !== "ready") return;
       initial = "connecting";
-      void this.restoreSelection(workspace, sessions, navigation, savedRemoteOffline).then(
-        () => {
+      const offlineFallback = savedRemoteOffline;
+      void this.restoreSelection(
+        workspace,
+        sessions,
+        navigation,
+        offlineFallback !== undefined,
+      ).then(
+        (restored) => {
+          if (navigation.aborted) return;
+          if (!restored && offlineFallback !== undefined && this.mainReference === undefined) {
+            showOfflineRecovery(offlineFallback);
+          }
           initial = "done";
         },
         (reason: unknown) => {
           if (navigation.aborted) return;
+          if (offlineFallback !== undefined && this.mainReference === undefined) {
+            showOfflineRecovery(offlineFallback);
+            initial = "done";
+            console.warn("initial Session restoration failed:", reason);
+            return;
+          }
           initial = "waiting";
           console.warn("initial Session restoration failed:", reason);
         },
@@ -672,6 +702,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
             id,
             navigation,
             () => {
+              savedRemoteOffline = undefined;
               if (this.sessions.list.getSnapshot().byId[id]?.blank === true) {
                 // Reusing a draft still needs authoritative Workspace membership/writer checks.
                 initial = "waiting";
@@ -682,10 +713,15 @@ class UiWorkspaceService extends Service implements UiWorkspace {
               }
             },
             restore,
-            (offline = false) => {
+            (offline) => {
               if (navigation.aborted) return;
-              if (!offline && this.selection.getSnapshot().sessionId === id) this.selection.set({});
-              savedRemoteOffline = offline;
+              if (offline === undefined && this.selection.getSnapshot().sessionId === id) {
+                this.selection.set({});
+              }
+              savedRemoteOffline =
+                offline === undefined
+                  ? undefined
+                  : { sessionId: id, message: offline.message, retry: restore };
               initial = "waiting";
               reconcile();
             },
@@ -708,14 +744,14 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     sessions: SessionListState,
     navigation: AbortSignal,
     savedRemoteOffline: boolean,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const saved: MainSelection = savedRemoteOffline ? {} : this.selection.getSnapshot();
     const workspaceItems = savedRemoteOffline
       ? workspaces.items.filter((item) => item.remote === undefined)
       : workspaces.items;
     if (saved.subagentAddress !== undefined) {
       this.replaceMain(saved.subagentAddress, navigation, "preserve");
-      return;
+      return true;
     }
     const summary = saved.sessionId === undefined ? undefined : sessions.byId[saved.sessionId];
     const workspace =
@@ -724,7 +760,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         : workspaceItems.find((item) => item.sessionIds.includes(summary.id));
     if (summary !== undefined && (!summary.blank || workspace === undefined)) {
       this.replaceMain(summary.id, navigation, "preserve");
-      return;
+      return true;
     }
     let sessionId: SessionId | undefined;
     if (
@@ -737,21 +773,32 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     }
     if (sessionId === undefined && workspaces.canStartProjectless && summary === undefined) {
       sessionId = await this.sessions.create();
-      if (!navigation.aborted)
+      if (!navigation.aborted) {
         this.replaceMain(sessionId, navigation, "preserve", undefined, savedRemoteOffline);
-      return;
+        return true;
+      }
+      return false;
     }
     let target = workspace?.workspaceId ?? recentWorkspace(workspaceItems, sessions.byId);
-    if (target === undefined && workspaceItems.length === 0 && sessions.ids.length === 0) {
+    const hasLocalSessions = sessions.ids.some(
+      (id) => !workspaces.archivedSessionIds.includes(id) && !this.isRemoteSession(id),
+    );
+    if (
+      target === undefined &&
+      workspaceItems.length === 0 &&
+      (savedRemoteOffline ? !hasLocalSessions : sessions.ids.length === 0)
+    ) {
       const prepared = await this.initializeDefaultWorkspace(navigation);
-      if (navigation.aborted) return;
+      if (navigation.aborted) return false;
       target = prepared?.workspaceId;
     }
     if (sessionId === undefined && target !== undefined)
       sessionId = await this.connectWorkspace(target);
     if (sessionId !== undefined && !navigation.aborted) {
       this.replaceMain(sessionId, navigation, "preserve", undefined, savedRemoteOffline);
+      return true;
     }
+    return false;
   }
 
   private async initializeDefaultWorkspace(
@@ -793,6 +840,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       const id: SessionId = cursor;
       seen.add(id);
       if (
+        id.startsWith("web-remote:") ||
         list.byId[id]?.projectionValues?.remoteHost != null ||
         list.projectionsBySession[id]?.values.remoteHost != null ||
         workspaces.some(

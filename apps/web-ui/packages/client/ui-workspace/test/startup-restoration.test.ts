@@ -10,6 +10,7 @@ import type {
 import type {
   IWorkspaces,
   WorkspaceSnapshot,
+  WorkspaceView,
 } from "@deepseek-ai/dsh-api-workspace-controller/client";
 import { createSnapshotStore } from "@deepseek-ai/dsh-client-store";
 import { SessionId } from "@deepseek-ai/dsh-session/types";
@@ -78,6 +79,12 @@ function createHarness(options: {
     listStore: ReturnType<typeof createSnapshotStore<SessionListState>>,
   ) => Promise<void>;
   createdIds?: SessionId[];
+  canStartProjectless?: boolean;
+  workspaceItems?: WorkspaceSnapshot["items"];
+  initialSessions?: SessionListState["byId"];
+  initializeDefault?: (
+    workspacesStore: ReturnType<typeof createSnapshotStore<WorkspaceSnapshot>>,
+  ) => Promise<WorkspaceView>;
 }) {
   const storage = installLocalStorage(
     options.savedSessionId === undefined
@@ -85,14 +92,15 @@ function createHarness(options: {
       : { "dsh.sessions.current": JSON.stringify({ sessionId: options.savedSessionId }) },
   );
   const ws1 = "ws-1" as WorkspaceId;
+  const initialById = options.initialSessions ?? {};
   const listStore = createSnapshotStore<SessionListState>({
-    ids: [],
-    byId: {},
+    ids: Object.keys(initialById) as SessionId[],
+    byId: initialById,
     phase: "ready",
     projectionsBySession: {},
   });
   const workspacesStore = createSnapshotStore<WorkspaceSnapshot>({
-    items: [
+    items: options.workspaceItems ?? [
       {
         workspaceId: ws1,
         path: "/tmp/ws-1",
@@ -103,7 +111,7 @@ function createHarness(options: {
       },
     ],
     phase: "ready",
-    canStartProjectless: true,
+    canStartProjectless: options.canStartProjectless ?? true,
     pinnedSessionIds: [],
     archivedSessionIds: [],
   });
@@ -185,7 +193,17 @@ function createHarness(options: {
   );
   ctx.provide("locale" as never, { bind: () => (key: string) => key } as never);
 
-  const workspaces: Partial<IWorkspaces> = { list: workspacesStore };
+  let initializeDefaultCalls = 0;
+  const workspaces: Partial<IWorkspaces> = {
+    list: workspacesStore,
+    initializeDefault: async () => {
+      initializeDefaultCalls += 1;
+      if (options.initializeDefault !== undefined) {
+        return options.initializeDefault(workspacesStore);
+      }
+      throw new Error("unexpected initializeDefault");
+    },
+  };
 
   const service = new UiWorkspaceService(
     ctx,
@@ -204,6 +222,9 @@ function createHarness(options: {
     retainedMain,
     createdCalls,
     loadSummaryCalls,
+    get initializeDefaultCalls() {
+      return initializeDefaultCalls;
+    },
   };
 }
 
@@ -371,3 +392,112 @@ for (const [code, sessionId, message] of recoveryCases) {
     );
   });
 }
+
+it("initializes the default workspace or keeps retryable recovery when offline fallback has only remote sessions", async () => {
+  const offline = SessionId("web-remote:offline");
+  const otherRemote = SessionId("web-remote:online-peer-thread");
+  const remoteWsId = "remote-workspace:peer:proj" as WorkspaceId;
+  const defaultWsId = "ws-default" as WorkspaceId;
+  const fallbackDraft = SessionId("draft-default-ws");
+
+  const remoteWorkspace: WorkspaceView = {
+    workspaceId: remoteWsId,
+    path: "/remote/proj",
+    title: "Remote Proj",
+    sessionIds: [otherRemote],
+    createdAt: "2026-01-01",
+    updatedAt: "2026-01-01",
+    remote: { hostId: "remote-peer:other", online: true },
+  };
+  const remoteSessions: SessionListState["byId"] = {
+    [otherRemote]: {
+      id: otherRemote,
+      displayTitle: "Other remote",
+      running: false,
+      blank: false,
+      updatedAt: 1,
+      retainedBy: {},
+    },
+  };
+
+  const initialized = createHarness({
+    savedSessionId: offline,
+    canStartProjectless: false,
+    workspaceItems: [remoteWorkspace],
+    initialSessions: remoteSessions,
+    createdIds: [fallbackDraft],
+    loadSummary: async () => {
+      throw remoteError("remote/offline", "Remote peer is not connected");
+    },
+    initializeDefault: async (workspacesStore) => {
+      const created: WorkspaceView = {
+        workspaceId: defaultWsId,
+        path: "/tmp/default",
+        title: "Default",
+        sessionIds: [],
+        createdAt: "2026-01-02",
+        updatedAt: "2026-01-02",
+      };
+      workspacesStore.update((draft) => {
+        draft.items.push(created);
+      });
+      return created;
+    },
+  });
+
+  await flushMicrotasks();
+
+  assert.equal(initialized.initializeDefaultCalls, 1);
+  assert.deepEqual(initialized.service.opening.getSnapshot(), { state: "idle" });
+  assert.deepEqual(initialized.retainedMain, [fallbackDraft]);
+  assert.equal(
+    initialized.storage.get("dsh.sessions.current"),
+    JSON.stringify({ sessionId: offline }),
+  );
+
+  let peerOnline = false;
+  const unrecoverable = createHarness({
+    savedSessionId: offline,
+    canStartProjectless: false,
+    workspaceItems: [remoteWorkspace],
+    initialSessions: remoteSessions,
+    loadSummary: async (id, listStore) => {
+      if (!peerOnline) throw remoteError("remote/offline", "Remote peer is not connected");
+      listStore.update((draft) => {
+        if (!draft.ids.includes(id)) draft.ids.push(id);
+        draft.byId[id] = {
+          id,
+          displayTitle: "Recovered remote",
+          running: false,
+          blank: false,
+          updatedAt: 2,
+          retainedBy: {},
+        };
+      });
+    },
+    initializeDefault: async () => {
+      throw new Error("cannot create default workspace");
+    },
+  });
+
+  await flushMicrotasks();
+
+  assert.equal(unrecoverable.initializeDefaultCalls, 1);
+  assert.deepEqual(unrecoverable.retainedMain, []);
+  assert.deepEqual(unrecoverable.service.opening.getSnapshot(), {
+    state: "error",
+    sessionId: offline,
+    message: "Remote peer is not connected",
+  });
+  assert.equal(
+    unrecoverable.storage.get("dsh.sessions.current"),
+    JSON.stringify({ sessionId: offline }),
+  );
+
+  peerOnline = true;
+  unrecoverable.service.retryOpening();
+  await flushMicrotasks();
+
+  assert.deepEqual(unrecoverable.service.opening.getSnapshot(), { state: "idle" });
+  assert.deepEqual(unrecoverable.retainedMain, [offline]);
+});

@@ -1066,7 +1066,7 @@ export class MappingStore {
   async updateMetadata(
     hostThreadId: HostThreadId,
     patch: ThreadMetadataPatch,
-    options: { ifProjectId?: string } = {},
+    options: { ifProjectId?: string; beforeWrite?: () => void } = {},
   ): Promise<StoredThreadRecordV1> {
     return this.#update(
       hostThreadId,
@@ -1079,6 +1079,8 @@ export class MappingStore {
       },
       // Backfilling a display hint is not new conversation activity.
       Object.keys(patch).every((key) => key === "preview"),
+      undefined,
+      options.beforeWrite,
     );
   }
 
@@ -1279,6 +1281,7 @@ export class MappingStore {
     preserveUpdatedAt:
       boolean | ((current: StoredThreadRecordV1, next: StoredThreadRecordV1) => boolean) = false,
     mode?: "antigravityBoundaryRepair",
+    beforeWrite?: () => void,
   ): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
     let result: StoredThreadRecordV1 | null = null;
@@ -1301,7 +1304,7 @@ export class MappingStore {
         updatedAt: preserve ? current.updatedAt : this.#now().toISOString(),
       }) as StoredThreadRecordV1;
       this.#validateGlobal(next, hostThreadId, mode === "antigravityBoundaryRepair");
-      await this.#replaceFile(this.#recordPath(hostThreadId), next, true);
+      await this.#replaceFile(this.#recordPath(hostThreadId), next, true, beforeWrite);
       const metadata = threadMetadataOf(next);
       if (!sameJson(threadMetadataOf(current), metadata)) {
         // Only a metadata patch changes metadata, and it changes nothing else in the record
@@ -1382,11 +1385,14 @@ export class MappingStore {
     target: string,
     record: StoredThreadRecordV1,
     preserveBackup: boolean,
+    beforeWrite?: () => void,
   ): Promise<void> {
     const temp = `${target}.tmp-${randomUUID()}`;
     let handle: FileHandle | null = null;
     try {
       await this.#beforeReplace?.(cloneRecord(record));
+      // Recheck admission after the store queue and immediately before opening the new file.
+      beforeWrite?.();
       handle = await open(temp, "wx", constants.S_IRUSR | constants.S_IWUSR);
       await handle.writeFile(`${JSON.stringify(withoutThreadMetadata(record), null, 2)}\n`, "utf8");
       await handle.sync();

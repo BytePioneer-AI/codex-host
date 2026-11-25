@@ -101,11 +101,7 @@ export interface ExternalThreadStore {
     through: number,
     prefix: InjectedTurnPrefix,
   ): Promise<StoredThreadRecordV1>;
-  updateMetadata(
-    hostThreadId: HostThreadId,
-    patch: ThreadMetadataPatch,
-    options?: { ifProjectId?: string },
-  ): Promise<StoredThreadRecordV1>;
+  updateMetadata: MappingStore["updateMetadata"];
   removeProvisional(hostThreadId: HostThreadId): Promise<void>;
   removeThread(hostThreadId: HostThreadId): Promise<void>;
   listSectionPlacements(): Promise<StoredSectionPlacementV1[]>;
@@ -320,7 +316,7 @@ export class ExternalThreadRepository {
   updateMetadata(
     hostThreadId: HostThreadId,
     patch: ThreadMetadataPatch,
-    options?: { ifProjectId?: string },
+    options?: Parameters<MappingStore["updateMetadata"]>[2],
   ): Promise<StoredThreadRecordV1> {
     return this.store.updateMetadata(hostThreadId, patch, options);
   }

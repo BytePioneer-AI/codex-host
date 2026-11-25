@@ -12,6 +12,7 @@ import {
 } from "@codexhost/desktop-control";
 import { decodeExternalTransportSelection } from "@codexhost/protocol-core";
 import {
+  CLIENT_THREAD_PROJECT_MOVE_METHOD,
   THREAD_STEER_STRICT_TARGET_PARAM,
   clientChannelEventSchema,
   clientThreadSnapshotSchema,
@@ -85,6 +86,15 @@ function current(fixture: ReturnType<typeof createFixture>) {
 }
 
 describe("public authenticated owner channel", () => {
+  it("does not send a project move through a Desktop-owned transport", async () => {
+    const { a, fixture } = await setup();
+    const received = vi.spyOn(fixture.host, "handleClientRequest");
+    await expect(
+      a.request(CLIENT_THREAD_PROJECT_MOVE_METHOD, { threadId: "thread", projectId: "target" }),
+    ).rejects.toMatchObject({ code: -32601 });
+    expect(received).not.toHaveBeenCalled();
+  });
+
   it("rejects non-Codex draft command inspection before reading the Adapter catalog", async () => {
     const { fixture, a } = await setup();
     const readCatalog = vi.fn(() => ({ commands: [] }));

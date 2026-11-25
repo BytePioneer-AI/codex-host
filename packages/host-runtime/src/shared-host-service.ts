@@ -158,6 +158,7 @@ export async function runSharedHostService(
           desktopOutput: owner.output,
           diagnosticOutput: process.stderr,
           externalOnly: true,
+          localProjectMoves: hostEnvironment.CODEXHOST_REMOTE_SSH_MANAGED !== "1",
           desktopConnected: () => desktops.size > 0,
           mappingStore: store,
           closeMappingStoreOnExit: false,

@@ -227,6 +227,13 @@ export const clientWorkspaceSnapshotSchema = z.object({
   nativeProjects: z.literal(true).optional(),
   assignments: z.record(z.string(), z.string()),
   projectless: z.array(z.string()),
+  /** Move-capable local owner only. A null assignment is confirmed; an absent key is not. */
+  projectMoveBindings: z
+    .object({
+      projectIds: z.array(projectMoveId),
+      assignments: z.record(z.string(), projectMoveId.nullable()),
+    })
+    .optional(),
   /** Canonical external pin membership; pins/list provides the native merged order. */
   pinned: z.array(z.string()),
   /** Projects Desktop placed in each custom section, keyed by the official section ID, in

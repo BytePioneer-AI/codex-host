@@ -25,25 +25,26 @@ export async function readNativeWorkspaceSnapshot(
 
 function localProjectIds(state: Record<string, unknown>, scope: string) {
   const mappings = state["app-server-project-id-by-legacy-project-id-by-host"];
-  const scoped =
-    mappings && typeof mappings === "object" && !Array.isArray(mappings)
-      ? (mappings as Record<string, unknown>)[scope]
-      : undefined;
+  if (mappings === undefined) return {};
+  if (!mappings || typeof mappings !== "object" || Array.isArray(mappings)) return null;
+  const scoped = (mappings as Record<string, unknown>)[scope];
+  if (scoped === undefined) return {};
   return scoped && typeof scoped === "object" && !Array.isArray(scoped)
     ? (scoped as Record<string, unknown>)
-    : {};
+    : null;
 }
 
 function workspaceProjects(
   snapshot: ClientWorkspaceSnapshot,
-  mappings: Record<string, unknown> = {},
+  mappings: Record<string, unknown> | null = {},
 ): WorkspaceProjects {
   const nativeByGui = new Map<string, string>();
   const guiByNative = new Map<string, string>();
   const ambiguous = new Set<string>();
   for (const { id } of snapshot.projects) {
-    const mapped = Object.hasOwn(mappings, id) ? mappings[id] : undefined;
-    const nativeId = typeof mapped === "string" && mapped ? mapped : id;
+    if (!mappings || !id.trim() || id.length > 1024) continue;
+    const nativeId = Object.hasOwn(mappings, id) ? mappings[id] : id;
+    if (typeof nativeId !== "string" || !nativeId.trim()) continue;
     if (guiByNative.has(nativeId)) ambiguous.add(nativeId);
     nativeByGui.set(id, nativeId);
     guiByNative.set(nativeId, id);
@@ -117,7 +118,7 @@ export async function readWorkspaceProjects(
         if (!value || typeof value !== "object") return [];
         const entry = value as Record<string, unknown>;
         const project = projectId(entry.projectId);
-        return entry.projectKind === "local" && project ? [[id, project]] : [];
+        return entry.projectKind === "local" && project !== undefined ? [[id, project]] : [];
       }),
     ),
     projectless: state["projectless-thread-ids"] ?? [],
@@ -182,44 +183,62 @@ export async function readExternalWorkspaceSnapshot(
   placements: readonly StoredSectionPlacementV1[],
   nativeThreadIds: readonly string[] = [],
   nativeProjects?: ClientWorkspaceSnapshot["projects"],
-  readProjectId?: (threadId: string) => Promise<string | null | undefined>,
+  readProjectIds?: (
+    threadIds: readonly string[],
+  ) => Promise<ReadonlyMap<string, string | null | undefined>>,
+  canMove = false,
 ): Promise<ClientWorkspaceSnapshot> {
-  const { snapshot, guiByNative } = await readWorkspaceProjects(environment, nativeProjects);
+  const { snapshot, nativeByGui, guiByNative } = await readWorkspaceProjects(
+    environment,
+    nativeProjects,
+  );
   const externalIds = new Set(threads.map((thread) => String(thread.hostThreadId)));
   const owned = new Set([...externalIds, ...nativeThreadIds]);
-  const assignments = Object.fromEntries(
+  const assignments = new Map(
     Object.entries(snapshot.assignments).filter(([id]) => nativeProjects || owned.has(id)),
   );
-  if (readProjectId && guiByNative.size) {
+  const verified = canMove ? new Map<string, string | null>() : undefined;
+  if (readProjectIds && guiByNative.size) {
     const official = [...owned].filter((id) => !externalIds.has(id));
-    for (let i = 0; i < official.length; i += 16) {
-      await Promise.all(
-        official.slice(i, i + 16).map(async (id) => {
-          const nativeId = await readProjectId(id);
-          if (nativeId === undefined) return; // Legacy servers omit projectId.
-          const guiId = nativeId === null ? undefined : guiByNative.get(nativeId);
-          if (guiId === undefined) delete assignments[id];
-          else assignments[id] = guiId;
-        }),
-      );
+    const values = await readProjectIds(official);
+    for (const id of official) {
+      const nativeId = values.get(id);
+      // Only a successful legacy read may retain the GUI assignment for navigation.
+      if (nativeId === undefined && values.has(id)) continue;
+      const guiId = typeof nativeId === "string" ? guiByNative.get(nativeId) : undefined;
+      if (guiId === undefined) assignments.delete(id);
+      else assignments.set(id, guiId);
+      if (guiId !== undefined || nativeId === null) verified?.set(id, guiId ?? null);
     }
   }
   const projectless = new Set(
-    snapshot.projectless.filter((id) => owned.has(id) && !assignments[id]),
+    snapshot.projectless.filter((id) => owned.has(id) && !assignments.has(id)),
   );
   for (const thread of threads) {
     if (thread.projectId) {
       const guiId = guiByNative.get(thread.projectId);
-      if (guiId !== undefined) assignments[thread.hostThreadId] = guiId;
-      else delete assignments[thread.hostThreadId];
+      if (guiId !== undefined) {
+        assignments.set(thread.hostThreadId, guiId);
+        verified?.set(thread.hostThreadId, guiId);
+      } else assignments.delete(thread.hostThreadId);
       projectless.delete(thread.hostThreadId);
-    } else if (thread.projectlessWorkspace && !assignments[thread.hostThreadId]) {
-      projectless.add(thread.hostThreadId);
+    } else {
+      verified?.set(thread.hostThreadId, null);
+      if (thread.projectlessWorkspace && !assignments.has(thread.hostThreadId))
+        projectless.add(thread.hostThreadId);
     }
   }
   return {
     ...snapshot,
-    assignments,
+    assignments: Object.fromEntries(assignments),
+    ...(verified
+      ? {
+          projectMoveBindings: {
+            projectIds: [...nativeByGui.keys()],
+            assignments: Object.fromEntries(verified),
+          },
+        }
+      : {}),
     projectless: [...projectless],
     pinned: externalPinIds(threads, placements),
   };

@@ -2,6 +2,7 @@ import { readdir, open } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import {
+  CLIENT_THREAD_PROJECT_MOVE_METHOD,
   clientChannelDescriptorSchema,
   clientChannelEventSchema,
   clientThreadSnapshotSchema,
@@ -192,7 +193,12 @@ export class HostClientChannel {
   }
   private async post<T>(route: string, body: unknown, timeoutMs = 120_000): Promise<T> {
     if (this.stopped || !this.online)
-      throw new Error("CH is disconnected; reconnect before submitting an operation");
+      throw Object.assign(
+        new Error("CH is disconnected; reconnect before submitting an operation"),
+        {
+          code: -32090,
+        },
+      );
     const generation = this.generation;
     let response: Response;
     let value: { result?: T; error?: { code?: number; message?: string } };
@@ -235,6 +241,10 @@ export class HostClientChannel {
     return value.result as T;
   }
   request<T>(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+    if (method === CLIENT_THREAD_PROJECT_MOVE_METHOD && this.descriptor.owner !== "service")
+      return Promise.reject(
+        Object.assign(new Error("Project moves require the shared local Host"), { code: -32601 }),
+      );
     return this.post(
       "/v1/rpc",
       { method, params },

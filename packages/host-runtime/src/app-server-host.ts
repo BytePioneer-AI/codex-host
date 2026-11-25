@@ -440,6 +440,8 @@ export interface AppServerHostOptions {
   hostExtensions?: HostExtensionManager | undefined;
   /** Private external-session owner: never forwards requests to native Codex. */
   externalOnly?: boolean;
+  /** Only the independent local service owns client project moves. */
+  localProjectMoves?: boolean;
   /** Shared service's live Desktop connection count, not native client subscriptions. */
   desktopConnected?(): boolean;
   /** GUI connection to the single external-session owner. */
@@ -1161,22 +1163,20 @@ export class AppServerHost {
       readThreadHandoff: (threadId) => this.#repository.getThreadHandoff(threadId),
       ...(this.#options.externalOnly
         ? {
-            ...((this.#options.environment ?? process.env).CODEXHOST_REMOTE_SSH_MANAGED === "1"
-              ? {}
-              : {
-                  moveThreadToProject: (threadId: string, projectId: string) =>
-                    this.#desktopRequests.run(threadId, () =>
+            ...(options.localProjectMoves
+              ? {
+                  moveThreadToProject: (threadId: string, projectId: string) => {
+                    // A cold owner can start generation one; a queued move cannot adopt a replacement.
+                    const generation = this.#officialRuntimeScope.owner.generation || 1;
+                    return this.#desktopRequests.run(threadId, () =>
                       this.#externalRuntime.idleRelease.runOperation(threadId, () =>
-                        this.#moveClientThreadToProject(threadId, projectId),
+                        this.#moveClientThreadToProject(threadId, projectId, generation),
                       ),
-                    ),
-                }),
-            readNativeProjectId: async (threadId: string) => {
-              const thread = await this.#readNativeProjectThread(threadId);
-              return typeof thread?.projectId === "string" || thread?.projectId === null
-                ? thread.projectId
-                : undefined;
-            },
+                    );
+                  },
+                }
+              : {}),
+            readNativeProjectIds: (ids: readonly string[]) => this.#readNativeProjectIds(ids),
             native: {
               events: this.clientEvents,
               asyncQuestions: this.#asyncQuestions,
@@ -2952,17 +2952,59 @@ export class AppServerHost {
     }
   }
 
-  async #readNativeProjectThread(threadId: string): Promise<JsonObject | undefined> {
-    const reply = await this.#requestClientNative("thread/read", { threadId, includeTurns: false });
-    if ("error" in reply) {
-      if ([-32090, -32093, -32094].includes(reply.error.code)) throw new Error(reply.error.message);
-      return undefined;
-    }
-    const thread = isRecord(reply.result) ? reply.result.thread : undefined;
-    return isRecord(thread) && thread.id === threadId ? thread : undefined;
+  #isProjectOwner(generation: number): boolean {
+    const { gate, owner } = this.#officialRuntimeScope;
+    return owner.running && gate.phase === "ready" && owner.generation === generation;
   }
 
-  #moveClientThreadToProject(threadId: string, projectId: string): Promise<ConsoleHostReply> {
+  async #readNativeProjectThread(
+    threadId: string,
+    beforeDispatch: () => void,
+  ): Promise<JsonObject> {
+    const reply = await this.#officialRuntime.request(
+      "thread/read",
+      { threadId, includeTurns: false },
+      beforeDispatch,
+    );
+    const thread = !("error" in reply) && isRecord(reply.result) ? reply.result.thread : undefined;
+    if (!isRecord(thread) || thread.id !== threadId) throw new Error("Native Thread read failed");
+    return thread;
+  }
+
+  async #readNativeProjectIds(ids: readonly string[]) {
+    const projects = new Map<string, string | null | undefined>();
+    if (ids.length === 0) return projects;
+    try {
+      await this.#initializeSharedOfficial();
+    } catch {
+      return projects;
+    }
+    const generation = this.#officialRuntimeScope.owner.generation;
+    const checkOwner = () => {
+      if (!this.#isProjectOwner(generation)) throw new OfficialAdmissionError("unavailable");
+    };
+    for (let i = 0; i < ids.length && this.#isProjectOwner(generation); i += 16) {
+      await Promise.all(
+        ids.slice(i, i + 16).map(async (id) => {
+          try {
+            const { projectId } = await this.#readNativeProjectThread(id, checkOwner);
+            if (projectId === undefined || projectId === null || typeof projectId === "string")
+              projects.set(id, projectId);
+          } catch {
+            // A failed row is not a legacy row and cannot supply a project binding.
+          }
+        }),
+      );
+    }
+    if (!this.#isProjectOwner(generation)) projects.clear();
+    return projects;
+  }
+
+  #moveClientThreadToProject(
+    threadId: string,
+    projectId: string,
+    generation: number,
+  ): Promise<ConsoleHostReply> {
     return this.#runSectionOperation(async () => {
       const unavailable = {
         error: { code: -32078, message: "A local, active, unpinned top-level Thread is required" },
@@ -2970,17 +3012,28 @@ export class AppServerHost {
       const confirmed = { result: { status: "confirmed", projectId } };
       const unknown = { result: { status: "unknown" } };
       let attemptedWrite = false;
+      const checkOwner = () => {
+        if (!this.#isProjectOwner(generation)) throw new OfficialAdmissionError("unavailable");
+      };
+      const beforeWrite = () => {
+        checkOwner();
+        attemptedWrite = true;
+      };
       try {
+        if (threadId.startsWith("web-remote:") || threadId.startsWith("draft-")) return unavailable;
+        if (this.#officialRuntimeScope.owner.generation !== 0 && !this.#isProjectOwner(generation))
+          return unavailable;
+        await this.#initializeSharedOfficial();
+        checkOwner();
         await this.#waitForPlugins();
-        const { nativeByGui } = await readWorkspaceProjects(
+        const { nativeByGui, guiByNative } = await readWorkspaceProjects(
           this.#options.environment ?? process.env,
         );
         const nativeId = nativeByGui.get(projectId);
-        if (!nativeId || !(await this.#projectExists(nativeId))) {
+        if (!nativeId || !(await this.#projectExists(nativeId, checkOwner))) {
           return { error: { code: -32602, message: "Local project is unavailable" } };
         }
-        const owner = this.#officialRuntimeScope.owner;
-        const generation = owner.generation;
+        checkOwner();
         const location = await this.#locateExternalThread(threadId);
         if (location.kind === "error") return { error: location.error };
         if (await this.#repository.getDelegationByChild(hostThreadIdSchema.parse(threadId)))
@@ -2990,22 +3043,28 @@ export class AppServerHost {
           const record = await this.#repository.find(id);
           if (
             !record ||
+            record.state !== "ready" ||
+            (record.projectId !== undefined && !guiByNative.has(record.projectId)) ||
             record.archived ||
+            record.ephemeral ||
             record.subagent ||
             record.attachedToThreadId ||
             location.thread?.unsubmittedPrewarm ||
             (await this.#repository.listSectionPlacements()).some(
               (entry) => entry.hostThreadId === id && entry.section.id === PINNED_THREAD_SECTION_ID,
-            ) ||
-            owner.generation !== generation
+            )
           )
             return unavailable;
+          checkOwner();
           if (record.projectId === nativeId) return confirmed;
-          attemptedWrite = true;
-          await this.#repository
-            .updateMetadata(id, { projectId: nativeId })
-            .catch((error: unknown) => this.#diagnose(error));
+          try {
+            await this.#repository.updateMetadata(id, { projectId: nativeId }, { beforeWrite });
+          } catch (error) {
+            if (!attemptedWrite) throw error;
+            this.#diagnose(error);
+          }
           const actual = await this.#repository.find(id);
+          checkOwner();
           if (actual) {
             const loaded = this.#externalRuntime.get(id);
             if (loaded) this.#syncLoadedExternalThread(loaded, actual);
@@ -3014,37 +3073,55 @@ export class AppServerHost {
                 method: "thread/project/updated",
                 params: { threadId, projectId: actual.projectId ?? null },
               });
-              return actual.projectId === nativeId ? confirmed : unknown;
+              return this.#isProjectOwner(generation) && actual.projectId === nativeId
+                ? confirmed
+                : unknown;
             }
           }
           this.clientEvents.changed(threadId, "thread/project/updated");
           return unknown;
         }
 
-        const thread = await this.#readNativeProjectThread(threadId);
+        const thread = await this.#readNativeProjectThread(threadId, checkOwner);
         if (
-          !thread ||
-          (typeof thread.projectId !== "string" && thread.projectId !== null) ||
+          (thread.projectId !== null &&
+            (typeof thread.projectId !== "string" || !guiByNative.has(thread.projectId))) ||
           thread.ephemeral === true ||
+          thread.canAcceptDirectInput === false ||
+          thread.isPinned === true ||
           typeof thread.parentThreadId === "string" ||
           typeof thread.attachedToThreadId === "string" ||
+          (typeof thread.source === "string" && thread.source.startsWith("subAgent")) ||
           (isRecord(thread.source) && "subAgent" in thread.source) ||
           (typeof thread.threadSource === "string" && thread.threadSource.startsWith("subAgent")) ||
           (isRecord(thread.section) && thread.section.id === PINNED_THREAD_SECTION_ID) ||
-          !(await this.#isActiveProjectMoveThread(thread)) ||
-          owner.generation !== generation
+          !(await this.#isActiveProjectMoveThread(thread, checkOwner))
         )
           return unavailable;
+        checkOwner();
         if (thread.projectId === nativeId) return confirmed;
-        attemptedWrite = true;
-        const write = await this.#requestClientNative("thread/metadata/update", {
-          threadId,
-          projectId: nativeId,
-        });
-        if ("error" in write && ![-32093, -32094].includes(write.error.code)) return write;
-        const actual = await this.#readNativeProjectThread(threadId);
+        let write: JsonObject | undefined;
+        try {
+          write = await this.#officialRuntime.request(
+            "thread/metadata/update",
+            { threadId, projectId: nativeId },
+            beforeWrite,
+          );
+        } catch (error) {
+          if (!attemptedWrite) throw error;
+          this.#diagnose(error);
+        }
+        checkOwner();
+        if (
+          isRecord(write?.error) &&
+          typeof write.error.code === "number" &&
+          typeof write.error.message === "string" &&
+          ![-32090, -32093, -32094, -32603].includes(write.error.code)
+        )
+          return { error: { code: write.error.code, message: write.error.message } };
+        const actual = await this.#readNativeProjectThread(threadId, checkOwner);
         this.clientEvents.changed(threadId, "thread/project/updated");
-        return owner.generation === generation && actual?.projectId === nativeId
+        return this.#isProjectOwner(generation) && actual.projectId === nativeId
           ? confirmed
           : unknown;
       } catch (error) {
@@ -3056,20 +3133,40 @@ export class AppServerHost {
     });
   }
 
-  async #isActiveProjectMoveThread(thread: JsonObject): Promise<boolean> {
-    if (typeof thread.archived === "boolean") return !thread.archived;
-    // Some native versions expose archive membership only via thread/list.
-    const generation = this.#officialRuntimeScope.owner.generation;
+  async #isActiveProjectMoveThread(thread: JsonObject, checkOwner: () => void): Promise<boolean> {
+    const section = thread.section;
+    if (
+      section !== undefined &&
+      section !== null &&
+      !(isRecord(section) && typeof section.id === "string")
+    )
+      return false;
+    if (thread.archived === true) return false;
+    if (
+      section === undefined &&
+      !(await this.#absentFromProjectMoveList(thread, { isPinned: true }, checkOwner))
+    )
+      return false;
+    if (thread.archived === false) return true;
+    return this.#absentFromProjectMoveList(thread, { archived: true }, checkOwner);
+  }
+
+  async #absentFromProjectMoveList(
+    thread: JsonObject,
+    filter: JsonObject,
+    checkOwner: () => void,
+  ): Promise<boolean> {
     let cursor: string | null = null;
     for (let page = 0; page < 10; page += 1) {
       const result = officialThreadListPageFromResponse(
-        await this.#requestOfficial("thread/list", { archived: true, limit: 100, cursor }, false),
+        await this.#officialRuntime.request(
+          "thread/list",
+          { ...filter, limit: 100, cursor },
+          checkOwner,
+        ),
       );
-      if (
-        generation !== this.#officialRuntimeScope.owner.generation ||
-        result.data.some(({ id }) => id === thread.id)
-      )
-        return false;
+      checkOwner();
+      if (result.data.some(({ id }) => id === thread.id)) return false;
       if (result.nextCursor === null) return true;
       if (result.nextCursor === cursor) return false;
       cursor = result.nextCursor;
@@ -4706,8 +4803,11 @@ export class AppServerHost {
     }
   }
 
-  #projectExists(projectId: string): Promise<boolean> {
-    return this.#requestOfficial("project/read", { projectId }).then(
+  #projectExists(projectId: string, beforeDispatch?: () => void): Promise<boolean> {
+    const result = beforeDispatch
+      ? this.#officialRuntime.request("project/read", { projectId }, beforeDispatch)
+      : this.#requestOfficial("project/read", { projectId });
+    return result.then(
       (response) =>
         !isRecord(response.error) &&
         isRecord(response.result) &&

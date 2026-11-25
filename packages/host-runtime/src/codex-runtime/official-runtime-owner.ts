@@ -21,7 +21,7 @@ export interface OwnedOfficialBackend {
 export interface OfficialClientSession {
   configure(params: JsonObject): void;
   initialize(params: JsonObject): Promise<JsonObject>;
-  request(method: string, params: JsonObject): Promise<JsonObject>;
+  request(method: string, params: JsonObject, beforeDispatch?: () => void): Promise<JsonObject>;
   send(value: JsonObject): Promise<void>;
   close(): void;
 }
@@ -260,7 +260,8 @@ export class OfficialRuntimeOwner {
     return {
       configure: (params) => this.#configure(client, params),
       initialize: (params) => this.#initialize(client, params),
-      request: (method, params) => this.#request(client, method, structuredClone(params)),
+      request: (method, params, beforeDispatch) =>
+        this.#request(client, method, structuredClone(params), beforeDispatch),
       send: (value) => this.#send(client, structuredClone(value)),
       close: () => {
         this.#clients.delete(client);
@@ -365,7 +366,12 @@ export class OfficialRuntimeOwner {
     }
   }
 
-  async #request(client: Client, method: string, params: JsonObject): Promise<JsonObject> {
+  async #request(
+    client: Client,
+    method: string,
+    params: JsonObject,
+    beforeDispatch?: () => void,
+  ): Promise<JsonObject> {
     this.#checkMethod(method);
     const finish = this.gate.admit();
     let response: JsonObject | undefined;
@@ -373,6 +379,8 @@ export class OfficialRuntimeOwner {
       const runtime = await this.#connection(client);
       await this.#restoreBeforeRequest(client, runtime, method, params);
       const forwarded = method === "thread/fork" ? this.#forkParams(params) : params;
+      // Check after connection and restoration waits, immediately before sending the frame.
+      beforeDispatch?.();
       response = await runtime.request(method, forwarded);
       if (
         client.runtime !== runtime ||

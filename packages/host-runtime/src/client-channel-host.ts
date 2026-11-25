@@ -123,7 +123,9 @@ export interface ClientChannelHostDependencies {
   /** Native Codex calls use the shared service's already-attached official client. */
   readonly native?: NativeClientChannelDependencies;
   moveThreadToProject?(threadId: string, projectId: string): Promise<ConsoleHostReply>;
-  readNativeProjectId?(threadId: string): Promise<string | null | undefined>;
+  readNativeProjectIds?(
+    threadIds: readonly string[],
+  ): Promise<ReadonlyMap<string, string | null | undefined>>;
   diagnoseNativeTitle?(event: NativeTitleDiagnostic): void;
   /** Runs one client request through the shared Desktop request handling. */
   submit(
@@ -258,7 +260,8 @@ export class ClientChannelHost {
             await this.#host.listSectionPlacements(),
             nativeThreadIds,
             projects,
-            this.#host.readNativeProjectId,
+            this.#host.readNativeProjectIds,
+            this.#host.moveThreadToProject !== undefined,
           ),
         ),
       };

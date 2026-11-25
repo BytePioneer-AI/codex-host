@@ -2340,6 +2340,16 @@ describe("OMP Adapter Subagents", () => {
           cwd,
         }),
       ).resolves.toMatchObject({ ok: false, error: { code: "sessionNotFound" } });
+      await expect(
+        adapter.readSnapshot({
+          nativeRef: nativeSessionRefSchema.parse({
+            harnessId: "omp",
+            nativeSessionId: "no-locator",
+            formatVersion: 1,
+          }),
+          cwd,
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
       expect(createTransport).not.toHaveBeenCalled();
     } finally {
       await adapter.close();

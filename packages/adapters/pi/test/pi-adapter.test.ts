@@ -4402,6 +4402,22 @@ describe("Pi HarnessAdapter Session", () => {
           cwd,
         }),
       ).resolves.toMatchObject({ ok: false, error: { code: "sessionNotFound" } });
+      await expect(
+        adapter.readSnapshot({
+          nativeRef: nativeSessionRefSchema.parse({
+            harnessId: "pi",
+            nativeSessionId: "no-locator",
+            formatVersion: 1,
+          }),
+          cwd,
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "unsupported" } });
+      await expect(
+        adapter.readSnapshot({
+          nativeRef: { harnessId: "pi", nativeSessionId: "" } as never,
+          cwd,
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
       expect(dependencies.createTransport).not.toHaveBeenCalled();
     } finally {
       await adapter.close();

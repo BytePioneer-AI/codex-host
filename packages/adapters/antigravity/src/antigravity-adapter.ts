@@ -2167,9 +2167,15 @@ export class AntigravityAdapter implements HarnessAdapter {
       return err("invalidRequest", "Invalid Antigravity Native Session");
     }
     try {
+      const environment: NodeJS.ProcessEnv = { ...this.#environment };
+      if (input.environment) {
+        for (const [key, value] of Object.entries(input.environment)) {
+          if (value !== undefined) environment[key] = value;
+        }
+      }
       const { events } = await readNativeHistory(
         input.nativeRef.nativeSessionId,
-        antigravityHome({ ...this.#environment, ...input.environment }),
+        antigravityHome(environment),
       );
       const turns = projectReplayedEventsToTurns({
         nativeSessionId: input.nativeRef.nativeSessionId,

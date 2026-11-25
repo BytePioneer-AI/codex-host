@@ -131,6 +131,13 @@ export type ExternalThreadColdRead =
       sessionId: string;
       thread: JsonObject;
       turns: JsonObject[];
+      historicalPlans: ReadonlyMap<string, TodoPlan>;
+      persistentPlan: boolean;
+      configuration: {
+        effectiveModel?: HarnessModelRef;
+        effectiveThinkingOptionId?: HarnessThinkingOptionId;
+        effectivePermissionModeId?: HarnessPermissionModeId;
+      };
     }
   | { kind: "unsupported" };
 
@@ -288,6 +295,7 @@ export class ExternalThreadRuntime {
     ExternalHarnessId,
     HarnessSessionCapabilities["history"]
   >();
+  readonly #persistentPlanHarnesses = new Set<ExternalHarnessId>();
   readonly #steeredTurnIds = new Map<string, Set<HostTurnId>>();
   readonly #subagentRunning: (threadId: string) => boolean;
   readonly #threads = new Map<string, ExternalThread>();
@@ -536,6 +544,9 @@ export class ExternalThreadRuntime {
     };
     if (!input.record.subagent) {
       this.#historyCapabilities.set(harnessId, input.session.capabilities.history);
+      if (input.session.capabilities.persistentPlan === true) {
+        this.#persistentPlanHarnesses.add(harnessId);
+      }
     }
     this.#restoreUsageMeasurements(externalThread);
     this.idleRelease.touch(externalThread);
@@ -746,12 +757,12 @@ export class ExternalThreadRuntime {
         }
         const record = location.record;
         if (record.subagent || !record.nativeSessionRef) return { kind: "unsupported" };
-        const adapter = this.#adapters.get(record.harnessId as ExternalHarnessId);
+        const harnessId = record.harnessId as ExternalHarnessId;
+        const adapter = this.#adapters.get(harnessId);
         if (!adapter?.readSnapshot) return { kind: "unsupported" };
         const snapshot = await adapter.readSnapshot({
           nativeRef: record.nativeSessionRef as NativeSessionRef,
           cwd: record.cwd,
-          environment: threadDelegationEnvironment(this.#environment, record.hostThreadId),
         });
         if (!snapshot.ok) {
           if (snapshot.error.code === "unsupported") return { kind: "unsupported" };
@@ -762,10 +773,35 @@ export class ExternalThreadRuntime {
           snapshot.value,
           this.#failedTurns(record),
         );
+        const { selection: storedSelection } = await this.#storedSelection(adapter, aligned.record);
+        const snapshotState = snapshot.value.state;
+        const effectiveModel = snapshotState
+          ? snapshotState.effectiveModel
+          : storedSelection?.model;
+        const effectiveThinkingOptionId = snapshotState
+          ? snapshotState.effectiveThinkingOptionId
+          : storedSelection?.thinkingOptionId;
+        const effectivePermissionModeId = snapshotState
+          ? snapshotState.effectivePermissionModeId
+          : storedSelection?.permissionModeId;
         const sessionId = await this.#repository.sessionTreeId(aligned.record);
         const turns = this.#mergeFailedTurns(aligned.record, aligned.turns);
         const thread = externalThreadValue({ record: aligned.record, turns, sessionId });
-        return { kind: "cold", record: aligned.record, sessionId, thread, turns };
+        return {
+          kind: "cold",
+          record: aligned.record,
+          sessionId,
+          thread,
+          turns,
+          historicalPlans: aligned.historicalPlans,
+          persistentPlan:
+            snapshot.value.persistentPlan === true || this.#persistentPlanHarnesses.has(harnessId),
+          configuration: {
+            ...(effectiveModel ? { effectiveModel } : {}),
+            ...(effectiveThinkingOptionId ? { effectiveThinkingOptionId } : {}),
+            ...(effectivePermissionModeId ? { effectivePermissionModeId } : {}),
+          },
+        };
       });
     } catch (error) {
       return { kind: "error", error: recoveryError(error) };

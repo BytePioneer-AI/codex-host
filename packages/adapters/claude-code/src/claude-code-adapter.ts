@@ -3392,7 +3392,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     try {
       return {
         ok: true,
-        value: mapClaudeSnapshot(messages, input.nativeRef.nativeSessionId),
+        value: {
+          ...mapClaudeSnapshot(messages, input.nativeRef.nativeSessionId),
+          persistentPlan: true,
+        },
       };
     } catch {
       return {

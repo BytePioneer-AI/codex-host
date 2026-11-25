@@ -112,15 +112,22 @@ function taskDigest(
     .digest("hex");
 }
 
+function statusFromTurns(
+  turns: readonly JsonObject[],
+  busy: boolean,
+): StoredDelegationRecordV1["status"] {
+  if (busy) return "running";
+  const last = turns.at(-1);
+  if (last?.status === "failed") return "failed";
+  if (last?.status === "interrupted") return "interrupted";
+  return last ? "completed" : "creating";
+}
+
 function statusFromThread(
   thread: ExternalThread,
   busy: boolean,
 ): StoredDelegationRecordV1["status"] {
-  if (busy) return "running";
-  const last = thread.turns.at(-1);
-  if (last?.status === "failed") return "failed";
-  if (last?.status === "interrupted") return "interrupted";
-  return last ? "completed" : "creating";
+  return statusFromTurns(thread.turns, busy);
 }
 
 function validateStart(input: DelegationStartInput): void {
@@ -563,23 +570,28 @@ export class HarnessDelegationCoordinator {
       return { kind: "retained" as const, ...retained };
     });
     if (source.kind === "cold" || source.kind === "retained") {
-      return this.#withPendingQuestions(
-        projectDelegationThreadSnapshot({
-          ...input,
-          thread:
-            source.kind === "cold"
-              ? source.thread
-              : {
-                  cwd: source.record.cwd,
-                  name: source.record.title,
-                  preview: source.record.preview ?? "",
-                },
-          harnessId: source.record.harnessId as RoutedHarnessId,
-          turns: source.turns,
-          running: false,
-        }),
-        input.threadId,
-      );
+      const snapshot = projectDelegationThreadSnapshot({
+        ...input,
+        thread:
+          source.kind === "cold"
+            ? source.thread
+            : {
+                cwd: source.record.cwd,
+                name: source.record.title,
+                preview: source.record.preview ?? "",
+              },
+        harnessId: source.record.harnessId as RoutedHarnessId,
+        turns: source.turns,
+        running: false,
+      });
+      if (source.kind === "cold") {
+        const delegation = await this.#repository.getDelegationByChild(source.record.hostThreadId);
+        const status = statusFromTurns(source.turns, false);
+        if (delegation && delegation.status !== status) {
+          await this.#repository.setDelegationStatus(delegation.delegationId, status);
+        }
+      }
+      return this.#withPendingQuestions(snapshot, input.threadId);
     }
     const { thread, turns, busy } = source;
     const snapshot = projectDelegationThreadSnapshot({
@@ -660,7 +672,8 @@ export class HarnessDelegationCoordinator {
   }
 
   async #readExternalThread(threadId: string, includeLiveItems = false) {
-    if (!this.#externalRuntime.get(threadId)) {
+    const loaded = this.#externalRuntime.get(threadId);
+    if (!loaded || loaded.sessionUnavailable) {
       const cold = await this.#externalRuntime.readCold(threadId);
       if (cold.kind === "error") throw externalThreadError(cold.error);
       if (cold.kind === "official") {

@@ -2378,7 +2378,8 @@ export class OmpAdapter implements HarnessAdapter {
     if (this.#closePromise) {
       return { ok: false, error: invalidState("Omp Adapter is closed") };
     }
-    if (input.nativeRef.harnessId !== this.harnessId) {
+    const parsedRef = nativeSessionRefSchema.safeParse(input.nativeRef);
+    if (!parsedRef.success || parsedRef.data.harnessId !== this.harnessId) {
       return {
         ok: false,
         error: {
@@ -2388,10 +2389,25 @@ export class OmpAdapter implements HarnessAdapter {
         },
       };
     }
+    const sourceRef = parsedRef.data as NativeSessionRef;
+    if (
+      !isRecord(sourceRef.locator) ||
+      typeof sourceRef.locator.sessionFile !== "string" ||
+      sourceRef.locator.sessionFile.length === 0
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Omp Native Session Ref has no resumable Session file",
+          retryable: false,
+        },
+      };
+    }
     try {
-      const sessionFile = sessionFileFromRef(input.nativeRef);
+      const sessionFile = sourceRef.locator.sessionFile;
       const header = await readOmpSessionHeader(sessionFile);
-      if (header.id !== input.nativeRef.nativeSessionId) {
+      if (header.id !== sourceRef.nativeSessionId) {
         throw new OmpAdapterFaultError({
           code: "sessionNotFound",
           message: "Omp Session header identity does not match the persisted Native Session Ref",
@@ -2402,7 +2418,7 @@ export class OmpAdapter implements HarnessAdapter {
       return {
         ok: true,
         value: mapOmpSnapshot(history, {
-          sessionId: input.nativeRef.nativeSessionId,
+          sessionId: sourceRef.nativeSessionId,
           model: null,
         }),
       };

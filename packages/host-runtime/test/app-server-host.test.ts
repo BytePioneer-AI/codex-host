@@ -425,7 +425,30 @@ describe("AppServerHost idle resource release", () => {
       if (!snapshot.ok) throw new Error(snapshot.error.message);
       const close = vi.spyOn(source, "close");
       const open = vi.spyOn(fixture.adapter, "open");
-      const readSnapshot = vi.fn(async () => snapshot);
+      const readSnapshot = vi.fn(async () => ({
+        ok: true as const,
+        value: {
+          ...snapshot.value,
+          persistentPlan: true,
+          turns: snapshot.value.turns.map((turn) => ({
+            ...turn,
+            items: [
+              ...turn.items,
+              {
+                item: {
+                  type: "toolExecution" as const,
+                  itemId: "plan-item" as never,
+                  toolName: "TodoWrite",
+                  arguments: {
+                    todos: [{ content: "Verify cold plan replay", status: "in_progress" }],
+                  },
+                },
+                outcome: { status: "succeeded" as const },
+              },
+            ],
+          })),
+        },
+      }));
       fixture.adapter.readSnapshot = readSnapshot;
 
       writeRequest(fixture.desktopInput, {
@@ -465,6 +488,15 @@ describe("AppServerHost idle resource release", () => {
       const coldHistory = await fixture.collector.waitFor((message) => requestId(message, 923));
       expect(coldHistory).not.toHaveProperty("error");
       expect(JSON.stringify(coldHistory)).toContain(turnId);
+      const replayedPlan = await fixture.collector.waitFor(
+        (message) =>
+          method(message, "turn/plan/updated") &&
+          JSON.stringify(message).includes("Verify cold plan replay"),
+      );
+      expect(replayedPlan).toMatchObject({
+        method: "turn/plan/updated",
+        params: { threadId },
+      });
 
       writeRequest(fixture.desktopInput, {
         id: 924,

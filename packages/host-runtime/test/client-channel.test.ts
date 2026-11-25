@@ -1056,6 +1056,55 @@ describe("public authenticated owner channel", () => {
     expect(nextFixture.adapter.sessions).toHaveLength(0);
     expect(fixture.adapter.sessions).toHaveLength(0);
   });
+
+  it("serves a client snapshot cold for an idle-released external Thread without resuming its Session", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      const { fixture, a } = await setup();
+      const threadId = await startPiThread(fixture);
+      const turnId = await completePiTurn(fixture, threadId, 2);
+      const source = current(fixture);
+      const snapshot = await source.readSnapshot();
+      if (!snapshot.ok) throw new Error(snapshot.error.message);
+
+      writeRequest(fixture.desktopInput, {
+        id: 901,
+        method: "codexhost/settings/idle-release/set",
+        params: { enabled: true, timeoutMinutes: 10 },
+      });
+      await fixture.collector.waitFor((message) => message.id === 901);
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+      writeRequest(fixture.desktopInput, {
+        id: 902,
+        method: "codexhost/sessions/loaded/list",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => message.id === 902)).toMatchObject({
+        result: [],
+      });
+
+      const open = vi.spyOn(fixture.adapter, "open");
+      const readSnapshot = vi.fn(async () => snapshot);
+      fixture.adapter.readSnapshot = readSnapshot;
+
+      const coldSnapshot = await a.snapshot(threadId);
+      expect(coldSnapshot.thread.id).toBe(threadId);
+      expect(coldSnapshot.turnsPage.data.map((turn) => turn.id)).toContain(turnId);
+      expect(coldSnapshot.activeTurnId).toBeNull();
+      expect(open).not.toHaveBeenCalled();
+      expect(readSnapshot).toHaveBeenCalledTimes(1);
+      writeRequest(fixture.desktopInput, {
+        id: 903,
+        method: "codexhost/sessions/loaded/list",
+        params: {},
+      });
+      expect(await fixture.collector.waitFor((message) => message.id === 903)).toMatchObject({
+        result: [],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("bounded invalidation recovery", () => {

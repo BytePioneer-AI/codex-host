@@ -1128,6 +1128,12 @@ export class AppServerHost {
       listSectionPlacements: () => this.#repository.listSectionPlacements(),
       locateExternalThread: (threadId) => this.#locateExternalThread(threadId),
       loadedThread: (threadId) => this.#externalRuntime?.get(threadId),
+      readColdExternalThread: (threadId) =>
+        this.#externalRuntime.idleRelease.runOperation(
+          threadId,
+          () => this.#readColdExternalThread(threadId),
+          { touch: false },
+        ),
       clientHistoryTurns: (thread) => this.#externalHistoryTurns(thread, true),
       queueSnapshot: (threadId) => this.#externalQueue.snapshot(threadId),
       readThreadHandoff: (threadId) => this.#repository.getThreadHandoff(threadId),
@@ -5940,17 +5946,26 @@ export class AppServerHost {
       );
       return;
     }
+    const readTurns = ownTurns(cold.record, cold.turns);
     await this.#writer.json(
       rpcEnvelope(request, {
         result: {
           thread: {
             ...cold.thread,
             ...(await this.#externalSectionFields(cold.record.hostThreadId)),
-            turns: [...cold.turns],
+            turns: readTurns,
           },
         },
       }),
     );
+    if (cold.persistentPlan) {
+      const update = historicalPlanUpdate(
+        cold.record.hostThreadId,
+        readTurns,
+        cold.historicalPlans,
+      );
+      if (update) await this.#writer.json(update);
+    }
   }
 
   async #listColdExternalHistory(
@@ -5959,10 +5974,11 @@ export class AppServerHost {
     params: JsonObject,
   ): Promise<void> {
     try {
+      const turns = ownTurns(cold.record, cold.turns);
       const result =
         request.method === "thread/turns/list"
-          ? listExternalTurns(cold.turns, params)
-          : listExternalItems(cold.turns, params);
+          ? listExternalTurns(turns, params)
+          : listExternalItems(turns, params);
       await this.#writer.json(rpcEnvelope(request, { result }));
     } catch (error) {
       await this.#writer.json(

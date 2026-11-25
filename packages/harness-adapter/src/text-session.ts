@@ -497,6 +497,8 @@ export interface HostThreadSnapshot {
   turns: HostTurnSnapshot[];
   /** Current Native Session configuration observed with this history read. */
   state?: HarnessSessionState;
+  /** True when this Harness's plan outlives a single Turn and should replay on read. */
+  persistentPlan?: boolean;
 }
 
 export type TurnOutcome =

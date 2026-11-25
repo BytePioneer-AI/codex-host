@@ -3485,7 +3485,11 @@ describe("Antigravity idle wake Turns", () => {
       db.close();
     }
     const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
-    const result = await adapter.readSnapshot({ nativeRef, cwd: home });
+    const result = await adapter.readSnapshot({
+      nativeRef,
+      cwd: home,
+      environment: { HOME: undefined, USERPROFILE: undefined },
+    });
     expect(result).toMatchObject({
       ok: true,
       value: {

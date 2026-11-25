@@ -2725,19 +2725,34 @@ export class PiAdapter implements HarnessAdapter {
     if (this.#closePromise) {
       return { ok: false, error: invalidState("Pi Adapter is closed") };
     }
-    const sourceRef = nativeSessionRefSchema.parse(input.nativeRef) as NativeSessionRef;
-    if (sourceRef.harnessId !== this.harnessId) {
+    const parsedRef = nativeSessionRefSchema.safeParse(input.nativeRef);
+    if (!parsedRef.success || parsedRef.data.harnessId !== this.harnessId) {
       return {
         ok: false,
         error: {
           code: "invalidRequest",
-          message: "Pi Adapter cannot read another Harness's Native Session",
+          message: "Pi Native Session reference is invalid",
+          retryable: false,
+        },
+      };
+    }
+    const sourceRef = parsedRef.data as NativeSessionRef;
+    if (
+      !isRecord(sourceRef.locator) ||
+      typeof sourceRef.locator.sessionFile !== "string" ||
+      sourceRef.locator.sessionFile.length === 0
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: "unsupported",
+          message: "Pi Native Session Ref has no resumable Session file",
           retryable: false,
         },
       };
     }
     try {
-      const sessionFile = sessionFileFromRef(sourceRef);
+      const sessionFile = sourceRef.locator.sessionFile;
       const header = await readPiSessionHeader(sessionFile);
       if (header.id !== sourceRef.nativeSessionId) {
         throw new PiAdapterFaultError({

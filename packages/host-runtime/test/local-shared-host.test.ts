@@ -613,7 +613,11 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
   const migrated = {
     ...state,
     "app-server-project-id-by-legacy-project-id-by-host": {
-      [`local:${path.resolve(root)}`]: { hidden: "native-hidden", first: "native-first" },
+      [`local:${path.resolve(root)}`]: {
+        hidden: "native-hidden",
+        first: "native-first",
+        selected: "native-selected",
+      },
       "remote-ssh:other": { foreign: "native-foreign" },
     },
   };
@@ -623,6 +627,16 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
     selected,
     hidden,
   ]);
+  const native = { id: "native-selected", name: "Native renamed", rootPaths: selected.rootPaths };
+  expect(await readNativeWorkspaceSnapshot(environment, [native])).toEqual({
+    projects: [native],
+    nativeProjects: true,
+    assignments: { thread: native.id },
+    projectless: ["unselected"],
+    pinned: [],
+  });
+  expect((await readNativeWorkspaceSnapshot(environment, [])).assignments).toEqual({});
+  expect(readFileSync(file, "utf8")).toBe(JSON.stringify(migrated));
   for (const key of ["a", "duplicate"] as const) {
     writeFileSync(
       file,

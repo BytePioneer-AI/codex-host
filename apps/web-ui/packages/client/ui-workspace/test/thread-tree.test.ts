@@ -11,6 +11,7 @@ import {
   deriveFlat,
   deriveGroups,
   deriveSearchResults,
+  deriveThreadForest,
   orderByRecency,
   reconcileManualOrder,
   threadTreeParentOf,
@@ -174,6 +175,54 @@ it("pins a whole subtree once, outside ordinary workspace and flat roots", () =>
   assert.deepEqual(
     groups[0]?.sessions.map((node) => node.id),
     ["other"],
+  );
+});
+
+it("reports a folded Workspace's activity at every Thread depth, without archived Threads", () => {
+  const running = (key: string, parent: string | null = null) => ({
+    ...row(key, parent),
+    running: true,
+  });
+  const list = catalog(
+    row("a"),
+    running("b", "a"),
+    row("subChild", "a"),
+    row("subRoot"),
+    running("c"),
+    running("gone"),
+    row("idle"),
+    { ...running("native-1"), origin: "subagent" },
+    { ...running("native-2"), origin: "subagent" },
+  );
+  const subagentProjection = (nativeKey: string) => ({
+    state: "ready" as const,
+    error: null,
+    values: {
+      subagentCatalog: [
+        { id: id(nativeKey), mode: "unknown" as const, createdAt: 1, label: "Worker" },
+      ],
+    },
+  });
+  list.projectionsBySession = {
+    [id("subChild")]: subagentProjection("native-1"),
+    [id("subRoot")]: subagentProjection("native-2"),
+  };
+  const rowState = { ...state, archivedSessionIds: [id("gone")], archivedFilter: "show" as const };
+  const groups = deriveGroups(
+    list,
+    [workspace("busy", "a", "b", "subChild", "subRoot", "c", "gone"), workspace("quiet", "idle")],
+    rowState,
+    new Map(),
+    { expandedGroups: [] },
+  );
+  assert.deepEqual(
+    groups.map((group) => [group.key, group.sessions.length, group.activity]),
+    [
+      ["busy", 0, { running: 4, pendingInteraction: 0, completed: 0 }],
+      ["quiet", 0, { running: 0, pendingInteraction: 0, completed: 0 }],
+      // Recents lists every Thread again.
+      ["", 0, { running: 4, pendingInteraction: 0, completed: 0 }],
+    ],
   );
 });
 
@@ -523,5 +572,28 @@ it("captures all unarchived local descendants when the tree is collapsed or sear
   assert.deepEqual(
     selection.map(({ id, title }) => [id, title]).sort(),
     ["fold", "fork", "fork-child", "hidden"].map((key) => [id(key), key]),
+  );
+});
+
+it("matches full derivation when reusing precomputed forest and order sources, and short-circuits empty deriveFlat", () => {
+  const list = catalog(row("root", null, 5), row("child", "root", 10), row("solo", null, 3));
+  const workspaces = [workspace("ws", "root", "child", "solo")];
+  const forest = deriveThreadForest(list, state, new Map());
+  const roots = new Map(forest.map((node) => [node.id, node]));
+
+  assert.deepEqual(deriveFlat(list, [], state, new Map()), []);
+  assert.deepEqual(
+    deriveFlat(list, list.ids, state, new Map(), roots),
+    deriveFlat(list, list.ids, state, new Map()),
+  );
+  assert.deepEqual(
+    deriveGroups(list, workspaces, state, new Map(), { expandedGroups: ["ws"] }, roots),
+    deriveGroups(list, workspaces, state, new Map(), { expandedGroups: ["ws"] }),
+  );
+  const precomputedOrder = threadTreeOrderSource(list, state, forest);
+  assert.deepEqual(precomputedOrder, threadTreeOrderSource(list, state));
+  assert.deepEqual(
+    pinOrderSource(workspaces, list, state, precomputedOrder),
+    pinOrderSource(workspaces, list, state),
   );
 });

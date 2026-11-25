@@ -16,6 +16,7 @@ import {
   defaultUpdateStateDirectory,
   discoverActiveUpdateStatus,
   discoverRecentCompletedUpdateStatus,
+  createNpmReleaseAvailability,
   fetchLatestGitHubRelease,
   fetchLatestGitHubReleaseWithGitHubCli,
   recoverUpdateOperationLock,
@@ -27,6 +28,7 @@ import {
   type CommonUpdateOptions,
   type DistributionMetadata,
   type PreparedBackgroundUpdate,
+  type NpmReleaseAvailability,
 } from "@codexhost/update-manager";
 
 const ERROR_MAX_LENGTH = 500;
@@ -71,6 +73,7 @@ export interface CreateConsoleUpdatesOptions {
   stateDirectory?: string;
   manager?: BackgroundUpdateManager;
   fetchLatest?(signal?: AbortSignal): Promise<CodexhostLatestRelease>;
+  npmRelease?: NpmReleaseAvailability;
 }
 
 function boundedError(error: unknown): string {
@@ -115,6 +118,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
   const environment = options.environment ?? process.env;
   const platform = options.platform ?? process.platform;
   const manager = options.manager ?? createBackgroundUpdateManager({ platform });
+  const npmRelease = options.npmRelease ?? createNpmReleaseAvailability();
   const stateDirectory = (): string =>
     options.stateDirectory ?? defaultUpdateStateDirectory(platform, environment);
   const fetchLatest =
@@ -147,13 +151,36 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
     return status ? publicStatus(status) : null;
   }
 
-  function installable(metadata: DistributionMetadata, release: CodexhostLatestRelease): boolean {
-    if (installationKind(metadata) === "npm") return true;
+  /**
+   * `false` without an error means the release is not yet in the npm registry this
+   * installation updates from; it is offered once it is.
+   */
+  async function installable(
+    metadata: DistributionMetadata,
+    target: ConsoleUpdateTarget,
+    release: CodexhostLatestRelease,
+  ): Promise<{ available: boolean; error: string | null }> {
+    if (installationKind(metadata) === "npm") {
+      try {
+        const available = await npmRelease.installable({
+          nodePath: absoluteEnvironmentPath(environment, "CODEXHOST_NPM_NODE_PATH"),
+          npmCliPath: absoluteEnvironmentPath(environment, "CODEXHOST_NPM_CLI_PATH"),
+          packageRoot: path.dirname(target.appDirectory),
+          version: release.version,
+        });
+        return { available, error: null };
+      } catch (error) {
+        return { available: false, error: boundedError(error) };
+      }
+    }
     try {
       selectInstallerReleaseArtifact(release, metadata.target);
-      return true;
+      return { available: true, error: null };
     } catch {
-      return false;
+      return {
+        available: false,
+        error: "The latest GitHub Release has no verified asset for this installation",
+      };
     }
   }
 
@@ -238,7 +265,9 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
         const release = await fetchLatest(signal);
         candidate = release;
         const updateAvailable = compareSemanticVersions(metadata.version, release.version) < 0;
-        const installationAvailable = updateAvailable && installable(metadata, release);
+        const { available: installationAvailable, error } = updateAvailable
+          ? await installable(metadata, target, release)
+          : { available: false, error: null };
         return {
           ...empty,
           latestVersion: release.version,
@@ -247,10 +276,7 @@ export function createConsoleUpdates(options: CreateConsoleUpdatesOptions): Cons
           releaseNotes: release.releaseNotes,
           releaseNotesUrl: release.releaseNotesUrl,
           status,
-          error:
-            updateAvailable && !installationAvailable
-              ? "The latest GitHub Release has no verified asset for this installation"
-              : null,
+          error,
         };
       } catch (error) {
         return { ...empty, status, error: boundedError(error) };

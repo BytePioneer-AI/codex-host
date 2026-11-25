@@ -5,9 +5,30 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 
 import { createBackgroundUpdateManager } from "@codexhost/update-manager";
+import type * as UpdateManager from "@codexhost/update-manager";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createConsoleUpdates, type ConsoleUpdateTarget } from "../src/updates.js";
+
+// The user's npm and its registry are external: every npm release is installable by default.
+const npmRegistry = vi.hoisted(() => ({
+  installable: vi.fn(async (): Promise<boolean> => true),
+  prefetch: vi.fn(async (): Promise<void> => {}),
+}));
+vi.mock("@codexhost/update-manager", async (importOriginal) => {
+  const original = await importOriginal<typeof UpdateManager>();
+  return {
+    ...original,
+    createNpmReleaseAvailability: () => ({ installable: npmRegistry.installable }),
+    createBackgroundUpdateManager: (
+      dependencies: UpdateManager.BackgroundUpdateManagerDependencies = {},
+    ) =>
+      original.createBackgroundUpdateManager({
+        prefetchNpm: npmRegistry.prefetch,
+        ...dependencies,
+      }),
+  };
+});
 
 let root: string;
 
@@ -72,6 +93,29 @@ describe("console updates", () => {
       updateAvailable: true,
       installationAvailable: true,
       error: null,
+    });
+  });
+
+  it("waits for an npm registry that has not synced the release", async () => {
+    const { target, environment } = await npmLayout();
+    npmRegistry.installable.mockImplementationOnce(async () => false);
+    const updates = createConsoleUpdates({
+      onHandedOff: vi.fn(),
+      environment,
+      stateDirectory: path.join(root, "state"),
+      fetchLatest: async () => release,
+    });
+    await expect(updates.check(target)).resolves.toMatchObject({
+      latestVersion: "1.1.0",
+      updateAvailable: true,
+      installationAvailable: false,
+      error: null,
+    });
+    expect(npmRegistry.installable).toHaveBeenCalledWith({
+      nodePath: environment.CODEXHOST_NPM_NODE_PATH,
+      npmCliPath: environment.CODEXHOST_NPM_CLI_PATH,
+      packageRoot: environment.CODEXHOST_NPM_PACKAGE_ROOT,
+      version: "1.1.0",
     });
   });
 

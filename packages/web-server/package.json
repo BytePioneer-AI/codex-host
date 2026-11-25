@@ -34,7 +34,7 @@
     "web-push": "3.6.7",
     "werift": "0.28.0",
     "ws": "8.21.0",
-    "zod": "4.4.3"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@codexhost/harness-adapter": "0.0.0",

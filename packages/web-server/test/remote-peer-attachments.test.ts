@@ -119,7 +119,9 @@ it("gates capability strictly on connected state and attachments=1", async () =>
   assert.equal(hub.supported({ ...base, state: "offline" }), false);
   assert.equal(hub.supported({ ...base, state: "connecting" }), false);
   assert.equal(hub.supported({ ...base, state: "auth-error" }), false);
-  assert.equal(hub.supported({ ...base, manifest: undefined }), false);
+  const unsupported = { ...base };
+  delete unsupported.manifest;
+  assert.equal(hub.supported(unsupported), false);
   assert.equal(
     hub.supported({
       ...base,
@@ -134,7 +136,6 @@ it("gates capability strictly on connected state and attachments=1", async () =>
     false,
   );
 
-  const unsupported = { ...base, manifest: undefined };
   await assert.rejects(
     hub.upload(
       unsupported,
@@ -486,7 +487,8 @@ it("serveFile enforces image-only proxying, security headers, 4xx passthrough, a
 
   const hub = new RemotePeerAttachments({ requestTimeoutMs: 2_000 });
   const supportedPeer = makePeer(remotePeer.origin);
-  const unsupportedPeer = makePeer(remotePeer.origin, { manifest: undefined });
+  const unsupportedPeer = makePeer(remotePeer.origin);
+  delete unsupportedPeer.manifest;
   const deadPeer = makePeer("http://127.0.0.1:1");
 
   const proxyServer = await startMockServer(async (req, res) => {

@@ -1,3 +1,153 @@
+.tabBarRow {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  margin: 0 4px 6px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2, rgba(128, 128, 128, 0.14));
+}
+
+.tabBar {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.tabBar::-webkit-scrollbar {
+  display: none;
+}
+
+.tabTrailing {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding-bottom: 3px;
+}
+
+.tabItem {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 136px;
+  padding: 3px 1px 7px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 120ms var(--ds-ease-in-out);
+}
+
+.tabItem:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+.tabItemActive {
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+
+.tabItemActive::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1.5px;
+  border-radius: 2px;
+  background: var(--dsw-alias-label-primary);
+}
+
+.tabItem:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid
+    var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
+.iconTrigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color 120ms var(--ds-ease-in-out),
+    color 120ms var(--ds-ease-in-out);
+}
+
+.iconTrigger:hover,
+.iconTriggerOpen {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.iconTriggerActive {
+  color: var(--dsw-alias-state-business-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent);
+}
+
+.iconTriggerActive:hover,
+.iconTriggerActive.iconTriggerOpen {
+  color: var(--dsw-alias-state-business-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent);
+}
+
+.iconTrigger:focus-visible {
+  outline: var(--dsw-focus-ring-width, 2px) solid
+    var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+.iconTriggerPip {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-business-primary);
+}
+
+.tabLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tabDot {
+  --ch-peer-dot-color: #3b76cc;
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-tertiary);
+  opacity: 0.45;
+}
+
 .anchorRoot {
   position: relative;
   display: inline-flex;
@@ -67,9 +217,9 @@
   opacity: 0.65;
 }
 
-/* Remote host dot: host tag color when connected, amber when connecting, muted gray offline. */
+/* Remote host dot: low-saturation pastel tag color when connected, amber when connecting, muted gray offline. */
 .dot {
-  --ch-peer-dot-color: #3b82f6;
+  --ch-peer-dot-color: #3b76cc;
   flex: none;
   width: 6px;
   height: 6px;
@@ -78,68 +228,68 @@
   opacity: 0.5;
 }
 
-.dot[data-color="blue"] {
-  --ch-peer-dot-color: #3b82f6;
+:is(.dot, .tabDot)[data-color="blue"] {
+  --ch-peer-dot-color: #3b76cc;
 }
 
-.dot[data-color="purple"] {
-  --ch-peer-dot-color: #8b5cf6;
+:is(.dot, .tabDot)[data-color="purple"] {
+  --ch-peer-dot-color: #7460cc;
 }
 
-.dot[data-color="cyan"] {
-  --ch-peer-dot-color: #06b6d4;
+:is(.dot, .tabDot)[data-color="cyan"] {
+  --ch-peer-dot-color: #0e8fa8;
 }
 
-.dot[data-color="green"] {
-  --ch-peer-dot-color: #10b981;
+:is(.dot, .tabDot)[data-color="green"] {
+  --ch-peer-dot-color: #2f8c70;
 }
 
-.dot[data-color="amber"] {
-  --ch-peer-dot-color: #f59e0b;
+:is(.dot, .tabDot)[data-color="amber"] {
+  --ch-peer-dot-color: #c27803;
 }
 
-.dot[data-color="rose"] {
-  --ch-peer-dot-color: #f43f5e;
+:is(.dot, .tabDot)[data-color="rose"] {
+  --ch-peer-dot-color: #c94a6a;
 }
 
-.dot[data-color="slate"] {
+:is(.dot, .tabDot)[data-color="slate"] {
   --ch-peer-dot-color: #64748b;
 }
 
-:global(body[data-ds-dark-theme]) .dot[data-color="blue"] {
-  --ch-peer-dot-color: #60a5fa;
+:global(body[data-ds-dark-theme]) :is(.dot, .tabDot)[data-color="blue"] {
+  --ch-peer-dot-color: #7bb0f8;
 }
 
-:global(body[data-ds-dark-theme]) .dot[data-color="purple"] {
-  --ch-peer-dot-color: #a78bfa;
+:global(body[data-ds-dark-theme]) :is(.dot, .tabDot)[data-color="purple"] {
+  --ch-peer-dot-color: #a899f2;
 }
 
-:global(body[data-ds-dark-theme]) .dot[data-color="cyan"] {
-  --ch-peer-dot-color: #22d3ee;
+:global(body[data-ds-dark-theme]) :is(.dot, .tabDot)[data-color="cyan"] {
+  --ch-peer-dot-color: #63c5da;
 }
 
-:global(body[data-ds-dark-theme]) .dot[data-color="green"] {
-  --ch-peer-dot-color: #34d399;
+:global(body[data-ds-dark-theme]) :is(.dot, .tabDot)[data-color="green"] {
+  --ch-peer-dot-color: #6ec4a7;
 }
 
-:global(body[data-ds-dark-theme]) .dot[data-color="amber"] {
-  --ch-peer-dot-color: #fbbf24;
+:global(body[data-ds-dark-theme]) :is(.dot, .tabDot)[data-color="amber"] {
+  --ch-peer-dot-color: #e0ae58;
 }
 
-:global(body[data-ds-dark-theme]) .dot[data-color="rose"] {
-  --ch-peer-dot-color: #fb7185;
+:global(body[data-ds-dark-theme]) :is(.dot, .tabDot)[data-color="rose"] {
+  --ch-peer-dot-color: #e08298;
 }
 
-:global(body[data-ds-dark-theme]) .dot[data-color="slate"] {
+:global(body[data-ds-dark-theme]) :is(.dot, .tabDot)[data-color="slate"] {
   --ch-peer-dot-color: #94a3b8;
 }
 
-.dot[data-state="connected"] {
+:is(.dot, .tabDot)[data-state="connected"] {
   background: var(--ch-peer-dot-color);
   opacity: 0.95;
 }
 
-.dot[data-state="connecting"] {
+:is(.dot, .tabDot)[data-state="connecting"] {
   background: var(--dsw-alias-state-warning-primary, #c27803);
   opacity: 0.9;
 }

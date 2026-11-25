@@ -10,6 +10,40 @@
   order: -1;
 }
 
+.indicatorGroup {
+  align-items: center;
+  gap: 4px;
+  flex: 0 100000 auto;
+  overflow: hidden;
+}
+
+.indicatorGroup[data-clipped] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  flex: none;
+  max-width: none;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.indicatorPill {
+  gap: 4px;
+  padding: 1px 6px;
+  flex-shrink: 0;
+}
+
+.indicatorIcon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .pill {
   display: inline-flex;
   align-items: center;

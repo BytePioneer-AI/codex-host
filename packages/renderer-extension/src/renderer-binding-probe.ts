@@ -391,6 +391,19 @@ export function draftThinkingOptionForModel(
   );
 }
 
+export function retainedThinkingOptionIdForModel(
+  catalog: HarnessModelCatalog,
+  model: HarnessModelRef,
+  resolved: HarnessThinkingOptionId | undefined,
+  previous: HarnessThinkingOptionId | undefined,
+): HarnessThinkingOptionId | undefined {
+  if (resolved) return resolved;
+  // Models without thinking selection must not erase the previously chosen
+  // thinking option, so it can be restored when switching back to a model
+  // that supports it.
+  return thinkingOptionsForModel(catalog, model).length === 0 ? previous : undefined;
+}
+
 export function draftPermissionMode(
   catalog: HarnessPermissionModeCatalog,
   requested: HarnessPermissionModeId | undefined,
@@ -1401,16 +1414,22 @@ export function installRendererBindingProbe(
     }
   };
 
+  /**
+   * A Thread Composer also starts in the draft phase until its owner is read, and stays there
+   * when that read fails. Only a new-Thread draft has draft usage to load.
+   */
+  function isDraftUsageComposer(mounted: MountedComposer): boolean {
+    return (
+      controller.get(mounted.composer).phase === "draft" &&
+      !controller.isSwitching(mounted.composer) &&
+      !controller.isSubmissionPending(mounted.composer) &&
+      !threadIdFromComposerModelTarget(mounted.modelTarget)
+    );
+  }
+
   const refreshDraftUsage = async (mounted: MountedComposer): Promise<void> => {
-    const state = controller.get(mounted.composer);
-    if (
-      state.phase !== "draft" ||
-      controller.isSwitching(mounted.composer) ||
-      controller.isSubmissionPending(mounted.composer) ||
-      threadIdFromComposerModelTarget(mounted.modelTarget)
-    )
-      return;
-    const agent = state.agent;
+    if (!isDraftUsageComposer(mounted)) return;
+    const agent = controller.get(mounted.composer).agent;
     const accounts = agent === "codex" ? composerCodexAccounts(mounted.composer) : null;
     const accountId = accounts?.readyAccountId;
     const client = composerClient(mounted);
@@ -1440,10 +1459,7 @@ export function installRendererBindingProbe(
       mountedByComposer.get(mounted.composer) === mounted &&
       mounted.usageRequestGeneration === generation &&
       controller.get(mounted.composer).agent === agent &&
-      controller.get(mounted.composer).phase === "draft" &&
-      !controller.isSwitching(mounted.composer) &&
-      !controller.isSubmissionPending(mounted.composer) &&
-      !threadIdFromComposerModelTarget(mounted.modelTarget);
+      isDraftUsageComposer(mounted);
     try {
       if (!client) return;
       if (agent === "codex") {
@@ -2374,7 +2390,16 @@ export function installRendererBindingProbe(
       }
       if (!isCurrentModelRequest(mounted, generation)) return;
       controller.setExternalModel(mounted.composer, agent, effectiveModel);
-      controller.setExternalThinkingOption(mounted.composer, agent, effectiveThinkingOptionId);
+      controller.setExternalThinkingOption(
+        mounted.composer,
+        agent,
+        retainedThinkingOptionIdForModel(
+          effectiveCatalog,
+          effectiveModel,
+          effectiveThinkingOptionId,
+          previousThinking,
+        ),
+      );
       const effectivePermissionModeId =
         mounted.threadConfiguration?.effectivePermissionModeId ?? previousPermissionModeId;
       if (effectivePermissionModeId) {
@@ -3205,12 +3230,14 @@ export function installRendererBindingProbe(
     // every Thread to the globally selected Host when navigating between them.
     reloadMountedOwnershipForHost();
     // Draft quota follows the concrete client, including connections without notifications.
+    // It uses the same eligibility as refreshDraftUsage: a Composer that one refuses would
+    // otherwise reload Accounts and rerender on every scan.
     for (const mounted of mountedByComposer.values()) {
       const client = composerClient(mounted);
       const request = draftUsageRequests.get(mounted);
       const state = controller.get(mounted.composer);
       if (
-        state.phase === "draft" &&
+        isDraftUsageComposer(mounted) &&
         mounted.draftUsageClient !== client &&
         (!request ||
           request.client !== client ||

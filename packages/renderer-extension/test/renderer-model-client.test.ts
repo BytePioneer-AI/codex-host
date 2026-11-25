@@ -24,6 +24,7 @@ import {
   HARNESS_PLUGIN_LIST_METHOD,
   HARNESS_WEB_UI_OPEN_METHOD,
   THREAD_FORK_METHOD,
+  THREAD_HANDOFF_METHOD,
   THREAD_INSPECT_METHOD,
   THREAD_MODEL_SELECT_METHOD,
   THREAD_PERMISSION_MODE_SELECT_METHOD,
@@ -505,6 +506,7 @@ describe("Renderer fixed Model request client", () => {
       "getHarnessPreferences",
       "getHostExtensionSettings",
       "getReleaseAnnouncement",
+      "handoffThread",
       "hasDesktopThread",
       "importHarnessSession",
       "inspectCodexAccountUsage",
@@ -1059,6 +1061,43 @@ describe("Renderer fixed Model request client", () => {
     await expect(client.inspectHarness({ harnessId: piHarnessId })).rejects.toThrow(
       "Invalid params",
     );
+    expect(sendRequest).toHaveBeenCalledOnce();
+  });
+
+  it("validates and sends Thread handoff requests through THREAD_HANDOFF_METHOD", async () => {
+    const handoff = {
+      sourceThreadId: hostThreadIdSchema.parse("thread-src"),
+      sourceHarnessId: harnessIdSchema.parse("codex"),
+      targetHarnessId: piHarnessId,
+      totalTurns: 3,
+      boundaryTurnNumber: 3,
+      includedTurnNumbers: [1, 2, 3],
+      omittedTurns: 0,
+      preview: "Turn 1..3 summary",
+      createdAtMs: 1_764_000_000_000,
+    };
+    const response = {
+      threadId: hostThreadIdSchema.parse("thread-dst"),
+      handoff,
+    };
+    const sendRequest = vi.fn().mockResolvedValueOnce(response);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Synthetic Model client was not created");
+
+    const params = {
+      sourceThreadId: hostThreadIdSchema.parse("thread-src"),
+      targetHarnessId: piHarnessId,
+      targetModel: "pi-model-v1.synthetic",
+    };
+    await expect(client.handoffThread(params)).resolves.toEqual(response);
+    expect(sendRequest).toHaveBeenCalledExactlyOnceWith(THREAD_HANDOFF_METHOD, params);
+
+    await expect(
+      client.handoffThread({
+        sourceThreadId: "" as unknown as ReturnType<typeof hostThreadIdSchema.parse>,
+        targetHarnessId: piHarnessId,
+      }),
+    ).rejects.toThrow();
     expect(sendRequest).toHaveBeenCalledOnce();
   });
 

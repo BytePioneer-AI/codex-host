@@ -56,7 +56,7 @@ Intermediate commentary, tool output and reasoning are not included; compact
 `result` still shows the latest progress while running. Turn text is not truncated.
 Preserve the Host-qualified link; use an earlier to for older context or omit
 both bounds for the latest 10 Turns.
-Remote send, cancel, wait and watch are outside this feature's scope.
+Remote send, cancel, wait and watch remain unsupported on Codex Desktop remote connections (`remote-ssh*` / `remote-control:*`). For Peer-channel cross-machine delegation and Thread operations on paired `remote-peer:<peerId>` hosts, see [multi-remote-peers.md](../product/multi-remote-peers.md).
 
 Serialized Controller replies (including the envelope and newline) are limited to
 16 MiB for Thread reads; settings operations retain their 1 MiB limit. Oversized

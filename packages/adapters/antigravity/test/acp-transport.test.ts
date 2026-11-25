@@ -66,7 +66,32 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     return result(req.id,{configOptions:[{id:'replies',name:'Replies',currentValue:JSON.stringify(replies),options:[]}]});
   }
   if (req.method === 'session/prompt') {
+    const previousPromptId = promptId;
     promptId=req.id;
+    if (scenario === 'steer') {
+      if (previousPromptId === undefined) {
+        update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'first'}});
+        return;
+      }
+      result(previousPromptId,{stopReason:'end_turn',usage:{inputTokens:10,outputTokens:5,cachedReadTokens:0,cachedWriteTokens:0,thoughtTokens:0,totalTokens:15}});
+      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'second'}});
+      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'timer-done'}});
+      result(req.id,{stopReason:'end_turn',usage:{inputTokens:20,outputTokens:8,cachedReadTokens:0,cachedWriteTokens:0,thoughtTokens:0,totalTokens:28}});
+      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'after-all'}});
+      return;
+    }
+    if (scenario === 'steer-chain') {
+      const text = req.params.prompt[0]?.text ?? '';
+      if (previousPromptId !== undefined) {
+        result(previousPromptId,{stopReason:'end_turn',usage:{inputTokens:5,outputTokens:2,totalTokens:7}});
+      }
+      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text}});
+      if (text === 'C') {
+        send({id:'permission',method:'session/request_permission',params:{sessionId:'native',toolCall:{toolCallId:'shell',name:'run_command',kind:'execute',args:{command:'pwd'}},options:[{optionId:'allow',name:'Allow',kind:'allow_once'}]}});
+        setTimeout(() => result(req.id,{stopReason:'end_turn',usage:{inputTokens:6,outputTokens:3,totalTokens:9}}), 40);
+      }
+      return;
+    }
     if (scenario === 'exit-prompt') return setTimeout(() => process.exit(8), 10);
     if (scenario === 'stall-prompt' || scenario === 'close-stalled') return;
     if (scenario === 'same-write-permission') {
@@ -87,6 +112,10 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     if (scenario === 'drained-prompt') {
       update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'A'.repeat(512 * 1024)}},'native',() => process.stderr.write('prompt-flushed\\n'));
       return result(req.id,{stopReason:'end_turn'});
+    }
+    if (scenario === 'post-prompt-callback') {
+      result(req.id,{stopReason:'end_turn'});
+      return setTimeout(() => send({id:'permission-after-prompt',method:'session/request_permission',params:{sessionId:'native',toolCall:{toolCallId:'after-prompt',name:'run_command'},options:[{optionId:'allow',name:'Allow',kind:'allow_once'}]}}),10);
     }
     if (scenario === 'callbacks' || scenario === 'prompt-ends' || scenario === 'answer-callbacks') {
       send({id:'permission',method:'session/request_permission',params:{sessionId:'native',toolCall:{toolCallId:'shell',name:'run_command',kind:'execute',args:{command:'pwd'}},options:[{optionId:'session',name:'Session',kind:'allow_session'},{optionId:'deny',name:'Deny',kind:'reject_once'}]}});
@@ -504,6 +533,36 @@ describe("native ACP stdio transport", () => {
     }
     expect((await pending).stopReason).toBe("end_turn");
   });
+  it("routes a permission that arrives after prompt returns to the session handler", async () => {
+    const value = transport("post-prompt-callback");
+    await open(value);
+    const permission = vi.fn<AntigravityActivePromptHandler["onPermission"]>(async () => ({
+      outcome: { outcome: "cancelled" },
+    }));
+    const sessionPermission = vi.fn<AntigravityActivePromptHandler["onPermission"]>(async () => ({
+      outcome: { outcome: "selected", optionId: "allow" },
+    }));
+    value.setSessionInteractionHandler({
+      onPermission: sessionPermission,
+      onElicitation: handler().onElicitation,
+    });
+    await expect(
+      value.prompt([], { ...handler(), onPermission: permission }),
+    ).resolves.toMatchObject({
+      stopReason: "end_turn",
+    });
+    await vi.waitFor(() => expect(sessionPermission).toHaveBeenCalledOnce());
+    expect(permission).not.toHaveBeenCalled();
+    expect(sessionPermission.mock.calls[0]?.[0]).toMatchObject({
+      sessionId: "native",
+      toolCall: { toolCallId: "after-prompt" },
+    });
+    await vi.waitFor(async () =>
+      expect(await replies(value)).toMatchObject({
+        "permission-after-prompt": { outcome: { outcome: "selected", optionId: "allow" } },
+      }),
+    );
+  });
   it.each(["cancel", "prompt-end", "close"])(
     "cleans pending callbacks on %s even when Host handlers never resolve",
     async (ending) => {
@@ -624,5 +683,77 @@ describe("native ACP stdio transport", () => {
     await value.prompt([], handler(promptEvents));
     expect(promptEvents).toContainEqual({ type: "agent.text", text: expect.any(String) });
     expect(sessionEvents).not.toContainEqual(expect.objectContaining({ type: "agent.text" }));
+  });
+  it("keeps the active prompt handler open across a steered concurrent session/prompt", async () => {
+    const value = transport("steer");
+    await open(value);
+    const sessionEvents: AntigravityAcpEvent[] = [];
+    const promptEvents: AntigravityAcpEvent[] = [];
+    const onResponse = vi.fn();
+    value.setSessionEventHandler((event) => sessionEvents.push(event));
+    const first = value.prompt([{ type: "text", text: "A" }], {
+      ...handler(promptEvents),
+      onResponse,
+    });
+    await vi.waitFor(() =>
+      expect(promptEvents).toContainEqual({ type: "agent.text", text: "first" }),
+    );
+    const second = value.steer([{ type: "text", text: "B" }]);
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult).toMatchObject({ stopReason: "end_turn", usage: { totalTokens: 15 } });
+    expect(secondResult).toMatchObject({ stopReason: "end_turn", usage: { totalTokens: 28 } });
+    expect(onResponse).toHaveBeenCalledTimes(1);
+    expect(promptEvents.filter((event) => event.type === "agent.text")).toEqual([
+      { type: "agent.text", text: "first" },
+      { type: "agent.text", text: "second" },
+      { type: "agent.text", text: "timer-done" },
+    ]);
+    await vi.waitFor(() =>
+      expect(sessionEvents).toContainEqual({ type: "agent.text", text: "after-all" }),
+    );
+    expect(() => value.steer([{ type: "text", text: "after-response" }])).toThrow(
+      "No steerable ACP prompt is active",
+    );
+  });
+  it("handles consecutive steers, callbacks on later prompts, and rejects steer after cancel", async () => {
+    const value = transport("steer-chain");
+    await open(value);
+    const promptEvents: AntigravityAcpEvent[] = [];
+    const onResponse = vi.fn();
+    const onPermission = vi.fn<AntigravityActivePromptHandler["onPermission"]>(async () => ({
+      outcome: { outcome: "selected" as const, optionId: "allow" },
+    }));
+    const first = value.prompt([{ type: "text", text: "A" }], {
+      ...handler(promptEvents),
+      onResponse,
+      onPermission,
+    });
+    await vi.waitFor(() => expect(promptEvents).toContainEqual({ type: "agent.text", text: "A" }));
+    const second = value.steer([{ type: "text", text: "B" }]);
+    await first;
+    await vi.waitFor(() => expect(promptEvents).toContainEqual({ type: "agent.text", text: "B" }));
+    const third = value.steer([{ type: "text", text: "C" }]);
+    await second;
+    await vi.waitFor(() => expect(onPermission).toHaveBeenCalledOnce());
+    expect((await third).stopReason).toBe("end_turn");
+    expect(onResponse).toHaveBeenCalledTimes(1);
+    expect(promptEvents.filter((event) => event.type === "agent.text")).toEqual([
+      { type: "agent.text", text: "A" },
+      { type: "agent.text", text: "B" },
+      { type: "agent.text", text: "C" },
+    ]);
+
+    const stalled = transport("stall-prompt");
+    await open(stalled);
+    const pending = stalled
+      .prompt([{ type: "text", text: "wait" }], handler())
+      .catch(() => undefined);
+    await delay(10);
+    await stalled.cancel();
+    expect(() => stalled.steer([{ type: "text", text: "after-cancel" }])).toThrow(
+      "No steerable ACP prompt is active",
+    );
+    await stalled.close();
+    await pending;
   });
 });

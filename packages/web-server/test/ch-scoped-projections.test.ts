@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
+import { SessionLog } from "../src/session-log.ts";
 import { ChSessions } from "../src/ch-sessions.ts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
@@ -192,4 +193,47 @@ it("scopes heavy projections to every follower, excludes control deltas/baseline
   const reconnected = await open("session/control");
   assert.equal(JSON.stringify(reconnected.frames).includes("codexhostTurnChanges"), false);
   assert.equal(JSON.stringify(reconnected.frames).includes("codexhostToolOutput"), false);
+});
+
+it("deduplicates structurally identical SessionLog.setProjection writes", () => {
+  let writes = 0;
+  const emitted: Array<{ key: string; value: unknown }> = [];
+  const log = new SessionLog(
+    { version: 4, id: "dedup-test", createdAt: 1, isSeeded: false },
+    {
+      readLines: () => [],
+      readJson: (_path, fallback) => fallback,
+      writeLines: () => {},
+      writeJson: () => {
+        writes += 1;
+      },
+      appendLine: () => {},
+    },
+    (_sessionId, key, value) => {
+      emitted.push({ key, value });
+    },
+  );
+  log.setProjection("tokenUsage", {
+    uncachedInputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  });
+  assert.equal(writes, 0);
+  assert.equal(emitted.length, 0);
+
+  log.setProjection("tokenUsage", {
+    uncachedInputTokens: 12,
+    outputTokens: 4,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  });
+  log.setProjection("tokenUsage", {
+    uncachedInputTokens: 12,
+    outputTokens: 4,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  });
+  assert.equal(writes, 1);
+  assert.equal(emitted.length, 1);
 });

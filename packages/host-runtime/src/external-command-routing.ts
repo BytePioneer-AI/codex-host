@@ -51,20 +51,41 @@ export async function inspectLiveCommandCatalog(
  * Harness resolves its own slash text, exactly as live commands execute.
  * Commonly excluded commands stay rejected.
  */
-export async function resolveExternalCommand(
-  commands: NonNullable<HarnessSession["commands"]>,
-  text: string,
-  options: { liveCatalogPending?: (catalog: HarnessCommandCatalog) => boolean } = {},
-): Promise<{ descriptor: HarnessCommandDescriptor; arguments?: JsonObject } | null> {
-  const catalog = await commands.list();
-  if (!catalog.ok) throw new ExternalCommandError(-32073, catalog.error.message);
-  const commandText = text.trim();
-  const matched = catalog.value.commands
+function matchCatalogCommand(
+  catalog: HarnessCommandCatalog,
+  commandText: string,
+): { descriptor: HarnessCommandDescriptor; arguments?: JsonObject } | null {
+  const matched = catalog.commands
     .toSorted((left, right) => right.invocation.length - left.invocation.length)
     .find((command) => {
       if (commandText === command.invocation) return true;
       return command.argumentMode === "text" && commandText.startsWith(`${command.invocation} `);
     });
+  if (!matched) return null;
+  const argumentText = commandText.slice(matched.invocation.length).trimStart();
+  return {
+    descriptor: matched,
+    ...(argumentText.length > 0 ? { arguments: { text: argumentText } } : {}),
+  };
+}
+
+export async function resolveExternalCommand(
+  commands: NonNullable<HarnessSession["commands"]>,
+  text: string,
+  options: {
+    liveCatalogPending?: (catalog: HarnessCommandCatalog) => boolean;
+  } = {},
+): Promise<{ descriptor: HarnessCommandDescriptor; arguments?: JsonObject } | null> {
+  const commandText = text.trim();
+  // Built-in commands explicitly declared immutable on the Session's command
+  // capability can be admitted without waiting on a live catalog scan.
+  if (commands.staticCatalog) {
+    const builtIn = matchCatalogCommand(commands.staticCatalog, commandText);
+    if (builtIn) return builtIn;
+  }
+  const catalog = await commands.list();
+  if (!catalog.ok) throw new ExternalCommandError(-32073, catalog.error.message);
+  const matched = matchCatalogCommand(catalog.value, commandText);
   if (!matched) {
     const name = /^\/(\S+)/u.exec(commandText)?.[1] ?? "";
     if (name && !isExcludedLiveCommand(name) && options.liveCatalogPending?.(catalog.value)) {
@@ -75,9 +96,5 @@ export async function resolveExternalCommand(
       "External Harness does not expose the requested command",
     );
   }
-  const argumentText = commandText.slice(matched.invocation.length).trimStart();
-  return {
-    descriptor: matched,
-    ...(argumentText.length > 0 ? { arguments: { text: argumentText } } : {}),
-  };
+  return matched;
 }

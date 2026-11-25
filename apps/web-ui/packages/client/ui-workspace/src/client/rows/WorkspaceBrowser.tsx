@@ -1,4 +1,4 @@
-import { canReorderLocalWorkspaces } from "./workspace-reorder.ts";
+import { canReorderWorkspaces, resolveWorkspaceDropAnchor } from "./workspace-reorder.ts";
 /**
  * The workspace/session browsing region filling the sidebar shell's
  * `sidebar.workspaces` hole: section header (title + view options + add
@@ -92,7 +92,7 @@ import { PinnedSection } from "./PinnedSection.tsx";
 import { SessionListError } from "./SessionListError.tsx";
 import { SessionListExpansion } from "./SessionListExpansion.tsx";
 import { SectionHeading } from "./SectionHeading.tsx";
-import { HostScopeFilter } from "./HostScopeFilter.tsx";
+import { HostScopeTabBar } from "./HostScopeFilter.tsx";
 import {
   APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT,
   ensureWorkspaceVisibleInHostScope,
@@ -343,6 +343,31 @@ interface WorkspaceDragState {
   over: { id: WorkspaceId; half: "before" | "after" } | null;
 }
 
+/** Resolve nearest registered parent Workspace within each host and section scope. */
+function computeWorkspaceParents(
+  workspaces: readonly WorkspaceView[],
+  nestWorkspaces: boolean,
+  sectionOf: ReadonlyMap<string, string>,
+): Map<string, WorkspaceId | undefined> {
+  if (!nestWorkspaces) return new Map<string, WorkspaceId | undefined>();
+  const scopeOf = (workspace: WorkspaceView) =>
+    `${workspace.remote?.hostId ?? "local"}\n${sectionOf.get(workspace.workspaceId) ?? ""}`;
+  const pathsByScope = new Map<string, Map<string, WorkspaceId>>();
+  for (const workspace of workspaces) {
+    const scope = scopeOf(workspace);
+    const paths = pathsByScope.get(scope) ?? new Map<string, WorkspaceId>();
+    if (workspace.path) paths.set(workspace.path, workspace.workspaceId);
+    pathsByScope.set(scope, paths);
+  }
+  return new Map<string, WorkspaceId | undefined>(
+    workspaces.map((workspace) => {
+      const keysByPath = pathsByScope.get(scopeOf(workspace));
+      const path = owningParentFolder(workspace.path, [...(keysByPath?.keys() ?? [])]);
+      return [workspace.workspaceId, path === undefined ? undefined : keysByPath?.get(path)];
+    }),
+  );
+}
+
 /** Resolve an insertion side across the Workspace header, descendants, and Sessions. */
 function workspaceGroupHalf(e: {
   clientY: number;
@@ -374,8 +399,10 @@ type SessionTreeProps = Pick<
     list: SessionListState;
     /** Host account home for POSIX hover-path abbreviation. */
     home?: string | undefined;
-    /** Workspaces in Host group order with browser-projected Session order. */
+    /** Workspaces in Host group order with browser-projected Session order (may be host-scoped). */
     workspaces: readonly WorkspaceView[];
+    /** Complete unfiltered Workspaces in Host order for cross-host drag-reorder anchor resolution. */
+    allWorkspaces?: readonly WorkspaceView[];
     /** Per Workspace, the projected roots that are there only through a descendant. */
     linkedRoots: ReadonlyMap<string, ReadonlySet<SessionId>>;
     /** Browser-projected order for Sessions outside every Workspace. */
@@ -412,8 +439,6 @@ type SessionTreeProps = Pick<
     revealSessionId?: SessionId | undefined;
     /** Acknowledge that the chosen Session row has been revealed. */
     onSessionRevealed: (sessionId: SessionId) => void;
-    /** Optional host/workspace scope filter control mounted in the section header. */
-    hostScopeFilterControl?: ReactNode;
     /** Whether the host/workspace scope filter is actively narrowing visible rows. */
     hostScopeFiltered?: boolean;
     /** Whether the effective host scope is narrowed to one specific remote host. */
@@ -460,6 +485,7 @@ function SessionTree({
   startSession,
   open,
   workspaces,
+  allWorkspaces = workspaces,
   linkedRoots,
   ungroupedSessionIds,
   rowState,
@@ -486,7 +512,6 @@ function SessionTree({
   onSessionRevealed,
   shortcuts,
   loadMoreSessions,
-  hostScopeFilterControl,
   hostScopeFiltered = false,
   singleRemoteHostScoped = false,
   onResetHostScope,
@@ -533,36 +558,39 @@ function SessionTree({
       for (const id of section.workspaceIds ?? []) if (!owners.has(id)) owners.set(id, section.id);
     return owners;
   }, [nativeSections]);
-  const parents = useMemo(() => {
-    if (!nestWorkspaces) return new Map<string, WorkspaceId | undefined>();
-    const scopeOf = (workspace: WorkspaceView) =>
-      `${workspace.remote?.hostId ?? "local"}\n${sectionOf.get(workspace.workspaceId) ?? ""}`;
-    const pathsByScope = new Map<string, Map<string, WorkspaceId>>();
-    for (const workspace of workspaces) {
-      const scope = scopeOf(workspace);
-      const paths = pathsByScope.get(scope) ?? new Map<string, WorkspaceId>();
-      if (workspace.path) paths.set(workspace.path, workspace.workspaceId);
-      pathsByScope.set(scope, paths);
-    }
-    return new Map<string, WorkspaceId | undefined>(
-      workspaces.map((workspace) => {
-        const keysByPath = pathsByScope.get(scopeOf(workspace));
-        const path = owningParentFolder(workspace.path, [...(keysByPath?.keys() ?? [])]);
-        return [workspace.workspaceId, path === undefined ? undefined : keysByPath?.get(path)];
-      }),
-    );
-  }, [nestWorkspaces, sectionOf, workspaces]);
+  const parents = useMemo(
+    () => computeWorkspaceParents(workspaces, nestWorkspaces, sectionOf),
+    [nestWorkspaces, sectionOf, workspaces],
+  );
+  const reorderParents = useMemo(
+    () =>
+      allWorkspaces === workspaces
+        ? parents
+        : computeWorkspaceParents(allWorkspaces, nestWorkspaces, sectionOf),
+    [allWorkspaces, nestWorkspaces, parents, sectionOf, workspaces],
+  );
   const expandedGroups = useMemo(() => {
     const ancestorKeys = new Set<string | undefined>(parents.values());
     return [...workspaces.map((workspace) => workspace.workspaceId), UNGROUPED_KEY].filter(
       (key) => groupExpansion[key] ?? (key === UNGROUPED_KEY || ancestorKeys.has(key)),
     );
   }, [groupExpansion, parents, workspaces]);
+  const forestRoots = useMemo(
+    () => new Map(deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node])),
+    [list, rowState, statuses],
+  );
   const groups = useMemo(() => {
-    const result = deriveGroups(list, workspaces, rowState, statuses, {
-      expandedGroups,
-      excludePinned: true,
-    });
+    const result = deriveGroups(
+      list,
+      workspaces,
+      rowState,
+      statuses,
+      {
+        expandedGroups,
+        excludePinned: true,
+      },
+      forestRoots,
+    );
     if (
       (canStartProjectless || (list.hasMore && result.length === 0)) &&
       !result.some((group) => group.key === UNGROUPED_KEY)
@@ -576,10 +604,11 @@ function SessionTree({
         sessionCount: 0,
         expanded: expandedGroups.includes(UNGROUPED_KEY),
         containsCurrent: false,
+        activity: { running: 0, pendingInteraction: 0, completed: 0 },
         sessions: [],
       });
     return result;
-  }, [list, workspaces, rowState, statuses, expandedGroups, canStartProjectless]);
+  }, [list, workspaces, rowState, statuses, expandedGroups, canStartProjectless, forestRoots]);
   const now = Date.now();
   const commitSessionDrag = (activeDrag: DragState, over: NonNullable<DragState["over"]>): void => {
     if (sessionDropCommitted.current) return;
@@ -610,29 +639,15 @@ function SessionTree({
     if (workspaceDropCommitted.current) return;
     workspaceDropCommitted.current = true;
     setWorkspaceDrag(null);
-    if (!canReorderLocalWorkspaces(workspaces, activeDrag.workspaceId, over.id)) return;
-    const owner = parents.get(activeDrag.workspaceId);
-    // Only Workspaces outside native sections can be dragged, among themselves.
-    const siblings = workspaces.filter(
-      (workspace) =>
-        !workspace.remote &&
-        !sectionOf.has(workspace.workspaceId) &&
-        parents.get(workspace.workspaceId) === owner,
-    );
-    const rowIndex = siblings.findIndex((workspace) => workspace.workspaceId === over.id);
-    if (rowIndex === -1) return;
-    const anchor = over.half === "before" ? over.id : siblings[rowIndex + 1]?.workspaceId;
-    if (anchor === activeDrag.workspaceId) return;
-    const sourceIndex = siblings.findIndex(
-      (workspace) => workspace.workspaceId === activeDrag.workspaceId,
-    );
-    const anchorIndex =
-      anchor === undefined
-        ? siblings.length
-        : siblings.findIndex((workspace) => workspace.workspaceId === anchor);
-    if (sourceIndex !== -1 && (anchorIndex === sourceIndex || anchorIndex === sourceIndex + 1))
-      return;
-    insertWorkspaceBefore(activeDrag.workspaceId, anchor).catch((reason: unknown) => {
+    const resolved = resolveWorkspaceDropAnchor(allWorkspaces, activeDrag.workspaceId, over, {
+      sectionOf,
+      parents: reorderParents,
+    });
+    if (resolved === null) return;
+    insertWorkspaceBefore(
+      activeDrag.workspaceId,
+      resolved.beforeWorkspaceId as WorkspaceId | undefined,
+    ).catch((reason: unknown) => {
       console.warn("workspace reorder rejected:", reason);
     });
   };
@@ -651,10 +666,6 @@ function SessionTree({
     return children;
   }, [groups, parents]);
   const rootGroups = childrenByParent.get(undefined) ?? [];
-  const workspaceDropAtListStart =
-    rootGroups[0]?.workspaceId !== undefined &&
-    workspaceDrag?.over?.id === rootGroups[0].workspaceId &&
-    workspaceDrag.over.half === "before";
   // Root ancestor of every rendered group: in tree mode the Workspace holding
   // the current Session may sit under folders, and revealing it must not
   // uncollapse the whole list.
@@ -699,12 +710,10 @@ function SessionTree({
   );
   const shownWorkspaceRoots = allWorkspacesShown ? workspaceRoots : collapsedWorkspaces.rows;
   const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
-  const nativeLayout = nativeSectionLayout(
-    nativeSections,
-    list,
-    rowState,
-    statuses,
-    sectionExpansion,
+  const nativeLayout = useMemo(
+    () =>
+      nativeSectionLayout(nativeSections, list, rowState, statuses, sectionExpansion, forestRoots),
+    [nativeSections, list, rowState, statuses, sectionExpansion, forestRoots],
   );
   const workspacesSectionExpanded = sectionExpanded(sectionExpansion, WORKSPACES_SECTION_KEY);
 
@@ -717,8 +726,12 @@ function SessionTree({
     setGroupExpanded(group.key, !group.expanded);
   };
 
-  const pinnedRows = deriveFlat(list, rowState.pinnedSessionIds, rowState, statuses).filter(
-    (node) => node.pinned,
+  const pinnedRows = useMemo(
+    () =>
+      deriveFlat(list, rowState.pinnedSessionIds, rowState, statuses, forestRoots).filter(
+        (node) => node.pinned,
+      ),
+    [list, rowState, statuses, forestRoots],
   );
   const rowKeys: string[] = [];
   if (pinnedRows.length > 0) {
@@ -726,15 +739,26 @@ function SessionTree({
     if (pinnedSectionExpanded)
       for (const node of threadView.rows(pinnedRows)) rowKeys.push(`session:${node.id}`);
   }
+  const nestedActivity = (group: GroupNode): GroupNode["activity"] => {
+    const total = { ...group.activity };
+    for (const child of childrenByParent.get(group.key) ?? []) {
+      const nested = nestedActivity(child);
+      total.running += nested.running;
+      total.pendingInteraction += nested.pendingInteraction;
+      total.completed += nested.completed;
+    }
+    return total;
+  };
   const renderGroup = (group: GroupNode, depth: number): ReactNode => {
     const workspaceId = group.workspaceId;
     const children = childrenByParent.get(group.key) ?? [];
     const sectioned = sectionOf.has(group.key);
     const compatibleDrag =
       workspaceDrag !== null &&
-      !sectioned &&
-      canReorderLocalWorkspaces(workspaces, workspaceDrag.workspaceId, workspaceId) &&
-      parents.get(workspaceDrag.workspaceId) === parents.get(group.key);
+      canReorderWorkspaces(allWorkspaces, workspaceDrag.workspaceId, workspaceId, {
+        sectionOf,
+        parents: reorderParents,
+      });
     const visible = sidebarWindow(
       group.sessions,
       sessionLimits[group.key] ?? GROUP_INITIAL_ROWS,
@@ -743,6 +767,8 @@ function SessionTree({
     );
     rowKeys.push(`workspace:${group.key}`);
     const childRows = group.expanded ? children.map((child) => renderGroup(child, depth + 1)) : [];
+    // A folded project hides its Threads and, in the tree view, its nested Workspaces.
+    const foldedActivity = group.expanded ? undefined : nestedActivity(group);
     const sessions = threadView.rows(visible.rows);
     // A tree shown through a descendant also renders in its root's group; keep its keys unique.
     const linked = linkedRoots.get(group.key);
@@ -768,7 +794,7 @@ function SessionTree({
         ? workspaceDrag.over.half
         : null;
     const workspaceDragProps =
-      workspaceId === undefined || group.remote || sectioned
+      workspaceId === undefined || sectioned
         ? undefined
         : {
             start: () => {
@@ -870,6 +896,8 @@ function SessionTree({
           <ProjectRowItem
             newShortcut={shortcuts.find((row) => row.id === "session.new")}
             group={group}
+            foldedActivity={foldedActivity}
+            showHost={!singleRemoteHostScoped}
             home={home}
             t={t}
             onToggle={() => {
@@ -1037,6 +1065,13 @@ function SessionTree({
   // control rather than an unbounded run of folders, and folding that section
   // leaves Recents in place.
   const showWorkspacesSection = workspaceRoots.length > 0 || hostScopeFiltered;
+  const workspaceListHasLeadingChrome =
+    showWorkspacesSection || pinnedRows.length > 0 || nativeLayout.length > 0;
+  const workspaceDropAtListStart =
+    !workspaceListHasLeadingChrome &&
+    shownWorkspaceRoots[0]?.workspaceId !== undefined &&
+    workspaceDrag?.over?.id === shownWorkspaceRoots[0].workspaceId &&
+    workspaceDrag.over.half === "before";
   const showFilterEmptyHint = hostScopeFiltered && workspaceRoots.length === 0;
   const groupRows: ReactNode[] = [];
   if (showWorkspacesSection) rowKeys.push(`section:${WORKSPACES_SECTION_KEY}`);
@@ -1093,6 +1128,7 @@ function SessionTree({
         <PinnedSection
           rows={pinnedRows}
           currentId={current}
+          showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
@@ -1108,6 +1144,7 @@ function SessionTree({
           sections={nativeLayout}
           groupRows={sectionGroupRows}
           currentId={current}
+          showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
@@ -1136,7 +1173,6 @@ function SessionTree({
               setSectionExpanded(WORKSPACES_SECTION_KEY, !workspacesSectionExpanded);
             }}
             rowKey={`section:${WORKSPACES_SECTION_KEY}`}
-            trailing={hostScopeFilterControl}
           />
         )}
         {groupRows}
@@ -1155,11 +1191,12 @@ function nativeSectionLayout(
   rowState: SessionRowState,
   statuses: SessionStatuses,
   expansion: SessionTreeProps["sectionExpansion"],
+  precomputedRoots?: ReadonlyMap<SessionId, SessionNode>,
 ) {
   if (!sections.length) return [];
-  const roots = new Map(
-    deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]),
-  );
+  const roots =
+    precomputedRoots ??
+    new Map(deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]));
   const placed = new Set<SessionId>();
   return sections.map(({ id, name, threadIds }) => {
     const key = `native-section:${id}`;
@@ -1230,8 +1267,8 @@ function FlatList({
   onSessionRevealed,
   renderSlot,
   loadMoreSessions,
-  hostScopeFilterControl,
   hostScopeFiltered = false,
+  singleRemoteHostScoped = false,
   onResetHostScope,
   t,
 }: Pick<
@@ -1252,8 +1289,8 @@ function FlatList({
   | "nativeSections"
   | "onLeaveArchivedOnly"
   | "loadMoreSessions"
-  | "hostScopeFilterControl"
   | "hostScopeFiltered"
+  | "singleRemoteHostScoped"
   | "onResetHostScope"
   | "t"
 > & {
@@ -1263,15 +1300,23 @@ function FlatList({
   const panelActive = usePanelInfo((info) => info.activePanelId !== null);
   const statuses = useSessionStatus((s) => s);
   const threadView = useThreadTreeView();
+  const forestRoots = useMemo(
+    () => new Map(deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node])),
+    [list, rowState, statuses],
+  );
   const rows = useMemo(
     () =>
-      deriveFlat(list, sessionIds, rowState, statuses).filter(
+      deriveFlat(list, sessionIds, rowState, statuses, forestRoots).filter(
         (node) => !node.pinned && !rowState.sectionedSessionIds?.has(node.id),
       ),
-    [list, sessionIds, rowState, statuses],
+    [list, sessionIds, rowState, statuses, forestRoots],
   );
-  const pinnedRows = deriveFlat(list, rowState.pinnedSessionIds, rowState, statuses).filter(
-    (node) => node.pinned,
+  const pinnedRows = useMemo(
+    () =>
+      deriveFlat(list, rowState.pinnedSessionIds, rowState, statuses, forestRoots).filter(
+        (node) => node.pinned,
+      ),
+    [list, rowState, statuses, forestRoots],
   );
   const [drag, setDrag] = useState<DragState | null>(null);
   const dropCommitted = useRef(false);
@@ -1292,12 +1337,10 @@ function FlatList({
   };
   const now = Date.now();
   const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
-  const nativeLayout = nativeSectionLayout(
-    nativeSections,
-    list,
-    rowState,
-    statuses,
-    sectionExpansion,
+  const nativeLayout = useMemo(
+    () =>
+      nativeSectionLayout(nativeSections, list, rowState, statuses, sectionExpansion, forestRoots),
+    [nativeSections, list, rowState, statuses, sectionExpansion, forestRoots],
   );
   return (
     <div className={clsx(css.treeBody, css.wide)}>
@@ -1322,6 +1365,7 @@ function FlatList({
         <PinnedSection
           rows={pinnedRows}
           currentId={currentId}
+          showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
@@ -1336,6 +1380,7 @@ function FlatList({
         <NativeSections
           sections={nativeLayout}
           currentId={currentId}
+          showHost={!singleRemoteHostScoped}
           onOpen={open}
           onRenameRequest={onSessionRenameRequest}
           renderSlot={renderSlot}
@@ -1344,10 +1389,8 @@ function FlatList({
           setSectionExpanded={setSectionExpanded}
           t={t}
         />
-        {(pinnedRows.length > 0 ||
-          nativeSections.length > 0 ||
-          hostScopeFilterControl !== undefined) && (
-          <SectionHeading label={t("section.sessions")} trailing={hostScopeFilterControl} />
+        {(pinnedRows.length > 0 || nativeSections.length > 0) && (
+          <SectionHeading label={t("section.sessions")} />
         )}
         {rows.length === 0 &&
           pinnedRows.length === 0 &&
@@ -1378,6 +1421,7 @@ function FlatList({
               <SessionNodeItem
                 key={node.id}
                 node={node}
+                showHost={!singleRemoteHostScoped}
                 currentId={currentId}
                 now={now}
                 onOpen={open}
@@ -1680,7 +1724,10 @@ function WorkspaceBrowserContent({
     () => sessionMemberIds(list, archivedSessionIds),
     [archivedSessionIds, list],
   );
-  const threadOrder = useMemo(() => threadTreeOrderSource(list, rowState), [list, rowState]);
+  const threadOrder = useMemo(
+    () => threadTreeOrderSource(list, rowState, threadView.forest),
+    [list, rowState, threadView.forest],
+  );
   const projectedWorkspaces = useMemo(
     () =>
       workspaces.map((workspace) => {
@@ -1751,8 +1798,8 @@ function WorkspaceBrowserContent({
     );
   }, [currentBlank, flatMemberIds, threadOrder, orderBy, orderState, sessionOrderByAccount]);
   const orderSource = useMemo(
-    () => pinOrderSource(workspaces, list, rowState),
-    [list, rowState, workspaces],
+    () => pinOrderSource(workspaces, list, rowState, threadOrder),
+    [list, rowState, threadOrder, workspaces],
   );
   const activeSessionOrders = useMemo<Readonly<Record<string, readonly SessionId[]>>>(
     () =>
@@ -1989,25 +2036,25 @@ function WorkspaceBrowserContent({
         visibleWorkspaceIdSet,
         orderedWorkspaces,
         effectiveHostScopeFilter,
+        threadOrder.rootOf,
       ).map((entry) => entry.id),
     );
     return {
       ...list,
       ids: list.ids.filter((id) => allowedIds.has(id)),
     };
-  }, [hostScopeFiltered, list, visibleWorkspaceIdSet, orderedWorkspaces, effectiveHostScopeFilter]);
+  }, [
+    hostScopeFiltered,
+    list,
+    visibleWorkspaceIdSet,
+    orderedWorkspaces,
+    effectiveHostScopeFilter,
+    threadOrder.rootOf,
+  ]);
   const hostScopeResetKey = useMemo(
     () => (hostScopeFiltered ? JSON.stringify(effectiveHostScopeFilter) : "all"),
     [hostScopeFiltered, effectiveHostScopeFilter],
   );
-  const hostScopeFilterControl = hasRemote ? (
-    <HostScopeFilter
-      workspaces={orderedWorkspaces}
-      state={effectiveHostScopeFilter}
-      onChange={updateHostScopeFilter}
-      t={t}
-    />
-  ) : undefined;
   const openAddRemoteWorkspace = (): void => {
     const selectedRemoteHostId =
       effectiveHostScopeFilter.selectedHost !== "all" &&
@@ -2473,6 +2520,15 @@ function WorkspaceBrowserContent({
         </div>
       )}
 
+      {wide && hasRemote && normalizedQuery === "" && (
+        <HostScopeTabBar
+          workspaces={orderedWorkspaces}
+          state={effectiveHostScopeFilter}
+          onChange={updateHostScopeFilter}
+          t={t}
+        />
+      )}
+
       {/* Always-mounted seat keeps the region's flex slot while the list
           itself is wide-only. */}
       <div className={css.listArea}>
@@ -2517,8 +2573,8 @@ function WorkspaceBrowserContent({
               setSectionExpanded={actions.setSectionExpanded}
               revealSessionId={revealSessionId}
               onSessionRevealed={acknowledgeSessionReveal}
-              hostScopeFilterControl={hostScopeFilterControl}
               hostScopeFiltered={hostScopeFiltered}
+              singleRemoteHostScoped={singleRemoteHostScoped}
               onResetHostScope={resetHostScope}
               t={t}
             />
@@ -2532,6 +2588,7 @@ function WorkspaceBrowserContent({
               onSessionRenameRequest={requestSessionRename}
               renderSlot={renderSlot}
               workspaces={scopedWorkspaces}
+              allWorkspaces={orderedWorkspaces}
               linkedRoots={linkedRoots}
               ungroupedSessionIds={orderedUngroupedSessionIds}
               canStartProjectless={canStartProjectless}
@@ -2551,7 +2608,6 @@ function WorkspaceBrowserContent({
               insertWorkspaceBefore={insertWorkspaceBefore}
               revealSessionId={revealSessionId}
               onSessionRevealed={acknowledgeSessionReveal}
-              hostScopeFilterControl={hostScopeFilterControl}
               hostScopeFiltered={hostScopeFiltered}
               singleRemoteHostScoped={singleRemoteHostScoped}
               onResetHostScope={resetHostScope}
@@ -2645,7 +2701,15 @@ function WorkspaceBrowserContent({
         title={t("delete.workspace")}
         {...(deleteTarget === null
           ? {}
-          : { description: t("delete.desc", { name: deleteTarget.title }) })}
+          : {
+              description: t(
+                workspaces.find((workspace) => workspace.workspaceId === deleteTarget.workspaceId)
+                  ?.projectId
+                  ? "delete.nativeProject"
+                  : "delete.desc",
+                { name: deleteTarget.title },
+              ),
+            })}
         footer={
           <>
             <Button variant="outline" disabled={deleting} onClick={closeDelete}>

@@ -25,6 +25,7 @@ import type {
 } from "../contract/sessions.ts";
 import type { SessionReferenceSource } from "../index.ts";
 import { createScope, scopeIdentityOf, scopeOf as scopeTagOf } from "../scope.ts";
+import type { SessionListEntry } from "./lineage.ts";
 import { SessionManager } from "./manager.ts";
 import type { SessionRemotes } from "./remotes.ts";
 import type {
@@ -275,6 +276,14 @@ export class ClientSessions implements ISessions {
   /** Stable per-id sources retained for the Client root lifetime, including across generation replacement. */
   private readonly retainObservers = new Map<SessionId, RetentionObserver>();
   private readonly scopeDrops = new Set<Promise<void>>();
+  private readonly projectedItemCache = new Map<
+    SessionId,
+    {
+      entry: SessionListEntry;
+      retainedBy: SessionRetainInfo["retainedBy"];
+      summary: SessionSummary;
+    }
+  >();
   private closed = false;
 
   /**
@@ -709,11 +718,17 @@ export class ClientSessions implements ISessions {
     const byId: Record<SessionId, SessionSummary> = {};
     for (const entry of items) {
       ids.push(entry.sessionId);
-      byId[entry.sessionId] = {
+      const retainedBy = this.retentionSnapshot(entry.sessionId).retainedBy;
+      const cached = this.projectedItemCache.get(entry.sessionId);
+      if (cached !== undefined && cached.entry === entry && cached.retainedBy === retainedBy) {
+        byId[entry.sessionId] = cached.summary;
+        continue;
+      }
+      const summary: SessionSummary = {
         id: entry.sessionId,
         displayTitle: displayTitleOf(entry.title, entry.cwd, entry.sessionId),
         running: entry.running,
-        retainedBy: this.retentionSnapshot(entry.sessionId).retainedBy,
+        retainedBy,
         blank: entry.blank,
         updatedAt: entry.updatedAt,
         ...(entry.projectionValues === undefined
@@ -724,6 +739,13 @@ export class ClientSessions implements ISessions {
         ...(entry.parentSessionId !== undefined ? { parentId: entry.parentSessionId } : {}),
         ...(entry.origin !== undefined ? { origin: entry.origin } : {}),
       };
+      this.projectedItemCache.set(entry.sessionId, { entry, retainedBy, summary });
+      byId[entry.sessionId] = summary;
+    }
+    if (this.projectedItemCache.size > items.length) {
+      for (const sessionId of this.projectedItemCache.keys()) {
+        if (byId[sessionId] === undefined) this.projectedItemCache.delete(sessionId);
+      }
     }
     for (const [parentId, projection] of Object.entries(projectionsBySession)) {
       for (const child of projection.values.subagentCatalog ?? []) {

@@ -28,6 +28,7 @@
     "@codexhost/harness-discovery": "0.0.0",
     "@codexhost/shared-contracts": "0.0.0",
     "diff": "8.0.2",
-    "zod": "4.4.3"
+    "yaml": "2.9.1",
+    "zod": "4.6.7"
   }
 }

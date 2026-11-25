@@ -5,7 +5,13 @@ import path from "node:path";
 import { isPlatformTest } from "./platform-tests.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
-const files = globSync("packages/web-server/test/*.test.ts", { cwd: root })
+const files = globSync(
+  [
+    "packages/web-server/test/*.test.ts",
+    "apps/web-ui/packages/client/ui-workspace/test/startup-restoration.test.ts",
+  ],
+  { cwd: root },
+)
   .map((file) => path.join(root, file))
   .filter((file) => process.env.CODEXHOST_TEST_SCOPE !== "platform" || isPlatformTest(file));
 

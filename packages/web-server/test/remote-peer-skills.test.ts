@@ -360,6 +360,7 @@ it("forwards codexhost/skills/list for remote peer external threads and drafts w
     },
   });
   assert.equal(created.ok, true);
+  assert.ok(created.ok);
   const draftId = (created.value as { sessionId: string }).sessionId;
 
   const selectedExt = await fx.rpc.dispatch("session/selectModel", {
@@ -452,6 +453,7 @@ it("forwards codexhost/threadCommands for peer threads and Codex drafts while sk
     },
   });
   assert.equal(created.ok, true);
+  assert.ok(created.ok);
   const draftId = (created.value as { sessionId: string }).sessionId;
 
   await fx.rpc.dispatch("session/selectModel", {
@@ -617,6 +619,7 @@ it("degrades gracefully on legacy peer -32601, remembers per connection, resets 
       },
     },
   });
+  assert.ok(created.ok);
   const draftId = (created.value as { sessionId: string }).sessionId;
   await fx.rpc.dispatch("session/selectModel", {
     args: { request: { sessionId: draftId, provider: "codex", model: "gpt-5.4" } },

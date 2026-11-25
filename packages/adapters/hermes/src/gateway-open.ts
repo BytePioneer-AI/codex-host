@@ -216,6 +216,7 @@ export async function openGatewaySession(
       transport: bridge,
       open,
       onSettle,
+      watchNativeTitle: (publish) => bridge.watchTitle(publish),
     });
   } catch (error) {
     await transport.close().catch(() => undefined);

@@ -75,6 +75,11 @@ import {
   codexAccountListResultSchema,
   externalThreadForkParamsSchema,
   externalThreadForkResultSchema,
+  THREAD_HANDOFF_METHOD,
+  threadHandoffParamsSchema,
+  threadHandoffResultSchema,
+  type ThreadHandoffParams,
+  type ThreadHandoffResult,
   harnessCommandCatalogSchema,
   harnessCommandsInspectParamsSchema,
   harnessConfigurationStateSchema,
@@ -179,6 +184,7 @@ export const HARNESS_ACCOUNT_SOURCES_METHOD = "codexhost/harness/accounts/source
 export const HARNESS_ACCOUNT_INSPECT_METHOD = "codexhost/harness/accounts/inspect";
 export const HARNESS_WEB_UI_OPEN_METHOD = "codexhost/harness/web-ui/open";
 export const THREAD_FORK_METHOD = "codexhost/thread/fork";
+export { THREAD_HANDOFF_METHOD };
 export const THREAD_INSPECT_METHOD = "codexhost/thread/inspect";
 export const HARNESS_COMMANDS_INSPECT_METHOD = "codexhost/harness/commands/inspect";
 export const THREAD_COMMANDS_INSPECT_METHOD = "codexhost/thread/commands/inspect";
@@ -311,6 +317,7 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   subscribeSkillsChanged?(listener: (params: SkillsChangedParams) => void): () => void;
   clientForHost?(hostId: string): RendererModelClient | null;
   forkThread(input: ExternalThreadForkParams): Promise<ExternalThreadForkResult>;
+  handoffThread(input: ThreadHandoffParams): Promise<ThreadHandoffResult>;
   inspectHarness(
     input: HarnessInspectParams,
     options?: RendererRequestOptions,
@@ -672,6 +679,11 @@ export function createRendererModelClient(
       const params = externalThreadForkParamsSchema.parse(input);
       const result = await manager.sendRequest(THREAD_FORK_METHOD, params);
       return externalThreadForkResultSchema.parse(result);
+    },
+    async handoffThread(input: ThreadHandoffParams): Promise<ThreadHandoffResult> {
+      const params = threadHandoffParamsSchema.parse(input);
+      const result = await manager.sendRequest(THREAD_HANDOFF_METHOD, params);
+      return threadHandoffResultSchema.parse(result);
     },
     inspectHarness,
     async listSkills(params: SkillsListParams): Promise<SkillsListResult> {

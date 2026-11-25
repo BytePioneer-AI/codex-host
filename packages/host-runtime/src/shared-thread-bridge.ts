@@ -14,6 +14,7 @@ import {
   IDLE_RELEASE_SETTINGS_METHOD,
   USAGE_STATISTICS_METHOD,
   SKILLS_LIST_METHOD,
+  THREAD_HANDOFF_METHOD,
 } from "@codexhost/shared-contracts";
 import {
   storedSectionPlacementV1Schema,
@@ -66,6 +67,7 @@ const LIST_CHANGING_METHODS = new Set([
   "thread/section/move",
   "thread/start",
   "thread/unarchive",
+  THREAD_HANDOFF_METHOD,
 ]);
 
 /** A GUI keeps its native Codex connection and forwards only shared external Threads. */
@@ -279,6 +281,7 @@ export class SharedThreadBridge {
         IDLE_RELEASE_SETTINGS_METHOD,
         USAGE_STATISTICS_METHOD,
         SKILLS_LIST_METHOD,
+        THREAD_HANDOFF_METHOD,
       ].some((value) => value === method)
     );
   }
@@ -296,10 +299,16 @@ export class SharedThreadBridge {
       (create !== null && create.selectedHarness !== "codex") ||
       (this.options.delegateCreates && request.method.startsWith("codexhost/harness/")) ||
       this.handlesControl(request.method);
-    if (!shared && typeof params.threadId === "string") {
+    const routedThreadId =
+      typeof params.threadId === "string"
+        ? params.threadId
+        : request.method === THREAD_HANDOFF_METHOD && typeof params.sourceThreadId === "string"
+          ? params.sourceThreadId
+          : null;
+    if (!shared && routedThreadId !== null) {
       shared =
-        this.#known.has(params.threadId) ||
-        (await this.ownership([params.threadId])).has(params.threadId);
+        this.#known.has(routedThreadId) ||
+        (await this.ownership([routedThreadId])).has(routedThreadId);
     }
     if (!shared) return null;
     const peer = await this.#connect();

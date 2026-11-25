@@ -214,10 +214,15 @@ const MAX_COMBO_URL_BYTES = 3 * 1024;
 const HASH_REVISION_LENGTH = 12;
 const COMBO_REVISION_PLACEHOLDER = "0".repeat(HASH_REVISION_LENGTH);
 
-/** Source-map trailer emitted by tsdown at the end of every client bundle. */
-const SOURCE_MAP_TRAILER = /(?:\r?\n)?\/\/# sourceMappingURL=[^\r\n]*(?:\r?\n)?$/;
-/** Debugger source name appended to page bundles in the WebWorker image. */
-const SOURCE_URL_TRAILER = /(?:\r?\n)?\/\/# sourceURL=([^\r\n]+)(?:\r?\n)?$/;
+/**
+ * Source-map trailer emitted by tsdown at the end of every client bundle. The
+ * leading line break is mandatory (with `^` covering a comment-only input) so a
+ * `//# sourceMappingURL=` string embedded mid-line — e.g. inside bundled
+ * lodash template sources — can never match and truncate the bundle.
+ */
+const SOURCE_MAP_TRAILER = /(?:^|\r?\n)\/\/# sourceMappingURL=[^\r\n]*(?:\r?\n)?$/;
+/** Debugger source name appended to page bundles in the WebWorker image; line-anchored like SOURCE_MAP_TRAILER. */
+const SOURCE_URL_TRAILER = /(?:^|\r?\n)\/\/# sourceURL=([^\r\n]+)(?:\r?\n)?$/;
 /** Published package-local client chunk names accepted by the on-demand route. */
 const CLIENT_CHUNK = /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/;
 

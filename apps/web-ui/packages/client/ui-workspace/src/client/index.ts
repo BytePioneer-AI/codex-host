@@ -75,7 +75,6 @@ import {
   MoveThreadSectionMenuItem,
   type ThreadSectionMenuInjected,
   type ThreadSectionMoveInjected,
-  type ThreadSectionMoveRequest,
 } from "./session-actions/MoveThreadSection.tsx";
 import {
   ManageThreadSectionDialog,
@@ -283,13 +282,13 @@ export function apply(ctx: Context): void {
           .map((row) => row.id),
       ),
   );
-  const threadSectionMove = createSnapshotStore<ThreadSectionMoveRequest | null>(null);
+  const threadSectionMove = createSnapshotStore<SessionId | null>(null);
   const threadSectionMenu = (): ThreadSectionMenuInjected => ({
     hooks: { nativeThreads: nativeThreadIds, sectionWorkspace: workspaces.list },
-    requestMove: (request) => threadSectionMove.set(request),
+    requestMove: (sessionId) => threadSectionMove.set(sessionId),
   });
   const threadSectionDialog = (): ThreadSectionMoveInjected => ({
-    hooks: { threadSectionMove },
+    hooks: { threadSectionMove, sectionWorkspace: workspaces.list },
     dismiss: () => threadSectionMove.set(null),
     move: (sessionId, sectionId) => {
       if (!workspaces.moveSessionToSection)

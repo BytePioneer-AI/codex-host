@@ -1,22 +1,16 @@
 import { IconFolderCloseRegular, MenuItemButton } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { InjectFace, PropsLocale, HostObservable } from "@deepseek-ai/dsh-client-ui-slots";
 import type { WorkspaceSnapshot } from "@deepseek-ai/dsh-api-workspace-controller/client";
-import type { WorkspaceThreadSection } from "@deepseek-ai/dsh-api-workspace-controller/types";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { SessionMenuItemProps } from "../contract/slots.ts";
 import { MoveSectionForm } from "../rows/MoveSectionForm.tsx";
-
-export interface ThreadSectionMoveRequest {
-  sessionId: SessionId;
-  sections: readonly WorkspaceThreadSection[];
-}
 
 export interface ThreadSectionMenuInjected {
   hooks: {
     nativeThreads: HostObservable<ReadonlySet<SessionId>>;
     sectionWorkspace: HostObservable<WorkspaceSnapshot>;
   };
-  requestMove: (request: ThreadSectionMoveRequest) => void;
+  requestMove: (sessionId: SessionId) => void;
 }
 
 export function MoveThreadSectionMenuItem({
@@ -43,7 +37,7 @@ export function MoveThreadSectionMenuItem({
       icon={<IconFolderCloseRegular />}
       onSelect={() => {
         setMenuOpen(false);
-        requestMove({ sessionId, sections });
+        requestMove(sessionId);
       }}
     >
       {t("menu.moveToSection")}
@@ -52,24 +46,32 @@ export function MoveThreadSectionMenuItem({
 }
 
 export interface ThreadSectionMoveInjected {
-  hooks: { threadSectionMove: HostObservable<ThreadSectionMoveRequest | null> };
+  hooks: {
+    threadSectionMove: HostObservable<SessionId | null>;
+    sectionWorkspace: HostObservable<WorkspaceSnapshot>;
+  };
   dismiss: () => void;
   move: (sessionId: SessionId, sectionId: string | null) => Promise<void>;
 }
 
 type MoveProps = PropsLocale<"workspace"> & InjectFace<ThreadSectionMoveInjected>;
 
-export function MoveThreadSectionDialog({ useThreadSectionMove, dismiss, move, t }: MoveProps) {
-  const request = useThreadSectionMove((value) => value);
-  if (!request) return null;
+export function MoveThreadSectionDialog({
+  useThreadSectionMove,
+  useSectionWorkspace,
+  dismiss,
+  move,
+  t,
+}: MoveProps) {
+  const sessionId = useThreadSectionMove((value) => value);
+  const sections = useSectionWorkspace((workspace) => workspace.threadSections);
+  if (!sessionId || !sections) return null;
   return (
     <MoveSectionForm
-      key={request.sessionId}
-      current={
-        request.sections.find((section) => section.threadIds.includes(request.sessionId))?.id ?? ""
-      }
-      sections={request.sections}
-      move={(target) => move(request.sessionId, target)}
+      key={sessionId}
+      current={sections.find((section) => section.threadIds.includes(sessionId))?.id ?? ""}
+      sections={sections}
+      move={(target) => move(sessionId, target)}
       dismiss={dismiss}
       defaultLabel={t("section.unsectioned")}
       failedLabel={t("section.moveFailed")}

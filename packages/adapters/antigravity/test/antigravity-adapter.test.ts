@@ -661,6 +661,7 @@ describe("Antigravity ACP Session", () => {
   it("forks a committed prefix without holding up the running or next source Turn", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-live-fork-"));
     directories.push(home);
+    const resumeStarted = deferred<undefined>();
     const resume = deferred<undefined>();
     const { adapter, transports } = fixture(
       { environment: { HOME: home, USERPROFILE: home } },
@@ -668,6 +669,7 @@ describe("Antigravity ACP Session", () => {
         if (index === 1) {
           const open = required(transport.openSession.getMockImplementation());
           transport.openSession.mockImplementation(async (input) => {
+            resumeStarted.resolve(undefined);
             await resume.promise;
             return open(input);
           });
@@ -721,7 +723,8 @@ describe("Antigravity ACP Session", () => {
       ).toMatchObject(busy);
 
       const forked = adapter.open(request);
-      await vi.waitFor(() => expect(transports).toHaveLength(2), { timeout: 10_000 });
+      expect(await Promise.race([resumeStarted.promise, forked])).toBeUndefined();
+      expect(transports).toHaveLength(2);
       expect(transport.cancel).not.toHaveBeenCalled();
       answerStep(db, 5, "source-only answer");
       transport.result.resolve({ stopReason: "end_turn" });

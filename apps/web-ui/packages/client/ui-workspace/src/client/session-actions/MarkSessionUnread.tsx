@@ -4,6 +4,7 @@ import {
   MenuItemButton,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { MarkSessionUnreadInjected, SessionMenuItemProps } from "../contract/slots.ts";
+import { sessionActivity } from "../tree.ts";
 
 /** Mark a background Session unread without navigating to it. */
 export function MarkSessionUnreadMenuItem({
@@ -16,13 +17,22 @@ export function MarkSessionUnreadMenuItem({
   t,
 }: SessionMenuItemProps<MarkSessionUnreadInjected>) {
   const [, setMenuOpen] = useMenuOpenState();
-  const background = useSessions(({ byId }) => {
-    const session = byId[sessionId];
-    return session !== undefined && (session.retainedBy.mainView ?? 0) === 0;
+  const list = useSessions((snapshot) => snapshot);
+  const session = list.byId[sessionId];
+  const canMarkUnread = useSessionStatus((statuses) => {
+    const status = statuses.get(sessionId);
+    if (
+      session === undefined ||
+      (session.retainedBy.mainView ?? 0) > 0 ||
+      status?.completionUnread !== false ||
+      status.pendingInteraction !== undefined
+    )
+      return false;
+    const { running, runningSubagentCount } = sessionActivity(session, list, statuses);
+    return !running && runningSubagentCount === 0;
   });
-  const read = useSessionStatus((statuses) => statuses.get(sessionId)?.completionUnread === false);
   const archived = useArchived((ids) => ids.has(sessionId));
-  if (!background || !read || archived) return null;
+  if (!canMarkUnread || archived) return null;
   return (
     <MenuItemButton
       icon={<IconBellOutlineRegular />}

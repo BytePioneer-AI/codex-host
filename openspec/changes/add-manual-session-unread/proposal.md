@@ -8,10 +8,10 @@ CodexHost Web 只会在后台会话完成时自动显示未读提醒，用户不
 
 ## What Changes
 
-- 在未归档、非当前主视图且没有未读提醒的会话菜单中增加“标记为未读 / Mark as unread”。
+- 在未归档、非当前主视图、没有运行活动、待处理交互或未读提醒的会话菜单中增加“标记为未读 / Mark as unread”。
 - 手动标记复用现有 `completionUnread` 状态，因此会话圆点、收起父会话的未读计数和最近会话提示保持一致。
 - 打开会话、重新运行会话及现有清除提醒操作仍会清除手动未读标记。
-- 在至少一个已加载后代未读的父会话菜单中增加“将子对话全部标为已读 / Mark all child threads as read”，一次清除该父行显示树内全部后代的未读提醒。
+- 在至少一个已加载后代显示未读提醒的未归档父会话菜单中增加“将子对话全部标为已读 / Mark all child threads as read”，一次清除该父行显示树内全部后代的未读提醒。
 - 批量操作复用父行现有 `descendantIds` 与 `markCompletionsRead`，不改变父会话自身、旁支、当前选择、运行或展开状态。
 - 不新增 Host RPC、持久化字段或 Harness 能力，不调用 Codex Desktop 原生 `thread/readState/update`。
 
@@ -31,7 +31,7 @@ CodexHost Web 只会在后台会话完成时自动显示未读提醒，用户不
 
 ### Modified Capabilities
 
-无。现有会话树的未读汇总直接读取同一状态，无需改变其契约。
+无。父会话使用后代可见的未读提醒作为汇总和批量操作入口的判断依据。
 
 ## Impact
 

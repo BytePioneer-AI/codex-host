@@ -6,11 +6,11 @@
 
 ### Requirement: 内置手动标记未读入口
 
-Web 会话行菜单 SHALL 为未归档、非当前主视图且尚未显示完成未读提醒的会话提供“标记为未读 / Mark as unread”。该操作 MUST NOT 打开会话、改变运行状态或修改 Harness 与 Codex Desktop 的原生已读状态。
+Web 会话行菜单 SHALL 为未归档、非当前主视图且没有运行活动、待处理交互或未读提醒的会话提供“标记为未读 / Mark as unread”。该操作 MUST NOT 打开会话、改变运行状态或修改 Harness 与 Codex Desktop 的原生已读状态。
 
 #### Scenario: 普通已读会话显示入口
 
-- **WHEN** 用户打开一个未归档、非当前主视图且没有未读提醒的会话菜单
+- **WHEN** 用户打开一个未归档、非当前主视图且没有运行活动、待处理交互或未读提醒的会话菜单
 - **THEN** 菜单 SHALL 显示“标记为未读 / Mark as unread”
 
 #### Scenario: 手动标记成功
@@ -22,7 +22,7 @@ Web 会话行菜单 SHALL 为未归档、非当前主视图且尚未显示完成
 
 #### Scenario: 不提供无效或互相冲突的入口
 
-- **WHEN** 会话已归档、处于当前主视图或已经有未读提醒
+- **WHEN** 会话已归档、处于当前主视图、有运行活动、等待交互或已经有未读提醒
 - **THEN** 菜单 MUST NOT 显示“标记为未读”
 
 ### Requirement: 手动与自动未读共用显示和清除规则
@@ -46,7 +46,7 @@ Web 会话行菜单 SHALL 为未归档、非当前主视图且尚未显示完成
 
 ### Requirement: 父会话批量清除后代未读
 
-Web 会话行菜单 SHALL 为至少一个已加载后代具有完成未读提醒的未归档父会话提供“将子对话全部标为已读 / Mark all child threads as read”。该操作 SHALL 复用现有 `markCompletionsRead`，清除该父行显示树中全部后代的完成未读提醒，且 MUST NOT 清除父会话自身或显示树外会话的未读提醒。
+Web 会话行菜单 SHALL 为至少一个已加载后代显示未读提醒的未归档父会话提供“将子对话全部标为已读 / Mark all child threads as read”。该操作 SHALL 复用现有 `markCompletionsRead`，清除该父行显示树中全部后代的完成未读提醒，且 MUST NOT 清除父会话自身或显示树外会话的未读提醒。
 
 #### Scenario: 清除全部后代未读
 
@@ -57,7 +57,7 @@ Web 会话行菜单 SHALL 为至少一个已加载后代具有完成未读提醒
 
 #### Scenario: 不提供空操作入口
 
-- **WHEN** 会话没有已加载后代，或其所有已加载后代均无完成未读提醒
+- **WHEN** 会话没有已加载后代，或其所有已加载后代均未显示未读提醒（包括归档或被运行、交互状态遮住的未读提醒）
 - **THEN** 菜单 MUST NOT 显示“将子对话全部标为已读”
 
 #### Scenario: 显示树边界

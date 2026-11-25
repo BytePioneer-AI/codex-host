@@ -414,9 +414,17 @@ export class UiSession extends Service {
     return (interaction, delegate) => domain.publish(interaction, delegate);
   }
 
-  /** Mark a background Session unread without opening it. */
+  /** Mark an idle background Session unread without opening it. */
   markCompletionUnread(sessionId: SessionId): void {
-    if (this.isMain(sessionId) || this.completionUnread.has(sessionId)) return;
+    const session = this.sessions.list.getSnapshot().byId[sessionId];
+    if (
+      session === undefined ||
+      (session.retainedBy.mainView ?? 0) > 0 ||
+      (this.running.get(sessionId) ?? session.running) ||
+      this.pendingSnapshot.has(sessionId) ||
+      this.completionUnread.has(sessionId)
+    )
+      return;
     this.completionUnread.add(sessionId);
     this.publishStatus();
   }

@@ -87,6 +87,7 @@ import type {
   HarnessAdapter,
   HarnessOutput,
   HarnessSession,
+  HarnessSessionCapabilities,
   HostApprovalInteraction,
   HostSubagentState,
   HostApprovalResponse,
@@ -839,6 +840,20 @@ function isPassiveThreadInspectMethod(method: string): boolean {
   return method === "codexhost/thread/inspect" || method === "codexhost/thread/usage/inspect";
 }
 
+function isPassiveTelemetryOutput(output: HarnessOutput): boolean {
+  if (output.kind !== "event") return false;
+  switch (output.event.type) {
+    case "session.usage.changed":
+    case "session.accountCredits.changed":
+    case "usage.request":
+    case "usage.request.timing":
+    case "usage.history":
+      return true;
+    default:
+      return false;
+  }
+}
+
 export class AppServerHost {
   readonly #options: Required<
     Pick<AppServerHostOptions, "desktopInput" | "desktopOutput" | "diagnosticOutput">
@@ -859,6 +874,10 @@ export class AppServerHost {
   readonly #preferences: HarnessPreferencesStore;
   #appliedPreferenceRevision = -1;
   readonly #accountInspections = new HarnessAccountInspectionCache();
+  readonly #coldHistoryLookups = new Map<
+    ExternalHarnessId,
+    Promise<HarnessSessionCapabilities["history"] | undefined>
+  >();
   #externalRuntime!: ExternalThreadRuntime;
   readonly #executionHosts = new WeakMap<ExternalThread, string>();
   readonly #externalPrewarms = new ExternalThreadPrewarms();
@@ -4042,7 +4061,7 @@ export class AppServerHost {
       );
       return;
     }
-    if (validated.data.status === "ready") {
+    if (validated.data.status === "ready" && params.data.purpose !== "availability") {
       this.#externalRuntime.noteHistoryCapabilities(
         adapter.harnessId as ExternalHarnessId,
         validated.data.capabilities.history,
@@ -4172,7 +4191,7 @@ export class AppServerHost {
     const threadUsage = this.#persistedThreadUsage(location.record);
     const history = location.record.subagent
       ? COLD_HISTORY_CAPABILITIES
-      : (this.#externalRuntime.knownHistoryCapabilities(harnessId) ?? COLD_HISTORY_CAPABILITIES);
+      : await this.#resolveColdHistoryCapabilities(harnessId, location.record.cwd);
     const inspection = threadInspectionSchema.parse({
       owner: "external",
       harnessId: location.record.harnessId,
@@ -4185,6 +4204,41 @@ export class AppServerHost {
       locked: true,
     });
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(inspection) }));
+  }
+
+  async #resolveColdHistoryCapabilities(
+    harnessId: ExternalHarnessId,
+    cwd: string,
+  ): Promise<HarnessSessionCapabilities["history"]> {
+    const cached = this.#externalRuntime.knownHistoryCapabilities(harnessId);
+    if (cached) return cached;
+    await this.#waitForPlugins();
+    const afterPlugins = this.#externalRuntime.knownHistoryCapabilities(harnessId);
+    if (afterPlugins) return afterPlugins;
+    const adapter = this.#externalAdapters.get(harnessId);
+    if (!adapter) return COLD_HISTORY_CAPABILITIES;
+    let pending = this.#coldHistoryLookups.get(harnessId);
+    if (!pending) {
+      pending = Promise.resolve()
+        .then(() => adapter.inspect(cwd ? { cwd } : {}))
+        .then((inspection) => {
+          const validated = harnessInspectionSchema.safeParse(inspection);
+          if (!validated.success || validated.data.status !== "ready") return undefined;
+          this.#externalRuntime.noteHistoryCapabilities(
+            harnessId,
+            validated.data.capabilities.history,
+          );
+          return validated.data.capabilities.history;
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          if (this.#coldHistoryLookups.get(harnessId) === pending) {
+            this.#coldHistoryLookups.delete(harnessId);
+          }
+        });
+      this.#coldHistoryLookups.set(harnessId, pending);
+    }
+    return (await pending) ?? COLD_HISTORY_CAPABILITIES;
   }
 
   async #inspectThreadUsage(request: JsonRpcRequest): Promise<void> {
@@ -6700,8 +6754,12 @@ export class AppServerHost {
   async #consumeHarnessOutputs(thread: ExternalThread): Promise<void> {
     try {
       for await (const output of thread.session.outputs) {
-        await this.#externalRuntime.idleRelease.consumeOutput(thread, () =>
-          this.#projectHarnessOutput(thread, output),
+        const passiveTelemetry =
+          !thread.running && !thread.activeTurnId && isPassiveTelemetryOutput(output);
+        await this.#externalRuntime.idleRelease.consumeOutput(
+          thread,
+          () => this.#projectHarnessOutput(thread, output),
+          passiveTelemetry ? { touch: false } : undefined,
         );
       }
       // Even an idle Session cannot deliver the next Turn's events after EOF.

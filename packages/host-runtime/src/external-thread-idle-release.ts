@@ -107,9 +107,14 @@ export class ExternalThreadIdleRelease {
   }
 
   /** Closing may emit outputs: consume them without waiting on the close being drained. */
-  consumeOutput<T>(thread: ExternalThread, operation: () => Promise<T>): Promise<T> {
-    this.touch(thread);
-    return this.#track(thread.id, operation, false);
+  consumeOutput<T>(
+    thread: ExternalThread,
+    operation: () => Promise<T>,
+    options?: { touch?: boolean },
+  ): Promise<T> {
+    const touch = options?.touch ?? true;
+    if (touch) this.touch(thread);
+    return this.#track(thread.id, operation, false, touch);
   }
 
   #track<T>(

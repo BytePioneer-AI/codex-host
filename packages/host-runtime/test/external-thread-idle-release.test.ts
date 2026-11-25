@@ -256,6 +256,32 @@ describe("external Thread idle release", () => {
     overlap.idle.stop();
   });
 
+  it("holds occupancy for touch:false consumeOutput without extending lastActivity, while default consumeOutput touches", async () => {
+    const f = await fixture();
+    f.idle.configure({ enabled: true, timeoutMinutes: 10 });
+    await vi.advanceTimersByTimeAsync(9 * MINUTE);
+    const gate = deferred();
+    const passive = f.idle.consumeOutput(f.thread, () => gate.promise, { touch: false });
+    await vi.advanceTimersByTimeAsync(2 * MINUTE);
+    expect(f.close).not.toHaveBeenCalled();
+    expect(f.idle.list()[0]).toMatchObject({ state: "busy", reason: "operation" });
+    gate.resolve();
+    await passive;
+    await vi.advanceTimersByTimeAsync(MINUTE);
+    expect(f.close).toHaveBeenCalledTimes(1);
+    f.idle.stop();
+
+    const active = await fixture();
+    active.idle.configure({ enabled: true, timeoutMinutes: 10 });
+    await vi.advanceTimersByTimeAsync(9 * MINUTE);
+    await active.idle.consumeOutput(active.thread, async () => undefined);
+    await vi.advanceTimersByTimeAsync(9 * MINUTE);
+    expect(active.close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(MINUTE);
+    expect(active.close).toHaveBeenCalledTimes(1);
+    active.idle.stop();
+  });
+
   it("releases occupancy in finally after a failed operation", async () => {
     const f = await fixture();
     f.idle.configure({ enabled: true, timeoutMinutes: 10 });

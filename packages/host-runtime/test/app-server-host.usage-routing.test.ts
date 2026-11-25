@@ -7,6 +7,7 @@ import {
   harnessIdSchema,
   IDLE_RELEASE_SETTINGS_METHOD,
   LOADED_SESSIONS_METHOD,
+  THREAD_USAGE_UPDATED_METHOD,
   type AccountCreditsSnapshot,
   type JsonObject,
 } from "@codexhost/shared-contracts";
@@ -14,11 +15,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ObservedSessionUsage } from "../src/observed-session-usage.js";
 import {
+  closeFixture,
   createFixture,
   JsonLineCollector,
   method,
   requestId,
   requiredMessageId,
+  rollbackCapableAdapter,
   startPiThread,
   startPiTurn,
   stopFixture,
@@ -537,4 +540,126 @@ describe("Usage inspection request routing", () => {
       }
     },
   );
+
+  it("resolves real history capabilities for cold Threads on first inspect without waking adapter.open()", async () => {
+    const seed = createFixture();
+    let externalId: string;
+    try {
+      externalId = await startPiThread(seed);
+    } finally {
+      await closeFixture(seed);
+    }
+
+    const adapter = rollbackCapableAdapter();
+    const open = vi.spyOn(adapter, "open");
+    const inspect = vi.spyOn(adapter, "inspect");
+    const fresh = createFixture({
+      mappingStoreDirectory: seed.mappingStoreDirectory,
+      externalAdapters: new Map([["pi", adapter]]),
+    });
+    try {
+      await fresh.ready;
+      writeRequest(fresh.desktopInput, {
+        id: 301,
+        method: inspectMethod,
+        params: { threadId: externalId },
+      });
+      expect(await fresh.collector.waitFor((message) => requestId(message, 301))).toMatchObject({
+        result: {
+          owner: "external",
+          harnessId: "pi",
+          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+          locked: true,
+        },
+      });
+      expect(open).not.toHaveBeenCalled();
+      expect(inspect).toHaveBeenCalledTimes(1);
+
+      // Subsequent cold inspections reuse cached history capabilities without re-probing.
+      writeRequest(fresh.desktopInput, {
+        id: 302,
+        method: inspectMethod,
+        params: { threadId: externalId },
+      });
+      expect(await fresh.collector.waitFor((message) => requestId(message, 302))).toMatchObject({
+        result: {
+          owner: "external",
+          harnessId: "pi",
+          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+          locked: true,
+        },
+      });
+      expect(open).not.toHaveBeenCalled();
+      expect(inspect).toHaveBeenCalledTimes(1);
+    } finally {
+      await stopFixture(fresh);
+    }
+  });
+
+  it("does not extend lastActivity when refreshUsage() emits session.usage.changed while idle, while Turn events still refresh it", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(100_000);
+    const fixture = createFixture();
+    try {
+      const externalId = await startPiThread(fixture);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Missing fake Pi session");
+      vi.spyOn(session, "refreshUsage").mockImplementation(async () => {
+        session.publishUsage({ totalTokens: 123, inputTokens: 100, outputTokens: 23 });
+      });
+      const close = vi.spyOn(session, "close");
+
+      writeRequest(fixture.desktopInput, {
+        id: 401,
+        method: IDLE_RELEASE_SETTINGS_METHOD,
+        params: { enabled: true, timeoutMinutes: 10 },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 401));
+
+      // Normal Turn events refresh lastActivity and postpone idle release past the initial 10m mark.
+      await vi.advanceTimersByTimeAsync(9 * MINUTE);
+      const turn = await startPiTurn(fixture, externalId, 402);
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turn));
+      session.appendText("hello");
+      await fixture.collector.waitFor((message) => method(message, "item/agentMessage/delta"));
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turn));
+
+      await vi.advanceTimersByTimeAsync(5 * MINUTE);
+      expect(close).not.toHaveBeenCalled();
+
+      // Passive session.usage.changed emitted by exact refresh while idle must not refresh lastActivity.
+      await vi.advanceTimersByTimeAsync(4 * MINUTE);
+      const priorUsageUpdates = fixture.collector.messages.filter((message) =>
+        method(message, THREAD_USAGE_UPDATED_METHOD),
+      ).length;
+      const usageUpdated = fixture.collector.waitFor(
+        (message) =>
+          method(message, THREAD_USAGE_UPDATED_METHOD) &&
+          fixture.collector.messages.filter((item) => method(item, THREAD_USAGE_UPDATED_METHOD))
+            .length > priorUsageUpdates,
+      );
+      writeRequest(fixture.desktopInput, {
+        id: 403,
+        method: usageMethod,
+        params: { threadId: externalId, refresh: "exact" },
+      });
+      expect(
+        await fixture.collector.waitFor((message) => requestId(message, 403)),
+      ).not.toHaveProperty("error");
+      await usageUpdated;
+
+      writeRequest(fixture.desktopInput, { id: 404, method: LOADED_SESSIONS_METHOD, params: {} });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 404))).toMatchObject({
+        result: [
+          { threadId: externalId, state: "idle", reason: "timeout", inactiveMs: 9 * MINUTE },
+        ],
+      });
+
+      await vi.advanceTimersByTimeAsync(MINUTE);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
 });

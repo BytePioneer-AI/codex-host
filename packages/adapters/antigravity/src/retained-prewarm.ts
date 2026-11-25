@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, realpath, stat } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";

@@ -135,21 +135,33 @@ export async function npmInstallation(
           if (!canUpdate || !npm)
             throw new Error("Use the original package manager to update this installation");
           const targetVersion = installationVersion(version);
+          const migrating = tracked !== name;
           // Two global packages claiming the same bin collide with EEXIST, and removing
           // the predecessor afterward unlinks the successor's bin in the same prefix.
-          if (tracked !== name)
+          if (migrating)
             await runInstallationCommand(
               npm.executable,
               ["uninstall", "--global", "--prefix", prefix, name],
               env,
               300_000,
             );
-          await runInstallationCommand(
-            npm.executable,
-            ["install", "--global", "--prefix", prefix, `${tracked}@${targetVersion}`],
-            withAllowedScripts(env, options.allowScripts),
-            300_000,
-          );
+          try {
+            await runInstallationCommand(
+              npm.executable,
+              ["install", "--global", "--prefix", prefix, `${tracked}@${targetVersion}`],
+              withAllowedScripts(env, options.allowScripts),
+              300_000,
+            );
+          } catch (error) {
+            if (migrating)
+              await runInstallationCommand(
+                npm.executable,
+                ["install", "--global", "--prefix", prefix, `${name}@${currentVersion}`],
+                env,
+                300_000,
+              ).catch(() => undefined);
+            throw error;
+          }
         },
       };
     }

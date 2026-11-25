@@ -196,11 +196,7 @@ export function registerComposerKeymap(
         // must insert a line break instead of submitting; the send button
         // stays the submit gesture. Falls through to Lexical's line break,
         // the same path Shift+Enter takes. Hardware modifiers keep submitting.
-        if (
-          isSoftKeyboardEnter() &&
-          event?.ctrlKey !== true &&
-          event?.metaKey !== true
-        )
+        if (isSoftKeyboardEnter() && event?.ctrlKey !== true && event?.metaKey !== true)
           return false;
         event?.preventDefault();
         if (event?.repeat === true) return true; // held-down Enter must not machine-gun sends

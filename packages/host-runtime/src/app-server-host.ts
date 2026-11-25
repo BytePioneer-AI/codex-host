@@ -104,10 +104,11 @@ import type {
   HarnessPluginContext,
   HarnessUsageStatisticsAdapter,
 } from "@codexhost/harness-adapter/plugin";
-import type {
-  StoredSectionPlacementV1,
-  StoredThreadRecordV1,
-  StoredThreadSummaryV1,
+import {
+  storedThreadMetadataV1Schema,
+  type StoredSectionPlacementV1,
+  type StoredThreadRecordV1,
+  type StoredThreadSummaryV1,
 } from "@codexhost/mapping-store";
 import {
   type HarnessAccountInspectResult,
@@ -3825,22 +3826,9 @@ export class AppServerHost {
       );
       return;
     }
-    if (typeof update.projectId === "string") {
-      // Projects belong to official Codex; only assign one it can still read.
-      const exists = await this.#requestOfficial("project/read", {
-        projectId: update.projectId,
-      }).then(
-        (response) =>
-          !isRecord(response.error) &&
-          isRecord(response.result) &&
-          isRecord(response.result.project) &&
-          response.result.project.id === update.projectId,
-        () => false,
-      );
-      if (!exists) {
-        await this.#writer.json(rpcError(request, -32602, "Project is unavailable"));
-        return;
-      }
+    if (typeof update.projectId === "string" && !(await this.#projectExists(update.projectId))) {
+      await this.#writer.json(rpcError(request, -32602, "Project is unavailable"));
+      return;
     }
     const patch = {
       ...(update.projectId !== undefined ? { projectId: update.projectId } : {}),
@@ -3864,6 +3852,17 @@ export class AppServerHost {
         params: { threadId: updated.record.hostThreadId, projectId },
       });
     }
+  }
+
+  #projectExists(projectId: string): Promise<boolean> {
+    return this.#requestOfficial("project/read", { projectId }).then(
+      (response) =>
+        !isRecord(response.error) &&
+        isRecord(response.result) &&
+        isRecord(response.result.project) &&
+        response.result.project.id === projectId,
+      () => false,
+    );
   }
 
   /** Clear External assignments to a project official Codex reported as deleted. */
@@ -5218,6 +5217,18 @@ export class AppServerHost {
       route && route.harnessId === harnessId
         ? route.transportModelId
         : transportModelIdForHarness(harnessId);
+    const project = storedThreadMetadataV1Schema.shape.projectId.safeParse(
+      params.projectId ?? undefined,
+    );
+    if (
+      !project.success ||
+      (project.data !== undefined && params.projectlessWorkspace !== undefined)
+    ) {
+      this.#routeObservationTracker.rejectCreate(request.id);
+      await this.#writer.json(rpcError(request, -32602, "Invalid project choice"));
+      return;
+    }
+    const projectId = project.data;
     let cwd = params.cwd;
     let projectlessWorkspace: StoredThreadRecordV1["projectlessWorkspace"];
     if (params.projectlessWorkspace !== undefined) {
@@ -5256,11 +5267,17 @@ export class AppServerHost {
       );
       return;
     }
+    if (projectId !== undefined && !(await this.#projectExists(projectId))) {
+      this.#routeObservationTracker.rejectCreate(request.id);
+      await this.#writer.json(rpcError(request, -32602, "Project is unavailable"));
+      return;
+    }
 
     const recordInput = createExternalThreadRecordInput({
       harnessId: adapter.harnessId,
       cwd,
       transportModelId,
+      ...(projectId === undefined ? {} : { projectId }),
       ...(projectlessWorkspace ? { projectlessWorkspace } : {}),
       ephemeral: params.ephemeral === true,
       historyMode: params.historyMode === "paginated" ? "paginated" : "legacy",
@@ -5301,6 +5318,11 @@ export class AppServerHost {
             record.hostThreadId,
             session.initialState.nativeRef,
           );
+        } else {
+          // Project membership may have changed while the Harness was opening.
+          const current = await this.#repository.find(record.hostThreadId);
+          if (!current) throw new Error("Missing provisional External Thread");
+          record = current;
         }
         const thread = externalThreadValue({
           record,

@@ -80,6 +80,8 @@ export function isolateRendererPrewarmConsumption(
   const wrapped = function (this: unknown, input: unknown, ...args: unknown[]) {
     const mode = record(input) && record(input.collaborationMode) ? input.collaborationMode : null;
     const expected = mode && record(mode.settings) ? mode.settings.model : null;
+    const assignment = record(input) ? input.projectAssignment : null;
+    const projectId = record(assignment) ? (assignment.projectId ?? null) : null;
     const scopedPool = Object.create(pool) as Record<string, unknown>;
     scopedPool.hasPrewarmedThread = (...parameters: unknown[]) =>
       hasPrewarm.apply(pool, parameters);
@@ -88,9 +90,16 @@ export function isolateRendererPrewarmConsumption(
       if (!record(warmed) || !record(warmed.response)) return warmed;
       const response = warmed.response;
       if (!external(expected) && !external(response.model)) return warmed;
-      if (external(expected) && expected === response.model) return warmed;
-      if (record(response.thread) && typeof response.thread.id === "string") {
-        const threadId = response.thread.id;
+      const thread = response.thread;
+      if (
+        external(expected) &&
+        expected === response.model &&
+        record(thread) &&
+        (thread.projectId ?? null) === projectId
+      )
+        return warmed;
+      if (record(thread) && typeof thread.id === "string") {
+        const threadId = thread.id;
         if (external(response.model)) discardExternal(threadId);
         else
           void Promise.resolve()

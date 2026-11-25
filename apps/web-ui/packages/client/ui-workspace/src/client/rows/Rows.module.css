@@ -563,9 +563,14 @@
 }
 
 /* Expansion is visible immediately after clicking, not only after pointer leave. */
-/* A resting Workspace folder reads at the row's own text weight, as in the
-   Codex sidebar; only the expanded state carries the blue open glyph. */
+/* Keep resting Workspace folders slightly quieter than row labels so the
+   sidebar list feels airy; hover and expansion restore emphasis. */
 .projectRow > .slot:not(.folderExpanded) {
+  color: color-mix(in srgb, currentColor 76%, transparent);
+  transition: color 140ms ease;
+}
+
+.projectRow:hover > .slot:not(.folderExpanded) {
   color: inherit;
 }
 

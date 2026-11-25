@@ -31,11 +31,15 @@
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: 50%;
+  corner-shape: round;
   padding: 0;
   background: transparent;
   cursor: pointer;
-  color: var(--dsw-alias-label-secondary);
+  color: color-mix(in srgb, var(--dsw-alias-label-secondary) 82%, transparent);
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
 }
 
 /* The action cluster animates its width and the search pill rounds its corners,
@@ -50,6 +54,7 @@
 
 .iconButton:hover {
   background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
 }
 
 /* View-options dropdown card: labels are short, so a content-sized card reads
@@ -197,11 +202,15 @@
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: 50%;
+  corner-shape: round;
   padding: 0;
   background: transparent;
   cursor: pointer;
-  color: inherit;
+  color: color-mix(in srgb, var(--dsw-alias-label-secondary) 82%, transparent);
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
 }
 
 .searchExpanded .searchButton {
@@ -211,6 +220,7 @@
 
 .searchButton:hover {
   background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
 }
 
 .searchExpanded .searchButton:hover {
@@ -281,6 +291,7 @@
   height: 36px;
   /* Rail hovers share the shell rail's 12px rounding. */
   border-radius: var(--dsw-radius-md);
+  corner-shape: var(--dsw-corner-shape);
   color: var(--dsw-alias-label-primary);
 }
 
@@ -301,6 +312,7 @@
   width: 36px;
   height: 36px;
   border-radius: var(--dsw-radius-md);
+  corner-shape: var(--dsw-corner-shape);
   color: var(--dsw-alias-label-primary);
 }
 

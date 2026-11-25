@@ -9,6 +9,8 @@ export {
   readDesktopExtensionIcon,
   readDesktopExtensionScreenshot,
 } from "./desktop-extension-artwork.js";
+export { ExtensionDownloadError } from "./desktop-extension-download.js";
+export { InvalidHostExtensionManifest } from "./host-extension-package.js";
 export { HarnessPreferencesStore, HarnessPreferenceConflict } from "./preferences.js";
 export { migrateLegacyDesktopExtensionsOnce } from "./host-extension-legacy-migration.js";
 export {

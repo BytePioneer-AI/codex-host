@@ -56,9 +56,8 @@ export interface DesktopExtensionDetailModalState {
   readonly unavailable: boolean;
   readonly canInstall: boolean;
   readonly canUninstall: boolean;
-  readonly mutating: boolean;
-  readonly activeMutationId: string | null;
-  readonly activeMutationAction: DesktopExtensionMutationAction | null;
+  readonly pendingMutations: ReadonlyMap<string, DesktopExtensionMutationAction>;
+  readonly globalBusy: boolean;
   readonly feedback: DesktopExtensionFeedback | null;
 }
 
@@ -193,25 +192,18 @@ export function createDesktopExtensionDetailModal(options: {
   let settingsSection: HTMLElement | null = null;
   let descriptionSection: HTMLDivElement | null = null;
   let screenshotsSection: HTMLElement | null = null;
-  let previewStage: HTMLDivElement | null = null;
-  let previewImage: HTMLImageElement | null = null;
-  let previewCounter: HTMLSpanElement | null = null;
-  let previewPrevButton: HTMLButtonElement | null = null;
-  let previewNextButton: HTMLButtonElement | null = null;
   let galleryGrid: HTMLDivElement | null = null;
+  let lightboxDialog: HTMLDialogElement | null = null;
+  let lightboxImage: HTMLImageElement | null = null;
+  let lightboxCounter: HTMLSpanElement | null = null;
+  let lightboxPrevButton: HTMLButtonElement | null = null;
+  let lightboxNextButton: HTMLButtonElement | null = null;
+  let lightboxReturnFocus: HTMLElement | null = null;
   let currentScreenshots: readonly string[] = [];
   let currentDisplayName = "";
 
-  const syncPreviewStage = (): void => {
-    if (!previewStage || !previewImage || !previewCounter || !galleryGrid) return;
-    const total = currentScreenshots.length;
-    if (
-      activeScreenshotIndex !== null &&
-      (activeScreenshotIndex < 0 || activeScreenshotIndex >= total)
-    ) {
-      activeScreenshotIndex = null;
-    }
-
+  const syncThumbPressed = (): void => {
+    if (!galleryGrid) return;
     const thumbButtons = galleryGrid.children;
     for (let i = 0; i < thumbButtons.length; i += 1) {
       const button = thumbButtons[i];
@@ -219,30 +211,158 @@ export function createDesktopExtensionDetailModal(options: {
         (button as HTMLElement).setAttribute("aria-pressed", String(activeScreenshotIndex === i));
       }
     }
+  };
 
-    if (activeScreenshotIndex === null || total === 0) {
-      previewStage.hidden = true;
-      previewImage.src = "";
-      previewImage.alt = "";
+  const cleanupLightbox = (): void => {
+    const previous = lightboxDialog;
+    const restore = lightboxReturnFocus;
+    lightboxDialog = null;
+    lightboxImage = null;
+    lightboxCounter = null;
+    lightboxPrevButton = null;
+    lightboxNextButton = null;
+    lightboxReturnFocus = null;
+    activeScreenshotIndex = null;
+    previous?.remove();
+    syncThumbPressed();
+    if (restore && restore.isConnected && typeof restore.focus === "function") {
+      restore.focus();
+    }
+  };
+
+  const closeLightbox = (): void => {
+    if (!lightboxDialog) {
+      activeScreenshotIndex = null;
+      syncThumbPressed();
       return;
     }
+    if (lightboxDialog.open) {
+      lightboxDialog.close();
+    } else {
+      cleanupLightbox();
+    }
+  };
 
+  const syncLightbox = (): void => {
+    const total = currentScreenshots.length;
+    if (
+      activeScreenshotIndex === null ||
+      total === 0 ||
+      activeScreenshotIndex < 0 ||
+      activeScreenshotIndex >= total
+    ) {
+      closeLightbox();
+      return;
+    }
     const activeUrl = currentScreenshots[activeScreenshotIndex];
     if (!activeUrl) {
-      previewStage.hidden = true;
-      previewImage.src = "";
-      previewImage.alt = "";
+      closeLightbox();
       return;
     }
-    previewStage.hidden = false;
-    previewImage.src = activeUrl;
-    previewImage.alt = formatMessage(copy.screenshotAlt, {
-      name: currentDisplayName,
-      index: String(activeScreenshotIndex + 1),
-    });
-    previewCounter.textContent = `${activeScreenshotIndex + 1} / ${total}`;
-    if (previewPrevButton) previewPrevButton.hidden = total <= 1;
-    if (previewNextButton) previewNextButton.hidden = total <= 1;
+
+    if (!lightboxDialog) {
+      const modal = createEl(document, "dialog", "settings-extensions-lightbox");
+      modal.setAttribute("aria-label", copy.screenshotsTitle);
+      modal.tabIndex = -1;
+
+      lightboxImage = createEl(document, "img", "settings-extensions-lightbox__img");
+
+      const closeBtn = createEl(
+        document,
+        "button",
+        "settings-extensions-lightbox__btn settings-extensions-lightbox__close",
+      );
+      closeBtn.type = "button";
+      closeBtn.title = copy.closePreview;
+      closeBtn.setAttribute("aria-label", copy.closePreview);
+      closeBtn.append(createRendererSettingsIcon("close", 16));
+      closeBtn.addEventListener("click", () => modal.close());
+
+      lightboxPrevButton = createEl(
+        document,
+        "button",
+        "settings-extensions-lightbox__btn settings-extensions-lightbox__nav settings-extensions-lightbox__nav--prev",
+      );
+      lightboxPrevButton.type = "button";
+      lightboxPrevButton.title = copy.previousScreenshot;
+      lightboxPrevButton.setAttribute("aria-label", copy.previousScreenshot);
+      lightboxPrevButton.append(createRendererSettingsIcon("chevron-left", 18));
+      lightboxPrevButton.addEventListener("click", () => {
+        if (activeScreenshotIndex === null || currentScreenshots.length <= 1) return;
+        activeScreenshotIndex =
+          (activeScreenshotIndex - 1 + currentScreenshots.length) % currentScreenshots.length;
+        syncLightbox();
+      });
+
+      lightboxNextButton = createEl(
+        document,
+        "button",
+        "settings-extensions-lightbox__btn settings-extensions-lightbox__nav settings-extensions-lightbox__nav--next",
+      );
+      lightboxNextButton.type = "button";
+      lightboxNextButton.title = copy.nextScreenshot;
+      lightboxNextButton.setAttribute("aria-label", copy.nextScreenshot);
+      lightboxNextButton.append(createRendererSettingsIcon("chevron-right", 18));
+      lightboxNextButton.addEventListener("click", () => {
+        if (activeScreenshotIndex === null || currentScreenshots.length <= 1) return;
+        activeScreenshotIndex = (activeScreenshotIndex + 1) % currentScreenshots.length;
+        syncLightbox();
+      });
+
+      lightboxCounter = createEl(document, "span", "settings-extensions-lightbox__count");
+
+      modal.append(
+        lightboxImage,
+        closeBtn,
+        lightboxPrevButton,
+        lightboxNextButton,
+        lightboxCounter,
+      );
+      modal.addEventListener("click", (event) => {
+        if (event.target === modal) modal.close();
+      });
+      modal.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation?.();
+          modal.close();
+        } else if (event.key === "ArrowLeft" && currentScreenshots.length > 1) {
+          event.preventDefault();
+          event.stopPropagation?.();
+          activeScreenshotIndex =
+            ((activeScreenshotIndex ?? 0) - 1 + currentScreenshots.length) %
+            currentScreenshots.length;
+          syncLightbox();
+        } else if (event.key === "ArrowRight" && currentScreenshots.length > 1) {
+          event.preventDefault();
+          event.stopPropagation?.();
+          activeScreenshotIndex = ((activeScreenshotIndex ?? 0) + 1) % currentScreenshots.length;
+          syncLightbox();
+        }
+      });
+      modal.addEventListener("close", cleanupLightbox);
+
+      lightboxDialog = modal;
+      host.append(modal);
+      modal.showModal();
+      modal.focus();
+    }
+
+    if (lightboxImage) {
+      lightboxImage.src = activeUrl;
+      lightboxImage.alt = formatMessage(copy.screenshotAlt, {
+        name: currentDisplayName,
+        index: String(activeScreenshotIndex + 1),
+      });
+    }
+    const multi = total > 1;
+    if (lightboxPrevButton) lightboxPrevButton.hidden = !multi;
+    if (lightboxNextButton) lightboxNextButton.hidden = !multi;
+    if (lightboxCounter) {
+      lightboxCounter.hidden = !multi;
+      lightboxCounter.textContent = multi ? `${activeScreenshotIndex + 1} / ${total}` : "";
+    }
+    syncThumbPressed();
   };
 
   const renderScreenshots = (
@@ -257,23 +377,22 @@ export function createDesktopExtensionDetailModal(options: {
     currentDisplayName = displayName;
     if (urls.length === 0) {
       renderedScreenshotsKey = "";
-      activeScreenshotIndex = null;
       screenshotsSection.hidden = true;
       galleryGrid.replaceChildren();
-      syncPreviewStage();
+      closeLightbox();
       return;
     }
 
     screenshotsSection.hidden = false;
     const signature = `${extensionId}\0${urls.join("\0")}`;
     if (signature === renderedScreenshotsKey) {
-      syncPreviewStage();
+      if (activeScreenshotIndex !== null) syncLightbox();
       return;
     }
 
     renderedScreenshotsKey = signature;
     if (activeScreenshotIndex !== null && activeScreenshotIndex >= urls.length) {
-      activeScreenshotIndex = null;
+      closeLightbox();
     }
 
     const thumbs: HTMLElement[] = [];
@@ -300,13 +419,14 @@ export function createDesktopExtensionDetailModal(options: {
       image.loading = "lazy";
       thumbButton.append(image);
       thumbButton.addEventListener("click", () => {
-        activeScreenshotIndex = activeScreenshotIndex === i ? null : i;
-        syncPreviewStage();
+        lightboxReturnFocus = thumbButton;
+        activeScreenshotIndex = i;
+        syncLightbox();
       });
       thumbs.push(thumbButton);
     }
     galleryGrid.replaceChildren(...thumbs);
-    syncPreviewStage();
+    if (activeScreenshotIndex !== null) syncLightbox();
   };
 
   const renderInlineSettings = (
@@ -665,7 +785,8 @@ export function createDesktopExtensionDetailModal(options: {
   ): void => {
     if (!actionBar || !modalToggle) return;
     const updateAvailable = hasCatalogUpdate(installed, catalogEntry);
-    const isBusyThis = state.activeMutationId === extensionId;
+    const extAction = state.pendingMutations.get(extensionId) ?? null;
+    const controlsDisabled = extAction !== null || state.globalBusy;
     const nodes: HTMLElement[] = [];
 
     if (!installed && catalogEntry) {
@@ -673,11 +794,12 @@ export function createDesktopExtensionDetailModal(options: {
         document,
         "button",
         "settings-command-button",
-        isBusyThis && state.activeMutationAction === "install" ? copy.installing : copy.install,
+        extAction === "install" ? copy.installing : copy.install,
       );
       installButton.type = "button";
       installButton.dataset.action = "install";
-      installButton.disabled = state.mutating || !state.canInstall;
+      installButton.setAttribute("aria-busy", String(extAction === "install"));
+      installButton.disabled = controlsDisabled || !state.canInstall;
       installButton.addEventListener("click", () => {
         if (!installButton.disabled) onInstall?.(catalogEntry, false);
       });
@@ -698,13 +820,14 @@ export function createDesktopExtensionDetailModal(options: {
           document,
           "button",
           "settings-command-button",
-          isBusyThis && state.activeMutationAction === "update"
+          extAction === "update"
             ? copy.updating
             : formatMessage(copy.updateToVersion, { version: catalogEntry.version }),
         );
         updateButton.type = "button";
         updateButton.dataset.action = "update";
-        updateButton.disabled = state.mutating || !state.canInstall;
+        updateButton.setAttribute("aria-busy", String(extAction === "update"));
+        updateButton.disabled = controlsDisabled || !state.canInstall;
         updateButton.addEventListener("click", () => {
           if (!updateButton.disabled) onInstall?.(catalogEntry, true);
         });
@@ -713,7 +836,7 @@ export function createDesktopExtensionDetailModal(options: {
 
       const blocked = isToggleBlocked(installed);
       modalToggle.checked = installed.enabled;
-      modalToggle.disabled = state.mutating || blocked;
+      modalToggle.disabled = controlsDisabled || blocked;
       modalToggle.setAttribute(
         "aria-label",
         formatMessage(copy.toggleLabel, { name: displayName }),
@@ -730,7 +853,7 @@ export function createDesktopExtensionDetailModal(options: {
         const openPageButton = createEl(document, "button", "settings-command-button");
         openPageButton.type = "button";
         openPageButton.dataset.action = "open-page";
-        openPageButton.disabled = state.mutating;
+        openPageButton.disabled = controlsDisabled;
         openPageButton.append(
           createRendererSettingsIcon("external-link", 13),
           createEl(document, "span", "", copy.openPage),
@@ -757,7 +880,7 @@ export function createDesktopExtensionDetailModal(options: {
         );
         openSettingsButton.type = "button";
         openSettingsButton.dataset.action = "open-settings";
-        openSettingsButton.disabled = state.mutating;
+        openSettingsButton.disabled = controlsDisabled;
         openSettingsButton.append(
           createRendererSettingsIcon("settings", 13),
           createEl(document, "span", "", copy.openExtensionSettings),
@@ -787,13 +910,12 @@ export function createDesktopExtensionDetailModal(options: {
             document,
             "button",
             "settings-command-button settings-command-button--secondary settings-command-button--danger",
-            isBusyThis && state.activeMutationAction === "uninstall"
-              ? copy.uninstalling
-              : copy.uninstallConfirm,
+            extAction === "uninstall" ? copy.uninstalling : copy.uninstallConfirm,
           );
           confirmButton.type = "button";
           confirmButton.dataset.action = "confirm-uninstall";
-          confirmButton.disabled = state.mutating;
+          confirmButton.setAttribute("aria-busy", String(extAction === "uninstall"));
+          confirmButton.disabled = controlsDisabled;
           confirmButton.addEventListener("click", () => {
             if (!confirmButton.disabled) onUninstall?.(installed);
           });
@@ -806,9 +928,9 @@ export function createDesktopExtensionDetailModal(options: {
           );
           cancelButton.type = "button";
           cancelButton.dataset.action = "cancel-uninstall";
-          cancelButton.disabled = state.mutating;
+          cancelButton.disabled = controlsDisabled;
           cancelButton.addEventListener("click", () => {
-            if (state.mutating) return;
+            if (controlsDisabled) return;
             confirmingUninstall = false;
             if (currentState) {
               renderContent(extensionId, currentItem, currentCatalogEntry, currentState);
@@ -825,13 +947,13 @@ export function createDesktopExtensionDetailModal(options: {
           );
           uninstallButton.type = "button";
           uninstallButton.dataset.action = "uninstall";
-          uninstallButton.disabled = state.mutating;
+          uninstallButton.disabled = controlsDisabled;
           uninstallButton.append(
             createRendererSettingsIcon("trash", 13),
             createEl(document, "span", "", copy.uninstall),
           );
           uninstallButton.addEventListener("click", () => {
-            if (state.mutating) return;
+            if (controlsDisabled) return;
             confirmingUninstall = true;
             if (currentState) {
               renderContent(extensionId, currentItem, currentCatalogEntry, currentState);
@@ -891,7 +1013,7 @@ export function createDesktopExtensionDetailModal(options: {
     } else {
       delete dialog.dataset.extensionState;
     }
-    if (state.activeMutationId === extensionId) dialog.dataset.busy = "true";
+    if (state.pendingMutations.has(extensionId)) dialog.dataset.busy = "true";
     else delete dialog.dataset.busy;
 
     const categories =
@@ -1149,6 +1271,7 @@ export function createDesktopExtensionDetailModal(options: {
 
   const cleanup = (): void => {
     signal.removeEventListener("abort", cleanup);
+    closeLightbox();
     settingsLoadToken += 1;
     const previous = dialog;
     dialog = null;
@@ -1176,11 +1299,6 @@ export function createDesktopExtensionDetailModal(options: {
     settingsSection = null;
     descriptionSection = null;
     screenshotsSection = null;
-    previewStage = null;
-    previewImage = null;
-    previewCounter = null;
-    previewPrevButton = null;
-    previewNextButton = null;
     galleryGrid = null;
     previous?.remove();
     onClose?.();
@@ -1239,7 +1357,9 @@ export function createDesktopExtensionDetailModal(options: {
     modalToggle.addEventListener("change", () => {
       if (!currentItem || !modalToggle) return;
       const desired = modalToggle.checked;
-      if (currentState?.mutating || isToggleBlocked(currentItem)) {
+      const isBusyThis =
+        currentState?.globalBusy || Boolean(currentState?.pendingMutations.has(currentItem.id));
+      if (isBusyThis || isToggleBlocked(currentItem)) {
         modalToggle.checked = currentItem.enabled;
         return;
       }
@@ -1268,7 +1388,7 @@ export function createDesktopExtensionDetailModal(options: {
     descriptionSection = createEl(document, "div", "settings-extensions-detail-modal__description");
     descriptionSection.hidden = true;
 
-    // Screenshots gallery + interactive large preview stage
+    // Screenshots gallery; clicking a thumbnail opens the floating viewport lightbox.
     screenshotsSection = createEl(
       document,
       "section",
@@ -1282,65 +1402,8 @@ export function createDesktopExtensionDetailModal(options: {
       copy.screenshotsTitle,
     );
 
-    previewStage = createEl(document, "div", "settings-extensions-detail-modal__preview");
-    previewStage.hidden = true;
-    previewImage = createEl(document, "img", "settings-extensions-detail-modal__preview-img");
-    const previewBar = createEl(document, "div", "settings-extensions-detail-modal__preview-bar");
-    previewCounter = createEl(document, "span", "settings-extensions-detail-modal__preview-count");
-    const previewControls = createEl(
-      document,
-      "div",
-      "settings-extensions-detail-modal__preview-controls",
-    );
-    previewPrevButton = createEl(
-      document,
-      "button",
-      "settings-icon-button settings-extensions-detail-modal__preview-nav",
-    );
-    previewPrevButton.type = "button";
-    previewPrevButton.title = copy.previousScreenshot;
-    previewPrevButton.setAttribute("aria-label", copy.previousScreenshot);
-    previewPrevButton.append(createRendererSettingsIcon("chevron-left", 14));
-    previewPrevButton.addEventListener("click", () => {
-      if (activeScreenshotIndex === null || currentScreenshots.length <= 1) return;
-      activeScreenshotIndex =
-        (activeScreenshotIndex - 1 + currentScreenshots.length) % currentScreenshots.length;
-      syncPreviewStage();
-    });
-
-    previewNextButton = createEl(
-      document,
-      "button",
-      "settings-icon-button settings-extensions-detail-modal__preview-nav",
-    );
-    previewNextButton.type = "button";
-    previewNextButton.title = copy.nextScreenshot;
-    previewNextButton.setAttribute("aria-label", copy.nextScreenshot);
-    previewNextButton.append(createRendererSettingsIcon("chevron-right", 14));
-    previewNextButton.addEventListener("click", () => {
-      if (activeScreenshotIndex === null || currentScreenshots.length <= 1) return;
-      activeScreenshotIndex = (activeScreenshotIndex + 1) % currentScreenshots.length;
-      syncPreviewStage();
-    });
-
-    const closePreviewButton = createEl(
-      document,
-      "button",
-      "settings-extensions-detail-modal__preview-close",
-      copy.closePreview,
-    );
-    closePreviewButton.type = "button";
-    closePreviewButton.addEventListener("click", () => {
-      activeScreenshotIndex = null;
-      syncPreviewStage();
-    });
-
-    previewControls.append(previewPrevButton, previewNextButton, closePreviewButton);
-    previewBar.append(previewCounter, previewControls);
-    previewStage.append(previewImage, previewBar);
-
     galleryGrid = createEl(document, "div", "settings-extensions-detail-modal__gallery");
-    screenshotsSection.append(screenshotsHeading, previewStage, galleryGrid);
+    screenshotsSection.append(screenshotsHeading, galleryGrid);
 
     modalBody.append(
       feedbackBar,
@@ -1361,8 +1424,7 @@ export function createDesktopExtensionDetailModal(options: {
       event.preventDefault();
       event.stopPropagation?.();
       if (activeScreenshotIndex !== null) {
-        activeScreenshotIndex = null;
-        syncPreviewStage();
+        closeLightbox();
         return;
       }
       modal.close();
@@ -1371,8 +1433,7 @@ export function createDesktopExtensionDetailModal(options: {
     modal.addEventListener("cancel", (event) => {
       if (activeScreenshotIndex !== null) {
         event.preventDefault();
-        activeScreenshotIndex = null;
-        syncPreviewStage();
+        closeLightbox();
       }
     });
 
@@ -1407,7 +1468,7 @@ export function createDesktopExtensionDetailModal(options: {
       const { installed, catalogEntry } = resolveEntries(extensionId, state);
       if (!installed && !catalogEntry) return;
       if (openExtensionId !== extensionId) {
-        activeScreenshotIndex = null;
+        closeLightbox();
         renderedIconKey = "";
         renderedScreenshotsKey = "";
         renderedDetailsKey = "";

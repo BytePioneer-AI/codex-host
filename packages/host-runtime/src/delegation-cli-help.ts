@@ -6,6 +6,8 @@ The response includes totalTurns (before message filtering), from, to and turns.
 Text messages output starts with totalTurns/from/to, then Thread metadata and ---; each Turn has a #<turnNumber> <status> section with verbatim user and final reply text. Compact result output keeps the latest nonempty progress while running, omitted once stopped.`;
 
 const COMMAND_HELP = {
+  "host list": `codexhost host list [--format json|compact|text]
+List paired remote Peer Hosts (remote-peer:<id>) with online status, delegation support, and known workspace paths. Peer tokens and raw URLs are never exposed.`,
   "host info": `codexhost host info [--refresh true|false] [--format json|compact|text]
 Read this Host's environment, tools and workspace defaults. Cached observations expire after 60 seconds.`,
   "project list": `codexhost project list [--query <text>] [--offset <n>] [--limit <n>] [--refresh true|false] [--format json|compact|text]
@@ -28,14 +30,15 @@ The listener also serves GET /v1/events as server-sent events (resume with Last-
 List registered external clients with their registration time and scope. Tokens are never shown.`,
   "client remove": `codexhost client remove <name>
 Revoke a client immediately. Its later requests are rejected with UNAUTHORIZED and its open event streams are closed. Threads it started remain.`,
-  "harness list": `codexhost harness list [--format json|compact|text]
-List Harnesses available in the active Runtime.`,
-  "harness inspect": `codexhost harness inspect <harness> [--cwd <path>] [--refresh true|false] [--format json|compact|text]
+  "harness list": `codexhost harness list [--host <hostId>] [--format json|compact|text]
+List Harnesses available in the active Runtime, or on a paired remote-peer:<id> Host.`,
+  "harness inspect": `codexhost harness inspect <harness> [--host <hostId>] [--cwd <path>] [--refresh true|false] [--format json|compact|text]
 Read available Models, native defaults, Thinking options, and configuration capabilities.
 Use the returned Model and Thinking IDs for explicit selections.
 Copy the displayed ID into --model. Advertised tiers use ~fast for Fast or ~ultrafast for Ultrafast. In JSON, a Fast variant is listed under fastModel.id.`,
-  "delegate start": `codexhost delegate start --harness <id> (--task <text> | --task-file <path|->) [--task-name <name>] [--cwd <path>] [--worktree <branch>] [--base <ref>] [--model <id>] [--thinking <option-id>] [--parent-thread <thread>] [--request-id <id>] [--ref <uri>]... [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact|text]
+  "delegate start": `codexhost delegate start --harness <id> (--task <text> | --task-file <path|->) [--host <hostId>] [--task-name <name>] [--cwd <path>] [--worktree <branch>] [--base <ref>] [--model <id>] [--thinking <option-id>] [--parent-thread <thread>] [--request-id <id>] [--ref <uri>]... [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact|text]
 Create an independent child Thread, submit the task, and return immediately.
+--host targets a paired remote-peer:<id> Host (requires explicit --cwd on the remote Host; --worktree/--base run on the remote Host; --watch is unsupported across hosts).
 --task and --task-file are mutually exclusive. --task-file reads UTF-8 from a file, or stdin for -; maximum 262144 bytes (256 KiB) before removing one final LF or CRLF. Other whitespace and special characters are preserved; empty/whitespace-only input is rejected. Terminal stdin is rejected: use a quoted heredoc (<<'EOF') or a pipe. --task is unchanged.
 --task-name supplies a short subtask name (1-120 characters); otherwise the first task line is used.
 The child title is the subtask name only, fixed at creation; parent titles are not appended. Existing Threads are not renamed.
@@ -51,8 +54,8 @@ Reuse --request-id for an idempotent retry. Identical recent parent/target/task/
 --ref records where the work came from, such as an issue URL; repeat it for several. Absolute URIs only, at most 16 per Thread; credentials in a URI are removed. A child inherits its parent Thread's references.
 An external client that omits --parent-thread starts the work as itself (parent client:<name>) and must pass --cwd.
 The response confirms cwd and parent. Use its Thread reference with thread read, wait, send, cancel, or watch.`,
-  "thread send": `codexhost thread send <thread> (--message <text> | --message-file <path|->) [--interrupt] [--steer true|false] [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact|text]
-Start a new Turn in a writable Thread and return after submission.
+  "thread send": `codexhost thread send <thread> (--message <text> | --message-file <path|->) [--host <hostId>] [--interrupt] [--steer true|false] [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact|text]
+Start a new Turn in a writable Thread and return after submission. Accepts thread://<id>?hostId=<encoded-host-id> or --host <remote-peer:id> for paired Peers.
 --message and --message-file are mutually exclusive. --message-file reads UTF-8 from a file, or stdin for -; maximum 262144 bytes (256 KiB) before removing one final LF or CRLF. Other whitespace and special characters are preserved; empty/whitespace-only input is rejected. Terminal stdin is rejected: use a quoted heredoc (<<'EOF') or a pipe. --message is unchanged.
 Without --interrupt or --steer true, THREAD_BUSY means the current Turn is still active. Messages are not queued.
 --interrupt cancels an active Turn and confirms it stopped before sending (30 s stop timeout); an idle Thread is sent normally. Cancellation failure/timeout sends nothing. It preserves existing watches, suppressing the temporary stop notification; it never retries or queues a failed send.
@@ -60,23 +63,23 @@ Without --interrupt or --steer true, THREAD_BUSY means the current Turn is still
 --steer true uses the same adjustment operation as Desktop: native steering where supported, otherwise stop and resend. An idle Thread starts a new Turn. Omitted or false keeps the busy rejection above.
 Success confirms acceptance, not execution in the current Turn or task completion. Use read/wait to observe the result.
 --watch true registers a watch only after sending succeeds, notifying the resolved caller (CODEXHOST_THREAD_ID, then CODEX_THREAD_ID; otherwise the external client itself). The response's watch field has the same shape as delegate start: watching/alreadyTerminal, or notRegistered with a reason, including a missing caller. --watch-timeout-ms requires --watch true and defaults to 1740000 (29 min).`,
-  "thread cancel": `codexhost thread cancel <thread> [--format json|compact|text]
-Request cancellation of the active Turn while preserving the Thread and history.
+  "thread cancel": `codexhost thread cancel <thread> [--host <hostId>] [--format json|compact|text]
+Request cancellation of the active Turn while preserving the Thread and history. Accepts thread://<id>?hostId=<encoded-host-id> or --host <remote-peer:id> for paired Peers.
 Accepted cancellation also removes all watches on that Thread; thread send --interrupt instead preserves them.
 cancelled=true (compact: cancelRequested=true) means the cancellation request was accepted. Read or wait to confirm the terminal state. An idle Thread returns false.`,
   "thread read": `codexhost thread read <thread> [--host <hostId>] [--view result|messages] [--from <n>] [--to <m>] [--format json|compact|text]
-Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the existing Desktop connection, never local fallback. Requires updated local and remote codexhost; remote send/wait/watch are not supported.
+Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the paired Peer channel (remote-peer:<id>) or existing Desktop connection, never local fallback. Codex Desktop remote Hosts support thread read only.
 pendingQuestions lists the unanswered Questions, with interaction ID, Turn, kind, and native question data in request; an empty list means none. No watch is needed to read or answer them.
 The default result view reports the latest Turn's status and result. Text result output shows Thread metadata, then --- and verbatim result text. Full JSON retains the complete snapshot. Tool calls/output, file activity, and reasoning are not included.
 ${MESSAGE_VIEW_HELP}`,
   "thread export": `codexhost thread export <thread> [--out <path>] [--format json|compact|text]
 Rarely needed: debugging only. Exports the full Thread to a JSON file and returns its path.`,
-  "thread wait": `codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--from <n>] [--to <m>] [--format json|compact|text]
-Wait until the Thread is terminal, is waiting for an answer, or the timeout expires (default 30000 ms), then return the same snapshot as thread read plus timedOut.
+  "thread wait": `codexhost thread wait <thread> [--host <hostId>] [--timeout-ms <n>] [--view result|messages] [--from <n>] [--to <m>] [--format json|compact|text]
+Wait until the Thread is terminal, is waiting for an answer, or the timeout expires (default 30000 ms), then return the same snapshot as thread read plus timedOut. Accepts thread://<id>?hostId=<encoded-host-id> or --host <remote-peer:id> for paired Peers (polled from the caller Host).
 A pending Question returns immediately with timedOut=false; an asynchronous Question may let the Turn keep working. timedOut=true is a running checkpoint: the child keeps running. The response already includes the result when available; another read is unnecessary unless more information is needed.
 ${MESSAGE_VIEW_HELP}`,
-  "thread answer": `codexhost thread answer <thread> --interaction <id> --answers-file <file> [--format json|compact]
-Answer one pending Question request reported by thread read in pendingQuestions, and let the original Turn continue.
+  "thread answer": `codexhost thread answer <thread> --interaction <id> --answers-file <file> [--host <hostId>] [--format json|compact|text]
+Answer one pending Question request reported by thread read in pendingQuestions, and let the original Turn continue. Accepts thread://<id>?hostId=<encoded-host-id> or --host <remote-peer:id> for paired Peers.
 --interaction is the opaque interactionId reported by read. --answers-file contains the existing reply result for kind=requestUserInput, for example {"answers":{"decision":{"answers":["Continue"]}}}. For kind=requestUserInputAsync, each entry is one question: read request.title and request.options and submit {"answer":"Continue"}. Native async questions follow the client channel: answers steer the current active Turn, or start a Turn when idle; the original question need not belong to the current Turn.
 Read pendingQuestions[].request for the original prompts and option labels. Reply interpretation, cancellation, and invalid-input behavior belong to the existing handler, just as for Desktop. Do not assume a rejected reply can be retried; read the Thread again.
 QUESTION_NOT_PENDING means the interaction ID is unknown, already answered by the user or another caller, cancelled, expired, or from a finished Turn or retired Runtime.
@@ -93,8 +96,8 @@ A watch is one-shot with no standalone unsubscribe command; an accepted thread c
   "thread watches": `codexhost thread watches [--format json|compact|text]
 List watches that have not been delivered: watching, pendingDelivery (waiting for the notified Thread), or undeliverable (with the reason). Delivered watches are removed.
 Entries include taskName when known, threadStatus when readable, and watchedForMs since registration (including downtime). Text prints one watch per line.`,
-  "thread list": `codexhost thread list [--cwd <path>] [--parent <thread> | --client <name>] [--ref <uri>] [--limit <n>] [--cursor <cursor>] [--sort created-asc|created-desc|updated-asc|updated-desc|recency-asc|recency-desc] [--format json|compact|text]
-Find existing Threads by workspace, or use --parent to list a Thread's delegated children.
+  "thread list": `codexhost thread list [--host <hostId>] [--cwd <path>] [--parent <thread> | --client <name>] [--ref <uri>] [--limit <n>] [--cursor <cursor>] [--sort created-asc|created-desc|updated-asc|updated-desc|recency-asc|recency-desc] [--format json|compact|text]
+Find existing Threads by workspace, or use --parent to list a Thread's delegated children. Pass --host <remote-peer:id> to list Threads on a paired Peer Host.
 Workspace listing defaults to the caller process cwd. Default limit 25 (maximum 100), sorted created-desc.
 --parent uses Delegation relationships. --client lists what an external client started without a parent Thread. --ref lists Threads carrying that reference, newest first, across workspaces. An external client lists all workspaces unless --cwd is given. A null nextCursor ends the list.
 Compact output keeps task links, Harness, status, title, and workspace.`,
@@ -115,6 +118,7 @@ Options accept --name <value> or --name=<value>. --task, --task-name, and --mess
 Output formats, errors and environment requirements: codexhost delegate --help.`;
 
 export const DELEGATION_HELP = `usage:
+  codexhost host list
   codexhost host info
   codexhost project list
   codexhost thread file <thread> --path <file>

@@ -12,6 +12,7 @@ import { makeZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import {
   DEFAULT_HOST_EXTENSION_STATS_URL,
   discoverHostExtensions,
+  ExtensionDownloadError,
   fetchHostExtensionCatalog,
   HostExtensionInstallConflict,
   HostExtensionRevisionConflict,
@@ -63,6 +64,7 @@ const zipSource = (data: object, files: Record<string, string | Buffer>) => ({
   zipBuffer: archive(data, files),
 });
 
+import { downloadExtensionBytes, ExtensionHttpError } from "../src/desktop-extension-download.js";
 import { readExtensionZip } from "../src/extension-zip.js";
 
 it("rejects invalid ZIP entries even outside the selected subtree", async () => {
@@ -489,6 +491,72 @@ it("races validated catalog mirrors, caches only successful results, and install
   ).rejects.toThrow("SHA-256 mismatch");
 });
 
+it("overlays live download counts from the stats worker onto catalog entries", async () => {
+  const catalog = {
+    schemaVersion: 2,
+    generatedAt: "2026-11-24T00:00:00.000Z",
+    extensions: [
+      {
+        id: "focus-pomodoro",
+        version: "1.3.0",
+        format: "codexhost",
+        targets: ["desktop", "web"],
+        apis: { page: 1 },
+        name: label,
+        description: label,
+        author: "codexhost",
+        repository: "https://github.com/BytePioneer-AI/focus-pomodoro",
+        downloadUrl:
+          "https://github.com/BytePioneer-AI/focus-pomodoro/releases/download/v1.3.0/focus-pomodoro.zip",
+        sha256: "a".repeat(64),
+      },
+      {
+        id: "sidebar-thread-tree",
+        version: "0.1.5",
+        format: "codexhost",
+        targets: ["desktop"],
+        apis: { desktop: 1 },
+        name: label,
+        description: label,
+        author: "sduhantao-maker",
+        repository: "https://github.com/sduhantao-maker/codexhost-sidebar-thread-tree",
+        downloads: 45,
+        downloadUrl:
+          "https://github.com/sduhantao-maker/codexhost-sidebar-thread-tree/releases/download/v0.1.5/sidebar-thread-tree.zip",
+        sha256: "b".repeat(64),
+      },
+    ],
+  };
+
+  let statsAvailable = true;
+  vi.stubEnv("CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL", "https://stats.example/counter/");
+  vi.stubGlobal("fetch", async (request: string) => {
+    if (request === HOST_EXTENSION_CATALOG_URL || request === HOST_EXTENSION_CATALOG_MIRROR_URL)
+      return Response.json(catalog);
+    if (request === "https://stats.example/counter/stats.json") {
+      if (!statsAvailable) return new Response(null, { status: 503 });
+      return Response.json({
+        generatedAt: "2026-11-24T02:53:49.535Z",
+        downloads: { "focus-pomodoro": 466, "sidebar-thread-tree": 578 },
+      });
+    }
+    throw new Error(`Unexpected URL ${request}`);
+  });
+
+  const live = await fetchHostExtensionCatalog({ forceRefresh: true });
+  expect(live.extensions.map(({ id, downloads }) => ({ id, downloads }))).toEqual([
+    { id: "focus-pomodoro", downloads: 466 },
+    { id: "sidebar-thread-tree", downloads: 578 },
+  ]);
+
+  statsAvailable = false;
+  const fallback = await fetchHostExtensionCatalog({ forceRefresh: true });
+  expect(fallback.extensions.map(({ id, downloads }) => ({ id, downloads }))).toEqual([
+    { id: "focus-pomodoro", downloads: undefined },
+    { id: "sidebar-thread-tree", downloads: 45 },
+  ]);
+});
+
 it("resolves extension stats URL overrides and reports catalog installs best-effort", async () => {
   expect(resolveHostExtensionStatsUrl({})).toBe(DEFAULT_HOST_EXTENSION_STATS_URL);
   expect(resolveHostExtensionStatsUrl({ CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "off" })).toBe(
@@ -523,4 +591,140 @@ it("resolves extension stats URL overrides and reports catalog installs best-eff
   expect(calls).toEqual([
     { url: "https://stats.example/counter/install/focus-pomodoro", method: "POST" },
   ]);
+});
+
+it("retries transient download errors and falls back to cached catalog during forceRefresh updates", async () => {
+  const zip = archive(manifest("resilient", { page, version: "1.0.0" }), {
+    [page.entry]: script,
+    [page.style]: "body {}",
+  });
+  const downloadUrl = "https://github.com/owner/resilient/releases/download/v1.0.0/resilient.zip";
+  const catalog = {
+    schemaVersion: 2,
+    generatedAt: "2026-11-25T10:00:00.000Z",
+    extensions: [
+      {
+        id: "resilient",
+        version: "1.0.0",
+        format: "codexhost",
+        targets: ["desktop", "web"],
+        apis: { page: 1 },
+        name: label,
+        description: label,
+        author: "Fixture",
+        repository: "https://github.com/owner/resilient",
+        downloadUrl,
+        sha256: createHash("sha256").update(zip).digest("hex"),
+      },
+    ],
+  };
+
+  let downloadAttempts = 0;
+  let missingAttempts = 0;
+  let malformedRedirectAttempts = 0;
+  let catalogAttempts = 0;
+  let catalogOffline = false;
+  vi.stubGlobal("fetch", async (request: string) => {
+    if (request === HOST_EXTENSION_CATALOG_URL || request === HOST_EXTENSION_CATALOG_MIRROR_URL) {
+      catalogAttempts += 1;
+      if (catalogOffline) throw new TypeError("fetch failed");
+      return Response.json(catalog);
+    }
+    if (request === downloadUrl) {
+      downloadAttempts += 1;
+      if (downloadAttempts === 1) return new Response(null, { status: 503 });
+      if (downloadAttempts === 2) throw new TypeError("socket hang up");
+      return new Response(Uint8Array.from(zip));
+    }
+    if (request === "https://github.com/owner/missing.zip") {
+      missingAttempts += 1;
+      return new Response(null, { status: 404 });
+    }
+    if (request === "https://github.com/owner/bad-redirect.zip") {
+      malformedRedirectAttempts += 1;
+      return new Response(null, {
+        status: 302,
+        headers: { location: "http://[invalid-host" },
+      });
+    }
+    throw new Error(`Unexpected URL ${request}`);
+  });
+
+  // Prime in-memory catalog cache.
+  await fetchHostExtensionCatalog({ forceRefresh: true });
+
+  // Non-retryable 404 and malformed redirect fail immediately without retrying.
+  await expect(
+    downloadExtensionBytes("https://github.com/owner/missing.zip", 1024, undefined, {
+      allowUrl: () => true,
+      retries: 2,
+      retryBaseDelayMs: 1,
+    }),
+  ).rejects.toBeInstanceOf(ExtensionHttpError);
+  expect(missingAttempts).toBe(1);
+
+  await expect(
+    downloadExtensionBytes("https://github.com/owner/bad-redirect.zip", 1024, undefined, {
+      allowUrl: () => true,
+      retries: 2,
+      retryBaseDelayMs: 1,
+    }),
+  ).rejects.toThrow("Invalid download redirect URL");
+  expect(malformedRedirectAttempts).toBe(1);
+
+  // Forced catalog refresh without fallback still rejects when offline.
+  catalogOffline = true;
+  await expect(fetchHostExtensionCatalog({ forceRefresh: true })).rejects.toThrow(
+    "Host extension catalog unavailable",
+  );
+
+  // Missing extension on forced refresh with fallback does not perform a second forced fetch.
+  const beforeMissingFetch = catalogAttempts;
+  await expect(
+    prepareHostExtension({
+      dataDir,
+      source: { type: "catalog", id: "unknown-ext" },
+      expected: { id: "unknown-ext" },
+      forceRefreshCatalog: true,
+      fallbackToCacheOnCatalogError: true,
+    }),
+  ).rejects.toThrow("Extension is not in the catalog");
+  // Primary + mirror with 1 retry each = at most 4 calls (one raceCatalog, never two).
+  expect(catalogAttempts - beforeMissingFetch).toBeLessThanOrEqual(4);
+
+  // Prepare with fallbackToCacheOnCatalogError uses cached catalog and retries transient ZIP failures.
+  const prepared = await prepareHostExtension({
+    dataDir,
+    source: { type: "catalog", id: "resilient" },
+    expected: { id: "resilient" },
+    forceRefreshCatalog: true,
+    fallbackToCacheOnCatalogError: true,
+  });
+  expect(downloadAttempts).toBe(3);
+  expect(prepared.manifest.id).toBe("resilient");
+  await prepared.dispose();
+
+  // Idle timeout surfaces a distinct ExtensionDownloadError("Download timed out").
+  vi.stubGlobal(
+    "fetch",
+    (_request: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(init.signal?.reason ?? new Error("aborted")),
+          { once: true },
+        );
+      }),
+  );
+  await expect(
+    downloadExtensionBytes(downloadUrl, 1024, undefined, {
+      allowUrl: () => true,
+      timeoutMs: 80,
+      idleTimeoutMs: 25,
+      retries: 0,
+    }),
+  ).rejects.toSatisfy(
+    (error: unknown) =>
+      error instanceof ExtensionDownloadError && error.message === "Download timed out",
+  );
 });

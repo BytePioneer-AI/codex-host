@@ -23,7 +23,6 @@ use crate::request::{
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use crate::status::unix_seconds;
 
-const NPM_PACKAGE_NAME: &str = "@codexhost/cli";
 const DISTRIBUTION_FILE: &str = "codexhost-distribution.json";
 
 #[derive(Debug, Deserialize)]
@@ -95,7 +94,33 @@ fn run_checked(command: &mut Command, label: &str) -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
-fn install_npm(request: &UpdateRequest, npm: &NpmInstallation) -> Result<(), Box<dyn Error>> {
+/// Checks, before anything stops, that this update can replace the installation that
+/// restart runs, and returns the npm package specs for an npm installation.
+pub(crate) fn preflight(request: &UpdateRequest) -> Result<Vec<String>, Box<dyn Error>> {
+    let Installation::Npm(npm) = &request.installation else {
+        return Ok(Vec::new());
+    };
+    crate::npm::install_specs(
+        &npm.node_path,
+        &npm.npm_cli_path,
+        &npm.npm_launcher_path,
+        &npm.npm_package_root,
+        &request.version,
+    )?
+    .ok_or_else(|| {
+        format!(
+            "npm uses a different global installation than {}; update manually with the npm that installed codexhost",
+            npm.npm_package_root.display()
+        )
+        .into()
+    })
+}
+
+fn install_npm(
+    request: &UpdateRequest,
+    npm: &NpmInstallation,
+    specs: &[String],
+) -> Result<(), Box<dyn Error>> {
     // The installer runs this step itself for an EXE install. npm does not, so close
     // what still runs from the platform package (for example a Shim the stopped
     // Desktop left behind) before npm replaces those locked executables. The shared
@@ -105,13 +130,34 @@ fn install_npm(request: &UpdateRequest, npm: &NpmInstallation) -> Result<(), Box
     let mut command = Command::new(&npm.node_path);
     command
         .arg(&npm.npm_cli_path)
-        .args(["install", "--global", "--no-audit", "--no-fund"])
-        .arg(format!("{NPM_PACKAGE_NAME}@{}", request.version));
+        // The update manager downloaded these packages into the npm cache before the
+        // services stopped, so the install does not wait on a slow or lagging registry.
+        .args([
+            "install",
+            "--global",
+            "--prefer-offline",
+            "--no-audit",
+            "--no-fund",
+        ])
+        .args(specs);
     configure_background_command(&mut command);
     if let Some(log) = operation_log(request, "npm-install.log") {
         command.stdout(log.try_clone()?).stderr(log);
     }
-    run_checked(&mut command, "npm update")
+    run_checked(&mut command, "npm update")?;
+    // Restart runs the payload at npm_package_root, so it must be the requested version.
+    verify_distribution(
+        &npm.npm_package_root.join("app").join(DISTRIBUTION_FILE),
+        &request.version,
+        "npm",
+    )
+    .map_err(|error| {
+        format!(
+            "npm update did not replace the platform package at {}: {error}",
+            npm.npm_package_root.display()
+        )
+        .into()
+    })
 }
 
 /// A diagnostic log beside the operation status; updates proceed without it.
@@ -347,7 +393,7 @@ fn install_linux(
         &staging,
         &backup,
         &request.version,
-        fs::remove_dir_all,
+        |path| fs::remove_dir_all(path),
     )
 }
 
@@ -359,9 +405,10 @@ fn install_linux(
     Err("Linux archive updates require Linux".into())
 }
 
-pub(crate) fn install(request: &UpdateRequest) -> Result<(), Box<dyn Error>> {
+/// `npm_specs` comes from [`preflight`].
+pub(crate) fn install(request: &UpdateRequest, npm_specs: &[String]) -> Result<(), Box<dyn Error>> {
     match &request.installation {
-        Installation::Npm(npm) => install_npm(request, npm),
+        Installation::Npm(npm) => install_npm(request, npm, npm_specs),
         Installation::WindowsInstaller(windows) => install_windows(request, windows),
         Installation::MacosDmg(macos) => install_macos(request, macos),
         Installation::LinuxArchive(linux) => install_linux(request, linux),
@@ -452,6 +499,88 @@ mod tests {
             "old"
         );
         assert!(!backup.exists());
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npm_update_replaces_the_platform_package_that_restart_runs() {
+        use crate::request::{Installation, NpmInstallation, RestartTarget, UpdateRequest};
+
+        let directory =
+            std::env::temp_dir().join(format!("codexhost-npm-layout-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let global_root = directory.join("lib/node_modules");
+        let modules = global_root.join("@codexhost");
+        let nested = modules.join("cli/node_modules/@codexhost/cli-fixture");
+        let independent = modules.join("cli-fixture");
+        let elsewhere = directory.join("other/node_modules/@codexhost/cli-fixture");
+        let npm_cli = directory.join("npm.sh");
+        fs::create_dir_all(&global_root).unwrap();
+        // Like npm: a named package is installed; the CLI brings only its nested payload.
+        fs::write(
+            &npm_cli,
+            format!(
+                r#"set -eu
+if [ "$1" = root ]; then echo '{}'; exit 0; fi
+shift 5
+for spec in "$@"; do
+  case "$spec" in
+    @codexhost/cli@*) root='{}' ;;
+    @codexhost/cli-fixture@*) root='{}' ;;
+  esac
+  mkdir -p "$root/app"
+  printf '{{"schemaVersion":1,"version":"%s","distribution":"npm","target":"fixture"}}' "${{spec##*@}}" > "$root/app/codexhost-distribution.json"
+done
+"#,
+                global_root.display(),
+                nested.display(),
+                independent.display()
+            ),
+        )
+        .unwrap();
+        for package_root in [&nested, &independent, &elsewhere] {
+            for root in [&nested, &independent, &elsewhere] {
+                let _ = fs::remove_dir_all(root);
+                fs::create_dir_all(root.join("app")).unwrap();
+                fs::write(
+                    root.join("app/codexhost-distribution.json"),
+                    r#"{"schemaVersion":1,"version":"1.0.0","distribution":"npm","target":"fixture"}"#,
+                )
+                .unwrap();
+            }
+            let request = UpdateRequest {
+                schema_version: 1,
+                version: "1.1.0".into(),
+                wait_pid: 2,
+                wait_executable: "/unused".into(),
+                runtime_descriptor_path: "/unused".into(),
+                restart_target: RestartTarget::Desktop,
+                data_directory: None,
+                service_managed: false,
+                status_path: directory.join("status.json"),
+                installation: Installation::Npm(NpmInstallation {
+                    node_path: "/bin/sh".into(),
+                    npm_cli_path: npm_cli.clone(),
+                    npm_launcher_path: modules.join("cli/bin/codexhost.js"),
+                    npm_package_root: package_root.clone(),
+                }),
+            };
+
+            let result =
+                super::preflight(&request).and_then(|specs| super::install(&request, &specs));
+
+            if package_root == &elsewhere {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("different global installation"), "{error}");
+                continue;
+            }
+            result.unwrap();
+            let installed =
+                super::distribution_metadata(&package_root.join("app/codexhost-distribution.json"))
+                    .unwrap();
+            assert_eq!(installed.version, "1.1.0", "{}", package_root.display());
+        }
         fs::remove_dir_all(&directory).unwrap();
     }
 

@@ -125,7 +125,9 @@ function LocationGlyph({
   return <RemoteHostIcon className={className} />;
 }
 
-async function fetchConfiguredRemotePeers(signal?: AbortSignal): Promise<ConfiguredRemotePeer[]> {
+async function fetchConfiguredRemotePeers(
+  signal?: AbortSignal,
+): Promise<ConfiguredRemotePeer[] | null> {
   try {
     const rpcId =
       typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -143,11 +145,11 @@ async function fetchConfiguredRemotePeers(signal?: AbortSignal): Promise<Configu
       }),
       ...(signal === undefined ? {} : { signal }),
     });
-    if (!response.ok) return [];
+    if (!response.ok) return null;
     const payload: unknown = await response.json();
     return parseConfiguredRemotePeers(payload);
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -173,6 +175,7 @@ export function HeroLocationWorkspacePicker({
   const flowAvailable = useDirectoryFlow((occupied) => occupied);
 
   const [configuredPeers, setConfiguredPeers] = useState<ConfiguredRemotePeer[]>([]);
+  const [peersLoaded, setPeersLoaded] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
   const [localProjectOpen, setLocalProjectOpen] = useState(false);
   const [locationQuery, setLocationQuery] = useState("");
@@ -209,6 +212,21 @@ export function HeroLocationWorkspacePicker({
     [workspaces, selectedId],
   );
 
+  const locations = useMemo(
+    () => buildHeroLocationOptions(workspaces, configuredPeers),
+    [workspaces, configuredPeers],
+  );
+  const availableLocationKeys = useMemo(
+    () => new Set(locations.map((loc) => loc.key)),
+    [locations],
+  );
+  const disabledRemoteHostIds = useMemo(
+    () => new Set(configuredPeers.filter((peer) => !peer.enabled).map((peer) => peer.hostId)),
+    [configuredPeers],
+  );
+  const workspacesReady = workspaceSnapshot.phase === "ready" && workspaceSnapshot.state === "idle";
+  const hostsReady = workspacesReady && peersLoaded;
+
   const [activeHostKey, setActiveHostKey] = useState<string>(() => selectedWorkspaceHostKey);
 
   const setProjectOpen = useCallback(
@@ -217,12 +235,16 @@ export function HeroLocationWorkspacePicker({
       onOpenChange?.(next);
       if (!next) {
         if (!keepPendingHost) {
-          setActiveHostKey(selectedWorkspaceHostKey);
+          setActiveHostKey(
+            availableLocationKeys.has(selectedWorkspaceHostKey)
+              ? selectedWorkspaceHostKey
+              : "local",
+          );
         }
         onClose();
       }
     },
-    [onClose, onOpenChange, selectedWorkspaceHostKey],
+    [availableLocationKeys, onClose, onOpenChange, selectedWorkspaceHostKey],
   );
 
   // Sync external `open` transitions (e.g. clicking the inert composer card).
@@ -236,7 +258,9 @@ export function HeroLocationWorkspacePicker({
   // Refresh configured remote peers silently so peers with 0 workspaces also appear.
   const refreshPeers = useCallback((signal?: AbortSignal): void => {
     void fetchConfiguredRemotePeers(signal).then((peers) => {
-      if (!signal?.aborted) setConfiguredPeers(peers);
+      if (signal?.aborted || peers === null) return;
+      setConfiguredPeers(peers);
+      setPeersLoaded(true);
     });
   }, []);
 
@@ -279,28 +303,85 @@ export function HeroLocationWorkspacePicker({
     };
   }, []);
 
-  const locations = useMemo(
-    () => buildHeroLocationOptions(workspaces, configuredPeers),
-    [workspaces, configuredPeers],
-  );
-
   // Follow external selection changes (e.g. clicking "+" next to a workspace in sidebar).
   const prevSelectedIdRef = useRef<WorkspaceId | undefined>(selectedId);
   useEffect(() => {
     if (selectedId !== prevSelectedIdRef.current) {
       prevSelectedIdRef.current = selectedId;
       if (selectedId !== undefined) {
-        setActiveHostKey(hostKeyOfWorkspace(workspaces, selectedId));
+        const nextHostKey = hostKeyOfWorkspace(workspaces, selectedId);
+        setActiveHostKey(availableLocationKeys.has(nextHostKey) ? nextHostKey : "local");
       }
     }
-  }, [selectedId, workspaces]);
+  }, [availableLocationKeys, selectedId, workspaces]);
 
   // If the selected remote workspace arrives after initial hydration, sync host key.
   useEffect(() => {
-    if (selectedId !== undefined && selectedWorkspaceHostKey !== "local") {
+    if (
+      selectedId !== undefined &&
+      selectedWorkspaceHostKey !== "local" &&
+      availableLocationKeys.has(selectedWorkspaceHostKey)
+    ) {
       setActiveHostKey((current) => (current === "local" ? selectedWorkspaceHostKey : current));
     }
-  }, [selectedId, selectedWorkspaceHostKey]);
+  }, [availableLocationKeys, selectedId, selectedWorkspaceHostKey]);
+
+  // Reset active remote host, pending creation targets, and stale remote selection once unavailable.
+  const clearedStaleSelectionRef = useRef<WorkspaceId | undefined>(undefined);
+  useEffect(() => {
+    const isHostGone = (hostKey: string): boolean =>
+      hostKey !== "local" &&
+      !availableLocationKeys.has(hostKey) &&
+      (hostsReady || disabledRemoteHostIds.has(hostKey));
+
+    if (isHostGone(activeHostKey)) {
+      setActiveHostKey("local");
+    }
+
+    if (awaitingRemoteHostRef.current !== null && isHostGone(awaitingRemoteHostRef.current)) {
+      awaitingRemoteHostRef.current = null;
+    }
+
+    if (pendingRemoteCreated !== null && isHostGone(pendingRemoteCreated.hostId)) {
+      setPendingRemoteCreated(null);
+    }
+
+    const currentWorkspace =
+      selectedId === undefined
+        ? undefined
+        : workspaces.find((item) => item.workspaceId === selectedId);
+    const selectedHostGone =
+      currentWorkspace?.remote !== undefined && isHostGone(currentWorkspace.remote.hostId);
+    const awaitingSelectedCreation =
+      pendingRemoteCreated !== null &&
+      !isHostGone(pendingRemoteCreated.hostId) &&
+      pendingRemoteCreated.workspaceId === selectedId;
+    const selectedRemoteMissing =
+      hostsReady &&
+      selectedId !== undefined &&
+      currentWorkspace === undefined &&
+      !awaitingSelectedCreation &&
+      (activeHostKey !== "local" || selectedId.startsWith("remote-peer:"));
+
+    if (selectedHostGone || selectedRemoteMissing) {
+      if (canStartProjectless && clearedStaleSelectionRef.current !== selectedId) {
+        clearedStaleSelectionRef.current = selectedId;
+        onPick(null);
+      }
+    } else {
+      clearedStaleSelectionRef.current = undefined;
+    }
+  }, [
+    activeHostKey,
+    availableLocationKeys,
+    canStartProjectless,
+    disabledRemoteHostIds,
+    hostsReady,
+    onPick,
+    pendingRemoteCreated,
+    selectedId,
+    workspaces,
+  ]);
 
   // Fall back to "local" if the active remote host disappears completely.
   const activeLocation: HeroLocationOption = useMemo(

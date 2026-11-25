@@ -15,6 +15,7 @@ import {
   useAnchoredPosition,
   useDismissOnOutsidePointer,
 } from "@deepseek-ai/dsh-client-ui-primitives";
+import { resolveRemotePeerColor } from "@codexhost/shared-contracts";
 import type { WorkspaceView } from "@deepseek-ai/dsh-api-workspace-controller/client";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
 import {
@@ -48,26 +49,6 @@ export interface HostScopeFilterProps {
 function hostDisplayLabel(host: HostSummary, t: Translate): string {
   if (host.key === "local") return t("host.local");
   return host.displayName || host.hostId || host.key;
-}
-
-function RemoteHostIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      width={12}
-      height={12}
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.45"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <rect x="2" y="2.5" width="12" height="8.5" rx="1.75" />
-      <path d="M5.5 13.5h5M8 11v2.5" />
-    </svg>
-  );
 }
 
 function hostStatusLabel(state: string | undefined, t: Translate): string {
@@ -197,7 +178,95 @@ function HostScopeWorkspacesEditor({
   );
 }
 
-export function HostScopeFilter({ workspaces, state, onChange, t }: HostScopeFilterProps) {
+function FilterFunnelIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2.2 3.2h11.6L9.4 8.4v4.1l-2.8-1.4V8.4L2.2 3.2Z" />
+    </svg>
+  );
+}
+
+export function HostScopeTabBar({ workspaces, state, onChange, t }: HostScopeFilterProps) {
+  const hasRemote = useMemo(() => hasRemoteWorkspaces(workspaces), [workspaces]);
+  const hosts = useMemo(() => deriveAvailableHosts(workspaces), [workspaces]);
+  const effective = useMemo(() => reconcileHostScopeFilter(state, workspaces), [state, workspaces]);
+
+  if (!hasRemote) return null;
+
+  return (
+    <div className={css.tabBarRow}>
+      <div className={css.tabBar} role="tablist" aria-label={t("hostScope.host.label")}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={effective.selectedHost === "all"}
+          className={clsx(css.tabItem, effective.selectedHost === "all" && css.tabItemActive)}
+          onClick={() => {
+            onChange(selectHostScope(effective, "all"));
+          }}
+        >
+          <span className={css.tabLabel}>{t("hostScope.allShort")}</span>
+        </button>
+        {hosts.map((host) => {
+          const selected = effective.selectedHost === host.key;
+          const label = hostDisplayLabel(host, t);
+          const title =
+            host.hostId !== undefined ? `${label} · ${hostStatusLabel(host.state, t)}` : label;
+          return (
+            <button
+              key={host.key}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              className={clsx(css.tabItem, selected && css.tabItemActive)}
+              title={title}
+              onClick={() => {
+                onChange(selectHostScope(effective, host.key));
+              }}
+            >
+              {host.hostId !== undefined && (
+                <span
+                  className={css.tabDot}
+                  data-state={host.state ?? "disconnected"}
+                  data-color={resolveRemotePeerColor(host.hostId, host.color)}
+                  aria-hidden="true"
+                />
+              )}
+              <span className={css.tabLabel}>{label}</span>
+            </button>
+          );
+        })}
+      </div>
+      <span className={css.tabTrailing}>
+        <HostScopeFilter
+          workspaces={workspaces}
+          state={state}
+          onChange={onChange}
+          t={t}
+          variant="icon"
+        />
+      </span>
+    </div>
+  );
+}
+
+export function HostScopeFilter({
+  workspaces,
+  state,
+  onChange,
+  t,
+  variant = "pill",
+}: HostScopeFilterProps & { variant?: "pill" | "icon" }) {
   const [open, setOpen] = useState(false);
   const [expandedAllHostKey, setExpandedAllHostKey] = useState<string | null>(null);
   const rootRef = useRef<HTMLSpanElement>(null);
@@ -282,36 +351,64 @@ export function HostScopeFilter({ workspaces, state, onChange, t }: HostScopeFil
   };
 
   const totalWorkspaceCount = workspaces.length;
+  const hasWorkspaceSubsetFilter = hosts.some(
+    (host) => effective.perHost[host.key]?.mode === "selected",
+  );
 
   return (
     <span ref={rootRef} className={css.anchorRoot}>
-      <button
-        ref={triggerRef}
-        type="button"
-        className={clsx(css.trigger, filtered && css.triggerActive, open && css.triggerOpen)}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-controls={open ? dialogId : undefined}
-        aria-label={t("hostScope.trigger.aria", { current: triggerLabel })}
-        title={t("hostScope.trigger.aria", { current: triggerLabel })}
-        onClick={(event) => {
-          event.stopPropagation();
-          setOpen((prev) => !prev);
-        }}
-      >
-        {selectedHostSummary?.hostId !== undefined &&
-          (selectedHostSummary.state === "connected" ? (
-            <RemoteHostIcon className={css.hostIcon} />
-          ) : (
+      {variant === "icon" ? (
+        <button
+          ref={triggerRef}
+          type="button"
+          className={clsx(
+            css.iconTrigger,
+            hasWorkspaceSubsetFilter && css.iconTriggerActive,
+            open && css.iconTriggerOpen,
+          )}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-controls={open ? dialogId : undefined}
+          aria-label={t("hostScope.trigger.aria", { current: triggerLabel })}
+          title={t("hostScope.trigger.aria", { current: triggerLabel })}
+          onClick={(event) => {
+            event.stopPropagation();
+            setOpen((prev) => !prev);
+          }}
+        >
+          <FilterFunnelIcon />
+          {hasWorkspaceSubsetFilter && <span className={css.iconTriggerPip} aria-hidden="true" />}
+        </button>
+      ) : (
+        <button
+          ref={triggerRef}
+          type="button"
+          className={clsx(css.trigger, filtered && css.triggerActive, open && css.triggerOpen)}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-controls={open ? dialogId : undefined}
+          aria-label={t("hostScope.trigger.aria", { current: triggerLabel })}
+          title={t("hostScope.trigger.aria", { current: triggerLabel })}
+          onClick={(event) => {
+            event.stopPropagation();
+            setOpen((prev) => !prev);
+          }}
+        >
+          {selectedHostSummary?.hostId !== undefined && (
             <span
               className={css.dot}
               data-state={selectedHostSummary.state ?? "disconnected"}
+              data-color={resolveRemotePeerColor(
+                selectedHostSummary.hostId,
+                selectedHostSummary.color,
+              )}
               aria-hidden="true"
             />
-          ))}
-        <span className={css.triggerLabel}>{triggerLabel}</span>
-        <IconChevronDownOutlineRegular size={12} className={css.triggerChevron} />
-      </button>
+          )}
+          <span className={css.triggerLabel}>{triggerLabel}</span>
+          <IconChevronDownOutlineRegular size={12} className={css.triggerChevron} />
+        </button>
+      )}
 
       {open &&
         createPortal(
@@ -392,16 +489,14 @@ export function HostScopeFilter({ workspaces, state, onChange, t }: HostScopeFil
                           onChange(selectHostScope(effective, host.key));
                         }}
                       >
-                        {host.hostId !== undefined &&
-                          (host.state === "connected" ? (
-                            <RemoteHostIcon className={css.hostIcon} />
-                          ) : (
-                            <span
-                              className={css.dot}
-                              data-state={host.state ?? "disconnected"}
-                              aria-hidden="true"
-                            />
-                          ))}
+                        {host.hostId !== undefined && (
+                          <span
+                            className={css.dot}
+                            data-state={host.state ?? "disconnected"}
+                            data-color={resolveRemotePeerColor(host.hostId, host.color)}
+                            aria-hidden="true"
+                          />
+                        )}
                         <span className={css.hostName}>{label}</span>
                         <span className={clsx(css.hostCount, isSubset && css.hostCountFiltered)}>
                           {countText}
@@ -461,16 +556,14 @@ export function HostScopeFilter({ workspaces, state, onChange, t }: HostScopeFil
                                 className={css.accordionIcon}
                               />
                             )}
-                            {host.hostId !== undefined &&
-                              (host.state === "connected" ? (
-                                <RemoteHostIcon className={css.hostIcon} />
-                              ) : (
-                                <span
-                                  className={css.dot}
-                                  data-state={host.state ?? "disconnected"}
-                                  aria-hidden="true"
-                                />
-                              ))}
+                            {host.hostId !== undefined && (
+                              <span
+                                className={css.dot}
+                                data-state={host.state ?? "disconnected"}
+                                data-color={resolveRemotePeerColor(host.hostId, host.color)}
+                                aria-hidden="true"
+                              />
+                            )}
                             <span className={css.hostName}>{hostDisplayLabel(host, t)}</span>
                             <span
                               className={clsx(

@@ -3319,6 +3319,9 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #sessions = new Set<ClaudeHarnessSession>();
   #closePromise: Promise<void> | null = null;
   #latestPlanLimit: ClaudePlanLimitEvent | null = null;
+  // Seeded once on cold start (or by the first passive push / explicit account inspection);
+  // runtime usage refreshes rely on passive `rate_limit_event` pushes without spawning probes.
+  #creditsSeeded = false;
   #accountInspection: Promise<HarnessAccountSnapshot | null> | null = null;
   #accountCreditsSupported = false;
 
@@ -3484,6 +3487,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         await inspector.close().catch(() => undefined);
         this.#inspectors.delete(inspector);
       }
+      if (!this.#closePromise) this.#creditsSeeded = true;
     }
   }
 
@@ -3839,6 +3843,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
     }
     this.#latestPlanLimit = next.fiveHour || next.sevenDay ? next : null;
     if (this.#latestPlanLimit) {
+      this.#creditsSeeded = true;
       this.#accountCreditsSupported = true;
       for (const session of this.#sessions) {
         session.publishAccountCreditsSupport(true);
@@ -3853,11 +3858,14 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   }
 
   refreshCredits(): Promise<AccountCreditsSnapshot | null> {
-    return this.inspectAccount().then(() => this.credits());
+    if (this.#closePromise) return Promise.resolve(null);
+    if (this.#creditsSeeded || this.#latestPlanLimit) return Promise.resolve(this.credits());
+    return this.inspectAccount().then(() => (this.#closePromise ? null : this.credits()));
   }
 
   close(): Promise<void> {
     if (!this.#closePromise) {
+      this.#creditsSeeded = false;
       this.#inspectionCache.clear();
       this.#closePromise = Promise.all([
         this.#importScope.close(),

@@ -1,6 +1,7 @@
 /** Native Harness identity picker beside the independent model/effort control. */
 import { useRef, useState, useSyncExternalStore } from "react";
 import {
+  harnessIconSources,
   IconDataOutlineRegular,
   RemotePluginIcon,
   IconWarningOutlineRegular,
@@ -13,13 +14,30 @@ import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ModelSelectInjected } from "./slots.ts";
 import css from "./HarnessSelect.module.css";
 
-/** Show the plugin's own brand asset, with a generic glyph when it has no icon. */
-function HarnessIcon({ id, size = 20 }: { id: string; size?: number }) {
+const noopSubscribe = () => () => {};
+const noopHostId = () => undefined;
+
+/** Show the plugin's own brand asset, with a generic glyph when it has no icon or remote host is unresolved. */
+function HarnessIcon({
+  id,
+  hostId,
+  deferRemote = false,
+  size = 20,
+}: {
+  id: string;
+  hostId?: string | undefined;
+  deferRemote?: boolean;
+  size?: number;
+}) {
+  if (deferRemote && id !== "codex") {
+    return <IconDataOutlineRegular size={size} />;
+  }
+  const icon = harnessIconSources(id, hostId);
   return (
     <RemotePluginIcon
       id={id}
-      src={`/harness-icons/${encodeURIComponent(id)}`}
-      presentationUrl="/harness-icons/presentation.json"
+      src={icon.src}
+      presentationUrl={icon.presentationUrl}
       size={size}
       className={css.icon}
       fallback={<IconDataOutlineRegular size={size} />}
@@ -33,6 +51,7 @@ export function HarnessSelect({
   directory,
   load,
   select,
+  iconHost,
   locked,
   t,
 }: ModelSelectInjected & { locked: boolean } & PropsLocale<"model">) {
@@ -40,6 +59,11 @@ export function HarnessSelect({
     (fn) => directory.subscribe(fn),
     () => directory.getSnapshot(),
   );
+  const iconHostId = useSyncExternalStore(
+    iconHost?.subscribe ?? noopSubscribe,
+    iconHost?.getHostId ?? noopHostId,
+  );
+  const deferRemoteIcon = iconHost?.isRemoteSession === true && iconHostId === undefined;
   const [open, setOpen] = useState(false);
   const [toast, setToast] = useState<{ text: string; seq: number } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -110,7 +134,14 @@ export function HarnessSelect({
           ...state.harnesses.map((group) => ({
             id: group.id,
             label: <span data-current={group.id === currentId ? "" : undefined}>{group.name}</span>,
-            icon: <HarnessIcon key={group.id} id={group.id} />,
+            icon: (
+              <HarnessIcon
+                key={group.id}
+                id={group.id}
+                hostId={iconHostId}
+                deferRemote={deferRemoteIcon}
+              />
+            ),
             disabled:
               locked ||
               busy ||
@@ -124,7 +155,14 @@ export function HarnessSelect({
                 {failure.name} · {t("harness.unavailable")}
               </span>
             ),
-            icon: <HarnessIcon key={failure.id} id={failure.id} />,
+            icon: (
+              <HarnessIcon
+                key={failure.id}
+                id={failure.id}
+                hostId={iconHostId}
+                deferRemote={deferRemoteIcon}
+              />
+            ),
             disabled: true,
           })),
         ].toSorted((a, b) => {
@@ -163,7 +201,13 @@ export function HarnessSelect({
             ) : currentId === undefined ? (
               <IconDataOutlineRegular size={16} />
             ) : (
-              <HarnessIcon key={currentId} id={currentId} size={16} />
+              <HarnessIcon
+                key={currentId}
+                id={currentId}
+                hostId={iconHostId}
+                deferRemote={deferRemoteIcon}
+                size={16}
+              />
             )}
           </button>
         }

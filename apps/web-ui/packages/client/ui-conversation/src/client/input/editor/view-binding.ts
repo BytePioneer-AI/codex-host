@@ -64,6 +64,36 @@ export function focusDraftEditor(editor: LexicalEditor, revealSelection: () => v
 }
 
 /**
+ * Re-apply a live collapsed DOM selection inside the focused editor so WebKit
+ * recomputes and repaints the caret after sibling layout shifts (e.g. mounting
+ * or collapsing the attachment rail above the draft).
+ * @param editor - the Session-owned editor.
+ */
+export function refreshDraftCaret(editor: LexicalEditor): void {
+  const root = editor.getRootElement();
+  if (root === null || editor.isComposing()) return;
+  const doc = root.ownerDocument;
+  if (doc.activeElement !== root && !root.contains(doc.activeElement)) return;
+  const selection = doc.defaultView?.getSelection();
+  if (selection === null || selection === undefined) return;
+  if (selection.rangeCount > 0) {
+    if (!selection.isCollapsed) return;
+    const range = selection.getRangeAt(0).cloneRange();
+    if (root.contains(range.startContainer) && root.contains(range.endContainer)) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return;
+    }
+  }
+  const target = root.firstChild ?? root;
+  const range = doc.createRange();
+  range.setStart(target, 0);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+/**
  * Forward wheel movement at the draft's edge to its conversation scrollport.
  * @param scrollRef - the InputBar-owned scrollport reference.
  * @returns the listener cleanup, or undefined when the element is absent.

@@ -549,7 +549,7 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   screenshotPreviewLabel: "预览第 {index} 张截图（共 {total} 张）",
   previousScreenshot: "上一张截图",
   nextScreenshot: "下一张截图",
-  closePreview: "收起大图",
+  closePreview: "关闭预览",
   openExtensionSettings: "打开设置",
   extensionSettingsTitle: "插件设置",
   extensionSettingsDisabledHint: "禁用时也可编辑",

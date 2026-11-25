@@ -13,6 +13,52 @@ export type OfficeFileBytes = DocumentFileBytes & {
   readonly generation: OfficeToPdfGeneration;
 };
 
+/** Host-level cache partition for Office preview results. */
+export interface OfficePreviewScope {
+  /** Stable partition key isolating local and per-Peer in-flight/cached conversions. */
+  readonly scopeKey: string;
+  /** Whether to query Hub `officeToPdf/generation` and retain completed PDFs across reopens. */
+  readonly useHostGeneration: boolean;
+}
+
+const REMOTE_SESSION_PREFIX = "web-remote:";
+
+/**
+ * Extract the remote host identity from a `web-remote:<base64url([hostId, threadId])>` session ID.
+ * Falls back to the opaque session ID when the payload is a draft or cannot be decoded.
+ */
+export function decodeRemoteHostScope(sessionId: string): string | undefined {
+  if (!sessionId.startsWith(REMOTE_SESSION_PREFIX)) return undefined;
+  const encoded = sessionId.slice(REMOTE_SESSION_PREFIX.length);
+  if (!encoded || encoded.startsWith("draft-")) return sessionId;
+  try {
+    const base64 = encoded.replace(/-/gu, "+").replace(/_/gu, "/");
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (Array.isArray(parsed) && typeof parsed[0] === "string" && parsed[0].length > 0) {
+      return parsed[0];
+    }
+  } catch {
+    // Isolate malformed remote IDs under their own key rather than falling back to local.
+  }
+  return sessionId;
+}
+
+/**
+ * Partition Office preview caching by owning Host.
+ * Remote Peer sessions bypass Hub generation and cross-reopen PDF retention so Peer restarts
+ * or font updates never serve stale cached PDFs while keeping in-flight deduplication and full
+ * isolation from Hub's local cache.
+ */
+export function officeScopeForSession(sessionId: string): OfficePreviewScope {
+  const remoteHost = decodeRemoteHostScope(sessionId);
+  if (remoteHost === undefined) return { scopeKey: "local", useHostGeneration: true };
+  return { scopeKey: `remote:${remoteHost}`, useHostGeneration: false };
+}
+
 /**
  * Load authorized PDF contents for one Office source.
  * @param file - Session and source path.
@@ -35,14 +81,18 @@ type Result = Awaited<ReturnType<ReadOfficeDocument>>;
 type Success = Extract<Result, { ok: true }>;
 type Stat = (file: SessionFile, signal: AbortSignal) => Promise<RemoteResult<WorkspaceFileStat>>;
 interface Pending {
+  readonly scopeKey: string;
   readonly controller: AbortController;
   readonly promise: Promise<Result>;
   users: number;
 }
 
+const DEFAULT_SCOPE: OfficePreviewScope = { scopeKey: "local", useHostGeneration: true };
+
 /** Bounded successful results; each caller reauthorizes and checks source freshness before reuse. */
 export class OfficePreviewCache {
   private readonly ready = new Map<string, Success>();
+  private readonly readyScope = new Map<string, string>();
   private readonly pending = new Map<string, Pending>();
   private bytes = 0;
   private readers = 0;
@@ -57,12 +107,13 @@ export class OfficePreviewCache {
   /**
    * @param stat - authorized source metadata lookup.
    * @param convert - Host render Remote returning binary PDF bytes borrowed read-only by callers.
-   * @param maxEntries - maximum completed results retained.
-   * @param maxBytes - maximum retained PDF byteLength.
+   * @param maxEntries - maximum completed results retained for local sessions.
+   * @param maxBytes - maximum retained PDF byteLength for local sessions.
    * @param maxPending - maximum unsettled Host conversion requests, including cancellation teardown.
    * @param maxReaders - maximum readers, including metadata lookups.
-   * @param generation - current Host renderer generation, checked before cached reuse.
+   * @param generation - current Host renderer generation, checked before cached reuse for local sessions.
    * @param busy - localized capacity failure.
+   * @param resolveScope - host scope classifier isolating local and remote Peer sessions.
    */
   constructor(
     private readonly stat: Stat,
@@ -75,6 +126,7 @@ export class OfficePreviewCache {
       signal: AbortSignal,
     ) => Promise<RemoteResult<OfficeToPdfGeneration>>,
     private readonly busy: () => Error,
+    private readonly resolveScope: (file: SessionFile) => OfficePreviewScope = () => DEFAULT_SCOPE,
   ) {}
 
   /**
@@ -121,6 +173,25 @@ export class OfficePreviewCache {
     throw this.busy();
   }
 
+  private evictScope(scopeKey: string, abortPending: boolean): void {
+    for (const [key, entryScope] of [...this.readyScope.entries()]) {
+      if (entryScope !== scopeKey) continue;
+      const entry = this.ready.get(key);
+      if (entry !== undefined) {
+        this.ready.delete(key);
+        this.bytes -= entry.value.data.byteLength;
+      }
+      this.readyScope.delete(key);
+    }
+    if (abortPending) {
+      for (const [pendingKey, pending] of [...this.pending.entries()]) {
+        if (pending.scopeKey !== scopeKey) continue;
+        pending.controller.abort(this.superseded);
+        this.pending.delete(pendingKey);
+      }
+    }
+  }
+
   private async lookupGeneration(
     file: SessionFile,
     signal: AbortSignal,
@@ -128,34 +199,39 @@ export class OfficePreviewCache {
   ): Promise<Result> {
     signal = AbortSignal.any([signal, this.lifetime.signal]);
     signal.throwIfAborted();
-    const query = ++this.generationQuery;
-    const generation = await this.currentGeneration(signal);
-    signal.throwIfAborted();
-    if (!generation.ok) return generation;
-    if (query < this.acceptedQuery && generation.value !== this.generation) throw this.superseded;
-    this.acceptedQuery = Math.max(query, this.acceptedQuery);
-    if (generation.value !== this.generation) {
-      this.generation = generation.value;
-      this.ready.clear();
-      this.bytes = 0;
-      for (const pending of this.pending.values()) pending.controller.abort(this.superseded);
-      this.pending.clear();
+    const scope = this.resolveScope(file);
+    let localGeneration: OfficeToPdfGeneration | undefined;
+    if (scope.useHostGeneration) {
+      const query = ++this.generationQuery;
+      const generation = await this.currentGeneration(signal);
+      signal.throwIfAborted();
+      if (!generation.ok) return generation;
+      if (query < this.acceptedQuery && generation.value !== this.generation) throw this.superseded;
+      this.acceptedQuery = Math.max(query, this.acceptedQuery);
+      if (generation.value !== this.generation) {
+        this.generation = generation.value;
+        this.evictScope(scope.scopeKey, true);
+      }
+      localGeneration = generation.value;
     }
     const metadata = await this.stat(file, signal);
     signal.throwIfAborted();
     if (!metadata.ok) return metadata;
-    if (generation.value !== this.generation) throw this.superseded;
+    if (scope.useHostGeneration && localGeneration !== this.generation) throw this.superseded;
     const key = JSON.stringify([
-      generation.value,
+      scope.scopeKey,
+      scope.useHostGeneration ? localGeneration : "remote",
       file.sessionId,
       metadata.value.absolutePath,
       metadata.value.version,
     ]);
-    const cached = this.ready.get(key);
-    if (cached !== undefined) {
-      this.ready.delete(key);
-      this.ready.set(key, cached);
-      return cached;
+    if (scope.useHostGeneration) {
+      const cached = this.ready.get(key);
+      if (cached !== undefined) {
+        this.ready.delete(key);
+        this.ready.set(key, cached);
+        return cached;
+      }
     }
     // A foreground RPC joins and promotes background work at the shared Host queue.
     const pendingKey = JSON.stringify([key, priority]);
@@ -171,14 +247,17 @@ export class OfficePreviewCache {
         })
         .then((result) => {
           controller.signal.throwIfAborted();
+          // Only local Host conversions (verified against Hub's live generation) are retained
+          // across reopens; remote Peer conversions never populate or mutate shared cache state.
           if (
-            generation.value === this.generation &&
+            scope.useHostGeneration &&
+            localGeneration === this.generation &&
             result.ok &&
-            result.value.generation === generation.value &&
+            result.value.generation === localGeneration &&
             result.value.version === metadata.value.version &&
             result.value.absolutePath === metadata.value.absolutePath
           ) {
-            this.retain(key, result);
+            this.retain(key, scope.scopeKey, result);
           }
           return result;
         })
@@ -188,7 +267,7 @@ export class OfficePreviewCache {
             this.pending.delete(pendingKey);
         });
       this.tasks.add(promise);
-      entry = { controller, promise, users: 0 };
+      entry = { scopeKey: scope.scopeKey, controller, promise, users: 0 };
       this.pending.set(pendingKey, entry);
     }
     const shared = entry;
@@ -235,14 +314,16 @@ export class OfficePreviewCache {
     this.lifetime.abort();
     this.pending.clear();
     this.ready.clear();
+    this.readyScope.clear();
     this.bytes = 0;
     await Promise.allSettled([...this.reads, ...this.tasks]);
   }
 
-  private retain(key: string, result: Success): void {
+  private retain(key: string, scopeKey: string, result: Success): void {
     const previous = this.ready.get(key);
     if (previous !== undefined) {
       this.ready.delete(key);
+      this.readyScope.delete(key);
       this.bytes -= previous.value.data.byteLength;
     }
     const size = result.value.data.byteLength;
@@ -250,9 +331,11 @@ export class OfficePreviewCache {
     while (this.ready.size >= this.maxEntries || this.bytes + size > this.maxBytes) {
       const oldest = this.ready.entries().next().value as [string, Success];
       this.ready.delete(oldest[0]);
+      this.readyScope.delete(oldest[0]);
       this.bytes -= oldest[1].value.data.byteLength;
     }
     this.ready.set(key, result);
+    this.readyScope.set(key, scopeKey);
     this.bytes += size;
   }
 }

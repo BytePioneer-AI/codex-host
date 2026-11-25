@@ -2,6 +2,7 @@
 
 mod handoff;
 mod install;
+mod npm;
 mod prepare_install;
 mod remote;
 mod request;
@@ -74,11 +75,13 @@ fn apply(request_path: &Path) -> Result<(), Box<dyn Error>> {
     let mut service_stop_output = None;
     let mut stopping_started = false;
     let result = (|| -> Result<(), Box<dyn Error>> {
+        // Before the handoff acknowledgement, so a refusal leaves the owner running.
+        let npm_specs = install::preflight(&request)?;
         wait_for_launcher_exit(&request)?;
         stopping_started = true;
         service_stop_output = services::stop(&request)?;
         write_status(&request, "installing", None, service_stop_output.as_deref())?;
-        install(&request)?;
+        install(&request, &npm_specs)?;
         write_status(&request, "restarting", None, service_stop_output.as_deref())?;
         restart::restore(&request, Some(&request.version))?;
         write_status(&request, "succeeded", None, service_stop_output.as_deref())?;

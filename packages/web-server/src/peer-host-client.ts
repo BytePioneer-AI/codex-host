@@ -1,24 +1,118 @@
 import * as c from "@codexhost/shared-contracts";
+import type { HostClientUpdate } from "@codexhost/desktop-control";
 import { setTimeout as sleep } from "node:timers/promises";
+import type { PeerChTransport } from "./peer-ch-host-client.ts";
 import { classifyPeerTransport, type PeerRecord } from "./peer-host-store.ts";
 import { RpcError } from "./transport.ts";
 
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 45_000;
 
-export function isCatalogChangingEvent(event: unknown): boolean {
-  if (!event || typeof event !== "object") return false;
-  const record = event as { type?: unknown; method?: unknown };
-  if (record.type === "hello") return true;
-  if (record.type !== "changed" || typeof record.method !== "string") return false;
-  const method = record.method;
+export type PeerFetchPath = `/api/${"ch" | "peer"}/v1/${string}`;
+
+export interface PeerFetchInit {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: BodyInit | object;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  duplex?: "half";
+  /** Bound only the initial response handshake by timeoutMs (used for streaming endpoints). */
+  stream?: boolean;
+}
+
+function isRawBodyInit(body: BodyInit | object): body is BodyInit {
   return (
-    (method.startsWith("thread/") && method !== "thread/tokenUsage/updated") ||
-    method === "turn/started" ||
-    method === "turn/completed" ||
-    method === "codexhost/thread/pins/changed" ||
-    method === "codexhost/thread/tree/changed"
+    typeof body === "string" ||
+    body instanceof Uint8Array ||
+    body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(body) ||
+    body instanceof Blob ||
+    body instanceof FormData ||
+    body instanceof URLSearchParams ||
+    body instanceof ReadableStream
   );
 }
+
+export async function peerFetch(
+  record: PeerRecord,
+  path: PeerFetchPath,
+  init: PeerFetchInit = {},
+): Promise<Response> {
+  if (!record.enabled) throw new RpcError("remote/offline", "Remote peer is disabled");
+  const requestTimeoutMs = init.timeoutMs ?? (path.startsWith("/api/ch/v1/") ? 60_000 : 8_000);
+  const handshake = new AbortController();
+  const timer = init.stream ? setTimeout(() => handshake.abort(), init.timeoutMs ?? 8_000) : null;
+  const headers = new Headers(init.headers);
+  let requestBody: BodyInit | undefined;
+  if (init.body !== undefined) {
+    if (isRawBodyInit(init.body)) {
+      requestBody = init.body;
+    } else {
+      requestBody = JSON.stringify(init.body);
+      if (!headers.has("content-type")) {
+        headers.set("content-type", "application/json");
+      }
+    }
+  } else if (!headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+  headers.set("authorization", "Bearer " + record.token);
+  const signals: AbortSignal[] = [];
+  if (init.stream) {
+    signals.push(handshake.signal);
+    if (init.signal) signals.push(init.signal);
+  } else {
+    signals.push(AbortSignal.timeout(requestTimeoutMs));
+    if (init.signal) signals.push(init.signal);
+  }
+  const signal = signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+  try {
+    const requestInit: RequestInit & { duplex?: "half" } = {
+      method: init.method ?? "GET",
+      redirect: "error",
+      headers,
+      ...(requestBody === undefined ? {} : { body: requestBody }),
+      ...(init.duplex === undefined ? {} : { duplex: init.duplex }),
+      ...(signal === undefined ? {} : { signal }),
+    };
+    const res = await fetch(record.origin + path, requestInit);
+    if (res.ok) return res;
+    const failure = await res
+      .json()
+      .then((payload: unknown) => {
+        if (!payload || typeof payload !== "object" || !("error" in payload)) return undefined;
+        const err = payload.error;
+        if (typeof err === "string") return { message: err };
+        if (err && typeof err === "object" && "message" in err && typeof err.message === "string")
+          return {
+            message: err.message,
+            code: "code" in err && typeof err.code === "number" ? err.code : undefined,
+          };
+        return undefined;
+      })
+      .catch(() => undefined);
+    if (res.status === 401 || (res.status === 403 && !failure?.message))
+      throw new RpcError("remote/auth-error", "Remote peer rejected the access token", {
+        httpStatus: res.status,
+      });
+    throw new RpcError(
+      "remote/request-failed",
+      failure?.message ?? `Remote peer returned HTTP ${res.status}`,
+      {
+        httpStatus: res.status,
+        ...(failure?.code === undefined ? {} : { hostCode: failure.code }),
+      },
+    );
+  } catch (err) {
+    if (err instanceof RpcError) throw err;
+    throw new RpcError("remote/offline", "Remote peer is unreachable");
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+const MAX_TRACKED_SNAPSHOT_THREADS = 64;
+const MAX_TRACKED_KNOWN_TURNS = 16;
 
 export class PeerHostClient {
   private life = new AbortController();
@@ -26,30 +120,91 @@ export class PeerHostClient {
   latencyMs?: number;
   lastError?: string;
   state: c.RemotePeerState;
-  private timer?: NodeJS.Timeout;
   private cursor?: c.ClientChannelCursor;
-  private createdEpoch: string | undefined;
-  private createdThreads = new Set<string>();
+  private streamOnline = false;
+  private readonly listeners = new Set<(update: HostClientUpdate) => void>();
   private readonly streamIdleTimeoutMs: number;
+  private readonly fullKnownTurns = new Map<string, Map<string, string>>();
+  private readonly truncatedKnownTurns = new Map<string, Map<string, string>>();
+  private knownTurnsEpoch: string | undefined;
   readonly hostId: string;
 
   constructor(
-    readonly record: PeerRecord,
+    public record: PeerRecord,
     private changed: (hostId?: string) => void,
-    options: { streamIdleTimeoutMs?: number } = {},
+    options: { streamIdleTimeoutMs?: number; initialManifest?: c.RemotePeerManifest } = {},
   ) {
     this.hostId = c.remotePeerHostId(record.peerId);
     this.state = record.enabled ? "connecting" : "disabled";
     this.streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+    if (options.initialManifest !== undefined) {
+      this.manifest = options.initialManifest;
+    }
+  }
+
+  private rememberSnapshotTurns(body: object, result: unknown): void {
+    const req = body as { threadId?: unknown; truncateToolOutput?: unknown };
+    if (typeof req.threadId !== "string" || !req.threadId) return;
+    if (!result || typeof result !== "object") return;
+    const snap = result as {
+      cursor?: { epoch?: unknown };
+      turnsPage?: { data?: Array<{ id?: unknown; fingerprint?: unknown }> };
+    };
+    const epoch = typeof snap.cursor?.epoch === "string" ? snap.cursor.epoch : undefined;
+    if (epoch !== undefined && this.knownTurnsEpoch !== epoch) {
+      this.fullKnownTurns.clear();
+      this.truncatedKnownTurns.clear();
+      this.knownTurnsEpoch = epoch;
+    }
+    const turns = snap.turnsPage?.data;
+    if (!Array.isArray(turns) || turns.length === 0) return;
+    const store = req.truncateToolOutput === true ? this.truncatedKnownTurns : this.fullKnownTurns;
+    let map = store.get(req.threadId);
+    if (!map) {
+      if (store.size >= MAX_TRACKED_SNAPSHOT_THREADS) {
+        const oldest = store.keys().next().value;
+        if (oldest !== undefined) store.delete(oldest);
+      }
+      map = new Map<string, string>();
+      store.set(req.threadId, map);
+    }
+    for (const turn of turns) {
+      if (typeof turn.id === "string" && typeof turn.fingerprint === "string" && turn.fingerprint) {
+        map.delete(turn.id);
+        map.set(turn.id, turn.fingerprint);
+      }
+    }
+    while (map.size > MAX_TRACKED_KNOWN_TURNS) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+  }
+
+  private knownTurnsForStatus(threadId: string): Array<{ id: string; fingerprint: string }> {
+    const merged = new Map<string, string>();
+    const full = this.fullKnownTurns.get(threadId);
+    if (full) {
+      for (const [id, fingerprint] of full) merged.set(id, fingerprint);
+    }
+    const truncated = this.truncatedKnownTurns.get(threadId);
+    if (truncated) {
+      for (const [id, fingerprint] of truncated) merged.set(id, fingerprint);
+    }
+    return [...merged.entries()].slice(-MAX_TRACKED_KNOWN_TURNS).map(([id, fingerprint]) => ({
+      id,
+      fingerprint,
+    }));
   }
 
   summary(): c.RemotePeerSummary {
-    const { peerId, name, origin, enabled, createdAt, updatedAt } = this.record;
+    const { peerId, name, color, origin, enabled, createdAt, updatedAt } = this.record;
     const { encrypted, transportKind } = classifyPeerTransport(origin);
     const { version, platform, hostname, homeDir, projects } = this.manifest ?? {};
     return {
       peerId,
       name,
+      ...(color !== undefined ? { color } : {}),
       origin,
       enabled,
       createdAt,
@@ -68,60 +223,66 @@ export class PeerHostClient {
     };
   }
 
-  private noteCreatedThread(threadId: string, epoch: string) {
-    if (this.createdEpoch !== epoch) {
-      this.createdEpoch = epoch;
-      this.createdThreads.clear();
+  private publish(update: HostClientUpdate): void {
+    for (const listener of [...this.listeners]) {
+      if (this.listeners.has(listener)) listener(update);
     }
-    this.createdThreads.add(threadId);
   }
 
-  private async fetch(path: string, method = "GET", body?: unknown, streamSignal?: AbortSignal) {
-    if (!this.record.enabled) throw new RpcError("remote/offline", "Remote peer is disabled");
-    const requestTimeoutMs = path.startsWith("/api/ch/v1/") ? 60_000 : 8_000;
-    const handshake = new AbortController();
-    const timer = setTimeout(() => handshake.abort(), 8_000);
-    try {
-      const res = await fetch(this.record.origin + path, {
-        method,
-        redirect: "error",
-        headers: {
-          authorization: "Bearer " + this.record.token,
-          "content-type": "application/json",
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: streamSignal
-          ? AbortSignal.any([handshake.signal, streamSignal, this.life.signal])
-          : AbortSignal.any([this.life.signal, AbortSignal.timeout(requestTimeoutMs)]),
-      });
-      if (res.ok) return res;
-      const failure = await res
-        .json()
-        .then((payload: unknown) => {
-          if (!payload || typeof payload !== "object" || !("error" in payload)) return undefined;
-          const err = payload.error;
-          if (typeof err === "string") return { message: err };
-          if (err && typeof err === "object" && "message" in err && typeof err.message === "string")
-            return {
-              message: err.message,
-              code: "code" in err && typeof err.code === "number" ? err.code : undefined,
-            };
-          return undefined;
-        })
-        .catch(() => undefined);
-      if (res.status === 401 || (res.status === 403 && !failure?.message))
-        throw new RpcError("remote/auth-error", "Remote peer rejected the access token");
-      throw new RpcError(
-        "remote/request-failed",
-        failure?.message ?? `Remote peer returned HTTP ${res.status}`,
-        failure?.code === undefined ? {} : { hostCode: failure.code },
-      );
-    } catch (err) {
-      if (err instanceof RpcError) throw err;
-      throw new RpcError("remote/offline", "Remote peer is unreachable");
-    } finally {
-      clearTimeout(timer);
+  private setStreamOffline(): void {
+    if (!this.streamOnline) return;
+    this.streamOnline = false;
+    this.publish({ type: "connection", online: false });
+  }
+
+  subscribe(listener: (update: HostClientUpdate) => void): () => void {
+    this.listeners.add(listener);
+    listener({ type: "connection", online: this.streamOnline });
+    if (this.streamOnline && this.cursor && this.listeners.has(listener)) {
+      listener({ type: "hello", version: 1, cursor: this.cursor, reset: false });
     }
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+    if (this.state !== "connected") {
+      throw new RpcError("remote/offline", "Remote peer is not connected");
+    }
+    const res = await this.fetch(`/api/ch/v1/${route}`, "POST", body);
+    let payload: unknown;
+    try {
+      payload = await res.json();
+    } catch {
+      throw new RpcError("remote/read-failed", "Remote peer returned invalid JSON");
+    }
+    if (!payload || typeof payload !== "object" || !("result" in payload)) {
+      throw new RpcError("remote/read-failed", "Remote peer response missing result");
+    }
+    const result = (payload as { result: T }).result;
+    if (route === "snapshot") {
+      this.rememberSnapshotTurns(body, result);
+    }
+    return result;
+  }
+
+  chTransport(): PeerChTransport {
+    return {
+      post: <T>(route: "rpc" | "snapshot" | "respond", body: object) => this.post<T>(route, body),
+      subscribe: (listener: (update: HostClientUpdate) => void) => this.subscribe(listener),
+      manifest: () => this.manifest,
+    };
+  }
+
+  private fetch(path: PeerFetchPath, method = "GET", body?: unknown, streamSignal?: AbortSignal) {
+    return peerFetch(this.record, path, {
+      method,
+      ...(body === undefined ? {} : { body: body as BodyInit | object }),
+      ...(streamSignal
+        ? { stream: true, signal: AbortSignal.any([streamSignal, this.life.signal]) }
+        : { signal: this.life.signal }),
+    });
   }
 
   async probe() {
@@ -141,17 +302,9 @@ export class PeerHostClient {
           ? "Remote peer rejected the access token"
           : "Remote peer manifest unavailable";
       this.lastError = message;
+      this.setStreamOffline();
       throw Error(message);
     }
-  }
-
-  private scheduleChanged() {
-    if (this.timer) return;
-    this.timer = setTimeout(() => {
-      delete this.timer;
-      this.changed(this.hostId);
-    }, 100);
-    this.timer.unref();
   }
 
   async start() {
@@ -168,15 +321,18 @@ export class PeerHostClient {
         idleTimer.unref();
       };
       try {
-        if (this.state !== "connected") await this.probe();
+        if (this.state !== "connected") {
+          await this.probe();
+          if (this.life.signal.aborted) return;
+          this.changed(this.hostId);
+        }
         if (this.life.signal.aborted) return;
-        this.changed(this.hostId);
         const query = this.cursor
           ? "?" +
             new URLSearchParams({ epoch: this.cursor.epoch, after: String(this.cursor.sequence) })
           : "";
         const response = await this.fetch(
-          "/api/ch/v1/events" + query,
+          `/api/ch/v1/events${query}`,
           "GET",
           undefined,
           streamAbort.signal,
@@ -200,17 +356,30 @@ export class PeerHostClient {
             const line = pending.slice(0, i);
             pending = pending.slice(i + 1);
             if (!line.trim()) continue;
-            const event: unknown = JSON.parse(line);
-            this.cursor = c.clientChannelCursorSchema.parse((event as { cursor?: unknown }).cursor);
-            if (
-              (event as { type?: unknown }).type === "hello" &&
-              this.manifest?.epoch !== this.cursor.epoch
-            ) {
-              await this.probe();
+            let raw: unknown;
+            try {
+              raw = JSON.parse(line);
+            } catch {
+              continue;
             }
-            delay = 1000;
-            if (isCatalogChangingEvent(event)) {
-              this.scheduleChanged();
+            const parsed = c.clientChannelEventSchema.safeParse(raw);
+            if (!parsed.success) continue;
+            const event = parsed.data;
+            this.cursor = event.cursor;
+            if (event.type === "hello") {
+              if (this.manifest?.epoch !== event.cursor.epoch) {
+                await this.probe();
+                this.changed(this.hostId);
+              }
+              delay = 1000;
+              if (!this.streamOnline) {
+                this.streamOnline = true;
+                this.publish({ type: "connection", online: true });
+              }
+              this.publish(event);
+            } else {
+              delay = 1000;
+              this.publish(event);
             }
           }
           if (pending.length > 4194304) throw Error("Invalid stream");
@@ -221,6 +390,7 @@ export class PeerHostClient {
       } finally {
         if (idleTimer) clearTimeout(idleTimer);
         streamAbort.abort();
+        this.setStreamOffline();
       }
       if (this.life.signal.aborted) return;
       if (this.state !== "auth-error") this.state = "offline";
@@ -232,13 +402,19 @@ export class PeerHostClient {
 
   close() {
     this.life.abort();
-    clearTimeout(this.timer);
+    this.setStreamOffline();
+    this.listeners.clear();
+    this.fullKnownTurns.clear();
+    this.truncatedKnownTurns.clear();
+    this.knownTurnsEpoch = undefined;
   }
 
   async listDirs(path?: string) {
     return c.remotePeerListDirsResultSchema.parse(
       await (
-        await this.fetch("/api/peer/v1/dirs" + (path ? "?" + new URLSearchParams({ path }) : ""))
+        await this.fetch(
+          path ? `/api/peer/v1/dirs?${new URLSearchParams({ path })}` : "/api/peer/v1/dirs",
+        )
       ).json(),
     );
   }
@@ -273,165 +449,105 @@ export class PeerHostClient {
     return result;
   }
 
+  async delegate(
+    request: c.PeerDelegationRequest,
+    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<c.PeerDelegationResponse> {
+    if (!this.record.enabled) {
+      throw new RpcError("remote/offline", "Remote peer is disabled");
+    }
+    if (this.state !== "connected") {
+      throw new RpcError("remote/offline", "Remote peer is not connected");
+    }
+    if (this.manifest?.capabilities?.delegation !== 1) {
+      throw new RpcError(
+        "remote/unsupported",
+        "Remote peer does not support cross-host delegation",
+      );
+    }
+    const defaultTimeoutMs =
+      request.operation === "read" ||
+      request.operation === "list" ||
+      request.operation === "listHarnesses"
+        ? 45_000
+        : 60_000;
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, this.life.signal])
+      : this.life.signal;
+    const res = await peerFetch(this.record, "/api/peer/v1/delegation", {
+      method: "POST",
+      body: {
+        ...request,
+        sourceId: request.sourceId ?? this.record.peerId,
+      },
+      signal,
+      timeoutMs: options.timeoutMs ?? defaultTimeoutMs,
+    });
+    let payload: unknown;
+    try {
+      payload = await res.json();
+    } catch {
+      throw new RpcError("remote/read-failed", "Remote peer returned invalid JSON");
+    }
+    const parsed = c.peerDelegationResponseSchema.safeParse(payload);
+    if (!parsed.success) {
+      throw new RpcError("remote/read-failed", "Remote peer returned an invalid delegation reply");
+    }
+    return parsed.data;
+  }
+
   async call(op: c.RemoteSessionOperation): Promise<unknown> {
     const epoch = this.manifest?.epoch;
     if (this.state !== "connected")
       throw new RpcError("remote/offline", "Remote peer is not connected");
-    if (
-      ("epoch" in op && op.epoch !== epoch) ||
-      (op.kind === "read" && op.page?.epoch && op.page.epoch !== epoch)
-    )
+    if ("epoch" in op && op.epoch !== epoch)
       throw new RpcError("remote/connection-changed", "Remote peer restarted");
-    const post = async (route: string, input: object) =>
-      (await (await this.fetch("/api/ch/v1/" + route, "POST", input)).json()).result;
-    const rpc = (method: string, params: object) => post("rpc", { method, params });
-    const loadedThreadIds = async (): Promise<string[]> => {
-      const raw = await rpc(c.LOADED_SESSIONS_METHOD, {}).catch(() => []);
-      if (Array.isArray(raw))
-        return raw
-          .map((item) =>
-            item && typeof item === "object"
-              ? (item as { threadId?: unknown }).threadId
-              : undefined,
-          )
-          .filter((id): id is string => typeof id === "string" && id.length > 0);
-      if (raw && typeof raw === "object" && Array.isArray((raw as { data?: unknown }).data))
-        return (raw as { data: unknown[] }).data.filter(
-          (id): id is string => typeof id === "string" && id.length > 0,
-        );
-      return [];
-    };
+    const post = <T = unknown>(route: "rpc" | "snapshot" | "respond", input: object) =>
+      this.post<T>(route, input);
+    const rpc = (method: string, params: object) =>
+      post<Record<string, unknown>>("rpc", { method, params });
     const threadId = "threadId" in op ? op.threadId : "";
     const base = { threadId };
     switch (op.kind) {
-      case "list": {
-        const page = await rpc("thread/list", {
-          cursor: op.cursor,
-          archived: op.archived,
-          limit: 100,
-        });
-        if (this.createdEpoch !== epoch) {
-          this.createdEpoch = epoch;
-          this.createdThreads.clear();
-        }
-        if (Array.isArray(page?.data)) {
-          for (const row of page.data) {
-            if (row && typeof row === "object" && typeof (row as { id?: unknown }).id === "string")
-              this.createdThreads.delete((row as { id: string }).id);
-          }
-        }
-        if (!op.includeLoaded) return page;
-        const loaded = [...new Set([...(await loadedThreadIds()), ...this.createdThreads])];
-        return { ...page, loaded, epoch };
-      }
-      case "read":
-      case "status":
-      case "queue": {
-        const s = c.clientThreadSnapshotSchema.parse(await post("snapshot", base));
+      case "status": {
+        const s = c.clientThreadSnapshotSchema.parse(
+          await post("snapshot", {
+            ...base,
+            knownTurns: this.knownTurnsForStatus(threadId),
+            truncateToolOutput: true,
+          }),
+        );
         if (s.thread.id !== threadId || s.cursor.epoch !== epoch)
           throw new RpcError("remote/connection-changed", "Remote peer snapshot changed");
-        if (op.kind === "status")
-          return {
-            threadId,
-            status: s.thread.status.type,
-            turnId: s.activeTurnId ?? null,
-            epoch,
-            supportsDelivery: true,
-            readOnly: s.thread.canAcceptDirectInput === false,
-          };
-        if (op.kind === "queue")
-          return s.queue
-            ? {
-                available: true,
-                items: s.queue.items.map((i) => ({
-                  id: i.id,
-                  clientUserMessageId: i.clientUserMessageId,
-                  preview: i.input
-                    .map((p) => p.text ?? "")
-                    .join("")
-                    .slice(0, 800),
-                })),
-              }
-            : { available: false };
-        let page =
-          !op.page && !s.turnsPage.nextCursor
-            ? { data: [...s.turnsPage.data].reverse(), nextCursor: null }
-            : await rpc("thread/turns/list", {
-                threadId,
-                cursor: op.page?.cursor ?? null,
-                limit: op.page?.limit ?? 20,
-                sortDirection: op.page?.sortDirection ?? "asc",
-                itemsView: "full",
-              });
-        const turns = [...page.data];
-        const seen = new Set<string>();
-        while (!op.page && page.nextCursor) {
-          if (seen.has(page.nextCursor) || seen.size >= 100)
-            throw new RpcError(
-              "remote/history-too-large",
-              "Remote history exceeds bounded traversal",
-            );
-          seen.add(page.nextCursor);
-          page = await rpc("thread/turns/list", {
-            threadId,
-            cursor: page.nextCursor,
-            limit: 20,
-            sortDirection: "asc",
-            itemsView: "full",
-          });
-          turns.push(...page.data);
-        }
-        const configuration = await rpc("codexhost/thread/inspect", base).catch(() => undefined);
-        const harnessId = configuration?.owner === "codex" ? "codex" : configuration?.harnessId;
-        const [inspection, catalog] = harnessId
-          ? await Promise.all([
-              rpc("codexhost/harness/inspect", { harnessId, cwd: s.thread.cwd }).catch(
-                () => undefined,
-              ),
-              rpc("codexhost/harness/plugins/list", {}).catch(() => undefined),
-            ])
-          : [];
         return {
+          threadId,
+          status: s.thread.status.type,
+          turnId: s.activeTurnId ?? null,
           epoch,
-          result: { thread: { ...s.thread, turns } },
-          requests: s.interactions.map((i) => ({ ...i.request, id: i.requestId })),
-          nextCursor: page.nextCursor,
-          configuration,
-          inspection,
-          harness: catalog?.plugins?.find((p: { id: string }) => p.id === harnessId),
-          nativeSettings: s.configuration.native,
+          supportsDelivery: true,
+          supportsQueuedSteer: true,
+          ...(s.thread.canAcceptDirectInput === false ? { readOnly: true } : {}),
         };
       }
       case "usage":
         return rpc("codexhost/thread/usage/inspect", base);
-      case "projectHarnesses":
-        return (await rpc("codexhost/harness/plugins/list", {})).plugins.filter(
-          (p: { kind?: string }) => p.kind !== "usage",
-        );
-      case "inspectHarness":
-        return rpc("codexhost/harness/inspect", { cwd: op.cwd, harnessId: op.harnessId });
-      case "create": {
-        const result = await rpc("thread/start", { cwd: op.cwd, historyMode: "paginated" });
-        if (epoch && typeof result?.thread?.id === "string") {
-          this.noteCreatedThread(result.thread.id, epoch);
-        }
-        return result;
-      }
+      case "create":
+        return rpc("thread/start", { cwd: op.cwd, historyMode: "paginated" });
       case "startSelected": {
-        const result = await rpc("thread/start", {
+        const result = (await rpc("thread/start", {
           cwd: op.cwd,
           historyMode: "paginated",
           model: op.model,
           ...(op.serviceTier ? { serviceTier: op.serviceTier } : {}),
           ...(op.reasoningEffort ? { config: { model_reasoning_effort: op.reasoningEffort } } : {}),
-        });
-        const owner = await rpc("codexhost/thread/inspect", { threadId: result.thread.id });
+        })) as { thread: { id: string } };
+        const owner = (await rpc("codexhost/thread/inspect", { threadId: result.thread.id })) as {
+          owner?: string;
+          harnessId?: string;
+        };
         if ((owner.owner === "codex" ? "codex" : owner.harnessId) !== op.harnessId) {
           await rpc("thread/archive", { threadId: result.thread.id }).catch(() => undefined);
           throw Error("Selected Harness not confirmed");
-        }
-        if (epoch && typeof result?.thread?.id === "string") {
-          this.noteCreatedThread(result.thread.id, epoch);
         }
         return result;
       }
@@ -460,11 +576,86 @@ export class PeerHostClient {
       }
       case "delivery": {
         const a = op.action;
-        const snapshot = c.clientThreadSnapshotSchema.parse(await post("snapshot", base));
+        const snapshot = c.clientThreadSnapshotSchema.parse(
+          await post("snapshot", {
+            ...base,
+            knownTurns: this.knownTurnsForStatus(threadId),
+            truncateToolOutput: true,
+          }),
+        );
         const thread = snapshot.thread;
         const external = thread.modelProvider === "codexhost" && thread.cliVersion === "codexhost";
         if (thread.canAcceptDirectInput === false)
           return { accepted: false, code: "remote/send-rejected", message: "Thread is read-only" };
+        if (a.kind === "sendNow") {
+          try {
+            const result = (await rpc("codexhost/thread/queue/send-now", {
+              threadId,
+              itemId: a.itemId,
+            })) as {
+              sent?: boolean;
+              turnId?: string;
+              turn?: { id?: string };
+            };
+            const confirmed =
+              (typeof result.turnId === "string" && result.turnId.length > 0) ||
+              (typeof result.turn?.id === "string" && result.turn.id.length > 0);
+            if (!confirmed) throw Error("Queued send-now not confirmed");
+            return { accepted: true };
+          } catch (error) {
+            if (error instanceof RpcError && error.code === "remote/request-failed") {
+              const hostCode =
+                "hostCode" in error.details && typeof error.details.hostCode === "number"
+                  ? error.details.hostCode
+                  : undefined;
+              const message = error.message;
+              if (
+                hostCode === -32601 ||
+                /unsupported client channel method|method not found/iu.test(message)
+              ) {
+                if (thread.status.type === "idle" || thread.status.type === "notLoaded") {
+                  const started = (await rpc("thread/queue/start", {
+                    threadId,
+                    queuedSubmissionId: a.itemId,
+                  })) as { turn?: { id?: string } };
+                  if (!started.turn?.id) throw Error("Queued turn not confirmed");
+                  return { accepted: true };
+                }
+                return {
+                  accepted: false,
+                  code: "remote/steer-unavailable",
+                  message: "Remote peer does not support steering queued messages.",
+                };
+              }
+              if (
+                (hostCode === -32072 && message === "Queued message not found") ||
+                (hostCode === -32602 && message === "Queued message is no longer available") ||
+                (hostCode === -32600 && message === `queued submission not found: ${a.itemId}`)
+              ) {
+                return {
+                  accepted: false,
+                  code: "session/queue-item-not-found",
+                  message: "Queued message no longer pending",
+                };
+              }
+              if (
+                hostCode === -32072 &&
+                (message === "Queued message is already starting" ||
+                  message === "Another queued message is already starting")
+              ) {
+                return {
+                  accepted: false,
+                  code: "session/queue-item-starting",
+                  message,
+                };
+              }
+              if (hostCode === -32090 || hostCode === -32095) {
+                throw new RpcError("remote/outcome-unknown", message);
+              }
+            }
+            throw error;
+          }
+        }
         if (a.kind === "steer" && external && !thread.codexhostSupportsStrictSteer)
           return {
             accepted: false,
@@ -472,14 +663,16 @@ export class PeerHostClient {
             message: "Remote peer cannot confirm the target turn",
           };
         if (a.kind === "start" && a.onlyIfHead) {
-          const page = await rpc("thread/queue/list", { threadId, limit: 1 });
+          const page = (await rpc("thread/queue/list", { threadId, limit: 1 })) as {
+            data: Array<{ id?: string }>;
+          };
           if (page.data[0]?.id !== a.itemId) return { accepted: true };
         }
         if (a.kind === "start" || a.kind === "remove") {
-          const result = await rpc("thread/queue/" + (a.kind === "start" ? "start" : "delete"), {
+          const result = (await rpc("thread/queue/" + (a.kind === "start" ? "start" : "delete"), {
             threadId,
             queuedSubmissionId: a.itemId,
-          });
+          })) as { deleted?: boolean; turn?: { id?: string } };
           if (a.kind === "remove" && !result.deleted)
             return {
               accepted: false,
@@ -488,7 +681,7 @@ export class PeerHostClient {
             };
           if (a.kind === "start" && !result.turn?.id) throw Error("Queued turn not confirmed");
         } else {
-          const result = await rpc(a.kind === "steer" ? "turn/steer" : "thread/queue/add", {
+          const result = (await rpc(a.kind === "steer" ? "turn/steer" : "thread/queue/add", {
             threadId,
             input: [{ type: "text", text: a.text, text_elements: [] }],
             clientUserMessageId: a.requestId,
@@ -500,7 +693,11 @@ export class PeerHostClient {
               : external && thread.status.type === "idle"
                 ? { codexhostQueueStartIfEmpty: true }
                 : {}),
-          });
+          })) as {
+            queuedSubmission?: { id?: string; clientUserMessageId?: string };
+            turnId?: string;
+            delivery?: string;
+          };
           if (a.kind === "enqueue") {
             const item = result.queuedSubmission;
             if (!item?.id || item.clientUserMessageId !== a.requestId)
@@ -519,11 +716,8 @@ export class PeerHostClient {
         return rpc("turn/interrupt", { threadId, turnId: op.turnId });
       case "rename":
         return rpc("thread/name/set", { threadId, name: op.name });
-      case "archive": {
-        const res = await rpc(op.archived ? "thread/archive" : "thread/unarchive", base);
-        if (op.archived) this.createdThreads.delete(threadId);
-        return res;
-      }
+      case "archive":
+        return rpc(op.archived ? "thread/archive" : "thread/unarchive", base);
       case "respond":
         return post("respond", {
           threadId,

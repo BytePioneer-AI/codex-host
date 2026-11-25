@@ -109,6 +109,7 @@ class FakeTransport implements AntigravityAcpTransportLike {
   handler?: AntigravityActivePromptHandler;
   parts?: readonly AntigravityPromptInputPart[];
   result = deferred<AntigravityPromptResult>();
+  steerResults: Array<ReturnType<typeof deferred<AntigravityPromptResult>>> = [];
   config = config();
   constructor(readonly options: AntigravityAcpTransportOptions) {}
   initialize = vi.fn(async (): Promise<InitializeResponse> => ({
@@ -145,6 +146,12 @@ class FakeTransport implements AntigravityAcpTransportLike {
       return this.result.promise;
     },
   );
+  steer = vi.fn((parts: readonly AntigravityPromptInputPart[]) => {
+    this.parts = parts;
+    const next = deferred<AntigravityPromptResult>();
+    this.steerResults.push(next);
+    return next.promise;
+  });
   cancel = vi.fn(async () => {});
   closeSession = vi.fn(async () => {
     this.sessionId = null;
@@ -203,6 +210,13 @@ async function completed(outputs: HarnessOutput[], id = "t1") {
     expect(
       events(outputs).filter((event) => event.type === "turn.completed" && event.turnId === id),
     ).toHaveLength(1),
+  );
+}
+/** CortexStepMetadata field 1 is the step's native creation time. */
+function stampStep(db: DatabaseSync, idx: number, atMs: number) {
+  db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
+    bytes(1, nanoseconds(BigInt(atMs) * 1_000_000n)),
+    idx,
   );
 }
 afterEach(async () => {
@@ -1674,32 +1688,53 @@ describe("inspection and errors", () => {
           },
         },
       };
-      await writeFile(
-        command,
-        `#!/bin/sh\necho 'diagnostic'\nprintf '%s\\n' '${JSON.stringify(quota)}'\n`,
-      );
-      await chmod(command, 0o755);
+      const writeQuota = async (script: string) => {
+        await writeFile(command, script);
+        await chmod(command, 0o755);
+      };
+      const quotaScript = `#!/bin/sh\necho 'diagnostic'\nprintf '%s\\n' '${JSON.stringify(quota)}'\n`;
+      await writeQuota(quotaScript);
+      let now = 100_000;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
       const { adapter, transports } = fixture({ command });
-      expect(adapter.credits()).toBeNull();
-      expect(await adapter.refreshCredits()).toMatchObject({
-        usedPercent: 25,
-        periodType: "five_hour",
-      });
-      const account = await adapter.inspectAccount();
-      expect(account?.credits).toMatchObject({ usedPercent: 25 });
-      expect(account?.credits).not.toHaveProperty("fetchedAt");
-      const { session } = await sessionOf(
-        await adapter.open({ kind: "create", cwd: home, model: model("claude-opus-4-6") }),
-      );
-      expect(await session.readAccountCredits?.()).toMatchObject({
-        scope: { id: "Claude and GPT Models" },
-        usedPercent: 0,
-        productUsage: [{ scope: { id: "Gemini Models" }, usagePercent: 25 }],
-      });
-      expect(transports).toHaveLength(0);
-      await writeFile(command, "#!/bin/sh\nexit 1\n");
-      expect(await adapter.refreshCredits()).toBeNull();
-      expect(adapter.credits()).toBeNull();
+      try {
+        expect(adapter.credits()).toBeNull();
+        expect(await adapter.refreshCredits()).toMatchObject({
+          usedPercent: 25,
+          periodType: "five_hour",
+        });
+        const account = await adapter.inspectAccount();
+        expect(account?.credits).toMatchObject({ usedPercent: 25 });
+        expect(account?.credits).not.toHaveProperty("fetchedAt");
+        const { session } = await sessionOf(
+          await adapter.open({ kind: "create", cwd: home, model: model("claude-opus-4-6") }),
+        );
+        await writeQuota("#!/bin/sh\nexit 1\n");
+        now = 110_000;
+        expect(await session.readAccountCredits?.()).toMatchObject({
+          scope: { id: "Claude and GPT Models" },
+          usedPercent: 0,
+          productUsage: [{ scope: { id: "Gemini Models" }, usagePercent: 25 }],
+        });
+        expect(await adapter.refreshCredits()).toMatchObject({
+          usedPercent: 25,
+          periodType: "five_hour",
+        });
+        expect(transports).toHaveLength(0);
+        expect(await adapter.inspectAccount()).toBeNull();
+        expect(adapter.credits()).toBeNull();
+        await writeQuota(quotaScript);
+        now = 140_000;
+        expect(await adapter.refreshCredits()).toBeNull();
+        now = 170_000;
+        expect(await adapter.refreshCredits()).toMatchObject({
+          usedPercent: 25,
+          periodType: "five_hour",
+        });
+      } finally {
+        clock.mockRestore();
+        await adapter.close();
+      }
     },
   );
   it("normalizes native faults and redacts diagnostics", () => {
@@ -1842,13 +1877,6 @@ describe("Antigravity foreground native commits", () => {
       return row;
     });
     return firstRead.promise;
-  }
-
-  function stampInput(db: DatabaseSync, idx: number, atMs: number) {
-    db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
-      bytes(1, nanoseconds(BigInt(atMs) * 1_000_000n)),
-      idx,
-    );
   }
 
   const terminal = (outputs: HarnessOutput[], id = "t1") => {
@@ -2006,7 +2034,7 @@ describe("Antigravity foreground native commits", () => {
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
         // Both prompts have the same input; text equality alone cannot prove ownership.
         userStep(db, 0, "hello", "first");
-        stampInput(db, 0, firstCreatedAt);
+        stampStep(db, 0, firstCreatedAt);
         answerStep(db, 1, "first answer", "first");
         const secondCreatedAt = Date.now();
         const firstRead = nextRead();
@@ -2015,7 +2043,7 @@ describe("Antigravity foreground native commits", () => {
         if (commits) {
           await new Promise<void>((resolve) => setTimeout(resolve, 50));
           userStep(db, 2, "hello", "second");
-          stampInput(db, 2, secondCreatedAt);
+          stampStep(db, 2, secondCreatedAt);
           answerStep(db, 3, "second answer", "second");
         }
         await completed(outputs, "t2");
@@ -2044,7 +2072,7 @@ describe("Antigravity foreground native commits", () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       const firstInputAt = Date.now();
       userStep(db, 0, "first-a", "first");
-      stampInput(db, 0, firstInputAt);
+      stampStep(db, 0, firstInputAt);
       const secondLateInputAt = Date.now();
       transport.result.resolve({ stopReason: "end_turn" });
       await completed(outputs, "t1");
@@ -2058,7 +2086,7 @@ describe("Antigravity foreground native commits", () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
       // Turn A's second native input commits late during Turn B while Turn B has not written yet.
       userStep(db, 1, "first-b", "first");
-      stampInput(db, 1, secondLateInputAt);
+      stampStep(db, 1, secondLateInputAt);
       transport.result.resolve({ stopReason: "end_turn" });
       await completed(outputs, "t2");
       expect(terminal(outputs, "t2")).not.toHaveProperty("nativeTurnRef");
@@ -2096,7 +2124,7 @@ describe("Antigravity foreground native commits", () => {
         await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
         userStep(db, 0, "hello", "second");
-        stampInput(db, 0, Date.now());
+        stampStep(db, 0, Date.now());
         // Commit a generic tool without a planner reply.
         const tool = bytes(4, Buffer.concat([textField(1, "next"), textField(2, "Tool")]));
         db.prepare(
@@ -2151,7 +2179,7 @@ describe("Antigravity foreground native commits", () => {
       db.exec("BEGIN IMMEDIATE");
       userStep(db, 0, "hel", "prompt");
       userStep(db, 1, "lo", "prompt");
-      stampInput(db, 1, createdAtMs);
+      stampStep(db, 1, createdAtMs);
       answerStep(db, 2, "hello there", "prompt");
       systemStep(db, 3, "wake");
       answerStep(db, 4, "wake answer", "wake");
@@ -2195,6 +2223,8 @@ describe("Antigravity foreground native commits", () => {
 describe("Antigravity idle wake Turns", () => {
   const wakes = (outputs: HarnessOutput[]) =>
     events(outputs).filter((event) => event.type === "turn.autonomous.completed");
+  /** Lets the wall clock advance between native creation times and Adapter clock readings. */
+  const moment = () => new Promise((resolve) => setTimeout(resolve, 10));
 
   async function setup() {
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-wake-"));
@@ -2338,6 +2368,126 @@ describe("Antigravity idle wake Turns", () => {
       ]);
       expect(wakes(outputs).map((event) => event.snapshot)).toEqual([snapshot.value.turns[1]]);
     } finally {
+      db.close();
+    }
+  });
+
+  it("does not republish a wake that streamed inside the active prompt", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      const handler = required(transport.handler);
+      // agy keeps the prompt open across a scheduled wake, whose output streams into t2.
+      handler.onEvent({ type: "agent.text", text: "first report" });
+      const firstAtMs = Date.now();
+      systemStep(db, 2, "first-wake");
+      answerStep(db, 3, "first report", "first-wake");
+      stampStep(db, 2, firstAtMs);
+      const lateAtMs = Date.now();
+      handler.onResponse?.();
+      // A wake that starts only after the wire response is idle output, not part of t2.
+      const idleAtMs = Date.now() + 1;
+      await moment();
+      userStep(db, 4, "next", "next");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(
+        events(outputs).filter((event) => event.type === "item.completed" && event.turnId === "t2"),
+      ).toMatchObject([{ snapshot: { item: { type: "agentMessage", text: "first report" } } }]);
+      expect(wakes(outputs)).toEqual([]);
+      // The second wake also started before the response; its commit lands after t2 completed.
+      systemStep(db, 5, "late-wake");
+      answerStep(db, 6, "late report", "late-wake");
+      stampStep(db, 5, lateAtMs);
+      systemStep(db, 7, "idle-wake");
+      answerStep(db, 8, "idle report", "idle-wake");
+      stampStep(db, 7, idleAtMs);
+      transport.eventHandler?.({ type: "agent.text", text: "idle report" });
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
+        "wake-7",
+      ]);
+    } finally {
+      await session.close();
+      db.close();
+    }
+  });
+
+  it("publishes only the idle wake when commits land while a later prompt is in flight", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      // The idle wake starts after that response; its notification begins the commit poll.
+      await moment();
+      const idleAtMs = Date.now();
+      transport.eventHandler?.({ type: "agent.text", text: "idle report" });
+      transport.result = deferred();
+      await moment();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      const inPromptAtMs = Date.now();
+      // Both wakes reach SQLite while t2's prompt still awaits its response.
+      systemStep(db, 2, "idle-wake");
+      stampStep(db, 2, idleAtMs);
+      answerStep(db, 3, "idle report", "idle-wake");
+      userStep(db, 4, "next", "next");
+      systemStep(db, 5, "in-prompt");
+      stampStep(db, 5, inPromptAtMs);
+      answerStep(db, 6, "in-prompt report", "in-prompt");
+      required(transport.handler).onEvent({ type: "agent.text", text: "in-prompt report" });
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
+        "wake-2",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("publishes an idle wake that started between prompts even when committed after the later prompt responds", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      // An idle wake starts between t1's response and t2's submission, then commits only after t2 responds.
+      await moment();
+      const idleAtMs = Date.now();
+      await moment();
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      const inPromptAtMs = Date.now();
+      required(transport.handler).onEvent({ type: "agent.text", text: "in-prompt report" });
+      required(transport.handler).onResponse?.();
+      await moment();
+      userStep(db, 2, "next", "next");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(wakes(outputs)).toEqual([]);
+      // Both wakes reach SQLite after t2 has already responded and completed.
+      systemStep(db, 3, "idle-wake");
+      stampStep(db, 3, idleAtMs);
+      answerStep(db, 4, "idle report", "idle-wake");
+      systemStep(db, 5, "in-prompt");
+      stampStep(db, 5, inPromptAtMs);
+      answerStep(db, 6, "in-prompt report", "in-prompt");
+      transport.eventHandler?.({ type: "agent.text", text: "idle report" });
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
+        "wake-3",
+      ]);
+    } finally {
+      await session.close();
       db.close();
     }
   });
@@ -2509,6 +2659,252 @@ describe("Antigravity idle wake Turns", () => {
           event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
       );
       expect(lastCompactionIndex).toBeLessThan(turnDoneIndex);
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("steers an active prompt via concurrent session/prompt without cancelling background work", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      expect(session.capabilities.steer).toBe(true);
+      const handler = required(transport.handler);
+      handler.onEvent({ type: "agent.text", text: "waiting on timer" });
+      // A pending approval from the superseded prompt closes cleanly when steer is accepted.
+      const stalePermission = handler.onPermission({
+        sessionId: required(transport.sessionId),
+        toolCall: { toolCallId: "perm-1", title: "Run command" },
+        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+      });
+      await vi.waitFor(() =>
+        expect(outputs.some((output) => output.kind === "interaction")).toBe(true),
+      );
+      const steered = await session.execute({
+        type: "turn.steer",
+        turnId: turnId("t1"),
+        input: [{ type: "text", text: "follow-up B" }],
+      });
+      expect(steered).toEqual({ ok: true, value: { accepted: true } });
+      expect(await stalePermission).toEqual({ outcome: { outcome: "cancelled" } });
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({ type: "interaction.closed", reason: "cancelled" }),
+      );
+      expect(transport.cancel).not.toHaveBeenCalled();
+      expect(transport.steer).toHaveBeenCalledWith([{ type: "text", text: "follow-up B" }]);
+      // The superseded initial prompt settles immediately; the Host Turn must remain open.
+      transport.result.resolve({
+        stopReason: "end_turn",
+        usage: { inputTokens: 10, outputTokens: 5, cachedWriteTokens: 2, totalTokens: 15 },
+      });
+      await setImmediate();
+      expect(session.capabilities.steer).toBe(true);
+      expect(events(outputs).some((event) => event.type === "turn.completed")).toBe(false);
+      handler.onEvent({ type: "agent.text", text: "reply B" });
+      userStep(db, 2, "follow-up B", "run-b");
+      handler.onResponse?.();
+      expect(session.capabilities.steer).toBe(false);
+      // Late steer after the wire response is refused so Host can start a fresh Turn.
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "too late" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+      // Omitting cachedWriteTokens on the second prompt keeps merged cacheWriteInputTokens unknown.
+      required(transport.steerResults[0]).resolve({
+        stopReason: "end_turn",
+        usage: { inputTokens: 20, outputTokens: 7, totalTokens: 27 },
+      });
+      await completed(outputs, "t1");
+      expect(session.capabilities.steer).toBe(false);
+      const done = events(outputs).find(
+        (event) => event.type === "turn.completed" && event.turnId === "t1",
+      );
+      expect(done).toMatchObject({
+        type: "turn.completed",
+        turnId: "t1",
+        outcome: { status: "succeeded" },
+        nativeTurnRef: { nativeTurnKey: "turn-1" },
+      });
+      const finalUsage = events(outputs).findLast(
+        (event) => event.type === "session.usage.changed" && event.observedForTurnId === "t1",
+      );
+      expect(finalUsage).toMatchObject({
+        usage: { inputTokens: 30, outputTokens: 12, totalTokens: 42 },
+      });
+      expect(
+        finalUsage && finalUsage.type === "session.usage.changed" && finalUsage.usage
+          ? finalUsage.usage.cacheWriteInputTokens
+          : "missing",
+      ).toBeUndefined();
+      expect(
+        events(outputs).filter(
+          (event) => event.type === "item.completed" && event.snapshot.item.type === "agentMessage",
+        ),
+      ).toMatchObject([
+        { snapshot: { item: { text: "waiting on timer" } } },
+        { snapshot: { item: { text: "reply B" } } },
+      ]);
+      // Idle session refuses turn.steer.
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "idle" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("waits for a delayed steered WAL commit and keeps prior foreground compaction checkpoints", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      stampStep(db, 0, Date.now());
+      await moment();
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "delayed steer" }],
+        }),
+      ).toEqual({ ok: true, value: { accepted: true } });
+      const steerCreatedAtMs = Date.now();
+      transport.result.resolve({ stopReason: "end_turn" });
+      required(transport.handler).onResponse?.();
+      required(transport.steerResults[0]).resolve({ stopReason: "end_turn" });
+      // Commit steer's USER_INPUT after observeNativeTurnCount's initial 0ms read,
+      // along with a late compaction checkpoint belonging to the initial prompt's run.
+      setTimeout(() => {
+        userStep(db, 2, "delayed steer", "run-b");
+        stampStep(db, 2, steerCreatedAtMs);
+        checkpointStep(db, 3, { status: 3, run: "prompt", summary: "Late initial compaction" });
+      }, 40);
+      await completed(outputs, "t1");
+      expect(
+        events(outputs).find((event) => event.type === "turn.completed" && event.turnId === "t1"),
+      ).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "turn-1" },
+        outcome: { status: "succeeded", checkpoint: { checkpointId: "turn-1" } },
+      });
+      expect(
+        events(outputs).filter(
+          (event) =>
+            event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+        ),
+      ).toMatchObject([
+        {
+          snapshot: {
+            item: { type: "contextCompaction", itemId: "checkpoint-3" },
+            outcome: { status: "succeeded" },
+          },
+        },
+      ]);
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("exposes dynamic steer capability across cancel and fails when a steered prompt rejects", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      expect(session.capabilities.steer).toBe(true);
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "will fail" }],
+        }),
+      ).toEqual({ ok: true, value: { accepted: true } });
+      transport.result.resolve({ stopReason: "end_turn" });
+      required(transport.steerResults[0]).reject(
+        new AntigravityTransportError("unavailable", "steer prompt failed"),
+      );
+      await completed(outputs, "t1");
+      expect(session.capabilities.steer).toBe(false);
+      expect(
+        events(outputs).find((event) => event.type === "turn.completed" && event.turnId === "t1"),
+      ).toMatchObject({
+        outcome: { status: "failed", error: { message: "steer prompt failed" } },
+      });
+
+      // Second turn: cancel flips capabilities.steer to false immediately and preserves prompt #0's checkpoint.
+      transport.result = deferred();
+      transport.steerResults = [];
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      expect(session.capabilities.steer).toBe(true);
+      userStep(db, 2, "second prompt", "run-2");
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t2"),
+          input: [{ type: "text", text: "cancelled steer" }],
+        }),
+      ).toEqual({ ok: true, value: { accepted: true } });
+      expect(await session.execute({ type: "turn.cancel", turnId: turnId("t2") })).toEqual({
+        ok: true,
+        value: { cancellationRequested: true },
+      });
+      expect(session.capabilities.steer).toBe(false);
+      transport.result.resolve({ stopReason: "end_turn" });
+      required(transport.steerResults[0]).resolve({ stopReason: "cancelled" });
+      await completed(outputs, "t2");
+      expect(
+        events(outputs).find((event) => event.type === "turn.completed" && event.turnId === "t2"),
+      ).toMatchObject({
+        outcome: { status: "cancelled" },
+      });
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("emits compaction checkpoints committed inside an in-prompt wake run", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      const beforePromptMs = Date.now() - 5_000;
+      systemStep(db, 2, "earlier-wake");
+      stampStep(db, 2, beforePromptMs);
+      checkpointStep(db, 3, { status: 3, run: "earlier-wake" });
+      userStep(db, 4, "hello", "fg-run");
+      const inPromptAtMs = Date.now();
+      systemStep(db, 5, "in-prompt-wake", "task_notification");
+      stampStep(db, 5, inPromptAtMs);
+      checkpointStep(db, 6, { status: 3, run: "in-prompt-wake", summary: "Wake compacted" });
+      transport.eventHandler?.({ type: "usage.context", used: 15_000, size: 200_000 });
+      await vi.waitFor(() =>
+        expect(
+          events(outputs).filter(
+            (event) =>
+              event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+          ),
+        ).toHaveLength(1),
+      );
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t1");
+      const done = events(outputs).filter(
+        (event) =>
+          event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+      );
+      expect(done).toMatchObject([
+        {
+          type: "item.completed",
+          turnId: "t1",
+          snapshot: {
+            item: { type: "contextCompaction", itemId: "checkpoint-6" },
+            outcome: { status: "succeeded" },
+          },
+        },
+      ]);
       await session.close();
     } finally {
       db.close();

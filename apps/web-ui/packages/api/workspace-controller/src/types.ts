@@ -26,6 +26,7 @@ export interface WorkspaceView {
     readonly hostId: string;
     readonly displayName: string;
     readonly state: string;
+    readonly color?: string;
   };
   readonly workspaceId: WorkspaceId;
   /** Canonical host directory path. */

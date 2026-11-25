@@ -34,7 +34,12 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import { pathPartsOf } from "@deepseek-ai/dsh-util-workspace-path";
 import type { TextInjected } from "./face.ts";
-import { emptyFailureRecourse, failureLine } from "./failure-line.ts";
+import {
+  emptyFailureRecourse,
+  failureLine,
+  remoteWorkspacePreviewBlockKey,
+  type RemoteHostWorkspaceCapabilities,
+} from "./failure-line.ts";
 import { LoadingIndicator } from "./LoadingIndicator.tsx";
 import { hostFileOf } from "./rpc.ts";
 import type { TextStore } from "./store.ts";
@@ -67,7 +72,11 @@ function fileSpecLine(fileName: string, bytes: number | undefined): string | nul
 
 /** Private registration inputs; the framework binds the registry source to useDocumentPreviews. */
 export interface TextPreviewInjected extends TextInjected {
-  readonly openExternal: (path: string, signal: AbortSignal) => Promise<void>;
+  readonly openExternal: (
+    sessionId: import("@deepseek-ai/dsh-session/types").SessionId,
+    path: string,
+    signal: AbortSignal,
+  ) => Promise<void>;
   readonly hooks: {
     readonly documentPreviews: ObservableSnapshot<readonly DocumentPreviewDefinition[]>;
   };
@@ -92,6 +101,7 @@ export type TextPreviewProps = PropsRuntime<"sidebar.right.pane.tab"> &
  */
 export function TextPreview({
   useTabInfo,
+  useSessions,
   useResource,
   useStore,
   actions,
@@ -110,8 +120,16 @@ export function TextPreview({
   const { tab } = useTabInfo();
   const { navigation, signal } = tab;
   const meta = useResource<"file">(tab.contentId);
-  const canRead = meta.status !== "none";
   const file = useMemo(() => hostFileOf(tab.contentId), [tab.contentId]);
+  const remoteHost = useSessions(
+    (s) =>
+      (
+        s.byId[file.sessionId]?.projectionValues as
+          { readonly remoteHost?: RemoteHostWorkspaceCapabilities | null } | undefined
+      )?.remoteHost,
+  );
+  const remoteBlockKey = remoteWorkspacePreviewBlockKey(file.sessionId, remoteHost);
+  const canRead = meta.status !== "none" && remoteBlockKey === undefined;
   const state = useStore((s) => s.byTab[tab.id]);
   const definitions = useDocumentPreviews((value) => value);
   const unviewable = useMemo(() => unviewableBinaryPath(file.path), [file.path]);
@@ -152,6 +170,7 @@ export function TextPreview({
   const absolutePath = meta.value?.absolutePath ?? current?.complete?.absolutePath;
   const displayPath = absolutePath ?? file.path;
   const [openError, setOpenError] = useState<string>();
+  const isRemoteSession = file.sessionId.startsWith("web-remote:");
   const pathLabel = (
     <>
       <PathLabel
@@ -159,10 +178,11 @@ export function TextPreview({
         className={css.path}
         data-textpreview-path
         onClick={(event) => {
-          if (!(event.ctrlKey || event.metaKey) || absolutePath === undefined) return;
+          if (isRemoteSession || !(event.ctrlKey || event.metaKey) || absolutePath === undefined)
+            return;
           event.preventDefault();
           setOpenError(undefined);
-          void openExternal(absolutePath, signal).catch((error: unknown) => {
+          void openExternal(file.sessionId, absolutePath, signal).catch((error: unknown) => {
             if (!signal.aborted)
               setOpenError(error instanceof Error ? error.message : String(error));
           });
@@ -401,6 +421,28 @@ export function TextPreview({
             <div className={css.emptyActions}>
               {renderSlot("sidebar.right.tab.document.unpreviewable", fileOwner)}
             </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (remoteBlockKey !== undefined) {
+    const { name: blockedName } = pathPartsOf(displayPath);
+    return (
+      <div
+        className={css.preview}
+        data-textpreview-state="text"
+        data-textpreview-url={tab.contentId}
+      >
+        <div className={css.header}>{pathLabel}</div>
+        <div className={css.body} data-textpreview-body>
+          <div className={css.empty} data-textpreview-failed="remote/workspace-files-unsupported">
+            <FileTypeIcon
+              kind={classifyFileType(blockedName)}
+              size={36}
+              className={css.emptyIcon}
+            />
+            <p className={css.emptyLine}>{t(remoteBlockKey)}</p>
           </div>
         </div>
       </div>

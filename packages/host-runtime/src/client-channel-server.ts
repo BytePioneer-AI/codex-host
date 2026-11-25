@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
 import {
+  PEER_DELEGATION_CHANNEL_METHOD,
   clientChannelCursorSchema,
   clientChannelResponseSchema,
   clientSnapshotRequestSchema,
@@ -13,6 +14,7 @@ import {
   type ClientChannelResponse,
   CLIENT_REQUEST_LIMIT_BYTES,
 } from "@codexhost/shared-contracts";
+import type { JsonValue } from "@codexhost/protocol-core";
 import type { ClientChannelEvents } from "./client-channel-events.js";
 import { ClientChannelRequestError } from "./client-channel-error.js";
 import { WebSocketServer } from "ws";
@@ -48,6 +50,8 @@ export async function startClientChannelServer(options: {
   directory?: string;
   owner?: "service";
   shutdown?: { runningTasks(): number; stop(): void };
+  /** When provided, advertises `capabilities.peerDelegation=1` and routes internal peer delegation exclusively here. */
+  peerDelegation?: (params: unknown) => Promise<{ result: JsonValue }>;
   externalSession?: (streams: RemoteAppServerSessionStreams) => RemoteAppServerSession;
   desktopSession?: (
     streams: RemoteAppServerSessionStreams,
@@ -113,9 +117,17 @@ export async function startClientChannelServer(options: {
         reply(200, { result: { stopping: true, runningTasks } });
         return;
       }
-      if (url.pathname === "/v1/rpc" && typeof input.method === "string")
-        reply(200, await options.target.handleClientRequest(input.method, input.params));
-      else if (url.pathname === "/v1/snapshot" && typeof input.threadId === "string") {
+      if (url.pathname === "/v1/rpc" && typeof input.method === "string") {
+        if (input.method === PEER_DELEGATION_CHANNEL_METHOD) {
+          if (options.peerDelegation) {
+            reply(200, await options.peerDelegation(input.params));
+          } else {
+            reply(200, { error: { code: -32601, message: "Client method is not available" } });
+          }
+        } else {
+          reply(200, await options.target.handleClientRequest(input.method, input.params));
+        }
+      } else if (url.pathname === "/v1/snapshot" && typeof input.threadId === "string") {
         const { threadId, ...snapshotOptions } = clientSnapshotRequestSchema.parse(input);
         reply(200, { result: await options.target.clientSnapshot(threadId, snapshotOptions) });
       } else if (url.pathname === "/v1/respond")
@@ -190,6 +202,7 @@ export async function startClientChannelServer(options: {
     token,
     startedAt: Date.now(),
     epoch: options.target.clientEvents.epoch,
+    ...(options.peerDelegation ? { capabilities: { peerDelegation: 1 as const } } : {}),
   };
   try {
     await mkdir(directory, { recursive: true, mode: 0o700 });

@@ -12,6 +12,7 @@ export * from "./skills.js";
 export * from "./skill-reference.js";
 export * from "./web-access-tokens.js";
 export * from "./delegation-read.js";
+export * from "./peer-delegation.js";
 export * from "./credential-imports.js";
 export * from "./harness-display-settings.js";
 export * from "./harness-preferences.js";
@@ -397,11 +398,13 @@ export {
   HARNESS_COMMAND_MENTION_PATH_PREFIX,
   delegationMentionPath,
   harnessCommandMentionPath,
+  harnessCommandReferences,
   restoreHarnessCommandMentions,
   formatDelegationMentionLink,
   stripDelegationMentions,
   type DelegationMention,
   type DelegationMentionRewrite,
+  type HarnessCommandReference,
 } from "./delegation-mention.js";
 
 export { desktopImageAttachmentPaths } from "./desktop-attachments.js";
@@ -498,11 +501,15 @@ export {
   REMOTE_PEER_ID_PATTERN,
   REMOTE_PEERS_METHODS,
   REMOTE_PEERS_CHANGED_EVENT,
+  REMOTE_PEER_COLORS,
+  defaultRemotePeerColor,
+  resolveRemotePeerColor,
   remotePeerHostId,
   peerIdFromRemoteHostId,
   remotePeerIdSchema,
   remotePeerHostIdSchema,
   remotePeerTransportKindSchema,
+  remotePeerColorSchema,
   remotePeerStateSchema,
   remotePeerSummarySchema,
   remotePeerListResultSchema,
@@ -511,9 +518,19 @@ export {
   remotePeerIdParamsSchema,
   remotePeerRemoveResultSchema,
   remotePeerTestParamsSchema,
+  remotePeerTestProjectSchema,
   remotePeerTestResultSchema,
+  remotePeerCapabilitiesSchema,
   remotePeerManifestProjectSchema,
   remotePeerManifestSchema,
+  REMOTE_PEER_UPLOAD_SCOPE_PATTERN,
+  REMOTE_PEER_FILE_PROXY_PATH,
+  remotePeerHarnessIconPath,
+  remotePeerWorkspaceId,
+  remotePeerHarnessPresentationPath,
+  remotePeerPromptParamsSchema,
+  remotePeerUploadResultSchema,
+  remotePeerPromptResultSchema,
   remotePeerDirectoryEntrySchema,
   remotePeerListDirsParamsSchema,
   remotePeerListDirsResultSchema,
@@ -523,6 +540,8 @@ export {
   remotePeerRenameWorkspaceParamsSchema,
   remotePeerDeleteWorkspaceParamsSchema,
   remotePeerWorkspaceMutationResultSchema,
+  type RemotePeerCapabilities,
+  type RemotePeerColor,
   type RemotePeerTransportKind,
   type RemotePeerState,
   type RemotePeerSummary,
@@ -532,9 +551,13 @@ export {
   type RemotePeerIdParams,
   type RemotePeerRemoveResult,
   type RemotePeerTestParams,
+  type RemotePeerTestProject,
   type RemotePeerTestResult,
   type RemotePeerManifestProject,
   type RemotePeerManifest,
+  type RemotePeerPromptParams,
+  type RemotePeerUploadResult,
+  type RemotePeerPromptResult,
   type RemotePeerDirectoryEntry,
   type RemotePeerListDirsParams,
   type RemotePeerListDirsResult,

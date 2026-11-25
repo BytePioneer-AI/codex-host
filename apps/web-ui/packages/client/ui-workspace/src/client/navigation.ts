@@ -188,6 +188,8 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     { persist: { name: "dsh.sessions.current" } },
   );
   private mainReference: SessionReference | undefined;
+  private mainIsRemote = false;
+  private disposeMainSessionWatch: (() => void) | undefined;
   readonly opening = createSnapshotStore<SessionOpeningState>({ state: "idle" });
   private retryOpen: (() => void) | undefined;
   private openingLoad: { readonly stop: () => void } | undefined;
@@ -238,8 +240,11 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         this.lifetime.abort();
         stopKeepalive();
         stopVisits();
+        this.disposeMainSessionWatch?.();
+        this.disposeMainSessionWatch = undefined;
         const reference = this.mainReference;
         this.mainReference = undefined;
+        this.mainIsRemote = false;
         reference?.release();
       };
     }, "ui-workspace: Workspace navigation policy");
@@ -375,6 +380,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     signal: AbortSignal,
     resolved: () => void,
     retry: () => void,
+    onMissing?: () => void,
   ): Promise<void> {
     if (signal.aborted) return;
     this.openingLoad?.stop();
@@ -395,12 +401,23 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       if (signal.aborted || this.openingLoad !== load) return;
       await this.sessions.loadSummary(sessionId);
       if (signal.aborted || this.openingLoad !== load) return;
-      if (this.sessions.list.getSnapshot().byId[sessionId] === undefined)
+      if (this.sessions.list.getSnapshot().byId[sessionId] === undefined) {
+        if (onMissing !== undefined) {
+          clear();
+          onMissing();
+          return;
+        }
         throw new Error(`Session not found: ${sessionId}`);
+      }
       resolved();
       clear();
     } catch (error: unknown) {
       if (signal.aborted || this.openingLoad !== load) return;
+      if (onMissing !== undefined && isMissingSessionError(error)) {
+        clear();
+        onMissing();
+        return;
+      }
       this.retryOpen = retry;
       this.opening.set({ state: "error", sessionId, message: creationFailureMessage(error) });
     }
@@ -659,7 +676,11 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     );
     const reconcile = (): void => {
       if (this.lifetime.signal.aborted) return;
-      if (this.clearArchivedCurrent()) return;
+      const current = this.mainReference?.sessionId;
+      if (current !== undefined && !this.mainIsRemote && this.isRemoteSession(current)) {
+        this.mainIsRemote = true;
+      }
+      if (this.clearArchivedCurrent() || this.clearRemovedRemoteCurrent()) return;
       if (initial !== "waiting") return;
       const workspace = this.workspaces.list.getSnapshot();
       const sessions = this.sessions.list.getSnapshot();
@@ -683,6 +704,11 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
     const disposeWorkspaces = this.workspaces.list.subscribe(reconcile);
     const disposeSessions = this.sessions.list.subscribe(reconcile);
+    const remote = this.ctx.get("remote");
+    const disposeRemoved = remote?.$on("api-session/removed", (sessionId: SessionId) => {
+      if (this.lifetime.signal.aborted) return;
+      this.clearRemovedRemoteCurrent(sessionId);
+    });
     const saved = this.selection.getSnapshot();
     if (saved.sessionId !== undefined || saved.subagentAddress !== undefined) {
       initial = "connecting";
@@ -706,6 +732,11 @@ class UiWorkspaceService extends Service implements UiWorkspace {
               }
             },
             restore,
+            () => {
+              if (this.selection.getSnapshot().sessionId === id) this.selection.set({});
+              initial = "waiting";
+              reconcile();
+            },
           );
         };
         restore();
@@ -714,6 +745,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     reconcile();
     return () => {
       this.lifetime.abort();
+      disposeRemoved?.();
       disposeSessions();
       disposeWorkspaces();
     };
@@ -789,9 +821,77 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     return true;
   }
 
+  private isDurableSubagent(sessionId: SessionId): boolean {
+    return (
+      this.sessions.subagentAddress(sessionId) !== undefined ||
+      this.sessions.list.getSnapshot().byId[sessionId]?.origin === "subagent"
+    );
+  }
+
+  private isRemoteSession(sessionId: SessionId): boolean {
+    const list = this.sessions.list.getSnapshot();
+    const workspaces = this.workspaces.list.getSnapshot().items;
+    const seen = new Set<SessionId>();
+    let cursor: SessionId | undefined = sessionId;
+    while (cursor !== undefined && !seen.has(cursor)) {
+      const id: SessionId = cursor;
+      seen.add(id);
+      if (
+        list.byId[id]?.projectionValues?.remoteHost != null ||
+        list.projectionsBySession[id]?.values.remoteHost != null ||
+        workspaces.some(
+          (workspace) => workspace.remote !== undefined && workspace.sessionIds.includes(id),
+        )
+      ) {
+        return true;
+      }
+      cursor = this.sessions.subagentAddress(id)?.parentSessionId;
+    }
+    return false;
+  }
+
+  /** @returns true when an explicitly removed remote current selection was cleared. */
+  private clearRemovedRemoteCurrent(explicitRemovedId?: SessionId): boolean {
+    const current = this.mainReference;
+    if (current === undefined) return false;
+    if (explicitRemovedId !== undefined && this.isDurableSubagent(explicitRemovedId)) {
+      return false;
+    }
+
+    const seen = new Set<SessionId>();
+    let cursor: SessionId | undefined = current.sessionId;
+    let matchedRemoval = false;
+    while (cursor !== undefined && !seen.has(cursor)) {
+      const id: SessionId = cursor;
+      seen.add(id);
+      const binding = id === current.sessionId ? current.binding : this.sessions.binding(id);
+      if (
+        (explicitRemovedId !== undefined && id === explicitRemovedId) ||
+        binding?.session.getSnapshot().removed === true
+      ) {
+        matchedRemoval = true;
+        break;
+      }
+      cursor = this.sessions.subagentAddress(id)?.parentSessionId;
+    }
+    if (!matchedRemoval) return false;
+
+    const isRemote =
+      this.mainIsRemote ||
+      this.isRemoteSession(current.sessionId) ||
+      (explicitRemovedId !== undefined && this.isRemoteSession(explicitRemovedId));
+    if (!isRemote) return false;
+
+    this.clearMain();
+    return true;
+  }
+
   private releaseMainSelection(): void {
     const previous = this.mainReference;
+    this.disposeMainSessionWatch?.();
+    this.disposeMainSessionWatch = undefined;
     this.mainReference = undefined;
+    this.mainIsRemote = false;
     this.recentVisits.clearCurrent();
     this.selection.set({});
     previous?.release();
@@ -828,7 +928,16 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       throw error;
     }
     const previous = this.mainReference;
+    this.disposeMainSessionWatch?.();
+    this.disposeMainSessionWatch = undefined;
     this.mainReference = reference;
+    this.mainIsRemote = this.isRemoteSession(reference.sessionId);
+    this.disposeMainSessionWatch =
+      typeof reference.binding.session.subscribe === "function"
+        ? reference.binding.session.subscribe(() => {
+            if (!this.lifetime.signal.aborted) this.clearRemovedRemoteCurrent();
+          })
+        : undefined;
     this.keepalive.visit(reference, target);
     this.recentVisits.visit(reference.sessionId, target);
     previous?.release();
@@ -845,6 +954,16 @@ function sessionCreateErrorOf(error: unknown): SessionCreateError | undefined {
   return error instanceof Error && error.name === "SessionCreateError"
     ? (error as SessionCreateError)
     : undefined;
+}
+
+/** True only when the Host definitively reports the Session no longer exists (not transient offline). */
+function isMissingSessionError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { isDSHRemoteError?: unknown }).isDSHRemoteError === true &&
+    (error as { code?: unknown }).code === "session/not-found"
+  );
 }
 
 class WorkspaceRequiredError extends Error {

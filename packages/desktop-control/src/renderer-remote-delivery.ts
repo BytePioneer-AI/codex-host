@@ -146,6 +146,12 @@ export async function rendererRemoteDelivery(
       throw error;
     }
   }
+  if (action.kind === "sendNow") {
+    return reject(
+      "remote/steer-unavailable",
+      "Use Codex Desktop to steer an already queued remote message.",
+    );
+  }
 
   const params = {
     threadId,

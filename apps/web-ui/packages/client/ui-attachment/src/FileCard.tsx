@@ -62,6 +62,9 @@ export function FileCard({
           type="button"
           className={`${css.body} ${css.retry}`}
           aria-label={labels.retry}
+          onMouseDown={(event) => {
+            event.preventDefault();
+          }}
           onClick={onRetry}
         >
           <span className={css.name}>{name}</span>
@@ -77,6 +80,9 @@ export function FileCard({
         type="button"
         className={retryable ? `${css.remove} ${css.removeFailed}` : css.remove}
         aria-label={labels.remove}
+        onMouseDown={(event) => {
+          event.preventDefault();
+        }}
         onClick={onRemove}
       >
         <IconCloseFillRegular size={12} />

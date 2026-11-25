@@ -40,6 +40,8 @@ import type {
 export type {
   AskUserQuestionAnswer,
   AskUserQuestionAnswerItem,
+  AskUserQuestionApprovalAction,
+  AskUserQuestionApprovalFile,
   AskUserQuestionIntent,
   AskUserQuestionItem,
   AskUserQuestionOption,
@@ -368,18 +370,32 @@ export class UserQuestionService extends TypertRemoteService {
     for (const question of request.questions) {
       const intent = question.intent;
       if (intent === undefined) continue;
-      if (!(question.options ?? []).some((option) => option.label === intent.approve)) {
-        throw new UserQuestionError(
-          `question ${question.id} declares intent ${intent.kind} whose approve label ` +
-            `${JSON.stringify(intent.approve)} names none of its options`,
-          "BAD_INTENT",
-        );
+      if (intent.kind === "plan-review") {
+        if (!(question.options ?? []).some((option) => option.label === intent.approve)) {
+          throw new UserQuestionError(
+            `question ${question.id} declares intent ${intent.kind} whose approve label ` +
+              `${JSON.stringify(intent.approve)} names none of its options`,
+            "BAD_INTENT",
+          );
+        }
+        if (question.detail === undefined) {
+          throw new UserQuestionError(
+            `question ${question.id} declares intent ${intent.kind} without the detail it reviews`,
+            "BAD_INTENT",
+          );
+        }
+        continue;
       }
-      if (question.detail === undefined) {
-        throw new UserQuestionError(
-          `question ${question.id} declares intent ${intent.kind} without the detail it reviews`,
-          "BAD_INTENT",
-        );
+      if (intent.kind === "approval") {
+        for (const action of intent.actions) {
+          if (!(question.options ?? []).some((option) => option.label === action.label)) {
+            throw new UserQuestionError(
+              `question ${question.id} declares intent ${intent.kind} whose action label ` +
+                `${JSON.stringify(action.label)} names none of its options`,
+              "BAD_INTENT",
+            );
+          }
+        }
       }
     }
     const noAnswerer = () =>

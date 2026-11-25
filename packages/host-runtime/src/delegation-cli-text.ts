@@ -56,6 +56,7 @@ function snapshotText(
 /** Explicitly scoped so a new command cannot silently fall back to JSON. */
 export function assertDelegationTextCommand(command: string): void {
   switch (command) {
+    case "host list":
     case "host info":
     case "project list":
     case "thread file":
@@ -67,6 +68,7 @@ export function assertDelegationTextCommand(command: string): void {
     case "thread cancel":
     case "thread read":
     case "thread wait":
+    case "thread answer":
     case "thread watch":
     case "thread watches":
     case "thread list":

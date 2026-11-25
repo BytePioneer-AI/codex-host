@@ -157,6 +157,7 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
             key={i}
             text={block.text}
             streaming={streaming}
+            breaks
             labels={labels}
             fileMentions={mentions}
             pathImages={pathImages}

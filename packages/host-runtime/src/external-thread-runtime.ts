@@ -4,6 +4,7 @@ import type {
   HarnessModelRef,
   HarnessResult,
   HarnessSession,
+  HarnessSessionCapabilities,
   HarnessSessionState,
   HostThreadSnapshot,
   HostTurnSnapshot,
@@ -38,7 +39,7 @@ import {
   externalThreadValue,
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
-import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
+import { threadDelegationEnvironment } from "./bearer-token.js";
 import { normalizeStoredModelRef, storedModelCatalog } from "./stored-model-ref.js";
 import { SessionStateObserver } from "./session-state-observer.js";
 import { DesktopRequestQueue } from "./desktop-request-queue.js";
@@ -228,6 +229,31 @@ function recoveryError(error: unknown): ExternalThreadRpcError {
   return { code: -32076, message: "External Thread recovery failed; retry the request" };
 }
 
+const EMPTY_PRICE_LOOKUP = { find: () => null };
+
+function restoreUsageMeasurements(meter: UsageMeter, record: StoredThreadRecordV1): void {
+  const saved = record.usageMeasurements;
+  if (!saved || JSON.stringify(saved.nativeSessionRef) !== JSON.stringify(record.nativeSessionRef))
+    return;
+  const retained = new Set<string>(record.turnMappings.map((mapping) => mapping.hostTurnId));
+  meter.restoreOutputTimings(
+    saved.values.outputTimings?.filter((value) => retained.has(value.turnId)) ?? [],
+  );
+  for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
+    const value = saved.values[field];
+    if (value && retained.has(value.turnId))
+      meter.restoreMeasurements({ [field]: value.value }, value.turnId, value.at);
+  }
+}
+
+/** Host-persisted usage telemetry for an unloaded External Thread without opening its Session. */
+export function persistedThreadUsage(record: StoredThreadRecordV1): HostUsage | null {
+  if (!record.usageMeasurements) return null;
+  const meter = new UsageMeter();
+  restoreUsageMeasurements(meter, record);
+  return meter.derive(null, EMPTY_PRICE_LOOKUP);
+}
+
 export class ExternalThreadRuntime {
   readonly idleRelease: ExternalThreadIdleRelease;
   readonly #adapters: Map<ExternalHarnessId, HarnessAdapter>;
@@ -237,6 +263,10 @@ export class ExternalThreadRuntime {
   readonly #repository: ExternalThreadRepository;
   readonly #lifecycle = new ExternalThreadLifecycle();
   readonly #hasRunningDescendants: (threadId: string) => boolean;
+  readonly #historyCapabilities = new Map<
+    ExternalHarnessId,
+    HarnessSessionCapabilities["history"]
+  >();
   readonly #steeredTurnIds = new Map<string, Set<HostTurnId>>();
   readonly #subagentRunning: (threadId: string) => boolean;
   readonly #threads = new Map<string, ExternalThread>();
@@ -289,6 +319,19 @@ export class ExternalThreadRuntime {
 
   get(threadId: string): ExternalThread | undefined {
     return this.#threads.get(threadId);
+  }
+
+  noteHistoryCapabilities(
+    harnessId: ExternalHarnessId,
+    history: HarnessSessionCapabilities["history"],
+  ): void {
+    this.#historyCapabilities.set(harnessId, history);
+  }
+
+  knownHistoryCapabilities(
+    harnessId: ExternalHarnessId,
+  ): HarnessSessionCapabilities["history"] | undefined {
+    return this.#historyCapabilities.get(harnessId);
   }
 
   #detach(threadId: string): void {
@@ -470,6 +513,9 @@ export class ExternalThreadRuntime {
       sessionUnavailable: false,
       steeredTurnIds,
     };
+    if (!input.record.subagent) {
+      this.#historyCapabilities.set(harnessId, input.session.capabilities.history);
+    }
     this.#restoreUsageMeasurements(externalThread);
     this.idleRelease.touch(externalThread);
     externalThread.outputTask = this.#consumeOutputs(externalThread);
@@ -600,7 +646,7 @@ export class ExternalThreadRuntime {
 
   async #locate(threadId: string): Promise<ExternalThreadLocation> {
     const loaded = this.#threads.get(threadId);
-    if (loaded) {
+    if (loaded && !this.idleRelease.retireConfirmedRelease(loaded)) {
       const failure = this.idleRelease.failure(loaded);
       if (failure) return { kind: "error", error: { code: -32075, message: failure } };
       return { kind: "external", record: loaded.record, thread: loaded };
@@ -862,7 +908,7 @@ export class ExternalThreadRuntime {
     const opened = await adapter.open({
       kind: "resume",
       cwd: thread.record.cwd,
-      environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: thread.record.hostThreadId },
+      environment: threadDelegationEnvironment(this.#environment, thread.record.hostThreadId),
       nativeRef: thread.record.nativeSessionRef as NativeSessionRef,
       knownTurnRefs: thread.record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
       ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
@@ -984,23 +1030,7 @@ export class ExternalThreadRuntime {
   }
 
   #restoreUsageMeasurements(thread: ExternalThread): void {
-    const saved = thread.record.usageMeasurements;
-    if (
-      !saved ||
-      JSON.stringify(saved.nativeSessionRef) !== JSON.stringify(thread.record.nativeSessionRef)
-    )
-      return;
-    const retained = new Set<string>(
-      thread.record.turnMappings.map((mapping) => mapping.hostTurnId),
-    );
-    thread.usageMeter.restoreOutputTimings(
-      saved.values.outputTimings?.filter((value) => retained.has(value.turnId)) ?? [],
-    );
-    for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
-      const value = saved.values[field];
-      if (value && retained.has(value.turnId))
-        thread.usageMeter.restoreMeasurements({ [field]: value.value }, value.turnId, value.at);
-    }
+    restoreUsageMeasurements(thread.usageMeter, thread.record);
   }
 
   /** Save display telemetry at lifecycle boundaries; optional failures cannot fail native work. */
@@ -1230,7 +1260,7 @@ export class ExternalThreadRuntime {
       : await adapter.open({
           kind: "resume",
           cwd: record.cwd,
-          environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: record.hostThreadId },
+          environment: threadDelegationEnvironment(this.#environment, record.hostThreadId),
           nativeRef: record.nativeSessionRef as NativeSessionRef,
           knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
           ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),

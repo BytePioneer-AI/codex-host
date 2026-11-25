@@ -3,7 +3,11 @@ import { useSyncExternalStore } from "react";
 import type { SessionListState } from "@deepseek-ai/dsh-api-session-controller/client";
 import type { HostObservable } from "@deepseek-ai/dsh-client-ui-slots";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
-import { IconDataOutlineRegular, RemotePluginIcon } from "@deepseek-ai/dsh-client-ui-primitives";
+import {
+  harnessIconSources,
+  IconDataOutlineRegular,
+  RemotePluginIcon,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 
 const SIDEBAR_ICON_SIZE = 14;
 
@@ -25,7 +29,12 @@ export function SessionHarnessIcon({
     (fn) => list.subscribe(fn),
     () => list.getSnapshot().byId[sessionId]?.projectionValues?.harnessIdentity,
   );
+  const hostId = useSyncExternalStore(
+    (fn) => list.subscribe(fn),
+    () => list.getSnapshot().byId[sessionId]?.projectionValues?.remoteHost?.hostId,
+  );
   if (!identity) return null;
+  const icon = harnessIconSources(identity.id, hostId);
   return (
     <span
       data-harness-id={identity.id}
@@ -42,7 +51,7 @@ export function SessionHarnessIcon({
     >
       {identity.id === "codex" ? (
         <img
-          src="/harness-icons/codex"
+          src={icon.src}
           width={SIDEBAR_ICON_SIZE}
           height={SIDEBAR_ICON_SIZE}
           alt=""
@@ -51,8 +60,8 @@ export function SessionHarnessIcon({
       ) : (
         <RemotePluginIcon
           id={identity.id}
-          src={`/harness-icons/${encodeURIComponent(identity.id)}`}
-          presentationUrl="/harness-icons/presentation.json"
+          src={icon.src}
+          presentationUrl={icon.presentationUrl}
           size={SIDEBAR_ICON_SIZE}
           fallback={<IconDataOutlineRegular size={SIDEBAR_ICON_SIZE} />}
         />

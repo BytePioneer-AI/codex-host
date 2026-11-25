@@ -1,3 +1,4 @@
+mod instance;
 mod launcher;
 mod navigation;
 mod readiness;
@@ -11,6 +12,7 @@ use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use url::Url;
 
+use instance::{Activation, Claim, PrimaryInstance};
 use launcher::{Launcher, Options, Surface};
 use navigation::{LOADING, Navigation, ONBOARDING, classify, embedded, open_browser};
 use readiness::{ShellReady, WebEvent, WebReady};
@@ -405,23 +407,25 @@ fn window_chrome_state(window: tauri::WebviewWindow) -> WindowChromeState {
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let options = Options::from_env()?;
+    let activation = if options.onboarding {
+        Activation::Onboarding
+    } else {
+        Activation::Show
+    };
+    let (instance, activations) = match instance::claim(&options.data_dir, activation)? {
+        Claim::Primary {
+            instance,
+            activations,
+        } => (instance, activations),
+        Claim::Forwarded => return Ok(()),
+    };
     let launcher = Arc::new(Launcher::new(&std::env::current_exe()?, options.data_dir));
     let locale = sys_locale::get_locale().unwrap_or_else(|| "en".into());
     let (ensure_web, requests) = mpsc::channel();
     let onboarding = options.onboarding;
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
-            let handle = app.clone();
-            let wants_onboarding = args.iter().any(|arg| arg == "--onboarding");
-            let _ = app.run_on_main_thread(move || {
-                if wants_onboarding {
-                    show_onboarding(&handle);
-                } else {
-                    show_main(&handle, None);
-                }
-            });
-        }))
         .plugin(tauri_plugin_dialog::init())
+        .manage(instance)
         .manage(Shell {
             launcher: launcher.clone(),
             view: Mutex::new(View {
@@ -476,6 +480,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             .inner_size(1140.0, 800.0)
             .min_inner_size(400.0, 320.0)
             .visible(false)
+            // Keep HTML5 drag-and-drop active in WKWebView/WebView2 (thread references, row reorder, file drops).
+            .disable_drag_drop_handler()
             .initialization_script(navigation::initialization_script());
             #[cfg(target_os = "windows")]
             let builder = builder.decorations(false).shadow(true);
@@ -527,10 +533,29 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         })
         .build(tauri::generate_context!())?;
+    let activation_app = app.handle().clone();
+    std::thread::Builder::new()
+        .name("instance-activations".into())
+        .spawn(move || {
+            while let Ok(activation) = activations.recv() {
+                let handle = activation_app.clone();
+                let delivered = activation_app.run_on_main_thread(move || match activation {
+                    Activation::Onboarding => show_onboarding(&handle),
+                    Activation::Show => show_main(&handle, None),
+                });
+                if delivered.is_err() {
+                    eprintln!("CodexHost: could not deliver a desktop window activation");
+                    break;
+                }
+            }
+        })?;
     app.run(|app, event| match event {
         RunEvent::Exit => {
             if let Some(ready) = app.try_state::<ShellReady>() {
                 ready.remove_if_owned();
+            }
+            if let Some(instance) = app.try_state::<PrimaryInstance>() {
+                instance.shutdown();
             }
         }
         #[cfg(target_os = "macos")]

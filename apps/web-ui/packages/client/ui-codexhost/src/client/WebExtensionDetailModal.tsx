@@ -1,5 +1,6 @@
 /** Unified detail modal for installed Host extensions and Marketplace catalog entries. */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   Button,
   IconCheckCircleFillRegular,
@@ -45,6 +46,8 @@ import { WebExtensionMarkdown } from "./WebExtensionMarkdown.tsx";
 import { WebExtensionSettingsForm } from "./WebExtensionSettingsForm.tsx";
 import css from "./WebExtensionDetailModal.module.css";
 
+export type ExtensionPendingAction = "install" | "update" | "toggle" | "uninstall";
+
 export interface DetailModalTarget {
   readonly item?: HostExtensionListItem | undefined;
   readonly catalog?: HostExtensionCatalogEntry | undefined;
@@ -53,8 +56,8 @@ export interface DetailModalTarget {
 export interface WebExtensionDetailModalProps {
   readonly open: boolean;
   readonly target: DetailModalTarget | null;
-  readonly busy: boolean;
-  readonly activeAction: string | null;
+  readonly pendingAction: ExtensionPendingAction | null;
+  readonly globalBusy: boolean;
   readonly feedback: {
     readonly tone: "success" | "warning" | "danger";
     readonly text: string;
@@ -83,11 +86,114 @@ const MARKDOWN_CLASSES = {
   link: css.mdLink,
 } as const;
 
+function ScreenshotLightbox({
+  screenshots,
+  activeIndex,
+  displayName,
+  t,
+  onSelect,
+  onClose,
+}: {
+  readonly screenshots: readonly string[];
+  readonly activeIndex: number;
+  readonly displayName: string;
+  readonly t: Translate;
+  readonly onSelect: (index: number) => void;
+  readonly onClose: () => void;
+}): ReactNode {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const total = screenshots.length;
+  const src = screenshots[activeIndex];
+  const multi = total > 1;
+
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    rootRef.current?.focus();
+    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      } else if (event.key === "ArrowLeft" && total > 1) {
+        event.preventDefault();
+        event.stopPropagation();
+        onSelect((activeIndex - 1 + total) % total);
+      } else if (event.key === "ArrowRight" && total > 1) {
+        event.preventDefault();
+        event.stopPropagation();
+        onSelect((activeIndex + 1) % total);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [activeIndex, onClose, onSelect, total]);
+
+  if (src === undefined) return null;
+
+  return createPortal(
+    <div
+      ref={rootRef}
+      tabIndex={-1}
+      className={css.lightbox}
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("extensions.screenshotsTitle")}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <img
+        src={src}
+        alt={t("extensions.screenshotAlt", { name: displayName, index: String(activeIndex + 1) })}
+        className={css.lightboxImage}
+      />
+      <button
+        type="button"
+        className={`${css.lightboxBtn} ${css.lightboxClose}`}
+        aria-label={t("extensions.closePreview")}
+        title={t("extensions.closePreview")}
+        onClick={onClose}
+      >
+        <IconCloseOutlineRegular size={16} />
+      </button>
+      {multi && (
+        <>
+          <button
+            type="button"
+            className={`${css.lightboxBtn} ${css.lightboxNav} ${css.lightboxPrev}`}
+            aria-label={t("extensions.previousScreenshot")}
+            title={t("extensions.previousScreenshot")}
+            onClick={() => onSelect((activeIndex - 1 + total) % total)}
+          >
+            <IconChevronLeftOutlineRegular size={18} />
+          </button>
+          <button
+            type="button"
+            className={`${css.lightboxBtn} ${css.lightboxNav} ${css.lightboxNext}`}
+            aria-label={t("extensions.nextScreenshot")}
+            title={t("extensions.nextScreenshot")}
+            onClick={() => onSelect((activeIndex + 1) % total)}
+          >
+            <IconChevronRightOutlineRegular size={18} />
+          </button>
+          <span className={css.lightboxCount}>
+            {activeIndex + 1} / {total}
+          </span>
+        </>
+      )}
+    </div>,
+    document.body,
+  );
+}
+
 export function WebExtensionDetailModal({
   open,
   target,
-  busy,
-  activeAction,
+  pendingAction,
+  globalBusy,
   feedback,
   locale,
   t,
@@ -103,9 +209,13 @@ export function WebExtensionDetailModal({
 
   const targetSignature =
     target === null ? "" : `host:${target.item?.id ?? target.catalog?.id ?? ""}`;
+  const isInstalledTarget = target?.item !== undefined;
 
   useEffect(() => {
     setConfirmingUninstall(false);
+  }, [targetSignature, open, isInstalledTarget]);
+
+  useEffect(() => {
     setActiveScreenshot(null);
   }, [targetSignature, open]);
 
@@ -197,21 +307,15 @@ export function WebExtensionDetailModal({
   const isInstalled = item !== undefined;
   const toggleBlocked = item ? isHostToggleBlocked(item) : false;
   const canOpenPage = Boolean(validItem && validItem.enabled && validItem.manifest.page);
+  const targetBusy = pendingAction !== null;
+  const controlsDisabled = targetBusy || globalBusy;
 
   return (
-    <Modal
-      open={open}
-      onClose={() => {
-        if (!busy) onClose();
-      }}
-      title={displayName}
-      headless
-      className={css.dialog}
-    >
+    <Modal open={open} onClose={onClose} title={displayName} headless className={css.dialog}>
       <div
         className={css.surface}
         data-web-extension-detail={targetSignature}
-        data-busy={busy ? "true" : undefined}
+        data-busy={targetBusy ? "true" : undefined}
       >
         <header className={css.header}>
           <div className={css.headerTop}>
@@ -329,7 +433,6 @@ export function WebExtensionDetailModal({
               className={css.closeButton}
               aria-label={t("extensions.close")}
               title={t("extensions.close")}
-              disabled={busy}
               onClick={onClose}
             >
               <IconCloseOutlineRegular size={15} />
@@ -342,15 +445,11 @@ export function WebExtensionDetailModal({
                 <Button
                   variant="primary"
                   size="sm"
-                  disabled={busy}
-                  aria-busy={activeAction === `install:${catalogEntry.id}`}
+                  disabled={controlsDisabled}
+                  aria-busy={pendingAction === "install"}
                   onClick={() => onInstallMarket(catalogEntry)}
                 >
-                  {t(
-                    activeAction === `install:${catalogEntry.id}`
-                      ? "extensions.installing"
-                      : "extensions.install",
-                  )}
+                  {t(pendingAction === "install" ? "extensions.installing" : "extensions.install")}
                 </Button>
                 {catalogEntry.trustTier === "community" && (
                   <span className={css.communityNote}>{t("extensions.communityNotice")}</span>
@@ -364,11 +463,11 @@ export function WebExtensionDetailModal({
                   <Button
                     variant="primary"
                     size="sm"
-                    disabled={busy}
-                    aria-busy={activeAction === `update:${validItem.id}`}
+                    disabled={controlsDisabled}
+                    aria-busy={pendingAction === "update"}
                     onClick={() => onUpdate(validItem, catalogEntry)}
                   >
-                    {activeAction === `update:${validItem.id}`
+                    {pendingAction === "update"
                       ? t("extensions.updating")
                       : t("extensions.updateToVersion", {
                           version: catalogEntry.version.replace(/^v/u, ""),
@@ -380,7 +479,7 @@ export function WebExtensionDetailModal({
                   <Button
                     variant="primary"
                     size="sm"
-                    disabled={busy}
+                    disabled={controlsDisabled}
                     onClick={() => {
                       onClose();
                       onOpenPage(validItem);
@@ -393,7 +492,7 @@ export function WebExtensionDetailModal({
                 <Switch
                   label={displayName}
                   checked={item.enabled}
-                  disabled={busy || toggleBlocked}
+                  disabled={controlsDisabled || toggleBlocked}
                   title={toggleBlocked ? t("extensions.toggleBlockedInvalid") : undefined}
                   onChange={(next) => onToggle(item, next)}
                 />
@@ -409,11 +508,12 @@ export function WebExtensionDetailModal({
                     variant="outline"
                     size="sm"
                     className={css.dangerButton}
-                    disabled={busy}
+                    disabled={controlsDisabled}
+                    aria-busy={pendingAction === "uninstall"}
                     onClick={() => onUninstall(item)}
                   >
                     {t(
-                      activeAction?.startsWith("uninstall:")
+                      pendingAction === "uninstall"
                         ? "extensions.uninstalling"
                         : "extensions.uninstallConfirm",
                     )}
@@ -421,7 +521,7 @@ export function WebExtensionDetailModal({
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={busy}
+                    disabled={controlsDisabled}
                     onClick={() => setConfirmingUninstall(false)}
                   >
                     {t("extensions.cancel")}
@@ -433,7 +533,7 @@ export function WebExtensionDetailModal({
                   size="sm"
                   className={css.dangerButton}
                   icon={<IconTrashOutlineRegular size={13} />}
-                  disabled={busy}
+                  disabled={controlsDisabled}
                   onClick={() => setConfirmingUninstall(true)}
                 >
                   {t("extensions.remove")}
@@ -478,70 +578,10 @@ export function WebExtensionDetailModal({
             </section>
           )}
 
-          {/* Screenshots gallery & interactive preview stage */}
+          {/* Screenshots gallery; clicking a thumbnail opens the floating viewport lightbox */}
           {screenshots.length > 0 && (
             <section className={css.screenshotsSection}>
               <h3 className={css.sectionTitle}>{t("extensions.screenshotsTitle")}</h3>
-
-              {clampedScreenshotIndex !== null &&
-                screenshots[clampedScreenshotIndex] !== undefined && (
-                  <div className={css.previewStage}>
-                    <img
-                      src={screenshots[clampedScreenshotIndex]}
-                      alt={t("extensions.screenshotAlt", {
-                        name: displayName,
-                        index: String(clampedScreenshotIndex + 1),
-                      })}
-                      className={css.previewImage}
-                    />
-                    <div className={css.previewBar}>
-                      <span className={css.previewCount}>
-                        {clampedScreenshotIndex + 1} / {screenshots.length}
-                      </span>
-                      <div className={css.previewControls}>
-                        {screenshots.length > 1 && (
-                          <>
-                            <button
-                              type="button"
-                              className={css.previewNav}
-                              aria-label={t("extensions.previousScreenshot")}
-                              title={t("extensions.previousScreenshot")}
-                              onClick={() =>
-                                setActiveScreenshot(
-                                  (clampedScreenshotIndex - 1 + screenshots.length) %
-                                    screenshots.length,
-                                )
-                              }
-                            >
-                              <IconChevronLeftOutlineRegular size={14} />
-                            </button>
-                            <button
-                              type="button"
-                              className={css.previewNav}
-                              aria-label={t("extensions.nextScreenshot")}
-                              title={t("extensions.nextScreenshot")}
-                              onClick={() =>
-                                setActiveScreenshot(
-                                  (clampedScreenshotIndex + 1) % screenshots.length,
-                                )
-                              }
-                            >
-                              <IconChevronRightOutlineRegular size={14} />
-                            </button>
-                          </>
-                        )}
-                        <button
-                          type="button"
-                          className={css.previewClose}
-                          onClick={() => setActiveScreenshot(null)}
-                        >
-                          {t("extensions.closePreview")}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
               <div className={css.galleryGrid}>
                 {screenshots.map((url, idx) => (
                   <button
@@ -553,7 +593,7 @@ export function WebExtensionDetailModal({
                       index: String(idx + 1),
                       total: String(screenshots.length),
                     })}
-                    onClick={() => setActiveScreenshot(clampedScreenshotIndex === idx ? null : idx)}
+                    onClick={() => setActiveScreenshot(idx)}
                   >
                     <img
                       src={url}
@@ -608,6 +648,17 @@ export function WebExtensionDetailModal({
           </section>
         </div>
       </div>
+
+      {clampedScreenshotIndex !== null && (
+        <ScreenshotLightbox
+          screenshots={screenshots}
+          activeIndex={clampedScreenshotIndex}
+          displayName={displayName}
+          t={t}
+          onSelect={setActiveScreenshot}
+          onClose={() => setActiveScreenshot(null)}
+        />
+      )}
     </Modal>
   );
 }

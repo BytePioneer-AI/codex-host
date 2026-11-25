@@ -35,6 +35,13 @@
   position: relative;
   display: inline-flex;
   flex: none;
+  color: var(--dsw-alias-label-secondary);
+  transition: color 140ms ease;
+}
+
+.trigger:hover .icon,
+.trigger[data-wide="false"] .icon {
+  color: inherit;
 }
 
 .badge {

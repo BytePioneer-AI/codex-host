@@ -2648,3 +2648,20 @@ it.each([false, true])(
     ]);
   },
 );
+
+it("preserves startedAt on in-progress snapshotTurn() while keeping explicit base compatible", () => {
+  const turnId = hostTurnIdSchema.parse("turn-started-at");
+  const startedAtMs = 1_750_000_123_456;
+  const projector = new CodexTurnProjector({
+    threadId: "thread-started-at",
+    turnId,
+    cwd: "/workspace",
+    startedAtMs,
+  });
+  projector.project({ type: "turn.started", turnId });
+  expect(projector.snapshotTurn().startedAt).toBe(Math.floor(startedAtMs / 1000));
+  expect(projector.snapshotTurn({ ...projector.pendingTurn(null), custom: true })).toMatchObject({
+    startedAt: null,
+    custom: true,
+  });
+});

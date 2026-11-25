@@ -20,6 +20,7 @@ import {
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 import type { DelegationControlApi, DelegationThreadSnapshot } from "../src/delegation-types.js";
+import { boundDelegationToken } from "../src/bearer-token.js";
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
 import { DelegationWatchService } from "../src/delegation-watch.js";
 import { type CodexAccountControl } from "../src/account/codex-account-control.js";
@@ -1014,46 +1015,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     }
   });
 
-  it("sends and cancels follow-up Turns on an external delegated Thread", async () => {
-    let delegationApi: DelegationControlApi | undefined;
-    const fixture = createFixture({
-      onDelegationApi: (api) => {
-        delegationApi = api;
-        return undefined;
-      },
-    });
-    await fixture.ready;
-    await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
-    if (!delegationApi) throw new Error("Delegation API was not registered");
-    const starting = delegationApi.start({
-      harnessId: "pi",
-      task: "first",
-      cwd: "/synthetic",
-      parentThreadId: "parent-thread",
-    });
-    await answerOfficialParentCwd(fixture);
-    const started = await starting;
-    const session = fixture.adapter.sessions[0];
-    if (!session) throw new Error("Delegated Session was not opened");
-    session.succeedTurn();
-    await vi.waitFor(async () =>
-      expect(
-        await delegationApi?.read({ threadId: started.threadId, view: "result" }),
-      ).toMatchObject({ status: "completed" }),
-    );
-    const followUp = await delegationApi.send({ threadId: started.threadId, message: "continue" });
-    expect(followUp).toMatchObject({ harnessId: "pi", status: "running" });
-    await expect(
-      delegationApi.send({ threadId: started.threadId, message: "again" }),
-    ).rejects.toMatchObject({ code: "THREAD_BUSY" });
-    await expect(delegationApi.cancel({ threadId: started.threadId })).resolves.toMatchObject({
-      turnId: followUp.turnId,
-      cancelled: true,
-    });
-    session.completeCancellation();
-    await stopFixture(fixture);
-  });
-
   it("sends and cancels follow-up Turns on a native Codex Thread", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
@@ -1516,7 +1477,21 @@ describe("AppServerHost HarnessAdapter projection", () => {
       requestId: "native-request-1",
     });
     await answerOfficialParentCwd(fixture, "parent-thread", "Renamed parent");
-    await expect(duplicate).resolves.toMatchObject({ threadId: "native-child" });
+    const duplicateRead = await readJsonLine(fixture.official.stdin);
+    expect(duplicateRead).toMatchObject({
+      method: "thread/read",
+      params: { threadId: "native-child", includeTurns: true },
+    });
+    fixture.official.stdout.write(
+      `${JSON.stringify({
+        id: duplicateRead.id,
+        result: { thread: { id: "native-child", turns: [{ id: "native-turn" }] } },
+      })}\n`,
+    );
+    await expect(duplicate).resolves.toMatchObject({
+      threadId: "native-child",
+      turnId: "native-turn",
+    });
     expect(fixture.official.stdin.readableLength).toBe(0);
 
     const implicitPending = delegationApi.start({
@@ -1616,11 +1591,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     const threadStart = await readJsonLine(fixture.official.stdin);
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
-    );
-    await answerOfficialChildName(fixture);
-    const turnStart = await readJsonLine(fixture.official.stdin);
-    fixture.official.stdout.write(
-      `${JSON.stringify({ id: turnStart.id, result: { turn: { id: "native-turn" } } })}\n`,
     );
     const deletion = await readJsonLine(fixture.official.stdin);
     expect(deletion).toMatchObject({
@@ -1786,7 +1756,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       environment: {
         CODEXHOST_CLI_PATH: "/opt/codexhost",
         CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
-        CODEXHOST_RUNTIME_TOKEN: "token",
+        CODEXHOST_RUNTIME_TOKEN: boundDelegationToken("token", threadId),
         CODEXHOST_THREAD_ID: threadId,
       },
     });

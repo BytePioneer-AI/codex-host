@@ -49,12 +49,14 @@ function renderSettled(
   fileMentions: MarkdownFileMentions | undefined,
   pathImages: MarkdownPathImages | undefined,
   responseAnnotations: MarkdownResponseAnnotations | undefined,
+  breaks: boolean,
 ): ReactNode[] {
   const root = parseGfmWithMath(text);
   const targets = createReferenceTargets();
   collectReferenceTargets(root.children, targets);
   const context: MarkdownRenderContext = {
     streaming: false,
+    breaks,
     labels,
     fileMentions,
     pathImages,
@@ -100,10 +102,12 @@ class StreamingRenderer {
    * @param responseAnnotations - The Turn's annotation citations, shared by
    * the frozen and tail contexts so a streaming reply resolves them exactly
    * as its settled pass will; the owner replaces the renderer when it changes.
+   * @param breaks - Whether single newlines in prose render as `<br />`.
    */
   constructor(
     private readonly labels: MarkdownLabels,
     private readonly responseAnnotations: MarkdownResponseAnnotations | undefined,
+    private readonly breaks: boolean,
   ) {}
 
   /**
@@ -142,6 +146,7 @@ class StreamingRenderer {
     if (newlyFrozen.length > 0) {
       const frozenContext: MarkdownRenderContext = {
         streaming: true,
+        breaks: this.breaks,
         labels: this.labels,
         fileMentions: undefined,
         pathImages: undefined,
@@ -162,6 +167,7 @@ class StreamingRenderer {
     }
     const tailContext: MarkdownRenderContext = {
       streaming: true,
+      breaks: this.breaks,
       labels: this.labels,
       fileMentions: undefined,
       pathImages: undefined,
@@ -189,6 +195,8 @@ class StreamingRenderer {
  * `streaming` parses incrementally across chunks and highlights fences as
  * they grow (each fence re-tokenizes only appended text; TeX stays literal
  * until the finalize swap so incomplete formulae never flash errors);
+ * `breaks` renders single newlines inside prose as `<br />` (off by default
+ * for document previews, enabled for chat replies);
  * `labels` forwards localized fence and footnote chrome — pass a
  * reference-stable object (memoized per locale revision), because a new
  * identity discards the streaming render cache mid-message. `fileMentions`
@@ -211,6 +219,7 @@ class StreamingRenderer {
 export const MarkdownText = memo(function MarkdownText({
   text,
   streaming = false,
+  breaks = false,
   labels,
   fileMentions,
   pathImages,
@@ -219,6 +228,7 @@ export const MarkdownText = memo(function MarkdownText({
 }: {
   text: string;
   streaming?: boolean;
+  breaks?: boolean;
   labels: MarkdownLabels;
   fileMentions?: MarkdownFileMentions | undefined;
   pathImages?: MarkdownPathImages | undefined;
@@ -228,22 +238,25 @@ export const MarkdownText = memo(function MarkdownText({
   const streamRef = useRef<StreamingRenderer | null>(null);
   const streamLabelsRef = useRef<MarkdownLabels>(labels);
   const streamAnnotationsRef = useRef<MarkdownResponseAnnotations | undefined>(responseAnnotations);
+  const streamBreaksRef = useRef<boolean>(breaks);
   const children = useMemo(() => {
     if (!streaming) {
       streamRef.current = null;
-      return renderSettled(text, labels, fileMentions, pathImages, responseAnnotations);
+      return renderSettled(text, labels, fileMentions, pathImages, responseAnnotations, breaks);
     }
     if (
       streamRef.current === null ||
       streamLabelsRef.current !== labels ||
-      streamAnnotationsRef.current !== responseAnnotations
+      streamAnnotationsRef.current !== responseAnnotations ||
+      streamBreaksRef.current !== breaks
     ) {
-      streamRef.current = new StreamingRenderer(labels, responseAnnotations);
+      streamRef.current = new StreamingRenderer(labels, responseAnnotations, breaks);
       streamLabelsRef.current = labels;
       streamAnnotationsRef.current = responseAnnotations;
+      streamBreaksRef.current = breaks;
     }
     return streamRef.current.render(text);
-  }, [text, streaming, labels, fileMentions, pathImages, responseAnnotations]);
+  }, [text, streaming, breaks, labels, fileMentions, pathImages, responseAnnotations]);
   return (
     <div
       className={clsx(css.markdown, variant === "compact" && css.compact)}

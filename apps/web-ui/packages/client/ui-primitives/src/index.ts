@@ -6,6 +6,8 @@ export { useCopyFeedback } from "./use-copy-feedback.ts";
 export type { CodeToolbarLabels } from "./CodeToolbar.tsx";
 export { StateDot } from "./StateDot.tsx";
 export { RemotePluginIcon } from "./RemotePluginIcon.tsx";
+export { harnessIconSources } from "./harness-icon-sources.ts";
+export type { HarnessIconSources } from "./harness-icon-sources.ts";
 export type { StateDotState } from "./StateDot.tsx";
 export { IconFileDiffOutlineRegular } from "./icons/file-diff.tsx";
 export { IconBellOutlineRegular } from "./icons/bell.tsx";
@@ -13,6 +15,14 @@ export { DisclosureRow } from "./DisclosureRow.tsx";
 export type { DisclosureRowProps } from "./DisclosureRow.tsx";
 export { TextShimmer } from "./TextShimmer.tsx";
 export type { TextShimmerProps } from "./TextShimmer.tsx";
+export { ApprovalCard, partitionApprovalCardActions } from "./ApprovalCard.tsx";
+export type {
+  ApprovalCardAction,
+  ApprovalCardActionEffect,
+  ApprovalCardFileDiff,
+  ApprovalCardLabels,
+  ApprovalCardProps,
+} from "./ApprovalCard.tsx";
 export { Button } from "./Button.tsx";
 export type { ButtonVariant } from "./Button.tsx";
 export { Pill } from "./Pill.tsx";
@@ -49,8 +59,14 @@ export {
   ResponseAnnotationChip,
   ResponseAnnotationLabel,
   ResponseAnnotationPopover,
+  ResponseAnnotationTray,
 } from "./ResponseAnnotation.tsx";
-export type { ResponseAnnotationLabels, ResponseAnnotationView } from "./ResponseAnnotation.tsx";
+export type {
+  ResponseAnnotationLabels,
+  ResponseAnnotationTrayItem,
+  ResponseAnnotationTrayLabels,
+  ResponseAnnotationView,
+} from "./ResponseAnnotation.tsx";
 export { ShortcutKeys } from "./ShortcutKeys.tsx";
 export { observeComposition } from "./keyboard-composition.ts";
 export { focusWithoutRing, isMobileDevice, shouldAutoFocusTextInput } from "./focus.ts";

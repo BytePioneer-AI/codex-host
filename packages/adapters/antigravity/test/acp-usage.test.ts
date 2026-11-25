@@ -1458,4 +1458,174 @@ describe("Antigravity Session usage", () => {
       cacheWriteInputTokens: 15,
     });
   });
+
+  it("projects ACP context usage onto per-model native max_context_tokens without cross-model leakage", async () => {
+    await transcript(
+      planner(1, { model: "gemini-3.8-flash-high" }),
+      planner(3, { model: "gemini-4-neon-xhigh" }),
+    );
+    await writeNativeTimingDatabase(home, [
+      { step: 1, maxContextTokens: 256_000 },
+      { step: 3, maxContextTokens: 512_000, retries: 1 },
+    ]);
+
+    // Before native metadata is replayed, ACP's nominal size is used directly.
+    expect(tracker.recordContextWindow(362_000, 1_048_576)).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 1_048_576,
+      contextUsagePercent: (362_000 / 1_048_576) * 100,
+    });
+
+    // Historical replay resolves each model's effective limit and updates the active context projection.
+    const replayed = await tracker.replayHistoricalRequests();
+    expect(replayed.usage).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 512_000,
+      contextUsagePercent: (362_000 / 512_000) * 100,
+    });
+
+    // Switching models selects that model's limit and never leaks a prior model's limit onto an unseen model.
+    expect(tracker.setActiveModel("gemini-3.8-flash")).toMatchObject({
+      contextWindowTokens: 256_000,
+      contextUsagePercent: 100,
+    });
+    expect(tracker.setActiveModel("claude-sonnet-5-5-thinking")).toMatchObject({
+      contextWindowTokens: 1_048_576,
+      contextUsagePercent: (362_000 / 1_048_576) * 100,
+    });
+
+    // Live Claude steps expose their native limit immediately even before PromptResponse settles cacheWrite.
+    tracker.beginTurn();
+    await appendFile(
+      file,
+      `${planner(5, { model: "claude-sonnet-5-5-thinking-xhigh", input_tokens: 100, cache_read_tokens: 50 })}\n`,
+    );
+    await writeNativeTimingDatabase(home, [
+      { step: 1, maxContextTokens: 256_000 },
+      { step: 3, maxContextTokens: 512_000, retries: 1 },
+      { step: 5, maxContextTokens: 840_000 },
+    ]);
+    const liveClaude = await tracker.collectNewTranscriptRequests();
+    expect(liveClaude.usage).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 840_000,
+      contextUsagePercent: (362_000 / 840_000) * 100,
+    });
+
+    // Late gen_metadata commits for an already-consumed step still update that model's window.
+    tracker.setActiveModel("gemini-4-carbon");
+    await appendFile(file, `${planner(7, { model: "gemini-4-carbon-high" })}\n`);
+    const dbPath = await writeNativeTimingDatabase(home, [{ step: 7, maxContextTokens: 512_000 }]);
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec("DELETE FROM gen_metadata");
+    } finally {
+      db.close();
+    }
+    expect((await tracker.collectNewTranscriptRequests()).usage?.contextWindowTokens).toBe(
+      1_048_576,
+    );
+    await writeNativeTimingDatabase(home, [{ step: 7, maxContextTokens: 512_000 }]);
+    expect((await tracker.collectNewTranscriptRequests()).usage?.contextWindowTokens).toBe(512_000);
+  });
+
+  it("backfills native max_context_tokens independently of #awaitingTiming after historical replay or settled timing", async () => {
+    // 1. Historical replay runs before gen_metadata exists (historical steps never enter #awaitingTiming).
+    await transcript(planner(1, { model: "gemini-4-neon-xhigh" }));
+    tracker.recordContextWindow(362_000, 1_048_576);
+    expect((await tracker.replayHistoricalRequests()).usage?.contextWindowTokens).toBe(1_048_576);
+    await writeNativeTimingDatabase(home, [{ step: 1, maxContextTokens: 512_000 }]);
+    expect((await tracker.collectNewTranscriptRequests()).usage).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 512_000,
+      contextUsagePercent: (362_000 / 512_000) * 100,
+    });
+
+    // 2. Live step settles timing first (clearing #awaitingTiming) before max_context_tokens appears.
+    tracker.setActiveModel("gemini-3.8-flash");
+    tracker.beginTurn(0);
+    await appendFile(file, `${planner(3, { model: "gemini-3.8-flash-high" })}\n`);
+    await writeNativeTimingDatabase(home, [
+      { step: 1, maxContextTokens: 512_000 },
+      { step: 3, created: 1000, started: 3000, completed: 5000 },
+    ]);
+    const settled = await tracker.collectNewTranscriptRequests();
+    expect(settled.timings).toHaveLength(1);
+    expect(settled.usage?.contextWindowTokens).toBe(1_048_576);
+
+    await writeNativeTimingDatabase(home, [
+      { step: 1, maxContextTokens: 512_000 },
+      { step: 3, created: 1000, started: 3000, completed: 5000, maxContextTokens: 256_000 },
+    ]);
+    expect((await tracker.collectNewTranscriptRequests()).usage).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 256_000,
+      contextUsagePercent: 100,
+    });
+
+    // 3. A newer historical step for an already-cached model still replaces the older window once committed.
+    const sameModelTracker = new AntigravitySessionUsageTracker({
+      nativeSessionId: "session-same-model",
+      homedir: home,
+    });
+    const sameModelFile = path.join(
+      home,
+      ".gemini/antigravity-cli/brain/session-same-model/.system_generated/logs/transcript.jsonl",
+    );
+    await mkdir(path.dirname(sameModelFile), { recursive: true });
+    await writeFile(
+      sameModelFile,
+      `${planner(1, { model: "gemini-4-neon-xhigh" })}\n${planner(3, { model: "gemini-4-neon-xhigh" })}\n`,
+    );
+    await writeNativeTimingDatabase(
+      home,
+      [{ step: 1, maxContextTokens: 512_000 }],
+      "session-same-model",
+    );
+    sameModelTracker.recordContextWindow(128_000, 1_048_576);
+    expect((await sameModelTracker.replayHistoricalRequests()).usage).toMatchObject({
+      contextWindowTokens: 512_000,
+      contextUsagePercent: 25,
+    });
+    await writeNativeTimingDatabase(
+      home,
+      [
+        { step: 1, maxContextTokens: 512_000 },
+        { step: 3, maxContextTokens: 256_000 },
+      ],
+      "session-same-model",
+    );
+    expect((await sameModelTracker.collectNewTranscriptRequests()).usage).toMatchObject({
+      contextWindowTokens: 256_000,
+      contextUsagePercent: 50,
+    });
+
+    // 4. When the DB becomes readable after replay and only an older step has a window, a newer missing step does not mask it.
+    const delayedDbTracker = new AntigravitySessionUsageTracker({
+      nativeSessionId: "session-delayed-db",
+      homedir: home,
+    });
+    const delayedDbFile = path.join(
+      home,
+      ".gemini/antigravity-cli/brain/session-delayed-db/.system_generated/logs/transcript.jsonl",
+    );
+    await mkdir(path.dirname(delayedDbFile), { recursive: true });
+    await writeFile(
+      delayedDbFile,
+      `${planner(1, { model: "gemini-4-neon-xhigh" })}\n${planner(3, { model: "gemini-4-neon-xhigh" })}\n`,
+    );
+    delayedDbTracker.recordContextWindow(256_000, 1_048_576);
+    expect((await delayedDbTracker.replayHistoricalRequests()).usage?.contextWindowTokens).toBe(
+      1_048_576,
+    );
+    await writeNativeTimingDatabase(
+      home,
+      [{ step: 1, maxContextTokens: 512_000 }, { step: 3 }],
+      "session-delayed-db",
+    );
+    expect((await delayedDbTracker.collectNewTranscriptRequests()).usage).toMatchObject({
+      contextWindowTokens: 512_000,
+      contextUsagePercent: 50,
+    });
+  });
 });

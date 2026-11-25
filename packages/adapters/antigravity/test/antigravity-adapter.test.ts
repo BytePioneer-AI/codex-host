@@ -421,6 +421,96 @@ describe("Antigravity ACP Session", () => {
       });
     },
   );
+  it("projects context window onto per-model native max_context_tokens across resume and model switches", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-context-native-window-"));
+    directories.push(home);
+    const nativeRef = ref();
+    const sessionId = nativeRef.nativeSessionId;
+    const log = path.join(
+      home,
+      ".gemini/antigravity-cli/brain",
+      sessionId,
+      ".system_generated/logs/transcript.jsonl",
+    );
+    await mkdir(path.dirname(log), { recursive: true });
+    await writeFile(
+      log,
+      `${JSON.stringify({
+        type: "PLANNER_RESPONSE",
+        status: "DONE",
+        step_index: 1,
+        model: "gemini-4-neon-xhigh",
+        input_tokens: 100,
+        cache_read_tokens: 50,
+        output_tokens: 20,
+      })}\n`,
+    );
+    await writeNativeTimingDatabase(home, [{ step: 1, maxContextTokens: 512_000 }], sessionId);
+    const { adapter } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    adapter.options.createTransport = (options) => {
+      const transport = new FakeTransport(options);
+      transport.config = [
+        {
+          id: "model",
+          category: "model",
+          name: "Model",
+          currentValue: "gemini-4-neon",
+          options: [
+            { value: "gemini-4-neon", name: "Gemini 4 Neon" },
+            { value: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
+          ],
+        },
+        {
+          id: "thought_level",
+          name: "Thinking",
+          currentValue: "xhigh",
+          options: [{ value: "xhigh", name: "XHigh" }],
+        },
+      ];
+      transport.queuedSessionEvents.push({
+        type: "usage.context",
+        used: 362_000,
+        size: 1_048_576,
+      });
+      return transport;
+    };
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "resume", nativeRef, cwd: home }),
+    );
+    if (!(session instanceof AntigravitySession)) throw new Error("Expected AntigravitySession");
+    await session.initialize();
+    await session.refreshUsage();
+    const latestUsage = () =>
+      events(outputs)
+        .filter((event) => event.type === "session.usage.changed")
+        .at(-1)?.usage;
+    expect(latestUsage()).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 512_000,
+      contextUsagePercent: (362_000 / 512_000) * 100,
+    });
+
+    // Switching to an unseen model falls back to ACP's reported size instead of leaking 512K.
+    expect(
+      await session.execute({ type: "model.select", model: model("claude-sonnet-5-5") }),
+    ).toEqual({ ok: true, value: { completed: true } });
+    expect(latestUsage()).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 1_048_576,
+      contextUsagePercent: (362_000 / 1_048_576) * 100,
+    });
+
+    // Switching back restores Gemini 4 Neon's verified native 512K limit immediately.
+    expect(await session.execute({ type: "model.select", model: model("gemini-4-neon") })).toEqual({
+      ok: true,
+      value: { completed: true },
+    });
+    expect(latestUsage()).toMatchObject({
+      contextUsedTokens: 362_000,
+      contextWindowTokens: 512_000,
+      contextUsagePercent: (362_000 / 512_000) * 100,
+    });
+  });
   it("marks missing derived history incomplete instead of publishing an empty zero-cost ledger", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-derived-usage-"));
     directories.push(home);

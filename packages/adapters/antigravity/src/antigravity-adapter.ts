@@ -609,8 +609,23 @@ export class AntigravitySession implements HarnessSession {
       nativeSessionId,
       homedir: antigravityHome(this.#options.environment),
       expectedInitialTurns: this.#confirmedCount ?? 0,
+      ...(this.#state.effectiveModel ? { activeModel: this.#state.effectiveModel.id } : {}),
     });
     this.#trackUsageWork(this.#replayUsage());
+  }
+  #syncUsageModel(emitChange: boolean): void {
+    const tracker = this.#usage;
+    if (!tracker) return;
+    const previous = tracker.currentUsage();
+    const next = tracker.setActiveModel(this.#state.effectiveModel?.id);
+    if (
+      emitChange &&
+      next &&
+      (next.contextWindowTokens !== previous?.contextWindowTokens ||
+        next.contextUsagePercent !== previous?.contextUsagePercent)
+    ) {
+      this.#emit({ type: "session.usage.changed", usage: next });
+    }
   }
   #setLocatorPermissionMode(permissionModeId: string): void {
     const ref = this.#state.nativeRef;
@@ -654,6 +669,7 @@ export class AntigravitySession implements HarnessSession {
         skip ? SKIP : (opened.modes?.currentModeId ?? "default"),
       ),
     };
+    this.#syncUsageModel(false);
   }
   #applyConfig(config: AntigravityAcpConfigOption[]): void {
     this.#configOptions = config;
@@ -670,6 +686,7 @@ export class AntigravitySession implements HarnessSession {
       ...(effectivePermissionModeId ? { effectivePermissionModeId } : {}),
       ...readAcpEffectiveModelState(config, this.#catalog),
     };
+    this.#syncUsageModel(true);
   }
   #findConfigOption(category: "model" | "thinking"): AntigravityAcpConfigOption | undefined {
     return this.#configOptions.find(

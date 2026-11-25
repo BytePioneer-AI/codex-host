@@ -1102,15 +1102,29 @@ fn service_supervisor_hands_off_once_and_can_retry_without_desktop() {
     }
     let fixture = Fixture::new();
     let installed = fixture.installed_launcher();
-    let started = fixture
-        .launcher_command(&installed)
-        .args(["host", "ensure", "--node", &fixture.node, "--host-runtime"])
-        .arg(fixture.root.join("host-runtime.mjs"))
-        .arg("--data")
-        .arg(&fixture.root)
-        .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
-        .output()
-        .unwrap();
+    let started = {
+        let mut attempt = 0;
+        loop {
+            match fixture
+                .launcher_command(&installed)
+                .args(["host", "ensure", "--node", &fixture.node, "--host-runtime"])
+                .arg(fixture.root.join("host-runtime.mjs"))
+                .arg("--data")
+                .arg(&fixture.root)
+                .env("CODEXHOST_NPM_NODE_PATH", &fixture.node)
+                .output()
+            {
+                Ok(output) => break output,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 10 =>
+                {
+                    attempt += 1;
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => panic!("failed to start installed launcher: {error}"),
+            }
+        }
+    };
     assert!(
         started.status.success(),
         "{}",

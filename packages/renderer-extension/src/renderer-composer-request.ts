@@ -10,12 +10,14 @@ const NATIVE_REQUEST_SELECTOR = NATIVE_COMPOSER_REQUEST_ATTRIBUTES.map(
 ).join(", ");
 
 export function isNativeComposerRequest(element: Element): boolean {
-  return element.closest(NATIVE_REQUEST_SELECTOR) !== null;
+  return typeof element.closest === "function" && element.closest(NATIVE_REQUEST_SELECTOR) !== null;
 }
 
 /** Suspend chat controls for the whole root until the native request surface closes. */
 export function hasNativeComposerRequest(composer: Element): boolean {
   return (
-    isNativeComposerRequest(composer) || composer.querySelector(NATIVE_REQUEST_SELECTOR) !== null
+    isNativeComposerRequest(composer) ||
+    (typeof composer.querySelector === "function" &&
+      composer.querySelector(NATIVE_REQUEST_SELECTOR) !== null)
   );
 }

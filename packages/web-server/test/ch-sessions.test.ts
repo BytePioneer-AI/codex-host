@@ -1415,6 +1415,7 @@ it("workspace mirror: preserves Web information and identities across native tit
           workspaceIds: [first.workspaceId, second.workspaceId],
         },
       ],
+      projectlessSessionIds: ["projectless"],
     },
   ]);
   writes.mock.resetCalls();
@@ -1430,6 +1431,7 @@ it("workspace mirror: preserves Web information and identities across native tit
     { type: "remove", workspaceId: second.workspaceId },
     { type: "upsert", workspace: visibleExplicit },
     { type: "order", workspaceIds: [explicit.workspaceId] },
+    { type: "localProjects", localProjects: [] },
   ]);
 });
 

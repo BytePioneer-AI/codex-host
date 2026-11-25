@@ -43,6 +43,7 @@ export class ChRealtime {
       thread: (id: string) => Promise<unknown>;
       usage: (id: string) => void;
       catalog: (reason?: "hello" | "changed") => Promise<void>;
+      projectsInvalidated?: () => void;
       sections?: () => Promise<void>;
       archived?: (id: string, archived: boolean) => void;
       connection: (online: boolean) => void;
@@ -93,6 +94,7 @@ export class ChRealtime {
       this.schedule("", DEFAULT_DEBOUNCE_MS);
     } else if (event.type === "changed") {
       if (event.method === "thread/project/updated") {
+        this.callbacks.projectsInvalidated?.();
         this.catalogReason = "changed";
         this.schedule("", DEFAULT_DEBOUNCE_MS);
         return;

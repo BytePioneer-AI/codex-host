@@ -127,6 +127,11 @@ it("retains confirmed organization on failure and ignores a read after close", a
   await b.tick(10_000);
   assert.deepEqual(b.workspaces.ownerOf("thread"), owner);
   assert.equal(b.directoryReads().length, 0);
+  const move = await b.rpc.dispatch("workspace/moveSessionToProject", {
+    args: { request: { sessionId: "thread", projectId: "project-thread" } },
+  });
+  assert.ok(!move.ok);
+  assert.equal(move.error.code, "workspace/project-unavailable");
   b.host.projects = original;
   b.host.pinnedIds = ["thread"];
   await b.tick(10_000);

@@ -54,16 +54,7 @@ export interface ChPinChange {
   pinned: boolean;
 }
 
-export interface ChProjectSnapshot {
-  projects: ClientWorkspaceSnapshot["projects"];
-  nativeProjects?: true | undefined;
-  assignments: Record<string, string>;
-  projectless: string[];
-  /** Projects in each native custom section, keyed by official section ID; shared Host only. */
-  sectionProjects?: Record<string, string[]> | undefined;
-  /** Projects pinned in Codex Desktop (`pinned-project-ids`), in Desktop order; shared Host only. */
-  pinnedProjects?: string[] | undefined;
-}
+export type ChProjectSnapshot = Omit<ClientWorkspaceSnapshot, "pinned">;
 
 const exec = promisify(execFile);
 const METHODS = new Set([
@@ -326,22 +317,23 @@ export async function createChHostClient(
       );
     }
   }
-  const realtimeRequest = <T = unknown>(
+  const request = <T = unknown>(
     method: string,
     params: Record<string, unknown>,
     timeoutMs?: number,
-  ): Promise<T> => hostOperation(channel.request<T>(method, params, timeoutMs));
-  const request: ChHostClient["request"] = (method, params) => {
+  ): Promise<T> => {
     if (method === CLIENT_THREAD_PROJECT_MOVE_METHOD && channel.owner !== "service")
       return Promise.reject(
-        new RpcError("host/method-unavailable", "Project moves require the shared local Host."),
+        new RpcError("host/method-unavailable", "Project moves require the shared local Host.", {
+          hostCode: -32601,
+        }),
       );
-    return hostOperation(channel.request(method, params));
+    return hostOperation(channel.request<T>(method, params, timeoutMs));
   };
   return {
     realtime: {
       subscribe: (listener, after) => channel.subscribe(listener, after),
-      request: realtimeRequest,
+      request,
       snapshot: (threadId, options) => hostOperation(channel.snapshot(threadId, options)),
       respond: (input) => hostOperation(channel.respond(input)),
       peerDelegationSupported: () => channel.peerDelegationSupported,

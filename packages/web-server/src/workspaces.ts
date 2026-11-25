@@ -69,6 +69,11 @@ interface LocalProjectView {
   workspaceIds?: string[];
 }
 
+interface LocalProjectState {
+  localProjects: readonly LocalProjectView[];
+  projectlessSessionIds?: readonly string[];
+}
+
 interface WorkspaceState {
   /** Web sidebar placement, tied to the official placement it supersedes. */
   projectSectionOverrides?: Record<string, ProjectSectionOverride>;
@@ -326,7 +331,7 @@ export class Workspaces {
   private remotePins: readonly string[] = [];
   private referenceProjectRoots: ReadonlySet<string> = new Set();
   private localProjectRootOwners = new Map<string, string>();
-  private localProjects: readonly LocalProjectView[] | undefined;
+  private localProjectState: LocalProjectState | undefined;
   private referenceArchives: string[] | undefined;
   private remoteArchives: readonly string[] = [];
   private remoteGroups: WorkspaceView[] = [];
@@ -423,11 +428,30 @@ export class Workspaces {
       if (sectionCapability === undefined || capable === sectionCapability) sink.push(frame);
   }
 
+  hasProjectMoveBinding(sessionId: string, projectId: string): boolean {
+    const state = this.localProjectState;
+    return (
+      state !== undefined &&
+      state.localProjects.some((project) => project.id === projectId) &&
+      (state.projectlessSessionIds?.includes(sessionId) === true ||
+        state.localProjects.some((project) => project.sessionIds.includes(sessionId)))
+    );
+  }
+
+  clearProjectMoveBindings(): void {
+    this.localProjectRootOwners.clear();
+    if (!this.localProjectState) return;
+    const { localProjects, projectlessSessionIds } = this.localProjectState;
+    if (!localProjects.length && !projectlessSessionIds?.length) return;
+    this.localProjectState = { localProjects: [] };
+    this.broadcast({ type: "localProjects", ...this.localProjectState });
+  }
+
   private updateLocalProjectRows(
-    projects = this.localProjects,
+    state = this.localProjectState,
     rows = new Map(this.state.items.map((workspace) => [workspace.path, workspace])),
-  ): readonly LocalProjectView[] | undefined {
-    if (projects === undefined) return;
+  ): LocalProjectState | undefined {
+    if (state === undefined) return;
     const idsByProject = new Map<string, string[]>();
     for (const [root, projectId] of this.localProjectRootOwners) {
       const workspace = rows.get(root);
@@ -436,14 +460,17 @@ export class Workspaces {
       if (ids) ids.push(workspace.workspaceId);
       else idsByProject.set(projectId, [workspace.workspaceId]);
     }
-    const next = projects.map(({ id, name, sessionIds }) => ({
-      id,
-      name,
-      sessionIds,
-      workspaceIds: idsByProject.get(id) ?? [],
-    }));
-    if (JSON.stringify(next) === JSON.stringify(this.localProjects)) return;
-    this.localProjects = next;
+    const next: LocalProjectState = {
+      ...state,
+      localProjects: state.localProjects.map(({ id, name, sessionIds }) => ({
+        id,
+        name,
+        sessionIds,
+        workspaceIds: idsByProject.get(id) ?? [],
+      })),
+    };
+    if (JSON.stringify(next) === JSON.stringify(this.localProjectState)) return;
+    this.localProjectState = next;
     return next;
   }
 
@@ -1249,7 +1276,7 @@ export class Workspaces {
       type: "order",
       workspaceIds: this.list().map((item) => item.workspaceId),
     });
-    if (localProjects) this.broadcast({ type: "localProjects", localProjects });
+    if (localProjects) this.broadcast({ type: "localProjects", ...localProjects });
     return { workspace, created: true };
   }
 
@@ -1298,7 +1325,7 @@ export class Workspaces {
     groups: Map<string, string | undefined>,
     projectless: ReadonlySet<string> = new Set(),
     projects: readonly NativeProject[] = [],
-    localProjects?: readonly LocalProjectView[],
+    projectState: LocalProjectState = { localProjects: [] },
   ): void {
     const before = new Map(
       this.list().map((workspace) => [workspace.workspaceId, JSON.stringify(workspace)]),
@@ -1415,17 +1442,19 @@ export class Workspaces {
     this.referenceProjectRoots = rootPaths;
     this.referenceGroups = groups;
     this.referenceProjectless = projectless;
-    let projectUpdate: readonly LocalProjectView[] | undefined;
-    if (localProjects !== undefined) {
-      this.localProjectRootOwners = new Map();
-      for (const { path, listings } of roots) {
-        const id = listings[0]?.project.id;
-        // The sidebar deduplicates roots. A row shared by distinct projects is not a drop target.
-        if (id !== undefined && listings.every(({ project }) => project.id === id))
-          this.localProjectRootOwners.set(path, id);
-      }
-      projectUpdate = this.updateLocalProjectRows(localProjects, byPath);
+    this.localProjectRootOwners.clear();
+    for (const { path, listings } of roots) {
+      const id = listings[0]?.project.id;
+      // A Workspace that represents more than one registered project has no unique binding.
+      if (
+        id !== undefined &&
+        listings.every(
+          ({ project, index }) => project.id === id && isAbsolute(project.rootPaths[index] ?? ""),
+        )
+      )
+        this.localProjectRootOwners.set(path, id);
     }
+    const projectUpdate = this.updateLocalProjectRows(projectState, byPath);
     const after = this.list();
     const ids = new Set(after.map((workspace) => workspace.workspaceId));
     for (const workspaceId of before.keys())
@@ -1437,7 +1466,7 @@ export class Workspaces {
     if (JSON.stringify([...before.keys()]) !== JSON.stringify(workspaceIds))
       this.broadcast({ type: "order", workspaceIds });
     this.publishPinnedWorkspaces();
-    if (projectUpdate) this.broadcast({ type: "localProjects", localProjects: projectUpdate });
+    if (projectUpdate) this.broadcast({ type: "localProjects", ...projectUpdate });
   }
 
   /** An actual Web submission makes its selected folder an explicit Web workspace. */
@@ -1542,7 +1571,7 @@ export class Workspaces {
         });
         this.publishProjectSections();
       }
-      if (localProjects) this.broadcast({ type: "localProjects", localProjects });
+      if (localProjects) this.broadcast({ type: "localProjects", ...localProjects });
       return { deleted: true };
     });
     rpc.register("workspace/moveWorkspaceToSection", async (args) => {
@@ -1621,7 +1650,7 @@ export class Workspaces {
           items: this.list(),
           pinnedSessionIds: this.pinnedSessionIds(),
           pinnedWorkspaceIds: this.pinnedWorkspaceIds(),
-          ...(this.localProjects === undefined ? {} : { localProjects: this.localProjects }),
+          ...this.localProjectState,
           threadSections: capable ? this.referenceThreadSections : this.legacyThreadSections,
           ...(capable && this.referenceThreadSectionsV1
             ? { [THREAD_SECTION_CAPABILITY]: true }

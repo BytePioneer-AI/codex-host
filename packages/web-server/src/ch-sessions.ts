@@ -85,6 +85,9 @@ import { SessionListTiming } from "./session-list-timing.ts";
 import { readSessionPage, nextCatalogCursor, type CatalogPage } from "./ch-session-page.ts";
 import { tryGenerateThreadTitle } from "./ch-thread-titles.ts";
 
+const SUPERSEDED = Symbol("project-read-superseded");
+type RefreshResult = CatalogRefresh | typeof SUPERSEDED | undefined;
+
 type CatalogScope = NonNullable<ThreadCatalogReadParams["scope"]>;
 type WorkspaceCatalog = { workspaceId: string; scope: CatalogScope };
 type CatalogRefresh = CatalogPage & {
@@ -138,7 +141,9 @@ export class ChSessions {
   private readonly threads = new WebThreadStates();
   private drafts = new Map<string, Draft>();
   private controls = new Set<StreamSink>();
-  private refreshing: Promise<CatalogRefresh | undefined> | undefined;
+  private refreshing: Promise<RefreshResult> | undefined;
+  private projectRevision = 0;
+  private boundProjectRevision = -1;
   private refreshingCatalog = false;
   private refreshingArchives = false;
   private refreshingArchiveChanges: Map<string, boolean> | undefined;
@@ -219,6 +224,7 @@ export class ChSessions {
           catalog: async () => {
             await this.refresh();
           },
+          projectsInvalidated: () => this.projectRevision++,
           sections: () => this.refreshAfterCurrent(true),
           archived: (id, archived) => {
             this.archiveOperations.delete(id);
@@ -227,6 +233,9 @@ export class ChSessions {
           connection: (online) => {
             this.hostOnline = online;
             if (!online) {
+              this.projectRevision++;
+              this.workspaces.clearProjectMoveBindings();
+              this.catalogReadAt = -Infinity;
               this.archiveOperations.clear();
               this.interactions?.clear();
             }
@@ -239,6 +248,9 @@ export class ChSessions {
             this.archiveOperations.clear();
             if (full && this.hostEpoch === epoch) this.threads.forgetKnownTurns();
             if (this.hostEpoch && this.hostEpoch !== epoch) {
+              this.projectRevision++;
+              this.workspaces.clearProjectMoveBindings();
+              this.catalogReadAt = -Infinity;
               this.interactions?.clear();
               for (const view of this.threads.newHostGeneration()) view.log.reconnectFollowers();
             }
@@ -337,6 +349,7 @@ export class ChSessions {
       const archiveChanges = new Map<string, boolean>();
       this.refreshingArchiveChanges = archiveChanges;
       this.refreshingProjectAssignments = new Map();
+      const revision = this.projectRevision;
       const load = workspace
         ? this.listWorkspacePage(
             this.refreshingTiming,
@@ -344,21 +357,33 @@ export class ChSessions {
             archiveChanges,
             cursor,
             workspace,
+            revision,
           )
-        : this.listAll(this.refreshingTiming, includeArchived, archiveChanges, cursor);
-      this.refreshing = load.finally(() => {
-        this.refreshing = undefined;
-        this.refreshingCatalog = false;
-        this.refreshingArchives = false;
-        this.refreshingArchiveChanges = undefined;
-        this.refreshingProjectAssignments = undefined;
-        this.refreshingTiming = undefined;
-      });
+        : this.listAll(this.refreshingTiming, includeArchived, archiveChanges, cursor, revision);
+      this.refreshing = load
+        .catch((error: unknown): typeof SUPERSEDED => {
+          if (!this.closed && revision !== this.projectRevision) return SUPERSEDED;
+          if (!this.closed && !workspace && cursor === undefined) {
+            this.workspaces.clearProjectMoveBindings();
+            this.catalogReadAt = -Infinity;
+          }
+          throw error;
+        })
+        .finally(() => {
+          this.refreshing = undefined;
+          this.refreshingCatalog = false;
+          this.refreshingArchives = false;
+          this.refreshingArchiveChanges = undefined;
+          this.refreshingProjectAssignments = undefined;
+          this.refreshingTiming = undefined;
+        });
     }
     const pending = this.refreshing;
     const catalogTiming = this.refreshingTiming;
     try {
       const result = await (timing ? timing.measure("catalog_wait", () => pending) : pending);
+      if (result === SUPERSEDED)
+        return this.refresh(timing, includeArchived, cursor, workspace, requireSections);
       if (requireSections && result?.sectionFailure) throw result.sectionFailure.error;
       return result;
     } finally {
@@ -382,12 +407,14 @@ export class ChSessions {
     archiveChanges: ReadonlyMap<string, boolean>,
     cursor: string | undefined,
     { workspaceId, scope }: WorkspaceCatalog,
-  ): Promise<CatalogRefresh | undefined> {
+    revision: number,
+  ): Promise<RefreshResult> {
     const [{ page }] = await Promise.all([
       readSessionPage(this.host, timing, includeArchived, cursor, async () => [], scope),
       timing.measure("thread_tree", () => this.tree.refresh()),
     ]);
     const target = this.workspaces.get(workspaceId);
+    if (revision !== this.projectRevision) return SUPERSEDED;
     if (this.closed || !target) return;
     const candidates = page.threads.filter((row) =>
       "projectId" in scope
@@ -440,6 +467,7 @@ export class ChSessions {
       return thread;
     });
     if (this.closed || !this.workspaces.get(workspaceId)) return;
+    if (revision !== this.projectRevision) return SUPERSEDED;
     for (const [id, row] of members) {
       const moved = this.refreshingProjectAssignments?.get(id);
       if (target.projectId && moved !== undefined && moved !== target.projectId) {
@@ -471,6 +499,7 @@ export class ChSessions {
           .map((row) => this.summary(row, ownership.get(row.id))),
       ),
     );
+    if (revision !== this.projectRevision) return SUPERSEDED;
     return { ...page, workspaceItems };
   }
 
@@ -479,7 +508,8 @@ export class ChSessions {
     includeArchived: boolean,
     archiveChanges: ReadonlyMap<string, boolean>,
     cursor?: string,
-  ): Promise<CatalogRefresh | undefined> {
+    revision = this.projectRevision,
+  ): Promise<RefreshResult> {
     const known = new Set(this.rows.keys());
     let sectionFailure: CatalogRefresh["sectionFailure"];
     let sectionsUnsupported = false;
@@ -573,6 +603,7 @@ export class ChSessions {
     });
     const projects = await timing.measure("projects", () => this.host.projects([...rows.keys()]));
     if (this.closed) return;
+    if (revision !== this.projectRevision) return SUPERSEDED;
     // A Host-confirmed move supersedes project metadata from this in-flight read.
     for (const [id, projectId] of this.refreshingProjectAssignments ?? []) {
       const row = rows.get(id);
@@ -581,8 +612,7 @@ export class ChSessions {
     this.threads.replaceHarnesses(ownership);
     this.rows = rows;
     timing.count("visibleRows", rows.size);
-    await this.syncWorkspace(timing, projects);
-    if (this.closed) return;
+    this.syncWorkspace(timing, projects);
     // Notifications received during catalog or ancestor reads supersede their membership.
     for (const [id, archived] of archiveChanges) {
       if (archived) archivedIds.add(id);
@@ -607,18 +637,13 @@ export class ChSessions {
       this.workspaces.setReferenceThreadSections(undefined);
     }
     await timing.measure("catalog_publish", () => this.publishCatalogChanges(pageSectionAdditions));
+    if (this.closed) return;
+    if (revision !== this.projectRevision) return SUPERSEDED;
     this.catalogReadAt = Date.now();
     return { ...snapshot, sectionFailure };
   }
-  private async syncWorkspace(
-    timing = new SessionListTiming(),
-    snapshot?: ChProjectSnapshot,
-  ): Promise<void> {
-    const projects =
-      snapshot ??
-      (await timing.measure("projects", () => this.host.projects([...this.rows.keys()])));
+  private syncWorkspace(timing: SessionListTiming, projects: ChProjectSnapshot): void {
     timing.count("projects", projects.projects.length);
-    if (this.closed) return;
     timing.measureSync("workspace_sync", () => {
       const groups = new Map<string, string | undefined>();
       if (projects.nativeProjects) {
@@ -635,17 +660,19 @@ export class ChSessions {
       const references: Array<{ sessionId: string; cwd: string; title?: string }> = [];
       const rootTitles = projectRootTitles(projects.projects);
       const projectless = new Set(projects.projectless.filter((id) => !projects.assignments[id]));
-      const localProjects = projects.projects.map(({ id, name }) => ({
-        id,
-        name,
-        sessionIds: [] as string[],
-      }));
+      const bindings = projects.projectMoveBindings;
+      const targets = new Set(bindings?.projectIds);
+      const localProjects = projects.projects
+        .filter(({ id }) => targets.has(id))
+        .map(({ id, name }) => ({ id, name, sessionIds: [] as string[] }));
       const localById = new Map(localProjects.map((project) => [project.id, project]));
+      const projectlessSessionIds: string[] = [];
       for (const row of this.rows.values()) {
-        const assignment = Object.hasOwn(projects.assignments, row.id)
-          ? projects.assignments[row.id]
-          : undefined;
-        if (assignment !== undefined) localById.get(assignment)?.sessionIds.push(row.id);
+        if (bindings && Object.hasOwn(bindings.assignments, row.id)) {
+          const assignment = bindings.assignments[row.id];
+          if (assignment === null) projectlessSessionIds.push(row.id);
+          else if (assignment !== undefined) localById.get(assignment)?.sessionIds.push(row.id);
+        }
         if (row.workspaceKind === "projectless" && !row.projectId && !projects.assignments[row.id])
           projectless.add(row.id);
         const root =
@@ -674,13 +701,13 @@ export class ChSessions {
       timing.count("workspaceReferences", references.length);
       // Membership is a set; catalog ordering changes must not invalidate it.
       for (const project of localProjects) project.sessionIds.sort();
-      this.workspaces.syncReferencedSessions(
-        references,
-        groups,
-        projectless,
-        projects.projects,
+      this.workspaces.syncReferencedSessions(references, groups, projectless, projects.projects, {
         localProjects,
-      );
+        ...(projectlessSessionIds.length
+          ? { projectlessSessionIds: projectlessSessionIds.sort() }
+          : {}),
+      });
+      this.boundProjectRevision = this.projectRevision;
       this.workspaces.setReferencePinnedProjects(projects.projects, projects.pinnedProjects);
     });
   }
@@ -1648,6 +1675,10 @@ export class ChSessions {
         );
       const row = this.rows.get(threadId);
       if (
+        this.closed ||
+        !this.hostOnline ||
+        this.boundProjectRevision !== this.projectRevision ||
+        !this.workspaces.hasProjectMoveBinding(threadId, projectId) ||
         (draft && !draft.canonicalId) ||
         !row ||
         !this.threads.hasHarness(threadId) ||
@@ -1678,6 +1709,7 @@ export class ChSessions {
         });
       const result = clientThreadProjectMoveResultSchema.safeParse(value);
       // Read back navigation only; a matching GUI snapshot cannot confirm this write.
+      this.projectRevision++;
       await this.refreshAfterCurrent().catch(() => undefined);
       return result.success &&
         result.data.status === "confirmed" &&
@@ -2426,10 +2458,20 @@ export class ChSessions {
       if (!this.realtime || Date.now() - this.catalogReadAt >= 60_000) {
         void this.refresh().catch(() => undefined);
       } else {
-        this.refreshing = this.syncWorkspace()
-          .then(() => {
-            if (!this.closed) void this.pins.refresh().catch(() => undefined);
+        const revision = this.projectRevision;
+        const timing = new SessionListTiming();
+        this.refreshing = timing
+          .measure("projects", () => this.host.projects([...this.rows.keys()]))
+          .then((projects) => {
+            if (this.closed || revision !== this.projectRevision) return;
+            this.syncWorkspace(timing, projects);
+            void this.pins.refresh().catch(() => undefined);
             return undefined;
+          })
+          .catch((error: unknown) => {
+            if (!this.closed && revision === this.projectRevision)
+              this.workspaces.clearProjectMoveBindings();
+            throw error;
           })
           .finally(() => {
             this.refreshing = undefined;

@@ -216,6 +216,7 @@ it("publishes empty and shared-root projects with only explicit local membership
   assert.ok((await call("session/create", { sessionId: "draft-new", cwd: root })).ok);
   assert.ok((await list()).ok);
   assert.equal(workspaces.ownerOf("cwd-match")?.path, row.cwd);
+  assert.equal((await move("cwd-match")).ok, false);
   const frames = await subscribe("workspace/follow", {});
   assert.deepEqual(baselineProjects(frames[0]), [
     { id: "project-moving", name: "source", sessionIds: [row.id], workspaceIds: [] },
@@ -233,13 +234,33 @@ it("publishes empty and shared-root projects with only explicit local membership
   ]);
   assert.ok((await list()).ok);
   assert.equal(frames.length, 2);
+  host.threads.delete(row.id);
+  assert.ok((await list()).ok);
+  assert.deepEqual(baselineProjects((await subscribe("workspace/follow", {}))[0]), [
+    { id: "project-moving", name: "source", sessionIds: [], workspaceIds: [] },
+    { id: "target", name: "Target", sessionIds: [], workspaceIds: [] },
+  ]);
+  assert.equal((await move()).ok, false);
   host.projectSnapshot.projects.length = 0;
   assert.ok((await list()).ok);
   assert.deepEqual(frames.at(-1), { type: "localProjects", localProjects: [] });
+  assert.equal((await move()).ok, false);
+  assert.deepEqual(baselineProjects((await subscribe("workspace/follow", {}))[0]), []);
 });
 
 it("updates project bindings when a local root Workspace row is removed or recreated", async (t) => {
   const { root, workspaces, list, call, subscribe } = setup(t, new FakeChHost());
+  workspaces.setRemoteGroups([
+    {
+      workspaceId: "peer-project",
+      path: join(root, "target"),
+      title: "Target",
+      sessionIds: [],
+      remote: { hostId: "peer", displayName: "Peer", state: "online" },
+      createdAt: "",
+      updatedAt: "",
+    },
+  ]);
   assert.ok((await list()).ok);
   const targetPath = join(root, "target");
   const source = workspaces.byPath(join(root, "source"));
@@ -279,11 +300,27 @@ it("updates project bindings when a local root Workspace row is removed or recre
 
 it("validates the local Thread and request before sending any Host move or remote call", async (t) => {
   const host = new FakeChHost();
-  const { row, root, events, rpc, streams, call, list, move } = setup(t, host);
+  const { row, root, events, rpc, streams, call, list, move, subscribe } = setup(t, host);
   host.add("child", row.cwd, "Child", false).parentThreadId = row.id;
   host.add("tree-child", row.cwd, "Tree child", false);
   host.add("pinned", row.cwd, "Pinned", false);
   host.add("archived", row.cwd, "Archived", false);
+  host.add("read-only", row.cwd, "Read only", false).canAcceptDirectInput = false;
+  host.add("legacy-assignment", row.cwd);
+  host.add("unknown-projectless", row.cwd, "Legacy projectless", false);
+  host.add("recent", row.cwd, "Confirmed projectless", false);
+  host.projectSnapshot.projectMoveBindings = {
+    projectIds: ["project-moving", "target"],
+    assignments: {
+      [row.id]: "project-moving",
+      child: null,
+      "tree-child": null,
+      "read-only": "project-moving",
+      archived: "project-moving",
+      pinned: "project-moving",
+      recent: null,
+    },
+  };
   host.pinnedIds.push("pinned");
   host.archivedIds.add("archived");
   const request = host.request.bind(host);
@@ -313,11 +350,21 @@ it("validates the local Thread and request before sending any Host move or remot
     "tree-child",
     "archived",
     "pinned",
+    "read-only",
+    "legacy-assignment",
+    "unknown-projectless",
     "missing",
     remoteSessionId("peer", row.id),
   ])
     await denied(move(id), "workspace/project-unavailable");
   await denied(move("web-remote:bad"), "remote/identity-invalid");
+  await denied(
+    call("workspace/moveSessionToProject", {
+      sessionId: row.id,
+      projectId: "project-legacy-assignment",
+    }),
+    "workspace/project-unavailable",
+  );
   for (const params of [
     { sessionId: row.id, projectId: "" },
     { sessionId: row.id, projectId: "target", cwd: root },
@@ -331,6 +378,30 @@ it("validates the local Thread and request before sending any Host move or remot
     await denied(call("workspace/moveSessionToProject", params), "workspace/project-invalid");
   assert.equal(remoteCalls, 0);
   assert.ok(!host.requests.some(({ method }) => method === CLIENT_THREAD_PROJECT_MOVE_METHOD));
+  const [baseline] = (await subscribe("workspace/follow", {})) as Array<{
+    value: { projectlessSessionIds: string[] };
+  }>;
+  assert.ok(baseline);
+  assert.ok(baseline.value.projectlessSessionIds.includes("recent"));
+  assert.ok(!baseline.value.projectlessSessionIds.includes("unknown-projectless"));
+  let moved: unknown;
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method !== CLIENT_THREAD_PROJECT_MOVE_METHOD) return request<T>(method, params);
+    moved = params;
+    return { status: "confirmed", projectId: "target" } as T;
+  };
+  assert.deepEqual(await move("recent"), {
+    ok: true,
+    value: { status: "confirmed", projectId: "target" },
+  });
+  assert.deepEqual(moved, { threadId: "recent", projectId: "target" });
+
+  const legacy = structuredClone(host.projectSnapshot);
+  delete legacy.projectMoveBindings;
+  host.projects = async () => legacy;
+  assert.ok((await list()).ok);
+  assert.deepEqual(baselineProjects((await subscribe("workspace/follow", {}))[0]), []);
+  await denied(move(), "workspace/project-unavailable");
 });
 
 it("reconciles unknown outcomes without retries or inferring success", async (t) => {
@@ -387,13 +458,21 @@ it("reconciles unknown outcomes without retries or inferring success", async (t)
     throw new Error("Lost workspace read");
   };
   assert.deepEqual(await move(), { ok: true, value: reply });
+  assert.equal((await move()).ok, false, "A failed read cannot authorize another write.");
+  assert.equal(writes, 2 + ambiguous.length);
 });
 
-it("invalidates the catalog without rereading followed Turns", { timeout: 5000 }, async (t) => {
+it("coalesces project and section changes, rejecting late reads", { timeout: 5000 }, async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const host = new FakeChChannel();
   host.online = false;
-  const { root, row, list, subscribe, workspaces } = setup(t, host);
+  const { root, row, list, move, subscribe, workspaces } = setup(t, host);
+  let sectionName = "Initial";
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
+    method === "codexhost/thread/sections/list"
+      ? ({ sections: [{ id: "section", name: sectionName, threads: [row] }] } as T)
+      : request<T>(method, params);
   host.online = true;
   for (const listener of host.listeners) listener({ type: "connection", online: true });
   assert.ok((await list()).ok);
@@ -413,10 +492,25 @@ it("invalidates the catalog without rereading followed Turns", { timeout: 5000 }
     }
     return snapshot;
   };
+  sectionName = "Obsolete";
+  host.projectSnapshot.projects.push({
+    id: "obsolete",
+    name: "Obsolete",
+    rootPaths: [join(root, "obsolete")],
+  });
+  host.projectSnapshot.assignments[row.id] = "obsolete";
   const older = list();
   await entered.promise;
+  sectionName = "Current";
+  host.projectSnapshot.projects.pop();
   host.projectSnapshot.assignments[row.id] = "target";
   host.changed(row.id, "thread/project/updated");
+  for (const listener of host.listeners)
+    listener({
+      type: "sections-changed",
+      cursor: { epoch: host.epoch, sequence: ++host.sequence },
+    });
+  assert.equal((await move()).ok, false, "A pending invalidation retires the source binding.");
   t.mock.timers.tick(100);
   release.resolve();
   assert.ok((await older).ok);
@@ -425,6 +519,11 @@ it("invalidates the catalog without rereading followed Turns", { timeout: 5000 }
   assert.equal(host.snapshots, snapshots);
   assert.equal(workspaces.ownerOf(row.id)?.path, join(root, "target"));
   assert.deepEqual(memberships(workspace, row.id), [join(root, "target")]);
+  assert.deepEqual(workspace.at(-1), {
+    type: "threadSections",
+    threadSections: [{ id: "section", name: "Current", threadIds: [row.id] }],
+  });
+  assert.ok(!JSON.stringify(workspace).includes("Obsolete"));
 });
 
 it("only sends a shared Host project move to service owner descriptors", async (t) => {
@@ -452,10 +551,13 @@ it("only sends a shared Host project move to service owner descriptors", async (
     try {
       const client = await createChHostClient({ directory });
       try {
-        const moving = client.request(CLIENT_THREAD_PROJECT_MOVE_METHOD, params);
-        if (owner === "service") assert.deepEqual(await moving, confirmed);
-        else await assert.rejects(moving, unsupported);
-        assert.equal(writes, owner === "service" ? 1 : 0);
+        assert.ok(client.realtime);
+        for (const send of [client.request, client.realtime.request]) {
+          const moving = send(CLIENT_THREAD_PROJECT_MOVE_METHOD, params);
+          if (owner === "service") assert.deepEqual(await moving, confirmed);
+          else await assert.rejects(moving, unsupported);
+        }
+        assert.equal(writes, owner === "service" ? 2 : 0);
       } finally {
         client.close();
       }
@@ -466,15 +568,39 @@ it("only sends a shared Host project move to service owner descriptors", async (
 });
 
 it(
-  "does not forward a project move after reconnecting to a Desktop owner",
+  "never resends a disconnected write or forwards it to a new Desktop owner",
   { timeout: 7000 },
   async (t) => {
     const directory = mkdtempSync(join(tmpdir(), "ch-project-move-reconnect-"));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
-    const service = await startFakeChChannel(new FakeChChannel(), directory, "service");
+    const serviceHost = new FakeChChannel();
+    const submitted = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const params = { threadId: "moving", projectId: "target" };
+    let writes = 0;
+    const request = serviceHost.request.bind(serviceHost);
+    serviceHost.request = async <T>(method: string, input: Record<string, unknown>): Promise<T> => {
+      if (method !== CLIENT_THREAD_PROJECT_MOVE_METHOD) return request<T>(method, input);
+      assert.deepEqual(input, params);
+      writes++;
+      submitted.resolve();
+      await release.promise;
+      return { status: "confirmed", projectId: "target" } as T;
+    };
+    const service = await startFakeChChannel(serviceHost, directory, "service");
     const client = await createChHostClient({ directory });
     t.after(() => client.close());
+    const lost = assert.rejects(
+      client.request(CLIENT_THREAD_PROJECT_MOVE_METHOD, params),
+      (error: unknown) =>
+        error instanceof RpcError &&
+        "hostCode" in error.details &&
+        error.details.hostCode === -32093,
+    );
+    await submitted.promise;
     await service.close();
+    release.resolve();
+    await lost;
     const desktopHost = new FakeChChannel();
     const desktop = await startFakeChChannel(desktopHost, directory);
     t.after(() => desktop.close());
@@ -485,12 +611,10 @@ it(
     t.after(() => stop?.());
     await reconnected.promise;
     await assert.rejects(
-      client.request(CLIENT_THREAD_PROJECT_MOVE_METHOD, {
-        threadId: "moving",
-        projectId: "target",
-      }),
+      client.request(CLIENT_THREAD_PROJECT_MOVE_METHOD, params),
       (error: unknown) => error instanceof RpcError && error.code === "host/method-unavailable",
     );
+    assert.equal(writes, 1);
     assert.ok(
       !desktopHost.requests.some(({ method }) => method === CLIENT_THREAD_PROJECT_MOVE_METHOD),
     );

@@ -142,6 +142,77 @@ function rowHalf(e: { clientY: number; currentTarget: HTMLElement }): "before" |
   return e.clientY < rect.top + rect.height / 2 ? "before" : "after";
 }
 
+/** Mini globe overlay pinned to the bottom-right corner of remote folder icons. */
+function RemoteFolderGlobe({ color, state }: { color: string; state: string }) {
+  return (
+    <span
+      className={css.remoteFolderGlobe}
+      data-color={color}
+      data-state={state}
+      aria-hidden="true"
+    >
+      <svg viewBox="0 0 12 12" width="10" height="10" fill="none">
+        <circle cx="6" cy="6" r="4.6" stroke="currentColor" strokeWidth="1.2" />
+        <ellipse cx="6" cy="6" rx="2.1" ry="4.6" stroke="currentColor" strokeWidth="1.05" />
+        <path d="M1.6 6h8.8" stroke="currentColor" strokeWidth="1.05" />
+      </svg>
+    </span>
+  );
+}
+
+/**
+ * Collapsible remote host folder row in the Workspaces section:
+ * folder icon with host-colored globe badge, host display name, inline
+ * workspace count, and fixed connection-state dot on the right.
+ */
+export function RemoteHostFolderRow({
+  hostId,
+  remote,
+  workspaceCount,
+  expanded,
+  onToggle,
+  t,
+}: {
+  hostId: string;
+  remote: NonNullable<GroupNode["remote"]>;
+  workspaceCount: number;
+  expanded: boolean;
+  onToggle: () => void;
+  t: RowTranslate;
+}) {
+  const remoteColor = resolveRemotePeerColor(hostId, remote.color);
+  const statusLabel =
+    remote.state === "connected"
+      ? t("host.connected")
+      : remote.state === "connecting"
+        ? t("host.connecting")
+        : t("host.disconnected");
+  const description = `${remote.displayName} · ${statusLabel}`;
+
+  return (
+    <div
+      className={clsx(css.projectRow, css.remoteHostRow)}
+      data-row-key={`remote-host:${hostId}`}
+      role="treeitem"
+      aria-expanded={expanded}
+      aria-label={`${description} (${workspaceCount})`}
+      title={description}
+      tabIndex={-1}
+      onClick={onToggle}
+    >
+      <span className={clsx(css.slot, expanded && css.folderExpanded)}>
+        {expanded ? <IconFolderOpenRegular /> : <IconFolderCloseRegular />}
+        <RemoteFolderGlobe color={remoteColor} state={remote.state} />
+      </span>
+      <span className={css.remoteHostText}>
+        <span className={css.title}>{remote.displayName}</span>
+        <span className={css.remoteHostMeta}>{workspaceCount}</span>
+      </span>
+      <span className={css.remoteHostStatusDot} data-state={remote.state} aria-hidden="true" />
+    </div>
+  );
+}
+
 /**
  * Project (workspace) header row: folder + title;
  * expanded folders stay blue and open even while hovered or keyboard-focused.
@@ -229,22 +300,28 @@ export function ProjectRowItem({
       }
       onDragEnd={drag?.end}
     >
-      {showRemoteIndicator && row.remote && (
-        <span
-          className={clsx(css.hostRail, css.hostRailWorkspace)}
-          data-color={remoteColor}
-          data-state={row.remote.state}
-          aria-hidden="true"
-        />
-      )}
       <span className={clsx(css.slot, row.expanded && css.folderExpanded)}>
         {row.expanded ? <IconFolderOpenRegular /> : <IconFolderCloseRegular />}
+        {showRemoteIndicator && row.remote && remoteColor !== undefined && (
+          <RemoteFolderGlobe color={remoteColor} state={row.remote.state} />
+        )}
       </span>
-      <span className={css.projectText}>
-        <span className={css.title}>{label}</span>
-      </span>
-      {showRemoteIndicator && row.remote && (
-        <HostBadge host={row.remote} variant="workspace" t={t} />
+      {showRemoteIndicator && row.remote ? (
+        <>
+          <span className={css.remoteHostText}>
+            <span className={css.title}>{label}</span>
+            <span className={css.remoteHostMeta}>{row.remote.displayName}</span>
+          </span>
+          <span
+            className={css.remoteHostStatusDot}
+            data-state={row.remote.state}
+            aria-hidden="true"
+          />
+        </>
+      ) : (
+        <span className={css.projectText}>
+          <span className={css.title}>{label}</span>
+        </span>
       )}
       <span className={css.rowActions}>
         {actions !== undefined && (

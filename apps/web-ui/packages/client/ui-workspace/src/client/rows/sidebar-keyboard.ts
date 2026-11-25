@@ -81,10 +81,14 @@ export function navigateSidebar(event: KeyboardEvent<HTMLDivElement>): void {
           break;
         }
         let group = row.closest("[data-sidebar-group]");
-        let heading = group?.querySelector<HTMLElement>('[data-row-key^="workspace:"]');
+        let heading = group?.querySelector<HTMLElement>(
+          '[data-row-key^="workspace:"], [data-row-key^="remote-host:"]',
+        );
         if (heading === row) {
           group = group?.parentElement?.closest("[data-sidebar-group]") ?? null;
-          heading = group?.querySelector<HTMLElement>('[data-row-key^="workspace:"]');
+          heading = group?.querySelector<HTMLElement>(
+            '[data-row-key^="workspace:"], [data-row-key^="remote-host:"]',
+          );
         }
         next = heading ?? undefined;
       }

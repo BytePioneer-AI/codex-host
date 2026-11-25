@@ -415,7 +415,7 @@ export class SessionManager {
     if (this.projectionLoads.get(sessionId)?.state === "ready") return Promise.resolve();
     const controller = new AbortController();
     const store = this.projectionStore(sessionId);
-    const initialValues = store.values();
+    const initialRevision = store.revision;
     this.projectionLoads.set(sessionId, { state: "loading", error: null });
     this.notifier.markDirty();
     const operation = (async () => {
@@ -425,7 +425,7 @@ export class SessionManager {
         if (result.ok) {
           if (result.value !== null) {
             store.seed({ ...result.value, asOfSeq: sessionSeqCursor(result.value.asOfSeq) });
-          } else if (store.values() === initialValues) {
+          } else if (store.revision === initialRevision) {
             // A later frame proves existence independently of an earlier missing read.
             store.clear();
           }
@@ -743,23 +743,25 @@ export class SessionManager {
    * Merge a Host summary, replacing live state and filling missing metadata.
    * Local create/fork placeholders only fill metadata on an existing row.
    */
-  private mergeSummary(summary: SessionSummary): void {
-    this.recordMutation({ kind: "upsert", summary }, "frame");
+  private mergeSummary(summary: SessionSummary): boolean {
+    const updated = this.recordMutation({ kind: "upsert", summary }, "frame");
     this.updateParentAvailability();
+    return updated;
   }
 
   /** Apply immediately and retain for replay when a list response is in flight. */
   private recordMutation(
     mutation: SessionListMutation,
     delivery: "microtask" | "frame" = "microtask",
-  ): void {
-    if (this.disposed) return;
+  ): boolean {
+    if (this.disposed) return false;
     this.listMutations?.push(mutation);
     const next = applyMutation(this.summaries, mutation);
-    if (next === this.summaries) return;
+    if (next === this.summaries) return false;
     this.summaries = next;
     if (delivery === "frame") this.notifier.markFrameDirty();
     else this.notifier.markDirty();
+    return true;
   }
 
   // ---- Subscription API (for useSessionList) ----
@@ -827,8 +829,9 @@ export class SessionManager {
    * @param catalogEntry - false for the direct metadata lookup path, not catalog discovery.
    */
   handleSessionAdded(summary: SessionSummary, catalogEntry = true): void {
-    if (catalogEntry) this.summaryOnlyIds.delete(summary.sessionId);
-    this.mergeSummary(summary);
+    const clearedSummaryOnly = catalogEntry && this.summaryOnlyIds.delete(summary.sessionId);
+    const updatedSummary = this.mergeSummary(summary);
+    if (clearedSummaryOnly && !updatedSummary) this.notifier.markFrameDirty();
     if (!this.disposed && summary.running) this.engagedSessions.add(summary.sessionId);
     const session = this.sessions.get(summary.sessionId);
     session?.handleRestored();
@@ -866,31 +869,42 @@ export class SessionManager {
    * @param sessionId - removed Session identity.
    */
   handleSessionRemoved(sessionId: SessionId): void {
-    this.summaryOnlyIds.delete(sessionId);
+    const clearedSummaryOnly = this.summaryOnlyIds.delete(sessionId);
     const durableSubagent =
       this.subagentAddress(sessionId) !== undefined ||
       this.summaries.some(
         (summary) => summary.sessionId === sessionId && summary.origin === "subagent",
       );
-    this.recordMutation(
+    const updatedSummary = this.recordMutation(
       durableSubagent
         ? { kind: "status", sessionId, running: false, agentAvailable: false }
         : { kind: "remove", sessionId },
       "frame",
     );
-    if (durableSubagent) this.sessions.get(sessionId)?.handleRunning(false);
-    else {
+    let subagentStopped = false;
+    if (durableSubagent) {
+      const session = this.sessions.get(sessionId);
+      subagentStopped = session?.getSnapshot().running === true;
+      session?.handleRunning(false);
+    } else {
       this.recentViews.delete(sessionId);
       this.sessions.get(sessionId)?.handleRemoved();
     }
     const catalog = this.projectionStores.get(sessionId)?.values().subagentCatalog;
-    if (!durableSubagent && (catalog === undefined || catalog.length === 0)) {
-      this.projectionStores.delete(sessionId);
-    }
+    const deletedProjectionStore =
+      !durableSubagent && (catalog === undefined || catalog.length === 0)
+        ? this.projectionStores.delete(sessionId)
+        : false;
     this.pruneEngagement(sessionId, this.retainedIds(this.summaries));
     this.projectionInflight.get(sessionId)?.controller.abort();
     this.projectionInflight.delete(sessionId);
-    this.projectionLoads.delete(sessionId);
+    const deletedProjectionLoad = this.projectionLoads.delete(sessionId);
+    if (
+      !updatedSummary &&
+      (clearedSummaryOnly || deletedProjectionStore || deletedProjectionLoad || subagentStopped)
+    ) {
+      this.notifier.markFrameDirty();
+    }
     for (const [childId, address] of this.addresses) {
       if (address.parentSessionId === sessionId) {
         this.sessions.get(childId)?.handleSubagentParentAvailable(false);
@@ -905,9 +919,17 @@ export class SessionManager {
    */
   handleSessionStatus(sessionId: SessionId, running: boolean): void {
     if (!this.disposed && running) this.engagedSessions.add(sessionId);
-    this.recordMutation({ kind: "status", sessionId, running, agentAvailable: true }, "frame");
+    const updatedSummary = this.recordMutation(
+      { kind: "status", sessionId, running, agentAvailable: true },
+      "frame",
+    );
     this.updateParentAvailability();
-    this.sessions.get(sessionId)?.handleRunning(running);
+    const session = this.sessions.get(sessionId);
+    const previousRunning = session?.getSnapshot().running;
+    session?.handleRunning(running);
+    if (!updatedSummary && session !== undefined && previousRunning !== running) {
+      this.notifier.markFrameDirty();
+    }
   }
 
   /**

@@ -120,10 +120,16 @@ export class ProjectionValueStore {
   private readonly rows = new Map<string, Row>();
   private readonly channels = new Map<string, Channel>();
   private valuesCache: Readonly<Partial<SessionProjectionMap>> | undefined;
+  private writeRevision = 0;
   /** Coarse any-key channel (no snapshot cache to rebuild: reads hit rows directly). */
   private readonly anyNotifier = new Notifier(() => {});
 
   constructor(private readonly anyIgnoredKeys?: ReadonlySet<string>) {}
+
+  /** Monotonic counter incremented on every accepted write, including same-value confirmations. */
+  get revision(): number {
+    return this.writeRevision;
+  }
 
   /**
    * Key-addressed bare observable face (the useProjection resolution path).
@@ -192,6 +198,7 @@ export class ProjectionValueStore {
     if (row?.kind === "sequenced" && seq <= row.seq) return false;
     if (row !== undefined && sameProjectionValue(row.value, value)) {
       this.rows.set(key, { kind: "sequenced", value: row.value, seq });
+      this.writeRevision += 1;
       return false;
     }
     this.rows.set(key, { kind: "sequenced", value, seq });
@@ -212,6 +219,7 @@ export class ProjectionValueStore {
     if (row?.kind === "sequenced" && seq < row.seq) return false;
     if (row !== undefined && sameProjectionValue(row.value, value)) {
       this.rows.set(key, { kind: "sequenced", value: row.value, seq });
+      this.writeRevision += 1;
       return false;
     }
     this.rows.set(key, { kind: "sequenced", value, seq });
@@ -231,7 +239,10 @@ export class ProjectionValueStore {
     for (const key of Object.keys(values)) {
       const row = this.rows.get(key);
       if (row?.kind === "sequenced") continue;
-      if (row !== undefined && sameProjectionValue(row.value, values[key])) continue;
+      if (row !== undefined && sameProjectionValue(row.value, values[key])) {
+        this.writeRevision += 1;
+        continue;
+      }
       this.rows.set(key, { kind: "cached", value: values[key] });
       this.changed(key);
     }
@@ -300,6 +311,7 @@ export class ProjectionValueStore {
   }
 
   private changed(key: string): void {
+    this.writeRevision += 1;
     this.valuesCache = undefined;
     this.channels.get(key)?.notifier.markDirty();
     if (!this.anyIgnoredKeys?.has(key)) {

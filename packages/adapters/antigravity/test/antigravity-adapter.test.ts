@@ -212,12 +212,30 @@ async function start(session: HarnessSession, transports: FakeTransport[], id = 
   await vi.waitFor(() => expect(transports.at(-1)?.handler).toBeDefined());
   return required(transports.at(-1));
 }
-async function completed(outputs: HarnessOutput[], id = "t1") {
-  await vi.waitFor(() =>
-    expect(
-      events(outputs).filter((event) => event.type === "turn.completed" && event.turnId === id),
-    ).toHaveLength(1),
+async function completed(outputs: HarnessOutput[], id = "t1", options?: { timeout: number }) {
+  await vi.waitFor(
+    () =>
+      expect(
+        events(outputs).filter((event) => event.type === "turn.completed" && event.turnId === id),
+      ).toHaveLength(1),
+    options,
   );
+}
+function nextRead() {
+  const get = StatementSync.prototype.get;
+  const firstRead = deferred<number>();
+  const spy = vi.spyOn(StatementSync.prototype, "get").mockImplementation(function (
+    this: StatementSync,
+    ...params: Parameters<StatementSync["get"]>
+  ) {
+    const row = get.apply(this, params);
+    if (this.sourceSQL.includes("count(*) AS n FROM steps WHERE step_type = 14")) {
+      spy.mockRestore();
+      firstRead.resolve(Number(row?.n));
+    }
+    return row;
+  });
+  return firstRead.promise;
 }
 /** CortexStepMetadata field 1 is the step's native creation time. */
 function stampStep(db: DatabaseSync, idx: number, atMs: number) {
@@ -2502,23 +2520,6 @@ describe("Antigravity foreground native commits", () => {
     return { adapter, home, nativeRef, session, outputs, transport, db };
   }
 
-  function nextRead() {
-    const get = StatementSync.prototype.get;
-    const firstRead = deferred<number>();
-    const spy = vi.spyOn(StatementSync.prototype, "get").mockImplementation(function (
-      this: StatementSync,
-      ...params: Parameters<StatementSync["get"]>
-    ) {
-      const row = get.apply(this, params);
-      if (this.sourceSQL.includes("count(*) AS n FROM steps WHERE step_type = 14")) {
-        spy.mockRestore();
-        firstRead.resolve(Number(row?.n));
-      }
-      return row;
-    });
-    return firstRead.promise;
-  }
-
   const terminal = (outputs: HarnessOutput[], id = "t1") => {
     const event = events(outputs).find(
       (event) => event.type === "turn.completed" && event.turnId === id,
@@ -3405,6 +3406,7 @@ describe("Antigravity idle wake Turns", () => {
   it("waits for a delayed steered WAL commit and keeps prior foreground compaction checkpoints", async () => {
     const { session, outputs, transport, db } = await setup();
     try {
+      db.exec("PRAGMA journal_mode = WAL");
       db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
       stampStep(db, 0, Date.now());
       await moment();
@@ -3416,17 +3418,18 @@ describe("Antigravity idle wake Turns", () => {
         }),
       ).toEqual({ ok: true, value: { accepted: true } });
       const steerCreatedAtMs = Date.now();
+      db.exec("BEGIN IMMEDIATE");
+      userStep(db, 2, "delayed steer", "run-b");
+      stampStep(db, 2, steerCreatedAtMs);
+      checkpointStep(db, 3, { status: 3, run: "prompt", summary: "Late initial compaction" });
+      const firstRead = nextRead();
       transport.result.resolve({ stopReason: "end_turn" });
       required(transport.handler).onResponse?.();
       required(transport.steerResults[0]).resolve({ stopReason: "end_turn" });
-      // Commit steer's USER_INPUT after observeNativeTurnCount's initial 0ms read,
-      // along with a late compaction checkpoint belonging to the initial prompt's run.
-      setTimeout(() => {
-        userStep(db, 2, "delayed steer", "run-b");
-        stampStep(db, 2, steerCreatedAtMs);
-        checkpointStep(db, 3, { status: 3, run: "prompt", summary: "Late initial compaction" });
-      }, 40);
-      await completed(outputs, "t1");
+      // The first native read sees only the initial prompt, not the uncommitted steer.
+      expect(await firstRead).toBe(1);
+      db.exec("COMMIT");
+      await completed(outputs, "t1", { timeout: 5_000 });
       expect(
         events(outputs).find((event) => event.type === "turn.completed" && event.turnId === "t1"),
       ).toMatchObject({

@@ -7,7 +7,6 @@ import {
   harnessIdSchema,
   IDLE_RELEASE_SETTINGS_METHOD,
   LOADED_SESSIONS_METHOD,
-  THREAD_USAGE_UPDATED_METHOD,
   type AccountCreditsSnapshot,
   type JsonObject,
 } from "@codexhost/shared-contracts";
@@ -32,6 +31,7 @@ import {
 const threadId = "00000000-0000-4000-8000-000000000001";
 const inspectMethod = "codexhost/thread/inspect";
 const usageMethod = "codexhost/thread/usage/inspect";
+const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
 const steeringMethod = "codexhost/thread/steering/inspect";
 const MINUTE = 60_000;
 
@@ -394,10 +394,12 @@ describe("Usage inspection request routing", () => {
 
       // Hold a hot usage inspect across the 10-minute mark to prove occupancy protection.
       const enteredCredits = Promise.withResolvers<undefined>();
-      session.readAccountCredits = () => {
-        enteredCredits.resolve(undefined);
-        return readCreditsGate.promise;
-      };
+      Object.assign(session, {
+        readAccountCredits: () => {
+          enteredCredits.resolve(undefined);
+          return readCreditsGate.promise;
+        },
+      });
       await vi.advanceTimersByTimeAsync(4 * MINUTE);
       writeRequest(fixture.desktopInput, {
         id: 104,

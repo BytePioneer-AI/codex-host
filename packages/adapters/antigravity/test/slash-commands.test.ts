@@ -19,7 +19,7 @@ import type {
   AntigravityOpenAcpSessionInput,
   AntigravitySessionEventHandler,
 } from "../src/acp-types.js";
-import { AntigravityAdapter, AntigravitySession } from "../src/antigravity-adapter.js";
+import { AntigravityAdapter, type AntigravitySession } from "../src/antigravity-adapter.js";
 import * as skillDiscovery from "../src/skill-discovery.js";
 import {
   ANTIGRAVITY_COMMAND_CATALOG,
@@ -232,6 +232,7 @@ describe("Antigravity live command skill filtering and readiness", () => {
         setMode: vi.fn(async () => undefined),
         setConfigOption: vi.fn(async () => []),
         prompt: vi.fn(async () => ({ stopReason: "end_turn" as const })),
+        steer: vi.fn(async () => ({ stopReason: "end_turn" as const })),
         cancel: vi.fn(async () => undefined),
         closeSession: vi.fn(async () => undefined),
         close: vi.fn(async () => undefined),
@@ -508,7 +509,7 @@ describe("Antigravity live command skill filtering and readiness", () => {
       .mockReturnValueOnce(scanA.promise)
       .mockReturnValueOnce(scanB.promise);
 
-    let emitEvent: AntigravitySessionEventHandler | null = null;
+    const emitter: { current: AntigravitySessionEventHandler | null } = { current: null };
     const adapter = new AntigravityAdapter({
       environment: { HOME: home, USERPROFILE: home },
       createTransport: (options) => {
@@ -518,7 +519,7 @@ describe("Antigravity live command skill filtering and readiness", () => {
         return {
           ...base,
           setSessionEventHandler(handler) {
-            emitEvent = handler;
+            emitter.current = handler;
             base.setSessionEventHandler(handler);
           },
         };
@@ -538,7 +539,7 @@ describe("Antigravity live command skill filtering and readiness", () => {
       });
 
       // Update B arrives and finishes while update A NEVER resolves.
-      emitEvent?.({
+      emitter.current?.({
         type: "commands.update",
         commands: [{ name: "beta", description: "Fresh command B" }],
       });

@@ -1403,8 +1403,10 @@ export class AntigravitySession implements HarnessSession {
       let hasLatestError = false;
       try {
         for (let index = 0; index < turn.promptChain.length; index++) {
+          const nextPrompt = turn.promptChain[index];
+          if (!nextPrompt) continue;
           try {
-            const settled = await turn.promptChain[index]!;
+            const settled = await nextPrompt;
             result = settled;
             combinedUsage = mergePromptUsage(combinedUsage, settled.usage);
             hasLatestError = false;

@@ -2735,7 +2735,7 @@ describe("Antigravity idle wake Turns", () => {
         usage: { inputTokens: 30, outputTokens: 12, totalTokens: 42 },
       });
       expect(
-        finalUsage && finalUsage.type === "session.usage.changed"
+        finalUsage && finalUsage.type === "session.usage.changed" && finalUsage.usage
           ? finalUsage.usage.cacheWriteInputTokens
           : "missing",
       ).toBeUndefined();

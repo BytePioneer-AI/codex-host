@@ -1,6 +1,6 @@
 {
   "identifier": "window-chrome",
-  "description": "Window drag and caption controls for the main desktop shell window on bundled pages and the local loopback Web UI.",
+  "description": "Window drag, caption, and zoom controls for the main desktop shell window on bundled pages and the local loopback Web UI.",
   "webviews": ["main"],
   "local": true,
   "remote": {
@@ -11,6 +11,9 @@
     "allow-window-minimize",
     "allow-window-toggle-maximize",
     "allow-window-close",
-    "allow-window-chrome-state"
+    "allow-window-chrome-state",
+    "allow-window-zoom-get",
+    "allow-window-zoom-step",
+    "allow-window-zoom-set"
   ]
 }

@@ -128,6 +128,7 @@ export function installKeyboard(
     deadKey = isDead;
     const gesture = {
       code: event.code,
+      key: event.key,
       control: event.ctrlKey,
       alt: event.altKey,
       shift: event.shiftKey,

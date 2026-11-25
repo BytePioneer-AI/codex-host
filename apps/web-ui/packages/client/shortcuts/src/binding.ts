@@ -46,6 +46,9 @@ const keyNames: Readonly<Record<string, string>> = {
   ArrowDown: "↓",
   ArrowLeft: "←",
   ArrowRight: "→",
+  NumpadAdd: "Num+",
+  NumpadSubtract: "Num-",
+  Numpad0: "Num0",
 };
 const modifierOrder = ["control", "alt", "shift", "meta"] as const;
 

@@ -91,11 +91,19 @@ import type {} from "@deepseek-ai/dsh-client-web";
 import { isDesktopShell, PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
 import { WallpaperController } from "./wallpaper.ts";
 import { WallpaperRow, type WallpaperFace } from "./WallpaperRow.tsx";
+import {
+  formatZoomShortcutHint,
+  getShellZoomBridge,
+  registerShellZoomShortcuts,
+  ShellZoomController,
+} from "./shell-zoom.ts";
+import { ShellZoomRow, type ShellZoomFace } from "./ShellZoomRow.tsx";
 import { ImportPage, type ImportPageFace } from "./ImportPage.tsx";
 import { HostSettingsSection, type HostSettingsSectionFace } from "./HostSettingsSection.tsx";
 import { SettingsLauncher, type SettingsLauncherFace } from "./SettingsLauncher.tsx";
 import { AndroidHostSwitcherAction } from "./AndroidHostSwitcherAction.tsx";
 import type {} from "@deepseek-ai/dsh-client-ui-theme/client";
+import type {} from "@deepseek-ai/dsh-client-shortcuts/client";
 import { en, zh, type ImportLocaleKey } from "./locales.ts";
 
 declare module "@deepseek-ai/dsh-client-ui-slots" {
@@ -218,6 +226,37 @@ export function apply(ctx: ClientContext): void {
       WallpaperRow,
     ),
   );
+  const shellZoomBridge = getShellZoomBridge();
+  if (shellZoomBridge !== undefined) {
+    const shellZoom = new ShellZoomController(shellZoomBridge);
+    ctx.effect(() => () => shellZoom.dispose(), "ui-codexhost: shell zoom");
+    ctx.slots.inject("settings.general.item", () =>
+      ctx.slots.register(
+        {
+          name: "settings.general.item",
+          id: "codexhost.shell-zoom",
+          order: 11.25,
+          locale: NS,
+          inject: (): ShellZoomFace => ({
+            zoom: shellZoom,
+            shortcutHint: formatZoomShortcutHint(ctx.get("shortcuts")),
+          }),
+        },
+        ShellZoomRow,
+      ),
+    );
+    ctx.inject(["shortcuts"], (scope) => {
+      scope.effect(
+        () =>
+          registerShellZoomShortcuts(scope.shortcuts, shellZoomBridge, {
+            zoomIn: () => t("shellZoom.shortcut.zoomIn"),
+            zoomOut: () => t("shellZoom.shortcut.zoomOut"),
+            reset: () => t("shellZoom.shortcut.reset"),
+          }),
+        "ui-codexhost: shell zoom shortcuts",
+      );
+    });
+  }
   ctx.provide("chatMessageEditing", sentMessageEditApi);
   ctx.provide("queueMessageEditing", queueMessageEditApi);
   ctx.provide("chatTurnDiffs", turnDiffsApi);

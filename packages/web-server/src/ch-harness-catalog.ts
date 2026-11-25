@@ -264,7 +264,11 @@ export class ChHarnessCatalog {
       void pending.then(
         () => {
           this.timedOutInspections.delete(pending);
-          if (!this.closed && this.inspections.get(key) === pending) {
+          if (
+            !this.closed &&
+            (this.inspections.get(key) === pending ||
+              (id === "codex" && !this.inspections.has(key)))
+          ) {
             this.events.emit("codexhost/harness-inspection-changed");
           }
         },

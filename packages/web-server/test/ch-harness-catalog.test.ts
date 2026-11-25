@@ -439,6 +439,43 @@ it("isolates a hanging Harness within the wait budget, fast-fails repeat reads, 
   assert.equal(fakeCalls, 1);
 });
 
+it("emits harness-inspection-changed when a timed-out Codex inspection later settles non-ready", async (t) => {
+  const host = new FakeChChannel();
+  const events = new EventHub("/unused");
+  const emitted: string[] = [];
+  events.emit = (event) => {
+    emitted.push(event);
+  };
+  const catalog = new ChHarnessCatalog(
+    host,
+    events,
+    async () => [],
+    undefined,
+    undefined,
+    undefined,
+    30,
+  );
+  t.after(() => catalog.close());
+  emitted.length = 0;
+
+  const slowCodex = Promise.withResolvers<HarnessInspection>();
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "codexhost/harness/inspect" && params.harnessId === "codex") {
+      return slowCodex.promise as Promise<T>;
+    }
+    return request<T>(method, params);
+  };
+
+  const first = await catalog.models();
+  assert.deepEqual(first.routableProviders, ["fake"]);
+  assert.deepEqual(emitted, []);
+
+  slowCodex.resolve(failed);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(emitted, ["codexhost/harness-inspection-changed"]);
+});
+
 it("does not fail healthy Harnesses when one plugin inspection throws", async (t) => {
   const { host, catalog } = fixture();
   t.after(() => catalog.close());

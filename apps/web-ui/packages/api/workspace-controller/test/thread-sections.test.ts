@@ -15,6 +15,7 @@ import type {
   WorkspaceMoveSessionToSectionRequest,
   WorkspaceMoveSessionToSectionValue,
   WorkspaceThreadSectionMutationValue,
+  WorkspaceView,
 } from "../src/types.ts";
 
 // The browser export is a loader bundle. Load the same Gateway source in Node.
@@ -306,5 +307,72 @@ describe("workspace-controller thread section contracts", () => {
       /workspace move to section failed: workspace\/section-invalid: Invalid anchor/,
     );
     expect(model.getSnapshot().threadSections?.[0]?.threadIds).toEqual(["t-1", "t-2"]);
+  });
+
+  it("preserves prior threadSections projection across workspace upserts, carrier drops, and stream errors until an authoritative baseline arrives", () => {
+    const model = new ClientWorkspaceModel({} as WorkspaceRemote);
+    const sections = [
+      {
+        id: "sec-research",
+        name: "Research",
+        appearance: null,
+        threadIds: ["codex-1" as SessionId, "ext-1" as SessionId, "ext-2" as SessionId],
+      },
+    ];
+    const workspace = {
+      workspaceId: "ws-1" as WorkspaceView["workspaceId"],
+      path: "/project",
+      title: "Project",
+      sessionIds: ["codex-1" as SessionId, "ext-1" as SessionId, "ext-2" as SessionId],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:01.000Z",
+    };
+
+    model.replaceBaseline({
+      items: [workspace],
+      archivedSessionIds: [],
+      pinnedSessionIds: [],
+      threadSections: sections,
+      threadSectionsV1: true,
+    });
+
+    // Project pagination / workspace membership upserts never overwrite threadSections.
+    model.upsertView({
+      ...workspace,
+      sessionIds: [...workspace.sessionIds, "codex-older" as SessionId],
+      updatedAt: "2026-01-01T00:00:02.000Z",
+    });
+    expect(model.getSnapshot().threadSections).toEqual(sections);
+    expect(model.getSnapshot().threadSectionsV1).toBe(true);
+
+    // Transient carrier disconnect keeps the last authoritative section projection visible.
+    model.handleCarrierFailure();
+    expect(model.getSnapshot().state).toBe("loading");
+    expect(model.getSnapshot().threadSections).toEqual(sections);
+    expect(model.getSnapshot().threadSectionsV1).toBe(true);
+
+    // Terminal stream error also preserves the last projection rather than unsectioning rows.
+    model.handleStreamFailure(new RemoteError("gateway/internal", "Host unavailable", {}));
+    expect(model.getSnapshot().state).toBe("error");
+    expect(model.getSnapshot().threadSections).toEqual(sections);
+    expect(model.getSnapshot().threadSectionsV1).toBe(true);
+
+    // Reconnect/restart baseline installs authoritative state cleanly.
+    model.replaceBaseline({
+      items: [
+        {
+          ...workspace,
+          sessionIds: [...workspace.sessionIds, "codex-older" as SessionId],
+          updatedAt: "2026-01-01T00:00:03.000Z",
+        },
+      ],
+      archivedSessionIds: [],
+      pinnedSessionIds: [],
+      threadSections: sections,
+      threadSectionsV1: true,
+    });
+    expect(model.getSnapshot().state).toBe("idle");
+    expect(model.getSnapshot().threadSections).toEqual(sections);
+    expect(model.getSnapshot().threadSectionsV1).toBe(true);
   });
 });

@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { SessionSummary } from "@deepseek-ai/dsh-api-session-controller/client";
-import type { WorkspaceThreadSection } from "@deepseek-ai/dsh-api-workspace-controller/types";
+import type {
+  SessionListState,
+  SessionSummary,
+} from "@deepseek-ai/dsh-api-session-controller/client";
+import type {
+  WorkspaceThreadSection,
+  WorkspaceView,
+} from "@deepseek-ai/dsh-api-workspace-controller/types";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
+import {
+  filterSessionsByHostScope,
+  filterWorkspacesByHostScope,
+  type HostScopeFilterState,
+} from "../src/client/rows/host-scope-filter.ts";
 import {
   canCommitSectionDrop,
   createSectionMoveCoordinator,
@@ -15,6 +26,16 @@ import {
   resolveSectionStepMove,
   visibleCustomSectionThreadIds,
 } from "../src/client/rows/section-dnd.ts";
+import { GROUP_INITIAL_ROWS, sidebarWindow } from "../src/client/rows/sidebar-window.ts";
+import { createWorkspaceViewStore } from "../src/client/stores.ts";
+import { threadTreeOrderSource } from "../src/client/thread-tree-order.ts";
+import {
+  deriveFlat,
+  deriveGroups,
+  deriveSearchResults,
+  deriveThreadForest,
+  type SessionRowState,
+} from "../src/client/tree.ts";
 
 const sid = (value: string): SessionId => value as SessionId;
 
@@ -627,5 +648,242 @@ describe("createSectionMoveCoordinator", () => {
     assert.equal(errors[0], failure);
     assert.ok(notifications >= 4);
     stop();
+  });
+});
+
+describe("mixed Codex and external Harness sidebar section projection", () => {
+  const harnessSummary = (
+    id: string,
+    harnessId: string,
+    title: string,
+    updatedAt: number,
+  ): SessionSummary =>
+    ({
+      id: sid(id),
+      title,
+      displayTitle: title,
+      cwd: "/repo/project",
+      running: false,
+      blank: false,
+      origin: "user",
+      updatedAt,
+      retainedBy: {},
+      projectionValues: {
+        harnessIdentity: { id: harnessId, name: harnessId },
+        threadReference: { hostId: "local" },
+      },
+    }) as SessionSummary;
+
+  const projectLayout = (
+    list: SessionListState,
+    workspaces: readonly WorkspaceView[],
+    sections: readonly WorkspaceThreadSection[],
+    view: ReturnType<ReturnType<typeof createWorkspaceViewStore>["create"]>,
+    hostScope?: HostScopeFilterState,
+  ) => {
+    const viewState = view.getSnapshot();
+    const archivedFilter = viewState.archivedFilter ?? "default";
+    const nativeSections = archivedFilter === "only" ? [] : sections;
+    const rowState: SessionRowState = {
+      pinnedSessionIds: [],
+      archivedSessionIds: [],
+      archivedFilter,
+      sectionedSessionIds: new Set(nativeSections.flatMap((entry) => entry.threadIds)),
+    };
+    const scopedWorkspaces = hostScope
+      ? filterWorkspacesByHostScope(workspaces, hostScope)
+      : workspaces;
+    const visibleWorkspaceIds = new Set<string>(scopedWorkspaces.map((w) => w.workspaceId));
+    const order = threadTreeOrderSource(list, rowState);
+    const scopedSessionIds = hostScope
+      ? new Set(
+          filterSessionsByHostScope(
+            list.ids.map((id) => ({
+              id,
+              remote: list.byId[id]?.projectionValues?.remoteHost ?? undefined,
+            })),
+            visibleWorkspaceIds,
+            workspaces,
+            hostScope,
+            order.rootOf,
+          ).map((entry) => entry.id),
+        )
+      : null;
+    const scopedList: SessionListState =
+      scopedSessionIds === null
+        ? list
+        : { ...list, ids: list.ids.filter((id) => scopedSessionIds.has(id)) };
+    const expandedGroups = scopedWorkspaces
+      .map((w) => w.workspaceId as string)
+      .filter((key) => viewState.groupExpansion[key] === true);
+    const groups = deriveGroups(scopedList, scopedWorkspaces, rowState, new Map(), {
+      expandedGroups,
+      excludePinned: true,
+    });
+    const roots = new Map(
+      deriveThreadForest(scopedList, rowState, new Map()).map((node) => [node.id, node]),
+    );
+    const sectionRows = new Map(
+      nativeSections.map((entry) => [
+        entry.id,
+        entry.threadIds.flatMap((threadId) => {
+          const node = roots.get(threadId);
+          return node && !node.pinned ? [node.id] : [];
+        }),
+      ]),
+    );
+    const flatUnsectioned = deriveFlat(scopedList, scopedList.ids, rowState, new Map())
+      .filter((node) => !node.pinned && !rowState.sectionedSessionIds?.has(node.id))
+      .map((node) => node.id);
+    return { rowState, groups, sectionRows, flatUnsectioned, scopedSessionIds };
+  };
+
+  it("keeps sectioned external and Codex rows out of projects across collapse/expand, single move, search/filter, and restart projection", () => {
+    const rows = [
+      harnessSummary("codex-sec", "codex", "Codex sectioned", 500),
+      harnessSummary("ext-a", "pi-native", "External Alpha", 400),
+      harnessSummary("ext-b", "claude-code", "External Beta", 300),
+      harnessSummary("ext-proj", "pi-native", "External Project", 200),
+      harnessSummary("codex-older", "codex", "Codex Older", 100),
+    ];
+    const list: SessionListState = {
+      ids: rows.map((r) => r.id),
+      byId: Object.fromEntries(rows.map((r) => [r.id, r])),
+      phase: "ready",
+      projectionsBySession: {},
+    };
+    const localWorkspace: WorkspaceView = {
+      workspaceId: "ws-local" as WorkspaceView["workspaceId"],
+      path: "/repo/project",
+      title: "Project",
+      sessionIds: rows.map((r) => r.id),
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01",
+    };
+    const remoteWorkspace: WorkspaceView = {
+      workspaceId: "remote-workspace:p1:ws" as WorkspaceView["workspaceId"],
+      path: "/remote/project",
+      title: "Remote",
+      sessionIds: [],
+      createdAt: "2026-01-01",
+      updatedAt: "2026-01-01",
+      remote: { hostId: "remote-peer:p1", displayName: "Peer", state: "connected" },
+    };
+    let sections: readonly WorkspaceThreadSection[] = [
+      { id: "sec-work", name: "Work", threadIds: [sid("codex-sec"), sid("ext-a"), sid("ext-b")] },
+    ];
+
+    const view = createWorkspaceViewStore().create();
+    view.actions.setGroupExpanded(localWorkspace.workspaceId, true);
+
+    // Collapse then expand project: sectioned external rows never move back into the project.
+    view.actions.setGroupExpanded(localWorkspace.workspaceId, false);
+    assert.deepEqual(
+      projectLayout(list, [localWorkspace], sections, view).groups.find(
+        (g) => g.key === localWorkspace.workspaceId,
+      )?.sessions,
+      [],
+    );
+    view.actions.setGroupExpanded(localWorkspace.workspaceId, true);
+    const expanded = projectLayout(list, [localWorkspace], sections, view);
+    assert.deepEqual(expanded.sectionRows.get("sec-work"), [
+      sid("codex-sec"),
+      sid("ext-a"),
+      sid("ext-b"),
+    ]);
+    const expandedProjectIds = sidebarWindow(
+      expanded.groups.find((g) => g.key === localWorkspace.workspaceId)!.sessions,
+      GROUP_INITIAL_ROWS,
+    ).rows.map((n) => n.id);
+    assert.deepEqual(expandedProjectIds, [sid("ext-proj"), sid("codex-older")]);
+    assert.deepEqual(expanded.flatUnsectioned, [sid("ext-proj"), sid("codex-older")]);
+
+    // Move one external session within the section; authoritative update preserves all section members.
+    const movePayload = resolveSectionDropMove(
+      { sessionId: sid("ext-a"), sourceSectionId: "sec-work" },
+      {
+        kind: "section-row",
+        sectionId: "sec-work",
+        targetSessionId: sid("codex-sec"),
+        half: "before",
+      },
+      sections,
+    );
+    assert.deepEqual(movePayload, {
+      sessionId: sid("ext-a"),
+      sectionId: "sec-work",
+      beforeSessionId: sid("codex-sec"),
+    });
+    sections = [
+      { id: "sec-work", name: "Work", threadIds: [sid("ext-a"), sid("codex-sec"), sid("ext-b")] },
+    ];
+    const afterMove = projectLayout(list, [localWorkspace], sections, view);
+    assert.deepEqual(afterMove.sectionRows.get("sec-work"), [
+      sid("ext-a"),
+      sid("codex-sec"),
+      sid("ext-b"),
+    ]);
+    assert.deepEqual(
+      afterMove.groups.find((g) => g.key === localWorkspace.workspaceId)?.sessions.map((n) => n.id),
+      [sid("ext-proj"), sid("codex-older")],
+    );
+
+    // Search + host scope filtering + archived filter toggle preserve sectionedSessionIds.
+    const search = deriveSearchResults(
+      list,
+      [localWorkspace],
+      "External",
+      [],
+      "default",
+      new Map(),
+      { items: [], hasMore: false },
+      20,
+    );
+    assert.deepEqual(
+      search.items.map((item) => item.id),
+      [sid("ext-a"), sid("ext-b"), sid("ext-proj")],
+    );
+    const remoteFiltered = projectLayout(list, [localWorkspace, remoteWorkspace], sections, view, {
+      selectedHost: "remote-peer:p1",
+      perHost: {},
+    });
+    assert.deepEqual(remoteFiltered.sectionRows.get("sec-work"), []);
+    assert.deepEqual(
+      remoteFiltered.rowState.sectionedSessionIds,
+      new Set([sid("ext-a"), sid("codex-sec"), sid("ext-b")]),
+    );
+    assert.deepEqual(
+      visibleCustomSectionThreadIds(sections[0]!, {
+        byId: list.byId,
+        pinnedSessionIds: [],
+        archivedSessionIds: [],
+        archivedFilter: "default",
+        visibleSessionIds: remoteFiltered.scopedSessionIds,
+      }),
+      [],
+    );
+    view.actions.setArchivedFilter("only");
+    assert.equal(projectLayout(list, [localWorkspace], sections, view).sectionRows.size, 0);
+    view.actions.setArchivedFilter("default");
+
+    // Restart projection with a fresh view store keeps both external members in the section.
+    const restartedView = createWorkspaceViewStore().create();
+    restartedView.actions.setGroupExpanded(localWorkspace.workspaceId, true);
+    const restarted = projectLayout(
+      list,
+      [localWorkspace, remoteWorkspace],
+      sections,
+      restartedView,
+      { selectedHost: "all", perHost: {} },
+    );
+    assert.deepEqual(restarted.sectionRows.get("sec-work"), [
+      sid("ext-a"),
+      sid("codex-sec"),
+      sid("ext-b"),
+    ]);
+    assert.deepEqual(
+      restarted.groups.find((g) => g.key === localWorkspace.workspaceId)?.sessions.map((n) => n.id),
+      [sid("ext-proj"), sid("codex-older")],
+    );
   });
 });

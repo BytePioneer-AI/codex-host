@@ -360,7 +360,10 @@ export class SharedThreadBridge {
   }
 
   /** Every shared row of one query; the caller's own cursor and page size do not apply. */
-  async list(params: JsonObject): Promise<readonly JsonObject[]> {
+  async list(
+    params: JsonObject,
+    { requireComplete = false }: { requireComplete?: boolean } = {},
+  ): Promise<readonly JsonObject[]> {
     const query: JsonObject = { ...params };
     delete query.cursor;
     delete query.limit;
@@ -369,28 +372,34 @@ export class SharedThreadBridge {
     const now = this.options.now ?? Date.now;
     try {
       const cached = this.#lists.get(key);
+      let rows: JsonObject[] | null;
       if (
         cached &&
         cached.generation === this.#listGeneration &&
         now() - cached.startedAtMs < SHARED_LIST_REUSE_MS
       ) {
-        return (await cached.rows) ?? [];
+        rows = await cached.rows;
+      } else {
+        // Registered before any await so concurrent pages join this walk.
+        const entry = {
+          generation: this.#listGeneration,
+          startedAtMs: now(),
+          rows: this.#connect().then((peer) => (peer ? this.#rows(peer, query) : null)),
+        };
+        this.#lists.set(key, entry);
+        const forget = (): void => {
+          if (this.#lists.get(key) === entry) this.#lists.delete(key);
+        };
+        entry.rows.then((rows) => {
+          if (rows === null) forget();
+        }, forget);
+        rows = await entry.rows;
       }
-      // Registered before any await so concurrent pages join this walk.
-      const entry = {
-        generation: this.#listGeneration,
-        startedAtMs: now(),
-        rows: this.#connect().then((peer) => (peer ? this.#rows(peer, query) : null)),
-      };
-      this.#lists.set(key, entry);
-      const forget = (): void => {
-        if (this.#lists.get(key) === entry) this.#lists.delete(key);
-      };
-      entry.rows.then((rows) => {
-        if (rows === null) forget();
-      }, forget);
-      return (await entry.rows) ?? [];
+      if (rows === null && requireComplete && (this.#hasConnected || this.options.delegateCreates))
+        throw new Error("Shared Thread Host is disconnected");
+      return rows ?? [];
     } catch (error) {
+      if (requireComplete) throw error;
       this.options.diagnose(error);
       return [];
     }

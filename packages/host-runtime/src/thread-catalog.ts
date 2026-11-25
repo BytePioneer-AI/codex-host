@@ -211,7 +211,7 @@ export async function readThreadCatalog(
           measure(query.archived ? "sharedArchived" : "shared", async (count) => {
             if (!input.sharedThreads) return [];
             count();
-            return input.sharedThreads.list(query.params);
+            return input.sharedThreads.list(query.params, { requireComplete: true });
           }),
         ),
       ),

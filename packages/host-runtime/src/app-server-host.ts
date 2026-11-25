@@ -4037,8 +4037,8 @@ export class AppServerHost {
     const [{ records, placements: localPlacements }, sharedPlacements, sharedThreads] =
       await Promise.all([
         this.#localThreadCatalog(definitions),
-        shared?.placements() ?? [],
-        shared?.list(query.params) ?? [],
+        shared?.placements(true) ?? [],
+        shared?.list(query.params, { requireComplete: true }) ?? [],
       ]);
     const placementById = new Map<string, StoredSectionPlacementV1>();
     for (const placement of localPlacements) placementById.set(placement.hostThreadId, placement);

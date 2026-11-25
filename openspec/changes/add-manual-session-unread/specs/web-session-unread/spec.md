@@ -44,6 +44,27 @@ Web 会话行菜单 SHALL 为未归档、非当前主视图且尚未显示完成
 - **WHEN** 用户通过现有折叠操作清除后代的完成未读提醒
 - **THEN** 其中的手动未读标记 SHALL 一并清除
 
+### Requirement: 父会话批量清除后代未读
+
+Web 会话行菜单 SHALL 为至少一个已加载后代具有完成未读提醒的未归档父会话提供“将子对话全部标为已读 / Mark all child threads as read”。该操作 SHALL 复用现有 `markCompletionsRead`，清除该父行显示树中全部后代的完成未读提醒，且 MUST NOT 清除父会话自身或显示树外会话的未读提醒。
+
+#### Scenario: 清除全部后代未读
+
+- **WHEN** 用户从父会话菜单选择“将子对话全部标为已读”
+- **THEN** 菜单 SHALL 关闭
+- **AND** 该父行显示树中所有已加载后代的手动与自动完成未读提醒 SHALL 被清除
+- **AND** 父会话自身、其他旁支、当前打开的会话、运行状态及展开状态 MUST NOT 改变
+
+#### Scenario: 不提供空操作入口
+
+- **WHEN** 会话没有已加载后代，或其所有已加载后代均无完成未读提醒
+- **THEN** 菜单 MUST NOT 显示“将子对话全部标为已读”
+
+#### Scenario: 显示树边界
+
+- **WHEN** 后代已因置顶、自定义分区、跨 Host 或尚未加载而不属于该父行显示树
+- **THEN** 该操作 MUST NOT 将其纳入清除范围
+
 ### Requirement: 当前 Web 运行时边界
 
 手动未读 MUST 与现有自动完成提醒一样只保存在当前 Web 前端运行时，刷新后不要求恢复。实现 MUST NOT 新增 Host RPC、持久化字段或 Codex Desktop `thread/readState/update` 调用。

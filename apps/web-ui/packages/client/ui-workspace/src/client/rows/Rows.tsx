@@ -30,6 +30,7 @@ import {
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ShortcutCatalogEntry } from "@deepseek-ai/dsh-client-shortcuts/client";
+import { SessionId } from "@deepseek-ai/dsh-session/types";
 import { abbreviateHomePath } from "@deepseek-ai/dsh-util-workspace-path";
 import type { MenuOpenState, WorkspaceBrowserProps } from "../contract/slots.ts";
 import type { GroupNode, SearchResultNode, SessionNode } from "../tree.ts";
@@ -601,7 +602,14 @@ export function SessionNodeItem({
   const row = node;
   const { expansion, toggle, markCompletionsRead, collapseStyle } = useThreadTreeView();
   const childGroupId = useThreadChildGroup();
-  const depth = node.tree?.depth ?? 0;
+  const tree = node.tree;
+  const depth = tree?.depth ?? 0;
+  const markChildThreadsRead =
+    !row.archived && tree !== undefined && tree.activity.completed > 0
+      ? () => {
+          markCompletionsRead(tree.descendantIds.map(SessionId));
+        }
+      : undefined;
   const expanded = expansion[node.id] === true;
   const drag = depth === 0 ? suppliedDrag : undefined;
   const title = displayTitle(node, t);
@@ -836,7 +844,12 @@ export function SessionNodeItem({
                 >
                   {renderSlot(
                     "sidebar.workspaces.session.menu.item",
-                    { sessionId: node.id, displayTitle: row.title, threadTreeChild: depth > 0 },
+                    {
+                      sessionId: node.id,
+                      displayTitle: row.title,
+                      threadTreeChild: depth > 0,
+                      ...(markChildThreadsRead === undefined ? {} : { markChildThreadsRead }),
+                    },
                     { hookContext: menuOpenState },
                   )}
                 </Menu>

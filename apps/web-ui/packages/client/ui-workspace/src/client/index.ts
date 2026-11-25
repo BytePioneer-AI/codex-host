@@ -78,7 +78,10 @@ import {
   type ThreadSectionMoveRequest,
 } from "./session-actions/MoveThreadSection.tsx";
 import { ForkSessionMenuItem } from "./session-actions/ForkSession.tsx";
-import { MarkSessionUnreadMenuItem } from "./session-actions/MarkSessionUnread.tsx";
+import {
+  MarkChildThreadsReadMenuItem,
+  MarkSessionUnreadMenuItem,
+} from "./session-actions/MarkSessionUnread.tsx";
 import { CopySessionLinkMenuItem } from "./session-actions/CopySessionLink.tsx";
 import {
   threadReferenceOf,
@@ -576,6 +579,15 @@ export function apply(ctx: Context): void {
         inject: markUnreadInjected,
       },
       MarkSessionUnreadMenuItem,
+    );
+    yield ctx.slots.register(
+      {
+        name: "sidebar.workspaces.session.menu.item",
+        id: "mark-children-as-read",
+        order: 260,
+        locale: NS,
+      },
+      MarkChildThreadsReadMenuItem,
     );
     yield ctx.slots.register(
       {

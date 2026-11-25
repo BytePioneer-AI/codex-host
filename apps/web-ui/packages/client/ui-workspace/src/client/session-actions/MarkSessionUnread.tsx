@@ -1,4 +1,8 @@
-import { IconBellOutlineRegular, MenuItemButton } from "@deepseek-ai/dsh-client-ui-primitives";
+import {
+  IconBellOutlineRegular,
+  IconCheckCircleOutlineRegular,
+  MenuItemButton,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import type { MarkSessionUnreadInjected, SessionMenuItemProps } from "../contract/slots.ts";
 
 /** Mark a background Session unread without navigating to it. */
@@ -28,6 +32,27 @@ export function MarkSessionUnreadMenuItem({
       }}
     >
       {t("menu.markAsUnread")}
+    </MenuItemButton>
+  );
+}
+
+/** Mark all loaded display-tree descendants read without changing selection or expansion. */
+export function MarkChildThreadsReadMenuItem({
+  markChildThreadsRead,
+  useMenuOpenState,
+  t,
+}: SessionMenuItemProps) {
+  const [, setMenuOpen] = useMenuOpenState();
+  if (markChildThreadsRead === undefined) return null;
+  return (
+    <MenuItemButton
+      icon={<IconCheckCircleOutlineRegular />}
+      onSelect={() => {
+        setMenuOpen(false);
+        markChildThreadsRead();
+      }}
+    >
+      {t("menu.markChildrenAsRead")}
     </MenuItemButton>
   );
 }

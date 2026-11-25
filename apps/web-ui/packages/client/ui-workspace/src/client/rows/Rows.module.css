@@ -26,73 +26,66 @@
   font-size: 10.5px;
 }
 .hostBadge[data-color="blue"],
-.hostRail[data-color="blue"],
-.selectedHostHint[data-color="blue"],
-.hoverHostDot[data-color="blue"] {
+.hoverHostDot[data-color="blue"],
+.remoteFolderGlobe[data-color="blue"] {
   --ch-peer-dot-color: #3b76cc;
 }
 .hostBadge[data-color="purple"],
-.hostRail[data-color="purple"],
-.selectedHostHint[data-color="purple"],
-.hoverHostDot[data-color="purple"] {
+.hoverHostDot[data-color="purple"],
+.remoteFolderGlobe[data-color="purple"] {
   --ch-peer-dot-color: #7460cc;
 }
 .hostBadge[data-color="cyan"],
-.hostRail[data-color="cyan"],
-.selectedHostHint[data-color="cyan"],
-.hoverHostDot[data-color="cyan"] {
+.hoverHostDot[data-color="cyan"],
+.remoteFolderGlobe[data-color="cyan"] {
   --ch-peer-dot-color: #0e8fa8;
 }
 .hostBadge[data-color="green"],
-.hostRail[data-color="green"],
-.selectedHostHint[data-color="green"],
-.hoverHostDot[data-color="green"] {
+.hoverHostDot[data-color="green"],
+.remoteFolderGlobe[data-color="green"] {
   --ch-peer-dot-color: #2f8c70;
 }
 .hostBadge[data-color="amber"],
-.hostRail[data-color="amber"],
-.selectedHostHint[data-color="amber"],
-.hoverHostDot[data-color="amber"] {
+.hoverHostDot[data-color="amber"],
+.remoteFolderGlobe[data-color="amber"] {
   --ch-peer-dot-color: #c27803;
 }
 .hostBadge[data-color="rose"],
-.hostRail[data-color="rose"],
-.selectedHostHint[data-color="rose"],
-.hoverHostDot[data-color="rose"] {
+.hoverHostDot[data-color="rose"],
+.remoteFolderGlobe[data-color="rose"] {
   --ch-peer-dot-color: #c94a6a;
 }
 .hostBadge[data-color="slate"],
-.hostRail[data-color="slate"],
-.selectedHostHint[data-color="slate"],
-.hoverHostDot[data-color="slate"] {
+.hoverHostDot[data-color="slate"],
+.remoteFolderGlobe[data-color="slate"] {
   --ch-peer-dot-color: #64748b;
 }
 :global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .selectedHostHint, .hoverHostDot)[data-color="blue"] {
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="blue"] {
   --ch-peer-dot-color: #7bb0f8;
 }
 :global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .selectedHostHint, .hoverHostDot)[data-color="purple"] {
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="purple"] {
   --ch-peer-dot-color: #a899f2;
 }
 :global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .selectedHostHint, .hoverHostDot)[data-color="cyan"] {
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="cyan"] {
   --ch-peer-dot-color: #63c5da;
 }
 :global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .selectedHostHint, .hoverHostDot)[data-color="green"] {
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="green"] {
   --ch-peer-dot-color: #6ec4a7;
 }
 :global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .selectedHostHint, .hoverHostDot)[data-color="amber"] {
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="amber"] {
   --ch-peer-dot-color: #e0ae58;
 }
 :global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .selectedHostHint, .hoverHostDot)[data-color="rose"] {
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="rose"] {
   --ch-peer-dot-color: #e08298;
 }
 :global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .selectedHostHint, .hoverHostDot)[data-color="slate"] {
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="slate"] {
   --ch-peer-dot-color: #94a3b8;
 }
 .hostBadge[data-state="connecting"] {
@@ -141,66 +134,93 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .hostBadge[data-state="connecting"] .hostDot,
-  .hostRail[data-state="connecting"] {
+  .remoteHostStatusDot[data-state="connecting"] {
     animation: none;
   }
 }
 
-.hostRail {
+.remoteFolderGlobe {
   --ch-peer-dot-color: #3b76cc;
   position: absolute;
-  inset-inline-start: 2px;
-  top: 8px;
-  width: 2px;
-  height: 16px;
-  border-radius: 2px;
-  background: var(--dsw-alias-label-tertiary);
-  opacity: 0.35;
+  right: -3px;
+  bottom: 0;
+  width: 11px;
+  height: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--dsh-row-surface);
+  color: var(--ch-peer-dot-color);
   pointer-events: none;
 }
 
-.hostRailWorkspace {
-  top: 8px;
-  height: 18px;
+.remoteSessionGlobe {
+  right: -4px;
+  bottom: 0;
+  width: 10px;
+  height: 10px;
+  z-index: 1;
 }
 
-.hostRail[data-state="connected"] {
-  background: var(--ch-peer-dot-color);
-  opacity: 0.78;
+.remoteSessionGlobe svg {
+  width: 9px;
+  height: 9px;
 }
 
-.hostRail[data-state="connecting"] {
-  background: var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-warn-primary, #c27803));
-  opacity: 0.85;
-  animation: hostDotPulse 1.6s ease-in-out infinite;
+.remoteFolderGlobe:is(
+  [data-state="disconnected"],
+  [data-state="offline"],
+  [data-state="auth-error"]
+) {
+  opacity: 0.6;
 }
 
-.selectedHostSubline {
-  display: block;
-  width: calc(100% - var(--dsh-thread-icon-size, 14px));
+.remoteHostText {
+  flex: 1;
   min-width: 0;
-  margin-inline-start: var(--dsh-thread-icon-size, 14px);
-  margin-block-end: 3px;
-  padding: 0 8px;
-  font-size: 11px;
-  line-height: 16px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.remoteHostText .title {
+  flex: 0 1 auto;
+}
+
+.remoteHostMeta {
+  flex: none;
+  max-width: 45%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.selectedHostHint {
-  --ch-peer-dot-color: #3b76cc;
-  font-weight: 500;
+  font-size: 12px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
   color: var(--dsw-alias-label-tertiary);
 }
 
-.selectedHostHint[data-state="connected"] {
-  color: var(--ch-peer-dot-color);
+.remoteHostStatusDot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-inline-start: auto;
+  margin-inline-end: 4px;
+  background: var(--dsw-alias-label-tertiary);
+  opacity: 0.45;
 }
 
-.selectedHostHint[data-state="connecting"] {
-  color: var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-warn-primary, #c27803));
+.remoteHostStatusDot[data-state="connected"] {
+  background: var(--dsw-alias-state-success-primary, #22c55e);
+  opacity: 1;
+}
+
+.remoteHostStatusDot[data-state="connecting"] {
+  background: var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-warn-primary, #d97706));
+  opacity: 0.95;
+  animation: hostDotPulse 1.6s ease-in-out infinite;
 }
 
 .hoverHost {
@@ -543,9 +563,14 @@
 }
 
 /* Expansion is visible immediately after clicking, not only after pointer leave. */
-/* A resting Workspace folder reads at the row's own text weight, as in the
-   Codex sidebar; only the expanded state carries the blue open glyph. */
+/* Keep resting Workspace folders gently quieter than row labels while staying
+   crisp and substantial; hover and expansion restore full emphasis. */
 .projectRow > .slot:not(.folderExpanded) {
+  color: color-mix(in srgb, currentColor 86%, transparent);
+  transition: color 140ms ease;
+}
+
+.projectRow:hover > .slot:not(.folderExpanded) {
   color: inherit;
 }
 
@@ -568,6 +593,59 @@
   white-space: nowrap;
   font-size: 14px;
   line-height: 20px;
+}
+
+/* Soft right-edge fade on full-width sidebar project, session, and search
+   titles only when text actually overflows its available box, so fitting
+   labels stay crisp without masking trailing badges, dots, actions, or
+   shrink-to-fit remote host labels (.remoteHostText .title). Symmetric ink
+   bleed padding keeps overhanging glyphs (italics, combining marks) unclipped
+   inside the mask box without altering layout width. */
+.projectRow .projectText > .title,
+.sessionRow .title,
+.searchResultTitle {
+  --dsh-title-ink-bleed: 4px;
+  container-type: inline-size;
+  display: flex;
+  align-items: center;
+  padding-inline-end: var(--dsh-title-ink-bleed);
+  margin-inline-end: calc(-1 * var(--dsh-title-ink-bleed));
+  overflow-x: clip;
+  overflow-y: visible;
+  text-overflow: clip;
+}
+
+.sessionRow .title {
+  margin-inline-end: calc(6px - var(--dsh-title-ink-bleed));
+}
+
+.projectRow .projectText > .title > .titleText,
+.sessionRow .title > .titleText,
+.searchResultTitle > .titleText {
+  flex: none;
+  box-sizing: content-box;
+  padding: var(--dsh-title-ink-bleed);
+  margin: calc(-1 * var(--dsh-title-ink-bleed));
+  white-space: nowrap;
+  --dsh-title-fade: clamp(
+    0px,
+    (
+        min(100%, 100cqw + 20px + var(--dsh-title-ink-bleed) * 2) - 100cqw -
+          var(--dsh-title-ink-bleed) * 2 - 0.5px
+      ) *
+      48,
+    20px + var(--dsh-title-ink-bleed)
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100cqw + var(--dsh-title-ink-bleed) * 2 - var(--dsh-title-fade)),
+    transparent calc(100cqw + var(--dsh-title-ink-bleed) * 2 + 20px - var(--dsh-title-fade))
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 calc(100cqw + var(--dsh-title-ink-bleed) * 2 - var(--dsh-title-fade)),
+    transparent calc(100cqw + var(--dsh-title-ink-bleed) * 2 + 20px - var(--dsh-title-fade))
+  );
 }
 
 .renameInput {
@@ -690,7 +768,8 @@
     visibility: hidden;
   }
 
-  .projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .hostBadge {
+  .projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen)
+    :is(.hostBadge, .remoteHostStatusDot) {
     visibility: hidden;
   }
 
@@ -726,17 +805,8 @@
   min-height: 44px;
 }
 
-:global([data-phone-drawer]) .sessionRow > .hostRail {
-  top: 14px;
-}
-
-:global([data-phone-drawer]) .projectRow > .hostRailWorkspace {
-  top: 13px;
-}
-
-/* Keep a collapsed Thread's title and summary (or selected remote host label) inside one phone-height row. */
-:global([data-phone-drawer])
-  .sessionRow:has(> :is([data-thread-summary], [data-selected-host-meta])) {
+/* Keep a collapsed Thread's title and summary inside one phone-height row. */
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) {
   display: grid;
   grid-template-columns: var(--dsh-thread-icon-size, 16px) minmax(0, 1fr) auto;
   grid-template-rows: 24px 24px;
@@ -744,45 +814,35 @@
   padding-block: 2px;
 }
 
-:global([data-phone-drawer])
-  .sessionRow:has(> :is([data-thread-summary], [data-selected-host-meta]))
-  > .hostRail {
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) > .hostRail {
   top: 7px;
 }
 
-:global([data-phone-drawer])
-  .sessionRow:has(> :is([data-thread-summary], [data-selected-host-meta]))
-  .sessionMain {
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .sessionMain {
   display: contents;
   position: static;
 }
 
-:global([data-phone-drawer])
-  .sessionRow:has(> :is([data-thread-summary], [data-selected-host-meta]))
-  .slot {
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .slot {
   grid-column: 1;
   grid-row: 1;
   align-self: center;
 }
 
-:global([data-phone-drawer])
-  .sessionRow:has(> :is([data-thread-summary], [data-selected-host-meta]))
-  .title {
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .title {
   grid-column: 2;
   grid-row: 1;
   align-self: center;
-  margin: 0;
+  margin: 0 calc(-1 * var(--dsh-title-ink-bleed)) 0 0;
 }
 
-:global([data-phone-drawer])
-  .sessionRow:has(> :is([data-thread-summary], [data-selected-host-meta]))
-  .trailing {
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .trailing {
   grid-column: 3;
   grid-row: 1 / span 2;
   align-self: center;
 }
 
-:global([data-phone-drawer]) .sessionRow > :is([data-thread-summary], [data-selected-host-meta]) {
+:global([data-phone-drawer]) .sessionRow > [data-thread-summary] {
   grid-column: 2;
   grid-row: 2;
   width: 100%;
@@ -932,6 +992,11 @@
 :global([data-phone-drawer]) .rowActions,
 :global([data-phone-drawer]) .rowActions::before {
   background: transparent;
+}
+
+:global([data-phone-drawer]) .remoteFolderGlobe,
+:global(body[data-codexhost-wallpaper]) .remoteFolderGlobe {
+  background: var(--dsw-specific-sidebar-fill);
 }
 
 :global(body[data-codexhost-wallpaper]) :is(.projectRow, .sessionRow) {

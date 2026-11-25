@@ -143,6 +143,7 @@ export const remoteSessionOperationSchema = z.discriminatedUnion("kind", [
         itemId: identity,
         onlyIfHead: z.literal(true).optional(),
       }),
+      z.strictObject({ kind: z.literal("sendNow"), itemId: identity }),
     ]),
   }),
   z.strictObject({ kind: z.literal("interrupt"), ...thread, epoch: identity, turnId: identity }),

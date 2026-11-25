@@ -122,9 +122,11 @@ fn options(arguments: &[String]) -> Result<Options, Box<dyn Error>> {
 }
 
 pub(super) fn clean(command: &mut Command) {
+    let source = crate::installation_layout::current_executable_is_source_checkout_build();
     for (key, _) in env::vars_os() {
         let upper = key.to_string_lossy().to_ascii_uppercase();
-        if crate::NPM_UPDATE_RUNTIME_ENV.contains(&upper.as_str())
+        if !source
+            && crate::NPM_UPDATE_RUNTIME_ENV.contains(&upper.as_str())
             && env::var_os(&key).is_some_and(|value| Path::new(&value).is_absolute())
         {
             continue;

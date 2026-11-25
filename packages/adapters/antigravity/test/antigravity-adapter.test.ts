@@ -109,6 +109,7 @@ class FakeTransport implements AntigravityAcpTransportLike {
   handler?: AntigravityActivePromptHandler;
   parts?: readonly AntigravityPromptInputPart[];
   result = deferred<AntigravityPromptResult>();
+  steerResults: Array<ReturnType<typeof deferred<AntigravityPromptResult>>> = [];
   config = config();
   constructor(readonly options: AntigravityAcpTransportOptions) {}
   initialize = vi.fn(async (): Promise<InitializeResponse> => ({
@@ -145,6 +146,12 @@ class FakeTransport implements AntigravityAcpTransportLike {
       return this.result.promise;
     },
   );
+  steer = vi.fn((parts: readonly AntigravityPromptInputPart[]) => {
+    this.parts = parts;
+    const next = deferred<AntigravityPromptResult>();
+    this.steerResults.push(next);
+    return next.promise;
+  });
   cancel = vi.fn(async () => {});
   closeSession = vi.fn(async () => {
     this.sessionId = null;
@@ -2652,6 +2659,252 @@ describe("Antigravity idle wake Turns", () => {
           event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
       );
       expect(lastCompactionIndex).toBeLessThan(turnDoneIndex);
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("steers an active prompt via concurrent session/prompt without cancelling background work", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      expect(session.capabilities.steer).toBe(true);
+      const handler = required(transport.handler);
+      handler.onEvent({ type: "agent.text", text: "waiting on timer" });
+      // A pending approval from the superseded prompt closes cleanly when steer is accepted.
+      const stalePermission = handler.onPermission({
+        sessionId: required(transport.sessionId),
+        toolCall: { toolCallId: "perm-1", title: "Run command" },
+        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+      });
+      await vi.waitFor(() =>
+        expect(outputs.some((output) => output.kind === "interaction")).toBe(true),
+      );
+      const steered = await session.execute({
+        type: "turn.steer",
+        turnId: turnId("t1"),
+        input: [{ type: "text", text: "follow-up B" }],
+      });
+      expect(steered).toEqual({ ok: true, value: { accepted: true } });
+      expect(await stalePermission).toEqual({ outcome: { outcome: "cancelled" } });
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({ type: "interaction.closed", reason: "cancelled" }),
+      );
+      expect(transport.cancel).not.toHaveBeenCalled();
+      expect(transport.steer).toHaveBeenCalledWith([{ type: "text", text: "follow-up B" }]);
+      // The superseded initial prompt settles immediately; the Host Turn must remain open.
+      transport.result.resolve({
+        stopReason: "end_turn",
+        usage: { inputTokens: 10, outputTokens: 5, cachedWriteTokens: 2, totalTokens: 15 },
+      });
+      await setImmediate();
+      expect(session.capabilities.steer).toBe(true);
+      expect(events(outputs).some((event) => event.type === "turn.completed")).toBe(false);
+      handler.onEvent({ type: "agent.text", text: "reply B" });
+      userStep(db, 2, "follow-up B", "run-b");
+      handler.onResponse?.();
+      expect(session.capabilities.steer).toBe(false);
+      // Late steer after the wire response is refused so Host can start a fresh Turn.
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "too late" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+      // Omitting cachedWriteTokens on the second prompt keeps merged cacheWriteInputTokens unknown.
+      required(transport.steerResults[0]).resolve({
+        stopReason: "end_turn",
+        usage: { inputTokens: 20, outputTokens: 7, totalTokens: 27 },
+      });
+      await completed(outputs, "t1");
+      expect(session.capabilities.steer).toBe(false);
+      const done = events(outputs).find(
+        (event) => event.type === "turn.completed" && event.turnId === "t1",
+      );
+      expect(done).toMatchObject({
+        type: "turn.completed",
+        turnId: "t1",
+        outcome: { status: "succeeded" },
+        nativeTurnRef: { nativeTurnKey: "turn-1" },
+      });
+      const finalUsage = events(outputs).findLast(
+        (event) => event.type === "session.usage.changed" && event.observedForTurnId === "t1",
+      );
+      expect(finalUsage).toMatchObject({
+        usage: { inputTokens: 30, outputTokens: 12, totalTokens: 42 },
+      });
+      expect(
+        finalUsage && finalUsage.type === "session.usage.changed" && finalUsage.usage
+          ? finalUsage.usage.cacheWriteInputTokens
+          : "missing",
+      ).toBeUndefined();
+      expect(
+        events(outputs).filter(
+          (event) => event.type === "item.completed" && event.snapshot.item.type === "agentMessage",
+        ),
+      ).toMatchObject([
+        { snapshot: { item: { text: "waiting on timer" } } },
+        { snapshot: { item: { text: "reply B" } } },
+      ]);
+      // Idle session refuses turn.steer.
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "idle" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("waits for a delayed steered WAL commit and keeps prior foreground compaction checkpoints", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      stampStep(db, 0, Date.now());
+      await moment();
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "delayed steer" }],
+        }),
+      ).toEqual({ ok: true, value: { accepted: true } });
+      const steerCreatedAtMs = Date.now();
+      transport.result.resolve({ stopReason: "end_turn" });
+      required(transport.handler).onResponse?.();
+      required(transport.steerResults[0]).resolve({ stopReason: "end_turn" });
+      // Commit steer's USER_INPUT after observeNativeTurnCount's initial 0ms read,
+      // along with a late compaction checkpoint belonging to the initial prompt's run.
+      setTimeout(() => {
+        userStep(db, 2, "delayed steer", "run-b");
+        stampStep(db, 2, steerCreatedAtMs);
+        checkpointStep(db, 3, { status: 3, run: "prompt", summary: "Late initial compaction" });
+      }, 40);
+      await completed(outputs, "t1");
+      expect(
+        events(outputs).find((event) => event.type === "turn.completed" && event.turnId === "t1"),
+      ).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "turn-1" },
+        outcome: { status: "succeeded", checkpoint: { checkpointId: "turn-1" } },
+      });
+      expect(
+        events(outputs).filter(
+          (event) =>
+            event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+        ),
+      ).toMatchObject([
+        {
+          snapshot: {
+            item: { type: "contextCompaction", itemId: "checkpoint-3" },
+            outcome: { status: "succeeded" },
+          },
+        },
+      ]);
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("exposes dynamic steer capability across cancel and fails when a steered prompt rejects", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      expect(session.capabilities.steer).toBe(true);
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t1"),
+          input: [{ type: "text", text: "will fail" }],
+        }),
+      ).toEqual({ ok: true, value: { accepted: true } });
+      transport.result.resolve({ stopReason: "end_turn" });
+      required(transport.steerResults[0]).reject(
+        new AntigravityTransportError("unavailable", "steer prompt failed"),
+      );
+      await completed(outputs, "t1");
+      expect(session.capabilities.steer).toBe(false);
+      expect(
+        events(outputs).find((event) => event.type === "turn.completed" && event.turnId === "t1"),
+      ).toMatchObject({
+        outcome: { status: "failed", error: { message: "steer prompt failed" } },
+      });
+
+      // Second turn: cancel flips capabilities.steer to false immediately and preserves prompt #0's checkpoint.
+      transport.result = deferred();
+      transport.steerResults = [];
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      expect(session.capabilities.steer).toBe(true);
+      userStep(db, 2, "second prompt", "run-2");
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId: turnId("t2"),
+          input: [{ type: "text", text: "cancelled steer" }],
+        }),
+      ).toEqual({ ok: true, value: { accepted: true } });
+      expect(await session.execute({ type: "turn.cancel", turnId: turnId("t2") })).toEqual({
+        ok: true,
+        value: { cancellationRequested: true },
+      });
+      expect(session.capabilities.steer).toBe(false);
+      transport.result.resolve({ stopReason: "end_turn" });
+      required(transport.steerResults[0]).resolve({ stopReason: "cancelled" });
+      await completed(outputs, "t2");
+      expect(
+        events(outputs).find((event) => event.type === "turn.completed" && event.turnId === "t2"),
+      ).toMatchObject({
+        outcome: { status: "cancelled" },
+      });
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("emits compaction checkpoints committed inside an in-prompt wake run", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      const beforePromptMs = Date.now() - 5_000;
+      systemStep(db, 2, "earlier-wake");
+      stampStep(db, 2, beforePromptMs);
+      checkpointStep(db, 3, { status: 3, run: "earlier-wake" });
+      userStep(db, 4, "hello", "fg-run");
+      const inPromptAtMs = Date.now();
+      systemStep(db, 5, "in-prompt-wake", "task_notification");
+      stampStep(db, 5, inPromptAtMs);
+      checkpointStep(db, 6, { status: 3, run: "in-prompt-wake", summary: "Wake compacted" });
+      transport.eventHandler?.({ type: "usage.context", used: 15_000, size: 200_000 });
+      await vi.waitFor(() =>
+        expect(
+          events(outputs).filter(
+            (event) =>
+              event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+          ),
+        ).toHaveLength(1),
+      );
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t1");
+      const done = events(outputs).filter(
+        (event) =>
+          event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+      );
+      expect(done).toMatchObject([
+        {
+          type: "item.completed",
+          turnId: "t1",
+          snapshot: {
+            item: { type: "contextCompaction", itemId: "checkpoint-6" },
+            outcome: { status: "succeeded" },
+          },
+        },
+      ]);
       await session.close();
     } finally {
       db.close();

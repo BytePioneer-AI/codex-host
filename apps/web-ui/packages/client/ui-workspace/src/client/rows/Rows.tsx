@@ -142,6 +142,32 @@ function rowHalf(e: { clientY: number; currentTarget: HTMLElement }): "before" |
   return e.clientY < rect.top + rect.height / 2 ? "before" : "after";
 }
 
+/** Mini globe overlay pinned to the bottom-right corner of remote folder/session icons. */
+function RemoteFolderGlobe({
+  color,
+  state,
+  className,
+}: {
+  color: string;
+  state: string;
+  className?: string | undefined;
+}) {
+  return (
+    <span
+      className={clsx(css.remoteFolderGlobe, className)}
+      data-color={color}
+      data-state={state}
+      aria-hidden="true"
+    >
+      <svg viewBox="0 0 12 12" width="10" height="10" fill="none">
+        <circle cx="6" cy="6" r="4.6" stroke="currentColor" strokeWidth="1.2" />
+        <ellipse cx="6" cy="6" rx="2.1" ry="4.6" stroke="currentColor" strokeWidth="1.05" />
+        <path d="M1.6 6h8.8" stroke="currentColor" strokeWidth="1.05" />
+      </svg>
+    </span>
+  );
+}
+
 /**
  * Project (workspace) header row: folder + title;
  * expanded folders stay blue and open even while hovered or keyboard-focused.
@@ -181,7 +207,7 @@ export function ProjectRowItem({
 }) {
   const row = group;
   const actions = group.remote ? undefined : suppliedActions;
-  const drag = group.remote ? undefined : suppliedDrag;
+  const drag = suppliedDrag;
   // The ungrouped bucket has no workspace title: its label is dictionary copy.
   const label = row.workspaceId === undefined ? t("group.ungrouped") : row.label;
   const remoteColor =
@@ -229,22 +255,30 @@ export function ProjectRowItem({
       }
       onDragEnd={drag?.end}
     >
-      {showRemoteIndicator && row.remote && (
-        <span
-          className={clsx(css.hostRail, css.hostRailWorkspace)}
-          data-color={remoteColor}
-          data-state={row.remote.state}
-          aria-hidden="true"
-        />
-      )}
       <span className={clsx(css.slot, row.expanded && css.folderExpanded)}>
         {row.expanded ? <IconFolderOpenRegular /> : <IconFolderCloseRegular />}
+        {showRemoteIndicator && row.remote && remoteColor !== undefined && (
+          <RemoteFolderGlobe color={remoteColor} state={row.remote.state} />
+        )}
       </span>
-      <span className={css.projectText}>
-        <span className={css.title}>{label}</span>
-      </span>
-      {showRemoteIndicator && row.remote && (
-        <HostBadge host={row.remote} variant="workspace" t={t} />
+      {showRemoteIndicator && row.remote ? (
+        <>
+          <span className={css.remoteHostText}>
+            <span className={css.title}>{label}</span>
+            <span className={css.remoteHostMeta}>{row.remote.displayName}</span>
+          </span>
+          <span
+            className={css.remoteHostStatusDot}
+            data-state={row.remote.state}
+            aria-hidden="true"
+          />
+        </>
+      ) : (
+        <span className={css.projectText}>
+          <span className={css.title}>
+            <span className={css.titleText}>{label}</span>
+          </span>
+        </span>
       )}
       <span className={css.rowActions}>
         {actions !== undefined && (
@@ -444,7 +478,9 @@ export function SearchResultItem({
     >
       <span className={css.searchResultHeading}>
         <span className={css.slot} />
-        <span className={css.searchResultTitle}>{result.title || t("session.untitled")}</span>
+        <span className={css.searchResultTitle}>
+          <span className={css.titleText}>{result.title || t("session.untitled")}</span>
+        </span>
         {result.remote && <HostBadge host={result.remote} variant="session" t={t} />}
         {!result.archived && primaryStatus.state !== "idle" && (
           <span className={css.timeStatus} data-session-status={primaryStatus.state}>
@@ -549,16 +585,7 @@ export function SessionNodeItem({
     row.remote !== undefined
       ? resolveRemotePeerColor(row.remote.hostId, row.remote.color)
       : undefined;
-  const showHostRail = showHost && row.remote !== undefined;
-  const showSelectedHostHint = selected && showHostRail;
-  const hasCollapsedSummary =
-    !expanded && collapseStyle === "summary" && (node.tree?.descendantCount ?? 0) > 0;
-  const selectedHostHint =
-    showSelectedHostHint && row.remote ? (
-      <span className={css.selectedHostHint} data-color={remoteColor} data-state={row.remote.state}>
-        {row.remote.displayName}
-      </span>
-    ) : undefined;
+  const showRemoteGlobe = showHost && row.remote !== undefined && remoteColor !== undefined;
   // Archived rows hold their in-place grayed slot, so manual reorder cannot
   // move them. Pinned rows drag within the pinned block: the browser gates
   // their drop targets to fellow pinned rows.
@@ -669,14 +696,6 @@ export function SessionNodeItem({
             }
       }
     >
-      {showHostRail && row.remote && (
-        <span
-          className={css.hostRail}
-          data-color={remoteColor}
-          data-state={row.remote.state}
-          aria-hidden="true"
-        />
-      )}
       <div className={css.sessionMain}>
         <SessionRowContent
           identityLabel={
@@ -698,6 +717,13 @@ export function SessionNodeItem({
               {renderSlot("sidebar.session.row.identity", { sessionId: node.id })}
               {!expanded && collapseStyle === "ring" && !!node.tree?.descendantCount && (
                 <ThreadTreeRing activity={node.tree.activity} />
+              )}
+              {showRemoteGlobe && row.remote && remoteColor !== undefined && (
+                <RemoteFolderGlobe
+                  color={remoteColor}
+                  state={row.remote.state}
+                  className={css.remoteSessionGlobe}
+                />
               )}
             </>
           }
@@ -798,19 +824,13 @@ export function SessionNodeItem({
           </span>
         </SessionRowContent>
       </div>
-      {hasCollapsedSummary && (
+      {!expanded && collapseStyle === "summary" && (
         <ThreadTreeSummary
           node={node}
           title={title}
-          prefix={selectedHostHint}
           toggle={() => toggle(node.id, true, childGroupId)}
           t={t}
         />
-      )}
-      {!hasCollapsedSummary && selectedHostHint !== undefined && (
-        <div data-selected-host-meta className={css.selectedHostSubline}>
-          {selectedHostHint}
-        </div>
       )}
     </div>
   );

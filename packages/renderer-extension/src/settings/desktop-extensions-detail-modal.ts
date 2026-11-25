@@ -56,9 +56,8 @@ export interface DesktopExtensionDetailModalState {
   readonly unavailable: boolean;
   readonly canInstall: boolean;
   readonly canUninstall: boolean;
-  readonly mutating: boolean;
-  readonly activeMutationId: string | null;
-  readonly activeMutationAction: DesktopExtensionMutationAction | null;
+  readonly pendingMutations: ReadonlyMap<string, DesktopExtensionMutationAction>;
+  readonly globalBusy: boolean;
   readonly feedback: DesktopExtensionFeedback | null;
 }
 
@@ -786,7 +785,8 @@ export function createDesktopExtensionDetailModal(options: {
   ): void => {
     if (!actionBar || !modalToggle) return;
     const updateAvailable = hasCatalogUpdate(installed, catalogEntry);
-    const isBusyThis = state.activeMutationId === extensionId;
+    const extAction = state.pendingMutations.get(extensionId) ?? null;
+    const controlsDisabled = extAction !== null || state.globalBusy;
     const nodes: HTMLElement[] = [];
 
     if (!installed && catalogEntry) {
@@ -794,11 +794,12 @@ export function createDesktopExtensionDetailModal(options: {
         document,
         "button",
         "settings-command-button",
-        isBusyThis && state.activeMutationAction === "install" ? copy.installing : copy.install,
+        extAction === "install" ? copy.installing : copy.install,
       );
       installButton.type = "button";
       installButton.dataset.action = "install";
-      installButton.disabled = state.mutating || !state.canInstall;
+      installButton.setAttribute("aria-busy", String(extAction === "install"));
+      installButton.disabled = controlsDisabled || !state.canInstall;
       installButton.addEventListener("click", () => {
         if (!installButton.disabled) onInstall?.(catalogEntry, false);
       });
@@ -819,13 +820,14 @@ export function createDesktopExtensionDetailModal(options: {
           document,
           "button",
           "settings-command-button",
-          isBusyThis && state.activeMutationAction === "update"
+          extAction === "update"
             ? copy.updating
             : formatMessage(copy.updateToVersion, { version: catalogEntry.version }),
         );
         updateButton.type = "button";
         updateButton.dataset.action = "update";
-        updateButton.disabled = state.mutating || !state.canInstall;
+        updateButton.setAttribute("aria-busy", String(extAction === "update"));
+        updateButton.disabled = controlsDisabled || !state.canInstall;
         updateButton.addEventListener("click", () => {
           if (!updateButton.disabled) onInstall?.(catalogEntry, true);
         });
@@ -834,7 +836,7 @@ export function createDesktopExtensionDetailModal(options: {
 
       const blocked = isToggleBlocked(installed);
       modalToggle.checked = installed.enabled;
-      modalToggle.disabled = state.mutating || blocked;
+      modalToggle.disabled = controlsDisabled || blocked;
       modalToggle.setAttribute(
         "aria-label",
         formatMessage(copy.toggleLabel, { name: displayName }),
@@ -851,7 +853,7 @@ export function createDesktopExtensionDetailModal(options: {
         const openPageButton = createEl(document, "button", "settings-command-button");
         openPageButton.type = "button";
         openPageButton.dataset.action = "open-page";
-        openPageButton.disabled = state.mutating;
+        openPageButton.disabled = controlsDisabled;
         openPageButton.append(
           createRendererSettingsIcon("external-link", 13),
           createEl(document, "span", "", copy.openPage),
@@ -878,7 +880,7 @@ export function createDesktopExtensionDetailModal(options: {
         );
         openSettingsButton.type = "button";
         openSettingsButton.dataset.action = "open-settings";
-        openSettingsButton.disabled = state.mutating;
+        openSettingsButton.disabled = controlsDisabled;
         openSettingsButton.append(
           createRendererSettingsIcon("settings", 13),
           createEl(document, "span", "", copy.openExtensionSettings),
@@ -908,13 +910,12 @@ export function createDesktopExtensionDetailModal(options: {
             document,
             "button",
             "settings-command-button settings-command-button--secondary settings-command-button--danger",
-            isBusyThis && state.activeMutationAction === "uninstall"
-              ? copy.uninstalling
-              : copy.uninstallConfirm,
+            extAction === "uninstall" ? copy.uninstalling : copy.uninstallConfirm,
           );
           confirmButton.type = "button";
           confirmButton.dataset.action = "confirm-uninstall";
-          confirmButton.disabled = state.mutating;
+          confirmButton.setAttribute("aria-busy", String(extAction === "uninstall"));
+          confirmButton.disabled = controlsDisabled;
           confirmButton.addEventListener("click", () => {
             if (!confirmButton.disabled) onUninstall?.(installed);
           });
@@ -927,9 +928,9 @@ export function createDesktopExtensionDetailModal(options: {
           );
           cancelButton.type = "button";
           cancelButton.dataset.action = "cancel-uninstall";
-          cancelButton.disabled = state.mutating;
+          cancelButton.disabled = controlsDisabled;
           cancelButton.addEventListener("click", () => {
-            if (state.mutating) return;
+            if (controlsDisabled) return;
             confirmingUninstall = false;
             if (currentState) {
               renderContent(extensionId, currentItem, currentCatalogEntry, currentState);
@@ -946,13 +947,13 @@ export function createDesktopExtensionDetailModal(options: {
           );
           uninstallButton.type = "button";
           uninstallButton.dataset.action = "uninstall";
-          uninstallButton.disabled = state.mutating;
+          uninstallButton.disabled = controlsDisabled;
           uninstallButton.append(
             createRendererSettingsIcon("trash", 13),
             createEl(document, "span", "", copy.uninstall),
           );
           uninstallButton.addEventListener("click", () => {
-            if (state.mutating) return;
+            if (controlsDisabled) return;
             confirmingUninstall = true;
             if (currentState) {
               renderContent(extensionId, currentItem, currentCatalogEntry, currentState);
@@ -1012,7 +1013,7 @@ export function createDesktopExtensionDetailModal(options: {
     } else {
       delete dialog.dataset.extensionState;
     }
-    if (state.activeMutationId === extensionId) dialog.dataset.busy = "true";
+    if (state.pendingMutations.has(extensionId)) dialog.dataset.busy = "true";
     else delete dialog.dataset.busy;
 
     const categories =
@@ -1356,7 +1357,9 @@ export function createDesktopExtensionDetailModal(options: {
     modalToggle.addEventListener("change", () => {
       if (!currentItem || !modalToggle) return;
       const desired = modalToggle.checked;
-      if (currentState?.mutating || isToggleBlocked(currentItem)) {
+      const isBusyThis =
+        currentState?.globalBusy || Boolean(currentState?.pendingMutations.has(currentItem.id));
+      if (isBusyThis || isToggleBlocked(currentItem)) {
         modalToggle.checked = currentItem.enabled;
         return;
       }

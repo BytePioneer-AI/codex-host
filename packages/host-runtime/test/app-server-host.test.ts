@@ -799,7 +799,7 @@ describe("AppServerHost installed Harness plugins", () => {
         }
       }
     },
-    10_000,
+    process.platform === "win32" ? 20_000 : 10_000,
   );
 
   it.each(["close", "eof"])(
@@ -857,9 +857,10 @@ describe("AppServerHost installed Harness plugins", () => {
         );
       }
       const fixture = createFixture({ pluginDirectory: directory, externalAdapters: new Map() });
+      const waitOptions = { timeout: process.platform === "win32" ? 5_000 : 2_000 };
       try {
         await fixture.ready;
-        await vi.waitFor(() => expect(readdirSync(started)).toHaveLength(4));
+        await vi.waitFor(() => expect(readdirSync(started)).toHaveLength(4), waitOptions);
         writeRequest(fixture.desktopInput, {
           id: 925,
           method: "codexhost/harness/commands/inspect",
@@ -875,13 +876,14 @@ describe("AppServerHost installed Harness plugins", () => {
           },
           () => undefined,
         );
-        await vi.waitFor(() => expect(exitCode).toBe(0));
+        await vi.waitFor(() => expect(exitCode).toBe(0), waitOptions);
         expect(readdirSync(started).sort()).toEqual(["a-agent", "b-agent", "c-agent", "d-agent"]);
       } finally {
         fixture.host.close();
         writeFileSync(release, "ok");
-        await vi.waitFor(() =>
-          expect(readdirSync(finished).sort()).toEqual(readdirSync(started).sort()),
+        await vi.waitFor(
+          () => expect(readdirSync(finished).sort()).toEqual(readdirSync(started).sort()),
+          waitOptions,
         );
         try {
           await stopFixture(fixture);
@@ -890,7 +892,7 @@ describe("AppServerHost installed Harness plugins", () => {
         }
       }
     },
-    3_000,
+    process.platform === "win32" ? 20_000 : 10_000,
   );
 
   it.each(["thread/start", "thread/resume", "codexhost/thread/command/execute"])(

@@ -17,8 +17,12 @@ fn cli_contract_and_status_are_read_only_in_isolated_home() {
             .as_nanos()
     ));
     fs::create_dir(&root).unwrap();
-    let command = |args: &[&str]| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_codexhost"));
+    let source = std::path::Path::new(env!("CARGO_BIN_EXE_codexhost"));
+    let installed = root.join("bin/codexhost");
+    fs::create_dir(installed.parent().unwrap()).unwrap();
+    fs::copy(source, &installed).unwrap();
+    let command_at = |executable: &std::path::Path, args: &[&str]| {
+        let mut command = Command::new(executable);
         command
             .env_clear()
             .env("HOME", &root)
@@ -29,6 +33,7 @@ fn cli_contract_and_status_are_read_only_in_isolated_home() {
             .args(args);
         command
     };
+    let command = |args: &[&str]| command_at(source, args);
     let path = root.join("Library/LaunchAgents/ai.bytepioneer.codexhost.autostart.plist");
     let off = command(&["autostart", "status"]).output().unwrap();
     assert!(off.status.success());
@@ -64,6 +69,16 @@ fn cli_contract_and_status_are_read_only_in_isolated_home() {
         .output()
         .unwrap();
     assert!(on.status.success());
+    assert!(
+        fs::read(&path).unwrap() == before,
+        "source autostart must keep using the source launcher"
+    );
+    let on = command_at(&installed, &["autostart", "on"])
+        .env("CODEXHOST_NPM_NODE_PATH", &node)
+        .env("CODEXHOST_NPM_LAUNCHER_PATH", &wrapper)
+        .output()
+        .unwrap();
+    assert!(on.status.success());
     let content = fs::read_to_string(&path).unwrap();
     assert!(content.contains(wrapper.to_str().unwrap()));
     assert!(content.contains(node.to_str().unwrap()));
@@ -77,7 +92,7 @@ fn cli_contract_and_status_are_read_only_in_isolated_home() {
     let status = command(&["status"]).output().unwrap();
     assert!(String::from_utf8_lossy(&status.stdout).contains("Autostart: invalid "));
     assert_eq!(fs::read_to_string(&path).unwrap(), content);
-    let failed = command(&["autostart", "on"])
+    let failed = command_at(&installed, &["autostart", "on"])
         .env("CODEXHOST_NPM_NODE_PATH", &node)
         .env("CODEXHOST_NPM_LAUNCHER_PATH", &wrapper)
         .output()

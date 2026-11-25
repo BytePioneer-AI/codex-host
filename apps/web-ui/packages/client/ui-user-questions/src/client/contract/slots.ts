@@ -12,6 +12,8 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {
   AskUserQuestionAnswer,
   AskUserQuestionAnswerItem,
+  AskUserQuestionApprovalAction,
+  AskUserQuestionApprovalFile,
   AskUserQuestionItem,
   UserQuestionState,
 } from "@deepseek-ai/dsh-user-questions/types";
@@ -110,6 +112,59 @@ export function planReviewOf(questions: readonly QuestionItem[]): PlanReview | u
     ...(intent.callId === undefined ? {} : { callId: intent.callId }),
     approve,
     ...(decline === undefined ? {} : { decline }),
+  };
+}
+
+/** Narrowed presentation model for a Host/Harness approval routed through user-questions. */
+export interface ApprovalReview {
+  /** The reviewed question id, echoed verbatim in the answer. */
+  readonly id: string;
+  /** Headline shown at the top of the approval card. */
+  readonly question: string;
+  /** Optional plain-text explanation (e.g., MCP or Computer Use description). */
+  readonly detail?: string;
+  /** Optional quiet top-right category label (e.g., "bash", "files"). */
+  readonly toolLabel?: string;
+  /** Optional shell command shown in a recessed monospace box. */
+  readonly command?: string;
+  /** Optional file changes / unified diffs shown in a faded preview. */
+  readonly files?: readonly AskUserQuestionApprovalFile[];
+  /** Native decision actions mapped 1:1 to option labels. */
+  readonly actions: readonly (AskUserQuestionApprovalAction & { readonly description?: string })[];
+}
+
+/**
+ * Narrow a single-question request carrying an `approval` presentation intent
+ * to the dedicated one-click approval card.
+ * @param questions - the request's whole question batch.
+ * @returns The narrowed approval view, or undefined for generic questions.
+ */
+export function approvalReviewOf(questions: readonly QuestionItem[]): ApprovalReview | undefined {
+  if (questions.length !== 1) return undefined;
+  const question = questions[0] as QuestionItem;
+  const intent = question.intent;
+  if (intent?.kind !== "approval") return undefined;
+  if (question.multiSelect === true) return undefined;
+  const options = question.options ?? [];
+  if (intent.actions.length === 0) return undefined;
+  const actions: Array<AskUserQuestionApprovalAction & { readonly description?: string }> = [];
+  for (const action of intent.actions) {
+    const matched = options.find((option) => option.label === action.label);
+    if (matched === undefined) return undefined;
+    actions.push({
+      label: matched.label,
+      effect: action.effect,
+      ...(matched.description === undefined ? {} : { description: matched.description }),
+    });
+  }
+  return {
+    id: question.id,
+    question: question.question,
+    ...(question.detail === undefined ? {} : { detail: question.detail }),
+    ...(intent.toolLabel === undefined ? {} : { toolLabel: intent.toolLabel }),
+    ...(intent.command === undefined ? {} : { command: intent.command }),
+    ...(intent.files === undefined ? {} : { files: intent.files }),
+    actions,
   };
 }
 
@@ -253,7 +308,7 @@ export interface QuestionCardSnapshot {
  */
 export class PendingQuestion {
   /** Presentation discriminator used by Session pending-interaction consumers. */
-  readonly kind: "question" | "plan-review";
+  readonly kind: "question" | "plan-review" | "approval";
   /** Render identity and request key for the Session-scoped draft store. */
   readonly key: string;
   /** Agent/Session identity owning the request. */
@@ -309,7 +364,12 @@ export class PendingQuestion {
   ) {
     this.sessionId = sessionId;
     this.questions = questions;
-    this.kind = planReviewOf(questions) === undefined ? "question" : "plan-review";
+    this.kind =
+      planReviewOf(questions) !== undefined
+        ? "plan-review"
+        : approvalReviewOf(questions) !== undefined
+          ? "approval"
+          : "question";
     this.callId = callId;
     this.review = review;
     this.dismissal = callId === undefined ? "cancel" : "hide";

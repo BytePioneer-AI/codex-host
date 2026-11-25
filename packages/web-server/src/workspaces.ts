@@ -734,6 +734,10 @@ export class Workspaces {
     return this.referenceThreadSections.some((section) => section.id === id);
   }
 
+  sectionMemberIds(): Set<string> {
+    return new Set(this.referenceThreadSections.flatMap(({ threadIds }) => threadIds));
+  }
+
   /**
    * Publish native sections. Desktop's project members become the Workspaces of their root
    * folders, so call this after the project roots are synced into Workspaces.
@@ -1522,6 +1526,21 @@ export class Workspaces {
       this.state = state;
       this.broadcast({ type: "remove", workspaceId: request.workspaceId });
       this.publishPinnedWorkspaces();
+      if (
+        this.referenceThreadSections.some(({ workspaceIds }) =>
+          workspaceIds?.includes(workspace.workspaceId),
+        )
+      ) {
+        this.publishReferenceThreadSections(
+          this.referenceThreadSections.map((section) => {
+            if (!section.workspaceIds?.includes(workspace.workspaceId)) return section;
+            const { workspaceIds, ...rest } = section;
+            const remaining = workspaceIds.filter((id) => id !== workspace.workspaceId);
+            return remaining.length ? { ...rest, workspaceIds: remaining } : rest;
+          }),
+          this.referenceThreadSectionsV1,
+        );
+      }
       return { deleted: true };
     });
     rpc.register("workspace/moveWorkspaceToSection", async (args) => {

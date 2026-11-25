@@ -52,6 +52,7 @@ function setupSectionRpc(t: TestContext, host: FakeChHost) {
   workspaces.register(rpc, streams);
   sessions.register(rpc, streams);
   return {
+    rpc,
     root,
     workspaces,
     list: () => rpc.dispatch("session/list", { args: {} }),
@@ -657,6 +658,10 @@ it("propagates native section membership and summaries to browsers that did not 
       } as T;
     if (method === "codexhost/thread/sections/move") {
       const target = params.sectionId;
+      if (params.threadId === pageOrdinary.id) {
+        members.push(pageOrdinary);
+        return {} as T;
+      }
       assert.deepEqual(params, { threadId: external.id, sectionId: target });
       if (target === null) {
         members.splice(members.indexOf(external), 1);
@@ -789,6 +794,26 @@ it("propagates native section membership and summaries to browsers that did not 
       sectionFrame(older.id, pageMember.id, later.id, discoveredDuringMove.id, external.id),
     ]);
     assert.deepEqual(workspaces.ownerOf(external.id), project);
+    eventsB.length = 0;
+    assert.ok(
+      (
+        await rpc.dispatch("workspace/moveSessionToSection", {
+          args: { request: { sessionId: pageOrdinary.id, sectionId: "research" } },
+        })
+      ).ok,
+    );
+    assert.deepEqual(addedB(), [pageOrdinary.id]);
+    assert.deepEqual(
+      workspaceB.filter(isSectionUpdate).at(-1),
+      sectionFrame(
+        older.id,
+        pageMember.id,
+        later.id,
+        discoveredDuringMove.id,
+        external.id,
+        pageOrdinary.id,
+      ),
+    );
   } finally {
     for (const handler of closeHandlers) handler();
   }
@@ -796,7 +821,7 @@ it("propagates native section membership and summaries to browsers that did not 
 
 it("preserves omitted, null and precise section anchors and surfaces Host owner rejection", async (t) => {
   const host = new FakeChHost();
-  const { root, workspaces, list, move, subscribe } = setupSectionRpc(t, host);
+  const { root, workspaces, rpc, list, move, subscribe } = setupSectionRpc(t, host);
   const first = host.add("first", root);
   const last = host.add("last", root);
   const outsider = host.add("outsider", root);
@@ -888,6 +913,11 @@ it("preserves omitted, null and precise section anchors and surfaces Host owner 
     capable.updates(),
     updates.map((frame) => ({ ...frame, ...sectionFollowArgs })),
   );
+  assert.ok((await rpc.dispatch("workspace/delete", { args: { request: { workspaceId } } })).ok);
+  assert.ok((await move({ ...toResearch, beforeSessionId: null })).ok);
+  const afterDelete = [{ id: "research", name: "Research", threadIds: [last.id, first.id] }];
+  assert.deepEqual(follower.updates().at(-1)?.threadSections, afterDelete);
+  assert.deepEqual((await subscribe(sectionFollowArgs)).baseline.threadSections, afterDelete);
 });
 
 it("places Desktop's section projects as their root Workspaces in Desktop order", async (t) => {

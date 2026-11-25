@@ -213,8 +213,9 @@ export class ChSessions {
             const view = this.threads.view(id);
             if (view) this.loadUsage(view, true);
           },
-          catalog: async () => {
-            await this.refresh();
+          catalog: async (_reason, requireSections) => {
+            await this.refreshing?.catch(() => undefined);
+            await this.refresh(undefined, false, undefined, undefined, requireSections);
           },
           sections: () => this.refreshSectionMove(),
           archived: (id, archived) => {
@@ -393,6 +394,7 @@ export class ChSessions {
       const archived = new Set(this.workspaces.localArchivedSessionIds());
       const sections: Array<Omit<ThreadSectionView, "workspaceIds">> = [];
       const capability = snapshot[THREAD_SECTION_CAPABILITY];
+      const referenced = this.workspaces.sectionMemberIds();
       let complete = true;
       let destination: string | null = null;
       for (const { id, name, appearance, threads } of snapshot.sections) {
@@ -402,6 +404,7 @@ export class ChSessions {
           if (
             typeof thread.id !== "string" ||
             archived.has(thread.id) ||
+            !referenced.has(thread.id) ||
             !this.publishedCatalog?.has(thread.id) ||
             !this.threads.hasHarness(thread.id)
           ) {
@@ -579,7 +582,8 @@ export class ChSessions {
     for (const id of snapshotArchives) archivedIds.add(id);
     for (const id of found.keys()) if (!snapshotArchives.has(id)) archivedIds.delete(id);
     const ownership = catalogOwnership(snapshot, found);
-    const pageSectionAdditions = cursor === undefined ? undefined : new Set<string>();
+    const referenced = sections && this.workspaces.sectionMemberIds();
+    const newSectionMembers = new Set<string>();
     const threadSectionsV1 = sections?.[THREAD_SECTION_CAPABILITY];
     const threadSections = sections?.sections.map(({ id, name, appearance, threads }) => {
       const threadIds: string[] = [];
@@ -602,7 +606,7 @@ export class ChSessions {
         if (thread.archived === false && !snapshotArchives.has(threadId))
           archivedIds.delete(threadId);
         threadIds.push(threadId);
-        if (!this.publishedCatalog?.has(threadId)) pageSectionAdditions?.add(threadId);
+        if (!referenced?.has(threadId)) newSectionMembers.add(threadId);
       }
       return threadSectionsV1 && appearance !== undefined
         ? { id, name, threadIds, appearance }
@@ -669,6 +673,9 @@ export class ChSessions {
       this.workspaces.setReferenceArchives([...archivedIds].sort()),
     );
     for (const id of found.keys()) this.workspacePageRows.delete(id);
+    await timing.measure("catalog_publish", () =>
+      this.publishCatalogChanges(cursor !== undefined, newSectionMembers),
+    );
     // Project members resolve to Workspaces, which exist once their roots are synced.
     if (threadSections && (!this.workspaces.usesNativeProjects || projects.nativeProjects)) {
       this.workspaces.setReferenceThreadSections(
@@ -683,7 +690,6 @@ export class ChSessions {
     } else if (sectionsUnsupported || (threadSections && !threadSectionsV1)) {
       this.workspaces.setReferenceThreadSections(undefined);
     }
-    await timing.measure("catalog_publish", () => this.publishCatalogChanges(pageSectionAdditions));
     this.catalogReadAt = Date.now();
     return { ...snapshot, sectionFailure };
   }
@@ -795,7 +801,10 @@ export class ChSessions {
       codexhostImportSource: row.codexhostImportSource ?? null,
     };
   }
-  private async publishCatalogChanges(pageSectionAdditions?: ReadonlySet<string>): Promise<void> {
+  private async publishCatalogChanges(
+    continuation: boolean,
+    newSectionMembers: ReadonlySet<string>,
+  ): Promise<void> {
     const before = this.publishedCatalog;
     const next = new Map(
       [...this.rows]
@@ -812,9 +821,9 @@ export class ChSessions {
             [...this.rows.values()]
               .filter(
                 (row) =>
-                  next.has(row.id) &&
-                  before.get(row.id) !== next.get(row.id) &&
-                  (!pageSectionAdditions || before.has(row.id) || pageSectionAdditions.has(row.id)),
+                  newSectionMembers.has(row.id) ||
+                  (before.get(row.id) !== next.get(row.id) &&
+                    (!continuation || before.has(row.id))),
               )
               .map((row) => this.summary(row)),
           );

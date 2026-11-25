@@ -83,7 +83,7 @@ function setupSectionRpc(t: TestContext, host: FakeChHost) {
       assert.ok(first?.type === "baseline");
       return {
         baseline: first.value,
-        updates: () => frames.filter(({ type }) => type === "threadSections"),
+        updates: () => frames.filter((frame) => frame.type === "threadSections"),
       };
     },
   };

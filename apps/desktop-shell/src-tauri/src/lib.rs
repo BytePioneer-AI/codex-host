@@ -476,6 +476,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             .inner_size(1140.0, 800.0)
             .min_inner_size(400.0, 320.0)
             .visible(false)
+            // Keep HTML5 drag-and-drop active in WKWebView/WebView2 (thread references, row reorder, file drops).
+            .disable_drag_drop_handler()
             .initialization_script(navigation::initialization_script());
             #[cfg(target_os = "windows")]
             let builder = builder.decorations(false).shadow(true);

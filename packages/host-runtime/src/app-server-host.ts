@@ -3,6 +3,7 @@ import {
   sharedDelegationRegistration,
   dispatchSharedDelegation,
 } from "./shared-delegation.js";
+import { threadDelegationEnvironment } from "./bearer-token.js";
 import {
   THREAD_QUESTION_RESPOND_METHOD,
   threadQuestionsListParamsSchema,
@@ -247,6 +248,7 @@ import type {
   DelegationThreadListResult,
   DelegationThreadSnapshot,
   DelegationPendingQuestion,
+  PersistedDelegationLookup,
   ThreadAnswerInput,
   ThreadAnswerResult,
   HarnessInspectInput,
@@ -1266,6 +1268,32 @@ export class AppServerHost {
         list: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.list(input)),
         canHandleStart: (input) => this.#canHandleDelegationStart(input),
         ownsThread: (threadId) => this.#ownsDelegationThread(threadId),
+        delegationParent: async (threadId) => {
+          const parsed = hostThreadIdSchema.safeParse(threadId);
+          if (!parsed.success) return undefined;
+          const record = await this.#repository.getDelegationByChild(parsed.data);
+          return record?.parentHostThreadId;
+        },
+        activeNativeThreadIds: () => [
+          ...new Set([
+            ...this.#activeOfficialTurns.keys(),
+            ...this.#pendingOfficialDelegationThreads,
+          ]),
+        ],
+        findDelegationByRequest: async (requestId) => {
+          const record = await this.#repository.findDelegationByRequest(requestId);
+          if (!record) return null;
+          const thread = await this.#repository.find(record.childHostThreadId);
+          return {
+            delegationId: record.delegationId,
+            parentHostThreadId: record.parentHostThreadId,
+            childHostThreadId: record.childHostThreadId,
+            targetHarnessId: record.targetHarnessId as PersistedDelegationLookup["targetHarnessId"],
+            status: record.status,
+            taskDigest: record.taskDigest,
+            ...(thread ? { cwd: thread.cwd, title: thread.title } : {}),
+          };
+        },
         executionHostId: (threadId) => {
           const thread = this.#externalRuntime.get(threadId);
           return thread ? this.#executionHosts.get(thread) : undefined;
@@ -2899,11 +2927,24 @@ export class AppServerHost {
       );
     }
     if (existing) {
-      const turnId = this.#activeOfficialTurns.get(existing.childHostThreadId) ?? "pending";
+      let turnId = this.#activeOfficialTurns.get(existing.childHostThreadId);
+      if (!turnId && existing.status !== "creating") {
+        const read = await this.#requestOfficial("thread/read", {
+          threadId: existing.childHostThreadId,
+          includeTurns: true,
+        }).catch(() => undefined);
+        const readResult = read && isRecord(read.result) ? read.result : null;
+        const readThread = readResult && isRecord(readResult.thread) ? readResult.thread : null;
+        const readTurns = readThread && Array.isArray(readThread.turns) ? readThread.turns : [];
+        const latestTurn = readTurns.at(-1);
+        if (isRecord(latestTurn) && typeof latestTurn.id === "string" && latestTurn.id) {
+          turnId = latestTurn.id;
+        }
+      }
       return {
         delegationId: existing.delegationId,
         threadId: existing.childHostThreadId,
-        turnId,
+        turnId: turnId ?? "pending",
         harnessId: "codex",
         deepLink: `codex://threads/${existing.childHostThreadId}`,
         status: existing.status,
@@ -2928,9 +2969,24 @@ export class AppServerHost {
     const thread = startedResult && isRecord(startedResult.thread) ? startedResult.thread : null;
     const threadId = thread && typeof thread.id === "string" ? thread.id : null;
     if (!threadId) throw new Error("Official thread/start returned no Thread identity");
+    const delegationId = hostThreadIdSchema.parse(randomUUID());
     this.#pendingOfficialDelegationThreads.add(threadId);
+    let delegationPersisted = false;
     let turnId: string;
     try {
+      // Persist the delegation lineage before turn/start so hop enforcement closes the first-turn window.
+      const source = await this.#repository.find(input.parentThreadId);
+      await this.#repository.createDelegation({
+        delegationId,
+        parentHostThreadId: hostThreadIdSchema.parse(input.parentThreadId),
+        childHostThreadId: hostThreadIdSchema.parse(threadId),
+        sourceHarnessId: source?.harnessId ?? harnessIdSchema.parse("codex"),
+        targetHarnessId: harnessIdSchema.parse("codex"),
+        status: "creating",
+        ...(input.requestId ? { requestId: input.requestId } : {}),
+        taskDigest: digest,
+      });
+      delegationPersisted = true;
       // The title is presentation only: a failure keeps the default title and still delivers the task.
       await this.#requestOfficial("thread/name/set", { threadId, name: input.title }).catch(
         () => undefined,
@@ -2949,24 +3005,16 @@ export class AppServerHost {
     } catch (error) {
       this.#pendingOfficialDelegationThreads.delete(threadId);
       this.#pendingOfficialTerminalStatuses.delete(threadId);
+      if (delegationPersisted) {
+        await this.#repository.removeDelegation(delegationId).catch(() => undefined);
+      }
       await this.#requestOfficial("thread/delete", { threadId }).catch(() => undefined);
       throw error;
     }
     this.#activeOfficialTurns.set(threadId, turnId);
-    const delegationId = hostThreadIdSchema.parse(randomUUID());
     try {
-      const source = await this.#repository.find(input.parentThreadId);
       const pendingTerminal = this.#pendingOfficialTerminalStatuses.get(threadId);
-      await this.#repository.createDelegation({
-        delegationId,
-        parentHostThreadId: hostThreadIdSchema.parse(input.parentThreadId),
-        childHostThreadId: hostThreadIdSchema.parse(threadId),
-        sourceHarnessId: source?.harnessId ?? harnessIdSchema.parse("codex"),
-        targetHarnessId: harnessIdSchema.parse("codex"),
-        status: pendingTerminal ?? "running",
-        ...(input.requestId ? { requestId: input.requestId } : {}),
-        taskDigest: digest,
-      });
+      await this.#repository.setDelegationStatus(delegationId, pendingTerminal ?? "running");
       this.clientEvents.changed(threadId, "codexhost/thread/tree/changed");
       return {
         delegationId,
@@ -3003,6 +3051,7 @@ export class AppServerHost {
     } catch (error) {
       this.#activeOfficialTurns.delete(threadId);
       this.#signalActiveWorkChanged();
+      await this.#repository.removeDelegation(delegationId).catch(() => undefined);
       await this.#requestOfficial("thread/delete", { threadId }).catch(() => undefined);
       throw error;
     } finally {
@@ -4358,7 +4407,11 @@ export class AppServerHost {
     const catalog = await inspectLiveCommandCatalog(thread.session.commands);
     if (!catalog) return null;
     const staticCatalog = this.#externalAdapters.get(thread.harnessId)?.commandCatalog;
-    if (staticCatalog && !isLiveCommandCatalog(catalog, staticCatalog)) return null;
+    if (
+      catalog.source === "static" ||
+      (staticCatalog && !isLiveCommandCatalog(catalog, staticCatalog))
+    )
+      return null;
     const live = { ...catalog, source: "live" as const };
     this.#liveCommandCache.remember(thread.harnessId, thread.cwd, live);
     return live;
@@ -4534,12 +4587,15 @@ export class AppServerHost {
         );
         return;
       }
-      const catalog = await commands.list();
-      if (!catalog.ok) {
-        await this.#writer.json(rpcError(request, -32078, catalog.error.message));
-        return;
+      let descriptor = commands.staticCatalog?.commands.find(params.select);
+      if (!descriptor) {
+        const catalog = await commands.list();
+        if (!catalog.ok) {
+          await this.#writer.json(rpcError(request, -32078, catalog.error.message));
+          return;
+        }
+        descriptor = catalog.value.commands.find(params.select);
       }
-      const descriptor = catalog.value.commands.find(params.select);
       if (!descriptor) {
         await this.#writer.json(rpcError(request, params.missing.code, params.missing.message));
         return;
@@ -5088,10 +5144,10 @@ export class AppServerHost {
       kind: "create",
       cwd,
       ...(prewarm ? { prewarm: true } : {}),
-      environment: {
-        ...(this.#options.environment ?? process.env),
-        [DELEGATION_THREAD_ID_ENV]: record.hostThreadId,
-      },
+      environment: threadDelegationEnvironment(
+        this.#options.environment ?? process.env,
+        record.hostThreadId,
+      ),
       ...(requestedModel ? { model: requestedModel } : {}),
       ...(requestedThinkingOptionId ? { thinkingOptionId: requestedThinkingOptionId } : {}),
       ...(requestedPermissionModeId ? { permissionModeId: requestedPermissionModeId } : {}),

@@ -74,6 +74,7 @@ export const AssistantNodeView = memo(function AssistantNodeView({
   fileMentions,
   responseAnnotations,
   useInput,
+  inputActions,
   usePresentation,
   t,
 }: AssistantNodeViewProps) {
@@ -143,6 +144,7 @@ export const AssistantNodeView = memo(function AssistantNodeView({
           answer={answer}
           answerKey={answerKey}
           useInput={useInput}
+          inputActions={inputActions}
           labels={citationLabels}
         />
       )}

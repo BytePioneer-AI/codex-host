@@ -93,3 +93,78 @@ describe("ClientWorkspaceModel removedIds lifecycle", () => {
     expect(model.getSnapshot().items).toEqual([]);
   });
 });
+
+describe("ClientWorkspaceModel mixed local+remote insertBefore", () => {
+  it("optimistically reorders mixed workspaces without bounce on stream replay and rolls back on failure", async () => {
+    const remoteA = makeWorkspace({
+      id: "remote-workspace:a",
+      title: "remote-a",
+      remote: { hostId: "remote-peer:a", displayName: "a", state: "connected" },
+    });
+    const remoteB = makeWorkspace({
+      id: "remote-workspace:b",
+      title: "remote-b",
+      remote: { hostId: "remote-peer:b", displayName: "b", state: "connected" },
+    });
+    const local1 = makeWorkspace({ id: "local-1", title: "local-1" });
+    const local2 = makeWorkspace({ id: "local-2", title: "local-2" });
+
+    let resolveRpc!: (
+      value:
+        | { ok: true; value: { workspaceIds: WorkspaceId[] } }
+        | { ok: false; error: { code: string; message: string } },
+    ) => void;
+    const insertBeforeMock = vi.fn(
+      () =>
+        new Promise<
+          | { ok: true; value: { workspaceIds: WorkspaceId[] } }
+          | { ok: false; error: { code: string; message: string } }
+        >((resolve) => {
+          resolveRpc = resolve;
+        }),
+    );
+    const model = new ClientWorkspaceModel(
+      createRemoteStub({
+        insertBefore: insertBeforeMock as unknown as WorkspaceRemote["insertBefore"],
+      }),
+    );
+    model.replaceBaseline({
+      items: [remoteA, remoteB, local1, local2],
+      archivedSessionIds: [],
+      pinnedSessionIds: [],
+    });
+
+    // Drag local1 before remoteA -> optimistic order updates immediately.
+    const pending = model.insertBefore(local1.workspaceId, remoteA.workspaceId);
+    expect(model.getSnapshot().items.map((w) => w.workspaceId)).toEqual([
+      local1.workspaceId,
+      remoteA.workspaceId,
+      remoteB.workspaceId,
+      local2.workspaceId,
+    ]);
+
+    // Stream order frame arrives before unary RPC reply with identical mixed order -> no bounce.
+    const expectedOrder = [
+      local1.workspaceId,
+      remoteA.workspaceId,
+      remoteB.workspaceId,
+      local2.workspaceId,
+    ];
+    model.replaceOrder(expectedOrder);
+    resolveRpc({ ok: true, value: { workspaceIds: expectedOrder } });
+    await pending;
+    expect(model.getSnapshot().items.map((w) => w.workspaceId)).toEqual(expectedOrder);
+
+    // Failed reorder rolls back cleanly to last committed mixed order.
+    const failing = model.insertBefore(remoteB.workspaceId, local1.workspaceId);
+    expect(model.getSnapshot().items.map((w) => w.workspaceId)).toEqual([
+      remoteB.workspaceId,
+      local1.workspaceId,
+      remoteA.workspaceId,
+      local2.workspaceId,
+    ]);
+    resolveRpc({ ok: false, error: { code: "workspace/not-found", message: "boom" } });
+    await failing;
+    expect(model.getSnapshot().items.map((w) => w.workspaceId)).toEqual(expectedOrder);
+  });
+});

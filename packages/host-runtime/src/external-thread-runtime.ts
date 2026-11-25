@@ -38,7 +38,7 @@ import {
   externalThreadValue,
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
-import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
+import { threadDelegationEnvironment } from "./bearer-token.js";
 import { normalizeStoredModelRef, storedModelCatalog } from "./stored-model-ref.js";
 import { SessionStateObserver } from "./session-state-observer.js";
 import { DesktopRequestQueue } from "./desktop-request-queue.js";
@@ -862,7 +862,7 @@ export class ExternalThreadRuntime {
     const opened = await adapter.open({
       kind: "resume",
       cwd: thread.record.cwd,
-      environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: thread.record.hostThreadId },
+      environment: threadDelegationEnvironment(this.#environment, thread.record.hostThreadId),
       nativeRef: thread.record.nativeSessionRef as NativeSessionRef,
       knownTurnRefs: thread.record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
       ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
@@ -1230,7 +1230,7 @@ export class ExternalThreadRuntime {
       : await adapter.open({
           kind: "resume",
           cwd: record.cwd,
-          environment: { ...this.#environment, [DELEGATION_THREAD_ID_ENV]: record.hostThreadId },
+          environment: threadDelegationEnvironment(this.#environment, record.hostThreadId),
           nativeRef: record.nativeSessionRef as NativeSessionRef,
           knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
           ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),

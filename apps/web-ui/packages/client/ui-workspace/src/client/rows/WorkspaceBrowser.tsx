@@ -1,4 +1,4 @@
-import { canReorderLocalWorkspaces } from "./workspace-reorder.ts";
+import { canReorderWorkspaces, resolveWorkspaceDropAnchor } from "./workspace-reorder.ts";
 /**
  * The workspace/session browsing region filling the sidebar shell's
  * `sidebar.workspaces` hole: section header (title + view options + add
@@ -85,14 +85,14 @@ import {
 import { pinOrderSource } from "../pin-order.ts";
 import { threadTreeOrderSource, workspaceTreeMembers } from "../thread-tree-order.ts";
 import { ThreadTreeViewProvider, useThreadTreeView } from "./ThreadTreeView.tsx";
-import { ProjectRowItem, RemoteHostFolderRow, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
+import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
 import { ThreadTreeRows } from "./ThreadTreeControls.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
 import { PinnedSection } from "./PinnedSection.tsx";
 import { SessionListError } from "./SessionListError.tsx";
 import { SessionListExpansion } from "./SessionListExpansion.tsx";
 import { SectionHeading } from "./SectionHeading.tsx";
-import { HostScopeFilter, HostScopeTabBar } from "./HostScopeFilter.tsx";
+import { HostScopeTabBar } from "./HostScopeFilter.tsx";
 import {
   APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT,
   ensureWorkspaceVisibleInHostScope,
@@ -343,6 +343,31 @@ interface WorkspaceDragState {
   over: { id: WorkspaceId; half: "before" | "after" } | null;
 }
 
+/** Resolve nearest registered parent Workspace within each host and section scope. */
+function computeWorkspaceParents(
+  workspaces: readonly WorkspaceView[],
+  nestWorkspaces: boolean,
+  sectionOf: ReadonlyMap<string, string>,
+): Map<string, WorkspaceId | undefined> {
+  if (!nestWorkspaces) return new Map<string, WorkspaceId | undefined>();
+  const scopeOf = (workspace: WorkspaceView) =>
+    `${workspace.remote?.hostId ?? "local"}\n${sectionOf.get(workspace.workspaceId) ?? ""}`;
+  const pathsByScope = new Map<string, Map<string, WorkspaceId>>();
+  for (const workspace of workspaces) {
+    const scope = scopeOf(workspace);
+    const paths = pathsByScope.get(scope) ?? new Map<string, WorkspaceId>();
+    if (workspace.path) paths.set(workspace.path, workspace.workspaceId);
+    pathsByScope.set(scope, paths);
+  }
+  return new Map<string, WorkspaceId | undefined>(
+    workspaces.map((workspace) => {
+      const keysByPath = pathsByScope.get(scopeOf(workspace));
+      const path = owningParentFolder(workspace.path, [...(keysByPath?.keys() ?? [])]);
+      return [workspace.workspaceId, path === undefined ? undefined : keysByPath?.get(path)];
+    }),
+  );
+}
+
 /** Resolve an insertion side across the Workspace header, descendants, and Sessions. */
 function workspaceGroupHalf(e: {
   clientY: number;
@@ -374,8 +399,10 @@ type SessionTreeProps = Pick<
     list: SessionListState;
     /** Host account home for POSIX hover-path abbreviation. */
     home?: string | undefined;
-    /** Workspaces in Host group order with browser-projected Session order. */
+    /** Workspaces in Host group order with browser-projected Session order (may be host-scoped). */
     workspaces: readonly WorkspaceView[];
+    /** Complete unfiltered Workspaces in Host order for cross-host drag-reorder anchor resolution. */
+    allWorkspaces?: readonly WorkspaceView[];
     /** Per Workspace, the projected roots that are there only through a descendant. */
     linkedRoots: ReadonlyMap<string, ReadonlySet<SessionId>>;
     /** Browser-projected order for Sessions outside every Workspace. */
@@ -412,8 +439,6 @@ type SessionTreeProps = Pick<
     revealSessionId?: SessionId | undefined;
     /** Acknowledge that the chosen Session row has been revealed. */
     onSessionRevealed: (sessionId: SessionId) => void;
-    /** Optional host/workspace scope filter control mounted in the section header. */
-    hostScopeFilterControl?: ReactNode;
     /** Whether the host/workspace scope filter is actively narrowing visible rows. */
     hostScopeFiltered?: boolean;
     /** Whether the effective host scope is narrowed to one specific remote host. */
@@ -421,11 +446,6 @@ type SessionTreeProps = Pick<
     /** Reset the host/workspace scope filter to show all hosts and workspaces. */
     onResetHostScope?: () => void;
   };
-
-/** Section-expansion key for a collapsible remote host folder in the Workspaces tree. */
-function remoteHostFolderKey(hostId: string): string {
-  return `remote-host:${hostId}`;
-}
 
 /** The list-empty placeholder — a glyph over the text; the archived-only view names its filter and offers the way back. */
 function EmptySessions({
@@ -465,6 +485,7 @@ function SessionTree({
   startSession,
   open,
   workspaces,
+  allWorkspaces = workspaces,
   linkedRoots,
   ungroupedSessionIds,
   rowState,
@@ -491,7 +512,6 @@ function SessionTree({
   onSessionRevealed,
   shortcuts,
   loadMoreSessions,
-  hostScopeFilterControl,
   hostScopeFiltered = false,
   singleRemoteHostScoped = false,
   onResetHostScope,
@@ -538,25 +558,17 @@ function SessionTree({
       for (const id of section.workspaceIds ?? []) if (!owners.has(id)) owners.set(id, section.id);
     return owners;
   }, [nativeSections]);
-  const parents = useMemo(() => {
-    if (!nestWorkspaces) return new Map<string, WorkspaceId | undefined>();
-    const scopeOf = (workspace: WorkspaceView) =>
-      `${workspace.remote?.hostId ?? "local"}\n${sectionOf.get(workspace.workspaceId) ?? ""}`;
-    const pathsByScope = new Map<string, Map<string, WorkspaceId>>();
-    for (const workspace of workspaces) {
-      const scope = scopeOf(workspace);
-      const paths = pathsByScope.get(scope) ?? new Map<string, WorkspaceId>();
-      if (workspace.path) paths.set(workspace.path, workspace.workspaceId);
-      pathsByScope.set(scope, paths);
-    }
-    return new Map<string, WorkspaceId | undefined>(
-      workspaces.map((workspace) => {
-        const keysByPath = pathsByScope.get(scopeOf(workspace));
-        const path = owningParentFolder(workspace.path, [...(keysByPath?.keys() ?? [])]);
-        return [workspace.workspaceId, path === undefined ? undefined : keysByPath?.get(path)];
-      }),
-    );
-  }, [nestWorkspaces, sectionOf, workspaces]);
+  const parents = useMemo(
+    () => computeWorkspaceParents(workspaces, nestWorkspaces, sectionOf),
+    [nestWorkspaces, sectionOf, workspaces],
+  );
+  const reorderParents = useMemo(
+    () =>
+      allWorkspaces === workspaces
+        ? parents
+        : computeWorkspaceParents(allWorkspaces, nestWorkspaces, sectionOf),
+    [allWorkspaces, nestWorkspaces, parents, sectionOf, workspaces],
+  );
   const expandedGroups = useMemo(() => {
     const ancestorKeys = new Set<string | undefined>(parents.values());
     return [...workspaces.map((workspace) => workspace.workspaceId), UNGROUPED_KEY].filter(
@@ -615,29 +627,15 @@ function SessionTree({
     if (workspaceDropCommitted.current) return;
     workspaceDropCommitted.current = true;
     setWorkspaceDrag(null);
-    if (!canReorderLocalWorkspaces(workspaces, activeDrag.workspaceId, over.id)) return;
-    const owner = parents.get(activeDrag.workspaceId);
-    // Only Workspaces outside native sections can be dragged, among themselves.
-    const siblings = workspaces.filter(
-      (workspace) =>
-        !workspace.remote &&
-        !sectionOf.has(workspace.workspaceId) &&
-        parents.get(workspace.workspaceId) === owner,
-    );
-    const rowIndex = siblings.findIndex((workspace) => workspace.workspaceId === over.id);
-    if (rowIndex === -1) return;
-    const anchor = over.half === "before" ? over.id : siblings[rowIndex + 1]?.workspaceId;
-    if (anchor === activeDrag.workspaceId) return;
-    const sourceIndex = siblings.findIndex(
-      (workspace) => workspace.workspaceId === activeDrag.workspaceId,
-    );
-    const anchorIndex =
-      anchor === undefined
-        ? siblings.length
-        : siblings.findIndex((workspace) => workspace.workspaceId === anchor);
-    if (sourceIndex !== -1 && (anchorIndex === sourceIndex || anchorIndex === sourceIndex + 1))
-      return;
-    insertWorkspaceBefore(activeDrag.workspaceId, anchor).catch((reason: unknown) => {
+    const resolved = resolveWorkspaceDropAnchor(allWorkspaces, activeDrag.workspaceId, over, {
+      sectionOf,
+      parents: reorderParents,
+    });
+    if (resolved === null) return;
+    insertWorkspaceBefore(
+      activeDrag.workspaceId,
+      resolved.beforeWorkspaceId as WorkspaceId | undefined,
+    ).catch((reason: unknown) => {
       console.warn("workspace reorder rejected:", reason);
     });
   };
@@ -656,10 +654,6 @@ function SessionTree({
     return children;
   }, [groups, parents]);
   const rootGroups = childrenByParent.get(undefined) ?? [];
-  const workspaceDropAtListStart =
-    rootGroups[0]?.workspaceId !== undefined &&
-    workspaceDrag?.over?.id === rootGroups[0].workspaceId &&
-    workspaceDrag.over.half === "before";
   // Root ancestor of every rendered group: in tree mode the Workspace holding
   // the current Session may sit under folders, and revealing it must not
   // uncollapse the whole list.
@@ -684,55 +678,6 @@ function SessionTree({
   const workspaceRoots = rootGroups.filter(
     (group) => group.key !== UNGROUPED_KEY && !sectionOf.has(group.key),
   );
-  const groupRemoteWorkspacesByHost = !singleRemoteHostScoped;
-  const directWorkspaceRoots = groupRemoteWorkspacesByHost
-    ? workspaceRoots.filter((group) => group.remote === undefined)
-    : workspaceRoots;
-  const remoteHostFolders = useMemo(() => {
-    if (!groupRemoteWorkspacesByHost) return [];
-    const countSubtree = (group: GroupNode): number =>
-      1 +
-      (childrenByParent.get(group.key) ?? []).reduce(
-        (total, child) => total + countSubtree(child),
-        0,
-      );
-    const byHostId = new Map<
-      string,
-      {
-        hostId: string;
-        remote: NonNullable<GroupNode["remote"]>;
-        groups: GroupNode[];
-        workspaceCount: number;
-      }
-    >();
-    for (const group of workspaceRoots) {
-      const remote = group.remote;
-      if (remote === undefined) continue;
-      const count = countSubtree(group);
-      const existing = byHostId.get(remote.hostId);
-      if (existing !== undefined) {
-        existing.groups.push(group);
-        existing.workspaceCount += count;
-        if (existing.remote.color === undefined && remote.color !== undefined) {
-          existing.remote = remote;
-        }
-      } else {
-        byHostId.set(remote.hostId, {
-          hostId: remote.hostId,
-          remote,
-          groups: [group],
-          workspaceCount: count,
-        });
-      }
-    }
-    return [...byHostId.values()];
-  }, [childrenByParent, groupRemoteWorkspacesByHost, workspaceRoots]);
-  const revealRemoteHostId = useMemo(() => {
-    if (revealGroup === undefined) return undefined;
-    const rootKey = rootKeyOf.get(revealGroup);
-    if (rootKey === undefined) return undefined;
-    return workspaceRoots.find((group) => group.key === rootKey)?.remote?.hostId;
-  }, [revealGroup, rootKeyOf, workspaceRoots]);
   // Each native section lists its Workspaces in Desktop's order, not the Web Workspace order.
   const sectionRoots = useMemo(() => {
     const roots = new Map(rootGroups.map((group) => [group.key, group]));
@@ -747,11 +692,11 @@ function SessionTree({
     );
   }, [nativeSections, rootGroups, sectionOf]);
   const collapsedWorkspaces = workspaceWindow(
-    directWorkspaceRoots,
+    workspaceRoots,
     WORKSPACE_INITIAL_ROWS,
     keptWorkspaceRoots,
   );
-  const shownWorkspaceRoots = allWorkspacesShown ? directWorkspaceRoots : collapsedWorkspaces.rows;
+  const shownWorkspaceRoots = allWorkspacesShown ? workspaceRoots : collapsedWorkspaces.rows;
   const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
   const nativeLayout = nativeSectionLayout(
     nativeSections,
@@ -780,19 +725,16 @@ function SessionTree({
     if (pinnedSectionExpanded)
       for (const node of threadView.rows(pinnedRows)) rowKeys.push(`session:${node.id}`);
   }
-  const renderGroup = (
-    group: GroupNode,
-    depth: number,
-    options?: { suppressHostCue?: boolean },
-  ): ReactNode => {
+  const renderGroup = (group: GroupNode, depth: number): ReactNode => {
     const workspaceId = group.workspaceId;
     const children = childrenByParent.get(group.key) ?? [];
     const sectioned = sectionOf.has(group.key);
     const compatibleDrag =
       workspaceDrag !== null &&
-      !sectioned &&
-      canReorderLocalWorkspaces(workspaces, workspaceDrag.workspaceId, workspaceId) &&
-      parents.get(workspaceDrag.workspaceId) === parents.get(group.key);
+      canReorderWorkspaces(allWorkspaces, workspaceDrag.workspaceId, workspaceId, {
+        sectionOf,
+        parents: reorderParents,
+      });
     const visible = sidebarWindow(
       group.sessions,
       sessionLimits[group.key] ?? GROUP_INITIAL_ROWS,
@@ -800,9 +742,7 @@ function SessionTree({
       revealSessionId,
     );
     rowKeys.push(`workspace:${group.key}`);
-    const childRows = group.expanded
-      ? children.map((child) => renderGroup(child, depth + 1, options))
-      : [];
+    const childRows = group.expanded ? children.map((child) => renderGroup(child, depth + 1)) : [];
     const sessions = threadView.rows(visible.rows);
     // A tree shown through a descendant also renders in its root's group; keep its keys unique.
     const linked = linkedRoots.get(group.key);
@@ -828,7 +768,7 @@ function SessionTree({
         ? workspaceDrag.over.half
         : null;
     const workspaceDragProps =
-      workspaceId === undefined || group.remote || sectioned
+      workspaceId === undefined || sectioned
         ? undefined
         : {
             start: () => {
@@ -930,7 +870,7 @@ function SessionTree({
           <ProjectRowItem
             newShortcut={shortcuts.find((row) => row.id === "session.new")}
             group={group}
-            showHost={!singleRemoteHostScoped && options?.suppressHostCue !== true}
+            showHost={!singleRemoteHostScoped}
             home={home}
             t={t}
             onToggle={() => {
@@ -1098,6 +1038,13 @@ function SessionTree({
   // control rather than an unbounded run of folders, and folding that section
   // leaves Recents in place.
   const showWorkspacesSection = workspaceRoots.length > 0 || hostScopeFiltered;
+  const workspaceListHasLeadingChrome =
+    showWorkspacesSection || pinnedRows.length > 0 || nativeLayout.length > 0;
+  const workspaceDropAtListStart =
+    !workspaceListHasLeadingChrome &&
+    shownWorkspaceRoots[0]?.workspaceId !== undefined &&
+    workspaceDrag?.over?.id === shownWorkspaceRoots[0].workspaceId &&
+    workspaceDrag.over.half === "before";
   const showFilterEmptyHint = hostScopeFiltered && workspaceRoots.length === 0;
   const groupRows: ReactNode[] = [];
   if (showWorkspacesSection) rowKeys.push(`section:${WORKSPACES_SECTION_KEY}`);
@@ -1132,30 +1079,6 @@ function SessionTree({
         </button>,
       );
     }
-    for (const folder of remoteHostFolders) {
-      const folderKey = remoteHostFolderKey(folder.hostId);
-      const expanded =
-        sectionExpansion?.[folderKey] === true || revealRemoteHostId === folder.hostId;
-      rowKeys.push(folderKey);
-      const childRows = expanded
-        ? folder.groups.map((group) => renderGroup(group, 1, { suppressHostCue: true }))
-        : [];
-      groupRows.push(
-        <div key={folderKey} data-sidebar-group={folderKey} className={css.groupSection}>
-          <RemoteHostFolderRow
-            hostId={folder.hostId}
-            remote={folder.remote}
-            workspaceCount={folder.workspaceCount}
-            expanded={expanded}
-            onToggle={() => {
-              setSectionExpanded(folderKey, !expanded);
-            }}
-            t={t}
-          />
-          {childRows.length > 0 && <div role="group">{childRows}</div>}
-        </div>,
-      );
-    }
   }
   const recentRoot = rootGroups.find((group) => group.key === UNGROUPED_KEY);
   if (recentRoot !== undefined) groupRows.push(renderGroup(recentRoot, 0));
@@ -1173,10 +1096,6 @@ function SessionTree({
           allWorkspacesShown,
           pinnedSectionExpanded,
           workspacesSectionExpanded,
-          remoteHostFolders.map(
-            (folder) =>
-              `${folder.hostId}:${String(sectionExpansion?.[remoteHostFolderKey(folder.hostId)] === true || revealRemoteHostId === folder.hostId)}`,
-          ),
         ])}
       >
         <PinnedSection
@@ -1227,7 +1146,6 @@ function SessionTree({
               setSectionExpanded(WORKSPACES_SECTION_KEY, !workspacesSectionExpanded);
             }}
             rowKey={`section:${WORKSPACES_SECTION_KEY}`}
-            trailing={hostScopeFilterControl}
           />
         )}
         {groupRows}
@@ -1321,7 +1239,6 @@ function FlatList({
   onSessionRevealed,
   renderSlot,
   loadMoreSessions,
-  hostScopeFilterControl,
   hostScopeFiltered = false,
   singleRemoteHostScoped = false,
   onResetHostScope,
@@ -1344,7 +1261,6 @@ function FlatList({
   | "nativeSections"
   | "onLeaveArchivedOnly"
   | "loadMoreSessions"
-  | "hostScopeFilterControl"
   | "hostScopeFiltered"
   | "singleRemoteHostScoped"
   | "onResetHostScope"
@@ -1439,10 +1355,8 @@ function FlatList({
           setSectionExpanded={setSectionExpanded}
           t={t}
         />
-        {(pinnedRows.length > 0 ||
-          nativeSections.length > 0 ||
-          hostScopeFilterControl !== undefined) && (
-          <SectionHeading label={t("section.sessions")} trailing={hostScopeFilterControl} />
+        {(pinnedRows.length > 0 || nativeSections.length > 0) && (
+          <SectionHeading label={t("section.sessions")} />
         )}
         {rows.length === 0 &&
           pinnedRows.length === 0 &&
@@ -2085,25 +1999,25 @@ function WorkspaceBrowserContent({
         visibleWorkspaceIdSet,
         orderedWorkspaces,
         effectiveHostScopeFilter,
+        threadOrder.rootOf,
       ).map((entry) => entry.id),
     );
     return {
       ...list,
       ids: list.ids.filter((id) => allowedIds.has(id)),
     };
-  }, [hostScopeFiltered, list, visibleWorkspaceIdSet, orderedWorkspaces, effectiveHostScopeFilter]);
+  }, [
+    hostScopeFiltered,
+    list,
+    visibleWorkspaceIdSet,
+    orderedWorkspaces,
+    effectiveHostScopeFilter,
+    threadOrder.rootOf,
+  ]);
   const hostScopeResetKey = useMemo(
     () => (hostScopeFiltered ? JSON.stringify(effectiveHostScopeFilter) : "all"),
     [hostScopeFiltered, effectiveHostScopeFilter],
   );
-  const hostScopeFilterControl = hasRemote ? (
-    <HostScopeFilter
-      workspaces={orderedWorkspaces}
-      state={effectiveHostScopeFilter}
-      onChange={updateHostScopeFilter}
-      t={t}
-    />
-  ) : undefined;
   const openAddRemoteWorkspace = (): void => {
     const selectedRemoteHostId =
       effectiveHostScopeFilter.selectedHost !== "all" &&
@@ -2143,9 +2057,6 @@ function WorkspaceBrowserContent({
         ? undefined
         : nativeSections.find(({ workspaceIds }) => workspaceIds?.includes(workspaceId) === true));
     if (section) actions.setSectionExpanded(`native-section:${section.id}`, true);
-    if (owningWorkspace?.remote !== undefined) {
-      actions.setSectionExpanded(remoteHostFolderKey(owningWorkspace.remote.hostId), true);
-    }
     setRevealSessionId(sessionId);
     setQuery("");
     setSearchExpanded(false);
@@ -2625,7 +2536,6 @@ function WorkspaceBrowserContent({
               setSectionExpanded={actions.setSectionExpanded}
               revealSessionId={revealSessionId}
               onSessionRevealed={acknowledgeSessionReveal}
-              hostScopeFilterControl={hostScopeFilterControl}
               hostScopeFiltered={hostScopeFiltered}
               singleRemoteHostScoped={singleRemoteHostScoped}
               onResetHostScope={resetHostScope}
@@ -2641,6 +2551,7 @@ function WorkspaceBrowserContent({
               onSessionRenameRequest={requestSessionRename}
               renderSlot={renderSlot}
               workspaces={scopedWorkspaces}
+              allWorkspaces={orderedWorkspaces}
               linkedRoots={linkedRoots}
               ungroupedSessionIds={orderedUngroupedSessionIds}
               canStartProjectless={canStartProjectless}
@@ -2660,7 +2571,6 @@ function WorkspaceBrowserContent({
               insertWorkspaceBefore={insertWorkspaceBefore}
               revealSessionId={revealSessionId}
               onSessionRevealed={acknowledgeSessionReveal}
-              hostScopeFilterControl={hostScopeFilterControl}
               hostScopeFiltered={hostScopeFiltered}
               singleRemoteHostScoped={singleRemoteHostScoped}
               onResetHostScope={resetHostScope}

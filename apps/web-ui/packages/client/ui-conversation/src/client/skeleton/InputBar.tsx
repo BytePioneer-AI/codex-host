@@ -19,13 +19,13 @@ import clsx from "clsx";
 import {
   IconPlusOutlineMedium,
   IconWarningOutlineRegular,
-  ResponseAnnotationChip,
+  ResponseAnnotationTray,
   shouldAutoFocusTextInput,
   StateDot,
   Toast,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
-import type { ResponseAnnotationLabels } from "@deepseek-ai/dsh-client-ui-primitives";
+import type { ResponseAnnotationTrayLabels } from "@deepseek-ai/dsh-client-ui-primitives";
 // Type-only: the `plan` projection key merge (the TodoDock posture — the
 // composer reads a host-computed value; the domain owns the key).
 import type {} from "@deepseek-ai/dsh-plan-mode/client";
@@ -36,7 +36,7 @@ import type {} from "@deepseek-ai/dsh-goal/client";
 // api-remotes import already places it in every client program.
 import type { Translate } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ComposerBarProps } from "../contract/slots.ts";
-import type { DraftResponseAnnotation } from "../contract/input.ts";
+import type { DraftAttachmentId, DraftResponseAnnotation } from "../contract/input.ts";
 import { DraftEditor } from "../input/editor/DraftEditor.tsx";
 import { registerComposerKeymap } from "../input/editor/keymap.ts";
 import {
@@ -98,16 +98,28 @@ export const InputBar = memo(function InputBar({
   const input = useInput((s) => s);
   const pendingDraftText = usePendingDraftText((s) => s);
   const responseAnnotations = input?.responseAnnotations ?? EMPTY_ANNOTATIONS;
-  const annotationLabels = useMemo<ResponseAnnotationLabels>(
+  const hoveredAnnotationId = input?.hoveredResponseAnnotationId;
+  const annotationTrayLabels = useMemo<ResponseAnnotationTrayLabels>(
     () => ({
-      label: (index) => t("annotation.label", { index }),
-      railLabel: (index) => t("annotation.chipLabel", { index }),
-      railTitle: (index, excerpt) => t("annotation.title", { index, excerpt }),
+      regionAria: t("annotation.rail"),
+      count: (count) => t("annotation.trayCount", { count }),
+      clearAll: t("annotation.clearAll"),
+      emptyComment: t("annotation.emptyComment"),
+      editHint: (index) => t("annotation.editHint", { index }),
+      revealHint: (index) => t("annotation.revealHint", { index }),
       remove: (index) => t("annotation.remove", { index }),
-      selectedText: t("annotation.selectedText"),
-      userComment: t("annotation.userComment"),
     }),
     [t],
+  );
+  const annotationTrayItems = useMemo(
+    () =>
+      responseAnnotations.map((annotation) => ({
+        id: annotation.id,
+        text: annotation.text,
+        ...(annotation.annotation === undefined ? {} : { annotation: annotation.annotation }),
+        canReveal: annotation.anchor !== undefined,
+      })),
+    [responseAnnotations],
   );
   const notice = useNotices((s) => s);
   const busyEnter = useBusyEnter((s) => s);
@@ -712,24 +724,33 @@ export const InputBar = memo(function InputBar({
               )}
             </div>
           )}
-          {responseAnnotations.length === 0 ? null : (
-            <div className={css.annotations} data-composer-annotations>
-              {responseAnnotations.map((annotation, index) => (
-                <ResponseAnnotationChip
-                  key={annotation.id}
-                  index={index + 1}
-                  annotation={annotation}
-                  labels={annotationLabels}
-                  onActivate={
-                    annotation.anchor === undefined
-                      ? undefined
-                      : () => revealResponseAnnotation?.(annotation.id)
-                  }
-                  onRemove={() => {
-                    inputActions?.removeResponseAnnotation(annotation.id);
-                  }}
-                />
-              ))}
+          {annotationTrayItems.length === 0 ? null : (
+            <div className={css.annotations}>
+              <ResponseAnnotationTray
+                annotations={annotationTrayItems}
+                hoveredId={hoveredAnnotationId}
+                disabled={locked || machineBusy}
+                labels={annotationTrayLabels}
+                onHover={(id) => {
+                  inputActions?.hoverResponseAnnotation(id as DraftAttachmentId | null);
+                }}
+                onReveal={
+                  revealResponseAnnotation === undefined
+                    ? undefined
+                    : (id) => {
+                        revealResponseAnnotation(id as DraftAttachmentId);
+                      }
+                }
+                onUpdate={(id, comment) => {
+                  inputActions?.updateResponseAnnotation(id as DraftAttachmentId, comment);
+                }}
+                onRemove={(id) => {
+                  inputActions?.removeResponseAnnotation(id as DraftAttachmentId);
+                }}
+                onClearAll={() => {
+                  inputActions?.clearResponseAnnotations();
+                }}
+              />
             </div>
           )}
           {input === undefined || sessionId === undefined ? null : (

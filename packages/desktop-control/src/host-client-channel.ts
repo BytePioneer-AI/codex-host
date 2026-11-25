@@ -228,12 +228,15 @@ export class HostClientChannel {
       throw new Error("Invalid Host reply; operation outcome may be unknown");
     return value.result as T;
   }
-  request<T>(method: string, params: Record<string, unknown>): Promise<T> {
+  request<T>(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
     return this.post(
       "/v1/rpc",
       { method, params },
-      harnessInstallationRequestTimeoutMs(method, params) ?? 120_000,
+      timeoutMs ?? harnessInstallationRequestTimeoutMs(method, params) ?? 120_000,
     );
+  }
+  get peerDelegationSupported(): boolean {
+    return this.descriptor.capabilities?.peerDelegation === 1;
   }
   get epoch(): string {
     return this.descriptor.epoch;

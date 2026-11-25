@@ -146,7 +146,7 @@ export async function readHostFile(
 
 const WINDOWS_RENAME_DELAYS_MS = [10, 30, 70, 150, 300] as const;
 
-async function replacePrivateExtensionFile(temporary: string, destination: string) {
+export async function renamePrivateExtensionPath(temporary: string, destination: string) {
   for (let attempt = 0; ; attempt++) {
     try {
       await rename(temporary, destination);
@@ -175,7 +175,7 @@ export async function writePrivateExtensionFile(
   try {
     await writeFile(temporary, text, { mode: 0o600, flag: "wx" });
     assertLocked?.();
-    await replacePrivateExtensionFile(temporary, path.join(directory, name));
+    await renamePrivateExtensionPath(temporary, path.join(directory, name));
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);
   }

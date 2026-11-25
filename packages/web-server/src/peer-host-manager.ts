@@ -24,6 +24,7 @@ export class PeerHostManager {
   private readonly streamIdleTimeoutMs: number | undefined;
   private readonly projector: ((threadId: string) => PeerThreadProjector) | undefined;
   onChange?: (hostId?: string) => void;
+  onPeerRemoved?: (hostId: string) => void;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
   onUsageChanged?: (hostId: string, threadId: string) => void;
   onCatalogInspectionChanged?: (hostId: string) => void;
@@ -93,6 +94,17 @@ export class PeerHostManager {
     return peerId === undefined ? undefined : this.clients.get(peerId);
   }
 
+  /** Server-internal list of configured peer access tokens for error-envelope scrubbing. */
+  peerTokens(): string[] {
+    const tokens = new Set<string>();
+    for (const client of this.clients.values()) {
+      if (typeof client.record.token === "string" && client.record.token.length > 0) {
+        tokens.add(client.record.token);
+      }
+    }
+    return [...tokens];
+  }
+
   source(hostId: string): PeerThreadSource | undefined {
     const peerId = c.peerIdFromRemoteHostId(hostId);
     return peerId === undefined ? undefined : this.sources.get(peerId);
@@ -127,6 +139,23 @@ export class PeerHostManager {
       }));
   }
 
+  /** Agent-safe summaries of enabled peers for cross-host delegation discovery (no tokens or URLs). */
+  delegationHosts(): c.PeerDelegationHostSummary[] {
+    return [...this.clients.values()]
+      .filter((p) => p.record.enabled)
+      .map((p) => ({
+        hostId: c.remotePeerHostId(p.record.peerId),
+        displayName: p.record.name,
+        online: p.state === "connected",
+        state: p.state,
+        delegation: p.state === "connected" && p.manifest?.capabilities?.delegation === 1,
+        projects: (p.manifest?.projects ?? []).map(({ id, name, path }) => ({ id, name, path })),
+        ...(p.manifest?.platform !== undefined ? { platform: p.manifest.platform } : {}),
+        ...(p.manifest?.hostname !== undefined ? { hostname: p.manifest.hostname } : {}),
+        ...(p.manifest?.homeDir !== undefined ? { homeDir: p.manifest.homeDir } : {}),
+      }));
+  }
+
   call(op: c.RemoteSessionOperation) {
     if (op.kind === "hosts") return Promise.resolve(this.hosts());
     return this.get(c.peerIdFromRemoteHostId(op.hostId) ?? "").call(op);
@@ -134,9 +163,16 @@ export class PeerHostManager {
 
   register(rpc: RpcRegistry) {
     const linkOptions = { allowLoopback: this.allowLoopback };
+    const localOnlyActions = new Set(["add", "update", "remove", "test"]);
     for (const [action, method] of Object.entries(c.REMOTE_PEERS_METHODS))
       rpc.register(method, async (args, ctx) => {
         if (!ctx.auth) throw new RpcError("auth/required", "Authentication required");
+        if (localOnlyActions.has(action) && ctx.auth.local !== true) {
+          throw new RpcError(
+            "auth/local-required",
+            "Managing remote peers requires a local authenticated session",
+          );
+        }
         const input = requestOf(args);
         if (action === "list") return { peers: [...this.clients.values()].map((p) => p.summary()) };
         if (action === "add" || action === "test") {
@@ -198,6 +234,7 @@ export class PeerHostManager {
             this.sources.delete(peerId);
             client.close();
             this.clients.delete(peerId);
+            this.onPeerRemoved?.(client.hostId);
             this.changed(client.hostId);
             return { removed: true };
           case "update": {

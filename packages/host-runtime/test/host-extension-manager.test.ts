@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -25,6 +25,7 @@ import { makeZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import { AppServerHost } from "../src/app-server-host.js";
 import { startClientChannelServer } from "../src/client-channel-server.js";
 import { HostExtensionManager } from "../src/host-extension-manager.js";
+import { handleHostExtensionRequest } from "../src/host-extension-requests.js";
 import { JsonLineCollector, writeRequest } from "./app-server-host-fixture.js";
 
 let root: string;
@@ -497,4 +498,227 @@ it("reports download stats asynchronously for catalog install and update only", 
     ),
   });
   expect(statsCalls).toHaveLength(2);
+});
+
+it("downloads extensions concurrently without blocking other operations, logs causes, and surfaces safe errors", async () => {
+  const buildArchive = (id: string, version: string) =>
+    makeZip([
+      {
+        name: "pkg/manifest.json",
+        data: JSON.stringify({
+          manifestVersion: 2,
+          id,
+          version,
+          name: { en: id, "zh-CN": id },
+          description: { en: id, "zh-CN": id },
+          page: { apiVersion: 1, entry: "page.mjs" },
+        }),
+      },
+      { name: "pkg/page.mjs", data: "export function mount() {}" },
+    ]);
+
+  const slowZip = buildArchive("slow-ext", "1.0.0");
+  const fastZip = buildArchive("fast-ext", "1.0.0");
+  const brokenZip = buildArchive("broken-ext", "1.0.0");
+  const slowUrl = "https://github.com/BytePioneer-AI/slow-ext/releases/download/v1.0.0/slow.zip";
+  const fastUrl = "https://github.com/BytePioneer-AI/fast-ext/releases/download/v1.0.0/fast.zip";
+  const brokenUrl =
+    "https://github.com/BytePioneer-AI/broken-ext/releases/download/v1.0.0/broken.zip";
+
+  const slowStarted = Promise.withResolvers<void>();
+  const releaseSlow = Promise.withResolvers<void>();
+  let slowAborted = false;
+
+  vi.stubEnv("CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL", "off");
+  vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
+    const href = String(input);
+    if (href === HOST_EXTENSION_CATALOG_URL || href === HOST_EXTENSION_CATALOG_MIRROR_URL) {
+      return Response.json({
+        schemaVersion: 2,
+        generatedAt: "2026-11-25T10:30:00.000Z",
+        extensions: [
+          {
+            id: "slow-ext",
+            version: "1.0.0",
+            format: "codexhost",
+            targets: ["desktop", "web"],
+            apis: { page: 1 },
+            name: { en: "Slow", "zh-CN": "慢速" },
+            description: { en: "Slow", "zh-CN": "慢速" },
+            author: "BytePioneer-AI",
+            repository: "https://github.com/BytePioneer-AI/slow-ext",
+            downloadUrl: slowUrl,
+            sha256: createHash("sha256").update(slowZip).digest("hex"),
+          },
+          {
+            id: "fast-ext",
+            version: "1.0.0",
+            format: "codexhost",
+            targets: ["desktop", "web"],
+            apis: { page: 1 },
+            name: { en: "Fast", "zh-CN": "快速" },
+            description: { en: "Fast", "zh-CN": "快速" },
+            author: "BytePioneer-AI",
+            repository: "https://github.com/BytePioneer-AI/fast-ext",
+            downloadUrl: fastUrl,
+            sha256: createHash("sha256").update(fastZip).digest("hex"),
+          },
+          {
+            id: "broken-ext",
+            version: "1.0.0",
+            format: "codexhost",
+            targets: ["desktop", "web"],
+            apis: { page: 1 },
+            name: { en: "Broken", "zh-CN": "损坏" },
+            description: { en: "Broken", "zh-CN": "损坏" },
+            author: "BytePioneer-AI",
+            repository: "https://github.com/BytePioneer-AI/broken-ext",
+            downloadUrl: brokenUrl,
+            sha256: createHash("sha256").update(brokenZip).digest("hex"),
+          },
+        ],
+      });
+    }
+    if (href === slowUrl) {
+      slowStarted.resolve();
+      await new Promise<void>((resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => {
+            slowAborted = true;
+            reject(init.signal?.reason ?? new Error("aborted"));
+          },
+          { once: true },
+        );
+        void releaseSlow.promise.then(resolve);
+      });
+      return new Response(Uint8Array.from(slowZip));
+    }
+    if (href === fastUrl) return new Response(Uint8Array.from(fastZip));
+    if (href === brokenUrl) return new Response(null, { status: 404 });
+    throw new Error(`Unexpected fetch: ${href}`);
+  });
+
+  const diagnostics: string[] = [];
+  const manager = new HostExtensionManager(
+    dataDir,
+    () => undefined,
+    (message) => {
+      diagnostics.push(message);
+    },
+  );
+  cleanup.push(() => manager.close());
+
+  // Start slow-ext download and hold it in flight.
+  const slowInstall = handleHostExtensionRequest(manager, RPC.install, {
+    source: { type: "catalog", id: "slow-ext" },
+  });
+  await slowStarted.promise;
+
+  // fast-ext installs and enables immediately while slow-ext is still downloading.
+  const fastReply = await handleHostExtensionRequest(manager, RPC.install, {
+    source: { type: "catalog", id: "fast-ext" },
+  });
+  expect(fastReply).toMatchObject({ result: { id: "fast-ext", replaced: false } });
+  const enabledReply = await handleHostExtensionRequest(manager, RPC.enable, {
+    id: "fast-ext",
+    expectedRevision: 0,
+  });
+  expect(enabledReply).toMatchObject({
+    result: { state: "saved", configuration: { enabled: ["fast-ext"] } },
+  });
+
+  // Safe HTTP error surfaces directly to caller and writes a diagnostic log entry.
+  const failedReply = await handleHostExtensionRequest(manager, RPC.install, {
+    source: { type: "catalog", id: "broken-ext" },
+  });
+  expect(failedReply).toEqual({
+    error: { code: -32000, message: "Download returned HTTP 404" },
+  });
+  expect(diagnostics).toContainEqual(
+    expect.stringContaining(
+      "Host extension codexhost/extensions/install failed: Download returned HTTP 404",
+    ),
+  );
+
+  // Release slow-ext and verify both extensions are installed.
+  releaseSlow.resolve();
+  expect(await slowInstall).toMatchObject({ result: { id: "slow-ext", replaced: false } });
+
+  // Raw internal/FS errors never leak host paths to RPC callers, while diagnostics log them.
+  const missingLocal = await handleHostExtensionRequest(manager, RPC.install, {
+    source: { type: "localDir", localDir: path.join(root, "does-not-exist-secret-dir") },
+  });
+  expect(missingLocal).toEqual({
+    error: {
+      code: -32000,
+      message: "Host extension operation failed: codexhost/extensions/install",
+    },
+  });
+  expect(diagnostics).toContainEqual(expect.stringContaining("does-not-exist-secret-dir"));
+
+  // Closing the manager aborts any in-flight download cleanly and rejects concurrent calls without deadlocking.
+  const secondSlowStarted = Promise.withResolvers<void>();
+  vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
+    const href = String(input);
+    if (href === HOST_EXTENSION_CATALOG_URL || href === HOST_EXTENSION_CATALOG_MIRROR_URL) {
+      return Response.json({
+        schemaVersion: 2,
+        generatedAt: "2026-11-25T10:31:00.000Z",
+        extensions: [
+          {
+            id: "slow-ext",
+            version: "1.0.0",
+            format: "codexhost",
+            targets: ["desktop", "web"],
+            apis: { page: 1 },
+            name: { en: "Slow", "zh-CN": "慢速" },
+            description: { en: "Slow", "zh-CN": "慢速" },
+            author: "BytePioneer-AI",
+            repository: "https://github.com/BytePioneer-AI/slow-ext",
+            downloadUrl: slowUrl,
+            sha256: createHash("sha256").update(slowZip).digest("hex"),
+          },
+        ],
+      });
+    }
+    if (href === slowUrl) {
+      secondSlowStarted.resolve();
+      await new Promise<void>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => {
+            slowAborted = true;
+            reject(init.signal?.reason ?? new Error("aborted"));
+          },
+          { once: true },
+        );
+      });
+    }
+    throw new Error(`Unexpected fetch: ${href}`);
+  });
+  const currentSlow = (await manager.list()).extensions.find((e) => e.id === "slow-ext");
+  assert(currentSlow?.state === "valid");
+  const abortedUpdate = handleHostExtensionRequest(manager, RPC.update, {
+    id: "slow-ext",
+    expectedDigest: currentSlow.digest,
+    expectedActivationId: currentSlow.activationId,
+    source: { type: "catalog", id: "slow-ext" },
+  });
+  await secondSlowStarted.promise;
+  const closingPromise = manager.close();
+  // Concurrent install arriving during close() must reject immediately instead of deadlocking close().
+  const duringClose = handleHostExtensionRequest(manager, RPC.install, {
+    source: { type: "catalog", id: "fast-ext" },
+  });
+  await closingPromise;
+  expect(slowAborted).toBe(true);
+  expect(await abortedUpdate).toMatchObject({
+    error: { code: -32000, message: "Download aborted" },
+  });
+  expect(await duringClose).toEqual({
+    error: { code: -32000, message: "Host extensions are closing" },
+  });
+  const entriesAfterClose = await readdir(path.join(dataDir, "host-extensions"));
+  expect(entriesAfterClose.filter((name) => name.startsWith(".staging-"))).toEqual([]);
 });

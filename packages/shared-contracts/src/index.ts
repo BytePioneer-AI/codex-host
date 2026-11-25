@@ -12,6 +12,7 @@ export * from "./skills.js";
 export * from "./skill-reference.js";
 export * from "./web-access-tokens.js";
 export * from "./delegation-read.js";
+export * from "./peer-delegation.js";
 export * from "./credential-imports.js";
 export * from "./harness-display-settings.js";
 export * from "./harness-preferences.js";
@@ -397,11 +398,13 @@ export {
   HARNESS_COMMAND_MENTION_PATH_PREFIX,
   delegationMentionPath,
   harnessCommandMentionPath,
+  harnessCommandReferences,
   restoreHarnessCommandMentions,
   formatDelegationMentionLink,
   stripDelegationMentions,
   type DelegationMention,
   type DelegationMentionRewrite,
+  type HarnessCommandReference,
 } from "./delegation-mention.js";
 
 export { desktopImageAttachmentPaths } from "./desktop-attachments.js";

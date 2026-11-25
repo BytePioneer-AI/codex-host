@@ -368,6 +368,11 @@ export const clientChannelDescriptorSchema = z.object({
   token: z.string().regex(/^[0-9a-f]{64}$/u),
   startedAt: z.number(),
   epoch: z.string().uuid(),
+  capabilities: z
+    .object({
+      peerDelegation: z.literal(1).optional(),
+    })
+    .optional(),
 });
 export type ClientChannelDescriptor = z.infer<typeof clientChannelDescriptorSchema>;
 export const clientChannelResponseSchema = z.object({

@@ -22,11 +22,13 @@ import {
   REMOTE_IDENTITY_MAX_LENGTH,
   WEB_FOLLOW_PROJECTION_KEYS,
   webToolOutputReferenceSchema,
+  webTurnDiffsRequestSchema,
   type HarnessCommandCatalog,
   type RemotePeerPromptParams,
   type RemoteSessionOperation,
   type SkillsListResult,
 } from "@codexhost/shared-contracts";
+import { ChInteractions } from "./ch-interactions.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { tryGenerateThreadTitle } from "./ch-thread-titles.ts";
@@ -190,6 +192,10 @@ interface Entry {
   peerHarnessIdentity?: { id: string; name: string };
   peerOwnershipAvailable?: boolean;
   peerTreeParent?: string | null;
+  /** True once a non-null delegation parent has been observed, so legacy fallback clears it explicitly. */
+  hadPeerTreeParent?: boolean;
+  /** Fingerprints of catalog projections last confirmed on a retired view, avoiding redundant frames. */
+  retiredCatalogProjections?: Map<string, string>;
   peerInspected?: { view: ChThreadView; epoch: string; revision: number };
   historyError?: { code: string; message: string };
   usageRequest?: {
@@ -213,6 +219,10 @@ export class RemoteSessions {
   private peerArchivedIds = new Map<string, Set<string>>();
   private controls = new Set<StreamSink>();
   private pending = new Map<string, { sessionId: string; cancel(): void }>();
+  private peerInteractions = new Map<
+    string,
+    { realtime: NonNullable<PeerThreadSource["host"]["realtime"]>; interactions: ChInteractions }
+  >();
   private readonly followLifetime = new AbortController();
   private listing: Promise<void> | undefined;
   private archiveRevision = 0;
@@ -250,7 +260,7 @@ export class RemoteSessions {
       onCatalogInspectionChanged: (hostId) => this.handlePeerCatalogInspectionChanged(hostId),
       onSkillsChanged: () => this.handlePeerSkillsChanged(),
       onConnection: (hostId, online) => this.handlePeerConnection(hostId, online),
-      onReset: (hostId, epoch) => this.handlePeerReset(hostId, epoch),
+      onReset: (hostId, epoch, full) => this.handlePeerReset(hostId, epoch, full),
     };
     if (peers) {
       peers.onThreadChanged ??= this.peerHandlers.onThreadChanged;
@@ -310,7 +320,9 @@ export class RemoteSessions {
   private handlePeerConnection(hostId: string, online: boolean): void {
     if (this.closed || online) return;
     this.syncedPeerSources.delete(hostId);
+    this.peerTreeRetryAttempts.delete(hostId);
     this.clearPeerChangeTimer(hostId);
+    this.clearPeerInteractions(hostId);
     const host = this.hosts.get(hostId);
     if (host) host.online = false;
     for (const entry of this.entries.values()) {
@@ -319,21 +331,41 @@ export class RemoteSessions {
     this.publishDraftSummaries(hostId);
     this.syncGroups();
   }
-  private handlePeerReset(hostId: string, epoch: string): void {
+  private handlePeerReset(hostId: string, epoch: string, full: boolean): void {
     if (this.closed) return;
     const synced = this.syncedPeerSources.get(hostId);
-    if (synced && synced.epoch !== epoch) {
+    if (synced && (full || synced.epoch !== epoch)) {
       this.syncedPeerSources.delete(hostId);
     }
+    this.peerTreeRetryAttempts.delete(hostId);
+    const hostEpoch = this.hosts.get(hostId)?.epoch;
+    let epochChanged = hostEpoch !== undefined && hostEpoch !== epoch;
     for (const [id, entry] of this.entries) {
       if (entry.identity.hostId !== hostId) continue;
       if (entry.epoch && entry.epoch !== epoch) {
+        epochChanged = true;
+        const beforeSummary = JSON.stringify(this.summary(id, entry));
         this.clearPending(id);
         this.retireView(entry);
         delete entry.controls;
         delete entry.peerInspected;
+        delete entry.peerTreeParent;
         entry.epoch = epoch;
+        const afterSummary = this.summary(id, entry);
+        if (JSON.stringify(afterSummary) !== beforeSummary) {
+          this.syncPeerCatalogProjections(id, entry, afterSummary);
+          this.events.emit("api-session/added", afterSummary);
+        }
       }
+    }
+    if (full || epochChanged) {
+      this.clearPeerInteractions(hostId);
+      for (const entry of this.entries.values()) {
+        if (entry.identity.hostId === hostId) {
+          entry.view?.log.setProjection("nativeInteractionError", null);
+        }
+      }
+      this.peerResetRevisions.set(hostId, (this.peerResetRevisions.get(hostId) ?? 0) + 1);
     }
   }
   private peerEndpoint(hostId: string): PeerAttachmentEndpoint | undefined {
@@ -572,11 +604,26 @@ export class RemoteSessions {
   >();
   private inFlightPeerSources = new Map<string, PeerThreadSource>();
   private peerChangeTimers = new Map<string, NodeJS.Timeout>();
+  private peerTreeRetryAttempts = new Map<string, number>();
+  private peerResetRevisions = new Map<string, number>();
   private clearPeerChangeTimer(hostId: string): void {
     const timer = this.peerChangeTimers.get(hostId);
     if (!timer) return;
     clearTimeout(timer);
     this.peerChangeTimers.delete(hostId);
+  }
+  private schedulePeerTreeRetry(hostId: string): void {
+    if (this.closed || this.peerChangeTimers.has(hostId)) return;
+    const attempt = this.peerTreeRetryAttempts.get(hostId) ?? 0;
+    this.peerTreeRetryAttempts.set(hostId, attempt + 1);
+    const delay = Math.min(PEER_CATALOG_REFRESH_MIN_INTERVAL_MS * 2 ** attempt, 30_000);
+    const timer = setTimeout(() => {
+      this.peerChangeTimers.delete(hostId);
+      if (this.closed) return;
+      this.queueHostRefresh(hostId);
+    }, delay);
+    timer.unref();
+    this.peerChangeTimers.set(hostId, timer);
   }
   private isPeerSynced(host: RemoteWorkspaceHost, source: PeerThreadSource): boolean {
     const synced = this.syncedPeerSources.get(host.hostId);
@@ -699,6 +746,7 @@ export class RemoteSessions {
           "[remote-sessions] Desktop discovery unavailable. Start codexhost Desktop; if Web uses a different environment, set CODEXHOST_DESKTOP_RUNTIME_DESCRIPTOR to its private desktop-runtime-v1.json path.",
         );
       this.discoveryUnavailable = true;
+      for (const hostId of this.peerInteractions.keys()) this.clearPeerInteractions(hostId);
       for (const entry of this.entries.values()) this.offline(entry);
       for (const host of this.hosts.values()) host.online = false;
       this.syncedPeerSources.clear();
@@ -753,6 +801,9 @@ export class RemoteSessions {
     for (const hostId of [...this.peerArchivedIds.keys()]) {
       if (!this.hosts.has(hostId)) this.peerArchivedIds.delete(hostId);
     }
+    for (const hostId of [...this.peerInteractions.keys()]) {
+      if (!this.hosts.has(hostId)) this.clearPeerInteractions(hostId, true);
+    }
     for (const hostId of [...this.syncedPeerSources.keys()]) {
       const host = this.hosts.get(hostId);
       const peerSource = this.peers?.source(hostId);
@@ -764,9 +815,19 @@ export class RemoteSessions {
       const host = this.hosts.get(hostId);
       if (!host || !host.online || !this.peers?.source(hostId)) {
         this.clearPeerChangeTimer(hostId);
+        this.peerTreeRetryAttempts.delete(hostId);
+      }
+    }
+    for (const hostId of [...this.peerTreeRetryAttempts.keys()]) {
+      const host = this.hosts.get(hostId);
+      if (!host || !host.online || !this.peers?.source(hostId)) {
+        this.peerTreeRetryAttempts.delete(hostId);
       }
     }
     const present = new Set(hosts.filter((host) => host.online).map((host) => host.hostId));
+    for (const hostId of this.peerInteractions.keys()) {
+      if (!present.has(hostId)) this.clearPeerInteractions(hostId);
+    }
     for (const entry of this.entries.values())
       if (!present.has(entry.identity.hostId)) this.offline(entry);
     // Publish updated host states and manifest project folders immediately instead of
@@ -875,6 +936,112 @@ export class RemoteSessions {
     );
     this.syncGroups();
   }
+  private reserveRetiredProjectionSeq(entry: Entry): number | undefined {
+    if (entry.view || entry.viewOrigin === undefined) return undefined;
+    const seq = entry.viewOrigin - 1;
+    entry.viewOrigin = seq + 2;
+    return seq;
+  }
+  private peerCatalogProjectionEntries(
+    entry: Entry,
+    nextSummary: ReturnType<RemoteSessions["summary"]>,
+  ): Array<[string, unknown]> {
+    const entries: Array<[string, unknown]> = [
+      ["title", nextSummary.projections.values.title],
+      ["remoteHost", nextSummary.projections.values.remoteHost],
+      ["nativeDiscovery", nextSummary.projections.values.nativeDiscovery],
+      ["attachmentInput", nextSummary.projections.values.attachmentInput],
+    ];
+    if ("imageLimits" in nextSummary.projections.values) {
+      entries.push(["imageLimits", nextSummary.projections.values.imageLimits]);
+    }
+    if (entry.peerOwnershipAvailable && entry.peerTreeParent !== undefined) {
+      entries.push(["threadTreeParent", entry.peerTreeParent]);
+    } else if (entry.hadPeerTreeParent) {
+      entries.push(["threadTreeParent", null]);
+    }
+    return entries;
+  }
+  private captureCatalogFingerprints(projections: Record<string, unknown>): Map<string, string> {
+    const fingerprints = new Map<string, string>();
+    for (const key of [
+      "title",
+      "remoteHost",
+      "nativeDiscovery",
+      "attachmentInput",
+      "imageLimits",
+      "threadTreeParent",
+    ]) {
+      if (Object.hasOwn(projections, key)) {
+        fingerprints.set(key, JSON.stringify(projections[key]) ?? "undefined");
+      }
+    }
+    return fingerprints;
+  }
+  private syncPeerCatalogProjections(
+    id: string,
+    entry: Entry,
+    nextSummary: ReturnType<RemoteSessions["summary"]>,
+  ): void {
+    const updates = this.peerCatalogProjectionEntries(entry, nextSummary);
+    if (entry.view) {
+      for (const [key, value] of updates) {
+        entry.view.log.setProjection(key, value);
+      }
+      if (entry.peerHarnessIdentity && !entry.controls?.harness) {
+        entry.view.log.setProjection("harnessIdentity", entry.peerHarnessIdentity);
+      }
+      return;
+    }
+    if (entry.viewOrigin === undefined) return;
+    const previous = entry.retiredCatalogProjections ?? new Map<string, string>();
+    const changed: Array<[string, unknown]> = [];
+    const nextFingerprints = new Map(previous);
+    for (const [key, value] of updates) {
+      const fingerprint = JSON.stringify(value) ?? "undefined";
+      if (previous.get(key) !== fingerprint) {
+        changed.push([key, value]);
+        nextFingerprints.set(key, fingerprint);
+      }
+    }
+    entry.retiredCatalogProjections = nextFingerprints;
+    if (changed.length === 0 || this.controls.size === 0) return;
+    // A previously opened Peer Thread retains sequenced browser projections after view
+    // retirement; push only changed catalog projections above its retired sequence watermark.
+    const seq = this.reserveRetiredProjectionSeq(entry);
+    if (seq === undefined) return;
+    for (const [key, value] of changed) {
+      for (const sink of this.controls) {
+        sink.push({ type: "projection", sessionId: id, key, value, seq });
+      }
+    }
+  }
+  private replayPeerControlProjections(sink: StreamSink): void {
+    for (const [id, entry] of this.entries) {
+      if (sink.closed) break;
+      if (!entry.identity.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) continue;
+      if (entry.view) {
+        const seq = Math.max(entry.view.log.lastSeq, 0);
+        for (const [key, value] of this.peerCatalogProjectionEntries(
+          entry,
+          this.summary(id, entry),
+        )) {
+          sink.push({ type: "projection", sessionId: id, key, value, seq });
+        }
+        continue;
+      }
+      if (entry.viewOrigin === undefined) continue;
+      const seq = this.reserveRetiredProjectionSeq(entry);
+      if (seq === undefined) continue;
+      const entries = this.peerCatalogProjectionEntries(entry, this.summary(id, entry));
+      const fingerprints = entry.retiredCatalogProjections ?? new Map<string, string>();
+      for (const [key, value] of entries) {
+        fingerprints.set(key, JSON.stringify(value) ?? "undefined");
+        sink.push({ type: "projection", sessionId: id, key, value, seq });
+      }
+      entry.retiredCatalogProjections = fingerprints;
+    }
+  }
   private async listPeerHost(
     host: RemoteWorkspaceHost,
     source: PeerThreadSource,
@@ -885,6 +1052,18 @@ export class RemoteSessions {
         (entry) => entry.identity.hostId === host.hostId && entry.createdEpoch,
       ),
     );
+    const startGeneration = source.generation;
+    const startResetRevision = this.peerResetRevisions.get(host.hostId) ?? 0;
+    const startHostEpoch = host.epoch;
+    const isCurrentList = () =>
+      !this.closed &&
+      archiveRevision === this.archiveRevision &&
+      this.peers?.source(host.hostId) === source &&
+      source.generation === startGeneration &&
+      (this.peerResetRevisions.get(host.hostId) ?? 0) === startResetRevision &&
+      (startHostEpoch === undefined ||
+        this.hosts.get(host.hostId)?.epoch === undefined ||
+        this.hosts.get(host.hostId)?.epoch === startHostEpoch);
     this.inFlightPeerSources.set(host.hostId, source);
     // Warm plugin metadata/icons in parallel with catalog paging so harness names
     // and sidebar logos are ready as soon as page 1 renders, without blocking list commit.
@@ -912,11 +1091,7 @@ export class RemoteSessions {
     try {
       const listed = await source.listThreads({
         onPage: (partial) => {
-          if (
-            this.closed ||
-            archiveRevision !== this.archiveRevision ||
-            this.peers?.source(host.hostId) !== source
-          ) {
+          if (!isCurrentList()) {
             return;
           }
           const cachedPlugins = source.catalog.cachedList();
@@ -935,6 +1110,13 @@ export class RemoteSessions {
               : undefined;
             const previous = this.entries.get(id);
             const beforeSummary = previous ? JSON.stringify(this.summary(id, previous)) : undefined;
+            if (previous && host.epoch && previous.epoch && previous.epoch !== host.epoch) {
+              this.clearPending(id);
+              this.retireView(previous, source);
+              delete previous.controls;
+              delete previous.peerInspected;
+              delete previous.peerTreeParent;
+            }
             const current: Entry = previous
               ? Object.assign(previous, {
                   row: { ...row, turns: [] },
@@ -953,9 +1135,18 @@ export class RemoteSessions {
                   peerOwnershipAvailable: partial.ownershipAvailable,
                 };
             if (peerHarnessIdentity) current.peerHarnessIdentity = peerHarnessIdentity;
+            if (partial.ownershipAvailable && Object.hasOwn(partial.parents, row.id)) {
+              const nativeParent = partial.parents[row.id];
+              current.peerTreeParent =
+                nativeParent && nativeParent !== row.id
+                  ? remoteSessionId(host.hostId, nativeParent)
+                  : null;
+              if (current.peerTreeParent !== null) current.hadPeerTreeParent = true;
+            }
             this.entries.set(id, current);
             const nextSummary = this.summary(id, current);
             if (beforeSummary !== JSON.stringify(nextSummary)) {
+              this.syncPeerCatalogProjections(id, current, nextSummary);
               this.events.emit("api-session/added", nextSummary);
               published = true;
             }
@@ -968,14 +1159,16 @@ export class RemoteSessions {
         cachedPlugins?.map((plugin) => [plugin.id, plugin.name]),
       );
       harnessNames.set("codex", "Codex");
-      if (
-        this.closed ||
-        archiveRevision !== this.archiveRevision ||
-        this.peers?.source(host.hostId) !== source
-      ) {
+      if (!isCurrentList() || listed.stale) {
         return;
       }
-      this.peerArchivedIds.set(host.hostId, new Set(listed.archivedIds));
+      const prevArchivedIds = this.peerArchivedIds.get(host.hostId);
+      const nextArchivedIds = new Set(listed.archivedIds);
+      if (listed.unarchivedIds) {
+        for (const threadId of listed.unarchivedIds) {
+          nextArchivedIds.delete(threadId);
+        }
+      }
       const found = new Map<string, Entry>();
       for (const row of listed.rows) {
         const id = remoteSessionId(host.hostId, row.id);
@@ -989,11 +1182,19 @@ export class RemoteSessions {
             ? remoteSessionId(host.hostId, nativeParent)
             : null
           : undefined;
+        const explicitlyUnarchived = listed.unarchivedIds?.has(row.id) === true;
+        const retainedBackfill =
+          !explicitlyUnarchived && listed.retainedAncestorIds?.has(row.id) === true;
+        const previousArchived =
+          retainedBackfill &&
+          (this.entries.get(id)?.archived === true || prevArchivedIds?.has(row.id) === true);
+        const archived = !explicitlyUnarchived && (nextArchivedIds.has(row.id) || previousArchived);
+        if (archived) nextArchivedIds.add(row.id);
         found.set(id, {
           identity: { hostId: host.hostId, threadId: row.id },
           row: { ...row, turns: [] },
           online: true,
-          archived: listed.archivedIds.has(row.id),
+          archived,
           ...(host.epoch ? { epoch: host.epoch } : {}),
           configurationRevision: 0,
           peerOwnershipAvailable: listed.ownershipAvailable,
@@ -1001,8 +1202,38 @@ export class RemoteSessions {
           ...(peerTreeParent !== undefined ? { peerTreeParent } : {}),
         });
       }
+      const restoredMissingEntries = new Set<string>();
+      if (listed.unarchivedIds) {
+        for (const threadId of listed.unarchivedIds) {
+          const id = remoteSessionId(host.hostId, threadId);
+          const existing = this.entries.get(id);
+          if (existing?.archived) {
+            existing.archived = false;
+            if (!found.has(id)) restoredMissingEntries.add(id);
+          }
+        }
+      }
+      if (prevArchivedIds) {
+        for (const threadId of prevArchivedIds) {
+          if (listed.unarchivedIds?.has(threadId)) continue;
+          const id = remoteSessionId(host.hostId, threadId);
+          const existing = this.entries.get(id);
+          const listedActive = found.has(id) && !found.get(id)?.archived;
+          if (!listedActive && existing?.archived) {
+            nextArchivedIds.add(threadId);
+          }
+        }
+      }
+      this.peerArchivedIds.set(host.hostId, nextArchivedIds);
       for (const [id, entry] of this.entries) {
         if (entry.identity.hostId === host.hostId && !found.has(id) && !entry.archived) {
+          if (listed.unarchivedIds?.has(entry.identity.threadId)) {
+            if (restoredMissingEntries.has(id) || !entry.online) {
+              entry.online = true;
+              this.events.emit("api-session/added", this.summary(id, entry));
+            }
+            continue;
+          }
           if (
             entry.createdEpoch &&
             !listed.archivedIds.has(entry.identity.threadId) &&
@@ -1046,49 +1277,35 @@ export class RemoteSessions {
         }
         if (entry.peerTreeParent !== undefined) {
           current.peerTreeParent = entry.peerTreeParent;
+          if (entry.peerTreeParent !== null) current.hadPeerTreeParent = true;
         } else {
           delete current.peerTreeParent;
         }
         this.entries.set(id, current);
         delete current.createdEpoch;
         const nextSummary = this.summary(id, current);
-        if (current.view) {
-          current.view.log.setProjection("title", nextSummary.projections.values.title);
-          current.view.log.setProjection("remoteHost", nextSummary.projections.values.remoteHost);
-          current.view.log.setProjection(
-            "nativeDiscovery",
-            nextSummary.projections.values.nativeDiscovery,
-          );
-          current.view.log.setProjection(
-            "attachmentInput",
-            nextSummary.projections.values.attachmentInput,
-          );
-          if ("imageLimits" in nextSummary.projections.values) {
-            current.view.log.setProjection(
-              "imageLimits",
-              nextSummary.projections.values.imageLimits,
-            );
-          }
-          if (current.peerOwnershipAvailable && current.peerTreeParent !== undefined) {
-            current.view.log.setProjection("threadTreeParent", current.peerTreeParent);
-          }
-          if (current.peerHarnessIdentity) {
-            current.view.log.setProjection("harnessIdentity", current.peerHarnessIdentity);
-          }
-        }
-        if (beforeSummary !== JSON.stringify(nextSummary)) {
+        const summaryChanged = beforeSummary !== JSON.stringify(nextSummary);
+        this.syncPeerCatalogProjections(id, current, nextSummary);
+        if (summaryChanged) {
           this.events.emit("api-session/added", nextSummary);
         }
       }
       this.syncArchives();
-      this.syncedPeerSources.set(host.hostId, {
-        source,
-        epoch: host.epoch,
-        listedAt: Date.now(),
-      });
+      if (listed.treeStale) {
+        this.syncedPeerSources.delete(host.hostId);
+        this.schedulePeerTreeRetry(host.hostId);
+      } else {
+        this.peerTreeRetryAttempts.delete(host.hostId);
+        this.syncedPeerSources.set(host.hostId, {
+          source,
+          epoch: host.epoch,
+          listedAt: Date.now(),
+        });
+      }
     } catch {
-      if (this.closed || this.peers?.source(host.hostId) !== source) return;
+      if (!isCurrentList()) return;
       this.syncedPeerSources.delete(host.hostId);
+      this.clearPeerInteractions(host.hostId);
       host.online = false;
       for (const entry of this.entries.values()) {
         if (entry.identity.hostId === host.hostId) this.offline(entry);
@@ -1482,7 +1699,9 @@ export class RemoteSessions {
           ...(harnessIdentity ? { harnessIdentity } : {}),
           ...(entry.peerOwnershipAvailable && entry.peerTreeParent !== undefined
             ? { threadTreeParent: entry.peerTreeParent }
-            : {}),
+            : entry.hadPeerTreeParent
+              ? { threadTreeParent: null }
+              : {}),
           threadReference: this.reference(entry),
           nativeConnection: { state: entry.online ? "connected" : "reconnecting" },
           nativeDiscovery,
@@ -1502,6 +1721,7 @@ export class RemoteSessions {
     if (changed) entry.view?.log.setProjection("queueState", { previewOnly: true, stale: true });
     const id = remoteSessionId(entry.identity.hostId, entry.identity.threadId);
     this.clearPending(id);
+    entry.view?.log.setProjection("nativeInteractionError", null);
     const summary = this.summary(id, entry);
     if (changed && !this.closed) this.events.emit("api-session/added", summary);
     entry.view?.log.setProjection("remoteHost", summary.projections.values.remoteHost);
@@ -1513,12 +1733,38 @@ export class RemoteSessions {
         : "Remote Host offline; reconnect in Desktop.",
     });
   }
+  private interactionsForPeer(hostId: string, source: PeerThreadSource): ChInteractions {
+    const realtime = source.host.realtime;
+    const existing = this.peerInteractions.get(hostId);
+    if (existing && existing.realtime === realtime) return existing.interactions;
+    existing?.interactions.clear();
+    const interactions = new ChInteractions(realtime, this.events, (sessionId, message) => {
+      this.entries.get(sessionId)?.view?.log.setProjection("nativeInteractionError", message);
+    });
+    this.peerInteractions.set(hostId, { realtime, interactions });
+    return interactions;
+  }
+  private clearPeerInteractions(hostId: string, remove = false): void {
+    const existing = this.peerInteractions.get(hostId);
+    if (!existing) return;
+    existing.interactions.clear();
+    if (remove) this.peerInteractions.delete(hostId);
+  }
   private clearPending(id: string): void {
     for (const [key, item] of this.pending)
       if (item.sessionId === id) {
         this.pending.delete(key);
         item.cancel();
       }
+    let hostId = this.entries.get(id)?.identity.hostId;
+    if (!hostId) {
+      try {
+        hostId = remoteSessionIdentity(id)?.hostId;
+      } catch {
+        hostId = undefined;
+      }
+    }
+    if (hostId) this.peerInteractions.get(hostId)?.interactions.clearSession(id);
   }
   async read(id: string, force = false): Promise<ChThreadView> {
     const identity = remoteSessionIdentity(id);
@@ -1678,32 +1924,75 @@ export class RemoteSessions {
     requireCurrent: () => void,
   ): Promise<ChThreadView> {
     const configurationRevision = current.configurationRevision;
+    const startResetRevision = this.peerResetRevisions.get(current.identity.hostId) ?? 0;
     current.reading ??= (async () => {
       try {
         const before = JSON.stringify(this.summary(id, current));
-        let history = source.history(current.identity.threadId, id, current.viewOrigin, {
-          row: current.row,
-          harnessId: viewHarnessId(current),
-          onProjection: this.controlProjectionListener,
-        });
-        try {
-          await history.refresh(force);
-        } catch (error) {
-          if (
-            !(error instanceof RpcError) ||
-            !["host/history-changed", "host/items-replaced"].includes(error.code)
-          ) {
-            throw error;
-          }
-          this.retireView(current, source);
-          history = source.history(current.identity.threadId, id, current.viewOrigin, {
+        const MAX_VIEW_REBUILDS = 4;
+        let history: ChThreadHistory;
+        let refreshForce = force;
+        let rebuilds = 0;
+        let originAdvancedDuringRead = false;
+        for (;;) {
+          const startOrigin = current.viewOrigin;
+          history = source.history(current.identity.threadId, id, startOrigin, {
             row: current.row,
             harnessId: viewHarnessId(current),
             onProjection: this.controlProjectionListener,
           });
-          await history.refresh(true);
+          try {
+            await history.refresh(refreshForce);
+          } catch (error) {
+            if (
+              !(error instanceof RpcError) ||
+              !["host/history-changed", "host/items-replaced"].includes(error.code)
+            ) {
+              throw error;
+            }
+            if (current.view) {
+              this.retireView(current, source);
+            } else {
+              current.viewOrigin = Math.max(current.viewOrigin ?? 0, history.log.lastSeq + 2);
+              source.discard(current.identity.threadId);
+              history.retire();
+            }
+            if (++rebuilds > MAX_VIEW_REBUILDS) {
+              throw new RpcError(
+                "remote/connection-changed",
+                "Remote Thread history changed repeatedly during read",
+              );
+            }
+            refreshForce = true;
+            continue;
+          }
+          requireCurrent();
+          // Retired catalog projections or control reconnect replays may advance `viewOrigin`
+          // while this snapshot is in flight. Rebuild only when the loaded history tail falls
+          // below the reserved floor (`viewOrigin - 1`); if the loaded turns already reached
+          // or exceeded that floor, reuse this snapshot and rebroadcast catalog projections at
+          // `history.log.lastSeq` below.
+          if (
+            current.view !== history &&
+            current.viewOrigin !== undefined &&
+            history.log.lastSeq < current.viewOrigin - 1
+          ) {
+            source.discard(current.identity.threadId);
+            history.retire();
+            if (++rebuilds > MAX_VIEW_REBUILDS) {
+              throw new RpcError(
+                "remote/connection-changed",
+                "Remote Thread sequence watermark advanced repeatedly during history read",
+              );
+            }
+            refreshForce = true;
+            continue;
+          }
+          originAdvancedDuringRead =
+            current.view !== history &&
+            current.viewOrigin !== undefined &&
+            current.viewOrigin !== startOrigin;
+          break;
         }
-        requireCurrent();
         const snapshot = history.ownerSnapshot;
         const snapshotEpoch =
           snapshot?.cursor.epoch ?? this.hosts.get(current.identity.hostId)?.epoch ?? current.epoch;
@@ -1720,6 +2009,7 @@ export class RemoteSessions {
           current.row = { ...snapshot.thread, turns: [] } as ChThread;
         }
         current.view = history;
+        delete current.retiredCatalogProjections;
         current.viewHarnessId = viewHarnessId(current);
 
         const needsInspect =
@@ -1748,7 +2038,13 @@ export class RemoteSessions {
               ])
             : [undefined, undefined];
           requireCurrent();
-          if (configurationRevision !== current.configurationRevision) {
+          if (
+            configurationRevision !== current.configurationRevision ||
+            current.view !== history ||
+            !current.online ||
+            this.peers?.source(current.identity.hostId) !== source ||
+            (this.peerResetRevisions.get(current.identity.hostId) ?? 0) !== startResetRevision
+          ) {
             return current.view ?? history;
           }
           const plugin = plugins?.find((p) => p.id === harnessId);
@@ -1802,19 +2098,27 @@ export class RemoteSessions {
           }
         }
         history.log.setProjection("harnessIdentity", remoteHarnessIdentity(current) ?? null);
+        if (originAdvancedDuringRead && this.controls.size > 0) {
+          const tailSeq = Math.max(history.log.lastSeq, 0);
+          for (const [key, value] of this.peerCatalogProjectionEntries(current, summary)) {
+            for (const sink of this.controls) {
+              sink.push({ type: "projection", sessionId: id, key, value, seq: tailSeq });
+            }
+          }
+        }
         applyRemoteControls(current, history);
         if (current.epoch) this.loadUsage(id, current, history, current.epoch);
-        const requests: PendingRequest[] = (snapshot?.interactions ?? []).flatMap((item) => {
-          const method = typeof item.request.method === "string" ? item.request.method : undefined;
-          const params =
-            item.request.params &&
-            typeof item.request.params === "object" &&
-            !Array.isArray(item.request.params)
-              ? (item.request.params as Record<string, unknown>)
-              : {};
-          return method ? [{ ...item.request, id: item.requestId, method, params }] : [];
-        });
-        this.interactions(id, current, requests);
+        if (
+          snapshot &&
+          !this.closed &&
+          current.online &&
+          current.view === history &&
+          this.peers?.source(current.identity.hostId) === source &&
+          (!current.epoch || current.epoch === snapshot.cursor.epoch) &&
+          (this.peerResetRevisions.get(current.identity.hostId) ?? 0) === startResetRevision
+        ) {
+          this.interactionsForPeer(current.identity.hostId, source).update(snapshot, id);
+        }
         if (JSON.stringify(summary) !== before) this.events.emit("api-session/added", summary);
         this.events.emit("api-session/status", id, summary.running);
         return history;
@@ -1897,6 +2201,7 @@ export class RemoteSessions {
       for (const memberId of updated) {
         if (archived) peerArchived.add(memberId);
         else peerArchived.delete(memberId);
+        source.setArchived(memberId, archived);
         const memberEntry = this.entries.get(remoteSessionId(hostId, memberId));
         if (memberEntry) memberEntry.archived = archived;
       }
@@ -2024,7 +2329,11 @@ export class RemoteSessions {
   }
   private retireView(entry: Entry, peerSource?: PeerThreadSource): void {
     if (!entry.view) return;
-    entry.viewOrigin = entry.view.log.lastSeq + 1;
+    entry.viewOrigin = Math.max(entry.viewOrigin ?? 0, entry.view.log.lastSeq + 2);
+    entry.retiredCatalogProjections = this.captureCatalogFingerprints(entry.view.log.projections);
+    if (typeof entry.view.log.projections.threadTreeParent === "string") {
+      entry.hadPeerTreeParent = true;
+    }
     (peerSource ?? this.peers?.source(entry.identity.hostId))?.discard(entry.identity.threadId);
     entry.view.retire();
     entry.view.log.reconnectFollowers();
@@ -2146,6 +2455,9 @@ export class RemoteSessions {
           ],
         };
       }
+      if (method === "session/search") {
+        return this.search(args, next);
+      }
       const request = requestOf<{
         sessionId?: string;
         address?: { sessionId?: string };
@@ -2186,6 +2498,12 @@ export class RemoteSessions {
             return this.listDraftSkills(draft);
           case "codexhost/threadCommands":
             return this.inspectDraftCommands(draft);
+          case "codexhost/turnDiffs": {
+            const parsed = webTurnDiffsRequestSchema.safeParse(input);
+            if (!parsed.success)
+              throw new RpcError("session/diff-invalid", "Invalid Turn diff request.");
+            throw new RpcError("session/diff-not-found", "This Turn is not loaded.");
+          }
           case "session/selectModel": {
             await draft.select(input, this.draftCatalogLoader(draft));
             const summary = this.draftSummary(draft);
@@ -2220,8 +2538,10 @@ export class RemoteSessions {
               frame !== null &&
               "type" in frame &&
               frame.type === "baseline"
-            )
+            ) {
               this.controls.add(sink);
+              this.replayPeerControlProjections(sink);
+            }
           },
         });
         return true;
@@ -2342,11 +2662,72 @@ export class RemoteSessions {
     }
     return peerSource.inspectThreadCommands(identity.threadId);
   }
+  private async search(
+    args: Record<string, unknown>,
+    next: () => Promise<unknown>,
+  ): Promise<{ items: Array<{ sessionId: string; snippet: string }>; hasMore: boolean }> {
+    const rawQuery = requestOf<{ query?: unknown }>(args).query;
+    const needle = typeof rawQuery === "string" ? rawQuery.toLowerCase() : "";
+    const local = (await next()) as {
+      items?: Array<{ sessionId: string; snippet: string }>;
+      hasMore?: boolean;
+    };
+    const localItems = Array.isArray(local?.items) ? local.items : [];
+    const localHasMore = local?.hasMore === true;
+    const seen = new Set(localItems.map((item) => item.sessionId));
+    const remoteMatches: Array<{ sessionId: string; snippet: string; updatedAt: number }> = [];
+    for (const [id, entry] of this.entries) {
+      if (seen.has(id)) continue;
+      const snippet = threadListTitle({ ...entry.row, id: entry.identity.threadId });
+      if (snippet.toLowerCase().includes(needle)) {
+        remoteMatches.push({ sessionId: id, snippet, updatedAt: entry.row.updatedAt * 1000 });
+      }
+    }
+    for (const draft of this.drafts.values()) {
+      if (draft.canonicalId || seen.has(draft.id)) continue;
+      const values = this.draftSummary(draft).projections.values as Record<string, unknown>;
+      const title = values.title;
+      if (typeof title === "string" && title.trim() && title.toLowerCase().includes(needle)) {
+        remoteMatches.push({ sessionId: draft.id, snippet: title, updatedAt: draft.lastUsed });
+      }
+    }
+    remoteMatches.sort((a, b) => b.updatedAt - a.updatedAt);
+    const limit = 20;
+    if (localItems.length + remoteMatches.length <= limit) {
+      return {
+        items: [
+          ...localItems,
+          ...remoteMatches.map(({ sessionId, snippet }) => ({ sessionId, snippet })),
+        ],
+        hasMore: localHasMore,
+      };
+    }
+    const localQuota = Math.min(
+      localItems.length,
+      Math.max(Math.floor(limit / 2), limit - remoteMatches.length),
+    );
+    const remoteQuota = Math.min(remoteMatches.length, limit - localQuota);
+    return {
+      items: [
+        ...localItems.slice(0, localQuota),
+        ...remoteMatches
+          .slice(0, remoteQuota)
+          .map(({ sessionId, snippet }) => ({ sessionId, snippet })),
+      ],
+      hasMore: true,
+    };
+  }
   private async handle(
     method: string,
     id: string,
     request: Record<string, unknown>,
   ): Promise<unknown> {
+    if (method === "codexhost/turnDiffs") {
+      const parsed = webTurnDiffsRequestSchema.safeParse(request);
+      if (!parsed.success) throw new RpcError("session/diff-invalid", "Invalid Turn diff request.");
+      const view = this.entries.get(id)?.view ?? (await this.read(id));
+      return { diffs: view.turnDiffs(parsed.data.turn, parsed.data.path) };
+    }
     if (method === "codexhost/skills/list") {
       return this.listThreadSkills(id);
     }
@@ -2512,6 +2893,10 @@ export class RemoteSessions {
           void this.startRefresh().catch(() => undefined);
         }
       }
+      if (peerSource) {
+        peerSource.setArchived(identity.threadId, false);
+        this.peerArchivedIds.get(identity.hostId)?.delete(identity.threadId);
+      }
       if (entry) {
         entry.archived = false;
         this.syncArchives();
@@ -2637,6 +3022,13 @@ export class RemoteSessions {
     if (operation.kind === "archive") {
       // Keep the confirmed row for undo even after it leaves the active catalog.
       entry.archived = operation.archived;
+      if (peerSource) {
+        peerSource.setArchived(entry.identity.threadId, operation.archived);
+        const peerArchived = this.peerArchivedIds.get(entry.identity.hostId) ?? new Set<string>();
+        if (operation.archived) peerArchived.add(entry.identity.threadId);
+        else peerArchived.delete(entry.identity.threadId);
+        this.peerArchivedIds.set(entry.identity.hostId, peerArchived);
+      }
       this.syncArchives();
     }
     // A failed read cannot turn an acknowledged mutation into a rejected write.
@@ -2652,6 +3044,8 @@ export class RemoteSessions {
     clearInterval(this.timer);
     for (const timer of this.peerChangeTimers.values()) clearTimeout(timer);
     this.peerChangeTimers.clear();
+    this.peerTreeRetryAttempts.clear();
+    this.peerResetRevisions.clear();
     this.syncedPeerSources.clear();
     this.inFlightPeerSources.clear();
     this.followLifetime.abort();
@@ -2669,6 +3063,8 @@ export class RemoteSessions {
       if (this.peers.onReset === this.peerHandlers.onReset) delete this.peers.onReset;
     }
     for (const id of this.entries.keys()) this.clearPending(id);
+    for (const peer of this.peerInteractions.values()) peer.interactions.clear();
+    this.peerInteractions.clear();
     for (const entry of this.entries.values()) entry.view?.log.reconnectFollowers();
     this.peerArchivedIds.clear();
     this.controls.clear();

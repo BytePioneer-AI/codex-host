@@ -407,6 +407,194 @@ describe("Thread command catalog", () => {
     }
   });
 
+  it("executes static built-in commands immediately via manual typing, command ID, and compact action even when commands.list() stalls", async () => {
+    const fixture = createFixture();
+    const stalled = Promise.withResolvers<HarnessResult<HarnessCommandCatalog>>();
+    try {
+      Object.assign(fixture.adapter, {
+        commandCatalog: { commands: [staticCommand] },
+        liveCommandCatalog: true,
+      });
+      const threadId = await startPiThread(fixture);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const list = vi.fn(() => stalled.promise);
+      const execute = vi.fn(async ({ turnId }: HarnessCommandInvocation) => {
+        queueMicrotask(() => {
+          session.emitEvent({ type: "turn.started", turnId });
+          session.emitEvent({
+            type: "turn.completed",
+            turnId,
+            outcome: { status: "succeeded" },
+            ephemeral: true,
+          });
+        });
+        return { ok: true as const, value: { turnId } };
+      });
+      session.commands = {
+        staticCatalog: { commands: [staticCommand] },
+        list,
+        execute,
+      };
+
+      // 1. Manually typed /compact bypasses stalled commands.list().
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "/compact" }] },
+      });
+      const typedResponse = await fixture.collector.waitFor((message) => requestId(message, 2));
+      expect(typedResponse).toMatchObject({ result: { turn: {} } });
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(list).not.toHaveBeenCalled();
+      const firstTurnId = (typedResponse as { result: { turn: { id: string } } }).result.turn.id;
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", firstTurnId),
+      );
+
+      // 2. Desktop thread/compact/start bypasses stalled commands.list().
+      writeRequest(fixture.desktopInput, {
+        id: 3,
+        method: "thread/compact/start",
+        params: { threadId },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 3)),
+      ).resolves.toMatchObject({ result: {} });
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(list).not.toHaveBeenCalled();
+      const secondTurnId = execute.mock.calls[1]?.[0]?.turnId;
+      if (!secondTurnId) throw new Error("Missing second turnId");
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", secondTurnId),
+      );
+
+      // 3. Direct command ID execution bypasses stalled commands.list().
+      writeRequest(fixture.desktopInput, {
+        id: 4,
+        method: "codexhost/thread/command/execute",
+        params: { threadId, commandId: staticCommand.id },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 4)),
+      ).resolves.toMatchObject({ result: { accepted: true } });
+      expect(execute).toHaveBeenCalledTimes(3);
+      expect(list).not.toHaveBeenCalled();
+      const thirdTurnId = execute.mock.calls[2]?.[0]?.turnId;
+      if (thirdTurnId) {
+        await fixture.collector.waitFor((message) =>
+          turnEvent(message, "turn/completed", thirdTurnId),
+        );
+      }
+    } finally {
+      stalled.resolve({ ok: true, value: { commands: [staticCommand], source: "live" } });
+      await stopFixture(fixture);
+    }
+  });
+
+  it("does not fast-path mutable adapter.commandCatalog commands when session.commands omits staticCatalog (Kimi semantics)", async () => {
+    const fixture = createFixture();
+    try {
+      // Simulate another Session overwriting adapter.commandCatalog with /review.
+      Object.assign(fixture.adapter, {
+        commandCatalog: { commands: [staticCommand, liveCommand] },
+      });
+      const threadId = await startPiThread(fixture);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const list = vi.fn(async () => ({
+        ok: true as const,
+        value: { commands: [staticCommand] },
+      }));
+      const execute = vi.fn(async ({ turnId }: HarnessCommandInvocation) => ({
+        ok: true as const,
+        value: { turnId },
+      }));
+      // Session does NOT declare immutable staticCatalog, so Host must consult list().
+      session.commands = { list, execute };
+
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "/review PR 42" }] },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 2)),
+      ).resolves.toMatchObject({ error: { code: -32078 } });
+
+      writeRequest(fixture.desktopInput, {
+        id: 3,
+        method: "codexhost/thread/command/execute",
+        params: { threadId, commandId: liveCommand.id, arguments: { text: "PR 42" } },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 3)),
+      ).resolves.toMatchObject({ error: { code: -32078 } });
+
+      expect(list).toHaveBeenCalledTimes(2);
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("treats a built-ins-only live catalog marked source=live as loaded for menu inspection and manual typing", async () => {
+    const fixture = createFixture();
+    try {
+      Object.assign(fixture.adapter, {
+        commandCatalog: { commands: [staticCommand] },
+        liveCommandCatalog: true,
+      });
+      const threadId = await startPiThread(fixture);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const execute = vi.fn(async ({ turnId }: HarnessCommandInvocation) => ({
+        ok: true as const,
+        value: { turnId },
+      }));
+      session.commands = {
+        list: async () => ({
+          ok: true,
+          value: { commands: [staticCommand], source: "live" },
+        }),
+        execute,
+      };
+      const startTurn = vi.spyOn(session, "execute");
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "codexhost/thread/commands/inspect",
+        params: { threadId },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 2)),
+      ).resolves.toMatchObject({
+        result: { commands: [staticCommand], source: "live" },
+      });
+      writeRequest(fixture.desktopInput, {
+        id: 3,
+        method: "codexhost/harness/commands/inspect",
+        params: { harnessId: "pi", cwd: "/synthetic" },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 3)),
+      ).resolves.toMatchObject({
+        result: { commands: [staticCommand], source: "live" },
+      });
+      writeRequest(fixture.desktopInput, {
+        id: 4,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "/lead-delegation hi" }] },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 4)),
+      ).resolves.toMatchObject({ error: { code: -32078 } });
+      expect(startTurn).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("marks a Thread catalog static until its Session reports live commands", async () => {
     const fixture = createFixture();
     try {

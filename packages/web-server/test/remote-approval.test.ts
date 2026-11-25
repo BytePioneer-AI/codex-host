@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { remoteApprovalPresentation } from "../src/remote-approval.ts";
-import { canReorderLocalWorkspaces } from "@deepseek-ai/dsh-client-ui-workspace/src/client/rows/workspace-reorder.ts";
+import { canReorderWorkspaces } from "@deepseek-ai/dsh-client-ui-workspace/src/client/rows/workspace-reorder.ts";
 
 it("presents command and file approvals without private routing fields", () => {
   const command = remoteApprovalPresentation({
@@ -32,21 +32,45 @@ it("presents command and file approvals without private routing fields", () => {
   assert.doesNotMatch(file.reason, /private-thread/);
 });
 
-it("never treats a remote workspace as a local reorder source or destination", () => {
+it("allows mixed local and remote workspace reordering while rejecting invalid targets", () => {
   const rows = [
     { workspaceId: "a" },
     { workspaceId: "b" },
     { workspaceId: "mac", remote: { hostId: "mac" } },
     { workspaceId: "other", remote: { hostId: "other" } },
+    { workspaceId: "sectioned" },
+    { workspaceId: "child" },
   ];
-  assert.equal(canReorderLocalWorkspaces(rows, "a", "b"), true);
-  for (const pair of [
+  const context = {
+    sectionOf: new Map([["sectioned", "sec-1"]]),
+    parents: new Map<string, string | undefined>([
+      ["a", undefined],
+      ["b", undefined],
+      ["mac", undefined],
+      ["other", undefined],
+      ["sectioned", undefined],
+      ["child", "a"],
+    ]),
+  };
+  for (const [source, target] of [
+    ["a", "b"],
     ["a", "mac"],
     ["mac", "a"],
     ["mac", "other"],
+  ]) {
+    assert.equal(canReorderWorkspaces(rows, source, target, context), true);
+  }
+  for (const [source, target] of [
+    ["a", "a"],
     ["missing", "a"],
-  ])
-    assert.equal(canReorderLocalWorkspaces(rows, pair[0] ?? "", pair[1]), false);
+    ["a", "missing"],
+    ["sectioned", "a"],
+    ["a", "sectioned"],
+    ["child", "mac"],
+    ["a", "child"],
+  ]) {
+    assert.equal(canReorderWorkspaces(rows, source, target, context), false);
+  }
 });
 
 it("uses the matching pending file-change item when approval params omit paths", () => {

@@ -477,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "codexhost-platform"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "libproc",
  "nix",
@@ -494,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "codexhost-shell"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "codexhost-platform",
  "getrandom 0.3.4",

@@ -92,7 +92,7 @@ import { PinnedSection } from "./PinnedSection.tsx";
 import { SessionListError } from "./SessionListError.tsx";
 import { SessionListExpansion } from "./SessionListExpansion.tsx";
 import { SectionHeading } from "./SectionHeading.tsx";
-import { HostScopeFilter, HostScopeTabBar } from "./HostScopeFilter.tsx";
+import { HostScopeTabBar } from "./HostScopeFilter.tsx";
 import {
   APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT,
   ensureWorkspaceVisibleInHostScope,
@@ -412,8 +412,6 @@ type SessionTreeProps = Pick<
     revealSessionId?: SessionId | undefined;
     /** Acknowledge that the chosen Session row has been revealed. */
     onSessionRevealed: (sessionId: SessionId) => void;
-    /** Optional host/workspace scope filter control mounted in the section header. */
-    hostScopeFilterControl?: ReactNode;
     /** Whether the host/workspace scope filter is actively narrowing visible rows. */
     hostScopeFiltered?: boolean;
     /** Whether the effective host scope is narrowed to one specific remote host. */
@@ -491,7 +489,6 @@ function SessionTree({
   onSessionRevealed,
   shortcuts,
   loadMoreSessions,
-  hostScopeFilterControl,
   hostScopeFiltered = false,
   singleRemoteHostScoped = false,
   onResetHostScope,
@@ -1227,7 +1224,6 @@ function SessionTree({
               setSectionExpanded(WORKSPACES_SECTION_KEY, !workspacesSectionExpanded);
             }}
             rowKey={`section:${WORKSPACES_SECTION_KEY}`}
-            trailing={hostScopeFilterControl}
           />
         )}
         {groupRows}
@@ -1321,7 +1317,6 @@ function FlatList({
   onSessionRevealed,
   renderSlot,
   loadMoreSessions,
-  hostScopeFilterControl,
   hostScopeFiltered = false,
   singleRemoteHostScoped = false,
   onResetHostScope,
@@ -1344,7 +1339,6 @@ function FlatList({
   | "nativeSections"
   | "onLeaveArchivedOnly"
   | "loadMoreSessions"
-  | "hostScopeFilterControl"
   | "hostScopeFiltered"
   | "singleRemoteHostScoped"
   | "onResetHostScope"
@@ -1439,10 +1433,8 @@ function FlatList({
           setSectionExpanded={setSectionExpanded}
           t={t}
         />
-        {(pinnedRows.length > 0 ||
-          nativeSections.length > 0 ||
-          hostScopeFilterControl !== undefined) && (
-          <SectionHeading label={t("section.sessions")} trailing={hostScopeFilterControl} />
+        {(pinnedRows.length > 0 || nativeSections.length > 0) && (
+          <SectionHeading label={t("section.sessions")} />
         )}
         {rows.length === 0 &&
           pinnedRows.length === 0 &&
@@ -2096,14 +2088,6 @@ function WorkspaceBrowserContent({
     () => (hostScopeFiltered ? JSON.stringify(effectiveHostScopeFilter) : "all"),
     [hostScopeFiltered, effectiveHostScopeFilter],
   );
-  const hostScopeFilterControl = hasRemote ? (
-    <HostScopeFilter
-      workspaces={orderedWorkspaces}
-      state={effectiveHostScopeFilter}
-      onChange={updateHostScopeFilter}
-      t={t}
-    />
-  ) : undefined;
   const openAddRemoteWorkspace = (): void => {
     const selectedRemoteHostId =
       effectiveHostScopeFilter.selectedHost !== "all" &&
@@ -2625,7 +2609,6 @@ function WorkspaceBrowserContent({
               setSectionExpanded={actions.setSectionExpanded}
               revealSessionId={revealSessionId}
               onSessionRevealed={acknowledgeSessionReveal}
-              hostScopeFilterControl={hostScopeFilterControl}
               hostScopeFiltered={hostScopeFiltered}
               singleRemoteHostScoped={singleRemoteHostScoped}
               onResetHostScope={resetHostScope}
@@ -2660,7 +2643,6 @@ function WorkspaceBrowserContent({
               insertWorkspaceBefore={insertWorkspaceBefore}
               revealSessionId={revealSessionId}
               onSessionRevealed={acknowledgeSessionReveal}
-              hostScopeFilterControl={hostScopeFilterControl}
               hostScopeFiltered={hostScopeFiltered}
               singleRemoteHostScoped={singleRemoteHostScoped}
               onResetHostScope={resetHostScope}

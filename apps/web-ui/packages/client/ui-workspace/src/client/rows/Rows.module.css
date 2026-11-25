@@ -26,73 +26,66 @@
   font-size: 10.5px;
 }
 .hostBadge[data-color="blue"],
-.hostRail[data-color="blue"],
 .hoverHostDot[data-color="blue"],
 .remoteFolderGlobe[data-color="blue"] {
   --ch-peer-dot-color: #3b76cc;
 }
 .hostBadge[data-color="purple"],
-.hostRail[data-color="purple"],
 .hoverHostDot[data-color="purple"],
 .remoteFolderGlobe[data-color="purple"] {
   --ch-peer-dot-color: #7460cc;
 }
 .hostBadge[data-color="cyan"],
-.hostRail[data-color="cyan"],
 .hoverHostDot[data-color="cyan"],
 .remoteFolderGlobe[data-color="cyan"] {
   --ch-peer-dot-color: #0e8fa8;
 }
 .hostBadge[data-color="green"],
-.hostRail[data-color="green"],
 .hoverHostDot[data-color="green"],
 .remoteFolderGlobe[data-color="green"] {
   --ch-peer-dot-color: #2f8c70;
 }
 .hostBadge[data-color="amber"],
-.hostRail[data-color="amber"],
 .hoverHostDot[data-color="amber"],
 .remoteFolderGlobe[data-color="amber"] {
   --ch-peer-dot-color: #c27803;
 }
 .hostBadge[data-color="rose"],
-.hostRail[data-color="rose"],
 .hoverHostDot[data-color="rose"],
 .remoteFolderGlobe[data-color="rose"] {
   --ch-peer-dot-color: #c94a6a;
 }
 .hostBadge[data-color="slate"],
-.hostRail[data-color="slate"],
 .hoverHostDot[data-color="slate"],
 .remoteFolderGlobe[data-color="slate"] {
   --ch-peer-dot-color: #64748b;
 }
 :global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .hoverHostDot, .remoteFolderGlobe)[data-color="blue"] {
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="blue"] {
   --ch-peer-dot-color: #7bb0f8;
 }
 :global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .hoverHostDot, .remoteFolderGlobe)[data-color="purple"] {
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="purple"] {
   --ch-peer-dot-color: #a899f2;
 }
 :global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .hoverHostDot, .remoteFolderGlobe)[data-color="cyan"] {
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="cyan"] {
   --ch-peer-dot-color: #63c5da;
 }
 :global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .hoverHostDot, .remoteFolderGlobe)[data-color="green"] {
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="green"] {
   --ch-peer-dot-color: #6ec4a7;
 }
 :global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .hoverHostDot, .remoteFolderGlobe)[data-color="amber"] {
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="amber"] {
   --ch-peer-dot-color: #e0ae58;
 }
 :global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .hoverHostDot, .remoteFolderGlobe)[data-color="rose"] {
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="rose"] {
   --ch-peer-dot-color: #e08298;
 }
 :global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .hoverHostDot, .remoteFolderGlobe)[data-color="slate"] {
+  :is(.hostBadge, .hoverHostDot, .remoteFolderGlobe)[data-color="slate"] {
   --ch-peer-dot-color: #94a3b8;
 }
 .hostBadge[data-state="connecting"] {
@@ -141,7 +134,6 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .hostBadge[data-state="connecting"] .hostDot,
-  .hostRail[data-state="connecting"],
   .remoteHostStatusDot[data-state="connecting"] {
     animation: none;
   }
@@ -161,6 +153,19 @@
   background: var(--dsh-row-surface);
   color: var(--ch-peer-dot-color);
   pointer-events: none;
+}
+
+.remoteSessionGlobe {
+  right: -4px;
+  bottom: 0;
+  width: 10px;
+  height: 10px;
+  z-index: 1;
+}
+
+.remoteSessionGlobe svg {
+  width: 9px;
+  height: 9px;
 }
 
 .remoteFolderGlobe:is(
@@ -215,35 +220,6 @@
 .remoteHostStatusDot[data-state="connecting"] {
   background: var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-warn-primary, #d97706));
   opacity: 0.95;
-  animation: hostDotPulse 1.6s ease-in-out infinite;
-}
-
-.hostRail {
-  --ch-peer-dot-color: #3b76cc;
-  position: absolute;
-  inset-inline-start: 2px;
-  top: 8px;
-  width: 2px;
-  height: 16px;
-  border-radius: 2px;
-  background: var(--dsw-alias-label-tertiary);
-  opacity: 0.35;
-  pointer-events: none;
-}
-
-.hostRailWorkspace {
-  top: 8px;
-  height: 18px;
-}
-
-.hostRail[data-state="connected"] {
-  background: var(--ch-peer-dot-color);
-  opacity: 0.78;
-}
-
-.hostRail[data-state="connecting"] {
-  background: var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-warn-primary, #c27803));
-  opacity: 0.85;
   animation: hostDotPulse 1.6s ease-in-out infinite;
 }
 
@@ -773,14 +749,6 @@
 /* Frame phone layout only: touch laptops and desktop search keep their rules. */
 :global([data-phone-drawer]) .sessionRow {
   min-height: 44px;
-}
-
-:global([data-phone-drawer]) .sessionRow > .hostRail {
-  top: 14px;
-}
-
-:global([data-phone-drawer]) .projectRow > .hostRailWorkspace {
-  top: 13px;
 }
 
 /* Keep a collapsed Thread's title and summary inside one phone-height row. */

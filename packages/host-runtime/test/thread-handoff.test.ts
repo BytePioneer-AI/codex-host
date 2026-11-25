@@ -1,4 +1,10 @@
+import type { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { PassThrough } from "node:stream";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
+import { MappingStore } from "@codexhost/mapping-store";
 import type { JsonObject } from "@codexhost/protocol-core";
 import {
   REASONING_TRANSCRIPT_COMMAND,
@@ -10,9 +16,12 @@ import {
 } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { AppServerHost } from "../src/app-server-host.js";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
 import { ClientChannelHost } from "../src/client-channel-host.js";
 import { isSlashCommandInput, withInjectedText } from "../src/external-thread-side-chat.js";
+import { SharedThreadBridge } from "../src/shared-thread-bridge.js";
+import { SharedThreadOwner } from "../src/shared-thread-owner.js";
 import {
   MAX_HANDOFF_BYTES,
   buildThreadHandoffPackage,
@@ -21,6 +30,7 @@ import {
   utf8ByteLength,
 } from "../src/thread-handoff.js";
 import {
+  FakeOfficialProcess,
   completePiTurn,
   createFixture,
   requestId,
@@ -684,5 +694,140 @@ describe("codexhost/thread/handoff host routing and dual-channel injection", () 
     });
     const clientSnap = await clientHost.clientSnapshot("official-handoff-1");
     expect(clientSnap.handoff).toEqual(codexResult.handoff);
+  });
+
+  it("announces official handoff thread/started and exposes official handoff metadata across SharedThreadBridge", async () => {
+    const sharedDir = mkdtempSync(path.join(tmpdir(), "shared-handoff-owner-"));
+    const owner = new SharedThreadOwner();
+    const sharedPiAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const sharedOfficial = new FakeOfficialProcess();
+    const sharedOfficialState = {
+      threads: new Map<string, JsonObject>(),
+      injected: [] as Array<{ threadId: string; items: unknown }>,
+      renamed: [] as Array<{ threadId: string; name: string }>,
+      deleted: [] as string[],
+      startedParams: [] as JsonObject[],
+      counter: 0,
+    };
+    attachOfficialResponder(sharedOfficial, sharedOfficialState);
+    const sharedHost = new AppServerHost({
+      stockCodexPath: "/unused",
+      arguments: [],
+      externalOnly: true,
+      environment: {
+        HOME: sharedDir,
+        CODEX_HOME: path.join(sharedDir, "codex"),
+        CODEXHOST_DATA_DIR: sharedDir,
+      },
+      desktopInput: owner.input,
+      desktopOutput: owner.output,
+      diagnosticOutput: new PassThrough(),
+      mappingStore: new MappingStore({ directory: sharedDir }),
+      externalAdapters: new Map([["pi", sharedPiAdapter]]),
+      spawnOfficial: (() => sharedOfficial) as unknown as typeof spawn,
+      officialCloseTimeoutMs: 50,
+    });
+    const sharedRun = sharedHost.run();
+    cleanups.push(async () => {
+      sharedHost.close();
+      await sharedRun;
+      owner.close();
+      owner.output.end();
+      rmSync(sharedDir, { recursive: true, force: true });
+    });
+
+    let allowConnect = true;
+    const bridge = new SharedThreadBridge({
+      connect: async () => (allowConnect ? owner.connect() : null),
+      delegateCreates: true,
+      diagnose: () => undefined,
+    });
+    const gui = createFixture({ sharedThreads: bridge });
+    cleanups.push(() => stopFixture(gui));
+
+    const guiOfficialReads: JsonObject[] = [];
+    let guiBuf = "";
+    gui.official.stdin.on("data", (chunk: Buffer) => {
+      guiBuf += chunk.toString();
+      let nl: number;
+      while ((nl = guiBuf.indexOf("\n")) >= 0) {
+        const msg = JSON.parse(guiBuf.slice(0, nl)) as JsonObject;
+        guiBuf = guiBuf.slice(nl + 1);
+        if (msg.method === "thread/read") guiOfficialReads.push(msg);
+        if (msg.id !== undefined) {
+          gui.official.stdout.write(
+            `${JSON.stringify({ id: msg.id, result: { thread: { id: (msg.params as JsonObject | undefined)?.threadId ?? "official" } } })}\n`,
+          );
+        }
+      }
+    });
+
+    // Create a shared external Pi thread through the Desktop GUI and complete one turn.
+    const sourceId = await startExternalThread(gui, "codexhost/pi-native", 1, {
+      historyMode: "paginated",
+    });
+    const turnStart = await callDesktop(gui, 2, "turn/start", {
+      threadId: sourceId,
+      input: [{ type: "text", text: "Summarize shared state" }],
+    });
+    const turnId = ((turnStart.result as JsonObject).turn as JsonObject).id as string;
+    await gui.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+    const piSession = sharedPiAdapter.sessions[0];
+    if (!piSession) throw new Error("Expected shared Pi session");
+    piSession.appendText("Shared state ready");
+    piSession.succeedTurn();
+    await gui.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+
+    // Hand off External -> Official Codex via Shared Host.
+    const handoffReply = await callDesktop(gui, 3, THREAD_HANDOFF_METHOD, {
+      sourceThreadId: sourceId,
+      targetHarnessId: "codex",
+      targetModel: "gpt-5.4",
+    });
+    const handoffResult = threadHandoffResultSchema.parse(handoffReply.result);
+    expect(handoffResult.threadId).toBe("official-handoff-1");
+
+    // Desktop GUI must receive thread/started for the new official thread so sidebar opens it.
+    const startedEvent = await gui.collector.waitFor(
+      (message) =>
+        message.method === "thread/started" &&
+        ((message.params as JsonObject | undefined)?.thread as JsonObject | undefined)?.id ===
+          handoffResult.threadId,
+    );
+    expect(((startedEvent.params as JsonObject).thread as JsonObject).modelProvider).toBe("openai");
+
+    // The official Codex thread must NOT be misclassified as a shared external thread.
+    expect(bridge.knowsTreeOwner(handoffResult.threadId)).toBe(false);
+    await callDesktop(gui, 4, "thread/read", {
+      threadId: handoffResult.threadId,
+      includeTurns: false,
+    });
+    expect(guiOfficialReads.map((m) => (m.params as JsonObject | undefined)?.threadId)).toContain(
+      handoffResult.threadId,
+    );
+
+    // Inspecting the official thread on GUI (separate MappingStore) must retrieve handoff from Shared Host without waking GUI official Codex.
+    const guiWriteSpy = vi.fn();
+    gui.official.stdin.on("data", guiWriteSpy);
+    const inspected = await callDesktop(gui, 5, "codexhost/thread/inspect", {
+      threadId: handoffResult.threadId,
+    });
+    expect(threadInspectionSchema.parse(inspected.result)).toEqual({
+      owner: "codex",
+      locked: true,
+      handoff: handoffResult.handoff,
+    });
+    expect(guiWriteSpy).not.toHaveBeenCalled();
+
+    // If Shared Host goes offline, official inspect degrades gracefully without failing.
+    allowConnect = false;
+    bridge.close();
+    const offlineInspected = await callDesktop(gui, 6, "codexhost/thread/inspect", {
+      threadId: handoffResult.threadId,
+    });
+    expect(threadInspectionSchema.parse(offlineInspected.result)).toEqual({
+      owner: "codex",
+      locked: true,
+    });
   });
 });

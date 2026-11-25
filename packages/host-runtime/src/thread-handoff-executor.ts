@@ -126,7 +126,7 @@ export type ThreadHandoffExecutionResult =
       ok: true;
       result: ThreadHandoffResult;
       externalStartedThread?: JsonObject;
-      officialStartedThreadId?: string;
+      officialStartedThread?: JsonObject;
     };
 
 export interface ExecuteThreadHandoffInput {
@@ -358,7 +358,7 @@ async function createOfficialHandoffTarget(input: {
   const startedResult = isRecord(started.result) ? started.result : null;
   const thread = startedResult && isRecord(startedResult.thread) ? startedResult.thread : null;
   const newThreadId = thread ? nonEmptyString(thread.id) : undefined;
-  if (!newThreadId || newThreadId === input.sourceThreadId) {
+  if (!thread || !newThreadId || newThreadId === input.sourceThreadId) {
     return {
       ok: false,
       error: { code: -32081, message: "Codex did not return a distinct handoff Thread ID" },
@@ -395,10 +395,14 @@ async function createOfficialHandoffTarget(input: {
         .requestOfficial("thread/name/set", { threadId: newThreadId, name: input.title })
         .catch(() => undefined);
     }
+    const officialStartedThread: JsonObject = {
+      ...thread,
+      ...(input.title ? { name: input.title } : {}),
+    };
     return {
       ok: true,
       result: threadHandoffResultSchema.parse({ threadId: parsedTargetId, handoff: metadata }),
-      officialStartedThreadId: newThreadId,
+      officialStartedThread,
     };
   } catch (error) {
     await input.repository.removeThreadHandoff(newThreadId).catch(() => undefined);

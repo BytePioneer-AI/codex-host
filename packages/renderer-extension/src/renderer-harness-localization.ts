@@ -154,10 +154,16 @@ export function formatRendererHandoffTurnsSummary(
     if (input.omittedTurns > 0) {
       return `已携带 ${input.includedCount} / ${input.totalTurns} 轮上下文（已省略 ${input.omittedTurns} 轮，截至第 ${input.boundaryTurnNumber} 轮）`;
     }
-    return `已携带全部 ${input.includedCount} / ${input.totalTurns} 轮上下文`;
+    if (input.boundaryTurnNumber < input.totalTurns) {
+      return `已携带前 ${input.boundaryTurnNumber} / ${input.totalTurns} 轮上下文`;
+    }
+    return `已携带全部 ${input.totalTurns} 轮上下文`;
   }
   if (input.omittedTurns > 0) {
     return `Carried ${input.includedCount} of ${input.totalTurns} turns (${input.omittedTurns} omitted, up to turn ${input.boundaryTurnNumber})`;
   }
-  return `Carried all ${input.includedCount} of ${input.totalTurns} turns`;
+  if (input.boundaryTurnNumber < input.totalTurns) {
+    return `Carried first ${input.boundaryTurnNumber} of ${input.totalTurns} turns`;
+  }
+  return `Carried all ${input.totalTurns} turns`;
 }

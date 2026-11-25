@@ -18,6 +18,7 @@ import {
   HANDOFF_POPOVER_ATTRIBUTE,
   installRendererHandoffControl,
 } from "../src/renderer-handoff-control.js";
+import { formatRendererHandoffTurnsSummary } from "../src/renderer-harness-localization.js";
 import {
   THREAD_HANDOFF_METHOD,
   createRendererModelClient,
@@ -452,5 +453,58 @@ describe("installRendererHandoffControl", () => {
 
     control.dispose();
     expect(document.querySelector(`[${HANDOFF_POPOVER_ATTRIBUTE}]`)).toBeNull();
+  });
+
+  it("formats full, prefix-boundary, and omitted turn summaries accurately in zh-CN and en", () => {
+    expect(
+      formatRendererHandoffTurnsSummary("zh-CN", {
+        includedCount: 5,
+        totalTurns: 5,
+        omittedTurns: 0,
+        boundaryTurnNumber: 5,
+      }),
+    ).toBe("已携带全部 5 轮上下文");
+    expect(
+      formatRendererHandoffTurnsSummary("en", {
+        includedCount: 5,
+        totalTurns: 5,
+        omittedTurns: 0,
+        boundaryTurnNumber: 5,
+      }),
+    ).toBe("Carried all 5 turns");
+
+    expect(
+      formatRendererHandoffTurnsSummary("zh-CN", {
+        includedCount: 3,
+        totalTurns: 5,
+        omittedTurns: 0,
+        boundaryTurnNumber: 3,
+      }),
+    ).toBe("已携带前 3 / 5 轮上下文");
+    expect(
+      formatRendererHandoffTurnsSummary("en", {
+        includedCount: 3,
+        totalTurns: 5,
+        omittedTurns: 0,
+        boundaryTurnNumber: 3,
+      }),
+    ).toBe("Carried first 3 of 5 turns");
+
+    expect(
+      formatRendererHandoffTurnsSummary("zh-CN", {
+        includedCount: 3,
+        totalTurns: 5,
+        omittedTurns: 2,
+        boundaryTurnNumber: 4,
+      }),
+    ).toBe("已携带 3 / 5 轮上下文（已省略 2 轮，截至第 4 轮）");
+    expect(
+      formatRendererHandoffTurnsSummary("en", {
+        includedCount: 3,
+        totalTurns: 5,
+        omittedTurns: 2,
+        boundaryTurnNumber: 4,
+      }),
+    ).toBe("Carried 3 of 5 turns (2 omitted, up to turn 4)");
   });
 });

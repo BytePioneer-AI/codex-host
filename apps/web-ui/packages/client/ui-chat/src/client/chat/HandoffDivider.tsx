@@ -48,10 +48,14 @@ export const HandoffDivider = memo(function HandoffDivider({
           omitted: handoff.omittedTurns,
           boundary: handoff.boundaryTurnNumber,
         })
-      : t("handoff.divider.turnsAll", {
-          included: includedCount > 0 ? includedCount : handoff.totalTurns,
-          boundary: handoff.boundaryTurnNumber,
-        });
+      : handoff.boundaryTurnNumber < handoff.totalTurns
+        ? t("handoff.divider.turnsPrefix", {
+            boundary: handoff.boundaryTurnNumber,
+            total: handoff.totalTurns,
+          })
+        : t("handoff.divider.turnsAll", {
+            total: handoff.totalTurns,
+          });
   const preview = handoff.preview.trim();
 
   return (

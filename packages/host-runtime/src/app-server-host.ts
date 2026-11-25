@@ -4148,7 +4148,24 @@ export class AppServerHost {
       resolution.kind === "official" ? null : await this.#threadUsage(resolution.thread);
     const sessionCatalog =
       resolution.kind === "external" ? resolution.thread.session.modelCatalog?.() : undefined;
-    const handoff = (await this.#repository.getThreadHandoff(params.data.threadId)) ?? undefined;
+    let handoff = (await this.#repository.getThreadHandoff(params.data.threadId)) ?? undefined;
+    if (
+      !handoff &&
+      resolution.kind === "official" &&
+      this.#options.sharedThreads?.options.delegateCreates
+    ) {
+      try {
+        const sharedReply = await this.#options.sharedThreads.request("codexhost/thread/inspect", {
+          threadId: params.data.threadId,
+        });
+        const sharedInspection = threadInspectionSchema.safeParse(sharedReply.result);
+        if (sharedInspection.success && sharedInspection.data.handoff) {
+          handoff = sharedInspection.data.handoff;
+        }
+      } catch (error) {
+        this.#diagnose(error);
+      }
+    }
     const inspection = threadInspectionSchema.parse(
       resolution.kind === "official"
         ? {
@@ -5366,8 +5383,15 @@ export class AppServerHost {
     );
     if (execution.externalStartedThread) {
       await this.#notifyExternalThreadStarted(execution.externalStartedThread);
-    } else if (execution.officialStartedThreadId) {
-      this.clientEvents.changed(execution.officialStartedThreadId, "thread/start");
+    } else if (execution.officialStartedThread) {
+      this.clientEvents.changed(execution.result.threadId, "thread/start");
+      if (this.#options.externalOnly) {
+        await this.#writer.json({
+          method: "thread/started",
+          emittedAtMs: Date.now(),
+          params: { thread: { ...execution.officialStartedThread, turns: [] } },
+        });
+      }
     }
   }
 

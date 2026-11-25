@@ -1017,14 +1017,14 @@ describe("External Thread sections through AppServerHost", () => {
 
   it("reads back an unacknowledged native-only move without resending it", async () => {
     const fixture = createFixture();
-    const submitted = Promise.withResolvers<void>();
+    const submitted = Promise.withResolvers<undefined>();
     const native = serveOfficialSections(
       fixture,
       [],
       { Research: ["N1"], Review: ["N2"] },
       {
         loseMoveReply: () => {
-          submitted.resolve();
+          submitted.resolve(undefined);
           return true;
         },
       },
@@ -1055,14 +1055,14 @@ describe("External Thread sections through AppServerHost", () => {
     "reads back a timed-out native removal without replaying it (committed: %s)",
     async (committed) => {
       const fixture = createFixture();
-      const submitted = Promise.withResolvers<void>();
+      const submitted = Promise.withResolvers<undefined>();
       const native = serveOfficialSections(
         fixture,
         [],
         { Research: ["N1", "N2", "N3"] },
         {
           loseMoveReply: () => {
-            submitted.resolve();
+            submitted.resolve(undefined);
             return committed;
           },
         },
@@ -1193,7 +1193,7 @@ describe("External Thread sections through AppServerHost", () => {
   it.each([true, false])(
     "uses Desktop's native Owner for section moves and pins when the peer is separate or offline (offline: %s)",
     async (offline) => {
-      const ended = Promise.withResolvers<void>();
+      const ended = Promise.withResolvers<undefined>();
       const peerRequest = vi.fn(async (method: string): Promise<JsonObject> => {
         if (method === "codexhost/shared-threads/sections/watch") return { result: {} };
         if (method === "codexhost/thread/ownership/list") return { result: { threads: [] } };
@@ -1209,7 +1209,7 @@ describe("External Thread sections through AppServerHost", () => {
                   respond: async () => undefined,
                   subscribe: () => () => undefined,
                   closed: ended.promise,
-                  close: () => ended.resolve(),
+                  close: () => ended.resolve(undefined),
                 },
           delegateCreates: true,
           diagnose: () => undefined,
@@ -1236,7 +1236,7 @@ describe("External Thread sections through AppServerHost", () => {
   );
 
   it("preserves a shared Owner rejection and never replays a lost shared write locally", async () => {
-    const ended = Promise.withResolvers<void>();
+    const ended = Promise.withResolvers<undefined>();
     const rejection = { code: -32602, message: "Owner rejected the move" };
     const fixture = createFixture({
       sharedThreads: new SharedThreadBridge({
@@ -1249,7 +1249,7 @@ describe("External Thread sections through AppServerHost", () => {
           respond: async () => undefined,
           subscribe: () => () => undefined,
           closed: ended.promise,
-          close: () => ended.resolve(),
+          close: () => ended.resolve(undefined),
         }),
         delegateCreates: true,
         ownsNativeSections: true,

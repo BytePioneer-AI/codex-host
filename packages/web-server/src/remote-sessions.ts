@@ -2122,6 +2122,8 @@ export class RemoteSessions {
           if (draft && !draft.canonicalId)
             return { items: [this.draftSummary(draft)], archivedSessionIds: this.syncArchives() };
           const canonicalId = draft?.canonicalId ?? id;
+          if (canonicalId.startsWith(`${PREFIX}draft-`))
+            throw new RpcError("session/not-found", "Remote draft Session is no longer available.");
           remoteSessionIdentity(canonicalId);
           if (!this.entries.has(canonicalId)) await this.refresh();
           const entry = this.entries.get(canonicalId);

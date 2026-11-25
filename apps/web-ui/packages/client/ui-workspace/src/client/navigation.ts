@@ -333,6 +333,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     signal: AbortSignal,
     resolved: () => void,
     retry: () => void,
+    onMissing?: () => void,
   ): Promise<void> {
     if (signal.aborted) return;
     this.openingLoad?.stop();
@@ -353,12 +354,23 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       if (signal.aborted || this.openingLoad !== load) return;
       await this.sessions.loadSummary(sessionId);
       if (signal.aborted || this.openingLoad !== load) return;
-      if (this.sessions.list.getSnapshot().byId[sessionId] === undefined)
+      if (this.sessions.list.getSnapshot().byId[sessionId] === undefined) {
+        if (onMissing !== undefined) {
+          clear();
+          onMissing();
+          return;
+        }
         throw new Error(`Session not found: ${sessionId}`);
+      }
       resolved();
       clear();
     } catch (error: unknown) {
       if (signal.aborted || this.openingLoad !== load) return;
+      if (onMissing !== undefined && isMissingSessionError(error)) {
+        clear();
+        onMissing();
+        return;
+      }
       this.retryOpen = retry;
       this.opening.set({ state: "error", sessionId, message: creationFailureMessage(error) });
     }
@@ -668,6 +680,11 @@ class UiWorkspaceService extends Service implements UiWorkspace {
               }
             },
             restore,
+            () => {
+              if (this.selection.getSnapshot().sessionId === id) this.selection.set({});
+              initial = "waiting";
+              reconcile();
+            },
           );
         };
         restore();
@@ -884,6 +901,16 @@ function sessionCreateErrorOf(error: unknown): SessionCreateError | undefined {
   return error instanceof Error && error.name === "SessionCreateError"
     ? (error as SessionCreateError)
     : undefined;
+}
+
+/** True only when the Host definitively reports the Session no longer exists (not transient offline). */
+function isMissingSessionError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { isDSHRemoteError?: unknown }).isDSHRemoteError === true &&
+    (error as { code?: unknown }).code === "session/not-found"
+  );
 }
 
 class WorkspaceRequiredError extends Error {

@@ -163,6 +163,7 @@ function hasNonTextContentPart(content: unknown): boolean {
 export interface RemotePeerProvider {
   source(hostId: string): PeerThreadSource | undefined;
   client?(hostId: string): PeerAttachmentEndpoint | undefined;
+  waitForInitialConnection?(hostId: string): Promise<void>;
   onThreadChanged?: (hostId: string, threadId: string) => unknown;
   onUsageChanged?: (hostId: string, threadId: string) => void;
   onCatalogInspectionChanged?: (hostId: string) => void;
@@ -319,6 +320,11 @@ export class RemoteSessions {
   }
   private handlePeerConnection(hostId: string, online: boolean): void {
     if (this.closed || online) return;
+    const pendingLookup = this.pendingPeerLookups.get(hostId);
+    if (pendingLookup) {
+      this.pendingPeerLookups.delete(hostId);
+      pendingLookup.resolve(false);
+    }
     this.syncedPeerSources.delete(hostId);
     this.peerTreeRetryAttempts.delete(hostId);
     this.clearPeerChangeTimer(hostId);
@@ -598,6 +604,7 @@ export class RemoteSessions {
   private fullRefreshPending = false;
   private backgroundRefreshPending = false;
   private pendingHostIds = new Set<string>();
+  private pendingPeerLookups = new Map<string, PromiseWithResolvers<boolean>>();
   private syncedPeerSources = new Map<
     string,
     { source: PeerThreadSource; epoch: string | undefined; listedAt: number }
@@ -641,8 +648,32 @@ export class RemoteSessions {
       this.pendingHostIds.size > 0
     );
   }
+  private deferPeerLookup(hostId: string, lookup: PromiseWithResolvers<boolean>): void {
+    if (this.closed) {
+      lookup.resolve(false);
+      return;
+    }
+    const existing = this.pendingPeerLookups.get(hostId);
+    if (existing) {
+      void existing.promise.then((confirmed) => lookup.resolve(confirmed));
+    } else {
+      this.pendingPeerLookups.set(hostId, lookup);
+    }
+    this.pendingHostIds.add(hostId);
+    this.refreshPending = true;
+  }
   private startRefresh(): Promise<void> {
-    this.listing ??= this.list().finally(() => {
+    if (this.listing) return this.listing;
+    if (this.archiveWrites) {
+      this.refreshPending = true;
+      return Promise.resolve();
+    }
+    // Lookups queued during an active refresh belong to the next batch.
+    const peerLookups = this.pendingPeerLookups;
+    this.pendingPeerLookups = new Map();
+    this.listing = this.list(peerLookups).finally(() => {
+      // Hosts skipped by discovery and incomplete reads cannot confirm absence.
+      for (const lookup of peerLookups.values()) lookup.resolve(false);
       this.listing = undefined;
       if (!this.closed && !this.archiveWrites && this.hasPendingRefresh()) {
         this.refreshPending = false;
@@ -723,8 +754,14 @@ export class RemoteSessions {
     }
     return this.startRefresh();
   }
-  private async list(): Promise<void> {
-    if (this.archiveWrites) return;
+  private async list(peerLookups: Map<string, PromiseWithResolvers<boolean>>): Promise<void> {
+    if (this.archiveWrites) {
+      for (const [hostId, lookup] of peerLookups) {
+        this.deferPeerLookup(hostId, lookup);
+      }
+      peerLookups.clear();
+      return;
+    }
     const explicitFullRefresh =
       this.fullRefreshPending || (!this.backgroundRefreshPending && this.pendingHostIds.size === 0);
     const backgroundRefresh = this.backgroundRefreshPending;
@@ -756,6 +793,9 @@ export class RemoteSessions {
     }
     const previousHosts = this.hosts;
     this.hosts = new Map(hosts.map((host) => [host.hostId, host]));
+    for (const [hostId, lookup] of peerLookups) {
+      if (!this.hosts.get(hostId)?.online || !this.peers?.source(hostId)) lookup.resolve(false);
+    }
     const metadataChangedHostIds = new Set<string>();
     const draftChangedHostIds = new Set<string>();
     for (const host of hosts) {
@@ -850,8 +890,17 @@ export class RemoteSessions {
         .map(async (host) => {
           const peerSource = this.peers?.source(host.hostId);
           if (peerSource) {
-            await this.listPeerHost(host, peerSource, archiveRevision);
+            const outcome = await this.listPeerHost(host, peerSource, archiveRevision);
             this.syncGroups();
+            const lookup = peerLookups.get(host.hostId);
+            if (lookup) {
+              peerLookups.delete(host.hostId);
+              if (outcome === "superseded") {
+                this.deferPeerLookup(host.hostId, lookup);
+              } else {
+                lookup.resolve(outcome === "confirmed");
+              }
+            }
             return;
           }
           const found = new Map<string, Entry>();
@@ -1046,7 +1095,15 @@ export class RemoteSessions {
     host: RemoteWorkspaceHost,
     source: PeerThreadSource,
     archiveRevision: number,
-  ): Promise<void> {
+  ): Promise<"confirmed" | "superseded" | "failed"> {
+    const canRetrySuperseded = (): "superseded" | "failed" => {
+      const peer = this.peerEndpoint(host.hostId);
+      return !this.closed &&
+        this.peers?.source(host.hostId) === source &&
+        (peer === undefined || peer.state === "connected")
+        ? "superseded"
+        : "failed";
+    };
     const unlisted = new Set(
       [...this.entries.values()].filter(
         (entry) => entry.identity.hostId === host.hostId && entry.createdEpoch,
@@ -1160,7 +1217,7 @@ export class RemoteSessions {
       );
       harnessNames.set("codex", "Codex");
       if (!isCurrentList() || listed.stale) {
-        return;
+        return canRetrySuperseded();
       }
       const prevArchivedIds = this.peerArchivedIds.get(host.hostId);
       const nextArchivedIds = new Set(listed.archivedIds);
@@ -1294,16 +1351,17 @@ export class RemoteSessions {
       if (listed.treeStale) {
         this.syncedPeerSources.delete(host.hostId);
         this.schedulePeerTreeRetry(host.hostId);
-      } else {
-        this.peerTreeRetryAttempts.delete(host.hostId);
-        this.syncedPeerSources.set(host.hostId, {
-          source,
-          epoch: host.epoch,
-          listedAt: Date.now(),
-        });
+        return "failed";
       }
+      this.peerTreeRetryAttempts.delete(host.hostId);
+      this.syncedPeerSources.set(host.hostId, {
+        source,
+        epoch: host.epoch,
+        listedAt: Date.now(),
+      });
+      return "confirmed";
     } catch {
-      if (!isCurrentList()) return;
+      if (!isCurrentList()) return canRetrySuperseded();
       this.syncedPeerSources.delete(host.hostId);
       this.clearPeerInteractions(host.hostId);
       host.online = false;
@@ -1311,6 +1369,7 @@ export class RemoteSessions {
         if (entry.identity.hostId === host.hostId) this.offline(entry);
       }
       this.publishDraftSummaries(host.hostId);
+      return "failed";
     } finally {
       if (this.inFlightPeerSources.get(host.hostId) === source) {
         this.inFlightPeerSources.delete(host.hostId);
@@ -2404,6 +2463,65 @@ export class RemoteSessions {
       );
     }
   }
+  private async lookupPeerSummary(id: string, hostId: string): Promise<Entry | undefined> {
+    if (this.peerEndpoint(hostId)?.state === "connecting") {
+      await this.peers?.waitForInitialConnection?.(hostId);
+    }
+    const source = this.peers?.source(hostId);
+    if (!source) return undefined;
+
+    const requireOnline = () => {
+      const peer = this.peerEndpoint(hostId);
+      if (this.closed || (peer && peer.state !== "connected"))
+        throw new RpcError("remote/offline", "Remote peer is not connected");
+      return peer?.manifest?.epoch;
+    };
+    const epoch = requireOnline();
+    const entry = this.entries.get(id);
+    const host = this.hosts.get(hostId);
+    if (
+      entry?.online &&
+      host?.online &&
+      (epoch === undefined || host.epoch === epoch) &&
+      this.isPeerSynced(host, source)
+    )
+      return entry;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let lookup = this.pendingPeerLookups.get(hostId);
+      if (!lookup) {
+        lookup = Promise.withResolvers<boolean>();
+        this.pendingPeerLookups.set(hostId, lookup);
+        this.queueHostRefresh(hostId);
+      }
+      const confirmed = await lookup.promise;
+      const currentSource = this.peers?.source(hostId);
+      if (!currentSource) return undefined;
+      const currentEpoch = requireOnline();
+      const currentHost = this.hosts.get(hostId);
+      if (
+        confirmed &&
+        currentSource === source &&
+        currentHost?.online &&
+        (currentEpoch === undefined || currentHost.epoch === currentEpoch) &&
+        this.isPeerSynced(currentHost, source)
+      ) {
+        return this.entries.get(id);
+      }
+      if (
+        attempt === 0 &&
+        confirmed &&
+        currentSource === source &&
+        currentHost?.online &&
+        (currentEpoch === undefined || currentHost.epoch === currentEpoch)
+      ) {
+        continue;
+      }
+      throw new RpcError("remote/offline", "Remote peer catalog is unavailable");
+    }
+    throw new RpcError("remote/offline", "Remote peer catalog is unavailable");
+  }
+
   install(rpc: RpcRegistry, streams: StreamRegistry): void {
     rpc.routeSessions(async (method, args, next) => {
       if (method === "session/create") {
@@ -2433,9 +2551,14 @@ export class RemoteSessions {
           const canonicalId = draft?.canonicalId ?? id;
           if (canonicalId.startsWith(`${PREFIX}draft-`))
             throw new RpcError("session/not-found", "Remote draft Session is no longer available.");
-          remoteSessionIdentity(canonicalId);
-          if (!this.entries.has(canonicalId)) await this.refresh();
-          const entry = this.entries.get(canonicalId);
+          const identity = remoteSessionIdentity(canonicalId);
+          let entry: Entry | undefined;
+          if (identity?.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX)) {
+            entry = await this.lookupPeerSummary(canonicalId, identity.hostId);
+          } else {
+            if (!this.entries.has(canonicalId)) await this.refresh();
+            entry = this.entries.get(canonicalId);
+          }
           if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
           return {
             items: [this.summary(canonicalId, entry)],
@@ -3041,6 +3164,8 @@ export class RemoteSessions {
   }
   close(): void {
     this.closed = true;
+    for (const lookup of this.pendingPeerLookups.values()) lookup.resolve(false);
+    this.pendingPeerLookups.clear();
     clearInterval(this.timer);
     for (const timer of this.peerChangeTimers.values()) clearTimeout(timer);
     this.peerChangeTimers.clear();

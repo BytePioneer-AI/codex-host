@@ -449,28 +449,37 @@ pub(super) fn publish_runtime_descriptor(
     )?)
 }
 
-fn send_controlled_attachment_with_timeout(
+fn read_attachment_reply(
     mut stream: TcpStream,
     descriptor: &RuntimeDescriptor,
     read_timeout: Duration,
-) -> Result<bool, Box<dyn Error>> {
+) -> io::Result<String> {
     let started = Instant::now();
     stream.set_write_timeout(Some(read_timeout.min(Duration::from_secs(2))))?;
     writeln!(stream, "ATTACH {}", descriptor.nonce)?;
     let remaining = read_timeout.saturating_sub(started.elapsed());
     if remaining.is_zero() {
-        return Ok(false);
+        return Ok(String::new());
     }
     stream.set_read_timeout(Some(remaining))?;
     let mut response = String::new();
-    match BufReader::new(stream).read_line(&mut response) {
-        Ok(_) => {}
-        // An orderly Controller close is an empty response, but Winsock may surface the same
-        // close as WSAECONNRESET. Both mean the controlled Desktop is not attachable yet.
+    BufReader::new(stream).read_line(&mut response)?;
+    Ok(response)
+}
+
+fn send_controlled_attachment_with_timeout(
+    stream: TcpStream,
+    descriptor: &RuntimeDescriptor,
+    read_timeout: Duration,
+) -> Result<bool, Box<dyn Error>> {
+    let response = match read_attachment_reply(stream, descriptor, read_timeout) {
+        Ok(response) => response,
+        // The Controller can disconnect before the request is written or before it replies.
         Err(error)
             if matches!(
                 error.kind(),
-                io::ErrorKind::ConnectionAborted
+                io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionAborted
                     | io::ErrorKind::ConnectionReset
                     | io::ErrorKind::TimedOut
                     | io::ErrorKind::WouldBlock
@@ -479,7 +488,7 @@ fn send_controlled_attachment_with_timeout(
             return Ok(false);
         }
         Err(error) => return Err(error.into()),
-    }
+    };
     match response.trim_end() {
         "ready" => Ok(true),
         "busy" => Ok(false),

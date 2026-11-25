@@ -2468,7 +2468,9 @@ export class AppServerHost {
       }
       await this.#writer.json(
         rpcEnvelope(request, {
-          result: jsonValueSchema.parse(await this.#projectSectionPlacements()),
+          result: jsonValueSchema.parse(
+            this.#sectionDefinitions.project(await this.#repository.listSectionPlacements()),
+          ),
         }),
       );
       return;
@@ -3986,21 +3988,25 @@ export class AppServerHost {
    * keep a copy from before the Thread was shared; the shared Host's row is canonical even when
    * the current query excludes it (archived, moved out of a section).
    */
-  async #localThreadCatalog(definitions?: ReadonlyMap<string, StoredThreadSection>): Promise<{
+  async #localThreadCatalog({ rawPlacements = false } = {}): Promise<{
     records: StoredThreadSummaryV1[];
     placements: StoredSectionPlacementV1[];
     officialImportTimes: OfficialImportTimes;
     sharedOwners?: ReadonlyMap<string, string>;
   }> {
-    const [records, placements] = await Promise.all([
+    const [records, storedPlacements] = await Promise.all([
       this.#repository.listSummaries(),
-      this.#projectSectionPlacements(undefined, definitions),
+      this.#repository.listSectionPlacements(),
     ]);
     // Matched against every local record, so a shared-owned Thread still hides its official import.
     const officialImportTimes = await readOfficialImportTimes(
       this.#officialRuntimeScope.permanentHome,
       records,
     );
+    // Ordinary catalog reads do not wait for native section pagination.
+    const placements = rawPlacements
+      ? storedPlacements
+      : this.#sectionDefinitions.project(storedPlacements);
     const shared = this.#options.sharedThreads;
     if (!shared) return { records, placements, officialImportTimes };
     const ids = [...new Set([...records, ...placements].map((entry) => entry.hostThreadId))];
@@ -4050,7 +4056,7 @@ export class AppServerHost {
     const shared = this.#options.sharedThreads;
     const [{ records, placements: localPlacements }, sharedPlacements, sharedThreads] =
       await Promise.all([
-        this.#localThreadCatalog(definitions),
+        this.#localThreadCatalog({ rawPlacements: true }),
         shared?.placements(true) ?? [],
         shared?.list(query.params, { requireComplete: true }) ?? [],
       ]);
@@ -4131,10 +4137,9 @@ export class AppServerHost {
   }
 
   async #projectSectionPlacements(
-    placements?: StoredSectionPlacementV1[],
+    placements: StoredSectionPlacementV1[],
     definitions?: ReadonlyMap<string, StoredThreadSection>,
   ): Promise<StoredSectionPlacementV1[]> {
-    placements ??= await this.#repository.listSectionPlacements();
     if (!placements.some(({ section }) => section.id !== PINNED_THREAD_SECTION_ID))
       return placements;
     if (!definitions) {

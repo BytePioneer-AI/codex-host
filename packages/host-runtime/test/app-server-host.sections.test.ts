@@ -883,8 +883,8 @@ describe("External Thread sections through AppServerHost", () => {
     }
   });
 
-  it("preserves a saved destination and serves external history without a native section list", async () => {
-    const fixture = createFixture();
+  it("serves external reads and the shared catalog without a native section list", async () => {
+    const fixture = createFixture({ externalOnly: true });
     let showReview = false;
     let offline = false;
     let offlineReads = 0;
@@ -901,6 +901,9 @@ describe("External Thread sections through AppServerHost", () => {
       },
     );
     try {
+      await vi.waitFor(() => fixture.mappingStore.listSectionPlacements());
+      const boot = await sectionRpc(fixture, "list", {});
+      expect(boot, fixture.diagnosticOutput.read()?.toString()).toHaveProperty("result");
       const external = await startPiThread(fixture);
       const pinned = await startExternalThread(fixture, "codexhost/pi-native", 2);
       expect(
@@ -928,6 +931,9 @@ describe("External Thread sections through AppServerHost", () => {
         result: { thread },
       });
       expect((await fixture.host.clientSnapshot(external)).thread).toMatchObject(thread);
+      const list = await call(fixture, 305, "thread/list", { archived: false });
+      const rows = (list.result as { data: JsonObject[] } | undefined)?.data;
+      expect(rows?.find((row) => row.id === external)).toMatchObject(thread);
       expect(offlineReads).toBe(0);
     } finally {
       await stopFixture(fixture);
@@ -938,6 +944,7 @@ describe("External Thread sections through AppServerHost", () => {
     { name: "removal", sectionId: null },
     { name: "move into another section", sectionId: "Review" },
     { name: "move before an anchor", sectionId: "Review", beforeThreadId: "N4" },
+    { name: "reorder within the same section", sectionId: "Research", beforeThreadId: "N1" },
     { name: "move superseded by native order", sectionId: "Review", changed: "native" },
     { name: "move superseded by external anchors", sectionId: "Review", changed: "external" },
   ])("checks a retried $name without replaying the native move", async (scenario) => {

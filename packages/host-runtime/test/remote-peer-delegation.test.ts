@@ -700,8 +700,8 @@ describe("Peer remote delegation routing & security boundaries", () => {
       const api = localRegistration("local", {
         start: vi.fn(async (input) => {
           seenParents.push(input.parentThreadId ?? "");
-          if (input.requestId && persistedByReq.has(input.requestId)) {
-            const existing = persistedByReq.get(input.requestId)!;
+          const existing = input.requestId ? persistedByReq.get(input.requestId) : undefined;
+          if (existing) {
             return {
               delegationId: existing.delegationId,
               threadId: existing.childHostThreadId,
@@ -709,7 +709,7 @@ describe("Peer remote delegation routing & security boundaries", () => {
               harnessId: existing.targetHarnessId,
               deepLink: `codex://threads/${existing.childHostThreadId}`,
               status: existing.status,
-              cwd: existing.cwd,
+              ...(existing.cwd !== undefined ? { cwd: existing.cwd } : {}),
               parentThreadId: existing.parentHostThreadId,
               next: { read: "read", wait: "wait" },
             };
@@ -1025,8 +1025,8 @@ describe("Peer remote delegation routing & security boundaries", () => {
             turnId: "turn-1",
             harnessId: input.harnessId,
             deepLink: "codex://threads/child-launder-attempt",
-            status: "running",
-            parentThreadId: input.parentThreadId,
+            status: "running" as const,
+            ...(input.parentThreadId !== undefined ? { parentThreadId: input.parentThreadId } : {}),
             next: { read: "read", wait: "wait" },
           };
         }),
@@ -1118,8 +1118,8 @@ describe("Peer remote delegation routing & security boundaries", () => {
             turnId: "turn-1",
             harnessId: input.harnessId,
             deepLink: "codex://threads/child-via-cli",
-            status: "running",
-            parentThreadId: input.parentThreadId,
+            status: "running" as const,
+            ...(input.parentThreadId !== undefined ? { parentThreadId: input.parentThreadId } : {}),
             next: { read: "read", wait: "wait" },
           };
         }),
@@ -1213,8 +1213,8 @@ describe("Peer remote delegation routing & security boundaries", () => {
         localRegistration("local", {
           start: vi.fn(async (input) => {
             startCalls += 1;
-            if (input.requestId && persistedByReq.has(input.requestId)) {
-              const existing = persistedByReq.get(input.requestId)!;
+            const existing = input.requestId ? persistedByReq.get(input.requestId) : undefined;
+            if (existing) {
               return {
                 delegationId: existing.delegationId,
                 threadId: existing.childHostThreadId,
@@ -1222,7 +1222,7 @@ describe("Peer remote delegation routing & security boundaries", () => {
                 harnessId: existing.targetHarnessId,
                 deepLink: `codex://threads/${existing.childHostThreadId}`,
                 status: existing.status,
-                cwd: existing.cwd,
+                ...(existing.cwd !== undefined ? { cwd: existing.cwd } : {}),
                 parentThreadId: existing.parentHostThreadId,
                 next: { read: "read", wait: "wait" },
               };
@@ -1501,9 +1501,11 @@ describe("Peer remote delegation routing & security boundaries", () => {
       regPartialSeed.register(failBeforeThreadApi);
       await regPartialSeed.handlePeerDelegationChannelRequest(partialReq);
       const partialRecord = await backingStore.get("req-partial-wt");
-      expect(partialRecord?.worktree).toBeDefined();
+      const partialWorktree = partialRecord?.worktree;
+      expect(partialWorktree).toBeDefined();
+      if (!partialWorktree) throw new Error("Expected persisted partial worktree");
       // Corrupt the worktree into a partial artifact by removing its checkout directory while branch remains.
-      rmSync(partialRecord!.worktree!.path, { recursive: true, force: true });
+      rmSync(partialWorktree.path, { recursive: true, force: true });
       regPartialSeed.close();
 
       const regPartialReplay = new DelegationControlRegistry({ peerStartStore: backingStore });
@@ -1576,7 +1578,9 @@ describe("Peer remote delegation routing & security boundaries", () => {
       // Explicitly persist a stale `pending` plan for the loser pointing to the winner's worktree
       // so cold replay genuinely hits the `getWorktreeOwner !== requestId` rejection path!
       const winnerPlan = await backingStore.get(winnerId);
-      expect(winnerPlan?.worktree).toBeDefined();
+      const winnerWorktree = winnerPlan?.worktree;
+      expect(winnerWorktree).toBeDefined();
+      if (!winnerWorktree) throw new Error("Expected winner worktree plan");
       const loserConfigHash = createHash("sha256")
         .update(
           JSON.stringify({
@@ -1597,7 +1601,7 @@ describe("Peer remote delegation routing & security boundaries", () => {
         parentThreadId: "peer:peer-a",
         configHash: loserConfigHash,
         state: "pending",
-        worktree: winnerPlan!.worktree,
+        worktree: winnerWorktree,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
@@ -2180,8 +2184,9 @@ describe("Peer remote delegation routing & security boundaries", () => {
             } else if (request.method === "thread/start") {
               const threadId = `native-remote-${seq++}`;
               threadStarts.push(request.params);
+              const cwd = (request.params as JsonObject).cwd;
               response = {
-                result: { thread: { id: threadId, cwd: (request.params as JsonObject).cwd } },
+                result: { thread: { id: threadId, ...(cwd !== undefined ? { cwd } : {}) } },
               };
             } else if (request.method === "turn/start") {
               const threadId = String((request.params as JsonObject).threadId);

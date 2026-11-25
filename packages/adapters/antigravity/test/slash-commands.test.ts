@@ -19,7 +19,7 @@ import type {
   AntigravityOpenAcpSessionInput,
   AntigravitySessionEventHandler,
 } from "../src/acp-types.js";
-import { AntigravityAdapter, AntigravitySession } from "../src/antigravity-adapter.js";
+import { AntigravityAdapter, type AntigravitySession } from "../src/antigravity-adapter.js";
 import * as skillDiscovery from "../src/skill-discovery.js";
 import {
   ANTIGRAVITY_COMMAND_CATALOG,
@@ -508,7 +508,7 @@ describe("Antigravity live command skill filtering and readiness", () => {
       .mockReturnValueOnce(scanA.promise)
       .mockReturnValueOnce(scanB.promise);
 
-    let emitEvent: AntigravitySessionEventHandler | null = null;
+    const eventSink: { emit: AntigravitySessionEventHandler | null } = { emit: null };
     const adapter = new AntigravityAdapter({
       environment: { HOME: home, USERPROFILE: home },
       createTransport: (options) => {
@@ -518,7 +518,7 @@ describe("Antigravity live command skill filtering and readiness", () => {
         return {
           ...base,
           setSessionEventHandler(handler) {
-            emitEvent = handler;
+            eventSink.emit = handler;
             base.setSessionEventHandler(handler);
           },
         };
@@ -538,7 +538,7 @@ describe("Antigravity live command skill filtering and readiness", () => {
       });
 
       // Update B arrives and finishes while update A NEVER resolves.
-      emitEvent?.({
+      eventSink.emit?.({
         type: "commands.update",
         commands: [{ name: "beta", description: "Fresh command B" }],
       });

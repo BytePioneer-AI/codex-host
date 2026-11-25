@@ -9,7 +9,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { it } from "node:test";
-import { REMOTE_PEERS_METHODS, type PeerDelegationHostsResult } from "@codexhost/shared-contracts";
+import {
+  REMOTE_PEERS_METHODS,
+  harnessModelRefSchema,
+  type PeerDelegationHostsResult,
+} from "@codexhost/shared-contracts";
 import {
   ClientChannelEvents,
   DelegationControlRegistry,
@@ -854,7 +858,9 @@ it("runs end-to-end dual-node loopback delegation (host list, start+worktree+ide
         inspection: {
           status: "ready",
           catalog: {
-            models: [{ ref: { id: "pi-model-1" }, label: "Pi Model 1" }],
+            models: [
+              { ref: harnessModelRefSchema.parse({ id: "pi-model-1" }), label: "Pi Model 1" },
+            ],
             thinkingOptions: [],
           },
           capabilities: {
@@ -887,9 +893,9 @@ it("runs end-to-end dual-node loopback delegation (host list, start+worktree+ide
           turnId: `turn-${threadId}-1`,
           harnessId: input.harnessId,
           deepLink: `codex://threads/${threadId}`,
-          status: "running",
+          status: "running" as const,
           cwd: input.cwd ?? repoB,
-          parentThreadId: input.parentThreadId,
+          ...(input.parentThreadId !== undefined ? { parentThreadId: input.parentThreadId } : {}),
           next: {
             read: `codexhost thread read ${threadId}`,
             wait: `codexhost thread wait ${threadId}`,

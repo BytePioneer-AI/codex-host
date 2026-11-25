@@ -105,7 +105,7 @@ function parseCommandReferenceAt(
   const encodedStart = prefixStart + HARNESS_COMMAND_MENTION_PATH_PREFIX.length;
   let cursor = encodedStart;
   while (cursor < text.length) {
-    const ch = text[cursor]!;
+    const ch = text.charAt(cursor);
     if (ch === ")" || ch === ">" || ch === "(" || ch === "<" || /\s/u.test(ch)) break;
     cursor++;
   }

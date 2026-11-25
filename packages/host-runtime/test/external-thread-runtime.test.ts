@@ -19,6 +19,7 @@ import {
 import { encodeExternalTransportSelection, type ExternalHarnessId } from "@codexhost/protocol-core";
 import { describe, expect, it, vi } from "vitest";
 
+import { boundDelegationToken } from "../src/bearer-token.js";
 import type { ExternalThreadRepository } from "../src/external-thread-repository.js";
 import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
 
@@ -602,7 +603,7 @@ describe("ExternalThreadRuntime register", () => {
           environment: expect.objectContaining({
             CODEXHOST_CLI_PATH: "/opt/codexhost",
             CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:43123",
-            CODEXHOST_RUNTIME_TOKEN: "token",
+            CODEXHOST_RUNTIME_TOKEN: boundDelegationToken("token", hostThreadId),
             CODEXHOST_THREAD_ID: hostThreadId,
           }),
         }),

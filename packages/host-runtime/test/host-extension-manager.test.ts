@@ -525,8 +525,8 @@ it("downloads extensions concurrently without blocking other operations, logs ca
   const brokenUrl =
     "https://github.com/BytePioneer-AI/broken-ext/releases/download/v1.0.0/broken.zip";
 
-  const slowStarted = Promise.withResolvers<void>();
-  const releaseSlow = Promise.withResolvers<void>();
+  const slowStarted = Promise.withResolvers<undefined>();
+  const releaseSlow = Promise.withResolvers<undefined>();
   let slowAborted = false;
 
   vi.stubEnv("CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL", "off");
@@ -580,7 +580,7 @@ it("downloads extensions concurrently without blocking other operations, logs ca
       });
     }
     if (href === slowUrl) {
-      slowStarted.resolve();
+      slowStarted.resolve(undefined);
       await new Promise<void>((resolve, reject) => {
         init?.signal?.addEventListener(
           "abort",
@@ -590,7 +590,7 @@ it("downloads extensions concurrently without blocking other operations, logs ca
           },
           { once: true },
         );
-        void releaseSlow.promise.then(resolve);
+        void releaseSlow.promise.then(() => resolve());
       });
       return new Response(Uint8Array.from(slowZip));
     }
@@ -642,7 +642,7 @@ it("downloads extensions concurrently without blocking other operations, logs ca
   );
 
   // Release slow-ext and verify both extensions are installed.
-  releaseSlow.resolve();
+  releaseSlow.resolve(undefined);
   expect(await slowInstall).toMatchObject({ result: { id: "slow-ext", replaced: false } });
 
   // Raw internal/FS errors never leak host paths to RPC callers, while diagnostics log them.
@@ -658,7 +658,7 @@ it("downloads extensions concurrently without blocking other operations, logs ca
   expect(diagnostics).toContainEqual(expect.stringContaining("does-not-exist-secret-dir"));
 
   // Closing the manager aborts any in-flight download cleanly and rejects concurrent calls without deadlocking.
-  const secondSlowStarted = Promise.withResolvers<void>();
+  const secondSlowStarted = Promise.withResolvers<undefined>();
   vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
     const href = String(input);
     if (href === HOST_EXTENSION_CATALOG_URL || href === HOST_EXTENSION_CATALOG_MIRROR_URL) {
@@ -683,7 +683,7 @@ it("downloads extensions concurrently without blocking other operations, logs ca
       });
     }
     if (href === slowUrl) {
-      secondSlowStarted.resolve();
+      secondSlowStarted.resolve(undefined);
       await new Promise<void>((_resolve, reject) => {
         init?.signal?.addEventListener(
           "abort",

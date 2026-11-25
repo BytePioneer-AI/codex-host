@@ -233,7 +233,6 @@ import {
   DELEGATION_CLI_PATH_ENV,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
   DELEGATION_RUNTIME_TOKEN_ENV,
-  DELEGATION_THREAD_ID_ENV,
   DelegationControlError,
 } from "./delegation-types.js";
 import type { resolveDelegationConfiguration } from "./delegation-configuration.js";

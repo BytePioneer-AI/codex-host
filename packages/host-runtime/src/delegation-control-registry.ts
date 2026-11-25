@@ -335,6 +335,11 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
 
   /** Handle an authenticated inbound Peer delegation request arriving over the local Client Channel. */
   async handlePeerDelegationChannelRequest(params: unknown): Promise<{ result: JsonValue }> {
+    const peerStartStore = this.#peerStartStore;
+    const deleteStart = peerStartStore?.delete;
+    const claimWorktreeOwner = peerStartStore?.claimWorktreeOwner;
+    const getWorktreeOwner = peerStartStore?.getWorktreeOwner;
+    const releaseWorktreeOwner = peerStartStore?.releaseWorktreeOwner;
     const result = await dispatchPeerDelegationRequest(this, params, {
       onRemoteThreadStarted: (threadId, hopCount) => {
         this.markRemoteOriginThread(threadId, hopCount);
@@ -351,36 +356,36 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
           }
           this.#peerStartCache.set(key, entry);
         },
-        ...(this.#peerStartStore
+        ...(peerStartStore
           ? {
-              getPersistedStart: (requestId) => this.#peerStartStore!.get(requestId),
-              savePersistedStart: (record) => this.#peerStartStore!.set(record),
-              ...(this.#peerStartStore.delete
+              getPersistedStart: (requestId) => peerStartStore.get(requestId),
+              savePersistedStart: (record) => peerStartStore.set(record),
+              ...(deleteStart
                 ? {
                     deletePersistedStart: (requestId: string) =>
-                      this.#peerStartStore!.delete!(requestId),
+                      deleteStart.call(peerStartStore, requestId),
                   }
                 : {}),
-              ...(this.#peerStartStore.claimWorktreeOwner
+              ...(claimWorktreeOwner
                 ? {
                     claimWorktreeOwner: (
                       target: { path: string; branch: string },
                       requestId: string,
-                    ) => this.#peerStartStore!.claimWorktreeOwner!(target, requestId),
+                    ) => claimWorktreeOwner.call(peerStartStore, target, requestId),
                   }
                 : {}),
-              ...(this.#peerStartStore.getWorktreeOwner
+              ...(getWorktreeOwner
                 ? {
                     getWorktreeOwner: (target: { path: string; branch: string }) =>
-                      this.#peerStartStore!.getWorktreeOwner!(target),
+                      getWorktreeOwner.call(peerStartStore, target),
                   }
                 : {}),
-              ...(this.#peerStartStore.releaseWorktreeOwner
+              ...(releaseWorktreeOwner
                 ? {
                     releaseWorktreeOwner: (
                       target: { path: string; branch: string },
                       requestId: string,
-                    ) => this.#peerStartStore!.releaseWorktreeOwner!(target, requestId),
+                    ) => releaseWorktreeOwner.call(peerStartStore, target, requestId),
                   }
                 : {}),
             }
@@ -462,13 +467,13 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     const authContext = getCallerAuthContext(input);
     const { hostId, callerThreadId, ...rest } = input;
     if (isRemoteHostId(hostId)) {
-      const { parentThreadId: _parent, ...remoteInput } = rest;
+      const { parentThreadId, ...remoteInput } = rest;
       const result = await this.#callRemotePeer<HarnessInspectResult>(
         hostId,
         "inspect",
         remoteInput,
         authContext,
-        callerThreadId ?? rest.parentThreadId,
+        callerThreadId ?? parentThreadId,
       );
       return { ...result, hostId };
     }
@@ -693,7 +698,8 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         );
       return this.#remoteRead(read);
     }
-    const { hostId: _localHost, ...localRead } = read;
+    const localRead = { ...read };
+    delete localRead.hostId;
     return (await this.#registrationForThread(localRead.threadId)).read(localRead);
   }
 
@@ -802,7 +808,8 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         "Cross-host thread watch is not supported yet",
       );
     }
-    const { hostId: _localHost, ...local } = input;
+    const local = { ...input };
+    delete local.hostId;
     return this.#watchService.watch(local);
   }
 

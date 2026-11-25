@@ -361,7 +361,9 @@ export class Workspaces {
   updateNativeProjectMember(sessionId: string, projectId: string | undefined): void {
     if (!this.nativeWorkspaces || !projectId) return;
     const item = this.nativeWorkspaces.find((workspace) => workspace.projectId === projectId);
-    if (!item || item.sessionIds.includes(sessionId)) return;
+    if (!item) return;
+    this.detachFromOtherNativeProjects(sessionId, item, new Date().toISOString());
+    if (item.sessionIds.includes(sessionId)) return;
     item.sessionIds = [...item.sessionIds, sessionId];
     this.broadcast({ type: "upsert", workspace: item });
   }
@@ -374,16 +376,24 @@ export class Workspaces {
   ): WorkspaceView {
     const workspace = this.require(workspaceId);
     const now = new Date().toISOString();
-    for (const other of this.nativeWorkspaces ?? []) {
-      if (other === workspace || !other.sessionIds.includes(sessionId)) continue;
-      other.sessionIds = other.sessionIds.filter((id) => id !== sessionId);
-      other.updatedAt = now;
-      this.broadcast({ type: "upsert", workspace: other });
-    }
+    this.detachFromOtherNativeProjects(sessionId, workspace, now);
     workspace.sessionIds = insertSessionId(workspace.sessionIds, sessionId, beforeSessionId);
     workspace.updatedAt = now;
     this.broadcast({ type: "upsert", workspace });
     return workspace;
+  }
+
+  private detachFromOtherNativeProjects(
+    sessionId: string,
+    target: WorkspaceView,
+    now: string,
+  ): void {
+    for (const other of this.nativeWorkspaces ?? []) {
+      if (other === target || !other.sessionIds.includes(sessionId)) continue;
+      other.sessionIds = other.sessionIds.filter((id) => id !== sessionId);
+      other.updatedAt = now;
+      this.broadcast({ type: "upsert", workspace: other });
+    }
   }
 
   private publishWorkspaceChanges(before: readonly WorkspaceView[]): void {

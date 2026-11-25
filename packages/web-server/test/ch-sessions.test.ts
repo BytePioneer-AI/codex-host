@@ -1263,9 +1263,13 @@ it("retries an unconfirmed project assignment on the started Thread without star
   const root = mkdtempSync(join(tmpdir(), "ch-native-project-assign-retry-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const alphaRoot = join(root, "alpha");
+  const betaRoot = join(root, "beta");
   const host = new FakeChHost();
   host.projectSnapshot.nativeProjects = true;
-  host.projectSnapshot.projects = [{ id: "alpha", name: "Alpha", rootPaths: [alphaRoot] }];
+  host.projectSnapshot.projects = [
+    { id: "alpha", name: "Alpha", rootPaths: [alphaRoot] },
+    { id: "beta", name: "Beta", rootPaths: [betaRoot] },
+  ];
   host.add("existing", alphaRoot, "Existing", false).projectId = "alpha";
   host.projectSnapshot.projectless = [];
   const data = new DataDir(join(root, "web"));
@@ -1290,7 +1294,9 @@ it("retries an unconfirmed project assignment on the started Thread without star
   const dispatch = (method: string, params = {}) =>
     rpc.dispatch(method, { args: { request: params } });
   await dispatch("session/list");
-  const draft = await dispatch("session/create", { cwd: alphaRoot });
+  const beta = workspaces.byPath(betaRoot);
+  assert.ok(beta);
+  const draft = await dispatch("session/create", { cwd: alphaRoot, workspaceId: beta.workspaceId });
   assert.ok(draft.ok);
   const { sessionId } = draft.value as { sessionId: string };
   const prompt = (requestId: string) =>
@@ -1306,6 +1312,16 @@ it("retries an unconfirmed project assignment on the started Thread without star
   assert.equal(failed.ok, false);
   assert.equal(count("thread/start"), 1);
   assert.equal(count("turn/start"), 0, "No message is sent before the project is confirmed");
+  const created = [...host.threads.values()].find((row) => row.id.startsWith("canonical-"));
+  assert.ok(created);
+  const memberships = () =>
+    workspaces.list().filter((workspace) => workspace.sessionIds.includes(created.id));
+  await sessions.refreshProjects();
+  assert.deepEqual(
+    memberships().map((workspace) => workspace.projectId),
+    ["alpha"],
+    "Before assignment, catalog refresh groups the Thread by its working directory",
+  );
 
   rejectUpdate = false;
   const sent = await prompt("send-2");
@@ -1313,10 +1329,11 @@ it("retries an unconfirmed project assignment on the started Thread without star
   assert.equal(count("thread/start"), 1, "The retry reuses the started Thread");
   assert.equal(count("thread/metadata/update"), 2);
   assert.equal(count("turn/start"), 1);
-  const created = [...host.threads.values()].find((row) => row.id.startsWith("canonical-"));
-  assert.ok(created);
-  assert.equal(created.projectId, "alpha");
-  assert.equal(workspaces.ownerOf(created.id)?.projectId, "alpha");
+  assert.equal(created.projectId, "beta");
+  assert.deepEqual(
+    memberships().map((workspace) => workspace.projectId),
+    ["beta"],
+  );
 });
 
 it("projectRootTitles: falls back to the full path when the basename is empty or conflicts", () => {

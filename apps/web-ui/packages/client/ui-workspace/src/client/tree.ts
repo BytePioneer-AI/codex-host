@@ -551,7 +551,8 @@ export function deriveGroups(
     const activity = { running: 0, pendingInteraction: 0, completed: 0 };
     for (const node of members) {
       if (node.archived) continue;
-      activity.running += Number(node.running) + (node.tree?.activity.running ?? 0);
+      activity.running +=
+        Number(node.running || node.runningSubagentCount > 0) + (node.tree?.activity.running ?? 0);
       activity.pendingInteraction +=
         Number(node.pendingInteraction !== undefined) +
         (node.tree?.activity.pendingInteraction ?? 0);

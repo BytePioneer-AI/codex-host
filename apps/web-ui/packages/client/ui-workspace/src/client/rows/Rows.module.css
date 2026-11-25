@@ -725,7 +725,8 @@
 }
 
 /* Keep accessible status text available when hover actions cover the glyph. */
-.timeStatus .visuallyHidden {
+.timeStatus .visuallyHidden,
+.projectActivity .visuallyHidden {
   visibility: visible;
 }
 

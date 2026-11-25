@@ -282,11 +282,13 @@ export function ProjectRowItem({
             <span className={css.title}>{label}</span>
             <span className={css.remoteHostMeta}>{row.remote.displayName}</span>
           </span>
-          <span
-            className={css.remoteHostStatusDot}
-            data-state={row.remote.state}
-            aria-hidden="true"
-          />
+          {activityState === undefined && (
+            <span
+              className={css.remoteHostStatusDot}
+              data-state={row.remote.state}
+              aria-hidden="true"
+            />
+          )}
         </>
       ) : (
         <span className={css.projectText}>

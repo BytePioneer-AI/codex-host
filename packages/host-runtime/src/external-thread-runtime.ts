@@ -10,6 +10,7 @@ import type {
   HostThreadSnapshot,
   HostTurnSnapshot,
   HostUsage,
+  NativeCleanupReceipt,
   TurnCompletedEvent,
 } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
@@ -279,6 +280,7 @@ export class ExternalThreadRuntime {
   readonly #steeredTurnIds = new Map<string, Set<HostTurnId>>();
   readonly #subagentRunning: (threadId: string) => boolean;
   readonly #threads = new Map<string, ExternalThread>();
+  readonly #nativeCleanupReceipts = new Map<string, NativeCleanupReceipt>();
   readonly #liveFailures = new Map<string, Map<string, LiveFailedTurn>>();
   // Only completed snapshots mutate this ledger; never hold this gate while
   // closing a Session (close drains its outputs).
@@ -368,17 +370,16 @@ export class ExternalThreadRuntime {
       const thread = this.#threads.get(hostThreadId);
       const record = thread?.record ?? (await this.#repository.find(hostThreadId));
       const billingSourceRef = record?.billingSourceRef;
-      let nativeSession: "deleted" | "not-persisted" | "unknown" | undefined;
+      let nativeSession: NativeCleanupReceipt | "unknown" | undefined;
       const cleanupUnconfirmed = (cause: unknown) =>
         new ExternalSessionReleaseError(
           cause,
           "Billing Source native cleanup is unconfirmed; the Host mapping was retained",
         );
-      // A crashed/restarted Host no longer owns native cleanup authority. The visible disposable
-      // mapping can still be forgotten explicitly, without claiming that native cleanup happened.
+      // Without a cleanup owner, explicit deletion only forgets the mapping. A receipt
+      // from an earlier attempt survives a mapping write failure in this process.
       if (billingSourceRef && !thread) {
-        await this.#repository.removeThread(hostThreadId);
-        return "unknown";
+        nativeSession = this.#nativeCleanupReceipts.get(hostThreadId) ?? "unknown";
       }
       let releaseError: unknown;
       if (thread) {
@@ -391,10 +392,16 @@ export class ExternalThreadRuntime {
           releaseError = error;
         }
       }
-      if (billingSourceRef) {
-        const session = thread?.session as BillingSourceSession | undefined;
+      if (billingSourceRef && thread) {
+        const session = thread.session as BillingSourceSession;
+        const expired = Promise.withResolvers<never>();
+        const timer = setTimeout(
+          () => expired.reject(new Error("Native cleanup timed out")),
+          60_000,
+        );
+        timer.unref();
         try {
-          const confirmed = await session?.confirmNativeCleanup?.();
+          const confirmed = await Promise.race([session.confirmNativeCleanup(), expired.promise]);
           if (
             !confirmed?.ok ||
             (confirmed.value !== "deleted" && confirmed.value !== "not-persisted")
@@ -404,17 +411,24 @@ export class ExternalThreadRuntime {
           nativeSession = confirmed.value;
         } catch (error) {
           throw cleanupUnconfirmed(releaseError ?? error);
+        } finally {
+          clearTimeout(timer);
         }
       }
       if (releaseError) throw releaseError;
+      if (nativeSession === "deleted" || nativeSession === "not-persisted") {
+        this.#nativeCleanupReceipts.set(hostThreadId, nativeSession);
+      }
       this.remove(hostThreadId);
       await this.#repository.removeThread(hostThreadId);
+      this.#nativeCleanupReceipts.delete(hostThreadId);
       return nativeSession;
     });
   }
 
   clear(): void {
     this.#liveFailures.clear();
+    this.#nativeCleanupReceipts.clear();
     this.#threads.clear();
     this.#steeredTurnIds.clear();
   }
@@ -563,7 +577,7 @@ export class ExternalThreadRuntime {
       sessionUnavailable: false,
       steeredTurnIds,
     };
-    if (!input.record.subagent) {
+    if (!input.record.subagent && !input.record.billingSourceRef) {
       this.#historyCapabilities.set(harnessId, input.session.capabilities.history);
     }
     this.#restoreUsageMeasurements(externalThread);

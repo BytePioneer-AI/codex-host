@@ -78,6 +78,7 @@ async function listedThreadIds(fixture: ReturnType<typeof createFixture>, id = 9
 function fakeBillingAdapter(
   confirmNativeCleanup: BillingSourceSession["confirmNativeCleanup"],
   mismatched = false,
+  withNativeRef = false,
 ) {
   const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("omp"));
   const ordinaryOpen = adapter.open.bind(adapter);
@@ -90,9 +91,11 @@ function fakeBillingAdapter(
       const billingSourceRef = mismatched
         ? { ...input.billingSourceRef, id: "different-source" }
         : input.billingSourceRef;
-      Object.defineProperty(opened.value, "initialState", {
-        value: { ...opened.value.initialState, nativeRef: undefined },
-      });
+      if (!withNativeRef) {
+        Object.defineProperty(opened.value, "initialState", {
+          value: { ...opened.value.initialState, nativeRef: undefined },
+        });
+      }
       return {
         ok: true,
         value: Object.assign(opened.value, { billingSourceRef, confirmNativeCleanup }),
@@ -103,6 +106,66 @@ function fakeBillingAdapter(
 }
 
 describe("external Thread local deletion", () => {
+  it("closes an ordinary Session before replying to a failed identity commit", async () => {
+    const fixture = createFixture();
+    const commit = vi.spyOn(fixture.mappingStore, "commitReady");
+    commit.mockImplementationOnce(async () => {
+      const session = loadedSession(fixture);
+      vi.spyOn(session, "close");
+      throw new Error("disk failure");
+    });
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "thread/start",
+        params: { model: "codexhost/pi-native", cwd: "/synthetic" },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 2))).toMatchObject({
+        error: { code: -32081 },
+      });
+      expect(loadedSession(fixture).close).toHaveBeenCalledOnce();
+      expect(await fixture.mappingStore.listThreads()).toEqual([]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("removes a ready Billing Source mapping if publishing the create reply fails", async () => {
+    const { adapter, openBillingSource } = fakeBillingAdapter(
+      async () => ({ ok: true, value: "not-persisted" }),
+      false,
+      true,
+    );
+    const fixture = createFixture({
+      additionalAdapters: new Map([["omp", Object.assign(adapter, { openBillingSource })]]),
+    });
+    const commitReady = fixture.mappingStore.commitReady.bind(fixture.mappingStore);
+    vi.spyOn(fixture.mappingStore, "commitReady").mockImplementationOnce(async (input) => {
+      const ready = await commitReady(input);
+      vi.spyOn(fixture.desktopOutput, "write").mockImplementationOnce(() => {
+        throw new Error("reply transport failure");
+      });
+      return ready;
+    });
+    try {
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "thread/start",
+        params: {
+          model: "codexhost/omp-native",
+          cwd: "/synthetic",
+          billingSourceRef: { harnessId: "omp", id: "source-ready" },
+        },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 2))).toMatchObject({
+        error: { code: -32081 },
+      });
+      expect(await fixture.mappingStore.listThreads()).toEqual([]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("closes the loaded connection and publishes the native deletion notification after replying", async () => {
     const fixture = createFixture();
     try {
@@ -297,8 +360,16 @@ describe("external Thread local deletion", () => {
       });
       expect(unbound).toHaveBeenCalledOnce();
       expect(execute).not.toHaveBeenCalled();
-      expect(await deleteThread(fixture, threadId, 13)).toEqual({
-        id: 13,
+      vi.spyOn(fixture.mappingStore, "removeThread").mockRejectedValueOnce(
+        new Error("disk failure after native cleanup"),
+      );
+      expect(await deleteThread(fixture, threadId, 13)).toMatchObject({ error: { code: -32081 } });
+      expect(await fixture.mappingStore.getThread(id)).toMatchObject({ billingSourceRef });
+      expect(fixture.collector.messages.some((message) => method(message, "thread/deleted"))).toBe(
+        false,
+      );
+      expect(await deleteThread(fixture, threadId, 14)).toEqual({
+        id: 14,
         result: { nativeSession: "not-persisted", hostMapping: "deleted" },
       });
       await expectDeleted(fixture, threadId);
@@ -306,6 +377,94 @@ describe("external Thread local deletion", () => {
       await stopFixture(fixture);
     }
   });
+
+  it("bounds native cleanup confirmation and allows the user to retry deletion", async () => {
+    const started = Promise.withResolvers<undefined>();
+    const pending = Promise.withResolvers<HarnessResult<"not-persisted">>();
+    const receipt = { ok: true, value: "not-persisted" } as const;
+    const confirm = vi
+      .fn<BillingSourceSession["confirmNativeCleanup"]>()
+      .mockImplementationOnce(() => {
+        started.resolve(undefined);
+        return pending.promise;
+      })
+      .mockResolvedValue(receipt);
+    const { adapter, openBillingSource } = fakeBillingAdapter(confirm);
+    const fixture = createFixture({
+      additionalAdapters: new Map([["omp", Object.assign(adapter, { openBillingSource })]]),
+    });
+    try {
+      const threadId = await startExternalThread(fixture, "codexhost/omp-native", 2, {
+        billingSourceRef: { harnessId: "omp", id: "source-timeout" },
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      writeRequest(fixture.desktopInput, { id: 10, method: "thread/delete", params: { threadId } });
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(60_000);
+      vi.useRealTimers();
+      expect(await fixture.collector.waitFor((message) => requestId(message, 10))).toMatchObject({
+        error: { code: -32075 },
+      });
+      expect(
+        await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+      ).not.toBeNull();
+      pending.resolve(receipt);
+      expect(await deleteThread(fixture, threadId, 11)).toEqual({
+        id: 11,
+        result: { nativeSession: "not-persisted", hostMapping: "deleted" },
+      });
+      await expectDeleted(fixture, threadId);
+    } finally {
+      vi.useRealTimers();
+      pending.resolve(receipt);
+      await stopFixture(fixture);
+    }
+  });
+
+  it.each(["rejected", "invalid", "missing"])(
+    "keeps an explicit deletion path when Billing Source open cleanup is %s",
+    async (failure) => {
+      const { adapter, openBillingSource } = fakeBillingAdapter(async () => ({
+        ok: true,
+        value: "not-persisted",
+      }));
+      if (failure === "rejected") {
+        openBillingSource.mockRejectedValueOnce(new Error("native setup rejected"));
+      } else {
+        openBillingSource.mockResolvedValueOnce({
+          ok: false,
+          error: { code: "nativeFailure", message: "native setup failed", retryable: false },
+          ...(failure === "invalid" ? { nativeCleanup: "invalid" } : {}),
+        } as BillingSourceOpenResult);
+      }
+      const fixture = createFixture({
+        additionalAdapters: new Map([["omp", Object.assign(adapter, { openBillingSource })]]),
+      });
+      try {
+        const billingSourceRef = { harnessId: "omp", id: "source-open-failure" };
+        writeRequest(fixture.desktopInput, {
+          id: 2,
+          method: "thread/start",
+          params: { model: "codexhost/omp-native", cwd: "/synthetic", billingSourceRef },
+        });
+        const response = await fixture.collector.waitFor((message) => requestId(message, 2));
+        const [retained] = await fixture.mappingStore.listThreads();
+        expect(retained).toMatchObject({ state: "creating", billingSourceRef });
+        if (!retained) throw new Error("Expected the retained Thread");
+        const threadId = retained.hostThreadId;
+        expect(response).toMatchObject({
+          error: { code: -32075, message: expect.stringContaining(threadId) },
+        });
+        expect(await deleteThread(fixture, threadId)).toEqual({
+          id: 10,
+          result: { nativeSession: "unknown", hostMapping: "deleted" },
+        });
+        await expectDeleted(fixture, threadId);
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
 
   it("confirms disposable cleanup during normal Host shutdown and leaves no mapping after restart", async () => {
     const confirmNativeCleanup = vi.fn(async (): Promise<HarnessResult<"not-persisted">> => ({

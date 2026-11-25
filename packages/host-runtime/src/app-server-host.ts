@@ -86,10 +86,12 @@ import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 
 import type {
+  BillingSourceOpenResult,
   BillingSourceSession,
   CreateSessionInput,
   HarnessAdapter,
   HarnessOutput,
+  HarnessResult,
   HarnessSession,
   HarnessSessionCapabilities,
   NativeCleanupReceipt,
@@ -4389,9 +4391,10 @@ export class AppServerHost {
     const harnessId = location.record.harnessId as ExternalHarnessId;
     const saved = decodeExternalTransportSelection(harnessId, location.record.transportModelId);
     const threadUsage = this.#persistedThreadUsage(location.record);
-    const history = location.record.subagent
-      ? COLD_HISTORY_CAPABILITIES
-      : await this.#resolveColdHistoryCapabilities(harnessId, location.record.cwd);
+    const history =
+      location.record.subagent || location.record.billingSourceRef
+        ? COLD_HISTORY_CAPABILITIES
+        : await this.#resolveColdHistoryCapabilities(harnessId, location.record.cwd);
     const inspection = threadInspectionSchema.parse({
       owner: "external",
       harnessId: location.record.harnessId,
@@ -4480,8 +4483,9 @@ export class AppServerHost {
       void this.#refreshExternalThreadUsage(thread, () => refreshUsage.call(session));
     }
     const harnessId = (thread?.harnessId ?? location.record.harnessId) as ExternalHarnessId;
-    if (!thread) await this.#waitForPlugins();
-    const adapter = this.#externalAdapters.get(harnessId);
+    const useAdapter = !!thread || !location.record.billingSourceRef;
+    if (useAdapter && !thread) await this.#waitForPlugins();
+    const adapter = useAdapter ? this.#externalAdapters.get(harnessId) : undefined;
     if (!session?.readAccountCredits && adapter?.credits && adapter.refreshCredits)
       void Promise.resolve()
         .then(() => adapter.refreshCredits?.())
@@ -5368,7 +5372,8 @@ export class AppServerHost {
       return;
     }
     const billingSourceRef = binding?.data;
-    if (billingSourceRef && !adapter.openBillingSource) {
+    const openBillingSource = adapter.openBillingSource;
+    if (billingSourceRef && !openBillingSource) {
       this.#routeObservationTracker.rejectCreate(request.id);
       await this.#writer.json(
         rpcError(request, -32070, "Harness does not support Billing Source binding"),
@@ -5485,25 +5490,42 @@ export class AppServerHost {
       ...(requestedThinkingOptionId ? { thinkingOptionId: requestedThinkingOptionId } : {}),
       ...(requestedPermissionModeId ? { permissionModeId: requestedPermissionModeId } : {}),
     };
-    const sessionResult =
-      billingSourceRef && adapter.openBillingSource
-        ? await adapter.openBillingSource({ ...openInput, billingSourceRef })
-        : await adapter.open(openInput);
+    let sessionResult: HarnessResult<HarnessSession> | BillingSourceOpenResult;
+    if (billingSourceRef && openBillingSource) {
+      try {
+        sessionResult = await openBillingSource.call(adapter, { ...openInput, billingSourceRef });
+      } catch {
+        sessionResult = {
+          ok: false,
+          error: {
+            code: "nativeFailure",
+            message: "Billing Source Session open failed",
+            retryable: false,
+          },
+          nativeCleanup: "unknown",
+        };
+      }
+    } else {
+      sessionResult = await adapter.open(openInput);
+    }
     if (!sessionResult.ok) {
       this.#routeObservationTracker.rejectCreate(request.id);
-      const nativeCleanup =
-        "nativeCleanup" in sessionResult ? sessionResult.nativeCleanup : "not-persisted";
-      if (nativeCleanup !== "unknown") {
+      const cleanupConfirmed =
+        !billingSourceRef ||
+        ("nativeCleanup" in sessionResult &&
+          (sessionResult.nativeCleanup === "deleted" ||
+            sessionResult.nativeCleanup === "not-persisted"));
+      if (cleanupConfirmed) {
         await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
       }
       const mapped = mapExternalThreadHarnessError(sessionResult.error, "create");
       await this.#writer.json(
         rpcError(
           request,
-          nativeCleanup === "unknown" ? -32075 : mapped.code,
-          nativeCleanup === "unknown"
-            ? `${mapped.message}; Thread ${record.hostThreadId} retained with unknown native cleanup`
-            : mapped.message,
+          cleanupConfirmed ? mapped.code : -32075,
+          cleanupConfirmed
+            ? mapped.message
+            : `${mapped.message}; Thread ${record.hostThreadId} retained with unknown native cleanup`,
         ),
       );
       return;
@@ -5597,10 +5619,15 @@ export class AppServerHost {
         if (record.state === "ready") await this.#notifyExternalThreadStarted(thread);
       } catch {
         this.#routeObservationTracker.forgetThread(record.hostThreadId);
-        const nativeCleanup = bound ? await closeBillingSourceAfterSetup(session) : "not-persisted";
+        const nativeCleanup = bound ? await closeBillingSourceAfterSetup(session) : undefined;
         if (nativeCleanup !== "unknown") {
           this.#externalRuntime.remove(record.hostThreadId);
-          await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
+          if (bound) {
+            await this.#repository.removeThread(record.hostThreadId).catch(() => undefined);
+          } else {
+            await session.close().catch(() => undefined);
+            await this.#repository.removeProvisional(record.hostThreadId).catch(() => undefined);
+          }
         } else if (externalThread) {
           this.#externalRuntime.markSessionUnavailable(externalThread);
         }

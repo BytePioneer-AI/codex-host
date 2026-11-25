@@ -37,6 +37,36 @@ function files(entries: Record<string, string>) {
 }
 
 describe("identified npm installation", () => {
+  it("removes a superseded package before installing its successor and allows postinstall scripts", async () => {
+    vi.stubGlobal("process", { ...process, platform: "linux" });
+    const prefix = path.resolve("legacy-prefix");
+    const directory = path.join(prefix, "lib", "node_modules", "opencode-ai");
+    files({
+      [path.join(directory, "package.json")]: JSON.stringify({
+        name: "opencode-ai",
+        version: "1.19.6",
+        bin: { opencode: "bin/opencode" },
+      }),
+    });
+    mocks.fetch.mockResolvedValue(JSON.stringify({ version: "2.4.1" }));
+    const installation = await npmInstallation(
+      path.join(directory, "bin", "opencode"),
+      ["@opencode/cli", "opencode-ai"],
+      { npm_config_allow_scripts: "@xai-official/grok" },
+      { successor: "@opencode/cli", allowScripts: "@opencode/cli" },
+    );
+    await expect(installation?.latest()).resolves.toBe("2.4.1");
+    expect(mocks.fetch).toHaveBeenCalledWith("https://registry.npmjs.org/%40opencode%2Fcli/latest");
+    await installation?.update("2.4.1");
+    expect(mocks.run.mock.calls.map((call) => call[1])).toEqual([
+      ["uninstall", "--global", "--prefix", prefix, "opencode-ai"],
+      ["install", "--global", "--prefix", prefix, "@opencode/cli@2.4.1"],
+    ]);
+    expect(mocks.run.mock.calls[1]?.[2]).toMatchObject({
+      npm_config_allow_scripts: "@xai-official/grok,@opencode/cli",
+    });
+  });
+
   it("targets the executable's prefix even when npm comes from a different prefix", async () => {
     vi.stubGlobal("process", { ...process, platform: "linux" });
     const prefix = path.resolve("chosen-prefix");

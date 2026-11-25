@@ -29,12 +29,59 @@ beforeEach(() => {
   mocks.resolve.mockReturnValue(executable);
   mocks.realpath.mockImplementation(async (value: string) => value);
   mocks.npm.mockResolvedValue(null);
-  mocks.fetch.mockResolvedValue(JSON.stringify({ tag_name: "v1.1.0" }));
+  mocks.fetch.mockResolvedValue(JSON.stringify({ version: "1.1.0" }));
   mocks.run.mockResolvedValue("1.0.0");
 });
 afterEach(() => vi.unstubAllGlobals());
 
 describe("OpenCode installation", () => {
+  it("reads the current version from the CLI's prefixed output and non-1/2 versions", async () => {
+    mocks.run.mockResolvedValue("opencode v2.4.1");
+    mocks.npm.mockResolvedValue(null);
+    mocks.fetch.mockResolvedValue(JSON.stringify({ version: "2.4.1" }));
+    await expect(createOpenCodeInstallation({})("check")).resolves.toMatchObject({
+      currentVersion: "2.4.1",
+      latestVersion: "2.4.1",
+      updateAvailable: false,
+    });
+
+    mocks.run.mockResolvedValue("0.15.0");
+    await expect(createOpenCodeInstallation({})("check")).resolves.toMatchObject({
+      currentVersion: "0.15.0",
+      latestVersion: "2.4.1",
+      updateAvailable: true,
+    });
+  });
+
+  it("tracks the @opencode/cli release line for npm and native installations", async () => {
+    mocks.npm.mockResolvedValue({
+      canUpdate: true,
+      latest: async () => "2.4.1",
+      update: mocks.update,
+    });
+    mocks.update.mockResolvedValue(undefined);
+    await createOpenCodeInstallation({})("check");
+    expect(mocks.npm).toHaveBeenCalledWith(
+      executable,
+      ["@opencode/cli", "opencode-ai"],
+      {},
+      { successor: "@opencode/cli", allowScripts: "@opencode/cli" },
+    );
+
+    mocks.npm.mockResolvedValue(null);
+    mocks.fetch.mockResolvedValue(JSON.stringify({ version: "2.4.1" }));
+    await expect(createOpenCodeInstallation({ HOME: home })("check")).resolves.toMatchObject({
+      currentVersion: "1.0.0",
+      latestVersion: "2.4.1",
+      updateAvailable: true,
+      notice: {
+        en: expect.stringContaining("cannot be resumed"),
+        "zh-CN": expect.stringContaining("无法再恢复"),
+      },
+    });
+    expect(mocks.fetch).toHaveBeenCalledWith("https://registry.npmjs.org/%40opencode%2Fcli/latest");
+  });
+
   it("uses a fixed non-interactive method only for the standard native install", async () => {
     let version = "1.0.0";
     mocks.run.mockImplementation(async (_command, args) => {

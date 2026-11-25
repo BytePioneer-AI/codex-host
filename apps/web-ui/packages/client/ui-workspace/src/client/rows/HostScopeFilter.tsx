@@ -178,6 +178,59 @@ function HostScopeWorkspacesEditor({
   );
 }
 
+export function HostScopeTabBar({ workspaces, state, onChange, t }: HostScopeFilterProps) {
+  const hasRemote = useMemo(() => hasRemoteWorkspaces(workspaces), [workspaces]);
+  const hosts = useMemo(() => deriveAvailableHosts(workspaces), [workspaces]);
+  const effective = useMemo(() => reconcileHostScopeFilter(state, workspaces), [state, workspaces]);
+
+  if (!hasRemote) return null;
+
+  return (
+    <div className={css.tabBar} role="tablist" aria-label={t("hostScope.host.label")}>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={effective.selectedHost === "all"}
+        className={clsx(css.tabItem, effective.selectedHost === "all" && css.tabItemActive)}
+        onClick={() => {
+          onChange(selectHostScope(effective, "all"));
+        }}
+      >
+        <span className={css.tabLabel}>{t("hostScope.allShort")}</span>
+      </button>
+      {hosts.map((host) => {
+        const selected = effective.selectedHost === host.key;
+        const label = hostDisplayLabel(host, t);
+        const title =
+          host.hostId !== undefined ? `${label} · ${hostStatusLabel(host.state, t)}` : label;
+        return (
+          <button
+            key={host.key}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            className={clsx(css.tabItem, selected && css.tabItemActive)}
+            title={title}
+            onClick={() => {
+              onChange(selectHostScope(effective, host.key));
+            }}
+          >
+            {host.hostId !== undefined && (
+              <span
+                className={css.tabDot}
+                data-state={host.state ?? "disconnected"}
+                data-color={resolveRemotePeerColor(host.hostId, host.color)}
+                aria-hidden="true"
+              />
+            )}
+            <span className={css.tabLabel}>{label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function HostScopeFilter({ workspaces, state, onChange, t }: HostScopeFilterProps) {
   const [open, setOpen] = useState(false);
   const [expandedAllHostKey, setExpandedAllHostKey] = useState<string | null>(null);

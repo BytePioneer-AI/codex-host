@@ -80,11 +80,13 @@ export function ThreadTreeSummary({
   node,
   title,
   toggle,
+  prefix,
   t,
 }: {
   node: SessionNode;
   title: string;
   toggle: () => void;
+  prefix?: ReactNode;
   t: WorkspaceBrowserProps["t"];
 }) {
   const groupId = useThreadChildGroup();
@@ -121,6 +123,8 @@ export function ThreadTreeSummary({
         toggle();
       }}
     >
+      {prefix}
+      {prefix !== undefined && prefix !== null && <span aria-hidden="true">{" · "}</span>}
       <ThreadTreeSummaryContent count={tree.descendantCount} activity={tree.activity} t={t} />
     </button>
   );

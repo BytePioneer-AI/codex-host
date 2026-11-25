@@ -12,6 +12,7 @@
  */
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
+import { resolveRemotePeerColor } from "@codexhost/shared-contracts";
 import type { PropsRenderSlots } from "@deepseek-ai/dsh-client-ui-slots";
 import {
   HoverCard,
@@ -159,6 +160,7 @@ export function ProjectRowItem({
   onCreate,
   actions: suppliedActions,
   drag: suppliedDrag,
+  showHost = true,
   home,
   newShortcut,
   t,
@@ -171,6 +173,8 @@ export function ProjectRowItem({
   actions?: { rename: () => void; delete: () => void } | undefined;
   /** Present only for real Workspace rows in the grouped view. */
   drag?: WorkspaceRowDragProps | undefined;
+  /** Whether to show remote host accent rail and tag when viewing multiple hosts. */
+  showHost?: boolean | undefined;
   /** Host account home; POSIX home-rooted hover paths display as `~`. */
   home?: string | undefined;
   t: RowTranslate;
@@ -180,6 +184,11 @@ export function ProjectRowItem({
   const drag = group.remote ? undefined : suppliedDrag;
   // The ungrouped bucket has no workspace title: its label is dictionary copy.
   const label = row.workspaceId === undefined ? t("group.ungrouped") : row.label;
+  const remoteColor =
+    row.remote !== undefined
+      ? resolveRemotePeerColor(row.remote.hostId, row.remote.color)
+      : undefined;
+  const showRemoteIndicator = showHost && row.workspaceId !== undefined && row.remote !== undefined;
   const [menuOpen, setMenuOpen] = useState(false);
   const [contextPoint, setContextPoint] = useState<DOMRect | null>(null);
   const workspaceMenuItems = [
@@ -220,13 +229,21 @@ export function ProjectRowItem({
       }
       onDragEnd={drag?.end}
     >
+      {showRemoteIndicator && row.remote && (
+        <span
+          className={clsx(css.hostRail, css.hostRailWorkspace)}
+          data-color={remoteColor}
+          data-state={row.remote.state}
+          aria-hidden="true"
+        />
+      )}
       <span className={clsx(css.slot, row.expanded && css.folderExpanded)}>
         {row.expanded ? <IconFolderOpenRegular /> : <IconFolderCloseRegular />}
       </span>
       <span className={css.projectText}>
         <span className={css.title}>{label}</span>
       </span>
-      {row.workspaceId !== undefined && row.remote && (
+      {showRemoteIndicator && row.remote && (
         <HostBadge host={row.remote} variant="workspace" t={t} />
       )}
       <span className={css.rowActions}>
@@ -338,9 +355,30 @@ function SessionHoverContent({
   const statuses = sessionStatuses(node, t).filter(
     (status) => !(node.archived && (status.state === "done" || status.state === "idle")),
   );
+  const remoteColor =
+    node.remote !== undefined
+      ? resolveRemotePeerColor(node.remote.hostId, node.remote.color)
+      : undefined;
+  const remoteStatusLabel =
+    node.remote?.state === "connected"
+      ? t("host.connected")
+      : node.remote?.state === "connecting"
+        ? t("host.connecting")
+        : t("host.disconnected");
   return (
     <div className={css.hoverContent}>
       <div className={css.hoverTitle}>{displayTitle(node, t)}</div>
+      {node.remote && (
+        <div className={css.hoverHost}>
+          <span
+            className={css.hoverHostDot}
+            data-color={remoteColor}
+            data-state={node.remote.state}
+            aria-hidden="true"
+          />
+          <span>{`${node.remote.displayName} · ${remoteStatusLabel}`}</span>
+        </div>
+      )}
       {node.cwd && <div className={css.hoverPath}>{node.cwd}</div>}
       {/* Same placeholder rule as the row's trailing cell: no timestamp
           before the first prompt. */}
@@ -507,6 +545,20 @@ export function SessionNodeItem({
   const statuses = sessionStatuses(node, t);
   const primaryStatus = statuses[0];
   const showStatus = !row.archived && primaryStatus.state !== "idle";
+  const remoteColor =
+    row.remote !== undefined
+      ? resolveRemotePeerColor(row.remote.hostId, row.remote.color)
+      : undefined;
+  const showHostRail = showHost && row.remote !== undefined;
+  const showSelectedHostHint = selected && showHostRail;
+  const hasCollapsedSummary =
+    !expanded && collapseStyle === "summary" && (node.tree?.descendantCount ?? 0) > 0;
+  const selectedHostHint =
+    showSelectedHostHint && row.remote ? (
+      <span className={css.selectedHostHint} data-color={remoteColor} data-state={row.remote.state}>
+        {row.remote.displayName}
+      </span>
+    ) : undefined;
   // Archived rows hold their in-place grayed slot, so manual reorder cannot
   // move them. Pinned rows drag within the pinned block: the browser gates
   // their drop targets to fellow pinned rows.
@@ -617,6 +669,14 @@ export function SessionNodeItem({
             }
       }
     >
+      {showHostRail && row.remote && (
+        <span
+          className={css.hostRail}
+          data-color={remoteColor}
+          data-state={row.remote.state}
+          aria-hidden="true"
+        />
+      )}
       <div className={css.sessionMain}>
         <SessionRowContent
           identityLabel={
@@ -657,16 +717,6 @@ export function SessionNodeItem({
               : undefined
           }
         >
-          {showHost && row.remote && (
-            <>
-              <HostBadge host={row.remote} variant="session" t={t} />
-              {!row.blank && (
-                <span className={css.hostTimeSep} aria-hidden="true">
-                  ·
-                </span>
-              )}
-            </>
-          )}
           <span className={css.trailing}>
             {/* A blank New Session row is a provisional placeholder: nothing has
           happened in it yet, so a "now" timestamp and the row verbs
@@ -748,13 +798,19 @@ export function SessionNodeItem({
           </span>
         </SessionRowContent>
       </div>
-      {!expanded && collapseStyle === "summary" && (
+      {hasCollapsedSummary && (
         <ThreadTreeSummary
           node={node}
           title={title}
+          prefix={selectedHostHint}
           toggle={() => toggle(node.id, true, childGroupId)}
           t={t}
         />
+      )}
+      {!hasCollapsedSummary && selectedHostHint !== undefined && (
+        <div data-selected-host-meta className={css.selectedHostSubline}>
+          {selectedHostHint}
+        </div>
       )}
     </div>
   );

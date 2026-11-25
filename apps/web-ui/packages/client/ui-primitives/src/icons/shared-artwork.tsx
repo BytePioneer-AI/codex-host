@@ -183,11 +183,11 @@ export const FolderCloseArtwork = ({ size = 16, className, strokeWidth }: Weight
     strokeLinejoin="round"
   >
     <path
-      d="M1.75 4.2C1.75 3.12304 2.62304 2.25 3.7 2.25H5.52C5.93109 2.25 6.32534 2.4133 6.61602 2.70398L7.44602 3.53398C7.7367 3.82466 8.13095 3.98796 8.54204 3.98796H12.3C13.377 3.98796 14.25 4.861 14.25 5.93796V11.8C14.25 12.877 13.377 13.75 12.3 13.75H3.7C2.62304 13.75 1.75 12.877 1.75 11.8V4.2Z"
+      d="M1.45 4.7A2.15 2.15 0 0 1 3.6 2.55H5.45C6.35 2.55 6.85 3.95 7.95 3.95H12.4A2.15 2.15 0 0 1 14.55 6.1V11.3A2.15 2.15 0 0 1 12.4 13.45H3.6A2.15 2.15 0 0 1 1.45 11.3Z"
       stroke="currentColor"
     />
     {/* The shelf line runs edge to edge, as the Codex sidebar folder does;
        an inset stroke reads as a stray pill at 16px. */}
-    <path d="M1.85 6.75H14.15" stroke="currentColor" />
+    <path d="M1.55 6.95H14.45" stroke="currentColor" />
   </svg>
 );

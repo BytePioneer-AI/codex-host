@@ -563,10 +563,10 @@
 }
 
 /* Expansion is visible immediately after clicking, not only after pointer leave. */
-/* Keep resting Workspace folders slightly quieter than row labels so the
-   sidebar list feels airy; hover and expansion restore emphasis. */
+/* Keep resting Workspace folders gently quieter than row labels while staying
+   crisp and substantial; hover and expansion restore full emphasis. */
 .projectRow > .slot:not(.folderExpanded) {
-  color: color-mix(in srgb, currentColor 76%, transparent);
+  color: color-mix(in srgb, currentColor 86%, transparent);
   transition: color 140ms ease;
 }
 

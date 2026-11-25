@@ -1689,7 +1689,7 @@ const IconProjectAddOutlineArtwork = ({ size = 16, className, strokeWidth }: Wei
     strokeLinejoin="round"
   >
     <path
-      d="M8.1 3.9H7.6C7.2 3.9 6.82 3.74 6.54 3.46L5.88 2.8C5.6 2.52 5.22 2.36 4.82 2.36H3.55C2.56 2.36 1.75 3.17 1.75 4.16V11.84C1.75 12.83 2.56 13.64 3.55 13.64H12.45C13.44 13.64 14.25 12.83 14.25 11.84V8.8"
+      d="M8.2 3.95H7.95C6.85 3.95 6.35 2.55 5.45 2.55H3.6A2.15 2.15 0 0 0 1.45 4.7V11.3A2.15 2.15 0 0 0 3.6 13.45H12.4A2.15 2.15 0 0 0 14.55 11.3V8.6"
       stroke="currentColor"
     />
     <path d="M10 4.5H14" stroke="currentColor" />
@@ -1697,12 +1697,12 @@ const IconProjectAddOutlineArtwork = ({ size = 16, className, strokeWidth }: Wei
   </svg>
 );
 
-/** Regular one-pixel IconProjectAddOutline artwork. */
+/** Regular IconProjectAddOutline artwork. */
 export const IconProjectAddOutlineRegular = (props: IconProps) => (
   <IconProjectAddOutlineArtwork {...props} strokeWidth={ICON_REGULAR_STROKE} />
 );
 
-/** Medium IconProjectAddOutline artwork with a 1.3px stroke. */
+/** Medium IconProjectAddOutline artwork. */
 export const IconProjectAddOutlineMedium = (props: IconProps) => (
   <IconProjectAddOutlineArtwork {...props} strokeWidth={ICON_MEDIUM_STROKE} />
 );
@@ -1717,27 +1717,26 @@ const IconFolderOpenOutlineArtwork = ({ size = 16, className, strokeWidth }: Wei
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
-
     strokeLinecap="round"
     strokeLinejoin="round"
   >
     <path
-      d="M12.3994 13.5986H2.04956C1.49728 13.5986 1.04956 13.1509 1.04956 12.5986V3.40137C1.04956 2.84908 1.49728 2.40137 2.04956 2.40137H4.76632C5.01016 2.40137 5.24561 2.49046 5.42836 2.6519L6.94088 3.98799C7.12364 4.14943 7.35908 4.23852 7.60293 4.23852H12.3994C12.9517 4.23852 13.3994 4.68624 13.3994 5.23852V7.16991"
+      d="M2.25 13.45A1.3 1.3 0 0 1 1.45 12.15V4.7A2.15 2.15 0 0 1 3.6 2.55H5.45C6.35 2.55 6.85 3.95 7.95 3.95H11.65A1.95 1.95 0 0 1 13.6 5.9V6.85"
       stroke="currentColor"
     />
     <path
-      d="M2.55911 7.93683C2.67584 7.49906 3.07229 7.19446 3.52536 7.19446H13.6491C14.3061 7.19446 14.7846 7.81725 14.6153 8.45209L13.4411 12.856C13.3244 13.2938 12.9279 13.5984 12.4748 13.5984H2.35113C1.69411 13.5984 1.21562 12.9756 1.38489 12.3407L2.55911 7.93683Z"
+      d="M2.65 8.12C2.86 7.37 3.54 6.85 4.32 6.85H13.38C14.3 6.85 14.96 7.72 14.72 8.61L13.76 12.18C13.56 12.93 12.88 13.45 12.1 13.45H2.8C1.9 13.45 1.26 12.59 1.5 11.72L2.65 8.12Z"
       stroke="currentColor"
     />
   </svg>
 );
 
-/** Regular one-pixel IconFolderOpenOutline artwork. */
+/** Regular IconFolderOpenOutline artwork. */
 export const IconFolderOpenOutlineRegular = (props: IconProps) => (
   <IconFolderOpenOutlineArtwork {...props} strokeWidth={ICON_REGULAR_STROKE} />
 );
 
-/** Medium IconFolderOpenOutline artwork with a 1.3px stroke. */
+/** Medium IconFolderOpenOutline artwork. */
 export const IconFolderOpenOutlineMedium = (props: IconProps) => (
   <IconFolderOpenOutlineArtwork {...props} strokeWidth={ICON_MEDIUM_STROKE} />
 );
@@ -1752,32 +1751,28 @@ const IconFolderOpenArtwork = ({ size = 16, className, strokeWidth }: WeightedIc
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
     strokeWidth={strokeWidth}
-
     strokeLinecap="round"
     strokeLinejoin="round"
   >
     <path
-      d="M2.55912 7.93683C2.67584 7.49906 3.0723 7.19446 3.52536 7.19446H13.6491C14.3061 7.19446 14.7846 7.81725 14.6153 8.45209L13.4411 12.856C13.3244 13.2938 12.9279 13.5984 12.4748 13.5984H2.35113C1.69411 13.5984 1.21562 12.9756 1.38489 12.3407L2.55912 7.93683Z"
-      fill="currentColor"
-      opacity="0.16"
+      d="M2.25 13.45A1.3 1.3 0 0 1 1.45 12.15V4.7A2.15 2.15 0 0 1 3.6 2.55H5.45C6.35 2.55 6.85 3.95 7.95 3.95H11.65A1.95 1.95 0 0 1 13.6 5.9V6.85"
+      stroke="currentColor"
     />
     <path
-      d="M13.6491 6.69446C14.6346 6.69453 15.3522 7.62895 15.0983 8.58118L13.9245 12.9845C13.7494 13.6412 13.1539 14.0988 12.4743 14.0988H2.35126C1.36574 14.0988 0.648153 13.1643 0.902044 12.212L2.07587 7.80774C2.25102 7.15128 2.84567 6.69455 3.52509 6.69446H13.6491ZM3.52509 7.69446C3.29865 7.69455 3.10004 7.84674 3.04169 8.06555L1.86786 12.4698C1.78345 12.7872 2.02285 13.0988 2.35126 13.0988H12.4743C12.7007 13.0988 12.8992 12.9463 12.9577 12.7277L14.1325 8.32336C14.2171 8.00598 13.9776 7.69453 13.6491 7.69446H3.52509Z"
+      d="M2.65 8.12C2.86 7.37 3.54 6.85 4.32 6.85H13.38C14.3 6.85 14.96 7.72 14.72 8.61L13.76 12.18C13.56 12.93 12.88 13.45 12.1 13.45H2.8C1.9 13.45 1.26 12.59 1.5 11.72L2.65 8.12Z"
       fill="currentColor"
-    />
-    <path
-      d="M4.7666 1.90137C5.13227 1.90144 5.48571 2.03525 5.75977 2.27734L7.27246 3.61328C7.36379 3.69382 7.48174 3.73828 7.60352 3.73828H12.3994C13.2276 3.73841 13.8993 4.41005 13.8994 5.23828V6.7168C13.8183 6.70327 13.735 6.69436 13.6494 6.69434H12.8994V5.23828C12.8993 4.96233 12.6754 4.73841 12.3994 4.73828H7.60352C7.23781 4.73828 6.88446 4.60438 6.61035 4.3623L5.09766 3.02637C5.00636 2.94576 4.88838 2.90144 4.7666 2.90137H2.0498C1.77366 2.90137 1.5498 3.12523 1.5498 3.40137V9.78223L0.902344 12.2119C0.648452 13.1642 1.36604 14.0986 2.35156 14.0986H2.0498C1.2214 14.0986 0.549838 13.427 0.549805 12.5986V3.40137C0.549805 2.57294 1.22138 1.90137 2.0498 1.90137H4.7666Z"
-      fill="currentColor"
+      fillOpacity="0.1"
+      stroke="currentColor"
     />
   </svg>
 );
 
-/** Regular IconFolderOpen artwork; its fill-only geometry is weight-independent. */
+/** Regular IconFolderOpen artwork with soft front-flap tint. */
 export const IconFolderOpenRegular = (props: IconProps) => (
   <IconFolderOpenArtwork {...props} strokeWidth={ICON_REGULAR_STROKE} />
 );
 
-/** Medium IconFolderOpen artwork; it matches Regular because the geometry is fill-only. */
+/** Medium IconFolderOpen artwork with soft front-flap tint. */
 export const IconFolderOpenMedium = (props: IconProps) => (
   <IconFolderOpenArtwork {...props} strokeWidth={ICON_MEDIUM_STROKE} />
 );

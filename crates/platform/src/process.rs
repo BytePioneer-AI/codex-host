@@ -627,6 +627,7 @@ pub fn desktop_process_ids_for_installation(
         .filter(|process| {
             windows_process::process_image_path(process.id)
                 .is_ok_and(|path| windows_executable_key(&path) == expected)
+                && !windows_process::process_has_exited(process.id)
         })
         .map(|process| process.id)
         .collect())
@@ -766,8 +767,9 @@ pub fn terminate_process_by_id(_process_id: u32) -> Result<(), PlatformError> {
 
 #[cfg(target_os = "windows")]
 pub fn process_exists(process_id: u32) -> bool {
-    windows_process::process_entries()
-        .is_ok_and(|entries| entries.iter().any(|process| process.id == process_id))
+    !windows_process::process_has_exited(process_id)
+        && windows_process::process_entries()
+            .is_ok_and(|entries| entries.iter().any(|process| process.id == process_id))
 }
 
 #[cfg(target_os = "macos")]

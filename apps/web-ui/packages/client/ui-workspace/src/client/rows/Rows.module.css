@@ -27,72 +27,58 @@
 }
 .hostBadge[data-color="blue"],
 .hostRail[data-color="blue"],
-.selectedHostHint[data-color="blue"],
 .hoverHostDot[data-color="blue"] {
   --ch-peer-dot-color: #3b76cc;
 }
 .hostBadge[data-color="purple"],
 .hostRail[data-color="purple"],
-.selectedHostHint[data-color="purple"],
 .hoverHostDot[data-color="purple"] {
   --ch-peer-dot-color: #7460cc;
 }
 .hostBadge[data-color="cyan"],
 .hostRail[data-color="cyan"],
-.selectedHostHint[data-color="cyan"],
 .hoverHostDot[data-color="cyan"] {
   --ch-peer-dot-color: #0e8fa8;
 }
 .hostBadge[data-color="green"],
 .hostRail[data-color="green"],
-.selectedHostHint[data-color="green"],
 .hoverHostDot[data-color="green"] {
   --ch-peer-dot-color: #2f8c70;
 }
 .hostBadge[data-color="amber"],
 .hostRail[data-color="amber"],
-.selectedHostHint[data-color="amber"],
 .hoverHostDot[data-color="amber"] {
   --ch-peer-dot-color: #c27803;
 }
 .hostBadge[data-color="rose"],
 .hostRail[data-color="rose"],
-.selectedHostHint[data-color="rose"],
 .hoverHostDot[data-color="rose"] {
   --ch-peer-dot-color: #c94a6a;
 }
 .hostBadge[data-color="slate"],
 .hostRail[data-color="slate"],
-.selectedHostHint[data-color="slate"],
 .hoverHostDot[data-color="slate"] {
   --ch-peer-dot-color: #64748b;
 }
-:global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .selectedHostHint, .hoverHostDot)[data-color="blue"] {
+:global(body[data-ds-dark-theme]) :is(.hostBadge, .hostRail, .hoverHostDot)[data-color="blue"] {
   --ch-peer-dot-color: #7bb0f8;
 }
-:global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .selectedHostHint, .hoverHostDot)[data-color="purple"] {
+:global(body[data-ds-dark-theme]) :is(.hostBadge, .hostRail, .hoverHostDot)[data-color="purple"] {
   --ch-peer-dot-color: #a899f2;
 }
-:global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .selectedHostHint, .hoverHostDot)[data-color="cyan"] {
+:global(body[data-ds-dark-theme]) :is(.hostBadge, .hostRail, .hoverHostDot)[data-color="cyan"] {
   --ch-peer-dot-color: #63c5da;
 }
-:global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .selectedHostHint, .hoverHostDot)[data-color="green"] {
+:global(body[data-ds-dark-theme]) :is(.hostBadge, .hostRail, .hoverHostDot)[data-color="green"] {
   --ch-peer-dot-color: #6ec4a7;
 }
-:global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .selectedHostHint, .hoverHostDot)[data-color="amber"] {
+:global(body[data-ds-dark-theme]) :is(.hostBadge, .hostRail, .hoverHostDot)[data-color="amber"] {
   --ch-peer-dot-color: #e0ae58;
 }
-:global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .selectedHostHint, .hoverHostDot)[data-color="rose"] {
+:global(body[data-ds-dark-theme]) :is(.hostBadge, .hostRail, .hoverHostDot)[data-color="rose"] {
   --ch-peer-dot-color: #e08298;
 }
-:global(body[data-ds-dark-theme])
-  :is(.hostBadge, .hostRail, .selectedHostHint, .hoverHostDot)[data-color="slate"] {
+:global(body[data-ds-dark-theme]) :is(.hostBadge, .hostRail, .hoverHostDot)[data-color="slate"] {
   --ch-peer-dot-color: #94a3b8;
 }
 .hostBadge[data-state="connecting"] {
@@ -173,34 +159,6 @@
   background: var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-warn-primary, #c27803));
   opacity: 0.85;
   animation: hostDotPulse 1.6s ease-in-out infinite;
-}
-
-.selectedHostSubline {
-  display: block;
-  width: calc(100% - var(--dsh-thread-icon-size, 14px));
-  min-width: 0;
-  margin-inline-start: var(--dsh-thread-icon-size, 14px);
-  margin-block-end: 3px;
-  padding: 0 8px;
-  font-size: 11px;
-  line-height: 16px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.selectedHostHint {
-  --ch-peer-dot-color: #3b76cc;
-  font-weight: 500;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.selectedHostHint[data-state="connected"] {
-  color: var(--ch-peer-dot-color);
-}
-
-.selectedHostHint[data-state="connecting"] {
-  color: var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-warn-primary, #c27803));
 }
 
 .hoverHost {
@@ -734,9 +692,8 @@
   top: 13px;
 }
 
-/* Keep a collapsed Thread's title and summary (or selected remote host label) inside one phone-height row. */
-:global([data-phone-drawer])
-  .sessionRow:has(> :is([data-thread-summary], [data-selected-host-meta])) {
+/* Keep a collapsed Thread's title and summary inside one phone-height row. */
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) {
   display: grid;
   grid-template-columns: var(--dsh-thread-icon-size, 16px) minmax(0, 1fr) auto;
   grid-template-rows: 24px 24px;
@@ -744,45 +701,35 @@
   padding-block: 2px;
 }
 
-:global([data-phone-drawer])
-  .sessionRow:has(> :is([data-thread-summary], [data-selected-host-meta]))
-  > .hostRail {
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) > .hostRail {
   top: 7px;
 }
 
-:global([data-phone-drawer])
-  .sessionRow:has(> :is([data-thread-summary], [data-selected-host-meta]))
-  .sessionMain {
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .sessionMain {
   display: contents;
   position: static;
 }
 
-:global([data-phone-drawer])
-  .sessionRow:has(> :is([data-thread-summary], [data-selected-host-meta]))
-  .slot {
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .slot {
   grid-column: 1;
   grid-row: 1;
   align-self: center;
 }
 
-:global([data-phone-drawer])
-  .sessionRow:has(> :is([data-thread-summary], [data-selected-host-meta]))
-  .title {
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .title {
   grid-column: 2;
   grid-row: 1;
   align-self: center;
   margin: 0;
 }
 
-:global([data-phone-drawer])
-  .sessionRow:has(> :is([data-thread-summary], [data-selected-host-meta]))
-  .trailing {
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .trailing {
   grid-column: 3;
   grid-row: 1 / span 2;
   align-self: center;
 }
 
-:global([data-phone-drawer]) .sessionRow > :is([data-thread-summary], [data-selected-host-meta]) {
+:global([data-phone-drawer]) .sessionRow > [data-thread-summary] {
   grid-column: 2;
   grid-row: 2;
   width: 100%;

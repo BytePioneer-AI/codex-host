@@ -550,15 +550,6 @@ export function SessionNodeItem({
       ? resolveRemotePeerColor(row.remote.hostId, row.remote.color)
       : undefined;
   const showHostRail = showHost && row.remote !== undefined;
-  const showSelectedHostHint = selected && showHostRail;
-  const hasCollapsedSummary =
-    !expanded && collapseStyle === "summary" && (node.tree?.descendantCount ?? 0) > 0;
-  const selectedHostHint =
-    showSelectedHostHint && row.remote ? (
-      <span className={css.selectedHostHint} data-color={remoteColor} data-state={row.remote.state}>
-        {row.remote.displayName}
-      </span>
-    ) : undefined;
   // Archived rows hold their in-place grayed slot, so manual reorder cannot
   // move them. Pinned rows drag within the pinned block: the browser gates
   // their drop targets to fellow pinned rows.
@@ -798,19 +789,13 @@ export function SessionNodeItem({
           </span>
         </SessionRowContent>
       </div>
-      {hasCollapsedSummary && (
+      {!expanded && collapseStyle === "summary" && (
         <ThreadTreeSummary
           node={node}
           title={title}
-          prefix={selectedHostHint}
           toggle={() => toggle(node.id, true, childGroupId)}
           t={t}
         />
-      )}
-      {!hasCollapsedSummary && selectedHostHint !== undefined && (
-        <div data-selected-host-meta className={css.selectedHostSubline}>
-          {selectedHostHint}
-        </div>
       )}
     </div>
   );

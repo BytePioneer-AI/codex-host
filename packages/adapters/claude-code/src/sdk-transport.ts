@@ -69,6 +69,8 @@ const APPROVAL_DESCRIPTION_MAX_LENGTH = 500;
 const DEFAULT_ABORT_TIMEOUT_MS = 2_000;
 /** Claude Code emits `queued` as soon as it reads a steer; this only bounds a missing receipt. */
 const DEFAULT_STEER_QUEUED_TIMEOUT_MS = 5_000;
+/** Bounds how long a task removed from `background_tasks_changed` waits for `task_notification`. */
+const DEFAULT_AWAITING_TASK_NOTIFICATION_TIMEOUT_MS = 30_000;
 /** Bounds the Workflow agent labels kept to name agent approvals. */
 const WORKFLOW_AGENT_LABEL_LIMIT = 1_000;
 const INTERRUPT_TIMEOUT_MESSAGE = "Claude SDK interrupt timed out";
@@ -152,6 +154,7 @@ export interface ClaudeSdkTransportOptions {
   closeTimeoutMs: number;
   abortTimeoutMs?: number;
   steerQueuedTimeoutMs?: number;
+  awaitingTaskNotificationTimeoutMs?: number;
   onPermissionModeChanged(permissionMode: ClaudePermissionMode): void;
   onFault(error: unknown): void;
   onPlanLimit(planLimit: ClaudePlanLimitEvent): void;
@@ -491,6 +494,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #thinkingOptionId: HarnessThinkingOptionId;
   #active: ActiveTurn | null = null;
   readonly #steerQueuedTimeoutMs: number;
+  readonly #awaitingTaskNotificationTimeoutMs: number;
   #nativeSteer = false;
   /** Root tool calls of the requested Turn that have started and not yet returned a result. */
   readonly #rootToolCalls = new Set<string>();
@@ -526,8 +530,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #skillNames: ReadonlySet<string> = new Set();
   #started = false;
   #backgroundTasks = new Set<string>();
-  /** Tasks that left the live roster before their terminal `task_notification` arrived. */
-  #awaitingTaskNotifications = new Set<string>();
+  /** Tasks that left the live roster before their terminal `task_notification`, keyed to expiry timestamp. */
+  #awaitingTaskNotifications = new Map<string, number>();
   /** Authoritative count of process-local session crons/wakeups from the latest Stop hook. */
   #sessionCronCount = 0;
   /** True after a session cron tool call until a Stop hook reports `session_crons`. */
@@ -538,6 +542,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#cwd = options.cwd;
     this.#abortTimeoutMs = options.abortTimeoutMs ?? DEFAULT_ABORT_TIMEOUT_MS;
     this.#steerQueuedTimeoutMs = options.steerQueuedTimeoutMs ?? DEFAULT_STEER_QUEUED_TIMEOUT_MS;
+    this.#awaitingTaskNotificationTimeoutMs =
+      options.awaitingTaskNotificationTimeoutMs ?? DEFAULT_AWAITING_TASK_NOTIFICATION_TIMEOUT_MS;
     this.#closeTimeoutMs = options.closeTimeoutMs;
     this.#command = options.command;
     this.#environment = options.environment ?? process.env;
@@ -1299,7 +1305,14 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#sessionCronsUnknown = false;
   }
 
+  #pruneExpiredAwaitingTaskNotifications(now = Date.now()): void {
+    for (const [id, expiresAtMs] of this.#awaitingTaskNotifications) {
+      if (expiresAtMs <= now) this.#awaitingTaskNotifications.delete(id);
+    }
+  }
+
   hasBackgroundTasks(): boolean {
+    this.#pruneExpiredAwaitingTaskNotifications();
     return (
       this.#backgroundTasks.size > 0 ||
       this.#awaitingTaskNotifications.size > 0 ||
@@ -1396,11 +1409,15 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
   }
 
-  /** Observation-only Stop hook: reads authoritative process-local cron count without altering turn control. */
+  /** Observation-only Stop hook: reads authoritative background task and session cron state without altering turn control. */
   readonly #observeStopHook: HookCallback = async (input) => {
-    if (!this.#closing && input.hook_event_name === "Stop" && Array.isArray(input.session_crons)) {
+    if (this.#closing || input.hook_event_name !== "Stop") return {};
+    if (Array.isArray(input.session_crons)) {
       this.#sessionCronCount = input.session_crons.length;
       this.#sessionCronsUnknown = false;
+    }
+    if (Array.isArray(input.background_tasks) && input.background_tasks.length === 0) {
+      this.#awaitingTaskNotifications.clear();
     }
     return {};
   };
@@ -1446,8 +1463,11 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           isRecord(task) && typeof task.task_id === "string" ? [task.task_id] : [],
         ),
       );
+      const now = Date.now();
+      this.#pruneExpiredAwaitingTaskNotifications(now);
+      const expiresAtMs = now + this.#awaitingTaskNotificationTimeoutMs;
       for (const id of this.#backgroundTasks) {
-        if (!next.has(id)) this.#awaitingTaskNotifications.add(id);
+        if (!next.has(id)) this.#awaitingTaskNotifications.set(id, expiresAtMs);
       }
       for (const id of next) {
         this.#awaitingTaskNotifications.delete(id);

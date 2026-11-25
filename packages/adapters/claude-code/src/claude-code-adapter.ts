@@ -238,6 +238,7 @@ interface ActiveTurn {
   nativeTurnRef: NativeTurnRef | null;
   cancellationRequested: boolean;
   usageRequestIds: Set<string>;
+  promptCacheTtlObserved: boolean;
   estimatedInputTokens: number;
   estimatedOutputTokens: number;
   estimatedCostUsd: number;
@@ -1104,6 +1105,7 @@ class ClaudeHarnessSession implements HarnessSession {
       cancellationRequested: false,
       steersAwaitingNative: new Set(),
       usageRequestIds: new Set(),
+      promptCacheTtlObserved: false,
       estimatedInputTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
@@ -1312,6 +1314,7 @@ class ClaudeHarnessSession implements HarnessSession {
       cancellationRequested: false,
       steersAwaitingNative: new Set(),
       usageRequestIds: new Set(),
+      promptCacheTtlObserved: false,
       estimatedInputTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
@@ -2106,6 +2109,7 @@ class ClaudeHarnessSession implements HarnessSession {
       if (this.#phase !== "closed" && this.#phase !== "faulted") {
         this.#meterUsage(event.record);
         if (event.promptCacheTtlSeconds !== undefined) {
+          active.promptCacheTtlObserved = true;
           this.#observePromptCacheTtl(event.promptCacheTtlSeconds);
         }
       }
@@ -2152,6 +2156,7 @@ class ClaudeHarnessSession implements HarnessSession {
       case "message.completed": {
         if (!event.localCommand) {
           if (event.lastRequestUsage?.promptCacheTtlSeconds !== undefined) {
+            active.promptCacheTtlObserved = true;
             this.#promptCacheTtlSeconds = event.lastRequestUsage.promptCacheTtlSeconds;
           }
           this.#lastAssistantResponseAtUnix = Math.floor(Date.now() / 1000);
@@ -2616,6 +2621,7 @@ class ClaudeHarnessSession implements HarnessSession {
       }),
       cancellationRequested: false,
       usageRequestIds: new Set(),
+      promptCacheTtlObserved: false,
       estimatedInputTokens: 0,
       estimatedOutputTokens: 0,
       estimatedCostUsd: 0,
@@ -2639,9 +2645,12 @@ class ClaudeHarnessSession implements HarnessSession {
   #deliverLiveEvent(target: ActiveTurn | null, event: ClaudeTurnEvent): void {
     // Requests belong to Session usage even when no foreground Turn owns the event.
     if (event.type === "usage.request") {
-      this.#meterUsage(event.record);
-      if (event.promptCacheTtlSeconds !== undefined) {
-        this.#observePromptCacheTtl(event.promptCacheTtlSeconds);
+      if (this.#phase !== "closed" && this.#phase !== "faulted") {
+        this.#meterUsage(event.record);
+        if (event.promptCacheTtlSeconds !== undefined) {
+          if (target && this.#active === target) target.promptCacheTtlObserved = true;
+          this.#observePromptCacheTtl(event.promptCacheTtlSeconds);
+        }
       }
       return;
     }
@@ -2704,6 +2713,7 @@ class ClaudeHarnessSession implements HarnessSession {
     // A late native terminal cannot substitute for the process shutdown already in progress.
     if (this.#active !== active || this.#hardCancelTask) return;
     active.rootSegmentActive = false;
+    active.promptCacheTtlObserved = false;
     if (active.cancellation) {
       // The Turn ends only once its background work is confirmed stopped; later Segments
       // still reach it through the idle handler. An unproven interruption still fails it.
@@ -2887,6 +2897,7 @@ class ClaudeHarnessSession implements HarnessSession {
     if (promptTokens > 0) this.#minimumContextUsedTokens = promptTokens;
     const cacheHitRatePercent = claudeCacheHitRatePercent(usage);
     if (usage.promptCacheTtlSeconds !== undefined) {
+      active.promptCacheTtlObserved = true;
       this.#promptCacheTtlSeconds = usage.promptCacheTtlSeconds;
     }
     const composerIndicators = claudePromptCacheIndicators(
@@ -2947,7 +2958,10 @@ class ClaudeHarnessSession implements HarnessSession {
     if (event.lastRequestUsage) {
       const cacheHitRatePercent = claudeCacheHitRatePercent(event.lastRequestUsage);
       if (cacheHitRatePercent !== undefined) delta.cacheHitRatePercent = cacheHitRatePercent;
-      if (event.lastRequestUsage.promptCacheTtlSeconds !== undefined) {
+      if (
+        !active.promptCacheTtlObserved &&
+        event.lastRequestUsage.promptCacheTtlSeconds !== undefined
+      ) {
         this.#promptCacheTtlSeconds = event.lastRequestUsage.promptCacheTtlSeconds;
         const composerIndicators = claudePromptCacheIndicators(
           this.#accountCreditsSupported,

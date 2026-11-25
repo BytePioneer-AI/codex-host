@@ -31,6 +31,7 @@ import {
   CLAUDE_DEFAULT_MODEL_REF,
   claudeModelRef as encodeClaudeModelRef,
 } from "../src/model-catalog.js";
+import { ClaudeNativeTurnAccumulator } from "../src/native-message.js";
 import {
   claudeBypassPermissionsAvailable,
   type ClaudePermissionMode,
@@ -640,6 +641,173 @@ describe("Claude Code Composer cache countdown", () => {
           ),
         ).toBe(true),
       );
+    } finally {
+      await adapter.close();
+      await collecting;
+    }
+  });
+
+  it("keeps the last per-request TTL when cumulative result.usage mixes 5m and 1h writes", async () => {
+    const { adapter, transports } = fixture({}, { accountCreditsSupported: true });
+    await adapter.inspectAccount();
+    const session = await openSession(adapter);
+    const outputs: HarnessOutput[] = [];
+    const collecting = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const latestExpiry = () =>
+      outputs
+        .flatMap((output) =>
+          output.kind === "event" && output.event.type === "session.usage.changed"
+            ? (output.event.usage?.composerIndicators ?? [])
+            : [],
+        )
+        .at(-1)?.expiresAtUnix;
+    try {
+      await session.execute(textTurn("cache-multi-request"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Expected a Claude transport");
+      const accumulator = new ClaudeNativeTurnAccumulator();
+      const emit = (nativeMessage: unknown, nowMs?: number) => {
+        const clock = nowMs !== undefined ? vi.spyOn(Date, "now").mockReturnValue(nowMs) : null;
+        try {
+          const { events, terminal } = accumulator.consume(nativeMessage);
+          for (const event of events) transport.event(event);
+          if (terminal) transport.finish(terminal);
+        } finally {
+          clock?.mockRestore();
+        }
+      };
+
+      // Req 1 writes 5m cache.
+      emit(
+        {
+          type: "assistant",
+          uuid: "req-1",
+          message: {
+            id: "msg-req-1",
+            model: "claude-sonnet-4-6",
+            content: [{ type: "text", text: "Step 1" }],
+            usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              cache_creation_input_tokens: 20,
+              cache_read_input_tokens: 0,
+              cache_creation: { ephemeral_5m_input_tokens: 20, ephemeral_1h_input_tokens: 0 },
+            },
+          },
+        },
+        1_800_000_000_000,
+      );
+      await vi.waitFor(() => expect(latestExpiry()).toBe(1_800_000_300));
+
+      // Req 2 in the same turn writes 1h cache.
+      emit(
+        {
+          type: "assistant",
+          uuid: "req-2",
+          message: {
+            id: "msg-req-2",
+            model: "claude-sonnet-4-6",
+            content: [{ type: "text", text: "Step 2" }],
+            usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              cache_creation_input_tokens: 40,
+              cache_read_input_tokens: 20,
+              cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 40 },
+            },
+          },
+        },
+        1_800_000_010_000,
+      );
+      await vi.waitFor(() => expect(latestExpiry()).toBe(1_800_003_610));
+
+      // Cumulative result.usage sums both requests (5m + 1h); must not downgrade Req 2's 1h TTL.
+      emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        terminal_reason: "completed",
+        usage: {
+          input_tokens: 20,
+          output_tokens: 10,
+          cache_creation_input_tokens: 60,
+          cache_read_input_tokens: 20,
+          cache_creation: { ephemeral_5m_input_tokens: 20, ephemeral_1h_input_tokens: 40 },
+        },
+      });
+      await vi.waitFor(() =>
+        expect(
+          outputs.some(
+            (output) => output.kind === "event" && output.event.type === "turn.completed",
+          ),
+        ).toBe(true),
+      );
+      expect(latestExpiry()).toBe(1_800_003_610);
+    } finally {
+      await adapter.close();
+      await collecting;
+    }
+  });
+
+  it("falls back to result.usage TTL only when no per-request TTL was observed in the turn", async () => {
+    const { adapter, transports } = fixture({}, { accountCreditsSupported: true });
+    await adapter.inspectAccount();
+    const session = await openSession(adapter);
+    const outputs: HarnessOutput[] = [];
+    const collecting = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const latestExpiry = () =>
+      outputs
+        .flatMap((output) =>
+          output.kind === "event" && output.event.type === "session.usage.changed"
+            ? (output.event.usage?.composerIndicators ?? [])
+            : [],
+        )
+        .at(-1)?.expiresAtUnix;
+    const completedTurns = () =>
+      outputs.filter((output) => output.kind === "event" && output.event.type === "turn.completed")
+        .length;
+    try {
+      // Turn 1: observes 1h per-request TTL.
+      await session.execute(textTurn("cache-fallback-turn-1"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Expected a Claude transport");
+      const clock1 = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+      try {
+        transport.event({
+          type: "message.completed",
+          messageId: "reply-turn-1",
+          lastRequestUsage: { ...usageWithTtl(3600), requestId: "req-turn-1" },
+        });
+      } finally {
+        clock1.mockRestore();
+      }
+      transport.finish({ status: "succeeded" });
+      await vi.waitFor(() => expect(completedTurns()).toBe(1));
+      expect(latestExpiry()).toBe(1_800_003_600);
+
+      // Turn 2: no per-request TTL observed; result.usage supplies 5m fallback after per-turn reset.
+      await session.execute(textTurn("cache-fallback-turn-2"));
+      const clock2 = vi.spyOn(Date, "now").mockReturnValue(1_800_000_060_000);
+      try {
+        transport.event({
+          type: "message.completed",
+          messageId: "reply-turn-2",
+          lastRequestUsage: { ...usageWithTtl(undefined), requestId: "req-turn-2" },
+        });
+      } finally {
+        clock2.mockRestore();
+      }
+      transport.event({
+        type: "usage.result",
+        lastRequestUsage: usageWithTtl(300),
+      });
+      transport.finish({ status: "succeeded" });
+      await vi.waitFor(() => expect(completedTurns()).toBe(2));
+      expect(latestExpiry()).toBe(1_800_000_360);
     } finally {
       await adapter.close();
       await collecting;

@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 import type {
+  BackgroundTaskSummary,
   PermissionUpdate,
   Query,
   SDKMessage,
@@ -3037,6 +3038,102 @@ describe("ClaudeSdkTransport native background tasks", () => {
       await expect(fireStop([])).resolves.toEqual({});
       expect(value.transport.hasBackgroundTasks()).toBe(false);
     } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("expires awaiting task notifications after the grace window and clears them on empty Stop background_tasks", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_800_000_000_000);
+    const value = fixture();
+    await value.transport.start();
+    const stopHook = options(value).hooks?.Stop?.[0]?.hooks[0];
+    if (!stopHook) throw new Error("Expected Stop hook to be registered");
+    const flush = async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    };
+    const fireStop = (background_tasks?: BackgroundTaskSummary[]) => {
+      const input: StopHookInput = {
+        hook_event_name: "Stop",
+        session_id: "00000000-0000-4000-8000-000000000001",
+        transcript_path: "",
+        cwd: process.cwd(),
+        stop_hook_active: false,
+        ...(background_tasks !== undefined ? { background_tasks } : {}),
+      };
+      return stopHook(input, undefined, { signal: new AbortController().signal });
+    };
+    try {
+      // Normal path: stays active during grace window and clears immediately on task_notification.
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "bash-normal", task_type: "local_bash", description: "sleep 1" }],
+      } as unknown as SDKMessage);
+      await flush();
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [],
+      } as unknown as SDKMessage);
+      await flush();
+      vi.advanceTimersByTime(10_000);
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "bash-normal",
+        status: "completed",
+      } as unknown as SDKMessage);
+      await flush();
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+
+      // Dropped task_notification: remains guarded up to the 30s bound, then expires cleanly.
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "bash-dropped", task_type: "local_bash", description: "sleep 1" }],
+      } as unknown as SDKMessage);
+      await flush();
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [],
+      } as unknown as SDKMessage);
+      await flush();
+      vi.advanceTimersByTime(29_999);
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+
+      // Stop hook clears awaiting tasks only when background_tasks is explicitly empty.
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "bash-stop", task_type: "local_bash", description: "sleep 1" }],
+      } as unknown as SDKMessage);
+      await flush();
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+      value.fakeQuery.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [],
+      } as unknown as SDKMessage);
+      await flush();
+      await expect(fireStop(undefined)).resolves.toEqual({});
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+      await expect(
+        fireStop([
+          { id: "other-task", type: "shell", status: "running", description: "still running" },
+        ]),
+      ).resolves.toEqual({});
+      expect(value.transport.hasBackgroundTasks()).toBe(true);
+      await expect(fireStop([])).resolves.toEqual({});
+      expect(value.transport.hasBackgroundTasks()).toBe(false);
+    } finally {
+      vi.useRealTimers();
       await value.transport.close();
     }
   });

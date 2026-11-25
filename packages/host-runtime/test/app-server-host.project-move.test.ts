@@ -37,7 +37,10 @@ async function setup(
     thread?: JsonObject;
     write?: "apply" | "stale" | "malformed-readback" | "rejected" | "ambiguous";
     projectId?: string;
-    listMembership?: "archived" | "isPinned";
+    listMembership?: "archived" | "sectionId";
+    archivedPages?: number;
+    desktop?: boolean;
+    nativeProjects?: boolean;
     beforeReplace?: ConstructorParameters<typeof MappingStore>[0]["beforeReplace"];
     remote?: boolean;
   } = {},
@@ -83,6 +86,11 @@ async function setup(
     section: SECTION,
     ...options.thread,
   };
+  let nativeOutput: PassThrough | undefined;
+  function notify(method: string, params: JsonObject) {
+    if (!nativeOutput) throw new Error("Native app-server is not connected");
+    writeRequest(nativeOutput, { method, params });
+  }
   const pauses = new Map<string, (reply: () => void) => void>();
   function pauseNext(method: string) {
     const reached = Promise.withResolvers<() => void>();
@@ -93,6 +101,19 @@ async function setup(
     const params = (request.params ?? {}) as JsonObject;
     const projectId = params.projectId ?? null;
     switch (request.method) {
+      case "project/list":
+        return options.nativeProjects
+          ? {
+              result: {
+                data: [OLD_NATIVE_PROJECT, NATIVE_PROJECT].map((id) => ({
+                  id,
+                  name: id,
+                  roots: [{ path: cwd }],
+                })),
+                nextCursor: null,
+              },
+            }
+          : { error: { code: -32601, message: "Method unavailable" } };
       case "project/read":
         return { result: { project: { id: options.projectId ?? projectId } } };
       case "thread/read":
@@ -111,9 +132,24 @@ async function setup(
       case "threadSection/list":
         return { result: { data: [SECTION], nextCursor: null } };
       case "thread/list":
+        if (params.archived === true && options.archivedPages !== undefined) {
+          const page = Number(params.cursor ?? 0);
+          return {
+            result: {
+              data: Array.from({ length: 100 }, (_, i) => ({ id: `archive-${page}-${i}` })),
+              nextCursor: page + 1 < options.archivedPages ? String(page + 1) : null,
+              backwardsCursor: null,
+            },
+          };
+        }
         return {
           result: {
-            data: options.listMembership && params[options.listMembership] === true ? [thread] : [],
+            data:
+              (options.listMembership === "archived" && params.archived === true) ||
+              (options.listMembership === "sectionId" &&
+                params.sectionId === PINNED_THREAD_SECTION_ID)
+                ? [thread]
+                : [],
             nextCursor: null,
             backwardsCursor: null,
           },
@@ -129,6 +165,7 @@ async function setup(
       createOwnedConnectionBackend(() => {
         const stdin = new PassThrough();
         const stdout = new PassThrough();
+        nativeOutput = stdout;
         const stderr = new PassThrough();
         const closed = Promise.withResolvers<{ code: number; signal: null }>();
         const collector = new JsonLineCollector(stdin);
@@ -161,7 +198,7 @@ async function setup(
   });
   cleanup.push(() => scope.close());
   const fixture = createFixture({
-    externalOnly: true,
+    externalOnly: !options.desktop,
     localProjectMoves: !options.remote,
     environment: { CODEX_HOME: home },
     mappingStore,
@@ -169,10 +206,19 @@ async function setup(
     officialRuntimeScope: scope,
   });
   cleanup.push(() => stopFixture(fixture));
-  // The shared service lazily attaches to the native app-server for the first read.
-  await fixture.host.handleClientRequest("codexhost/workspace/read", {
-    threadIds: [NATIVE_THREAD],
-  });
+  if (options.desktop) {
+    writeRequest(fixture.desktopInput, {
+      id: 0,
+      method: "initialize",
+      params: { clientInfo: { name: "fixture", version: "1" } },
+    });
+    await fixture.collector.waitFor(({ id }) => id === 0);
+  } else {
+    // Attach the native app-server without warming the workspace assignment cache.
+    await fixture.host.handleClientRequest("codexhost/workspace/read", {
+      threadIds: ["attach-native"],
+    });
+  }
   await fixture.ready;
   return {
     fixture,
@@ -183,6 +229,7 @@ async function setup(
     thread,
     scope,
     pauseNext,
+    notify,
     mappingStore,
     home,
   };
@@ -198,9 +245,10 @@ function nativeWrites({ requests }: Pick<Setup, "requests">) {
   return requests.filter(({ method }) => method === "thread/metadata/update");
 }
 
-async function workspace({ fixture }: Setup, threadIds: string[] = []) {
+async function workspace({ fixture }: Setup, threadIds: string[] = [], nativeProjects = false) {
   const response = await fixture.host.handleClientRequest("codexhost/workspace/read", {
     threadIds,
+    nativeProjects,
   });
   if (!("result" in response)) throw new Error(response.error.message);
   return clientWorkspaceSnapshotSchema.parse(response.result);
@@ -215,6 +263,22 @@ async function startExternal({ fixture, cwd }: Setup) {
 const confirmed = { result: { status: "confirmed", projectId: GUI_PROJECT } };
 
 describe("Host client project move", () => {
+  it("moves between native catalog projects without Desktop registrations", async () => {
+    const context = await setup({ nativeProjects: true });
+    await rm(context.stateFile);
+    const initial = await workspace(context, [NATIVE_THREAD], true);
+    expect(initial.projectMoveBindings).toEqual({
+      projectIds: [OLD_NATIVE_PROJECT, NATIVE_PROJECT],
+      assignments: { [NATIVE_THREAD]: OLD_NATIVE_PROJECT },
+    });
+    await expect(move(context, NATIVE_THREAD, NATIVE_PROJECT)).resolves.toEqual({
+      result: { status: "confirmed", projectId: NATIVE_PROJECT },
+    });
+    expect((await workspace(context, [NATIVE_THREAD], true)).assignments[NATIVE_THREAD]).toBe(
+      NATIVE_PROJECT,
+    );
+  });
+
   it("moves the official Thread using scoped native IDs and confirms from a separate read", async () => {
     const context = await setup();
     await expect(move(context, NATIVE_THREAD)).resolves.toEqual(confirmed);
@@ -243,6 +307,53 @@ describe("Host client project move", () => {
     expect((await workspace(context, [NATIVE_THREAD])).assignments[NATIVE_THREAD]).toBe(
       GUI_PROJECT,
     );
+  });
+
+  it("reuses confirmed native identities until the owner changes", async () => {
+    const context = await setup();
+    const read = () => workspace(context, [NATIVE_THREAD]);
+    const first = await read();
+    const count = () =>
+      context.requests.filter(
+        ({ method, params }) =>
+          method === "thread/read" && (params as JsonObject).threadId === NATIVE_THREAD,
+      ).length;
+    expect(first.projectMoveBindings?.assignments[NATIVE_THREAD]).toBe(OLD_GUI_PROJECT);
+    const reads = count();
+    await expect(read()).resolves.toEqual(first);
+    const repeatedReads = count() - reads;
+    await context.scope.stop();
+    context.thread.projectId = null;
+    await context.scope.start();
+    expect((await read()).projectMoveBindings?.assignments[NATIVE_THREAD]).toBeNull();
+    expect(count()).toBe(reads + repeatedReads + 1);
+    expect(repeatedReads).toBe(0);
+  });
+
+  it("invalidates a native identity when another client moves the Thread", async () => {
+    const context = await setup();
+    const { fixture } = context;
+    expect((await workspace(context, [NATIVE_THREAD])).assignments[NATIVE_THREAD]).toBe(
+      OLD_GUI_PROJECT,
+    );
+    const notified = Promise.withResolvers<undefined>();
+    const unsubscribe = fixture.host.clientEvents.subscribe((event) => {
+      if (event.type === "changed" && event.method === "thread/project/updated")
+        notified.resolve(undefined);
+    });
+    try {
+      context.thread.projectId = NATIVE_PROJECT;
+      context.notify("thread/project/updated", {
+        threadId: NATIVE_THREAD,
+        projectId: NATIVE_PROJECT,
+      });
+      await notified.promise;
+      expect((await workspace(context, [NATIVE_THREAD])).assignments[NATIVE_THREAD]).toBe(
+        GUI_PROJECT,
+      );
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("does not write if the official Thread is already in the destination", async () => {
@@ -337,7 +448,7 @@ describe("Host client project move", () => {
 
   it.each([
     ["archived", "archived"],
-    ["section", "isPinned"],
+    ["section", "sectionId"],
   ] as const)("checks native membership when thread/read omits %s", async (field, filter) => {
     const context = await setup({ listMembership: filter });
     if (field === "archived") delete context.thread.archived;
@@ -346,10 +457,24 @@ describe("Host client project move", () => {
     expect(context.requests).toContainEqual(
       expect.objectContaining({
         method: "thread/list",
-        params: expect.objectContaining({ [filter]: true }),
+        params: expect.objectContaining({
+          [filter]: filter === "archived" ? true : PINNED_THREAD_SECTION_ID,
+        }),
       }),
     );
     expect(nativeWrites(context)).toEqual([]);
+  });
+
+  it("checks the end of an archive catalog with more than 1000 Threads", async () => {
+    const context = await setup({ archivedPages: 11 });
+    delete context.thread.archived;
+    await expect(move(context, NATIVE_THREAD)).resolves.toEqual(confirmed);
+    expect(context.requests).toContainEqual(
+      expect.objectContaining({
+        method: "thread/list",
+        params: expect.objectContaining({ archived: true, cursor: "10" }),
+      }),
+    );
   });
 
   it.each(["draft-local", "web-remote:peer"])(
@@ -408,6 +533,55 @@ describe("Host client project move", () => {
     expect((await workspace(context, [NATIVE_THREAD])).projectMoveBindings).toBeUndefined();
     await expect(move(context, NATIVE_THREAD)).resolves.toHaveProperty("error");
     expect(nativeWrites(context)).toEqual([]);
+  });
+
+  it("retains a legacy external navigation assignment without treating it as projectless", async () => {
+    const context = await setup();
+    const id = await startExternal(context);
+    const state = JSON.parse(context.originalState);
+    state["thread-project-assignments"][id] = { projectKind: "local", projectId: OLD_GUI_PROJECT };
+    await writeFile(context.stateFile, JSON.stringify(state), "utf8");
+
+    const snapshot = await workspace(context);
+    expect(snapshot.assignments[id]).toBe(OLD_GUI_PROJECT);
+    expect(snapshot.projectMoveBindings?.assignments).not.toHaveProperty(id);
+    await expect(move(context, id, OLD_GUI_PROJECT)).resolves.toHaveProperty("error");
+    expect((await context.mappingStore.getThread(id))?.projectId).toBeUndefined();
+  });
+
+  it("clears a deleted project after the in-flight section mutation", async () => {
+    const context = await setup({ desktop: true });
+    const { fixture } = context;
+    const id = await startExternal(context);
+    await context.mappingStore.updateMetadata(id, { projectId: OLD_NATIVE_PROJECT });
+
+    const paused = context.pauseNext("threadSection/delete");
+    writeRequest(fixture.desktopInput, {
+      id: 2,
+      method: "threadSection/delete",
+      params: { sectionId: SECTION.id },
+    });
+    const reply = await paused;
+    try {
+      context.notify("project/changed", { projectId: OLD_NATIVE_PROJECT, changeType: "deleted" });
+      context.notify("project/changed", { projectId: NATIVE_PROJECT, changeType: "updated" });
+      await fixture.collector.waitFor(
+        (message) =>
+          message.method === "project/changed" &&
+          (message.params as JsonObject).projectId === NATIVE_PROJECT,
+      );
+    } finally {
+      reply();
+    }
+
+    const section = await fixture.collector.waitFor(({ id }) => id === 2);
+    const cleared = await fixture.collector.waitFor(
+      ({ method }) => method === "thread/project/updated",
+    );
+    expect(fixture.collector.messages.indexOf(cleared)).toBeGreaterThan(
+      fixture.collector.messages.indexOf(section),
+    );
+    expect((await context.mappingStore.getThread(id))?.projectId).toBeUndefined();
   });
 
   it("persists only external project metadata, projects the GUI ID, and skips same-value writes", async () => {
@@ -525,7 +699,7 @@ describe("Host client project move", () => {
     expect(nativeWrites(context)).toEqual([]);
   });
 
-  it("rejects pinned external Threads and does not expose general metadata updates", async () => {
+  it("rejects pinned external Threads and extra project-move fields", async () => {
     const context = await setup();
     const { fixture } = context;
     const threadId = await startExternal(context);
@@ -539,14 +713,6 @@ describe("Host client project move", () => {
     ]);
     const before = await fixture.mappingStore.getThread(threadId);
     await expect(move(context, threadId)).resolves.toHaveProperty("error");
-    for (const id of [threadId, NATIVE_THREAD]) {
-      await expect(
-        fixture.host.handleClientRequest("thread/metadata/update", {
-          threadId: id,
-          projectId: NATIVE_PROJECT,
-        }),
-      ).resolves.toMatchObject({ error: { code: -32601 } });
-    }
     await expect(
       fixture.host.handleClientRequest(MOVE, {
         threadId,

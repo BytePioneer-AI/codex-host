@@ -43,7 +43,7 @@ Web / App → Web 网关 → 客户端通道 ───────────�
 
 更改项目归属的本机服务入口为 `codexhost/workspace/moveThreadToProject {threadId, projectId}`。`projectId` 使用 `workspace/read` 的 GUI 项目 ID；Host 按当前本机 scope 转成原生 ID，并通过同一个 app-server 的 `project/read` 校验目标。普通 Codex 只发送 `thread/metadata/update {threadId, projectId}`，随后用独立 `thread/read` 确认；外部 Harness 由 Mapping Store 保存并回读项目 metadata。`workspace/read` 将两种所有者的权威归属投影为 GUI ID；旧协议缺少原生归属字段时，GUI 归属仅用于只读兼容。客户端通道不开放通用 metadata 写入。
 
-目标校验、写入和回读使用同一代官方后台。写入前后台换代，Host 拒绝操作；写入已经发出但无法在原代次确认，返回 `{status:"unknown"}`，不在新后台重发。单个 Thread 的归属读取失败不影响其他 Thread；缺少确认的归属不能用旧 GUI 记录或执行目录补成可写绑定。
+目标校验、写入和回读使用同一代官方后台。写入前后台换代，Host 拒绝操作；写入已经发出但无法在原代次确认，返回 `{status:"unknown"}`，不在新后台重发。目录刷新在当前 Owner 代次内复用已确认的原生归属；收到项目变更通知时使相关缓存失效。单个 Thread 的归属读取失败不影响其他 Thread；缺少确认的归属不能用旧 GUI 记录或执行目录补成可写绑定。外部 Thread 若只有旧 GUI 归属，保留导航但不允许移动；没有任何项目归属则可作为明确的无项目来源。删除项目后的外部归属清理与项目移动、分区和置顶操作使用同一串行边界。
 
 ## 官方 Codex 的统一入口
 

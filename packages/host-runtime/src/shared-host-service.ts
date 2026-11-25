@@ -194,6 +194,8 @@ export async function runSharedHostService(
           owner,
           hostExtensions: host.hostExtensions,
           store,
+          clearDeletedProjectAssignments: (projectId: string) =>
+            host.clearDeletedProjectAssignments(projectId),
           prices,
           releaseAnnouncement,
           ...(updateCoordinator ? { updateCoordinator } : {}),

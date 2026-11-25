@@ -801,6 +801,42 @@ describe("mapping-store package", () => {
     await second.close();
   });
 
+  it("rolls back a project reassignment when retirement is detected at metadata commit", async () => {
+    const directory = await temporaryStoreDirectory();
+    const first = new MappingStore({ directory });
+    await first.initialize();
+    await createReady(first);
+    const original = await first.updateMetadata(threadId, { projectId: "project-a" });
+    const retired = new Error("Target project retired");
+    let targetRetired = false;
+    try {
+      await expect(
+        first.updateMetadata(
+          threadId,
+          { projectId: "project-b" },
+          {
+            ifProjectId: "project-a",
+            beforeWrite() {
+              if (targetRetired) throw retired;
+              targetRetired = true;
+            },
+          },
+        ),
+      ).rejects.toMatchObject({ cause: retired });
+      await expect(first.getThread(threadId)).resolves.toEqual(original);
+    } finally {
+      await first.close();
+    }
+
+    const reopened = new MappingStore({ directory });
+    await reopened.initialize();
+    try {
+      await expect(reopened.getThread(threadId)).resolves.toEqual(original);
+    } finally {
+      await reopened.close();
+    }
+  });
+
   it("applies a native title without changing recency and preserves a concurrent rename", async () => {
     const directory = await temporaryStoreDirectory();
     let now = new Date("2026-01-01T00:00:00.000Z");

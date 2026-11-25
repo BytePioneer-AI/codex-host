@@ -12,6 +12,7 @@ import { externalPinIds } from "./external-thread-pins.js";
 
 interface WorkspaceProjects {
   snapshot: ClientWorkspaceSnapshot;
+  legacyAssignedThreads: ReadonlySet<string>;
   nativeByGui: Map<string, string>;
   guiByNative: Map<string, string>;
 }
@@ -37,6 +38,7 @@ function localProjectIds(state: Record<string, unknown>, scope: string) {
 function workspaceProjects(
   snapshot: ClientWorkspaceSnapshot,
   mappings: Record<string, unknown> | null = {},
+  legacyAssignedThreads: ReadonlySet<string> = new Set(),
 ): WorkspaceProjects {
   const nativeByGui = new Map<string, string>();
   const guiByNative = new Map<string, string>();
@@ -52,7 +54,7 @@ function workspaceProjects(
   for (const id of ambiguous) guiByNative.delete(id);
   for (const [guiId, nativeId] of nativeByGui)
     if (!guiByNative.has(nativeId)) nativeByGui.delete(guiId);
-  return { snapshot, nativeByGui, guiByNative };
+  return { snapshot, legacyAssignedThreads, nativeByGui, guiByNative };
 }
 
 /** Read Desktop's persisted projects, never infer them from execution cwd or write its file. */
@@ -92,6 +94,7 @@ export async function readWorkspaceProjects(
     const mapped = aliases?.[id];
     return typeof mapped === "string" && ids.has(mapped) ? mapped : undefined;
   };
+  const legacyAssignedThreads = new Set<string>();
   const sectionProjects = Object.fromEntries(
     Object.entries(desktopSectionProjects(state)).map(([sectionId, projects]) => [
       sectionId,
@@ -117,8 +120,10 @@ export async function readWorkspaceProjects(
       Object.entries(assigned).flatMap(([id, value]) => {
         if (!value || typeof value !== "object") return [];
         const entry = value as Record<string, unknown>;
+        if (entry.projectKind !== "local" || typeof entry.projectId !== "string") return [];
+        legacyAssignedThreads.add(id);
         const project = projectId(entry.projectId);
-        return entry.projectKind === "local" && project !== undefined ? [[id, project]] : [];
+        return project !== undefined ? [[id, project]] : [];
       }),
     ),
     projectless: state["projectless-thread-ids"] ?? [],
@@ -126,7 +131,11 @@ export async function readWorkspaceProjects(
     ...(Object.keys(sectionProjects).length > 0 ? { sectionProjects } : {}),
     ...(pinnedProjects !== undefined ? { pinnedProjects } : {}),
   });
-  return workspaceProjects(snapshot, nativeProjects ? {} : localProjectIds(state, scope));
+  return workspaceProjects(
+    snapshot,
+    nativeProjects ? {} : localProjectIds(state, scope),
+    legacyAssignedThreads,
+  );
 }
 
 const PROJECT_ITEM_PREFIX = "codex:project:";
@@ -188,10 +197,8 @@ export async function readExternalWorkspaceSnapshot(
   ) => Promise<ReadonlyMap<string, string | null | undefined>>,
   canMove = false,
 ): Promise<ClientWorkspaceSnapshot> {
-  const { snapshot, nativeByGui, guiByNative } = await readWorkspaceProjects(
-    environment,
-    nativeProjects,
-  );
+  const { snapshot, legacyAssignedThreads, nativeByGui, guiByNative } =
+    await readWorkspaceProjects(environment, nativeProjects);
   const externalIds = new Set(threads.map((thread) => String(thread.hostThreadId)));
   const owned = new Set([...externalIds, ...nativeThreadIds]);
   const assignments = new Map(
@@ -223,9 +230,10 @@ export async function readExternalWorkspaceSnapshot(
       } else assignments.delete(thread.hostThreadId);
       projectless.delete(thread.hostThreadId);
     } else {
-      verified?.set(thread.hostThreadId, null);
-      if (thread.projectlessWorkspace && !assignments.has(thread.hostThreadId))
-        projectless.add(thread.hostThreadId);
+      // An inherited Desktop assignment is navigation-only, not proof of no project.
+      if (!legacyAssignedThreads.has(thread.hostThreadId)) verified?.set(thread.hostThreadId, null);
+      if (assignments.has(thread.hostThreadId)) continue;
+      if (thread.projectlessWorkspace) projectless.add(thread.hostThreadId);
     }
   }
   return {

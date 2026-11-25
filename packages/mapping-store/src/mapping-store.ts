@@ -1311,7 +1311,7 @@ export class MappingStore {
         // besides Revision and updatedAt. Restoring the previous record therefore makes a failed
         // metadata write leave disk equal to memory; the metadata file itself is replaced atomically.
         try {
-          await this.#writeMetadataFile(hostThreadId, metadata);
+          await this.#writeMetadataFile(hostThreadId, metadata, beforeWrite);
         } catch (error) {
           await this.#replaceFile(this.#recordPath(hostThreadId), current, false).catch(
             () => undefined,
@@ -1416,6 +1416,7 @@ export class MappingStore {
   async #writeMetadataFile(
     hostThreadId: HostThreadId,
     metadata: StoredThreadMetadataV1 | null,
+    beforeWrite?: () => void,
   ): Promise<void> {
     const target = this.#metadataPath(hostThreadId);
     const temp = `${target}.tmp-${randomUUID()}`;
@@ -1427,6 +1428,7 @@ export class MappingStore {
         ),
       );
       if (!metadata && Object.keys(retained).length === 0) {
+        beforeWrite?.();
         await rm(target, { force: true });
         return;
       }
@@ -1436,6 +1438,7 @@ export class MappingStore {
       await handle.sync();
       await handle.close();
       handle = null;
+      beforeWrite?.();
       await rename(temp, target);
     } catch (error) {
       await handle?.close().catch(() => undefined);

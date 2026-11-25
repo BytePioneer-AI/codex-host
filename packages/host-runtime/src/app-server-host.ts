@@ -30,6 +30,7 @@ import { readThreadCatalog } from "./thread-catalog.js";
 import { readOfficialImportTimes, type OfficialImportTimes } from "./official-import-duplicates.js";
 import { confirmNativeThreadArchived } from "./native-thread-archive-confirm.js";
 import { readWorkspaceProjects } from "./native-workspace-snapshot.js";
+import { listNativeProjects } from "./native-project-list.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { SkillLibrary } from "@codexhost/skill-library";
 import { SKILLS_LIST_METHOD, SKILLS_CHANGED_METHOD } from "@codexhost/shared-contracts";
@@ -446,6 +447,8 @@ export interface AppServerHostOptions {
   desktopConnected?(): boolean;
   /** GUI connection to the single external-session owner. */
   sharedThreads?: SharedThreadBridge;
+  /** Shared Desktop connections clear assignments on the owner that serializes project moves. */
+  clearDeletedProjectAssignments?(projectId: string): Promise<void>;
   /** In-process SSH fronts send external Delegations to the same owner as GUI requests. */
   sharedDelegation?: DelegationControlRegistration;
   stockCodexPath: string;
@@ -1044,6 +1047,8 @@ export class AppServerHost {
   readonly #threadTree: ThreadTree;
   readonly #treeWatch: ThreadTreeWatch;
   #sectionOperations: Promise<unknown> = Promise.resolve();
+  #nativeProjectGeneration = 0;
+  #nativeProjectIds = new Map<string, Promise<string | null | undefined>>();
   #sectionReconcileTimer: NodeJS.Timeout | undefined;
   #sectionReconcileDelay = SECTION_RECONCILE_RETRY_MS;
   readonly #sectionDefinitions = new SectionDefinitions(PINNED_THREAD_SECTION_ID);
@@ -2788,9 +2793,25 @@ export class AppServerHost {
   }): Promise<void> {
     for (const listener of this.#nativeSettingsNotifications) listener(input.value);
     this.#treeWatch.observe(input.value, true);
+    const deletedProjectId = observeDeletedProject(input.value);
+    if (deletedProjectId) {
+      // The current section operation may be waiting for another frame from this connection.
+      this.#dispatchDesktopRequest(() =>
+        this.#options.clearDeletedProjectAssignments
+          ? this.#options.clearDeletedProjectAssignments(deletedProjectId)
+          : this.clearDeletedProjectAssignments(deletedProjectId),
+      );
+    }
     if (this.#options.externalOnly) {
+      const value = input.value;
+      if (
+        isRecord(value) &&
+        (value.method === "thread/project/updated" || value.method === "thread/deleted") &&
+        isRecord(value.params) &&
+        typeof value.params.threadId === "string"
+      )
+        this.#nativeProjectIds.delete(value.params.threadId);
       this.#observeOfficialUsage(input.value, Date.now());
-      await this.#observeDeletedProject(input.value);
       this.#client.observeNativeMessage(input.value);
       // Native children created through Delegation still have a native owner
       // and lifecycle. Their rendering stays on the GUI's native connection.
@@ -2852,16 +2873,6 @@ export class AppServerHost {
       this.#finishOfficialTurn(parsed);
     }
     this.#nativeAccountObserver?.observe(parsed);
-    await this.#observeDeletedProject(parsed);
-  }
-
-  async #observeDeletedProject(value: JsonValue): Promise<void> {
-    const deletedProjectId = observeDeletedProject(value);
-    if (deletedProjectId) {
-      await this.#clearDeletedProjectAssignments(deletedProjectId).catch((error: unknown) =>
-        this.#diagnose(error),
-      );
-    }
   }
 
   #observeOfficialUsage(value: JsonValue, observedAtMs: number): void {
@@ -2923,9 +2934,15 @@ export class AppServerHost {
     return this.#officialRuntime.request(method, options ? { ...params, ...options } : params);
   }
 
-  async #requestClientNative(method: string, params: JsonObject): Promise<ConsoleHostReply> {
+  async #requestClientNative(
+    method: string,
+    params: JsonObject,
+    beforeDispatch?: () => void,
+  ): Promise<ConsoleHostReply> {
     try {
-      const response = await this.#requestOfficial(method, params, false);
+      const response = beforeDispatch
+        ? await this.#officialRuntime.request(method, params, beforeDispatch)
+        : await this.#requestOfficial(method, params, false);
       if (isRecord(response.error)) {
         return {
           error: {
@@ -2980,19 +2997,34 @@ export class AppServerHost {
       return projects;
     }
     const generation = this.#officialRuntimeScope.owner.generation;
+    if (generation !== this.#nativeProjectGeneration) {
+      this.#nativeProjectGeneration = generation;
+      this.#nativeProjectIds = new Map();
+    }
+    const cache = this.#nativeProjectIds;
     const checkOwner = () => {
       if (!this.#isProjectOwner(generation)) throw new OfficialAdmissionError("unavailable");
     };
     for (let i = 0; i < ids.length && this.#isProjectOwner(generation); i += 16) {
       await Promise.all(
         ids.slice(i, i + 16).map(async (id) => {
-          try {
-            const { projectId } = await this.#readNativeProjectThread(id, checkOwner);
-            if (projectId === undefined || projectId === null || typeof projectId === "string")
-              projects.set(id, projectId);
-          } catch {
-            // A failed row is not a legacy row and cannot supply a project binding.
+          let read = cache.get(id);
+          if (!read) {
+            read = this.#readNativeProjectThread(id, checkOwner).then(({ projectId }) => {
+              if (projectId === null || typeof projectId === "string" || projectId === undefined)
+                return projectId;
+              throw new Error("Invalid native project identity");
+            });
+            cache.set(id, read);
           }
+          try {
+            const projectId = await read;
+            if (projectId === undefined || cache.get(id) === read) projects.set(id, projectId);
+            if (projectId !== undefined) return;
+          } catch {
+            // Failed rows cannot supply a binding or the legacy navigation assignment.
+          }
+          if (cache.get(id) === read) cache.delete(id);
         }),
       );
     }
@@ -3026,8 +3058,14 @@ export class AppServerHost {
         await this.#initializeSharedOfficial();
         checkOwner();
         await this.#waitForPlugins();
-        const { nativeByGui, guiByNative } = await readWorkspaceProjects(
-          this.#options.environment ?? process.env,
+        const environment = this.#options.environment ?? process.env;
+        const nativeProjects = await listNativeProjects({
+          request: (method, params) => this.#requestClientNative(method, params, checkOwner),
+        });
+        checkOwner();
+        const { legacyAssignedThreads, nativeByGui, guiByNative } = await readWorkspaceProjects(
+          environment,
+          nativeProjects?.some(({ id }) => id === projectId) ? nativeProjects : undefined,
         );
         const nativeId = nativeByGui.get(projectId);
         if (!nativeId || !(await this.#projectExists(nativeId, checkOwner))) {
@@ -3044,7 +3082,9 @@ export class AppServerHost {
           if (
             !record ||
             record.state !== "ready" ||
-            (record.projectId !== undefined && !guiByNative.has(record.projectId)) ||
+            (record.projectId === undefined
+              ? legacyAssignedThreads.has(id)
+              : !guiByNative.has(record.projectId)) ||
             record.archived ||
             record.ephemeral ||
             record.subagent ||
@@ -3095,7 +3135,7 @@ export class AppServerHost {
           (isRecord(thread.source) && "subAgent" in thread.source) ||
           (typeof thread.threadSource === "string" && thread.threadSource.startsWith("subAgent")) ||
           (isRecord(thread.section) && thread.section.id === PINNED_THREAD_SECTION_ID) ||
-          !(await this.#isActiveProjectMoveThread(thread, checkOwner))
+          !(await this.#isActiveProjectMoveThread(threadId, thread, checkOwner))
         )
           return unavailable;
         checkOwner();
@@ -3120,6 +3160,7 @@ export class AppServerHost {
         )
           return { error: { code: write.error.code, message: write.error.message } };
         const actual = await this.#readNativeProjectThread(threadId, checkOwner);
+        this.#nativeProjectIds.delete(threadId);
         this.clientEvents.changed(threadId, "thread/project/updated");
         return this.#isProjectOwner(generation) && actual.projectId === nativeId
           ? confirmed
@@ -3127,13 +3168,18 @@ export class AppServerHost {
       } catch (error) {
         this.#diagnose(error);
         if (!attemptedWrite) return unavailable;
+        this.#nativeProjectIds.delete(threadId);
         this.clientEvents.changed(threadId, "thread/project/updated");
         return unknown;
       }
     });
   }
 
-  async #isActiveProjectMoveThread(thread: JsonObject, checkOwner: () => void): Promise<boolean> {
+  async #isActiveProjectMoveThread(
+    threadId: string,
+    thread: JsonObject,
+    checkOwner: () => void,
+  ): Promise<boolean> {
     const section = thread.section;
     if (
       section !== undefined &&
@@ -3144,34 +3190,40 @@ export class AppServerHost {
     if (thread.archived === true) return false;
     if (
       section === undefined &&
-      !(await this.#absentFromProjectMoveList(thread, { isPinned: true }, checkOwner))
+      !(await this.#absentFromProjectMoveList(
+        threadId,
+        { sectionId: PINNED_THREAD_SECTION_ID },
+        checkOwner,
+      ))
     )
       return false;
     if (thread.archived === false) return true;
-    return this.#absentFromProjectMoveList(thread, { archived: true }, checkOwner);
+    return this.#absentFromProjectMoveList(threadId, { archived: true }, checkOwner);
   }
 
   async #absentFromProjectMoveList(
-    thread: JsonObject,
+    threadId: string,
     filter: JsonObject,
     checkOwner: () => void,
   ): Promise<boolean> {
     let cursor: string | null = null;
-    for (let page = 0; page < 10; page += 1) {
+    const seen = new Set<string>();
+    for (;;) {
       const result = officialThreadListPageFromResponse(
         await this.#officialRuntime.request(
           "thread/list",
-          { ...filter, limit: 100, cursor },
+          { ...filter, includedThreadIds: [threadId], limit: 100, cursor },
           checkOwner,
         ),
       );
       checkOwner();
-      if (result.data.some(({ id }) => id === thread.id)) return false;
+      if (result.data.some(({ id }) => id === threadId)) return false;
       if (result.nextCursor === null) return true;
-      if (result.nextCursor === cursor) return false;
+      // Older app-servers may ignore includedThreadIds. Follow their finite page chain.
+      if (seen.has(result.nextCursor)) return false;
+      seen.add(result.nextCursor);
       cursor = result.nextCursor;
     }
-    return false;
   }
 
   #respondClientNative(
@@ -4818,24 +4870,27 @@ export class AppServerHost {
   }
 
   /** Clear External assignments to a project official Codex reported as deleted. */
-  async #clearDeletedProjectAssignments(projectId: string): Promise<void> {
-    const records = await this.#repository.list();
-    for (const record of records) {
-      if (record.projectId !== projectId) continue;
-      // A concurrent Desktop update may have reassigned the Thread since the listing.
-      const updated = await this.#repository.updateMetadata(
-        record.hostThreadId,
-        { projectId: null },
-        { ifProjectId: projectId },
-      );
-      if (updated.projectId !== undefined) continue;
-      const loaded = this.#externalRuntime.get(updated.hostThreadId);
-      if (loaded) this.#syncLoadedExternalThread(loaded, updated);
-      await this.#writer.json({
-        method: "thread/project/updated",
-        params: { threadId: updated.hostThreadId, projectId: null },
-      });
-    }
+  clearDeletedProjectAssignments(projectId: string): Promise<void> {
+    this.#nativeProjectIds.clear();
+    return this.#runSectionOperation(async () => {
+      const records = await this.#repository.list();
+      for (const record of records) {
+        if (record.projectId !== projectId) continue;
+        // A concurrent Desktop update may have reassigned the Thread since the listing.
+        const updated = await this.#repository.updateMetadata(
+          record.hostThreadId,
+          { projectId: null },
+          { ifProjectId: projectId },
+        );
+        if (updated.projectId !== undefined) continue;
+        const loaded = this.#externalRuntime.get(updated.hostThreadId);
+        if (loaded) this.#syncLoadedExternalThread(loaded, updated);
+        await this.#writer.json({
+          method: "thread/project/updated",
+          params: { threadId: updated.hostThreadId, projectId: null },
+        });
+      }
+    });
   }
 
   #syncLoadedExternalThread(thread: ExternalThread, record: StoredThreadRecordV1): JsonObject {

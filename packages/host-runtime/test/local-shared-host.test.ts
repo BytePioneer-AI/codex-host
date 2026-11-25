@@ -163,6 +163,7 @@ it("returns an actionable failure when authenticated Desktop admission finds a r
         official,
         owner: f.owner,
         store: f.store,
+        clearDeletedProjectAssignments: (id) => f.host.clearDeletedProjectAssignments(id),
         prices: new ModelPriceCatalog({
           directory: path.join(f.root, "prices"),
           diagnose: () => {},
@@ -238,6 +239,7 @@ it.each([true, false])("forwards current Desktop runtime context (%s)", async (e
         official,
         owner: f.owner,
         store: f.store,
+        clearDeletedProjectAssignments: (id) => f.host.clearDeletedProjectAssignments(id),
         prices: new ModelPriceCatalog({
           directory: path.join(f.root, "prices"),
           diagnose: () => {},

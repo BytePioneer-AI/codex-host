@@ -105,6 +105,7 @@ function clientWith(
 ): RendererModelClient {
   return {
     forkThread: vi.fn(),
+    handoffThread: vi.fn(),
     inspectHarness: vi.fn(),
     inspectThread: vi.fn(),
     inspectHarnessCommands: vi.fn(),

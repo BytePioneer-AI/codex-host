@@ -153,7 +153,8 @@ function itemOf(
           ...(Array.isArray(item.content) ? item.content : []),
         ]
           .filter((value) => typeof value === "string")
-          .join("\n"),
+          // Each summary part is its own Markdown paragraph block.
+          .join("\n\n"),
       };
     case "commandExecution":
       // Codex Desktop receives each Host Reasoning Item twice: a `reasoning`

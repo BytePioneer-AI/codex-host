@@ -246,6 +246,14 @@ function restoreUsageMeasurements(meter: UsageMeter, record: StoredThreadRecordV
   }
 }
 
+function isDeferredPendingRecord(record: StoredThreadRecordV1): boolean {
+  return (
+    record.state === "creating" &&
+    !record.nativeSessionRef &&
+    (record.pendingInjectedText?.length ?? 0) > 0
+  );
+}
+
 /** Host-persisted usage telemetry for an unloaded External Thread without opening its Session. */
 export function persistedThreadUsage(record: StoredThreadRecordV1): HostUsage | null {
   if (!record.usageMeasurements) return null;
@@ -661,7 +669,10 @@ export class ExternalThreadRuntime {
       };
     }
     if (!record) return { kind: "official" };
-    if (record.state !== "ready" || !record.nativeSessionRef) {
+    if (
+      (record.state !== "ready" || !record.nativeSessionRef) &&
+      !isDeferredPendingRecord(record)
+    ) {
       return {
         kind: "error",
         error: { code: -32079, message: "External Native Session is unavailable" },
@@ -892,7 +903,8 @@ export class ExternalThreadRuntime {
     thread.sessionUnavailable = true;
     const harnessId = thread.record.harnessId as ExternalHarnessId;
     const adapter = this.#adapters.get(harnessId);
-    if (!adapter || !thread.record.nativeSessionRef) {
+    const isDeferredCreate = isDeferredPendingRecord(thread.record);
+    if (!adapter || (!thread.record.nativeSessionRef && !isDeferredCreate)) {
       await this.#dropIdleSession(thread);
       return { code: -32077, message: "External Harness is unavailable" };
     }
@@ -905,23 +917,36 @@ export class ExternalThreadRuntime {
       adapter,
       thread.record,
     );
-    const opened = await adapter.open({
-      kind: "resume",
-      cwd: thread.record.cwd,
-      environment: threadDelegationEnvironment(this.#environment, thread.record.hostThreadId),
-      nativeRef: thread.record.nativeSessionRef as NativeSessionRef,
-      knownTurnRefs: thread.record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
-      ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
-      ...(restoredSelection?.thinkingOptionId
-        ? { thinkingOptionId: restoredSelection.thinkingOptionId }
-        : {}),
-      ...(restoredSelection?.permissionModeId
-        ? { permissionModeId: restoredSelection.permissionModeId }
-        : {}),
-    });
+    const opened = isDeferredCreate
+      ? await adapter.open({
+          kind: "create",
+          cwd: thread.record.cwd,
+          environment: threadDelegationEnvironment(this.#environment, thread.record.hostThreadId),
+          ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
+          ...(restoredSelection?.thinkingOptionId
+            ? { thinkingOptionId: restoredSelection.thinkingOptionId }
+            : {}),
+          ...(restoredSelection?.permissionModeId
+            ? { permissionModeId: restoredSelection.permissionModeId }
+            : {}),
+        })
+      : await adapter.open({
+          kind: "resume",
+          cwd: thread.record.cwd,
+          environment: threadDelegationEnvironment(this.#environment, thread.record.hostThreadId),
+          nativeRef: thread.record.nativeSessionRef as NativeSessionRef,
+          knownTurnRefs: thread.record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
+          ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
+          ...(restoredSelection?.thinkingOptionId
+            ? { thinkingOptionId: restoredSelection.thinkingOptionId }
+            : {}),
+          ...(restoredSelection?.permissionModeId
+            ? { permissionModeId: restoredSelection.permissionModeId }
+            : {}),
+        });
     if (!opened.ok) {
       await this.#dropIdleSession(thread);
-      return mapExternalThreadHarnessError(opened.error, "resume");
+      return mapExternalThreadHarnessError(opened.error, isDeferredCreate ? "create" : "resume");
     }
     const session = opened.value;
     if (this.#threads.get(thread.id) !== thread) {
@@ -929,6 +954,13 @@ export class ExternalThreadRuntime {
       return { code: -32076, message: "External Thread recovery failed" };
     }
     try {
+      let currentRecord = thread.record;
+      if (isDeferredCreate && session.initialState.nativeRef) {
+        currentRecord = await this.#repository.commitNative(
+          currentRecord.hostThreadId,
+          session.initialState.nativeRef,
+        );
+      }
       const snapshot = await session.readSnapshot();
       if (!snapshot.ok) {
         await this.#lifecycle.release(thread.id, session, Promise.resolve());
@@ -936,9 +968,9 @@ export class ExternalThreadRuntime {
         return mapExternalThreadHarnessError(snapshot.error, "read");
       }
       let aligned = await this.#repository.alignSnapshot(
-        thread.record,
+        currentRecord,
         snapshot.value,
-        this.#failedTurns(thread.record),
+        this.#failedTurns(currentRecord),
       );
       if (this.#threads.get(thread.id) !== thread) {
         await this.#lifecycle.release(thread.id, session, Promise.resolve());
@@ -1199,7 +1231,8 @@ export class ExternalThreadRuntime {
   ): Promise<ExternalThread> {
     const harnessId = record.harnessId as ExternalHarnessId;
     const adapter = this.#adapters.get(harnessId);
-    if (!adapter || !record.nativeSessionRef) {
+    const isDeferredCreate = isDeferredPendingRecord(record);
+    if (!adapter || (!record.nativeSessionRef && !isDeferredCreate)) {
       throw new ExternalThreadOpenError({
         code: -32077,
         message: "External Harness is unavailable",
@@ -1257,33 +1290,55 @@ export class ExternalThreadRuntime {
     const { selection: restoredSelection, migrated } = await this.#storedSelection(adapter, record);
     const opened = preparedSession
       ? { ok: true as const, value: preparedSession }
-      : await adapter.open({
-          kind: "resume",
-          cwd: record.cwd,
-          environment: threadDelegationEnvironment(this.#environment, record.hostThreadId),
-          nativeRef: record.nativeSessionRef as NativeSessionRef,
-          knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
-          ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
-          ...(restoredSelection?.thinkingOptionId
-            ? { thinkingOptionId: restoredSelection.thinkingOptionId }
-            : {}),
-          ...(restoredSelection?.permissionModeId
-            ? { permissionModeId: restoredSelection.permissionModeId }
-            : {}),
-        });
+      : isDeferredCreate
+        ? await adapter.open({
+            kind: "create",
+            cwd: record.cwd,
+            environment: threadDelegationEnvironment(this.#environment, record.hostThreadId),
+            ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
+            ...(restoredSelection?.thinkingOptionId
+              ? { thinkingOptionId: restoredSelection.thinkingOptionId }
+              : {}),
+            ...(restoredSelection?.permissionModeId
+              ? { permissionModeId: restoredSelection.permissionModeId }
+              : {}),
+          })
+        : await adapter.open({
+            kind: "resume",
+            cwd: record.cwd,
+            environment: threadDelegationEnvironment(this.#environment, record.hostThreadId),
+            nativeRef: record.nativeSessionRef as NativeSessionRef,
+            knownTurnRefs: record.turnMappings.map(({ nativeTurnRef }) => nativeTurnRef),
+            ...(restoredSelection?.model ? { model: restoredSelection.model } : {}),
+            ...(restoredSelection?.thinkingOptionId
+              ? { thinkingOptionId: restoredSelection.thinkingOptionId }
+              : {}),
+            ...(restoredSelection?.permissionModeId
+              ? { permissionModeId: restoredSelection.permissionModeId }
+              : {}),
+          });
     if (!opened.ok) {
-      throw new ExternalThreadOpenError(mapExternalThreadHarnessError(opened.error, "resume"));
+      throw new ExternalThreadOpenError(
+        mapExternalThreadHarnessError(opened.error, isDeferredCreate ? "create" : "resume"),
+      );
     }
     const session = opened.value;
     try {
+      let currentRecord = record;
+      if (isDeferredCreate && session.initialState.nativeRef) {
+        currentRecord = await this.#repository.commitNative(
+          currentRecord.hostThreadId,
+          session.initialState.nativeRef,
+        );
+      }
       const snapshot = await session.readSnapshot();
       if (!snapshot.ok) {
         throw new ExternalThreadOpenError(mapExternalThreadHarnessError(snapshot.error, "read"));
       }
       let aligned = await this.#repository.alignSnapshot(
-        record,
+        currentRecord,
         snapshot.value,
-        this.#failedTurns(record),
+        this.#failedTurns(currentRecord),
       );
       const restoredState = snapshot.value.state;
       const effectiveModel = restoredState

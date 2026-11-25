@@ -591,6 +591,7 @@ fn select_host_node(
 impl LaunchOptions {
     fn resolve(self, desktop_root: Option<&Path>) -> Result<ResolvedLaunchOptions, Box<dyn Error>> {
         let installed = InstalledResources::from_current_executable()?;
+        let shim = resolve_resource_path(self.shim, &installed.shim, "--shim", "bundled Shim")?;
         let node = match self.node {
             Some(path) => absolute_file(&path, "--node")?,
             None => {
@@ -600,7 +601,7 @@ impl LaunchOptions {
             }
         };
         Ok(ResolvedLaunchOptions {
-            shim: resolve_resource_path(self.shim, &installed.shim, "--shim", "bundled Shim")?,
+            shim,
             node,
             host_runtime: resolve_resource_path(
                 self.host_runtime,

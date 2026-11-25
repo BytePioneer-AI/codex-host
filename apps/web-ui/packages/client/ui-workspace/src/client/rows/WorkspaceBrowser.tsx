@@ -1989,13 +1989,21 @@ function WorkspaceBrowserContent({
         visibleWorkspaceIdSet,
         orderedWorkspaces,
         effectiveHostScopeFilter,
+        threadOrder.rootOf,
       ).map((entry) => entry.id),
     );
     return {
       ...list,
       ids: list.ids.filter((id) => allowedIds.has(id)),
     };
-  }, [hostScopeFiltered, list, visibleWorkspaceIdSet, orderedWorkspaces, effectiveHostScopeFilter]);
+  }, [
+    hostScopeFiltered,
+    list,
+    visibleWorkspaceIdSet,
+    orderedWorkspaces,
+    effectiveHostScopeFilter,
+    threadOrder.rootOf,
+  ]);
   const hostScopeResetKey = useMemo(
     () => (hostScopeFiltered ? JSON.stringify(effectiveHostScopeFilter) : "all"),
     [hostScopeFiltered, effectiveHostScopeFilter],

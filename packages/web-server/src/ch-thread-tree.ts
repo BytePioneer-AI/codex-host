@@ -14,10 +14,17 @@ export class ChThreadTree {
   private parents: Record<string, string> = {};
   constructor(private readonly host: ChHostClient) {}
 
-  async refresh(): Promise<void> {
-    this.parents = clientThreadTreeSchema.parse(
+  clear(): void {
+    this.parents = {};
+  }
+
+  async refresh(isCurrent: () => boolean = () => true): Promise<boolean> {
+    const parents = clientThreadTreeSchema.parse(
       await this.host.request("codexhost/thread/tree/read", {}),
     ).parents;
+    if (!isCurrent()) return false;
+    this.parents = parents;
+    return true;
   }
 
   parent(id: string): string | null {

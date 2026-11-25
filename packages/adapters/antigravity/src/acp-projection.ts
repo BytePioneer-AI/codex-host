@@ -38,6 +38,10 @@ import { createTwoFilesPatch } from "diff";
 
 import type { AntigravityAcpConfigOption, AntigravityAcpEvent } from "./acp-types.js";
 import type { NativeCompactionEvent, NativeReplayEvent } from "./native-replay.js";
+import {
+  isDiscoveredAntigravitySkill,
+  type DiscoveredAntigravitySkills,
+} from "./skill-discovery.js";
 import { ANTIGRAVITY_COMMAND_CATALOG } from "./slash-commands.js";
 import {
   compactToolName,
@@ -724,6 +728,11 @@ export function projectReplayedEventsToTurns(params: {
 
 export function buildLiveCommandCatalog(
   commands: readonly AvailableCommand[],
+  options?: { discoveredSkills?: DiscoveredAntigravitySkills },
 ): HarnessCommandCatalog {
-  return mergeLiveHarnessCommands(ANTIGRAVITY_COMMAND_CATALOG, "antigravity.", commands);
+  const discoveredSkills = options?.discoveredSkills;
+  const filtered = discoveredSkills
+    ? commands.filter((command) => !isDiscoveredAntigravitySkill(command, discoveredSkills))
+    : commands;
+  return mergeLiveHarnessCommands(ANTIGRAVITY_COMMAND_CATALOG, "antigravity.", filtered);
 }

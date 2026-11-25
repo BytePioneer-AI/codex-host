@@ -278,6 +278,12 @@ export interface HarnessCommandAccepted {
 }
 
 export interface HarnessCommandCapability {
+  /**
+   * Immutable built-in commands that this Session can always execute directly
+   * without waiting for a live `list()` scan. Omit unless every command here
+   * is guaranteed valid for this Session regardless of live updates.
+   */
+  readonly staticCatalog?: HarnessCommandCatalog;
   list(): Promise<HarnessResult<HarnessCommandCatalog>>;
   execute(command: HarnessCommandInvocation): Promise<HarnessResult<HarnessCommandAccepted>>;
 }

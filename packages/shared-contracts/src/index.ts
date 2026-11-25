@@ -397,11 +397,13 @@ export {
   HARNESS_COMMAND_MENTION_PATH_PREFIX,
   delegationMentionPath,
   harnessCommandMentionPath,
+  harnessCommandReferences,
   restoreHarnessCommandMentions,
   formatDelegationMentionLink,
   stripDelegationMentions,
   type DelegationMention,
   type DelegationMentionRewrite,
+  type HarnessCommandReference,
 } from "./delegation-mention.js";
 
 export { desktopImageAttachmentPaths } from "./desktop-attachments.js";

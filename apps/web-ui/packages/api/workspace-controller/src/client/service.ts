@@ -207,9 +207,13 @@ export class WorkspaceController extends Service implements IWorkspaces {
     projectId: string,
   ): Promise<WorkspaceMoveSessionToProjectValue> {
     const result = await this.model.moveSessionToProject({ sessionId, projectId });
-    if (!result.ok) throw commandError("move to project", result.error);
+    if (!result.ok) {
+      if (result.error.code === "gateway/internal" || result.error.code === "gateway/cancelled")
+        return { status: "unknown" };
+      throw commandError("move to project", result.error);
+    }
     if (result.value.status === "confirmed" && result.value.projectId !== projectId)
-      throw new Error("The requested project change was not confirmed.");
+      return { status: "unknown" };
     return result.value;
   }
 

@@ -29,6 +29,7 @@ import { pinOrderAccounts, pinOrderSource } from "./pin-order.ts";
 import type { WorkspaceViewStoreActions } from "./stores.ts";
 import { SessionKeepalive } from "./session-keepalive.ts";
 import { RecentVisits } from "./recent-visits.ts";
+import { SessionMoveLock } from "./session-move-lock.ts";
 
 interface MainSelection {
   readonly sessionId?: SessionId;
@@ -67,6 +68,7 @@ export type SessionCreationState =
 
 /** Workspace archive and directory operations consumed by Client UI domains. */
 export interface UiWorkspace {
+  readonly sessionMoves: Pick<SessionMoveLock, "movingSessionIds" | "isMoving">;
   /**
    * Select a Session and show its Conversation as one UI navigation action.
    * Unknown IDs resolve through their own summary read; failures surface in `opening`.
@@ -181,6 +183,7 @@ export class DirectoryBrowseError extends Error {
 
 /** Implements Workspace archive and directory UI operations. */
 class UiWorkspaceService extends Service implements UiWorkspace {
+  readonly sessionMoves = new SessionMoveLock();
   private readonly connecting = new Map<WorkspaceId, Promise<SessionId>>();
   private readonly lifetime = new AbortController();
   private readonly selection = createSnapshotStore<MainSelection>(
@@ -636,20 +639,30 @@ class UiWorkspaceService extends Service implements UiWorkspace {
   }
 
   async pinSession(sessionId: SessionId): Promise<void> {
-    await this.workspaces.pinSession(sessionId);
-    const { items, pinnedSessionIds, archivedSessionIds } = this.workspaces.list.getSnapshot();
-    this.view.pinSessionOrder(
-      sessionId,
-      pinOrderAccounts(items, sessionId),
-      pinOrderSource(items, this.sessions.list.getSnapshot(), {
-        pinnedSessionIds,
-        archivedSessionIds,
-      }),
-    );
+    if (!this.sessionMoves.tryAcquire(sessionId)) return;
+    try {
+      await this.workspaces.pinSession(sessionId);
+      const { items, pinnedSessionIds, archivedSessionIds } = this.workspaces.list.getSnapshot();
+      this.view.pinSessionOrder(
+        sessionId,
+        pinOrderAccounts(items, sessionId),
+        pinOrderSource(items, this.sessions.list.getSnapshot(), {
+          pinnedSessionIds,
+          archivedSessionIds,
+        }),
+      );
+    } finally {
+      this.sessionMoves.release(sessionId);
+    }
   }
 
   async unpinSession(sessionId: SessionId): Promise<void> {
-    await this.workspaces.unpinSession(sessionId);
+    if (!this.sessionMoves.tryAcquire(sessionId)) return;
+    try {
+      await this.workspaces.unpinSession(sessionId);
+    } finally {
+      this.sessionMoves.release(sessionId);
+    }
   }
 
   async pickDirectory(): Promise<string | null> {

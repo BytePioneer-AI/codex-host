@@ -1,6 +1,7 @@
 /** Client-side Workspace state model shared by Remote transport and UI projection. */
 
 import { notifySubscribers } from "@deepseek-ai/dsh-client-store";
+import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {} from "@deepseek-ai/dsh-api-workspace-controller/remote";
 import { isRemoteFailure } from "@deepseek-ai/dsh-api-gateway/client";
 import type {
@@ -61,6 +62,7 @@ export interface WorkspaceSnapshot {
   readonly threadSections?: readonly WorkspaceThreadSection[];
   readonly threadSectionsV1?: true;
   readonly localProjects?: readonly WorkspaceLocalProject[];
+  readonly projectlessSessionIds?: readonly SessionId[];
   readonly state: "idle" | "loading" | "error";
   readonly phase: WorkspaceListPhase;
   readonly error: RemoteFailure | null;
@@ -85,7 +87,10 @@ export interface WorkspaceFollowSink {
     pinnedWorkspaceIds: WorkspacePinnedWorkspacesValue["pinnedWorkspaceIds"],
   ): void;
   replaceThreadSections(sections: readonly WorkspaceThreadSection[], capability?: true): void;
-  replaceLocalProjects(projects: readonly WorkspaceLocalProject[]): void;
+  replaceLocalProjects(
+    projects: readonly WorkspaceLocalProject[],
+    projectlessSessionIds?: readonly SessionId[],
+  ): void;
 }
 
 /**
@@ -100,6 +105,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   private threadSections: readonly WorkspaceThreadSection[] = [];
   private threadSectionsV1: true | undefined;
   private localProjects: readonly WorkspaceLocalProject[] = [];
+  private projectlessSessionIds: readonly SessionId[] = [];
   private state: WorkspaceSnapshot["state"] = "loading";
   private phase: WorkspaceListPhase = "pending";
   private error: RemoteFailure | null = null;
@@ -339,6 +345,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     this.threadSections = baseline.threadSections ?? [];
     this.threadSectionsV1 = baseline.threadSectionsV1;
     this.localProjects = baseline.localProjects ?? [];
+    this.projectlessSessionIds = baseline.projectlessSessionIds ?? [];
     this.state = "idle";
     this.phase = "ready";
     this.error = null;
@@ -443,8 +450,12 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     this.invalidate();
   }
 
-  replaceLocalProjects(projects: readonly WorkspaceLocalProject[]): void {
+  replaceLocalProjects(
+    projects: readonly WorkspaceLocalProject[],
+    projectlessSessionIds: readonly SessionId[] = [],
+  ): void {
     this.localProjects = projects;
+    this.projectlessSessionIds = projectlessSessionIds;
     this.invalidate();
   }
 
@@ -506,6 +517,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
       threadSections: this.threadSections,
       ...(this.threadSectionsV1 ? { threadSectionsV1: true } : {}),
       localProjects: this.localProjects,
+      projectlessSessionIds: this.projectlessSessionIds,
       state: this.state,
       phase: this.phase,
       error: this.error,

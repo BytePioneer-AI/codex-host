@@ -10,6 +10,9 @@ import type {
 } from "@deepseek-ai/dsh-api-workspace-controller/types";
 import type { HostObservable } from "@deepseek-ai/dsh-client-ui-slots";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
+import type { SessionMoveLock } from "../session-move-lock.ts";
+import type { SessionSummary } from "@deepseek-ai/dsh-api-session-controller/client";
+import type { WorkspaceSnapshot } from "@deepseek-ai/dsh-api-workspace-controller/client";
 
 /** Narrow authoritative move request dispatched to `workspace/moveSessionToProject`. */
 export interface ProjectMovePayload {
@@ -24,9 +27,9 @@ export type ProjectMoveOutcome =
   | { readonly status: "failed"; readonly error: unknown };
 
 export interface ProjectMoveCoordinator {
-  /** Observable snapshot of sessions that currently have a project move RPC in flight. */
+  /** All sessions with a shared placement lock, not only project moves. */
   readonly movingSessionIds: HostObservable<ReadonlySet<SessionId>>;
-  /** True while `sessionId` already has a project move request in flight. */
+  /** True while any placement operation owns this session. */
   isMoving(sessionId: SessionId): boolean;
   /**
    * Commit one project move under a per-session in-flight lock.
@@ -38,21 +41,8 @@ export interface ProjectMoveCoordinator {
   ): Promise<ProjectMoveOutcome>;
 }
 
-export interface ProjectSessionEligibilityInput {
-  readonly sessionId: SessionId;
-  readonly canMoveProject: boolean;
-  readonly nativeThreadIds: ReadonlySet<SessionId>;
-  readonly archivedSessionIds: readonly SessionId[];
-  readonly localProjects: readonly WorkspaceLocalProject[] | undefined;
-  readonly blank?: boolean;
-  readonly subagent?: boolean;
-  readonly threadTreeChild?: boolean;
-  readonly threadTreeParent?: string | null;
-  readonly remote?: boolean;
-  readonly archived?: boolean;
-}
-
 export interface MoveProjectDialogState {
+  readonly eligible: boolean;
   readonly availableProjects: readonly WorkspaceLocalProject[];
   readonly currentProjectId: string;
   /** Effective `<select>` value: live current project (or `""` if unassigned) before user choice, then user choice. */
@@ -64,42 +54,30 @@ export interface MoveProjectDialogState {
 
 /** True when a local project descriptor carries a valid canonical native project ID. */
 export function isValidLocalProject(
-  project: Pick<WorkspaceLocalProject, "id" | "name"> | null | undefined,
+  project: WorkspaceLocalProject | null | undefined,
 ): project is WorkspaceLocalProject {
-  return project != null && project.id.length > 0;
+  return project != null && project.id !== "" && project.id.trim() === project.id;
 }
 
-/** Find the existing local native project currently owning `sessionId`, if any. */
-export function findSessionLocalProject(
+/** Resolve a native source ID, explicit projectless (null), or missing/conflicting authority. */
+export function resolveSessionProjectId(
   sessionId: SessionId,
-  projects: readonly WorkspaceLocalProject[] | undefined,
-): WorkspaceLocalProject | undefined {
-  if (projects === undefined) return undefined;
-  return projects.find(
-    (project) => isValidLocalProject(project) && project.sessionIds.includes(sessionId),
-  );
-}
-
-/**
- * Check whether a session is eligible to show the "Move to project" menu entry.
- * Only local, native, non-draft, non-subagent, non-child, non-remote, non-archived sessions
- * with at least one other existing local native project target are allowed.
- * Pinned and sectioned sessions remain eligible because moving project never mutates pin,
- * section, or execution cwd.
- */
-export function isProjectMovableSession(input: ProjectSessionEligibilityInput): boolean {
-  if (!input.canMoveProject) return false;
-  if (!input.nativeThreadIds.has(input.sessionId)) return false;
-  if (input.blank === true) return false;
-  if (input.subagent === true) return false;
-  if (input.threadTreeChild === true) return false;
-  if (input.threadTreeParent != null && input.threadTreeParent.length > 0) return false;
-  if (input.remote === true) return false;
-  if (input.archived === true || input.archivedSessionIds.includes(input.sessionId)) return false;
-  const availableProjects = (input.localProjects ?? []).filter(isValidLocalProject);
-  if (availableProjects.length === 0) return false;
-  const currentProjectId = findSessionLocalProject(input.sessionId, availableProjects)?.id;
-  return availableProjects.some((project) => project.id !== currentProjectId);
+  projects: readonly WorkspaceLocalProject[],
+  projectlessSessionIds: readonly SessionId[] | undefined,
+): string | null | undefined {
+  let owner: WorkspaceLocalProject | null | undefined = projectlessSessionIds?.includes(sessionId)
+    ? null
+    : undefined;
+  for (const project of projects) {
+    if (!project.sessionIds.includes(sessionId)) continue;
+    if (owner !== undefined || !isValidLocalProject(project)) return undefined;
+    owner = project;
+  }
+  if (owner == null) return owner;
+  const ownerId = owner.id;
+  return projects.some((project) => project !== owner && project.id === ownerId)
+    ? undefined
+    : ownerId;
 }
 
 /**
@@ -111,25 +89,72 @@ export function isProjectMovableSession(input: ProjectSessionEligibilityInput): 
  */
 export function resolveMoveProjectDialogState(input: {
   readonly sessionId: SessionId;
-  readonly projects: readonly WorkspaceLocalProject[] | undefined;
+  readonly workspace: Pick<
+    WorkspaceSnapshot,
+    | "state"
+    | "phase"
+    | "localProjects"
+    | "projectlessSessionIds"
+    | "pinnedSessionIds"
+    | "archivedSessionIds"
+  >;
+  readonly summary:
+    Pick<SessionSummary, "id" | "blank" | "origin" | "parentId" | "projectionValues"> | undefined;
   /** `null` before user selection; chosen native `projectId` otherwise. */
   readonly selectedTarget: string | null;
   readonly busy: boolean;
 }): MoveProjectDialogState {
-  const availableProjects = (input.projects ?? []).filter(isValidLocalProject);
-  const currentProjectId = findSessionLocalProject(input.sessionId, availableProjects)?.id ?? "";
+  const { workspace, sessionId, summary } = input;
+  const projects = workspace.localProjects ?? [];
+  const unique = new Set<string>();
+  const duplicate = new Set<string>();
+  for (const { id } of projects) {
+    if (unique.has(id)) duplicate.add(id);
+    unique.add(id);
+  }
+  const availableProjects = projects.filter(
+    (project) => isValidLocalProject(project) && !duplicate.has(project.id),
+  );
+  const source = resolveSessionProjectId(sessionId, projects, workspace.projectlessSessionIds);
+  const currentProjectId = source ?? "";
+  const reference = summary?.projectionValues?.threadReference;
+  const eligible =
+    workspace.phase === "ready" &&
+    workspace.state === "idle" &&
+    summary?.id === sessionId &&
+    !sessionId.startsWith("web-remote:") &&
+    !summary.blank &&
+    summary.origin !== "subagent" &&
+    summary.parentId === undefined &&
+    summary.projectionValues?.nativeDiscovery === true &&
+    !summary.projectionValues?.remoteHost &&
+    summary.projectionValues?.threadTreeParent === null &&
+    reference?.hostId === "local" &&
+    (reference.threadId === undefined || reference.threadId === sessionId) &&
+    !workspace.pinnedSessionIds.includes(sessionId) &&
+    !workspace.archivedSessionIds.includes(sessionId) &&
+    source !== undefined &&
+    availableProjects.some(({ id }) => id !== source);
   const effectiveTarget = input.selectedTarget ?? currentProjectId;
   const targetDeleted =
     input.selectedTarget !== null &&
     input.selectedTarget !== "" &&
     !availableProjects.some((project) => project.id === input.selectedTarget);
   const canSubmit =
+    eligible &&
     !input.busy &&
     input.selectedTarget !== null &&
     input.selectedTarget !== "" &&
     !targetDeleted &&
     input.selectedTarget !== currentProjectId;
-  return { availableProjects, currentProjectId, effectiveTarget, targetDeleted, canSubmit };
+  return {
+    eligible,
+    availableProjects,
+    currentProjectId,
+    effectiveTarget,
+    targetDeleted,
+    canSubmit,
+  };
 }
 
 /**
@@ -138,40 +163,21 @@ export function resolveMoveProjectDialogState(input: {
  * the same session are skipped until the in-flight request settles.
  */
 export function createProjectMoveCoordinator(options: {
+  readonly lock: SessionMoveLock;
   readonly execute: (
     sessionId: SessionId,
     projectId: string,
   ) => Promise<WorkspaceMoveSessionToProjectValue>;
   readonly onError?: (error: unknown) => void;
 }): ProjectMoveCoordinator {
-  const inFlight = new Set<SessionId>();
-  let snapshot: ReadonlySet<SessionId> = new Set();
-  const listeners = new Set<() => void>();
-
-  const emit = (): void => {
-    snapshot = new Set(inFlight);
-    for (const listener of listeners) listener();
-  };
-
-  const movingSessionIds: HostObservable<ReadonlySet<SessionId>> = {
-    getSnapshot: () => snapshot,
-    subscribe: (listener) => {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-  };
-
+  const { lock } = options;
   return {
-    movingSessionIds,
-    isMoving: (sessionId) => inFlight.has(sessionId),
+    movingSessionIds: lock.movingSessionIds,
+    isMoving: lock.isMoving,
     async move(payload, moveOptions = {}) {
-      if (inFlight.has(payload.sessionId)) {
+      if (!lock.tryAcquire(payload.sessionId)) {
         return { status: "skipped-in-flight" };
       }
-      inFlight.add(payload.sessionId);
-      emit();
       try {
         const result = await options.execute(payload.sessionId, payload.projectId);
         if (result.status !== "confirmed") {
@@ -182,8 +188,7 @@ export function createProjectMoveCoordinator(options: {
         if (moveOptions.notifyOnError !== false) options.onError?.(error);
         return { status: "failed", error };
       } finally {
-        inFlight.delete(payload.sessionId);
-        emit();
+        lock.release(payload.sessionId);
       }
     },
   };

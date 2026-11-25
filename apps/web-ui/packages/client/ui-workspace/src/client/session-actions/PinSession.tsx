@@ -22,15 +22,21 @@ import css from "../rows/Rows.module.css";
 
 type PinState = Pick<
   SessionMenuItemProps<PinSessionInjected>,
-  "sessionId" | "usePinned" | "useArchived" | "useSessions"
+  "sessionId" | "usePinned" | "useArchived" | "useSessions" | "useMovingSessions"
 >;
 
-/** The row's pin, archive, and host capability membership. */
-function usePinState({ sessionId, usePinned, useArchived, useSessions }: PinState) {
+function usePinState({
+  sessionId,
+  usePinned,
+  useArchived,
+  useSessions,
+  useMovingSessions,
+}: PinState) {
   return {
     pinned: usePinned((pinned) => pinned.has(sessionId)),
     archived: useArchived((archived) => archived.has(sessionId)),
     supported: useSessions((list) => canPinSession(list.byId[sessionId])),
+    moving: useMovingSessions((ids) => ids.has(sessionId)),
   };
 }
 
@@ -42,11 +48,12 @@ function usePinState({ sessionId, usePinned, useArchived, useSessions }: PinStat
 export function PinSessionMenuItem(props: SessionMenuItemProps<PinSessionInjected>) {
   const { sessionId, useMenuOpenState, pinSession, unpinSession, t } = props;
   const [, setMenuOpen] = useMenuOpenState();
-  const { pinned, archived, supported } = usePinState(props);
+  const { pinned, archived, supported, moving } = usePinState(props);
   if (archived || !supported) return null;
   return (
     <MenuItemButton
       icon={pinned ? <IconPinFillRegular /> : <IconPinOutlineRegular />}
+      disabled={moving}
       onSelect={() => {
         setMenuOpen(false);
         (pinned ? unpinSession : pinSession)(sessionId);
@@ -64,7 +71,7 @@ export function PinSessionMenuItem(props: SessionMenuItemProps<PinSessionInjecte
  */
 export function PinSessionRowButton(props: SessionRowActionProps<PinSessionInjected>) {
   const { sessionId, pinSession, unpinSession, t } = props;
-  const { pinned, archived, supported } = usePinState(props);
+  const { pinned, archived, supported, moving } = usePinState(props);
   if (archived || !supported) return null;
   return (
     <Tooltip
@@ -76,6 +83,7 @@ export function PinSessionRowButton(props: SessionRowActionProps<PinSessionInjec
       <button
         type="button"
         className={css.iconButton}
+        disabled={moving}
         aria-label={t(pinned ? "menu.unpinSession" : "menu.pinSession")}
         onClick={() => {
           (pinned ? unpinSession : pinSession)(sessionId);

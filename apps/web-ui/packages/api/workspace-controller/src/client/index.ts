@@ -153,7 +153,7 @@ function acceptIncrement(accept: WorkspaceFollowSink, frame: WorkspaceFollowIncr
       accept.replaceThreadSections(frame.threadSections, frame.threadSectionsV1);
       return;
     case "localProjects":
-      accept.replaceLocalProjects(frame.localProjects);
+      accept.replaceLocalProjects(frame.localProjects, frame.projectlessSessionIds);
       return;
     /* v8 ignore next -- the generated Remote codec validates this closed union */
     default:

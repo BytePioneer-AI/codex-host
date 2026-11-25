@@ -417,7 +417,7 @@ type SessionTreeProps = Pick<
     /** Persist one section's fold. */
     setSectionExpanded: (key: string, expanded: boolean) => void;
     /** Save a drag order and select Manual. */
-    setSessionOrder: (accountKey: string, order: readonly string[]) => void;
+    setSessionOrder: (sessionId: SessionId, accountKey: string, order: readonly string[]) => void;
     pinnedWorkspaceIds: readonly string[];
     /** Registry-global pin and archive sets plus the archived-visibility choice. */
     rowState: SessionRowState;
@@ -699,7 +699,8 @@ function SessionTree({
       activeDrag,
       over,
     );
-    if (nextOrder !== undefined) setSessionOrder(activeDrag.accountKey, nextOrder);
+    if (nextOrder !== undefined)
+      setSessionOrder(activeDrag.sessionId, activeDrag.accountKey, nextOrder);
   };
   const commitWorkspaceDrag = (
     activeDrag: WorkspaceDragState,
@@ -1464,7 +1465,8 @@ function FlatList({
     dropCommitted.current = true;
     setDrag(null);
     const nextOrder = sessionDragOrder(sessionIds, rows, activeDrag, over);
-    if (nextOrder !== undefined) setSessionOrder(FLAT_SESSION_ORDER_KEY, nextOrder);
+    if (nextOrder !== undefined)
+      setSessionOrder(activeDrag.sessionId, FLAT_SESSION_ORDER_KEY, nextOrder);
   };
   const now = Date.now();
   const pinnedSectionExpanded = sectionExpanded(sectionExpansion, PINNED_SECTION_KEY);
@@ -1767,6 +1769,7 @@ function WorkspaceBrowserContent({
   unarchiveSession,
   createWorkspace,
   requestManageThreadSection,
+  isSessionMoving,
   searchSessions,
   searchResultLimit,
   useDirectoryFlow,
@@ -2020,7 +2023,12 @@ function WorkspaceBrowserContent({
     orderSource,
     workspaceReady,
   ]);
-  const saveSessionOrder = (accountKey: string, order: readonly string[]): void => {
+  const saveSessionOrder = (
+    sessionId: SessionId,
+    accountKey: string,
+    order: readonly string[],
+  ): void => {
+    if (isSessionMoving(sessionId)) return;
     actions.setSessionOrder(accountKey, order, activeSessionOrders, orderSource);
   };
   // The query outlives the tree and the input (both wide-only) so collapsing

@@ -77,7 +77,10 @@ import {
   type ThreadProjectMoveInjected,
   type ThreadProjectMoveRequest,
 } from "./session-actions/MoveThreadProject.tsx";
-import { createProjectMoveCoordinator } from "./session-actions/project-move.ts";
+import {
+  createProjectMoveCoordinator,
+  resolveMoveProjectDialogState,
+} from "./session-actions/project-move.ts";
 import {
   MoveThreadSectionDialog,
   MoveThreadSectionMenuItem,
@@ -307,15 +310,22 @@ export function apply(ctx: Context): void {
   );
   const threadProjectMove = createSnapshotStore<ThreadProjectMoveRequest | null>(null);
   const projectMoveCoordinator = createProjectMoveCoordinator({
+    lock: uiWorkspace.sessionMoves,
     execute: (sessionId, projectId) => {
-      if (!workspaces.moveSessionToProject)
-        return Promise.reject(new Error("Project moves are unavailable"));
+      const state = resolveMoveProjectDialogState({
+        sessionId,
+        workspace: workspaces.list.getSnapshot(),
+        summary: sessions.list.getSnapshot().byId[sessionId],
+        selectedTarget: projectId,
+        busy: false,
+      });
+      if (!workspaces.moveSessionToProject || !state.canSubmit)
+        return Promise.reject(new Error("Project move is no longer available"));
       return workspaces.moveSessionToProject(sessionId, projectId);
     },
   });
   const threadProjectMenu = (): ThreadProjectMenuInjected => ({
     hooks: {
-      nativeThreads: nativeThreadIds,
       projectWorkspace: workspaces.list,
       projectSessions: sessions.list,
       movingProjectSessions: projectMoveCoordinator.movingSessionIds,
@@ -327,6 +337,7 @@ export function apply(ctx: Context): void {
     hooks: {
       threadProjectMove,
       projectWorkspace: workspaces.list,
+      projectSessions: sessions.list,
       movingProjectSessions: projectMoveCoordinator.movingSessionIds,
     },
     dismiss: () => threadProjectMove.set(null),
@@ -365,7 +376,11 @@ export function apply(ctx: Context): void {
     notifySyncPending: () => notify({ kind: "sectionSyncPending" }),
   });
   const pinInjected = (): PinSessionInjected => ({
-    hooks: { pinned: pinnedSet, archived: archivedSet },
+    hooks: {
+      pinned: pinnedSet,
+      archived: archivedSet,
+      movingSessions: uiWorkspace.sessionMoves.movingSessionIds,
+    },
     // Pin failures surface as a notice: nothing else on the surface moves, so
     // a silent failure would read as a dead action.
     pinSession: (sessionId) => {
@@ -530,6 +545,7 @@ export function apply(ctx: Context): void {
       uiWorkspace.startSession(workspaceId);
     },
     open: openSession,
+    isSessionMoving: uiWorkspace.sessionMoves.isMoving,
     markCompletionsRead: (sessionIds) => {
       ctx.get("uiSession")?.markCompletionsRead(sessionIds);
     },

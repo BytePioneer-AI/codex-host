@@ -11,7 +11,6 @@ import type { WorkspaceSnapshot } from "@deepseek-ai/dsh-api-workspace-controlle
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { SessionMenuItemProps } from "../contract/slots.ts";
 import {
-  isProjectMovableSession,
   resolveMoveProjectDialogState,
   type ProjectMoveOutcome,
   type ProjectMovePayload,
@@ -24,7 +23,6 @@ export interface ThreadProjectMoveRequest {
 
 export interface ThreadProjectMenuInjected {
   hooks: {
-    nativeThreads: HostObservable<ReadonlySet<SessionId>>;
     projectWorkspace: HostObservable<WorkspaceSnapshot>;
     projectSessions: HostObservable<SessionListState>;
     movingProjectSessions: HostObservable<ReadonlySet<SessionId>>;
@@ -38,7 +36,6 @@ export function MoveThreadProjectMenuItem(props: SessionMenuItemProps<ThreadProj
     sessionId,
     threadTreeChild,
     useMenuOpenState,
-    useNativeThreads,
     useProjectWorkspace,
     useProjectSessions,
     useMovingProjectSessions,
@@ -47,23 +44,17 @@ export function MoveThreadProjectMenuItem(props: SessionMenuItemProps<ThreadProj
     t,
   } = props;
   const [, setMenuOpen] = useMenuOpenState();
-  const nativeThreadIds = useNativeThreads((threads) => threads);
   const workspace = useProjectWorkspace((snapshot) => snapshot);
   const summary = useProjectSessions((snapshot) => snapshot.byId[sessionId]);
   const moving = useMovingProjectSessions((ids) => ids.has(sessionId));
-  const eligible = isProjectMovableSession({
+  const { eligible } = resolveMoveProjectDialogState({
     sessionId,
-    canMoveProject: canMove,
-    nativeThreadIds,
-    archivedSessionIds: workspace.archivedSessionIds,
-    localProjects: workspace.localProjects,
-    blank: summary?.blank,
-    subagent: summary?.origin === "subagent",
-    threadTreeChild,
-    threadTreeParent: summary?.projectionValues?.threadTreeParent,
-    remote: Boolean(summary?.projectionValues?.remoteHost),
+    summary,
+    workspace,
+    selectedTarget: null,
+    busy: moving,
   });
-  if (!eligible) return null;
+  if (!canMove || threadTreeChild || !eligible) return null;
   return (
     <MenuItemButton
       icon={<IconFolderOpenOutlineRegular />}
@@ -83,6 +74,7 @@ export interface ThreadProjectMoveInjected {
   hooks: {
     threadProjectMove: HostObservable<ThreadProjectMoveRequest | null>;
     projectWorkspace: HostObservable<WorkspaceSnapshot>;
+    projectSessions: HostObservable<SessionListState>;
     movingProjectSessions: HostObservable<ReadonlySet<SessionId>>;
   };
   dismiss: () => void;
@@ -99,24 +91,27 @@ export function MoveThreadProjectDialog({ useThreadProjectMove, ...props }: Move
 function MoveProjectForm({
   request,
   useProjectWorkspace,
+  useProjectSessions,
   useMovingProjectSessions,
   dismiss,
   move,
   t,
 }: Omit<MoveProps, "useThreadProjectMove"> & { request: ThreadProjectMoveRequest }) {
-  const liveProjects = useProjectWorkspace((snapshot) => snapshot.localProjects);
+  const workspace = useProjectWorkspace((snapshot) => snapshot);
+  const summary = useProjectSessions((snapshot) => snapshot.byId[request.sessionId]);
   const inFlight = useMovingProjectSessions((ids) => ids.has(request.sessionId));
   const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
   const [errorKind, setErrorKind] = useState<"failed" | "unknown" | null>(null);
   const pending = useRef(false);
   const busy = moving || inFlight;
-  const { availableProjects, effectiveTarget, targetDeleted, canSubmit } =
+  const { eligible, availableProjects, effectiveTarget, targetDeleted, canSubmit } =
     resolveMoveProjectDialogState({
       sessionId: request.sessionId,
-      projects: liveProjects,
+      workspace,
+      summary,
       selectedTarget,
-      busy,
+      busy: busy || errorKind === "unknown",
     });
   const close = () => {
     if (!pending.current && !inFlight) dismiss();
@@ -161,7 +156,7 @@ function MoveProjectForm({
         className={css.renameInput}
         aria-label={t("project.destination")}
         value={effectiveTarget}
-        disabled={busy}
+        disabled={busy || !eligible || errorKind === "unknown"}
         data-modal-autofocus
         onChange={({ target: select }) => {
           setSelectedTarget(select.value);
@@ -184,6 +179,11 @@ function MoveProjectForm({
           </option>
         ))}
       </select>
+      {!eligible && !targetDeleted && errorKind === null && (
+        <div className={css.renameError} role="status">
+          {t("project.moveUnavailable")}
+        </div>
+      )}
       {busy && (
         <div className={css.deleteStatus} role="status">
           {t("project.moving")}
@@ -194,7 +194,7 @@ function MoveProjectForm({
           {t("project.targetDeleted")}
         </div>
       )}
-      {errorKind !== null && !targetDeleted && (
+      {errorKind !== null && (
         <div className={css.renameError} role="alert">
           {errorKind === "unknown" ? t("project.outcomeUnknown") : t("project.moveFailed")}
         </div>

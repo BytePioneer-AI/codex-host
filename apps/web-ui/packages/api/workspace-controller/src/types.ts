@@ -198,6 +198,8 @@ export interface WorkspaceLocalProject {
   readonly name: string;
   /** Authoritative Sessions currently assigned to this local native project. */
   readonly sessionIds: readonly SessionId[];
+  /** Authoritative Web Workspaces corresponding to this native project's roots. */
+  readonly workspaceIds?: readonly WorkspaceId[];
 }
 
 /** Narrow request moving a local native Session to an existing local native project. */
@@ -282,6 +284,8 @@ export interface WorkspaceBaseline {
   readonly threadSectionsV1?: true;
   /** Existing local native projects and their authoritative Session assignments. */
   readonly localProjects?: readonly WorkspaceLocalProject[];
+  /** Sessions explicitly assigned no project by the native owner. */
+  readonly projectlessSessionIds?: readonly SessionId[];
 }
 
 /** One ordered Workspace change after a generation's baseline. */
@@ -300,6 +304,7 @@ export type WorkspaceFollowIncrement =
   | {
       readonly type: "localProjects";
       readonly localProjects: readonly WorkspaceLocalProject[];
+      readonly projectlessSessionIds?: readonly SessionId[];
     };
 
 /** Workspace state stream; every generation starts with exactly one baseline. */

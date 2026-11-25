@@ -115,6 +115,7 @@ const localProjects = () => z.array(z.object({
   'id': z.string().min(1).readonly(),
   'name': z.string().readonly(),
   'sessionIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
+  'workspaceIds': z.array(z.intersection(z.string(), z.unknown())).optional().readonly(),
 }).readonly()).readonly()
 const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema$value ??= z.union([z.object({
   'type': z.literal("baseline").readonly(),
@@ -150,6 +151,7 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema =
 }))]).readonly().optional(),
   'threadSectionsV1': z.union([z.undefined(), z.literal(true)]).readonly().optional(),
   'localProjects': localProjects().optional().readonly(),
+  'projectlessSessionIds': z.array(z.intersection(z.string(), z.unknown())).optional().readonly(),
 }).readonly(),
 }), z.object({
   'type': z.literal("upsert").readonly(),
@@ -199,6 +201,7 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema =
 }), z.object({
   'type': z.literal("localProjects").readonly(),
   'localProjects': localProjects(),
+  'projectlessSessionIds': z.array(z.intersection(z.string(), z.unknown())).optional().readonly(),
 })]))
 let _deepseek_ai_dsh_api_workspace_controller_workspace_initializeDefault_result$schema$value
 const _deepseek_ai_dsh_api_workspace_controller_workspace_initializeDefault_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_initializeDefault_result$schema$value ??= z.union([z.undefined(), z.object({

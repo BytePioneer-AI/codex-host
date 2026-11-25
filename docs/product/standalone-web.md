@@ -644,7 +644,9 @@ Web 侧栏同步本机 Codex Desktop 的自定义分区。未置顶、未归档�
 
 同一归属不会再次写入。RPC 返回 `{status:"confirmed", projectId}` 或 `{status:"unknown"}`；明确拒绝返回 RPC 错误。Web 通过权威读侧刷新 `workspace/follow`，未知结果只读对账、不重发写入，不保存第二份项目归属。
 
-`workspace/follow` 在基线的 `value.localProjects` 中返回已知的本机原生项目 `{id, name, sessionIds}`，包括暂时没有已加载成员的项目；尚未读到项目快照时省略该字段。`{type:"localProjects", localProjects}` 增量替换整个列表，与同次刷新产生的工作区 `upsert` 一并发布。成员仅取 Host 返回的显式归属，不从 cwd、工作区路径或共用根目录推断；共用根目录的两个项目之间移动时，即使没有工作区 `upsert`，也会发布项目归属增量。
+桌面和手机都可从会话菜单打开「移动到项目」。弹窗只列出本机原生项目；选中的目标被删除时不会自动改选。只有已确认归属某项目或明确无项目的会话才能移动。旧 Host、未完成的读取、无法映射的项目 ID 都不等于“无项目”。
+
+`workspace/follow` 的 `localProjects` 列出本机原生项目 `{id, name, sessionIds}`，包括没有已加载成员的项目。`projectlessSessionIds` 只列出已明确无项目的本机会话。`localProjects` 增量同时替换两份成员列表；没有确认归属的会话不会出现在任一列表中。属于哪个项目以 Host 的显式归属为准，即使两个项目共用根目录、工作区行没有变化，也会发布归属变更。
 
 每个项目还可携带 `workspaceIds`。Host 明确登记的根目录在 Web 生成或复用 Workspace 行时，后端把当前行的 ID 绑定到该原生项目；同名、改名和会话数量不影响绑定。多根项目按原生根目录顺序返回绑定，隐藏或删除的行、多个项目共用的行不作为拖放目标。工作区行新增或移除时，项目绑定在同一轮流更新中同步。
 

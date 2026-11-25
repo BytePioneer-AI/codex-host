@@ -12,6 +12,7 @@ import { ClientWorkspaceModel, type WorkspaceRemote } from "../src/client/model.
 import { WorkspaceController } from "../src/client/service.ts";
 import type {
   WorkspaceFollowFrame,
+  WorkspaceId,
   WorkspaceLocalProject,
   WorkspaceMoveSessionToProjectRequest,
   WorkspaceMoveSessionToProjectValue,
@@ -37,12 +38,22 @@ describe("workspace-controller project move contracts", () => {
   it("streams localProjects on baseline and incremental frames via Gateway", async () => {
     const endpoint = "workspace/follow";
     const initialProjects: WorkspaceLocalProject[] = [
-      { id: "proj-alpha", name: "Project Alpha", sessionIds: ["s-1" as SessionId] },
+      {
+        id: "proj-alpha",
+        name: "Project Alpha",
+        sessionIds: ["s-1" as SessionId],
+        workspaceIds: ["ws-a" as WorkspaceId],
+      },
       { id: "proj-beta", name: "Project Beta", sessionIds: [] },
     ];
     const updatedProjects: WorkspaceLocalProject[] = [
       { id: "proj-alpha", name: "Project Alpha", sessionIds: [] },
-      { id: "proj-beta", name: "Project Beta", sessionIds: ["s-1" as SessionId] },
+      {
+        id: "proj-beta",
+        name: "Project Beta",
+        sessionIds: ["s-1" as SessionId],
+        workspaceIds: ["ws-b" as WorkspaceId],
+      },
     ];
     const carrier = RemoteMock.create().stream(
       endpoint,
@@ -54,6 +65,7 @@ describe("workspace-controller project move contracts", () => {
             archivedSessionIds: [],
             pinnedSessionIds: [],
             localProjects: initialProjects,
+            projectlessSessionIds: ["s-free"],
           },
         },
       ]),
@@ -73,10 +85,12 @@ describe("workspace-controller project move contracts", () => {
       await carrier.streams.opened(endpoint, 1);
       await vi.waitFor(() => {
         expect(model.getSnapshot().localProjects).toEqual(initialProjects);
+        expect(model.getSnapshot().projectlessSessionIds).toEqual(["s-free"]);
       });
       carrier.streams.push(endpoint, { type: "localProjects", localProjects: updatedProjects });
       await vi.waitFor(() => {
         expect(model.getSnapshot().localProjects).toEqual(updatedProjects);
+        expect(model.getSnapshot().projectlessSessionIds).toEqual([]);
       });
     } finally {
       await stream.dispose();
@@ -117,10 +131,12 @@ describe("workspace-controller project move contracts", () => {
     const frame = followSchema.parse({
       type: "localProjects",
       localProjects: [{ id: "proj-alpha", name: "Alpha", sessionIds: ["t-1"] }],
+      projectlessSessionIds: ["free"],
     }) as WorkspaceFollowFrame;
     expect(frame).toEqual({
       type: "localProjects",
       localProjects: [{ id: "proj-alpha", name: "Alpha", sessionIds: ["t-1"] }],
+      projectlessSessionIds: ["free"],
     });
   });
 
@@ -143,6 +159,16 @@ describe("workspace-controller project move contracts", () => {
         }
         if (request.projectId === "proj-unknown") {
           return { ok: true, value: { status: "unknown" } };
+        }
+        if (request.projectId === "proj-offline") {
+          return {
+            ok: false,
+            error: {
+              code: "gateway/internal",
+              message: "Disconnected",
+              details: {},
+            } as RemoteFailure,
+          };
         }
         if (request.projectId === "proj-mismatch") {
           return { ok: true, value: { status: "confirmed", projectId: "proj-other" } };
@@ -189,8 +215,13 @@ describe("workspace-controller project move contracts", () => {
     ).rejects.toThrow(
       /workspace move to project failed: workspace\/project-unavailable: Project not found/,
     );
-    await expect(
-      controller.moveSessionToProject("t-1" as SessionId, "proj-mismatch"),
-    ).rejects.toThrow(/not confirmed/);
+    for (const projectId of ["proj-mismatch", "proj-offline"]) {
+      await expect(controller.moveSessionToProject("t-1" as SessionId, projectId)).resolves.toEqual(
+        {
+          status: "unknown",
+        },
+      );
+      expect(sentMoves.filter((call) => call.projectId === projectId)).toHaveLength(1);
+    }
   });
 });

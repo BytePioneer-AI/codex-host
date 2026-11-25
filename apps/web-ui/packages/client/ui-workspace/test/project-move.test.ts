@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import type {
   WorkspaceLocalProject,
   WorkspaceMoveSessionToProjectValue,
@@ -7,244 +7,162 @@ import type {
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import {
   createProjectMoveCoordinator,
-  findSessionLocalProject,
-  isProjectMovableSession,
   resolveMoveProjectDialogState,
 } from "../src/client/session-actions/project-move.ts";
+import { createSectionMoveCoordinator } from "../src/client/rows/section-dnd.ts";
+import { SessionMoveLock } from "../src/client/session-move-lock.ts";
 
 const sid = (value: string): SessionId => value as SessionId;
 
-describe("isProjectMovableSession", () => {
-  const twoProjects: readonly WorkspaceLocalProject[] = [
-    { id: "proj-alpha", name: "Alpha", sessionIds: [sid("s-1")] },
-    { id: "proj-beta", name: "Beta", sessionIds: [] },
-  ];
-  const singleProject: readonly WorkspaceLocalProject[] = [
-    { id: "proj-alpha", name: "Alpha", sessionIds: [sid("s-1")] },
-  ];
-  const nativeThreadIds = new Set([sid("s-1"), sid("s-unassigned"), sid("s-pinned")]);
-
-  it("allows local native top-level active sessions including pinned/sectioned when another target exists", () => {
-    assert.equal(
-      isProjectMovableSession({
-        sessionId: sid("s-1"),
-        canMoveProject: true,
-        nativeThreadIds,
-        archivedSessionIds: [],
-        localProjects: twoProjects,
-      }),
-      true,
-    );
-    // Unassigned native session with 1 existing local native project has a valid target
-    assert.equal(
-      isProjectMovableSession({
-        sessionId: sid("s-unassigned"),
-        canMoveProject: true,
-        nativeThreadIds,
-        archivedSessionIds: [],
-        localProjects: singleProject,
-      }),
-      true,
-    );
-    // Pinned sessions remain eligible (moving project never changes pin or section state)
-    assert.equal(
-      isProjectMovableSession({
-        sessionId: sid("s-pinned"),
-        canMoveProject: true,
-        nativeThreadIds,
-        archivedSessionIds: [],
-        localProjects: twoProjects,
-      }),
-      true,
-    );
-  });
-
-  it("hides when no target local native project exists or RPC is unavailable", () => {
-    assert.equal(
-      isProjectMovableSession({
-        sessionId: sid("s-1"),
-        canMoveProject: false,
-        nativeThreadIds,
-        archivedSessionIds: [],
-        localProjects: twoProjects,
-      }),
-      false,
-    );
-    assert.equal(
-      isProjectMovableSession({
-        sessionId: sid("s-1"),
-        canMoveProject: true,
-        nativeThreadIds,
-        archivedSessionIds: [],
-        localProjects: [],
-      }),
-      false,
-    );
-    assert.equal(
-      isProjectMovableSession({
-        sessionId: sid("s-1"),
-        canMoveProject: true,
-        nativeThreadIds,
-        archivedSessionIds: [],
-        localProjects: undefined,
-      }),
-      false,
-    );
-    // Only 1 local project and session is already in it -> no movable destination
-    assert.equal(
-      isProjectMovableSession({
-        sessionId: sid("s-1"),
-        canMoveProject: true,
-        nativeThreadIds,
-        archivedSessionIds: [],
-        localProjects: singleProject,
-      }),
-      false,
-    );
-  });
-
-  it("hides for draft, subagent, delegated child, remote, archived, and non-native sessions", () => {
-    const base = {
-      sessionId: sid("s-1"),
-      canMoveProject: true,
-      nativeThreadIds,
-      archivedSessionIds: [] as readonly SessionId[],
-      localProjects: twoProjects,
-    };
-    assert.equal(isProjectMovableSession({ ...base, sessionId: sid("non-native") }), false);
-    assert.equal(isProjectMovableSession({ ...base, blank: true }), false);
-    assert.equal(isProjectMovableSession({ ...base, subagent: true }), false);
-    assert.equal(isProjectMovableSession({ ...base, threadTreeChild: true }), false);
-    assert.equal(isProjectMovableSession({ ...base, threadTreeParent: "parent-1" }), false);
-    assert.equal(isProjectMovableSession({ ...base, remote: true }), false);
-    assert.equal(isProjectMovableSession({ ...base, archived: true }), false);
-    assert.equal(isProjectMovableSession({ ...base, archivedSessionIds: [sid("s-1")] }), false);
-  });
-});
-
-describe("resolveMoveProjectDialogState", () => {
-  const initial: readonly WorkspaceLocalProject[] = [
-    { id: "proj-alpha", name: "Alpha", sessionIds: [sid("s-1")] },
-    { id: "proj-beta", name: "Beta", sessionIds: [] },
-  ];
-
-  it("tracks live project ownership before selection and preserves user choice across updates", () => {
-    assert.equal(findSessionLocalProject(sid("s-1"), initial)?.id, "proj-alpha");
-
-    const untouched = resolveMoveProjectDialogState({
-      sessionId: sid("s-1"),
-      projects: initial,
-      selectedTarget: null,
+describe("move-to-project menu and dialog", () => {
+  const sessionId = sid("s-1");
+  const alpha: WorkspaceLocalProject = { id: "alpha", name: "A", sessionIds: [sessionId] };
+  const beta: WorkspaceLocalProject = { id: "beta", name: "B", sessionIds: [], workspaceIds: [] };
+  const projections = {
+    nativeDiscovery: true,
+    threadReference: { hostId: "local" },
+    threadTreeParent: null,
+    harnessIdentity: { id: "external", name: "External" },
+  };
+  const summary = { id: sessionId, blank: false, projectionValues: projections };
+  type Input = Parameters<typeof resolveMoveProjectDialogState>[0];
+  const workspace: Input["workspace"] = {
+    phase: "ready",
+    state: "idle",
+    pinnedSessionIds: [],
+    archivedSessionIds: [],
+    localProjects: [alpha, beta],
+  };
+  const state = (change: Partial<Input> = {}, updates: Partial<Input["workspace"]> = {}) =>
+    resolveMoveProjectDialogState({
+      sessionId,
+      summary,
+      selectedTarget: beta.id,
       busy: false,
+      ...change,
+      workspace: { ...workspace, ...updates },
     });
-    assert.equal(untouched.currentProjectId, "proj-alpha");
-    assert.equal(untouched.effectiveTarget, "proj-alpha");
-    assert.equal(untouched.targetDeleted, false);
+
+  it("allows canonical local threads regardless of harness and allows a rootless destination", () => {
+    assert.equal(state().eligible, true);
+    assert.equal(state().canSubmit, true);
+    assert.equal(state({ busy: true }).canSubmit, false);
+    assert.equal(state({ selectedTarget: alpha.id }).canSubmit, false);
+    assert.equal(state({}, { localProjects: [alpha] }).eligible, false);
+  });
+
+  it("requires an explicit projectless assignment or a single unambiguous owner", () => {
+    assert.equal(state({}, { localProjects: [beta] }).eligible, false);
+    assert.equal(
+      state({}, { localProjects: [beta], projectlessSessionIds: [sessionId] }).canSubmit,
+      true,
+    );
+    for (const updates of [
+      { localProjects: [] },
+      { projectlessSessionIds: [sessionId] }, // also assigned to alpha
+      { localProjects: [alpha, { ...beta, sessionIds: [sessionId] }] },
+      { localProjects: [alpha, { ...alpha, sessionIds: [] }, beta] },
+      { localProjects: [alpha, { ...beta, id: " " }] },
+      { localProjects: [alpha, beta, beta] },
+    ]) {
+      assert.equal(state({}, updates).eligible, false);
+      assert.equal(state({}, updates).canSubmit, false);
+    }
+  });
+
+  it("rechecks the selected row and registry when an open dialog becomes stale", () => {
+    for (const row of [
+      undefined,
+      { ...summary, id: sid("other") },
+      { ...summary, blank: true },
+      { ...summary, origin: "subagent" as const },
+      { ...summary, parentId: sid("parent") },
+      { ...summary, projectionValues: { harnessIdentity: projections.harnessIdentity } },
+      { ...summary, projectionValues: { ...projections, nativeDiscovery: false } },
+      { ...summary, projectionValues: { ...projections, threadTreeParent: "parent" } },
+      {
+        ...summary,
+        projectionValues: { ...projections, threadReference: { hostId: "remote-ssh:host" } },
+      },
+      {
+        ...summary,
+        projectionValues: {
+          ...projections,
+          threadReference: { hostId: "local", threadId: "other" },
+        },
+      },
+    ]) {
+      assert.equal(state({ summary: row }).canSubmit, false);
+    }
+    assert.equal(state({}, { pinnedSessionIds: [sessionId] }).canSubmit, false);
+    assert.equal(state({}, { archivedSessionIds: [sessionId] }).canSubmit, false);
+    assert.equal(state({}, { state: "loading" }).canSubmit, false);
+    assert.equal(state({}, { state: "error" }).canSubmit, false);
+  });
+
+  it("tracks live ownership before a choice, but never remaps a selected target", () => {
+    const untouched = state({ selectedTarget: null });
+    assert.equal(untouched.effectiveTarget, alpha.id);
     assert.equal(untouched.canSubmit, false);
-
-    // Another client moves s-1 before user chooses: follows live owner and stays disabled
-    const movedExternally = resolveMoveProjectDialogState({
-      sessionId: sid("s-1"),
-      projects: [
-        { id: "proj-alpha", name: "Alpha", sessionIds: [] },
-        { id: "proj-beta", name: "Beta", sessionIds: [sid("s-1")] },
+    const reassigned = {
+      localProjects: [
+        { ...alpha, sessionIds: [] },
+        { ...beta, sessionIds: [sessionId] },
       ],
-      selectedTarget: null,
-      busy: false,
-    });
-    assert.equal(movedExternally.currentProjectId, "proj-beta");
-    assert.equal(movedExternally.effectiveTarget, "proj-beta");
-    assert.equal(movedExternally.canSubmit, false);
-
-    // Unassigned session starts at "" with submit disabled until user picks an existing project
-    const unassigned = resolveMoveProjectDialogState({
-      sessionId: sid("s-unassigned"),
-      projects: initial,
-      selectedTarget: null,
-      busy: false,
-    });
-    assert.equal(unassigned.currentProjectId, "");
-    assert.equal(unassigned.effectiveTarget, "");
-    assert.equal(unassigned.targetDeleted, false);
-    assert.equal(unassigned.canSubmit, false);
-
-    // User picks proj-beta while s-1 is in proj-alpha
-    const picked = resolveMoveProjectDialogState({
-      sessionId: sid("s-1"),
-      projects: initial,
-      selectedTarget: "proj-beta",
-      busy: false,
-    });
-    assert.equal(picked.effectiveTarget, "proj-beta");
-    assert.equal(picked.targetDeleted, false);
-    assert.equal(picked.canSubmit, true);
-
-    // Busy disables submit
-    assert.equal(
-      resolveMoveProjectDialogState({
-        sessionId: sid("s-1"),
-        projects: initial,
-        selectedTarget: "proj-beta",
-        busy: true,
-      }).canSubmit,
-      false,
+    };
+    assert.equal(state({ selectedTarget: null }, reassigned).effectiveTarget, beta.id);
+    assert.equal(state({}, reassigned).canSubmit, false);
+    const unassigned = state(
+      { selectedTarget: null },
+      { localProjects: [beta], projectlessSessionIds: [sessionId] },
     );
-
-    // Selected project deleted while dialog is open: marks targetDeleted and blocks submit without auto-switching
-    const deleted = resolveMoveProjectDialogState({
-      sessionId: sid("s-1"),
-      projects: [
-        { id: "proj-alpha", name: "Alpha", sessionIds: [sid("s-1")] },
-        { id: "proj-gamma", name: "Gamma", sessionIds: [] },
-      ],
-      selectedTarget: "proj-beta",
-      busy: false,
-    });
-    assert.equal(deleted.effectiveTarget, "proj-beta");
-    assert.equal(deleted.targetDeleted, true);
-    assert.equal(deleted.canSubmit, false);
-
-    // If another client moves s-1 into proj-beta after user picked it, submit becomes disabled
-    const alreadyThere = resolveMoveProjectDialogState({
-      sessionId: sid("s-1"),
-      projects: [
-        { id: "proj-alpha", name: "Alpha", sessionIds: [] },
-        { id: "proj-beta", name: "Beta", sessionIds: [sid("s-1")] },
-      ],
-      selectedTarget: "proj-beta",
-      busy: false,
-    });
-    assert.equal(alreadyThere.targetDeleted, false);
-    assert.equal(alreadyThere.canSubmit, false);
+    assert.equal(unassigned.effectiveTarget, "");
+    assert.equal(unassigned.canSubmit, false);
+    for (const targets of [[alpha], [alpha, beta, beta]]) {
+      const unavailable = state({}, { localProjects: targets });
+      assert.equal(unavailable.effectiveTarget, beta.id);
+      assert.equal(unavailable.targetDeleted, true);
+      assert.equal(unavailable.canSubmit, false);
+    }
   });
 });
 
 describe("createProjectMoveCoordinator", () => {
   it("enforces per-session in-flight locks, returns committed/unknown without retry, and handles failures", async () => {
     const calls: Array<{ sessionId: SessionId; projectId: string }> = [];
-    let resolveA!: (value: WorkspaceMoveSessionToProjectValue) => void;
-    let rejectB!: (reason: Error) => void;
+    const moveA = Promise.withResolvers<WorkspaceMoveSessionToProjectValue>();
+    const moveBResult = Promise.withResolvers<WorkspaceMoveSessionToProjectValue>();
 
+    const lock = new SessionMoveLock();
     const coordinator = createProjectMoveCoordinator({
+      lock,
       execute: (sessionId, projectId) => {
         calls.push({ sessionId, projectId });
-        if (sessionId === sid("a")) {
-          return new Promise<WorkspaceMoveSessionToProjectValue>((resolve) => {
-            resolveA = resolve;
-          });
-        }
+        if (sessionId === sid("a")) return moveA.promise;
         if (sessionId === sid("u")) {
           return Promise.resolve({ status: "unknown" });
         }
-        return new Promise<WorkspaceMoveSessionToProjectValue>((_resolve, reject) => {
-          rejectB = reject;
-        });
+        return moveBResult.promise;
       },
     });
 
     const moveA1 = coordinator.move({ sessionId: sid("a"), projectId: "proj-beta" });
     assert.equal(coordinator.isMoving(sid("a")), true);
     assert.equal(coordinator.movingSessionIds.getSnapshot().has(sid("a")), true);
+    const sectionGate = Promise.withResolvers<void>();
+    const section = createSectionMoveCoordinator({
+      lock,
+      execute: () => sectionGate.promise,
+    });
+    assert.deepEqual(await section.move({ sessionId: sid("a"), sectionId: null }), {
+      status: "skipped-in-flight",
+    });
+    const sectionMove = section.move({ sessionId: sid("c"), sectionId: "custom" });
+    assert.deepEqual(await coordinator.move({ sessionId: sid("c"), projectId: "proj-beta" }), {
+      status: "skipped-in-flight",
+    });
+    sectionGate.resolve();
+    assert.deepEqual(await sectionMove, { status: "committed" });
 
     const moveA2 = await coordinator.move({ sessionId: sid("a"), projectId: "proj-gamma" });
     assert.deepEqual(moveA2, { status: "skipped-in-flight" });
@@ -257,7 +175,7 @@ describe("createProjectMoveCoordinator", () => {
     assert.equal(coordinator.isMoving(sid("b")), true);
     assert.equal(calls.length, 2);
 
-    resolveA({ status: "confirmed", projectId: "proj-beta" });
+    moveA.resolve({ status: "confirmed", projectId: "proj-beta" });
     assert.deepEqual(await moveA1, { status: "committed", projectId: "proj-beta" });
     assert.equal(coordinator.isMoving(sid("a")), false);
 
@@ -268,7 +186,7 @@ describe("createProjectMoveCoordinator", () => {
     assert.equal(calls.length, 3);
 
     const failure = new Error("Project unavailable");
-    rejectB(failure);
+    moveBResult.reject(failure);
     const outcomeB = await moveB;
     assert.equal(outcomeB.status, "failed");
     assert.equal(coordinator.isMoving(sid("b")), false);

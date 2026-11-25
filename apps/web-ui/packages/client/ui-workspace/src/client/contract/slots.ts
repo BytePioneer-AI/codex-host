@@ -267,6 +267,7 @@ export type DirectoryPickingHooks = PropsHooks<DirectoryPickingInjected["hooks"]
  * browsing region drives.
  */
 export type WorkspaceBrowserInjected = {
+  isSessionMoving: (id: SessionId) => boolean;
   setThreadTreeCollapseStyle: (style: ThreadTreeCollapseStyle) => Promise<boolean>;
   hooks: DirectoryPickingInjected["hooks"] & {
     workspacePreferences: HostObservable<ConfigFormSnapshot<WorkspacePreferences>>;
@@ -396,6 +397,7 @@ export interface PinSessionInjected {
     pinned: HostObservable<ReadonlySet<SessionId>>;
     /** Archived Session ids (pin does not apply to an archived row). */
     archived: HostObservable<ReadonlySet<SessionId>>;
+    movingSessions: HostObservable<ReadonlySet<SessionId>>;
   };
   /** Pin a Session; on success it leads its accounts' saved orders, on failure the notice says so. */
   pinSession: (sessionId: SessionId) => void;

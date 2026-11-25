@@ -23,6 +23,7 @@ import { buildThreadTree, type ThreadTreeInfo } from "./thread-tree.ts";
 /** Only the shared external catalog advertises this capability; absence is unsupported. */
 declare module "@deepseek-ai/dsh-session-projection/types" {
   interface SessionProjectionMap {
+    nativeDiscovery: boolean | null;
     threadReference: { hostId: string; threadId?: string } | null;
     threadTreeParent: string | null;
     archiveForkParent: string | null;

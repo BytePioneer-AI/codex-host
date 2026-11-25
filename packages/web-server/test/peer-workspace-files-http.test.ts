@@ -169,14 +169,18 @@ test("Peer workspace-files RPC serves confined read, stat, list, baseFile readBy
         const metadata = JSON.parse(String(form.get("metadata"))) as {
           type: string;
           rpcId: string;
-          result: { ok: boolean };
-          attachments: Array<{ part: string }>;
+          result: { ok: boolean; value: Record<string, unknown> };
+          attachments: Array<{ path: string[]; codec: string; part: string }>;
         };
         assert.equal(metadata.type, "server-response");
         assert.equal(metadata.rpcId, "rpc-bytes-1");
         assert.equal(metadata.result.ok, true);
+        assert.equal(Object.hasOwn(metadata.result.value, "data"), true);
+        assert.equal(metadata.result.value.data, null);
         const attachment = metadata.attachments[0];
         assert.ok(attachment);
+        assert.deepEqual(attachment.path, ["data"]);
+        assert.equal(attachment.codec, "bytes");
         const part = form.get(attachment.part);
         assert.ok(part instanceof Blob);
         assert.deepEqual(Buffer.from(await part.arrayBuffer()), binaryBytes);
@@ -192,16 +196,23 @@ test("Peer workspace-files RPC serves confined read, stat, list, baseFile readBy
         const officeForm = await officeRes.formData();
         const officeMeta = JSON.parse(String(officeForm.get("metadata"))) as {
           rpcId: string;
-          result: { ok: boolean; value: { generation: string; missingFonts: string[] } };
-          attachments: Array<{ part: string }>;
+          result: {
+            ok: boolean;
+            value: { data: unknown; generation: string; missingFonts: string[] };
+          };
+          attachments: Array<{ path: string[]; codec: string; part: string }>;
         };
         assert.equal(officeMeta.rpcId, "rpc-office-1");
         assert.equal(officeMeta.result.ok, true);
+        assert.equal(Object.hasOwn(officeMeta.result.value, "data"), true);
+        assert.equal(officeMeta.result.value.data, null);
         assert.equal(officeMeta.result.value.generation, "peer-gen-1");
         assert.deepEqual(officeMeta.result.value.missingFonts, ["PingFang SC"]);
         assert.deepEqual(officeInputBytes, Buffer.from("PK\x03\x04fake-docx"));
         const pdfAttachment = officeMeta.attachments[0];
         assert.ok(pdfAttachment);
+        assert.deepEqual(pdfAttachment.path, ["data"]);
+        assert.equal(pdfAttachment.codec, "bytes");
         const pdfPart = officeForm.get(pdfAttachment.part);
         assert.ok(pdfPart instanceof Blob);
         assert.deepEqual(Buffer.from(await pdfPart.arrayBuffer()), fakePdf);

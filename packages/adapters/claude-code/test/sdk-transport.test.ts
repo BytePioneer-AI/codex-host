@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
-import type { PermissionUpdate, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { PermissionUpdate, Query, SDKMessage, query } from "@anthropic-ai/claude-agent-sdk";
 import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 
 import {

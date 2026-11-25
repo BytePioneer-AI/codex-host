@@ -362,6 +362,66 @@ describe("external Thread idle release", () => {
     },
   );
 
+  it.each(["confirmed", "persistence failure"] as const)(
+    "rechecks the original idle release on a later request after timeout (%s)",
+    async (outcome) => {
+      const f = await fixture();
+      const late = deferred();
+      const cleanup = deferred();
+      const blocked = { kind: "error", error: { code: -32075 } };
+      f.close.mockImplementation(async () => {
+        await late.promise;
+        if (outcome === "persistence failure")
+          f.thread.persistenceError = new Error("Store failed");
+        await FakeHarnessSession.prototype.close.call(f.thread.session);
+      });
+      f.onClosed.mockImplementation(async () => {
+        await cleanup.promise;
+        return undefined;
+      });
+      f.idle.configure({ enabled: true, timeoutMinutes: 10 });
+      try {
+        await vi.advanceTimersByTimeAsync(11 * MINUTE);
+        expect(await f.runtime.resolve(f.id)).toMatchObject(blocked);
+
+        late.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(f.onClosed).toHaveBeenCalledWith(f.thread);
+        expect(await f.runtime.locate(f.id)).toMatchObject(blocked);
+        expect(f.open).not.toHaveBeenCalled();
+
+        cleanup.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        // A late close may record its result, but only a new request can retire its owner.
+        expect(f.runtime.get(f.id)).toBe(f.thread);
+        const [first, second] = await Promise.all([
+          f.runtime.resolve(f.id),
+          f.runtime.resolve(f.id),
+        ]);
+        if (outcome === "persistence failure") {
+          expect(first).toMatchObject(blocked);
+          expect(second).toMatchObject(blocked);
+          expect(f.open).not.toHaveBeenCalled();
+          return;
+        }
+        if (first.kind !== "external" || second.kind !== "external") {
+          throw new Error(
+            `Expected recovery after confirmed shutdown, got ${first.kind} and ${second.kind}`,
+          );
+        }
+        expect(first.thread).toBe(second.thread);
+        expect(first.thread).not.toBe(f.thread);
+        expect(f.open).toHaveBeenCalledTimes(1);
+        expect(f.open).toHaveBeenCalledWith(
+          expect.objectContaining({ kind: "resume", nativeRef: f.thread.record.nativeSessionRef }),
+        );
+        await first.thread.session.close();
+      } finally {
+        f.idle.stop();
+      }
+    },
+  );
+
   it("does not remove a replacement when an old close completes late", async () => {
     const f = await fixture();
     const late = deferred();

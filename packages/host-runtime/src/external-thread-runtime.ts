@@ -646,7 +646,7 @@ export class ExternalThreadRuntime {
 
   async #locate(threadId: string): Promise<ExternalThreadLocation> {
     const loaded = this.#threads.get(threadId);
-    if (loaded) {
+    if (loaded && !this.idleRelease.retireConfirmedRelease(loaded)) {
       const failure = this.idleRelease.failure(loaded);
       if (failure) return { kind: "error", error: { code: -32075, message: failure } };
       return { kind: "external", record: loaded.record, thread: loaded };

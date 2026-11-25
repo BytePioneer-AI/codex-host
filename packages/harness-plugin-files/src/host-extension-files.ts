@@ -31,7 +31,6 @@ import {
   hostExtensionsRoot,
   ifMissing,
   readHostFile,
-  renamePrivateExtensionPath,
   storeChild,
   storeRoot,
   utf8,
@@ -51,6 +50,7 @@ import {
   validateHostPackageEntries,
   verifyHostPackage,
 } from "./host-extension-package.js";
+import { renameWithWindowsRetry } from "./rename-with-windows-retry.js";
 
 const ACTIVE = "active.json";
 const ENABLED = "enabled.json";
@@ -329,7 +329,7 @@ export async function stageHostExtension({
           });
           const destination = path.join(parent, active.generation);
           assertLocked();
-          await renamePrivateExtensionPath(staging, destination);
+          await renameWithWindowsRetry(staging, destination);
           try {
             await writePrivateExtensionFile(parent, ACTIVE, JSON.stringify(active), assertLocked);
           } catch (error) {
@@ -411,7 +411,7 @@ export async function uninstallHostExtension({
     if (parent) {
       const tombstone = path.join(root, `.removed-${randomUUID()}`);
       assertLocked();
-      await renamePrivateExtensionPath(parent, tombstone);
+      await renameWithWindowsRetry(parent, tombstone);
       await discard(tombstone);
     }
     if (data) await rm(data, { recursive: true, force: true });

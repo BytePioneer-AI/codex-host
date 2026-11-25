@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { lstat, mkdir, open, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import lockfile from "proper-lockfile";
 import {
   hostExtensionIdSchema,
   hostExtensionResourcePathSchema,
 } from "@codexhost/shared-contracts";
+import { renameWithWindowsRetry } from "./rename-with-windows-retry.js";
 
 export function desktopExtensionsStatusPath(dataDirectory: string): string {
   return path.join(dataDirectory, "diagnostics", "desktop-extensions-v1.json");
@@ -144,27 +144,6 @@ export async function readHostFile(
   }
 }
 
-const WINDOWS_RENAME_DELAYS_MS = [10, 30, 70, 150, 300] as const;
-
-export async function renamePrivateExtensionPath(temporary: string, destination: string) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await rename(temporary, destination);
-      return;
-    } catch (error) {
-      const wait = WINDOWS_RENAME_DELAYS_MS[attempt];
-      const code = (error as NodeJS.ErrnoException).code;
-      if (
-        process.platform !== "win32" ||
-        wait === undefined ||
-        !["EPERM", "EACCES", "EBUSY"].includes(code ?? "")
-      )
-        throw error;
-      await delay(wait);
-    }
-  }
-}
-
 export async function writePrivateExtensionFile(
   directory: string,
   name: string,
@@ -175,7 +154,7 @@ export async function writePrivateExtensionFile(
   try {
     await writeFile(temporary, text, { mode: 0o600, flag: "wx" });
     assertLocked?.();
-    await renamePrivateExtensionPath(temporary, path.join(directory, name));
+    await renameWithWindowsRetry(temporary, path.join(directory, name));
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);
   }

@@ -1,7 +1,7 @@
 /** Durable preferences. The runtime owner serializes mutations; browsers never write this file. */
 import { randomUUID } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -13,6 +13,7 @@ import {
   type HarnessPreferenceSnapshot,
   type HarnessPreferenceValues,
 } from "@codexhost/shared-contracts";
+import { renameWithWindowsRetry } from "./rename-with-windows-retry.js";
 
 type Document = ReturnType<typeof harnessPreferencesDocumentSchema.parse>;
 type MigrateModels = (values: HarnessPreferenceValues, migrated: Set<string>) => Promise<void>;
@@ -169,7 +170,7 @@ export class HarnessPreferencesStore {
             flag: "wx",
             mode: 0o600,
           });
-          await rename(temporary, this.file);
+          await renameWithWindowsRetry(temporary, this.file);
         } finally {
           await rm(temporary, { force: true });
         }

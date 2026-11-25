@@ -10,12 +10,13 @@ import type { DesktopRequestQueue } from "./desktop-request-queue.js";
 const CHECK_INTERVAL_MS = 60_000;
 const CLOSE_TIMEOUT_MS = 60_000;
 const CLOSE_FAILURE =
-  "External Session resource release failed. Further use is blocked to avoid duplicate writers. Restart Codex Desktop to retry recovery; residual processes may require manual cleanup.";
+  "External Session shutdown could not be confirmed. Retry after shutdown completes. If the Session stays blocked, stop any residual Harness processes and restart the codexhost Host.";
 
 interface Activity {
   lastActivity: number;
   outputFailed: boolean;
   closeFailed: boolean;
+  closeConfirmed: boolean;
 }
 
 /** Host-only coordination. Native background work is judged by `canRelease` (via `HarnessSession.hasBackgroundWork`). */
@@ -64,6 +65,7 @@ export class ExternalThreadIdleRelease {
         lastActivity: Date.now(),
         outputFailed: false,
         closeFailed: false,
+        closeConfirmed: false,
       });
   }
 
@@ -86,6 +88,30 @@ export class ExternalThreadIdleRelease {
 
   failure(thread: ExternalThread): string | undefined {
     return this.#activity.get(thread)?.closeFailed ? CLOSE_FAILURE : undefined;
+  }
+
+  /** Called from the Thread's serialized lifecycle after waiting for the bounded close. */
+  retireConfirmedRelease(thread: ExternalThread): boolean {
+    const state = this.#activity.get(thread);
+    if (
+      !state?.closeFailed ||
+      !state.closeConfirmed ||
+      !this.#hasPersistedIdentity(thread, state) ||
+      this.options.get(thread.id) !== thread
+    ) {
+      return false;
+    }
+    this.options.remove(thread.id);
+    return true;
+  }
+
+  #hasPersistedIdentity(thread: ExternalThread, state: Activity): boolean {
+    return (
+      !state.outputFailed &&
+      !thread.persistenceError &&
+      thread.record.state === "ready" &&
+      !!thread.record.nativeSessionRef
+    );
   }
 
   async waitForClose(id: string): Promise<void> {
@@ -239,11 +265,12 @@ export class ExternalThreadIdleRelease {
     const state = this.#activity.get(thread);
     if (!state) return;
     let timeout: NodeJS.Timeout | undefined;
-    // Only the bounded waiter may retire the instance. Late underlying completion cannot do so.
+    // Late completion records proof without changing which instance owns the Thread.
     const closed = Promise.resolve().then(async () => {
       await thread.session.close();
       await thread.outputTask;
       await this.options.onClosed?.(thread);
+      state.closeConfirmed = true;
     });
     try {
       await Promise.race([
@@ -256,12 +283,7 @@ export class ExternalThreadIdleRelease {
           timeout.unref();
         }),
       ]);
-      if (
-        state.outputFailed ||
-        thread.persistenceError ||
-        thread.record.state !== "ready" ||
-        !thread.record.nativeSessionRef
-      ) {
+      if (!this.#hasPersistedIdentity(thread, state)) {
         throw new Error("Session release could not confirm persisted history and identity");
       }
       if (this.options.get(thread.id) !== thread) throw new Error("Session changed during release");

@@ -1083,7 +1083,7 @@ export class CodexTurnProjector {
   /** Complete materialized state for snapshot clients. pendingTurn() remains
    * the Desktop-specific wire shape; it deliberately omits several live Items.
    */
-  snapshotTurn(base: JsonObject = this.pendingTurn()): JsonObject {
+  snapshotTurn(base: JsonObject = this.pendingTurn(this.#startedAt)): JsonObject {
     const turn = {
       ...base,
       items: [

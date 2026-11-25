@@ -22,11 +22,13 @@ import {
   REMOTE_IDENTITY_MAX_LENGTH,
   WEB_FOLLOW_PROJECTION_KEYS,
   webToolOutputReferenceSchema,
+  webTurnDiffsRequestSchema,
   type HarnessCommandCatalog,
   type RemotePeerPromptParams,
   type RemoteSessionOperation,
   type SkillsListResult,
 } from "@codexhost/shared-contracts";
+import { ChInteractions } from "./ch-interactions.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { tryGenerateThreadTitle } from "./ch-thread-titles.ts";
@@ -217,6 +219,10 @@ export class RemoteSessions {
   private peerArchivedIds = new Map<string, Set<string>>();
   private controls = new Set<StreamSink>();
   private pending = new Map<string, { sessionId: string; cancel(): void }>();
+  private peerInteractions = new Map<
+    string,
+    { realtime: NonNullable<PeerThreadSource["host"]["realtime"]>; interactions: ChInteractions }
+  >();
   private readonly followLifetime = new AbortController();
   private listing: Promise<void> | undefined;
   private archiveRevision = 0;
@@ -316,6 +322,7 @@ export class RemoteSessions {
     this.syncedPeerSources.delete(hostId);
     this.peerTreeRetryAttempts.delete(hostId);
     this.clearPeerChangeTimer(hostId);
+    this.clearPeerInteractions(hostId);
     const host = this.hosts.get(hostId);
     if (host) host.online = false;
     for (const entry of this.entries.values()) {
@@ -352,6 +359,12 @@ export class RemoteSessions {
       }
     }
     if (full || epochChanged) {
+      this.clearPeerInteractions(hostId);
+      for (const entry of this.entries.values()) {
+        if (entry.identity.hostId === hostId) {
+          entry.view?.log.setProjection("nativeInteractionError", null);
+        }
+      }
       this.peerResetRevisions.set(hostId, (this.peerResetRevisions.get(hostId) ?? 0) + 1);
     }
   }
@@ -733,6 +746,7 @@ export class RemoteSessions {
           "[remote-sessions] Desktop discovery unavailable. Start codexhost Desktop; if Web uses a different environment, set CODEXHOST_DESKTOP_RUNTIME_DESCRIPTOR to its private desktop-runtime-v1.json path.",
         );
       this.discoveryUnavailable = true;
+      for (const hostId of this.peerInteractions.keys()) this.clearPeerInteractions(hostId);
       for (const entry of this.entries.values()) this.offline(entry);
       for (const host of this.hosts.values()) host.online = false;
       this.syncedPeerSources.clear();
@@ -787,6 +801,9 @@ export class RemoteSessions {
     for (const hostId of [...this.peerArchivedIds.keys()]) {
       if (!this.hosts.has(hostId)) this.peerArchivedIds.delete(hostId);
     }
+    for (const hostId of [...this.peerInteractions.keys()]) {
+      if (!this.hosts.has(hostId)) this.clearPeerInteractions(hostId, true);
+    }
     for (const hostId of [...this.syncedPeerSources.keys()]) {
       const host = this.hosts.get(hostId);
       const peerSource = this.peers?.source(hostId);
@@ -808,6 +825,9 @@ export class RemoteSessions {
       }
     }
     const present = new Set(hosts.filter((host) => host.online).map((host) => host.hostId));
+    for (const hostId of this.peerInteractions.keys()) {
+      if (!present.has(hostId)) this.clearPeerInteractions(hostId);
+    }
     for (const entry of this.entries.values())
       if (!present.has(entry.identity.hostId)) this.offline(entry);
     // Publish updated host states and manifest project folders immediately instead of
@@ -1285,6 +1305,7 @@ export class RemoteSessions {
     } catch {
       if (!isCurrentList()) return;
       this.syncedPeerSources.delete(host.hostId);
+      this.clearPeerInteractions(host.hostId);
       host.online = false;
       for (const entry of this.entries.values()) {
         if (entry.identity.hostId === host.hostId) this.offline(entry);
@@ -1700,6 +1721,7 @@ export class RemoteSessions {
     if (changed) entry.view?.log.setProjection("queueState", { previewOnly: true, stale: true });
     const id = remoteSessionId(entry.identity.hostId, entry.identity.threadId);
     this.clearPending(id);
+    entry.view?.log.setProjection("nativeInteractionError", null);
     const summary = this.summary(id, entry);
     if (changed && !this.closed) this.events.emit("api-session/added", summary);
     entry.view?.log.setProjection("remoteHost", summary.projections.values.remoteHost);
@@ -1711,12 +1733,38 @@ export class RemoteSessions {
         : "Remote Host offline; reconnect in Desktop.",
     });
   }
+  private interactionsForPeer(hostId: string, source: PeerThreadSource): ChInteractions {
+    const realtime = source.host.realtime;
+    const existing = this.peerInteractions.get(hostId);
+    if (existing && existing.realtime === realtime) return existing.interactions;
+    existing?.interactions.clear();
+    const interactions = new ChInteractions(realtime, this.events, (sessionId, message) => {
+      this.entries.get(sessionId)?.view?.log.setProjection("nativeInteractionError", message);
+    });
+    this.peerInteractions.set(hostId, { realtime, interactions });
+    return interactions;
+  }
+  private clearPeerInteractions(hostId: string, remove = false): void {
+    const existing = this.peerInteractions.get(hostId);
+    if (!existing) return;
+    existing.interactions.clear();
+    if (remove) this.peerInteractions.delete(hostId);
+  }
   private clearPending(id: string): void {
     for (const [key, item] of this.pending)
       if (item.sessionId === id) {
         this.pending.delete(key);
         item.cancel();
       }
+    let hostId = this.entries.get(id)?.identity.hostId;
+    if (!hostId) {
+      try {
+        hostId = remoteSessionIdentity(id)?.hostId;
+      } catch {
+        hostId = undefined;
+      }
+    }
+    if (hostId) this.peerInteractions.get(hostId)?.interactions.clearSession(id);
   }
   async read(id: string, force = false): Promise<ChThreadView> {
     const identity = remoteSessionIdentity(id);
@@ -1876,6 +1924,7 @@ export class RemoteSessions {
     requireCurrent: () => void,
   ): Promise<ChThreadView> {
     const configurationRevision = current.configurationRevision;
+    const startResetRevision = this.peerResetRevisions.get(current.identity.hostId) ?? 0;
     current.reading ??= (async () => {
       try {
         const before = JSON.stringify(this.summary(id, current));
@@ -1989,7 +2038,13 @@ export class RemoteSessions {
               ])
             : [undefined, undefined];
           requireCurrent();
-          if (configurationRevision !== current.configurationRevision) {
+          if (
+            configurationRevision !== current.configurationRevision ||
+            current.view !== history ||
+            !current.online ||
+            this.peers?.source(current.identity.hostId) !== source ||
+            (this.peerResetRevisions.get(current.identity.hostId) ?? 0) !== startResetRevision
+          ) {
             return current.view ?? history;
           }
           const plugin = plugins?.find((p) => p.id === harnessId);
@@ -2053,17 +2108,17 @@ export class RemoteSessions {
         }
         applyRemoteControls(current, history);
         if (current.epoch) this.loadUsage(id, current, history, current.epoch);
-        const requests: PendingRequest[] = (snapshot?.interactions ?? []).flatMap((item) => {
-          const method = typeof item.request.method === "string" ? item.request.method : undefined;
-          const params =
-            item.request.params &&
-            typeof item.request.params === "object" &&
-            !Array.isArray(item.request.params)
-              ? (item.request.params as Record<string, unknown>)
-              : {};
-          return method ? [{ ...item.request, id: item.requestId, method, params }] : [];
-        });
-        this.interactions(id, current, requests);
+        if (
+          snapshot &&
+          !this.closed &&
+          current.online &&
+          current.view === history &&
+          this.peers?.source(current.identity.hostId) === source &&
+          (!current.epoch || current.epoch === snapshot.cursor.epoch) &&
+          (this.peerResetRevisions.get(current.identity.hostId) ?? 0) === startResetRevision
+        ) {
+          this.interactionsForPeer(current.identity.hostId, source).update(snapshot, id);
+        }
         if (JSON.stringify(summary) !== before) this.events.emit("api-session/added", summary);
         this.events.emit("api-session/status", id, summary.running);
         return history;
@@ -2400,6 +2455,9 @@ export class RemoteSessions {
           ],
         };
       }
+      if (method === "session/search") {
+        return this.search(args, next);
+      }
       const request = requestOf<{
         sessionId?: string;
         address?: { sessionId?: string };
@@ -2440,6 +2498,12 @@ export class RemoteSessions {
             return this.listDraftSkills(draft);
           case "codexhost/threadCommands":
             return this.inspectDraftCommands(draft);
+          case "codexhost/turnDiffs": {
+            const parsed = webTurnDiffsRequestSchema.safeParse(input);
+            if (!parsed.success)
+              throw new RpcError("session/diff-invalid", "Invalid Turn diff request.");
+            throw new RpcError("session/diff-not-found", "This Turn is not loaded.");
+          }
           case "session/selectModel": {
             await draft.select(input, this.draftCatalogLoader(draft));
             const summary = this.draftSummary(draft);
@@ -2598,11 +2662,72 @@ export class RemoteSessions {
     }
     return peerSource.inspectThreadCommands(identity.threadId);
   }
+  private async search(
+    args: Record<string, unknown>,
+    next: () => Promise<unknown>,
+  ): Promise<{ items: Array<{ sessionId: string; snippet: string }>; hasMore: boolean }> {
+    const rawQuery = requestOf<{ query?: unknown }>(args).query;
+    const needle = typeof rawQuery === "string" ? rawQuery.toLowerCase() : "";
+    const local = (await next()) as {
+      items?: Array<{ sessionId: string; snippet: string }>;
+      hasMore?: boolean;
+    };
+    const localItems = Array.isArray(local?.items) ? local.items : [];
+    const localHasMore = local?.hasMore === true;
+    const seen = new Set(localItems.map((item) => item.sessionId));
+    const remoteMatches: Array<{ sessionId: string; snippet: string; updatedAt: number }> = [];
+    for (const [id, entry] of this.entries) {
+      if (seen.has(id)) continue;
+      const snippet = threadListTitle({ ...entry.row, id: entry.identity.threadId });
+      if (snippet.toLowerCase().includes(needle)) {
+        remoteMatches.push({ sessionId: id, snippet, updatedAt: entry.row.updatedAt * 1000 });
+      }
+    }
+    for (const draft of this.drafts.values()) {
+      if (draft.canonicalId || seen.has(draft.id)) continue;
+      const values = this.draftSummary(draft).projections.values as Record<string, unknown>;
+      const title = values.title;
+      if (typeof title === "string" && title.trim() && title.toLowerCase().includes(needle)) {
+        remoteMatches.push({ sessionId: draft.id, snippet: title, updatedAt: draft.lastUsed });
+      }
+    }
+    remoteMatches.sort((a, b) => b.updatedAt - a.updatedAt);
+    const limit = 20;
+    if (localItems.length + remoteMatches.length <= limit) {
+      return {
+        items: [
+          ...localItems,
+          ...remoteMatches.map(({ sessionId, snippet }) => ({ sessionId, snippet })),
+        ],
+        hasMore: localHasMore,
+      };
+    }
+    const localQuota = Math.min(
+      localItems.length,
+      Math.max(Math.floor(limit / 2), limit - remoteMatches.length),
+    );
+    const remoteQuota = Math.min(remoteMatches.length, limit - localQuota);
+    return {
+      items: [
+        ...localItems.slice(0, localQuota),
+        ...remoteMatches
+          .slice(0, remoteQuota)
+          .map(({ sessionId, snippet }) => ({ sessionId, snippet })),
+      ],
+      hasMore: true,
+    };
+  }
   private async handle(
     method: string,
     id: string,
     request: Record<string, unknown>,
   ): Promise<unknown> {
+    if (method === "codexhost/turnDiffs") {
+      const parsed = webTurnDiffsRequestSchema.safeParse(request);
+      if (!parsed.success) throw new RpcError("session/diff-invalid", "Invalid Turn diff request.");
+      const view = this.entries.get(id)?.view ?? (await this.read(id));
+      return { diffs: view.turnDiffs(parsed.data.turn, parsed.data.path) };
+    }
     if (method === "codexhost/skills/list") {
       return this.listThreadSkills(id);
     }
@@ -2938,6 +3063,8 @@ export class RemoteSessions {
       if (this.peers.onReset === this.peerHandlers.onReset) delete this.peers.onReset;
     }
     for (const id of this.entries.keys()) this.clearPending(id);
+    for (const peer of this.peerInteractions.values()) peer.interactions.clear();
+    this.peerInteractions.clear();
     for (const entry of this.entries.values()) entry.view?.log.reconnectFollowers();
     this.peerArchivedIds.clear();
     this.controls.clear();

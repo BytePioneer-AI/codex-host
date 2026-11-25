@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
+import { remoteWorkspaceId } from "../src/remote-workspaces.ts";
 
 function paginatedUsageFixture(inspect: () => unknown) {
   const identity = { hostId: "remote-control:a", threadId: "same" };
@@ -4133,4 +4134,695 @@ it("unarchives a supplemented parent in Hub when catalog lists it in archivedThr
     items.find((item) => item.sessionId === childSessionId)?.projections.values.threadTreeParent,
     parentSessionId,
   );
+});
+
+it("forwards remote peer questions, external harness approvals, and interaction errors via ChInteractions and clears on offline", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "codexhost-peer-interactions-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const hostId = "remote-peer:peer-interactions";
+  const epoch = "33333333-3333-4333-8333-333333333333";
+  const threadId = "peer-q-thread";
+  const row: ChThread = {
+    id: threadId,
+    cwd: "/remote/repo",
+    modelProvider: "codexhost",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "active" },
+    name: "Peer Question Session",
+    turns: [
+      {
+        id: "turn-1",
+        status: "inProgress",
+        startedAt: 150,
+        items: [{ id: "u-1", type: "userMessage", content: [{ type: "text", text: "Ask me" }] }],
+      },
+    ],
+  };
+  let pendingInteractions: unknown[] = [
+    {
+      requestId: "req-question",
+      threadId,
+      kind: "question",
+      interaction: {
+        type: "question",
+        title: "Need your input",
+        questions: [
+          {
+            id: "choice-1",
+            prompt: "Pick A or B",
+            type: "choice",
+            multiple: false,
+            allowOther: false,
+            options: [
+              { value: "a", label: "Alpha" },
+              { value: "b", label: "Beta" },
+            ],
+          },
+        ],
+      },
+      request: { method: "item/tool/requestUserInput", params: {} },
+    },
+    {
+      requestId: "req-approval",
+      threadId,
+      kind: "approval",
+      interaction: {
+        type: "approval",
+        title: "Allow external tool?",
+        description: "Run external harness command",
+        actions: [
+          { id: "allow", label: "Allow once", effect: "allowOnce" },
+          { id: "deny", label: "Decline", effect: "deny" },
+        ],
+      },
+      request: { method: "mcpServer/elicitation/request", params: {} },
+    },
+  ];
+  let nativeInteractionError: string | undefined;
+  const responses: Array<Record<string, unknown>> = [];
+  const listeners = new Set<(update: HostClientUpdate) => void>();
+
+  const transport: PeerChTransport = {
+    async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const input = body as Record<string, unknown>;
+      if (route === "respond") {
+        responses.push(input);
+        return { resolved: true } as T;
+      }
+      if (route === "snapshot") {
+        return {
+          cursor: { epoch, sequence: 10 },
+          thread: {
+            ...row,
+            turns: [],
+            ...(nativeInteractionError ? { nativeInteractionError } : {}),
+          },
+          turnsPage: {
+            data: row.turns,
+            nextCursor: null,
+          },
+          configuration: { native: {} },
+          interactions: pendingInteractions,
+        } as T;
+      }
+      const method = String(input.method);
+      if (method === "codexhost/thread/catalog/read") {
+        return {
+          threads: [{ ...row, turns: [] }],
+          ownership: [{ threadId, owner: "external", harnessId: "antigravity" }],
+          officialCursor: { live: null },
+          archivedThreadIds: [],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
+      if (method === "codexhost/thread/inspect") {
+        return { owner: "external", harnessId: "antigravity", locked: true } as T;
+      }
+      if (method === "codexhost/harness/plugins/list") {
+        return { plugins: [{ id: "antigravity", name: "Antigravity", version: "1.0.0" }] } as T;
+      }
+      if (method === "codexhost/harness/inspect") {
+        return { status: "ready", catalog: { models: [] } } as T;
+      }
+      throw new Error(`Unexpected peer RPC: ${method}`);
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+      return () => listeners.delete(listener);
+    },
+    manifest: () => ({
+      version: "1.0.0",
+      platform: "darwin",
+      hostname: "peer-interactions",
+      epoch,
+      projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+    }),
+  };
+
+  const events = new EventHub("peer-interactions");
+  const frames: Array<Record<string, unknown>> = [];
+  events.handler(
+    {},
+    {
+      id: "browser-client",
+      closed: false,
+      push: (frame) => frames.push(frame as Record<string, unknown>),
+      end() {},
+      fail() {},
+      onClose() {},
+    },
+  );
+  const peerProvider: RemotePeerProvider = { source: () => undefined };
+  const source = new PeerThreadSource({
+    hostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(hostId),
+    onThreadChanged: (tid) => peerProvider.onThreadChanged?.(hostId, tid),
+    onConnection: (online) => peerProvider.onConnection?.(hostId, online),
+    onReset: (e, full) => peerProvider.onReset?.(hostId, e, full),
+  });
+  peerProvider.source = (h) => (h === hostId ? source : undefined);
+
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const remote = new RemoteSessions(
+    events,
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          {
+            hostId,
+            online: true,
+            epoch,
+            displayName: "Peer Interactions",
+            projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+          },
+        ];
+      }
+      if (op.kind === "usage") return { threadId, usage: {} };
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    workspaces,
+    peerProvider,
+  );
+  t.after(() => {
+    remote.close();
+    source.close();
+  });
+
+  await remote.refresh(hostId);
+  const sessionId = remoteSessionId(hostId, threadId);
+  const view = await remote.read(sessionId);
+
+  const waterfalls = frames.filter((frame) => frame.type === "waterfall");
+  assert.equal(waterfalls.length, 2, "both question and external harness approval must be emitted");
+  assert.equal(waterfalls[0]?.agentId, sessionId);
+  assert.equal(waterfalls[1]?.agentId, sessionId);
+  assert.equal(waterfalls[0]?.event, "user-questions/request");
+  assert.equal(waterfalls[1]?.event, "user-questions/request");
+
+  const clientId = String(frames[0]?.clientId);
+  events.settle({
+    clientId,
+    eventId: String(waterfalls[0]?.eventId),
+    outcome: { kind: "returned", value: { answers: [{ id: "choice-1", selected: ["Alpha"] }] } },
+  });
+  events.settle({
+    clientId,
+    eventId: String(waterfalls[1]?.eventId),
+    outcome: {
+      kind: "returned",
+      value: { answers: [{ id: "approval", selected: ["Allow once"] }] },
+    },
+  });
+  for (let i = 0; i < 100 && responses.length < 2; i++) await sleep(10);
+  assert.equal(responses.length, 2);
+  assert.deepEqual(responses[0], {
+    epoch,
+    requestId: "req-question",
+    threadId,
+    result: { answers: { "choice-1": { answers: ["Alpha"] } } },
+  });
+  assert.deepEqual(responses[1], {
+    epoch,
+    requestId: "req-approval",
+    threadId,
+    result: { action: "accept", content: {} },
+  });
+
+  // Verify nativeInteractionError projection and cancellation when peer goes offline.
+  nativeInteractionError = "Peer interaction failed";
+  pendingInteractions = [
+    {
+      requestId: "req-before-offline",
+      threadId,
+      kind: "question",
+      interaction: {
+        type: "question",
+        title: "Offline test",
+        questions: [{ id: "q", prompt: "Wait?", type: "text" }],
+      },
+      request: { method: "item/tool/requestUserInput", params: {} },
+    },
+  ];
+  await remote.read(sessionId, true);
+  assert.equal(view.log.projections.nativeInteractionError, "Peer interaction failed");
+
+  for (const listener of [...listeners]) {
+    listener({ type: "connection", online: false });
+  }
+  assert.equal(
+    view.log.projections.nativeInteractionError,
+    null,
+    "going offline must clear stale nativeInteractionError projection",
+  );
+  const lateFrames: Array<Record<string, unknown>> = [];
+  events.handler(
+    {},
+    {
+      id: "late-client-after-offline",
+      closed: false,
+      push: (frame) => lateFrames.push(frame as Record<string, unknown>),
+      end() {},
+      fail() {},
+      onClose() {},
+    },
+  );
+  assert.equal(
+    lateFrames.filter((frame) => frame.type === "waterfall").length,
+    0,
+    "going offline must clear all pending peer interactions",
+  );
+});
+
+it("does not revive zombie peer interaction cards when peer disconnects or resets while thread/inspect is in flight", async (t) => {
+  for (const disruption of ["offline", "reset"] as const) {
+    const root = mkdtempSync(join(tmpdir(), `codexhost-peer-inspect-race-${disruption}-`));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+
+    const hostId = `remote-peer:peer-inspect-race-${disruption}`;
+    const epoch = "66666666-6666-4666-8666-666666666666";
+    const threadId = "race-thread";
+    const row: ChThread = {
+      id: threadId,
+      cwd: "/remote/repo",
+      modelProvider: "codexhost",
+      createdAt: 100,
+      updatedAt: 200,
+      status: { type: "active" },
+      name: "Race Thread",
+      turns: [
+        {
+          id: "turn-1",
+          status: "inProgress",
+          startedAt: 150,
+          items: [{ id: "u-1", type: "userMessage", content: [{ type: "text", text: "Ask me" }] }],
+        },
+      ],
+    };
+    const pendingInteractions = [
+      {
+        requestId: "req-zombie",
+        threadId,
+        kind: "question",
+        interaction: {
+          type: "question",
+          title: "Should not revive",
+          questions: [
+            {
+              id: "q1",
+              prompt: "Pick one",
+              type: "choice",
+              multiple: false,
+              allowOther: false,
+              options: [{ value: "a", label: "A" }],
+            },
+          ],
+        },
+        request: { method: "item/tool/requestUserInput", params: {} },
+      },
+    ];
+
+    const inspectEntered = Promise.withResolvers<void>();
+    const inspectGate = Promise.withResolvers<unknown>();
+    const listeners = new Set<(update: HostClientUpdate) => void>();
+
+    const transport: PeerChTransport = {
+      async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+        const input = body as Record<string, unknown>;
+        if (route === "respond") return { resolved: true } as T;
+        if (route === "snapshot") {
+          return {
+            cursor: { epoch, sequence: 10 },
+            thread: { ...row, turns: [] },
+            turnsPage: { data: row.turns, nextCursor: null },
+            configuration: { native: {} },
+            interactions: pendingInteractions,
+          } as T;
+        }
+        const method = String(input.method);
+        if (method === "codexhost/thread/catalog/read") {
+          return {
+            threads: [{ ...row, turns: [] }],
+            ownership: [{ threadId, owner: "external", harnessId: "antigravity" }],
+            officialCursor: { live: null },
+            archivedThreadIds: [],
+          } as T;
+        }
+        if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
+        if (method === "codexhost/thread/inspect") {
+          inspectEntered.resolve();
+          return (await inspectGate.promise) as T;
+        }
+        if (method === "codexhost/harness/plugins/list") {
+          return { plugins: [{ id: "antigravity", name: "Antigravity", version: "1.0.0" }] } as T;
+        }
+        if (method === "codexhost/harness/inspect") {
+          return { status: "ready", catalog: { models: [] } } as T;
+        }
+        throw new Error(`Unexpected peer RPC: ${method}`);
+      },
+      subscribe(listener) {
+        listeners.add(listener);
+        listener({ type: "connection", online: true });
+        listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+        return () => listeners.delete(listener);
+      },
+      manifest: () => ({
+        version: "1.0.0",
+        platform: "darwin",
+        hostname: `peer-race-${disruption}`,
+        epoch,
+        projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+      }),
+    };
+
+    const events = new EventHub(`peer-race-${disruption}`);
+    const frames: Array<Record<string, unknown>> = [];
+    events.handler(
+      {},
+      {
+        id: "browser-race",
+        closed: false,
+        push: (frame) => frames.push(frame as Record<string, unknown>),
+        end() {},
+        fail() {},
+        onClose() {},
+      },
+    );
+    const peerProvider: RemotePeerProvider = { source: () => undefined };
+    const source = new PeerThreadSource({
+      hostId,
+      host: new PeerChHostClient(transport),
+      onCatalogChanged: () => remote.hostsChanged(hostId),
+      onThreadChanged: (tid) => peerProvider.onThreadChanged?.(hostId, tid),
+      onConnection: (online) => peerProvider.onConnection?.(hostId, online),
+      onReset: (e, full) => peerProvider.onReset?.(hostId, e, full),
+    });
+    peerProvider.source = (h) => (h === hostId ? source : undefined);
+
+    const workspaces = new Workspaces(new DataDir(root), root);
+    const remote = new RemoteSessions(
+      events,
+      async (op) => {
+        if (op.kind === "hosts") {
+          return [
+            {
+              hostId,
+              online: true,
+              epoch,
+              displayName: `Peer Race ${disruption}`,
+              projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+            },
+          ];
+        }
+        if (op.kind === "usage") return { threadId, usage: {} };
+        throw new Error(`Unexpected op: ${op.kind}`);
+      },
+      workspaces,
+      peerProvider,
+    );
+    t.after(() => {
+      remote.close();
+      source.close();
+    });
+
+    await remote.refresh(hostId);
+    const sessionId = remoteSessionId(hostId, threadId);
+    const readPromise = remote.read(sessionId);
+    await inspectEntered.promise;
+
+    if (disruption === "offline") {
+      for (const listener of [...listeners]) {
+        listener({ type: "connection", online: false });
+      }
+    } else {
+      for (const listener of [...listeners]) {
+        listener({
+          type: "hello",
+          version: 1,
+          cursor: { epoch: "77777777-7777-4777-8777-777777777777", sequence: 1 },
+          reset: true,
+        });
+      }
+    }
+
+    inspectGate.resolve({ owner: "external", harnessId: "antigravity", locked: true });
+    await readPromise;
+
+    assert.equal(
+      frames.filter((frame) => frame.type === "waterfall").length,
+      0,
+      `must not revive zombie question card after ${disruption} during thread/inspect`,
+    );
+  }
+});
+
+it("serves codexhost/turnDiffs for remote sessions and handles invalid requests and drafts cleanly", async (t) => {
+  const hostId = "remote-peer:peer-diffs";
+  const threadId = "diff-thread";
+  const sessionId = remoteSessionId(hostId, threadId);
+  const epoch = "44444444-4444-4444-8444-444444444444";
+  const row: ChThread = {
+    id: threadId,
+    cwd: "/remote/repo",
+    modelProvider: "openai",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "idle" },
+    name: "Remote Diff Session",
+    turns: [
+      {
+        id: "turn-1",
+        status: "completed",
+        startedAt: 110,
+        completedAt: 120,
+        items: [
+          { id: "u-1", type: "userMessage", content: [{ type: "text", text: "Edit files" }] },
+          {
+            id: "fc-1",
+            type: "fileChange",
+            status: "completed",
+            changes: [
+              {
+                path: "src/a.ts",
+                kind: { type: "update", move_path: null },
+                diff: "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-oldA\n+newA\n",
+              },
+              {
+                path: "src/b.ts",
+                kind: { type: "update", move_path: null },
+                diff: "--- a/src/b.ts\n+++ b/src/b.ts\n@@ -1 +1 @@\n-oldB\n+newB\n",
+              },
+            ],
+          },
+          { id: "a-1", type: "agentMessage", text: "Done" },
+        ],
+      },
+    ],
+  };
+
+  const remote = new RemoteSessions(new EventHub("remote-diffs"), async (op) => {
+    if (op.kind === "hosts") {
+      return [
+        {
+          hostId,
+          online: true,
+          epoch,
+          displayName: "Peer Diffs",
+          projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+        },
+      ];
+    }
+    if (op.kind === "list") return { data: [{ ...row, turns: [] }], nextCursor: null };
+    if (op.kind === "read") return { result: { thread: row }, epoch, requests: [] };
+    if (op.kind === "usage") return { threadId, usage: {} };
+    throw new Error(`Unexpected op: ${op.kind}`);
+  });
+  t.after(() => remote.close());
+
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  rpc.register("codexhost/turnDiffs", () => {
+    throw new Error("local turnDiffs should not be called for remote sessions");
+  });
+  rpc.register("session/create", () => {
+    throw new Error("local session/create should not be called for remote workspaces");
+  });
+  streams.routeSessions = () => {};
+  remote.install(rpc, streams);
+
+  await remote.refresh();
+  const allDiffs = await rpc.dispatch("codexhost/turnDiffs", {
+    args: { request: { sessionId, turn: 1 } },
+  });
+  assert.equal(allDiffs.ok, true);
+  assert.deepEqual(allDiffs.value, {
+    diffs: [
+      { path: "src/a.ts", oldText: "oldA", newText: "newA" },
+      { path: "src/b.ts", oldText: "oldB", newText: "newB" },
+    ],
+  });
+
+  const filtered = await rpc.dispatch("codexhost/turnDiffs", {
+    args: { request: { sessionId, turn: 1, path: "src/b.ts" } },
+  });
+  assert.equal(filtered.ok, true);
+  assert.deepEqual(filtered.value, {
+    diffs: [{ path: "src/b.ts", oldText: "oldB", newText: "newB" }],
+  });
+
+  const missingTurn = await rpc.dispatch("codexhost/turnDiffs", {
+    args: { request: { sessionId, turn: 99 } },
+  });
+  assert.equal(missingTurn.ok, false);
+  if (!missingTurn.ok) assert.equal(missingTurn.error.code, "session/diff-not-found");
+
+  const invalidTurn = await rpc.dispatch("codexhost/turnDiffs", {
+    args: { request: { sessionId, turn: -1 } },
+  });
+  assert.equal(invalidTurn.ok, false);
+  if (!invalidTurn.ok) assert.equal(invalidTurn.error.code, "session/diff-invalid");
+
+  // Unbound remote draft returns session/diff-not-found instead of remote/unsupported.
+  const created = await rpc.dispatch("session/create", {
+    args: { request: { workspaceId: remoteWorkspaceId(hostId, "proj-1") } },
+  });
+  assert.equal(created.ok, true);
+  const draftId = (created.value as { sessionId: string }).sessionId;
+  const draftDiff = await rpc.dispatch("codexhost/turnDiffs", {
+    args: { request: { sessionId: draftId, turn: 1 } },
+  });
+  assert.equal(draftDiff.ok, false);
+  if (!draftDiff.ok) assert.equal(draftDiff.error.code, "session/diff-not-found");
+});
+
+it("merges remote sessions into session/search with case-insensitive matching, balanced truncation, and hasMore", async (t) => {
+  const hostId = "remote-peer:peer-search";
+  const epoch = "55555555-5555-4555-8555-555555555555";
+  const remoteRows: ChThread[] = Array.from({ length: 15 }, (_, index) => ({
+    id: `remote-t-${index}`,
+    cwd: "/remote/repo",
+    modelProvider: "openai",
+    createdAt: 100 + index,
+    updatedAt: 200 + index,
+    status: { type: "idle" },
+    name: index === 0 ? "Unique Remote Alpha" : `Shared Keyword Remote #${index}`,
+    turns: [],
+  }));
+
+  let localItems: Array<{ sessionId: string; snippet: string }> = [];
+  const remote = new RemoteSessions(new EventHub("remote-search"), async (op) => {
+    if (op.kind === "hosts") {
+      return [
+        {
+          hostId,
+          online: true,
+          epoch,
+          displayName: "Peer Search",
+          projects: [],
+        },
+      ];
+    }
+    if (op.kind === "list") return { data: remoteRows, nextCursor: null };
+    throw new Error(`Unexpected op: ${op.kind}`);
+  });
+  t.after(() => remote.close());
+
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  streams.routeSessions = () => {};
+  rpc.register("session/search", (args) => {
+    const query = String(
+      (args.request as { query?: string } | undefined)?.query ?? "",
+    ).toLowerCase();
+    return {
+      items: localItems.filter((item) => item.snippet.toLowerCase().includes(query)).slice(0, 20),
+      hasMore: false,
+    };
+  });
+  remote.install(rpc, streams);
+  await remote.refresh();
+
+  // 1. Remote-only match (case-insensitive)
+  localItems = [{ sessionId: "local-only", snippet: "Local Beta Task" }];
+  const remoteOnly = await rpc.dispatch("session/search", {
+    args: { request: { query: "unique remote" } },
+  });
+  assert.equal(remoteOnly.ok, true);
+  assert.deepEqual(remoteOnly.value, {
+    items: [
+      {
+        sessionId: remoteSessionId(hostId, "remote-t-0"),
+        snippet: "Unique Remote Alpha",
+      },
+    ],
+    hasMore: false,
+  });
+
+  // 2. Local-only match
+  const localOnly = await rpc.dispatch("session/search", {
+    args: { request: { query: "local beta" } },
+  });
+  assert.equal(localOnly.ok, true);
+  assert.deepEqual(localOnly.value, {
+    items: [{ sessionId: "local-only", snippet: "Local Beta Task" }],
+    hasMore: false,
+  });
+
+  // 3. Mixed local + remote under limit
+  localItems = [{ sessionId: "local-shared", snippet: "Shared Keyword Local" }];
+  const mixed = await rpc.dispatch("session/search", {
+    args: { request: { query: "shared keyword" } },
+  });
+  assert.equal(mixed.ok, true);
+  const mixedVal = mixed.value as {
+    items: Array<{ sessionId: string; snippet: string }>;
+    hasMore: boolean;
+  };
+  assert.equal(mixedVal.items.length, 15);
+  assert.equal(mixedVal.hasMore, false);
+  assert.equal(mixedVal.items[0]?.sessionId, "local-shared");
+  assert.equal(mixedVal.items[1]?.sessionId, remoteSessionId(hostId, "remote-t-14"));
+
+  // 4. Overflow (> 20) truncates cleanly, keeps both local and remote results, and sets hasMore: true
+  localItems = Array.from({ length: 18 }, (_, i) => ({
+    sessionId: `local-shared-${i}`,
+    snippet: `Shared Keyword Local #${i}`,
+  }));
+  const overflow = await rpc.dispatch("session/search", {
+    args: { request: { query: "shared keyword" } },
+  });
+  assert.equal(overflow.ok, true);
+  const overflowVal = overflow.value as {
+    items: Array<{ sessionId: string; snippet: string }>;
+    hasMore: boolean;
+  };
+  assert.equal(overflowVal.items.length, 20);
+  assert.equal(overflowVal.hasMore, true);
+  assert.equal(
+    overflowVal.items.filter((item) => item.sessionId.startsWith("local-shared-")).length,
+    10,
+  );
+  assert.equal(
+    overflowVal.items.filter((item) => item.sessionId.startsWith("web-remote:")).length,
+    10,
+  );
+  assert.equal(overflowVal.items[10]?.sessionId, remoteSessionId(hostId, "remote-t-14"));
+
+  // 5. Empty query merges local + remote under the same cap and sets hasMore when truncated
+  const emptyQuery = await rpc.dispatch("session/search", {
+    args: { request: { query: "" } },
+  });
+  assert.equal(emptyQuery.ok, true);
+  const emptyVal = emptyQuery.value as {
+    items: Array<{ sessionId: string; snippet: string }>;
+    hasMore: boolean;
+  };
+  assert.equal(emptyVal.items.length, 20);
+  assert.equal(emptyVal.hasMore, true);
+  assert.ok(emptyVal.items.some((item) => item.sessionId.startsWith("web-remote:")));
 });

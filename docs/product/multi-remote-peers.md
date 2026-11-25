@@ -6,7 +6,7 @@
 
 - **命名空间隔离**：Peer 聚合主机使用 `remote-peer:<peerId>` 作为 `hostId`，与 Codex Desktop 现有的 `remote-ssh*` / `remote-control:*` 远程主机完全隔离。两类远程主机通过 `createCompositeRemoteCall` 并存，Codex Desktop 未启动时不影响 Peer 聚合。
 - **单跳聚合、防环路**：被连接节点通过 `GET /api/peer/v1/manifest` 仅导出其本机非远端工作区（`!w.remote`），因此两台主机之间可以双向互连而不产生递归环路。
-- **分层复用读路径与事件驱动同步**：每个启用的 Peer 由 `PeerChHostClient`（实现 `ChHostClient` 接口，底层走版本化 `/api/ch/v1/*`）与 `PeerThreadSource` 组合直连同款的 `ChRealtime`、`ChThreadHistory`（`hostThreadId` 隔离原生与展示 ID、`knownTurns` 指纹增量、首屏 5 个 Turn 与按需翻页）、`ChHarnessCatalog`（按节点与 epoch 隔离缓存，收到 `harness-inspection-changed` 或 `hello` 才失效）、`readSessionPage`（`codexhost/thread/catalog/read`，旧远端 `-32601` 时回退 `thread/list`）与 `ChThreadTree`（同节点委派树与归档级联，`tree/read` 失败时静默降级）。
+- **分层复用读路径与事件驱动同步**：每个启用的 Peer 由 `PeerChHostClient`（实现 `ChHostClient` 接口，底层走版本化 `/api/ch/v1/*`）与 `PeerThreadSource` 组合直连同款的 `ChRealtime`、`ChThreadHistory`（`hostThreadId` 隔离原生与展示 ID、`knownTurns` 指纹增量、首屏 5 个 Turn 与按需翻页）、`ChInteractions`（统一承接同步/异步提问、外部 Harness 审批、原生审批动作与 `nativeInteractionError` 投影，断线或换代时及时清理）、`ChHarnessCatalog`（按节点与 epoch 隔离缓存，收到 `harness-inspection-changed` 或 `hello` 才失效）、`readSessionPage`（`codexhost/thread/catalog/read`，旧远端 `-32601` 时回退 `thread/list`）与 `ChThreadTree`（同节点委派树与归档级联，`tree/read` 失败时静默降级）；同时支持远端会话 `codexhost/turnDiffs`、`session/search` 全局搜索合流与 `thread://<id>?hostId=remote-peer:...` 引用跳转。
   - 事件流直接驱动会话内容、用量与目录刷新，取消周期性全量轮询；流式文本与工具增量帧不触发目录刷新。
   - 为事件流读取设置 45 秒空闲读超时（服务端每 15 秒发送心跳换行），半开断连时自动中止并走指数退避重连。
 - **节点作用域 Harness 图标**：本机新增 `GET /harness-icons/peer/<peerId>/<harnessId>` 与 `GET /harness-icons/peer/<peerId>/presentation.json`（从对应 Peer 缓存目录提供并设置 `Content-Security-Policy: sandbox; default-src 'none'`），Codex 始终使用本机图标，远端离线或缺失时退回通用图标。

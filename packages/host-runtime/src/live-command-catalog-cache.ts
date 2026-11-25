@@ -5,14 +5,17 @@ import type { HarnessCommandCatalog } from "@codexhost/shared-contracts";
 const MAX_ENTRIES = 64;
 
 /**
- * Whether a Session catalog carries anything beyond the Adapter's static
- * built-ins. A Session whose native process has not started yet reports only
- * the built-ins, which is not a live catalog.
+ * Whether a Session catalog reflects a live native catalog rather than only
+ * the Adapter's cold-start static built-ins. An explicit `source` takes
+ * precedence so a live catalog that contains only built-ins after filtering
+ * (for example, once Skills are excluded) is still recognized as ready.
  */
 export function isLiveCommandCatalog(
   catalog: HarnessCommandCatalog,
   staticCatalog: HarnessCommandCatalog,
 ): boolean {
+  if (catalog.source === "live") return true;
+  if (catalog.source === "static") return false;
   const staticIds = new Set<string>(staticCatalog.commands.map(({ id }) => id));
   return catalog.commands.some(({ id }) => !staticIds.has(id));
 }

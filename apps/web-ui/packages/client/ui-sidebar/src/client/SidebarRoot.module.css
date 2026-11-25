@@ -204,10 +204,11 @@
   }
 }
 
-/* macOS hiddenInset titlebar: the strip spans the column's top edge (negative
-   margins cancel the root padding) so it clears the traffic lights at
-   (16, 18). The strip marks itself `data-window-drag` in markup (SidebarRoot), so
-   its own run is the column's draggable geometry and no frame band has to match
+/* macOS titlebar: the strip spans the column's top edge (negative margins
+   cancel the root padding) so the toggle clears the traffic lights while
+   staying locked to the collapsed seat's vertical center across zoom levels.
+   The strip marks itself `data-window-drag` in markup (SidebarRoot), so its
+   own run is the column's draggable geometry and no frame band has to match
    the strip's height; the toggle inside subtracts via the base.css rule. */
 .topStrip {
   flex: none;
@@ -229,11 +230,13 @@
   justify-content: flex-start;
 }
 
-/* The strip's full 52px foot leaves the wordmark too low; the content column
-   tucks 12px back under it, still clear of the toggle (28px control centered
-   in the strip ends at y 40). */
+/* The strip's full 52px foot leaves the wordmark too low at 100%; tuck 12px
+   back under it while still clearing the toggle (ends at y 40). Below 100%
+   native shell zoom, --dsh-mac-lights-bottom grows past 32px so the wordmark
+   pushes down to clear the fixed-size macOS traffic lights without moving the
+   toggle inside .topStrip. */
 .topStrip + .logoRow {
-  margin-top: -12px;
+  margin-top: calc(max(0px, var(--dsh-mac-lights-bottom, 32px) - 32px) - 12px);
 }
 
 /* Logo row (figma pad (4,8,4,8)): expanded keeps the panel toggle at the
@@ -354,15 +357,20 @@
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: 50%;
+  corner-shape: round;
   padding: 0;
   background: transparent;
   cursor: pointer;
-  color: var(--dsw-alias-label-secondary);
+  color: color-mix(in srgb, var(--dsw-alias-label-secondary) 82%, transparent);
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
 }
 
 .iconButton:hover {
   background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
 }
 
 /* The toggle is flush with .logoRow, which clips its own overflow, so an outward ring loses
@@ -378,6 +386,7 @@
   height: 36px;
   /* Rail hovers share the panel rows' and New Session's 12px rounding. */
   border-radius: var(--dsw-radius-md);
+  corner-shape: var(--dsw-corner-shape);
 }
 
 /* Rail logo swap: collapsed, the toggle rests as the whale mark (brand ink,
@@ -517,6 +526,13 @@
 }
 .newSessionContent > svg {
   flex: none;
+  color: var(--dsw-alias-label-secondary);
+  transition: color 140ms ease;
+}
+
+.newSession:hover .newSessionContent > svg,
+.collapsed .newSessionContent > svg {
+  color: var(--dsw-alias-label-primary);
 }
 
 .collapsed .newSessionContent {
@@ -594,6 +610,13 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  color: var(--dsw-alias-label-secondary);
+  transition: color 140ms ease;
+}
+
+.panelRow:is(:hover, .panelActive) .panelGlyph,
+.collapsed .panelGlyph {
+  color: inherit;
 }
 
 .panelTitle {

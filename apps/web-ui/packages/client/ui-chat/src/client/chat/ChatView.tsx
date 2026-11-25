@@ -41,10 +41,18 @@ import { TurnNavigator } from "./TurnNavigator.tsx";
 import { RunningStatus } from "./RunningStatus.tsx";
 import { mergeTurnRailItems } from "./turn-rail-items.ts";
 import { useChatScroll } from "./use-chat-scroll.ts";
+import {
+  REMOTE_PEER_FILE_PROXY_PATH,
+  REMOTE_PEER_HOST_ID_PREFIX,
+  WEB_HANDOFF_PROJECTION,
+  type ThreadHandoffMetadata,
+} from "@codexhost/shared-contracts";
 import { fileMediaUrl, resolveWorkspacePath } from "@deepseek-ai/dsh-util-workspace-path";
 import { useSentMessageEditing } from "./SentMessageEditor.tsx";
 import { SelectionActions } from "./SelectionActions.tsx";
 import { ChatMarkdown } from "./ChatMarkdown.tsx";
+import { HandoffDivider } from "./HandoffDivider.tsx";
+import { HandoffModal } from "./HandoffModal.tsx";
 import css from "./ChatView.module.css";
 
 declare module "@deepseek-ai/dsh-session-projection/types" {
@@ -54,7 +62,24 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
     /** Last failed remote history read; cleared by a successful authoritative read. */
     remoteHistoryError: { code: string; message: string } | null;
     nativeConnection: { state: "connected" | "reconnecting"; message?: string } | null;
+    /** Cross-Harness context handoff provenance for derived Threads. */
+    codexhostHandoff: ThreadHandoffMetadata | null;
   }
+}
+
+/** Resolve a remote-peer image path to the Hub file proxy without touching local workspace roots. */
+function remotePeerFileMediaUrl(
+  base: string,
+  sessionId: string,
+  rawPath: string,
+): string | undefined {
+  if (!/^https?:/u.test(base) || rawPath === "" || /[\u0000-\u001f\u007f]/u.test(rawPath)) {
+    return undefined;
+  }
+  return new URL(
+    `${REMOTE_PEER_FILE_PROXY_PATH}?sessionId=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(rawPath)}`,
+    base,
+  ).href;
 }
 
 /** Host/OS refusal text for the file-open dialog; empty throws keep a locale fallback. */
@@ -195,6 +220,9 @@ export function ChatView({
   inspectCall,
   chatScroll,
   forkAt,
+  openSession,
+  handoff,
+  loadModelCatalog,
   loadTurnDiffs,
   editMessage,
   fileMentions,
@@ -237,11 +265,31 @@ export function ChatView({
   const inbox = useProjection("inbox") as unknown as InboxState | undefined;
   // Workspace root off the session list row: path summaries display relative to it.
   const cwd = useSessions((s) => s.byId[sessionId]?.cwd);
-  const remote = useSessions((s) => Boolean(s.byId[sessionId]?.projectionValues?.remoteHost));
+  const remoteHostId = useSessions((s) => s.byId[sessionId]?.projectionValues?.remoteHost?.hostId);
+  const currentHarnessId = useSessions(
+    (s) =>
+      (
+        s.byId[sessionId]?.projectionValues as
+          { readonly harnessIdentity?: { readonly id?: string } | null } | undefined
+      )?.harnessIdentity?.id,
+  );
+  const isRemote = useSessions((s) => Boolean(s.byId[sessionId]?.projectionValues?.remoteHost));
+  const remotePeerFilePreview = useSessions((s) => {
+    const remoteHost = s.byId[sessionId]?.projectionValues?.remoteHost;
+    return (
+      remoteHost?.hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX) === true &&
+      remoteHost.filePreview === true
+    );
+  });
   const fileImages = useMemo(
     () => ({
-      resolve: (path: string) =>
-        remote ? undefined : fileMediaUrl(document.baseURI, resolveWorkspacePath(cwd, path)),
+      resolve: (path: string) => {
+        if (remotePeerFilePreview) {
+          return remotePeerFileMediaUrl(document.baseURI, sessionId, path);
+        }
+        if (isRemote) return undefined;
+        return fileMediaUrl(document.baseURI, resolveWorkspacePath(cwd, path));
+      },
       labels: {
         open: t("image.open"),
         loading: t("image.loading"),
@@ -250,7 +298,7 @@ export function ChatView({
         close: t("image.close"),
       },
     }),
-    [cwd, remote, t],
+    [cwd, isRemote, remotePeerFilePreview, sessionId, t],
   );
   // The transcript column holds every rendered answer: a selection is offered
   // the attach action only when it stays inside one of them.
@@ -264,6 +312,22 @@ export function ChatView({
   const carrier = useSyncExternalStore(connection.state.subscribe, connection.state.getSnapshot);
   const recoveryLasting = useSustainedRecovery(carrier !== "connected");
   const compacting = useProjection("compacting");
+  const handoffMeta = useProjection(WEB_HANDOFF_PROJECTION);
+  const [handoffTarget, setHandoffTarget] = useState<{
+    readonly sessionId: string;
+    readonly atSeq?: number;
+  } | null>(null);
+  const activeHandoffTarget = handoffTarget?.sessionId === sessionId ? handoffTarget : null;
+  const openHandoffAt = useCallback(
+    (seq: number) => {
+      setHandoffTarget({ sessionId, atSeq: seq });
+    },
+    [sessionId],
+  );
+  const closeHandoffModal = useCallback(() => {
+    setHandoffTarget(null);
+  }, []);
+  const handoffEnabled = handoff !== undefined && loadModelCatalog !== undefined;
   const openState = useSession((s) => s.openState);
   const historyError = useProjection("remoteHistoryError");
   const nativeConnection = useProjection("nativeConnection");
@@ -460,10 +524,19 @@ export function ChatView({
                 )}
               </div>
             )}
+            {!hasMore && handoffMeta != null && (
+              <HandoffDivider
+                handoff={handoffMeta}
+                hostId={remoteHostId}
+                onOpenSource={openSession}
+                t={t}
+              />
+            )}
             <ChatMarkdown
               key={sessionId}
               openExternalLink={openExternalLink}
               openLinkInSidebar={browserAvailable ? openLinkInSidebar : undefined}
+              hideLocalFileActions={isRemote}
               resolveLink={resolveLink}
               openFile={requestOpenFile}
               fileImages={fileImages}
@@ -485,6 +558,7 @@ export function ChatView({
                 openSkill={openSkill}
                 inspectCall={inspectCall}
                 forkAt={forkAt}
+                handoffAt={handoffEnabled ? openHandoffAt : undefined}
                 loadTurnDiffs={loadTurnDiffs}
                 messageEditing={messageEditing}
                 loadImage={loadImage}
@@ -547,6 +621,18 @@ export function ChatView({
             <IconChevronDownOutlineRegular />
           </button>
         </div>
+      )}
+      {activeHandoffTarget !== null && handoff !== undefined && loadModelCatalog !== undefined && (
+        <HandoffModal
+          key={`${sessionId}:${activeHandoffTarget.atSeq ?? "latest"}`}
+          open
+          atSeq={activeHandoffTarget.atSeq}
+          currentHarnessId={currentHarnessId}
+          loadModelCatalog={loadModelCatalog}
+          onSubmit={handoff}
+          onClose={closeHandoffModal}
+          t={t}
+        />
       )}
       {fileOpenError !== null && (
         <FileOpenErrorDialog

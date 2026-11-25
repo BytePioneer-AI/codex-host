@@ -31,7 +31,6 @@ import androidx.activity.OnBackPressedCallback
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
-import androidx.webkit.WebViewCompat
 import ai.bytepioneer.codexhost.android.core.AuthResult
 import ai.bytepioneer.codexhost.android.core.AuthSessionClient
 import ai.bytepioneer.codexhost.android.core.HostProfile
@@ -259,6 +258,7 @@ internal class SessionWebActivity : NativeActivity() {
                 if (token == null) return@launch showRevoked()
                 if (!isOnline()) return@launch showError(R.string.offline)
                 BrowserBoundary.initialize(uiExecutor)
+                BrowserBoundary.prepareHost(applicationContext, id)
                 val cookies = BrowserBoundary.cookiesFor(id)
                 val hasCookie = cookies.getCookie(selected.address).orEmpty().split(';').any { part ->
                     part.substringBefore('=').trim() == selected.cookieName && part.substringAfter('=', "").isNotEmpty()
@@ -278,7 +278,7 @@ internal class SessionWebActivity : NativeActivity() {
                             val persisted = runCatching { store.clearToken(id) }.isSuccess
                             showRevoked()
                             try {
-                                BrowserBoundary.clearCookies(id)
+                                BrowserBoundary.clearCookies(applicationContext, id)
                             } finally {
                                 if (!persisted) tell(R.string.storage_error)
                             }
@@ -307,7 +307,8 @@ internal class SessionWebActivity : NativeActivity() {
     @SuppressLint("SetJavaScriptEnabled") // Only the paired codexhost origin can run inside this WebView.
     private fun createWebView(selected: Origin): WebView = WebView(this).also { view ->
         web = view
-        WebViewCompat.setProfile(view, id)
+        BrowserBoundary.attachProfile(view, id)
+        BrowserBoundary.installCompatPolyfills(view, selected)
         BrowserBoundary.cookiesFor(id).setAcceptThirdPartyCookies(view, false)
         view.settings.apply {
             javaScriptEnabled = true
@@ -417,7 +418,7 @@ internal class SessionWebActivity : NativeActivity() {
         closePopup()
         val child = WebView(this)
         popup = child
-        WebViewCompat.setProfile(child, id)
+        BrowserBoundary.attachProfile(child, id)
         child.settings.allowFileAccess = false
         child.settings.allowContentAccess = false
         child.webViewClient = object : WebViewClient() {
@@ -533,7 +534,7 @@ internal class SessionWebActivity : NativeActivity() {
                             }
                         }
                         BrowserBoundary.initialize(uiExecutor)
-                        BrowserBoundary.deleteProfileData(profile.id)
+                        BrowserBoundary.deleteProfileData(applicationContext, profile.id)
                         store.delete(profile.id)
                         val remaining = store.list()
                         if (deletingCurrent) {

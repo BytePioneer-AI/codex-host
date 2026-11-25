@@ -36,11 +36,13 @@ import {
   type RemotePeerTestParams,
   type RemotePeerUpdateParams,
   type ThreadCommandExecuteResult,
+  type ThreadHandoffMetadata,
   type HarnessSessionImportCandidate,
   type HarnessSessionImportSourcesResult,
   type HarnessSessionListParams,
 } from "@codexhost/shared-contracts";
 
+import type { RestoredQueuedMessage } from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type { DesktopScreenshotProgress } from "./desktop-screenshot.ts";
 import {
   DESKTOP_SCREENSHOT_PATH,
@@ -389,6 +391,28 @@ export const sentMessageEditApi = {
       "codexhost/editMessage",
       { request: { sessionId, atSeq, text } },
     ),
+};
+
+/** Cross-Harness context handoff: creates a new target Thread with packaged context. */
+export const handoffApi = {
+  handoff: (request: {
+    sessionId: string;
+    atSeq?: number;
+    targetHarnessId: string;
+    targetModel?: string;
+    targetThinkingOptionId?: string;
+  }) =>
+    call<{ sessionId: string; handoff: ThreadHandoffMetadata }>("session/handoff", {
+      request,
+    }),
+};
+
+/** Takes a pending queued entry off the Shared Host and restores its text and Web-owned attachments. */
+export const queueMessageEditApi = {
+  takeForEdit: (sessionId: string, itemId: string, revision: string) =>
+    call<RestoredQueuedMessage>("codexhost/editQueueItem", {
+      request: { sessionId, itemId, revision },
+    }),
 };
 
 export const skillLibraryApi = {

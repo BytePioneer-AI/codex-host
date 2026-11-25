@@ -1,8 +1,9 @@
 /** Browser-safe projection of the public CodexHost Thread Usage contract. */
 
-import type { AccountCreditsSnapshot } from "@codexhost/shared-contracts";
+import type { AccountCreditsSnapshot, ThreadUsageSnapshot } from "@codexhost/shared-contracts";
 
 export interface HostThreadUsage {
+  readonly composerIndicators?: ThreadUsageSnapshot["composerIndicators"];
   readonly inputTokens?: number;
   readonly cachedInputTokens?: number;
   readonly cacheWriteInputTokens?: number;

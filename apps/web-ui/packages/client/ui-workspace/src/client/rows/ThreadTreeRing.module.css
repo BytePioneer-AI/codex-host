@@ -35,6 +35,8 @@
 }
 
 .ring[data-thread-ring="running"] svg {
+  will-change: transform;
+  contain: layout style paint;
   animation: spin 1.8s linear infinite;
 }
 

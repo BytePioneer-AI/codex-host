@@ -19,6 +19,12 @@ export interface SavedFile {
   file: WebFileRef;
   image?: WebImageRef;
 }
+export interface StagedWebAttachment {
+  readonly kind: "image" | "file";
+  readonly receiptId: string;
+  readonly file: WebFileRef;
+  readonly image?: WebImageRef;
+}
 interface Receipt extends SavedFile {
   sessionId: string;
   hash: string;
@@ -190,6 +196,48 @@ export class WebFiles {
   consume(sessionId: string, ids: readonly string[]): void {
     for (const id of ids)
       if (this.receipts.get(id)?.sessionId === sessionId) this.receipts.delete(id);
+  }
+  /**
+   * Re-issue a session-scoped upload receipt for an already-stored Web image or file path.
+   * Canonicalizes the stored path and verifies content integrity before issuing a receipt so
+   * corrupted/tampered files fail closed before destructive queue removal.
+   */
+  async stage(sessionId: string, path: string, name?: string): Promise<StagedWebAttachment> {
+    this.prune();
+    const imageId = this.images.idForPath(path);
+    if (imageId) {
+      const image = this.images.readBytes(imageId);
+      const canonical = join(this.images.directory, image.leaf);
+      const file: WebFileRef = {
+        attachmentId: image.ref.attachmentId,
+        name: name || `image.${image.leaf.split(".").at(-1)}`,
+        bytes: image.ref.bytes,
+      };
+      const receiptId = randomUUID();
+      this.receipts.set(receiptId, {
+        sessionId,
+        path: canonical,
+        file,
+        image: image.ref,
+        hash: image.leaf.slice(0, 64),
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      });
+      return { kind: "image", receiptId, file, image: image.ref };
+    }
+    const file = this.reference(path);
+    if (!file) invalid("FILE_UNAVAILABLE", "The referenced file is unavailable or not Web-owned.");
+    const hash = basename(dirname(resolve(path)));
+    const canonical = join(this.directory, hash, file.name);
+    await this.verify(canonical, hash, file.bytes);
+    const receiptId = randomUUID();
+    this.receipts.set(receiptId, {
+      sessionId,
+      hash,
+      path: canonical,
+      file,
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    });
+    return { kind: "file", receiptId, file };
   }
   /** Only Web-owned paths receive byte metadata; ordinary native files remain references. */
   reference(path: string): WebFileRef | undefined {

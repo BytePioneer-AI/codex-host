@@ -1,12 +1,14 @@
 /** Right-Sidebar tab action that hands a previewed file to the Host desktop. */
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import { IconShareOutlineRegular, MenuItemButton } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { InjectFace, PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import { TEXTPREVIEW_KIND } from "./definition.ts";
+import { hostFileOf } from "./rpc.ts";
 
 /** Host file-opening behavior supplied by the document-preview plugin. */
 export interface OpenOriginalFileInjected {
-  readonly openExternal: (path: string) => Promise<void>;
+  readonly openExternal: (sessionId: SessionId, path: string) => Promise<void>;
 }
 
 type OpenOriginalFileMenuItemProps = PropsRuntime<"sidebar.right.tab.menu.item"> &
@@ -23,8 +25,22 @@ export function OpenOriginalFileMenuItem({
 }: OpenOriginalFileMenuItemProps) {
   const resource = useResource<"file">(tab.contentId);
   const [state, setState] = useState<"idle" | "opening" | "failed">("idle");
+  const file = useMemo(() => {
+    if (tab.kind !== TEXTPREVIEW_KIND) return undefined;
+    try {
+      return hostFileOf(tab.contentId);
+    } catch {
+      return undefined;
+    }
+  }, [tab.kind, tab.contentId]);
   const path = resource.value?.absolutePath;
-  if (tab.kind !== TEXTPREVIEW_KIND || path === undefined) return null;
+  if (
+    tab.kind !== TEXTPREVIEW_KIND ||
+    path === undefined ||
+    file === undefined ||
+    file.sessionId.startsWith("web-remote:")
+  )
+    return null;
 
   return (
     <MenuItemButton
@@ -33,7 +49,7 @@ export function OpenOriginalFileMenuItem({
       disabled={state === "opening"}
       onSelect={() => {
         setState("opening");
-        void openExternal(path).then(
+        void openExternal(file.sessionId, path).then(
           () => {
             dismiss();
           },

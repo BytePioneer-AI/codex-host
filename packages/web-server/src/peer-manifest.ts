@@ -81,6 +81,13 @@ function mapFsError(error: unknown, fallback: string): PeerEndpointError {
   return new PeerEndpointError(400, fallback);
 }
 
+export interface PeerEndpointOptions {
+  attachments?: boolean;
+  workspaceFiles?: boolean;
+  officePreview?: boolean;
+  delegation?: boolean;
+}
+
 export async function peerEndpoint(
   method: string,
   url: URL,
@@ -90,6 +97,7 @@ export async function peerEndpoint(
   epoch: string | undefined,
   version: string,
   allowedRoots?: readonly string[],
+  options?: PeerEndpointOptions,
 ) {
   const collectAllowedRoots = async (): Promise<string[]> => {
     const rawRoots = [
@@ -124,6 +132,12 @@ export async function peerEndpoint(
   };
   const manifest = () => {
     if (!epoch) throw new PeerEndpointError(503, "Host realtime channel is not ready");
+    const capabilities: c.RemotePeerCapabilities = {
+      ...(options?.attachments ? { attachments: 1 } : {}),
+      ...(options?.workspaceFiles ? { workspaceFiles: 1 } : {}),
+      ...(options?.officePreview ? { officePreview: 1 } : {}),
+      ...(options?.delegation ? { delegation: 1 } : {}),
+    };
     return c.remotePeerManifestSchema.parse({
       version,
       epoch,
@@ -134,6 +148,7 @@ export async function peerEndpoint(
         .list()
         .filter((w) => !w.remote)
         .map((w) => ({ id: w.workspaceId, name: w.title, path: w.path, threadIds: w.sessionIds })),
+      ...(Object.keys(capabilities).length > 0 ? { capabilities } : {}),
     });
   };
   const route = url.pathname.slice("/api/peer/v1/".length);
@@ -234,7 +249,11 @@ export async function peerEndpoint(
           roots,
           "Workspace path is outside allowed roots",
         );
-        workspaceId = workspaces.create(canonicalPath).workspace.workspaceId;
+        const created = await rpc.dispatch("workspace/create", { args: { path: canonicalPath } });
+        if (!created.ok) throw new PeerEndpointError(400, "Workspace mutation failed");
+        const workspace = workspaces.byPath(canonicalPath);
+        if (!workspace) throw new PeerEndpointError(404, "Unknown workspace");
+        workspaceId = workspace.workspaceId;
         title = p.title;
       } else if (method === "PATCH") {
         ({ workspaceId, title } = c.remotePeerRenameWorkspaceParamsSchema

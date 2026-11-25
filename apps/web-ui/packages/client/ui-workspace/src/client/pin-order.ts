@@ -7,7 +7,11 @@ import type { SessionListState } from "@deepseek-ai/dsh-api-session-controller/c
 import type { WorkspaceView } from "@deepseek-ai/dsh-api-workspace-controller/client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import { FLAT_SESSION_ORDER_KEY } from "./stores.ts";
-import { threadTreeOrderSource, workspaceTreeMembers } from "./thread-tree-order.ts";
+import {
+  threadTreeOrderSource,
+  workspaceTreeMembers,
+  type ThreadTreeOrder,
+} from "./thread-tree-order.ts";
 import { owningGroupKey, sessionMemberIds, type SessionRowState, UNGROUPED_KEY } from "./tree.ts";
 
 /** What `pinSessionOrder` reconciles a pinned Session's accounts against. */
@@ -30,11 +34,14 @@ export function pinOrderSource(
   workspaces: readonly WorkspaceView[],
   list: SessionListState,
   rowState: PinOrderSource["rowState"] & Partial<Pick<SessionRowState, "archivedFilter">>,
+  precomputedTreeOrder?: ThreadTreeOrder,
 ): PinOrderSource {
-  const treeOrder = threadTreeOrderSource(list, {
-    ...rowState,
-    archivedFilter: rowState.archivedFilter ?? "default",
-  });
+  const treeOrder =
+    precomputedTreeOrder ??
+    threadTreeOrderSource(list, {
+      ...rowState,
+      archivedFilter: rowState.archivedFilter ?? "default",
+    });
   const rootMembers = (ids: readonly SessionId[]) =>
     ids.filter((id) => list.byId[id] === undefined || treeOrder.rootIds.has(id));
   const accounted = new Set(workspaces.flatMap((workspace) => workspace.sessionIds));

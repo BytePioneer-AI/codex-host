@@ -19,7 +19,7 @@ export async function listUserProcesses({
       "-Command",
       String.raw`$ErrorActionPreference = 'Stop'
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-Get-CimInstance Win32_Process -Filter "Name = 'node.exe' OR Name = 'codexhost.exe' OR Name = 'codexhost-shim.exe'" |
+Get-CimInstance Win32_Process -Filter "Name = 'node.exe' OR Name = 'codexhost.exe' OR Name = 'codexhost-shim.exe' OR Name = 'codexhost-shell.exe'" |
   Where-Object { (Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid).Sid -eq $sid } |
   Select-Object @{n='pid';e={$_.ProcessId}},@{n='parentPid';e={$_.ParentProcessId}},@{n='created';e={$_.CreationDate.ToString('o')}},@{n='command';e={$_.CommandLine}} |
   ConvertTo-Json -Compress`,
@@ -86,6 +86,20 @@ export function launcherProcess(candidate) {
   return typeof candidate?.command === "string" ? executable(candidate.command, "codexhost") : null;
 }
 
+export function desktopShellProcess(candidate) {
+  if (typeof candidate?.command !== "string") return null;
+  const direct = executable(candidate.command, "codexhost-shell");
+  if (direct) return direct;
+  const match =
+    /^(?:"([^"\r\n]*\/CodexHost\.app\/Contents\/MacOS\/CodexHost)"|((?:(?!\s-)[^"\r\n])*?\/CodexHost\.app\/Contents\/MacOS\/CodexHost))(?:\s+|$)/u.exec(
+      candidate.command,
+    );
+  if (!match) return null;
+  const file = match[1] ?? match[2];
+  if (!match[1] && /\s/u.test(file) && !existsSync(file)) return null;
+  return { file, rest: candidate.command.slice(match[0].length) };
+}
+
 const sourceEntries = [
   ["watch", "apps/web-ui/scripts/build.ts"],
   ["web", "packages/web-server/scripts/preview.ts"],
@@ -106,6 +120,9 @@ const packedEntries = [
 /** Only entrypoints launched by codexhost; arbitrary Node CLI flags are not interpreted. */
 export async function identifyStopTarget(candidate, { json = readJson } = {}) {
   if (typeof candidate.command !== "string") return null;
+  if (desktopShellProcess(candidate)) {
+    return { ...candidate, kind: "shell" };
+  }
   if (launcherProcess(candidate)?.rest.startsWith("web-service serve ")) {
     return { ...candidate, kind: "web-supervisor" };
   }

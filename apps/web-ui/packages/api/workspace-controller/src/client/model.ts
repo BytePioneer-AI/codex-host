@@ -93,7 +93,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   >();
   /** Latest pin-set request; a later request or a pushed set supersedes it. */
   private pinRequestSeq = 0;
-  /** Host Workspace ids are never reused, so delayed data cannot resurrect a removed row. */
+  /** Locally deleted Workspace ids so delayed snapshots or echoes cannot resurrect them. */
   private readonly removedIds = new Set<WorkspaceId>();
   private readonly listeners = new Set<() => void>();
   private snapshotCache: WorkspaceSnapshot;
@@ -148,7 +148,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
    */
   async delete(workspaceId: WorkspaceId): Promise<RemoteResult<WorkspaceDeleteValue>> {
     const result = await this.remote.delete({ workspaceId });
-    if (result.ok) this.remove(workspaceId, true);
+    if (result.ok) this.remove(workspaceId, { immediate: true, recordRemoved: true });
     return result;
   }
 
@@ -475,8 +475,14 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     this.invalidate();
   }
 
-  private remove(workspaceId: WorkspaceId, immediate = false): void {
-    this.removedIds.add(workspaceId);
+  private remove(
+    workspaceId: WorkspaceId,
+    options: { immediate?: boolean; recordRemoved?: boolean } = {},
+  ): void {
+    const { immediate = false, recordRemoved = false } = options;
+    if (recordRemoved && !isRemoteWorkspaceId(workspaceId)) {
+      this.removedIds.add(workspaceId);
+    }
     this.committedOrder = this.committedOrder.filter((id) => id !== workspaceId);
     const items = this.items.filter((item) => item.workspaceId !== workspaceId);
     if (items.length === this.items.length) {
@@ -529,6 +535,10 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     this.snapshotDirty = false;
     this.snapshotCache = this.buildSnapshot();
   }
+}
+
+function isRemoteWorkspaceId(workspaceId: WorkspaceId): boolean {
+  return workspaceId.startsWith("remote-workspace:");
 }
 
 function insertIdBefore(

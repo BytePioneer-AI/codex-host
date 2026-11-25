@@ -6,7 +6,9 @@ import {
 } from "../src/renderer-scoped-draft-model.js";
 
 const mode = (model: string) => ({ collaborationMode: { settings: { model } } });
-const warmed = (id: string, model: string) => ({ response: { thread: { id }, model } });
+const warmed = (id: string, model: string, projectId?: string) => ({
+  response: { thread: { id, ...(projectId === undefined ? {} : { projectId }) }, model },
+});
 function fixture() {
   const consume = vi.fn<(...args: unknown[]) => Promise<unknown>>();
   const deleted = vi.fn();
@@ -43,6 +45,30 @@ describe("native prewarm consumption isolation", () => {
     expect(f.consume.mock.contexts[0]).toBe(f.pool);
     expect(f.discarded).not.toHaveBeenCalled();
     expect(f.deleted).not.toHaveBeenCalled();
+  });
+  it("reuses an external prewarm only for the selected project at the same cwd", async () => {
+    const f = fixture();
+    const model = "codexhost/pi-native";
+    const projectB = {
+      ...mode(model),
+      projectAssignment: { projectKind: "local", projectId: "b" },
+    };
+    const matching = warmed("matching", model, "b");
+    f.consume
+      .mockResolvedValueOnce(warmed("other-project", model, "a"))
+      .mockResolvedValueOnce(warmed("no-project", model))
+      .mockResolvedValueOnce(matching)
+      .mockResolvedValueOnce(warmed("previous-project", model, "b"));
+
+    await expect(f.creation.createConversation(projectB)).resolves.toBeNull();
+    await expect(f.creation.createConversation(projectB)).resolves.toBeNull();
+    await expect(f.creation.createConversation(projectB)).resolves.toEqual(matching);
+    await expect(f.creation.createConversation(mode(model))).resolves.toBeNull();
+    expect(f.discarded.mock.calls.flat()).toEqual([
+      "other-project",
+      "no-project",
+      "previous-project",
+    ]);
   });
   it("does not let the official entry consume an external draft at the same cwd", async () => {
     const f = fixture();

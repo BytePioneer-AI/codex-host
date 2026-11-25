@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import type {
+  SessionListState,
+  SessionSummary,
+} from "@deepseek-ai/dsh-api-session-controller/client";
 import type { WorkspaceId, WorkspaceView } from "@deepseek-ai/dsh-api-workspace-controller/client";
-import type { SessionId } from "@deepseek-ai/dsh-session/types";
+import { SessionId } from "@deepseek-ai/dsh-session/types";
+import { deriveFlat, deriveGroups, type SessionRowState } from "../src/client/tree.ts";
+import { threadTreeOrderSource, workspaceTreeMembers } from "../src/client/thread-tree-order.ts";
 import {
   DEFAULT_HOST_SCOPE_FILTER_STATE,
   HOST_SCOPE_FILTER_STORAGE_KEY,
@@ -15,6 +21,7 @@ import {
   isHostScopeFiltered,
   loadHostScopeFilter,
   parseHostScopeFilter,
+  pruneUnavailableHostScopeFilter,
   reconcileHostScopeFilter,
   resetHostScopeFilter,
   saveHostScopeFilter,
@@ -29,7 +36,7 @@ function makeWorkspace(input: {
   title?: string;
   path?: string;
   sessionIds?: string[];
-  remote?: { hostId: string; displayName: string; state: string };
+  remote?: { hostId: string; displayName: string; state: string; color?: string };
 }): WorkspaceView {
   return {
     workspaceId: input.id as WorkspaceId,
@@ -48,14 +55,24 @@ const sampleWorkspaces = (): WorkspaceView[] => [
     id: "ws-us-1",
     title: "us-api",
     sessionIds: ["s-us-1"],
-    remote: { hostId: "remote-peer:us-vps", displayName: "美VPS", state: "connected" },
+    remote: {
+      hostId: "remote-peer:us-vps",
+      displayName: "美VPS",
+      state: "connected",
+      color: "purple",
+    },
   }),
   makeWorkspace({ id: "ws-local-2", title: "local-b", sessionIds: ["s-local-3"] }),
   makeWorkspace({
     id: "ws-us-2",
     title: "us-web",
     sessionIds: ["s-us-2"],
-    remote: { hostId: "remote-peer:us-vps", displayName: "美VPS", state: "connected" },
+    remote: {
+      hostId: "remote-peer:us-vps",
+      displayName: "美VPS",
+      state: "connected",
+      color: "purple",
+    },
   }),
   makeWorkspace({
     id: "ws-jp-1",
@@ -81,6 +98,7 @@ describe("deriveAvailableHosts", () => {
         hostId: host.hostId,
         displayName: host.displayName,
         state: host.state,
+        color: host.color,
         workspaceCount: host.workspaceCount,
         workspaceIds: host.workspaces.map((w) => w.workspaceId),
       })),
@@ -90,6 +108,7 @@ describe("deriveAvailableHosts", () => {
           hostId: undefined,
           displayName: undefined,
           state: undefined,
+          color: undefined,
           workspaceCount: 2,
           workspaceIds: ["ws-local-1", "ws-local-2"],
         },
@@ -98,6 +117,7 @@ describe("deriveAvailableHosts", () => {
           hostId: "remote-peer:us-vps",
           displayName: "美VPS",
           state: "connected",
+          color: "purple",
           workspaceCount: 2,
           workspaceIds: ["ws-us-1", "ws-us-2"],
         },
@@ -106,6 +126,7 @@ describe("deriveAvailableHosts", () => {
           hostId: "remote-peer:jp-box",
           displayName: "日VPS",
           state: "disconnected",
+          color: undefined,
           workspaceCount: 1,
           workspaceIds: ["ws-jp-1"],
         },
@@ -317,6 +338,108 @@ describe("reconcileHostScopeFilter", () => {
   });
 });
 
+describe("pruneUnavailableHostScopeFilter", () => {
+  it("resets disappeared remote selectedHost to all and drops its stale perHost entry", () => {
+    const workspacesWithoutJp = sampleWorkspaces().filter(
+      (w) => w.remote?.hostId !== "remote-peer:jp-box",
+    );
+    const saved: HostScopeFilterState = {
+      selectedHost: "remote-peer:jp-box",
+      perHost: {
+        "remote-peer:jp-box": { mode: "selected", workspaceIds: ["ws-jp-1"] },
+        "remote-peer:us-vps": { mode: "selected", workspaceIds: ["ws-us-1", "ws-us-deleted"] },
+      },
+    };
+
+    const pruned = pruneUnavailableHostScopeFilter(saved, workspacesWithoutJp);
+    assert.deepEqual(pruned, {
+      selectedHost: "all",
+      perHost: {
+        "remote-peer:us-vps": { mode: "selected", workspaceIds: ["ws-us-1"] },
+      },
+    });
+  });
+
+  it("keeps the same reference when selectedHost and workspaceIds are still valid", () => {
+    const workspaces = sampleWorkspaces();
+    const saved: HostScopeFilterState = {
+      selectedHost: "remote-peer:us-vps",
+      perHost: {
+        "remote-peer:us-vps": { mode: "selected", workspaceIds: ["ws-us-1"] },
+      },
+    };
+    assert.strictEqual(pruneUnavailableHostScopeFilter(saved, workspaces), saved);
+  });
+
+  it("preserves local selectedHost even when the loaded workspace list is empty", () => {
+    const saved: HostScopeFilterState = {
+      selectedHost: "local",
+      perHost: {
+        local: { mode: "selected", workspaceIds: ["ws-local-stale"] },
+        "remote-peer:jp-box": { mode: "selected", workspaceIds: ["ws-jp-1"] },
+      },
+    };
+    assert.deepEqual(pruneUnavailableHostScopeFilter(saved, []), {
+      selectedHost: "local",
+      perHost: {
+        local: { mode: "selected", workspaceIds: [] },
+      },
+    });
+  });
+
+  it("preserves perHost workspace presets for newly added hosts not yet synced into workspaces", () => {
+    const workspaces = sampleWorkspaces();
+    const saved: HostScopeFilterState = {
+      selectedHost: "all",
+      perHost: {
+        "remote-peer:new-box": {
+          mode: "selected",
+          workspaceIds: ["remote-workspace:new-a", "remote-workspace:new-b"],
+        },
+        "remote-peer:gone-box": {
+          mode: "selected",
+          workspaceIds: ["remote-workspace:gone-1"],
+        },
+      },
+    };
+
+    const pruned = pruneUnavailableHostScopeFilter(saved, workspaces, {
+      preserveHostKeys: new Set(["remote-peer:new-box"]),
+    });
+    assert.deepEqual(pruned, {
+      selectedHost: "all",
+      perHost: {
+        "remote-peer:new-box": {
+          mode: "selected",
+          workspaceIds: ["remote-workspace:new-a", "remote-workspace:new-b"],
+        },
+      },
+    });
+  });
+
+  it("preserves perHost workspaceIds while a remote host is still connecting", () => {
+    const workspaces = [
+      ...sampleWorkspaces(),
+      makeWorkspace({
+        id: "remote-workspace:placeholder",
+        title: "New Box",
+        path: "",
+        remote: { hostId: "remote-peer:new-box", displayName: "New Box", state: "connecting" },
+      }),
+    ];
+    const saved: HostScopeFilterState = {
+      selectedHost: "all",
+      perHost: {
+        "remote-peer:new-box": {
+          mode: "selected",
+          workspaceIds: ["remote-workspace:new-a", "remote-workspace:new-b"],
+        },
+      },
+    };
+    assert.strictEqual(pruneUnavailableHostScopeFilter(saved, workspaces), saved);
+  });
+});
+
 describe("persistence & state mutation helpers", () => {
   it("parses valid storage payloads and falls back safely on corrupt data", () => {
     assert.deepEqual(parseHostScopeFilter(null), resetHostScopeFilter());
@@ -400,5 +523,216 @@ describe("persistence & state mutation helpers", () => {
 
     // Already visible workspace returns the same reference.
     assert.strictEqual(ensureWorkspaceVisibleInHostScope(widened, target, workspaces), widened);
+  });
+});
+
+describe("host scope filter with delegation thread trees", () => {
+  const peerHost = {
+    hostId: "remote-peer:us-vps",
+    displayName: "美VPS",
+    state: "connected",
+    color: "purple",
+  };
+  const rowState: SessionRowState = {
+    pinnedSessionIds: [],
+    archivedSessionIds: [],
+    archivedFilter: "default",
+  };
+
+  function makeSummary(input: {
+    id: string;
+    hostId?: string;
+    parent?: string | null;
+    running?: boolean;
+    updatedAt?: number;
+  }): SessionSummary {
+    const sid = SessionId(input.id);
+    return {
+      id: sid,
+      title: input.id,
+      displayTitle: input.id,
+      running: input.running ?? false,
+      blank: false,
+      retainedBy: {},
+      updatedAt: input.updatedAt ?? 100,
+      projectionValues: {
+        threadTreeParent: input.parent ?? null,
+        threadReference: { hostId: input.hostId ?? "local", threadId: input.id },
+        ...(input.hostId ? { remoteHost: { ...peerHost, hostId: input.hostId } } : {}),
+      },
+    };
+  }
+
+  function buildScopedView(
+    list: SessionListState,
+    rawWorkspaces: WorkspaceView[],
+    filterState: HostScopeFilterState,
+  ) {
+    const order = threadTreeOrderSource(list, rowState);
+    const orderedWorkspaces = rawWorkspaces.map((workspace) => ({
+      ...workspace,
+      sessionIds: workspaceTreeMembers(workspace.sessionIds, order).memberIds,
+    }));
+    const scopedWorkspaces = filterWorkspacesByHostScope(orderedWorkspaces, filterState);
+    const visibleWorkspaceIdSet = new Set<string>(scopedWorkspaces.map((w) => w.workspaceId));
+    const allowedIds = new Set(
+      filterSessionsByHostScope(
+        list.ids.map((id) => ({
+          id,
+          remote: list.byId[id]?.projectionValues?.remoteHost ?? undefined,
+        })),
+        visibleWorkspaceIdSet,
+        orderedWorkspaces,
+        filterState,
+        order.rootOf,
+      ).map((entry) => entry.id),
+    );
+    const scopedList: SessionListState = {
+      ...list,
+      ids: list.ids.filter((id) => allowedIds.has(id)),
+    };
+    return { order, orderedWorkspaces, scopedWorkspaces, scopedList };
+  }
+
+  it("retains remote peer delegated children and running counts under single-host and workspace-subset filters", () => {
+    const rows = [
+      makeSummary({ id: "local-root", updatedAt: 10 }),
+      makeSummary({ id: "local-child", parent: "local-root", running: true, updatedAt: 20 }),
+      makeSummary({ id: "peer-parent", hostId: peerHost.hostId, updatedAt: 30 }),
+      makeSummary({
+        id: "peer-child-same",
+        hostId: peerHost.hostId,
+        parent: "peer-parent",
+        running: true,
+        updatedAt: 40,
+      }),
+      makeSummary({
+        id: "peer-child-worktree",
+        hostId: peerHost.hostId,
+        parent: "peer-parent",
+        running: false,
+        updatedAt: 50,
+      }),
+      makeSummary({ id: "peer-other-parent", hostId: peerHost.hostId, updatedAt: 15 }),
+      makeSummary({
+        id: "peer-other-child",
+        hostId: peerHost.hostId,
+        parent: "peer-other-parent",
+        running: true,
+        updatedAt: 25,
+      }),
+    ];
+    const list: SessionListState = {
+      ids: rows.map((r) => r.id),
+      byId: Object.fromEntries(rows.map((r) => [r.id, r])),
+      phase: "ready",
+      projectionsBySession: {},
+    };
+    const workspaces = [
+      makeWorkspace({ id: "ws-local", sessionIds: ["local-root", "local-child"] }),
+      makeWorkspace({
+        id: "ws-peer-main",
+        sessionIds: ["peer-parent", "peer-child-same"],
+        remote: peerHost,
+      }),
+      makeWorkspace({
+        id: "ws-peer-fallback",
+        sessionIds: ["peer-child-worktree"],
+        remote: peerHost,
+      }),
+      makeWorkspace({
+        id: "ws-peer-other",
+        sessionIds: ["peer-other-parent", "peer-other-child"],
+        remote: peerHost,
+      }),
+    ];
+
+    // 1. Filtering to a single remote peer host keeps delegated children and running activity.
+    const singleHost = buildScopedView(list, workspaces, {
+      selectedHost: peerHost.hostId,
+      perHost: {},
+    });
+    const singleHostGroups = deriveGroups(
+      singleHost.scopedList,
+      singleHost.scopedWorkspaces,
+      rowState,
+      new Map(),
+      { expandedGroups: ["ws-peer-main", ""] },
+    );
+    const mainGroup = singleHostGroups.find((g) => g.key === "ws-peer-main");
+    const parentNode = mainGroup?.sessions.find((s) => s.id === "peer-parent");
+    assert.ok(parentNode, "remote parent must appear in its workspace group");
+    assert.equal(parentNode.tree?.descendantCount, 2);
+    assert.equal(parentNode.tree?.activity.running, 1);
+    assert.deepEqual([...(parentNode.tree?.descendantIds ?? [])].sort(), [
+      "peer-child-same",
+      "peer-child-worktree",
+    ]);
+
+    // 2. Selecting a subset of workspaces on the remote peer while selectedHost="all" keeps
+    //    delegated children (including worktree children) of selected roots and hides unselected trees.
+    const subsetFilter: HostScopeFilterState = {
+      selectedHost: "all",
+      perHost: {
+        [peerHost.hostId]: { mode: "selected", workspaceIds: ["ws-peer-main"] },
+      },
+    };
+    const subset = buildScopedView(list, workspaces, subsetFilter);
+    const flatRoots = deriveFlat(
+      subset.scopedList,
+      subset.scopedList.ids.filter((id) => subset.order.rootIds.has(id)),
+      rowState,
+      new Map(),
+    );
+    const subsetParent = flatRoots.find((n) => n.id === "peer-parent");
+    assert.ok(subsetParent);
+    assert.equal(subsetParent.tree?.descendantCount, 2);
+    assert.equal(subsetParent.tree?.activity.running, 1);
+    assert.equal(
+      flatRoots.some((n) => n.id === "peer-other-parent" || n.id === "peer-other-child"),
+      false,
+    );
+
+    // 3. Selecting only the child's workspace (linkedRoot) retains both the linked root and its descendants.
+    const linked = buildScopedView(list, workspaces, {
+      selectedHost: peerHost.hostId,
+      perHost: {
+        [peerHost.hostId]: { mode: "selected", workspaceIds: ["ws-peer-fallback"] },
+      },
+    });
+    const linkedGroups = deriveGroups(
+      linked.scopedList,
+      linked.scopedWorkspaces,
+      rowState,
+      new Map(),
+      { expandedGroups: ["ws-peer-fallback"] },
+    );
+    const linkedParent = linkedGroups
+      .find((g) => g.key === "ws-peer-fallback")
+      ?.sessions.find((s) => s.id === "peer-parent");
+    assert.ok(linkedParent, "linked root must appear in child's workspace");
+    assert.equal(linkedParent.tree?.descendantCount, 2);
+    assert.equal(linkedParent.tree?.activity.running, 1);
+
+    // 4. Local workspace subset filter also preserves local delegated children.
+    const localSubset = buildScopedView(list, workspaces, {
+      selectedHost: "local",
+      perHost: {
+        local: { mode: "selected", workspaceIds: ["ws-local"] },
+      },
+    });
+    const localGroups = deriveGroups(
+      localSubset.scopedList,
+      localSubset.scopedWorkspaces,
+      rowState,
+      new Map(),
+      { expandedGroups: ["ws-local"] },
+    );
+    const localRoot = localGroups
+      .find((g) => g.key === "ws-local")
+      ?.sessions.find((s) => s.id === "local-root");
+    assert.ok(localRoot);
+    assert.equal(localRoot.tree?.descendantCount, 1);
+    assert.equal(localRoot.tree?.activity.running, 1);
   });
 });

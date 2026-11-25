@@ -217,7 +217,7 @@ export function DesktopScreenshotPreview({
     clampPosition(rememberedPosition ?? defaultPosition()),
   );
   const [open, setOpen] = useState(false);
-  const draftText = useInput((input) => input.draft);
+  const draftIsEmpty = useInput((input) => input.draft.trim() === "");
   // A freshly captured image opens at once; remounting with an old one does not.
   const shown = useRef(image?.url);
   useEffect(() => {
@@ -366,7 +366,7 @@ export function DesktopScreenshotPreview({
             if (message !== "") {
               // Append after whatever is already typed, then let the editor settle before submitting.
               const span = inputActions.captureInsertion("end");
-              const text = draftText.trim() === "" ? message : `\n${message}`;
+              const text = draftIsEmpty ? message : `\n${message}`;
               if (!inputActions.insertText(text, span)) return t("desktop.attach.blocked");
               await new Promise((resolve) => setTimeout(resolve, 0));
             }

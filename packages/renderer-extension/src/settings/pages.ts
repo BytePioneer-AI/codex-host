@@ -70,6 +70,7 @@ import {
 } from "./update-request.js";
 
 import { createRendererUpdateStatusPoll } from "./update-status-poll.js";
+import { describeUpdateFailure } from "./update-failure-messages.js";
 import { RendererRequestTransportError } from "../renderer-request-sender.js";
 
 export const CODEXHOST_GITHUB_REPOSITORY_URL = "https://github.com/BytePioneer-AI/codex-host";
@@ -177,7 +178,7 @@ function statusMessage(
 ): string | null {
   if (!status) return null;
   if (status.phase === "succeeded") return messages.updateSucceeded;
-  if (status.phase === "failed") return status.error ?? messages.updateFailed;
+  if (status.phase === "failed") return describeUpdateFailure(status.error, messages);
   if (status.phase === "waiting-for-exit") return messages.updateWaitingForExit;
   if (status.phase === "installing") {
     return status.installation === "npm" ? messages.updateInstallingNpm : messages.updateInstalling;
@@ -561,6 +562,12 @@ function updatesPage(
         panel.replaceChildren();
         panel.append(createPanelHead(document, viewPhase, message));
         appendServiceStopOutput(status);
+        if (status?.phase === "failed" && status.error) {
+          const error = document.createElement("p");
+          error.className = "settings-update-error";
+          error.textContent = status.error;
+          panel.append(error);
+        }
         setManualFallback(viewPhase === "failed");
         if (
           status?.phase === "downloading" &&
@@ -669,7 +676,10 @@ function updatesPage(
               : result.error
                 ? messages.updateFailed
                 : result.updateAvailable
-                  ? messages.updateAvailable
+                  ? // Not installable without an error: the npm registry has not synced it yet.
+                    result.installationAvailable
+                    ? messages.updateAvailable
+                    : messages.updateWaitingForRegistry
                   : messages.updateUpToDate,
           ),
         );

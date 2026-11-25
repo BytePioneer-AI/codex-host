@@ -118,7 +118,7 @@
   :global([data-dockkit-host="dock"][data-dockkit-column="0"]) {
   /* Lights end near x 68; 88 leaves the same 20px of air the conversation
      header's leading controls keep after them (ui-sidebar HeaderLeadingControls). */
-  --dsh-dockkit-strip-inline-start: 88px;
+  --dsh-dockkit-strip-inline-start: calc(var(--dsh-mac-lights-end, 68px) + 20px);
 }
 
 :global([data-platform="darwin"])
@@ -156,22 +156,27 @@
   width: 28px;
   height: 28px;
   padding: 6px;
-  color: var(--dsw-alias-label-secondary);
+  color: color-mix(in srgb, var(--dsw-alias-label-secondary) 82%, transparent);
   line-height: 1;
   background: transparent;
   border: none;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: 50%;
+  corner-shape: round;
   cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
 }
 
 .iconButton svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
 }
 
 @media (hover: hover) {
   .iconButton:hover {
     background: var(--dsw-alias-interactive-bg-hover);
+    color: var(--dsw-alias-label-primary);
   }
 }
 

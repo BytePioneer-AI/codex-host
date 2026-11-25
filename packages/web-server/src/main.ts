@@ -15,6 +15,14 @@ import { requestRemoteSession } from "@codexhost/desktop-control";
 import { PeerHostManager, createCompositeRemoteCall } from "./peer-host-manager.ts";
 import { PeerHostStore } from "./peer-host-store.ts";
 import { PeerEndpointError, peerEndpoint, resolveServerVersion } from "./peer-manifest.ts";
+import { servePeerAttachments } from "./peer-attachments-http.ts";
+import { servePeerDelegation } from "./peer-delegation-http.ts";
+import { startPeerDelegationBridge } from "./peer-delegation-bridge.ts";
+import { servePeerWorkspaceFiles } from "./peer-workspace-files-http.ts";
+import { RemotePeerAttachments } from "./remote-peer-attachments.ts";
+import { RemotePeerWorkspaceFiles } from "./remote-peer-workspace-files.ts";
+import { WorkspaceFileSearchCache } from "./workspace-file-search.ts";
+import { resolvePeerHarnessIcon } from "./peer-thread-source.ts";
 import { existsSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir } from "node:os";
@@ -53,7 +61,7 @@ import {
   reachableNetworkUrls,
 } from "./network-urls.ts";
 import { tailscaleServeState, tailscaleState } from "./tailscale-serve.ts";
-import type { WebNetworkAccessUrl } from "@codexhost/shared-contracts";
+import { REMOTE_PEER_FILE_PROXY_PATH, type WebNetworkAccessUrl } from "@codexhost/shared-contracts";
 import { RequestTrust } from "./request-trust.ts";
 import { RemoteRelay } from "./remote-relay/state.ts";
 import { registerRelayRpc } from "./remote-relay/rpc.ts";
@@ -83,6 +91,7 @@ import type { SessionListTiming } from "./session-list-timing.ts";
 import { WebAssets, type WebAssetOptions } from "./web-assets.ts";
 import { SHELL_EVENTS_PATH, WebShellReload } from "./web-hmr.ts";
 import { Workspaces } from "./workspaces.ts";
+import { nativeProjectCommands } from "./ch-project-commands.ts";
 import { inspectImage, readImageFile, WebImages } from "./web-images.ts";
 import { WebFiles } from "./web-files.ts";
 import { serveFileUpload } from "./ch-file-upload-http.ts";
@@ -310,7 +319,6 @@ const dsh = await DshWebServices.open({
   );
   return undefined;
 });
-if (dsh) streams.setFallback((endpoint, args, sink) => dsh.stream(endpoint, args, sink));
 const settings = new Settings(data, events);
 const push = new PushNotifier(data);
 const downloadTickets = new WorkspaceDownloadTickets();
@@ -405,7 +413,16 @@ if (!values["safe-mode"]) {
 const shellReload = devWebUi === undefined ? undefined : new WebShellReload(assets);
 
 streams.register("$events", events.handler);
-workspaces.register(rpc, streams);
+workspaces.register(
+  rpc,
+  streams,
+  nativeProjectCommands(
+    chHost,
+    workspaces,
+    () => sessions.refreshProjects(),
+    (sessionId, projectId) => sessions.assignNativeProject(sessionId, projectId),
+  ),
+);
 sessions.register(rpc, streams);
 sessions.registerCommands(rpc);
 sessions.registerImport(rpc);
@@ -434,6 +451,7 @@ async function resolvePeerEpoch(): Promise<string | undefined> {
   });
   return peerEpoch;
 }
+const peerAttachments = new RemotePeerAttachments();
 const peerManager = new PeerHostManager(
   new PeerHostStore(data),
   async () => [
@@ -441,18 +459,45 @@ const peerManager = new PeerHostManager(
     ...["localhost", "127.0.0.1", "[::1]"].map((host) => `http://${host}:${listeningPort}`),
   ],
   events,
-  { allowLoopback: process.env.CODEXHOST_ALLOW_LOOPBACK_PEERS === "1" },
+  {
+    allowLoopback: process.env.CODEXHOST_ALLOW_LOOPBACK_PEERS === "1",
+    projector: (threadId) => peerAttachments.projector(threadId),
+  },
 );
 peerManager.register(rpc);
+const peerDelegationBridge = await startPeerDelegationBridge({
+  peerManager,
+  dataDirectory: displayDirectory,
+}).catch((error: unknown) => {
+  console.warn(
+    "[remote-peers] delegation bridge unavailable:",
+    error instanceof Error ? error.message : String(error),
+  );
+  return undefined;
+});
 const remoteSessions = new RemoteSessions(
   events,
   createCompositeRemoteCall(peerManager, requestRemoteSession),
   workspaces,
+  peerManager,
+  peerAttachments,
 );
 peerManager.onChange = (hostId) => {
   remoteSessions.hostsChanged(hostId);
 };
+peerManager.onPeerRemoved = (hostId) => {
+  workspaces.removeRemoteHostOrder(hostId);
+};
 remoteSessions.install(rpc, streams);
+const remoteWorkspaceFiles = new RemotePeerWorkspaceFiles(remoteSessions);
+const peerWorkspaceSearchCache = new WorkspaceFileSearchCache();
+sessions.setRemoteFileSearch((sessionId, query, signal) =>
+  remoteWorkspaceFiles.searchFiles(sessionId, query, signal),
+);
+streams.setFallback((endpoint, args, sink) => {
+  if (remoteWorkspaceFiles.handleStream(endpoint, args, sink)) return true;
+  return dsh ? dsh.stream(endpoint, args, sink) : false;
+});
 preferences.register(rpc);
 displaySettings.register(rpc);
 settings.register(rpc);
@@ -572,6 +617,7 @@ const server = createWebServer((request, response) => {
           requestUrl,
           (id) => sessions.fileWorkspaceRoot(id),
           grant,
+          remoteWorkspaceFiles,
         );
         return;
       }
@@ -593,8 +639,13 @@ const server = createWebServer((request, response) => {
       pathname === "/api/workspace-file/download" &&
       (request.method === "GET" || request.method === "HEAD")
     ) {
-      await downloadWorkspaceFile(request, response, new URL(url, "http://localhost"), (id) =>
-        sessions.fileWorkspaceRoot(id),
+      await downloadWorkspaceFile(
+        request,
+        response,
+        new URL(url, "http://localhost"),
+        (id) => sessions.fileWorkspaceRoot(id),
+        undefined,
+        remoteWorkspaceFiles,
       );
       return;
     }
@@ -617,6 +668,13 @@ const server = createWebServer((request, response) => {
       }
       return;
     }
+    if (
+      pathname === REMOTE_PEER_FILE_PROXY_PATH &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
+      await remoteSessions.servePeerFile(request, response);
+      return;
+    }
     if (pathname.startsWith("/api/peer/v1/")) {
       if (!requestAuth) {
         response.writeHead(401).end();
@@ -624,6 +682,68 @@ const server = createWebServer((request, response) => {
       }
       if (!trust.sameOrigin(request)) {
         response.writeHead(403).end();
+        return;
+      }
+      const sendPeerJson = async (status: number, value: unknown): Promise<void> => {
+        const contentType = "application/json; charset=utf-8";
+        const compressed = await compressResponse(
+          Buffer.from(JSON.stringify(value)),
+          contentType,
+          request.headers["accept-encoding"],
+        );
+        if (response.destroyed || response.writableEnded || response.headersSent) return;
+        response
+          .writeHead(status, {
+            "content-type": contentType,
+            "cache-control": "no-store",
+            ...compressed.headers,
+          })
+          .end(compressed.body);
+      };
+      const peerRoute = pathname.slice("/api/peer/v1/".length);
+      const peerAttachmentsAvailable = Boolean(files && images);
+      const peerWorkspaceFilesAvailable = Boolean(dsh);
+      const peerDelegationAvailable =
+        process.env.CODEXHOST_DISABLE_PEER_DELEGATION !== "1" &&
+        chHost.realtime?.peerDelegationSupported?.() === true;
+      if (peerRoute === "delegation") {
+        await servePeerDelegation(request, response, {
+          enabled: peerDelegationAvailable,
+          chHost,
+          credential: requestAuth.credential,
+        });
+        return;
+      }
+      if (peerRoute === "uploads" || peerRoute === "prompt" || peerRoute === "file") {
+        if (!peerAttachmentsAvailable) {
+          await sendPeerJson(404, { error: "Peer attachments unavailable" });
+          return;
+        }
+        await servePeerAttachments(request, response, peerRoute, {
+          sessions,
+          files,
+          images,
+          rpc,
+        });
+        return;
+      }
+      if (
+        peerRoute === "workspace-files/rpc" ||
+        peerRoute === "workspace-files/download" ||
+        peerRoute === "workspace-files/search"
+      ) {
+        const route =
+          peerRoute === "workspace-files/rpc"
+            ? "rpc"
+            : peerRoute === "workspace-files/download"
+              ? "download"
+              : "search";
+        await servePeerWorkspaceFiles(request, response, route, {
+          resolveWorkspaceRoot: (threadId, signal) =>
+            sessions.ensureLocalWorkspaceRoot(threadId, signal),
+          ...(dsh ? { dsh } : {}),
+          searchCache: peerWorkspaceSearchCache,
+        });
         return;
       }
       try {
@@ -644,23 +764,20 @@ const server = createWebServer((request, response) => {
           await resolvePeerEpoch(),
           SERVER_VERSION,
           [resolve(values.workspace as string)],
+          {
+            attachments: peerAttachmentsAvailable,
+            workspaceFiles: peerWorkspaceFilesAvailable,
+            officePreview: peerWorkspaceFilesAvailable,
+            delegation: peerDelegationAvailable,
+          },
         );
-        response
-          .writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
-          .end(JSON.stringify(result));
+        await sendPeerJson(200, result);
       } catch (error) {
         if (error instanceof PeerEndpointError) {
-          response
-            .writeHead(error.status, {
-              "content-type": "application/json",
-              "cache-control": "no-store",
-            })
-            .end(JSON.stringify({ error: error.message }));
+          await sendPeerJson(error.status, { error: error.message });
         } else {
           console.error("[remote-peers] unexpected /api/peer/v1 error:", error);
-          response
-            .writeHead(500, { "content-type": "application/json", "cache-control": "no-store" })
-            .end(JSON.stringify({ error: "Internal peer endpoint error" }));
+          await sendPeerJson(500, { error: "Internal peer endpoint error" });
         }
       }
       return;
@@ -694,7 +811,13 @@ const server = createWebServer((request, response) => {
         return;
       }
       if (pathname === "/api/session/uploadFileBinary") {
-        await serveFileUpload(sessions, request, response, trust.relaySockets.has(request.socket));
+        await serveFileUpload(
+          sessions,
+          request,
+          response,
+          trust.relaySockets.has(request.socket),
+          remoteSessions,
+        );
         return;
       }
       if (pathname === "/api/workspace-file/download-ticket") {
@@ -706,26 +829,41 @@ const server = createWebServer((request, response) => {
           (id) => sessions.fileWorkspaceRoot(id),
           downloadTickets,
           requestAuth?.credential,
+          remoteWorkspaceFiles,
+          request,
         );
         return;
       }
       const body = await readBody(request, response);
       if (body === undefined) return;
+      if (await remoteWorkspaceFiles.handleApiRequest(request, body, response)) return;
       if (dsh && (await dsh.handleApiRequest(request, body, response))) return;
       let listTiming: SessionListTiming | undefined;
       let listOk = false;
-      const reply = await rpc.handleHttp(
-        body,
-        requestAuth,
-        (callback) => {
-          response.once("finish", callback);
-        },
-        trust.relaySockets.has(request.socket),
-        (timing, ok) => {
-          listTiming = timing;
-          listOk = ok;
-        },
-      );
+      const rpcAbort = new AbortController();
+      const abortRpc = () => {
+        if (!response.writableEnded) rpcAbort.abort();
+      };
+      response.once("close", abortRpc);
+      let reply: string;
+      try {
+        reply = await rpc.handleHttp(
+          body,
+          requestAuth,
+          (callback) => {
+            response.once("finish", callback);
+          },
+          trust.relaySockets.has(request.socket),
+          (timing, ok) => {
+            listTiming = timing;
+            listOk = ok;
+          },
+          rpcAbort.signal,
+        );
+      } finally {
+        response.off("close", abortRpc);
+      }
+      if (rpcAbort.signal.aborted || response.destroyed || response.writableEnded) return;
       const contentType = "application/json; charset=utf-8";
       let encodedBytes: number | undefined;
       let responseReady = false;
@@ -793,6 +931,19 @@ const server = createWebServer((request, response) => {
         assets.plugin(url) ?? recoveryAssets.plugin(url),
         url.includes("rev=") ? IMMUTABLE_CACHE : undefined,
       );
+      return;
+    }
+    if (pathname.startsWith("/harness-icons/peer/")) {
+      const asset = await resolvePeerHarnessIcon(peerManager, pathname);
+      if (!asset) {
+        response.writeHead(404, { "cache-control": "no-store" }).end();
+        return;
+      }
+      if (asset.stale) {
+        response.setHeader("X-CodexHost-Icon-Stale", "1");
+      }
+      response.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
+      await send(request, response, asset, asset.stale ? "no-store" : HARNESS_ICON_CACHE);
       return;
     }
     if (pathname === "/harness-icons/presentation.json") {
@@ -955,6 +1106,7 @@ function shutdown(exitCode = 0): Promise<void> {
   return (shuttingDown ??= (async () => {
     try {
       stopEpoch?.();
+      await peerDelegationBridge?.close();
       peerManager.close();
       relay.close();
       shellReload?.close();
@@ -966,6 +1118,7 @@ function shutdown(exitCode = 0): Promise<void> {
       await extensions.cleanup(true);
       pushNotifications?.close();
       await sessions.close();
+      peerWorkspaceSearchCache.close();
       remoteSessions.close();
       await preferences?.close();
       displaySettings.close();

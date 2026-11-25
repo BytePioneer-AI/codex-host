@@ -106,10 +106,14 @@ describe("background update manager", () => {
       await mkdir(path.dirname(filePath), { recursive: true });
       await writeFile(filePath, "fixture\n");
     }
+    const prefetched: unknown[] = [];
     const manager = createBackgroundUpdateManager({
       platform: "darwin",
       randomId: () => "npm-fixture",
       now: () => 1_700_000_000_000,
+      prefetchNpm: async (target) => {
+        prefetched.push(target);
+      },
       spawnUpdater: (executable, requestPath) => {
         const child = spawn(process.execPath, [
           "-e",
@@ -153,6 +157,14 @@ describe("background update manager", () => {
       installation: "npm",
     });
     expect(prepared.artifactPath).toBeUndefined();
+    expect(prefetched).toEqual([
+      {
+        nodePath: npmFiles.nodePath,
+        npmCliPath: npmFiles.npmCliPath,
+        packageRoot: path.join(root, "npm", "platform-package"),
+        version: "1.2.3-test.4",
+      },
+    ]);
     const request = JSON.parse(await readFile(prepared.requestPath, "utf8"));
     expect(request).toEqual({
       schema_version: 1,
@@ -203,6 +215,7 @@ describe("background update manager", () => {
       const manager = createBackgroundUpdateManager({
         platform: "darwin",
         randomId: () => "retry-fixture",
+        prefetchNpm: async () => {},
       });
 
       await expect(
@@ -212,9 +225,50 @@ describe("background update manager", () => {
           packageRoot: path.join(root, "npm", "platform-package"),
         }),
       ).resolves.toMatchObject({ installation: "npm" });
-      expect(renameFixture.attempts).toBe(3);
+      expect(renameFixture.attempts).toBe(4);
     },
   );
+
+  it("fails before any handoff when npm cannot download the release", async () => {
+    const root = await temporaryDirectory();
+    const common = await commonOptions(root);
+    const npmFiles = {
+      nodePath: path.join(root, "node", "node"),
+      npmCliPath: path.join(root, "node", "npm-cli.js"),
+      npmLauncherPath: path.join(root, "npm", "bin", "codexhost.js"),
+    };
+    for (const filePath of Object.values(npmFiles)) {
+      await mkdir(path.dirname(filePath), { recursive: true });
+      await writeFile(filePath, "fixture\n");
+    }
+    let statusPath = "";
+    const manager = createBackgroundUpdateManager({
+      platform: "darwin",
+      randomId: () => "npm-unsynced",
+      prefetchNpm: async () => {
+        throw new Error("npm registry does not have codexhost 1.2.3-test.4 yet; retry later");
+      },
+    });
+
+    await expect(
+      manager.prepareNpm({
+        ...common,
+        ...npmFiles,
+        packageRoot: path.join(root, "npm", "platform-package"),
+        onPrepared: (info) => {
+          statusPath = info.statusPath;
+        },
+      }),
+    ).rejects.toThrow("does not have codexhost");
+    await expect(manager.readStatus(statusPath)).resolves.toMatchObject({
+      phase: "failed",
+      error: "npm registry does not have codexhost 1.2.3-test.4 yet; retry later",
+    });
+    // No request means no Updater can be started, so nothing is stopped.
+    await expect(readFile(path.join(path.dirname(statusPath), "request-v1.json"))).rejects.toThrow(
+      "ENOENT",
+    );
+  });
 
   it("reports artifact download progress while preparing an installer", async () => {
     const root = await temporaryDirectory();

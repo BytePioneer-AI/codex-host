@@ -256,4 +256,37 @@ describe("Antigravity native request timings", () => {
     }
     expect(await read()).toEqual(new Map());
   });
+
+  it("extracts native max_context_tokens even when timing is omitted and ignores zero or mismatched records", async () => {
+    await writeNativeTimingDatabase(home, [
+      { step: 1, maxContextTokens: 512_000 },
+      { step: 3, maxContextTokens: 256_000, retries: 1 },
+      { step: 5, maxContextTokens: 840_000, streamDuration: 1990 },
+      { step: 7, maxContextTokens: 0 },
+      { step: 9, maxContextTokens: 512_000, generatorThought: 1 },
+    ]);
+    const all = new Map<number, HostUsageRequest>([
+      [1, request],
+      [3, { ...request, requestId: "step:3" }],
+      [5, { ...request, requestId: "step:5" }],
+      [7, { ...request, requestId: "step:7" }],
+      [9, { ...request, requestId: "step:9", reasoningOutputTokens: 0 }],
+    ]);
+    const metadata = await readAntigravityRequestMetadata("session", home, all);
+    expect(metadata?.get(1)).toMatchObject({
+      reasoningOutputTokens: 0,
+      contextWindowTokens: 512_000,
+      timing: { startedAtMs: 3000, completedAtMs: 5000 },
+    });
+    expect(metadata?.get(3)).toEqual({
+      reasoningOutputTokens: 0,
+      contextWindowTokens: 256_000,
+    });
+    expect(metadata?.get(5)).toEqual({
+      reasoningOutputTokens: 0,
+      contextWindowTokens: 840_000,
+    });
+    expect(metadata?.get(7)).not.toHaveProperty("contextWindowTokens");
+    expect(metadata?.has(9)).toBe(false);
+  });
 });

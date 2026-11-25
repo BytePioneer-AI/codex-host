@@ -26,8 +26,11 @@ export interface WorkspaceView {
     readonly hostId: string;
     readonly displayName: string;
     readonly state: string;
+    readonly color?: string;
   };
   readonly workspaceId: WorkspaceId;
+  /** Canonical project identity when Codex owns the workspace. */
+  readonly projectId?: string;
   /** Canonical host directory path. */
   readonly path: string;
   /** User-visible title. */

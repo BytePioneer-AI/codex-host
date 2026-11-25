@@ -22,6 +22,7 @@ const GROUPS: readonly { title: SettingsKey; items: readonly string[] }[] = [
       "appearance",
       "codexhost.wallpaper",
       "font-size",
+      "codexhost.shell-zoom",
       "workspace.thread-tree-style",
       "workspace.recent-navigation",
     ],

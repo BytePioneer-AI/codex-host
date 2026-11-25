@@ -303,12 +303,12 @@ fn exit_signal(_status: &ExitStatus) -> Option<i32> {
     None
 }
 
-/// Returns the position of the Codex `app-server` subcommand after supported global options.
+/// Returns the position of the named Codex subcommand after supported global options.
 ///
-/// An arbitrary later argument named `app-server` is not treated as a subcommand. This keeps the
+/// An arbitrary later argument matching `expected` is not treated as a subcommand. This keeps the
 /// Shim transparent for prompts and subcommands whose values happen to contain the same text.
 #[must_use]
-pub fn app_server_subcommand_index(arguments: &[OsString]) -> Option<usize> {
+fn subcommand_index(arguments: &[OsString], expected: &str) -> Option<usize> {
     const VALUE_OPTIONS: &[&str] = &[
         "-c",
         "--config",
@@ -335,7 +335,7 @@ pub fn app_server_subcommand_index(arguments: &[OsString]) -> Option<usize> {
 
     let mut index = 0;
     while let Some(argument) = arguments.get(index).and_then(|value| value.to_str()) {
-        if argument == "app-server" {
+        if argument == expected {
             return Some(index);
         }
         if VALUE_OPTIONS.contains(&argument) {
@@ -355,6 +355,54 @@ pub fn app_server_subcommand_index(arguments: &[OsString]) -> Option<usize> {
         return None;
     }
     None
+}
+
+/// Returns the position of the Codex `app-server` subcommand after supported global options.
+///
+/// An arbitrary later argument named `app-server` is not treated as a subcommand. This keeps the
+/// Shim transparent for prompts and subcommands whose values happen to contain the same text.
+#[must_use]
+pub fn app_server_subcommand_index(arguments: &[OsString]) -> Option<usize> {
+    subcommand_index(arguments, "app-server")
+}
+
+/// Returns the position of the Codex `exec-server` subcommand after supported global options.
+#[cfg(any(target_os = "macos", test))]
+#[must_use]
+fn exec_server_subcommand_index(arguments: &[OsString]) -> Option<usize> {
+    subcommand_index(arguments, "exec-server")
+}
+
+/// Returns whether a macOS stock-CLI passthrough invocation should replace the Shim process with
+/// the validated official CLI via `exec`.
+///
+/// Desktop's native socket peer authorization verifies both ancestry back to Desktop and OpenAI
+/// code-signing identities across the peer, its parent, and its grandparent. Keeping an
+/// ad-hoc-signed Shim above Desktop's `exec-server`, auxiliary `app-server`, or `sandbox` helpers
+/// breaks that chain when those helpers connect to native Desktop pipes such as `codex-app-tools`.
+#[cfg(any(target_os = "macos", test))]
+#[must_use]
+fn should_replace_shim_with_stock_codex(
+    arguments: &[OsString],
+    desktop_caller: &desktop_invocation::DesktopCaller,
+    desktop_helper: bool,
+    cli_discovery_only: bool,
+) -> bool {
+    let is_exec_server = exec_server_subcommand_index(arguments).is_some();
+    if is_exec_server
+        && matches!(
+            desktop_caller,
+            desktop_invocation::DesktopCaller::Main | desktop_invocation::DesktopCaller::Helper
+        )
+    {
+        return true;
+    }
+    (desktop_helper || cli_discovery_only)
+        && (app_server_subcommand_index(arguments).is_some()
+            || is_exec_server
+            || arguments
+                .first()
+                .is_some_and(|argument| argument == "sandbox"))
 }
 
 /// Returns whether the app-server invocation belongs to the Skysight memory summarizer.
@@ -933,13 +981,12 @@ pub fn run_proxy_with_observer(
     #[cfg(target_os = "macos")]
     if command.get_program() == stock_codex_path.as_os_str()
         && !is_managed_remote_listener(arguments)
-        && (desktop_helper
-            || (!host_runtime_paths_are_configured()
-                && env::var_os(STOCK_CODEX_PATH_ENV).is_none()))
-        && (app_server_subcommand_index(arguments).is_some()
-            || arguments
-                .first()
-                .is_some_and(|argument| argument == "sandbox"))
+        && should_replace_shim_with_stock_codex(
+            arguments,
+            &desktop_caller,
+            desktop_helper,
+            !host_runtime_paths_are_configured() && env::var_os(STOCK_CODEX_PATH_ENV).is_none(),
+        )
     {
         // Native peer authorization requires the signed helper's original caller chain.
         use std::os::unix::process::CommandExt;
@@ -1063,10 +1110,12 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use std::time::{Duration, Instant};
 
+    use super::desktop_invocation::DesktopCaller;
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{PROCESS_TREE_REFRESH_INTERVAL, ShutdownSignals, process_tree_refresh_due};
     use super::{
-        app_server_subcommand_index, is_default_remote_unix_listener, should_start_host_runtime,
+        app_server_subcommand_index, exec_server_subcommand_index, is_default_remote_unix_listener,
+        should_replace_shim_with_stock_codex, should_start_host_runtime,
         should_start_host_runtime_for_originator,
     };
 
@@ -1121,6 +1170,92 @@ mod tests {
             None
         );
         assert_eq!(app_server_subcommand_index(&arguments(&["-c"])), None);
+    }
+
+    #[test]
+    fn finds_exec_server_after_supported_global_options_only() {
+        assert_eq!(
+            exec_server_subcommand_index(&arguments(&[
+                "-c",
+                "forced_login_method=\"chatgpt\"",
+                "exec-server",
+                "--concurrent-requests",
+                "32",
+            ])),
+            Some(2)
+        );
+        assert_eq!(
+            exec_server_subcommand_index(&arguments(&[
+                "--config=forced_login_method=\"chatgpt\"",
+                "exec-server",
+            ])),
+            Some(1)
+        );
+        assert_eq!(
+            exec_server_subcommand_index(&arguments(&["exec-server"])),
+            Some(0)
+        );
+        assert_eq!(
+            exec_server_subcommand_index(&arguments(&["--label", "exec-server"])),
+            None
+        );
+        assert_eq!(exec_server_subcommand_index(&arguments(&["-c"])), None);
+    }
+
+    #[test]
+    fn replaces_macos_shim_for_desktop_exec_server_and_helper_tools() {
+        let exec_server = arguments(&[
+            "-c",
+            "forced_login_method=\"chatgpt\"",
+            "exec-server",
+            "--concurrent-requests",
+            "32",
+        ]);
+        let app_server = arguments(&["app-server", "--listen", "stdio://"]);
+        let sandbox = arguments(&["sandbox", "--", "/official/node", "/official/kernel.js"]);
+
+        assert!(should_replace_shim_with_stock_codex(
+            &exec_server,
+            &DesktopCaller::Main,
+            false,
+            false,
+        ));
+        assert!(should_replace_shim_with_stock_codex(
+            &exec_server,
+            &DesktopCaller::Helper,
+            true,
+            false,
+        ));
+        assert!(should_replace_shim_with_stock_codex(
+            &exec_server,
+            &DesktopCaller::Unknown,
+            false,
+            true,
+        ));
+        assert!(!should_replace_shim_with_stock_codex(
+            &exec_server,
+            &DesktopCaller::NonDesktop,
+            false,
+            false,
+        ));
+        assert!(!should_replace_shim_with_stock_codex(
+            &app_server,
+            &DesktopCaller::Main,
+            false,
+            false,
+        ));
+        assert!(should_replace_shim_with_stock_codex(
+            &app_server,
+            &DesktopCaller::Helper,
+            true,
+            false,
+        ));
+        assert!(should_replace_shim_with_stock_codex(
+            &sandbox,
+            &DesktopCaller::Unknown,
+            false,
+            true,
+        ));
     }
 
     #[test]

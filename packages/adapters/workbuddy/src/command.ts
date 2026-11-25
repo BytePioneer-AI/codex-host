@@ -98,7 +98,10 @@ export function workBuddyEnvironment(
   const root = paths.resolve(
     configuredRoot?.trim()
       ? configuredRoot
-      : paths.join(environment.HOME || environment.USERPROFILE || homedir(), ".workbuddy-ai"),
+      : paths.join(
+          environment.HOME || environment.USERPROFILE || homedir(),
+          platform === "linux" ? ".workbuddy" : ".workbuddy-ai",
+        ),
   );
   return {
     ...environment,
@@ -118,10 +121,10 @@ export function resolveWorkBuddyLaunch(
   const platform = dependencies.platform ?? process.platform;
   const configured =
     environmentValue(environment, "CODEXHOST_WORKBUDDY_COMMAND")?.trim() || undefined;
-  if (!configured && platform !== "darwin" && platform !== "win32")
+  if (!configured && platform !== "darwin" && platform !== "win32" && platform !== "linux")
     throw new CodeBuddyError(
       "notInstalled",
-      "WorkBuddy app discovery is available on macOS and Windows; set CODEXHOST_WORKBUDDY_COMMAND for a compatible native runtime on this platform",
+      "WorkBuddy app discovery is unavailable on this platform; set CODEXHOST_WORKBUDDY_COMMAND for a compatible native runtime",
     );
   const isExecutable =
     dependencies.isExecutable ?? ((candidate: string) => isExecutableFile(candidate, platform));
@@ -135,19 +138,27 @@ export function resolveWorkBuddyLaunch(
           { isExecutable },
         )?.executable
       : undefined;
+  const explicitBundle = explicitExecutable
+    ? resolveWorkBuddyBundle(environment, platform, isExecutable, explicitExecutable)
+    : undefined;
   const explicitDesktop =
-    explicitExecutable &&
+    explicitExecutable !== undefined &&
     ((platform === "win32" &&
       /^(?:WorkBuddy|WorkBuddy AI|WorkBuddyAI)\.exe$/iu.test(
         targetPath(platform).basename(explicitExecutable),
       )) ||
       (platform === "darwin" &&
-        /\/(?:WorkBuddy|WorkBuddy AI)\.app\/Contents\/MacOS\/Electron$/u.test(explicitExecutable)));
+        /\/(?:WorkBuddy|WorkBuddy AI)\.app\/Contents\/MacOS\/Electron$/u.test(
+          explicitExecutable,
+        )) ||
+      (platform === "linux" && targetPath(platform).basename(explicitExecutable) === "workbuddy"));
   const bundle = configuredDirectory
     ? resolveWorkBuddyInstallDirectory(configuredDirectory, environment, platform, isExecutable)
-    : !configured || explicitDesktop
-      ? resolveWorkBuddyBundle(environment, platform, isExecutable, explicitExecutable)
-      : undefined;
+    : !configured
+      ? resolveWorkBuddyBundle(environment, platform, isExecutable)
+      : explicitDesktop
+        ? explicitBundle
+        : undefined;
   const executable =
     configured && !explicitDesktop && !configuredDirectory
       ? explicitExecutable

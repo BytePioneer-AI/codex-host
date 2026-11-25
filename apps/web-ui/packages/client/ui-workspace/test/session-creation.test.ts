@@ -77,8 +77,24 @@ function createHarness() {
   const adopted: Array<{ sessionId: SessionId; options?: unknown }> = [];
   const toasts: unknown[] = [];
   const createQueue: Array<ReturnType<typeof deferred<SessionId>>> = [];
+  const reused: SessionId[] = [];
 
   const bindings = new Map<SessionId, SessionBinding>();
+  const sessionStores = new Map<
+    SessionId,
+    ReturnType<
+      typeof createSnapshotStore<{
+        sessionId: SessionId;
+        openState: string;
+        running: boolean;
+        blank: boolean;
+        removed: boolean;
+        subagent: null;
+        promptError: null;
+      }>
+    >
+  >();
+  const removedListeners = new Set<(id: SessionId) => void>();
   const ensureBinding = (id: SessionId): SessionBinding => {
     let existing = bindings.get(id);
     if (existing !== undefined) return existing;
@@ -91,6 +107,7 @@ function createHarness() {
       subagent: null,
       promptError: null,
     });
+    sessionStores.set(id, sessionSnapshot);
     existing = { sessionId: id, session: sessionSnapshot } as unknown as SessionBinding;
     bindings.set(id, existing);
     return existing;
@@ -98,7 +115,11 @@ function createHarness() {
 
   const sessions: Partial<ISessions> = {
     list: listStore,
-    create: async () => {
+    create: async (opts) => {
+      if (opts?.sessionId !== undefined) {
+        reused.push(opts.sessionId);
+        return opts.sessionId;
+      }
       const next = createQueue.shift();
       if (next === undefined) throw new Error("unexpected create");
       const id = await next.promise;
@@ -148,6 +169,17 @@ function createHarness() {
   };
 
   const ctx = new Context();
+  ctx.provide(
+    "remote" as never,
+    {
+      $on: (event: string, listener: (id: SessionId) => void) => {
+        if (event === "api-session/removed") removedListeners.add(listener);
+        return () => {
+          removedListeners.delete(listener);
+        };
+      },
+    } as never,
+  );
   ctx.provide("conversation" as never, conversation as never);
   ctx.provide(
     "layout" as never,
@@ -184,15 +216,26 @@ function createHarness() {
   return {
     ctx,
     service,
+    listStore,
+    workspacesStore,
     sessionA,
     sessionB,
     ws1,
     createQueue,
+    reused,
     panelSelections,
     retainedMain,
     releasedMain,
     adopted,
     toasts,
+    emitRemoved: (id: SessionId) => {
+      for (const listener of removedListeners) listener(id);
+    },
+    markSessionRemoved: (id: SessionId) => {
+      sessionStores.get(id)?.update((draft) => {
+        draft.removed = true;
+      });
+    },
   };
 }
 
@@ -268,26 +311,28 @@ it("cancels in-flight creation when navigating to another session or starting ag
   assert.equal(h.service.creating.getSnapshot().state, "idle");
 
   // Starting twice without a project cancels the first create and honors only the second.
+  // A fresh harness: the abandoned blank above would otherwise be reused as the projectless draft.
+  const h2 = createHarness();
   const req2 = deferred<SessionId>();
   const req3 = deferred<SessionId>();
-  h.createQueue.push(req2, req3);
-  h.service.startSession(undefined, { prompt: "first prompt" });
-  const firstState = h.service.creating.getSnapshot();
+  h2.createQueue.push(req2, req3);
+  h2.service.startSession(undefined, { prompt: "first prompt" });
+  const firstState = h2.service.creating.getSnapshot();
   assert.equal(firstState.state, "creating");
   assert.equal(firstState.workspaceId, null);
   assert.equal(firstState.initialPrompt, "first prompt");
 
-  h.service.startSession(undefined, { prompt: "second prompt" });
+  h2.service.startSession(undefined, { prompt: "second prompt" });
   req2.resolve(SessionId("stale-projectless"));
   await new Promise((r) => setTimeout(r, 0));
-  assert.equal(h.service.creating.getSnapshot().state, "creating");
+  assert.equal(h2.service.creating.getSnapshot().state, "creating");
 
   const finalId = SessionId("final-projectless");
   req3.resolve(finalId);
   await new Promise((r) => setTimeout(r, 0));
-  assert.equal(h.service.creating.getSnapshot().state, "idle");
-  assert.equal(h.retainedMain.at(-1), finalId);
-  assert.deepEqual(h.adopted, [{ sessionId: finalId, options: { prompt: "second prompt" } }]);
+  assert.equal(h2.service.creating.getSnapshot().state, "idle");
+  assert.equal(h2.retainedMain.at(-1), finalId);
+  assert.deepEqual(h2.adopted, [{ sessionId: finalId, options: { prompt: "second prompt" } }]);
 
   // Project-scoped startSession shares connectWorkspace inflight and surfaces workspaceId immediately.
   const reqWs = deferred<SessionId>();
@@ -344,4 +389,122 @@ it("preserves failure detail for unknown creation errors without code prefixes",
   assert.equal(blankState.state, "error");
   assert.equal(blankState.reason, "unknown");
   assert.equal(blankState.message, undefined);
+});
+
+it("reuses the projectless blank Session so its unsent draft survives switching away", async () => {
+  const h = createHarness();
+  const first = deferred<SessionId>();
+  h.createQueue.push(first);
+  h.service.startSession();
+  const blank = SessionId("draft-projectless");
+  first.resolve(blank);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(h.retainedMain.at(-1), blank);
+
+  // Switch to another Session, then start a New Session again without a project.
+  h.service.openSession(h.sessionA);
+  h.service.startSession();
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.equal(h.createQueue.length, 0);
+  assert.deepEqual(h.reused, [blank]);
+  assert.equal(h.retainedMain.at(-1), blank);
+});
+
+it("reuses the opened projectless blank rather than one left by an abandoned creation", async () => {
+  const h = createHarness();
+  const abandoned = deferred<SessionId>();
+  const opened = deferred<SessionId>();
+  h.createQueue.push(abandoned, opened);
+  h.service.startSession();
+  h.service.startSession();
+  // The abandoned request completes first, so its blank is listed before the opened one.
+  abandoned.resolve(SessionId("abandoned-projectless"));
+  await new Promise((r) => setTimeout(r, 0));
+  const draft = SessionId("opened-projectless");
+  opened.resolve(draft);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(h.retainedMain.at(-1), draft);
+
+  h.service.openSession(h.sessionA);
+  h.service.startSession();
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.deepEqual(h.reused, [draft]);
+  assert.equal(h.retainedMain.at(-1), draft);
+});
+
+it("clears main view when an open remote session is explicitly removed, without closing unpaged or local sessions", () => {
+  const h = createHarness();
+  const remoteSession1 = SessionId("remote-s1");
+  const remoteSession2 = SessionId("remote-s2");
+  const remoteWs = "remote-peer:vps::/srv/app" as WorkspaceId;
+
+  const prevWorkspaces = h.workspacesStore.getSnapshot();
+  h.workspacesStore.set({
+    ...prevWorkspaces,
+    items: [
+      ...prevWorkspaces.items,
+      {
+        workspaceId: remoteWs,
+        path: "/srv/app",
+        title: "app",
+        sessionIds: [remoteSession1, remoteSession2],
+        createdAt: "2026-01-01",
+        updatedAt: "2026-01-01",
+        remote: { hostId: "remote-peer:vps", displayName: "VPS", state: "connected" },
+      },
+    ],
+  });
+  h.listStore.update((draft) => {
+    draft.ids = [...draft.ids, remoteSession1, remoteSession2];
+    draft.byId[remoteSession1] = {
+      id: remoteSession1,
+      displayTitle: "Remote 1",
+      running: false,
+      blank: false,
+      updatedAt: 3,
+      retainedBy: {},
+      projectionValues: {
+        remoteHost: { hostId: "remote-peer:vps", displayName: "VPS", state: "connected" },
+      },
+    };
+    draft.byId[remoteSession2] = {
+      id: remoteSession2,
+      displayTitle: "Remote 2",
+      running: false,
+      blank: false,
+      updatedAt: 4,
+      retainedBy: {},
+      projectionValues: {
+        remoteHost: { hostId: "remote-peer:vps", displayName: "VPS", state: "connected" },
+      },
+    };
+  });
+
+  // 1. Open remoteSession1; omitting it from paginated list ids alone must NOT close it.
+  h.service.openSession(remoteSession1);
+  assert.equal(h.retainedMain.at(-1), remoteSession1);
+  h.listStore.update((draft) => {
+    draft.ids = draft.ids.filter((id) => id !== remoteSession1);
+    delete draft.byId[remoteSession1];
+  });
+  assert.equal(h.releasedMain.includes(remoteSession1), false);
+
+  // 2. Explicit api-session/removed closes the open remote session and clears main view.
+  const panelCountBefore = h.panelSelections.length;
+  h.emitRemoved(remoteSession1);
+  assert.equal(h.releasedMain.includes(remoteSession1), true);
+  assert.equal(h.panelSelections.length, panelCountBefore + 1);
+  assert.equal(h.panelSelections.at(-1), null);
+
+  // 3. Resident Session snapshot `removed: true` also clears main view for remote sessions.
+  h.service.openSession(remoteSession2);
+  h.markSessionRemoved(remoteSession2);
+  assert.equal(h.releasedMain.includes(remoteSession2), true);
+
+  // 4. Local sessions are not auto-closed by api-session/removed.
+  h.service.openSession(h.sessionA);
+  h.emitRemoved(h.sessionA);
+  assert.equal(h.releasedMain.includes(h.sessionA), false);
 });

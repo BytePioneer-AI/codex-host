@@ -20,9 +20,19 @@ import { RpcError, type EventHub } from "./transport.ts";
 import { withHarnessDisplayOrder } from "./harness-display-order.ts";
 import type { WebHarnessPreferences } from "./harness-preferences.ts";
 
+const DEFAULT_MODEL_INSPECT_TIMEOUT_MS = 5_000;
+const INSPECT_TIMED_OUT = Symbol("inspect-timed-out");
+
 export class ChHarnessCatalog {
   private plugins: Promise<HarnessPluginDescriptor[]> | undefined;
+  private lastPlugins: HarnessPluginDescriptor[] | undefined;
+  private pluginsEpoch: string | undefined;
+  private lastHelloEpoch: string | undefined;
+  private pluginsGeneration = 0;
+  private pluginsResolvedGeneration = -1;
+  private closed = false;
   private inspections = new Map<string, Promise<HarnessInspection>>();
+  private readonly timedOutInspections = new Set<Promise<HarnessInspection>>();
   private readonly pendingRefreshes = new Map<
     string,
     { inspection: Promise<HarnessInspection>; notified: boolean; retryCredentials: boolean }
@@ -34,11 +44,13 @@ export class ChHarnessCatalog {
   private readonly stop: (() => void) | undefined;
   constructor(
     private readonly host: ChHostClient,
-    events: EventHub,
+    private readonly events: EventHub,
     readonly displayEntries: () => Promise<HarnessDisplayEntries> = async () => [],
     readonly preferences?: WebHarnessPreferences,
     /** Optional advanced subset override from `--harness`; absent means every Host plugin. */
     private readonly restrictTo?: ReadonlySet<string>,
+    private readonly currentEpoch?: () => string | undefined,
+    private readonly modelInspectTimeoutMs = DEFAULT_MODEL_INSPECT_TIMEOUT_MS,
   ) {
     this.stop = host.realtime?.subscribe((event) => {
       if (event.type === "harness-inspection-changed") {
@@ -49,45 +61,82 @@ export class ChHarnessCatalog {
           refresh?.notified === false ? refresh.inspection : undefined,
         );
         if (refresh) refresh.notified = true;
-        events.emit("codexhost/harness-inspection-changed");
+        this.events.emit("codexhost/harness-inspection-changed");
       } else if (event.type === "hello") {
+        const epoch = event.cursor.epoch;
+        // Preserve in-flight or resolved plugin catalog when the initial hello matches the
+        // epoch already probed from manifest, or on a non-reset same-epoch stream resume.
+        const sameInitialEpoch =
+          this.lastHelloEpoch === undefined &&
+          this.pluginsEpoch !== undefined &&
+          this.pluginsEpoch === epoch;
+        const sameResumeEpoch = !event.reset && this.lastHelloEpoch === epoch;
+        this.lastHelloEpoch = epoch;
+        if (!sameInitialEpoch && !sameResumeEpoch) {
+          this.pluginsGeneration += 1;
+          this.plugins = undefined;
+          this.pluginsEpoch = undefined;
+        }
         this.inspections.clear();
+        this.timedOutInspections.clear();
         this.pendingRefreshes.clear();
-        this.plugins = undefined;
         this.refreshing.clear();
-        events.emit("codexhost/harness-inspection-changed");
+        this.events.emit("codexhost/harness-inspection-changed");
       }
     });
   }
   close(): void {
+    this.closed = true;
     this.stop?.();
+  }
+  hasFreshList(): boolean {
+    return this.plugins !== undefined;
+  }
+  hasResolvedCurrentList(): boolean {
+    return this.pluginsResolvedGeneration === this.pluginsGeneration;
+  }
+  currentGeneration(): number {
+    return this.pluginsGeneration;
   }
   async list(): Promise<HarnessPluginDescriptor[]> {
     if (this.plugins) return this.plugins;
+    const generation = this.pluginsGeneration;
+    this.pluginsEpoch = this.currentEpoch?.() ?? this.lastHelloEpoch;
     const plugins = this.host
       .request("codexhost/harness/plugins/list", {})
-      .then((value) =>
-        harnessPluginListResultSchema
+      .then((value) => {
+        const filtered = harnessPluginListResultSchema
           .parse(value)
           .plugins.filter(
             (plugin) =>
               plugin.kind !== "usage" &&
               (this.restrictTo === undefined || this.restrictTo.has(plugin.id)),
-          ),
-      )
+          );
+        if (generation === this.pluginsGeneration) {
+          this.lastPlugins = filtered;
+          this.pluginsResolvedGeneration = generation;
+        }
+        return filtered;
+      })
       .catch((error: unknown) => {
-        if (this.plugins === plugins) this.plugins = undefined;
+        if (this.plugins === plugins) {
+          this.plugins = undefined;
+          this.pluginsEpoch = undefined;
+        }
         throw error;
       });
     this.plugins = plugins;
     return plugins;
+  }
+  cachedList(): HarnessPluginDescriptor[] | undefined {
+    return this.lastPlugins;
   }
   private invalidate(id: string, preserve?: Promise<HarnessInspection>): void {
     for (const [key, inspection] of this.inspections) {
       if (inspection !== preserve && JSON.parse(key)[0] === id) this.inspections.delete(key);
     }
   }
-  async inspect(
+  inspect(
     id: string,
     cwd?: string,
     refresh: boolean | "re-detect" = false,
@@ -98,8 +147,7 @@ export class ChHarnessCatalog {
       const pending = this.pendingRefreshes.get(id);
       if (pending && this.inspections.get(key) === pending.inspection) {
         if (!retryCredentials || pending.retryCredentials) return pending.inspection;
-        await Promise.allSettled([pending.inspection]);
-        return this.inspect(id, cwd, refresh);
+        return Promise.allSettled([pending.inspection]).then(() => this.inspect(id, cwd, refresh));
       }
       this.invalidate(id);
     }
@@ -168,6 +216,69 @@ export class ChHarnessCatalog {
     this.refreshing.set(harnessId, operation);
     return operation;
   }
+  private async inspectForModels(
+    id: string,
+    name: string,
+    refresh: boolean | "re-detect",
+  ): Promise<HarnessInspection | undefined> {
+    const key = JSON.stringify([id, undefined]);
+    const pending = this.inspect(id, undefined, refresh);
+    const timedOutInspection = (): HarnessInspection => ({
+      status: "unavailable",
+      error: {
+        code: "internalError",
+        message: `${name} model inspection timed out.`,
+        retryable: true,
+      },
+    });
+    if (this.timedOutInspections.has(pending)) {
+      return id === "codex" ? undefined : timedOutInspection();
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([
+        pending,
+        new Promise<typeof INSPECT_TIMED_OUT>((resolve) => {
+          timer = setTimeout(() => resolve(INSPECT_TIMED_OUT), this.modelInspectTimeoutMs);
+        }),
+      ]);
+      if (outcome !== INSPECT_TIMED_OUT) return outcome;
+    } catch (error: unknown) {
+      if (id === "codex") return undefined;
+      return {
+        status: "unavailable",
+        error: {
+          code: "internalError",
+          message:
+            error instanceof Error && error.message
+              ? error.message
+              : `${name} model inspection failed.`,
+          retryable: true,
+        },
+      };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+    if (!this.timedOutInspections.has(pending)) {
+      this.timedOutInspections.add(pending);
+      void pending.then(
+        () => {
+          this.timedOutInspections.delete(pending);
+          if (
+            !this.closed &&
+            (this.inspections.get(key) === pending ||
+              (id === "codex" && !this.inspections.has(key)))
+          ) {
+            this.events.emit("codexhost/harness-inspection-changed");
+          }
+        },
+        () => {
+          this.timedOutInspections.delete(pending);
+        },
+      );
+    }
+    return id === "codex" ? undefined : timedOutInspection();
+  }
   private async readModels(
     refresh: boolean,
     harnessId?: string,
@@ -175,21 +286,28 @@ export class ChHarnessCatalog {
   ) {
     const shouldRefresh = (id: string) => refresh && (harnessId === undefined || harnessId === id);
     const plugins = await this.list();
-    const values = await Promise.all(
+    const pluginValues = await Promise.all(
       plugins.map(async ({ id, name }) => ({
         id,
         name,
-        inspection: await this.inspect(
+        inspection: await this.inspectForModels(
           id,
-          undefined,
+          name,
           refresh && id === harnessId ? "re-detect" : shouldRefresh(id),
         ),
       })),
     );
+    const values = pluginValues.filter(
+      (
+        value,
+      ): value is {
+        id: HarnessPluginDescriptor["id"];
+        name: string;
+        inspection: HarnessInspection;
+      } => value.inspection !== undefined,
+    );
     if (this.restrictTo === undefined || this.restrictTo.has("codex")) {
-      const inspection = await this.inspect("codex", undefined, shouldRefresh("codex")).catch(
-        () => undefined,
-      );
+      const inspection = await this.inspectForModels("codex", "Codex", shouldRefresh("codex"));
       if (inspection)
         values.unshift({ id: harnessIdSchema.parse("codex"), name: "Codex", inspection });
     }
@@ -243,10 +361,20 @@ export class ChHarnessCatalog {
   }
   async icon(id: string): Promise<{ body: Buffer; contentType: string } | undefined> {
     const value = (await this.list()).find((plugin) => plugin.id === id)?.icon;
-    if (!value) return undefined;
-    const match = /^data:(image\/(?:png|jpeg|webp|svg\+xml));base64,(.+)$/u.exec(value);
-    return match?.[1] && match[2]
-      ? { body: Buffer.from(match[2], "base64"), contentType: match[1] }
-      : undefined;
+    return parsePluginIconDataUrl(value);
   }
+  cachedIcon(id: string): { body: Buffer; contentType: string } | undefined {
+    const value = this.lastPlugins?.find((plugin) => plugin.id === id)?.icon;
+    return parsePluginIconDataUrl(value);
+  }
+}
+
+function parsePluginIconDataUrl(
+  value: string | undefined,
+): { body: Buffer; contentType: string } | undefined {
+  if (!value) return undefined;
+  const match = /^data:(image\/(?:png|jpeg|webp|svg\+xml));base64,(.+)$/u.exec(value);
+  return match?.[1] && match[2]
+    ? { body: Buffer.from(match[2], "base64"), contentType: match[1] }
+    : undefined;
 }

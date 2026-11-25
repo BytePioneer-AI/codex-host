@@ -232,6 +232,7 @@ export async function runSharedHostService(
               clientSnapshot: (id, snapshotOptions) => host.clientSnapshot(id, snapshotOptions),
               respondClient: (input) => host.respondClient(input),
             },
+            peerDelegation: (params) => registry.handlePeerDelegationChannelRequest(params),
           });
           console = await startConsoleControlServer({
             environment: env,

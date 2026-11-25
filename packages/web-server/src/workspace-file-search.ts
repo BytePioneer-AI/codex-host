@@ -10,6 +10,7 @@ import { lstat, readdir } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { FileReferenceCandidate } from "@deepseek-ai/dsh-file-reference/types";
 
+export type { FileReferenceCandidate } from "@deepseek-ai/dsh-file-reference/types";
 export { activeAtToken, formatFileMention } from "@deepseek-ai/dsh-file-reference/grammar";
 
 /** Default maximum file and directory candidates rendered for one query. */
@@ -402,4 +403,69 @@ function waitForPromise<T>(promise: Promise<T>, signal: AbortSignal): Promise<T>
 
 function errorReason(reason: unknown, fallback: string): Error {
   return reason instanceof Error ? reason : new Error(fallback, { cause: reason });
+}
+
+export interface WorkspaceFileSearchCacheOptions {
+  readonly maxRoots?: number;
+  readonly refreshIntervalMs?: number;
+  readonly config?: FileSearchConfig;
+}
+
+const DEFAULT_CACHE_MAX_ROOTS = 16;
+const DEFAULT_CACHE_REFRESH_INTERVAL_MS = 2_000;
+
+/** Bounded LRU cache of per-root `WorkspaceFileSearch` indexes shared across local and Peer queries. */
+export class WorkspaceFileSearchCache {
+  private readonly searches = new Map<
+    string,
+    { search: WorkspaceFileSearch; refreshedAt: number }
+  >();
+  private readonly maxRoots: number;
+  private readonly refreshIntervalMs: number;
+  private readonly config: FileSearchConfig;
+  private disposed = false;
+
+  constructor(options: WorkspaceFileSearchCacheOptions = {}) {
+    this.maxRoots = options.maxRoots ?? DEFAULT_CACHE_MAX_ROOTS;
+    this.refreshIntervalMs = options.refreshIntervalMs ?? DEFAULT_CACHE_REFRESH_INTERVAL_MS;
+    this.config = options.config ?? {
+      maxResults: DEFAULT_FILE_SEARCH_MAX_RESULTS,
+      maxEntries: DEFAULT_FILE_SEARCH_MAX_ENTRIES,
+      excludedDirectories: DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES,
+    };
+  }
+
+  async list(root: string, query: string, signal: AbortSignal): Promise<FileReferenceCandidate[]> {
+    signal.throwIfAborted();
+    if (this.disposed) return [];
+    const now = Date.now();
+    let entry = this.searches.get(root);
+    if (!entry) {
+      if (this.searches.size >= this.maxRoots) {
+        const oldest = this.searches.entries().next().value;
+        if (oldest) {
+          oldest[1].search.dispose();
+          this.searches.delete(oldest[0]);
+        }
+      }
+      entry = {
+        search: new WorkspaceFileSearch(root, this.config),
+        refreshedAt: now,
+      };
+    } else if (now - entry.refreshedAt >= this.refreshIntervalMs) {
+      // Keep serving the settled index while the background scan refreshes it.
+      entry.search.invalidate();
+      entry.refreshedAt = now;
+    }
+    this.searches.delete(root);
+    this.searches.set(root, entry);
+    return entry.search.list(query, signal);
+  }
+
+  close(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const { search } of this.searches.values()) search.dispose();
+    this.searches.clear();
+  }
 }

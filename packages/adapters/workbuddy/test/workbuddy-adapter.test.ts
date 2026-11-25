@@ -520,58 +520,75 @@ describe("WorkBuddy Adapter identity", () => {
     });
   });
 
-  it("reads default history only from .workbuddy-ai", async () => {
-    const home = await mkdtemp(path.join(tmpdir(), "codexhost-workbuddy-"));
-    const cwd = await mkdtemp(path.join(tmpdir(), "codexhost-workbuddy-cwd-"));
-    const sessionId = "workbuddy-history";
-    const slug = codeBuddyProjectSlug(cwd, WORKBUDDY_RUNTIME_PROFILE);
-    const workBuddyProject = path.join(home, ".workbuddy-ai", "projects", slug);
-    const codeBuddyProject = path.join(home, ".codebuddy", "projects", slug);
-    await Promise.all([
-      mkdir(workBuddyProject, { recursive: true }),
-      mkdir(codeBuddyProject, { recursive: true }),
-    ]);
-    const rows = (input: string) =>
-      [
-        { type: "message", role: "user", id: "user", sessionId, cwd, content: input },
-        {
-          type: "message",
-          role: "assistant",
-          id: "assistant",
-          parentId: "user",
-          sessionId,
-          cwd,
-          status: "completed",
-          content: "done",
-        },
-      ]
-        .map((row) => JSON.stringify(row))
-        .join("\n");
-    await Promise.all([
-      writeFile(path.join(workBuddyProject, `${sessionId}.jsonl`), rows("from WorkBuddy")),
-      writeFile(path.join(codeBuddyProject, `${sessionId}.jsonl`), rows("from CodeBuddy")),
-    ]);
+  it.each([
+    ["darwin", ".workbuddy-ai", "from WorkBuddy macOS/Windows"],
+    ["win32", ".workbuddy-ai", "from WorkBuddy macOS/Windows"],
+    ["linux", ".workbuddy", "from WorkBuddy Linux"],
+  ] as const)(
+    "reads %s default history only from %s",
+    async (platform, _expectedDirectory, expectedInput) => {
+      const home = await mkdtemp(path.join(tmpdir(), "codexhost-workbuddy-"));
+      const cwd = await mkdtemp(path.join(tmpdir(), "codexhost-workbuddy-cwd-"));
+      const sessionId = "workbuddy-history";
+      const slug = codeBuddyProjectSlug(cwd, WORKBUDDY_RUNTIME_PROFILE);
+      const desktopWorkBuddyProject = path.join(home, ".workbuddy-ai", "projects", slug);
+      const linuxWorkBuddyProject = path.join(home, ".workbuddy", "projects", slug);
+      const codeBuddyProject = path.join(home, ".codebuddy", "projects", slug);
+      await Promise.all([
+        mkdir(desktopWorkBuddyProject, { recursive: true }),
+        mkdir(linuxWorkBuddyProject, { recursive: true }),
+        mkdir(codeBuddyProject, { recursive: true }),
+      ]);
+      const rows = (input: string) =>
+        [
+          { type: "message", role: "user", id: "user", sessionId, cwd, content: input },
+          {
+            type: "message",
+            role: "assistant",
+            id: "assistant",
+            parentId: "user",
+            sessionId,
+            cwd,
+            status: "completed",
+            content: "done",
+          },
+        ]
+          .map((row) => JSON.stringify(row))
+          .join("\n");
+      await Promise.all([
+        writeFile(
+          path.join(desktopWorkBuddyProject, `${sessionId}.jsonl`),
+          rows("from WorkBuddy macOS/Windows"),
+        ),
+        writeFile(
+          path.join(linuxWorkBuddyProject, `${sessionId}.jsonl`),
+          rows("from WorkBuddy Linux"),
+        ),
+        writeFile(path.join(codeBuddyProject, `${sessionId}.jsonl`), rows("from CodeBuddy")),
+      ]);
 
-    const adapter = new WorkBuddyAdapter({
-      environment: { HOME: home, CODEBUDDY_CONFIG_DIR: path.join(home, ".codebuddy") },
-      clientFactory: fakeFactory(),
-    });
-    adapters.push(adapter);
-    const opened = await adapter.open({
-      kind: "resume",
-      cwd,
-      nativeRef: nativeSessionRefSchema.parse({
-        harnessId: "workbuddy",
-        nativeSessionId: sessionId,
-        formatVersion: 1,
-      }),
-    });
-    expect(opened.ok).toBe(true);
-    if (!opened.ok) return;
-    expect(await opened.value.readSnapshot()).toMatchObject({
-      value: { turns: [{ input: [{ text: "from WorkBuddy" }] }] },
-    });
-  });
+      const adapter = new WorkBuddyAdapter({
+        platform,
+        environment: { HOME: home, CODEBUDDY_CONFIG_DIR: path.join(home, ".codebuddy") },
+        clientFactory: fakeFactory(),
+      });
+      adapters.push(adapter);
+      const opened = await adapter.open({
+        kind: "resume",
+        cwd,
+        nativeRef: nativeSessionRefSchema.parse({
+          harnessId: "workbuddy",
+          nativeSessionId: sessionId,
+          formatVersion: 1,
+        }),
+      });
+      expect(opened.ok).toBe(true);
+      if (!opened.ok) return;
+      expect(await opened.value.readSnapshot()).toMatchObject({
+        value: { turns: [{ input: [{ text: expectedInput }] }] },
+      });
+    },
+  );
 
   it("brands authentication failures as WorkBuddy", async () => {
     const adapter = new WorkBuddyAdapter({

@@ -38,6 +38,7 @@ it("routes the public catalog through existing client and Desktop/CDP entry poin
     cursor: null,
     sortKey: "updated_at",
     sortDirection: "desc",
+    modelProviders: [],
   });
   expect(fixture.spawnOfficial).toHaveBeenCalledTimes(1);
   await expect(
@@ -221,9 +222,30 @@ it("lazily initializes the existing managed scope on a cold external Host and re
   expect(
     requests.filter((request) => request.method === "thread/list").map((request) => request.params),
   ).toEqual([
-    { archived: false, cursor: null, limit: 20, sortKey: "updated_at", sortDirection: "desc" },
-    { archived: true, cursor: null, limit: 20, sortKey: "updated_at", sortDirection: "desc" },
-    { archived: false, cursor: null, limit: 20, sortKey: "updated_at", sortDirection: "desc" },
+    {
+      archived: false,
+      cursor: null,
+      limit: 20,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+      modelProviders: [],
+    },
+    {
+      archived: true,
+      cursor: null,
+      limit: 20,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+      modelProviders: [],
+    },
+    {
+      archived: false,
+      cursor: null,
+      limit: 20,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+      modelProviders: [],
+    },
   ]);
 });
 

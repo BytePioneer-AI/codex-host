@@ -44,6 +44,13 @@ function withinFolder(folder: string, cwd: string): boolean {
 /** A native row the scoped folder would list: inside it and outside every excluded folder. */
 function inScope(scope: NonNullable<ThreadCatalogReadParams["scope"]>, row: JsonObject): boolean {
   const cwd = row.cwd;
+  if ("projectId" in scope) {
+    if (typeof row.projectId === "string") return row.projectId === scope.projectId;
+    if (typeof row.id === "string" && scope.legacyThreadIds.includes(row.id)) return true;
+    return (
+      typeof cwd === "string" && (scope.rootPaths ?? []).some((root) => withinFolder(root, cwd))
+    );
+  }
   return (
     typeof cwd === "string" &&
     withinFolder(scope.cwd, cwd) &&
@@ -55,6 +62,12 @@ interface CatalogEntry {
   entry: ThreadListEntry;
   ownership: ThreadOwnership;
   archived: boolean;
+}
+
+interface ExternalCatalog {
+  rows: CatalogEntry[];
+  archivedThreadIds: HostThreadId[];
+  reservedIds: Set<string>;
 }
 
 export interface ThreadCatalogInput {
@@ -93,7 +106,7 @@ function rowId(row: JsonObject): HostThreadId {
   return hostThreadIdSchema.parse(row.id);
 }
 
-/** External metadata is complete; official branches read one native page each. */
+/** First page returns complete external metadata with one official page per branch; continuations read only official branches. */
 export async function readThreadCatalog(
   input: ThreadCatalogInput,
 ): Promise<ThreadCatalogReadResult> {
@@ -153,6 +166,8 @@ export async function readThreadCatalog(
         count();
         const page = await input.requestOfficialPage({
           ...query.params,
+          // A project can contain Codex conversations from more than one model provider.
+          modelProviders: [],
           ...(scope ? { limit: SCOPED_PAGE_SIZE } : {}),
           cursor: next,
         });
@@ -170,7 +185,7 @@ export async function readThreadCatalog(
       }));
     });
 
-  const readExternal = async () => {
+  const readExternal = async (): Promise<ExternalCatalog> => {
     const [local, sharedPages] = await Promise.all([
       measure("local", async (count) => {
         count();
@@ -246,7 +261,13 @@ export async function readThreadCatalog(
 
   try {
     const [external, ...official] = await Promise.all([
-      readExternal(),
+      input.officialCursor === undefined
+        ? readExternal()
+        : Promise.resolve<ExternalCatalog>({
+            rows: [],
+            archivedThreadIds: [],
+            reservedIds: new Set<string>(),
+          }),
       ...queries.map(readOfficial),
     ]);
     const byId = new Map<string, CatalogEntry>();

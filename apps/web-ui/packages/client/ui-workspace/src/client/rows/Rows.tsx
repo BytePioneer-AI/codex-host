@@ -12,6 +12,7 @@
  */
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
+import { resolveRemotePeerColor } from "@codexhost/shared-contracts";
 import type { PropsRenderSlots } from "@deepseek-ai/dsh-client-ui-slots";
 import {
   HoverCard,
@@ -43,7 +44,11 @@ import { HostBadge } from "./HostBadge.tsx";
 import { useThreadTreeView } from "./ThreadTreeView.tsx";
 import { ThreadTreeSummary, useThreadChildGroup } from "./ThreadTreeControls.tsx";
 import { ThreadTreeRing } from "./ThreadTreeRing.tsx";
-import { threadTreeSummary } from "./thread-tree-presentation.ts";
+import {
+  threadActivityPriority,
+  threadActivitySegments,
+  threadTreeSummary,
+} from "./thread-tree-presentation.ts";
 
 /** The standard locale seat, prop-passed from the browser root. */
 type RowTranslate = WorkspaceBrowserProps["t"];
@@ -91,7 +96,7 @@ function createdLabel(createdAt: number, t: RowTranslate): string {
   return t("hover.created", { time: `${date} ${pad2(d.getHours())}:${pad2(d.getMinutes())}` });
 }
 
-/** Hover-card body: workspace title, display directory path, absolute creation time. */
+/** Hover-card body: workspace title, optional directory path, optional creation time. */
 function WorkspaceHoverContent({
   label,
   cwd,
@@ -100,14 +105,14 @@ function WorkspaceHoverContent({
 }: {
   label: string;
   cwd: string | undefined;
-  createdAt: number;
+  createdAt: number | undefined;
   t: RowTranslate;
 }) {
   return (
     <div className={css.hoverContent}>
       <div className={css.hoverTitle}>{label}</div>
-      <div className={css.hoverPath}>{cwd}</div>
-      <div className={css.hoverTime}>{createdLabel(createdAt, t)}</div>
+      {cwd !== undefined && cwd !== "" && <div className={css.hoverPath}>{cwd}</div>}
+      {createdAt !== undefined && <div className={css.hoverTime}>{createdLabel(createdAt, t)}</div>}
     </div>
   );
 }
@@ -141,11 +146,38 @@ function rowHalf(e: { clientY: number; currentTarget: HTMLElement }): "before" |
   return e.clientY < rect.top + rect.height / 2 ? "before" : "after";
 }
 
+/** Mini globe overlay pinned to the bottom-right corner of remote folder/session icons. */
+function RemoteFolderGlobe({
+  color,
+  state,
+  className,
+}: {
+  color: string;
+  state: string;
+  className?: string | undefined;
+}) {
+  return (
+    <span
+      className={clsx(css.remoteFolderGlobe, className)}
+      data-color={color}
+      data-state={state}
+      aria-hidden="true"
+    >
+      <svg viewBox="0 0 12 12" width="10" height="10" fill="none">
+        <circle cx="6" cy="6" r="4.6" stroke="currentColor" strokeWidth="1.2" />
+        <ellipse cx="6" cy="6" rx="2.1" ry="4.6" stroke="currentColor" strokeWidth="1.05" />
+        <path d="M1.6 6h8.8" stroke="currentColor" strokeWidth="1.05" />
+      </svg>
+    </span>
+  );
+}
+
 /**
  * Project (workspace) header row: folder + title;
  * expanded folders stay blue and open even while hovered or keyboard-focused.
  * Dwelling on a real Workspace shows its hover card (the ungrouped bucket has none).
  * @param props.group - derived group node; expansion owns the folder appearance.
+ * @param props.foldedActivity - activity of the Threads a folded group hides; absent while expanded.
  * @param props.onToggle - expand/collapse the group.
  * @param props.onCreate - start a frontend Session inside this Workspace.
  * @param props.drag - optional workspace-row drag wiring.
@@ -155,15 +187,19 @@ function rowHalf(e: { clientY: number; currentTarget: HTMLElement }): "before" |
  */
 export function ProjectRowItem({
   group,
+  foldedActivity,
   onToggle,
   onCreate,
   actions: suppliedActions,
   drag: suppliedDrag,
+  showHost = true,
   home,
   newShortcut,
   t,
 }: {
   group: GroupNode;
+  /** What the folded group hides: its own Threads and those of nested Workspaces. */
+  foldedActivity?: GroupNode["activity"] | undefined;
   newShortcut?: ShortcutCatalogEntry | undefined;
   onToggle: () => void;
   onCreate: () => void;
@@ -171,15 +207,29 @@ export function ProjectRowItem({
   actions?: { rename: () => void; delete: () => void } | undefined;
   /** Present only for real Workspace rows in the grouped view. */
   drag?: WorkspaceRowDragProps | undefined;
+  /** Whether to show remote host accent rail and tag when viewing multiple hosts. */
+  showHost?: boolean | undefined;
   /** Host account home; POSIX home-rooted hover paths display as `~`. */
   home?: string | undefined;
   t: RowTranslate;
 }) {
   const row = group;
+  // Same priority as a folded Thread tree: a pending interaction, then running, then unread.
+  const activityState =
+    foldedActivity === undefined
+      ? undefined
+      : ({ pending: "warning", running: "ongoing", completed: "done", idle: undefined } as const)[
+          threadActivityPriority(foldedActivity)
+        ];
   const actions = group.remote ? undefined : suppliedActions;
-  const drag = group.remote ? undefined : suppliedDrag;
+  const drag = suppliedDrag;
   // The ungrouped bucket has no workspace title: its label is dictionary copy.
   const label = row.workspaceId === undefined ? t("group.ungrouped") : row.label;
+  const remoteColor =
+    row.remote !== undefined
+      ? resolveRemotePeerColor(row.remote.hostId, row.remote.color)
+      : undefined;
+  const showRemoteIndicator = showHost && row.workspaceId !== undefined && row.remote !== undefined;
   const [menuOpen, setMenuOpen] = useState(false);
   const [contextPoint, setContextPoint] = useState<DOMRect | null>(null);
   const workspaceMenuItems = [
@@ -222,12 +272,41 @@ export function ProjectRowItem({
     >
       <span className={clsx(css.slot, row.expanded && css.folderExpanded)}>
         {row.expanded ? <IconFolderOpenRegular /> : <IconFolderCloseRegular />}
+        {showRemoteIndicator && row.remote && remoteColor !== undefined && (
+          <RemoteFolderGlobe color={remoteColor} state={row.remote.state} />
+        )}
       </span>
-      <span className={css.projectText}>
-        <span className={css.title}>{label}</span>
-      </span>
-      {row.workspaceId !== undefined && row.remote && (
-        <HostBadge host={row.remote} variant="workspace" t={t} />
+      {showRemoteIndicator && row.remote ? (
+        <>
+          <span className={css.remoteHostText}>
+            <span className={css.title}>{label}</span>
+            <span className={css.remoteHostMeta}>{row.remote.displayName}</span>
+          </span>
+          {activityState === undefined && (
+            <span
+              className={css.remoteHostStatusDot}
+              data-state={row.remote.state}
+              aria-hidden="true"
+            />
+          )}
+        </>
+      ) : (
+        <span className={css.projectText}>
+          <span className={css.title}>
+            <span className={css.titleText}>{label}</span>
+          </span>
+        </span>
+      )}
+      {activityState !== undefined && foldedActivity !== undefined && (
+        <span className={css.projectActivity} data-project-activity={activityState}>
+          <StateDot state={activityState} size={activityState === "ongoing" ? 16 : undefined} />
+          <span className={css.visuallyHidden}>
+            {threadActivitySegments(foldedActivity)
+              .filter((segment) => segment.count > 0)
+              .map((segment) => t(`threadTree.${segment.state}`, { n: segment.count }))
+              .join(" · ")}
+          </span>
+        </span>
       )}
       <span className={css.rowActions}>
         {actions !== undefined && (
@@ -292,22 +371,25 @@ export function ProjectRowItem({
       </span>
     </div>
   );
-  // The ungrouped bucket has no backing Workspace: no card to show.
-  if (row.createdAt === undefined) return ownRow;
+  const cwd = row.cwd !== undefined && row.cwd !== "" ? row.cwd : undefined;
+  // Skip the hover card when there is no backing Workspace or no supplemental details to show.
+  if (row.workspaceId === undefined || (cwd === undefined && row.createdAt === undefined)) {
+    return ownRow;
+  }
   return (
     <HoverCard
       anchor={ownRow}
       content={
         <WorkspaceHoverContent
           label={row.label}
-          cwd={row.cwd === undefined ? undefined : abbreviateHomePath(row.cwd, home)}
+          cwd={cwd === undefined ? undefined : abbreviateHomePath(cwd, home)}
           createdAt={row.createdAt}
           t={t}
         />
       }
       openDelayMs={800}
       disabled={menuOpen}
-      copyText={row.cwd}
+      copyText={cwd}
       copyLabel={t("copy")}
       copiedLabel={t("hover.copied")}
     />
@@ -335,9 +417,30 @@ function SessionHoverContent({
   const statuses = sessionStatuses(node, t).filter(
     (status) => !(node.archived && (status.state === "done" || status.state === "idle")),
   );
+  const remoteColor =
+    node.remote !== undefined
+      ? resolveRemotePeerColor(node.remote.hostId, node.remote.color)
+      : undefined;
+  const remoteStatusLabel =
+    node.remote?.state === "connected"
+      ? t("host.connected")
+      : node.remote?.state === "connecting"
+        ? t("host.connecting")
+        : t("host.disconnected");
   return (
     <div className={css.hoverContent}>
       <div className={css.hoverTitle}>{displayTitle(node, t)}</div>
+      {node.remote && (
+        <div className={css.hoverHost}>
+          <span
+            className={css.hoverHostDot}
+            data-color={remoteColor}
+            data-state={node.remote.state}
+            aria-hidden="true"
+          />
+          <span>{`${node.remote.displayName} · ${remoteStatusLabel}`}</span>
+        </div>
+      )}
       {node.cwd && <div className={css.hoverPath}>{node.cwd}</div>}
       {/* Same placeholder rule as the row's trailing cell: no timestamp
           before the first prompt. */}
@@ -403,7 +506,9 @@ export function SearchResultItem({
     >
       <span className={css.searchResultHeading}>
         <span className={css.slot} />
-        <span className={css.searchResultTitle}>{result.title || t("session.untitled")}</span>
+        <span className={css.searchResultTitle}>
+          <span className={css.titleText}>{result.title || t("session.untitled")}</span>
+        </span>
         {result.remote && <HostBadge host={result.remote} variant="session" t={t} />}
         {!result.archived && primaryStatus.state !== "idle" && (
           <span className={css.timeStatus} data-session-status={primaryStatus.state}>
@@ -504,6 +609,11 @@ export function SessionNodeItem({
   const statuses = sessionStatuses(node, t);
   const primaryStatus = statuses[0];
   const showStatus = !row.archived && primaryStatus.state !== "idle";
+  const remoteColor =
+    row.remote !== undefined
+      ? resolveRemotePeerColor(row.remote.hostId, row.remote.color)
+      : undefined;
+  const showRemoteGlobe = showHost && row.remote !== undefined && remoteColor !== undefined;
   // Archived rows hold their in-place grayed slot, so manual reorder cannot
   // move them. Pinned rows drag within the pinned block: the browser gates
   // their drop targets to fellow pinned rows.
@@ -636,6 +746,13 @@ export function SessionNodeItem({
               {!expanded && collapseStyle === "ring" && !!node.tree?.descendantCount && (
                 <ThreadTreeRing activity={node.tree.activity} />
               )}
+              {showRemoteGlobe && row.remote && remoteColor !== undefined && (
+                <RemoteFolderGlobe
+                  color={remoteColor}
+                  state={row.remote.state}
+                  className={css.remoteSessionGlobe}
+                />
+              )}
             </>
           }
           ambient={
@@ -654,16 +771,6 @@ export function SessionNodeItem({
               : undefined
           }
         >
-          {showHost && row.remote && (
-            <>
-              <HostBadge host={row.remote} variant="session" t={t} />
-              {!row.blank && (
-                <span className={css.hostTimeSep} aria-hidden="true">
-                  ·
-                </span>
-              )}
-            </>
-          )}
           <span className={css.trailing}>
             {/* A blank New Session row is a provisional placeholder: nothing has
           happened in it yet, so a "now" timestamp and the row verbs

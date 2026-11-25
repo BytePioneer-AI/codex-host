@@ -196,10 +196,20 @@ mod node_repl_override_tests {
     }
 }
 
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 fn configure_managed_desktop_environment(
     command: &mut Command,
     inherited: impl IntoIterator<Item = (OsString, OsString)>,
     managed: &[(OsString, OsString)],
+) {
+    configure_managed_desktop_environment_with_removals(command, inherited, managed, &[]);
+}
+
+fn configure_managed_desktop_environment_with_removals(
+    command: &mut Command,
+    inherited: impl IntoIterator<Item = (OsString, OsString)>,
+    managed: &[(OsString, OsString)],
+    removed: &[&str],
 ) {
     // Desktop is a local GUI session, even when launched over SSH. Otherwise its
     // child shells can reapply the remote bootstrap and overwrite the Host paths.
@@ -213,6 +223,17 @@ fn configure_managed_desktop_environment(
         .any(|(name, value)| name == REMOTE_SSH_MANAGED_ENV && value == std::ffi::OsStr::new("1"));
     if inherited_remote_profile {
         for name in REMOTE_PROFILE_ONLY_ENVIRONMENT {
+            command.env_remove(name);
+        }
+    }
+    for &name in removed {
+        command.env_remove(name);
+    }
+    for (name, _) in &inherited {
+        if removed
+            .iter()
+            .any(|candidate| name.to_string_lossy().eq_ignore_ascii_case(candidate))
+        {
             command.env_remove(name);
         }
     }
@@ -365,12 +386,31 @@ fn configure_external_command(command: &mut Command) {
     super::configure_background_command(command);
 }
 
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 fn desktop_launch_command(
     installation: &DesktopInstallation,
     shim_path: &Path,
     mode: DesktopLaunchMode,
     additional_arguments: &[OsString],
     additional_environment: &[(OsString, OsString)],
+) -> Result<Command, PlatformError> {
+    desktop_launch_command_with_removed_environment(
+        installation,
+        shim_path,
+        mode,
+        additional_arguments,
+        additional_environment,
+        &[],
+    )
+}
+
+fn desktop_launch_command_with_removed_environment(
+    installation: &DesktopInstallation,
+    shim_path: &Path,
+    mode: DesktopLaunchMode,
+    additional_arguments: &[OsString],
+    additional_environment: &[(OsString, OsString)],
+    removed_environment: &[&str],
 ) -> Result<Command, PlatformError> {
     let environment = managed_desktop_environment(installation, shim_path, additional_environment)?;
 
@@ -430,7 +470,12 @@ fn desktop_launch_command(
         "managed Desktop launch currently supports Windows, macOS, and Linux only",
     ));
 
-    configure_managed_desktop_environment(&mut command, std::env::vars_os(), &environment);
+    configure_managed_desktop_environment_with_removals(
+        &mut command,
+        std::env::vars_os(),
+        &environment,
+        removed_environment,
+    );
 
     command
         .stdin(Stdio::null())
@@ -447,12 +492,32 @@ pub fn launch_desktop(
     additional_arguments: &[OsString],
     additional_environment: &[(OsString, OsString)],
 ) -> Result<DesktopProcess, PlatformError> {
-    desktop_launch_command(
+    launch_desktop_with_removed_environment(
         installation,
         shim_path,
         mode,
         additional_arguments,
         additional_environment,
+        &[],
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn launch_desktop_with_removed_environment(
+    installation: &DesktopInstallation,
+    shim_path: &Path,
+    mode: DesktopLaunchMode,
+    additional_arguments: &[OsString],
+    additional_environment: &[(OsString, OsString)],
+    removed_environment: &[&str],
+) -> Result<DesktopProcess, PlatformError> {
+    desktop_launch_command_with_removed_environment(
+        installation,
+        shim_path,
+        mode,
+        additional_arguments,
+        additional_environment,
+        removed_environment,
     )?
     .spawn()
     .map_err(PlatformError::Io)
@@ -466,6 +531,25 @@ pub fn launch_desktop(
     additional_arguments: &[OsString],
     additional_environment: &[(OsString, OsString)],
 ) -> Result<DesktopProcess, PlatformError> {
+    launch_desktop_with_removed_environment(
+        installation,
+        shim_path,
+        mode,
+        additional_arguments,
+        additional_environment,
+        &[],
+    )
+}
+
+#[cfg(target_os = "windows")]
+pub fn launch_desktop_with_removed_environment(
+    installation: &DesktopInstallation,
+    shim_path: &Path,
+    mode: DesktopLaunchMode,
+    additional_arguments: &[OsString],
+    additional_environment: &[(OsString, OsString)],
+    removed_environment: &[&str],
+) -> Result<DesktopProcess, PlatformError> {
     if mode == DesktopLaunchMode::WindowsDirect {
         if !matches!(
             &installation.identity,
@@ -478,12 +562,13 @@ pub fn launch_desktop(
                 "--windows-direct requires a registered Codex Desktop Store installation".into(),
             ));
         }
-        let mut command = desktop_launch_command(
+        let mut command = desktop_launch_command_with_removed_environment(
             installation,
             shim_path,
             mode,
             additional_arguments,
             additional_environment,
+            removed_environment,
         )?;
         super::process::require_no_running_store_desktop(installation)?;
         return Ok(DesktopProcess::from_child(command.spawn()?));
@@ -513,12 +598,13 @@ pub fn launch_desktop(
             )
         }
         None => {
-            let child = desktop_launch_command(
+            let child = desktop_launch_command_with_removed_environment(
                 installation,
                 shim_path,
                 mode,
                 additional_arguments,
                 additional_environment,
+                removed_environment,
             )?
             .spawn()
             .map_err(PlatformError::Io)?;
@@ -767,6 +853,27 @@ pub fn launch_desktop_session(
     additional_environment: &[(OsString, OsString)],
     start_timeout: Duration,
 ) -> Result<DesktopSession, PlatformError> {
+    launch_desktop_session_with_removed_environment(
+        installation,
+        shim_path,
+        mode,
+        additional_arguments,
+        additional_environment,
+        start_timeout,
+        &[],
+    )
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn launch_desktop_session_with_removed_environment(
+    installation: &DesktopInstallation,
+    shim_path: &Path,
+    mode: DesktopLaunchMode,
+    additional_arguments: &[OsString],
+    additional_environment: &[(OsString, OsString)],
+    start_timeout: Duration,
+    removed_environment: &[&str],
+) -> Result<DesktopSession, PlatformError> {
     if !desktop_process_tree(installation)?.is_empty() {
         return Err(PlatformError::Invalid(
             "Codex Desktop is already running; refusing to reuse or terminate it".into(),
@@ -774,12 +881,13 @@ pub fn launch_desktop_session(
     }
     #[cfg(target_os = "linux")]
     {
-        let mut launch_process = desktop_launch_command(
+        let mut launch_process = desktop_launch_command_with_removed_environment(
             installation,
             shim_path,
             mode,
             additional_arguments,
             additional_environment,
+            removed_environment,
         )?
         .spawn()?;
         let launcher_instance = match process_snapshot(launch_process.id()) {
@@ -923,12 +1031,13 @@ pub fn launch_desktop_session(
 
     #[cfg(target_os = "macos")]
     {
-        let mut launch_process = desktop_launch_command(
+        let mut launch_process = desktop_launch_command_with_removed_environment(
             installation,
             shim_path,
             mode,
             additional_arguments,
             additional_environment,
+            removed_environment,
         )?
         .spawn()?;
         let started = Instant::now();
@@ -1617,5 +1726,226 @@ mod tests {
                 .is_ok_and(|current| same_process_instance(&child_snapshot, &current))
         );
         session.disarm_cleanup();
+    }
+
+    #[test]
+    fn managed_launch_removes_requested_environment_variables_case_insensitively() {
+        const CHILD: &str = "CODEXHOST_TEST_MANAGED_DESKTOP_REMOVED_ENV";
+        const NPM_KEYS: [&str; 4] = [
+            "CODEXHOST_NPM_NODE_PATH",
+            "CODEXHOST_NPM_CLI_PATH",
+            "CODEXHOST_NPM_LAUNCHER_PATH",
+            "CODEXHOST_NPM_PACKAGE_ROOT",
+        ];
+        if std::env::var_os(CHILD).is_none() {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "desktop_launch::tests::managed_launch_removes_requested_environment_variables_case_insensitively",
+                ])
+                .env(CHILD, "1")
+                .env("CODEXHOST_NPM_NODE_PATH", "/inherited/node")
+                .env("CODEXHOST_NPM_CLI_PATH", "/inherited/npm-cli.js")
+                .env("CODEXHOST_NPM_LAUNCHER_PATH", "/inherited/codexhost.js")
+                .env("CODEXHOST_NPM_PACKAGE_ROOT", "/inherited/package");
+            let output = command.output().expect("run isolated environment test");
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
+
+        let directory = temporary_directory("codexhost-desktop-removed-env");
+        let shim = directory.join("codexhost-shim");
+        fs::write(&shim, b"shim").expect("write fake Shim");
+        let env_bin = std::path::PathBuf::from("/usr/bin/env");
+        let installation = DesktopInstallation {
+            #[cfg(target_os = "macos")]
+            identity: DesktopIdentity::MacOsBundle {
+                bundle_identifier: "com.openai.codex".into(),
+            },
+            #[cfg(target_os = "linux")]
+            identity: DesktopIdentity::LinuxPackage {
+                package_name: "chatgpt".into(),
+                brand: "chatgpt".into(),
+                flavor: "prod".into(),
+            },
+            version: "1.0.0".into(),
+            build: "100".into(),
+            asar_integrity: format!("sha256:{}", "0".repeat(64)),
+            install_root: directory.clone(),
+            desktop_launcher: env_bin.clone(),
+            desktop_executable: env_bin.clone(),
+            packaged_codex_cli: env_bin.clone(),
+            executable_codex_cli: env_bin,
+        };
+
+        let mut source_command = super::desktop_launch_command_with_removed_environment(
+            &installation,
+            &shim,
+            DesktopLaunchMode::DirectExecutable,
+            &[],
+            &[],
+            &NPM_KEYS,
+        )
+        .expect("source-mode managed command");
+        for key in NPM_KEYS {
+            assert!(
+                source_command
+                    .get_envs()
+                    .any(|(name, value)| name == key && value.is_none()),
+                "source Desktop command must explicitly remove {key}"
+            );
+        }
+        source_command.stdout(Stdio::piped());
+        let output = source_command.output().expect("spawn direct env command");
+        assert!(output.status.success());
+        let child_env = String::from_utf8(output.stdout).expect("UTF-8 environment");
+        for key in NPM_KEYS {
+            assert!(
+                !child_env.contains(&format!("{key}=")),
+                "source Desktop child inherited {key}"
+            );
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let launch_services_command = super::desktop_launch_command_with_removed_environment(
+                &installation,
+                &shim,
+                DesktopLaunchMode::LaunchServices,
+                &[],
+                &[],
+                &NPM_KEYS,
+            )
+            .expect("source LaunchServices command");
+            for key in NPM_KEYS {
+                assert!(
+                    launch_services_command
+                        .get_envs()
+                        .any(|(name, value)| name == key && value.is_none()),
+                    "LaunchServices command must explicitly remove {key}"
+                );
+            }
+            assert!(
+                !launch_services_command
+                    .get_args()
+                    .any(|arg| arg.to_string_lossy().contains("CODEXHOST_NPM_"))
+            );
+        }
+
+        let forwarded = NPM_KEYS
+            .iter()
+            .map(|key| {
+                (
+                    OsString::from(*key),
+                    OsString::from(format!("/installed/{key}")),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut installed_command = super::desktop_launch_command_with_removed_environment(
+            &installation,
+            &shim,
+            DesktopLaunchMode::DirectExecutable,
+            &[],
+            &forwarded,
+            &[],
+        )
+        .expect("installed-mode managed command");
+        for (key, value) in &forwarded {
+            assert!(
+                installed_command
+                    .get_envs()
+                    .any(|(name, candidate)| name == key.as_os_str()
+                        && candidate == Some(value.as_os_str())),
+                "installed Desktop command must forward {key:?}"
+            );
+        }
+        installed_command.stdout(Stdio::piped());
+        let output = installed_command
+            .output()
+            .expect("spawn installed direct env command");
+        assert!(output.status.success());
+        let child_env = String::from_utf8(output.stdout).expect("UTF-8 environment");
+        for (key, value) in &forwarded {
+            assert!(
+                child_env.contains(&format!(
+                    "{}={}\n",
+                    key.to_string_lossy(),
+                    value.to_string_lossy()
+                )),
+                "installed Desktop child missed forwarded {key:?}"
+            );
+        }
+
+        fs::remove_dir_all(directory).expect("remove launch fixture");
+    }
+}
+
+#[cfg(test)]
+mod environment_removal_tests {
+    use std::ffi::OsString;
+    use std::process::Command;
+
+    use super::configure_managed_desktop_environment_with_removals;
+
+    #[test]
+    fn removes_requested_inherited_variables_case_insensitively() {
+        const NPM_KEYS: [&str; 4] = [
+            "CODEXHOST_NPM_NODE_PATH",
+            "CODEXHOST_NPM_CLI_PATH",
+            "CODEXHOST_NPM_LAUNCHER_PATH",
+            "CODEXHOST_NPM_PACKAGE_ROOT",
+        ];
+        let inherited = [
+            (
+                OsString::from("codexhost_npm_node_path"),
+                OsString::from("/inherited/mixed"),
+            ),
+            (
+                OsString::from("CODEXHOST_NPM_PACKAGE_ROOT"),
+                OsString::from("/inherited/package"),
+            ),
+            (OsString::from("UNRELATED_ENV"), OsString::from("keep")),
+        ];
+        let mut command = Command::new("codexhost-test-unused");
+        configure_managed_desktop_environment_with_removals(
+            &mut command,
+            inherited,
+            &[(
+                OsString::from("CODEXHOST_HOST_RUNTIME_PATH"),
+                OsString::from("/source/host-runtime.js"),
+            )],
+            &NPM_KEYS,
+        );
+        let envs = command.get_envs().collect::<Vec<_>>();
+        for key in [
+            "codexhost_npm_node_path",
+            "CODEXHOST_NPM_NODE_PATH",
+            "CODEXHOST_NPM_CLI_PATH",
+            "CODEXHOST_NPM_LAUNCHER_PATH",
+            "CODEXHOST_NPM_PACKAGE_ROOT",
+        ] {
+            assert!(
+                envs.iter().any(|(name, value)| {
+                    value.is_none()
+                        && if cfg!(windows) {
+                            name.to_string_lossy().eq_ignore_ascii_case(key)
+                        } else {
+                            *name == key
+                        }
+                }),
+                "expected {key} to be removed"
+            );
+        }
+        assert!(envs.iter().any(|(name, value)| {
+            *name == "CODEXHOST_HOST_RUNTIME_PATH"
+                && *value == Some(std::ffi::OsStr::new("/source/host-runtime.js"))
+        }));
+        assert!(!envs.iter().any(|(name, _)| *name == "UNRELATED_ENV"));
     }
 }

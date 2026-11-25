@@ -25,6 +25,7 @@
 | [`architecture/external-thread-steering.md`](architecture/external-thread-steering.md) | 外部 Thread 按 Session 能力选择原生同轮插入或停止后重发；修改 steering 时阅读。 |
 | [`architecture/external-thread-queue.md`](architecture/external-thread-queue.md) | 外部 Thread 跟进消息的 Host 原生 `thread/queue/*`、自动推进与中断暂停；修改排队或 Turn 启动时阅读。 |
 | [`architecture/external-thread-side-chats.md`](architecture/external-thread-side-chats.md) | 外部 Thread 的侧边聊天：挂靠 Fork、来源运行中的 Fork、边界消息暂存并随下一个 Turn 交付，以及列表、历史与删除规则；修改侧边聊天或 Fork 时阅读。 |
+| [`architecture/cross-harness-handoff.md`](architecture/cross-harness-handoff.md) | 跨 Harness 上下文交接：16 KB 规则打包、`codexhost/thread/handoff` 四向双通道注入、跨官方/外部元数据持久化，以及 Web 与 Desktop 的入口和交接分割线；修改跨 Agent 交接时阅读。 |
 | [`architecture/host-client-channel.md`](architecture/host-client-channel.md) | GUI、Web 与 App 共享原生 Codex／外部 Harness 的生命周期、认证通道、事件驱动快照、交互仲裁及恢复边界。 |
 | [OpenSpec：状态刷新与轮询优化](../openspec/changes/reduce-redundant-state-polling/proposal.md) | Web 目录与组织状态分别校验，远程设置页和 Console 按可见性降频；查看方案、实现进度与验收边界时阅读。 |
 | [`architecture/gui-web-shared-state-design.md`](architecture/gui-web-shared-state-design.md) | 共享 Host 的官方 Codex 与外部 Thread 所有权、存储边界、启动发现及生命周期；不提供旧 standalone 迁移。 |
@@ -149,7 +150,7 @@
 | [`product/web-ui-extensions.md`](product/web-ui-extensions.md) | DSH Web 插件安装、原生前后端运行、资源路由、启停、依赖检查、恢复与原包验证边界；使用或维护界面扩展时阅读。 |
 | [`proposals/ui-extension-plugins.md`](proposals/ui-extension-plugins.md) | 界面扩展目标方案与分步状态：Harness 与界面插件分类、统一管理、DSH 纯 Web 首期范围，以及原生插件和 Codex GUI 分端接入背景。 |
 | [`proposals/web-native-extensions.md`](proposals/web-native-extensions.md) | Web 原生扩展 Phase 1 契约：v2 清单、双轨管理、浏览器宿主、Node 后端和市场索引；包含三路并行实现的分工与接口。 |
-| [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA、Tauri v2 独立原生桌面壳、默认桌面路由、Desktop 已有 SSH/Remote Control 会话、GUI/Web 共享偏好、源码构建、启动隔离及验收限制；开发 Web 或桌面入口时阅读。 |
+| [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA、Tauri v2 独立原生桌面壳、桌面壳缩放、默认桌面路由、Desktop 已有 SSH/Remote Control 会话、GUI/Web 共享偏好、源码构建、启动隔离及验收限制；开发 Web 或桌面入口时阅读。 |
 | [`../apps/android-shell/README.md`](../apps/android-shell/README.md) | Android 轻量原生 APK 壳：免 GMS、多电脑管理、扫码配对、同源 WebView 隔离、构建与安全说明。 |
 | [`product/web-ios-keyboard-composer-alignment.md`](product/web-ios-keyboard-composer-alignment.md) | 待解决问题：iOS Safari 软键盘下输入框与屏幕底部不贴合的实测数据、根因（页面被 iOS 多滚、`visualViewport` 不可用）、无效做法与备选方向；处理手机键盘布局前阅读。 |
 | [`../packages/remote-relay/README.md`](../packages/remote-relay/README.md) | 独立 Relay 的启动参数、部署要求、控制证书重载、协议与流量限制、元数据日志和本机验证；自建 Docker 部署见产品文档。 |
@@ -181,7 +182,7 @@
 | [`platforms/remote/remote-control-host.md`](platforms/remote/remote-control-host.md) | Remote Control Harness Host 的英文说明；修改对应中文说明时同步核对。 |
 | [`platforms/macos/macos-native-tools.md`](platforms/macos/macos-native-tools.md) | macOS Browser 与 Computer Use 辅助 app-server 路由；修改原生工具兼容性时阅读。 |
 | [`platforms/macos/native-aqua-broker.md`](platforms/macos/native-aqua-broker.md) | 在 macOS Aqua 会话运行远程原生 Harness 插件的 Broker；修改 Broker 时阅读。 |
-| [`platforms/macos/macos-process-observation.md`](platforms/macos/macos-process-observation.md) | macOS shim 进程树观察、路径读取优化与安全不变量；修改进程监管时阅读。 |
+| [`platforms/macos/macos-process-observation.md`](platforms/macos/macos-process-observation.md) | macOS shim 与 Host / Web 监管的进程树观察、扫描时机、路径读取优化与安全不变量；修改进程监管时阅读。 |
 | [`platforms/windows/windows-tool-compatibility.md`](platforms/windows/windows-tool-compatibility.md) | Windows Browser Use、Computer Use 和辅助进程路由；修改 Windows 原生工具支持时阅读。 |
 
 ## 维护

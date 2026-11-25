@@ -22,7 +22,7 @@ import {
   externalThreadValue,
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
-import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
+import { threadDelegationEnvironment } from "./bearer-token.js";
 import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-runtime.js";
 import { ownTurns } from "./external-thread-side-chat.js";
 
@@ -136,10 +136,7 @@ async function executeCurrentLastTurnRollback(input: {
     opened = await adapter.open({
       kind: "rollbackLastTurn",
       cwd: current.cwd,
-      environment: {
-        ...(input.environment ?? process.env),
-        [DELEGATION_THREAD_ID_ENV]: current.id,
-      },
+      environment: threadDelegationEnvironment(input.environment ?? process.env, current.id),
       sourceRef: currentNativeRef as NativeSessionRef,
       ...(configuration.effectiveModel ? { model: configuration.effectiveModel } : {}),
       ...(configuration.effectiveThinkingOptionId
@@ -368,10 +365,7 @@ export async function executeExternalThreadRollback(input: {
     opened = await adapter.open({
       kind: "fork",
       cwd: derived.cwd,
-      environment: {
-        ...(input.environment ?? process.env),
-        [DELEGATION_THREAD_ID_ENV]: derived.id,
-      },
+      environment: threadDelegationEnvironment(input.environment ?? process.env, derived.id),
       sourceRef: sourceNativeRef as NativeSessionRef,
       checkpoint: boundary.nativeCheckpointRef as NativeCheckpointRef,
     });

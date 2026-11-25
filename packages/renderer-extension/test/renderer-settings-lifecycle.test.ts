@@ -170,6 +170,7 @@ describe("Renderer Settings lifecycle", () => {
       ...failedUpdateCheck(),
       latestVersion: "0.3.3",
       updateAvailable: true,
+      installationAvailable: true,
       error: null,
     }));
     lifecycle.refresh();
@@ -180,6 +181,17 @@ describe("Renderer Settings lifecycle", () => {
     for (let index = 0; index < 20; index += 1) lifecycle.refresh();
     await vi.advanceTimersByTimeAsync(60_000);
     expect(clients.current.checkUpdate).toHaveBeenCalledTimes(1);
+
+    // A release the npm registry has not synced is not announced until it can be installed.
+    clients.current = updateClient(async () => ({
+      ...failedUpdateCheck(),
+      latestVersion: "0.3.3",
+      updateAvailable: true,
+      error: null,
+    }));
+    lifecycle.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(triggerSetUpdateAvailable).toHaveBeenLastCalledWith(false);
     lifecycle.dispose();
   });
 

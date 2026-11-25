@@ -37,6 +37,9 @@ export const zh = {
   "error.notFound": "这个目录不在了。可能已被移动或删除。",
   "error.outsideWorkspace": "这个目录在工作区之外，侧栏不会读取它。",
   "error.notDirectory": "这不是一个目录。",
+  "error.remoteUpgradeRequired": "远程主机版本过旧，不支持工作区文件浏览，请升级对端 codexhost。",
+  "error.remoteUnsupported": "当前远程主机暂不支持工作区文件浏览。",
+  "error.remoteOffline": "远程主机当前离线或已禁用，请重新连接后重试。",
   "error.unavailable": "读取失败：{message}",
 } satisfies Record<string, string>;
 
@@ -63,5 +66,9 @@ export const en = {
   "error.outsideWorkspace":
     "That directory is outside the workspace, so the sidebar will not read it.",
   "error.notDirectory": "That is not a directory.",
+  "error.remoteUpgradeRequired":
+    "The remote host is running an older version that does not support workspace file browsing. Upgrade codexhost on the remote host.",
+  "error.remoteUnsupported": "Workspace file browsing is not supported for this remote host.",
+  "error.remoteOffline": "The remote host is offline or disabled. Reconnect and try again.",
   "error.unavailable": "Read failed: {message}",
 } satisfies Record<SidebarFilesKey, string>;

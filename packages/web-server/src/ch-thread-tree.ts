@@ -14,10 +14,17 @@ export class ChThreadTree {
   private parents: Record<string, string> = {};
   constructor(private readonly host: ChHostClient) {}
 
-  async refresh(): Promise<void> {
-    this.parents = clientThreadTreeSchema.parse(
+  clear(): void {
+    this.parents = {};
+  }
+
+  async refresh(isCurrent: () => boolean = () => true): Promise<boolean> {
+    const parents = clientThreadTreeSchema.parse(
       await this.host.request("codexhost/thread/tree/read", {}),
     ).parents;
+    if (!isCurrent()) return false;
+    this.parents = parents;
+    return true;
   }
 
   parent(id: string): string | null {
@@ -44,14 +51,22 @@ export class ChThreadTree {
     rows: Map<string, ChThread>,
     read: (id: string) => Promise<ChThread>,
   ): Promise<void> {
-    for (const id of this.withAncestors(rows.keys())) {
-      if (rows.has(id)) continue;
-      try {
-        rows.set(id, await read(id));
-      } catch {
-        // A deleted or unconfirmable ancestor leaves its children visible at the top level.
-      }
-    }
+    const missing = [...this.withAncestors(rows.keys())].filter((id) => !rows.has(id));
+    if (missing.length === 0) return;
+    let offset = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(4, missing.length) }, async () => {
+        while (offset < missing.length) {
+          const id = missing[offset++];
+          if (id === undefined || rows.has(id)) continue;
+          try {
+            rows.set(id, await read(id));
+          } catch {
+            // A deleted or unconfirmable ancestor leaves its children visible at the top level.
+          }
+        }
+      }),
+    );
   }
 
   private async readArchivedIds(): Promise<ReadonlySet<string>> {

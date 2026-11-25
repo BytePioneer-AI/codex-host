@@ -1,6 +1,6 @@
 {
   "name": "codexhost",
-  "version": "0.26.0-rc.1",
+  "version": "0.26.1",
   "private": true,
   "license": "LGPL-3.0-only",
   "type": "module",
@@ -34,6 +34,8 @@
     "build:plugins": "node scripts/release/harness-plugins.mjs --output packages/host-runtime/dist/plugins",
     "build:web": "npm run build:typescript && npm run build:rust && npm run build:web:ui && npm run pack --workspace=@codexhost/web-server",
     "build:web:ui": "npm run build:renderer && node --import tsx apps/web-ui/scripts/build.ts",
+    "build:shell": "cargo build --manifest-path apps/desktop-shell/src-tauri/Cargo.toml --locked",
+    "start:app": "node --disable-warning=UNDICI-EHPA tools/dev-desktop/run.mjs app",
     "start:web": "node --disable-warning=UNDICI-EHPA tools/dev-desktop/run.mjs web",
     "test:web": "npm run test --workspace=@codexhost/web-server",
     "test:web:distribution": "npm run test:distribution --workspace=@codexhost/web-server",
@@ -113,7 +115,7 @@
     "typescript-eslint": "8.65.0",
     "vite": "8.1.5",
     "vitest": "4.1.10",
-    "zod": "4.4.3"
+    "zod": "4.6.7"
   },
   "allowScripts": {
     "@qodercn-ai/qodercn-agent-sdk@1.0.58": true,

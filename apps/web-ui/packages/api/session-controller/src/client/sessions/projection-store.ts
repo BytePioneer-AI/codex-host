@@ -90,12 +90,46 @@ interface Channel {
  * once; the store-level channel (`subscribeAny`) serves coarse consumers (the
  * manager's list projection reads the `title` key).
  */
+function sameProjectionValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      if (!sameProjectionValue(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  const protoA = Object.getPrototypeOf(a);
+  if (protoA !== Object.getPrototypeOf(b) || (protoA !== Object.prototype && protoA !== null)) {
+    return false;
+  }
+  const aRecord = a as Record<string, unknown>;
+  const bRecord = b as Record<string, unknown>;
+  const aKeys = Object.keys(aRecord);
+  const bKeys = Object.keys(bRecord);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (!Object.hasOwn(bRecord, key)) return false;
+    if (!sameProjectionValue(aRecord[key], bRecord[key])) return false;
+  }
+  return true;
+}
+
 export class ProjectionValueStore {
   private readonly rows = new Map<string, Row>();
   private readonly channels = new Map<string, Channel>();
   private valuesCache: Readonly<Partial<SessionProjectionMap>> | undefined;
+  private writeRevision = 0;
   /** Coarse any-key channel (no snapshot cache to rebuild: reads hit rows directly). */
   private readonly anyNotifier = new Notifier(() => {});
+
+  constructor(private readonly anyIgnoredKeys?: ReadonlySet<string>) {}
+
+  /** Monotonic counter incremented on every accepted write, including same-value confirmations. */
+  get revision(): number {
+    return this.writeRevision;
+  }
 
   /**
    * Key-addressed bare observable face (the useProjection resolution path).
@@ -157,13 +191,19 @@ export class ProjectionValueStore {
    * @param value - whole value computed by the host unit.
    * @param seq - the unit's watermark at emission.
    */
-  apply(key: string, value: unknown, seq: SessionSeqCursor): void {
+  apply(key: string, value: unknown, seq: SessionSeqCursor): boolean {
     const row = this.rows.get(key);
     // higher seq wins among sequenced rows; replays and stale frames drop. A
     // cached row has no comparable seq and always yields.
-    if (row?.kind === "sequenced" && seq <= row.seq) return;
+    if (row?.kind === "sequenced" && seq <= row.seq) return false;
+    if (row !== undefined && sameProjectionValue(row.value, value)) {
+      this.rows.set(key, { kind: "sequenced", value: row.value, seq });
+      this.writeRevision += 1;
+      return false;
+    }
     this.rows.set(key, { kind: "sequenced", value, seq });
     this.changed(key);
+    return true;
   }
 
   /**
@@ -174,11 +214,17 @@ export class ProjectionValueStore {
    * @param value - replacement value.
    * @param seq - durable watermark carried by the frame.
    */
-  applyLive(key: string, value: unknown, seq: SessionSeqCursor): void {
+  applyLive(key: string, value: unknown, seq: SessionSeqCursor): boolean {
     const row = this.rows.get(key);
-    if (row?.kind === "sequenced" && seq < row.seq) return;
+    if (row?.kind === "sequenced" && seq < row.seq) return false;
+    if (row !== undefined && sameProjectionValue(row.value, value)) {
+      this.rows.set(key, { kind: "sequenced", value: row.value, seq });
+      this.writeRevision += 1;
+      return false;
+    }
     this.rows.set(key, { kind: "sequenced", value, seq });
     this.changed(key);
+    return true;
   }
 
   /**
@@ -191,7 +237,12 @@ export class ProjectionValueStore {
    */
   applyCached(values: Readonly<Record<string, unknown>>): void {
     for (const key of Object.keys(values)) {
-      if (this.rows.get(key)?.kind === "sequenced") continue;
+      const row = this.rows.get(key);
+      if (row?.kind === "sequenced") continue;
+      if (row !== undefined && sameProjectionValue(row.value, values[key])) {
+        this.writeRevision += 1;
+        continue;
+      }
       this.rows.set(key, { kind: "cached", value: values[key] });
       this.changed(key);
     }
@@ -214,22 +265,22 @@ export class ProjectionValueStore {
     liveKeys?: ReadonlySet<string>,
     preservedKeys?: ReadonlySet<string>,
   ): void {
-    for (const [key, row] of this.rows) {
-      if (row.kind !== "cached") continue;
-      this.rows.delete(key);
-      this.changed(key);
-    }
     // Erased walk: the framework crosses the open key space; per-key typing
     // is re-established at the consumer (useProjection's map lookup).
     const values = baseline.values as Record<string, unknown>;
+    for (const [key, row] of this.rows) {
+      if (row.kind !== "cached" || Object.hasOwn(values, key)) continue;
+      this.rows.delete(key);
+      this.changed(key);
+    }
     for (const key of Object.keys(values)) {
       if (liveKeys?.has(key)) this.applyLive(key, values[key], baseline.asOfSeq);
       else this.apply(key, values[key], baseline.asOfSeq);
     }
     for (const [key, row] of this.rows) {
       if (Object.hasOwn(values, key) || preservedKeys?.has(key)) continue;
-      // Every cached row was deleted above; the kind test only narrows the
-      // type so `row.seq` is readable.
+      // Every cached row absent from `values` was deleted above; the kind test
+      // only narrows the type so `row.seq` is readable.
       if (row.kind === "sequenced" && row.seq > baseline.asOfSeq) continue;
       this.rows.delete(key);
       this.changed(key);
@@ -260,9 +311,12 @@ export class ProjectionValueStore {
   }
 
   private changed(key: string): void {
+    this.writeRevision += 1;
     this.valuesCache = undefined;
     this.channels.get(key)?.notifier.markDirty();
-    this.anyNotifier.markDirty();
+    if (!this.anyIgnoredKeys?.has(key)) {
+      this.anyNotifier.markDirty();
+    }
   }
 
   private channel(key: string): Channel {

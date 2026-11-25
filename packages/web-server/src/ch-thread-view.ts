@@ -153,7 +153,8 @@ function itemOf(
           ...(Array.isArray(item.content) ? item.content : []),
         ]
           .filter((value) => typeof value === "string")
-          .join("\n"),
+          // Each summary part is its own Markdown paragraph block.
+          .join("\n\n"),
       };
     case "commandExecution":
       // Codex Desktop receives each Host Reasoning Item twice: a `reasoning`
@@ -281,7 +282,7 @@ export class ChThreadView {
     private turnStart = 0,
     sequenceStart = 0,
     hasEarlier: () => boolean = () => false,
-    private readonly projectInput: (content: unknown[]) => unknown[] = (content) => content,
+    protected readonly projectInput: (content: unknown[]) => unknown[] = (content) => content,
     private readonly projectImage: (path: string, projectionKey: string) => unknown = () =>
       undefined,
   ) {

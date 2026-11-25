@@ -118,7 +118,7 @@ http://127.0.0.1:3080/
 连接流程是：
 
 1. 校验诊断端点只包含无凭据的 loopback HTTP 根地址，拒绝 bootstrap URL 和查询参数。
-2. 依次检查显式命令、当前 `PATH` 和 Node 版本管理器目录中的 `dsh`、本地 `npx --offline --no-install @deepseek-ai/dsh`；显式配置不可用时不静默改用其他安装。启动时将所选命令所在目录及 Host Node 目录追加到 PATH，以便 npm 脚本找到 Node。
+2. 显式配置命令时只解析指定命令。默认在 `PATH`、Node 版本管理器目录和 POSIX 常见安装目录中查找 `dsh`，随后才使用本地 `npx --offline --no-install @deepseek-ai/dsh` 回退。启动时补齐所选命令目录与 Host Node 目录。POSIX 下，如果 `dsh` 指向另一目录里的符号链接目标，而且目标旁有可执行的 `node`，子进程优先使用该 Node.js。
 3. 执行 `--version`，要求输出单行规范 SemVer。低于 `0.1.7-rc.1` 时返回 `unsupported`（stage `version`，不可重试），不启动托管 Web；中英文提示列出已验证版本，说明高于最新已验证版本的版本可以尝试连接但适配度可能有限，并给出升级命令。其余版本一律按 V4 profile 尝试，不因版本较新而被拒绝。实际 Web Remote、日志及流式事件仍按 V4 协议严格验证，不兼容时返回真实启动或协议错误。
 4. 对诊断端点做无凭据指纹检查。若已有 DSH Web 返回已识别的认证要求，提示关闭该实例后重新诊断；不会接管其凭据或停止它。端点属于其他服务时不向其发送会话内容。
 5. 启动 `web --no-open --host 127.0.0.1 --port 0`，等待原生 bootstrap，完成认证，再建立 HTTP/WebSocket 通信。托管进程使用自己的临时端口。

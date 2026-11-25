@@ -20,6 +20,7 @@ import {
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
   type ExternalThreadForkParams,
+  type ThreadHandoffParams,
   type HarnessModelRef,
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
@@ -38,6 +39,7 @@ import {
 
 import type { RendererAgent } from "./agent-selection-state.js";
 import { installRendererForkControl } from "./renderer-fork-control.js";
+import { installRendererHandoffControl } from "./renderer-handoff-control.js";
 import {
   createThreadUsageSubscriptionRelay,
   type RendererModelClient,
@@ -832,6 +834,7 @@ export function installCurrentRendererAdapter(): {
       return client.listHarnessPlugins();
     },
     forkThread: (input: ExternalThreadForkParams) => currentModelClient().forkThread(input),
+    handoffThread: (input: ThreadHandoffParams) => currentModelClient().handoffThread(input),
     inspectHarness: (...args: Parameters<RendererModelClient["inspectHarness"]>) =>
       currentModelClient().inspectHarness(...args),
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),
@@ -933,11 +936,24 @@ export function installCurrentRendererAdapter(): {
       );
     },
   });
+  const handoffControl = installRendererHandoffControl({
+    getClient: () => (disposed ? null : modelControl),
+    getHostId: (composer) => modelControl.currentHostId?.(composer) ?? null,
+    resolveComposerThreadId: (composer) =>
+      threadIdFromComposerModelTarget(findComposerModelTarget(composer)),
+    reportError: (error) => {
+      console.error(
+        "codexhost Thread Handoff failed",
+        error instanceof Error ? error.name : "UnknownError",
+      );
+    },
+  });
 
   const selectedPolicies = new Map<string, RendererDraftPrewarmPolicy>();
   const draftModels = createScopedDraftModelWriter();
   const handleRoutingPolicyChange = (): void => {
     currentRequestRoute();
+    handoffControl.refresh();
   };
   window.addEventListener("codexhost:draft-prewarm-policy-changed", handleRoutingPolicyChange);
   currentRequestRoute();
@@ -1022,6 +1038,7 @@ export function installCurrentRendererAdapter(): {
       const cleanups = [
         ...[...selectedPolicies.values()].map((policy) => () => policy.select(null)),
         () => forkControl.dispose(),
+        () => handoffControl.dispose(),
         () => stopGroupSync(),
         () => clients.dispose(),
         () => usageSubscription.dispose(),

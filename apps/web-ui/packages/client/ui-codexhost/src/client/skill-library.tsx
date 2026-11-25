@@ -8,6 +8,7 @@ import type {
 import { IconSkillOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   formatSkillReference,
+  REMOTE_PEER_HOST_ID_PREFIX,
   SKILL_REFERENCE_SOURCE,
   type LibrarySkill,
   type SkillsListResult,
@@ -19,19 +20,32 @@ export function registerSkillLibrary(ctx: Context): void {
   const connection = ctx.get("connection") as ConnectionHandle;
   const cache = new Map<
     SessionId,
-    { epoch: object | undefined; promise: Promise<SkillsListResult> }
+    { epoch: object | undefined; harnessKey: string; promise: Promise<SkillsListResult> }
   >();
   const selected = new WeakMap<InputTriggerCandidate, { skill: LibrarySkill; entry: object }>();
   const listeners = new Set<() => void>();
   const t = ctx.locale.bind("codexhostImport");
+  const harnessKeyOf = (id: SessionId) => {
+    const row = ctx.sessions.list.getSnapshot().byId[id];
+    const identityId = row?.projectionValues?.harnessIdentity?.id ?? "";
+    const draftProvider = row?.blank
+      ? (row.projectionValues?.modelSelection?.next?.provider ?? "")
+      : "";
+    return `${identityId}:${draftProvider}`;
+  };
   const supported = (id: SessionId) => {
     const row = ctx.sessions.list.getSnapshot().byId[id];
-    const identity = row?.projectionValues?.harnessIdentity;
+    const hostId = row?.projectionValues?.threadReference?.hostId ?? "local";
+    const allowedHost = hostId === "local" || hostId.startsWith(REMOTE_PEER_HOST_ID_PREFIX);
+    const harnessId =
+      (row?.blank ? row.projectionValues?.modelSelection?.next?.provider : undefined) ??
+      row?.projectionValues?.harnessIdentity?.id;
     return (
-      !!identity &&
-      identity.id !== "codex" &&
+      !!row &&
+      !!harnessId &&
+      harnessId !== "codex" &&
       (row.blank || row.projectionValues?.nativeDiscovery === true) &&
-      (row.projectionValues?.threadReference?.hostId ?? "local") === "local" &&
+      allowedHost &&
       ctx.sessions.subagentAddress(id) === undefined
     );
   };
@@ -42,9 +56,10 @@ export function registerSkillLibrary(ctx: Context): void {
   ctx.effect(() => connection.generation.subscribe(invalidate));
   ctx.effect(() => ctx.remote.$on("codexhost/skills/changed", invalidate));
   const read = (id: SessionId, req: CandidateRequest) => {
+    const harnessKey = harnessKeyOf(id);
     let entry = cache.get(id);
-    if (!entry || entry.epoch !== req.menuEpoch) {
-      entry = { epoch: req.menuEpoch, promise: skillLibraryApi.list(id) };
+    if (!entry || entry.epoch !== req.menuEpoch || entry.harnessKey !== harnessKey) {
+      entry = { epoch: req.menuEpoch, harnessKey, promise: skillLibraryApi.list(id) };
       cache.set(id, entry);
     }
     return entry;

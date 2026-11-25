@@ -45,7 +45,10 @@ export function buildHeroLocationOptions(
   }
 
   for (const peer of configuredPeers) {
-    if (!peer.enabled) continue;
+    if (!peer.enabled) {
+      remoteByHostId.delete(peer.hostId);
+      continue;
+    }
     const existing = remoteByHostId.get(peer.hostId);
     if (existing !== undefined) {
       remoteByHostId.set(peer.hostId, {

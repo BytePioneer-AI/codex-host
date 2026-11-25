@@ -11,11 +11,9 @@
   background: transparent;
 }
 
-/* 76px with its rule: the height of the Sidebar's tab strip and header row
-   (ui-dockkit `.tabStrip` 38px + the pane header's 38px), so the two rules
-   meet at the column edge. The rows add up to it — 10px top inset, the 30px
-   title row, the tab strip's 10px margin, a 16px tab line, and its 9px bottom
-   inset — so no row below may grow past its figure. */
+/* 76px with view tabs: matches the Sidebar's tab strip and header row
+   (ui-dockkit `.tabStrip` 38px + the pane header's 38px) without drawing a
+   full-width bottom divider, so the header merges seamlessly into the body. */
 .header {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -23,13 +21,11 @@
   box-sizing: border-box;
   min-height: 76px;
   padding: 10px 28px 0 20px;
-  border-bottom: 0.5px solid var(--dsw-alias-border-l3);
 }
 
 .header:where(:not(:has(.tabs))) {
   min-height: 0;
   padding: 10px 24px 6px 20px;
-  border-bottom: none;
 }
 
 :global([data-windows-titlebar]) .header:where(:not(:has(.tabs))) {
@@ -590,8 +586,7 @@ button.crumb:hover {
   }
 }
 
-/* figma Tab_Group 34:11441: 35px strip, gap 36, pad-left 8, tabs bottom-aligned.
-   Positioned above the header's own paint, so the active bar covers the rule. */
+/* figma Tab_Group 34:11441: 35px strip, gap 36, pad-left 8, tabs bottom-aligned. */
 .tabs {
   grid-column: 1 / -1;
   position: relative;
@@ -602,9 +597,8 @@ button.crumb:hover {
   padding-left: 8px;
 }
 
-/* figma .Tab 34:11442: 13/16 text (figma wt510, rendered 500). The 2px bar
-   reaches 1px past the tab's box to end flush with the header's bottom edge,
-   sitting over the rule. */
+/* figma .Tab 34:11442: 13/16 text (figma wt510, rendered 500) with a 2px
+   bottom indicator flush with the tab's box. */
 .tab {
   position: relative;
   padding: 0 0 9px;
@@ -621,7 +615,7 @@ button.crumb:hover {
   content: "";
   position: absolute;
   right: 0;
-  bottom: -1px;
+  bottom: 0;
   left: 0;
   height: 2px;
   border-radius: 2px;

@@ -153,14 +153,16 @@ interface AccountRead {
 export class OmpAccountCredits {
   #cached: { fetchedAt: number; identified: boolean; value: AccountRead } | undefined;
   #pending: { identified: boolean; value: Promise<AccountRead> } | undefined;
+  readonly #identityShutdown = new AbortController();
+  readonly #identityProbes = new Set<Promise<readonly OmpNativeBillingIdentity[]>>();
   #probeSequence = 0;
 
   constructor(
     private readonly load: () => Promise<string>,
     private readonly profile = "",
-    private readonly loadIdentities: () => Promise<
-      readonly OmpNativeBillingIdentity[]
-    > = async () => [],
+    private readonly loadIdentities: (
+      signal: AbortSignal,
+    ) => Promise<readonly OmpNativeBillingIdentity[]> = async () => [],
   ) {}
 
   async forAccount(key: string): Promise<AccountCreditsSnapshot | null> {
@@ -185,15 +187,28 @@ export class OmpAccountCredits {
     return null;
   }
 
+  async close(): Promise<void> {
+    this.#identityShutdown.abort();
+    await Promise.allSettled(this.#identityProbes);
+  }
+
   async #readIdentities(): Promise<readonly OmpNativeBillingIdentity[]> {
-    const deadline = Promise.withResolvers<never[]>();
-    const timer = setTimeout(() => deadline.resolve([]), IDENTITY_BUDGET_MS);
+    const shutdown = this.#identityShutdown.signal;
+    if (shutdown.aborted) return [];
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), IDENTITY_BUDGET_MS);
+    const signal = AbortSignal.any([shutdown, controller.signal]);
+    let probe: Promise<readonly OmpNativeBillingIdentity[]> | undefined;
     try {
-      return await Promise.race([this.loadIdentities(), deadline.promise]);
+      probe = this.loadIdentities(signal);
+      this.#identityProbes.add(probe);
+      const rows = await probe;
+      return signal.aborted ? [] : rows;
     } catch {
       return [];
     } finally {
       clearTimeout(timer);
+      if (probe) this.#identityProbes.delete(probe);
     }
   }
 
@@ -300,11 +315,14 @@ export function createOmpAccountCredits(
         cwd,
       ),
     profile,
-    () =>
-      listOmpBillingIdentities({
-        cwd: cwd ?? process.cwd(),
-        environment: env,
-        ...(command ? { command } : {}),
-      }),
+    (signal) =>
+      listOmpBillingIdentities(
+        {
+          cwd: cwd ?? process.cwd(),
+          environment: env,
+          ...(command ? { command } : {}),
+        },
+        signal,
+      ),
   );
 }

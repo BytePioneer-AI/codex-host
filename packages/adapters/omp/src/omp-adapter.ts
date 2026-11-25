@@ -3034,6 +3034,7 @@ export class OmpAdapter implements HarnessAdapter {
     if (!this.#closePromise) {
       for (const listing of this.#availabilityListings) listing.abort();
       const billing = [
+        this.#accountCredits.close(),
         ...[...this.#billingSessions].map((session) => session.close()),
         ...this.#billingOpens,
       ];

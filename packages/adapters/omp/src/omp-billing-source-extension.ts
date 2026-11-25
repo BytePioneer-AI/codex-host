@@ -3,13 +3,16 @@ export const billingSourceExtension = `
 import { createAgentSession, SessionManager, Settings } from '@oh-my-pi/pi-coding-agent';
 
 export default function(pi) {
-  let session, manager, selected, started = false, createDispatched = false;
+  let session, manager, selected, started = false, createDispatched = false, cleanupConfirmed = false;
   const reply = (id, data) => process.stdout.write(JSON.stringify({ codexhostBillingSource: id, ...data }) + '\\n');
   async function dispose() {
-    if (!session) return !createDispatched;
-    if (manager.getSessionFile() !== undefined) return false;
+    if (cleanupConfirmed || !createDispatched) return true;
+    if (!session || manager.getSessionFile() !== undefined) return false;
     await session.dispose();
-    return manager.getSessionFile() === undefined;
+    if (manager.getSessionFile() !== undefined) return false;
+    cleanupConfirmed = true;
+    session = manager = undefined;
+    return true;
   }
   async function selectedCredential(registry, provider, credentialId, identityKey) {
     const auth = registry.authStorage;
@@ -34,7 +37,7 @@ export default function(pi) {
             .map(row => ({ provider: row.provider, credentialId: row.id, identityKey: row.identityKey }));
           return reply(id, { code: 'accounts', accounts });
         }
-        if (command.type === 'prepare' && !session) {
+        if (command.type === 'prepare' && !createDispatched) {
           const { provider, credentialId, identityKey, modelId } = command;
           const registry = ctx.modelRegistry;
           const row = await selectedCredential(registry, provider, credentialId, identityKey);
@@ -74,7 +77,7 @@ export default function(pi) {
           }
           return reply(id, { code: 'ready', ...selected, modelCollisions });
         }
-        if (command.type === 'turn' && selected && !started) {
+        if (command.type === 'turn' && session && selected && !started) {
           started = true;
           let completed = false;
           try {
@@ -92,14 +95,12 @@ export default function(pi) {
             // A failed/denied Turn can still have a confirmed in-memory cleanup.
           }
           const clean = await dispose().catch(() => false);
-          session = undefined;
           reply(id, { code: completed ? 'completed' : 'failed', ...(completed ? selected : {}),
             cleanup: clean ? 'not-persisted' : null });
           return;
         }
         if (command.type === 'dispose') {
-          const clean = await dispose();
-          session = undefined;
+          const clean = await dispose().catch(() => false);
           return reply(id, { code: 'disposed', cleanup: clean ? 'not-persisted' : null });
         }
         reply(id, { code: 'protocol' });

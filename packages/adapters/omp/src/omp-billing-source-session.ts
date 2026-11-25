@@ -58,12 +58,15 @@ interface Bridge {
   close(): Promise<void>;
 }
 
-async function launch(input: BridgeOptions): Promise<Bridge | null> {
+async function launch(input: BridgeOptions, signal?: AbortSignal): Promise<Bridge | null> {
+  signal?.throwIfAborted();
   const directory = await mkdtemp(path.join(tmpdir(), "ch-omp-billing-"));
   const extension = path.join(directory, "bridge.mjs");
   const hello = randomUUID();
   try {
+    signal?.throwIfAborted();
     await writeFile(extension, `${billingSourceExtension}\n`, { mode: 0o600, encoding: "utf8" });
+    signal?.throwIfAborted();
     const env = withNodeRuntimeOnPath({
       ...input.environment,
       OMP_SKIP_VERSION_CHECK: "1",
@@ -153,8 +156,22 @@ async function launch(input: BridgeOptions): Promise<Bridge | null> {
       startup.resolve(undefined);
       pending?.settle(null);
     });
+    function kill() {
+      if (dead) return;
+      try {
+        signalProcessTree(child, "SIGKILL");
+      } catch {
+        /* process exit can race */
+      }
+    }
+    function abort() {
+      kill();
+      startup.resolve(undefined);
+      pending?.settle(null);
+    }
+    signal?.addEventListener("abort", abort, { once: true });
     function request(data: Receipt, timeoutMs: number): Promise<Receipt | null> {
-      if (dead || pending || !child.stdin.writable) return Promise.resolve(null);
+      if (signal?.aborted || dead || pending || !child.stdin.writable) return Promise.resolve(null);
       const id = randomUUID();
       const completion = Promise.withResolvers<Receipt | null>();
       const timer = setTimeout(() => pending?.settle(null), timeoutMs);
@@ -177,14 +194,7 @@ async function launch(input: BridgeOptions): Promise<Bridge | null> {
     }
     async function close() {
       child.stdin.end();
-      const stop = setTimeout(() => {
-        if (dead) return;
-        try {
-          signalProcessTree(child, "SIGKILL");
-        } catch {
-          /* process exit can race */
-        }
-      }, 2_000);
+      const stop = setTimeout(kill, 2_000);
       const deadline = Promise.withResolvers<undefined>();
       const timeout = setTimeout(
         () => deadline.reject(new Error("OMP bridge shutdown could not be confirmed")),
@@ -193,6 +203,7 @@ async function launch(input: BridgeOptions): Promise<Bridge | null> {
       try {
         await Promise.race([exited.promise, deadline.promise]);
       } finally {
+        signal?.removeEventListener("abort", abort);
         clearTimeout(stop);
         clearTimeout(timeout);
         await rm(directory, { recursive: true, force: true });
@@ -201,7 +212,7 @@ async function launch(input: BridgeOptions): Promise<Bridge | null> {
     const timeout = setTimeout(() => startup.resolve(undefined), setupTimeoutMs);
     await startup.promise;
     clearTimeout(timeout);
-    if (!booted || !advertised || dead) {
+    if (signal?.aborted || !booted || !advertised || dead) {
       await close();
       return null;
     }
@@ -240,8 +251,9 @@ async function disposeBridge(bridge: Bridge): Promise<NativeCleanupReceipt | "un
 
 export async function listOmpBillingIdentities(
   input: BridgeOptions,
+  signal: AbortSignal,
 ): Promise<readonly OmpNativeBillingIdentity[]> {
-  const bridge = await launch(input).catch(() => null);
+  const bridge = await launch(input, signal).catch(() => null);
   if (!bridge) return [];
   try {
     const receipt = await bridge.request({ type: "accounts" }, setupTimeoutMs);
@@ -262,7 +274,7 @@ export async function listOmpBillingIdentities(
   } catch {
     return [];
   } finally {
-    await bridge.close().catch(() => undefined);
+    await bridge.close();
   }
 }
 

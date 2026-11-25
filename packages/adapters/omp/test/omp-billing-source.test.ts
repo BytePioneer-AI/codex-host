@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { harnessModelRefSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { OmpAdapter } from "../src/omp-adapter.js";
 import { openOmpBillingSource } from "../src/omp-billing-source-session.js";
@@ -34,6 +34,7 @@ if (process.argv[2] === 'usage') {
   const p = process.argv.indexOf('--extension');
   if (p < 0 || !process.argv.includes('--no-session')) throw new Error('Not a native no-session launch');
   const source = readFileSync(process.argv[p + 1], 'utf8').split('export default function')[1];
+  const identityProbe = process.env.FAKE_OMP_HANG_IDENTITY;
   const sdk = {
     Settings: { isolated: () => ({}) },
     SessionManager: { inMemory: () => ({ getSessionFile: () => undefined }) },
@@ -53,15 +54,30 @@ if (process.argv[2] === 'usage') {
             saveIdentities();
           }
           if (text === 'lose cleanup') this.loseCleanup = true;
+          if (text === 'retry cleanup') this.retryCleanup = true;
         },
         async waitForIdle() {},
-        async dispose() { if (this.loseCleanup) throw new Error('disposal did not acknowledge'); },
+        async dispose() {
+          if (this.loseCleanup) throw new Error('disposal did not acknowledge');
+          if (this.retryCleanup) {
+            this.retryCleanup = false;
+            throw new Error('transient disposal failure');
+          }
+        },
       };
       return { session };
     },
   };
   const registry = {
-    authStorage: { credentials: { async revalidate() {}, snapshot: () => ({ credentials: rows }) } },
+    authStorage: { credentials: {
+      async revalidate() {
+        if (!identityProbe) return;
+        writeFileSync(identityProbe, JSON.stringify({ pid: process.pid, extension: process.argv[p + 1] }));
+        // Keep the native process alive even if its parent closes stdin.
+        await new Promise(() => setInterval(() => {}, 1000));
+      },
+      snapshot: () => ({ credentials: rows }),
+    } },
     getAvailable: () => process.env.FAKE_OMP_BLANK_MODEL ? [{ ...models[0], id: ' ' }] : models,
     find: (provider, id) => models.find(model => model.provider === provider && model.id === id),
   };
@@ -80,18 +96,71 @@ if (process.argv[2] === 'usage') {
       continue;
     }
     await handler(args, { cwd: process.cwd(), modelRegistry: registry });
+    if (request.type === 'turn' && request.text === 'lose turn acknowledgement') {
+      process.stdout.write(JSON.stringify({ id: prompt.id, type: 'response', success: false }) + '\n');
+      continue;
+    }
     process.stdout.write(JSON.stringify({ id: prompt.id, type: 'prompt_result', agentInvoked: false, status: 'completed' }) + '\n');
   }
 }
 `;
 
-it("runs distinct OMP Billing Sources without fallback and requires native cleanup proof", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "ch-omp-binding-test-"));
+async function writeFakeOmp(directory: string) {
   const script = path.join(directory, "fake-omp.mjs");
-  const launches = path.join(directory, "attempts.log");
-  const identities = path.join(directory, "identities.json");
   const windows = process.platform === "win32";
   const command = path.join(directory, windows ? "omp.cmd" : "omp");
+  await writeFile(script, executable, "utf8");
+  await writeFile(
+    command,
+    windows
+      ? `@"${process.execPath}" "${script}" %*\r\n`
+      : `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`,
+    { encoding: "utf8", mode: 0o700 },
+  );
+  return command;
+}
+
+it.each(["deadline", "adapter close"])(
+  "kills a blocked native identity probe and removes its tempdir on %s",
+  async (mode) => {
+    const directory = await mkdtemp(path.join(tmpdir(), "ch-omp-identity-test-"));
+    const marker = path.join(directory, "identity.json");
+    const command = await writeFakeOmp(directory);
+    const adapter = new OmpAdapter({ command, environment: { FAKE_OMP_HANG_IDENTITY: marker } });
+    const inspection = adapter.inspectAccounts();
+    let probe: { pid: number; extension: string } | undefined;
+    try {
+      probe = await vi.waitFor(async () => JSON.parse(await readFile(marker, "utf8")), {
+        timeout: 4_000,
+      });
+      if (!probe) throw new Error("The native probe did not start");
+      if (mode === "adapter close") await adapter.close();
+      else expect(await inspection).toHaveLength(2);
+      const { pid, extension } = probe;
+      expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+      await expect(access(path.dirname(extension))).rejects.toMatchObject({ code: "ENOENT" });
+      for (const account of await inspection) expect(account.billingSourceRef).toBeUndefined();
+    } finally {
+      if (probe) {
+        try {
+          process.kill(probe.pid);
+        } catch {
+          // The adapter may already have killed the probe.
+        }
+      }
+      await adapter.close();
+      await inspection;
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+  12_000,
+);
+
+it("runs distinct OMP Billing Sources without fallback and requires native cleanup proof", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ch-omp-binding-test-"));
+  const launches = path.join(directory, "attempts.log");
+  const identities = path.join(directory, "identities.json");
+  const command = await writeFakeOmp(directory);
   const environment = { FAKE_OMP_ATTEMPTS: launches, FAKE_OMP_IDENTITIES: identities };
   const adapter = new OmpAdapter({
     command,
@@ -102,15 +171,7 @@ it("runs distinct OMP Billing Sources without fallback and requires native clean
     environment: { ...environment, PI_CODING_AGENT_DIR: path.join(directory, "other") },
   });
   try {
-    await writeFile(script, executable, "utf8");
     await writeFile(identities, "{}", "utf8");
-    await writeFile(
-      command,
-      windows
-        ? `@"${process.execPath}" "${script}" %*\r\n`
-        : `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`,
-      { encoding: "utf8", mode: 0o700 },
-    );
     const accounts = await adapter.inspectAccounts();
     const [a, b] = accounts.map((account) => account.billingSourceRef);
     if (!a || !b) throw new Error("Fake quotas did not carry Billing Source references");
@@ -211,6 +272,14 @@ it("runs distinct OMP Billing Sources without fallback and requires native clean
       terminal: { event: { billingSourceRef: b, outcome: { status: "succeeded" } } },
       cleanup: { ok: false },
     });
+    expect(await run(b, "retry cleanup")).toMatchObject({
+      terminal: { event: { billingSourceRef: b, outcome: { status: "succeeded" } } },
+      cleanup: { ok: true, value: "not-persisted" },
+    });
+    expect(await run(b, "lose turn acknowledgement")).toMatchObject({
+      terminal: { event: { outcome: { status: "failed" } } },
+      cleanup: { ok: true, value: "not-persisted" },
+    });
     const listed = await adapter.inspectAccounts();
     expect(JSON.stringify(listed)).not.toContain("native-");
     await writeFile(identities, JSON.stringify({ 11: "native-replacement" }), "utf8");
@@ -231,6 +300,8 @@ it("runs distinct OMP Billing Sources without fallback and requires native clean
     });
     expect((await readFile(launches, "utf8")).trim().split("\n")).toEqual([
       "11:native-11",
+      "22:native-22",
+      "22:native-22",
       "22:native-22",
       "22:native-22",
       "11:native-replacement",

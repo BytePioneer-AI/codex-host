@@ -1,6 +1,6 @@
 # 独立 Web 应用
 
-Web 与 Codex Desktop 在同一仓库开发，浏览器通过 `packages/web-server` 的独立 Node 服务访问。默认 `codexhost` 会话来源按需启动或连接独立的本地 CH 后台，复用 CH 的 Thread 目录、创建、读取和操作；Web 网关不直接读写 Mapping Store、不为外部 Threads 启动第二份 Adapter，也不登记 Desktop 进程所有权。主列表同时展示本机原生 Codex Threads 和共享外部 Harness Threads，不按原生会话的 Model Provider 排除会话。原生 Codex 保留原始 Thread ID，通过共享 Host 使用 Desktop 相同的官方 app-server；外部 Harness 继续由共享后台的外部 Thread 运行时执行。Web 与 PWA 共用响应式界面；桌面端另有基于 Tauri v2 的独立原生桌面壳（`apps/desktop-shell/src-tauri`，与官方 Codex Desktop 共用同一本机 Host 与 Web 服务），Android 提供免应用商店的轻量原生 APK 壳（`apps/android-shell/`），iOS 继续使用 Safari「添加到主屏幕」独立窗口。
+Web 与 Codex Desktop 在同一仓库开发，浏览器通过 `packages/web-server` 的独立 Node 服务访问。默认 `codexhost` 会话来源按需启动或连接独立的本地 CH 后台，复用 CH 的 Thread 目录、创建、读取和操作；Web 网关不直接读写 Mapping Store、不为外部 Threads 启动第二份 Adapter，也不登记 Desktop 进程所有权。主列表同时展示本机原生 Codex Threads 和共享外部 Harness Threads，不按原生会话的 Model Provider 排除会话。原生 Codex 保留原始 Thread ID，通过共享 Host 使用 Desktop 相同的官方 app-server；外部 Harness 继续由共享后台的外部 Thread 运行时执行。Web 与 PWA 共用响应式界面；桌面端另有基于 Tauri v2 的独立原生桌面壳（`apps/desktop-shell/src-tauri`，与官方 Codex Desktop 共用同一本机 Host 与 Web 服务，并按规范化数据目录单实例运行），Android 提供免应用商店的轻量原生 APK 壳（`apps/android-shell/`），iOS 继续使用 Safari「添加到主屏幕」独立窗口。
 
 ### 本机原生 Codex 会话
 

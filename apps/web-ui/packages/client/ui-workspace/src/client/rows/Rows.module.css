@@ -1,20 +1,82 @@
 .hostBadge {
+  --ch-peer-dot-color: #3b82f6;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4.5px;
   min-width: 0;
   max-width: 88px;
-  margin-left: 6px;
+  height: 18px;
+  padding: 0;
+  margin-left: 4px;
   flex-shrink: 0;
   overflow: hidden;
+  border: none;
+  background: transparent;
   font-size: 11px;
   line-height: 16px;
-  font-weight: 450;
-  color: var(--dsw-alias-label-tertiary);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--dsw-alias-label-secondary) 60%, var(--dsw-alias-label-tertiary));
 }
 .hostBadgeSession {
-  max-width: 78px;
-  margin-left: 4px;
+  height: 16px;
+  max-width: 74px;
+  gap: 4px;
+  margin-left: 2px;
+  font-size: 10.5px;
+}
+.hostBadge[data-color="blue"] {
+  --ch-peer-dot-color: #3b82f6;
+}
+.hostBadge[data-color="purple"] {
+  --ch-peer-dot-color: #8b5cf6;
+}
+.hostBadge[data-color="cyan"] {
+  --ch-peer-dot-color: #06b6d4;
+}
+.hostBadge[data-color="green"] {
+  --ch-peer-dot-color: #10b981;
+}
+.hostBadge[data-color="amber"] {
+  --ch-peer-dot-color: #f59e0b;
+}
+.hostBadge[data-color="rose"] {
+  --ch-peer-dot-color: #f43f5e;
+}
+.hostBadge[data-color="slate"] {
+  --ch-peer-dot-color: #64748b;
+}
+:global(body[data-ds-dark-theme]) .hostBadge[data-color="blue"] {
+  --ch-peer-dot-color: #60a5fa;
+}
+:global(body[data-ds-dark-theme]) .hostBadge[data-color="purple"] {
+  --ch-peer-dot-color: #a78bfa;
+}
+:global(body[data-ds-dark-theme]) .hostBadge[data-color="cyan"] {
+  --ch-peer-dot-color: #22d3ee;
+}
+:global(body[data-ds-dark-theme]) .hostBadge[data-color="green"] {
+  --ch-peer-dot-color: #34d399;
+}
+:global(body[data-ds-dark-theme]) .hostBadge[data-color="amber"] {
+  --ch-peer-dot-color: #fbbf24;
+}
+:global(body[data-ds-dark-theme]) .hostBadge[data-color="rose"] {
+  --ch-peer-dot-color: #fb7185;
+}
+:global(body[data-ds-dark-theme]) .hostBadge[data-color="slate"] {
+  --ch-peer-dot-color: #94a3b8;
+}
+.hostBadge[data-state="connecting"] {
+  color: color-mix(
+    in srgb,
+    var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-warn-primary, #d97706)) 78%,
+    var(--dsw-alias-label-secondary)
+  );
+}
+.hostBadge:is([data-state="disconnected"], [data-state="offline"], [data-state="auth-error"]) {
+  color: var(--dsw-alias-label-tertiary);
+  opacity: 0.72;
 }
 .hostLabel {
   min-width: 0;
@@ -28,24 +90,39 @@
   height: 5px;
   border-radius: 50%;
   background: var(--dsw-alias-label-tertiary);
-  opacity: 0.75;
+  opacity: 0.45;
   flex-shrink: 0;
 }
 .hostBadge[data-state="connected"] .hostDot {
-  background: var(--dsw-alias-state-success-primary, #16a34a);
-  opacity: 0.85;
+  background: var(--ch-peer-dot-color);
+  opacity: 0.95;
 }
 .hostBadge[data-state="connecting"] .hostDot {
-  background: var(--dsw-alias-state-warning-primary, #d97706);
+  background: var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-warn-primary, #d97706));
   opacity: 0.9;
+  animation: hostDotPulse 1.6s ease-in-out infinite;
+}
+@keyframes hostDotPulse {
+  0%,
+  100% {
+    opacity: 0.95;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hostBadge[data-state="connecting"] .hostDot {
+    animation: none;
+  }
 }
 .hostTimeSep {
   flex: none;
-  margin: 0 4px;
+  margin: 0 5px;
   font-size: 10px;
   line-height: 16px;
   color: var(--dsw-alias-label-tertiary);
-  opacity: 0.55;
+  opacity: 0.45;
   user-select: none;
 }
 
@@ -760,6 +837,13 @@
 @media (hover: hover) and (pointer: fine) {
   :global(body[data-codexhost-wallpaper]) :is(.projectRow > .rowActions, .sessionRow .rowActions) {
     background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 82%, transparent);
+  }
+
+  :global(body[data-codexhost-wallpaper])
+    :is(
+      .projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) > .rowActions,
+      .sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .rowActions
+    ) {
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
   }

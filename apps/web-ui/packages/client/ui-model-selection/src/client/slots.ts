@@ -26,4 +26,10 @@ export interface ModelSelectInjected {
    */
   select: (selection: ModelSelection) => Promise<RemoteResult<void> | undefined>;
   setFavorite?: (provider: string, modelId: string, enabled: boolean) => Promise<void>;
+  /** Reactive remote host lookup used to resolve peer-scoped Harness icon URLs. */
+  iconHost?: {
+    readonly isRemoteSession: boolean;
+    readonly subscribe: (listener: () => void) => () => void;
+    readonly getHostId: () => string | undefined;
+  };
 }

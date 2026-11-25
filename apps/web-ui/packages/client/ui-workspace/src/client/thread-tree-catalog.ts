@@ -38,7 +38,6 @@ export function isLocalThreadTreeMember(summary: SessionSummary | undefined): bo
     summary !== undefined &&
     !summary.blank &&
     summary.origin !== "subagent" &&
-    !summary.projectionValues?.remoteHost &&
     summary.projectionValues?.threadTreeParent !== undefined
   );
 }

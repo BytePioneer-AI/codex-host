@@ -587,6 +587,63 @@ fn macos_browser_helpers_replace_the_shim_process_with_the_official_cli() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn macos_desktop_exec_server_replaces_the_shim_process_with_the_official_cli() {
+    let directory = temporary_directory();
+    let bundle = macos_fixture_bundle(&directory);
+    let desktop = bundle.join("Contents/MacOS/ChatGPT");
+    let cli = bundle.join("Contents/Resources/codex");
+    let ready = directory.join("exec-server-ready");
+    let mut child = Command::new(&desktop)
+        .args([
+            "-c",
+            "forced_login_method=\"chatgpt\"",
+            "exec-server",
+            "--concurrent-requests",
+            "32",
+        ])
+        .env("FAKE_CODEX_HELPER_SHIM", shim_path())
+        .env("FAKE_CODEX_HELPER_DEPTH", "0")
+        .env("FAKE_CODEX_HOST_RUNTIME_READY", &ready)
+        .env("FAKE_CODEX_HOST_RUNTIME_EOF_DELAY_MS", "0")
+        .env("CODEXHOST_LAUNCHER_PID", process::id().to_string())
+        .env(
+            "CODEXHOST_LAUNCHER_EXECUTABLE",
+            std::env::current_exe().unwrap(),
+        )
+        .env("CODEXHOST_DATA_DIR", &directory)
+        .env_remove(REMOTE_SSH_MANAGED_ENV)
+        .env(STOCK_CODEX_PATH_ENV, &cli)
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(HOST_NODE_PATH_ENV, fake_codex_path())
+        .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let desktop_id = child.id();
+    let observed = wait_for_optional_file(&ready, Duration::from_secs(5))
+        .expect("official exec-server published readiness");
+    let exec_server_id = process_id_from_ready(&observed, "root=");
+    let observed_parent =
+        parent_process_id(exec_server_id).expect("read official exec-server parent");
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        observed_parent,
+        Some(desktop_id),
+        "Desktop exec-server must exec stock codex directly below Desktop without an intermediate Shim"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn macos_browser_helper_preserving_only_cli_override_reaches_official_cli() {
     let directory = temporary_directory();
     let bundle = macos_fixture_bundle(&directory);

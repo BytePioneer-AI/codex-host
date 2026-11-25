@@ -1,19 +1,73 @@
 /** Add, edit, and remove modal sheets for remote CodexHost peer management. */
-import { useId, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { Button, Modal, Switch } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
-import type {
-  RemotePeerAddParams,
-  RemotePeerSummary,
-  RemotePeerTestParams,
-  RemotePeerTestResult,
-  RemotePeerTransportKind,
-  RemotePeerUpdateParams,
+import {
+  REMOTE_PEER_COLORS,
+  remotePeerWorkspaceId,
+  resolveRemotePeerColor,
+  type RemotePeerAddParams,
+  type RemotePeerColor,
+  type RemotePeerSummary,
+  type RemotePeerTestParams,
+  type RemotePeerTestResult,
+  type RemotePeerTransportKind,
+  type RemotePeerUpdateParams,
 } from "@codexhost/shared-contracts";
 import { remotePeersApi } from "./api.ts";
-import { dispatchRemotePeersUpdated } from "./remote-peers-events.ts";
+import { PeerColorPicker } from "./PeerColorPicker.tsx";
+import {
+  dispatchRemotePeersUpdated,
+  persistAndDispatchHostScopeWorkspaceSelection,
+} from "./remote-peers-events.ts";
 import { CheckMarkIcon } from "./RemoteHostIcon.tsx";
 import css from "./RemotePeersPanel.module.css";
+
+const AUTO_PROBE_DEBOUNCE_MS = 400;
+
+function hasCompleteConnectionLink(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed) return false;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    const queryToken = url.searchParams.get("token")?.trim();
+    if (queryToken) return true;
+    const hash = url.hash.startsWith("#") ? url.hash.slice(1) : url.hash;
+    if (!hash) return false;
+    const hashToken = new URLSearchParams(hash).get("token")?.trim();
+    return Boolean(hashToken);
+  } catch {
+    return false;
+  }
+}
+
+function ChevronDownIcon({ className, expanded }: { className?: string; expanded: boolean }) {
+  return (
+    <span className={className} data-expanded={expanded} aria-hidden="true">
+      <svg
+        width={13}
+        height={13}
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M4.25 6.25L8 10l3.75-3.75" />
+      </svg>
+    </span>
+  );
+}
 
 export type RemotePeersTranslate = PropsLocale<"codexhostImport">["t"];
 type AddMode = "link" | "manual";
@@ -30,10 +84,12 @@ export const errorMessageOf = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 
 export function AddPeerModal({
+  suggestedColor,
   onClose,
   onAdded,
   t,
 }: {
+  suggestedColor?: RemotePeerColor;
   onClose: () => void;
   onAdded: () => Promise<void>;
   t: RemotePeersTranslate;
@@ -43,18 +99,42 @@ export function AddPeerModal({
   const [origin, setOrigin] = useState("");
   const [token, setToken] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [color, setColor] = useState<RemotePeerColor>(suggestedColor ?? REMOTE_PEER_COLORS[0]);
   const [testing, setTesting] = useState(false);
   const [adding, setAdding] = useState(false);
   const [testResult, setTestResult] = useState<RemotePeerTestResult | null>(null);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<ReadonlySet<string> | null>(null);
+  const [projectsExpanded, setProjectsExpanded] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  const testSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+  const lastAutoProbedLinkRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      testSeqRef.current += 1;
+    };
+  }, []);
 
   const linkId = useId();
   const originId = useId();
   const tokenId = useId();
   const nameId = useId();
   const formId = useId();
+  const projectsListId = useId();
 
-  const formBusy = testing || adding;
+  const resetProbeState = useCallback((): void => {
+    testSeqRef.current += 1;
+    lastAutoProbedLinkRef.current = null;
+    setTesting(false);
+    setFormError(null);
+    setTestResult(null);
+    setSelectedProjectIds(null);
+    setProjectsExpanded(false);
+  }, []);
 
   const buildCredentials = ():
     | { ok: true; testParams: RemotePeerTestParams; addParams: RemotePeerAddParams }
@@ -71,6 +151,7 @@ export function AddPeerModal({
         addParams: {
           connectionUrl: trimmedUrl,
           ...(trimmedName ? { name: trimmedName } : {}),
+          color,
         },
       };
     }
@@ -89,28 +170,81 @@ export function AddPeerModal({
         origin: trimmedOrigin,
         token: trimmedToken,
         ...(trimmedName ? { name: trimmedName } : {}),
+        color,
       },
     };
   };
+
+  const runProbe = useCallback(async (params: RemotePeerTestParams): Promise<void> => {
+    const seq = ++testSeqRef.current;
+    setTesting(true);
+    setFormError(null);
+    setTestResult(null);
+    setSelectedProjectIds(null);
+    setProjectsExpanded(false);
+    try {
+      const result = await remotePeersApi.test(params);
+      if (seq !== testSeqRef.current || !mountedRef.current) return;
+      setTestResult(result);
+      if (result.ok && result.projects !== undefined && result.projects.length > 0) {
+        setSelectedProjectIds(new Set(result.projects.map((project) => project.id)));
+      }
+    } catch (cause) {
+      if (seq !== testSeqRef.current || !mountedRef.current) return;
+      setTestResult({ ok: false, error: errorMessageOf(cause) });
+    } finally {
+      if (seq === testSeqRef.current && mountedRef.current) {
+        setTesting(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (mode !== "link" || adding) return;
+    const trimmed = connectionUrl.trim();
+    if (!hasCompleteConnectionLink(trimmed) || lastAutoProbedLinkRef.current === trimmed) return;
+    const timer = setTimeout(() => {
+      if (!mountedRef.current) return;
+      lastAutoProbedLinkRef.current = trimmed;
+      void runProbe({ connectionUrl: trimmed });
+    }, AUTO_PROBE_DEBOUNCE_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [adding, connectionUrl, mode, runProbe]);
 
   const handleTest = async (): Promise<void> => {
     const built = buildCredentials();
     if (!built.ok) {
       setFormError(built.message);
       setTestResult(null);
+      setSelectedProjectIds(null);
+      setProjectsExpanded(false);
       return;
     }
-    setTesting(true);
-    setFormError(null);
-    setTestResult(null);
-    try {
-      const result = await remotePeersApi.test(built.testParams);
-      setTestResult(result);
-    } catch (cause) {
-      setTestResult({ ok: false, error: errorMessageOf(cause) });
-    } finally {
-      setTesting(false);
+    if (mode === "link") {
+      lastAutoProbedLinkRef.current = connectionUrl.trim();
     }
+    await runProbe(built.testParams);
+  };
+
+  const probedProjects = testResult !== null && testResult.ok ? (testResult.projects ?? []) : [];
+  const selectedCount =
+    selectedProjectIds === null
+      ? probedProjects.length
+      : probedProjects.reduce(
+          (count, project) => count + (selectedProjectIds.has(project.id) ? 1 : 0),
+          0,
+        );
+  const allProjectsSelected = selectedCount === probedProjects.length;
+
+  const toggleProjectSelection = (projectId: string): void => {
+    setSelectedProjectIds((current) => {
+      const next = new Set(current ?? probedProjects.map((project) => project.id));
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
   };
 
   const handleAdd = async (event?: FormEvent): Promise<void> => {
@@ -120,10 +254,22 @@ export function AddPeerModal({
       setFormError(built.message);
       return;
     }
+    testSeqRef.current += 1;
+    setTesting(false);
     setAdding(true);
     setFormError(null);
     try {
-      await remotePeersApi.add(built.addParams);
+      const { peer } = await remotePeersApi.add(built.addParams);
+      if (
+        probedProjects.length > 0 &&
+        selectedProjectIds !== null &&
+        selectedCount < probedProjects.length
+      ) {
+        const workspaceIds = probedProjects
+          .filter((project) => selectedProjectIds.has(project.id))
+          .map((project) => remotePeerWorkspaceId(peer.hostId, project.id));
+        persistAndDispatchHostScopeWorkspaceSelection(peer.hostId, workspaceIds);
+      }
       dispatchRemotePeersUpdated();
       await onAdded();
       onClose();
@@ -159,7 +305,7 @@ export function AddPeerModal({
     <Modal
       open
       onClose={() => {
-        if (!formBusy) onClose();
+        if (!adding) onClose();
       }}
       title={t("remotePeers.addTitle")}
       closeLabel={t("connectDevices.close")}
@@ -169,7 +315,7 @@ export function AddPeerModal({
           <Button
             variant="outline"
             size="sm"
-            disabled={formBusy}
+            disabled={adding || testing}
             aria-busy={testing}
             onClick={() => void handleTest()}
           >
@@ -180,7 +326,7 @@ export function AddPeerModal({
             size="sm"
             type="submit"
             form={formId}
-            disabled={formBusy}
+            disabled={adding}
             aria-busy={adding}
           >
             {t(adding ? "remotePeers.adding" : "remotePeers.add")}
@@ -198,11 +344,10 @@ export function AddPeerModal({
               <button
                 type="button"
                 className={css.modeToggle}
-                disabled={formBusy}
+                disabled={adding}
                 onClick={() => {
                   setMode("manual");
-                  setFormError(null);
-                  setTestResult(null);
+                  resetProbeState();
                 }}
               >
                 {t("remotePeers.switchToManual")}
@@ -212,15 +357,14 @@ export function AddPeerModal({
               id={linkId}
               className={css.input}
               value={connectionUrl}
-              disabled={formBusy}
+              disabled={adding}
               placeholder={t("remotePeers.placeholder.link")}
               autoComplete="off"
               spellCheck={false}
               data-modal-autofocus
               onChange={(event) => {
                 setConnectionUrl(event.target.value);
-                setFormError(null);
-                setTestResult(null);
+                resetProbeState();
               }}
             />
           </div>
@@ -234,11 +378,10 @@ export function AddPeerModal({
                 <button
                   type="button"
                   className={css.modeToggle}
-                  disabled={formBusy}
+                  disabled={adding}
                   onClick={() => {
                     setMode("link");
-                    setFormError(null);
-                    setTestResult(null);
+                    resetProbeState();
                   }}
                 >
                   {t("remotePeers.switchToLink")}
@@ -248,15 +391,14 @@ export function AddPeerModal({
                 id={originId}
                 className={css.input}
                 value={origin}
-                disabled={formBusy}
+                disabled={adding}
                 placeholder={t("remotePeers.placeholder.origin")}
                 autoComplete="off"
                 spellCheck={false}
                 data-modal-autofocus
                 onChange={(event) => {
                   setOrigin(event.target.value);
-                  setFormError(null);
-                  setTestResult(null);
+                  resetProbeState();
                 }}
               />
             </div>
@@ -269,13 +411,12 @@ export function AddPeerModal({
                 type="password"
                 className={css.input}
                 value={token}
-                disabled={formBusy}
+                disabled={adding}
                 placeholder={t("remotePeers.placeholder.token")}
                 autoComplete="new-password"
                 onChange={(event) => {
                   setToken(event.target.value);
-                  setFormError(null);
-                  setTestResult(null);
+                  resetProbeState();
                 }}
               />
             </div>
@@ -290,11 +431,16 @@ export function AddPeerModal({
             id={nameId}
             className={css.input}
             value={displayName}
-            disabled={formBusy}
+            disabled={adding}
             maxLength={120}
             placeholder={t("remotePeers.placeholder.name")}
             onChange={(event) => setDisplayName(event.target.value)}
           />
+        </div>
+
+        <div className={css.field}>
+          <span className={css.label}>{t("remotePeers.field.color")}</span>
+          <PeerColorPicker value={color} onChange={setColor} disabled={adding} t={t} />
         </div>
 
         {testResult !== null && testSummary !== null && (
@@ -314,6 +460,74 @@ export function AddPeerModal({
           </div>
         )}
 
+        {probedProjects.length > 0 && (
+          <div className={css.projectsSection}>
+            <button
+              type="button"
+              className={css.projectsHeader}
+              aria-expanded={projectsExpanded}
+              aria-controls={projectsListId}
+              disabled={adding}
+              onClick={() => setProjectsExpanded((prev) => !prev)}
+            >
+              <span className={css.projectsHeaderLabel}>
+                {allProjectsSelected
+                  ? t("remotePeers.projectsScope.all", { count: probedProjects.length })
+                  : t("remotePeers.projectsScope.selected", {
+                      selected: selectedCount,
+                      total: probedProjects.length,
+                    })}
+              </span>
+              <ChevronDownIcon className={css.projectsChevron} expanded={projectsExpanded} />
+            </button>
+            {projectsExpanded && (
+              <div id={projectsListId} className={css.projectsBody}>
+                <div className={css.projectsToolbar}>
+                  <button
+                    type="button"
+                    className={css.projectsAction}
+                    disabled={adding || allProjectsSelected}
+                    onClick={() =>
+                      setSelectedProjectIds(new Set(probedProjects.map((project) => project.id)))
+                    }
+                  >
+                    {t("remotePeers.projectsScope.selectAll")}
+                  </button>
+                  <button
+                    type="button"
+                    className={css.projectsAction}
+                    disabled={adding || selectedCount === 0}
+                    onClick={() => setSelectedProjectIds(new Set())}
+                  >
+                    {t("remotePeers.projectsScope.clear")}
+                  </button>
+                </div>
+                <div className={css.projectsList}>
+                  {probedProjects.map((project) => {
+                    const checked =
+                      selectedProjectIds === null || selectedProjectIds.has(project.id);
+                    return (
+                      <label key={project.id} className={css.projectRow} title={project.path}>
+                        <input
+                          type="checkbox"
+                          className={css.projectCheckbox}
+                          checked={checked}
+                          disabled={adding}
+                          onChange={() => toggleProjectSelection(project.id)}
+                        />
+                        <span className={css.projectText}>
+                          <span className={css.projectName}>{project.name}</span>
+                          <span className={css.projectPath}>{project.path}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {formError !== null && (
           <p className={css.error} role="alert">
             {formError}
@@ -328,14 +542,20 @@ export function EditPeerModal({
   peer,
   onClose,
   onSaved,
+  eventSource,
   t,
 }: {
   peer: RemotePeerSummary;
   onClose: () => void;
   onSaved: (updated: RemotePeerSummary) => void;
+  eventSource?: unknown;
   t: RemotePeersTranslate;
 }): ReactNode {
   const [name, setName] = useState(peer.name);
+  const [color, setColor] = useState<RemotePeerColor>(() =>
+    resolveRemotePeerColor(peer.hostId, peer.color),
+  );
+  const [colorTouched, setColorTouched] = useState(false);
   const [enabled, setEnabled] = useState(peer.enabled);
   const [mode, setMode] = useState<AddMode>("link");
   const [connectionUrl, setConnectionUrl] = useState("");
@@ -360,6 +580,7 @@ export function EditPeerModal({
       peerId: peer.peerId,
       name: trimmedName,
       enabled,
+      ...(colorTouched ? { color } : {}),
     };
     if (mode === "link") {
       const trimmedUrl = connectionUrl.trim();
@@ -374,7 +595,7 @@ export function EditPeerModal({
     setError(null);
     try {
       const { peer: updated } = await remotePeersApi.update(payload);
-      dispatchRemotePeersUpdated();
+      dispatchRemotePeersUpdated(eventSource === undefined ? undefined : { source: eventSource });
       onSaved(updated);
     } catch (cause) {
       setError(t("remotePeers.actionFailed", { message: errorMessageOf(cause) }));
@@ -423,6 +644,18 @@ export function EditPeerModal({
             maxLength={120}
             onChange={(event) => setName(event.target.value)}
             data-modal-autofocus
+          />
+        </div>
+        <div className={css.field}>
+          <span className={css.label}>{t("remotePeers.field.color")}</span>
+          <PeerColorPicker
+            value={color}
+            onChange={(next) => {
+              setColor(next);
+              setColorTouched(true);
+            }}
+            disabled={saving}
+            t={t}
           />
         </div>
         <div className={css.switchRow}>

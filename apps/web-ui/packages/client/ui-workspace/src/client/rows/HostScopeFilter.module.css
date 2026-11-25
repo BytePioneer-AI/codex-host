@@ -67,23 +67,76 @@
   opacity: 0.65;
 }
 
-.hostIcon {
-  flex: none;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.triggerActive .hostIcon {
-  color: currentColor;
-}
-
-/* Status dot shown only for non-connected (connecting / offline) hosts. */
+/* Remote host dot: host tag color when connected, amber when connecting, muted gray offline. */
 .dot {
+  --ch-peer-dot-color: #3b82f6;
   flex: none;
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--dsw-alias-label-tertiary);
-  opacity: 0.75;
+  opacity: 0.5;
+}
+
+.dot[data-color="blue"] {
+  --ch-peer-dot-color: #3b82f6;
+}
+
+.dot[data-color="purple"] {
+  --ch-peer-dot-color: #8b5cf6;
+}
+
+.dot[data-color="cyan"] {
+  --ch-peer-dot-color: #06b6d4;
+}
+
+.dot[data-color="green"] {
+  --ch-peer-dot-color: #10b981;
+}
+
+.dot[data-color="amber"] {
+  --ch-peer-dot-color: #f59e0b;
+}
+
+.dot[data-color="rose"] {
+  --ch-peer-dot-color: #f43f5e;
+}
+
+.dot[data-color="slate"] {
+  --ch-peer-dot-color: #64748b;
+}
+
+:global(body[data-ds-dark-theme]) .dot[data-color="blue"] {
+  --ch-peer-dot-color: #60a5fa;
+}
+
+:global(body[data-ds-dark-theme]) .dot[data-color="purple"] {
+  --ch-peer-dot-color: #a78bfa;
+}
+
+:global(body[data-ds-dark-theme]) .dot[data-color="cyan"] {
+  --ch-peer-dot-color: #22d3ee;
+}
+
+:global(body[data-ds-dark-theme]) .dot[data-color="green"] {
+  --ch-peer-dot-color: #34d399;
+}
+
+:global(body[data-ds-dark-theme]) .dot[data-color="amber"] {
+  --ch-peer-dot-color: #fbbf24;
+}
+
+:global(body[data-ds-dark-theme]) .dot[data-color="rose"] {
+  --ch-peer-dot-color: #fb7185;
+}
+
+:global(body[data-ds-dark-theme]) .dot[data-color="slate"] {
+  --ch-peer-dot-color: #94a3b8;
+}
+
+.dot[data-state="connected"] {
+  background: var(--ch-peer-dot-color);
+  opacity: 0.95;
 }
 
 .dot[data-state="connecting"] {

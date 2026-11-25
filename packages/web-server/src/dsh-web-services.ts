@@ -11,10 +11,19 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   createDshWebBackend,
   type DshWebBackend,
+  type OfficeToPdfRequest,
+  type OfficeToPdfResult,
   type WebPluginRuntime,
   type WebPluginRuntimeOptions,
 } from "@codexhost/dsh-web-backend";
-export type { WebPluginRuntime } from "@codexhost/dsh-web-backend";
+export {
+  OfficeToPdfError,
+  type OfficeExtension,
+  type OfficeToPdfPriority,
+  type OfficeToPdfRequest,
+  type OfficeToPdfResult,
+  type WebPluginRuntime,
+} from "@codexhost/dsh-web-backend";
 
 import type { StreamSink } from "./transport.ts";
 
@@ -124,6 +133,10 @@ export class DshWebServices {
       }
     })();
     return true;
+  }
+
+  convertOffice(request: OfficeToPdfRequest, signal: AbortSignal): Promise<OfficeToPdfResult> {
+    return this.backend.convertOffice(request, signal);
   }
 
   loadPlugins(options: WebPluginRuntimeOptions): Promise<WebPluginRuntime> {

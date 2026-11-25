@@ -1,7 +1,7 @@
 /** File upload/admission facade. Native Threads remain owned by the existing CH Host. */
-import type { WebImages } from "./web-images.ts";
-import type { WebFiles, SavedFile } from "./web-files.ts";
-import { nativeUserInput } from "./native-user-input.ts";
+import { WEB_IMAGE_LIMITS, type WebImages } from "./web-images.ts";
+import type { WebFiles, SavedFile, StagedWebAttachment } from "./web-files.ts";
+import { nativeUserInput, type EditableQueuedAttachment } from "./native-user-input.ts";
 import { RpcError, type RpcRegistry } from "./transport.ts";
 
 export interface FileUploadTiming {
@@ -149,5 +149,57 @@ export class ChFileInputs {
   }
   accepted(id: string, content: unknown): void {
     this.files.consume(id, this.ids(content));
+  }
+  /**
+   * Re-stage already-stored Web attachments for an authorized Thread without additional Host RPCs.
+   * Rolls back all issued receipts if any attachment fails validation or exceeds image limits.
+   */
+  async stageStored(
+    sessionId: string,
+    attachments: readonly EditableQueuedAttachment[],
+  ): Promise<StagedWebAttachment[]> {
+    const staged: StagedWebAttachment[] = [];
+    let imageCount = 0;
+    let imageBytes = 0;
+    try {
+      for (const attachment of attachments) {
+        const entry = await this.files.stage(
+          sessionId,
+          attachment.path,
+          attachment.kind === "image" ? attachment.name : undefined,
+        );
+        staged.push(entry);
+        if (entry.kind !== attachment.kind)
+          throw new RpcError(
+            "session/attachment-invalid",
+            "Queued attachment kind did not match stored Web object.",
+            { reason: "FILE_UNAVAILABLE" },
+          );
+        if (entry.kind === "image") {
+          imageCount += 1;
+          if (imageCount > WEB_IMAGE_LIMITS.maxImagesPerMessage)
+            throw new RpcError("session/attachment-invalid", "At most 20 images can be attached.", {
+              reason: "TOO_MANY_IMAGES",
+            });
+          imageBytes += entry.image?.bytes ?? entry.file.bytes;
+          if (imageBytes > WEB_IMAGE_LIMITS.maxMessageImageBytes)
+            throw new RpcError(
+              "session/attachment-invalid",
+              "Images exceed 50 MiB in one message.",
+              { reason: "IMAGES_TOO_LARGE" },
+            );
+        }
+      }
+      return staged;
+    } catch (error) {
+      this.discard(
+        sessionId,
+        staged.map((entry) => entry.receiptId),
+      );
+      throw error;
+    }
+  }
+  discard(sessionId: string, receiptIds: readonly string[]): void {
+    if (receiptIds.length > 0) this.files.consume(sessionId, receiptIds);
   }
 }

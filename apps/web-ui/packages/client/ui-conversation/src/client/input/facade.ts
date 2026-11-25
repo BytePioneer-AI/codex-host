@@ -156,6 +156,10 @@ export class SessionInputShell implements SessionInput {
   get editor(): LexicalEditor {
     return this.draftEditor.editor;
   }
+  /** Whether this shell has been disposed; used by async restoration guards after release. */
+  get isDisposed(): boolean {
+    return this.disposed;
+  }
   /** The public provide-channel action face (one stable identity per session). */
   readonly actions: InputActions = {
     captureInsertion: (placement) => {
@@ -387,9 +391,13 @@ export class SessionInputShell implements SessionInput {
     return this.draftEditor.insertFileReferences(references, span);
   }
 
-  /** Append ordered attachment ids unless an admission transaction is locked. */
+  /** Append ordered attachment ids unless the shell is disposed or an admission transaction is locked. */
   addAttachments(ids: readonly DraftAttachmentId[]): boolean {
-    if (this.snapshot.phase === "adjudicating" || this.snapshot.phase === "submitting")
+    if (
+      this.disposed ||
+      this.snapshot.phase === "adjudicating" ||
+      this.snapshot.phase === "submitting"
+    )
       return false;
     if (ids.length === 0) return true;
     this.attachmentIds = [...this.attachmentIds, ...ids];

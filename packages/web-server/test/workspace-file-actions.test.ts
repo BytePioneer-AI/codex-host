@@ -189,8 +189,10 @@ test(
     const root = await mkdtemp(join(tmpdir(), "ch-native-open-"));
     const launcher = join(root, "launcher");
     const workspace = join(root, "workspace");
+    const host = new FakeChHost();
+    host.add("local-thread", workspace);
     const sessions = new ChSessions(
-      new FakeChHost(),
+      host,
       new Workspaces(new DataDir(root), workspace),
       new EventHub(root),
       undefined,
@@ -214,10 +216,24 @@ test(
       await chmod(launcher, 0o700);
       const rpc = new RpcRegistry();
       sessions.register(rpc, new StreamRegistry());
-      const openPath = (path: string, action?: string, relay = false) =>
+      assert.equal((await rpc.dispatch("session/list", { args: {} })).ok, true);
+      const openPath = (
+        path: string,
+        action?: string,
+        relay = false,
+        sessionId: string | null = "local-thread",
+      ) =>
         rpc.dispatch(
           "session/openWorkspacePath",
-          { args: { request: { path, action } } },
+          {
+            args: {
+              request: {
+                ...(sessionId === null ? {} : { sessionId }),
+                path,
+                action,
+              },
+            },
+          },
           undefined,
           undefined,
           relay,
@@ -235,6 +251,8 @@ test(
       for (const rejected of [
         await openPath(file, "reveal", true),
         await openPath(file, "other"),
+        await openPath(file, undefined, false, null),
+        await openPath(file, undefined, false, "unknown-local"),
       ]) {
         assert.equal(rejected.ok, false);
         if (!rejected.ok) assert.equal(rejected.error.code, "session/open-unavailable");

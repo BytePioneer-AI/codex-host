@@ -165,7 +165,9 @@ export class WebImages {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     if (lstatSync(directory).isSymbolicLink())
       throw new Error("Web image directory must not be a symlink");
-    this.directory = realpathSync(directory);
+    // Match fs/promises.realpath's native Windows representation (drive case,
+    // junction resolution and expanded 8.3 names), not the JS fallback spelling.
+    this.directory = realpathSync.native(directory);
     if (/[\u0000-\u001f\u007f]/u.test(this.directory))
       throw new Error("Web image directory cannot contain control characters");
   }

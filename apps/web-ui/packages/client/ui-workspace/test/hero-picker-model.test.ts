@@ -61,6 +61,35 @@ describe("hero-picker-model", () => {
     );
   });
 
+  it("excludes workspace-derived remote hosts when configured peer is explicitly disabled", () => {
+    const workspaces = [
+      makeWorkspace({
+        workspaceId: "ws-local",
+        title: "codex-host",
+        path: "/Users/me/Code/codex-host",
+      }),
+      makeWorkspace({
+        workspaceId: "ws-disabled-1",
+        title: "remote-api",
+        path: "/srv/remote-api",
+        remote: {
+          hostId: "remote-peer:disabled-box",
+          displayName: "停用节点",
+          state: "disabled",
+        },
+      }),
+    ];
+
+    const locations = buildHeroLocationOptions(workspaces, [
+      { hostId: "remote-peer:disabled-box", name: "停用节点", state: "disabled", enabled: false },
+    ]);
+
+    assert.deepEqual(
+      locations.map((item) => item.key),
+      ["local"],
+    );
+  });
+
   it("filters locations and projects case-insensitively across title and path", () => {
     const workspaces = [
       makeWorkspace({ workspaceId: "w1", title: "codex-host", path: "/Users/me/Code/codex-host" }),

@@ -122,8 +122,12 @@ export function apply(ctx: ClientContext): void {
   );
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-sidebar-documentpreview: dictionaries");
 
-  const openExternal = async (path: string, signal?: AbortSignal): Promise<void> => {
-    const result = await ctx.remote.session.openWorkspacePath({ path }, signal);
+  const openExternal = async (
+    sessionId: import("@deepseek-ai/dsh-session/types").SessionId,
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    const result = await ctx.remote.session.openWorkspacePath({ sessionId, path }, signal);
     if (!result.ok) throw new Error(result.error.message);
   };
   ctx.effect(

@@ -281,7 +281,7 @@ export class ChThreadView {
     private turnStart = 0,
     sequenceStart = 0,
     hasEarlier: () => boolean = () => false,
-    private readonly projectInput: (content: unknown[]) => unknown[] = (content) => content,
+    protected readonly projectInput: (content: unknown[]) => unknown[] = (content) => content,
     private readonly projectImage: (path: string, projectionKey: string) => unknown = () =>
       undefined,
   ) {

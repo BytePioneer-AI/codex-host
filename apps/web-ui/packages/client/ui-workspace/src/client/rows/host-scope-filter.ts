@@ -6,6 +6,13 @@
 import type { WorkspaceView } from "@deepseek-ai/dsh-api-workspace-controller/client";
 
 export const HOST_SCOPE_FILTER_STORAGE_KEY = "codexhost.sidebar.hostScopeFilter.v1";
+export const APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT =
+  "codexhost:apply-host-scope-workspace-selection";
+
+export interface ApplyHostScopeWorkspaceSelectionDetail {
+  hostId: string;
+  workspaceIds: string[];
+}
 
 export type HostScopeTarget = "all" | "local" | string;
 
@@ -30,6 +37,8 @@ export interface HostSummary {
   displayName?: string;
   /** Remote connection state ("connected" | "connecting" | "disconnected" | ...). */
   state?: string;
+  /** Optional configured host tag color. */
+  color?: string;
   /** Number of workspaces belonging to this host. */
   workspaceCount: number;
   /** Workspaces belonging to this host in their incoming order. */
@@ -81,12 +90,16 @@ export function deriveAvailableHosts(workspaces: readonly WorkspaceView[]): Host
     if (existing !== undefined) {
       existing.workspaces.push(workspace);
       existing.workspaceCount += 1;
+      if (existing.color === undefined && remote.color !== undefined) {
+        existing.color = remote.color;
+      }
     } else {
       remoteByHostId.set(remote.hostId, {
         key: remote.hostId,
         hostId: remote.hostId,
         displayName: remote.displayName,
         state: remote.state,
+        ...(remote.color !== undefined ? { color: remote.color } : {}),
         workspaceCount: 1,
         workspaces: [workspace],
       });
@@ -122,6 +135,75 @@ export function reconcileHostScopeFilter(
     ...state,
     selectedHost: "all",
   };
+}
+
+/**
+ * Prune persisted filter state against a loaded workspace snapshot: reset a
+ * disappeared remote `selectedHost` back to `"all"`, drop disappeared remote
+ * `perHost` entries (except hosts still awaiting initial sync in
+ * `options.preserveHostKeys`), and remove stale `workspaceIds` from remaining
+ * hosts. Returns the original reference when nothing changed.
+ */
+export function pruneUnavailableHostScopeFilter(
+  state: HostScopeFilterState,
+  workspaces: readonly WorkspaceView[],
+  options?: { readonly preserveHostKeys?: ReadonlySet<string> },
+): HostScopeFilterState {
+  const hosts = deriveAvailableHosts(workspaces);
+  const hostByKey = new Map(hosts.map((host) => [host.key, host]));
+  const preserveHostKeys = options?.preserveHostKeys;
+
+  const selectedHost =
+    state.selectedHost !== "all" &&
+    state.selectedHost !== "local" &&
+    !hostByKey.has(state.selectedHost)
+      ? "all"
+      : state.selectedHost;
+
+  let changed = selectedHost !== state.selectedHost;
+  const nextPerHost: Record<string, PerHostWorkspaceScope> = {};
+
+  for (const [hostKey, scope] of Object.entries(state.perHost)) {
+    const host = hostByKey.get(hostKey);
+    if (host === undefined) {
+      if (hostKey !== "local") {
+        if (preserveHostKeys?.has(hostKey) === true) {
+          nextPerHost[hostKey] = scope;
+        } else {
+          changed = true;
+        }
+        continue;
+      }
+      if (scope.workspaceIds.length > 0) {
+        changed = true;
+        nextPerHost[hostKey] = { mode: scope.mode, workspaceIds: [] };
+      } else {
+        nextPerHost[hostKey] = scope;
+      }
+      continue;
+    }
+
+    if (
+      hostKey !== "local" &&
+      (host.state === "connecting" ||
+        (host.state !== "connected" && preserveHostKeys?.has(hostKey) === true))
+    ) {
+      nextPerHost[hostKey] = scope;
+      continue;
+    }
+
+    const validIds = new Set<string>(host.workspaces.map((workspace) => workspace.workspaceId));
+    const filteredIds = scope.workspaceIds.filter((id) => validIds.has(id));
+    if (filteredIds.length !== scope.workspaceIds.length) {
+      changed = true;
+      nextPerHost[hostKey] = { mode: scope.mode, workspaceIds: filteredIds };
+    } else {
+      nextPerHost[hostKey] = scope;
+    }
+  }
+
+  if (!changed) return state;
+  return { selectedHost, perHost: nextPerHost };
 }
 
 /**

@@ -35,6 +35,37 @@ export const remotePeerHostIdSchema = z.string().regex(/^remote-peer:[a-zA-Z0-9_
 export const remotePeerTransportKindSchema = z.enum(["relay", "tailscale", "lan", "custom"]);
 export type RemotePeerTransportKind = z.infer<typeof remotePeerTransportKindSchema>;
 
+export const REMOTE_PEER_COLORS = [
+  "blue",
+  "purple",
+  "cyan",
+  "green",
+  "amber",
+  "rose",
+  "slate",
+] as const;
+export const remotePeerColorSchema = z.enum(REMOTE_PEER_COLORS);
+export type RemotePeerColor = z.infer<typeof remotePeerColorSchema>;
+
+const REMOTE_PEER_COLOR_SET: ReadonlySet<string> = new Set(REMOTE_PEER_COLORS);
+
+/** Deterministic fallback color derived from hostId so every surface agrees when unconfigured. */
+export function defaultRemotePeerColor(hostId: string): RemotePeerColor {
+  let hash = 2166136261;
+  for (let i = 0; i < hostId.length; i += 1) {
+    hash ^= hostId.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return REMOTE_PEER_COLORS[(hash >>> 0) % REMOTE_PEER_COLORS.length] ?? REMOTE_PEER_COLORS[0];
+}
+
+export function resolveRemotePeerColor(hostId: string, color?: string | null): RemotePeerColor {
+  if (typeof color === "string" && REMOTE_PEER_COLOR_SET.has(color)) {
+    return color as RemotePeerColor;
+  }
+  return defaultRemotePeerColor(hostId);
+}
+
 export const remotePeerStateSchema = z.enum([
   "connected",
   "connecting",
@@ -49,6 +80,7 @@ export const remotePeerSummarySchema = z.object({
   peerId: remotePeerIdSchema,
   hostId: remotePeerHostIdSchema,
   name: z.string().min(1).max(120),
+  color: remotePeerColorSchema.optional(),
   origin: z.string().min(1).max(2048),
   transportKind: remotePeerTransportKindSchema,
   encrypted: z.boolean(),
@@ -77,6 +109,7 @@ export const remotePeerAddParamsSchema = z
     origin: z.string().min(1).max(2048).optional(),
     token: z.string().min(1).max(2048).optional(),
     name: z.string().trim().min(1).max(120).optional(),
+    color: remotePeerColorSchema.optional(),
   })
   .refine(
     (input) => Boolean(input.connectionUrl) || (Boolean(input.origin) && Boolean(input.token)),
@@ -87,6 +120,7 @@ export type RemotePeerAddParams = z.infer<typeof remotePeerAddParamsSchema>;
 export const remotePeerUpdateParamsSchema = z.object({
   peerId: remotePeerIdSchema,
   name: z.string().trim().min(1).max(120).optional(),
+  color: remotePeerColorSchema.nullable().optional(),
   connectionUrl: z.string().min(1).max(4096).optional(),
   origin: z.string().min(1).max(2048).optional(),
   token: z.string().min(1).max(2048).optional(),
@@ -120,6 +154,13 @@ export const remotePeerTestParamsSchema = z
   );
 export type RemotePeerTestParams = z.infer<typeof remotePeerTestParamsSchema>;
 
+export const remotePeerTestProjectSchema = z.object({
+  id: z.string().min(1).max(1024),
+  name: z.string().min(1).max(512),
+  path: z.string().min(1).max(8192),
+});
+export type RemotePeerTestProject = z.infer<typeof remotePeerTestProjectSchema>;
+
 export const remotePeerTestResultSchema = z.object({
   ok: z.boolean(),
   latencyMs: z.number().int().nonnegative().optional(),
@@ -131,6 +172,7 @@ export const remotePeerTestResultSchema = z.object({
   hostname: z.string().max(255).optional(),
   homeDir: z.string().max(4096).optional(),
   projectCount: z.number().int().nonnegative().optional(),
+  projects: z.array(remotePeerTestProjectSchema).optional(),
   error: z.string().max(1000).optional(),
 });
 export type RemotePeerTestResult = z.infer<typeof remotePeerTestResultSchema>;
@@ -143,6 +185,16 @@ export const remotePeerManifestProjectSchema = z.object({
 });
 export type RemotePeerManifestProject = z.infer<typeof remotePeerManifestProjectSchema>;
 
+export const remotePeerCapabilitiesSchema = z.object({
+  /** /api/peer/v1/uploads, /api/peer/v1/prompt, and /api/peer/v1/file are all available. */
+  attachments: z.literal(1).optional(),
+  /** /api/peer/v1/workspace-files/rpc and /api/peer/v1/workspace-files/download are available. */
+  workspaceFiles: z.literal(1).optional(),
+  /** Peer supports officeToPdf/render over /api/peer/v1/workspace-files/rpc. */
+  officePreview: z.literal(1).optional(),
+});
+export type RemotePeerCapabilities = z.infer<typeof remotePeerCapabilitiesSchema>;
+
 export const remotePeerManifestSchema = z.object({
   version: z.string().max(128),
   platform: z.string().max(64),
@@ -150,8 +202,87 @@ export const remotePeerManifestSchema = z.object({
   homeDir: z.string().max(4096).optional(),
   epoch: z.string().min(1).max(256),
   projects: z.array(remotePeerManifestProjectSchema),
+  capabilities: remotePeerCapabilitiesSchema.optional(),
 });
 export type RemotePeerManifest = z.infer<typeof remotePeerManifestSchema>;
+
+export const REMOTE_PEER_UPLOAD_SCOPE_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+export const REMOTE_PEER_FILE_PROXY_PATH = "/api/remote-peer/file";
+
+export function remotePeerHarnessIconPath(peerId: string, harnessId: string): string {
+  return `/harness-icons/peer/${encodeURIComponent(peerId)}/${encodeURIComponent(harnessId)}`;
+}
+
+function encodeUtf8Base64Url(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i] ?? 0);
+  }
+  return btoa(binary).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "");
+}
+
+/** Deterministic workspace ID matching `packages/web-server/src/remote-workspaces.ts`. */
+export function remotePeerWorkspaceId(hostId: string, projectId: string | null): string {
+  return `remote-workspace:${encodeUtf8Base64Url(JSON.stringify([hostId, projectId]))}`;
+}
+
+export function remotePeerHarnessPresentationPath(peerId: string): string {
+  return `/harness-icons/peer/${encodeURIComponent(peerId)}/presentation.json`;
+}
+
+export const remotePeerPromptParamsSchema = z.strictObject({
+  threadId: z.string().min(1).max(1024),
+  scope: z.string().regex(REMOTE_PEER_UPLOAD_SCOPE_PATTERN).optional(),
+  requestId: z.string().min(1).max(256).optional(),
+  mode: z.enum(["queue", "steer"]).optional(),
+  expectedTurnId: z.string().min(1).max(1024).nullable().optional(),
+  content: z
+    .array(
+      z.discriminatedUnion("type", [
+        z.strictObject({ type: z.literal("text"), text: z.string() }),
+        z.strictObject({ type: z.literal("file"), receiptId: z.string().min(1).max(128) }),
+      ]),
+    )
+    .min(1)
+    .max(64),
+});
+export type RemotePeerPromptParams = z.infer<typeof remotePeerPromptParamsSchema>;
+
+const remotePeerErrorEnvelopeSchema = z.object({
+  ok: z.literal(false),
+  error: z.object({
+    code: z.string(),
+    message: z.string(),
+    details: z.record(z.string(), z.unknown()).optional(),
+  }),
+});
+
+export const remotePeerUploadResultSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    value: z.object({
+      receiptId: z.string().min(1),
+      file: z.object({
+        attachmentId: z.string(),
+        name: z.string(),
+        bytes: z.number().int().nonnegative(),
+      }),
+    }),
+  }),
+  remotePeerErrorEnvelopeSchema,
+]);
+export type RemotePeerUploadResult = z.infer<typeof remotePeerUploadResultSchema>;
+
+export const remotePeerPromptResultSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    value: z.object({ accepted: z.literal(true) }),
+  }),
+  remotePeerErrorEnvelopeSchema,
+]);
+export type RemotePeerPromptResult = z.infer<typeof remotePeerPromptResultSchema>;
 
 export const remotePeerDirectoryEntrySchema = z.object({
   name: z.string().min(1).max(512),

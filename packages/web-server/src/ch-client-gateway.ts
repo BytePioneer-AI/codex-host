@@ -7,6 +7,7 @@ import {
   isHostExtensionManagementMethod,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient } from "./ch-host-client.ts";
+import { compressResponse } from "./compression.ts";
 import { RpcError } from "./transport.ts";
 
 /** Generic App protocol behind the Web server's auth + same-origin gate. Never
@@ -17,13 +18,25 @@ export async function serveChClientGateway(
   response: ServerResponse,
   { authenticated = false, safeMode = false } = {},
 ): Promise<void> {
-  const reply = (status: number, value: unknown) => {
-    response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
-    response.end(JSON.stringify(value));
+  const reply = async (status: number, value: unknown): Promise<void> => {
+    const contentType = "application/json; charset=utf-8";
+    const compressed = await compressResponse(
+      Buffer.from(JSON.stringify(value)),
+      contentType,
+      request.headers["accept-encoding"],
+    );
+    if (response.destroyed || response.writableEnded || response.headersSent) return;
+    response
+      .writeHead(status, {
+        "content-type": contentType,
+        "cache-control": "no-store",
+        ...compressed.headers,
+      })
+      .end(compressed.body);
   };
   const channel = host?.realtime;
   if (!channel) {
-    reply(503, {
+    await reply(503, {
       error: {
         code: -32090,
         message: "This Host does not provide client channel v1; update CH to enable it",
@@ -45,7 +58,12 @@ export async function serveChClientGateway(
         if (event.type === "connection") {
           if (!event.online && !response.writableEnded && !response.destroyed) {
             if (!response.headersSent)
-              reply(503, { error: { code: -32090, message: "CH is reconnecting" } });
+              response
+                .writeHead(503, {
+                  "content-type": "application/json; charset=utf-8",
+                  "cache-control": "no-store",
+                })
+                .end(JSON.stringify({ error: { code: -32090, message: "CH is reconnecting" } }));
             else response.end();
           }
           return;
@@ -73,7 +91,7 @@ export async function serveChClientGateway(
       return;
     }
     if (request.method !== "POST") {
-      reply(404, { error: { code: -32601, message: "Not found" } });
+      await reply(404, { error: { code: -32601, message: "Not found" } });
       return;
     }
     let size = 0;
@@ -90,9 +108,9 @@ export async function serveChClientGateway(
     const input = value as Record<string, unknown>;
     if (route === "/v1/snapshot" && typeof input.threadId === "string") {
       const { threadId, ...options } = clientSnapshotRequestSchema.parse(input);
-      reply(200, { result: await channel.snapshot(threadId, options) });
+      await reply(200, { result: await channel.snapshot(threadId, options) });
     } else if (route === "/v1/respond")
-      reply(200, { result: await channel.respond(clientChannelResponseSchema.parse(input)) });
+      await reply(200, { result: await channel.respond(clientChannelResponseSchema.parse(input)) });
     else if (
       route === "/v1/rpc" &&
       typeof input.method === "string" &&
@@ -101,7 +119,7 @@ export async function serveChClientGateway(
       !Array.isArray(input.params)
     ) {
       if ((!authenticated || safeMode) && isHostExtensionManagementMethod(input.method)) {
-        reply(403, {
+        await reply(403, {
           error: {
             code: -32000,
             message: safeMode
@@ -111,10 +129,10 @@ export async function serveChClientGateway(
         });
         return;
       }
-      reply(200, {
+      await reply(200, {
         result: await channel.request(input.method, input.params as Record<string, unknown>),
       });
-    } else reply(404, { error: { code: -32601, message: "Not found" } });
+    } else await reply(404, { error: { code: -32601, message: "Not found" } });
   } catch (error) {
     if (response.headersSent) {
       response.destroy();
@@ -126,7 +144,7 @@ export async function serveChClientGateway(
         : error instanceof Error && "code" in error
           ? error.code
           : undefined;
-    reply(400, {
+    await reply(400, {
       error: {
         code: typeof code === "number" ? code : -32603,
         message: error instanceof Error ? error.message : "Client operation failed",

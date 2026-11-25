@@ -1,5 +1,5 @@
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { accessSync, constants, statSync, type Stats } from "node:fs";
+import { accessSync, constants, readlinkSync, statSync, type Stats } from "node:fs";
 import type * as filesystem from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -13,14 +13,8 @@ import {
 
 vi.mock("node:fs", async (importOriginal) => {
   const original = await importOriginal<typeof filesystem>();
-  const accessSync = vi.fn();
-  const statSync = vi.fn();
-  return {
-    ...original,
-    accessSync,
-    statSync,
-    default: { ...original, accessSync, statSync },
-  };
+  const overrides = { accessSync: vi.fn(), readlinkSync: vi.fn(), statSync: vi.fn() };
+  return { ...original, ...overrides, default: { ...original, ...overrides } };
 });
 vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 
@@ -33,6 +27,9 @@ function platform(value: NodeJS.Platform): void {
 
 beforeEach(() => {
   entries.clear();
+  vi.mocked(readlinkSync).mockImplementation(() => {
+    throw new Error("EINVAL");
+  });
   vi.mocked(accessSync).mockImplementation((file) => {
     if (!entries.has(String(file))) throw new Error("ENOENT");
   });
@@ -103,6 +100,37 @@ describe("DeepSeek executable helpers", () => {
       kind: "dsh",
     });
     expect(accessSync).toHaveBeenCalledWith("/bin/dsh", constants.X_OK);
+  });
+
+  it("finds a user-bin dsh with a GUI PATH", () => {
+    platform("darwin");
+    const environment = { HOME: "/user", PATH: "/usr/bin:/bin:/usr/sbin:/sbin" };
+    const command = "/user/.local/bin/dsh";
+    entries.set(command, "file");
+
+    expect(resolveDeepSeekCommand(undefined, environment)).toEqual({
+      command,
+      arguments: [],
+      kind: "dsh",
+    });
+    expect(resolveDeepSeekCommand("/missing/dsh", environment)).toBeNull();
+    entries.set("/usr/bin/dsh", "file");
+    expect(resolveDeepSeekCommand(undefined, environment)?.command).toBe("/usr/bin/dsh");
+  });
+
+  it("gives a linked DSH installation's Node priority over the alias directory", () => {
+    const command = "/user/.local/bin/dsh";
+    const runtimeDirectory = "/user/.local/node24/bin";
+    const environment = { PATH: `/user/.local/bin:/usr/bin:${runtimeDirectory}` };
+    entries.set(`${runtimeDirectory}/node`, "file");
+    vi.mocked(readlinkSync).mockReturnValue("../node24/bin/dsh");
+
+    const childEnvironment = deepSeekEnvironment(command, environment, "darwin");
+    expect(childEnvironment.PATH?.split(":")[0]).toBe(runtimeDirectory);
+    expect(
+      childEnvironment.PATH?.split(":").filter((entry) => entry === runtimeDirectory),
+    ).toHaveLength(1);
+    expect(environment.PATH).toBe(`/user/.local/bin:/usr/bin:${runtimeDirectory}`);
   });
 
   it("uses local offline npx only when dsh is absent", () => {

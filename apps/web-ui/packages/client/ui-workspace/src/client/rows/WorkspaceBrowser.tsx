@@ -19,6 +19,7 @@ import {
   type ComponentProps,
   type CSSProperties,
   type ReactNode,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -93,6 +94,7 @@ import { SessionListExpansion } from "./SessionListExpansion.tsx";
 import { SectionHeading } from "./SectionHeading.tsx";
 import { HostScopeFilter } from "./HostScopeFilter.tsx";
 import {
+  APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT,
   ensureWorkspaceVisibleInHostScope,
   filterSessionsByHostScope,
   filterWorkspacesByHostScope,
@@ -100,9 +102,12 @@ import {
   hasRemoteWorkspaces,
   isHostScopeFiltered,
   loadHostScopeFilter,
+  pruneUnavailableHostScopeFilter,
   reconcileHostScopeFilter,
   resetHostScopeFilter,
   saveHostScopeFilter,
+  setHostSelectedWorkspaceIds,
+  type ApplyHostScopeWorkspaceSelectionDetail,
   type HostScopeFilterState,
 } from "./host-scope-filter.ts";
 import {
@@ -411,6 +416,8 @@ type SessionTreeProps = Pick<
     hostScopeFilterControl?: ReactNode;
     /** Whether the host/workspace scope filter is actively narrowing visible rows. */
     hostScopeFiltered?: boolean;
+    /** Whether the effective host scope is narrowed to one specific remote host. */
+    singleRemoteHostScoped?: boolean;
     /** Reset the host/workspace scope filter to show all hosts and workspaces. */
     onResetHostScope?: () => void;
   };
@@ -481,6 +488,7 @@ function SessionTree({
   loadMoreSessions,
   hostScopeFilterControl,
   hostScopeFiltered = false,
+  singleRemoteHostScoped = false,
   onResetHostScope,
 }: SessionTreeProps) {
   const threadView = useThreadTreeView();
@@ -752,7 +760,8 @@ function SessionTree({
           ? `linked:${group.key}:${id}`
           : `session:${id}`;
     for (const node of sessions) rowKeys.push(rowKeyOf(node.id));
-    const canExpand = group.expanded && (visible.hiddenCount > 0 || list.hasMore);
+    const groupHasMore = group.remote ? false : list.hasMore;
+    const canExpand = group.expanded && (visible.hiddenCount > 0 || groupHasMore);
     if (canExpand) rowKeys.push(`overflow:${group.key}`);
     const workspaceMarker =
       workspaceId !== undefined && workspaceDrag?.over?.id === workspaceId
@@ -953,7 +962,9 @@ function SessionTree({
                   <SessionNodeItem
                     key={node.id}
                     rowKey={rowKeyOf(node.id)}
-                    showHost={!group.remote}
+                    showHost={
+                      !group.remote && !(workspaceId === undefined && singleRemoteHostScoped)
+                    }
                     node={node}
                     currentId={current}
                     now={now}
@@ -981,16 +992,16 @@ function SessionTree({
               <SessionListExpansion
                 rowKey={`overflow:${group.key}`}
                 hiddenCount={visible.hiddenCount}
-                hasMore={list.hasMore}
-                loading={list.loading}
+                hasMore={groupHasMore}
+                loading={group.remote ? false : list.loading}
                 expand={() => {
                   setSessionLimits((limits) => ({
                     ...limits,
                     [group.key]: (limits[group.key] ?? GROUP_INITIAL_ROWS) + SIDEBAR_PAGE_ROWS,
                   }));
                 }}
-                // A local project reads on until one of its own Sessions arrives; Recents and
-                // remote projects keep the plain next page.
+                // A local project reads on until one of its own Sessions arrives; Recents
+                // keep the plain next page.
                 loadMoreSessions={() => {
                   loadMoreSessions(
                     workspaceId === undefined || group.remote ? undefined : workspaceId,
@@ -1838,10 +1849,82 @@ function WorkspaceBrowserContent({
   const [hostScopeFilter, setHostScopeFilter] = useState<HostScopeFilterState>(() =>
     loadHostScopeFilter(),
   );
-  const updateHostScopeFilter = (next: HostScopeFilterState): void => {
+  // Protect newly-added remote host presets until their workspaces arrive in `orderedWorkspaces`.
+  const pendingPresetHostKeysRef = useRef<Set<string> | null>(null);
+  if (pendingPresetHostKeysRef.current === null) {
+    const initialPending = new Set<string>();
+    for (const hostKey of Object.keys(hostScopeFilter.perHost)) {
+      if (hostKey !== "local" && hostKey !== hostScopeFilter.selectedHost) {
+        initialPending.add(hostKey);
+      }
+    }
+    pendingPresetHostKeysRef.current = initialPending;
+  }
+  const updateHostScopeFilter = useCallback((next: HostScopeFilterState): void => {
     setHostScopeFilter(next);
     saveHostScopeFilter(next);
-  };
+  }, []);
+  useEffect(() => {
+    const onApplySelection = (event: Event): void => {
+      const detail = (event as CustomEvent<ApplyHostScopeWorkspaceSelectionDetail | undefined>)
+        .detail;
+      if (
+        !detail ||
+        typeof detail.hostId !== "string" ||
+        detail.hostId === "" ||
+        !Array.isArray(detail.workspaceIds)
+      ) {
+        return;
+      }
+      const workspaceIds = detail.workspaceIds.filter((id): id is string => typeof id === "string");
+      pendingPresetHostKeysRef.current?.add(detail.hostId);
+      setHostScopeFilter((prev) => {
+        const next = setHostSelectedWorkspaceIds(prev, detail.hostId, workspaceIds);
+        saveHostScopeFilter(next);
+        return next;
+      });
+    };
+    window.addEventListener(APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT, onApplySelection);
+    return () => {
+      window.removeEventListener(APPLY_HOST_SCOPE_WORKSPACE_SELECTION_EVENT, onApplySelection);
+    };
+  }, []);
+  useEffect(() => {
+    if (workspacePhase !== "ready" || workspaceStreamState !== "idle") return;
+    // Wait briefly for multi-workspace follow bursts (`upsert` per remote project)
+    // to settle before pruning stale workspaceIds; `reconcileHostScopeFilter`
+    // already handles immediate render-time fallback when a host disappears.
+    const timer = window.setTimeout(() => {
+      const pendingPresetHostKeys = pendingPresetHostKeysRef.current;
+      if (pendingPresetHostKeys !== null && pendingPresetHostKeys.size > 0) {
+        for (const workspace of orderedWorkspaces) {
+          const remoteHostId = workspace.remote?.hostId;
+          if (remoteHostId !== undefined && workspace.remote?.state === "connected") {
+            pendingPresetHostKeys.delete(remoteHostId);
+          }
+        }
+      }
+      const pruned = pruneUnavailableHostScopeFilter(
+        hostScopeFilter,
+        orderedWorkspaces,
+        pendingPresetHostKeys === null || pendingPresetHostKeys.size === 0
+          ? undefined
+          : { preserveHostKeys: pendingPresetHostKeys },
+      );
+      if (pruned !== hostScopeFilter) {
+        updateHostScopeFilter(pruned);
+      }
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    hostScopeFilter,
+    orderedWorkspaces,
+    updateHostScopeFilter,
+    workspacePhase,
+    workspaceStreamState,
+  ]);
   const resetHostScope = (): void => {
     updateHostScopeFilter(resetHostScopeFilter());
   };
@@ -1857,6 +1940,13 @@ function WorkspaceBrowserContent({
   const hostScopeFiltered = useMemo(
     () => hasRemote && isHostScopeFiltered(effectiveHostScopeFilter, orderedWorkspaces),
     [hasRemote, effectiveHostScopeFilter, orderedWorkspaces],
+  );
+  const singleRemoteHostScoped = useMemo(
+    () =>
+      hasRemote &&
+      effectiveHostScopeFilter.selectedHost !== "all" &&
+      effectiveHostScopeFilter.selectedHost !== "local",
+    [hasRemote, effectiveHostScopeFilter.selectedHost],
   );
   const scopedWorkspaces = useMemo(
     () =>
@@ -2463,6 +2553,7 @@ function WorkspaceBrowserContent({
               onSessionRevealed={acknowledgeSessionReveal}
               hostScopeFilterControl={hostScopeFilterControl}
               hostScopeFiltered={hostScopeFiltered}
+              singleRemoteHostScoped={singleRemoteHostScoped}
               onResetHostScope={resetHostScope}
               home={home}
               t={t}

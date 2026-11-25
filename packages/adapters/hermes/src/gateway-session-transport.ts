@@ -192,6 +192,9 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
   #adoptedPrompts: GatewayRecord[] = [];
   #closed = false;
   #info: GatewayRecord;
+  #publishTitle: ((title: string) => void) | undefined;
+  #titleReadPending = false;
+  #titleReadRunning = false;
   #revision: number | null = null;
   #generation: number | null = null;
   #subscriptionId: string | null = null;
@@ -223,6 +226,32 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       void this.#request(id, method, params).catch((error) => this.#fault(error));
     };
     transport.onFault = (error) => this.#fault(error);
+  }
+  watchTitle(publish: (title: string) => void): void {
+    this.#publishTitle = publish;
+    void this.#refreshTitle();
+  }
+  async #refreshTitle(): Promise<void> {
+    if (!this.#publishTitle || !gatewayString(this.#info.title).trim()) return;
+    this.#titleReadPending = true;
+    if (this.#titleReadRunning) return;
+    this.#titleReadRunning = true;
+    try {
+      while (this.#titleReadPending && !this.#closed && this.#publishTitle) {
+        this.#titleReadPending = false;
+        // The same title text can appear in both the derived and finalized info frames.
+        // Read provenance from the attached profile instead of adopting the first frame.
+        const title = await this.history.readTitle().catch(() => null);
+        // A session.info that arrived during the read may carry a newer title; re-read before publishing.
+        if (this.#titleReadPending) continue;
+        if (!title || this.#closed) continue;
+        const publish = this.#publishTitle;
+        this.#publishTitle = undefined;
+        publish(title);
+      }
+    } finally {
+      this.#titleReadRunning = false;
+    }
   }
   async openResult(confirmedSelection?: HermesGatewayModelSelection): Promise<HermesOpenResult> {
     const reasoning = await this.transport.request("config.get", {
@@ -509,6 +538,7 @@ export class HermesGatewaySessionTransport implements HermesSessionTransport {
       if (typeof payload.revision === "number") this.#revision = payload.revision;
       if (typeof payload.execution_generation === "number")
         this.#generation = payload.execution_generation;
+      void this.#refreshTitle();
       return;
     }
     if (event.type === "session.usage") {

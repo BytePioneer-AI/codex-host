@@ -29,6 +29,7 @@ import type {
   ComposerFileAttachment,
   ComposerImageAttachment,
   DraftFileUpload,
+  RestoredQueuedAttachment,
 } from "./contract/slots.ts";
 import type { QueueAction } from "@deepseek-ai/dsh-api-session-controller/types";
 import type { MessageId } from "@deepseek-ai/dsh-llm/brand";
@@ -283,8 +284,8 @@ export class ConversationController extends Service implements IConversation {
                   DraftFileUpload,
                   { status: "ready" }
                 >["file"]["attachmentId"],
-                name: attachment.file.name,
-                bytes: attachment.file.size,
+                name: "file" in attachment ? attachment.file.name : attachment.stored.name,
+                bytes: "file" in attachment ? attachment.file.size : attachment.stored.bytes,
               },
             }),
       }));
@@ -367,6 +368,47 @@ export class ConversationController extends Service implements IConversation {
   }
 
   /**
+   * Register Host-staged attachments restored from a removed queued message directly as ready
+   * drafts so the existing submission, echo, and failure-restore flow handles them unchanged.
+   */
+  restoreStagedDrafts(
+    sessionId: SessionId,
+    staged: readonly (RestoredQueuedAttachment & { readonly imageFile?: File })[],
+  ): readonly ComposerAttachment[] {
+    const readyUploads: Array<
+      readonly [DraftAttachmentId, Extract<DraftFileUpload, { status: "ready" }>]
+    > = [];
+    const attachments: ComposerAttachment[] = [];
+    for (const entry of staged) {
+      let attachment: ComposerAttachment;
+      if (entry.kind === "image" && entry.imageFile !== undefined) {
+        const image = browserDraftAttachment(entry.imageFile);
+        probeDimensions(image);
+        attachment = image;
+      } else {
+        attachment = {
+          kind: "file",
+          id: randomUUID() as DraftAttachmentId,
+          stored: entry.file,
+        };
+      }
+      this.draftAttachments.set(attachment.id, attachment);
+      this.uploadSessions.set(attachment.id, sessionId);
+      readyUploads.push([
+        attachment.id,
+        { status: "ready", receiptId: entry.receiptId, file: entry.file },
+      ]);
+      attachments.push(attachment);
+    }
+    if (readyUploads.length > 0) {
+      this.fileUploads.update((draft) => {
+        for (const [id, upload] of readyUploads) draft[id] = upload;
+      });
+    }
+    return attachments;
+  }
+
+  /**
    * Restart one failed file upload.
    * @param sessionId - target Agent-scope identity.
    * @param id - draft attachment id whose upload previously failed.
@@ -374,6 +416,7 @@ export class ConversationController extends Service implements IConversation {
   retryFileUpload(sessionId: SessionId, id: DraftAttachmentId): void {
     const attachment = this.draftAttachments.get(id);
     if (attachment === undefined) return;
+    if (attachment.kind === "file" && !("file" in attachment)) return;
     if (this.fileUploads.getSnapshot()[id]?.status !== "error") return;
     this.beginFileUpload(sessionId, attachment);
   }
@@ -386,11 +429,26 @@ export class ConversationController extends Service implements IConversation {
   rebindDraftFiles(sessionId: SessionId, ids: readonly DraftAttachmentId[]): void {
     for (const id of ids) {
       const attachment = this.draftAttachments.get(id);
-      if (attachment !== undefined) this.beginFileUpload(sessionId, attachment);
+      if (attachment === undefined) continue;
+      if (attachment.kind === "file" && !("file" in attachment)) {
+        this.uploadSessions.delete(id);
+        this.fileUploads.update((draft) => {
+          draft[id] = {
+            status: "error",
+            message: this.ctx.locale.bind(NS)("file.unavailable"),
+            transport: false,
+          };
+        });
+        continue;
+      }
+      this.beginFileUpload(sessionId, attachment);
     }
   }
 
-  private beginFileUpload(sessionId: SessionId, attachment: ComposerAttachment): void {
+  private beginFileUpload(
+    sessionId: SessionId,
+    attachment: ComposerImageAttachment | Extract<ComposerFileAttachment, { file: File }>,
+  ): void {
     this.uploadSessions.set(attachment.id, sessionId);
     this.fileUploadOperations.get(attachment.id)?.controller.abort();
     const controller = new AbortController();

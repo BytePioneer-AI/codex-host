@@ -124,7 +124,7 @@ internal class HostListActivity : NativeActivity() {
                             return@launch
                         }
                         BrowserBoundary.initialize(uiExecutor)
-                        BrowserBoundary.deleteProfileData(profile.id)
+                        BrowserBoundary.deleteProfileData(applicationContext, profile.id)
                         store.delete(profile.id)
                         refresh()
                     } catch (cancelled: CancellationException) {

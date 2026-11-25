@@ -712,6 +712,84 @@ describe("native session history", () => {
     }
   });
 
+  it("aligns readNativeTurnCompactions Plan handoff ownership with decodeNativeHistory across interleaved runs", async () => {
+    const promptWindow = { submittedAtMs: 1_000, returnedAtMs: 2_000 };
+    const inWindow = (createdAtMs: number | undefined) =>
+      isTimestampInPromptWindows(createdAtMs, [promptWindow]);
+
+    // A: Foreground in-prompt wake initiates Plan switch after an independent wake's SYSTEM_MESSAGE.
+    const fgRef = nativeSessionRefSchema.parse({
+      harnessId: "antigravity",
+      nativeSessionId: "compaction-plan-interleaved-fg",
+      formatVersion: 1,
+    });
+    const dbA = await createNativeHistoryDatabase(home, fgRef.nativeSessionId);
+    try {
+      const stamp = (idx: number, ms: number) => {
+        dbA
+          .prepare("UPDATE steps SET metadata = ? WHERE idx = ?")
+          .run(bytes(1, nanoseconds(BigInt(ms) * 1_000_000n)), idx);
+      };
+      userStep(dbA, 0, "foreground", "p");
+      systemStep(dbA, 1, "w", "task_notification");
+      systemStep(dbA, 2, "idle", "task_notification");
+      answerStep(dbA, 3, "IDLE", "idle");
+      planModeSwitch(dbA, 4, "w", "w-plan");
+      checkpointStep(dbA, 7, { status: 3, run: "w-plan", summary: "FG Plan Compact" });
+      answerStep(dbA, 8, "USER_PLAN_RESULT", "w-plan");
+      dbA.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      stamp(1, 1_200);
+      stamp(2, 900);
+      stamp(6, 1_500);
+
+      expect(
+        await readNativeTurnCompactions(
+          nativeConversationDbPath(fgRef.nativeSessionId, home),
+          -1,
+          inWindow,
+        ),
+      ).toEqual([{ type: "history.compaction", stepIndex: 7, status: "succeeded" }]);
+    } finally {
+      dbA.close();
+    }
+
+    // B: Background wake initiates Plan switch after a foreground in-prompt wake's SYSTEM_MESSAGE.
+    const bgRef = nativeSessionRefSchema.parse({
+      harnessId: "antigravity",
+      nativeSessionId: "compaction-plan-interleaved-bg",
+      formatVersion: 1,
+    });
+    const dbB = await createNativeHistoryDatabase(home, bgRef.nativeSessionId);
+    try {
+      const stamp = (idx: number, ms: number) => {
+        dbB
+          .prepare("UPDATE steps SET metadata = ? WHERE idx = ?")
+          .run(bytes(1, nanoseconds(BigInt(ms) * 1_000_000n)), idx);
+      };
+      userStep(dbB, 0, "foreground", "p");
+      systemStep(dbB, 1, "idle", "task_notification");
+      systemStep(dbB, 2, "w", "task_notification");
+      planModeSwitch(dbB, 3, "idle", "idle-plan");
+      checkpointStep(dbB, 6, { status: 7, run: "idle-plan", error: "BACKGROUND_ONLY_FAILURE" });
+      answerStep(dbB, 7, "IDLE_PLAN", "idle-plan");
+      answerStep(dbB, 8, "FOREGROUND", "w");
+      dbB.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      stamp(1, 900);
+      stamp(2, 1_200);
+      stamp(5, 1_500);
+
+      expect(
+        await readNativeTurnCompactions(
+          nativeConversationDbPath(bgRef.nativeSessionId, home),
+          -1,
+          inWindow,
+        ),
+      ).toEqual([]);
+    } finally {
+      dbB.close();
+    }
+  });
+
   it("preserves all prompt windows across concurrent multi-process writers", async () => {
     const execFileAsync = promisify(execFile);
     const moduleUrl = pathToFileURL(

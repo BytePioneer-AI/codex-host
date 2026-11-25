@@ -15,7 +15,6 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { antigravityHome } from "./usage-statistics.js";
 
@@ -31,8 +30,13 @@ const LOCK_TIMEOUT_MS = 5_000;
 const STALE_LOCK_MS = 10_000;
 const PROCESS_START_TOLERANCE_MS = 5_000;
 const WINDOWS_RETRY_DELAYS_MS = [10, 30, 70, 150, 300] as const;
-const PROCESS_STARTED_AT_MS = Math.round(performance.timeOrigin);
 const pendingWrites = new Map<string, Promise<void>>();
+// Own-process artifacts whose cleanup failed after the owning operation ended.
+const unreleasedLocks = new Map<string, string>();
+const orphanedTempLinks = new Map<string, Set<string>>();
+let cachedSelfStartResolved = false;
+let cachedSelfStartId: string | undefined;
+let cachedSelfOsStartedAtMs: number | null = null;
 
 export function promptWindowsDirectory(environment: NodeJS.ProcessEnv): string {
   const dataDir =
@@ -132,10 +136,14 @@ export async function readPromptWindows(
 ): Promise<AntigravityPromptWindow[]> {
   if (!VALID_SESSION_ID.test(sessionId)) return [];
   try {
-    const raw = await readFile(promptWindowsPath(sessionId, environment), "utf8");
+    const raw = await retryOnWindows(() =>
+      readFile(promptWindowsPath(sessionId, environment), "utf8"),
+    );
     return parsePromptWindowsJson(raw);
-  } catch {
-    return [];
+  } catch (error) {
+    const code = errnoCode(error);
+    if (code === "ENOENT" || code === "ENOTDIR") return [];
+    throw error;
   }
 }
 
@@ -205,13 +213,7 @@ function readLinuxStartTicks(pid: number): { alive: boolean; startTicks: string 
   }
 }
 
-function currentContenderStart(): string {
-  const ticks = process.platform === "linux" ? readLinuxStartTicks(process.pid).startTicks : null;
-  return ticks ? `ticks${ticks}` : String(PROCESS_STARTED_AT_MS);
-}
-
-function queryProcessStartedAtMs(pid: number): number | null {
-  if (pid === process.pid) return PROCESS_STARTED_AT_MS;
+function queryOsProcessStartedAtMs(pid: number): number | null {
   try {
     if (process.platform === "darwin") {
       const result = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
@@ -249,6 +251,29 @@ function queryProcessStartedAtMs(pid: number): number | null {
   return null;
 }
 
+/** Publish the same OS process creation identity used during verification (survives `exec`). */
+function currentContenderStart(): string | undefined {
+  if (cachedSelfStartResolved) return cachedSelfStartId;
+  cachedSelfStartResolved = true;
+  if (process.platform === "linux") {
+    const ticks = readLinuxStartTicks(process.pid).startTicks;
+    cachedSelfStartId = ticks ? `ticks${ticks}` : undefined;
+    return cachedSelfStartId;
+  }
+  cachedSelfOsStartedAtMs = queryOsProcessStartedAtMs(process.pid);
+  cachedSelfStartId =
+    cachedSelfOsStartedAtMs !== null ? String(cachedSelfOsStartedAtMs) : undefined;
+  return cachedSelfStartId;
+}
+
+function queryProcessStartedAtMs(pid: number): number | null {
+  if (pid === process.pid) {
+    if (!cachedSelfStartResolved) currentContenderStart();
+    return cachedSelfOsStartedAtMs;
+  }
+  return queryOsProcessStartedAtMs(pid);
+}
+
 /** Process liveness with PID-reuse disambiguation; never evicts a live process by wall-clock age. */
 function contenderIsLive(pid: number, startId?: string): boolean {
   if (!isPidAlive(pid)) return false;
@@ -267,9 +292,50 @@ function contenderIsLive(pid: number, startId?: string): boolean {
   );
 }
 
+function trackOrphanedTempLink(lockFile: string, linkPath: string): void {
+  let set = orphanedTempLinks.get(lockFile);
+  if (!set) {
+    set = new Set();
+    orphanedTempLinks.set(lockFile, set);
+  }
+  set.add(linkPath);
+}
+
+async function cleanupOrphanedTempLinks(lockFile: string): Promise<void> {
+  const links = orphanedTempLinks.get(lockFile);
+  if (!links?.size) return;
+  for (const linkPath of [...links]) {
+    try {
+      await retryOnWindows(() => rm(linkPath, { force: true }));
+      links.delete(linkPath);
+    } catch {
+      // Keep tracking so a subsequent retry can clean it once the transient fault clears.
+    }
+  }
+  if (!links.size) orphanedTempLinks.delete(lockFile);
+}
+
+async function cleanupPendingOwnArtifacts(lockFile: string): Promise<void> {
+  await cleanupOrphanedTempLinks(lockFile);
+  const unreleased = unreleasedLocks.get(lockFile);
+  if (unreleased !== undefined) {
+    try {
+      await releaseLockFile(lockFile, unreleased);
+      unreleasedLocks.delete(lockFile);
+    } catch {
+      // Keep tracking so recovery succeeds once the underlying filesystem error clears.
+    }
+  }
+}
+
+function contenderLinkName(lockFile: string, kind: "publish" | "claim"): string {
+  const startId = currentContenderStart() ?? "unknown";
+  return `${lockFile}.${kind}-${process.pid}-${startId}-${randomUUID()}`;
+}
+
 /** Publish a complete lock payload atomically without creating an empty `.lock` on write error. */
 async function publishLockFile(lockFile: string, content: string): Promise<void> {
-  const temporary = `${lockFile}.publish-${process.pid}-${currentContenderStart()}-${randomUUID()}`;
+  const temporary = contenderLinkName(lockFile, "publish");
   const handle = await open(temporary, "wx", 0o600);
   try {
     try {
@@ -279,7 +345,11 @@ async function publishLockFile(lockFile: string, content: string): Promise<void>
     }
     await link(temporary, lockFile);
   } finally {
-    await retryOnWindows(() => rm(temporary, { force: true })).catch(() => undefined);
+    try {
+      await retryOnWindows(() => rm(temporary, { force: true }));
+    } catch {
+      trackOrphanedTempLink(lockFile, temporary);
+    }
   }
 }
 
@@ -288,17 +358,18 @@ async function removeDeadSiblingLinks(
   snapshot: string,
   pinned: BigIntStats,
 ): Promise<void> {
+  await cleanupOrphanedTempLinks(lockFile);
   const dir = path.dirname(lockFile);
   const base = path.basename(lockFile);
   const snapshotName = path.basename(snapshot);
   for (const entry of await readdir(dir)) {
     if (entry === base || entry === snapshotName || !entry.startsWith(`${base}.`)) continue;
-    const match = /^(?:publish|claim)-(\d+)-(?:(ticks\d+|\d+)-)?/u.exec(
+    const match = /^(?:publish|claim)-(\d+)-(?:(ticks\d+|\d+|unknown)-)?/u.exec(
       entry.slice(base.length + 1),
     );
     if (!match) continue;
     const siblingPid = Number(match[1]);
-    const siblingStart = match[2];
+    const siblingStart = match[2] === "unknown" ? undefined : match[2];
     const siblingPath = path.join(dir, entry);
     let sibling: BigIntStats;
     try {
@@ -318,6 +389,7 @@ async function removeDeadSiblingLinks(
 }
 
 async function tryReclaimStaleLock(lockFile: string): Promise<boolean> {
+  await cleanupPendingOwnArtifacts(lockFile);
   let info: Awaited<ReturnType<typeof stat>>;
   let inspected: string;
   try {
@@ -345,7 +417,7 @@ async function tryReclaimStaleLock(lockFile: string): Promise<boolean> {
   }
   // Pin the inspected inode via a hard link. Because live reclaimers' claims are never evicted,
   // nlink === 2n proves exclusive reclaim ownership of this exact inode.
-  const snapshot = `${lockFile}.claim-${process.pid}-${currentContenderStart()}-${randomUUID()}`;
+  const snapshot = contenderLinkName(lockFile, "claim");
   try {
     await link(lockFile, snapshot);
     try {
@@ -361,7 +433,11 @@ async function tryReclaimStaleLock(lockFile: string): Promise<boolean> {
       await rm(lockFile);
       return true;
     } finally {
-      await retryOnWindows(() => rm(snapshot, { force: true })).catch(() => undefined);
+      try {
+        await retryOnWindows(() => rm(snapshot, { force: true }));
+      } catch {
+        trackOrphanedTempLink(lockFile, snapshot);
+      }
     }
   } catch (error) {
     const code = errnoCode(error);
@@ -395,14 +471,16 @@ async function withFileLock<T>(
 ): Promise<T> {
   const lockFile = `${file}.lock`;
   const token = randomUUID();
+  const startId = currentContenderStart();
   const payload = JSON.stringify({
     pid: process.pid,
-    startId: currentContenderStart(),
+    ...(startId ? { startId } : {}),
     token,
     createdAtMs: Date.now(),
   });
   const deadline = Date.now() + timeoutMs;
   while (true) {
+    await cleanupPendingOwnArtifacts(lockFile);
     try {
       await publishLockFile(lockFile, payload);
       break;
@@ -425,7 +503,9 @@ async function withFileLock<T>(
   }
   try {
     await releaseLockFile(lockFile, payload);
+    if (unreleasedLocks.get(lockFile) === payload) unreleasedLocks.delete(lockFile);
   } catch (releaseError) {
+    unreleasedLocks.set(lockFile, payload);
     if (!hasWorkError) throw releaseError;
   }
   if (hasWorkError) throw workError;

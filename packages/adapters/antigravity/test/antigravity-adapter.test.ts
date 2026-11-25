@@ -3850,6 +3850,94 @@ describe("Antigravity idle wake Turns", () => {
       db.close();
     }
   });
+
+  it("flushes unsaved prompt windows on transport fault during post-response turn settlement", async () => {
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      const env = { HOME: home, USERPROFILE: home };
+      const blockingPath = promptWindowsDirectory(env);
+      await mkdir(path.dirname(blockingPath), { recursive: true });
+      await writeFile(blockingPath, "block-save");
+
+      const nativeRef = required(session.initialState.nativeRef);
+      const countGate = deferred<number>();
+      const observeSpy = vi
+        .spyOn(nativeBoundaries, "observeNativeTurnCount")
+        .mockReturnValue(countGate.promise);
+
+      required(transport.handler).onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      await vi.waitFor(() => expect(observeSpy).toHaveBeenCalledOnce());
+      // Initial save failed while turn accounting is still pending (promptPhase === "returned").
+      expect(await readPromptWindows(nativeRef.nativeSessionId, env)).toEqual([]);
+
+      await rm(blockingPath);
+      transport.options.onFault?.(new AntigravityTransportError("processExited", "ACP exited"));
+      await vi.waitFor(() =>
+        expect(events(outputs).some((event) => event.type === "session.faulted")).toBe(true),
+      );
+
+      // Fault path must flush the unsaved window without waiting for an explicit close().
+      await vi.waitFor(async () =>
+        expect(await readPromptWindows(nativeRef.nativeSessionId, env)).toHaveLength(1),
+      );
+      countGate.resolve(1);
+      await adapter.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("surfaces final close persistence failure without forgetting unsaved windows, then persists on retry", async () => {
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      const env = { HOME: home, USERPROFILE: home };
+      const blockingPath = promptWindowsDirectory(env);
+      await mkdir(path.dirname(blockingPath), { recursive: true });
+      await writeFile(blockingPath, "block-save");
+
+      const handler = required(transport.handler);
+      const nativeRef = required(session.initialState.nativeRef);
+      const inPromptAtMs = Date.now();
+      stampStep(db, 0, inPromptAtMs);
+      systemStep(db, 2, "in-prompt-wake", "task_notification");
+      stampStep(db, 2, inPromptAtMs);
+      answerStep(db, 3, "WAKE_RESULT", "in-prompt-wake");
+      stampStep(db, 3, inPromptAtMs);
+      handler.onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+
+      // Keep storage blocked across close(): close must reject instead of silently dropping windows.
+      await expect(session.close()).rejects.toThrow();
+
+      // Once storage recovers, retrying close() persists the window and keeps cold reopen merged.
+      await rm(blockingPath);
+      await session.close();
+      expect(await readPromptWindows(nativeRef.nativeSessionId, env)).toHaveLength(1);
+
+      const restarted = fixture({ environment: env }).adapter;
+      try {
+        const reopened = await restarted.open({ kind: "resume", cwd: home, nativeRef });
+        assert(reopened.ok);
+        const coldSnapshot = await reopened.value.readSnapshot();
+        assert(coldSnapshot.ok);
+        expect(coldSnapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+          "turn-0",
+        ]);
+        expect(coldSnapshot.value.turns[0]?.items).toMatchObject([
+          { item: { type: "agentMessage", text: "hello there\n\nWAKE_RESULT" } },
+        ]);
+      } finally {
+        await restarted.close();
+      }
+      await adapter.close();
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe("native session titles", () => {

@@ -688,6 +688,202 @@ describe("native SQLite Fork", () => {
     ]);
   });
 
+  it("attributes id-only in-prompt tool results, late foreground replies, and Plan handoffs across intervening wakes and rejects unsafe cuts", async () => {
+    // 1. R1: id-only tool result (missing execution_id) separated by an independent wake.
+    const r1 = await fixture();
+    {
+      const db = new DatabaseSync(r1.file);
+      const stamp = (idx: number, ms: number) => {
+        db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
+          bytes(1, nanoseconds(BigInt(ms) * 1_000_000n)),
+          idx,
+        );
+      };
+      try {
+        db.exec(
+          "PRAGMA user_version = 1; DROP TABLE steps; CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB, metadata BLOB)",
+        );
+        userStep(db, 0, "first", "p0");
+        systemStep(db, 1, "in-prompt", "task_notification");
+        const call = Buffer.concat([textField(1, "read"), textField(2, "view_file")]);
+        db.prepare(
+          "INSERT INTO steps (idx, step_type, status, step_payload) VALUES (2, 15, 3, ?)",
+        ).run(Buffer.concat([runField("in-prompt"), bytes(20, bytes(7, call))]));
+        systemStep(db, 3, "idle", "task_notification");
+        answerStep(db, 4, "IDLE", "idle");
+        // Id-only GENERIC_TOOL without execution_id (field 12 omitted).
+        db.prepare(
+          "INSERT INTO steps (idx, step_type, status, step_payload) VALUES (5, 132, 3, ?)",
+        ).run(
+          Buffer.concat([
+            bytes(5, bytes(4, textField(1, "read"))),
+            bytes(140, bytes(2, textField(1, "IMPORTANT_RESULT"))),
+          ]),
+        );
+        stamp(1, 1_200);
+        stamp(3, 900);
+      } finally {
+        db.close();
+      }
+      const windows = [{ submittedAtMs: 1_000, returnedAtMs: 2_000 }];
+      await savePromptWindows(r1.sourceRef.nativeSessionId, windows, r1.options.adapterEnvironment);
+      const history = await readNativeHistory(r1.sourceRef.nativeSessionId, r1.home, {
+        promptWindows: windows,
+      });
+      expect(history.events).toMatchObject([
+        { type: "user.text", text: "first", nativeTurnIndex: 0 },
+        { type: "tool.call", toolCallId: "read", name: "view_file" },
+        {
+          type: "tool.update",
+          toolCallId: "read",
+          status: "completed",
+          rawOutput: "IMPORTANT_RESULT",
+        },
+        { type: "history.autonomous", stepIndex: 3, createdAtMs: 900 },
+        { type: "agent.text", text: "IDLE" },
+      ]);
+      expect(
+        await forkAntigravitySession({
+          ...r1.options,
+          input: {
+            kind: "fork",
+            cwd: r1.home,
+            sourceRef: r1.sourceRef,
+            checkpoint: { ...r1.sourceRef, checkpointId: "turn-0" },
+          },
+        }),
+      ).toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
+    }
+
+    // 2. R2: original foreground run reply returning after an independent wake.
+    const r2 = await fixture();
+    {
+      const db = new DatabaseSync(r2.file);
+      const stamp = (idx: number, ms: number) => {
+        db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
+          bytes(1, nanoseconds(BigInt(ms) * 1_000_000n)),
+          idx,
+        );
+      };
+      try {
+        db.exec(
+          "PRAGMA user_version = 1; DROP TABLE steps; CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB, metadata BLOB)",
+        );
+        userStep(db, 0, "first", "p");
+        systemStep(db, 1, "in-prompt", "task_notification");
+        systemStep(db, 3, "idle", "task_notification");
+        answerStep(db, 4, "IDLE", "idle");
+        answerStep(db, 5, "FOREGROUND_RESULT", "p");
+        stamp(1, 1_200);
+        stamp(3, 900);
+      } finally {
+        db.close();
+      }
+      const windows = [{ submittedAtMs: 1_000, returnedAtMs: 2_000 }];
+      await savePromptWindows(r2.sourceRef.nativeSessionId, windows, r2.options.adapterEnvironment);
+      const history = await readNativeHistory(r2.sourceRef.nativeSessionId, r2.home, {
+        promptWindows: windows,
+      });
+      expect(history.events).toEqual([
+        { type: "user.text", text: "first", nativeTurnIndex: 0 },
+        { type: "agent.text", text: "FOREGROUND_RESULT" },
+        { type: "history.autonomous", stepIndex: 3, createdAtMs: 900 },
+        { type: "agent.text", text: "IDLE" },
+      ]);
+      expect(
+        await forkAntigravitySession({
+          ...r2.options,
+          input: {
+            kind: "fork",
+            cwd: r2.home,
+            sourceRef: r2.sourceRef,
+            checkpoint: { ...r2.sourceRef, checkpointId: "turn-0" },
+          },
+        }),
+      ).toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
+    }
+
+    // 3. R3: Plan handoff after interleaved wakes between Plan call, tool result, and handoff.
+    const r3 = await fixture();
+    {
+      const db = new DatabaseSync(r3.file);
+      const stamp = (idx: number, ms: number) => {
+        db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
+          bytes(1, nanoseconds(BigInt(ms) * 1_000_000n)),
+          idx,
+        );
+      };
+      try {
+        db.exec(
+          "PRAGMA user_version = 1; DROP TABLE steps; CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB, metadata BLOB)",
+        );
+        userStep(db, 0, "first", "p");
+        systemStep(db, 1, "w", "task_notification");
+        const exitCall = Buffer.concat([textField(1, "exit-call"), textField(2, "exit_plan_mode")]);
+        db.prepare(
+          "INSERT INTO steps (idx, step_type, status, step_payload) VALUES (2, 15, 3, ?)",
+        ).run(Buffer.concat([runField("w"), bytes(20, bytes(7, exitCall))]));
+        systemStep(db, 3, "idle-1", "task_notification");
+        answerStep(db, 4, "IDLE_1", "idle-1");
+        db.prepare(
+          "INSERT INTO steps (idx, step_type, status, step_payload) VALUES (5, 132, 3, ?)",
+        ).run(
+          Buffer.concat([
+            bytes(5, Buffer.concat([textField(12, "w"), bytes(4, exitCall)])),
+            bytes(140, Buffer.alloc(0)),
+          ]),
+        );
+        systemStep(db, 6, "idle-2", "task_notification");
+        answerStep(db, 7, "IDLE_2", "idle-2");
+        systemStep(db, 8, "w-plan", "plan_mode_handoff");
+        answerStep(db, 9, "USER_PLAN_RESULT", "w-plan");
+        stamp(1, 1_200);
+        stamp(3, 900);
+        stamp(6, 950);
+      } finally {
+        db.close();
+      }
+      const windows = [{ submittedAtMs: 1_000, returnedAtMs: 2_000 }];
+      await savePromptWindows(r3.sourceRef.nativeSessionId, windows, r3.options.adapterEnvironment);
+      const history = await readNativeHistory(r3.sourceRef.nativeSessionId, r3.home, {
+        promptWindows: windows,
+      });
+      expect(history.events).toMatchObject([
+        { type: "user.text", text: "first", nativeTurnIndex: 0 },
+        { type: "tool.call", toolCallId: "exit-call", name: "exit_plan_mode" },
+        { type: "tool.update", toolCallId: "exit-call", status: "completed" },
+        { type: "agent.text", text: "USER_PLAN_RESULT" },
+        { type: "history.autonomous", stepIndex: 3, createdAtMs: 900 },
+        { type: "agent.text", text: "IDLE_1" },
+        { type: "history.autonomous", stepIndex: 6, createdAtMs: 950 },
+        { type: "agent.text", text: "IDLE_2" },
+      ]);
+      // Forking to wake-3 (cutoff=6) would cut off USER_PLAN_RESULT (idx=9) and must be rejected.
+      expect(
+        await forkAntigravitySession({
+          ...r3.options,
+          input: {
+            kind: "fork",
+            cwd: r3.home,
+            sourceRef: r3.sourceRef,
+            checkpoint: { ...r3.sourceRef, checkpointId: "wake-3" },
+          },
+        }),
+      ).toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
+      // Forking to wake-6 retains the entire prefix safely.
+      const safe = await forkAntigravitySession({
+        ...r3.options,
+        input: {
+          kind: "fork",
+          cwd: r3.home,
+          sourceRef: r3.sourceRef,
+          checkpoint: { ...r3.sourceRef, checkpointId: "wake-6" },
+        },
+      });
+      expect(safe.ok).toBe(true);
+    }
+  });
+
   it("rejects another Harness, foreign checkpoint and active source", async () => {
     const f = await fixture();
     const input = {

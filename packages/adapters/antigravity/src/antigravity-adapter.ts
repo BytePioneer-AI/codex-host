@@ -454,29 +454,32 @@ export class AntigravitySession implements HarnessSession {
     const persisted = await readPromptWindows(nativeSessionId, this.#options.environment);
     return () => mergePromptWindows(persisted, this.currentPromptWindows());
   }
-  #recordPromptWindow(turn: ActiveTurn, nativeSessionId: string): Promise<void> {
-    if (turn.returnedAtMs !== undefined || turn.submittedAtMs === undefined)
-      return this.#promptWindowWrites;
+  #recordPromptWindow(turn: ActiveTurn, nativeSessionId: string): boolean {
+    if (turn.returnedAtMs !== undefined || turn.submittedAtMs === undefined) return false;
     const returnedAtMs = Math.max(Date.now(), turn.lastSubmittedAtMs ?? turn.submittedAtMs);
     turn.returnedAtMs = returnedAtMs;
     const window = { submittedAtMs: turn.submittedAtMs, returnedAtMs };
     this.#promptWindows.push(window);
     this.#unsavedPromptWindows.push(window);
-    return this.#flushPromptWindows(nativeSessionId);
+    void this.#flushPromptWindows(nativeSessionId);
+    return true;
   }
-  #flushPromptWindows(nativeSessionId: string): Promise<void> {
-    this.#promptWindowWrites = this.#promptWindowWrites
-      .then(async () => {
-        const batch = mergePromptWindows(this.#unsavedPromptWindows);
-        if (!batch.length) return;
-        await savePromptWindows(nativeSessionId, batch, this.#options.environment);
-        const saved = new Set(batch.map((entry) => `${entry.submittedAtMs}:${entry.returnedAtMs}`));
-        this.#unsavedPromptWindows = this.#unsavedPromptWindows.filter(
-          (entry) => !saved.has(`${entry.submittedAtMs}:${entry.returnedAtMs}`),
-        );
-      })
-      .catch(() => undefined);
-    return this.#promptWindowWrites;
+  #flushPromptWindows(
+    nativeSessionId: string,
+    options?: { propagateError?: boolean },
+  ): Promise<void> {
+    const attempt = this.#promptWindowWrites.then(async () => {
+      const batch = mergePromptWindows(this.#unsavedPromptWindows);
+      if (!batch.length) return;
+      await savePromptWindows(nativeSessionId, batch, this.#options.environment);
+      const saved = new Set(batch.map((entry) => `${entry.submittedAtMs}:${entry.returnedAtMs}`));
+      this.#unsavedPromptWindows = this.#unsavedPromptWindows.filter(
+        (entry) => !saved.has(`${entry.submittedAtMs}:${entry.returnedAtMs}`),
+      );
+    });
+    // Keep the shared queue healthy across transient write failures; callers like close() can still observe failure.
+    this.#promptWindowWrites = attempt.catch(() => undefined);
+    return options?.propagateError ? attempt : this.#promptWindowWrites;
   }
   activeForkTurnIndex(checkpointId: string, home: string): number | undefined {
     if (
@@ -1956,9 +1959,13 @@ export class AntigravitySession implements HarnessSession {
     this.#postPromptWake = false;
     this.#closeInteractions("cancelled");
     const active = this.#active;
-    if (active && this.nativeRef) this.#recordPromptWindow(active, this.nativeRef.nativeSessionId);
-    else if (this.nativeRef && this.#unsavedPromptWindows.length) {
-      void this.#flushPromptWindows(this.nativeRef.nativeSessionId);
+    if (this.nativeRef) {
+      const recorded = active
+        ? this.#recordPromptWindow(active, this.nativeRef.nativeSessionId)
+        : false;
+      if (!recorded && this.#unsavedPromptWindows.length) {
+        void this.#flushPromptWindows(this.nativeRef.nativeSessionId);
+      }
     }
     if (active) this.#finish(active, { status: "failed", error: normalizeAntigravityError(error) });
     this.#settleDetachedOwners({ status: "failed", error: normalizeAntigravityError(error) });
@@ -1993,7 +2000,7 @@ export class AntigravitySession implements HarnessSession {
     await Promise.all([this.#transport?.close(), this.#subagents.close()]);
     await this.#promptWindowWrites;
     if (this.nativeRef && this.#unsavedPromptWindows.length) {
-      await this.#flushPromptWindows(this.nativeRef.nativeSessionId);
+      await this.#flushPromptWindows(this.nativeRef.nativeSessionId, { propagateError: true });
     }
     this.#options.onClosed(this);
   }

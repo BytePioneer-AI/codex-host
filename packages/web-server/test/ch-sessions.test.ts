@@ -1198,6 +1198,32 @@ it("groups assigned worktrees under their GUI project without changing execution
   assert.equal(projectGroupRoot(snapshot, "unknown", `${root}-other`), undefined);
 });
 
+it("keeps an assigned Thread with its own project when its folder is another project's first root", () => {
+  const home = resolve("computer", "chapter");
+  const shared = resolve("computer", "shared");
+  const extra = resolve("computer", "extra");
+  const snapshot = {
+    projects: [
+      { id: "owner", name: "Owner", rootPaths: [shared] },
+      { id: "chapter", name: "Chapter", rootPaths: [home, shared, extra] },
+    ],
+    assignments: { mine: "chapter", theirs: "owner", plain: "chapter" },
+    projectless: [],
+  };
+  assert.equal(projectGroupRoot(snapshot, "mine", join(shared, "notes")), home);
+  assert.equal(projectGroupRoot(snapshot, "theirs", shared), shared);
+  assert.equal(
+    projectGroupRoot(snapshot, "plain", extra),
+    extra,
+    "a root no project is named after stays its own Workspace",
+  );
+  assert.equal(
+    projectGroupRoot(snapshot, "unassigned", shared),
+    shared,
+    "without an assignment the folder decides",
+  );
+});
+
 it("uses existing Desktop routing without installing code, and does not retry rejected writes", async (t) => {
   const host = new FakeChHost();
   host.add("thread", "/workspace");

@@ -2613,7 +2613,7 @@ it("handles peer tree retirement, control replay, snapshot-rebuild monotonicity,
   let treeParents: Record<string, string> = {};
   let failTreeRead = false;
   let legacyFallback = false;
-  let holdSnapshot: PromiseWithResolvers<void> | undefined;
+  let holdSnapshot: PromiseWithResolvers<undefined> | undefined;
   let treeReadCalls = 0;
 
   const transport: PeerChTransport = {
@@ -2887,7 +2887,7 @@ it("handles peer tree retirement, control replay, snapshot-rebuild monotonicity,
   // 5. P1-2: Rebuild view while snapshot is in flight; retired catalog update advances viewOrigin
   //    mid-flight (setting parent), then rebuilt view finishes and later clears parent. Browser
   //    must accept the rebuilt view's clear frame (strictly monotonic seq).
-  const snapshotGate = Promise.withResolvers<void>();
+  const snapshotGate = Promise.withResolvers<undefined>();
   holdSnapshot = snapshotGate;
   const readingChild = remote.read(childSessionId);
   await sleep(15);
@@ -2898,7 +2898,7 @@ it("handles peer tree retirement, control replay, snapshot-rebuild monotonicity,
   assert.ok(preRebuildRetiredSeq > replayedSeq);
   // Release snapshot -> readPeer detects viewOrigin advanced past its draft view's lastSeq,
   // rebuilds above the new floor, and subsequent clear on the live view outranks the retired seq.
-  snapshotGate.resolve();
+  snapshotGate.resolve(undefined);
   await readingChild;
   treeParents = {};
   await remote.refresh(hostId);
@@ -3020,9 +3020,9 @@ it("guards stale cross-epoch catalog pages, preserves supplemented parents acros
   };
 
   let failTreeRead = false;
-  let treeParents: Record<string, string> = { [childRow.id]: parentRow.id };
+  const treeParents: Record<string, string> = { [childRow.id]: parentRow.id };
   let holdCatalog: PromiseWithResolvers<unknown> | undefined;
-  let holdSnapshot: PromiseWithResolvers<void> | undefined;
+  let holdSnapshot: PromiseWithResolvers<undefined> | undefined;
   let onSnapshotStart: ((threadId: string) => void) | undefined;
   let snapshotCalls = 0;
 
@@ -3333,13 +3333,13 @@ it("guards stale cross-epoch catalog pages, preserves supplemented parents acros
   emit({ type: "hello", version: 1, cursor: { epoch, sequence: ++seq }, reset: true });
   await remote.refresh(hostId);
   snapshotCalls = 0;
-  const parentGate = Promise.withResolvers<void>();
+  const parentGate = Promise.withResolvers<undefined>();
   holdSnapshot = parentGate;
   const readingParent = remote.read(parentSessionId);
   await sleep(15);
   closeControl();
   await openControl();
-  parentGate.resolve();
+  parentGate.resolve(undefined);
   await readingParent;
   assert.equal(
     snapshotCalls,
@@ -3617,7 +3617,7 @@ it("keeps a backfilled parent unarchived when realtime thread/unarchived arrives
   let parentArchivedOnHost = true;
   let failTreeRead = false;
   let holdCatalog: PromiseWithResolvers<unknown> | undefined;
-  let catalogEntered: PromiseWithResolvers<void> | undefined;
+  let catalogEntered: PromiseWithResolvers<undefined> | undefined = undefined;
 
   const transport: PeerChTransport = {
     async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
@@ -3628,7 +3628,7 @@ it("keeps a backfilled parent unarchived when realtime thread/unarchived arrives
         if (holdCatalog) {
           const gate = holdCatalog;
           holdCatalog = undefined;
-          catalogEntered?.resolve();
+          catalogEntered?.resolve(undefined);
           return (await gate.promise) as T;
         }
         return {
@@ -3722,7 +3722,7 @@ it("keeps a backfilled parent unarchived when realtime thread/unarchived arrives
   // Hold a catalog page without the parent while tree/read fails transiently, and deliver
   // realtime `thread/unarchived` before the page resolves.
   const catalogGate = Promise.withResolvers<unknown>();
-  const enteredGate = Promise.withResolvers<void>();
+  const enteredGate = Promise.withResolvers<undefined>();
   holdCatalog = catalogGate;
   catalogEntered = enteredGate;
   failTreeRead = true;
@@ -3782,7 +3782,7 @@ it("keeps a restored non-ancestor entry and its open follower alive when an olde
 
   let standaloneArchivedOnHost = false;
   let holdCatalog: PromiseWithResolvers<unknown> | undefined;
-  let catalogEntered: PromiseWithResolvers<void> | undefined;
+  let catalogEntered: PromiseWithResolvers<undefined> | undefined = undefined;
 
   const transport: PeerChTransport = {
     async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
@@ -3805,7 +3805,7 @@ it("keeps a restored non-ancestor entry and its open follower alive when an olde
         if (holdCatalog) {
           const gate = holdCatalog;
           holdCatalog = undefined;
-          catalogEntered?.resolve();
+          catalogEntered?.resolve(undefined);
           return (await gate.promise) as T;
         }
         const activeRows = standaloneArchivedOnHost ? [otherRow] : [standaloneRow, otherRow];
@@ -3945,7 +3945,7 @@ it("keeps a restored non-ancestor entry and its open follower alive when an olde
   // 2. Hold an older catalog page that omits standaloneRow (still archived when page started),
   //    then receive realtime `thread/unarchived` before that old page commits.
   const catalogGate = Promise.withResolvers<unknown>();
-  const enteredGate = Promise.withResolvers<void>();
+  const enteredGate = Promise.withResolvers<undefined>();
   holdCatalog = catalogGate;
   catalogEntered = enteredGate;
   const staleRefresh = remote.refresh(hostId);
@@ -4200,7 +4200,7 @@ it("forwards remote peer questions, external harness approvals, and interaction 
       request: { method: "mcpServer/elicitation/request", params: {} },
     },
   ];
-  let nativeInteractionError: string | undefined;
+  let nativeInteractionError: string | undefined = undefined;
   const responses: Array<Record<string, unknown>> = [];
   const listeners = new Set<(update: HostClientUpdate) => void>();
 
@@ -4446,7 +4446,7 @@ it("does not revive zombie peer interaction cards when peer disconnects or reset
       },
     ];
 
-    const inspectEntered = Promise.withResolvers<void>();
+    const inspectEntered = Promise.withResolvers<undefined>();
     const inspectGate = Promise.withResolvers<unknown>();
     const listeners = new Set<(update: HostClientUpdate) => void>();
 
@@ -4474,7 +4474,7 @@ it("does not revive zombie peer interaction cards when peer disconnects or reset
         }
         if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
         if (method === "codexhost/thread/inspect") {
-          inspectEntered.resolve();
+          inspectEntered.resolve(undefined);
           return (await inspectGate.promise) as T;
         }
         if (method === "codexhost/harness/plugins/list") {

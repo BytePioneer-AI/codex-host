@@ -102,6 +102,7 @@ export const TurnTailNodeView = memo(function TurnTailNodeView({
         t={t}
         useProjection={useProjection}
         loadTurnDiffs={loadTurnDiffs}
+        openFile={openFile}
       />
       {tail}
       <MessageIconActions

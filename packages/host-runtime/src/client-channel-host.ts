@@ -30,6 +30,7 @@ import { listExternalTurns } from "./external-thread-history.js";
 import type { ExternalThreadQueueSnapshot } from "./external-thread-queue.js";
 import type { ExternalThread, ExternalThreadLocation } from "./external-thread-runtime.js";
 import { readExternalWorkspaceSnapshot } from "./native-workspace-snapshot.js";
+import { listNativeProjects } from "./native-project-list.js";
 import {
   NativeClientChannel,
   type NativeClientChannelDependencies,
@@ -46,6 +47,7 @@ const OFFICIAL_METHODS: Readonly<Record<string, "native" | "host">> = {
   "thread/turns/list": "native",
   "thread/items/list": "native",
   "thread/name/set": "native",
+  "thread/metadata/update": "native",
   "thread/archive": "native",
   "thread/unarchive": "native",
   "turn/start": "native",
@@ -163,6 +165,7 @@ export class ClientChannelHost {
    * the same Web snapshot/response boundary. */
   observeNativeMessage(value: JsonValue): void {
     if (this.#titles?.observe(value)) return;
+    if (isRecord(value) && value.method === "project/changed") this.clientEvents.projectsChanged();
     this.#native?.observeMessage(value);
   }
 
@@ -227,6 +230,10 @@ export class ClientChannelHost {
       const nativeThreadIds = Array.isArray(params.threadIds)
         ? params.threadIds.filter((value): value is string => typeof value === "string")
         : [];
+      const projects =
+        params.nativeProjects === true && this.#native
+          ? await listNativeProjects(this.#native)
+          : undefined;
       return {
         result: jsonValueSchema.parse(
           await readExternalWorkspaceSnapshot(
@@ -234,11 +241,12 @@ export class ClientChannelHost {
             await this.#host.listRecords(),
             await this.#host.listSectionPlacements(),
             nativeThreadIds,
+            projects,
           ),
         ),
       };
     }
-    let native = false;
+    let native = method.startsWith("project/");
     if (method === "thread/start") {
       const route = classifyCreateRequestRoute(parsed.data);
       native = !route || route.selectedHarness === "codex";

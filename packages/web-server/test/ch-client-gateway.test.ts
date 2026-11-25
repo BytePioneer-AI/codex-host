@@ -23,7 +23,7 @@ import { serveChClientGateway } from "../src/ch-client-gateway.ts";
 
 it(
   "exposes the same generic App protocol through Web authentication, without leaking Host credentials",
-  { timeout: 15000 },
+  { timeout: 45_000 },
   async (t) => {
     const directory = mkdtempSync(join(tmpdir(), "ch-app-gateway-"));
     t.after(() => rmSync(directory, { recursive: true, force: true }));

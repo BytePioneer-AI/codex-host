@@ -94,6 +94,10 @@ export class PeerHostManager {
     return peerId === undefined ? undefined : this.clients.get(peerId);
   }
 
+  async waitForInitialConnection(hostId: string): Promise<void> {
+    await this.client(hostId)?.waitForInitialConnection();
+  }
+
   /** Server-internal list of configured peer access tokens for error-envelope scrubbing. */
   peerTokens(): string[] {
     const tokens = new Set<string>();

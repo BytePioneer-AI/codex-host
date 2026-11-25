@@ -75,7 +75,10 @@ describe("source-separated Thread catalog", () => {
   it("starts native and local reads together, reads exactly the latest 20 once, and defaults to live only", async () => {
     const localStarted = Promise.withResolvers<undefined>();
     const nativeStarted = Promise.withResolvers<undefined>();
-    const nativeRows = Array.from({ length: 301 }, (_, n) => row(`private-native-${n}`, 400 - n));
+    const nativeRows = Array.from({ length: 301 }, (_, n) => ({
+      ...row(`private-native-${n}`, 400 - n),
+      modelProvider: n === 0 ? "other-provider" : "default-provider",
+    }));
     const options = input([external("private-external", 500)]);
     options.readLocal = vi.fn(async () => {
       localStarted.resolve(undefined);
@@ -86,7 +89,11 @@ describe("source-separated Thread catalog", () => {
       nativeStarted.resolve(undefined);
       await localStarted.promise;
       const offset = params.cursor === null ? 0 : Number(params.cursor);
-      return page(nativeRows.slice(offset, offset + 20), offset < 300 ? String(offset + 20) : null);
+      const rows =
+        Array.isArray(params.modelProviders) && params.modelProviders.length === 0
+          ? nativeRows
+          : nativeRows.filter((row) => row.modelProvider === "default-provider");
+      return page(rows.slice(offset, offset + 20), offset < 300 ? String(offset + 20) : null);
     });
     options.requestOfficialPage = request;
     const result = await readThreadCatalog(options);
@@ -96,6 +103,7 @@ describe("source-separated Thread catalog", () => {
         cursor,
         archived: false,
         limit: 20,
+        modelProviders: [],
         sortKey: "updated_at",
         sortDirection: "desc",
       })),
@@ -103,6 +111,7 @@ describe("source-separated Thread catalog", () => {
     expect(result.threads).toHaveLength(21);
     expect(result.officialCursor).toEqual({ live: "20" });
     expect(result.threads[0]?.id).toBe("private-external");
+    expect(result.threads[1]?.id).toBe("private-native-0");
     expect(result.archivedThreadIds).toEqual([]);
     expect(threadCatalogReadResultSchema.parse(result)).toEqual(result);
     expect(options.diagnose).toHaveBeenCalledWith(expect.stringContaining('"official":{"ms":'));
@@ -295,48 +304,61 @@ describe("source-separated Thread catalog", () => {
     expect(threadCatalogReadResultSchema.parse(result).ownership).toHaveLength(201);
   });
 
-  it("reads on for a scoped folder until a page holds its Thread, the branch ends, or the bound", async () => {
-    // Row 120 lies in an excluded nested folder; row 250 is the folder's only Thread.
-    const cwdOf = (n: number) =>
-      n === 250 ? "/work/app/src" : n === 120 ? "/work/app/nested" : "/work/other";
-    const nativeRows = Array.from({ length: 2_000 }, (_, n) => ({
-      ...row(`native-${n}`, 5_000 - n),
-      cwd: cwdOf(n),
-    }));
-    const request = vi.fn(async (params: JsonObject) => {
-      const offset = Number(params.cursor);
-      const end = offset + Number(params.limit);
-      return page(nativeRows.slice(offset, end), end < nativeRows.length ? String(end) : null);
-    });
-    const scoped = (live: string) =>
-      readThreadCatalog({
-        ...input([external("external", 1)]),
-        officialCursor: { live },
-        scope: { cwd: "/work/app", excludeCwds: ["/work/app/nested"] },
-        requestOfficialPage: request,
+  it.each(["folder", "project", "migrated", "rooted"] as const)(
+    "reads on for a scoped %s until a page holds its Thread, the branch ends, or the bound",
+    async (scopeKind) => {
+      // Row 120 lies in an excluded nested folder; row 250 is the folder's only Thread.
+      const cwdOf = (n: number) =>
+        n === 250 ? "/work/app/src" : n === 120 ? "/work/app/nested" : "/work/other";
+      const nativeRows = Array.from({ length: 2_000 }, (_, n) => ({
+        ...row(`native-${n}`, 5_000 - n),
+        cwd: cwdOf(n),
+        ...(n === 120 ? { projectId: "other-project" } : {}),
+        ...(scopeKind === "project" && n === 250 ? { projectId: "selected-project" } : {}),
+      }));
+      const request = vi.fn(async (params: JsonObject) => {
+        const offset = Number(params.cursor);
+        const end = offset + Number(params.limit);
+        return page(nativeRows.slice(offset, end), end < nativeRows.length ? String(end) : null);
       });
-    const reads = () =>
-      request.mock.calls.splice(0).map(([params]) => [params.cursor, params.limit]);
+      const scoped = (live: string) =>
+        readThreadCatalog({
+          ...input([external("external", 1)]),
+          officialCursor: { live },
+          scope:
+            scopeKind === "folder"
+              ? { cwd: "/work/app", excludeCwds: ["/work/app/nested"] }
+              : {
+                  projectId: "selected-project",
+                  legacyThreadIds: scopeKind === "migrated" ? ["native-120", "native-250"] : [],
+                  // Row 120 names another project, so only row 250 matches by root.
+                  ...(scopeKind === "rooted" ? { rootPaths: ["/work/app"] } : {}),
+                },
+          requestOfficialPage: request,
+        });
+      const reads = () =>
+        request.mock.calls.splice(0).map(([params]) => [params.cursor, params.limit]);
 
-    const match = await scoped("20");
-    expect(reads()).toEqual([
-      ["20", 100],
-      ["120", 100],
-      ["220", 100],
-    ]);
-    expect(match.officialCursor).toEqual({ live: "320" });
-    // Every row read is returned, so the next page continues where this one stopped.
-    expect(match.threads).toHaveLength(300);
+      const match = await scoped("20");
+      expect(reads()).toEqual([
+        ["20", 100],
+        ["120", 100],
+        ["220", 100],
+      ]);
+      expect(match.officialCursor).toEqual({ live: "320" });
+      // Every row read is returned, so the next page continues where this one stopped.
+      expect(match.threads).toHaveLength(300);
 
-    const bounded = await scoped("320");
-    expect(reads()).toHaveLength(10);
-    expect(bounded.officialCursor).toEqual({ live: "1320" });
+      const bounded = await scoped("320");
+      expect(reads()).toHaveLength(10);
+      expect(bounded.officialCursor).toEqual({ live: "1320" });
 
-    const ended = await scoped("1320");
-    expect(reads()).toHaveLength(7);
-    expect(ended.officialCursor).toEqual({ live: null });
-    expect(ended.threads).toHaveLength(680);
-  });
+      const ended = await scoped("1320");
+      expect(reads()).toHaveLength(7);
+      expect(ended.officialCursor).toEqual({ live: null });
+      expect(ended.threads).toHaveLength(680);
+    },
+  );
 
   it("rejects a non-advancing native cursor without requesting another page", async () => {
     const request = vi.fn(async () => page([], "A"));

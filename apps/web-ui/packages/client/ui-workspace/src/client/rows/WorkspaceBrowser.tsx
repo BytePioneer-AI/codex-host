@@ -2664,7 +2664,15 @@ function WorkspaceBrowserContent({
         title={t("delete.workspace")}
         {...(deleteTarget === null
           ? {}
-          : { description: t("delete.desc", { name: deleteTarget.title }) })}
+          : {
+              description: t(
+                workspaces.find((workspace) => workspace.workspaceId === deleteTarget.workspaceId)
+                  ?.projectId
+                  ? "delete.nativeProject"
+                  : "delete.desc",
+                { name: deleteTarget.title },
+              ),
+            })}
         footer={
           <>
             <Button variant="outline" disabled={deleting} onClick={closeDelete}>

@@ -301,6 +301,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         summary.cwd === undefined &&
         summary.parentId === undefined &&
         summary.origin === undefined &&
+        !this.isRemoteSession(id) &&
         !workspaces.archivedSessionIds.includes(id) &&
         !workspaces.items.some((workspace) => workspace.sessionIds.includes(id))
       );
@@ -317,8 +318,9 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     navigation: AbortSignal,
     panel: "reveal" | "preserve",
     beforeOpen?: (sessionId: SessionId) => void,
+    preserveSavedSelection = false,
   ): void {
-    this.replaceMain(sessionId, navigation, panel, beforeOpen);
+    this.replaceMain(sessionId, navigation, panel, beforeOpen, preserveSavedSelection);
     if (this.mainReference?.sessionId === sessionId) this.openedProjectlessBlank = sessionId;
   }
 
@@ -380,7 +382,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     signal: AbortSignal,
     resolved: () => void,
     retry: () => void,
-    onMissing?: () => void,
+    onMissing?: (offline?: { readonly message: string }) => void,
   ): Promise<void> {
     if (signal.aborted) return;
     this.openingLoad?.stop();
@@ -413,9 +415,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       clear();
     } catch (error: unknown) {
       if (signal.aborted || this.openingLoad !== load) return;
-      if (onMissing !== undefined && isMissingSessionError(error)) {
+      const offline = remoteFailureCode(error) === "remote/offline";
+      if (onMissing !== undefined && (offline || isMissingSessionError(error))) {
         clear();
-        onMissing();
+        onMissing(offline ? { message: creationFailureMessage(error) } : undefined);
         return;
       }
       this.retryOpen = retry;
@@ -665,6 +668,9 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
   private watchNavigation(): () => void {
     let initial: "waiting" | "connecting" | "done" = "waiting";
+    let savedRemoteOffline:
+      | { readonly sessionId: SessionId; readonly message: string; readonly retry: () => void }
+      | undefined;
     const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal]);
     // Explicit navigation supersedes startup, including an unresolved direct link.
     navigation.addEventListener(
@@ -674,6 +680,18 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       },
       { once: true },
     );
+    const showOfflineRecovery = (offline: {
+      readonly sessionId: SessionId;
+      readonly message: string;
+      readonly retry: () => void;
+    }): void => {
+      this.retryOpen = offline.retry;
+      this.opening.set({
+        state: "error",
+        sessionId: offline.sessionId,
+        message: offline.message,
+      });
+    };
     const reconcile = (): void => {
       if (this.lifetime.signal.aborted) return;
       const current = this.mainReference?.sessionId;
@@ -690,12 +708,28 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       }
       if (workspace.phase !== "ready" || sessions.phase !== "ready") return;
       initial = "connecting";
-      void this.restoreSelection(workspace, sessions, navigation).then(
-        () => {
+      const offlineFallback = savedRemoteOffline;
+      void this.restoreSelection(
+        workspace,
+        sessions,
+        navigation,
+        offlineFallback !== undefined,
+      ).then(
+        (restored) => {
+          if (navigation.aborted) return;
+          if (!restored && offlineFallback !== undefined && this.mainReference === undefined) {
+            showOfflineRecovery(offlineFallback);
+          }
           initial = "done";
         },
         (reason: unknown) => {
           if (navigation.aborted) return;
+          if (offlineFallback !== undefined && this.mainReference === undefined) {
+            showOfflineRecovery(offlineFallback);
+            initial = "done";
+            console.warn("initial Session restoration failed:", reason);
+            return;
+          }
           initial = "waiting";
           console.warn("initial Session restoration failed:", reason);
         },
@@ -722,6 +756,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
             id,
             navigation,
             () => {
+              savedRemoteOffline = undefined;
               if (this.sessions.list.getSnapshot().byId[id]?.blank === true) {
                 // Reusing a draft still needs authoritative Workspace membership/writer checks.
                 initial = "waiting";
@@ -732,8 +767,15 @@ class UiWorkspaceService extends Service implements UiWorkspace {
               }
             },
             restore,
-            () => {
-              if (this.selection.getSnapshot().sessionId === id) this.selection.set({});
+            (offline) => {
+              if (navigation.aborted) return;
+              if (offline === undefined && this.selection.getSnapshot().sessionId === id) {
+                this.selection.set({});
+              }
+              savedRemoteOffline =
+                offline === undefined
+                  ? undefined
+                  : { sessionId: id, message: offline.message, retry: restore };
               initial = "waiting";
               reconcile();
             },
@@ -755,21 +797,25 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     workspaces: WorkspaceSnapshot,
     sessions: SessionListState,
     navigation: AbortSignal,
-  ): Promise<void> {
-    const saved = this.selection.getSnapshot();
+    savedRemoteOffline: boolean,
+  ): Promise<boolean> {
+    const saved: MainSelection = savedRemoteOffline ? {} : this.selection.getSnapshot();
+    const workspaceItems = savedRemoteOffline
+      ? workspaces.items.filter((item) => item.remote === undefined)
+      : workspaces.items;
     if (saved.subagentAddress !== undefined) {
       this.replaceMain(saved.subagentAddress, navigation, "preserve");
-      return;
+      return true;
     }
     const summary = saved.sessionId === undefined ? undefined : sessions.byId[saved.sessionId];
     const workspace =
       summary === undefined
         ? undefined
-        : workspaces.items.find((item) => item.sessionIds.includes(summary.id));
+        : workspaceItems.find((item) => item.sessionIds.includes(summary.id));
     if (summary !== undefined && (!summary.blank || workspace === undefined)) {
       if (summary.blank) this.openProjectlessBlank(summary.id, navigation, "preserve");
       else this.replaceMain(summary.id, navigation, "preserve");
-      return;
+      return true;
     }
     let sessionId: SessionId | undefined;
     if (
@@ -782,20 +828,32 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     }
     if (sessionId === undefined && workspaces.canStartProjectless && summary === undefined) {
       sessionId = await this.reuseOrCreateProjectlessBlank();
-      if (!navigation.aborted) this.openProjectlessBlank(sessionId, navigation, "preserve");
-      return;
+      if (!navigation.aborted) {
+        this.openProjectlessBlank(sessionId, navigation, "preserve", undefined, savedRemoteOffline);
+        return true;
+      }
+      return false;
     }
-    let target = workspace?.workspaceId ?? recentWorkspace(workspaces.items, sessions.byId);
-    if (target === undefined && workspaces.items.length === 0 && sessions.ids.length === 0) {
+    let target = workspace?.workspaceId ?? recentWorkspace(workspaceItems, sessions.byId);
+    const hasLocalSessions = sessions.ids.some(
+      (id) => !workspaces.archivedSessionIds.includes(id) && !this.isRemoteSession(id),
+    );
+    if (
+      target === undefined &&
+      workspaceItems.length === 0 &&
+      (savedRemoteOffline ? !hasLocalSessions : sessions.ids.length === 0)
+    ) {
       const prepared = await this.initializeDefaultWorkspace(navigation);
-      if (navigation.aborted) return;
+      if (navigation.aborted) return false;
       target = prepared?.workspaceId;
     }
     if (sessionId === undefined && target !== undefined)
       sessionId = await this.connectWorkspace(target);
     if (sessionId !== undefined && !navigation.aborted) {
-      this.replaceMain(sessionId, navigation, "preserve");
+      this.replaceMain(sessionId, navigation, "preserve", undefined, savedRemoteOffline);
+      return true;
     }
+    return false;
   }
 
   private async initializeDefaultWorkspace(
@@ -837,6 +895,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       const id: SessionId = cursor;
       seen.add(id);
       if (
+        id.startsWith("web-remote:") ||
         list.byId[id]?.projectionValues?.remoteHost != null ||
         list.projectionsBySession[id]?.values.remoteHost != null ||
         workspaces.some(
@@ -907,6 +966,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     signal: AbortSignal,
     panel: "reveal" | "preserve",
     beforeOpen?: (sessionId: SessionId) => void,
+    preserveSavedSelection = false,
   ): void {
     signal.throwIfAborted();
     const reference = this.sessions.retain(target, { source: "mainView" });
@@ -917,12 +977,14 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         reference.release();
         return;
       }
-      const subagentAddress =
-        typeof target === "string" ? this.sessions.subagentAddress(reference.sessionId) : target;
-      this.selection.set({
-        sessionId: reference.sessionId,
-        ...(subagentAddress === undefined ? {} : { subagentAddress }),
-      });
+      if (!preserveSavedSelection) {
+        const subagentAddress =
+          typeof target === "string" ? this.sessions.subagentAddress(reference.sessionId) : target;
+        this.selection.set({
+          sessionId: reference.sessionId,
+          ...(subagentAddress === undefined ? {} : { subagentAddress }),
+        });
+      }
     } catch (error: unknown) {
       reference.release();
       throw error;
@@ -956,13 +1018,23 @@ function sessionCreateErrorOf(error: unknown): SessionCreateError | undefined {
     : undefined;
 }
 
-/** True only when the Host definitively reports the Session no longer exists (not transient offline). */
-function isMissingSessionError(error: unknown): boolean {
-  return (
+function remoteFailureCode(error: unknown): unknown {
+  if (
     typeof error === "object" &&
     error !== null &&
-    (error as { isDSHRemoteError?: unknown }).isDSHRemoteError === true &&
-    (error as { code?: unknown }).code === "session/not-found"
+    "isDSHRemoteError" in error &&
+    error.isDSHRemoteError === true &&
+    "code" in error
+  )
+    return error.code;
+}
+
+function isMissingSessionError(error: unknown): boolean {
+  const code = remoteFailureCode(error);
+  return (
+    code === "session/not-found" ||
+    code === "remote/not-found" ||
+    code === "remote/identity-invalid"
   );
 }
 

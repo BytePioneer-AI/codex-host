@@ -92,6 +92,33 @@ describe("WorkBuddy desktop application updates", () => {
     );
   });
 
+  it("reads the Linux app version without a Linux update feed", async () => {
+    const cli = "/opt/WorkBuddy/resources/app.asar.unpacked/cli/bin/codebuddy";
+    mocks.resolve.mockReturnValue({ executable: "/opt/WorkBuddy/workbuddy", bundle: { cli } });
+    const readProduct = vi.fn(async () => ({
+      applicationName: "WorkBuddy",
+      genieVersion: "5.6.2",
+      updateUrl: null,
+    }));
+    const fetchText = vi.fn();
+    const result = await createWorkBuddyInstallation(
+      {},
+      { platform: "linux", arch: "x64", readProduct, fetchText },
+    )("check");
+    expect(readProduct).toHaveBeenCalledWith(
+      "/opt/WorkBuddy/resources/app.asar.unpacked/cli/product.json",
+    );
+    expect(result).toMatchObject({
+      currentVersion: "5.6.2",
+      latestVersion: "Unknown",
+      latestVersionKind: "unknown",
+      updateAvailable: false,
+      canUpdate: false,
+    });
+    expect(fetchText).not.toHaveBeenCalled();
+    expect(mocks.run).not.toHaveBeenCalled();
+  });
+
   it("keeps the China edition on its own public channel", async () => {
     const fetchText = vi.fn(async () =>
       feed("darwin-arm64", "5.8.3.123", "https://download.codebuddy.cn/workbuddy/saas"),

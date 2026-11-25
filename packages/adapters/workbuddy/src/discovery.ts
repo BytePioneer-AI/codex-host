@@ -16,6 +16,7 @@ const windowsRoots = [
   "${ProgramFiles}/WorkBuddy",
   "${ProgramFiles}/WorkBuddyAI",
 ];
+const linuxRoots = ["/opt/WorkBuddy", "/opt/WorkBuddy AI", "/opt/WorkBuddyAI"];
 const macSpec: HarnessDiscoverySpec = {
   id: "workbuddy",
   command: "Electron",
@@ -27,6 +28,11 @@ const macSpec: HarnessDiscoverySpec = {
       "~/Applications/WorkBuddy.app/Contents/MacOS",
     ],
   },
+};
+const linuxSpec: HarnessDiscoverySpec = {
+  id: "workbuddy",
+  command: "workbuddy",
+  installRoots: { posix: linuxRoots },
 };
 
 /** Resolve only within the selected installation; never search PATH or another installation. */
@@ -42,7 +48,9 @@ export function resolveWorkBuddyInstallDirectory(
       ? ["WorkBuddy.exe", "WorkBuddy AI.exe", "WorkBuddyAI.exe"]
       : platform === "darwin"
         ? [paths.join("Contents", "MacOS", "Electron")]
-        : [];
+        : platform === "linux"
+          ? ["workbuddy"]
+          : [];
   for (const entry of entries) {
     const bundle = resolveWorkBuddyBundle(
       environment,
@@ -71,14 +79,17 @@ export function resolveWorkBuddyBundle(
             command,
             installRoots: { windows: windowsRoots },
           }))
-        : [];
+        : platform === "linux"
+          ? [linuxSpec]
+          : [];
   const paths = targetPath(platform);
   const candidates = explicitExecutable
     ? [{ candidate: explicitExecutable, source: "configured" as const }]
     : specs.flatMap((spec) => harnessCandidates(spec, { environment, platform }));
   for (const { candidate, source } of candidates) {
-    // A random Electron on PATH is not WorkBuddy; Windows .cmd shims are not Electron runtimes.
-    if (platform === "darwin" && source !== "install-root" && !explicitExecutable) continue;
+    // A random Electron or wrapper script on PATH is not WorkBuddy; Windows .cmd
+    // shims are not Electron runtimes.
+    if (platform !== "win32" && source === "path" && !explicitExecutable) continue;
     if (platform === "win32" && paths.extname(candidate).toLowerCase() !== ".exe") continue;
     if (!isExecutable(candidate)) continue;
     const resources =

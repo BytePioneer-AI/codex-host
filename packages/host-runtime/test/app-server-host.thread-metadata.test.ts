@@ -784,29 +784,39 @@ describe("External Thread metadata updates", () => {
     await stopFixture(fixture);
   });
 
-  it("clears External assignments when official Codex deletes the project", async () => {
-    const fixture = createFixture();
-    answerOfficial(fixture, new Set(["project-a"]));
-    const threadId = await startPiThread(fixture);
-    await updateMetadata(fixture, 40, { threadId, projectId: "project-a" });
-    await fixture.collector.waitFor((message) => method(message, "thread/project/updated"));
+  it.each([false, true])(
+    "clears External assignments when official Codex deletes the project (shared Host: %s)",
+    async (externalOnly) => {
+      const fixture = createFixture({ externalOnly });
+      answerOfficial(fixture, new Set(["project-a"]));
+      if (externalOnly) {
+        await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
+        await expect(
+          fixture.host.handleClientRequest("codexhost/workspace/read", { nativeProjects: true }),
+        ).resolves.toMatchObject({ result: { nativeProjects: true } });
+      }
+      const threadId = await startPiThread(fixture);
+      await updateMetadata(fixture, 40, { threadId, projectId: "project-a" });
+      await fixture.collector.waitFor((message) => method(message, "thread/project/updated"));
 
-    const deleted = {
-      method: "project/changed",
-      params: { projectId: "project-a", changeType: "deleted" },
-    };
-    fixture.official.stdout.write(`${JSON.stringify(deleted)}\n`);
-    await expect(
-      fixture.collector.waitFor((message) => method(message, "project/changed")),
-    ).resolves.toEqual(deleted);
-    await vi.waitFor(() =>
-      expect(
-        fixture.collector.messages.filter((m) => method(m, "thread/project/updated")).at(-1),
-      ).toEqual({ method: "thread/project/updated", params: { threadId, projectId: null } }),
-    );
-    await expect(
-      fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
-    ).resolves.not.toHaveProperty("projectId");
-    await stopFixture(fixture);
-  });
+      const deleted = {
+        method: "project/changed",
+        params: { projectId: "project-a", changeType: "deleted" },
+      };
+      fixture.official.stdout.write(`${JSON.stringify(deleted)}\n`);
+      if (!externalOnly)
+        await expect(
+          fixture.collector.waitFor((message) => method(message, "project/changed")),
+        ).resolves.toEqual(deleted);
+      await vi.waitFor(() =>
+        expect(
+          fixture.collector.messages.filter((m) => method(m, "thread/project/updated")).at(-1),
+        ).toEqual({ method: "thread/project/updated", params: { threadId, projectId: null } }),
+      );
+      await expect(
+        fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+      ).resolves.not.toHaveProperty("projectId");
+      await stopFixture(fixture);
+    },
+  );
 });

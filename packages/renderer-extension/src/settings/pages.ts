@@ -544,6 +544,14 @@ function updatesPage(
         );
       };
 
+      const appendErrorDetail = (detail: string | null | undefined): void => {
+        if (!detail) return;
+        const error = document.createElement("p");
+        error.className = "settings-update-error";
+        error.textContent = detail;
+        panel.append(error);
+      };
+
       const appendServiceStopOutput = (status: UpdateStatus | null): void => {
         if (!status?.serviceStopOutput) return;
         const output = document.createElement("pre");
@@ -562,6 +570,7 @@ function updatesPage(
         panel.replaceChildren();
         panel.append(createPanelHead(document, viewPhase, message));
         appendServiceStopOutput(status);
+        if (status?.phase === "failed") appendErrorDetail(status.error);
         setManualFallback(viewPhase === "failed");
         if (
           status?.phase === "downloading" &&
@@ -678,18 +687,8 @@ function updatesPage(
           ),
         );
         appendServiceStopOutput(result.status);
-        if (actionableStatus?.error) {
-          const error = document.createElement("p");
-          error.className = "settings-update-error";
-          error.textContent = actionableStatus.error;
-          panel.append(error);
-        }
-        if (result.error) {
-          const error = document.createElement("p");
-          error.className = "settings-update-error";
-          error.textContent = result.error;
-          panel.append(error);
-        }
+        appendErrorDetail(actionableStatus?.error);
+        appendErrorDetail(result.error);
         const buttons: HTMLElement[] = [];
         if (result.updateAvailable && result.installationAvailable) {
           const update = document.createElement("button");

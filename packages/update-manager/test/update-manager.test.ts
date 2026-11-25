@@ -212,10 +212,13 @@ describe("background update manager", () => {
         await writeFile(filePath, "fixture\n");
       }
       renameFixture.remainingFailures = 2;
+      let downloadingRenameAttempts = 0;
       const manager = createBackgroundUpdateManager({
         platform: "darwin",
         randomId: () => "retry-fixture",
-        prefetchNpm: async () => {},
+        prefetchNpm: async () => {
+          downloadingRenameAttempts = renameFixture.attempts;
+        },
       });
 
       await expect(
@@ -225,7 +228,7 @@ describe("background update manager", () => {
           packageRoot: path.join(root, "npm", "platform-package"),
         }),
       ).resolves.toMatchObject({ installation: "npm" });
-      expect(renameFixture.attempts).toBe(3);
+      expect(downloadingRenameAttempts).toBe(3);
     },
   );
 

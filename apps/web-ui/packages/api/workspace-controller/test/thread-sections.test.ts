@@ -225,6 +225,27 @@ describe("workspace-controller thread section contracts", () => {
     },
   );
 
+  it.each(["gateway/internal", "gateway/cancelled"] as const)(
+    "reports %s as an unknown outcome for every section mutation",
+    async (code) => {
+      const fail = async (): Promise<RemoteResult<never>> => ({
+        ok: false,
+        error: new RemoteError(code, "No write receipt", {}),
+      });
+      const model = new ClientWorkspaceModel({
+        createThreadSection: fail,
+        updateThreadSection: fail,
+        deleteThreadSection: fail,
+      } as WorkspaceRemote);
+      const controller = new WorkspaceController(new Context(), model);
+      await expect(controller.createThreadSection("New")).resolves.toEqual({ status: "unknown" });
+      await expect(controller.updateThreadSection("sec-1", "Renamed")).resolves.toEqual({
+        status: "unknown",
+      });
+      await expect(controller.deleteThreadSection("sec-1")).resolves.toEqual({ status: "unknown" });
+    },
+  );
+
   it("supports optional beforeSessionId on moveSessionToSection while omitting anchor for legacy calls", async () => {
     const moveParam = strictSchema(descriptor("moveSessionToSection").parameters[0]!.codec);
     const parsedLegacy = moveParam.parse({ sessionId: "t-1", sectionId: "sec-1" }) as Record<

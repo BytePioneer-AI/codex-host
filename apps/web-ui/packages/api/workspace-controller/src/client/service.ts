@@ -2,11 +2,12 @@
 
 import { Service, type Context } from "@deepseek-ai/cordis";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
-import type { RemoteFailure } from "@deepseek-ai/dsh-typert-protocol";
+import type { RemoteFailure, RemoteResult } from "@deepseek-ai/dsh-typert-protocol";
 import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
 import type {
   WorkspaceCreateThreadSectionValue,
   WorkspaceDeleteThreadSectionValue,
+  WorkspaceThreadSectionMutationValue,
   WorkspaceUpdateThreadSectionValue,
   WorkspaceView,
 } from "../types.ts";
@@ -222,24 +223,27 @@ export class WorkspaceController extends Service implements IWorkspaces {
   }
 
   async createThreadSection(name: string): Promise<WorkspaceCreateThreadSectionValue> {
-    const result = await this.model.createThreadSection({ name });
-    if (!result.ok) throw commandError("create thread section", result.error);
-    return result.value;
+    return sectionMutationValue(
+      "create thread section",
+      await this.model.createThreadSection({ name }),
+    );
   }
 
   async updateThreadSection(
     sectionId: string,
     name: string,
   ): Promise<WorkspaceUpdateThreadSectionValue> {
-    const result = await this.model.updateThreadSection({ sectionId, name });
-    if (!result.ok) throw commandError("update thread section", result.error);
-    return result.value;
+    return sectionMutationValue(
+      "update thread section",
+      await this.model.updateThreadSection({ sectionId, name }),
+    );
   }
 
   async deleteThreadSection(sectionId: string): Promise<WorkspaceDeleteThreadSectionValue> {
-    const result = await this.model.deleteThreadSection({ sectionId });
-    if (!result.ok) throw commandError("delete thread section", result.error);
-    return result.value;
+    return sectionMutationValue(
+      "delete thread section",
+      await this.model.deleteThreadSection({ sectionId }),
+    );
   }
 
   async unpinSession(sessionId: SessionId): Promise<void> {
@@ -261,6 +265,16 @@ export class WorkspaceController extends Service implements IWorkspaces {
     if (!result.ok) throw commandError("move", result.error);
     return result.value.workspace;
   }
+}
+
+function sectionMutationValue(
+  operation: string,
+  result: RemoteResult<WorkspaceThreadSectionMutationValue>,
+): WorkspaceThreadSectionMutationValue {
+  if (result.ok) return result.value;
+  if (result.error.code === "gateway/internal" || result.error.code === "gateway/cancelled")
+    return { status: "unknown" };
+  throw commandError(operation, result.error);
 }
 
 function commandError(operation: string, failure: RemoteFailure): Error {

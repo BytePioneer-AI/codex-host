@@ -176,6 +176,97 @@ describe("Qoder SDK 1.0.58 compatibility", () => {
     await adapter.close();
   });
 
+  it("waits for exclusive daemon stop on session.close, propagates failure, and allows retry", async () => {
+    const { adapter, started } = daemonHarness();
+    await adapter.inspect({ cwd: "/tmp" });
+    started.splice(0);
+
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/tmp",
+      environment: { CODEXHOST_THREAD_ID: "thread-stop-fail" },
+    });
+    if (!opened.ok) throw new Error("open failed");
+    const session = opened.value;
+    const outputsEnded = (async () => {
+      for await (const output of session.outputs) {
+        void output;
+      }
+    })();
+
+    let rejectStop!: (error: Error) => void;
+    started[0]?.stop
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((_, reject) => {
+            rejectStop = reject;
+          }),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    let settled = false;
+    const closing = session.close().finally(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(started[0]?.stop).toHaveBeenCalledTimes(1));
+    expect(settled).toBe(false);
+
+    rejectStop(new Error("daemon stop failed"));
+    await expect(closing).rejects.toThrow("daemon stop failed");
+    await expect(outputsEnded).resolves.toBeUndefined();
+
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(started[0]?.stop).toHaveBeenCalledTimes(2);
+    await adapter.close();
+  });
+
+  it("propagates daemon stop failure only when releasing the last lease on a shared daemon", async () => {
+    const { adapter, started } = daemonHarness();
+    await adapter.inspect({ cwd: "/tmp" });
+    started.splice(0);
+    const input = {
+      kind: "create" as const,
+      cwd: "/tmp",
+      environment: { CODEXHOST_THREAD_ID: "thread-shared" },
+    };
+    const [first, second] = await Promise.all([adapter.open(input), adapter.open(input)]);
+    if (!first.ok || !second.ok) throw new Error("open failed");
+    started[0]?.stop.mockRejectedValueOnce(new Error("shared daemon stop failed"));
+
+    await expect(first.value.close()).resolves.toBeUndefined();
+    expect(started[0]?.stop).not.toHaveBeenCalled();
+
+    await expect(second.value.close()).rejects.toThrow("shared daemon stop failed");
+    expect(started[0]?.stop).toHaveBeenCalledTimes(1);
+
+    await adapter.close();
+    expect(started[0]?.stop).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps QoderAdapter.close best-effort when one daemon fails to stop", async () => {
+    const { adapter, started } = daemonHarness();
+    await adapter.inspect({ cwd: "/tmp" });
+    started.splice(0);
+
+    const a = await adapter.open({
+      kind: "create",
+      cwd: "/tmp",
+      environment: { CODEXHOST_THREAD_ID: "thread-best-effort-a" },
+    });
+    const b = await adapter.open({
+      kind: "create",
+      cwd: "/tmp",
+      environment: { CODEXHOST_THREAD_ID: "thread-best-effort-b" },
+    });
+    if (!a.ok || !b.ok) throw new Error("open failed");
+
+    started[0]?.stop.mockRejectedValue(new Error("daemon a stuck"));
+
+    await expect(adapter.close()).resolves.toBeUndefined();
+    expect(started[0]?.stop).toHaveBeenCalled();
+    expect(started[1]?.stop).toHaveBeenCalledOnce();
+  });
+
   it("stops a daemon whose start was still in flight when the adapter closed", async () => {
     let finishStart: (() => void) | undefined;
     const stop = vi.fn(async () => undefined);

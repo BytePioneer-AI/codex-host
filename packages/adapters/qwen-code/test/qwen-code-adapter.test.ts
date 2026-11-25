@@ -646,4 +646,38 @@ describe("QwenCodeAdapter", () => {
     }
     expect(transport.closed).toBe(true);
   });
+
+  it("propagates transport.close failures through session.close while ending outputs and allowing retry", async () => {
+    const transport = new FakeTransport();
+    const closeSpy = vi
+      .spyOn(transport, "close")
+      .mockRejectedValueOnce(new Error("qwen transport close failed"))
+      .mockImplementationOnce(async () => {
+        transport.closed = true;
+      });
+    const { adapter } = adapterFor(transport);
+    const opened = await adapter.open({ kind: "create", cwd: "/tmp" });
+    if (!opened.ok) throw new Error("open failed");
+    const session = opened.value;
+    const outputsEnded = (async () => {
+      for await (const output of session.outputs) {
+        void output;
+      }
+    })();
+
+    await expect(session.close()).rejects.toThrow("qwen transport close failed");
+    await expect(outputsEnded).resolves.toBeUndefined();
+    expect(
+      await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("turn-after-failed-close"),
+        input: [{ type: "text", text: "status" }],
+      }),
+    ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(closeSpy).toHaveBeenCalledTimes(2);
+    expect(transport.closed).toBe(true);
+    await adapter.close();
+  });
 });

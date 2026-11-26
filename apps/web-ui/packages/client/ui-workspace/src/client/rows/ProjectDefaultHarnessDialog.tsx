@@ -1,5 +1,14 @@
-import { useEffect, useState } from "react";
-import { Button, Modal } from "@deepseek-ai/dsh-client-ui-primitives";
+import { useEffect, useState, type ReactNode } from "react";
+import {
+  Button,
+  harnessIconSources,
+  IconChevronDownOutlineRegular,
+  IconDataOutlineRegular,
+  IconSettingsOutlineRegular,
+  Menu,
+  Modal,
+  RemotePluginIcon,
+} from "@deepseek-ai/dsh-client-ui-primitives";
 import type { WorkspaceId } from "@deepseek-ai/dsh-api-workspace-controller/client";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
 import css from "./WorkspaceBrowser.module.css";
@@ -7,6 +16,17 @@ import css from "./WorkspaceBrowser.module.css";
 interface ProjectDefaultHarness {
   harnessId: string | null;
   harnesses: { id: string; name: string }[];
+}
+
+function harnessIcon(id: string) {
+  return (
+    <RemotePluginIcon
+      id={id}
+      {...harnessIconSources(id)}
+      size={16}
+      fallback={<IconDataOutlineRegular size={16} />}
+    />
+  );
 }
 
 async function projectDefaultHarness(
@@ -47,6 +67,7 @@ export function ProjectDefaultHarnessDialog({
 }) {
   const [config, setConfig] = useState<ProjectDefaultHarness>();
   const [selection, setSelection] = useState("");
+  const [menuOpen, setMenuOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<"loadFailed" | "saveFailed">();
 
@@ -65,6 +86,25 @@ export function ProjectDefaultHarnessDialog({
     return () => load.abort();
   }, [workspaceId]);
 
+  const inherit = {
+    id: "",
+    label: t("defaultHarness.inherit"),
+    icon: <IconSettingsOutlineRegular size={16} />,
+  };
+  const items: { id: string; label: string; icon: ReactNode; disabled?: boolean }[] = [
+    inherit,
+    ...(config?.harnesses.map(({ id, name }) => ({ id, label: name, icon: harnessIcon(id) })) ??
+      []),
+  ];
+  if (config?.harnessId && !items.some(({ id }) => id === config.harnessId)) {
+    items.push({
+      id: config.harnessId,
+      label: t("defaultHarness.unavailable", { name: config.harnessId }),
+      icon: harnessIcon(config.harnessId),
+      disabled: true,
+    });
+  }
+  const selected = items.find(({ id }) => id === selection) ?? inherit;
   const unchanged = config === undefined || selection === (config.harnessId ?? "");
   const close = () => {
     if (!saving) onClose();
@@ -101,25 +141,34 @@ export function ProjectDefaultHarnessDialog({
       }
     >
       {config ? (
-        <select
-          className={css.renameInput}
-          aria-label={t("defaultHarness.title")}
-          value={selection}
-          disabled={saving}
-          onChange={(event) => setSelection(event.target.value)}
-        >
-          <option value="">{t("defaultHarness.inherit")}</option>
-          {config.harnessId && !config.harnesses.some(({ id }) => id === config.harnessId) && (
-            <option value={config.harnessId} disabled>
-              {t("defaultHarness.unavailable", { name: config.harnessId })}
-            </option>
-          )}
-          {config.harnesses.map(({ id, name }) => (
-            <option key={id} value={id}>
-              {name}
-            </option>
-          ))}
-        </select>
+        <Menu
+          open={menuOpen}
+          portal
+          autoFocus
+          listClassName={css.defaultHarnessMenu}
+          items={items}
+          selectedId={selection}
+          onClose={() => setMenuOpen(false)}
+          onSelect={(id) => {
+            setSelection(id);
+            setMenuOpen(false);
+          }}
+          anchor={
+            <button
+              type="button"
+              className={`${css.renameInput} ${css.defaultHarnessTrigger}`}
+              aria-label={t("defaultHarness.select", { name: selected.label })}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              disabled={saving}
+              onClick={() => setMenuOpen(!menuOpen)}
+            >
+              {selected.icon}
+              <span>{selected.label}</span>
+              <IconChevronDownOutlineRegular size={14} />
+            </button>
+          }
+        />
       ) : error === undefined ? (
         <div role="status">{t("defaultHarness.loading")}</div>
       ) : null}

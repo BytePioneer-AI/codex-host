@@ -2022,6 +2022,18 @@ it("pairs two Hosts on add, forms a three-Host mesh, and immediately translates 
     meshPeerIds: [ab.peer.peerId, ab.peer.peerId, "missing"],
   });
   assert.equal(ac.peer.pairedBack, true);
+  assert.deepEqual(ac.peer.linkedPeerIds, [ab.peer.peerId]);
+  const listAfterMesh = await a.rpc.dispatch(methods.list, { args: {} }, pairingAuth);
+  assert.ok(listAfterMesh.ok);
+  const peersAfterMesh = (
+    listAfterMesh.value as { peers: Array<{ peerId: string; linkedPeerIds?: string[] }> }
+  ).peers;
+  assert.deepEqual(peersAfterMesh.find((p) => p.peerId === ab.peer.peerId)?.linkedPeerIds, [
+    ac.peer.peerId,
+  ]);
+  assert.deepEqual(peersAfterMesh.find((p) => p.peerId === ac.peer.peerId)?.linkedPeerIds, [
+    ab.peer.peerId,
+  ]);
   assert.deepEqual(
     ac.pairing?.results.map(({ targetPeerId, introducedHost, status }) => [
       targetPeerId,
@@ -2095,6 +2107,16 @@ it("pairs two Hosts on add, forms a three-Host mesh, and immediately translates 
     pairingAuth,
   );
   assert.ok(removed.ok);
+  await a.manager.client(ac.peer.hostId)?.probe();
+  const listOneWay = await a.rpc.dispatch(methods.list, { args: {} }, pairingAuth);
+  assert.ok(listOneWay.ok);
+  const peersOneWay = (
+    listOneWay.value as { peers: Array<{ peerId: string; linkedPeerIds?: string[] }> }
+  ).peers;
+  assert.deepEqual(peersOneWay.find((p) => p.peerId === ac.peer.peerId)?.linkedPeerIds, []);
+  assert.deepEqual(peersOneWay.find((p) => p.peerId === ab.peer.peerId)?.linkedPeerIds, [
+    ac.peer.peerId,
+  ]);
   const synced = await a.rpc.dispatch(methods.syncMesh, { args: {} }, pairingAuth);
   assert.ok(synced.ok);
   const steps = remotePeerPairingReportSchema.parse(synced.value).results;
@@ -2106,6 +2128,14 @@ it("pairs two Hosts on add, forms a three-Host mesh, and immediately translates 
   assert.ok(restored);
   assert.notEqual(restored, `remote-peer:${cb.peerId}`);
   assert.equal(a.manager.client(ac.peer.hostId)?.manifest?.peerNodes?.[restored], "node-b");
+  const listRestored = await a.rpc.dispatch(methods.list, { args: {} }, pairingAuth);
+  assert.ok(listRestored.ok);
+  const peersRestored = (
+    listRestored.value as { peers: Array<{ peerId: string; linkedPeerIds?: string[] }> }
+  ).peers;
+  assert.deepEqual(peersRestored.find((p) => p.peerId === ac.peer.peerId)?.linkedPeerIds, [
+    ab.peer.peerId,
+  ]);
 });
 
 it("upserts a verified introduction by nodeId or normalized origin without overwriting a customized peer", async (t) => {

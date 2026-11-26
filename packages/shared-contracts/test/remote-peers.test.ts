@@ -206,11 +206,13 @@ describe("remote peer host colors", () => {
         encrypted: true,
         enabled: true,
         state: "connected",
+        pairedBack: true,
+        linkedPeerIds: ["peer-2"],
         projectCount: 0,
         createdAt: "2026-01-01T00:00:00.000Z",
         updatedAt: "2026-01-01T00:00:00.000Z",
-      }).nodeId,
-    ).toBe("node-b-uuid");
+      }),
+    ).toMatchObject({ nodeId: "node-b-uuid", pairedBack: true, linkedPeerIds: ["peer-2"] });
 
     expect(
       peerDelegationHostSummarySchema.parse({

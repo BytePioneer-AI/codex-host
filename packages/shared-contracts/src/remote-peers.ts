@@ -92,6 +92,8 @@ export const remotePeerSummarySchema = z.object({
   supportsPeerPairing: z.boolean().optional(),
   /** Omitted when either side's node mapping is unknown. */
   pairedBack: z.boolean().optional(),
+  /** Other configured remote peerIds on this Hub present in this peer's `manifest.peerNodes`. */
+  linkedPeerIds: z.array(remotePeerIdSchema).max(128).optional(),
   latencyMs: z.number().int().nonnegative().optional(),
   version: z.string().max(128).optional(),
   platform: z.string().max(64).optional(),

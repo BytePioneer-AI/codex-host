@@ -178,6 +178,22 @@ export class PeerHostManager {
     return peerId === undefined ? undefined : this.sources.get(peerId);
   }
 
+  private summarize(client: PeerHostClient): c.RemotePeerSummary {
+    const base = client.summary();
+    const peerNodes = client.manifest?.peerNodes;
+    if (peerNodes === undefined) return base;
+    const remoteNodeIds = new Set(Object.values(peerNodes));
+    const linkedPeerIds: string[] = [];
+    for (const other of this.clients.values()) {
+      if (other.record.peerId === client.record.peerId) continue;
+      const otherNodeId = other.manifest?.nodeId ?? other.record.nodeId;
+      if (otherNodeId !== undefined && remoteNodeIds.has(otherNodeId)) {
+        linkedPeerIds.push(other.record.peerId);
+      }
+    }
+    return { ...base, linkedPeerIds };
+  }
+
   private get(id: string) {
     const client = this.clients.get(id);
     if (!client) throw Error("Unknown remote peer");
@@ -352,7 +368,8 @@ export class PeerHostManager {
           );
         }
         const input = requestOf(args);
-        if (action === "list") return { peers: [...this.clients.values()].map((p) => p.summary()) };
+        if (action === "list")
+          return { peers: [...this.clients.values()].map((p) => this.summarize(p)) };
         if (action === "syncMesh")
           return this.syncMesh(c.remotePeerSyncMeshParamsSchema.parse(input));
         if (action === "add" || action === "test") {
@@ -413,9 +430,9 @@ export class PeerHostManager {
               },
               installed,
             );
-            return { peer: installed.summary(), pairing };
+            return { peer: this.summarize(installed), pairing };
           }
-          return { peer: installed.summary() };
+          return { peer: this.summarize(installed) };
         }
         const { peerId } = c.remotePeerIdParamsSchema.parse(input);
         const client = this.get(peerId);
@@ -498,16 +515,16 @@ export class PeerHostManager {
             ) {
               client.record = record;
               this.changed(client.hostId);
-              return { peer: client.summary() };
+              return { peer: this.summarize(client) };
             }
             const next = this.install(record, probedClient);
             this.changed(next.hostId);
-            return { peer: next.summary() };
+            return { peer: this.summarize(next) };
           }
           case "reconnect": {
             const next = this.install(client.record);
             this.changed(next.hostId);
-            return { peer: next.summary() };
+            return { peer: this.summarize(next) };
           }
           case "listDirs":
             return client.listDirs(c.remotePeerListDirsParamsSchema.parse(input).path);

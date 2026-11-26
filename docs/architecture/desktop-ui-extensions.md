@@ -125,7 +125,7 @@ Web 与 `web` 入口共用 `extensions-changed` 订阅和快照对账；Desktop 
 - 经典脚本（非 ESM），加载时同步调用一次 `define({ activate(api) { … } })`，运行在 Codex Desktop 主窗口；激活超时 5 秒。
 - `packages/desktop-control` 的 `RendererDesktopExtensions` 扫描 `$CODEXHOST_DATA_DIR/host-extensions/`，仅注入已启用、声明了 `manifest.desktop` 且未发生槽位冲突的扩展；按 `(activationId, digest)` 做无重载热更新与回收，并将状态写入诊断文件。
 - 槽位：`sidebar.thread-badge`、`sidebar.thread-layout`、`appearance.theme` 同一时间只分配给一个扩展；冲突按 `enabled` 顺序判定，不影响该扩展的 `page`、`widget`、`web` 或 `backend` 能力。
-- 原语包括 `api.sidebar.observeRows`、`api.threads.watchTree`、`api.navigate.openThread`、`api.harnesses.describe`、`api.dom.mount`、`api.dom.mark` / `unmark`、`api.assets.readDataUrl`、`api.storage`、`api.backend.invoke`、`api.settings.registerPage`、`api.signal` 与 `api.track`。
+- 原语包括 `api.sidebar.observeRows`、`api.threads.watchTree`、`api.navigate.openThread`、`api.harnesses.describe`、`api.dom.mount`、`api.dom.mark` / `unmark`、`api.assets.readDataUrl`、`api.storage`、`api.backend.invoke`、`api.settings.registerPage`、`api.signal` 与 `api.track`。通过 `api.dom.mount` 挂载到 Codex Desktop 左侧图标导航栏（`nav[data-app-navigation-rail]`）的扩展条目由宿主统一约束为 36×36 纯图标样式，并自动从原文本补充 `title` 与 `aria-label`，避免插件名称撑宽边栏。
 
 ### Web 注入（`web`）
 

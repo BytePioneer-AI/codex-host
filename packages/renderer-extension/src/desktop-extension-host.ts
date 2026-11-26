@@ -22,6 +22,7 @@ import {
   createDesktopExtensionModules,
   type DesktopExtensionModuleEntry,
 } from "./desktop-extension-modules.js";
+import { createDesktopExtensionRailPresentation } from "./desktop-extension-rail.js";
 
 export interface DesktopExtensionEntry {
   id: string;
@@ -121,6 +122,7 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
   let queue = Promise.resolve();
   let pendingReady: ReturnType<typeof setTimeout> | undefined;
   const modules = createDesktopExtensionModules();
+  const railPresentation = createDesktopExtensionRailPresentation(document);
   const instances = new Map<string, Instance>();
   const reports = new Map<string, DesktopExtensionStatus>();
   const customSettingsPages = new Map<
@@ -264,6 +266,9 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
         registerSettingsPage,
         subscribeStorage,
         notifyStorage: notifyStorageChange,
+        onDomMount: (extensionId, node) =>
+          railPresentation.syncMount(extensionId, node, entry.name),
+        onDomReclaim: (extensionId) => railPresentation.releaseExtension(extensionId),
       });
       instance.resources = resources;
       if (entry.style) instance.removeStyle = installStyle(document, entry.style);
@@ -430,7 +435,10 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
       modules.replace([]);
       desired = [];
       for (const instance of instances.values()) instance.resources?.stopDeliveries();
-      return serialize(apply);
+      return serialize(async () => {
+        await apply();
+        railPresentation.dispose();
+      });
     },
     bind(next) {
       bridge = next;

@@ -218,7 +218,7 @@ export class ChatViewport {
             row.dataset.chatGroupKey === undefined
               ? row
               : (row.querySelector<HTMLElement>(
-                  "[data-step-process-content] > [data-chat-anchor-key]:not(:empty):not([hidden]):not([hidden] *)",
+                  "[data-step-process-content] > [data-chat-anchor-key]:not(:empty:not([data-chat-virtualized])):not([hidden]):not([hidden] *)",
                 ) ?? row);
           break;
         }
@@ -227,7 +227,7 @@ export class ChatViewport {
     if (anchor === null) {
       const rows = list.querySelectorAll<HTMLElement>(
         '[data-chat-flow-key]:not([data-chat-group-key]):not([data-chat-flow-kind="turn-process"])' +
-          ":not(:empty):not([hidden]):not([hidden] *)",
+          ":not(:empty:not([data-chat-virtualized])):not([hidden]):not([hidden] *)",
       );
       let low = 0;
       let high = rows.length;
@@ -359,7 +359,7 @@ export class ChatViewport {
   beginPaging(): void {
     this.stopPreserving();
     const row = this.elements?.list.querySelector<HTMLElement>(
-      "[data-chat-paging-anchor]:not(:empty):not([hidden]):not([hidden] *)",
+      "[data-chat-paging-anchor]:not(:empty:not([data-chat-virtualized])):not([hidden]):not([hidden] *)",
     );
     if (row != null) this.retain(row);
   }
@@ -441,7 +441,7 @@ export class ChatViewport {
       if (paging === null) return null;
     }
     const { row, group, position } = paging;
-    if (row.closest("[hidden]") !== null || row.matches(":empty")) {
+    if (row.closest("[hidden]") !== null || row.matches(":empty:not([data-chat-virtualized])")) {
       this.stopPreserving();
       return null;
     }

@@ -200,3 +200,14 @@ select,
 textarea {
   font-family: inherit;
 }
+
+/* Pause CSS animations while the desktop window is hidden/minimized or the
+   browser tab is backgrounded to avoid idle CPU and compositor work.
+   Note: because animations pause globally while hidden, animated components
+   must not rely on `animationend` for cleanup. */
+html[data-codexhost-window-hidden],
+html[data-codexhost-window-hidden] *,
+html[data-codexhost-window-hidden] *::before,
+html[data-codexhost-window-hidden] *::after {
+  animation-play-state: paused !important;
+}

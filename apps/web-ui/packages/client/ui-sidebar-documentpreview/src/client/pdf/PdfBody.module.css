@@ -33,15 +33,18 @@
 }
 
 .canvas {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   max-width: none;
-  height: auto;
+  height: 100%;
   margin-inline: auto;
 }
 
 .surface {
   position: relative;
+  width: min(var(--pdf-page-width, 100%), 100%);
   max-width: none;
   margin-inline: auto;
   box-shadow: var(--dsw-elevation-prominent);

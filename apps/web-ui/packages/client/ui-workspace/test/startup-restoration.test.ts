@@ -16,6 +16,11 @@ import { createSnapshotStore } from "@deepseek-ai/dsh-client-store";
 import { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { WorkspaceId } from "@deepseek-ai/dsh-workspace/types";
 import { UiWorkspaceService } from "../src/client/navigation.ts";
+import {
+  MAX_STOPPED_WARM_BYTES,
+  MAX_STOPPED_WARM_SESSIONS,
+  SessionKeepalive,
+} from "../src/client/session-keepalive.ts";
 
 const originalLocalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 
@@ -500,4 +505,222 @@ it("initializes the default workspace or keeps retryable recovery when offline f
 
   assert.deepEqual(unrecoverable.service.opening.getSnapshot(), { state: "idle" });
   assert.deepEqual(unrecoverable.retainedMain, [offline]);
+});
+
+function createKeepaliveHarness(options: {
+  sessionIds: readonly SessionId[];
+  runningIds?: readonly SessionId[];
+  bytesById?: Readonly<Record<string, number>>;
+  maxStoppedSessions?: number;
+  maxStoppedBytes?: number;
+}) {
+  const runningSet = new Set(options.runningIds ?? []);
+  const bytesById = new Map<SessionId, number>(
+    Object.entries(options.bytesById ?? {}).map(([id, bytes]) => [id as SessionId, bytes]),
+  );
+  const byId: SessionListState["byId"] = {};
+  for (const id of options.sessionIds) {
+    byId[id] = {
+      id,
+      displayTitle: id,
+      running: runningSet.has(id),
+      blank: false,
+      updatedAt: 1,
+      retainedBy: {},
+    };
+  }
+  const listStore = createSnapshotStore<SessionListState>({
+    ids: [...options.sessionIds],
+    byId,
+    phase: "ready",
+    projectionsBySession: {},
+  });
+  const workspacesStore = createSnapshotStore<WorkspaceSnapshot>({
+    items: [],
+    phase: "ready",
+    canStartProjectless: true,
+    pinnedSessionIds: [],
+    archivedSessionIds: [],
+  });
+  const sourceCounts = new Map<SessionId, Record<string, number>>();
+  const bindings = new Map<SessionId, SessionBinding>();
+
+  const publishRetainedBy = (id: SessionId): void => {
+    const counts = { ...(sourceCounts.get(id) ?? {}) };
+    listStore.update((draft) => {
+      const row = draft.byId[id];
+      if (row !== undefined) draft.byId[id] = { ...row, retainedBy: counts };
+    });
+  };
+
+  const ensureBinding = (id: SessionId): SessionBinding => {
+    let existing = bindings.get(id);
+    if (existing !== undefined) return existing;
+    const sessionSnapshot = createSnapshotStore({
+      sessionId: id,
+      openState: "open",
+      running: runningSet.has(id),
+      blank: false,
+      removed: false,
+      subagent: null,
+      promptError: null,
+    });
+    existing = { sessionId: id, session: sessionSnapshot } as unknown as SessionBinding;
+    bindings.set(id, existing);
+    return existing;
+  };
+
+  const retain = (target: SessionId | { childSessionId: SessionId }, opts: { source: string }) => {
+    const id = typeof target === "string" ? target : target.childSessionId;
+    const binding = ensureBinding(id);
+    const counts = sourceCounts.get(id) ?? {};
+    counts[opts.source] = (counts[opts.source] ?? 0) + 1;
+    sourceCounts.set(id, counts);
+    publishRetainedBy(id);
+    let released = false;
+    const reference: SessionReference = {
+      sessionId: id,
+      binding,
+      ready: Promise.resolve(binding),
+      release() {
+        if (released) return;
+        released = true;
+        const current = sourceCounts.get(id);
+        if (current !== undefined) {
+          const next = (current[opts.source] ?? 1) - 1;
+          if (next <= 0) delete current[opts.source];
+          else current[opts.source] = next;
+          if (Object.keys(current).length === 0) bindings.delete(id);
+          publishRetainedBy(id);
+        }
+      },
+      [Symbol.dispose]() {
+        this.release();
+      },
+    };
+    return reference;
+  };
+
+  const sessions: Partial<ISessions> = {
+    list: listStore,
+    retain: retain as ISessions["retain"],
+    binding: (id) => bindings.get(id),
+    subagentAddress: () => undefined,
+    estimatedBytes: (id) => bytesById.get(id) ?? 0,
+  };
+  const workspaces: Partial<IWorkspaces> = { list: workspacesStore };
+  const keepalive = new SessionKeepalive(sessions as ISessions, workspaces as IWorkspaces, {
+    ...(options.maxStoppedSessions === undefined
+      ? {}
+      : { maxStoppedSessions: options.maxStoppedSessions }),
+    ...(options.maxStoppedBytes === undefined ? {} : { maxStoppedBytes: options.maxStoppedBytes }),
+  });
+  const stop = keepalive.start();
+
+  const warmIds = (): SessionId[] =>
+    options.sessionIds.filter((id) => (sourceCounts.get(id)?.backgroundWarm ?? 0) > 0);
+
+  let currentMain: SessionReference | undefined;
+  const openInMain = (id: SessionId): void => {
+    const previous = currentMain;
+    const next = retain(id, { source: "mainView" });
+    currentMain = next;
+    keepalive.visit(next, id);
+    previous?.release();
+  };
+
+  return {
+    keepalive,
+    stop,
+    warmIds,
+    openInMain,
+    setBytes: (id: SessionId, bytes: number) => bytesById.set(id, bytes),
+    releaseMain: () => {
+      const previous = currentMain;
+      currentMain = undefined;
+      previous?.release();
+    },
+  };
+}
+
+it("caps stopped warm sessions at 4 slots and evicts oldest stopped sessions above byte budget", () => {
+  assert.equal(MAX_STOPPED_WARM_SESSIONS, 4);
+  assert.equal(MAX_STOPPED_WARM_BYTES, 32 * 1024 * 1024);
+
+  const ids = ["s1", "s2", "s3", "s4", "s5"].map((id) => SessionId(id));
+  const slotHarness = createKeepaliveHarness({
+    sessionIds: ids,
+    bytesById: Object.fromEntries(ids.map((id) => [id, 100])),
+  });
+  try {
+    for (const id of ids) slotHarness.openInMain(id);
+    assert.deepEqual(slotHarness.warmIds(), ids.slice(1));
+  } finally {
+    slotHarness.releaseMain();
+    slotHarness.stop();
+  }
+
+  const [b1, b2, b3, b4] = ["b1", "b2", "b3", "b4"].map((id) => SessionId(id)) as [
+    SessionId,
+    SessionId,
+    SessionId,
+    SessionId,
+  ];
+  const byteHarness = createKeepaliveHarness({
+    sessionIds: [b1, b2, b3, b4],
+    bytesById: { [b1]: 12, [b2]: 12, [b3]: 12, [b4]: 4 },
+    maxStoppedBytes: 30,
+  });
+  try {
+    byteHarness.openInMain(b1);
+    byteHarness.openInMain(b2);
+    assert.deepEqual(byteHarness.warmIds(), [b1, b2]);
+
+    // Adding b3 (total 36 > 30) evicts oldest stopped session b1 while retaining b2 + b3.
+    byteHarness.openInMain(b3);
+    assert.deepEqual(byteHarness.warmIds(), [b2, b3]);
+
+    // Switching to small b4 fits within 30 (12 + 12 + 4 = 28) without further eviction.
+    byteHarness.openInMain(b4);
+    assert.deepEqual(byteHarness.warmIds(), [b2, b3, b4]);
+  } finally {
+    byteHarness.releaseMain();
+    byteHarness.stop();
+  }
+});
+
+it("never evicts running sessions or the currently viewed main session when warm bytes exceed budget", () => {
+  const running = SessionId("running-heavy");
+  const oldStopped = SessionId("stopped-old");
+  const currentHeavy = SessionId("current-heavy");
+  const nextSmall = SessionId("next-small");
+
+  const harness = createKeepaliveHarness({
+    sessionIds: [running, oldStopped, currentHeavy, nextSmall],
+    runningIds: [running],
+    bytesById: {
+      [running]: 100,
+      [oldStopped]: 10,
+      [currentHeavy]: 50,
+      [nextSmall]: 5,
+    },
+    maxStoppedBytes: 30,
+  });
+  try {
+    assert.deepEqual(harness.warmIds(), [running]);
+
+    harness.openInMain(oldStopped);
+    assert.deepEqual(harness.warmIds(), [running, oldStopped]);
+
+    // Viewing currentHeavy (50 > 30 budget) evicts oldStopped, but keeps both running and currentHeavy.
+    harness.openInMain(currentHeavy);
+    assert.deepEqual(harness.warmIds(), [running, currentHeavy]);
+
+    // Switching away from currentHeavy to nextSmall releases mainView on currentHeavy, allowing budget eviction.
+    harness.openInMain(nextSmall);
+    assert.deepEqual(harness.warmIds(), [running, nextSmall]);
+  } finally {
+    harness.releaseMain();
+    harness.stop();
+  }
 });

@@ -5,6 +5,7 @@ import {
   npmReleasePackages,
   prefetchNpmRelease,
   type NpmCommandResult,
+  type NpmDownloadProgress,
 } from "../src/npm-registry.js";
 
 const target = {
@@ -92,5 +93,28 @@ describe("npm release availability", () => {
     [offline, "npm could not download the update: npm error code ENOTFOUND"],
   ])("explains a failed download", async (result, message) => {
     await expect(prefetchNpmRelease(target, async () => result)).rejects.toThrow(message);
+  });
+
+  it("reports each required package only after npm caches it", async () => {
+    const progress: NpmDownloadProgress[] = [];
+    const cached: string[] = [];
+    await prefetchNpmRelease(
+      target,
+      async (_target, args) => {
+        expect(args.slice(0, 2)).toEqual(["cache", "add"]);
+        expect(progress.at(-1)?.completed).toBe(cached.length);
+        cached.push(...args.slice(2));
+        return published;
+      },
+      (value) => {
+        progress.push(value);
+      },
+    );
+    expect(cached).toEqual(npmReleasePackages(target.packageRoot, target.version));
+    expect(progress).toEqual([
+      { completed: 0, total: 2 },
+      { completed: 1, total: 2 },
+      { completed: 2, total: 2 },
+    ]);
   });
 });

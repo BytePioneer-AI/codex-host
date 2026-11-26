@@ -136,7 +136,7 @@ Turn 可附 `codexhostFileOperations: [{beforeItemId, item}]`，保留被 Deskto
 
 审批与提问使用 Host 中现有 request ID，并绑定 epoch、Thread。Web 显示原生 action/选项标签，结果仍由 Host 的原有投影解析器校验。第一份有效响应在异步执行前认领，后续响应不重复调用 Harness；`serverRequest/resolved` 使其他 GUI/Web 卡片撤下。`{resolved:true}` 只表示请求已不再待处理，不证明当前客户端的答案获胜，更不代表工具执行成功。
 
-断线会撤下 Web 的交互卡片，不自动回答或拒绝 Harness；重新连接只恢复快照中仍 pending 的请求。配置通知只报告观察器已接受的实际状态，多个配置命令不被包装成一个虚假的原子事务。草稿、阅读位置、输入框内容与当前选中 Thread 留在各端。跟进队列不属于这些本地 UI 状态：Desktop 的原生 `thread/queue/*` 与 Web 的 DSH inbox 操作都落到 Shared Host；正常成功后推进，停止、失败或 unknown outcome 后暂停。
+断线会撤下 Web 的交互卡片，不自动回答或拒绝 Harness；重新连接只恢复快照中仍 pending 的请求。配置通知只报告观察器已接受的实际状态，多个配置命令不被包装成一个虚假的原子事务。外部 Harness 的状态事件沿输出流逐条等待配置落盘，成功后才更新内存中的已保存选择；落盘失败保留原选择，后续相同状态仍可重试。模型切换后，快照与 inspect 不从旧模型的已保存选择回填 Thinking，即使新选择尚未落盘。草稿、阅读位置、输入框内容与当前选中 Thread 留在各端。跟进队列不属于这些本地 UI 状态：Desktop 的原生 `thread/queue/*` 与 Web 的 DSH inbox 操作都落到 Shared Host；正常成功后推进，停止、失败或 unknown outcome 后暂停。
 
 ## 写操作边界
 

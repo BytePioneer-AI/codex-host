@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   delegationMentionPath,
+  remoteDelegationMentionPath,
   formatDelegationMentionLink,
   harnessCommandMentionPath,
   harnessCommandReferences,
@@ -38,6 +39,57 @@ describe("delegation mention carrier", () => {
   it("leaves native custom agent roles and plain text alone", () => {
     const text = "[@reviewer](subagent://reviewer) and #claude";
     expect(stripDelegationMentions(text)).toEqual({ text, mentions: [] });
+  });
+
+  it("formats and strips remote host and remote host+Harness mentions distinctly", () => {
+    const hostOnly = formatDelegationMentionLink({
+      hostId: "remote-peer:peer-studio",
+      label: "Mac Studio",
+    });
+    const hostWithHarness = formatDelegationMentionLink({
+      hostId: "remote-peer:peer-studio",
+      harnessId: "claude-code",
+      label: "Mac Studio · Claude Code",
+    });
+    const localSameHarness = formatDelegationMentionLink({
+      harnessId: "claude-code",
+      label: "Claude Code",
+    });
+    expect(hostOnly).toBe("[@Mac Studio](subagent://codexhost-remote/remote-peer%3Apeer-studio)");
+    expect(hostWithHarness).toBe(
+      "[@Mac Studio · Claude Code](subagent://codexhost-remote/remote-peer%3Apeer-studio/claude-code)",
+    );
+    expect(remoteDelegationMentionPath("local", "codex")).toBe(
+      "subagent://codexhost-remote/local/codex",
+    );
+    expect(() => remoteDelegationMentionPath("remote-ssh:box")).toThrow();
+    expect(() => remoteDelegationMentionPath("remote-peer:ok", "bad id")).toThrow();
+    expect(() => formatDelegationMentionLink({ label: "Empty" })).toThrow();
+
+    const result = stripDelegationMentions(
+      `${localSameHarness}, ${hostWithHarness}, ${hostOnly}, and again ${hostWithHarness}`,
+    );
+    expect(result.text).toBe(
+      "@Claude Code, @Mac Studio · Claude Code, @Mac Studio, and again @Mac Studio · Claude Code",
+    );
+    expect(result.mentions).toEqual([
+      { harnessId: "claude-code", label: "Claude Code" },
+      {
+        hostId: "remote-peer:peer-studio",
+        harnessId: "claude-code",
+        label: "Mac Studio · Claude Code",
+      },
+      { hostId: "remote-peer:peer-studio", label: "Mac Studio" },
+    ]);
+
+    for (const invalid of [
+      "[@bad](subagent://codexhost-remote/%ZZ)",
+      "[@bad](subagent://codexhost-remote/remote-ssh%3Abox/codex)",
+      "[@bad](<subagent://codexhost-remote/local)",
+      "[@bad](subagent://codexhost-remote/local>)",
+    ]) {
+      expect(stripDelegationMentions(invalid)).toEqual({ text: invalid, mentions: [] });
+    }
   });
 });
 

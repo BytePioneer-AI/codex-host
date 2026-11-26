@@ -1631,6 +1631,12 @@ it("uses PeerThreadSource for event-driven follow, incremental paging, harness i
               version: "1.0.0",
               icon: "data:image/png;base64,AA==",
             },
+            {
+              id: "antigravity",
+              name: "Antigravity",
+              version: "1.0.0",
+              icon: "data:image/png;base64,AA==",
+            },
           ],
         } as T;
       }
@@ -1639,6 +1645,22 @@ it("uses PeerThreadSource for event-driven follow, incremental paging, harness i
           return {
             status: "notInstalled",
             error: { code: "unavailable", message: "No Codex", retryable: false },
+          } as T;
+        }
+        if (params.harnessId === "antigravity") {
+          return {
+            ...inspection,
+            catalog: {
+              ...inspection.catalog,
+              models: [
+                {
+                  ref: { id: "agy-one" },
+                  label: "Agy One",
+                  supportedThinkingOptionIds: ["medium"],
+                },
+              ],
+              defaultModel: { id: "agy-one" },
+            },
           } as T;
         }
         return inspection as T;
@@ -1884,6 +1906,24 @@ it("uses PeerThreadSource for event-driven follow, incremental paging, harness i
   await sleep(160);
   assert.equal(snapshotCalls, snapsAfterClose);
 
+  // Bound Peer thread modelCatalog includes all ready Harnesses on that Peer for @ delegation
+  // while keeping routableProviders locked to the thread's bound Harness.
+  const boundCatalog = await rpc.dispatch("session/modelCatalog", {
+    args: { request: { sessionId: parentSessionId } },
+  });
+  assert.ok(boundCatalog.ok);
+  assert.deepEqual((boundCatalog.value as { routableProviders: string[] }).routableProviders, [
+    "claude-code",
+  ]);
+  assert.deepEqual(
+    (boundCatalog.value as { groups: Array<{ id: string }> }).groups.map((g) => g.id),
+    ["claude-code", "antigravity"],
+  );
+  const crossHarnessSelect = await rpc.dispatch("session/selectModel", {
+    args: { request: { sessionId: parentSessionId, provider: "antigravity", model: "agy-one" } },
+  });
+  assert.equal(crossHarnessSelect.ok, false);
+
   // 3. Peer draft modelCatalog uses source.catalog.models() without projectHarnesses/inspectHarness ops.
   const ws = defined(workspaces.list().find((w) => w.remote?.hostId === hostId));
   const created = await rpc.dispatch("session/create", {
@@ -1897,6 +1937,7 @@ it("uses PeerThreadSource for event-driven follow, incremental paging, harness i
   assert.ok(draftCatalog.ok);
   assert.deepEqual((draftCatalog.value as { routableProviders: string[] }).routableProviders, [
     "claude-code",
+    "antigravity",
   ]);
   assert.equal(
     opLog.some((op) => op.kind === "projectHarnesses" || op.kind === "inspectHarness"),
@@ -4825,4 +4866,213 @@ it("merges remote sessions into session/search with case-insensitive matching, b
   assert.equal(emptyVal.items.length, 20);
   assert.equal(emptyVal.hasMore, true);
   assert.ok(emptyVal.items.some((item) => item.sessionId.startsWith("web-remote:")));
+});
+
+it("re-inspects remote peer external Threads when configuration confirms via snapshot or configuration update", async (t) => {
+  const hostId = "remote-peer:peer-config-sync";
+  const epoch = "88888888-8888-4888-8888-888888888888";
+  const threadId = "antigravity-thread";
+  const row: ChThread = {
+    id: threadId,
+    cwd: "/remote/repo",
+    modelProvider: "codexhost",
+    createdAt: 100,
+    updatedAt: 200,
+    status: { type: "active" },
+    name: "Antigravity Remote",
+    turns: [],
+  };
+  const configState: { permissionModeId?: string; thinkingOptionId?: string } = {};
+  let inspectCount = 0;
+  let holdNextInspect:
+    | { entered: PromiseWithResolvers<undefined>; release: PromiseWithResolvers<undefined> }
+    | undefined;
+  const listeners = new Set<(update: HostClientUpdate) => void>();
+
+  const transport: PeerChTransport = {
+    async post<T>(route: "rpc" | "snapshot" | "respond", body: object): Promise<T> {
+      const input = body as Record<string, unknown>;
+      if (route === "snapshot") {
+        return {
+          cursor: { epoch, sequence: 10 + inspectCount },
+          thread: { ...row, turns: [] },
+          turnsPage: { data: [], nextCursor: null },
+          configuration: {
+            effectiveModel: { id: "gemini-4-neon" },
+            ...(configState.thinkingOptionId
+              ? { effectiveThinkingOptionId: configState.thinkingOptionId }
+              : {}),
+            ...(configState.permissionModeId
+              ? { effectivePermissionModeId: configState.permissionModeId }
+              : {}),
+          },
+          interactions: [],
+        } as T;
+      }
+      const method = String(input.method);
+      if (method === "codexhost/thread/catalog/read") {
+        return {
+          threads: [{ ...row, turns: [] }],
+          ownership: [{ threadId, owner: "external", harnessId: "antigravity" }],
+          officialCursor: { live: null },
+          archivedThreadIds: [],
+        } as T;
+      }
+      if (method === "codexhost/thread/tree/read") return { parents: {} } as T;
+      if (method === "codexhost/thread/inspect") {
+        inspectCount++;
+        const gate = holdNextInspect;
+        holdNextInspect = undefined;
+        if (gate) {
+          gate.entered.resolve(undefined);
+          await gate.release.promise;
+        }
+        return {
+          owner: "external",
+          harnessId: "antigravity",
+          transportModelId: "codexhost/plugin-v1@antigravity",
+          effectiveModel: { id: "gemini-4-neon" },
+          ...(configState.thinkingOptionId
+            ? { effectiveThinkingOptionId: configState.thinkingOptionId }
+            : {}),
+          ...(configState.permissionModeId
+            ? { effectivePermissionModeId: configState.permissionModeId }
+            : {}),
+          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+          locked: true,
+        } as T;
+      }
+      if (method === "codexhost/harness/plugins/list") {
+        return { plugins: [{ id: "antigravity", name: "Antigravity CLI", version: "1.0.0" }] } as T;
+      }
+      if (method === "codexhost/harness/inspect") {
+        return {
+          status: "ready",
+          catalog: {
+            models: [{ ref: { id: "gemini-4-neon" }, label: "Gemini 4 Neon" }],
+            thinkingOptions: [{ id: "xhigh", label: "XHigh" }],
+          },
+          permissionModes: {
+            modes: [
+              { id: "default", label: "Default" },
+              { id: "dangerously-skip-permissions", label: "Skip permissions", dangerous: true },
+            ],
+            defaultModeId: "dangerously-skip-permissions",
+          },
+          capabilities: {
+            configuration: {
+              selectModel: true,
+              selectThinkingOption: true,
+              selectPermissionMode: true,
+              permissionModeScope: "live",
+            },
+            history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+          },
+        } as T;
+      }
+      throw new Error(`Unexpected peer RPC: ${method}`);
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      listener({ type: "connection", online: true });
+      listener({ type: "hello", version: 1, cursor: { epoch, sequence: 1 }, reset: false });
+      return () => listeners.delete(listener);
+    },
+    manifest: () => ({
+      version: "1.0.0",
+      platform: "darwin",
+      hostname: "home",
+      epoch,
+      projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+    }),
+  };
+
+  const peerProvider: RemotePeerProvider = { source: () => undefined };
+  const source = new PeerThreadSource({
+    hostId,
+    host: new PeerChHostClient(transport),
+    onCatalogChanged: () => remote.hostsChanged(hostId),
+    onThreadChanged: (tid) => peerProvider.onThreadChanged?.(hostId, tid),
+    onThreadConfigurationChanged: (tid) => peerProvider.onThreadConfigurationChanged?.(hostId, tid),
+    onConnection: (online) => peerProvider.onConnection?.(hostId, online),
+    onReset: (e, full) => peerProvider.onReset?.(hostId, e, full),
+  });
+  peerProvider.source = (h) => (h === hostId ? source : undefined);
+
+  const remote = new RemoteSessions(
+    new EventHub("peer-config-sync"),
+    async (op) => {
+      if (op.kind === "hosts") {
+        return [
+          {
+            hostId,
+            online: true,
+            epoch,
+            displayName: "home",
+            projects: [{ id: "proj-1", name: "Repo", path: "/remote/repo", threadIds: [] }],
+          },
+        ];
+      }
+      if (op.kind === "usage") return { threadId, usage: {} };
+      throw new Error(`Unexpected op: ${op.kind}`);
+    },
+    undefined,
+    peerProvider,
+  );
+  t.after(() => {
+    remote.close();
+    source.close();
+  });
+
+  await remote.refresh(hostId);
+  const sessionId = remoteSessionId(hostId, threadId);
+
+  // Initial read while lazy-open has not confirmed permission mode yet.
+  const firstView = await remote.read(sessionId);
+  assert.deepEqual(firstView.log.projections.permissions, { currentValue: "" });
+  assert.equal(inspectCount, 1);
+
+  // Case 1: snapshot reports confirmed mode/thinking even without a configuration event.
+  configState.permissionModeId = "dangerously-skip-permissions";
+  configState.thinkingOptionId = "xhigh";
+  await remote.read(sessionId, true);
+  assert.equal(inspectCount, 2);
+  assert.deepEqual(firstView.log.projections.permissions, {
+    currentValue: "dangerously-skip-permissions",
+  });
+  assert.deepEqual(firstView.log.projections.modelSelection, {
+    lastUsed: { provider: "antigravity", model: "gemini-4-neon", reasoningEffort: "xhigh" },
+    next: { provider: "antigravity", model: "gemini-4-neon", reasoningEffort: "xhigh" },
+  });
+
+  // Case 2: configuration update arrives while an inspect is already in flight;
+  // peerInspected must not freeze stale data and the follow-up read converges.
+  holdNextInspect = {
+    entered: Promise.withResolvers<undefined>(),
+    release: Promise.withResolvers<undefined>(),
+  };
+  const gate = holdNextInspect;
+  for (const listener of listeners) {
+    listener({
+      type: "changed",
+      threadId,
+      method: "codexhost/thread/configuration/updated",
+      cursor: { epoch, sequence: 20 },
+    });
+  }
+  const inFlight = remote.read(sessionId, true);
+  await gate.entered.promise;
+  configState.permissionModeId = "default";
+  for (const listener of listeners) {
+    listener({
+      type: "changed",
+      threadId,
+      method: "codexhost/thread/configuration/updated",
+      cursor: { epoch, sequence: 21 },
+    });
+  }
+  gate.release.resolve(undefined);
+  await inFlight;
+  await remote.read(sessionId, true);
+  assert.deepEqual(firstView.log.projections.permissions, { currentValue: "default" });
 });

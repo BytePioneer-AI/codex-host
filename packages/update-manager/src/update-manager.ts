@@ -11,10 +11,13 @@ import {
   type ArtifactDownloader,
   type ArtifactSource,
 } from "./artifact.js";
-import { prefetchNpmRelease, type NpmReleaseTarget } from "./npm-registry.js";
+import {
+  prefetchNpmRelease,
+  type NpmDownloadProgress,
+  type NpmReleaseTarget,
+} from "./npm-registry.js";
 import {
   parseUpdateStatus,
-  preparedStatus,
   requireSemanticVersion,
   type BackgroundUpdateInstallation,
   type BackgroundUpdateStatus,
@@ -86,7 +89,10 @@ export interface BackgroundUpdateManagerDependencies {
   download?: ArtifactDownloader;
   spawnUpdater?(executable: string, requestPath: string): ChildProcess;
   /** Downloads an npm release into the npm cache before any service stops. */
-  prefetchNpm?(target: NpmReleaseTarget): Promise<void>;
+  prefetchNpm?(
+    target: NpmReleaseTarget,
+    onProgress: (progress: NpmDownloadProgress) => Promise<void>,
+  ): Promise<void>;
   now?(): number;
 }
 
@@ -241,7 +247,9 @@ export function createBackgroundUpdateManager(
   const randomId = dependencies.randomId ?? randomUUID;
   const download = dependencies.download ?? downloadArtifact;
   const spawnUpdater = dependencies.spawnUpdater ?? defaultSpawnUpdater;
-  const prefetchNpm = dependencies.prefetchNpm ?? ((target) => prefetchNpmRelease(target));
+  const prefetchNpm: NonNullable<BackgroundUpdateManagerDependencies["prefetchNpm"]> =
+    dependencies.prefetchNpm ??
+    ((target, onProgress) => prefetchNpmRelease(target, undefined, onProgress));
   const now = dependencies.now ?? Date.now;
   const preparedRequests = new Set<string>();
 
@@ -367,7 +375,7 @@ export function createBackgroundUpdateManager(
     if (platform !== "win32") await chmod(helperPath, 0o700);
     const requestPath = path.join(workDirectory, "request-v1.json");
     const statusPath = path.join(workDirectory, "status-v1.json");
-    await writePrivateJson(statusPath, preparedStatus(version, installation, now()));
+    await writePrivateJson(statusPath, statusSnapshot(version, installation, "downloading"));
     await options.onPrepared?.({ version, installation, statusPath });
     return {
       version,
@@ -390,11 +398,12 @@ export function createBackgroundUpdateManager(
     sourceValue: ArtifactSource,
     fileName: string,
   ): Promise<{ source: ArtifactSource; artifactPath: string }> {
-    const source = validateArtifact(sourceValue);
     const temporaryPath = path.join(common.workDirectory, `.${fileName}.download`);
     const artifactPath = path.join(common.workDirectory, fileName);
-    const progress = progressReporter(common.statusPath, common.version, installation, source.size);
+    let progress: ReturnType<typeof progressReporter> | undefined;
     try {
+      const source = validateArtifact(sourceValue);
+      progress = progressReporter(common.statusPath, common.version, installation, source.size);
       const result = await download(source, temporaryPath, progress.update);
       progress.update({ downloadedBytes: result.bytes, totalBytes: source.size });
       await progress.flush();
@@ -407,7 +416,7 @@ export function createBackgroundUpdateManager(
       return { source, artifactPath };
     } catch (error) {
       await rm(temporaryPath, { force: true });
-      await progress.flush();
+      await progress?.flush();
       await writeFailedStatus(common.statusPath, common.version, installation, error);
       throw error;
     }
@@ -430,11 +439,16 @@ export function createBackgroundUpdateManager(
       ...(common.dataDirectory ? { data_directory: common.dataDirectory } : {}),
       installation,
     };
-    await writePrivateJson(common.requestPath, request);
-    await writeStatusSnapshot(
-      common.statusPath,
-      statusSnapshot(common.version, installation.kind, "prepared"),
-    );
+    try {
+      await writePrivateJson(common.requestPath, request);
+      await writeStatusSnapshot(
+        common.statusPath,
+        statusSnapshot(common.version, installation.kind, "prepared"),
+      );
+    } catch (error) {
+      await writeFailedStatus(common.statusPath, common.version, installation.kind, error);
+      throw error;
+    }
     preparedRequests.add(common.requestPath);
     return Object.freeze({
       version: common.version,
@@ -455,11 +469,14 @@ export function createBackgroundUpdateManager(
         const packageRoot = requireAbsolutePath(options.packageRoot, "npm platform package root");
         // The Updater installs from this cache after the services stop, so a registry that is
         // unreachable or lacks the release fails here while everything keeps running.
-        await writeStatusSnapshot(
-          common.statusPath,
-          statusSnapshot(common.version, "npm", "downloading"),
+        await prefetchNpm(
+          { nodePath, npmCliPath, packageRoot, version: common.version },
+          (npmDownload) =>
+            writeStatusSnapshot(common.statusPath, {
+              ...statusSnapshot(common.version, "npm", "downloading"),
+              npmDownload,
+            }).catch(() => undefined),
         );
-        await prefetchNpm({ nodePath, npmCliPath, packageRoot, version: common.version });
         return await finalize(common, {
           kind: "npm",
           node_path: nodePath,
@@ -480,6 +497,7 @@ export function createBackgroundUpdateManager(
       options: WindowsInstallerUpdateOptions,
     ): Promise<PreparedBackgroundUpdate> {
       if (platform !== "win32") throw new Error("Windows installer updates require Windows");
+      const installRoot = requireAbsolutePath(options.installRoot, "Windows install root");
       const common = await prepareCommon(options, "windows-installer");
       const artifact = await prepareArtifact(
         common,
@@ -493,7 +511,7 @@ export function createBackgroundUpdateManager(
           kind: "windows-installer",
           installer_path: artifact.artifactPath,
           artifact_sha256: artifact.source.sha256,
-          install_root: requireAbsolutePath(options.installRoot, "Windows install root"),
+          install_root: installRoot,
         },
         artifact.artifactPath,
       );
@@ -501,11 +519,11 @@ export function createBackgroundUpdateManager(
 
     async prepareMacOsDmg(options: MacOsDmgUpdateOptions): Promise<PreparedBackgroundUpdate> {
       if (platform !== "darwin") throw new Error("macOS DMG updates require macOS");
-      const common = await prepareCommon(options, "macos-dmg");
       const appPath = requireAbsolutePath(options.appPath, "macOS application path");
       if (path.extname(appPath) !== ".app") {
         throw new Error("macOS application path must end in .app");
       }
+      const common = await prepareCommon(options, "macos-dmg");
       const artifact = await prepareArtifact(common, "macos-dmg", options.artifact, "update.dmg");
       return finalize(
         common,
@@ -523,6 +541,7 @@ export function createBackgroundUpdateManager(
       options: LinuxArchiveUpdateOptions,
     ): Promise<PreparedBackgroundUpdate> {
       if (platform !== "linux") throw new Error("Linux archive updates require Linux");
+      const installRoot = requireAbsolutePath(options.installRoot, "Linux install root");
       const common = await prepareCommon(options, "linux-archive");
       const artifact = await prepareArtifact(
         common,
@@ -536,7 +555,7 @@ export function createBackgroundUpdateManager(
           kind: "linux-archive",
           archive_path: artifact.artifactPath,
           artifact_sha256: artifact.source.sha256,
-          install_root: requireAbsolutePath(options.installRoot, "Linux install root"),
+          install_root: installRoot,
         },
         artifact.artifactPath,
       );

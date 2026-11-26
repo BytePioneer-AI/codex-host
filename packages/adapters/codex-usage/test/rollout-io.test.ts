@@ -135,4 +135,18 @@ describe("streaming Codex rollout reading", () => {
     await expect(early.next()).resolves.toMatchObject({ done: true });
     await rm(file);
   });
+
+  it("skips filtered oversized multi-chunk lines while preserving split UTF-8 and kept lines", async () => {
+    const skipped = `{"type":"response_item","payload":"${"x".repeat(300 * 1024)}"}`;
+    const kept = `{"type":"event_msg","note":"${"中".repeat(90 * 1024)}","tail":"token_count"}`;
+    const file = path.join(root, "mixed.jsonl.zst");
+    await writeFile(file, zstdCompressSync(Buffer.from(`${skipped}\n${kept}\n{"small":1}`)));
+    const lines: string[] = [];
+    for await (const line of rolloutLines(file, signal, (_head, tail) =>
+      tail.includes("token_count"),
+    )) {
+      lines.push(line);
+    }
+    expect(lines).toEqual([kept, '{"small":1}']);
+  });
 });

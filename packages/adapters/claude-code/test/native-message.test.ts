@@ -1034,6 +1034,136 @@ describe("Claude native Turn interpretation", () => {
     );
   });
 
+  it("classifies rate-limit, rejected plan-limit, and billing failures from SDK fields", () => {
+    const rateLimited = new ClaudeNativeTurnAccumulator();
+    rateLimited.consume(assistant("", "rate_limit"));
+    expect(
+      rateLimited.consume(result({ is_error: true, terminal_reason: "api_error" })).terminal,
+    ).toEqual({ status: "failed", kind: "rateLimited" });
+
+    const quotaWithReset = new ClaudeNativeTurnAccumulator();
+    quotaWithReset.consume({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "rejected",
+        rateLimitType: "five_hour",
+        resetsAt: 1_787_674_200,
+      },
+    });
+    quotaWithReset.consume(assistant("", "rate_limit"));
+    expect(
+      quotaWithReset.consume(result({ is_error: true, terminal_reason: "api_error" })).terminal,
+    ).toEqual({ status: "failed", kind: "quotaExhausted", resetsAtUnix: 1_787_674_200 });
+
+    const billing = new ClaudeNativeTurnAccumulator();
+    billing.consume({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 1_787_674_200 },
+    });
+    billing.consume(assistant("", "billing_error"));
+    expect(
+      billing.consume(result({ is_error: true, terminal_reason: "api_error" })).terminal,
+    ).toEqual({ status: "failed", kind: "billing" });
+
+    const outOfRangeReset = new ClaudeNativeTurnAccumulator();
+    outOfRangeReset.consume({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 9_000_000_000_000 },
+    });
+    expect(outOfRangeReset.consume(result({ is_error: true })).terminal).toEqual({
+      status: "failed",
+      kind: "quotaExhausted",
+    });
+
+    // Cleared rejection or an explicit unrelated assistant error must not misclassify as quota.
+    const cleared = new ClaudeNativeTurnAccumulator();
+    cleared.consume({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 1_787_674_200 },
+    });
+    cleared.consume({ type: "rate_limit_event", rate_limit_info: { status: "allowed" } });
+    cleared.consume(assistant("", "rate_limit"));
+    expect(cleared.consume(result({ is_error: true })).terminal).toEqual({
+      status: "failed",
+      kind: "rateLimited",
+    });
+
+    const unrelatedAfterReject = new ClaudeNativeTurnAccumulator();
+    unrelatedAfterReject.consume({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 1_787_674_200 },
+    });
+    unrelatedAfterReject.consume(assistant("", "invalid_request"));
+    expect(unrelatedAfterReject.consume(result({ is_error: true })).terminal).toEqual({
+      status: "failed",
+      kind: "native",
+    });
+
+    // Authentication retains precedence over a rejected rate-limit event.
+    const authFirst = new ClaudeNativeTurnAccumulator();
+    authFirst.consume({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "rejected", resetsAt: 1_787_674_200 },
+    });
+    authFirst.consume(assistant("", "authentication_failed"));
+    expect(authFirst.consume(result({ is_error: true })).terminal).toEqual({
+      status: "failed",
+      kind: "authentication",
+    });
+
+    // When extra-usage overage covers the send, primary rejection is not blocking.
+    for (const overageInfo of [
+      { status: "rejected", resetsAt: 1_787_674_200, isUsingOverage: true },
+      { status: "rejected", resetsAt: 1_787_674_200, overageInUse: true },
+      { status: "rejected", resetsAt: 1_787_674_200, overageStatus: "allowed" },
+      { status: "rejected", resetsAt: 1_787_674_200, overageStatus: "allowed_warning" },
+    ]) {
+      const covered = new ClaudeNativeTurnAccumulator();
+      covered.consume({
+        type: "rate_limit_event",
+        rate_limit_info: { status: "rejected", resetsAt: 1_787_674_200 },
+      });
+      covered.consume({ type: "rate_limit_event", rate_limit_info: overageInfo });
+      expect(covered.consume(result({ is_error: true })).terminal).toEqual({
+        status: "failed",
+        kind: "native",
+      });
+    }
+
+    // Both primary and overage rejected: use overageResetsAt when primary reset is absent or later.
+    const overageRejectedOnly = new ClaudeNativeTurnAccumulator();
+    overageRejectedOnly.consume({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "rejected",
+        overageStatus: "rejected",
+        overageResetsAt: 1_787_760_600,
+      },
+    });
+    expect(overageRejectedOnly.consume(result({ is_error: true })).terminal).toEqual({
+      status: "failed",
+      kind: "quotaExhausted",
+      resetsAtUnix: 1_787_760_600,
+    });
+
+    const overageEarlierReset = new ClaudeNativeTurnAccumulator();
+    overageEarlierReset.consume({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "rejected",
+        rateLimitType: "seven_day",
+        resetsAt: 1_787_940_000,
+        overageStatus: "rejected",
+        overageResetsAt: 1_787_760_600,
+      },
+    });
+    expect(overageEarlierReset.consume(result({ is_error: true })).terminal).toEqual({
+      status: "failed",
+      kind: "quotaExhausted",
+      resetsAtUnix: 1_787_760_600,
+    });
+  });
+
   it("does not read authentication failure from the text of a successful Turn", () => {
     const turn = new ClaudeNativeTurnAccumulator();
     const text = "Configure the OAuth client; a user who is not logged in sees invalid API key.";
@@ -1118,6 +1248,80 @@ describe("Claude native Turn interpretation", () => {
         checkpointId: "recap-output",
       },
     ]);
+  });
+
+  it("notifies once when the main session falls back to another model", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const event = {
+      type: "system",
+      subtype: "model_refusal_fallback",
+      trigger: "refusal",
+      direction: "retry",
+      scope: "session",
+      original_model: "fable-5.2",
+      fallback_model: "claude-opus-5",
+      request_id: "req-fallback-1",
+    };
+    const events = turn.consume(event).events;
+    expect(events[0]).toMatchObject({
+      type: "text.delta",
+      delta:
+        "Model fallback: **fable-5.2 → claude-opus-5**. The session continues on the fallback model; your configured model choice is unchanged.",
+    });
+    expect(events[1]).toMatchObject({ type: "message.completed" });
+    expect(turn.consume({ ...event, uuid: "repeat" }).events).toEqual([]);
+    expect(
+      turn.consume({ ...event, request_id: "req-fallback-2", uuid: "second" }).events.length,
+    ).toBe(2);
+  });
+
+  it("stays silent when only a subagent or side-question fell back", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    expect(
+      turn.consume({
+        type: "system",
+        subtype: "model_refusal_fallback",
+        direction: "retry",
+        scope: "local",
+        original_model: "fable-5.2",
+        fallback_model: "claude-opus-5",
+        request_id: "req-fallback-local",
+      }).events,
+    ).toEqual([]);
+  });
+
+  it("marks the fallback notice completion as a local command and prefers the wire uuid", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const events = turn.consume({
+      type: "system",
+      subtype: "model_refusal_fallback",
+      direction: "retry",
+      scope: "session",
+      original_model: "fable-5.2",
+      fallback_model: "claude-opus-5",
+      request_id: "req-fallback-uuid",
+      uuid: "fb-sys-uuid",
+    }).events;
+    expect(events[1]).toEqual({
+      type: "message.completed",
+      messageId: "fb-sys-uuid",
+      localCommand: true,
+    });
+  });
+
+  it("stays silent when the fallback direction is a revert to the configured model", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    expect(
+      turn.consume({
+        type: "system",
+        subtype: "model_refusal_fallback",
+        direction: "revert",
+        scope: "session",
+        original_model: "fable-5.2",
+        fallback_model: "claude-opus-5",
+        request_id: "req-fallback-revert",
+      }).events,
+    ).toEqual([]);
   });
 
   it("synthesizes a complete Compaction lifecycle when only a boundary is available", () => {

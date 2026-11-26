@@ -768,6 +768,250 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
+  it("defers explicit Thinking validation to open for unobserved Models in activeModel-scoped catalogs", async () => {
+    const activeModel = harnessModelRefSchema.parse({ id: "active-model" });
+    const otherModel = harnessModelRefSchema.parse({ id: "other-model" });
+    const unsupportedModel = harnessModelRefSchema.parse({ id: "no-thinking-model" });
+    const max = harnessThinkingOptionIdSchema.parse("max");
+    const bogus = harnessThinkingOptionIdSchema.parse("bogus");
+    const activeOnlyCatalog = harnessModelCatalogSchema.parse({
+      models: [
+        { ref: activeModel, label: "Active", supportedThinkingOptionIds: ["high"] },
+        { ref: otherModel, label: "Other" },
+        { ref: unsupportedModel, label: "No Thinking" },
+      ],
+      defaultModel: activeModel,
+      thinkingOptions: [{ id: "high", label: "High" }],
+      defaultThinkingOptionId: "high",
+      thinkingOptionsScope: "activeModel",
+    });
+    class ActiveOnlyAdapter extends FakeHarnessAdapter {
+      readonly openInputs: Parameters<FakeHarnessAdapter["open"]>[0][] = [];
+      selectThinking = true;
+      rejectNonDeferredOpen = false;
+
+      override async inspect() {
+        const result = await super.inspect();
+        if (result.status !== "ready") return result;
+        return {
+          ...result,
+          capabilities: {
+            ...result.capabilities,
+            configuration: {
+              ...result.capabilities.configuration,
+              selectThinkingOption: this.selectThinking,
+            },
+          },
+        };
+      }
+
+      override async open(input: Parameters<FakeHarnessAdapter["open"]>[0]) {
+        this.openInputs.push(input);
+        if (this.rejectNonDeferredOpen) {
+          return {
+            ok: false as const,
+            error: {
+              code: "invalidRequest" as const,
+              message: "Unavailable execution policy mode",
+              retryable: false,
+            },
+          };
+        }
+        if (input.kind === "create" && input.model?.id === otherModel.id) {
+          if (input.thinkingOptionId === bogus) {
+            return {
+              ok: false as const,
+              error: {
+                code: "invalidRequest" as const,
+                message: "Thinking option is not in this Model's native catalog",
+                retryable: false,
+              },
+            };
+          }
+          const rest = { ...input };
+          delete rest.thinkingOptionId;
+          return super.open(rest);
+        }
+        if (input.kind === "create" && input.model?.id === unsupportedModel.id) {
+          if (input.thinkingOptionId) {
+            return {
+              ok: false as const,
+              error: {
+                code: "unsupported" as const,
+                message: "Target Model does not advertise a native Thinking selector",
+                retryable: false,
+              },
+            };
+          }
+          return super.open(input);
+        }
+        return super.open(input);
+      }
+    }
+    const adapter = new ActiveOnlyAdapter(harnessIdSchema.parse("pi"), activeOnlyCatalog);
+    const value = await fixture(adapter);
+    const base = {
+      harnessId: "pi" as const,
+      cwd: "/synthetic",
+      parentThreadId: "parent-thread",
+    };
+    try {
+      const deferred = await value.coordinator.start({
+        ...base,
+        task: "explicit unobserved model and thinking",
+        model: otherModel,
+        thinkingOptionId: max,
+      });
+      expect(deferred.configuration?.requested).toEqual({
+        model: otherModel,
+        thinkingOptionId: max,
+      });
+      expect(adapter.openInputs.at(-1)).toMatchObject({ model: otherModel, thinkingOptionId: max });
+
+      await expect(
+        value.coordinator.start({
+          ...base,
+          task: "active model invalid thinking",
+          model: activeModel,
+          thinkingOptionId: max,
+        }),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        details: { validThinkingOptionIds: ["high"] },
+      });
+
+      const deliveredBeforeReject = value.delivered.length;
+      await expect(
+        value.coordinator.start({
+          ...base,
+          task: "unobserved model native invalidRequest rejection",
+          model: otherModel,
+          thinkingOptionId: bogus,
+        }),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Thinking option is not in this Model's native catalog",
+      });
+      await expect(
+        value.coordinator.start({
+          ...base,
+          task: "unobserved model native unsupported rejection",
+          model: unsupportedModel,
+          thinkingOptionId: max,
+        }),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Target Model does not advertise a native Thinking selector",
+      });
+      expect(await value.repository.listDelegations()).toHaveLength(1);
+      expect(await value.repository.list()).toHaveLength(1);
+      expect(value.runtime.values()).toHaveLength(1);
+      expect(value.delivered).toHaveLength(deliveredBeforeReject);
+
+      // Non-deferred open invalidRequest failures keep DELEGATION_FAILED rather than INVALID_ARGUMENT.
+      adapter.rejectNonDeferredOpen = true;
+      await expect(
+        value.coordinator.start({
+          ...base,
+          task: "non-deferred open policy error",
+          model: activeModel,
+          thinkingOptionId: high.thinkingOptionId,
+        }),
+      ).rejects.toMatchObject({
+        code: "DELEGATION_FAILED",
+        message: "Unavailable execution policy mode",
+      });
+      adapter.rejectNonDeferredOpen = false;
+
+      await value.setDelegationDefault({ model: otherModel, thinkingOptionId: "high" });
+      const savedFallback = await value.coordinator.start({
+        ...base,
+        task: "saved thinking on unobserved model falls back",
+      });
+      expect(savedFallback.configuration?.requested).toEqual({ model: otherModel });
+      expect(adapter.openInputs.at(-1)).not.toHaveProperty("thinkingOptionId");
+
+      // When native default supports explicit Thinking, an unobserved saved Model falls back to it.
+      const nativeDefaultFallback = await value.coordinator.start({
+        ...base,
+        task: "explicit thinking supported by native default overrides unobserved saved model",
+        thinkingOptionId: high.thinkingOptionId,
+      });
+      expect(nativeDefaultFallback.configuration?.requested).toEqual({
+        thinkingOptionId: high.thinkingOptionId,
+      });
+      expect(adapter.openInputs.at(-1)).not.toHaveProperty("model");
+      expect(adapter.openInputs.at(-1)).toMatchObject({ thinkingOptionId: high.thinkingOptionId });
+
+      // When native default does not support explicit Thinking, defer on the saved unobserved Model.
+      const explicitOnSavedModel = await value.coordinator.start({
+        ...base,
+        task: "explicit thinking unsupported by native default preserves saved unobserved model",
+        thinkingOptionId: max,
+      });
+      expect(explicitOnSavedModel.configuration?.requested).toEqual({
+        model: otherModel,
+        thinkingOptionId: max,
+      });
+      expect(adapter.openInputs.at(-1)).toMatchObject({ model: otherModel, thinkingOptionId: max });
+
+      // Active model without Thinking (selectThinkingOption: false) still defers for other Models,
+      // while rejecting explicit Thinking on the active Model itself.
+      adapter.selectThinking = false;
+      const deferredFromNoThinkingDefault = await value.coordinator.start({
+        ...base,
+        task: "unobserved model defers even when active default lacks thinking selector",
+        model: otherModel,
+        thinkingOptionId: max,
+      });
+      expect(deferredFromNoThinkingDefault.configuration?.requested).toEqual({
+        model: otherModel,
+        thinkingOptionId: max,
+      });
+      await expect(
+        value.coordinator.start({
+          ...base,
+          task: "active model fails fast when selectThinkingOption is false",
+          model: activeModel,
+          thinkingOptionId: high.thinkingOptionId,
+        }),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: "Harness does not support Thinking selection",
+      });
+    } finally {
+      await value.close();
+    }
+
+    const completeCatalog = harnessModelCatalogSchema.parse({
+      models: [
+        { ref: activeModel, label: "Active", supportedThinkingOptionIds: ["high"] },
+        { ref: otherModel, label: "Other" },
+      ],
+      defaultModel: activeModel,
+      thinkingOptions: [{ id: "high", label: "High" }],
+      defaultThinkingOptionId: "high",
+    });
+    const completeValue = await fixture(
+      new RecordingAdapter(harnessIdSchema.parse("pi"), completeCatalog),
+    );
+    try {
+      await expect(
+        completeValue.coordinator.start({
+          ...base,
+          task: "complete catalog omits supported thinking",
+          model: otherModel,
+          thinkingOptionId: high.thinkingOptionId,
+        }),
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        details: { validThinkingOptionIds: [] },
+      });
+    } finally {
+      await completeValue.close();
+    }
+  });
+
   it("starts natively if a preference-only catalog check fails, then uses the saved selection after recovery", async () => {
     const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
     const value = await fixture(adapter);
@@ -1301,6 +1545,59 @@ describe("HarnessDelegationCoordinator", () => {
       await expect(
         value.coordinator.wait({ threadId: started.threadId, view: "result", timeoutMs: 10 }),
       ).resolves.toMatchObject({ timedOut: true, pendingQuestions: [] });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("reads and exports an unloaded external Thread cold without opening a Harness Session", async () => {
+    const adapter = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter);
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "cold read task",
+        parentThreadId: "parent",
+      });
+      const thread = value.registered[0];
+      const session = adapter.sessions[0];
+      if (!thread || !session) throw new Error("delegated Thread was not created");
+      session.appendText("cold reply");
+      session.succeedTurn();
+      thread.running = false;
+      thread.activeTurnId = null;
+      const snapshot = await session.readSnapshot();
+      if (!snapshot.ok) throw new Error(snapshot.error.message);
+      await session.close();
+      value.runtime.remove(thread.id);
+      expect(value.runtime.get(thread.id)).toBeUndefined();
+
+      const open = vi.spyOn(adapter, "open");
+      const readSnapshot = vi.fn(async () => snapshot);
+      adapter.readSnapshot = readSnapshot;
+
+      const readResult = await value.coordinator.read({
+        threadId: started.threadId,
+        view: "messages",
+      });
+      expect(readResult).toMatchObject({
+        threadId: started.threadId,
+        harnessId: "pi",
+        status: "completed",
+        totalTurns: 1,
+      });
+      expect(JSON.stringify(readResult)).toContain("cold reply");
+
+      const exported = await value.coordinator.exportThread({
+        threadId: started.threadId,
+        out: path.join(value.directory, "cold-export.json"),
+      });
+      expect(exported).toMatchObject({ harnessId: "pi", turns: 1, complete: true });
+      expect(await readFile(exported.path, "utf8")).toContain("cold reply");
+
+      expect(open).not.toHaveBeenCalled();
+      expect(readSnapshot).toHaveBeenCalledTimes(2);
+      expect(value.runtime.get(thread.id)).toBeUndefined();
     } finally {
       await value.close();
     }

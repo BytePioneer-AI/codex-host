@@ -1,5 +1,7 @@
 import { WEB_ACTIVE_TURN_PROJECTION } from "@codexhost/shared-contracts";
 import { SessionId, SessionSeq } from "@deepseek-ai/dsh-session/types";
+import { RemoteError } from "@deepseek-ai/dsh-typert-protocol";
+import { MessageId } from "@deepseek-ai/dsh-llm/brand";
 import { expect, it, vi } from "vitest";
 import { TYPERT_REMOTE } from "../generated/remote.js";
 import { ProjectionValueStore } from "../src/client/sessions/projection-store.ts";
@@ -13,12 +15,12 @@ const sessionId = SessionId("thread");
 const text = "Steer the visible Turn";
 const content = [{ type: "text" as const, text }];
 
-function fixture() {
+function fixture(id = sessionId) {
   const prompt = vi
     .fn<SessionRemotes["session"]["prompt"]>()
     .mockResolvedValue({ ok: true, value: { accepted: true } });
   const projections = new ProjectionValueStore();
-  const session = new Session(sessionId, { session: { prompt } } as unknown as SessionRemotes, {
+  const session = new Session(id, { session: { prompt } } as unknown as SessionRemotes, {
     projections,
   });
   return { prompt, projections, session };
@@ -70,6 +72,105 @@ it("uses the current projection for a direct steer without a registered submissi
     undefined,
   );
   await session.dispose();
+});
+
+it("keeps the first echo across canonical binding and draft disposal", async () => {
+  const { session: draft } = fixture(SessionId("draft-thread"));
+  const { session: canonical } = fixture(SessionId("canonical-thread"));
+  const retired: unknown[] = [];
+  const submission = draft.beginSubmission({
+    mode: "queue",
+    text: "First message",
+    attachments: [],
+    onRetire: (result) => retired.push(result),
+  });
+  const echo = draft.getSnapshot().pendingSubmissions[0];
+
+  draft.handoffSubmissions(canonical);
+  draft.handoffSubmissions(canonical);
+  expect(draft.getSnapshot().pendingSubmissions).toEqual([echo]);
+  expect(canonical.getSnapshot().pendingSubmissions).toEqual([echo]);
+  await draft.dispose();
+  expect(canonical.getSnapshot().pendingSubmissions).toEqual([echo]);
+  expect(retired).toEqual([]);
+
+  // A pre-prompt failure still reaches the new owner, including after draft disposal.
+  submission.abandon();
+  expect(canonical.getSnapshot().pendingSubmissions).toEqual([]);
+  expect(retired).toEqual([{ reason: "failed" }]);
+  await canonical.dispose();
+  expect(retired).toHaveLength(1);
+});
+
+it("routes an in-flight prompt rejection to its canonical echo", async () => {
+  const { session: draft, prompt } = fixture(SessionId("draft-thread"));
+  const { session: canonical } = fixture(SessionId("canonical-thread"));
+  let reject!: (value: Awaited<ReturnType<typeof prompt>>) => void;
+  prompt.mockReturnValue(
+    new Promise((resolve) => {
+      reject = resolve;
+    }),
+  );
+  const submission = draft.beginSubmission({ mode: "queue", text, attachments: [] });
+  const sending = draft.prompt(content, "queue", undefined, submission.requestId);
+  draft.handoffSubmissions(canonical);
+  await draft.dispose();
+
+  reject({ ok: false, error: new RemoteError("test/rejected", "Rejected", {}) });
+  await sending;
+  expect(canonical.getSnapshot().pendingSubmissions).toEqual([]);
+  expect(canonical.getSnapshot().promptError?.error.code).toBe("test/rejected");
+  await canonical.dispose();
+});
+
+it("retires a transferred echo once when the canonical history already contains its message", async () => {
+  const { session: draft, prompt } = fixture(SessionId("draft-thread"));
+  const { session: canonical } = fixture(SessionId("canonical-thread"));
+  let complete!: (value: Awaited<ReturnType<typeof prompt>>) => void;
+  prompt.mockReturnValue(
+    new Promise((resolve) => {
+      complete = resolve;
+    }),
+  );
+  const retired: unknown[] = [];
+  const submission = draft.beginSubmission({
+    mode: "queue",
+    text,
+    attachments: [],
+    onRetire: (result) => retired.push(result),
+  });
+  const sending = draft.prompt(content, "queue", undefined, submission.requestId);
+  canonical.eventSource.replace(
+    [
+      {
+        type: "event",
+        event: {
+          type: "user/message",
+          seq: SessionSeq(0),
+          time: 1,
+          data: {
+            id: MessageId("message"),
+            role: "user",
+            content,
+            source: { kind: "user", rpcId: submission.requestId },
+          },
+        },
+      },
+    ],
+    false,
+  );
+
+  draft.handoffSubmissions(canonical);
+  await draft.dispose();
+  await vi.waitFor(() => expect(canonical.getSnapshot().pendingSubmissions).toEqual([]));
+  expect(retired).toEqual([{ reason: "observed", attachments: [] }]);
+  canonical.eventSource.replace([], false);
+  complete({ ok: false, error: new RemoteError("remote/outcome-unknown", "Disconnected", {}) });
+  await expect(sending).resolves.toEqual({ ok: true, value: { accepted: true } });
+  expect(canonical.getSnapshot().promptError).toBeNull();
+  submission.abandon();
+  await canonical.dispose();
+  expect(retired).toHaveLength(1);
 });
 
 it("preserves the remote delivery fields in the strict prompt wire codecs", () => {

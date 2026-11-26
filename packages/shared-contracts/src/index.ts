@@ -219,6 +219,7 @@ export {
   harnessSessionCapabilitiesSchema,
   harnessThinkingOptionIdSchema,
   harnessThinkingOptionSchema,
+  harnessThinkingOptionsScopeSchema,
   harnessWebUiCapabilitySchema,
   harnessWebUiOpenParamsSchema,
   harnessWebUiOpenResultSchema,
@@ -252,6 +253,7 @@ export type {
   HarnessSessionCapabilities,
   HarnessThinkingOption,
   HarnessThinkingOptionId,
+  HarnessThinkingOptionsScope,
   HarnessWebUiCapability,
   HarnessWebUiOpenParams,
   HarnessWebUiOpenResult,
@@ -355,6 +357,7 @@ export {
   updatePhaseSchema,
   updateSemanticVersionSchema,
   updateStartResultSchema,
+  npmDownloadProgressSchema,
   updateStatusResultSchema,
   updateStatusSchema,
 } from "./updates.js";
@@ -396,8 +399,10 @@ export const packageMetadata = {
 
 export {
   DELEGATION_MENTION_PATH_PREFIX,
+  REMOTE_DELEGATION_MENTION_PATH_PREFIX,
   HARNESS_COMMAND_MENTION_PATH_PREFIX,
   delegationMentionPath,
+  remoteDelegationMentionPath,
   harnessCommandMentionPath,
   harnessCommandReferences,
   restoreHarnessCommandMentions,
@@ -548,6 +553,14 @@ export {
   remotePeerRenameWorkspaceParamsSchema,
   remotePeerDeleteWorkspaceParamsSchema,
   remotePeerWorkspaceMutationResultSchema,
+  DELEGATION_REMOTE_HOSTS_METHOD,
+  DELEGATION_HOST_HARNESSES_METHOD,
+  delegationRemoteHostsParamsSchema,
+  delegationRemoteHostOptionSchema,
+  delegationRemoteHostsResultSchema,
+  delegationHostHarnessesParamsSchema,
+  delegationHostHarnessOptionSchema,
+  delegationHostHarnessesResultSchema,
   type RemotePeerCapabilities,
   type RemotePeerColor,
   type RemotePeerTransportKind,
@@ -581,6 +594,12 @@ export {
   type RemotePeerRenameWorkspaceParams,
   type RemotePeerDeleteWorkspaceParams,
   type RemotePeerWorkspaceMutationResult,
+  type DelegationRemoteHostsParams,
+  type DelegationRemoteHostOption,
+  type DelegationRemoteHostsResult,
+  type DelegationHostHarnessesParams,
+  type DelegationHostHarnessOption,
+  type DelegationHostHarnessesResult,
 } from "./remote-peers.js";
 
 export {
@@ -588,4 +607,4 @@ export {
   officialCodexModelSelection,
   normalizeOfficialCodexModelRef,
 } from "./official-codex-model-ref.js";
-export { desktopProjectDefinitions } from "./desktop-project-definitions.js";
+export { desktopProjectDefinitions, desktopProjectPathKey } from "./desktop-project-definitions.js";

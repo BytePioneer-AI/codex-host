@@ -215,6 +215,14 @@ export const sessionCommandExecuteParamsSchema = sessionParamsSchema.extend({
   command: brokerCommandInvocationSchema,
 });
 
+export const adapterReadSnapshotSchema = z
+  .object({
+    nativeRef: nativeSessionRefSchema,
+    cwd: cwdSchema,
+    environment: brokerEnvironmentSchema.optional(),
+  })
+  .strict();
+
 export const subagentReadSnapshotSchema = z
   .object({
     parent: nativeSessionRefSchema,
@@ -229,6 +237,8 @@ export const harnessErrorSchema = z
       "notInstalled",
       "unavailable",
       "authenticationRequired",
+      "rateLimited",
+      "quotaExhausted",
       "sessionNotFound",
       "sessionBusy",
       "checkpointNotFound",
@@ -242,6 +252,12 @@ export const harnessErrorSchema = z
     ]),
     message: z.string().max(65_536),
     retryable: z.boolean(),
+    resetsAt: z
+      .string()
+      .min(1)
+      .max(128)
+      .refine((value) => !Number.isNaN(Date.parse(value)), "resetsAt must be a valid timestamp")
+      .optional(),
     diagnostic: z.string().max(65_536).optional(),
     stage: z.string().max(1_024).optional(),
     durationMs: z.number().finite().nonnegative().optional(),

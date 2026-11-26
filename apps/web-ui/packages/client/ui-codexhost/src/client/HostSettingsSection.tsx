@@ -18,6 +18,7 @@ export interface WebSettingsPages {
     host: HTMLElement,
     options: { locale: string; colorScheme: "light" | "dark" },
   ): () => void;
+  focusConnectionsAgent?(agentKey: string): void;
   openReleaseAnnouncement?(
     announcement: ReleaseAnnouncement,
     options: {

@@ -249,12 +249,17 @@ describe("Host update coordinator", () => {
 
   it("hands a macOS update to Launcher without starting the Helper", async () => {
     const fixture = await npmFixture();
+    const platformDownload = Promise.withResolvers<undefined>();
     const spawnUpdater = vi.fn(() => ({ pid: 777 }) as unknown as ChildProcess);
     const manager = createBackgroundUpdateManager({
       platform: "darwin",
       randomId: () => "one",
       spawnUpdater,
       now: () => 10_000,
+      prefetchNpm: async (_target, report) => {
+        await report({ completed: 1, total: 2 });
+        await platformDownload.promise;
+      },
     });
     const coordinator = createHostUpdateCoordinator({
       hostRuntimePath: fixture.hostRuntimePath,
@@ -273,12 +278,22 @@ describe("Host update coordinator", () => {
       installationAvailable: true,
     });
     await expect(coordinator.start()).resolves.toMatchObject({
-      status: { version: "1.2.3", installation: "npm", phase: "prepared" },
+      status: { version: "1.2.3", installation: "npm", phase: "downloading" },
     });
-    // A second request joins the operation in progress, which may still be downloading.
-    await expect(coordinator.start()).resolves.toMatchObject({
-      status: { version: "1.2.3", installation: "npm" },
-    });
+    try {
+      await vi.waitFor(async () =>
+        expect((await coordinator.status()).status).toMatchObject({
+          phase: "downloading",
+          npmDownload: { completed: 1, total: 2 },
+        }),
+      );
+      // A second request joins the operation in progress.
+      await expect(coordinator.start()).resolves.toMatchObject({
+        status: { version: "1.2.3", installation: "npm", phase: "downloading" },
+      });
+    } finally {
+      platformDownload.resolve(undefined);
+    }
     const home = fixture.environment.HOME;
     if (!home) throw new Error("fixture HOME is missing");
     const updaterRequestPath = path.join(
@@ -290,9 +305,10 @@ describe("Host update coordinator", () => {
       "update-1.2.3-one",
       "request-v1.json",
     );
-    await vi.waitFor(async () =>
-      expect(await readFile(updaterRequestPath, "utf8")).not.toEqual(""),
-    );
+    await vi.waitFor(async () => {
+      expect((await coordinator.status()).status?.phase).toBe("prepared");
+      expect(await readFile(updaterRequestPath, "utf8")).not.toEqual("");
+    });
     expect(spawnUpdater).not.toHaveBeenCalled();
   });
 
@@ -315,7 +331,7 @@ describe("Host update coordinator", () => {
     });
 
     await expect(coordinator.start()).resolves.toMatchObject({
-      status: { version: "1.2.3", installation: "npm", phase: "prepared" },
+      status: { version: "1.2.3", installation: "npm", phase: "downloading" },
     });
     const localAppData = fixture.environment.LOCALAPPDATA;
     if (!localAppData) throw new Error("fixture LOCALAPPDATA is missing");

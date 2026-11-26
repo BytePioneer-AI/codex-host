@@ -484,7 +484,16 @@ const peerManager = new PeerHostManager(
     },
   },
 );
-peerManager.register(rpc);
+peerManager.register(rpc, {
+  localHostname: hostname(),
+  localDelegationAvailable: () =>
+    process.env.CODEXHOST_DISABLE_PEER_DELEGATION !== "1" &&
+    chHost.realtime?.peerDelegationSupported?.() === true,
+  localHarnesses: async () => {
+    const catalog = await sessions.catalog.models().catch(() => undefined);
+    return (catalog?.groups ?? []).map((group) => ({ id: group.id, name: group.name }));
+  },
+});
 const peerDelegationBridge = await startPeerDelegationBridge({
   peerManager,
   dataDirectory: displayDirectory,

@@ -371,4 +371,40 @@ describe("External Side Chats", () => {
       await stopFixture(fixture);
     }
   });
+
+  it("hides inherited source Turns during cold history reads of an idle-released Side Chat", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const fixture = createFixture();
+    try {
+      const sourceId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+        historyMode: "paginated",
+      });
+      await completePiTurn(fixture, sourceId, 2);
+      const sideChatId = await openSideChat(fixture, sourceId, 3);
+      const sideChat = fixture.adapter.sessions[1];
+      if (!sideChat) throw new Error("Missing Side Chat Session");
+      const snapshot = await sideChat.readSnapshot();
+      if (!snapshot.ok) throw new Error(snapshot.error.message);
+      expect(snapshot.value.turns.length).toBeGreaterThan(0);
+
+      await call(fixture, 5, "codexhost/settings/idle-release/set", {
+        enabled: true,
+        timeoutMinutes: 10,
+      });
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+      expect(await call(fixture, 6, "codexhost/sessions/loaded/list", {})).toMatchObject({
+        result: [],
+      });
+
+      const open = vi.spyOn(fixture.adapter, "open");
+      fixture.adapter.readSnapshot = vi.fn(async () => snapshot);
+
+      const listed = await call(fixture, 7, "thread/turns/list", { threadId: sideChatId });
+      expect(listed.result).toMatchObject({ data: [] });
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      await stopFixture(fixture);
+      vi.useRealTimers();
+    }
+  });
 });

@@ -8,6 +8,8 @@ import { homedir, tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import {
+  DELEGATION_HOST_HARNESSES_METHOD,
+  DELEGATION_REMOTE_HOSTS_METHOD,
   REMOTE_PEERS_METHODS as methods,
   remotePeerIntroduceResultSchema,
   remotePeerPairingReportSchema,
@@ -2305,4 +2307,235 @@ it("uses shareable local origins in priority order and restricts loopback to a c
   assert.ok("error" in resolvePeerSelfOrigin(urls, fallback, fallback));
   assert.ok("error" in resolvePeerSelfOrigin([], undefined));
   assert.deepEqual(resolvePeerSelfOrigin([], fallback, fallback), { origin: fallback });
+});
+
+it("lists reachable remote delegation hosts per session perspective and resolves target host Harnesses", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "peer-delegation-discovery-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const localNodeId = "node-hub-a";
+  const token = "delegation-discovery-token";
+
+  const makePeerServer = async (opts: {
+    nodeId: string;
+    hostname: string;
+    delegation: boolean;
+    peerNodes?: Record<string, string>;
+    harnesses?: Array<{ id: string; name: string }>;
+  }) => {
+    const server = createServer(async (req, res) => {
+      if (req.headers.authorization !== `Bearer ${token}`) {
+        res.writeHead(401).end();
+        return;
+      }
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/api/peer/v1/manifest") {
+        res.writeHead(200, { "content-type": "application/json" }).end(
+          JSON.stringify({
+            version: "0.27.0",
+            platform: "darwin",
+            hostname: opts.hostname,
+            epoch: `epoch-${opts.nodeId}`,
+            nodeId: opts.nodeId,
+            ...(opts.peerNodes ? { peerNodes: opts.peerNodes } : {}),
+            projects: [],
+            capabilities: opts.delegation ? { delegation: 1 } : {},
+          }),
+        );
+        return;
+      }
+      if (url.pathname === "/api/ch/v1/events") {
+        res.writeHead(200);
+        res.write(
+          `${JSON.stringify({ type: "hello", version: 1, cursor: { epoch: `epoch-${opts.nodeId}`, sequence: 1 }, reset: true })}\n`,
+        );
+        return;
+      }
+      if (url.pathname === "/api/ch/v1/rpc") {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as {
+          method?: string;
+          params?: { harnessId?: string };
+        };
+        if (body.method === "codexhost/harness/plugins/list") {
+          res.writeHead(200, { "content-type": "application/json" }).end(
+            JSON.stringify({
+              result: {
+                plugins: (opts.harnesses ?? [])
+                  .filter((h) => h.id !== "codex")
+                  .map((h) => ({ id: h.id, name: h.name, version: "1.0.0" })),
+              },
+            }),
+          );
+          return;
+        }
+        if (body.method === "codexhost/harness/inspect") {
+          const harnessId = body.params?.harnessId ?? "";
+          const found = (opts.harnesses ?? []).find((h) => h.id === harnessId);
+          res.writeHead(200, { "content-type": "application/json" }).end(
+            JSON.stringify({
+              result: found
+                ? {
+                    status: "ready",
+                    catalog: {
+                      models: [
+                        {
+                          ref: { id: `${found.id}-model` },
+                          label: `${found.name} Model`,
+                          supportedThinkingOptionIds: ["medium"],
+                        },
+                      ],
+                      defaultModel: { id: `${found.id}-model` },
+                      thinkingOptions: [{ id: "medium", label: "Medium" }],
+                      defaultThinkingOptionId: "medium",
+                    },
+                    capabilities: {
+                      configuration: {
+                        selectModel: true,
+                        selectThinkingOption: true,
+                        selectPermissionMode: false,
+                        permissionModeScope: "live",
+                      },
+                      history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+                    },
+                  }
+                : {
+                    status: "notInstalled",
+                    error: { code: "unavailable", message: "Not installed", retryable: false },
+                  },
+            }),
+          );
+          return;
+        }
+      }
+      res.writeHead(404).end();
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const addr = server.address() as { port: number };
+    t.after(() => server.close());
+    return `http://127.0.0.1:${addr.port}`;
+  };
+
+  // Peer B paired with Hub A (node-hub-a) and Peer C (node-peer-c), but NOT Peer D (node-peer-d).
+  const originB = await makePeerServer({
+    nodeId: "node-peer-b",
+    hostname: "mac-studio",
+    delegation: true,
+    peerNodes: {
+      "remote-peer:a-on-b": localNodeId,
+      "remote-peer:c-on-b": "node-peer-c",
+    },
+    harnesses: [
+      { id: "claude-code", name: "Claude Code" },
+      { id: "antigravity", name: "Antigravity" },
+    ],
+  });
+  const originC = await makePeerServer({
+    nodeId: "node-peer-c",
+    hostname: "home-mini",
+    delegation: true,
+    harnesses: [{ id: "pi", name: "Pi" }],
+  });
+  const originD = await makePeerServer({
+    nodeId: "node-peer-d",
+    hostname: "unpaired-box",
+    delegation: true,
+  });
+  const originLegacy = await makePeerServer({
+    nodeId: "node-legacy",
+    hostname: "legacy-box",
+    delegation: false,
+  });
+
+  const data = new DataDir(root);
+  const events = new EventHub(root);
+  const manager = new PeerHostManager(new PeerHostStore(data), async () => [], events, {
+    allowLoopback: true,
+    localNodeId,
+  });
+  t.after(() => manager.close());
+
+  const rpc = new RpcRegistry();
+  manager.register(rpc, {
+    localHostname: "work-mbp",
+    localDelegationAvailable: () => true,
+    localHarnesses: async () => [{ id: "codex", name: "Codex" }],
+  });
+  const localAuth = { local: true, credential: "local", release() {} };
+
+  const addPeer = async (origin: string, name: string, color: string) => {
+    const added = await rpc.dispatch(
+      methods.add,
+      { args: { connectionUrl: `${origin}/#token=${token}`, name, color } },
+      localAuth,
+    );
+    assert.equal(added.ok, true);
+    const hostId = (added.value as { peer: { hostId: string } }).peer.hostId;
+    await manager.waitForInitialConnection(hostId);
+    return hostId;
+  };
+
+  const hostB = await addPeer(originB, "Mac Studio", "blue");
+  const hostC = await addPeer(originC, "Home Mini", "green");
+  const hostD = await addPeer(originD, "Unpaired Box", "amber");
+  await addPeer(originLegacy, "Legacy Box", "slate");
+
+  // 1. From Hub A's local session: lists only connected delegation-capable peers (B, C, D; not Legacy).
+  const fromLocal = await rpc.dispatch(
+    DELEGATION_REMOTE_HOSTS_METHOD,
+    { args: { request: { sessionHostId: "local" } } },
+    localAuth,
+  );
+  assert.equal(fromLocal.ok, true);
+  assert.deepEqual(
+    (fromLocal.value as { hosts: Array<{ hostId: string }> }).hosts.map((h) => h.hostId).sort(),
+    [hostB, hostC, hostD].sort(),
+  );
+
+  // 2. From Peer B's session: lists Hub A (isLocal) and Peer C (in B's peerNodes), excluding B itself and unpaired D.
+  const fromPeerB = await rpc.dispatch(
+    DELEGATION_REMOTE_HOSTS_METHOD,
+    { args: { request: { sessionHostId: hostB } } },
+    localAuth,
+  );
+  assert.equal(fromPeerB.ok, true);
+  assert.deepEqual(
+    (fromPeerB.value as { hosts: Array<{ hostId: string; isLocal?: boolean }> }).hosts,
+    [
+      { hostId: "local", name: "work-mbp", isLocal: true, hostname: "work-mbp" },
+      { hostId: hostC, name: "Home Mini", color: "green", hostname: "home-mini" },
+    ],
+  );
+
+  // 3. SSH remote session returns empty list.
+  const fromSsh = await rpc.dispatch(
+    DELEGATION_REMOTE_HOSTS_METHOD,
+    { args: { request: { sessionHostId: "remote-ssh:box" } } },
+    localAuth,
+  );
+  assert.equal(fromSsh.ok, true);
+  assert.deepEqual((fromSsh.value as { hosts: unknown[] }).hosts, []);
+
+  // 4. Target host Harnesses: local returns localHarnesses, Peer B returns Peer B's ready Harnesses.
+  const localHarnesses = await rpc.dispatch(
+    DELEGATION_HOST_HARNESSES_METHOD,
+    { args: { request: { hostId: "local" } } },
+    localAuth,
+  );
+  assert.equal(localHarnesses.ok, true);
+  assert.deepEqual(localHarnesses.value, { harnesses: [{ id: "codex", name: "Codex" }] });
+
+  const peerBHarnesses = await rpc.dispatch(
+    DELEGATION_HOST_HARNESSES_METHOD,
+    { args: { request: { hostId: hostB } } },
+    localAuth,
+  );
+  assert.equal(peerBHarnesses.ok, true);
+  assert.deepEqual(peerBHarnesses.value, {
+    harnesses: [
+      { id: "claude-code", name: "Claude Code" },
+      { id: "antigravity", name: "Antigravity" },
+    ],
+  });
 });

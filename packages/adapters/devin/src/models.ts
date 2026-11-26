@@ -137,6 +137,7 @@ export function devinCatalog(info: DevinSessionInfo): HarnessModelCatalog {
     models,
     defaultModel: devinModelRef(current),
     thinkingOptions: thinking.options,
+    thinkingOptionsScope: "activeModel",
     ...(thinking.current ? { defaultThinkingOptionId: thinking.current } : {}),
   };
 }

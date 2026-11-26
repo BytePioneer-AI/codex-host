@@ -26,6 +26,84 @@ function thread(items?: ChThread["turns"][number]["items"], status = "completed"
   };
 }
 
+it("restores tool cards and the final answer in converted Codex history", () => {
+  const call =
+    "[external_agent_tool_call: Bash]\ndescription: Show help\ncommand: example --help\n[/external_agent_tool_call]";
+  const result = "[external_agent_tool_result]\nUsage: example\n[/external_agent_tool_result]";
+  const emptyResult = "[external_agent_tool_result]\n[/external_agent_tool_result]";
+  const answer = "The task finished.";
+  const prompt = "@Hermes 让它回复 1";
+  const instruction =
+    "[codexhost delegation] The user mentioned @Hermes (Harness `hermes`). Use the codexhost-delegation skill to delegate this request to that Harness with `delegate start --harness <id>` through the executable in CODEXHOST_CLI_PATH, instead of doing the task yourself.";
+  const historical = thread();
+  historical.modelProvider = "openai";
+  historical.historyMode = "paginated";
+  const imported = {
+    id: "external-import-turn-2",
+    status: "completed",
+    items: [
+      {
+        id: "item-3",
+        type: "userMessage",
+        content: [{ type: "text", text: `${prompt}\n\n${instruction}` }],
+      },
+      { id: "item-4", type: "agentMessage", text: call, phase: null },
+      { id: "item-5", type: "agentMessage", text: result, phase: null },
+      { id: "item-6", type: "agentMessage", text: call, phase: null },
+      { id: "item-7", type: "agentMessage", text: emptyResult, phase: null },
+      { id: "item-8", type: "agentMessage", text: answer, phase: null },
+      { id: "item-9", type: "agentMessage", text: "<EXTERNAL SESSION IMPORTED>", phase: null },
+    ],
+  };
+  historical.turns = [imported];
+  const view = new ChThreadView({ ...historical, turns: [] }, "codex", () => {});
+  view.update(structuredClone(historical));
+  const events = view.log.events;
+  const data = (type: string) =>
+    events.filter((event) => event.type === type).map((event) => event.data);
+  assert.match(JSON.stringify(data("user/message")), /@Hermes 让它回复 1/u);
+  assert.doesNotMatch(JSON.stringify(data("user/message")), /codexhost delegation/u);
+  assert.match(JSON.stringify(data("tool/call")), /example --help/u);
+  assert.match(JSON.stringify(data("tool/result")), /Usage: example/u);
+  assert.equal(data("tool/result").length, 2);
+  const messages = (
+    data("assistant/message") as { step: number; message: { content: { type: string }[] } }[]
+  ).filter(({ message }) => message.content.some((part) => part.type === "text"));
+  assert.equal(messages.length, 1);
+  assert.match(JSON.stringify(messages), /The task finished\./u);
+  const [message] = messages;
+  assert.ok(message);
+  assert.equal(typeof message.step, "number");
+  assert.equal(
+    (data("turn/end")[0] as { finalAssistantStep: number }).finalAssistantStep,
+    message.step,
+  );
+  assert.deepEqual(view.thread.turns, [imported]);
+  assert.match(JSON.stringify(view.editableMessage()?.input), /codexhost delegation/u);
+
+  const count = events.length;
+  view.update(structuredClone(historical));
+  assert.equal(events.length, count);
+
+  const ordinary = new ChThreadView({ ...historical, turns: [] }, "codex", () => {});
+  ordinary.update({ ...historical, turns: [{ ...imported, id: "ordinary-turn" }] });
+  assert.ok(
+    ordinary.log.events.some(
+      (event) =>
+        event.type === "assistant/message" &&
+        JSON.stringify(event.data).includes("external_agent_tool_call"),
+    ),
+  );
+  assert.ok(
+    ordinary.log.events.some(
+      (event) =>
+        event.type === "user/message" &&
+        JSON.stringify(event.data).includes("codexhost delegation"),
+    ),
+  );
+  assert.ok(!ordinary.log.events.some((event) => event.type === "tool/call"));
+});
+
 it("shows CH MCP tool calls and web searches as named DSH tool calls", () => {
   const view = new ChThreadView(thread(), "claude-code", () => {});
   view.update(

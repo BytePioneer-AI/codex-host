@@ -5,7 +5,7 @@ import type { ComposerKeyboard } from "../../contract/draft-editor.ts";
 import type { ComposerPrimaryAction } from "../../contract/input.ts";
 import type { ComposerBarProps } from "../../contract/slots.ts";
 import type { BusyEnterBehavior } from "../../contract/composer-submission.ts";
-import { isMobileDevice } from "@deepseek-ai/dsh-client-ui-primitives";
+import { shouldAutoFocusTextInput } from "@deepseek-ai/dsh-client-ui-primitives";
 import { resolveSubmitMode } from "../submission-policy.ts";
 import { registerComposerKeymap } from "./keymap.ts";
 
@@ -204,8 +204,8 @@ export function installDraftKeymap(
 /**
  * Blur an active inline annotation note editor before a primary send press so
  * its existing blur handler commits the edited comment synchronously before
- * click-time submission, including on mobile where {@link keepDraftFocus}
- * cancels mousedown without focusing the draft editor.
+ * click-time submission, including on touch browsers where tapping a button may
+ * not blur a focused textarea.
  * @param doc - the button's owning document.
  * @returns whether an active annotation textarea was blurred.
  */
@@ -224,10 +224,29 @@ export function blurActiveAnnotationEditor(doc: Document): boolean {
 }
 
 /**
- * Keep a toolbar press from moving focus away from the draft. The press never
- * summons focus on phones and tablets: focusing the editor there raises the
- * on-screen keyboard, so a draft that already has focus keeps it (mousedown is
- * cancelled) and an unfocused one stays unfocused.
+ * Blur the borrowed editor when it (or a descendant inside it) currently holds
+ * DOM focus, leaving focus on unrelated controls untouched.
+ * @param editor - the borrowed editor, absent in the inert view.
+ * @returns whether editor focus was cleared.
+ */
+export function blurDraftEditor(editor: LexicalEditor | null): boolean {
+  const root = editor?.getRootElement() ?? null;
+  if (root === null) return false;
+  const active = root.ownerDocument.activeElement;
+  if (active === null || !root.contains(active)) return false;
+  if (typeof (active as HTMLElement).blur === "function") {
+    (active as HTMLElement).blur();
+  } else {
+    root.blur();
+  }
+  return true;
+}
+
+/**
+ * Keep a toolbar press from moving focus away from the draft on devices that
+ * allow automatic text-input focus. On touch devices and narrow coarse-pointer
+ * viewports, toolbar presses neither cancel mousedown nor focus the editor so
+ * they do not preserve residual focus or raise the on-screen keyboard.
  * @param event - the toolbar button's mouse event.
  * @param editor - the borrowed editor, absent in the inert view.
  */
@@ -235,7 +254,7 @@ export function keepDraftFocus(
   event: MouseEvent<HTMLButtonElement>,
   editor: LexicalEditor | null,
 ): void {
+  if (!shouldAutoFocusTextInput()) return;
   event.preventDefault();
-  if (isMobileDevice()) return;
   editor?.getRootElement()?.focus({ preventScroll: true });
 }

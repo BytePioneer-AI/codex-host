@@ -5,7 +5,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { mapOmpSnapshot } from "../src/omp-history.js";
-import { verifyOmpSessionCwd, readOmpSessionHistory } from "../src/omp-session-file.js";
+import {
+  verifyOmpSessionCwd,
+  readOmpSessionHistory,
+  readOmpSessionHeader,
+} from "../src/omp-session-file.js";
 import { ompUsageHistory } from "../src/omp-usage.js";
 
 const temporaryDirectories: string[] = [];
@@ -37,6 +41,19 @@ describe("OMP session files", () => {
         expectedCwd: directory,
       }),
     ).resolves.toBeUndefined();
+  });
+
+  it("reads the header when the 64 KiB boundary splits a UTF-8 history character", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-omp-session-"));
+    temporaryDirectories.push(directory);
+    const sessionFile = path.join(directory, "session.jsonl");
+    const header = { type: "session", id: "omp-session", cwd: directory };
+    const prefix = `${JSON.stringify({ type: "title", title: "" })}\n${JSON.stringify(header)}\n{"text":"`;
+    await writeFile(
+      sessionFile,
+      prefix + "a".repeat(64 * 1024 - Buffer.byteLength(prefix) - 1) + '中"}\n',
+    );
+    await expect(readOmpSessionHeader(sessionFile)).resolves.toEqual(header);
   });
 
   it.each([

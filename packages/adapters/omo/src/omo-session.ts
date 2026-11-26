@@ -63,6 +63,52 @@
  * characters) and a truncated diff is marked `diffScope: "fragment"`, matching
  * the public Item contract. Image parts pass through as base64 data.
  *
+ * Engine-initiated (autonomous) Turns, B12: a `turn_start` frame with no
+ * `clientTurnId` starts an engine turn no host requested (restored input, a
+ * wake source, an extension message). It is projected through the same Turn
+ * machinery under a synthesized host Turn id — its frames carry no client id,
+ * so the existing foreign-id guard keeps requested-Turn frames out and the
+ * null-id frames of the engine turn flow to the active Turn. The terminal is
+ * the same `agent_settled` rule with exactly one terminal; the identity is the
+ * user entry the machinery observes during the run, and an engine turn that
+ * persists none completes `ephemeral` (the history projection roots Turns at
+ * user entries, so such a Turn has no history Turn to reference — its
+ * content would otherwise be lost). While a host operation holds the
+ * foreground slot (prompt admission, a configuration selection, an active or
+ * settling Turn), the engine turn and its frames are buffered behind a bound
+ * and drained when the slot clears, so an engine turn that starts during a
+ * host operation is delayed, never dropped. A `turn_start` with no id while a
+ * Turn is already running is a single-turn invariant violation and faults.
+ *
+ * Session usage, B13: one anchor — a `get_session_stats` read established
+ * while the engine is idle — plus the Usage records observed on
+ * `message_end` (assistant messages, and tool-result messages that report
+ * nested LLM work; `agent_end` repeats the same assistant records and is not
+ * re-observed). Mid-Turn snapshots are anchor + observed records and carry
+ * `observedForTurnId`; each Turn completion re-reads the authoritative stats
+ * while idle and re-anchors. `initialUsage` is the latest published snapshot:
+ * the anchor read starts in the constructor, so a Host that reads the property
+ * before the first answer lands sees `null` and receives the same value as the
+ * first `session.usage.changed`. A missing or malformed record, or an
+ * unparseable stats answer, publishes `null` (unknown) rather than carrying
+ * the last known numbers forward; usage reads never fault the Session or an
+ * active Turn. Records observed while an anchor transition is in flight are
+ * conservatively dropped (the transition re-reads the authoritative totals,
+ * so the next publication is exact) — the design never double counts, the
+ * one bounded loss window is one event-loop turn wide and self-heals at the
+ * next anchor.
+ *
+ * Background work, GAP-4: `session_lifecycle` frames (and the open-time
+ * `get_state.lifecycle`) feed `hasBackgroundWork()`: the engine's
+ * `waitingOn.children` count, a non-empty `waitingOn.background` list, or a
+ * `waiting_background`/`waiting_children` state (the lists are supplemental
+ * and may be incomplete, so the state is authoritative too; `waiting_human`
+ * and hold/paused states are not background work). `stopBackgroundWork()`
+ * sends `interrupt {background:"stop"}` with a bounded budget: the command
+ * answers only after the interrupted Turn settles, so an expired budget means
+ * "no receipt yet", never "not dispatched". Hold and paused semantics stay
+ * native and out of the public contract.
+ *
  * Calibration points left for the real-binary trace step (see
  * .omo/evidence/task-8-add-omo-harness.md): the live tool-result `details`
  * fields that carry an edit diff (`diff`/`patch`/`unifiedDiff`) and a shell
@@ -118,12 +164,14 @@ import {
   harnessIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
+  hostTurnIdSchema,
   jsonValueSchema,
   nativeCheckpointRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
   type HostInteractionId,
   type HostItemId,
+  type HostTurnId,
   type JsonValue,
   type NativeCheckpointRef,
   type NativeTurnRef,
@@ -166,6 +214,16 @@ import {
   OmoSteerWindow,
   reconcileOmoSteerSettlement,
 } from "./omo-steer.js";
+import {
+  accumulateOmoUsageRecord,
+  emptyOmoUsageDelta,
+  omoAccumulatedHostUsage,
+  omoAnchorHostUsage,
+  omoUsageAnchorFromSessionStats,
+  parseOmoUsageRecord,
+  type OmoUsageAnchor,
+  type OmoUsageDelta,
+} from "./omo-usage.js";
 
 const omoHarnessId: HarnessId = harnessIdSchema.parse("omo");
 
@@ -174,10 +232,12 @@ const omoHarnessId: HarnessId = harnessIdSchema.parse("omo");
  * Model, Thinking, and Permission Mode selection are live (omO presets apply
  * from the next permission decision, including mid-Turn). History derivation is
  * supported: Fork and last-Turn rollback derive a new Native Session and never
- * mutate the source. Steering is a live-only capability
- * (`capabilities.steer`), because it exists only while a native root-tool
- * window is open; without a Turn there is nothing to steer, so the static
- * declaration stays false, exactly like an Adapter with no native input.
+ * mutate the source. Engine-initiated Turns are observed (`turn_start` without
+ * a client id) whenever the engine starts one, with or without a host Turn.
+ * Steering is a live-only capability (`capabilities.steer`), because it exists
+ * only while a native root-tool window is open; without a Turn there is nothing
+ * to steer, so the static declaration stays false, exactly like an Adapter
+ * with no native input.
  */
 export const OMO_SESSION_CAPABILITIES: HarnessSessionCapabilities = Object.freeze({
   configuration: Object.freeze({
@@ -187,6 +247,7 @@ export const OMO_SESSION_CAPABILITIES: HarnessSessionCapabilities = Object.freez
     permissionModeScope: "live" as const,
   }),
   history: Object.freeze({ fork: true, forkAcrossCwd: false, rollbackLastTurn: true }),
+  autonomousTurns: Object.freeze({ observe: true }),
   steer: false,
 });
 
@@ -212,6 +273,8 @@ const IDENTITY_PAGE_BYTES = 8 * 1024 * 1024;
 const IDENTITY_MAX_PAGES = 5;
 /** Bound on events buffered between prompt admission and Turn publication. */
 const MAX_DEFERRED_FRAMES = 1_024;
+/** Bound on engine Turns buffered behind a host operation; overflow is a fault. */
+const MAX_PENDING_AUTONOMOUS_TURNS = 16;
 
 // Real 5.1.83 routes shell commands through the `eval` tool (bash, powershell
 // and grep run inside eval cells; task-9 trace), so it routes like a shell
@@ -266,6 +329,8 @@ interface AssistantTerminal {
 interface ActiveTurn {
   readonly command: TurnStartCommand;
   readonly clientTurnId: string;
+  /** True when the engine started this Turn (`turn_start` with no client id). */
+  readonly autonomous: boolean;
   readonly baseline: IdentityBaseline;
   userEntryId: string | null;
   segment: AssistantSegment | null;
@@ -300,6 +365,51 @@ type IdentityBaseline =
   | { readonly kind: "entry"; readonly entryId: string }
   | { readonly kind: "empty" }
   | { readonly kind: "unknown" };
+
+/** An engine Turn waiting for the foreground slot, with the frames observed after its start. */
+interface PendingAutonomousTurn {
+  readonly frames: OmoEventFrame[];
+}
+
+/** The lifecycle facts this Session tracks: whether native background work runs. */
+interface OmoLifecycleObservation {
+  readonly seq: number | null;
+  readonly state: string | null;
+  readonly backgroundWork: boolean;
+}
+
+/**
+ * Reads one `session_lifecycle` snapshot (rpc.md: `state`, `seq`,
+ * `waitingOn { children, background, human }`). Unknown or malformed fields
+ * are ignored per the additive rule; `waiting_human` and hold/paused states
+ * are not background work. The `background` list is supplemental, so a
+ * `waiting_background`/`waiting_children` state counts even when the list is
+ * incomplete (empty).
+ */
+function parseOmoLifecycleObservation(
+  lifecycle: Record<string, unknown>,
+): OmoLifecycleObservation | null {
+  const state = typeof lifecycle.state === "string" ? lifecycle.state : null;
+  const seq =
+    typeof lifecycle.seq === "number" && Number.isSafeInteger(lifecycle.seq) ? lifecycle.seq : null;
+  const waitingOn = isRecord(lifecycle.waitingOn) ? lifecycle.waitingOn : null;
+  const children =
+    waitingOn !== null &&
+    typeof waitingOn.children === "number" &&
+    Number.isSafeInteger(waitingOn.children) &&
+    waitingOn.children >= 0
+      ? waitingOn.children
+      : null;
+  const backgroundList =
+    waitingOn !== null && Array.isArray(waitingOn.background) ? waitingOn.background : null;
+  const backgroundWork =
+    state === "waiting_background" ||
+    state === "waiting_children" ||
+    (children ?? 0) > 0 ||
+    (backgroundList !== null && backgroundList.length > 0);
+  if (state === null && waitingOn === null) return null;
+  return { seq, state, backgroundWork };
+}
 
 export interface OmoHarnessSessionOptions {
   /** The native-confirmed identity published by Adapter.open. */
@@ -624,7 +734,6 @@ export class OmoHarnessSession implements HarnessSession {
   readonly harnessId: HarnessId = omoHarnessId;
   readonly capabilities: HarnessSessionCapabilities;
   readonly initialState: HarnessSessionState;
-  readonly initialUsage: HostUsage | null = null;
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly #channel = new HarnessOutputChannel<HarnessOutput>();
   readonly #rpc: OmoRpcSession;
@@ -648,6 +757,21 @@ export class OmoHarnessSession implements HarnessSession {
   #phase: SessionPhase = "open";
   #closePromise: Promise<void> | null = null;
   #turnAccepted = false;
+  /** Latest published usage snapshot; the anchor read starts in the constructor. */
+  #usage: HostUsage | null = null;
+  #usageAnchor: OmoUsageAnchor | null = null;
+  #usageDelta: OmoUsageDelta = emptyOmoUsageDelta();
+  /** An unusable observation: numbers unknown until the next anchor re-syncs. */
+  #usageTainted = false;
+  #usageRefreshSequence = 0;
+  /** Engine Turns waiting for the foreground slot, oldest first. */
+  #pendingAutonomous: PendingAutonomousTurn[] = [];
+  /** Latest `session_lifecycle` observation from the ordered event stream. */
+  #lifecycle: OmoLifecycleObservation | null = null;
+
+  get initialUsage(): HostUsage | null {
+    return this.#usage;
+  }
 
   constructor(rpc: OmoRpcSession, options: OmoHarnessSessionOptions) {
     this.#rpc = rpc;
@@ -671,6 +795,7 @@ export class OmoHarnessSession implements HarnessSession {
         permissionModeScope: "live" as const,
       }),
       history: Object.freeze({ fork: true, forkAcrossCwd: false, rollbackLastTurn: true }),
+      autonomousTurns: Object.freeze({ observe: true }),
       // Live only: an open root-tool window in the active Turn. The Host reads
       // this right before each submission and on every admitted steer.
       get steer(): boolean {
@@ -680,6 +805,10 @@ export class OmoHarnessSession implements HarnessSession {
     this.outputs = this.#channel.outputs;
     this.#pump = this.#runEventPump();
     this.#cancelOrphanDialogs();
+    this.#adoptLifecycleState();
+    // The first anchor read starts here; until it lands, `initialUsage` reads
+    // null and the first `session.usage.changed` carries the same snapshot.
+    void this.#refreshUsageSnapshot();
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
@@ -713,6 +842,49 @@ export class OmoHarnessSession implements HarnessSession {
     } catch (error) {
       return { ok: false, error: sessionError(error, this.#rpc) };
     }
+  }
+
+  /** Re-reads the native session totals and publishes them when they changed. */
+  async refreshUsage(): Promise<void> {
+    await this.#refreshUsageSnapshot();
+  }
+
+  /**
+   * Native background work (engine `waitingOn` children/background) is running;
+   * such a Session must not be idle-released. A `waiting_human` answer or a
+   * hold is not background work.
+   */
+  hasBackgroundWork(): boolean {
+    if (this.#phase !== "open") return false;
+    return this.#latestLifecycleObservation()?.backgroundWork === true;
+  }
+
+  /**
+   * Stops background work with `interrupt {background:"stop"}`. The command
+   * answers only after the interrupted Turn settles, so a bounded budget that
+   * expires means "no receipt yet", never "not dispatched"; a native refusal
+   * is a typed failure. Never faults the Session.
+   */
+  async stopBackgroundWork(): Promise<HarnessResult<void>> {
+    if (this.#phase !== "open") {
+      return { ok: false, error: invalidState("OmO Session is not open") };
+    }
+    try {
+      await this.#rpc.send(
+        "interrupt",
+        { background: "stop" },
+        {
+          timeoutMs: this.#commandTimeoutMs,
+        },
+      );
+    } catch (error) {
+      if (error instanceof OmoRpcCommandTimeoutError) {
+        // The frame was written; the receipt follows the Turn's settlement.
+        return { ok: true, value: undefined };
+      }
+      return { ok: false, error: sessionError(error, this.#rpc) };
+    }
+    return { ok: true, value: undefined };
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
@@ -807,6 +979,8 @@ export class OmoHarnessSession implements HarnessSession {
       return { ok: false, error: sessionError(error, this.#rpc) };
     } finally {
       this.#configuring = false;
+      // A finished selection frees the foreground slot for an engine Turn.
+      this.#drainPendingAutonomous();
     }
   }
 
@@ -836,6 +1010,7 @@ export class OmoHarnessSession implements HarnessSession {
       const turn: ActiveTurn = {
         command,
         clientTurnId: command.turnId,
+        autonomous: false,
         baseline,
         userEntryId: null,
         segment: null,
@@ -911,6 +1086,9 @@ export class OmoHarnessSession implements HarnessSession {
       return { ok: true, value: { turnId: command.turnId } };
     } finally {
       this.#accepting = null;
+      // A rejected or handled admission frees the foreground slot for an engine
+      // Turn that started while the prompt was in flight.
+      this.#drainPendingAutonomous();
     }
   }
 
@@ -1033,6 +1211,9 @@ export class OmoHarnessSession implements HarnessSession {
     return (
       this.#phase === "open" &&
       active !== null &&
+      // An engine-initiated Turn has no client Turn identity to steer under;
+      // the native steer guard keys on the client id the engine never saw.
+      !active.autonomous &&
       !active.settling &&
       !active.cancellationRequested &&
       active.steerWindow.isOpen
@@ -1129,6 +1310,286 @@ export class OmoHarnessSession implements HarnessSession {
     }
     if (refusal) return sessionError(refusal, this.#rpc);
     return invalidState(error.message);
+  }
+
+  // ------------------------------------------------------------ autonomous turns
+
+  /** The foreground slot is free for an engine Turn right now. */
+  #autonomousStartClear(): boolean {
+    return this.#accepting === null && !this.#configuring && this.#active === null;
+  }
+
+  /**
+   * A `turn_start` with no client id: the engine started a Turn no host
+   * requested. It starts immediately when the foreground slot is free and is
+   * buffered behind a bound otherwise; a Turn already running means the
+   * engine's single-Turn invariant broke, which faults (a queued start can
+   * only follow a settling Turn).
+   */
+  #receiveAutonomousTurnStart(): void {
+    if (this.#phase !== "open") return;
+    const active = this.#active;
+    if (active !== null && !active.settling) {
+      this.#fault(
+        new HarnessSessionFault({
+          code: "protocolError",
+          message: active.autonomous
+            ? "OmO started a second engine Turn before the first settled"
+            : "OmO started an engine Turn while the requested Turn was still running",
+          retryable: false,
+        }),
+      );
+      return;
+    }
+    if (this.#autonomousStartClear()) {
+      this.#startAutonomousTurn();
+      return;
+    }
+    if (this.#pendingAutonomous.length >= MAX_PENDING_AUTONOMOUS_TURNS) {
+      this.#fault(
+        new HarnessSessionFault({
+          code: "protocolError",
+          message: "OmO queued too many engine Turns behind a host operation",
+          retryable: false,
+        }),
+      );
+      return;
+    }
+    this.#pendingAutonomous.push({ frames: [] });
+  }
+
+  /**
+   * Starts an engine Turn under a synthesized host Turn id. The id is never on
+   * the wire, so frames carrying any client id are foreign and dropped by the
+   * existing guard, while the engine Turn's own (id-less) frames project here.
+   */
+  #startAutonomousTurn(): void {
+    const turnId = hostTurnIdSchema.parse(randomUUID());
+    let resolveCompletion = (): void => undefined;
+    const completion = new Promise<void>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    const turn: ActiveTurn = {
+      command: { type: "turn.start", turnId, input: [] },
+      clientTurnId: turnId,
+      autonomous: true,
+      baseline: { kind: "unknown" },
+      userEntryId: null,
+      segment: null,
+      compactionItem: null,
+      tools: new Map(),
+      toolItemsByCallId: new Map(),
+      interactions: new Map(),
+      interactionByNativeId: new Map(),
+      cancellationRequested: false,
+      settling: false,
+      aborted: false,
+      nativeTurnId: null,
+      steerWindow: new OmoSteerWindow(),
+      acceptedSteerCount: 0,
+      pendingSteers: new Set(),
+      steerTargetEnded: null,
+      abortSource: null,
+      agentFailure: null,
+      lastAssistant: null,
+      interruptedToolResult: false,
+      cancelGuard: null,
+      completion,
+      resolveCompletion,
+    };
+    this.#active = turn;
+    // An engine Turn is accepted work: a prewarm Session must persist.
+    this.#turnAccepted = true;
+    this.#event({ type: "turn.autonomous.started", turnId, input: [] });
+    this.#event({ type: "turn.started", turnId });
+  }
+
+  /**
+   * Drains engine Turns once the foreground slot is free. Each buffered frame
+   * replays through the normal handler, so an engine Turn that ran behind a
+   * host operation is published after it, never dropped.
+   */
+  #drainPendingAutonomous(): void {
+    while (
+      this.#pendingAutonomous.length > 0 &&
+      this.#phase === "open" &&
+      this.#autonomousStartClear()
+    ) {
+      const entry = this.#pendingAutonomous.shift();
+      if (!entry) break;
+      this.#startAutonomousTurn();
+      for (const frame of entry.frames) {
+        if (this.#phase !== "open") return;
+        try {
+          this.#handleFrame(frame);
+        } catch (error) {
+          this.#fault(
+            new HarnessSessionFault({
+              code: "protocolError",
+              message: `OmO event projection failed: ${messageOf(error)}`,
+              retryable: false,
+            }),
+          );
+          return;
+        }
+      }
+    }
+  }
+
+  /**
+   * The identity of a settled engine Turn: the user entry observed during the
+   * run, which is the only Turn identity OmO persists. An engine Turn that
+   * persisted none (a custom-message trigger with no user entry) completes
+   * ephemeral — the history projection roots Turns at user entries, so there is
+   * no history Turn to reference. Never faults: engine turns are not ours to
+   * reject.
+   */
+  #autonomousTurnIdentity(active: ActiveTurn): {
+    nativeTurnRef: NativeTurnRef;
+    checkpoint: NativeCheckpointRef;
+  } | null {
+    const sessionId =
+      this.#state.nativeRef?.nativeSessionId ?? nonEmptyString(this.#rpc.state.sessionId);
+    const entryId = active.userEntryId;
+    if (!sessionId || entryId === null) return null;
+    const nativeTurnKey = omoHistoryTurnKey(entryId);
+    if (this.#emittedTurnKeys.has(nativeTurnKey)) return null;
+    this.#emittedTurnKeys.add(nativeTurnKey);
+    this.#consumedUserEntryIds.add(entryId);
+    return {
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: omoHarnessId,
+        nativeSessionId: sessionId,
+        nativeTurnKey,
+        formatVersion: 1,
+      }),
+      checkpoint: nativeCheckpointRefSchema.parse({
+        harnessId: omoHarnessId,
+        nativeSessionId: sessionId,
+        checkpointId: entryId,
+        formatVersion: 1,
+      }),
+    };
+  }
+
+  // --------------------------------------------------------------- session usage
+
+  /**
+   * One per-message Usage observation. A parseable record accumulates into the
+   * delta and publishes `anchor + delta` attributed to the running Turn; a
+   * missing or malformed record taints the total, publishing `null` once
+   * instead of carrying the last known numbers forward.
+   */
+  #observeUsage(turnId: HostTurnId, usage: unknown): void {
+    if (this.#usageTainted) return;
+    const record = parseOmoUsageRecord(usage);
+    if (record === null) {
+      this.#usageTainted = true;
+      if (this.#usage !== null) {
+        this.#usage = null;
+        this.#event({ type: "session.usage.changed", usage: null });
+      }
+      return;
+    }
+    accumulateOmoUsageRecord(this.#usageDelta, record);
+    const anchor = this.#usageAnchor;
+    if (anchor === null) return;
+    this.#publishUsage(omoAccumulatedHostUsage(anchor, this.#usageDelta), turnId);
+  }
+
+  /** Publishes a validated snapshot once per change; `null` skips (taint is direct). */
+  #publishUsage(snapshot: HostUsage | null, observedForTurnId?: HostTurnId): void {
+    if (snapshot === null) return;
+    if (JSON.stringify(snapshot) === JSON.stringify(this.#usage)) return;
+    this.#usage = snapshot;
+    this.#event({
+      type: "session.usage.changed",
+      usage: snapshot,
+      ...(observedForTurnId === undefined ? {} : { observedForTurnId }),
+    });
+  }
+
+  /**
+   * Reads the native session totals and re-anchors. The answer is only used
+   * while the engine is idle at landing (no active or admitting Turn): a read
+   * landing mid-Turn is discarded so the running anchor + delta stays
+   * monotone; the Turn's own completion refresh re-reads. One event-loop turn
+   * of drain after the answer proves the pump observed every frame written
+   * before it, so the anchor transition never double counts.
+   */
+  async #refreshUsageSnapshot(observedForTurnId?: HostTurnId): Promise<void> {
+    if (this.#phase !== "open") return;
+    const sequence = (this.#usageRefreshSequence += 1);
+    let data: unknown;
+    try {
+      const response = await this.#rpc.send(
+        "get_session_stats",
+        {},
+        { timeoutMs: this.#commandTimeoutMs },
+      );
+      data = response.data;
+    } catch {
+      // Isolated by contract: a failed read never faults the Session or a Turn.
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    if (this.#phase !== "open" || sequence !== this.#usageRefreshSequence) return;
+    if (!this.#autonomousStartClear()) return;
+    const anchor = omoUsageAnchorFromSessionStats(data);
+    if (anchor === null) return;
+    this.#usageAnchor = anchor;
+    this.#usageDelta = emptyOmoUsageDelta();
+    this.#usageTainted = false;
+    this.#publishUsage(omoAnchorHostUsage(anchor), observedForTurnId);
+  }
+
+  // ---------------------------------------------------------- background work
+
+  /** Adopts the open-time `get_state.lifecycle` as the initial observation. */
+  #adoptLifecycleState(): void {
+    const lifecycle = this.#rpc.state.raw.lifecycle;
+    if (!isRecord(lifecycle)) return;
+    const observation = parseOmoLifecycleObservation(lifecycle);
+    if (observation !== null) this.#lifecycle = observation;
+  }
+
+  /**
+   * The latest lifecycle observation: the event stream's snapshot, or the
+   * `get_state.lifecycle` copy when it carries a newer `seq` (refreshState
+   * replaces it on steer and cancellation probes).
+   */
+  #latestLifecycleObservation(): OmoLifecycleObservation | null {
+    const event = this.#lifecycle;
+    const rawLifecycle = this.#rpc.state.raw.lifecycle;
+    if (!isRecord(rawLifecycle)) return event;
+    const fromState = parseOmoLifecycleObservation(rawLifecycle);
+    if (fromState === null) return event;
+    if (event === null || event.seq === null || fromState.seq === null) return event ?? fromState;
+    return fromState.seq > event.seq ? fromState : event;
+  }
+
+  /**
+   * A `session_lifecycle` frame. Session-level state, so it is never deferred
+   * behind prompt admission or a buffered engine Turn, and an older `seq`
+   * never replaces a newer one.
+   */
+  #handleLifecycleFrame(frame: OmoEventFrame): void {
+    const lifecycle = frame.lifecycle;
+    if (!isRecord(lifecycle)) return;
+    const observation = parseOmoLifecycleObservation(lifecycle);
+    if (observation === null) return;
+    const current = this.#lifecycle;
+    if (
+      current !== null &&
+      current.seq !== null &&
+      observation.seq !== null &&
+      observation.seq < current.seq
+    ) {
+      return;
+    }
+    this.#lifecycle = observation;
   }
 
   // -------------------------------------------------------------- interactions
@@ -1355,6 +1816,38 @@ export class OmoHarnessSession implements HarnessSession {
       );
       return;
     }
+    // Session-level and engine-Turn frames are routed before prompt admission
+    // deferral: a lifecycle change must reach `hasBackgroundWork()` immediately,
+    // and an engine Turn must never be replayed into a requested Turn.
+    if (frame.type === "session_lifecycle") {
+      this.#handleLifecycleFrame(frame);
+      return;
+    }
+    if (frame.type === "turn_start" && frameTurnId(frame) === null) {
+      this.#receiveAutonomousTurnStart();
+      return;
+    }
+    if (
+      this.#pendingAutonomous.length > 0 &&
+      frameTurnId(frame) === null &&
+      !this.#autonomousStartClear()
+    ) {
+      // An engine Turn is waiting behind a host operation: its frames (they
+      // carry no client id) belong to it, buffered in wire order.
+      const entry = this.#pendingAutonomous[this.#pendingAutonomous.length - 1];
+      if (!entry || entry.frames.length >= MAX_DEFERRED_FRAMES) {
+        this.#fault(
+          new HarnessSessionFault({
+            code: "protocolError",
+            message: "OmO buffered too many events for a queued engine Turn",
+            retryable: false,
+          }),
+        );
+        return;
+      }
+      entry.frames.push(frame);
+      return;
+    }
     if (this.#accepting) {
       const turnId = frameTurnId(frame);
       if (turnId === null || turnId === this.#accepting.clientTurnId) {
@@ -1421,8 +1914,10 @@ export class OmoHarnessSession implements HarnessSession {
         return;
       default:
         // Event types are additive; a record this client cannot project (retry,
-        // queue, lifecycle, barrier, model notices, autonomous chatter) is kept
-        // out of the Turn rather than faulted.
+        // queue, lifecycle, barrier, model notices) is kept out of the Turn
+        // rather than faulted. `turn_start` with a client id is the requested
+        // Turn's own start record; the Turn was already published at admission,
+        // and a no-id start is intercepted in #handleFrame before dispatch.
         return;
     }
   }
@@ -1553,10 +2048,16 @@ export class OmoHarnessSession implements HarnessSession {
     const message = frame.message;
     if (!isRecord(message)) return;
     if (message.role === "toolResult") {
+      // Tool-reported nested LLM work contributes to the native session totals,
+      // so a present Usage record is observed like an assistant one.
+      if (message.usage !== undefined && message.usage !== null) {
+        this.#observeUsage(active.command.turnId, message.usage);
+      }
       if (interruptedDetails(message)) active.interruptedToolResult = true;
       return;
     }
     if (message.role !== "assistant") return;
+    this.#observeUsage(active.command.turnId, message.usage);
     const stopReason = nonEmptyString(message.stopReason);
     const terminal: AssistantTerminal = {
       text: contentText(message.content),
@@ -1847,7 +2348,8 @@ export class OmoHarnessSession implements HarnessSession {
    */
   async #turnIdentity(
     active: ActiveTurn,
-  ): Promise<{ nativeTurnRef: NativeTurnRef; checkpoint: NativeCheckpointRef }> {
+  ): Promise<{ nativeTurnRef: NativeTurnRef; checkpoint: NativeCheckpointRef } | null> {
+    if (active.autonomous) return this.#autonomousTurnIdentity(active);
     const sessionId =
       this.#state.nativeRef?.nativeSessionId ?? nonEmptyString(this.#rpc.state.sessionId);
     if (!sessionId) {
@@ -2063,9 +2565,20 @@ export class OmoHarnessSession implements HarnessSession {
       type: "turn.completed",
       turnId: active.command.turnId,
       outcome,
-      ...(nativeTurnRef === undefined ? {} : { nativeTurnRef }),
+      ...(nativeTurnRef !== undefined
+        ? { nativeTurnRef }
+        : active.autonomous
+          ? // An engine Turn that persisted no user entry has no history Turn;
+            // its content is only the live projection.
+            { ephemeral: true as const }
+          : {}),
     });
     active.resolveCompletion();
+    if (this.#phase !== "open") return;
+    this.#drainPendingAutonomous();
+    // The authoritative totals are re-read while the engine is idle; the
+    // snapshot is attributed to the Turn that just completed.
+    void this.#refreshUsageSnapshot(active.command.turnId);
   }
 
   /**

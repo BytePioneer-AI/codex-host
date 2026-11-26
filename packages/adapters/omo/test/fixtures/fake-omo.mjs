@@ -94,7 +94,10 @@ function chatter() {
 
 if (scenario !== "silent-start") {
   chatter();
-  write({ type: "turn_start" });
+  // A bare `turn_start` now means an engine Turn started (task 13), so the
+  // synthetic startup noise keeps it out of the session surface; the raw
+  // transport tests still observe it on non-session scenarios.
+  if (!scenario.startsWith("session")) write({ type: "turn_start" });
   write({ type: "future.additive.event", payload: { ok: true } });
   // A durable, non-bookkeeping entry stays visible.
   write({
@@ -126,6 +129,7 @@ const sessionEntries = [];
 const sessionReceived = {
   prompts: [],
   aborts: [],
+  interrupts: [],
   uiResponses: [],
   steers: [],
   clearQueues: [],
@@ -153,7 +157,35 @@ const sessionControls = {
   confirmPermission: process.env.FAKE_OMO_SET_PERMISSION_CONFIRM !== "false",
   promptTurnId: process.env.FAKE_OMO_PROMPT_NO_TURN_ID !== "1",
   steerMode: process.env.FAKE_OMO_STEER_MODE ?? "queue",
+  // Usage/lifecycle surface (task 13): armed `get_session_stats` answers,
+  // per-message Usage records for the usage script, the interrupt answer, and
+  // a delayed set_model response that opens a wide in-flight configuration
+  // window for the engine-Turn queueing test.
+  sessionStats: readJsonEnv("FAKE_OMO_SESSION_STATS"),
+  sessionStatsError: null,
+  messageUsages: null,
+  interruptAnswer: null,
+  modelDelayMs: 0,
 };
+
+function readJsonEnv(name) {
+  const raw = process.env[name];
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+if (process.env.FAKE_OMO_LIFECYCLE) {
+  // Seeded `get_state.lifecycle` for the open-time background-work observation.
+  try {
+    state.lifecycle = JSON.parse(process.env.FAKE_OMO_LIFECYCLE);
+  } catch {
+    state.lifecycle = null;
+  }
+}
 
 // Native same-Turn steering surface: a turn script parks inside an open root
 // tool call, the `steer` command answers per mode, and the continuation's user
@@ -236,6 +268,20 @@ function assistantText(text, extra = {}) {
     timestamp: Date.now(),
     ...extra,
   };
+}
+
+/**
+ * The Usage record the usage script puts on assistant message `index`, from
+ * `sessionControls.messageUsages`: `null` omits the field (numbers unknown),
+ * any other value passes through as-is (a test may arm garbage on purpose),
+ * and an exhausted or absent list falls back to the fixture default.
+ */
+function controlledUsage(index) {
+  const list = sessionControls.messageUsages;
+  if (!Array.isArray(list) || index >= list.length) {
+    return { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 };
+  }
+  return list[index];
 }
 
 function settle(clientTurnId, aborted = false) {
@@ -432,6 +478,75 @@ function runTurnScript(script, clientTurnId) {
         type: "agent_end",
         clientTurnId,
         messages: [assistantText("Done")],
+        willRetry: false,
+      });
+      write({ type: "agent_settled" });
+      return;
+    }
+    case "usage": {
+      // Two assistant messages with Usage records on every `message_end`, a
+      // tool call between them: the shape the session usage observation reads.
+      write({ type: "turn_start", clientTurnId });
+      write({
+        type: "message_start",
+        clientTurnId,
+        message: { role: "assistant", content: [], timestamp: Date.now() },
+      });
+      write({
+        type: "message_update",
+        clientTurnId,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Step" },
+      });
+      write({
+        type: "message_end",
+        clientTurnId,
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Step" },
+            { type: "toolCall", id: "call-usage-1", name: "bash", arguments: { command: "ls" } },
+          ],
+          stopReason: "toolUse",
+          timestamp: Date.now(),
+          usage: controlledUsage(0),
+        },
+      });
+      events([
+        {
+          type: "tool_execution_start",
+          clientTurnId,
+          toolCallId: "call-usage-1",
+          toolName: "bash",
+          args: { command: "ls" },
+        },
+        {
+          type: "tool_execution_end",
+          clientTurnId,
+          toolCallId: "call-usage-1",
+          toolName: "bash",
+          result: { content: [{ type: "text", text: "ok" }], details: { exitCode: 0 } },
+          isError: false,
+        },
+      ]);
+      write({
+        type: "message_start",
+        clientTurnId,
+        message: { role: "assistant", content: [], timestamp: Date.now() },
+      });
+      write({
+        type: "message_update",
+        clientTurnId,
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Done" },
+      });
+      write({
+        type: "message_end",
+        clientTurnId,
+        message: assistantText("Done", { usage: controlledUsage(1) }),
+      });
+      write({
+        type: "agent_end",
+        clientTurnId,
+        messages: [assistantText("Done", { usage: controlledUsage(1) })],
         willRetry: false,
       });
       write({ type: "agent_settled" });
@@ -700,37 +815,47 @@ function handleSession(command) {
       const row = sessionConfig.models.find(
         (model) => model.provider === command.provider && model.id === command.modelId,
       );
-      if (sessionControls.confirmModel && row) {
-        state.model = {
-          provider: command.provider,
-          id: command.modelId,
-          name: row.name,
-          reasoning: row.reasoning,
-        };
-      }
-      // The engine broadcasts the switch; the transport drops it as startup
-      // chatter by design (effective state comes from get_state).
-      write({ type: "model_changed", model: { provider: command.provider, id: command.modelId } });
-      respond(command, {
-        ...(row ?? {
-          provider: command.provider,
-          id: command.modelId,
-          name: "Unknown Synthetic Model",
-          reasoning: true,
-        }),
-        ...(command.effectId
-          ? {
-              effectId: command.effectId,
-              state: sessionControls.modelReceipt,
-              effect: {
+      const answer = () => {
+        if (sessionControls.confirmModel && row) {
+          state.model = {
+            provider: command.provider,
+            id: command.modelId,
+            name: row.name,
+            reasoning: row.reasoning,
+          };
+        }
+        // The engine broadcasts the switch; the transport drops it as startup
+        // chatter by design (effective state comes from get_state).
+        write({
+          type: "model_changed",
+          model: { provider: command.provider, id: command.modelId },
+        });
+        respond(command, {
+          ...(row ?? {
+            provider: command.provider,
+            id: command.modelId,
+            name: "Unknown Synthetic Model",
+            reasoning: true,
+          }),
+          ...(command.effectId
+            ? {
                 effectId: command.effectId,
-                kind: "set_model",
                 state: sessionControls.modelReceipt,
-                disposition: "applied",
-              },
-            }
-          : {}),
-      });
+                effect: {
+                  effectId: command.effectId,
+                  kind: "set_model",
+                  state: sessionControls.modelReceipt,
+                  disposition: "applied",
+                },
+              }
+            : {}),
+        });
+      };
+      if (sessionControls.modelDelayMs > 0) {
+        setTimeout(answer, sessionControls.modelDelayMs).unref?.();
+      } else {
+        answer();
+      }
       return true;
     }
     case "set_thinking_level": {
@@ -794,6 +919,82 @@ function handleSession(command) {
       respond(command, page);
       return true;
     }
+    case "get_session_stats": {
+      // Default answer carries no tokens (numbers unknown, never invented);
+      // tests arm `sessionStats` with a full documented shape or refuse with
+      // `sessionStatsError` to exercise the isolated refresh path.
+      if (sessionControls.sessionStatsError) {
+        respondError(command, sessionControls.sessionStatsError);
+        return true;
+      }
+      respond(
+        command,
+        sessionControls.sessionStats ?? {
+          sessionFile: state.sessionFile,
+          sessionId: state.sessionId,
+          userMessages: sessionEntries.filter((entry) => entry.message?.role === "user").length,
+          assistantMessages: sessionEntries.filter((entry) => entry.message?.role === "assistant")
+            .length,
+          toolCalls: 0,
+          toolResults: 0,
+          totalMessages: sessionEntries.length,
+        },
+      );
+      return true;
+    }
+    case "interrupt": {
+      sessionReceived.interrupts.push({ ...command });
+      const nativeTurnId = state.currentTurnId;
+      // Real semantics: `interrupt {background:"stop"}` stops the running turn
+      // and its background jobs, answering after the turn settled; a parked
+      // cancel-script turn settles here as the interrupt's effect.
+      if (sessionWaitingForAbort) {
+        sessionWaitingForAbort = false;
+        state.isStreaming = false;
+        settle(sessionLastClientTurnId, true);
+      }
+      respond(
+        command,
+        sessionControls.interruptAnswer ?? {
+          interrupted: true,
+          ...(nativeTurnId === null ? {} : { turnId: nativeTurnId }),
+          background: { stopped: [], failed: [] },
+        },
+      );
+      return true;
+    }
+    case "autonomous.run": {
+      // An engine-initiated turn: no client ids anywhere. The turn begins
+      // before its consumed input is persisted (the user entry is observed
+      // while the engine Turn is already running), matching the identity the
+      // live projection keys on. Options control the persisted user entry
+      // (default appended), the assistant text, and the Usage record (which
+      // may be garbage or null-on-purpose).
+      write({ type: "turn_start" });
+      if (command.entry !== false) appendUserEntry(command.message ?? "engine work");
+      write({
+        type: "message_start",
+        message: { role: "assistant", content: [], timestamp: Date.now() },
+      });
+      write({
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "text_delta",
+          contentIndex: 0,
+          delta: command.text ?? "engine result",
+        },
+      });
+      write({
+        type: "message_end",
+        message: assistantText(command.text ?? "engine result", {
+          ...("usage" in command ? { usage: command.usage } : {}),
+        }),
+      });
+      write({ type: "agent_end", messages: [], willRetry: false });
+      write({ type: "agent_settled" });
+      respond(command, { ran: true });
+      return true;
+    }
     case "probe.received":
       respond(command, {
         ...sessionReceived,
@@ -826,6 +1027,13 @@ function handleSession(command) {
         sessionControls.confirmPermission = command.confirmPermission;
       if ("promptTurnId" in command) sessionControls.promptTurnId = command.promptTurnId;
       if (typeof command.steerMode === "string") sessionControls.steerMode = command.steerMode;
+      if ("sessionStats" in command) sessionControls.sessionStats = command.sessionStats;
+      if ("sessionStatsError" in command)
+        sessionControls.sessionStatsError = command.sessionStatsError;
+      if ("messageUsages" in command) sessionControls.messageUsages = command.messageUsages;
+      if ("interruptAnswer" in command) sessionControls.interruptAnswer = command.interruptAnswer;
+      if (typeof command.modelDelayMs === "number")
+        sessionControls.modelDelayMs = command.modelDelayMs;
       respond(command, { ...sessionControls });
       return true;
     }

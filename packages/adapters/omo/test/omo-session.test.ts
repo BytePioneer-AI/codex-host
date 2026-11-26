@@ -278,7 +278,7 @@ function textOf(snapshot: HostItemSnapshot | undefined): string | undefined {
 }
 
 describe("OmO Session capabilities and declaration", () => {
-  it("declares live configuration selections and history derivation, no idle steering", async () => {
+  it("declares live configuration selections, history derivation, engine Turn observation, and no idle steering", async () => {
     const fixtureSession = await createSessionFixture("session");
     expect(fixtureSession.session.capabilities).toEqual({
       configuration: {
@@ -288,8 +288,11 @@ describe("OmO Session capabilities and declaration", () => {
         permissionModeScope: "live",
       },
       history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+      autonomousTurns: { observe: true },
       steer: false,
     });
+    // The anchor read is in flight; until it lands the snapshot is null and
+    // the first `session.usage.changed` carries the same value.
     expect(fixtureSession.session.initialUsage).toBeNull();
     await expect(
       fixtureSession.session.execute({

@@ -519,6 +519,7 @@ const sessionCapabilities = {
     permissionModeScope: "live",
   },
   history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+  autonomousTurns: { observe: true },
   steer: false,
 } as const;
 

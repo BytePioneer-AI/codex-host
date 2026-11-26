@@ -1343,8 +1343,8 @@ export class AppServerHost {
         ),
       sendOfficial: (input) => this.#sendOfficialDelegationThread(input),
       cancelOfficial: (input) => this.#cancelOfficialDelegationThread(input),
-      startOfficial: (input, resolveConfiguration, projectId) =>
-        this.#startOfficialDelegation(input, resolveConfiguration, projectId),
+      startOfficial: (input, resolveConfiguration, readParentProject) =>
+        this.#startOfficialDelegation(input, resolveConfiguration, readParentProject),
       listOfficial: (input) => this.#listDelegationThreads(input),
       officialThreadMetadata: (threadId) => this.#readOfficialThreadMetadata(threadId),
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
@@ -3053,7 +3053,7 @@ export class AppServerHost {
       model: HarnessModelRef | undefined,
       inspected?: HarnessInspectResult,
     ) => ReturnType<typeof resolveDelegationConfiguration>,
-    projectId?: string,
+    readParentProject: () => Promise<string | undefined>,
   ): Promise<DelegationStartResult> {
     let inspected: HarnessInspectResult | undefined;
     const requestedModel = input.officialModelArgument ?? input.model;
@@ -3122,6 +3122,7 @@ export class AppServerHost {
         },
       };
     }
+    const projectId = await readParentProject();
     const selection = await resolveConfiguration(explicitModel, inspected);
     const { model, thinkingOptionId } = selection;
     const nativeSelection = model ? officialCodexModelSelection(model) : undefined;

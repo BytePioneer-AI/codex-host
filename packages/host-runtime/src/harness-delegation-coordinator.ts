@@ -184,7 +184,7 @@ export class HarnessDelegationCoordinator {
   readonly #startOfficial: (
     input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
     resolveConfiguration: ResolveOfficialConfiguration,
-    projectId?: string,
+    readParentProject: () => Promise<string | undefined>,
   ) => Promise<DelegationStartResult>;
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
   readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata | null>;
@@ -220,7 +220,7 @@ export class HarnessDelegationCoordinator {
     startOfficial(
       input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
       resolveConfiguration: ResolveOfficialConfiguration,
-      projectId?: string,
+      readParentProject: () => Promise<string | undefined>,
     ): Promise<DelegationStartResult>;
     listOfficial(input: ThreadListInput): Promise<DelegationThreadListResult>;
     officialThreadMetadata(threadId: string): Promise<ParentMetadata | null>;
@@ -288,17 +288,24 @@ export class HarnessDelegationCoordinator {
           : "--cwd is required when an external client starts work without a parent Thread",
       );
     const parentThreadId = await this.#resolveParent(input.parentThreadId);
-    const parent = await this.#parentMetadata(parentThreadId, input.harnessId);
-    const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
     const title = delegationTitle(input);
     if (input.harnessId === "codex") {
+      const inheritedParent = input.cwd
+        ? undefined
+        : await this.#parentMetadata(parentThreadId, "codex");
+      const selectedCwd = input.cwd ?? inheritedParent?.cwd ?? process.cwd();
       const startInput = { ...input, parentThreadId, cwd: selectedCwd, title };
       // The official owner resolves preferences only after checking the original request digest.
       const result = await this.#startOfficial(
         startInput,
         (model, inspected) =>
           this.#resolveConfiguration(startInput, model, inspected && Promise.resolve(inspected)),
-        parent.cwd && path.relative(parent.cwd, selectedCwd) === "" ? parent.projectId : undefined,
+        async () => {
+          const parent = inheritedParent ?? (await this.#parentMetadata(parentThreadId, "codex"));
+          return parent.cwd && path.relative(parent.cwd, selectedCwd) === ""
+            ? parent.projectId
+            : undefined;
+        },
       );
       return {
         ...result,
@@ -308,6 +315,8 @@ export class HarnessDelegationCoordinator {
       };
     }
     const targetHarnessId = input.harnessId;
+    const parent = await this.#parentMetadata(parentThreadId, targetHarnessId);
+    const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
     const adapter = this.#adapters.get(targetHarnessId);
     if (!adapter) {
       throw new DelegationControlError(

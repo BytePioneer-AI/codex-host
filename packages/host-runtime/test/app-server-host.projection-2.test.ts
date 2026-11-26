@@ -1355,7 +1355,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
       parentThreadId: "parent-thread",
       model: legacyModel,
     });
-    await answerOfficialParentCwd(fixture);
     const modelList = await readJsonLine(fixture.official.stdin);
     expect(modelList).toMatchObject({ method: "model/list", params: {} });
     fixture.official.stdout.write(
@@ -1364,6 +1363,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
         result: { data: [{ model: "gpt-5.6-luna", isDefault: true }] },
       })}\n`,
     );
+    await answerOfficialParentCwd(fixture);
     const threadStart = await readJsonLine(fixture.official.stdin);
     expect(threadStart).toMatchObject({
       method: "thread/start",
@@ -1556,7 +1556,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
       parentThreadId: "parent-thread",
       requestId: "native-request-1",
     });
-    await answerOfficialParentCwd(fixture, "parent-thread", "Renamed parent");
     const duplicateRead = await readJsonLine(fixture.official.stdin);
     expect(duplicateRead).toMatchObject({
       method: "thread/read",
@@ -1572,6 +1571,15 @@ describe("AppServerHost HarnessAdapter projection", () => {
       threadId: "native-child",
       turnId: "native-turn",
     });
+    await expect(
+      delegationApi.start({
+        harnessId: "codex",
+        task: "different task",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        requestId: "native-request-1",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     expect(fixture.official.stdin.readableLength).toBe(0);
 
     const implicitPending = delegationApi.start({
@@ -1597,7 +1605,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
       cwd: "/synthetic",
       parentThreadId: "parent-thread",
     });
-    await answerOfficialParentCwd(fixture);
     await expect(implicitDuplicate).resolves.toMatchObject({ threadId: "implicit-child" });
     expect(fixture.official.stdin.readableLength).toBe(0);
     await stopFixture(fixture);

@@ -166,10 +166,12 @@ it.each(["shared", "stale SSH copy", "legacy SSH"] as const)(
     if (!api) throw new Error("Missing viewer registration");
     const parentId = placement === "legacy SSH" ? "legacy-only-parent" : sharedParent;
     if (placement !== "shared") {
-      const record = await origin.mappingStore.getThread(hostThreadIdSchema.parse(sharedParent));
-      if (!record) throw new Error("Missing parent fixture");
       await viewer.mappingStore.createProvisional({
-        ...record,
+        harnessId: harnessIdSchema.parse("pi"),
+        title: "Legacy parent",
+        transportModelId: "codexhost/pi-native",
+        ephemeral: false,
+        historyMode: "paginated",
         hostThreadId: hostThreadIdSchema.parse(parentId),
         createRequestId: parentId,
         cwd: "/legacy",
